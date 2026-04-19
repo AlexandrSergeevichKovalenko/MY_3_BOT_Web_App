@@ -56,6 +56,9 @@ READER_SESSION_AUTOCLOSE_MAX_SECONDS = max(
 WEBAPP_SCHEMA_MIGRATION_LOCK_KEY = 830420260305001
 _ENSURE_WEBAPP_TABLES_MUTEX = threading.Lock()
 _ENSURE_WEBAPP_TABLES_DONE = False
+PHASE1_PROJECTION_SCHEMA_LOCK_KEY = 830420260305002
+_ENSURE_PHASE1_PROJECTION_SCHEMA_MUTEX = threading.Lock()
+_ENSURE_PHASE1_PROJECTION_SCHEMA_DONE = False
 _DB_POOL_LOCK = threading.Lock()
 _DB_POOL: ThreadedConnectionPool | None = None
 _DB_ACQUIRE_LOCAL = threading.local()
@@ -1088,6 +1091,84 @@ def get_translation_focus_pool_daily_snapshot(
         }
         for row in rows
         if str(row[0] or "").strip() and str(row[2] or "").strip()
+    ]
+
+
+def get_translation_readiness_bucket_rollup(
+    *,
+    source_lang: str,
+    target_lang: str,
+    lookback_days: int = 14,
+) -> list[dict[str, Any]]:
+    normalized_source_lang = _normalize_lang_code(source_lang)
+    normalized_target_lang = _normalize_lang_code(target_lang)
+    safe_lookback_days = max(1, int(lookback_days or 1))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    focus_kind,
+                    focus_key,
+                    COALESCE(NULLIF(MAX(focus_label), ''), focus_key) AS focus_label,
+                    level,
+                    COALESCE(SUM(sessions_started), 0)::BIGINT AS sessions_started,
+                    COALESCE(SUM(ready_zero_starts), 0)::BIGINT AS ready_zero_starts,
+                    COALESCE(SUM(ready_ge_1_starts), 0)::BIGINT AS ready_ge_1_starts,
+                    COALESCE(SUM(ready_ge_3_starts), 0)::BIGINT AS ready_ge_3_starts,
+                    COALESCE(SUM(ready_ge_7_starts), 0)::BIGINT AS ready_ge_7_starts,
+                    COALESCE(SUM(total_ready_count), 0)::BIGINT AS total_ready_count,
+                    COALESCE(SUM(total_personal_added), 0)::BIGINT AS total_personal_added,
+                    COALESCE(SUM(total_pool_added), 0)::BIGINT AS total_pool_added,
+                    COALESCE(SUM(total_generic_added), 0)::BIGINT AS total_generic_added,
+                    COALESCE(SUM(total_llm_added_on_start), 0)::BIGINT AS total_llm_added_on_start,
+                    COALESCE(SUM(background_fill_required_count), 0)::BIGINT AS background_fill_required_count,
+                    COALESCE(SUM(fill_runs), 0)::BIGINT AS fill_runs,
+                    COALESCE(SUM(fill_underfilled_count), 0)::BIGINT AS fill_underfilled_count,
+                    COALESCE(SUM(fill_failed_count), 0)::BIGINT AS fill_failed_count,
+                    COALESCE(SUM(total_fill_rounds), 0)::BIGINT AS total_fill_rounds,
+                    COALESCE(SUM(total_time_to_first_ready_ms), 0)::BIGINT AS total_time_to_first_ready_ms,
+                    COALESCE(SUM(time_to_first_ready_samples), 0)::BIGINT AS time_to_first_ready_samples
+                FROM bt_3_translation_readiness_daily_stats
+                WHERE source_lang = %s
+                  AND target_lang = %s
+                  AND snapshot_date >= CURRENT_DATE - (%s::int - 1)
+                GROUP BY focus_kind, focus_key, level
+                ORDER BY focus_kind, focus_key, level;
+                """,
+                (
+                    normalized_source_lang,
+                    normalized_target_lang,
+                    safe_lookback_days,
+                ),
+            )
+            rows = cursor.fetchall() or []
+    return [
+        {
+            "focus_kind": str(row[0] or "").strip().lower(),
+            "focus_key": str(row[1] or "").strip(),
+            "focus_label": str(row[2] or row[1] or "").strip(),
+            "level": str(row[3] or "").strip().lower(),
+            "sessions_started": int(row[4] or 0),
+            "ready_zero_starts": int(row[5] or 0),
+            "ready_ge_1_starts": int(row[6] or 0),
+            "ready_ge_3_starts": int(row[7] or 0),
+            "ready_ge_7_starts": int(row[8] or 0),
+            "total_ready_count": int(row[9] or 0),
+            "total_personal_added": int(row[10] or 0),
+            "total_pool_added": int(row[11] or 0),
+            "total_generic_added": int(row[12] or 0),
+            "total_llm_added_on_start": int(row[13] or 0),
+            "background_fill_required_count": int(row[14] or 0),
+            "fill_runs": int(row[15] or 0),
+            "fill_underfilled_count": int(row[16] or 0),
+            "fill_failed_count": int(row[17] or 0),
+            "total_fill_rounds": int(row[18] or 0),
+            "total_time_to_first_ready_ms": int(row[19] or 0),
+            "time_to_first_ready_samples": int(row[20] or 0),
+        }
+        for row in rows
+        if str(row[1] or "").strip() and str(row[3] or "").strip()
     ]
 
 
@@ -2557,6 +2638,65 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_user_api_snapshots (user_id, updated_at DESC);
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_projection_jobs (
+                    id BIGSERIAL PRIMARY KEY,
+                    job_kind TEXT NOT NULL,
+                    projection_kind TEXT NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    source_session_id TEXT NOT NULL DEFAULT '',
+                    plan_date DATE,
+                    lookback_days INT,
+                    job_source TEXT NOT NULL DEFAULT 'live',
+                    queue_name TEXT NOT NULL DEFAULT 'projection_materialization_live',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempt_count INT NOT NULL DEFAULT 0,
+                    lease_token TEXT,
+                    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    last_error TEXT,
+                    enqueued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    started_at TIMESTAMPTZ,
+                    completed_at TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_projection_jobs
+                ADD COLUMN IF NOT EXISTS job_source TEXT NOT NULL DEFAULT 'live';
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_projection_jobs
+                ADD COLUMN IF NOT EXISTS queue_name TEXT NOT NULL DEFAULT 'projection_materialization_live';
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_projection_jobs
+                ADD COLUMN IF NOT EXISTS enqueued_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_projection_jobs
+                ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_projection_jobs
+                ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+            """)
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_3_projection_jobs_identity
+                ON bt_3_projection_jobs (job_kind, projection_kind, user_id, source_session_id);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_projection_jobs_due
+                ON bt_3_projection_jobs (status, next_attempt_at ASC, updated_at ASC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_projection_jobs_source_due
+                ON bt_3_projection_jobs (job_source, status, next_attempt_at ASC, updated_at ASC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_projection_jobs_user_updated
+                ON bt_3_projection_jobs (user_id, updated_at DESC);
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_webapp_checks (
                     id SERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL,
@@ -2606,6 +2746,9 @@ def ensure_webapp_tables() -> None:
                     dispatched_at TIMESTAMPTZ,
                     worker_job_id TEXT,
                     heartbeat_at TIMESTAMPTZ,
+                    summary_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    completion_side_effects_started_at TIMESTAMPTZ,
+                    completion_side_effects_done_at TIMESTAMPTZ,
                     started_at TIMESTAMPTZ,
                     finished_at TIMESTAMPTZ,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -2638,6 +2781,18 @@ def ensure_webapp_tables() -> None:
             """)
             cursor.execute("""
                 ALTER TABLE bt_3_translation_check_sessions
+                ADD COLUMN IF NOT EXISTS summary_json JSONB NOT NULL DEFAULT '{}'::jsonb;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_translation_check_sessions
+                ADD COLUMN IF NOT EXISTS completion_side_effects_started_at TIMESTAMPTZ;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_translation_check_sessions
+                ADD COLUMN IF NOT EXISTS completion_side_effects_done_at TIMESTAMPTZ;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_translation_check_sessions
                 ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ;
             """)
             cursor.execute("""
@@ -2651,6 +2806,7 @@ def ensure_webapp_tables() -> None:
                     item_order INT NOT NULL DEFAULT 0,
                     sentence_number INT,
                     sentence_id_for_mistake_table BIGINT,
+                    source_daily_sentence_id BIGINT,
                     original_text TEXT NOT NULL,
                     user_translation TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'pending',
@@ -2672,6 +2828,10 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_translation_check_items_status
                 ON bt_3_translation_check_items (check_session_id, status, item_order);
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_translation_check_items
+                ADD COLUMN IF NOT EXISTS source_daily_sentence_id BIGINT;
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_webapp_dictionary_queries (
@@ -3658,6 +3818,40 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_translation_bucket_daily_demand_lookup
                 ON bt_3_translation_bucket_daily_demand (source_lang, target_lang, focus_key, level, demand_date DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_translation_readiness_daily_stats (
+                    snapshot_date DATE NOT NULL,
+                    source_lang TEXT NOT NULL,
+                    target_lang TEXT NOT NULL,
+                    focus_kind TEXT NOT NULL,
+                    focus_key TEXT NOT NULL,
+                    focus_label TEXT NOT NULL,
+                    level TEXT NOT NULL,
+                    sessions_started BIGINT NOT NULL DEFAULT 0,
+                    ready_zero_starts BIGINT NOT NULL DEFAULT 0,
+                    ready_ge_1_starts BIGINT NOT NULL DEFAULT 0,
+                    ready_ge_3_starts BIGINT NOT NULL DEFAULT 0,
+                    ready_ge_7_starts BIGINT NOT NULL DEFAULT 0,
+                    total_ready_count BIGINT NOT NULL DEFAULT 0,
+                    total_personal_added BIGINT NOT NULL DEFAULT 0,
+                    total_pool_added BIGINT NOT NULL DEFAULT 0,
+                    total_generic_added BIGINT NOT NULL DEFAULT 0,
+                    total_llm_added_on_start BIGINT NOT NULL DEFAULT 0,
+                    background_fill_required_count BIGINT NOT NULL DEFAULT 0,
+                    fill_runs BIGINT NOT NULL DEFAULT 0,
+                    fill_underfilled_count BIGINT NOT NULL DEFAULT 0,
+                    fill_failed_count BIGINT NOT NULL DEFAULT 0,
+                    total_fill_rounds BIGINT NOT NULL DEFAULT 0,
+                    total_time_to_first_ready_ms BIGINT NOT NULL DEFAULT 0,
+                    time_to_first_ready_samples BIGINT NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (snapshot_date, source_lang, target_lang, focus_kind, focus_key, level)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_translation_readiness_daily_stats_lookup
+                ON bt_3_translation_readiness_daily_stats (source_lang, target_lang, focus_kind, focus_key, level, snapshot_date DESC);
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_quiz_history (
@@ -5446,6 +5640,132 @@ def ensure_webapp_tables() -> None:
                 + ", ".join(missing_phase1_objects)
             )
         _ENSURE_WEBAPP_TABLES_DONE = True
+
+
+def ensure_phase1_projection_schema() -> None:
+    global _ENSURE_PHASE1_PROJECTION_SCHEMA_DONE
+    if _ENSURE_PHASE1_PROJECTION_SCHEMA_DONE:
+        return
+    with _ENSURE_PHASE1_PROJECTION_SCHEMA_MUTEX:
+        if _ENSURE_PHASE1_PROJECTION_SCHEMA_DONE:
+            return
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT pg_advisory_xact_lock(%s);",
+                    (PHASE1_PROJECTION_SCHEMA_LOCK_KEY,),
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS bt_3_user_api_snapshots (
+                        user_id BIGINT NOT NULL,
+                        snapshot_kind TEXT NOT NULL,
+                        snapshot_key TEXT NOT NULL,
+                        source_lang TEXT,
+                        target_lang TEXT,
+                        payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        refreshed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        fresh_until_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        stale_until_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        PRIMARY KEY (user_id, snapshot_kind, snapshot_key)
+                    );
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_bt_3_user_api_snapshots_kind_fresh
+                    ON bt_3_user_api_snapshots (snapshot_kind, fresh_until_at DESC, updated_at DESC);
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_bt_3_user_api_snapshots_user_updated
+                    ON bt_3_user_api_snapshots (user_id, updated_at DESC);
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS bt_3_projection_jobs (
+                        id BIGSERIAL PRIMARY KEY,
+                        job_kind TEXT NOT NULL,
+                        projection_kind TEXT NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        source_session_id TEXT NOT NULL DEFAULT '',
+                        plan_date DATE,
+                        lookback_days INT,
+                        job_source TEXT NOT NULL DEFAULT 'live',
+                        queue_name TEXT NOT NULL DEFAULT 'projection_materialization_live',
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        attempt_count INT NOT NULL DEFAULT 0,
+                        lease_token TEXT,
+                        next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        last_error TEXT,
+                        enqueued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        started_at TIMESTAMPTZ,
+                        completed_at TIMESTAMPTZ,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                    """
+                )
+                cursor.execute(
+                    """
+                    ALTER TABLE bt_3_projection_jobs
+                    ADD COLUMN IF NOT EXISTS job_source TEXT NOT NULL DEFAULT 'live';
+                    """
+                )
+                cursor.execute(
+                    """
+                    ALTER TABLE bt_3_projection_jobs
+                    ADD COLUMN IF NOT EXISTS queue_name TEXT NOT NULL DEFAULT 'projection_materialization_live';
+                    """
+                )
+                cursor.execute(
+                    """
+                    ALTER TABLE bt_3_projection_jobs
+                    ADD COLUMN IF NOT EXISTS enqueued_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+                    """
+                )
+                cursor.execute(
+                    """
+                    ALTER TABLE bt_3_projection_jobs
+                    ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
+                    """
+                )
+                cursor.execute(
+                    """
+                    ALTER TABLE bt_3_projection_jobs
+                    ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_3_projection_jobs_identity
+                    ON bt_3_projection_jobs (job_kind, projection_kind, user_id, source_session_id);
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_bt_3_projection_jobs_due
+                    ON bt_3_projection_jobs (status, next_attempt_at ASC, updated_at ASC);
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_bt_3_projection_jobs_source_due
+                    ON bt_3_projection_jobs (job_source, status, next_attempt_at ASC, updated_at ASC);
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_bt_3_projection_jobs_user_updated
+                    ON bt_3_projection_jobs (user_id, updated_at DESC);
+                    """
+                )
+            conn.commit()
+        _ENSURE_PHASE1_PROJECTION_SCHEMA_DONE = True
 
 
 def require_semantic_audit_tables() -> None:
@@ -7598,6 +7918,440 @@ def mark_user_api_snapshots_stale(
             return int(cursor.rowcount or 0)
 
 
+def _map_projection_job_row(row: tuple | None) -> dict | None:
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "job_kind": str(row[1] or "").strip(),
+        "projection_kind": str(row[2] or "").strip(),
+        "user_id": int(row[3]),
+        "source_session_id": str(row[4] or "").strip() or None,
+        "plan_date": row[5].isoformat() if row[5] else None,
+        "lookback_days": int(row[6]) if row[6] is not None else None,
+        "job_source": str(row[7] or "").strip() or "live",
+        "queue_name": str(row[8] or "").strip() or None,
+        "status": str(row[9] or "").strip(),
+        "attempt_count": int(row[10] or 0),
+        "lease_token": str(row[11] or "").strip() or None,
+        "next_attempt_at": row[12].isoformat() if row[12] else None,
+        "last_error": str(row[13] or "").strip() or None,
+        "enqueued_at": row[14].isoformat() if row[14] else None,
+        "started_at": row[15].isoformat() if row[15] else None,
+        "completed_at": row[16].isoformat() if row[16] else None,
+        "created_at": row[17].isoformat() if row[17] else None,
+        "updated_at": row[18].isoformat() if row[18] else None,
+    }
+
+
+def upsert_projection_job(
+    *,
+    job_kind: str,
+    projection_kind: str,
+    user_id: int,
+    source_session_id: str | None = None,
+    plan_date: date | None = None,
+    lookback_days: int | None = None,
+    job_source: str | None = None,
+    queue_name: str | None = None,
+) -> dict | None:
+    ensure_phase1_projection_schema()
+    normalized_job_kind = str(job_kind or "").strip()
+    normalized_projection_kind = str(projection_kind or "").strip()
+    normalized_source_session_id = str(source_session_id or "").strip()
+    if not normalized_job_kind or not normalized_projection_kind:
+        raise ValueError("job_kind and projection_kind are required")
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_projection_jobs (
+                    job_kind,
+                    projection_kind,
+                    user_id,
+                    source_session_id,
+                    plan_date,
+                    lookback_days,
+                    job_source,
+                    queue_name,
+                    status,
+                    attempt_count,
+                    lease_token,
+                    next_attempt_at,
+                    last_error,
+                    enqueued_at,
+                    started_at,
+                    completed_at,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s,
+                    'pending', 0, NULL, NOW(), NULL, NOW(), NULL, NULL, NOW(), NOW()
+                )
+                ON CONFLICT (job_kind, projection_kind, user_id, source_session_id) DO UPDATE
+                SET
+                    plan_date = COALESCE(EXCLUDED.plan_date, bt_3_projection_jobs.plan_date),
+                    lookback_days = COALESCE(EXCLUDED.lookback_days, bt_3_projection_jobs.lookback_days),
+                    job_source = COALESCE(EXCLUDED.job_source, bt_3_projection_jobs.job_source),
+                    queue_name = COALESCE(EXCLUDED.queue_name, bt_3_projection_jobs.queue_name),
+                    status = CASE
+                        WHEN bt_3_projection_jobs.status = 'running' THEN bt_3_projection_jobs.status
+                        ELSE 'pending'
+                    END,
+                    lease_token = CASE
+                        WHEN bt_3_projection_jobs.status = 'running' THEN bt_3_projection_jobs.lease_token
+                        ELSE NULL
+                    END,
+                    next_attempt_at = CASE
+                        WHEN bt_3_projection_jobs.status = 'running' THEN bt_3_projection_jobs.next_attempt_at
+                        ELSE NOW()
+                    END,
+                    last_error = CASE
+                        WHEN bt_3_projection_jobs.status = 'running' THEN bt_3_projection_jobs.last_error
+                        ELSE NULL
+                    END,
+                    enqueued_at = CASE
+                        WHEN bt_3_projection_jobs.status = 'running' THEN bt_3_projection_jobs.enqueued_at
+                        ELSE NOW()
+                    END,
+                    started_at = CASE
+                        WHEN bt_3_projection_jobs.status = 'running' THEN bt_3_projection_jobs.started_at
+                        ELSE NULL
+                    END,
+                    completed_at = NULL,
+                    updated_at = NOW()
+                RETURNING
+                    id,
+                    job_kind,
+                    projection_kind,
+                    user_id,
+                    source_session_id,
+                    plan_date,
+                    lookback_days,
+                    job_source,
+                    queue_name,
+                    status,
+                    attempt_count,
+                    lease_token,
+                    next_attempt_at,
+                    last_error,
+                    enqueued_at,
+                    started_at,
+                    completed_at,
+                    created_at,
+                    updated_at;
+                """,
+                (
+                    normalized_job_kind,
+                    normalized_projection_kind,
+                    int(user_id),
+                    normalized_source_session_id,
+                    plan_date,
+                    int(lookback_days) if lookback_days is not None else None,
+                    str(job_source or "").strip() or "live",
+                    str(queue_name or "").strip() or "projection_materialization_live",
+                ),
+            )
+            return _map_projection_job_row(cursor.fetchone())
+
+
+def claim_projection_job(
+    *,
+    job_id: int,
+    expected_job_source: str | None = None,
+    expected_queue_name: str | None = None,
+) -> dict | None:
+    ensure_phase1_projection_schema()
+    safe_job_id = int(job_id or 0)
+    if safe_job_id <= 0:
+        return None
+    lease_token = str(uuid4())
+    conditions = [
+        "id = %s",
+        "status = 'pending'",
+        "next_attempt_at <= NOW()",
+    ]
+    params: list[Any] = [lease_token, safe_job_id]
+    normalized_expected_source = str(expected_job_source or "").strip()
+    normalized_expected_queue = str(expected_queue_name or "").strip()
+    if normalized_expected_source:
+        conditions.append("job_source = %s")
+        params.append(normalized_expected_source)
+    if normalized_expected_queue:
+        conditions.append("queue_name = %s")
+        params.append(normalized_expected_queue)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                UPDATE bt_3_projection_jobs
+                SET
+                    status = 'running',
+                    attempt_count = attempt_count + 1,
+                    lease_token = %s,
+                    started_at = NOW(),
+                    updated_at = NOW()
+                WHERE {" AND ".join(conditions)}
+                RETURNING
+                    id,
+                    job_kind,
+                    projection_kind,
+                    user_id,
+                    source_session_id,
+                    plan_date,
+                    lookback_days,
+                    job_source,
+                    queue_name,
+                    status,
+                    attempt_count,
+                    lease_token,
+                    next_attempt_at,
+                    last_error,
+                    enqueued_at,
+                    started_at,
+                    completed_at,
+                    created_at,
+                    updated_at;
+                """,
+                params,
+            )
+            return _map_projection_job_row(cursor.fetchone())
+
+
+def complete_projection_job(*, job_id: int, lease_token: str) -> dict | None:
+    ensure_phase1_projection_schema()
+    normalized_lease_token = str(lease_token or "").strip()
+    if int(job_id or 0) <= 0 or not normalized_lease_token:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_projection_jobs
+                SET
+                    status = 'done',
+                    lease_token = NULL,
+                    last_error = NULL,
+                    completed_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND status = 'running'
+                  AND lease_token = %s
+                RETURNING
+                    id,
+                    job_kind,
+                    projection_kind,
+                    user_id,
+                    source_session_id,
+                    plan_date,
+                    lookback_days,
+                    job_source,
+                    queue_name,
+                    status,
+                    attempt_count,
+                    lease_token,
+                    next_attempt_at,
+                    last_error,
+                    enqueued_at,
+                    started_at,
+                    completed_at,
+                    created_at,
+                    updated_at;
+                """,
+                (int(job_id), normalized_lease_token),
+            )
+            return _map_projection_job_row(cursor.fetchone())
+
+
+def fail_projection_job(
+    *,
+    job_id: int,
+    lease_token: str,
+    error_text: str,
+    max_attempts: int = 4,
+) -> dict | None:
+    ensure_phase1_projection_schema()
+    normalized_lease_token = str(lease_token or "").strip()
+    if int(job_id or 0) <= 0 or not normalized_lease_token:
+        return None
+    safe_error = str(error_text or "").strip() or "projection_job_failed"
+    safe_max_attempts = max(1, int(max_attempts or 1))
+    retry_schedule_seconds = [30, 120, 600, 1800]
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT attempt_count
+                FROM bt_3_projection_jobs
+                WHERE id = %s
+                  AND status = 'running'
+                  AND lease_token = %s
+                LIMIT 1;
+                """,
+                (int(job_id), normalized_lease_token),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            attempt_count = int(row[0] or 0)
+            if attempt_count >= safe_max_attempts:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_projection_jobs
+                    SET
+                        status = 'failed',
+                        lease_token = NULL,
+                        last_error = %s,
+                        completed_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = %s
+                      AND status = 'running'
+                      AND lease_token = %s
+                    RETURNING
+                        id,
+                        job_kind,
+                        projection_kind,
+                        user_id,
+                        source_session_id,
+                        plan_date,
+                        lookback_days,
+                        job_source,
+                        queue_name,
+                        status,
+                        attempt_count,
+                        lease_token,
+                        next_attempt_at,
+                        last_error,
+                        enqueued_at,
+                        started_at,
+                        completed_at,
+                        created_at,
+                        updated_at;
+                    """,
+                    (safe_error, int(job_id), normalized_lease_token),
+                )
+                return _map_projection_job_row(cursor.fetchone())
+            retry_delay = retry_schedule_seconds[min(max(0, attempt_count - 1), len(retry_schedule_seconds) - 1)]
+            cursor.execute(
+                """
+                UPDATE bt_3_projection_jobs
+                SET
+                    status = 'pending',
+                    lease_token = NULL,
+                    next_attempt_at = NOW() + (%s * INTERVAL '1 second'),
+                    last_error = %s,
+                    completed_at = NULL,
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND status = 'running'
+                  AND lease_token = %s
+                RETURNING
+                    id,
+                    job_kind,
+                    projection_kind,
+                    user_id,
+                    source_session_id,
+                    plan_date,
+                    lookback_days,
+                    job_source,
+                    queue_name,
+                    status,
+                    attempt_count,
+                    lease_token,
+                    next_attempt_at,
+                    last_error,
+                    enqueued_at,
+                    started_at,
+                    completed_at,
+                    created_at,
+                    updated_at;
+                """,
+                (int(retry_delay), safe_error, int(job_id), normalized_lease_token),
+            )
+            return _map_projection_job_row(cursor.fetchone())
+
+
+def get_projection_job_status_counts(*, job_source: str | None = None) -> dict[str, int]:
+    ensure_phase1_projection_schema()
+    conditions = []
+    params: list[Any] = []
+    normalized_job_source = str(job_source or "").strip()
+    if normalized_job_source:
+        conditions.append("job_source = %s")
+        params.append(normalized_job_source)
+    where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT
+                    COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN status = 'pending' AND attempt_count > 0 THEN 1 ELSE 0 END), 0)
+                FROM bt_3_projection_jobs
+                {where_sql};
+                """,
+                params,
+            )
+            row = cursor.fetchone() or (0, 0, 0, 0, 0)
+            return {
+                "pending": int(row[0] or 0),
+                "running": int(row[1] or 0),
+                "done": int(row[2] or 0),
+                "failed": int(row[3] or 0),
+                "retrying": int(row[4] or 0),
+            }
+
+
+def list_webapp_projection_target_user_ids(*, lookback_days: int = 30) -> list[int]:
+    safe_days = max(1, int(lookback_days or 1))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH allowlist_users AS (
+                    SELECT
+                        user_id,
+                        MAX(updated_at) AS activity_at
+                    FROM bt_3_allowed_users
+                    GROUP BY user_id
+                ),
+                recent_activity AS (
+                    SELECT q.user_id, MAX(q.created_at) AS activity_at
+                    FROM bt_3_webapp_dictionary_queries q
+                    WHERE q.created_at >= NOW() - (%s || ' days')::interval
+                    GROUP BY q.user_id
+                    UNION ALL
+                    SELECT c.user_id, MAX(c.created_at) AS activity_at
+                    FROM bt_3_webapp_checks c
+                    WHERE c.created_at >= NOW() - (%s || ' days')::interval
+                    GROUP BY c.user_id
+                    UNION ALL
+                    SELECT p.user_id, MAX(COALESCE(p.end_time, p.start_time)) AS activity_at
+                    FROM bt_3_user_progress p
+                    WHERE COALESCE(p.end_time, p.start_time) >= NOW() - (%s || ' days')::interval
+                    GROUP BY p.user_id
+                ),
+                unioned AS (
+                    SELECT user_id, activity_at FROM allowlist_users
+                    UNION ALL
+                    SELECT user_id, activity_at FROM recent_activity
+                )
+                SELECT user_id
+                FROM unioned
+                WHERE user_id IS NOT NULL
+                GROUP BY user_id
+                ORDER BY MAX(activity_at) DESC NULLS LAST, user_id DESC;
+                """,
+                (safe_days, safe_days, safe_days),
+            )
+            rows = cursor.fetchall() or []
+    return [int(row[0]) for row in rows if row and row[0] is not None]
+
+
 def get_webapp_scope_state(user_id: int) -> dict:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -8223,6 +8977,9 @@ def _map_translation_check_session_row(row) -> dict | None:
         "finished_at": row[15].isoformat() if row[15] else None,
         "created_at": row[16].isoformat() if row[16] else None,
         "updated_at": row[17].isoformat() if row[17] else None,
+        "summary_json": row[18] if isinstance(row[18], dict) else {},
+        "completion_side_effects_started_at": row[19].isoformat() if row[19] else None,
+        "completion_side_effects_done_at": row[20].isoformat() if row[20] else None,
     }
 
 
@@ -8248,6 +9005,8 @@ def _map_translation_check_session_status_row(row) -> dict | None:
         "finished_at": row[13].isoformat() if row[13] else None,
         "created_at": row[14].isoformat() if row[14] else None,
         "updated_at": row[15].isoformat() if row[15] else None,
+        "summary_json": row[16] if isinstance(row[16], dict) else {},
+        "completion_side_effects_done_at": row[17].isoformat() if row[17] else None,
     }
 
 
@@ -8279,17 +9038,18 @@ def _map_translation_check_item_row(row) -> dict | None:
         "item_order": int(row[2] or 0),
         "sentence_number": int(row[3]) if row[3] is not None else None,
         "sentence_id_for_mistake_table": int(row[4]) if row[4] is not None else None,
-        "original_text": str(row[5] or ""),
-        "user_translation": str(row[6] or ""),
-        "status": str(row[7] or "pending"),
-        "result_json": row[8] if isinstance(row[8], dict) else None,
-        "result_text": str(row[9] or "") or None,
-        "error_text": str(row[10] or "") or None,
-        "webapp_check_id": int(row[11]) if row[11] is not None else None,
-        "started_at": row[12].isoformat() if row[12] else None,
-        "finished_at": row[13].isoformat() if row[13] else None,
-        "created_at": row[14].isoformat() if row[14] else None,
-        "updated_at": row[15].isoformat() if row[15] else None,
+        "source_daily_sentence_id": int(row[5]) if row[5] is not None else None,
+        "original_text": str(row[6] or ""),
+        "user_translation": str(row[7] or ""),
+        "status": str(row[8] or "pending"),
+        "result_json": row[9] if isinstance(row[9], dict) else None,
+        "result_text": str(row[10] or "") or None,
+        "error_text": str(row[11] or "") or None,
+        "webapp_check_id": int(row[12]) if row[12] is not None else None,
+        "started_at": row[13].isoformat() if row[13] else None,
+        "finished_at": row[14].isoformat() if row[14] else None,
+        "created_at": row[15].isoformat() if row[15] else None,
+        "updated_at": row[16].isoformat() if row[16] else None,
     }
 
 
@@ -8332,7 +9092,8 @@ def create_translation_check_session(
                     id, user_id, username, source_session_id, source_lang, target_lang,
                     status, total_items, completed_items, failed_items, send_private_grammar_text,
                     original_text_bundle, user_translation_bundle, last_error, started_at,
-                    finished_at, created_at, updated_at;
+                    finished_at, created_at, updated_at, summary_json,
+                    completion_side_effects_started_at, completion_side_effects_done_at;
                 """,
                 (
                     int(user_id),
@@ -8352,7 +9113,7 @@ def create_translation_check_session(
             session_id = int(session_row[0])
 
             if normalized_items:
-                item_rows: list[tuple[int, int, int | None, int | None, str, str]] = []
+                item_rows: list[tuple[int, int, int | None, int | None, int | None, str, str]] = []
                 for index, item in enumerate(normalized_items):
                     item_rows.append(
                         (
@@ -8360,6 +9121,7 @@ def create_translation_check_session(
                             int(item.get("item_order", index)),
                             int(item["sentence_number"]) if item.get("sentence_number") is not None else None,
                             int(item["id_for_mistake_table"]) if item.get("id_for_mistake_table") is not None else None,
+                            int(item["source_sentence_id"]) if item.get("source_sentence_id") is not None else None,
                             str(item.get("original_text") or "").strip(),
                             str(item.get("translation") or item.get("user_translation") or "").strip(),
                         )
@@ -8372,6 +9134,7 @@ def create_translation_check_session(
                         item_order,
                         sentence_number,
                         sentence_id_for_mistake_table,
+                        source_daily_sentence_id,
                         original_text,
                         user_translation,
                         status,
@@ -8381,7 +9144,7 @@ def create_translation_check_session(
                     VALUES %s
                     """,
                     item_rows,
-                    template="(%s, %s, %s, %s, %s, %s, 'pending', NOW(), NOW())",
+                    template="(%s, %s, %s, %s, %s, %s, %s, 'pending', NOW(), NOW())",
                     page_size=200,
                 )
 
@@ -8402,7 +9165,8 @@ def get_translation_check_session(*, session_id: int, user_id: int | None = None
                     id, user_id, username, source_session_id, source_lang, target_lang,
                     status, total_items, completed_items, failed_items, send_private_grammar_text,
                     original_text_bundle, user_translation_bundle, last_error, started_at,
-                    finished_at, created_at, updated_at
+                    finished_at, created_at, updated_at, summary_json,
+                    completion_side_effects_started_at, completion_side_effects_done_at
                 FROM bt_3_translation_check_sessions
                 {where_sql}
                 LIMIT 1;
@@ -8426,7 +9190,8 @@ def get_translation_check_session_status(*, session_id: int, user_id: int | None
                 SELECT
                     id, user_id, username, source_session_id, source_lang, target_lang,
                     status, total_items, completed_items, failed_items, send_private_grammar_text,
-                    last_error, started_at, finished_at, created_at, updated_at
+                    last_error, started_at, finished_at, created_at, updated_at,
+                    summary_json, completion_side_effects_done_at
                 FROM bt_3_translation_check_sessions
                 {where_sql}
                 LIMIT 1;
@@ -8455,6 +9220,47 @@ def get_translation_check_session_runtime(*, session_id: int) -> dict | None:
     return _map_translation_check_session_runtime_row(row)
 
 
+def list_stale_translation_check_queued_sessions(*, stale_ms: int, limit: int = 20) -> list[dict]:
+    normalized_stale_ms = max(1000, int(stale_ms))
+    normalized_limit = max(1, int(limit))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id, user_id, status, last_error, dispatched_job_id, dispatched_at,
+                    worker_job_id, heartbeat_at, started_at, finished_at, created_at, updated_at
+                FROM bt_3_translation_check_sessions
+                WHERE status = 'queued'
+                  AND finished_at IS NULL
+                  AND COALESCE(dispatched_at, created_at) <= NOW() - (%s * INTERVAL '1 millisecond')
+                ORDER BY COALESCE(dispatched_at, created_at) ASC
+                LIMIT %s;
+                """,
+                (normalized_stale_ms, normalized_limit),
+            )
+            rows = cursor.fetchall() or []
+    return [_map_translation_check_session_runtime_row(row) for row in rows if row]
+
+
+def count_active_translation_check_running_sessions() -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM bt_3_translation_check_sessions
+                WHERE status = 'running'
+                  AND finished_at IS NULL;
+                """
+            )
+            row = cursor.fetchone()
+    try:
+        return max(0, int(row[0] or 0)) if row else 0
+    except Exception:
+        return 0
+
+
 def list_translation_check_items(*, session_id: int) -> list[dict]:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -8462,7 +9268,7 @@ def list_translation_check_items(*, session_id: int) -> list[dict]:
                 """
                 SELECT
                     id, check_session_id, item_order, sentence_number, sentence_id_for_mistake_table,
-                    original_text, user_translation, status, result_json, result_text, error_text,
+                    source_daily_sentence_id, original_text, user_translation, status, result_json, result_text, error_text,
                     webapp_check_id, started_at, finished_at, created_at, updated_at
                 FROM bt_3_translation_check_items
                 WHERE check_session_id = %s
@@ -8492,7 +9298,8 @@ def get_translation_check_session_with_items(
                     id, user_id, username, source_session_id, source_lang, target_lang,
                     status, total_items, completed_items, failed_items, send_private_grammar_text,
                     original_text_bundle, user_translation_bundle, last_error, started_at,
-                    finished_at, created_at, updated_at
+                    finished_at, created_at, updated_at, summary_json,
+                    completion_side_effects_started_at, completion_side_effects_done_at
                 FROM bt_3_translation_check_sessions
                 {where_sql}
                 LIMIT 1;
@@ -8507,7 +9314,7 @@ def get_translation_check_session_with_items(
                 """
                 SELECT
                     id, check_session_id, item_order, sentence_number, sentence_id_for_mistake_table,
-                    original_text, user_translation, status, result_json, result_text, error_text,
+                    source_daily_sentence_id, original_text, user_translation, status, result_json, result_text, error_text,
                     webapp_check_id, started_at, finished_at, created_at, updated_at
                 FROM bt_3_translation_check_items
                 WHERE check_session_id = %s
@@ -8533,7 +9340,8 @@ def get_latest_translation_check_session(
                     id, user_id, username, source_session_id, source_lang, target_lang,
                     status, total_items, completed_items, failed_items, send_private_grammar_text,
                     original_text_bundle, user_translation_bundle, last_error, started_at,
-                    finished_at, created_at, updated_at
+                    finished_at, created_at, updated_at, summary_json,
+                    completion_side_effects_started_at, completion_side_effects_done_at
                 FROM bt_3_translation_check_sessions
                 WHERE user_id = %s
                   {status_sql}
@@ -8559,7 +9367,8 @@ def get_latest_translation_check_session_status(
                 SELECT
                     id, user_id, username, source_session_id, source_lang, target_lang,
                     status, total_items, completed_items, failed_items, send_private_grammar_text,
-                    last_error, started_at, finished_at, created_at, updated_at
+                    last_error, started_at, finished_at, created_at, updated_at,
+                    summary_json, completion_side_effects_done_at
                 FROM bt_3_translation_check_sessions
                 WHERE user_id = %s
                   {status_sql}
@@ -8586,7 +9395,8 @@ def get_latest_translation_check_session_with_items(
                     id, user_id, username, source_session_id, source_lang, target_lang,
                     status, total_items, completed_items, failed_items, send_private_grammar_text,
                     original_text_bundle, user_translation_bundle, last_error, started_at,
-                    finished_at, created_at, updated_at
+                    finished_at, created_at, updated_at, summary_json,
+                    completion_side_effects_started_at, completion_side_effects_done_at
                 FROM bt_3_translation_check_sessions
                 WHERE user_id = %s
                   {status_sql}
@@ -8603,7 +9413,7 @@ def get_latest_translation_check_session_with_items(
                 """
                 SELECT
                     id, check_session_id, item_order, sentence_number, sentence_id_for_mistake_table,
-                    original_text, user_translation, status, result_json, result_text, error_text,
+                    source_daily_sentence_id, original_text, user_translation, status, result_json, result_text, error_text,
                     webapp_check_id, started_at, finished_at, created_at, updated_at
                 FROM bt_3_translation_check_items
                 WHERE check_session_id = %s
@@ -8642,7 +9452,8 @@ def update_translation_check_session_status(
                     id, user_id, username, source_session_id, source_lang, target_lang,
                     status, total_items, completed_items, failed_items, send_private_grammar_text,
                     original_text_bundle, user_translation_bundle, last_error, started_at,
-                    finished_at, created_at, updated_at;
+                    finished_at, created_at, updated_at, summary_json,
+                    completion_side_effects_started_at, completion_side_effects_done_at;
                 """,
                 (
                     normalized,
@@ -8716,7 +9527,8 @@ def claim_translation_check_session_runner(
                     id, user_id, username, source_session_id, source_lang, target_lang,
                     status, total_items, completed_items, failed_items, send_private_grammar_text,
                     original_text_bundle, user_translation_bundle, last_error, started_at,
-                    finished_at, created_at, updated_at;
+                    finished_at, created_at, updated_at, summary_json,
+                    completion_side_effects_started_at, completion_side_effects_done_at;
                 """,
                 (
                     normalized_dispatch_job_id,
@@ -8777,6 +9589,9 @@ def complete_translation_check_session(
                     last_error = %s,
                     finished_at = NOW(),
                     heartbeat_at = NOW(),
+                    summary_json = '{}'::jsonb,
+                    completion_side_effects_started_at = NULL,
+                    completion_side_effects_done_at = NULL,
                     updated_at = NOW()
                 WHERE id = %s
                   AND status = 'running'
@@ -8786,13 +9601,76 @@ def complete_translation_check_session(
                     id, user_id, username, source_session_id, source_lang, target_lang,
                     status, total_items, completed_items, failed_items, send_private_grammar_text,
                     original_text_bundle, user_translation_bundle, last_error, started_at,
-                    finished_at, created_at, updated_at;
+                    finished_at, created_at, updated_at, summary_json,
+                    completion_side_effects_started_at, completion_side_effects_done_at;
                 """,
                 (
                     normalized_status,
                     str(last_error or "").strip() or None,
                     int(session_id),
                     normalized_worker_job_id,
+                ),
+            )
+            row = cursor.fetchone()
+    return _map_translation_check_session_row(row)
+
+
+def begin_translation_check_completion_side_effects(
+    *,
+    session_id: int,
+) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_translation_check_sessions
+                SET
+                    completion_side_effects_started_at = COALESCE(completion_side_effects_started_at, NOW()),
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND status IN ('done', 'failed', 'canceled')
+                  AND finished_at IS NOT NULL
+                  AND completion_side_effects_done_at IS NULL
+                RETURNING
+                    id, user_id, username, source_session_id, source_lang, target_lang,
+                    status, total_items, completed_items, failed_items, send_private_grammar_text,
+                    original_text_bundle, user_translation_bundle, last_error, started_at,
+                    finished_at, created_at, updated_at, summary_json,
+                    completion_side_effects_started_at, completion_side_effects_done_at;
+                """,
+                (int(session_id),),
+            )
+            row = cursor.fetchone()
+    return _map_translation_check_session_row(row)
+
+
+def finalize_translation_check_completion_side_effects(
+    *,
+    session_id: int,
+    summary_json: dict | None = None,
+) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_translation_check_sessions
+                SET
+                    summary_json = %s::jsonb,
+                    completion_side_effects_done_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND status IN ('done', 'failed', 'canceled')
+                  AND finished_at IS NOT NULL
+                RETURNING
+                    id, user_id, username, source_session_id, source_lang, target_lang,
+                    status, total_items, completed_items, failed_items, send_private_grammar_text,
+                    original_text_bundle, user_translation_bundle, last_error, started_at,
+                    finished_at, created_at, updated_at, summary_json,
+                    completion_side_effects_started_at, completion_side_effects_done_at;
+                """,
+                (
+                    Json(summary_json if isinstance(summary_json, dict) else {}),
+                    int(session_id),
                 ),
             )
             row = cursor.fetchone()
@@ -8830,7 +9708,7 @@ def update_translation_check_item_result(
                 WHERE id = %s
                 RETURNING
                     id, check_session_id, item_order, sentence_number, sentence_id_for_mistake_table,
-                    original_text, user_translation, status, result_json, result_text, error_text,
+                    source_daily_sentence_id, original_text, user_translation, status, result_json, result_text, error_text,
                     webapp_check_id, started_at, finished_at, created_at, updated_at;
                 """,
                 (
@@ -8881,7 +9759,7 @@ def finalize_translation_check_item(
                   AND status NOT IN ('done', 'failed')
                 RETURNING
                     id, check_session_id, item_order, sentence_number, sentence_id_for_mistake_table,
-                    original_text, user_translation, status, result_json, result_text, error_text,
+                    source_daily_sentence_id, original_text, user_translation, status, result_json, result_text, error_text,
                     webapp_check_id, started_at, finished_at, created_at, updated_at;
                 """,
                 (
@@ -8909,7 +9787,8 @@ def finalize_translation_check_item(
                         id, user_id, username, source_session_id, source_lang, target_lang,
                         status, total_items, completed_items, failed_items, send_private_grammar_text,
                         original_text_bundle, user_translation_bundle, last_error, started_at,
-                        finished_at, created_at, updated_at;
+                        finished_at, created_at, updated_at, summary_json,
+                        completion_side_effects_started_at, completion_side_effects_done_at;
                     """,
                     (int(completed_delta), int(failed_delta), int(item_row[1])),
                 )
@@ -8919,7 +9798,7 @@ def finalize_translation_check_item(
                     """
                     SELECT
                         id, check_session_id, item_order, sentence_number, sentence_id_for_mistake_table,
-                        original_text, user_translation, status, result_json, result_text, error_text,
+                        source_daily_sentence_id, original_text, user_translation, status, result_json, result_text, error_text,
                         webapp_check_id, started_at, finished_at, created_at, updated_at
                     FROM bt_3_translation_check_items
                     WHERE id = %s;
@@ -8996,31 +9875,30 @@ def finalize_translation_check_items_batch(
                 FROM incoming
                 WHERE items.id = incoming.item_id
                   AND items.check_session_id = {int(session_id)}
-                  AND items.status NOT IN ('done', 'failed');
+                  AND items.status NOT IN ('done', 'failed')
+                RETURNING incoming.status AS final_status;
                 """,
                 normalized_rows,
                 template="(%s, %s, %s::jsonb, %s, %s, %s)",
                 page_size=200,
             )
+            updated_rows = cursor.fetchall() or []
+            completed_delta = sum(1 for updated_row in updated_rows if str(updated_row[0] or "").strip().lower() == "done")
+            failed_delta = sum(1 for updated_row in updated_rows if str(updated_row[0] or "").strip().lower() == "failed")
             cursor.execute(
                 """
                 UPDATE bt_3_translation_check_sessions s
                 SET
-                    total_items = counts.total_items,
-                    completed_items = counts.completed_items,
-                    failed_items = counts.failed_items,
+                    completed_items = LEAST(
+                        GREATEST(0, s.total_items),
+                        GREATEST(0, s.completed_items + %s)
+                    ),
+                    failed_items = LEAST(
+                        GREATEST(0, s.total_items),
+                        GREATEST(0, s.failed_items + %s)
+                    ),
                     updated_at = NOW()
-                FROM (
-                    SELECT
-                        check_session_id,
-                        COUNT(*) AS total_items,
-                        COUNT(*) FILTER (WHERE status = 'done') AS completed_items,
-                        COUNT(*) FILTER (WHERE status = 'failed') AS failed_items
-                    FROM bt_3_translation_check_items
-                    WHERE check_session_id = %s
-                    GROUP BY check_session_id
-                ) AS counts
-                WHERE s.id = counts.check_session_id
+                WHERE s.id = %s
                   AND s.status = 'running'
                   AND s.finished_at IS NULL
                   AND (%s IS NULL OR COALESCE(s.worker_job_id, '') = %s)
@@ -9028,11 +9906,34 @@ def finalize_translation_check_items_batch(
                     s.id, s.user_id, s.username, s.source_session_id, s.source_lang, s.target_lang,
                     s.status, s.total_items, s.completed_items, s.failed_items, s.send_private_grammar_text,
                     s.original_text_bundle, s.user_translation_bundle, s.last_error, s.started_at,
-                    s.finished_at, s.created_at, s.updated_at;
+                    s.finished_at, s.created_at, s.updated_at, s.summary_json,
+                    s.completion_side_effects_started_at, s.completion_side_effects_done_at;
                 """,
-                (int(session_id), normalized_worker_job_id, normalized_worker_job_id),
+                (
+                    int(completed_delta),
+                    int(failed_delta),
+                    int(session_id),
+                    normalized_worker_job_id,
+                    normalized_worker_job_id,
+                ),
             )
             row = cursor.fetchone()
+            if row is None:
+                cursor.execute(
+                    """
+                    SELECT
+                        id, user_id, username, source_session_id, source_lang, target_lang,
+                        status, total_items, completed_items, failed_items, send_private_grammar_text,
+                        original_text_bundle, user_translation_bundle, last_error, started_at,
+                        finished_at, created_at, updated_at, summary_json,
+                        completion_side_effects_started_at, completion_side_effects_done_at
+                    FROM bt_3_translation_check_sessions
+                    WHERE id = %s
+                    LIMIT 1;
+                    """,
+                    (int(session_id),),
+                )
+                row = cursor.fetchone()
     return _map_translation_check_session_row(row)
 
 
@@ -9060,7 +9961,8 @@ def increment_translation_check_session_counters(
                     id, user_id, username, source_session_id, source_lang, target_lang,
                     status, total_items, completed_items, failed_items, send_private_grammar_text,
                     original_text_bundle, user_translation_bundle, last_error, started_at,
-                    finished_at, created_at, updated_at;
+                    finished_at, created_at, updated_at, summary_json,
+                    completion_side_effects_started_at, completion_side_effects_done_at;
                 """,
                 (int(completed_delta), int(failed_delta), int(session_id)),
             )
@@ -9094,7 +9996,8 @@ def refresh_translation_check_session_counters(*, session_id: int) -> dict | Non
                     s.id, s.user_id, s.username, s.source_session_id, s.source_lang, s.target_lang,
                     s.status, s.total_items, s.completed_items, s.failed_items, s.send_private_grammar_text,
                     s.original_text_bundle, s.user_translation_bundle, s.last_error, s.started_at,
-                    s.finished_at, s.created_at, s.updated_at;
+                    s.finished_at, s.created_at, s.updated_at, s.summary_json,
+                    s.completion_side_effects_started_at, s.completion_side_effects_done_at;
                 """,
                 (int(session_id),),
             )

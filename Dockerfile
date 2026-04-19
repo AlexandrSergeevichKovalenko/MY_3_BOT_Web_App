@@ -38,6 +38,4 @@ ENV LIVEKIT_URL=""
 ENV LIVEKIT_API_KEY=""
 ENV LIVEKIT_API_SECRET=""
 
-
-
-CMD ["python", "bot_3.py"]
+CMD ["/bin/sh", "-lc", "if [ \"$RAILWAY_SERVICE_NAME\" = \"TRANSLATION_CHECK_WORKER\" ]; then exec python -m backend.run_dramatiq_worker; else exec python bot_3.py; fi"]

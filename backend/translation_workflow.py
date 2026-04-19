@@ -20,7 +20,12 @@ from backend.config_mistakes_data import (
     VALID_CATEGORIES,
     VALID_SUBCATEGORIES,
 )
-from backend.grammar_focuses import focus_matches_error_pair, resolve_webapp_focus
+from backend.grammar_focuses import (
+    focus_matches_error_pair,
+    get_legacy_shared_pool_focus_by_key,
+    resolve_shared_sentence_pool_focus,
+    resolve_webapp_focus,
+)
 from backend.openai_manager import (
     generate_sentences_multilang,
     llm_execute,
@@ -39,6 +44,17 @@ from backend.database import (
     delete_translation_draft_state,
     build_translation_session_minutes_sql,
     enforce_feature_limit,
+)
+from backend.job_queue import (
+    clear_active_translation_session_state,
+    clear_translation_session_card,
+    clear_translation_session_state,
+    get_active_translation_session_state,
+    get_redis_client,
+    get_translation_session_state,
+    set_active_translation_session_state,
+    set_translation_session_card,
+    set_translation_session_state,
 )
 
 PHASE1_SKILL_ROLE_WEIGHTS = {
@@ -60,6 +76,149 @@ TRANSLATION_SENTENCE_LLM_GLOBAL_CONCURRENCY = max(
     min(32, int((os.getenv("TRANSLATION_SENTENCE_LLM_GLOBAL_CONCURRENCY") or "4").strip() or "4")),
 )
 _TRANSLATION_SENTENCE_LLM_SEMAPHORE = threading.BoundedSemaphore(TRANSLATION_SENTENCE_LLM_GLOBAL_CONCURRENCY)
+def _remember_active_translation_session_pointer(
+    *,
+    user_id: int,
+    session_id: str | int,
+    source_lang: str,
+    target_lang: str,
+    focus_kind: str | None = None,
+    focus_key: str | None = None,
+    level: str | None = None,
+    state: str = "ready",
+    ready_count: int | None = None,
+    generation_status: str | None = None,
+) -> None:
+    normalized_session_id = str(session_id or "").strip()
+    if not normalized_session_id:
+        return
+    payload = {
+        "session_type": "regular",
+        "session_id": normalized_session_id,
+        "source_lang": str(source_lang or "").strip().lower() or "ru",
+        "target_lang": str(target_lang or "").strip().lower() or "de",
+        "focus_kind": str(focus_kind or "").strip().lower() or None,
+        "focus_key": str(focus_key or "").strip() or None,
+        "level": str(level or "").strip().lower() or None,
+        "state": str(state or "").strip().lower() or "ready",
+        "ready_count": int(ready_count or 0) if ready_count is not None else None,
+        "generation_status": str(generation_status or "").strip().lower() or None,
+    }
+    set_active_translation_session_state(int(user_id), payload)
+
+
+def _clear_active_translation_session_pointer(*, user_id: int, session_id: str | int | None = None) -> None:
+    normalized_session_id = str(session_id or "").strip()
+    if not normalized_session_id:
+        clear_active_translation_session_state(int(user_id))
+        return
+    payload = get_active_translation_session_state(int(user_id))
+    if isinstance(payload, dict) and str(payload.get("session_id") or "").strip() == normalized_session_id:
+        clear_active_translation_session_state(int(user_id))
+
+
+def _get_active_translation_session_pointer(
+    *,
+    user_id: int,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+) -> dict[str, Any] | None:
+    payload = get_active_translation_session_state(int(user_id))
+    if not isinstance(payload, dict):
+        return None
+    if str(payload.get("session_type") or "").strip().lower() != "regular":
+        return None
+    if str(payload.get("source_lang") or "").strip().lower() != (str(source_lang or "").strip().lower() or "ru"):
+        return None
+    if str(payload.get("target_lang") or "").strip().lower() != (str(target_lang or "").strip().lower() or "de"):
+        return None
+    normalized_session_id = str(payload.get("session_id") or "").strip()
+    if not normalized_session_id:
+        return None
+    return {
+        "type": "regular",
+        "session_id": normalized_session_id,
+        "source_lang": str(payload.get("source_lang") or "").strip().lower() or "ru",
+        "target_lang": str(payload.get("target_lang") or "").strip().lower() or "de",
+        "focus_kind": str(payload.get("focus_kind") or "").strip().lower() or None,
+        "focus_key": str(payload.get("focus_key") or "").strip() or None,
+        "level": str(payload.get("level") or "").strip().lower() or None,
+        "state": str(payload.get("state") or "").strip().lower() or None,
+        "ready_count": int(payload.get("ready_count") or 0) if payload.get("ready_count") is not None else None,
+        "generation_status": str(payload.get("generation_status") or "").strip().lower() or None,
+        "updated_at_ms": int(payload.get("updated_at_ms") or 0),
+    }
+
+
+def _build_translation_session_state_payload(
+    *,
+    user_id: int,
+    session_id: str | int,
+    source_lang: str,
+    target_lang: str,
+    focus_kind: str | None,
+    focus_key: str | None,
+    level: str | None,
+    state: str,
+    ready_count: int,
+    expected_total: int = 7,
+    generation_status: str | None = None,
+    background_fill_required: bool | None = None,
+) -> dict[str, Any]:
+    normalized_state = str(state or "").strip().lower() or "created"
+    normalized_generation_status = (
+        str(generation_status or "").strip().lower()
+        or ("ready" if normalized_state == "ready" and ready_count >= expected_total else "pending")
+    )
+    return {
+        "session_id": str(session_id or "").strip(),
+        "user_id": int(user_id),
+        "session_type": "regular",
+        "state": normalized_state,
+        "source_lang": str(source_lang or "").strip().lower() or "ru",
+        "target_lang": str(target_lang or "").strip().lower() or "de",
+        "focus_kind": str(focus_kind or "").strip().lower() or None,
+        "focus_key": str(focus_key or "").strip() or None,
+        "level": str(level or "").strip().lower() or None,
+        "ready_count": int(ready_count),
+        "expected_total": int(expected_total),
+        "generation_status": normalized_generation_status,
+        "background_fill_required": bool(background_fill_required) if background_fill_required is not None else None,
+    }
+
+
+def _build_translation_session_card_payload(
+    *,
+    user_id: int,
+    session_id: str | int,
+    source_lang: str,
+    target_lang: str,
+    focus_kind: str | None,
+    focus_key: str | None,
+    level: str | None,
+    state: str,
+    ready_count: int | None,
+    expected_total: int = 7,
+    generation_status: str | None = None,
+    background_fill_required: bool | None = None,
+) -> dict[str, Any]:
+    normalized_state = str(state or "").strip().lower() or "created"
+    return {
+        "user_id": int(user_id),
+        "session_id": str(session_id or "").strip(),
+        "type": "regular",
+        "state": normalized_state,
+        "source_lang": str(source_lang or "").strip().lower() or "ru",
+        "target_lang": str(target_lang or "").strip().lower() or "de",
+        "focus_kind": str(focus_kind or "").strip().lower() or None,
+        "focus_key": str(focus_key or "").strip() or None,
+        "level": str(level or "").strip().lower() or None,
+        "ready_count": int(ready_count) if ready_count is not None else None,
+        "expected_total": int(expected_total),
+        "generation_status": str(generation_status or "").strip().lower() or None,
+        "background_fill_required": bool(background_fill_required) if background_fill_required is not None else None,
+        "updated_at_ms": int(time.time() * 1000),
+    }
 
 
 def _translation_sentence_fill_async_enabled() -> bool:
@@ -137,7 +296,7 @@ def _translation_fill_reached_target(result: dict[str, Any] | None) -> bool:
 
 
 def finalize_open_translation_sessions() -> dict[str, int]:
-    """Force-close unfinished translation sessions that already have issued sentences."""
+    """Force-close only stale unfinished translation sessions from prior dates."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -164,6 +323,14 @@ def finalize_open_translation_sessions() -> dict[str, int]:
                     FROM bt_3_daily_sentences ds
                     WHERE ds.user_id = up.user_id
                       AND ds.session_id = up.session_id
+                      AND ds.date < CURRENT_DATE
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM bt_3_daily_sentences ds
+                    WHERE ds.user_id = up.user_id
+                      AND ds.session_id = up.session_id
+                      AND ds.date >= CURRENT_DATE
                   );
                 """
             )
@@ -343,6 +510,57 @@ def _close_user_progress_session(
         """,
         (user_id, normalized_session_id),
     )
+
+
+def _close_stale_open_translation_sessions_for_user_with_cursor(
+    cursor,
+    *,
+    user_id: int,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+) -> int:
+    cursor.execute(
+        """
+        UPDATE bt_3_user_progress up
+        SET
+            active_seconds = COALESCE(up.active_seconds, 0)
+                + CASE
+                    WHEN COALESCE(up.active_running, FALSE) = TRUE
+                     AND up.active_started_at IS NOT NULL
+                        THEN GREATEST(
+                            0,
+                            EXTRACT(EPOCH FROM (NOW() - up.active_started_at))::BIGINT
+                        )
+                    ELSE 0
+                END,
+            active_started_at = NULL,
+            active_running = FALSE,
+            end_time = NOW(),
+            completed = TRUE
+        WHERE up.user_id = %s
+          AND up.completed = FALSE
+          AND EXISTS (
+            SELECT 1
+            FROM bt_3_daily_sentences ds
+            WHERE ds.user_id = up.user_id
+              AND ds.session_id = up.session_id
+              AND COALESCE(ds.source_lang, 'ru') = %s
+              AND COALESCE(ds.target_lang, 'de') = %s
+              AND ds.date < CURRENT_DATE
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM bt_3_daily_sentences ds
+            WHERE ds.user_id = up.user_id
+              AND ds.session_id = up.session_id
+              AND COALESCE(ds.source_lang, 'ru') = %s
+              AND COALESCE(ds.target_lang, 'de') = %s
+              AND ds.date >= CURRENT_DATE
+          );
+        """,
+        (int(user_id), source_lang, target_lang, source_lang, target_lang),
+    )
+    return int(cursor.rowcount or 0)
 
 
 def correct_numbering(sentences: list[str]) -> list[str]:
@@ -824,8 +1042,37 @@ def get_active_session_type(
             source_lang=source_lang,
             target_lang=target_lang,
         )
+    cached_pointer = _get_active_translation_session_pointer(
+        user_id=int(user_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
+            if isinstance(cached_pointer, dict):
+                cached_session_id = str(cached_pointer.get("session_id") or "").strip()
+                if cached_session_id:
+                    cursor.execute(
+                        """
+                        SELECT 1
+                        FROM bt_3_user_progress
+                        WHERE user_id = %s
+                          AND session_id = %s
+                          AND completed = FALSE
+                        LIMIT 1;
+                        """,
+                        (user_id, cached_session_id),
+                    )
+                    if cursor.fetchone():
+                        return {
+                            "type": "regular",
+                            "session_id": cached_session_id,
+                            "_lookup_source": "redis_pointer_verified",
+                        }
+                    _clear_active_translation_session_pointer(
+                        user_id=int(user_id),
+                        session_id=cached_session_id,
+                    )
             cursor.execute(
                 """
                 SELECT session_id
@@ -854,7 +1101,13 @@ def get_active_session_type(
             )
             story_row = cursor.fetchone()
             if story_row:
-                return {"type": "story", "story_id": story_row[0], "session_id": str(session_id)}
+                _clear_active_translation_session_pointer(user_id=int(user_id))
+                return {
+                    "type": "story",
+                    "story_id": story_row[0],
+                    "session_id": str(session_id),
+                    "_lookup_source": "db_story",
+                }
 
             cursor.execute(
                 """
@@ -867,9 +1120,20 @@ def get_active_session_type(
             )
             sentence_row = cursor.fetchone()
             if sentence_row:
-                return {"type": "regular", "session_id": str(session_id)}
+                _remember_active_translation_session_pointer(
+                    user_id=int(user_id),
+                    session_id=str(session_id),
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                )
+                return {
+                    "type": "regular",
+                    "session_id": str(session_id),
+                    "_lookup_source": "db",
+                }
 
-    return {"type": "none", "session_id": None}
+    _clear_active_translation_session_pointer(user_id=int(user_id))
+    return {"type": "none", "session_id": None, "_lookup_source": "db_none"}
 
 
 async def start_story_session_webapp(
@@ -1022,6 +1286,7 @@ async def start_story_session_webapp(
 
         _insert_story_session_sentences(cursor, user_id, session_id, story_sentences)
         conn.commit()
+        _clear_active_translation_session_pointer(user_id=int(user_id))
 
         return {
             "session_id": session_id,
@@ -1743,6 +2008,237 @@ def _record_translation_bucket_demand_with_cursor(
     )
 
 
+def _resolve_shared_pool_focus_payload(
+    focus: dict[str, Any] | None,
+    *,
+    level: str | None,
+) -> dict[str, Any] | None:
+    return resolve_shared_sentence_pool_focus(focus, level)
+
+
+def _resolve_translation_readiness_focus_identity(
+    *,
+    focus: dict[str, Any] | None,
+    level: str | None,
+) -> tuple[str, str, str]:
+    normalized_level = _normalize_level(level)
+    normalized_focus = focus if isinstance(focus, dict) else {}
+    focus_kind = str(normalized_focus.get("kind") or "").strip().lower() or "legacy"
+    shared_pool_focus = _resolve_shared_pool_focus_payload(
+        normalized_focus,
+        level=normalized_level,
+    )
+    if shared_pool_focus is not None:
+        focus_key = str(shared_pool_focus.get("key") or "").strip()
+        focus_label = str(shared_pool_focus.get("label") or focus_key).strip() or focus_key
+        if focus_key:
+            return focus_kind, focus_key, focus_label
+    focus_key = str(normalized_focus.get("key") or "").strip() or focus_kind
+    focus_label = str(normalized_focus.get("label") or focus_key).strip() or focus_key
+    return focus_kind, focus_key, focus_label
+
+
+def _record_translation_readiness_start_with_cursor(
+    cursor,
+    *,
+    source_lang: str,
+    target_lang: str,
+    focus_kind: str,
+    focus_key: str,
+    focus_label: str,
+    level: str | None,
+    ready_count: int,
+    personal_added: int = 0,
+    pool_added: int = 0,
+    generic_added: int = 0,
+    llm_added_on_start: int = 0,
+    background_fill_required: bool = False,
+) -> None:
+    normalized_focus_kind = str(focus_kind or "").strip().lower() or "legacy"
+    normalized_focus_key = str(focus_key or "").strip()
+    if not normalized_focus_key:
+        return
+    normalized_level = _normalize_level(level)
+    safe_ready_count = max(0, int(ready_count or 0))
+    cursor.execute(
+        """
+        INSERT INTO bt_3_translation_readiness_daily_stats (
+            snapshot_date,
+            source_lang,
+            target_lang,
+            focus_kind,
+            focus_key,
+            focus_label,
+            level,
+            sessions_started,
+            ready_zero_starts,
+            ready_ge_1_starts,
+            ready_ge_3_starts,
+            ready_ge_7_starts,
+            total_ready_count,
+            total_personal_added,
+            total_pool_added,
+            total_generic_added,
+            total_llm_added_on_start,
+            background_fill_required_count
+        )
+        VALUES (
+            CURRENT_DATE,
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+            1,
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+            %s
+        )
+        ON CONFLICT (snapshot_date, source_lang, target_lang, focus_kind, focus_key, level)
+        DO UPDATE SET
+            focus_label = EXCLUDED.focus_label,
+            sessions_started = bt_3_translation_readiness_daily_stats.sessions_started + EXCLUDED.sessions_started,
+            ready_zero_starts = bt_3_translation_readiness_daily_stats.ready_zero_starts + EXCLUDED.ready_zero_starts,
+            ready_ge_1_starts = bt_3_translation_readiness_daily_stats.ready_ge_1_starts + EXCLUDED.ready_ge_1_starts,
+            ready_ge_3_starts = bt_3_translation_readiness_daily_stats.ready_ge_3_starts + EXCLUDED.ready_ge_3_starts,
+            ready_ge_7_starts = bt_3_translation_readiness_daily_stats.ready_ge_7_starts + EXCLUDED.ready_ge_7_starts,
+            total_ready_count = bt_3_translation_readiness_daily_stats.total_ready_count + EXCLUDED.total_ready_count,
+            total_personal_added = bt_3_translation_readiness_daily_stats.total_personal_added + EXCLUDED.total_personal_added,
+            total_pool_added = bt_3_translation_readiness_daily_stats.total_pool_added + EXCLUDED.total_pool_added,
+            total_generic_added = bt_3_translation_readiness_daily_stats.total_generic_added + EXCLUDED.total_generic_added,
+            total_llm_added_on_start = bt_3_translation_readiness_daily_stats.total_llm_added_on_start + EXCLUDED.total_llm_added_on_start,
+            background_fill_required_count = bt_3_translation_readiness_daily_stats.background_fill_required_count + EXCLUDED.background_fill_required_count,
+            updated_at = NOW();
+        """,
+        (
+            str(source_lang or "").strip().lower() or "ru",
+            str(target_lang or "").strip().lower() or "de",
+            normalized_focus_kind,
+            normalized_focus_key,
+            str(focus_label or normalized_focus_key).strip() or normalized_focus_key,
+            normalized_level,
+            1 if safe_ready_count <= 0 else 0,
+            1 if safe_ready_count >= 1 else 0,
+            1 if safe_ready_count >= 3 else 0,
+            1 if safe_ready_count >= 7 else 0,
+            safe_ready_count,
+            max(0, int(personal_added or 0)),
+            max(0, int(pool_added or 0)),
+            max(0, int(generic_added or 0)),
+            max(0, int(llm_added_on_start or 0)),
+            1 if background_fill_required else 0,
+        ),
+    )
+
+
+def _record_translation_readiness_fill_result(
+    *,
+    source_lang: str,
+    target_lang: str,
+    focus_kind: str,
+    focus_key: str,
+    focus_label: str,
+    level: str | None,
+    fill_rounds: int = 0,
+    underfilled: bool = False,
+    failed: bool = False,
+    time_to_first_ready_ms: int | None = None,
+) -> None:
+    normalized_focus_kind = str(focus_kind or "").strip().lower() or "legacy"
+    normalized_focus_key = str(focus_key or "").strip()
+    if not normalized_focus_key:
+        return
+    normalized_level = _normalize_level(level)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_translation_readiness_daily_stats (
+                    snapshot_date,
+                    source_lang,
+                    target_lang,
+                    focus_kind,
+                    focus_key,
+                    focus_label,
+                    level,
+                    fill_runs,
+                    fill_underfilled_count,
+                    fill_failed_count,
+                    total_fill_rounds,
+                    total_time_to_first_ready_ms,
+                    time_to_first_ready_samples
+                )
+                VALUES (
+                    CURRENT_DATE,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    1,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s
+                )
+                ON CONFLICT (snapshot_date, source_lang, target_lang, focus_kind, focus_key, level)
+                DO UPDATE SET
+                    focus_label = EXCLUDED.focus_label,
+                    fill_runs = bt_3_translation_readiness_daily_stats.fill_runs + EXCLUDED.fill_runs,
+                    fill_underfilled_count = bt_3_translation_readiness_daily_stats.fill_underfilled_count + EXCLUDED.fill_underfilled_count,
+                    fill_failed_count = bt_3_translation_readiness_daily_stats.fill_failed_count + EXCLUDED.fill_failed_count,
+                    total_fill_rounds = bt_3_translation_readiness_daily_stats.total_fill_rounds + EXCLUDED.total_fill_rounds,
+                    total_time_to_first_ready_ms = bt_3_translation_readiness_daily_stats.total_time_to_first_ready_ms + EXCLUDED.total_time_to_first_ready_ms,
+                    time_to_first_ready_samples = bt_3_translation_readiness_daily_stats.time_to_first_ready_samples + EXCLUDED.time_to_first_ready_samples,
+                    updated_at = NOW();
+                """,
+                (
+                    str(source_lang or "").strip().lower() or "ru",
+                    str(target_lang or "").strip().lower() or "de",
+                    normalized_focus_kind,
+                    normalized_focus_key,
+                    str(focus_label or normalized_focus_key).strip() or normalized_focus_key,
+                    normalized_level,
+                    1 if underfilled else 0,
+                    1 if failed else 0,
+                    max(0, int(fill_rounds or 0)),
+                    max(0, int(time_to_first_ready_ms or 0)),
+                    1 if time_to_first_ready_ms is not None and int(time_to_first_ready_ms) >= 0 else 0,
+                ),
+            )
+
+
+def _get_translation_session_started_at_with_cursor(
+    cursor,
+    *,
+    user_id: int,
+    session_id: int,
+) -> datetime | None:
+    cursor.execute(
+        """
+        SELECT start_time
+        FROM bt_3_user_progress
+        WHERE user_id = %s
+          AND session_id = %s
+        ORDER BY start_time DESC
+        LIMIT 1;
+        """,
+        (int(user_id), str(session_id)),
+    )
+    row = cursor.fetchone()
+    return row[0] if row and row[0] else None
+
+
 def _load_sentence_bucket_info_with_cursor(cursor, *, sentence_id: int) -> dict[str, str] | None:
     cursor.execute(
         """
@@ -1780,9 +2276,10 @@ def _fetch_shared_sentence_pool_entries_with_cursor(
     safe_limit = max(0, int(limit or 0))
     if safe_limit <= 0:
         return []
-    if not isinstance(focus, dict) or str(focus.get("kind") or "").strip().lower() != "preset":
+    shared_focus = _resolve_shared_pool_focus_payload(focus, level=level)
+    if not shared_focus:
         return []
-    focus_key = str(focus.get("key") or "").strip()
+    focus_key = str(shared_focus.get("key") or "").strip()
     if not focus_key:
         return []
     level_key = _normalize_level(level)
@@ -1858,10 +2355,11 @@ def _upsert_shared_sentence_pool_entries_with_cursor(
     target_lang: str,
     entries: list[dict[str, Any]] | None,
 ) -> int:
-    if not isinstance(focus, dict) or str(focus.get("kind") or "").strip().lower() != "preset":
+    shared_focus = _resolve_shared_pool_focus_payload(focus, level=level)
+    if not shared_focus:
         return 0
-    focus_key = str(focus.get("key") or "").strip()
-    focus_label = str(focus.get("label") or "").strip()
+    focus_key = str(shared_focus.get("key") or "").strip()
+    focus_label = str(shared_focus.get("label") or "").strip()
     if not focus_key or not focus_label:
         return 0
     level_key = _normalize_level(level)
@@ -1923,9 +2421,10 @@ def _count_shared_sentence_pool_entries_with_cursor(
     source_lang: str,
     target_lang: str,
 ) -> int:
-    if not isinstance(focus, dict) or str(focus.get("kind") or "").strip().lower() != "preset":
+    shared_focus = _resolve_shared_pool_focus_payload(focus, level=level)
+    if not shared_focus:
         return 0
-    focus_key = str(focus.get("key") or "").strip()
+    focus_key = str(shared_focus.get("key") or "").strip()
     if not focus_key:
         return 0
     level_key = _normalize_level(level)
@@ -1958,9 +2457,10 @@ def _list_shared_sentence_pool_sentence_keys_with_cursor(
     source_lang: str,
     target_lang: str,
 ) -> set[str]:
-    if not isinstance(focus, dict) or str(focus.get("kind") or "").strip().lower() != "preset":
+    shared_focus = _resolve_shared_pool_focus_payload(focus, level=level)
+    if not shared_focus:
         return set()
-    focus_key = str(focus.get("key") or "").strip()
+    focus_key = str(shared_focus.get("key") or "").strip()
     if not focus_key:
         return set()
     level_key = _normalize_level(level)
@@ -2039,7 +2539,7 @@ async def _top_up_immediate_sentence_entries_with_cursor(
         level=level_key,
         excluded_sentence_keys=excluded_sentence_keys,
     )
-    if filtered_entries and focus_kind == "preset":
+    if filtered_entries and _resolve_shared_pool_focus_payload(resolved_focus, level=level) is not None:
         _upsert_shared_sentence_pool_entries_with_cursor(
             cursor,
             focus=resolved_focus,
@@ -2102,7 +2602,12 @@ async def prewarm_shared_translation_sentence_pool(
     try:
         for focus in candidate_focuses:
             focus_key = str(focus.get("key") or "").strip()
-            for level_key in normalized_levels:
+            focus_levels = [
+                _normalize_level(item)
+                for item in (focus.get("_pool_levels") or normalized_levels)
+                if str(item or "").strip()
+            ] or list(normalized_levels)
+            for level_key in focus_levels:
                 bucket_key = (focus_key, level_key)
                 min_ready_for_bucket = max(
                     1,
@@ -2982,7 +3487,7 @@ async def get_original_sentences_webapp(
                 }
             ),
             )
-        if generated_entries and focus_kind == "preset":
+        if generated_entries and _resolve_shared_pool_focus_payload(resolved_focus, level=level) is not None:
             _upsert_shared_sentence_pool_entries_with_cursor(
                 cursor,
                 focus=resolved_focus,
@@ -3030,7 +3535,7 @@ async def get_original_sentences_webapp(
         )
         if not extra_entries:
             break
-        if focus_kind == "preset":
+        if _resolve_shared_pool_focus_payload(resolved_focus, level=level) is not None:
             _upsert_shared_sentence_pool_entries_with_cursor(
                 cursor,
                 focus=resolved_focus,
@@ -3077,6 +3582,7 @@ def _collect_seed_sentence_entries_with_cursor(
     personal_rows_scanned = 0
 
     sentence_entries: list[dict[str, Any]] = []
+    generic_ready_count = 0
     if focus_kind not in {"preset", "custom"}:
         cursor.execute("SELECT sentence FROM bt_3_sentences ORDER BY RANDOM() LIMIT 20;")
         rows = [
@@ -3085,6 +3591,7 @@ def _collect_seed_sentence_entries_with_cursor(
             if _normalize_sentence_text_key(sentence) not in blocked_sentence_keys
         ][:min(1, target_total)]
         sentence_entries = [{"sentence": str(sentence or "").strip(), "tested_skill_profile": []} for sentence in rows if str(sentence or "").strip()]
+        generic_ready_count = len(sentence_entries)
 
     already_given_sentence_ids = set()
     seen_sentence_keys = set(blocked_sentence_keys)
@@ -3144,9 +3651,18 @@ def _collect_seed_sentence_entries_with_cursor(
         personal_elapsed_ms = 0
 
     num_sentences = target_total - len(sentence_entries)
-    personal_ready_count = len(sentence_entries)
-    if num_sentences > 0 and focus_kind == "preset":
+    personal_ready_count = max(0, int(len(sentence_entries) - generic_ready_count))
+    pool_ready_before = 0
+    shared_pool_focus = _resolve_shared_pool_focus_payload(resolved_focus, level=level_key)
+    if num_sentences > 0 and shared_pool_focus is not None:
         pool_started_at = time.perf_counter()
+        pool_ready_before = _count_shared_sentence_pool_entries_with_cursor(
+            cursor,
+            focus=resolved_focus,
+            level=level_key,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
         pooled_entries = _fetch_shared_sentence_pool_entries_with_cursor(
             cursor,
             focus=resolved_focus,
@@ -3179,7 +3695,9 @@ def _collect_seed_sentence_entries_with_cursor(
                 "pool_ms": int(pool_elapsed_ms),
                 "personal_rows_scanned": int(personal_rows_scanned),
                 "personal_added": int(personal_ready_count),
-                "pool_added": max(0, int(len(sentence_entries) - personal_ready_count)),
+                "generic_added": int(generic_ready_count),
+                "pool_added": max(0, int(len(sentence_entries) - generic_ready_count - personal_ready_count)),
+                "pool_ready_before": int(pool_ready_before),
                 "seed_ready_count": int(len(sentence_entries)),
             }
         )
@@ -3464,6 +3982,7 @@ def _insert_sentence_entries_into_session_with_cursor(
         )
         inserted_items.append(
             {
+                "_row_id": int(inserted_row[0]),
                 "id_for_mistake_table": int(id_for_mistake_table),
                 "sentence": sentence,
                 "unique_id": int(next_unique_id),
@@ -3488,6 +4007,48 @@ def _insert_sentence_entries_into_session_with_cursor(
             sentences_assigned_delta=len(inserted_items),
         )
     return inserted_items
+
+
+def _mark_translation_session_items_shown_with_cursor(
+    cursor,
+    *,
+    user_id: int,
+    session_id: int,
+    row_ids: list[int],
+    source_lang: str,
+    target_lang: str,
+) -> int:
+    normalized_row_ids = sorted(
+        {
+            int(item)
+            for item in list(row_ids or [])
+            if item is not None and str(item).strip() != "" and int(item) > 0
+        }
+    )
+    if not normalized_row_ids:
+        return 0
+    cursor.execute(
+        """
+        UPDATE bt_3_daily_sentences
+        SET
+            shown_to_user = TRUE,
+            shown_to_user_at = COALESCE(shown_to_user_at, NOW())
+        WHERE id = ANY(%s)
+          AND user_id = %s
+          AND session_id = %s
+          AND COALESCE(source_lang, 'ru') = %s
+          AND COALESCE(target_lang, 'de') = %s
+          AND shown_to_user = FALSE;
+        """,
+        (
+            normalized_row_ids,
+            int(user_id),
+            int(session_id),
+            source_lang,
+            target_lang,
+        ),
+    )
+    return int(cursor.rowcount or 0)
 
 
 def _translation_session_is_open_with_cursor(
@@ -3531,7 +4092,10 @@ async def fill_translation_session_webapp(
     round_diagnostics: list[dict[str, Any]] = []
     try:
         resolved_focus = grammar_focus if isinstance(grammar_focus, dict) else resolve_webapp_focus(topic)
-        focus_key = str(resolved_focus.get("key") or "").strip() if isinstance(resolved_focus, dict) else ""
+        focus_kind, focus_key, focus_label = _resolve_translation_readiness_focus_identity(
+            focus=resolved_focus,
+            level=level,
+        )
         cursor.execute("SELECT pg_try_advisory_lock(%s);", (int(session_id),))
         lock_row = cursor.fetchone()
         advisory_lock_acquired = bool(lock_row and lock_row[0])
@@ -3540,6 +4104,7 @@ async def fill_translation_session_webapp(
 
         total_inserted = 0
         current_count = 0
+        initial_ready_count: int | None = None
         for _round in range(max(1, int(max_rounds or 1))):
             if not _translation_session_is_open_with_cursor(
                 cursor,
@@ -3560,6 +4125,8 @@ async def fill_translation_session_webapp(
             )
             count_row = cursor.fetchone()
             current_count = int(count_row[0] or 0) if count_row else 0
+            if initial_ready_count is None:
+                initial_ready_count = int(current_count)
             if current_count >= int(target_count):
                 break
             missing_count = max(0, int(target_count) - int(current_count))
@@ -3723,12 +4290,77 @@ async def fill_translation_session_webapp(
                 int(target_count),
                 round_diagnostics,
             )
+        started_at = _get_translation_session_started_at_with_cursor(
+            cursor,
+            user_id=int(user_id),
+            session_id=int(session_id),
+        )
+        time_to_first_ready_ms: int | None = None
+        if started_at is not None and int(initial_ready_count or 0) <= 0 and int(current_count) > 0:
+            now_dt = datetime.now(started_at.tzinfo) if getattr(started_at, "tzinfo", None) else datetime.now()
+            time_to_first_ready_ms = max(
+                0,
+                int((now_dt - started_at).total_seconds() * 1000),
+            )
+        conn.commit()
+        set_translation_session_state(
+            int(session_id),
+            _build_translation_session_state_payload(
+                user_id=int(user_id),
+                session_id=int(session_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                focus_kind=focus_kind,
+                focus_key=focus_key,
+                level=level,
+                state="ready" if int(current_count) >= int(target_count) else "created",
+                ready_count=int(current_count),
+                expected_total=int(target_count),
+                generation_status="ready" if int(current_count) >= int(target_count) else "pending",
+                background_fill_required=bool(int(current_count) < int(target_count)),
+            ),
+        )
+        set_translation_session_card(
+            int(user_id),
+            _build_translation_session_card_payload(
+                user_id=int(user_id),
+                session_id=int(session_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                focus_kind=focus_kind,
+                focus_key=focus_key,
+                level=level,
+                state="ready" if int(current_count) >= int(target_count) else "created",
+                ready_count=int(current_count),
+                expected_total=int(target_count),
+                generation_status="ready" if int(current_count) >= int(target_count) else "pending",
+                background_fill_required=bool(int(current_count) < int(target_count)),
+            ),
+        )
+        _remember_active_translation_session_pointer(
+            user_id=int(user_id),
+            session_id=int(session_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            focus_kind=focus_kind,
+            focus_key=focus_key,
+            level=level,
+            state="ready" if int(current_count) >= int(target_count) else "created",
+            ready_count=int(current_count),
+            generation_status="ready" if int(current_count) >= int(target_count) else "pending",
+        )
         return {
             "session_id": int(session_id),
             "filled": int(total_inserted),
             "ready_count": int(current_count),
             "expected_total": int(target_count),
             "round_diagnostics": round_diagnostics,
+            "focus_kind": focus_kind,
+            "focus_key": focus_key,
+            "focus_label": focus_label,
+            "fill_rounds": int(len(round_diagnostics)),
+            "underfilled": bool(current_count < int(target_count)),
+            "time_to_first_ready_ms": time_to_first_ready_ms,
         }
     finally:
         if advisory_lock_acquired:
@@ -3751,15 +4383,11 @@ async def start_translation_session_webapp(
     tested_skill_profile_seed: dict[str, Any] | None = None,
     grammar_focus: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    close_stale_open_translation_sessions_for_user(
-        user_id=int(user_id),
-        source_lang=source_lang,
-        target_lang=target_lang,
-    )
     with db_acquire_scope("translation_session_start"):
         conn = get_db_connection()
     cursor = conn.cursor()
     phase_metrics: dict[str, int] = {
+        "close_stale_open_ms": 0,
         "active_lookup_ms": 0,
         "session_state_ms": 0,
         "close_empty_active_ms": 0,
@@ -3773,13 +4401,28 @@ async def start_translation_session_webapp(
     }
 
     try:
-        active_lookup_started_at = time.perf_counter()
-        active_session_id = _get_active_session_id(
+        close_stale_started_at = time.perf_counter()
+        _close_stale_open_translation_sessions_for_user_with_cursor(
             cursor,
-            user_id,
+            user_id=int(user_id),
             source_lang=source_lang,
             target_lang=target_lang,
         )
+        phase_metrics["close_stale_open_ms"] = int((time.perf_counter() - close_stale_started_at) * 1000)
+        active_lookup_started_at = time.perf_counter()
+        active_pointer = _get_active_translation_session_pointer(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        active_session_id = str(active_pointer.get("session_id") or "").strip() if isinstance(active_pointer, dict) else ""
+        if not active_session_id:
+            active_session_id = _get_active_session_id(
+                cursor,
+                user_id,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
         phase_metrics["active_lookup_ms"] = int((time.perf_counter() - active_lookup_started_at) * 1000)
         if active_session_id:
             session_state_started_at = time.perf_counter()
@@ -3796,6 +4439,50 @@ async def start_translation_session_webapp(
                 completion_required = (
                     session_state["pending_count"] == 0
                     and session_state["translated_count"] > 0
+                )
+                _remember_active_translation_session_pointer(
+                    user_id=int(user_id),
+                    session_id=active_session_id,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    level=level,
+                    state="ready",
+                    ready_count=int(session_state["stored_count"]),
+                    generation_status="ready",
+                )
+                set_translation_session_state(
+                    active_session_id,
+                    _build_translation_session_state_payload(
+                        user_id=int(user_id),
+                        session_id=active_session_id,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        focus_kind="legacy",
+                        focus_key=None,
+                        level=level,
+                        state="ready",
+                        ready_count=int(session_state["stored_count"]),
+                        expected_total=7,
+                        generation_status="ready",
+                        background_fill_required=bool(int(session_state["stored_count"]) < 7),
+                    ),
+                )
+                set_translation_session_card(
+                    int(user_id),
+                    _build_translation_session_card_payload(
+                        user_id=int(user_id),
+                        session_id=active_session_id,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        focus_kind="legacy",
+                        focus_key=None,
+                        level=level,
+                        state="ready",
+                        ready_count=int(session_state["stored_count"]),
+                        expected_total=7,
+                        generation_status="ready",
+                        background_fill_required=bool(int(session_state["stored_count"]) < 7),
+                    ),
                 )
                 return {
                     "session_id": active_session_id,
@@ -3825,6 +4512,12 @@ async def start_translation_session_webapp(
                 commit_started_at = time.perf_counter()
                 conn.commit()
                 phase_metrics["commit_ms"] += int((time.perf_counter() - commit_started_at) * 1000)
+                _clear_active_translation_session_pointer(
+                    user_id=int(user_id),
+                    session_id=active_session_id,
+                )
+                clear_translation_session_state(active_session_id)
+                clear_translation_session_card(int(user_id))
 
         feature_limit_started_at = time.perf_counter()
         translation_limit_error = enforce_feature_limit(
@@ -3858,13 +4551,19 @@ async def start_translation_session_webapp(
         phase_metrics["session_insert_ms"] = int((time.perf_counter() - session_insert_started_at) * 1000)
 
         immediate_entries: list[dict[str, Any]] = []
+        sync_seed_target_count = 1 if _translation_sentence_fill_async_enabled() else 7
         focus_key = ""
+        focus_kind = "legacy"
+        focus_label = ""
         seed_started_at = time.perf_counter()
         seed_diagnostics: dict[str, Any] = {}
         if _is_legacy_ru_de_pair(source_lang, target_lang):
             level_key = _normalize_level(level)
             resolved_focus = grammar_focus if isinstance(grammar_focus, dict) else resolve_webapp_focus(topic)
-            focus_key = str(resolved_focus.get("key") or "").strip()
+            focus_kind, focus_key, focus_label = _resolve_translation_readiness_focus_identity(
+                focus=resolved_focus,
+                level=level_key,
+            )
             recent_keys_started_at = time.perf_counter()
             recent_sentence_keys = _get_recently_served_sentence_keys_with_cursor(
                 cursor,
@@ -3882,7 +4581,7 @@ async def start_translation_session_webapp(
                 target_lang=target_lang,
                 resolved_focus=resolved_focus,
                 recent_sentence_keys=recent_sentence_keys,
-                target_count=7,
+                target_count=sync_seed_target_count,
                 diagnostics=seed_diagnostics,
             )
             phase_metrics["seed_collect_ms"] = int((time.perf_counter() - seed_collect_started_at) * 1000)
@@ -3923,7 +4622,7 @@ async def start_translation_session_webapp(
             focus_key=focus_key,
             level=level,
             sentence_entries=immediate_entries,
-            limit=7,
+            limit=sync_seed_target_count,
         )
         if focus_key:
             _record_translation_bucket_demand_with_cursor(
@@ -3939,6 +4638,15 @@ async def start_translation_session_webapp(
         conn.commit()
         phase_metrics["commit_ms"] += int((time.perf_counter() - commit_started_at) * 1000)
         ready_count = len(inserted_items)
+        if ready_count >= 7:
+            _mark_translation_session_items_shown_with_cursor(
+                cursor,
+                user_id=int(user_id),
+                session_id=int(session_id),
+                row_ids=[item.get("_row_id") for item in inserted_items],
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
         immediate_batch_summary = _summarize_sentence_entry_batch(
             immediate_entries,
             existing_sentence_keys=set(),
@@ -3976,13 +4684,91 @@ async def start_translation_session_webapp(
                 int(ready_count),
                 7,
             )
+        _record_translation_readiness_start_with_cursor(
+            cursor,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            focus_kind=focus_kind,
+            focus_key=focus_key,
+            focus_label=focus_label or focus_key,
+            level=level,
+            ready_count=int(ready_count),
+            personal_added=int(seed_diagnostics.get("personal_added") or 0),
+            pool_added=int(seed_diagnostics.get("pool_added") or 0),
+            generic_added=int(seed_diagnostics.get("generic_added") or 0),
+            llm_added_on_start=int(seed_diagnostics.get("quick_topup_added") or 0),
+            background_fill_required=bool(ready_count < 7),
+        )
+        conn.commit()
+        _remember_active_translation_session_pointer(
+            user_id=int(user_id),
+            session_id=int(session_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            focus_kind=focus_kind,
+            focus_key=focus_key,
+            level=level,
+            state="ready" if ready_count >= 7 else "created",
+            ready_count=int(ready_count),
+            generation_status="ready" if ready_count >= 7 else "pending",
+        )
+        set_translation_session_state(
+            int(session_id),
+            _build_translation_session_state_payload(
+                user_id=int(user_id),
+                session_id=int(session_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                focus_kind=focus_kind,
+                focus_key=focus_key,
+                level=level,
+                state="ready" if ready_count >= 7 else "created",
+                ready_count=int(ready_count),
+                expected_total=7,
+                generation_status="ready" if ready_count >= 7 else "pending",
+                background_fill_required=bool(ready_count < 7),
+            ),
+        )
+        set_translation_session_card(
+            int(user_id),
+            _build_translation_session_card_payload(
+                user_id=int(user_id),
+                session_id=int(session_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                focus_kind=focus_kind,
+                focus_key=focus_key,
+                level=level,
+                state="ready" if ready_count >= 7 else "created",
+                ready_count=int(ready_count),
+                expected_total=7,
+                generation_status="ready" if ready_count >= 7 else "pending",
+                background_fill_required=bool(ready_count < 7),
+            ),
+        )
         return {
             "session_id": int(session_id),
             "created": True,
             "count": int(ready_count),
+            "items": [
+                {
+                    "id_for_mistake_table": int(item.get("id_for_mistake_table") or 0),
+                    "sentence": str(item.get("sentence") or "").strip(),
+                    "unique_id": int(item.get("unique_id") or 0),
+                    "source_session_id": str(item.get("source_session_id") or session_id),
+                }
+                for item in inserted_items
+                if int(item.get("id_for_mistake_table") or 0) > 0
+                and str(item.get("sentence") or "").strip()
+            ],
             "ready_count": int(ready_count),
             "expected_total": 7,
             "remaining_count": max(0, 7 - int(ready_count)),
+            "focus_kind": focus_kind,
+            "focus_key": focus_key,
+            "focus_label": focus_label or focus_key,
+            "background_fill_required": bool(ready_count < 7),
+            "readiness_diagnostics": dict(seed_diagnostics),
             "phase_metrics": dict(phase_metrics),
         }
     finally:
@@ -5990,6 +6776,7 @@ async def check_user_translation_webapp_item(
     daily_session_id: str | int | None = None,
     *,
     checkpoint_item_id: int | None = None,
+    prefetched_context: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     sentence_id_for_mistake = translation.get("id_for_mistake_table")
     if isinstance(sentence_id_for_mistake, str) and sentence_id_for_mistake.isdigit():
@@ -6001,64 +6788,147 @@ async def check_user_translation_webapp_item(
     normalized_source_lang = source_lang or "ru"
     normalized_target_lang = target_lang or "de"
     latest_session_id = _normalize_translation_session_id(daily_session_id)
+    sentence_pk_id = translation.get("source_daily_sentence_id")
+    if isinstance(sentence_pk_id, str) and sentence_pk_id.isdigit():
+        sentence_pk_id = int(sentence_pk_id)
+    sentence_number = translation.get("sentence_number")
+    if isinstance(sentence_number, str) and sentence_number.isdigit():
+        sentence_number = int(sentence_number)
+    original_text = str(translation.get("original_text") or "").strip()
+    source_session_id = _normalize_translation_session_id(
+        translation.get("source_session_id") if translation.get("source_session_id") is not None else daily_session_id
+    )
+    prefetched_daily_by_pk = {}
+    prefetched_daily_by_mistake = {}
+    prefetched_translations_by_sentence = {}
+    prefetched_sentence_ids: set[int] = set()
+    translations_prefetched_complete = False
+    if isinstance(prefetched_context, dict):
+        prefetched_daily_by_pk = prefetched_context.get("daily_sentences_by_pk_id") or {}
+        prefetched_daily_by_mistake = prefetched_context.get("daily_sentences_by_mistake_id") or {}
+        prefetched_translations_by_sentence = prefetched_context.get("translations_by_sentence_id") or {}
+        prefetched_sentence_ids = set(prefetched_context.get("resolved_sentence_ids") or [])
+        translations_prefetched_complete = bool(prefetched_context.get("translations_prefetched_complete"))
 
-    with db_acquire_scope("translation_webapp_item_lookup"), get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            if latest_session_id is None:
-                latest_session_id = _resolve_latest_translation_session_id(
-                    cursor,
-                    user_id=int(user_id),
-                    source_lang=normalized_source_lang,
-                    target_lang=normalized_target_lang,
-                )
-            if latest_session_id is None:
-                return None, None
-
-            cursor.execute(
-                """
-                SELECT unique_id, id_for_mistake_table, id, sentence, session_id
-                FROM bt_3_daily_sentences
-                WHERE session_id = %s
-                  AND user_id = %s
-                  AND COALESCE(source_lang, 'ru') = %s
-                  AND COALESCE(target_lang, 'de') = %s
-                  AND id_for_mistake_table = %s
-                LIMIT 1;
-                """,
-                (
-                    latest_session_id,
-                    user_id,
-                    normalized_source_lang,
-                    normalized_target_lang,
-                    int(sentence_id_for_mistake),
-                ),
+    if sentence_pk_id is not None:
+        prefetched_sentence = prefetched_daily_by_pk.get(int(sentence_pk_id))
+        if isinstance(prefetched_sentence, dict):
+            sentence_number = int(prefetched_sentence.get("sentence_number") or sentence_number or 0) or sentence_number
+            original_text = str(prefetched_sentence.get("original_text") or original_text or "").strip()
+            source_session_id = _normalize_translation_session_id(
+                prefetched_sentence.get("source_session_id") if prefetched_sentence.get("source_session_id") is not None else source_session_id
             )
-            sentence_row = cursor.fetchone()
-            if not sentence_row:
-                return {
-                    "sentence_number": None,
-                    "error": "Предложение не принадлежит пользователю или не найдено.",
-                }, None
-
-            sentence_number = sentence_row[0]
-            sentence_pk_id = sentence_row[2]
-            original_text = sentence_row[3]
-            source_session_id = sentence_row[4]
-
-            cursor.execute(
-                """
-                SELECT id, score, user_translation, feedback
-                FROM bt_3_translations
-                WHERE user_id = %s
-                  AND sentence_id = %s
-                  AND COALESCE(source_lang, 'ru') = %s
-                  AND COALESCE(target_lang, 'de') = %s
-                ORDER BY timestamp DESC, id DESC
-                LIMIT 1;
-                """,
-                (user_id, sentence_pk_id, normalized_source_lang, normalized_target_lang),
+    elif sentence_id_for_mistake:
+        prefetched_sentence = prefetched_daily_by_mistake.get(int(sentence_id_for_mistake))
+        if isinstance(prefetched_sentence, dict):
+            sentence_number = int(prefetched_sentence.get("sentence_number") or sentence_number or 0) or sentence_number
+            sentence_pk_id = int(prefetched_sentence.get("sentence_pk_id") or 0) or sentence_pk_id
+            original_text = str(prefetched_sentence.get("original_text") or original_text or "").strip()
+            source_session_id = _normalize_translation_session_id(
+                prefetched_sentence.get("source_session_id") if prefetched_sentence.get("source_session_id") is not None else source_session_id
             )
-            existing_translation = cursor.fetchone()
+
+    existing_translation = None
+    if sentence_pk_id is not None:
+        prefetched_translation = prefetched_translations_by_sentence.get(int(sentence_pk_id))
+        if isinstance(prefetched_translation, dict):
+            existing_translation = (
+                int(prefetched_translation.get("translation_id") or 0) or None,
+                int(prefetched_translation.get("score") or 0),
+                str(prefetched_translation.get("user_translation") or "").strip(),
+                str(prefetched_translation.get("feedback") or "").strip(),
+            )
+
+    existing_translation_lookup_required = bool(sentence_pk_id is None)
+    if (
+        not existing_translation_lookup_required
+        and sentence_pk_id is not None
+        and (
+            not translations_prefetched_complete
+            or int(sentence_pk_id) not in prefetched_sentence_ids
+        )
+    ):
+        existing_translation_lookup_required = True
+
+    if existing_translation_lookup_required:
+        with db_acquire_scope("translation_webapp_item_lookup"), get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                if sentence_pk_id is None:
+                    if latest_session_id is None:
+                        latest_session_id = _resolve_latest_translation_session_id(
+                            cursor,
+                            user_id=int(user_id),
+                            source_lang=normalized_source_lang,
+                            target_lang=normalized_target_lang,
+                        )
+                    if latest_session_id is None:
+                        return None, None
+
+                    cursor.execute(
+                        """
+                        SELECT unique_id, id_for_mistake_table, id, sentence, session_id
+                        FROM bt_3_daily_sentences
+                        WHERE session_id = %s
+                          AND user_id = %s
+                          AND COALESCE(source_lang, 'ru') = %s
+                          AND COALESCE(target_lang, 'de') = %s
+                          AND id_for_mistake_table = %s
+                        LIMIT 1;
+                        """,
+                        (
+                            latest_session_id,
+                            user_id,
+                            normalized_source_lang,
+                            normalized_target_lang,
+                            int(sentence_id_for_mistake),
+                        ),
+                    )
+                    sentence_row = cursor.fetchone()
+                    if not sentence_row:
+                        return {
+                            "sentence_number": None,
+                            "error": "Предложение не принадлежит пользователю или не найдено.",
+                        }, None
+
+                    sentence_number = int(sentence_row[0]) if sentence_row[0] is not None else None
+                    sentence_pk_id = int(sentence_row[2]) if sentence_row[2] is not None else None
+                    original_text = str(sentence_row[3] or "").strip()
+                    source_session_id = _normalize_translation_session_id(sentence_row[4])
+
+                if sentence_pk_id is None:
+                    return {
+                        "sentence_number": sentence_number,
+                        "error": "Предложение не принадлежит пользователю или не найдено.",
+                    }, None
+
+                if existing_translation is None:
+                    if source_session_id is not None:
+                        cursor.execute(
+                            """
+                            SELECT id, score, user_translation, feedback
+                            FROM bt_3_translations
+                            WHERE user_id = %s
+                              AND sentence_id = %s
+                              AND session_id = %s
+                            LIMIT 1;
+                            """,
+                            (user_id, int(sentence_pk_id), source_session_id),
+                        )
+                    else:
+                        cursor.execute(
+                            """
+                            SELECT id, score, user_translation, feedback
+                            FROM bt_3_translations
+                            WHERE user_id = %s
+                              AND sentence_id = %s
+                              AND COALESCE(source_lang, 'ru') = %s
+                              AND COALESCE(target_lang, 'de') = %s
+                            ORDER BY timestamp DESC, id DESC
+                            LIMIT 1;
+                            """,
+                            (user_id, int(sentence_pk_id), normalized_source_lang, normalized_target_lang),
+                        )
+                    existing_translation = cursor.fetchone()
 
     if existing_translation:
         result_item = {
@@ -6093,55 +6963,6 @@ async def check_user_translation_webapp_item(
     stored_user_translation = user_translation
     stored_score_value = score_value
     stored_feedback = feedback
-    inserted_new_row = False
-    with db_acquire_scope("translation_webapp_item_store"), get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO bt_3_translations (user_id, id_for_mistake_table, session_id, username, sentence_id,
-                user_translation, score, feedback, source_lang, target_lang)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (user_id, sentence_id, session_id) WHERE session_id IS NOT NULL DO NOTHING
-                RETURNING id, user_translation, score, feedback;
-                """,
-                (
-                    user_id,
-                    sentence_id_for_mistake,
-                    source_session_id,
-                    username,
-                    sentence_pk_id,
-                    user_translation,
-                    score_value,
-                    feedback,
-                    normalized_source_lang,
-                    normalized_target_lang,
-                ),
-            )
-            created_translation = cursor.fetchone()
-            if created_translation:
-                inserted_new_row = True
-                translation_id = int(created_translation[0]) if created_translation[0] is not None else None
-                stored_user_translation = str(created_translation[1] or "").strip() or user_translation
-                stored_score_value = int(created_translation[2] or 0)
-                stored_feedback = str(created_translation[3] or "").strip() or feedback
-            else:
-                cursor.execute(
-                    """
-                    SELECT id, user_translation, score, feedback
-                    FROM bt_3_translations
-                    WHERE user_id = %s
-                      AND sentence_id = %s
-                      AND session_id = %s
-                    LIMIT 1;
-                    """,
-                    (user_id, sentence_pk_id, source_session_id),
-                )
-                existing_row = cursor.fetchone()
-                if existing_row:
-                    translation_id = int(existing_row[0]) if existing_row[0] is not None else None
-                    stored_user_translation = str(existing_row[1] or "").strip() or user_translation
-                    stored_score_value = int(existing_row[2] or 0)
-                    stored_feedback = str(existing_row[3] or "").strip() or feedback
 
     result_item = {
         "translation_id": translation_id,
@@ -6153,37 +6974,283 @@ async def check_user_translation_webapp_item(
         "correct_translation": correct_translation,
         "feedback": stored_feedback,
     }
-    if inserted_new_row:
-        deferred_payload = {
-            "user_id": int(user_id),
-            "original_text": original_text,
-            "user_translation": user_translation,
-            "sentence_pk_id": int(sentence_pk_id),
-            "session_id": int(source_session_id) if source_session_id is not None else None,
-            "sentence_id_for_mistake": int(sentence_id_for_mistake),
-            "score_value": score_value,
-            "correct_translation": correct_translation,
-            "categories": list(categories or []),
-            "subcategories": list(subcategories or []),
-            "source_lang": normalized_source_lang,
-            "target_lang": normalized_target_lang,
-        }
-        if _translation_result_side_effects_async_enabled():
-            try:
-                from backend.job_queue import enqueue_translation_result_side_effects_job
+    deferred_store_payload = {
+        "user_id": int(user_id),
+        "username": str(username or "").strip() or None,
+        "sentence_id_for_mistake": int(sentence_id_for_mistake),
+        "session_id": int(source_session_id) if source_session_id is not None else None,
+        "sentence_pk_id": int(sentence_pk_id) if sentence_pk_id is not None else None,
+        "user_translation": user_translation,
+        "score_value": int(score_value),
+        "feedback": feedback,
+        "source_lang": normalized_source_lang,
+        "target_lang": normalized_target_lang,
+        "original_text": original_text,
+        "correct_translation": correct_translation,
+        "categories": list(categories or []),
+        "subcategories": list(subcategories or []),
+    }
+    return result_item, deferred_store_payload
 
-                enqueue_translation_result_side_effects_job(**deferred_payload)
-            except Exception:
-                logging.warning(
-                    "translation_result_side_effects enqueue failed; running inline user_id=%s sentence_id_for_mistake=%s",
+
+def persist_translation_webapp_item_results_batch(
+    *,
+    store_payloads: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    normalized_rows: list[tuple[int, int, int | None, str | None, int | None, str, int, str, str, str]] = []
+    normalized_payloads: list[dict[str, Any]] = []
+    for payload in store_payloads or []:
+        if not isinstance(payload, dict):
+            continue
+        sentence_pk_id = payload.get("sentence_pk_id")
+        sentence_id_for_mistake = payload.get("sentence_id_for_mistake")
+        session_id = payload.get("session_id")
+        if sentence_pk_id is None or sentence_id_for_mistake is None or session_id is None:
+            continue
+        normalized_payload = {
+            "user_id": int(payload.get("user_id") or 0),
+            "username": str(payload.get("username") or "").strip() or None,
+            "sentence_id_for_mistake": int(sentence_id_for_mistake),
+            "session_id": int(session_id),
+            "sentence_pk_id": int(sentence_pk_id),
+            "user_translation": str(payload.get("user_translation") or "").strip(),
+            "score_value": int(payload.get("score_value") or 0),
+            "feedback": str(payload.get("feedback") or "").strip(),
+            "source_lang": str(payload.get("source_lang") or "ru").strip().lower() or "ru",
+            "target_lang": str(payload.get("target_lang") or "de").strip().lower() or "de",
+            "original_text": str(payload.get("original_text") or "").strip(),
+            "correct_translation": str(payload.get("correct_translation") or "").strip() or None,
+            "categories": list(payload.get("categories") or []),
+            "subcategories": list(payload.get("subcategories") or []),
+        }
+        if normalized_payload["user_id"] <= 0:
+            continue
+        normalized_rows.append(
+            (
+                normalized_payload["user_id"],
+                normalized_payload["sentence_id_for_mistake"],
+                normalized_payload["session_id"],
+                normalized_payload["username"],
+                normalized_payload["sentence_pk_id"],
+                normalized_payload["user_translation"],
+                normalized_payload["score_value"],
+                normalized_payload["feedback"],
+                normalized_payload["source_lang"],
+                normalized_payload["target_lang"],
+            )
+        )
+        normalized_payloads.append(normalized_payload)
+
+    if not normalized_rows:
+        return []
+
+    persisted_rows: list[tuple[int | None, str, int, str, bool]] = []
+    with db_acquire_scope("translation_webapp_item_store"), get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            execute_values(
+                cursor,
+                """
+                WITH incoming(
                     user_id,
-                    sentence_id_for_mistake,
-                    exc_info=True,
+                    id_for_mistake_table,
+                    session_id,
+                    username,
+                    sentence_id,
+                    user_translation,
+                    score,
+                    feedback,
+                    source_lang,
+                    target_lang
+                ) AS (
+                    VALUES %s
                 )
-                await apply_translation_result_side_effects(**deferred_payload)
-        else:
-            await apply_translation_result_side_effects(**deferred_payload)
-    return result_item, None
+                INSERT INTO bt_3_translations (
+                    user_id,
+                    id_for_mistake_table,
+                    session_id,
+                    username,
+                    sentence_id,
+                    user_translation,
+                    score,
+                    feedback,
+                    source_lang,
+                    target_lang
+                )
+                SELECT
+                    incoming.user_id,
+                    incoming.id_for_mistake_table,
+                    incoming.session_id,
+                    incoming.username,
+                    incoming.sentence_id,
+                    incoming.user_translation,
+                    incoming.score,
+                    incoming.feedback,
+                    incoming.source_lang,
+                    incoming.target_lang
+                FROM incoming
+                ON CONFLICT (user_id, sentence_id, session_id) WHERE session_id IS NOT NULL
+                DO UPDATE SET
+                    user_translation = EXCLUDED.user_translation,
+                    score = EXCLUDED.score,
+                    feedback = EXCLUDED.feedback,
+                    username = EXCLUDED.username,
+                    source_lang = EXCLUDED.source_lang,
+                    target_lang = EXCLUDED.target_lang
+                RETURNING sentence_id, id, user_translation, score, feedback, (xmax = 0) AS inserted_new_row;
+                """,
+                normalized_rows,
+                template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                page_size=200,
+            )
+            persisted_rows = cursor.fetchall() or []
+
+    persisted_by_sentence_id: dict[int, tuple[int | None, str, int, str, bool]] = {}
+    for sentence_id, translation_id, user_translation, score, feedback, inserted_new_row in persisted_rows:
+        if sentence_id is None:
+            continue
+        persisted_by_sentence_id[int(sentence_id)] = (
+            int(translation_id) if translation_id is not None else None,
+            str(user_translation or "").strip(),
+            int(score or 0),
+            str(feedback or "").strip(),
+            bool(inserted_new_row),
+        )
+
+    persisted_payloads: list[dict[str, Any]] = []
+    for payload in normalized_payloads:
+        persisted = persisted_by_sentence_id.get(int(payload["sentence_pk_id"]))
+        if not persisted:
+            continue
+        translation_id, stored_user_translation, stored_score_value, stored_feedback, inserted_new_row = persisted
+        persisted_payload = dict(payload)
+        persisted_payload.update(
+            {
+                "translation_id": translation_id,
+                "stored_user_translation": stored_user_translation or payload["user_translation"],
+                "stored_score_value": stored_score_value,
+                "stored_feedback": stored_feedback or payload["feedback"],
+                "inserted_new_row": inserted_new_row,
+            }
+        )
+        persisted_payloads.append(persisted_payload)
+    return persisted_payloads
+
+
+def build_translation_webapp_session_prefetch(
+    *,
+    user_id: int,
+    translations: list[dict[str, Any]],
+    source_lang: str = "ru",
+    target_lang: str = "de",
+    daily_session_id: str | int | None = None,
+) -> dict[str, Any]:
+    normalized_source_lang = source_lang or "ru"
+    normalized_target_lang = target_lang or "de"
+    latest_session_id = _normalize_translation_session_id(daily_session_id)
+    sentence_pk_ids: set[int] = set()
+    mistake_ids: set[int] = set()
+    for translation in translations or []:
+        if not isinstance(translation, dict):
+            continue
+        sentence_pk_id = translation.get("source_daily_sentence_id")
+        if isinstance(sentence_pk_id, str) and sentence_pk_id.isdigit():
+            sentence_pk_id = int(sentence_pk_id)
+        if isinstance(sentence_pk_id, int) and sentence_pk_id > 0:
+            sentence_pk_ids.add(int(sentence_pk_id))
+        mistake_id = translation.get("id_for_mistake_table")
+        if isinstance(mistake_id, str) and mistake_id.isdigit():
+            mistake_id = int(mistake_id)
+        if isinstance(mistake_id, int) and mistake_id > 0:
+            mistake_ids.add(int(mistake_id))
+
+    daily_sentences_by_pk_id: dict[int, dict[str, Any]] = {}
+    daily_sentences_by_mistake_id: dict[int, dict[str, Any]] = {}
+    translations_by_sentence_id: dict[int, dict[str, Any]] = {}
+    with db_acquire_scope("translation_webapp_batch"), get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if latest_session_id is None:
+                latest_session_id = _resolve_latest_translation_session_id(
+                    cursor,
+                    user_id=int(user_id),
+                    source_lang=normalized_source_lang,
+                    target_lang=normalized_target_lang,
+                )
+            if latest_session_id is None:
+                return {
+                    "latest_session_id": None,
+                    "daily_sentences_by_pk_id": {},
+                    "daily_sentences_by_mistake_id": {},
+                    "translations_by_sentence_id": {},
+                }
+
+            if sentence_pk_ids or mistake_ids:
+                cursor.execute(
+                    """
+                    SELECT unique_id, id_for_mistake_table, id, sentence, session_id
+                    FROM bt_3_daily_sentences
+                    WHERE session_id = %s
+                      AND user_id = %s
+                      AND COALESCE(source_lang, 'ru') = %s
+                      AND COALESCE(target_lang, 'de') = %s
+                      AND (
+                          (%s::int[] IS NOT NULL AND id = ANY(%s::int[]))
+                          OR (%s::int[] IS NOT NULL AND id_for_mistake_table = ANY(%s::int[]))
+                      );
+                    """,
+                    (
+                        latest_session_id,
+                        int(user_id),
+                        normalized_source_lang,
+                        normalized_target_lang,
+                        list(sentence_pk_ids) if sentence_pk_ids else None,
+                        list(sentence_pk_ids) if sentence_pk_ids else None,
+                        list(mistake_ids) if mistake_ids else None,
+                        list(mistake_ids) if mistake_ids else None,
+                    ),
+                )
+                for unique_id, mistake_id, sentence_pk_id, sentence_text, source_session in cursor.fetchall() or []:
+                    mapped = {
+                        "sentence_number": int(unique_id) if unique_id is not None else None,
+                        "id_for_mistake_table": int(mistake_id) if mistake_id is not None else None,
+                        "sentence_pk_id": int(sentence_pk_id) if sentence_pk_id is not None else None,
+                        "original_text": str(sentence_text or "").strip(),
+                        "source_session_id": _normalize_translation_session_id(source_session),
+                    }
+                    if mapped["sentence_pk_id"] is not None:
+                        daily_sentences_by_pk_id[int(mapped["sentence_pk_id"])] = mapped
+                    if mapped["id_for_mistake_table"] is not None:
+                        daily_sentences_by_mistake_id[int(mapped["id_for_mistake_table"])] = mapped
+
+            resolved_sentence_ids = sorted(daily_sentences_by_pk_id.keys())
+            if resolved_sentence_ids:
+                cursor.execute(
+                    """
+                    SELECT sentence_id, id, score, user_translation, feedback
+                    FROM bt_3_translations
+                    WHERE user_id = %s
+                      AND session_id = %s
+                      AND sentence_id = ANY(%s::int[]);
+                    """,
+                    (int(user_id), latest_session_id, resolved_sentence_ids),
+                )
+                for sentence_id, translation_id, score, user_translation, feedback in cursor.fetchall() or []:
+                    if sentence_id is None:
+                        continue
+                    translations_by_sentence_id[int(sentence_id)] = {
+                        "translation_id": int(translation_id) if translation_id is not None else None,
+                        "score": int(score or 0),
+                        "user_translation": str(user_translation or "").strip(),
+                        "feedback": str(feedback or "").strip(),
+                    }
+
+    return {
+        "latest_session_id": latest_session_id,
+        "daily_sentences_by_pk_id": daily_sentences_by_pk_id,
+        "daily_sentences_by_mistake_id": daily_sentences_by_mistake_id,
+        "translations_by_sentence_id": translations_by_sentence_id,
+        "resolved_sentence_ids": resolved_sentence_ids,
+        "translations_prefetched_complete": True,
+    }
 
 
 async def check_user_translation_webapp(
@@ -6212,9 +7279,17 @@ async def check_user_translation_webapp(
     if latest_session_id is None:
         return []
 
+    prefetched_context = build_translation_webapp_session_prefetch(
+        user_id=int(user_id),
+        translations=list(translations or []),
+        source_lang=normalized_source_lang,
+        target_lang=normalized_target_lang,
+        daily_session_id=latest_session_id,
+    )
     results: list[dict[str, Any]] = []
+    deferred_store_pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for entry in translations:
-        result_item, _ = await check_user_translation_webapp_item(
+        result_item, deferred_store_payload = await check_user_translation_webapp_item(
             user_id,
             username,
             entry,
@@ -6222,9 +7297,62 @@ async def check_user_translation_webapp(
             target_lang=normalized_target_lang,
             daily_session_id=latest_session_id,
             checkpoint_item_id=None,
+            prefetched_context=prefetched_context,
         )
         if result_item:
             results.append(result_item)
+            if isinstance(deferred_store_payload, dict):
+                deferred_store_pairs.append((result_item, deferred_store_payload))
+
+    if deferred_store_pairs:
+        persisted_payloads = persist_translation_webapp_item_results_batch(
+            store_payloads=[payload for _result_item, payload in deferred_store_pairs],
+        )
+        persisted_by_sentence_id = {
+            int(payload["sentence_pk_id"]): payload
+            for payload in persisted_payloads
+            if payload.get("sentence_pk_id") is not None
+        }
+        for result_item, deferred_store_payload in deferred_store_pairs:
+            persisted_payload = persisted_by_sentence_id.get(
+                int(deferred_store_payload.get("sentence_pk_id") or 0)
+            )
+            if not persisted_payload:
+                continue
+            result_item["translation_id"] = persisted_payload.get("translation_id")
+            result_item["user_translation"] = persisted_payload.get("stored_user_translation")
+            result_item["score"] = persisted_payload.get("stored_score_value")
+            result_item["feedback"] = persisted_payload.get("stored_feedback")
+            if persisted_payload.get("inserted_new_row") and persisted_payload.get("translation_id") is not None:
+                deferred_side_effect_payload = {
+                    "user_id": int(persisted_payload["user_id"]),
+                    "original_text": str(persisted_payload.get("original_text") or ""),
+                    "user_translation": str(persisted_payload.get("user_translation") or ""),
+                    "sentence_pk_id": int(persisted_payload["sentence_pk_id"]),
+                    "session_id": int(persisted_payload["session_id"]) if persisted_payload.get("session_id") is not None else None,
+                    "sentence_id_for_mistake": int(persisted_payload["sentence_id_for_mistake"]),
+                    "score_value": int(persisted_payload["score_value"]),
+                    "correct_translation": str(persisted_payload.get("correct_translation") or "").strip() or None,
+                    "categories": list(persisted_payload.get("categories") or []),
+                    "subcategories": list(persisted_payload.get("subcategories") or []),
+                    "source_lang": str(persisted_payload.get("source_lang") or "ru"),
+                    "target_lang": str(persisted_payload.get("target_lang") or "de"),
+                }
+                if _translation_result_side_effects_async_enabled():
+                    try:
+                        from backend.job_queue import enqueue_translation_result_side_effects_job
+
+                        enqueue_translation_result_side_effects_job(**deferred_side_effect_payload)
+                    except Exception:
+                        logging.warning(
+                            "translation_result_side_effects enqueue failed; running inline user_id=%s sentence_id_for_mistake=%s",
+                            user_id,
+                            deferred_side_effect_payload["sentence_id_for_mistake"],
+                            exc_info=True,
+                        )
+                        await apply_translation_result_side_effects(**deferred_side_effect_payload)
+                else:
+                    await apply_translation_result_side_effects(**deferred_side_effect_payload)
 
     results.sort(key=lambda item: item.get("sentence_number") or 0)
     return results
@@ -6238,54 +7366,16 @@ def finish_translation_webapp(user_id: int) -> dict[str, Any]:
     try:
         cursor.execute(
             """
-            WITH active_sessions AS (
-                SELECT session_id, start_time
-                FROM bt_3_user_progress
-                WHERE user_id = %s
-                  AND completed = FALSE
-            ),
-            latest_session AS (
-                SELECT session_id
-                FROM active_sessions
-                ORDER BY start_time DESC NULLS LAST, session_id DESC
-                LIMIT 1
-            )
-            SELECT
-                (SELECT session_id FROM latest_session) AS latest_session_id,
-                ARRAY(
-                    SELECT session_id
-                    FROM active_sessions
-                    WHERE session_id IS NOT NULL
-                ) AS active_session_ids,
-                COALESCE(
-                    (
-                        SELECT COUNT(*)
-                        FROM bt_3_daily_sentences ds
-                        WHERE ds.user_id = %s
-                          AND ds.session_id = (SELECT session_id FROM latest_session)
-                          AND COALESCE(ds.shown_to_user, FALSE) = TRUE
-                    ),
-                    0
-                ) AS total_sentences,
-                COALESCE(
-                    (
-                        SELECT COUNT(DISTINCT t.sentence_id)
-                        FROM bt_3_translations t
-                        JOIN bt_3_daily_sentences ds
-                          ON ds.id = t.sentence_id
-                         AND ds.user_id = t.user_id
-                        WHERE t.user_id = %s
-                          AND t.session_id = (SELECT session_id FROM latest_session)
-                          AND COALESCE(ds.shown_to_user, FALSE) = TRUE
-                    ),
-                    0
-                ) AS translated_count
-            ;
+            SELECT session_id, start_time
+            FROM bt_3_user_progress
+            WHERE user_id = %s
+              AND completed = FALSE
+            ORDER BY start_time DESC NULLS LAST, session_id DESC;
             """,
-            (user_id, user_id, user_id),
+            (user_id,),
         )
-        session_row = cursor.fetchone()
-        if not session_row or session_row[0] is None:
+        session_rows = list(cursor.fetchall() or [])
+        if not session_rows or session_rows[0][0] is None:
             return {
                 "message": (
                     "❌ У вас нет активных сессий! Используйте кнопки: "
@@ -6294,11 +7384,42 @@ def finish_translation_webapp(user_id: int) -> dict[str, Any]:
                 "status": "no_session",
             }
 
-        session_id = session_row[0]
-        raw_active_session_ids = list(session_row[1] or [])
-        active_session_ids = [item for item in raw_active_session_ids if item is not None]
-        total_sentences = int(session_row[2] or 0)
-        translated_count = int(session_row[3] or 0)
+        session_id = session_rows[0][0]
+        active_session_ids = [row[0] for row in session_rows if row[0] is not None]
+        total_sentences = 0
+        translated_count = 0
+        if session_id is not None:
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM bt_3_daily_sentences
+                WHERE user_id = %s
+                  AND session_id = %s
+                  AND COALESCE(shown_to_user, FALSE) = TRUE;
+                """,
+                (user_id, session_id),
+            )
+            total_sentences = int((cursor.fetchone() or [0])[0] or 0)
+
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM bt_3_daily_sentences ds
+                WHERE ds.user_id = %s
+                  AND ds.session_id = %s
+                  AND COALESCE(ds.shown_to_user, FALSE) = TRUE
+                  AND EXISTS (
+                      SELECT 1
+                      FROM bt_3_translations t
+                      WHERE t.user_id = %s
+                        AND t.session_id = %s
+                        AND t.sentence_id = ds.id
+                  );
+                """,
+                (user_id, session_id, user_id, session_id),
+            )
+            translated_count = int((cursor.fetchone() or [0])[0] or 0)
+
         if len(active_session_ids) > 1:
             logging.warning(
                 "finish_translation_webapp: multiple active sessions detected for user_id=%s sessions=%s; closing all.",
@@ -6330,6 +7451,25 @@ def finish_translation_webapp(user_id: int) -> dict[str, Any]:
             (user_id, active_session_ids),
         )
         conn.commit()
+        _clear_active_translation_session_pointer(user_id=int(user_id))
+        clear_translation_session_card(int(user_id))
+        set_translation_session_state(
+            str(session_id or "").strip() or "",
+            _build_translation_session_state_payload(
+                user_id=int(user_id),
+                session_id=str(session_id or "").strip() or "",
+                source_lang="ru",
+                target_lang="de",
+                focus_kind=None,
+                focus_key=None,
+                level=None,
+                state="finished",
+                ready_count=int(total_sentences),
+                expected_total=int(total_sentences or 0),
+                generation_status="ready",
+                background_fill_required=False,
+            ),
+        )
         try:
             delete_translation_draft_state(user_id=int(user_id), source_session_id=str(session_id))
         except Exception:
