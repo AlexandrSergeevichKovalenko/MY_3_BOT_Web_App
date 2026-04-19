@@ -23817,8 +23817,12 @@ def _store_phase1_projection(
     timing_breakdown: dict[str, int] | None = None,
 ) -> dict | None:
     store_started_perf = time.perf_counter()
+    schema_ensure_started_perf = time.perf_counter()
     ensure_phase1_projection_schema()
+    schema_ensure_duration_ms = int((time.perf_counter() - schema_ensure_started_perf) * 1000)
+    ttls_started_perf = time.perf_counter()
     fresh_ttl_sec, stale_ttl_sec = _phase1_projection_ttls(snapshot_kind)
+    ttls_duration_ms = int((time.perf_counter() - ttls_started_perf) * 1000)
     upsert_started_perf = time.perf_counter()
     snapshot = upsert_user_api_snapshot(
         user_id=int(user_id),
@@ -23853,9 +23857,18 @@ def _store_phase1_projection(
         )
     if isinstance(timing_breakdown, dict):
         total_duration_ms = int((time.perf_counter() - store_started_perf) * 1000)
+        timing_breakdown["phase1_schema_ensure_ms"] = schema_ensure_duration_ms
+        timing_breakdown["phase1_ttls_ms"] = ttls_duration_ms
         timing_breakdown["upsert_user_api_snapshot_ms"] = upsert_duration_ms
         timing_breakdown["set_projection_card_ms"] = redis_mirror_duration_ms
-        timing_breakdown["other_ms"] = max(0, total_duration_ms - upsert_duration_ms - redis_mirror_duration_ms)
+        timing_breakdown["other_ms"] = max(
+            0,
+            total_duration_ms
+            - schema_ensure_duration_ms
+            - ttls_duration_ms
+            - upsert_duration_ms
+            - redis_mirror_duration_ms,
+        )
     return snapshot
 
 
@@ -24206,6 +24219,12 @@ def _write_session_presence_projection_post_finish(
         )
         timing_breakdown["session_presence_set_session_presence_card_ms"] = int(
             store_timing_breakdown.get("set_projection_card_ms") or 0
+        )
+        timing_breakdown["session_presence_phase1_schema_ensure_ms"] = int(
+            store_timing_breakdown.get("phase1_schema_ensure_ms") or 0
+        )
+        timing_breakdown["session_presence_phase1_ttls_ms"] = int(
+            store_timing_breakdown.get("phase1_ttls_ms") or 0
         )
         timing_breakdown["session_presence_other_ms"] = int(store_timing_breakdown.get("other_ms") or 0)
     return snapshot
@@ -40262,6 +40281,8 @@ def finish_webapp_translation():
         session_presence_store_phase1_projection_ms = 0
         session_presence_upsert_user_api_snapshot_ms = 0
         session_presence_set_session_presence_card_ms = 0
+        session_presence_phase1_schema_ensure_ms = 0
+        session_presence_phase1_ttls_ms = 0
         session_presence_other_ms = 0
         finish_recent_finish_marker_ms = 0
         finish_today_sync_ms = 0
@@ -40331,6 +40352,12 @@ def finish_webapp_translation():
                     )
                     session_presence_set_session_presence_card_ms = int(
                         session_presence_timing.get("session_presence_set_session_presence_card_ms") or 0
+                    )
+                    session_presence_phase1_schema_ensure_ms = int(
+                        session_presence_timing.get("session_presence_phase1_schema_ensure_ms") or 0
+                    )
+                    session_presence_phase1_ttls_ms = int(
+                        session_presence_timing.get("session_presence_phase1_ttls_ms") or 0
                     )
                     session_presence_other_ms = int(
                         session_presence_timing.get("session_presence_other_ms") or 0
@@ -40503,6 +40530,8 @@ def finish_webapp_translation():
             session_presence_store_phase1_projection_ms=session_presence_store_phase1_projection_ms,
             session_presence_upsert_user_api_snapshot_ms=session_presence_upsert_user_api_snapshot_ms,
             session_presence_set_session_presence_card_ms=session_presence_set_session_presence_card_ms,
+            session_presence_phase1_schema_ensure_ms=session_presence_phase1_schema_ensure_ms,
+            session_presence_phase1_ttls_ms=session_presence_phase1_ttls_ms,
             session_presence_other_ms=session_presence_other_ms,
             finish_recent_finish_marker_ms=finish_recent_finish_marker_ms,
             finish_today_sync_ms=finish_today_sync_ms,
