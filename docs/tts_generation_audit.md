@@ -435,7 +435,111 @@ After extraction, admin monitor in `BACKEND_WEB` will always see an empty deque.
 - All TTS in-process state globals (`_TTS_GENERATION_QUEUE`, `_TTS_GENERATION_JOBS`, etc.)
 - `_run_tts_prewarm_scheduler_job`, `_run_tts_generation_recovery_scheduler_job`, `_run_tts_prewarm_quota_control_scheduler_job` — exposed via `tts_scheduler.py` seam
 
-### Next slice options
+### Next slice options (superseded by Slice 2 blocker analysis — see §10)
 
-1. **Extract `_send_private_message` into a shared module** → unblocks `_notify_google_tts_budget_thresholds` → unblocks `_enforce_google_tts_monthly_budget` → unblocks `_synthesize_mp3`
-2. **Extract `_build_observability_correlation_id` / `_to_epoch_ms` into a generic utils module** → unblocks `_build_tts_generation_job_kwargs_from_meta`
+---
+
+## 10. SLICE 2 BLOCKER ANALYSIS
+
+### Remaining blocked functions
+
+| Function | Line | Blocker helper | Blocker location |
+|----------|------|----------------|-----------------|
+| `_build_tts_generation_job_kwargs_from_meta` | 30538 | `_build_observability_correlation_id` + `_to_epoch_ms` | backend_server.py:2391, 2421 |
+| `_enforce_google_tts_monthly_budget` | 16273 | `_notify_google_tts_budget_thresholds` → `_send_private_message` | backend_server.py:11540 |
+| `_synthesize_mp3` | 16326 | `_enforce_google_tts_monthly_budget` (above) | — |
+
+---
+
+### Blocker 1: `_build_observability_correlation_id` (backend_server.py:2391)
+
+- **What it does:** Builds a sanitized correlation ID. Checks Flask request context (`has_request_context()`), reads request headers/args if in-request; falls back to `f"{prefix}_{uuid4().hex}"` when not.
+- **Callers:** 50+ across ALL subsystems (translation, analytics, billing, YouTube, reader, TTS routes, TTS recovery).
+- **Callees:** `_sanitize_observability_id` (pure, line 2360), Flask `has_request_context`, `request.headers`, `request.args`.
+- **Side effects:** None. Pure except for UUID generation.
+- **Depends on backend_server globals:** `has_request_context`, `request`, `g` — Flask thread-locals only. No module-level state.
+- **Broadly reused:** Yes — 50+ callers, spans every subsystem.
+
+**TTS-specific usage (line 30561):**
+```python
+"correlation_id": _build_observability_correlation_id(
+    fallback_seed=f"recover:{cache_key[:16]}",
+    prefix="tts",
+)
+```
+Called from `_build_tts_generation_job_kwargs_from_meta`, which is called ONLY from the background recovery scheduler — never from a Flask route. Therefore `has_request_context()` is **always False** here, and the function always takes the fallback path: `f"tts_{sanitize(fallback_seed)}"`. The Flask-context branches are dead code for this call site.
+
+---
+
+### Blocker 2: `_to_epoch_ms` (backend_server.py:2421)
+
+- **What it does:** `int(time.time() * 1000)`. Literally a one-liner.
+- **Callers:** 22 across all subsystems (translation execution, TTS generation, analytics, etc.).
+- **Side effects:** None.
+- **Depends on backend_server globals:** None.
+- **Broadly reused:** Yes — 22 callers.
+
+**TTS-specific usage (line 30565):** `"enqueue_ts_ms": _to_epoch_ms()` — records job enqueue timestamp. Trivial.
+
+---
+
+### Blocker 3: `_send_private_message` (backend_server.py:11540)
+
+- **What it does:** Posts a message to Telegram via Bot API (`sendMessage`), records `message_id` in DB via `record_telegram_system_message`.
+- **Callers:** 17 call sites in backend_server.py spanning admin notifications, user reminders, daily plans, analytics reports, TTS admin alerts.
+- **Callees:** `requests.post` (Telegram API), `record_telegram_system_message` (DB side effect).
+- **Side effects:** HEAVY — external HTTP call + DB write.
+- **Depends on backend_server globals:** `TELEGRAM_Deutsch_BOT_TOKEN` (module-level constant, line ~777).
+- **Broadly reused:** Yes — 17 callers across unrelated subsystems (not TTS-only).
+
+**TTS-specific usage:** `_notify_google_tts_budget_thresholds` (line 16210) calls it to alert admins at 50/75/90% budget thresholds. This is a side effect, not core synthesis logic. `_notify_google_tts_budget_thresholds` itself is called only by `_enforce_google_tts_monthly_budget`.
+
+---
+
+### PATH A: Unblock `_build_tts_generation_job_kwargs_from_meta`
+
+**Minimum approach:** Do NOT extract `_build_observability_correlation_id` or `_to_epoch_ms` as shared modules (blast radius too wide). Instead:
+
+1. Add `_to_epoch_ms` as a one-liner duplicate to `tts_generation.py` (2 lines, no callers in backend_server change).
+2. Add `_tts_correlation_id(fallback_seed, prefix)` to `tts_generation.py` — a pure, no-Flask subset of `_build_observability_correlation_id`, valid for background job context (where `has_request_context()` is always False). Uses only `re`, `uuid4`. Behaviorally equivalent at this specific call site.
+3. Move `_build_tts_generation_job_kwargs_from_meta` to `tts_generation.py`; update import in backend_server.py.
+
+**Files affected:** `tts_generation.py` (+3 symbols), `backend_server.py` (1 def removed, 2 imports added, 0 other callers touched).
+
+**Blast radius:** Minimal — zero existing callers affected.
+
+**Risk:** Low. `_to_epoch_ms` is trivially safe. `_tts_correlation_id` correctness is provable: the call site is only ever reached in background context, so the Flask branches being absent is not a behavioral difference.
+
+**Value:** Moves the job-kwargs builder to `tts_generation.py`. Does NOT unblock `_synthesize_mp3`.
+
+---
+
+### PATH B: Unblock `_enforce_google_tts_monthly_budget` + `_synthesize_mp3`
+
+**Minimum approach (B2 — extract `_send_private_message`):**
+
+1. Create `backend/telegram_notify.py` with `_send_private_message` (change `TELEGRAM_Deutsch_BOT_TOKEN` to `os.getenv(...)`).
+2. Rewire all 17 call sites in backend_server.py to import from new module.
+3. Move `_notify_google_tts_budget_thresholds` + `_enforce_google_tts_monthly_budget` + `_synthesize_mp3` to `tts_generation.py`.
+
+**Files affected:** 1 new module, backend_server.py (17 call sites + 3 defs removed), tts_generation.py (+3 defs).
+
+**Blast radius:** Substantial — 17 call sites across admin, user, analytics, TTS paths.
+
+**Risk:** Higher. Any missed call site or import error breaks message delivery across the whole bot, not just TTS.
+
+**Value:** High — moves `_synthesize_mp3`, the actual Google TTS synthesis engine.
+
+**Option B1 (TTS-only notifier with callable injection):** Inject `notify_fn: Callable` into `_enforce_google_tts_monthly_budget`. This changes the function signature and all call sites — more churn than B2 with no isolation benefit. Rejected.
+
+---
+
+### Recommendation: PATH A next
+
+PATH A has zero blast radius beyond `tts_generation.py` and `_build_tts_generation_job_kwargs_from_meta`. It completes the job-kwargs builder extraction cleanly.
+
+PATH B is deferred: extracting `_send_private_message` to `telegram_notify.py` should be its own dedicated step, scoped to the 17 notification call sites, not bundled with TTS extraction. Once that step is complete, PATH B becomes equally straightforward.
+
+**Chosen next step:** Add `_to_epoch_ms` + `_tts_correlation_id` to `tts_generation.py`, move `_build_tts_generation_job_kwargs_from_meta`.
+
+**PATH B deferred because:** 17 call sites for `_send_private_message` span unrelated subsystems. Touching them during a TTS extraction increases blast radius unnecessarily. The right time is a dedicated "extract Telegram notification primitives" step.
