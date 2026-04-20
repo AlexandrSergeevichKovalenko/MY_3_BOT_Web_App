@@ -24783,7 +24783,27 @@ def _run_post_finish_snapshot_bookkeeping(
     session_presence_target_lang: str | None = None,
     session_presence_translated_count: int = 0,
     session_presence_total_sentences: int = 0,
+    skills_seed_payload: dict | None = None,
+    skills_seed_meta: dict | None = None,
+    skills_seed_source_lang: str | None = None,
+    skills_seed_target_lang: str | None = None,
 ) -> None:
+    if isinstance(skills_seed_payload, dict) and skills_seed_payload:
+        try:
+            _store_phase1_projection(
+                user_id=int(user_id),
+                snapshot_kind=_SKILLS_CARD_KIND,
+                snapshot_key=_skills_card_projection_key(_SKILLS_CARD_DEFAULT_LOOKBACK_DAYS),
+                payload=skills_seed_payload,
+                source_lang=skills_seed_source_lang,
+                target_lang=skills_seed_target_lang,
+                meta=skills_seed_meta,
+            )
+        except Exception:
+            logging.warning(
+                "Deferred skills_card DB upsert failed: user_id=%s session_id=%s",
+                int(user_id), finished_session_id, exc_info=True,
+            )
     if finished_session_id and session_presence_source_lang:
         try:
             _write_session_presence_projection_post_finish(
@@ -24863,6 +24883,10 @@ def _dispatch_post_finish_snapshot_bookkeeping(
     session_presence_target_lang: str | None = None,
     session_presence_translated_count: int = 0,
     session_presence_total_sentences: int = 0,
+    skills_seed_payload: dict | None = None,
+    skills_seed_meta: dict | None = None,
+    skills_seed_source_lang: str | None = None,
+    skills_seed_target_lang: str | None = None,
 ) -> None:
     threading.Thread(
         target=_run_post_finish_snapshot_bookkeeping,
@@ -24877,6 +24901,10 @@ def _dispatch_post_finish_snapshot_bookkeeping(
             "session_presence_target_lang": session_presence_target_lang,
             "session_presence_translated_count": int(session_presence_translated_count),
             "session_presence_total_sentences": int(session_presence_total_sentences),
+            "skills_seed_payload": skills_seed_payload,
+            "skills_seed_meta": skills_seed_meta,
+            "skills_seed_source_lang": skills_seed_source_lang,
+            "skills_seed_target_lang": skills_seed_target_lang,
         },
         daemon=True,
     ).start()
@@ -40495,6 +40523,8 @@ def finish_webapp_translation():
         schedule_refresh_ms = 0
         finish_today_sync_plan_fetch_ms = 0
         finish_today_sync_item_write_ms = 0
+        _skills_seed_payload: dict | None = None
+        _skills_seed_meta: dict | None = None
         if str(result.get("status") or "").strip().lower() == "completed":
             finished_session_id = str(result.get("session_id") or "").strip()
             if finished_session_id:
@@ -40563,10 +40593,25 @@ def finish_webapp_translation():
                         "finish_skills_seed_store_ms": 0,
                         "ensured_skills": False,
                         "skills_duration_ms": 0,
+                        "skills_payload": None,
+                        "skills_meta": None,
                     }
                     try:
-                        _timing: dict[str, int] = {}
-                        _write_skills_card_projection_seed(
+                        _snapshot_key = _skills_card_projection_key(_SKILLS_CARD_DEFAULT_LOOKBACK_DAYS)
+                        _t_read = time.perf_counter()
+                        _existing_payload = _validate_skills_card_projection_payload(
+                            get_skills_card(int(user_id), _snapshot_key),
+                            expected_lookback_days=_SKILLS_CARD_DEFAULT_LOOKBACK_DAYS,
+                        )
+                        if not isinstance(_existing_payload, dict):
+                            _existing_snapshot = get_user_api_snapshot(
+                                user_id=int(user_id),
+                                snapshot_kind=_SKILLS_CARD_KIND,
+                                snapshot_key=_snapshot_key,
+                            ) or {}
+                            _existing_payload = dict(_existing_snapshot.get("payload") or {})
+                        _r["finish_skills_seed_read_ms"] = int((time.perf_counter() - _t_read) * 1000)
+                        _skills_payload, _skills_meta = _build_skills_card_seed_payload(
                             user_id=int(user_id),
                             lookback_days=_SKILLS_CARD_DEFAULT_LOOKBACK_DAYS,
                             source_lang=source_lang,
@@ -40575,10 +40620,13 @@ def finish_webapp_translation():
                             recent_session_seed=recent_session_seed,
                             projection_status="refreshing",
                             pending_finish_session_id=finished_session_id,
-                            timing_breakdown=_timing,
+                            existing_projection_payload=_existing_payload,
                         )
-                        _r["finish_skills_seed_read_ms"] = int(_timing.get("read_ms") or 0)
-                        _r["finish_skills_seed_store_ms"] = int(_timing.get("store_ms") or 0)
+                        _t_store = time.perf_counter()
+                        set_skills_card(int(user_id), _snapshot_key, _skills_payload)
+                        _r["finish_skills_seed_store_ms"] = int((time.perf_counter() - _t_store) * 1000)
+                        _r["skills_payload"] = _skills_payload
+                        _r["skills_meta"] = _skills_meta
                         _r["ensured_skills"] = True
                         _r["skills_duration_ms"] = (
                             _r["finish_skills_seed_read_ms"] + _r["finish_skills_seed_store_ms"]
@@ -40608,6 +40656,8 @@ def finish_webapp_translation():
                 ensured_hotpaths["today_duration_ms"] = _today_hp["today_duration_ms"]
                 ensured_hotpaths["skills"] = _skills_hp["ensured_skills"]
                 ensured_hotpaths["skills_duration_ms"] = _skills_hp["skills_duration_ms"]
+                _skills_seed_payload = _skills_hp.get("skills_payload")
+                _skills_seed_meta = _skills_hp.get("skills_meta")
             ensure_hotpaths_ms = int(ensured_hotpaths.get("wall_ms") or 0)
         bookkeeping_dispatch_started_perf = time.perf_counter()
         _dispatch_post_finish_snapshot_bookkeeping(
@@ -40621,6 +40671,10 @@ def finish_webapp_translation():
             session_presence_target_lang=target_lang,
             session_presence_translated_count=_sp_translated_count,
             session_presence_total_sentences=_sp_total_sentences,
+            skills_seed_payload=_skills_seed_payload,
+            skills_seed_meta=_skills_seed_meta,
+            skills_seed_source_lang=source_lang,
+            skills_seed_target_lang=target_lang,
         )
         finish_bookkeeping_dispatch_ms = int((time.perf_counter() - bookkeeping_dispatch_started_perf) * 1000)
         _log_finish_request_event(
