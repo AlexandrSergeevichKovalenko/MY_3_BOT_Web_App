@@ -579,5 +579,108 @@ Sanitization regex is identical: `[^a-zA-Z0-9._:-]+` → `-`.
 ### Remaining blocker
 
 `_enforce_google_tts_monthly_budget` and `_synthesize_mp3` remain in `backend_server.py`.  
-Blocker: `_notify_google_tts_budget_thresholds` → `_send_private_message` (17 callers, Telegram API side effect, `TELEGRAM_Deutsch_BOT_TOKEN` module constant).  
-Next step: dedicated "extract Telegram notification primitives" commit — extract `_send_private_message` to `backend/telegram_notify.py`, rewire 17 callers in backend_server, then move the budget/synthesize chain.
+Blocker: `_notify_google_tts_budget_thresholds` → `_send_private_message` (16 callers, Telegram API side effect, `TELEGRAM_Deutsch_BOT_TOKEN` module constant).  
+See §12 for full messaging dependency audit and chosen next step.
+
+---
+
+## 12. MESSAGING DEPENDENCY AUDIT (_send_private_message)
+
+### Function inventory
+
+**`_send_private_message` (backend_server.py:11543)**
+- Sends Telegram `sendMessage` API call; records `message_id` in DB via `record_telegram_system_message`.
+- Params: `user_id, text, reply_markup?, disable_web_page_preview?, parse_mode?, message_type?`
+- Module dep: `TELEGRAM_Deutsch_BOT_TOKEN = os.getenv(...)` at line 647 — trivially portable.
+- DB dep: `record_telegram_system_message` (database.py) — already imported pattern.
+- Side effects: Telegram HTTP POST + DB INSERT — heavy.
+- 16 call sites in backend_server.py.
+
+**`_send_private_message_chunks` (backend_server.py:11740)**
+- Splits long text at line boundaries, calls `_send_private_message` for each chunk.
+- Pure chunking logic + dispatch. No additional deps.
+- 3 call sites: grammar explanation (user-facing), semantic audit digest (admin), today plan report (admin).
+
+**`_send_tts_admin_message` (backend_server.py:11757)**
+- TTS-specific wrapper: iterates `get_admin_telegram_ids()`, calls `_send_private_message` for each.
+- Already scoped to TTS. If `_send_private_message` moves, this can remain in backend_server and import it.
+
+---
+
+### Caller shape classification (all 16 call sites)
+
+| Line | Context | Shape |
+|------|---------|-------|
+| 11754 | `_send_private_message_chunks` | chunked dispatch |
+| 11764 | `_send_tts_admin_message` | **admin alert** (TTS events) |
+| 12035 | TTS prewarm quota control | **admin alert** (quota/budget) |
+| 15349 | Translation focus pool report (text fallback) | **admin analytics report** |
+| 15390 | Translation focus pool report (photo fallback) | **admin analytics report** |
+| 16177 | `_notify_provider_budget_thresholds` | **admin alert** (generic provider budget) |
+| 16251 | `_notify_google_tts_budget_thresholds` | **admin alert** (TTS budget) |
+| 30101 | Feel-word delivery | **user-facing** (HTML, feel_word type) |
+| 35096 | Webapp lesson result submit | **user-facing** (plain text) |
+| 35517 | Private analytics dispatch | **user-facing** (plain text) |
+| 35805 | Weekly plan period reminder | **user-facing** (reply_markup) |
+| 36272 | Weekly group badges | **user-facing** (reply_markup) |
+| 36394 | Today evening reminder | **user-facing** (reply_markup) |
+| 36410 | Today evening celebration | **user-facing** (reply_markup) |
+| 38219 | `_send_today_plan_private_message` | **user-facing** (reply_markup) |
+| 38270 | Today plan fallback dispatch | **user-facing** (plain text) |
+
+**Split: 6 admin-alert/report + 9 user-facing + 1 chunked wrapper.**
+
+### Is `_send_private_message` homogeneous enough to extract?
+
+**Yes.** All 16 callers use an identical interface: `(user_id_or_chat_id, text, optional_params)`. The function is a thin HTTP wrapper — there is no conditional logic, no caller-specific branching inside the function. Every caller uses it the same way regardless of whether it is admin-alerting or user-facing.
+
+The TTS budget alert path (line 16251) uses it in the simplest form: plain text, `disable_web_page_preview=True`, no markup, no parse_mode. Same shape as 5 other admin-alert callers.
+
+### TTS-specific usage: is the messaging core logic or alerting only?
+
+- `_notify_google_tts_budget_thresholds` → `_send_private_message`: **alerting only**. It sends a text notification to admins when a budget threshold is crossed. This is a side effect of `_enforce_google_tts_monthly_budget`, not its core logic. The core logic (checking budget, raising `GoogleTTSBudgetBlockedError`) does not depend on whether the notification succeeded.
+- `_synthesize_mp3` depends on `_enforce_google_tts_monthly_budget` which calls `_notify_google_tts_budget_thresholds`. Same dependency chain.
+
+### Extraction options
+
+**Option A — Extract full `_send_private_message` + `_send_private_message_chunks` to `backend/telegram_notify.py`**
+- Files: new module + 16 call sites in backend_server (import change only) + tts_generation.py can then import it
+- Blast radius: all 16 send paths touched (import swap, function logic unchanged)
+- Risk: LOW — function logic is identical, only the import location changes; import failure would be caught immediately at startup
+- Value: directly unblocks `_notify_google_tts_budget_thresholds` → `_enforce_google_tts_monthly_budget` → `_synthesize_mp3`
+- Downside: 16 call site edits in a single commit — requires care
+
+**Option B — Extract a narrow TTS-only admin notifier (no full extraction)**
+- Define e.g. `_send_tts_budget_alert(admin_id, text)` in `tts_generation.py` that calls Telegram API directly
+- Files: tts_generation.py only
+- Blast radius: minimal
+- Risk: duplicates HTTP transport logic; two implementations of Telegram messaging diverge over time
+- Value: unblocks TTS budget path only — `_synthesize_mp3` still unblocked
+- Downside: creates a second HTTP transport for Telegram that will need consolidation later. Fake decoupling.
+
+**Option C — Inject a `notify_fn: Callable` into `_enforce_google_tts_monthly_budget`**
+- Caller passes the function at call time; `tts_generation.py` has no Telegram dep
+- Files: tts_generation.py + backend_server.py (call site change)
+- Blast radius: only the 2–3 call sites of `_enforce_google_tts_monthly_budget`
+- Risk: changes function interface; complicates testing; not idiomatic
+- Value: technically unblocks the move but creates an awkward interface
+- Downside: interface change for every future caller; non-obvious parameter
+
+**Option D — Do not extract messaging yet**
+- Files: none
+- Blast radius: 0
+- Risk: 0
+- Value: 0 — `_enforce_google_tts_monthly_budget` and `_synthesize_mp3` stay blocked indefinitely
+- Downside: real TTS engine extraction is permanently stalled
+
+### Recommendation: Option A
+
+Extract `_send_private_message` and `_send_private_message_chunks` to `backend/telegram_notify.py`.
+
+- The function IS homogeneous — it is a thin transport primitive, not a domain-specific helper.
+- 16 call site edits are all identical: replace implicit name resolution with an import. No logic changes.
+- Module dep (`TELEGRAM_Deutsch_BOT_TOKEN`) becomes `os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")` inside the function — one-line change.
+- `_send_tts_admin_message` (already TTS-scoped) can stay in backend_server.py and import the primitive.
+- After this step, `_notify_google_tts_budget_thresholds` → `_enforce_google_tts_monthly_budget` → `_synthesize_mp3` can all move to `tts_generation.py` cleanly.
+
+Broader messaging extraction (group helpers, photo helpers, etc.) is explicitly NOT part of this step — only the two private-message functions move.
