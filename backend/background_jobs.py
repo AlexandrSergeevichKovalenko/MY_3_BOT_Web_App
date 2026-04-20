@@ -1412,8 +1412,8 @@ def run_today_evening_reminders_scheduler_actor() -> None:
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_translation_sessions_auto_close_actor() -> None:
-    from backend.backend_server import _run_translation_sessions_auto_close_job
-    _run_translation_sessions_auto_close_job()
+    from backend.scheduler_jobs_core import run_translation_sessions_auto_close_job
+    run_translation_sessions_auto_close_job()
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")

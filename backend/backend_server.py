@@ -499,7 +499,6 @@ from backend.translation_workflow import (
     check_user_translation_webapp_item,
     persist_translation_webapp_item_results_batch,
     fill_translation_session_webapp,
-    finalize_open_translation_sessions,
     finish_translation_webapp,
     get_db_connection as get_translation_workflow_db_connection,
     get_daily_translation_history,
@@ -512,6 +511,7 @@ from backend.translation_workflow import (
     _normalize_level as _normalize_translation_level,
     _sentence_fits_level as _translation_sentence_fits_level,
 )
+from backend.scheduler_jobs_core import run_translation_sessions_auto_close_job
 from backend.analytics import (
     _calculate_final_score,
     fetch_user_summary,
@@ -38408,18 +38408,6 @@ def _run_today_evening_reminders_scheduler_job() -> None:
         logging.exception("❌ Today evening reminders scheduler failed")
 
 
-def _run_translation_sessions_auto_close_job() -> None:
-    enabled = (os.getenv("TRANSLATION_SESSIONS_AUTO_CLOSE_ENABLED") or "1").strip().lower()
-    if enabled not in ("1", "true", "yes", "on"):
-        logging.info("ℹ️ Translation sessions auto-close disabled by TRANSLATION_SESSIONS_AUTO_CLOSE_ENABLED")
-        return
-    try:
-        result = finalize_open_translation_sessions()
-        logging.info("✅ Translation sessions auto-close finished: %s", result)
-    except Exception:
-        logging.exception("❌ Translation sessions auto-close failed")
-
-
 def _run_system_message_cleanup_job() -> None:
     enabled = (os.getenv("SYSTEM_MESSAGE_CLEANUP_ENABLED") or "1").strip().lower()
     if enabled not in ("1", "true", "yes", "on"):
@@ -38943,7 +38931,7 @@ def _start_audio_scheduler() -> None:
             logging.warning("⚠️ Invalid TODAY_PLAN_TZ for translation auto-close: %s. Falling back to UTC", translation_close_tz_name)
             translation_close_tz = ZoneInfo("UTC")
         _audio_scheduler.add_job(
-            _run_translation_sessions_auto_close_job,
+            run_translation_sessions_auto_close_job,
             "cron",
             hour=translation_close_hour,
             minute=translation_close_minute,
