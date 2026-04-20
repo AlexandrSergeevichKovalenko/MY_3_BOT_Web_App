@@ -1436,8 +1436,8 @@ def run_tts_db_cache_cleanup_actor() -> None:
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_tts_r2_cache_cleanup_actor() -> None:
-    from backend.backend_server import _run_tts_r2_cache_cleanup_job
-    _run_tts_r2_cache_cleanup_job()
+    from backend.scheduler_jobs_core import run_tts_r2_cache_cleanup_job
+    run_tts_r2_cache_cleanup_job()
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")

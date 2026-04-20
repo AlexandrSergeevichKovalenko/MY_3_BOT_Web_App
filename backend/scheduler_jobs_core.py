@@ -4,6 +4,7 @@ import os
 from backend.database import get_db_connection_context
 from backend.database import delete_stale_tts_db_cache
 from backend.translation_workflow import finalize_open_translation_sessions
+from backend.tts_cache_cleanup import run_tts_r2_cache_cleanup
 
 
 def run_translation_sessions_auto_close_job() -> None:
@@ -62,4 +63,12 @@ def run_tts_db_cache_cleanup_job() -> None:
         )
     except Exception:
         logging.exception("❌ TTS DB cache cleanup failed")
+        raise
+
+
+def run_tts_r2_cache_cleanup_job() -> None:
+    try:
+        run_tts_r2_cache_cleanup()
+    except Exception:
+        logging.exception("❌ TTS R2 cache cleanup failed")
         raise

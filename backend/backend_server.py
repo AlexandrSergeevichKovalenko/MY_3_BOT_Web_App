@@ -513,6 +513,7 @@ from backend.translation_workflow import (
 from backend.scheduler_jobs_core import run_translation_sessions_auto_close_job
 from backend.scheduler_jobs_core import run_flashcard_feel_cleanup_job
 from backend.scheduler_jobs_core import run_tts_db_cache_cleanup_job
+from backend.scheduler_jobs_core import run_tts_r2_cache_cleanup_job
 from backend.analytics import (
     _calculate_final_score,
     fetch_user_summary,
@@ -39001,7 +39002,7 @@ def _start_audio_scheduler() -> None:
         tts_r2_cache_cleanup_hour = int((os.getenv("TTS_R2_CACHE_CLEANUP_HOUR") or "4").strip())
         tts_r2_cache_cleanup_minute = int((os.getenv("TTS_R2_CACHE_CLEANUP_MINUTE") or "20").strip())
         _audio_scheduler.add_job(
-            _run_tts_r2_cache_cleanup_job,
+            run_tts_r2_cache_cleanup_job,
             "cron",
             hour=tts_r2_cache_cleanup_hour,
             minute=tts_r2_cache_cleanup_minute,
