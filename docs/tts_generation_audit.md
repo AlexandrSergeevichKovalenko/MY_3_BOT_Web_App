@@ -965,3 +965,85 @@ The already-extracted helpers in `backend/tts_generation.py` reduce synthesis-do
 **Change `_dispatch_tts_prewarm()` to enqueue generation via `_enqueue_tts_generation_job_result()` instead of calling `_run_tts_generation_job()` inline, and explicitly change the prewarm result counters from `generated/ready-now` semantics to `queued` semantics.**
 
 This is the smallest meaningful move because it removes the only remaining synchronous orchestration path that bypasses the existing queue/worker model, without introducing Redis or moving `_run_tts_generation_job()` prematurely.
+
+---
+
+## 17. `_run_tts_generation_job` BLOCKER ISOLATION (2026-04-20)
+
+This section narrows the remaining blockers around `_run_tts_generation_job()` without changing prewarm semantics, queue semantics, or runtime behavior.
+
+### Blocker classification
+
+| Blocker | Class | Why |
+|---------|-------|-----|
+| `_TTS_GENERATION_JOBS_LOCK` | process-local execution-state blocker | Guards in-process dedup set for the local queue runner |
+| `_TTS_GENERATION_JOBS` | process-local execution-state blocker | Tracks in-flight `cache_key` values only within one process |
+| `_clear_tts_url_poll_attempt()` | poll-state helper | Clears TTS URL polling state kept in a TTS-specific in-memory dict |
+| `_record_tts_admin_monitor_event()` | observability/admin helper | Writes admin-monitor event to in-memory deque and persistent DB table |
+| `_maybe_send_tts_admin_failure_alert()` | observability/admin helper | Reads monitor window and may send admin Telegram alert |
+| `_get_user_language_pair()` | server-domain helper | Shared web/server language-profile helper with broad non-TTS reuse |
+| `_billing_log_event_safe()` | billing helper | Shared billing write helper across multiple product domains |
+
+### Blocker surface details
+
+| Blocker | File | Line | Direct callers | Direct callees / deps | Side effects | Broad reuse outside TTS? | Narrow extraction now? |
+|---------|------|------|----------------|------------------------|--------------|--------------------------|------------------------|
+| `_clear_tts_url_poll_attempt()` | `backend/backend_server.py` | 2872 | `_run_tts_generation_job()`, `webapp_tts_url()`, `webapp_tts_generate()` | `_OBSERVABILITY_LOCK`, `_TTS_URL_POLL_ATTEMPTS.pop()` | Mutates in-memory TTS poll counter map | No; TTS-only | **Yes** — can move with its TTS-specific dict/lock boundary |
+| `_record_tts_admin_monitor_event()` | `backend/backend_server.py` | 11753 | `_run_tts_generation_job()`, enqueue path, recovery path, prewarm path, scheduler wrappers | `_TTS_ADMIN_MONITOR_EVENTS`, `_TTS_ADMIN_MONITOR_LOCK`, `persist_tts_admin_monitor_event()`, `_prune_tts_admin_monitor_events_locked()`, `_prune_tts_admin_monitor_events_persistent()` | Appends to deque, prunes, persists DB event | Mostly TTS-only, but used across all TTS orchestration branches | Not as a tiny move; it drags the admin-monitor subsystem |
+| `_maybe_send_tts_admin_failure_alert()` | `backend/backend_server.py` | 12223 | `_run_tts_generation_job()`, enqueue queue-full path, scheduler wrappers | `_get_tts_admin_monitor_window()`, `_summarize_tts_failure_window()`, `_should_send_tts_admin_alert()`, `_send_tts_admin_message()` | Reads monitor window, cooldown state, may send Telegram admin message | TTS-only, but operationally broad inside TTS | Not as a tiny move; it drags alerting/reporting helpers |
+| `_get_user_language_pair()` | `backend/backend_server.py` | 3715 | `_run_tts_generation_job()` plus many non-TTS routes and services | `_LANGUAGE_PAIR_CACHE`, `_LANGUAGE_PAIR_CACHE_LOCK`, `get_user_language_profile()`, normalization helpers | DB read on miss, shared cache write | **Yes** — heavily reused outside TTS | No narrow extraction; cross-domain shared server helper |
+| `_billing_log_event_safe()` | `backend/backend_server.py` | 8702 | `_run_tts_generation_job()` plus many non-TTS billing sites | `log_billing_event()`, `_notify_provider_budget_thresholds()`, `_log_billing_skip_warning()` | Billing DB write, provider-threshold notification | **Yes** — broad cross-domain reuse | No narrow extraction; billing-domain shared helper |
+| `_TTS_GENERATION_JOBS_LOCK` | `backend/backend_server.py` | 955 | `_run_tts_generation_job()`, `_enqueue_tts_generation_job_result()` | `threading.Lock` only | Synchronizes local dedup set access | TTS-only | No narrow extraction by itself; tied to local queue model |
+| `_TTS_GENERATION_JOBS` | `backend/backend_server.py` | 956 | `_run_tts_generation_job()`, `_enqueue_tts_generation_job_result()` | local `set[str]` | Adds/discards in-flight `cache_key` | TTS-only | No narrow extraction by itself; tied to local queue model |
+
+### `_run_tts_generation_job()` internal phases
+
+| Phase | Code shape | Blockers touched |
+|-------|------------|------------------|
+| Setup / correlation | sanitize ids, build request/correlation ids, emit `generation_runner_started` log | none of the hard blockers |
+| Optional language-resolution setup | `if user_id_int > 0: _get_user_language_pair(...)` | `_get_user_language_pair()` |
+| Existing-meta short-circuit | `r2_exists()` → optional `mark_tts_object_ready()` → `_clear_tts_url_poll_attempt()` | `_billing_log_event_safe()` on R2 HEAD estimate, `_clear_tts_url_poll_attempt()` |
+| Synthesis | `_synthesize_mp3(...)` | none of the listed blockers |
+| Upload | `r2_put_bytes(...)` | `_billing_log_event_safe()` for R2 PUT + storage allocation |
+| Ready transition | `mark_tts_object_ready(...)` | `_billing_log_event_safe()` for Google TTS chars, `_clear_tts_url_poll_attempt()` |
+| Failure handling | `mark_tts_object_failed(...)`, shorten error text | none of the listed blockers directly, except later alerting in finally |
+| Finally cleanup / monitoring | discard `cache_key` from `_TTS_GENERATION_JOBS`, record monitor event, maybe send admin alert, emit finish log | `_TTS_GENERATION_JOBS_LOCK`, `_TTS_GENERATION_JOBS`, `_record_tts_admin_monitor_event()`, `_maybe_send_tts_admin_failure_alert()` |
+
+### Minimum movable sub-slice
+
+There is **no meaningful success-path or finally-block sub-slice of `_run_tts_generation_job()`** that can move now without dragging one of the architecture-bound blockers with it.
+
+The only truly narrow movable dependency is the **TTS URL poll-state primitive**:
+- `_TTS_URL_POLL_ATTEMPTS`
+- `_increment_tts_url_poll_attempt()`
+- `_clear_tts_url_poll_attempt()`
+
+That slice is:
+- TTS-only
+- process-local but self-contained
+- reused only by TTS URL/generate/runner code
+- independent from billing, admin alerting, queue semantics, and prewarm semantics
+
+By contrast:
+- admin-monitor helpers pull in deque + persistence + Telegram alerting
+- `_get_user_language_pair()` is a broad shared server helper
+- `_billing_log_event_safe()` is a broad shared billing helper
+- `_TTS_GENERATION_JOBS*` are architecture-bound to the current in-process queue model
+
+### Single recommended next step
+
+**Extract the TTS URL poll-state slice first: move `_TTS_URL_POLL_ATTEMPTS`, `_increment_tts_url_poll_attempt()`, and `_clear_tts_url_poll_attempt()` into a dedicated TTS runtime-state module, then update TTS routes and `_run_tts_generation_job()` to import those primitives from there.**
+
+Why this is next:
+1. It removes one real `_run_tts_generation_job()` blocker without changing execution semantics.
+2. It is smaller and safer than changing prewarm or queue behavior.
+3. It establishes the right extraction pattern for TTS-only process-local state before touching architecture-bound queue/dedup logic.
+
+### Why prewarm queue-conversion is deferred
+
+Prewarm queue-conversion remains the first **execution-model** change, but it is deferred in favor of blocker isolation because:
+- it changes result semantics from `generated now` to `queued`
+- it changes scheduler/admin observable behavior
+- `_run_tts_generation_job()` still carries multiple backend-server-only blockers that should be reduced first
+
+So the next step is not to change prewarm behavior yet, but to remove the narrowest TTS-only blocker from `_run_tts_generation_job()` first.
