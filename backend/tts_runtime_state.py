@@ -11,6 +11,8 @@ import threading
 
 _TTS_URL_POLL_ATTEMPTS_LOCK = threading.Lock()
 _TTS_URL_POLL_ATTEMPTS: dict[str, int] = {}
+_TTS_GENERATION_IN_FLIGHT_LOCK = threading.Lock()
+_TTS_GENERATION_IN_FLIGHT: set[str] = set()
 
 
 def _increment_tts_url_poll_attempt(cache_key: str) -> int:
@@ -31,3 +33,22 @@ def _clear_tts_url_poll_attempt(cache_key: str) -> None:
         return
     with _TTS_URL_POLL_ATTEMPTS_LOCK:
         _TTS_URL_POLL_ATTEMPTS.pop(safe_cache_key, None)
+
+
+def _claim_tts_generation_in_flight(cache_key: str) -> bool:
+    safe_cache_key = str(cache_key or "").strip()
+    if not safe_cache_key:
+        return False
+    with _TTS_GENERATION_IN_FLIGHT_LOCK:
+        if safe_cache_key in _TTS_GENERATION_IN_FLIGHT:
+            return False
+        _TTS_GENERATION_IN_FLIGHT.add(safe_cache_key)
+        return True
+
+
+def _release_tts_generation_in_flight(cache_key: str) -> None:
+    safe_cache_key = str(cache_key or "").strip()
+    if not safe_cache_key:
+        return
+    with _TTS_GENERATION_IN_FLIGHT_LOCK:
+        _TTS_GENERATION_IN_FLIGHT.discard(safe_cache_key)

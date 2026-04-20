@@ -1132,3 +1132,32 @@ Why this is next:
 - Admin-monitor extraction is deferred because the write path and alert path are not a tiny move once persistence, monitor window, and Telegram alerting are included.
 - `_get_user_language_pair()` is deferred because it is a shared server-domain helper, not a narrow TTS-only dependency.
 - `_billing_log_event_safe()` is deferred because a TTS-local adapter would mostly add indirection while keeping the same broad billing dependency underneath.
+
+---
+
+## 20. TTS IN-FLIGHT DEDUP STATE EXTRACTION (2026-04-20)
+
+Moved behind narrow primitives in [backend/tts_runtime_state.py](/Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/backend/tts_runtime_state.py):
+
+- `_TTS_GENERATION_JOBS_LOCK`
+- `_TTS_GENERATION_JOBS`
+
+Introduced primitive API:
+
+- `_claim_tts_generation_in_flight(cache_key) -> bool`
+- `_release_tts_generation_in_flight(cache_key) -> None`
+
+Callers updated:
+- `_enqueue_tts_generation_job_result()` now claims instead of touching the raw set/lock directly
+- `_run_tts_generation_job()` now releases in `finally` via the primitive
+
+Important limitation:
+- this remains **process-local in-memory dedup state**
+- it does **not** solve cross-replica dedup
+- it is blocker isolation only, not a horizontal-scaling improvement
+
+Remaining `_run_tts_generation_job()` blockers after this extraction:
+- `_record_tts_admin_monitor_event()`
+- `_maybe_send_tts_admin_failure_alert()`
+- `_get_user_language_pair()`
+- `_billing_log_event_safe()`

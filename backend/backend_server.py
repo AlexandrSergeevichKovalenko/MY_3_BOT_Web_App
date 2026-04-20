@@ -538,8 +538,10 @@ from backend.tts_generation import (
     _synthesize_mp3,
 )
 from backend.tts_runtime_state import (
+    _claim_tts_generation_in_flight,
     _clear_tts_url_poll_attempt,
     _increment_tts_url_poll_attempt,
+    _release_tts_generation_in_flight,
 )
 from backend.analytics import (
     _calculate_final_score,
@@ -955,8 +957,6 @@ SEMANTIC_BENCHMARK_PREP_GENERATION_LIMIT = max(1, min(500, int((os.getenv("SEMAN
 SEMANTIC_BENCHMARK_PREP_MIN_ATTEMPTS = max(1, min(50, int((os.getenv("SEMANTIC_BENCHMARK_PREP_MIN_ATTEMPTS") or str(SEMANTIC_AUDIT_MIN_ATTEMPTS)).strip() or str(SEMANTIC_AUDIT_MIN_ATTEMPTS))))
 SEMANTIC_AUDIT_REPORTS_DIR = BASE_DIR / "reports" / "semantic_audit"
 _TTS_PREWARM_LOCK = threading.Lock()
-_TTS_GENERATION_JOBS_LOCK = threading.Lock()
-_TTS_GENERATION_JOBS: set[str] = set()
 _LANGUAGE_PAIR_CACHE_LOCK = threading.Lock()
 _LANGUAGE_PAIR_CACHE: dict[int, dict] = {}
 _DICTIONARY_LOOKUP_CACHE_LOCK = threading.Lock()
@@ -30141,8 +30141,7 @@ def _run_tts_generation_job(
         )
         final_status = "error"
     finally:
-        with _TTS_GENERATION_JOBS_LOCK:
-            _TTS_GENERATION_JOBS.discard(str(cache_key))
+        _release_tts_generation_in_flight(str(cache_key))
         runner_duration_ms = _elapsed_ms_since(job_started_perf)
         _record_tts_admin_monitor_event(
             "generation",
@@ -30248,16 +30247,13 @@ def _enqueue_tts_generation_job_result(**kwargs) -> dict:
     if not cache_key:
         return {"queued": False, "reason": "missing_cache_key"}
     _ensure_tts_generation_workers_started()
-    with _TTS_GENERATION_JOBS_LOCK:
-        if cache_key in _TTS_GENERATION_JOBS:
-            return {"queued": False, "reason": "duplicate_in_process"}
-        _TTS_GENERATION_JOBS.add(cache_key)
+    if not _claim_tts_generation_in_flight(cache_key):
+        return {"queued": False, "reason": "duplicate_in_process"}
     generation_queue = _get_tts_generation_queue()
     try:
         generation_queue.put(kwargs, timeout=float(TTS_GENERATION_ENQUEUE_TIMEOUT_MS) / 1000.0)
     except queue.Full:
-        with _TTS_GENERATION_JOBS_LOCK:
-            _TTS_GENERATION_JOBS.discard(cache_key)
+        _release_tts_generation_in_flight(cache_key)
         queue_size = _tts_generation_queue_size()
         logging.warning(
             "TTS generation queue full: cache_key=%s queue_size=%s queue_maxsize=%s",
