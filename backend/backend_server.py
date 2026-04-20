@@ -515,6 +515,7 @@ from backend.scheduler_jobs_core import run_flashcard_feel_cleanup_job
 from backend.scheduler_jobs_core import run_tts_db_cache_cleanup_job
 from backend.scheduler_jobs_core import run_tts_r2_cache_cleanup_job
 from backend.scheduler_jobs_core import run_system_message_cleanup_job
+from backend.scheduler_jobs_core import run_database_table_sizes_report_job
 from backend.analytics import (
     _calculate_final_score,
     fetch_user_summary,
@@ -38947,7 +38948,7 @@ def _start_audio_scheduler() -> None:
             logging.warning("⚠️ Invalid DB_TABLE_SIZE_REPORT_TZ: %s. Falling back to UTC", db_table_size_report_tz_name)
             db_table_size_report_tz = ZoneInfo("UTC")
         _audio_scheduler.add_job(
-            _run_database_table_sizes_report_job,
+            run_database_table_sizes_report_job,
             "cron",
             day_of_week=db_table_size_report_day_of_week,
             hour=db_table_size_report_hour,
