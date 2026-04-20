@@ -7397,34 +7397,27 @@ def finish_translation_webapp(user_id: int, timing_breakdown: dict | None = None
             _t_counts = time.perf_counter()
             cursor.execute(
                 """
-                SELECT COUNT(*)
-                FROM bt_3_daily_sentences
-                WHERE user_id = %s
-                  AND session_id = %s
-                  AND COALESCE(shown_to_user, FALSE) = TRUE;
-                """,
-                (user_id, session_id),
-            )
-            total_sentences = int((cursor.fetchone() or [0])[0] or 0)
-
-            cursor.execute(
-                """
-                SELECT COUNT(*)
+                SELECT
+                    COUNT(*) FILTER (WHERE COALESCE(ds.shown_to_user, FALSE) = TRUE) AS total_sentences,
+                    COUNT(*) FILTER (
+                        WHERE COALESCE(ds.shown_to_user, FALSE) = TRUE
+                          AND EXISTS (
+                              SELECT 1
+                              FROM bt_3_translations t
+                              WHERE t.user_id = %s
+                                AND t.session_id = %s
+                                AND t.sentence_id = ds.id
+                          )
+                    ) AS translated_count
                 FROM bt_3_daily_sentences ds
                 WHERE ds.user_id = %s
-                  AND ds.session_id = %s
-                  AND COALESCE(ds.shown_to_user, FALSE) = TRUE
-                  AND EXISTS (
-                      SELECT 1
-                      FROM bt_3_translations t
-                      WHERE t.user_id = %s
-                        AND t.session_id = %s
-                        AND t.sentence_id = ds.id
-                  );
+                  AND ds.session_id = %s;
                 """,
                 (user_id, session_id, user_id, session_id),
             )
-            translated_count = int((cursor.fetchone() or [0])[0] or 0)
+            _counts_row = cursor.fetchone() or (0, 0)
+            total_sentences = int(_counts_row[0] or 0)
+            translated_count = int(_counts_row[1] or 0)
             if isinstance(timing_breakdown, dict):
                 timing_breakdown["finish_core_counts_ms"] = int((time.perf_counter() - _t_counts) * 1000)
 
