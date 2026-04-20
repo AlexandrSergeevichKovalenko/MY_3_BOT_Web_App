@@ -7369,33 +7369,58 @@ def finish_translation_webapp(user_id: int, timing_breakdown: dict | None = None
         _t_session_lookup = time.perf_counter()
         cursor.execute(
             """
-            SELECT
-                up.session_id,
-                COALESCE(c.total_sentences, 0),
-                COALESCE(c.translated_count, 0)
-            FROM bt_3_user_progress up
-            LEFT JOIN LATERAL (
+            WITH session_data AS (
                 SELECT
-                    COUNT(*) FILTER (WHERE COALESCE(ds.shown_to_user, FALSE) = TRUE) AS total_sentences,
-                    COUNT(*) FILTER (
-                        WHERE COALESCE(ds.shown_to_user, FALSE) = TRUE
-                          AND EXISTS (
-                              SELECT 1
-                              FROM bt_3_translations t
-                              WHERE t.user_id = up.user_id
-                                AND t.session_id = up.session_id
-                                AND t.sentence_id = ds.id
-                          )
-                    ) AS translated_count
-                FROM bt_3_daily_sentences ds
-                WHERE ds.user_id = up.user_id
-                  AND ds.session_id = up.session_id
-            ) c ON TRUE
-            WHERE up.user_id = %s
-              AND up.completed = FALSE
-            ORDER BY up.start_time DESC NULLS LAST, up.session_id DESC;
+                    up.session_id,
+                    ROW_NUMBER() OVER (ORDER BY up.start_time DESC NULLS LAST, up.session_id DESC) AS rn,
+                    COALESCE(c.total_sentences, 0) AS total_sentences,
+                    COALESCE(c.translated_count, 0) AS translated_count
+                FROM bt_3_user_progress up
+                LEFT JOIN LATERAL (
+                    SELECT
+                        COUNT(*) FILTER (WHERE COALESCE(ds.shown_to_user, FALSE) = TRUE) AS total_sentences,
+                        COUNT(*) FILTER (
+                            WHERE COALESCE(ds.shown_to_user, FALSE) = TRUE
+                              AND EXISTS (
+                                  SELECT 1
+                                  FROM bt_3_translations t
+                                  WHERE t.user_id = up.user_id
+                                    AND t.session_id = up.session_id
+                                    AND t.sentence_id = ds.id
+                              )
+                        ) AS translated_count
+                    FROM bt_3_daily_sentences ds
+                    WHERE ds.user_id = up.user_id
+                      AND ds.session_id = up.session_id
+                ) c ON TRUE
+                WHERE up.user_id = %s
+                  AND up.completed = FALSE
+            ),
+            _updated AS (
+                UPDATE bt_3_user_progress
+                SET
+                    active_seconds = COALESCE(active_seconds, 0)
+                        + CASE
+                            WHEN COALESCE(active_running, FALSE) = TRUE
+                             AND active_started_at IS NOT NULL
+                                THEN GREATEST(
+                                    0,
+                                    EXTRACT(EPOCH FROM (NOW() - active_started_at))::BIGINT
+                                )
+                            ELSE 0
+                          END,
+                    active_started_at = NULL,
+                    active_running = FALSE,
+                    end_time = NOW(),
+                    completed = TRUE
+                WHERE user_id = %s
+                  AND completed = FALSE
+            )
+            SELECT session_id, total_sentences, translated_count
+            FROM session_data
+            ORDER BY rn ASC;
             """,
-            (user_id,),
+            (user_id, user_id),
         )
         session_rows = list(cursor.fetchall() or [])
         if isinstance(timing_breakdown, dict):
@@ -7423,29 +7448,6 @@ def finish_translation_webapp(user_id: int, timing_breakdown: dict | None = None
             )
 
         _t_commit = time.perf_counter()
-        cursor.execute(
-            """
-            UPDATE bt_3_user_progress
-            SET
-                active_seconds = COALESCE(active_seconds, 0)
-                    + CASE
-                        WHEN COALESCE(active_running, FALSE) = TRUE
-                         AND active_started_at IS NOT NULL
-                            THEN GREATEST(
-                                0,
-                                EXTRACT(EPOCH FROM (NOW() - active_started_at))::BIGINT
-                            )
-                        ELSE 0
-                    END,
-                active_started_at = NULL,
-                active_running = FALSE,
-                end_time = NOW(),
-                completed = TRUE
-            WHERE user_id = %s
-              AND session_id = ANY(%s);
-            """,
-            (user_id, active_session_ids),
-        )
         conn.commit()
         if isinstance(timing_breakdown, dict):
             timing_breakdown["finish_core_commit_ms"] = int((time.perf_counter() - _t_commit) * 1000)
