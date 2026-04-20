@@ -24779,7 +24779,26 @@ def _run_post_finish_snapshot_bookkeeping(
     finished_session_id: str | None = None,
     request_id: str | None = None,
     correlation_id: str | None = None,
+    session_presence_source_lang: str | None = None,
+    session_presence_target_lang: str | None = None,
+    session_presence_translated_count: int = 0,
+    session_presence_total_sentences: int = 0,
 ) -> None:
+    if finished_session_id and session_presence_source_lang:
+        try:
+            _write_session_presence_projection_post_finish(
+                user_id=int(user_id),
+                source_lang=session_presence_source_lang,
+                target_lang=session_presence_target_lang or session_presence_source_lang,
+                finished_session_id=finished_session_id,
+                translated_count=session_presence_translated_count,
+                total_sentences=session_presence_total_sentences,
+            )
+        except Exception:
+            logging.warning(
+                "Deferred session_presence DB upsert failed: user_id=%s session_id=%s",
+                int(user_id), finished_session_id, exc_info=True,
+            )
     try:
         _mark_weekly_plan_snapshot_stale(user_id=int(user_id), anchor_date=plan_date)
         _mark_plan_analytics_snapshot_stale(user_id=int(user_id))
@@ -24840,6 +24859,10 @@ def _dispatch_post_finish_snapshot_bookkeeping(
     finished_session_id: str | None = None,
     request_id: str | None = None,
     correlation_id: str | None = None,
+    session_presence_source_lang: str | None = None,
+    session_presence_target_lang: str | None = None,
+    session_presence_translated_count: int = 0,
+    session_presence_total_sentences: int = 0,
 ) -> None:
     threading.Thread(
         target=_run_post_finish_snapshot_bookkeeping,
@@ -24850,6 +24873,10 @@ def _dispatch_post_finish_snapshot_bookkeeping(
             "finished_session_id": finished_session_id,
             "request_id": request_id,
             "correlation_id": correlation_id,
+            "session_presence_source_lang": session_presence_source_lang,
+            "session_presence_target_lang": session_presence_target_lang,
+            "session_presence_translated_count": int(session_presence_translated_count),
+            "session_presence_total_sentences": int(session_presence_total_sentences),
         },
         daemon=True,
     ).start()
@@ -40427,46 +40454,34 @@ def finish_webapp_translation():
                 )
                 try:
                     session_presence_publish_started_perf = time.perf_counter()
-                    session_presence_timing: dict[str, int] = {}
-                    _write_session_presence_projection_post_finish(
+                    _sp_translated_count = int(result.get("translated_count") or 0)
+                    _sp_total_sentences = int(result.get("total_sentences") or 0)
+                    _sp_recent_finish_until_ms = int(
+                        (time.time() + float(WEBAPP_RECENT_FINISH_SESSION_CACHE_TTL_SEC)) * 1000
+                    )
+                    _sp_payload = _build_session_presence_card_payload(
                         user_id=int(user_id),
+                        state="post_finish_none",
                         source_lang=source_lang,
                         target_lang=target_lang,
                         finished_session_id=finished_session_id,
-                        translated_count=int(result.get("translated_count") or 0),
-                        total_sentences=int(result.get("total_sentences") or 0),
-                        timing_breakdown=session_presence_timing,
+                        finished_at=datetime.now(timezone.utc).isoformat(),
+                        translated_count=_sp_translated_count,
+                        total_sentences=_sp_total_sentences,
+                        recent_finish_until_ms=_sp_recent_finish_until_ms,
                     )
+                    set_session_presence_card(int(user_id), _sp_payload)
                     finish_session_presence_publish_ms = int(
                         (time.perf_counter() - session_presence_publish_started_perf) * 1000
-                    )
-                    session_presence_build_payload_ms = int(
-                        session_presence_timing.get("session_presence_build_payload_ms") or 0
-                    )
-                    session_presence_store_phase1_projection_ms = int(
-                        session_presence_timing.get("session_presence_store_phase1_projection_ms") or 0
-                    )
-                    session_presence_upsert_user_api_snapshot_ms = int(
-                        session_presence_timing.get("session_presence_upsert_user_api_snapshot_ms") or 0
-                    )
-                    session_presence_set_session_presence_card_ms = int(
-                        session_presence_timing.get("session_presence_set_session_presence_card_ms") or 0
-                    )
-                    session_presence_phase1_schema_ensure_ms = int(
-                        session_presence_timing.get("session_presence_phase1_schema_ensure_ms") or 0
-                    )
-                    session_presence_phase1_ttls_ms = int(
-                        session_presence_timing.get("session_presence_phase1_ttls_ms") or 0
-                    )
-                    session_presence_other_ms = int(
-                        session_presence_timing.get("session_presence_other_ms") or 0
                     )
                 except Exception:
                     finish_session_presence_publish_ms = int(
                         (time.perf_counter() - session_presence_publish_started_perf) * 1000
                     )
+                    _sp_translated_count = int(result.get("translated_count") or 0)
+                    _sp_total_sentences = int(result.get("total_sentences") or 0)
                     logging.warning(
-                        "Phase1 session_presence_card publish failed on finish: user_id=%s session_id=%s",
+                        "Phase1 session_presence_card Redis publish failed on finish: user_id=%s session_id=%s",
                         int(user_id),
                         finished_session_id,
                         exc_info=True,
@@ -40602,6 +40617,10 @@ def finish_webapp_translation():
             finished_session_id=finished_session_id or None,
             request_id=request_id,
             correlation_id=correlation_id,
+            session_presence_source_lang=source_lang,
+            session_presence_target_lang=target_lang,
+            session_presence_translated_count=_sp_translated_count,
+            session_presence_total_sentences=_sp_total_sentences,
         )
         finish_bookkeeping_dispatch_ms = int((time.perf_counter() - bookkeeping_dispatch_started_perf) * 1000)
         _log_finish_request_event(
