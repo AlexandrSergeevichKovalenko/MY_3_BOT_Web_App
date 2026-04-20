@@ -1161,3 +1161,58 @@ Remaining `_run_tts_generation_job()` blockers after this extraction:
 - `_maybe_send_tts_admin_failure_alert()`
 - `_get_user_language_pair()`
 - `_billing_log_event_safe()`
+
+---
+
+## 21. ADMIN-OBSERVABILITY BLOCKER COMPARISON (2026-04-20)
+
+After isolating TTS poll-state and in-flight dedup state, the remaining `_run_tts_generation_job()` blockers are:
+
+- `_record_tts_admin_monitor_event()`
+- `_maybe_send_tts_admin_failure_alert()`
+- `_get_user_language_pair()`
+- `_billing_log_event_safe()`
+
+### Comparison
+
+| Blocker | Category | File | Line | Direct callers | Direct callees / deps | Side effects | Reuse outside TTS | Extraction blast radius | Material coupling reduction if removed? |
+|---------|----------|------|------|----------------|------------------------|--------------|-------------------|-------------------------|-----------------------------------------|
+| `_record_tts_admin_monitor_event()` | admin-observability | `backend/backend_server.py` | 11736 | `_run_tts_generation_job()`, enqueue path, recovery path, prewarm path, scheduler/admin paths | `_TTS_ADMIN_MONITOR_EVENTS`, `_TTS_ADMIN_MONITOR_LOCK`, `_prune_tts_admin_monitor_events_locked()`, `persist_tts_admin_monitor_event()`, `_prune_tts_admin_monitor_events_persistent()` | Appends/prunes in-memory deque, persists DB event | Low outside TTS, but broad inside TTS | Medium | Yes |
+| `_maybe_send_tts_admin_failure_alert()` | admin-observability | `backend/backend_server.py` | 12206 | `_run_tts_generation_job()`, queue-full path, scheduler/admin paths | `_get_tts_admin_monitor_window()`, `_summarize_tts_failure_window()`, `_should_send_tts_admin_alert()`, `_send_tts_admin_message()` | Reads monitor window, applies cooldown, may send Telegram alert | TTS-only | Medium-to-large | Yes |
+| `_get_user_language_pair()` | server-domain | `backend/backend_server.py` | 3698 | `_run_tts_generation_job()` plus many non-TTS web/server flows | `_LANGUAGE_PAIR_CACHE`, `_LANGUAGE_PAIR_CACHE_LOCK`, `get_user_language_profile()`, normalization helpers | Shared cache write, DB read on miss | High | Large | Yes, but too broad right now |
+| `_billing_log_event_safe()` | billing | `backend/backend_server.py` | 8685 | `_run_tts_generation_job()` plus many non-TTS billing paths | `log_billing_event()`, `_notify_provider_budget_thresholds()`, `_log_billing_skip_warning()` | Billing DB writes, provider budget notifications | High | Large | Yes, but too broad right now |
+
+### Admin-observability split findings
+
+- `_record_tts_admin_monitor_event()` and `_maybe_send_tts_admin_failure_alert()` do **not** depend on each other directly inside code.
+  `_run_tts_generation_job()` calls them separately in `finally`.
+
+- They are still **operationally adjacent**:
+  `_maybe_send_tts_admin_failure_alert()` reads the monitor window built from the same admin-monitor subsystem that `_record_tts_admin_monitor_event()` writes into.
+
+- `_record_tts_admin_monitor_event()` **can move alone** without dragging the alert-sending logic, because its write path is self-contained:
+  in-memory deque append/prune plus persistent DB write.
+
+- Moving only `_record_tts_admin_monitor_event()` would still be **meaningful**:
+  it removes one direct `_run_tts_generation_job()` dependency and keeps the move TTS-specific, while avoiding the broader Telegram alerting/cooldown/reporting surface pulled by `_maybe_send_tts_admin_failure_alert()`.
+
+### Why shared helpers stay deferred
+
+- `_get_user_language_pair()` stays deferred because it is a shared server-domain helper with heavy non-TTS reuse throughout `backend/backend_server.py`; moving it now would be a broader server extraction, not a narrow TTS blocker-removal step.
+
+- `_billing_log_event_safe()` stays deferred because it is part of a shared billing subsystem with many non-TTS callers; a TTS-local wrapper would mostly add indirection while leaving the same broad dependency underneath.
+
+### Single recommended next step
+
+**Extract `_record_tts_admin_monitor_event()` next, by moving the event-recording side of the TTS admin-monitor subsystem into a narrow TTS-specific module, while leaving `_maybe_send_tts_admin_failure_alert()` in place for now.**
+
+Why this is next:
+1. It is the smallest remaining TTS-only blocker.
+2. It is separable from alert sending in code, even though both belong to the same operational subsystem.
+3. It reduces `_run_tts_generation_job()` coupling without touching queue semantics, prewarm semantics, or shared server/billing helpers.
+
+### Why other paths are deferred
+
+- `_maybe_send_tts_admin_failure_alert()` is deferred because it pulls in monitor-window reads, cooldown state, failure summarization, and Telegram admin messaging.
+- `_get_user_language_pair()` is deferred because it is a shared server helper with high blast radius.
+- `_billing_log_event_safe()` is deferred because it is a shared billing helper with high blast radius.
