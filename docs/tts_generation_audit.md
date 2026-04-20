@@ -1075,3 +1075,60 @@ Remaining `_run_tts_generation_job()` blockers after this extraction:
 - `_maybe_send_tts_admin_failure_alert()`
 - `_get_user_language_pair()`
 - `_billing_log_event_safe()`
+
+---
+
+## 19. REMAINING BLOCKER COMPARISON (2026-04-20)
+
+This section compares the remaining `_run_tts_generation_job()` blockers after the TTS URL poll-state extraction, with the goal of choosing the next smallest blocker-removal step without changing execution semantics.
+
+### Comparison table
+
+| Blocker | Category | File | Line | Direct callers | Direct callees / deps | Side effects | Reuse outside TTS | Extraction blast radius | Material coupling reduction if removed? |
+|---------|----------|------|------|----------------|------------------------|--------------|-------------------|-------------------------|-----------------------------------------|
+| `_TTS_GENERATION_JOBS_LOCK` | process-local state | `backend/backend_server.py` | 958 | `_run_tts_generation_job()`, `_enqueue_tts_generation_job_result()` | `threading.Lock` | Synchronizes local in-flight set | No | Small if moved together with `_TTS_GENERATION_JOBS`; not meaningful alone | Yes, but only together with `_TTS_GENERATION_JOBS` |
+| `_TTS_GENERATION_JOBS` | process-local state | `backend/backend_server.py` | 959 | `_run_tts_generation_job()`, `_enqueue_tts_generation_job_result()` | local `set[str]` | Tracks in-flight `cache_key` values | No | Small if moved together with lock/helper wrapper | Yes, but only together with lock |
+| `_record_tts_admin_monitor_event()` | admin-observability | `backend/backend_server.py` | 11736 | `_run_tts_generation_job()`, enqueue path, recovery path, prewarm path, scheduler wrappers | `_TTS_ADMIN_MONITOR_EVENTS`, `_TTS_ADMIN_MONITOR_LOCK`, persistence helpers | Deque append/prune + DB write | Mostly TTS-only, but broad across TTS orchestration | Medium; drags admin monitor storage and prune helpers | Yes |
+| `_maybe_send_tts_admin_failure_alert()` | admin-observability | `backend/backend_server.py` | 12206 | `_run_tts_generation_job()`, queue-full path, scheduler wrappers | monitor-window helpers, summary helpers, Telegram send path | Reads monitor window, cooldown state, may send alerts | TTS-only | Medium-to-large; drags alerting/reporting subsystem | Yes |
+| `_get_user_language_pair()` | server-domain | `backend/backend_server.py` | 3698 | `_run_tts_generation_job()` plus many non-TTS routes and services | language-profile cache + DB helper + normalization helpers | Shared cache write, DB read on miss | **High** | Large; shared web/server helper | Yes, but too broad right now |
+| `_billing_log_event_safe()` | billing | `backend/backend_server.py` | 8685 | `_run_tts_generation_job()` plus many non-TTS billing sites | `log_billing_event()`, threshold notifier, skip-warning helper | Billing DB write + provider budget notifications | **High** | Large; shared billing subsystem | Yes, but too broad right now |
+
+### Coupling / pairing findings
+
+- `_TTS_GENERATION_JOBS_LOCK` + `_TTS_GENERATION_JOBS` are a **hard pair**.
+  They are not useful as separate moves. The meaningful unit is an in-flight dedup runtime-state slice or tiny wrapper API around that slice.
+
+- `_record_tts_admin_monitor_event()` + `_maybe_send_tts_admin_failure_alert()` are **loosely paired but operationally adjacent**.
+  They can be separated in code, but moving only one leaves `_run_tts_generation_job()` still bound to the same admin-monitor subsystem.
+
+- `_get_user_language_pair()` is **standalone but broad**.
+  It is separable in theory, but not as a narrow TTS-only move because it is a heavily shared server-domain helper.
+
+- `_billing_log_event_safe()` is **standalone but broad**.
+  It could be hidden behind a TTS billing adapter, but that adapter would still depend on the same shared billing subsystem and would not materially shrink blast radius yet.
+
+### Candidate next-step sizing
+
+| Candidate | Size / risk | Why |
+|-----------|-------------|-----|
+| Isolate `_record_tts_admin_monitor_event()` only | medium / risky | Requires moving the monitor-event write path plus deque/prune/persistence helpers, but still leaves `_maybe_send_tts_admin_failure_alert()` in `_run_tts_generation_job()` |
+| Isolate monitor-event + failure-alert together | too broad right now | Pulls in monitor window, summary helpers, cooldown state, Telegram admin messaging, and reporting behavior |
+| Isolate `_get_user_language_pair()` adapter boundary | medium / risky | Still anchored to a broad shared server-domain helper with many non-TTS callers |
+| Isolate a TTS-local billing adapter around `_billing_log_event_safe()` | medium / risky | Adds an indirection layer but does not actually isolate the billing subsystem yet |
+| Isolate the in-flight dedup state (`_TTS_GENERATION_JOBS_LOCK` + `_TTS_GENERATION_JOBS`) | **tiny / safe** | TTS-only, narrow, directly used by `_run_tts_generation_job()` and enqueue path, no behavior change required |
+| Do not move anything yet | too conservative | There is still one clearly smaller blocker-removal move available |
+
+### Single recommended next step
+
+**Isolate the in-flight dedup state next: move `_TTS_GENERATION_JOBS_LOCK` and `_TTS_GENERATION_JOBS` behind a narrow TTS runtime-state boundary, with tiny helper primitives for claim/release semantics used by `_enqueue_tts_generation_job_result()` and `_run_tts_generation_job()`.**
+
+Why this is next:
+1. It is smaller than the admin-monitor path.
+2. It is far narrower than the language-profile and billing helpers.
+3. It removes two remaining `_run_tts_generation_job()` blockers in one TTS-only move without changing execution semantics.
+
+### Why other paths are deferred
+
+- Admin-monitor extraction is deferred because the write path and alert path are not a tiny move once persistence, monitor window, and Telegram alerting are included.
+- `_get_user_language_pair()` is deferred because it is a shared server-domain helper, not a narrow TTS-only dependency.
+- `_billing_log_event_safe()` is deferred because a TTS-local adapter would mostly add indirection while keeping the same broad billing dependency underneath.
