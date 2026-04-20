@@ -24788,6 +24788,32 @@ def _run_post_finish_snapshot_bookkeeping(
     skills_seed_source_lang: str | None = None,
     skills_seed_target_lang: str | None = None,
 ) -> None:
+    if finished_session_id and session_presence_source_lang:
+        try:
+            _plan = get_daily_plan(user_id=int(user_id), plan_date=plan_date)
+            _sync_today_translation_task_progress_for_session(
+                user_id=int(user_id),
+                username=username,
+                source_lang=session_presence_source_lang,
+                target_lang=session_presence_target_lang or session_presence_source_lang,
+                translation_session_id=finished_session_id,
+                trigger="finish_complete",
+                prefetched_plan=_plan,
+            )
+            if isinstance(_plan, dict):
+                _write_today_card_projection_from_daily_plan(
+                    user_id=int(user_id),
+                    plan_date=plan_date,
+                    daily_plan=_plan,
+                    source_lang=session_presence_source_lang,
+                    target_lang=session_presence_target_lang or session_presence_source_lang,
+                    card_version=f"finish:{finished_session_id}",
+                )
+        except Exception:
+            logging.warning(
+                "Deferred today_card finish seed failed: user_id=%s session_id=%s",
+                int(user_id), finished_session_id, exc_info=True,
+            )
     if isinstance(skills_seed_payload, dict) and skills_seed_payload:
         try:
             _store_phase1_projection(
@@ -40533,60 +40559,6 @@ def finish_webapp_translation():
                     translated_count=int(result.get("translated_count") or 0),
                     total_sentences=int(result.get("total_sentences") or 0),
                 )
-                def _run_today_hotpath():
-                    _r = {
-                        "finish_today_plan_fetch_ms": 0,
-                        "finish_today_sync_plan_fetch_ms": 0,
-                        "finish_today_sync_item_write_ms": 0,
-                        "finish_today_sync_ms": 0,
-                        "finish_today_card_store_ms": 0,
-                        "ensured_today": False,
-                        "today_duration_ms": 0,
-                    }
-                    try:
-                        _t0 = time.perf_counter()
-                        with db_acquire_scope("today_card_finish_seed"):
-                            _plan = get_daily_plan(user_id=int(user_id), plan_date=plan_date)
-                        _r["finish_today_plan_fetch_ms"] = int((time.perf_counter() - _t0) * 1000)
-                        _sync_timing: dict[str, int] = {}
-                        _t1 = time.perf_counter()
-                        _sync_today_translation_task_progress_for_session(
-                            user_id=int(user_id),
-                            username=username or user_name,
-                            source_lang=source_lang,
-                            target_lang=target_lang,
-                            translation_session_id=finished_session_id,
-                            trigger="finish_complete",
-                            timing_breakdown=_sync_timing,
-                            prefetched_plan=_plan,
-                        )
-                        _r["finish_today_sync_plan_fetch_ms"] = int(_sync_timing.get("sync_plan_fetch_ms") or 0)
-                        _r["finish_today_sync_item_write_ms"] = int(_sync_timing.get("sync_item_write_ms") or 0)
-                        _r["finish_today_sync_ms"] = int((time.perf_counter() - _t1) * 1000)
-                        if isinstance(_plan, dict):
-                            _t2 = time.perf_counter()
-                            _write_today_card_projection_from_daily_plan(
-                                user_id=int(user_id),
-                                plan_date=plan_date,
-                                daily_plan=_plan,
-                                source_lang=source_lang,
-                                target_lang=target_lang,
-                                card_version=f"finish:{finished_session_id}",
-                            )
-                            _r["finish_today_card_store_ms"] = int((time.perf_counter() - _t2) * 1000)
-                            _r["ensured_today"] = True
-                        _r["today_duration_ms"] = (
-                            _r["finish_today_plan_fetch_ms"]
-                            + _r["finish_today_sync_ms"]
-                            + _r["finish_today_card_store_ms"]
-                        )
-                    except Exception:
-                        logging.warning(
-                            "Phase1 today_card finish seed failed: user_id=%s session_id=%s",
-                            int(user_id), finished_session_id, exc_info=True,
-                        )
-                    return _r
-
                 def _run_skills_hotpath():
                     _r: dict = {
                         "finish_skills_seed_read_ms": 0,
@@ -40639,21 +40611,10 @@ def finish_webapp_translation():
                     return _r
 
                 _t_hotpaths = time.perf_counter()
-                with ThreadPoolExecutor(max_workers=2) as _exec:
-                    _fut_today_hp = _exec.submit(_run_today_hotpath)
-                    _fut_skills_hp = _exec.submit(_run_skills_hotpath)
-                    _today_hp = _fut_today_hp.result()
-                    _skills_hp = _fut_skills_hp.result()
+                _skills_hp = _run_skills_hotpath()
                 ensured_hotpaths["wall_ms"] = int((time.perf_counter() - _t_hotpaths) * 1000)
-                finish_today_plan_fetch_ms = _today_hp["finish_today_plan_fetch_ms"]
-                finish_today_sync_plan_fetch_ms = _today_hp["finish_today_sync_plan_fetch_ms"]
-                finish_today_sync_item_write_ms = _today_hp["finish_today_sync_item_write_ms"]
-                finish_today_sync_ms = _today_hp["finish_today_sync_ms"]
-                finish_today_card_store_ms = _today_hp["finish_today_card_store_ms"]
                 finish_skills_seed_read_ms = _skills_hp["finish_skills_seed_read_ms"]
                 finish_skills_seed_store_ms = _skills_hp["finish_skills_seed_store_ms"]
-                ensured_hotpaths["today"] = _today_hp["ensured_today"]
-                ensured_hotpaths["today_duration_ms"] = _today_hp["today_duration_ms"]
                 ensured_hotpaths["skills"] = _skills_hp["ensured_skills"]
                 ensured_hotpaths["skills_duration_ms"] = _skills_hp["skills_duration_ms"]
                 _skills_seed_payload = _skills_hp.get("skills_payload")
