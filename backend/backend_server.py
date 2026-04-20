@@ -320,7 +320,6 @@ from backend.database import (
     record_tts_admin_monitor_event as persist_tts_admin_monitor_event,
     list_tts_admin_monitor_events_since,
     delete_old_tts_admin_monitor_events,
-    delete_stale_tts_db_cache,
     get_next_due_srs_card,
     get_next_new_srs_candidate,
     count_due_srs_cards,
@@ -513,6 +512,7 @@ from backend.translation_workflow import (
 )
 from backend.scheduler_jobs_core import run_translation_sessions_auto_close_job
 from backend.scheduler_jobs_core import run_flashcard_feel_cleanup_job
+from backend.scheduler_jobs_core import run_tts_db_cache_cleanup_job
 from backend.analytics import (
     _calculate_final_score,
     fetch_user_summary,
@@ -38465,25 +38465,6 @@ def _run_system_message_cleanup_job() -> None:
     )
 
 
-def _run_tts_db_cache_cleanup_job() -> None:
-    enabled = (os.getenv("TTS_DB_CACHE_CLEANUP_ENABLED") or "1").strip().lower()
-    if enabled not in ("1", "true", "yes", "on"):
-        logging.info("ℹ️ TTS DB cache cleanup disabled by TTS_DB_CACHE_CLEANUP_ENABLED")
-        return
-    retention_days = int((os.getenv("TTS_DB_CACHE_RETENTION_DAYS") or "90").strip())
-    try:
-        result = delete_stale_tts_db_cache(older_than_days=retention_days)
-        logging.info(
-            "✅ TTS DB cache cleanup finished: retention_days=%s audio_rows=%s chunk_rows=%s total_rows=%s",
-            retention_days,
-            int(result.get("audio_rows") or 0),
-            int(result.get("chunk_rows") or 0),
-            int(result.get("total_rows") or 0),
-        )
-    except Exception:
-        logging.exception("❌ TTS DB cache cleanup failed")
-
-
 def _run_tts_r2_cache_cleanup_job() -> None:
     enabled = (os.getenv("TTS_R2_CACHE_CLEANUP_ENABLED") or "1").strip().lower()
     if enabled not in ("1", "true", "yes", "on"):
@@ -39007,7 +38988,7 @@ def _start_audio_scheduler() -> None:
         tts_db_cache_cleanup_hour = int((os.getenv("TTS_DB_CACHE_CLEANUP_HOUR") or "4").strip())
         tts_db_cache_cleanup_minute = int((os.getenv("TTS_DB_CACHE_CLEANUP_MINUTE") or "10").strip())
         _audio_scheduler.add_job(
-            _run_tts_db_cache_cleanup_job,
+            run_tts_db_cache_cleanup_job,
             "cron",
             hour=tts_db_cache_cleanup_hour,
             minute=tts_db_cache_cleanup_minute,
