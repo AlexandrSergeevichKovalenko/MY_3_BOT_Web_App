@@ -34,6 +34,13 @@ except Exception:
         VALID_SUBCATEGORIES as VALID_SUBCATEGORIES_DE,
     )
 
+try:
+    from backend.hotpath_cache import HotPathCacheManager as _HotPathCacheManager
+except Exception:
+    from hotpath_cache import HotPathCacheManager as _HotPathCacheManager
+
+_DAILY_PLAN_CACHE = _HotPathCacheManager(name="daily_plan", max_entries=5000)
+
 env_path = Path(__file__).parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
@@ -16729,6 +16736,11 @@ def delete_reader_library_document(
 
 
 def get_daily_plan(user_id: int, plan_date: date) -> dict | None:
+    _cache_key = (int(user_id), plan_date)
+    _cached = _DAILY_PLAN_CACHE.get(_cache_key)
+    if _cached is not None:
+        return _cached.get("payload")
+
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -16755,7 +16767,7 @@ def get_daily_plan(user_id: int, plan_date: date) -> dict | None:
         for r in rows
         if r[5] is not None
     ]
-    return {
+    result = {
         "id": plan_id,
         "user_id": int(plan_row[1]),
         "plan_date": plan_row[2].isoformat() if plan_row[2] else None,
@@ -16763,6 +16775,8 @@ def get_daily_plan(user_id: int, plan_date: date) -> dict | None:
         "created_at": plan_row[4].isoformat() if plan_row[4] else None,
         "items": items,
     }
+    _DAILY_PLAN_CACHE.put(_cache_key, result, fresh_ttl_sec=300, stale_ttl_sec=300)
+    return result
 
 
 def get_daily_plan_item(*, user_id: int, item_id: int) -> dict | None:
@@ -16932,7 +16946,9 @@ def update_daily_plan_item_status(
             row = cursor.fetchone()
             if not row:
                 return None
-            return _map_daily_plan_item(row)
+            result = _map_daily_plan_item(row)
+    _DAILY_PLAN_CACHE.invalidate_prefix((int(user_id),))
+    return result
 
 
 def update_daily_plan_item_payload(
@@ -16971,7 +16987,9 @@ def update_daily_plan_item_payload(
             row = cursor.fetchone()
             if not row:
                 return None
-            return _map_daily_plan_item(row)
+            result = _map_daily_plan_item(row)
+    _DAILY_PLAN_CACHE.invalidate_prefix((int(user_id),))
+    return result
 
 
 def update_daily_plan_item_timer(
