@@ -16733,44 +16733,34 @@ def get_daily_plan(user_id: int, plan_date: date) -> dict | None:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id, user_id, plan_date, total_minutes, created_at
-                FROM bt_3_daily_plans
-                WHERE user_id = %s AND plan_date = %s
-                LIMIT 1;
+                SELECT
+                    p.id, p.user_id, p.plan_date, p.total_minutes, p.created_at,
+                    i.id, i.plan_id, i.order_index, i.task_type, i.title,
+                    i.estimated_minutes, i.payload, i.status, i.completed_at
+                FROM bt_3_daily_plans p
+                LEFT JOIN bt_3_daily_plan_items i ON i.plan_id = p.id
+                WHERE p.user_id = %s AND p.plan_date = %s
+                ORDER BY i.order_index ASC, i.id ASC;
                 """,
                 (int(user_id), plan_date),
             )
-            row = cursor.fetchone()
-            if not row:
-                return None
+            rows = cursor.fetchall()
 
-            plan_id = int(row[0])
-            cursor.execute(
-                """
-                SELECT
-                    id,
-                    plan_id,
-                    order_index,
-                    task_type,
-                    title,
-                    estimated_minutes,
-                    payload,
-                    status,
-                    completed_at
-                FROM bt_3_daily_plan_items
-                WHERE plan_id = %s
-                ORDER BY order_index ASC, id ASC;
-                """,
-                (plan_id,),
-            )
-            items = [_map_daily_plan_item(item_row) for item_row in cursor.fetchall()]
-
+    if not rows:
+        return None
+    plan_row = rows[0]
+    plan_id = int(plan_row[0])
+    items = [
+        _map_daily_plan_item((r[5], r[6], r[7], r[8], r[9], r[10], r[11], r[12], r[13]))
+        for r in rows
+        if r[5] is not None
+    ]
     return {
         "id": plan_id,
-        "user_id": int(row[1]),
-        "plan_date": row[2].isoformat() if row[2] else None,
-        "total_minutes": int(row[3] or 0),
-        "created_at": row[4].isoformat() if row[4] else None,
+        "user_id": int(plan_row[1]),
+        "plan_date": plan_row[2].isoformat() if plan_row[2] else None,
+        "total_minutes": int(plan_row[3] or 0),
+        "created_at": plan_row[4].isoformat() if plan_row[4] else None,
         "items": items,
     }
 
