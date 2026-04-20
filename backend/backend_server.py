@@ -537,6 +537,10 @@ from backend.tts_generation import (
     _enforce_google_tts_monthly_budget,
     _synthesize_mp3,
 )
+from backend.tts_runtime_state import (
+    _clear_tts_url_poll_attempt,
+    _increment_tts_url_poll_attempt,
+)
 from backend.analytics import (
     _calculate_final_score,
     fetch_user_summary,
@@ -624,7 +628,6 @@ _TRANSLATION_CHECK_REDIS_STATE_RECONCILE_RUNNING_STALE_MS = max(
     int((os.getenv("TRANSLATION_CHECK_REDIS_STATE_RECONCILE_RUNNING_STALE_MS") or "20000").strip() or "20000"),
 )
 _OBSERVABILITY_LOCK = threading.Lock()
-_TTS_URL_POLL_ATTEMPTS: dict[str, int] = {}
 _TRANSLATION_CHECK_STATUS_POLLS: dict[int, int] = {}
 _BILLING_EVENT_SKIP_COUNTS: dict[str, int] = {}
 _TRANSLATION_CHECK_ACCEPTED_AT_MS: dict[int, int] = {}
@@ -2855,26 +2858,6 @@ def _log_billing_skip_warning(*, provider: str, action_type: str, units_type: st
             next_count,
             exc,
         )
-
-
-def _increment_tts_url_poll_attempt(cache_key: str) -> int:
-    safe_cache_key = str(cache_key or "").strip()
-    if not safe_cache_key:
-        return 0
-    with _OBSERVABILITY_LOCK:
-        next_value = int(_TTS_URL_POLL_ATTEMPTS.get(safe_cache_key) or 0) + 1
-        _TTS_URL_POLL_ATTEMPTS[safe_cache_key] = next_value
-        if len(_TTS_URL_POLL_ATTEMPTS) > 10000:
-            _TTS_URL_POLL_ATTEMPTS.clear()
-        return next_value
-
-
-def _clear_tts_url_poll_attempt(cache_key: str) -> None:
-    safe_cache_key = str(cache_key or "").strip()
-    if not safe_cache_key:
-        return
-    with _OBSERVABILITY_LOCK:
-        _TTS_URL_POLL_ATTEMPTS.pop(safe_cache_key, None)
 
 
 def _remember_translation_check_accepted_at(session_id: int, accepted_at_ms: int) -> None:

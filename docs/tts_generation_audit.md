@@ -1047,3 +1047,31 @@ Prewarm queue-conversion remains the first **execution-model** change, but it is
 - `_run_tts_generation_job()` still carries multiple backend-server-only blockers that should be reduced first
 
 So the next step is not to change prewarm behavior yet, but to remove the narrowest TTS-only blocker from `_run_tts_generation_job()` first.
+
+---
+
+## 18. TTS URL POLL-STATE EXTRACTION (2026-04-20)
+
+Moved from `backend/backend_server.py` to [backend/tts_runtime_state.py](/Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/backend/tts_runtime_state.py):
+
+- `_TTS_URL_POLL_ATTEMPTS`
+- `_increment_tts_url_poll_attempt()`
+- `_clear_tts_url_poll_attempt()`
+
+Why this moved:
+- it was the narrowest `_run_tts_generation_job()` blocker
+- it is TTS-only
+- it does not change prewarm, queue, or billing behavior
+
+Important limitation:
+- this remains **process-local in-memory state**
+- it is still **not** a horizontal-scaling solution
+- this step is blocker isolation only, so that `_run_tts_generation_job()` depends less directly on `backend/backend_server.py`
+
+Remaining `_run_tts_generation_job()` blockers after this extraction:
+- `_TTS_GENERATION_JOBS_LOCK`
+- `_TTS_GENERATION_JOBS`
+- `_record_tts_admin_monitor_event()`
+- `_maybe_send_tts_admin_failure_alert()`
+- `_get_user_language_pair()`
+- `_billing_log_event_safe()`
