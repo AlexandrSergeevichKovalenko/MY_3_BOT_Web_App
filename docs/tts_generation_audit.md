@@ -684,3 +684,37 @@ Extract `_send_private_message` and `_send_private_message_chunks` to `backend/t
 - After this step, `_notify_google_tts_budget_thresholds` → `_enforce_google_tts_monthly_budget` → `_synthesize_mp3` can all move to `tts_generation.py` cleanly.
 
 Broader messaging extraction (group helpers, photo helpers, etc.) is explicitly NOT part of this step — only the two private-message functions move.
+
+---
+
+## 13. SLICE 3 — TELEGRAM TRANSPORT EXTRACTION RESULTS
+
+**Completed** — `backend/telegram_notify.py` created. `backend_server.py` updated.
+
+### What was moved
+
+| Symbol | From | To |
+|--------|------|----|
+| `_send_private_message` | backend_server.py:11543 | telegram_notify.py |
+| `_send_private_message_chunks` | backend_server.py:11740 | telegram_notify.py |
+
+### Token access change
+
+`TELEGRAM_Deutsch_BOT_TOKEN` (module-level constant, backend_server.py:647) replaced with `os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")` read lazily inside `_send_private_message`. Behavior when env var is missing: `token` is `None`, URL becomes `https://api.telegram.org/botNone/sendMessage`, Telegram API returns 401 → `RuntimeError` raised — identical to the previous behavior (the module-level constant was also `None` if env var was absent).
+
+### Callers rewired
+
+**0 call sites modified.** Because the function names are unchanged and both names are imported into `backend_server`'s module namespace at line 520–522, all 16 `_send_private_message` call sites and 3 `_send_private_message_chunks` call sites resolve correctly through the import without any per-site edits.
+
+`_send_tts_admin_message` (line ~11719) remains in `backend_server.py` and calls the imported `_send_private_message` — unchanged.
+
+### Why this is a narrow transport extraction
+
+- `backend/telegram_notify.py` contains exactly 2 functions.
+- Group, photo, media helpers stay in `backend_server.py`.
+- No behavioral change — only the definition location moved.
+- `backend_server.py` re-exports both names via import, so nothing in the call graph changed.
+
+### TTS functions now unblocked for Slice 4
+
+`_notify_google_tts_budget_thresholds` and `_enforce_google_tts_monthly_budget` can now import `_send_private_message` from `backend.telegram_notify` instead of `backend_server`. `_synthesize_mp3` can follow as soon as `_enforce_google_tts_monthly_budget` moves. All three can now land in `backend/tts_generation.py` with no circular import.
