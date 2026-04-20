@@ -514,6 +514,7 @@ from backend.scheduler_jobs_core import run_translation_sessions_auto_close_job
 from backend.scheduler_jobs_core import run_flashcard_feel_cleanup_job
 from backend.scheduler_jobs_core import run_tts_db_cache_cleanup_job
 from backend.scheduler_jobs_core import run_tts_r2_cache_cleanup_job
+from backend.scheduler_jobs_core import run_system_message_cleanup_job
 from backend.analytics import (
     _calculate_final_score,
     fetch_user_summary,
@@ -38961,7 +38962,7 @@ def _start_audio_scheduler() -> None:
         cleanup_hour = int((os.getenv("SYSTEM_MESSAGE_CLEANUP_HOUR") or "23").strip())
         cleanup_minute = int((os.getenv("SYSTEM_MESSAGE_CLEANUP_MINUTE") or "59").strip())
         _audio_scheduler.add_job(
-            _run_system_message_cleanup_job,
+            run_system_message_cleanup_job,
             "cron",
             hour=cleanup_hour,
             minute=cleanup_minute,
@@ -39820,7 +39821,7 @@ def cleanup_system_messages_now():
         return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
     if token != required_token:
         return jsonify({"error": "Неверный токен"}), 401
-    _run_system_message_cleanup_job()
+    run_system_message_cleanup_job()
     return jsonify({"ok": True})
 
 
