@@ -543,3 +543,41 @@ PATH B is deferred: extracting `_send_private_message` to `telegram_notify.py` s
 **Chosen next step:** Add `_to_epoch_ms` + `_tts_correlation_id` to `tts_generation.py`, move `_build_tts_generation_job_kwargs_from_meta`.
 
 **PATH B deferred because:** 17 call sites for `_send_private_message` span unrelated subsystems. Touching them during a TTS extraction increases blast radius unnecessarily. The right time is a dedicated "extract Telegram notification primitives" step.
+
+---
+
+## 11. SLICE 2 RESULTS
+
+**Completed** — `_build_tts_generation_job_kwargs_from_meta` moved to `backend/tts_generation.py`.
+
+### What was moved
+
+| Symbol | From | To |
+|--------|------|----|
+| `TTS_WEBAPP_DEFAULT_SPEED` | backend_server.py:765 | tts_generation.py |
+| `_normalize_utterance_text` | backend_server.py:12996 | tts_generation.py |
+| `_build_tts_generation_job_kwargs_from_meta` | backend_server.py:30538 | tts_generation.py |
+
+`backend_server.py` imports all three back; no callers changed.
+
+### Tiny helpers introduced
+
+**`_to_epoch_ms()`** — `int(time.time() * 1000)`. Added to `tts_generation.py` as a local duplicate. The original in `backend_server.py` (line 2421) was intentionally left in place because it has 22 other callers across unrelated subsystems. Extracting it to a shared module for TTS would be wrong scope.
+
+**`_tts_recovery_correlation_id(cache_key_prefix)`** — No-Flask subset of `_build_observability_correlation_id`. Explicitly scoped to TTS background jobs. Correctness: `_build_tts_generation_job_kwargs_from_meta` is only called from `_recover_stale_tts_generation_jobs` (the recovery scheduler), never from a Flask route. Therefore `has_request_context()` is always `False` at that call site — the Flask-header branches of the generic helper are dead code there. The local helper covers only the fallback path: `sanitize(seed)` → `f"tts_{safe_seed}"`. Produces identical output to the generic helper for this context.
+
+### Behavior parity: `correlation_id` field
+
+| Before | After |
+|--------|-------|
+| `_build_observability_correlation_id(fallback_seed="recover:{key[:16]}", prefix="tts")` in background context | `_tts_recovery_correlation_id("recover:{key[:16]}")` |
+| `has_request_context()` → False → fallback path → `f"tts_{sanitize(seed)}"` | `f"tts_{sanitize(seed)}"` |
+| Output: `"tts_recover-<16 chars>"` | Output: `"tts_recover-<16 chars>"` — identical |
+
+Sanitization regex is identical: `[^a-zA-Z0-9._:-]+` → `-`.
+
+### Remaining blocker
+
+`_enforce_google_tts_monthly_budget` and `_synthesize_mp3` remain in `backend_server.py`.  
+Blocker: `_notify_google_tts_budget_thresholds` → `_send_private_message` (17 callers, Telegram API side effect, `TELEGRAM_Deutsch_BOT_TOKEN` module constant).  
+Next step: dedicated "extract Telegram notification primitives" commit — extract `_send_private_message` to `backend/telegram_notify.py`, rewire 17 callers in backend_server, then move the budget/synthesize chain.

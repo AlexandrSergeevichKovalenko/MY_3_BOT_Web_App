@@ -520,12 +520,15 @@ from backend.tts_generation import (
     _TTS_VOICES,
     _TTS_LANG_CODES,
     TTS_OBJECT_PREFIX,
+    TTS_WEBAPP_DEFAULT_SPEED,
     _normalize_short_lang_code,
     _sanitize_object_segment,
+    _normalize_utterance_text,
     _normalize_tts_language_code,
     _normalize_tts_voice_name,
     _tts_object_key,
     GoogleTTSBudgetBlockedError,
+    _build_tts_generation_job_kwargs_from_meta,
 )
 from backend.analytics import (
     _calculate_final_score,
@@ -762,7 +765,7 @@ TRANSLATION_FOCUS_POOL_DEFICIT_REFILL_COOLDOWN_SEC = max(
 _SENTENCE_PREWARM_LOCK = threading.Lock()
 TTS_PROFILING_ENABLED = str(os.getenv("TTS_PROFILING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 TTS_URL_PENDING_RETRY_MS = max(150, int((os.getenv("TTS_URL_PENDING_RETRY_MS") or "350").strip() or "350"))
-TTS_WEBAPP_DEFAULT_SPEED = 0.95
+# TTS_WEBAPP_DEFAULT_SPEED lives in backend.tts_generation (imported above)
 TTS_GENERATION_WORKERS = max(1, min(32, int((os.getenv("TTS_GENERATION_WORKERS") or "4").strip() or "4")))
 TTS_GENERATION_QUEUE_MAXSIZE = max(
     int(TTS_GENERATION_WORKERS) * 4,
@@ -12993,10 +12996,7 @@ def safe_filename(username: str | None, user_id: int, date_str: str) -> str:
     return f"{base}_mistakes_{date_str}.mp3"
 
 
-def _normalize_utterance_text(text: str) -> str:
-    cleaned = (text or "").strip()
-    cleaned = re.sub(r"\s+", " ", cleaned)
-    return cleaned
+# _normalize_utterance_text lives in backend.tts_generation (imported above)
 
 
 def _audio_grammar_cache_key(target_lang: str, source_lang: str, sentence: str) -> str:
@@ -30535,35 +30535,7 @@ def _ensure_tts_generation_workers_started() -> None:
         )
 
 
-def _build_tts_generation_job_kwargs_from_meta(meta: dict, *, user_id: int | None = None) -> dict | None:
-    if not isinstance(meta, dict):
-        return None
-    cache_key = str(meta.get("cache_key") or "").strip()
-    normalized_text = _normalize_utterance_text(meta.get("source_text") or "")
-    if not cache_key or not normalized_text:
-        return None
-    short_lang, language_code = _normalize_tts_language_code(meta.get("language"))
-    voice = _normalize_tts_voice_name(meta.get("voice"), short_lang)
-    speaking_rate = float(meta.get("speed")) if meta.get("speed") is not None else TTS_WEBAPP_DEFAULT_SPEED
-    object_key = str(meta.get("object_key") or "").strip() or _tts_object_key(short_lang, voice, cache_key)
-    safe_user_id = max(0, int(user_id or 0))
-    return {
-        "user_id": safe_user_id,
-        "language": language_code,
-        "tts_lang_short": short_lang,
-        "voice": voice,
-        "speaking_rate": speaking_rate,
-        "normalized_text": normalized_text,
-        "cache_key": cache_key,
-        "object_key": object_key,
-        "had_existing_meta": True,
-        "request_id": f"req_tts_recover_{uuid4().hex[:16]}",
-        "correlation_id": _build_observability_correlation_id(
-            fallback_seed=f"recover:{cache_key[:16]}",
-            prefix="tts",
-        ),
-        "enqueue_ts_ms": _to_epoch_ms(),
-    }
+# _build_tts_generation_job_kwargs_from_meta lives in backend.tts_generation (imported above)
 
 
 def _enqueue_tts_generation_job_result(**kwargs) -> dict:
