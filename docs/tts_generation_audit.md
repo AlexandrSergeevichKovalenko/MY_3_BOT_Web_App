@@ -718,3 +718,50 @@ Broader messaging extraction (group helpers, photo helpers, etc.) is explicitly 
 ### TTS functions now unblocked for Slice 4
 
 `_notify_google_tts_budget_thresholds` and `_enforce_google_tts_monthly_budget` can now import `_send_private_message` from `backend.telegram_notify` instead of `backend_server`. `_synthesize_mp3` can follow as soon as `_enforce_google_tts_monthly_budget` moves. All three can now land in `backend/tts_generation.py` with no circular import.
+
+---
+
+## 14. SLICE 4 — BUDGET ENFORCEMENT + SYNTHESIS EXTRACTION RESULTS
+
+**Completed** — all three candidates moved to `backend/tts_generation.py`.
+
+### What was moved
+
+| Symbol | From line | To |
+|--------|-----------|----|
+| `_notify_google_tts_budget_thresholds` | backend_server.py:16165 | tts_generation.py |
+| `_enforce_google_tts_monthly_budget` | backend_server.py:16228 | tts_generation.py |
+| `_synthesize_mp3` | backend_server.py:16281 | tts_generation.py |
+
+### New imports added to tts_generation.py
+
+| Import | Source | Purpose |
+|--------|--------|---------|
+| `import io` | stdlib | BytesIO for MP3 multi-chunk assembly |
+| `import logging` | stdlib | budget alert warnings |
+| `from pydub import AudioSegment` | pydub | multi-chunk MP3 concatenation |
+| `from backend.database import get_admin_telegram_ids, get_google_tts_monthly_budget_status, mark_provider_budget_threshold_notified, set_provider_budget_block_state` | backend.database | budget status reads + writes |
+| `from backend.telegram_notify import _send_private_message` | backend.telegram_notify | admin alert delivery |
+| `from backend.utils import prepare_google_creds_for_tts` | backend.utils | Google credential file path |
+
+No `backend_server` import. No circular dependency.
+
+### Callers rewired
+
+All 4 call sites of `_synthesize_mp3` in backend_server.py (lines 13316, 30053, 30904, 33229) resolve through the import at line 538. No per-site edit needed — name unchanged.
+
+`_notify_google_tts_budget_thresholds` and `_enforce_google_tts_monthly_budget` were only called internally within the moved chain — zero external call sites rewired.
+
+### Thread-safety: no regression
+
+`_synthesize_mp3` mutates `os.environ["GOOGLE_APPLICATION_CREDENTIALS"]`. This is a process-global write and was already subject to a race condition under concurrent TTS worker threads in backend_server.py. Moving the function to `tts_generation.py` does not change this risk — same callers, same call sites, same process model.
+
+### What remains in backend_server.py
+
+- `_notify_provider_budget_thresholds` (generic multi-provider budget alerter) — not TTS-only, stays
+- `_provider_budget_alert_thresholds` (reads BILLING_PROVIDER_ALERT_THRESHOLDS env) — generic, stays
+- The full TTS worker/queue/thread architecture (`_run_tts_generation_job`, `_tts_generation_worker_loop`, globals) — deferred; these require in-process state coordination
+
+### Next extraction target
+
+The TTS worker and queue architecture (`_TTS_GENERATION_QUEUE`, `_TTS_GENERATION_JOBS`, `_tts_generation_worker_loop`, `_run_tts_generation_job`, prewarm). These are the remaining large block — they depend on in-process threading state and are the scalability bottleneck identified in the original audit.

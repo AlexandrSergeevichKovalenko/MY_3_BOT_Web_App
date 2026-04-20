@@ -5,25 +5,31 @@ Slice 1 — pure constants, normalisation utilities, and the budget-blocked
 exception.
 
 Slice 2 — job-kwargs builder for the recovery scheduler path.
-  Added: TTS_WEBAPP_DEFAULT_SPEED, _normalize_utterance_text, _to_epoch_ms,
-         _tts_recovery_correlation_id, _build_tts_generation_job_kwargs_from_meta.
-  _to_epoch_ms is duplicated here (not extracted from backend_server) so that
-  backend_server's 22 other callers are untouched.
-  _tts_recovery_correlation_id is an intentionally narrow, no-Flask subset of
-  _build_observability_correlation_id, valid only for background-job contexts
-  where has_request_context() is always False.  It is NOT a replacement for
-  the generic helper.
 
-NOT moved (blocked by backend_server-only helpers):
-  - _enforce_google_tts_monthly_budget  →  calls _notify_google_tts_budget_thresholds
-                                            → _send_private_message (backend_server only)
-  - _synthesize_mp3                     →  depends on _enforce_google_tts_monthly_budget
+Slice 4 — budget enforcement, admin alerting, and Google TTS synthesis.
+  Added: _notify_google_tts_budget_thresholds, _enforce_google_tts_monthly_budget,
+         _synthesize_mp3.
+  These were previously blocked by _send_private_message living only in
+  backend_server; that primitive now lives in backend.telegram_notify.
 """
 
+import io
+import logging
 import os
 import re
 import time
 from uuid import uuid4
+
+from pydub import AudioSegment
+
+from backend.database import (
+    get_admin_telegram_ids,
+    get_google_tts_monthly_budget_status,
+    mark_provider_budget_threshold_notified,
+    set_provider_budget_block_state,
+)
+from backend.telegram_notify import _send_private_message
+from backend.utils import prepare_google_creds_for_tts
 
 
 # ---------------------------------------------------------------------------
@@ -169,3 +175,252 @@ class GoogleTTSBudgetBlockedError(RuntimeError):
     def __init__(self, message: str, *, payload: dict | None = None):
         super().__init__(message)
         self.payload = dict(payload or {})
+
+
+# ---------------------------------------------------------------------------
+# Budget alerting and enforcement
+# ---------------------------------------------------------------------------
+
+
+def _notify_google_tts_budget_thresholds(
+    *,
+    status: dict,
+    requested_chars: int,
+) -> None:
+    effective_limit = int(status.get("effective_limit_units") or 0)
+    if effective_limit <= 0:
+        return
+
+    used_units = float(status.get("used_units") or 0.0)
+    projected_used = used_units + max(0, int(requested_chars or 0))
+    thresholds = [50, 75, 90]
+    notified = status.get("notified_thresholds") if isinstance(status.get("notified_thresholds"), dict) else {}
+    period_month = status.get("period_month")
+
+    for threshold in thresholds:
+        threshold_key = str(threshold)
+        threshold_units = effective_limit * (threshold / 100.0)
+        if projected_used < threshold_units:
+            continue
+        if notified.get(threshold_key):
+            continue
+
+        used_out = int(round(used_units))
+        projected_out = int(round(projected_used))
+        remaining_out = max(0, effective_limit - projected_out)
+        message_text = (
+            "⚠️ Google TTS budget alert\n\n"
+            f"Threshold: {threshold}%\n"
+            f"Month: {period_month or '—'}\n"
+            f"Used now: {used_out} chars\n"
+            f"Projected after current request: {projected_out} chars\n"
+            f"Limit: {effective_limit} chars\n"
+            f"Remaining after request: {remaining_out} chars\n\n"
+            "Budget tracking is active. If needed, increase the monthly limit before the hard stop is reached."
+        )
+
+        admin_ids = sorted(int(item) for item in get_admin_telegram_ids() if int(item) > 0)
+        sent = False
+        for admin_id in admin_ids:
+            try:
+                _send_private_message(int(admin_id), message_text, disable_web_page_preview=True)
+                sent = True
+            except Exception:
+                logging.warning("Failed to send Google TTS budget alert to admin_id=%s", admin_id, exc_info=True)
+
+        if sent:
+            try:
+                updated = mark_provider_budget_threshold_notified(
+                    provider="google_tts",
+                    threshold_percent=threshold,
+                    metadata={
+                        "last_threshold_alert": threshold,
+                        "last_threshold_projected_used": projected_out,
+                        "last_threshold_limit": effective_limit,
+                    },
+                )
+                if isinstance(updated, dict):
+                    notified = updated.get("notified_thresholds") if isinstance(updated.get("notified_thresholds"), dict) else notified
+            except Exception:
+                logging.warning("Failed to mark Google TTS threshold=%s as notified", threshold, exc_info=True)
+
+
+def _enforce_google_tts_monthly_budget(requested_chars: int) -> dict:
+    requested_value = max(0, int(requested_chars or 0))
+    status = get_google_tts_monthly_budget_status()
+    if not status:
+        return {
+            "provider": "google_tts",
+            "unit": "chars",
+            "used_units": 0.0,
+            "effective_limit_units": 0,
+            "remaining_units": 0.0,
+            "usage_ratio": 0.0,
+            "is_blocked": False,
+        }
+
+    _notify_google_tts_budget_thresholds(status=status, requested_chars=requested_value)
+
+    effective_limit = int(status.get("effective_limit_units") or 0)
+    used_units = float(status.get("used_units") or 0.0)
+    payload = {
+        "provider": "google_tts",
+        "unit": "chars",
+        "used": int(round(used_units)),
+        "requested": requested_value,
+        "limit": effective_limit,
+        "remaining": max(0, int(round(effective_limit - used_units))),
+        "period_month": status.get("period_month"),
+        "is_blocked": bool(status.get("is_blocked")),
+    }
+
+    if bool(status.get("is_blocked")):
+        reason = str(status.get("block_reason") or "").strip() or "Google TTS monthly budget is blocked"
+        raise GoogleTTSBudgetBlockedError(reason, payload=payload)
+
+    if effective_limit > 0 and used_units + requested_value > effective_limit:
+        over_reason = (
+            f"Google TTS monthly limit reached: "
+            f"{int(round(used_units))} + {requested_value} > {effective_limit} chars"
+        )
+        try:
+            set_provider_budget_block_state(
+                provider="google_tts",
+                is_blocked=True,
+                block_reason=over_reason,
+            )
+        except Exception:
+            logging.warning("Failed to persist Google TTS budget block state", exc_info=True)
+        payload["is_blocked"] = True
+        payload["remaining"] = max(0, effective_limit - int(round(used_units)))
+        raise GoogleTTSBudgetBlockedError(over_reason, payload=payload)
+
+    return status
+
+
+# ---------------------------------------------------------------------------
+# Google TTS synthesis
+# ---------------------------------------------------------------------------
+
+
+def _synthesize_mp3(
+    text: str,
+    language: str = "de-DE",
+    voice: str = "de-DE-Neural2-C",
+    speed: float = 0.9,
+) -> bytes:
+    normalized_text = str(text or "").strip()
+    if not normalized_text:
+        raise RuntimeError("Google TTS получил пустой текст")
+
+    try:
+        from google.cloud import texttospeech
+    except Exception as exc:
+        raise RuntimeError(f"Google TTS не установлен: {exc}") from exc
+
+    # Google TTS has request length limits; chunk long reader documents to avoid
+    # forced fallback to offline engine for otherwise valid requests.
+    max_chars_per_request = 4500
+
+    def split_for_google_tts(raw_text: str) -> list[str]:
+        compact = re.sub(r"[ \t]+", " ", raw_text).strip()
+        if not compact:
+            return []
+        if len(compact) <= max_chars_per_request:
+            return [compact]
+
+        chunks: list[str] = []
+        paragraphs = [part.strip() for part in re.split(r"\n{2,}", compact) if part.strip()]
+        if not paragraphs:
+            paragraphs = [compact]
+
+        def append_piece(piece: str) -> None:
+            piece = piece.strip()
+            if not piece:
+                return
+            if len(piece) <= max_chars_per_request:
+                chunks.append(piece)
+                return
+            sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", piece) if s.strip()]
+            if not sentences:
+                sentences = [piece]
+            current = ""
+            for sentence in sentences:
+                candidate = f"{current} {sentence}".strip() if current else sentence
+                if len(candidate) <= max_chars_per_request:
+                    current = candidate
+                    continue
+                if current:
+                    chunks.append(current)
+                if len(sentence) <= max_chars_per_request:
+                    current = sentence
+                    continue
+                words = sentence.split()
+                bucket = ""
+                for word in words:
+                    next_bucket = f"{bucket} {word}".strip() if bucket else word
+                    if len(next_bucket) <= max_chars_per_request:
+                        bucket = next_bucket
+                    else:
+                        if bucket:
+                            chunks.append(bucket)
+                        bucket = word
+                if bucket:
+                    current = bucket
+                else:
+                    current = ""
+            if current:
+                chunks.append(current)
+
+        accumulator = ""
+        for paragraph in paragraphs:
+            candidate = f"{accumulator}\n\n{paragraph}".strip() if accumulator else paragraph
+            if len(candidate) <= max_chars_per_request:
+                accumulator = candidate
+            else:
+                if accumulator:
+                    append_piece(accumulator)
+                accumulator = paragraph
+        if accumulator:
+            append_piece(accumulator)
+        return chunks
+
+    text_chunks = split_for_google_tts(normalized_text)
+    if not text_chunks:
+        raise RuntimeError("Google TTS не получил чанки текста")
+    _enforce_google_tts_monthly_budget(sum(len(chunk) for chunk in text_chunks))
+
+    key_path = prepare_google_creds_for_tts()
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
+    tts_client = texttospeech.TextToSpeechClient()
+    voice_params = texttospeech.VoiceSelectionParams(language_code=language, name=voice)
+    audio_config = texttospeech.AudioConfig(
+        audio_encoding=texttospeech.AudioEncoding.MP3,
+        speaking_rate=speed,
+    )
+    if len(text_chunks) == 1:
+        response = tts_client.synthesize_speech(
+            input=texttospeech.SynthesisInput(text=text_chunks[0]),
+            voice=voice_params,
+            audio_config=audio_config,
+        )
+        return response.audio_content
+
+    combined = AudioSegment.silent(duration=0)
+    for chunk in text_chunks:
+        response = tts_client.synthesize_speech(
+            input=texttospeech.SynthesisInput(text=chunk),
+            voice=voice_params,
+            audio_config=audio_config,
+        )
+        if not response.audio_content:
+            continue
+        segment = AudioSegment.from_file(io.BytesIO(response.audio_content), format="mp3")
+        combined += segment
+
+    if len(combined) == 0:
+        raise RuntimeError("Google TTS вернул пустой аудиопоток")
+
+    out = io.BytesIO()
+    combined.export(out, format="mp3", bitrate="192k")
+    return out.getvalue()
