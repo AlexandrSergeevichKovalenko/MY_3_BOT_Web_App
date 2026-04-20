@@ -765,3 +765,203 @@ All 4 call sites of `_synthesize_mp3` in backend_server.py (lines 13316, 30053, 
 ### Next extraction target
 
 The TTS worker and queue architecture (`_TTS_GENERATION_QUEUE`, `_TTS_GENERATION_JOBS`, `_tts_generation_worker_loop`, `_run_tts_generation_job`, prewarm). These are the remaining large block — they depend on in-process threading state and are the scalability bottleneck identified in the original audit.
+
+---
+
+## 15. ORCHESTRATION LAYER AUDIT
+
+### Entry points
+
+| Function | Line | Trigger | Execution model |
+|----------|------|---------|----------------|
+| `_dispatch_tts_prewarm` | 13701 | APScheduler / Dramatiq actor | **SYNCHRONOUS** — calls `_run_tts_generation_job` directly in scheduler thread |
+| `_enqueue_tts_generation_job_result` | 30263 | HTTP request / recovery scheduler / dictionary save | Queue-based: puts kwargs into `_TTS_GENERATION_QUEUE` |
+| `_enqueue_tts_generation_job` | 30302 | Thin wrapper over above | Same |
+| `_tts_generation_worker_loop` | 30220 | Daemon thread started by `_ensure_tts_generation_workers_started` | Thread-based: blocks on `_TTS_GENERATION_QUEUE.get()` |
+| `_run_tts_generation_job` | 29960 | Worker loop (async) or prewarm (sync) | Executes synthesis, R2 upload, DB state transitions |
+| `_recover_stale_tts_generation_jobs` | 30306 | Recovery scheduler actor | Queue-based: calls `_enqueue_tts_generation_job_result` per stale record |
+| `_run_tts_prewarm_scheduler_job` | 14164 | APScheduler (scheduler service) | Calls `_dispatch_tts_prewarm` |
+| `_run_tts_generation_recovery_scheduler_job` | 30366 | APScheduler (scheduler service) | Calls `_recover_stale_tts_generation_jobs` |
+
+### Process-local state — all scaling blockers
+
+| Symbol | Line | Written by | Read by | Invariant maintained | Scaling blocker |
+|--------|------|-----------|---------|---------------------|----------------|
+| `_TTS_GENERATION_QUEUE` | 639 | `_get_tts_generation_queue` (lazy init) | `_tts_generation_worker_loop`, `_enqueue_tts_generation_job_result` | Bounded job queue | Per-process — jobs in queue are lost on restart; N processes each have their own queue |
+| `_TTS_GENERATION_JOBS` | 956 | `_enqueue_tts_generation_job_result`, `_run_tts_generation_job` finally-block | `_enqueue_tts_generation_job_result` | Prevents duplicate in-flight jobs per cache_key | Per-process — no cross-process dedup; two instances enqueue same job |
+| `_TTS_GENERATION_QUEUE_LOCK` | 638 | n/a | `_get_tts_generation_queue`, `_ensure_tts_generation_workers_started` | Queue init + thread list update atomicity | n/a (local lock only) |
+| `_TTS_GENERATION_WORKER_THREADS` | 640 | `_ensure_tts_generation_workers_started` | Same | Tracks live threads to avoid over-spinning | Per-process list |
+| `_TTS_PREWARM_LOCK` | 954 | `_dispatch_tts_prewarm` | Same (non-blocking acquire) | Prevents concurrent prewarm runs | Per-process only — two instances run prewarm concurrently |
+| `_TTS_GENERATION_JOBS_LOCK` | 955 | n/a | `_enqueue_tts_generation_job_result`, `_run_tts_generation_job` finally | Guards `_TTS_GENERATION_JOBS` set | n/a (local lock only) |
+| `_TTS_ADMIN_MONITOR_EVENTS` | 636 | `_record_tts_admin_monitor_event` | `_get_tts_admin_monitor_window` | In-memory ring buffer for admin failure alerting | Per-process — events from other processes are invisible; DB is secondary but not always consulted |
+| `_TTS_URL_POLL_ATTEMPTS` | 627 | `_increment_tts_url_poll_attempt` | `_clear_tts_url_poll_attempt` | Tracks how many times a URL poll was attempted | Per-process — cleared on restart |
+
+### Execution flows
+
+**A — On-demand (webapp TTS request):**
+```
+HTTP POST /webapp/tts
+→ _enqueue_tts_generation_job_result (queue insert + dedup check)
+→ _TTS_GENERATION_QUEUE.put(kwargs)           ← async boundary
+→ _tts_generation_worker_loop (daemon thread)
+→ _run_tts_generation_job
+→ r2_exists (R2 HEAD)
+→ _synthesize_mp3 (Google TTS API)
+→ r2_put_bytes (R2 PUT)
+→ mark_tts_object_ready (DB)
+→ _clear_tts_url_poll_attempt (in-memory)
+```
+
+**B — Recovery (stale pending records):**
+```
+APScheduler → run_tts_generation_recovery_scheduler_actor (Dramatiq)
+→ _run_tts_generation_recovery_scheduler_job
+→ _recover_stale_tts_generation_jobs
+→ list_stale_pending_tts_objects (DB)
+→ per record: _build_tts_generation_job_kwargs_from_meta → _enqueue_tts_generation_job_result
+→ _TTS_GENERATION_QUEUE.put(kwargs)           ← async boundary (same worker pool)
+→ _run_tts_generation_job (worker thread)
+```
+
+**C — Prewarm (SYNCHRONOUS bottleneck):**
+```
+APScheduler → run_tts_prewarm_scheduler_actor (Dramatiq)
+→ _run_tts_prewarm_scheduler_job
+→ _dispatch_tts_prewarm
+→ _TTS_PREWARM_LOCK.acquire(blocking=False)
+→ per candidate: _run_tts_generation_job ← DIRECT SYNCHRONOUS CALL, no queue
+→ synthesis blocks scheduler/Dramatiq thread for full duration per candidate
+```
+
+### `_run_tts_generation_job` dependency audit
+
+**Already in `tts_generation.py` (no blocker):**
+- `_synthesize_mp3`, `GoogleTTSBudgetBlockedError` ✓
+- `r2_exists`, `r2_put_bytes`, `r2_public_url` (r2_storage.py) ✓
+- `mark_tts_object_ready`, `mark_tts_object_failed` (database.py) ✓
+
+**Backend-server-only blockers:**
+
+| Dep | Line | Why it blocks | Movability |
+|-----|------|--------------|------------|
+| `_elapsed_ms_since` | 2435 | `int((perf_counter()-start)*1000)` | TRIVIAL — pure one-liner, no state |
+| `_log_flow_observation` | 2458 | JSON structured log to `logging.info` | TRIVIAL — pure, no Flask, no state |
+| `_shorten_tts_admin_text` | 12101 | 6-line string truncation | TRIVIAL — pure, no state |
+| `_sanitize_observability_id` | 2360 | regex string sanitizer | TRIVIAL — pure, no state |
+| `_build_observability_correlation_id` | 2391 | Flask-aware, 50+ callers | MODERATE — can use `_tts_recovery_correlation_id` pattern if in background context |
+| `_clear_tts_url_poll_attempt` | 2872 | Mutates `_TTS_URL_POLL_ATTEMPTS` (process-local dict, `_OBSERVABILITY_LOCK`) | HARD — process-local in-memory state |
+| `_record_tts_admin_monitor_event` | 11753 | Writes to `_TTS_ADMIN_MONITOR_EVENTS` deque (process-local) + DB | HARD — deque is process-local |
+| `_maybe_send_tts_admin_failure_alert` | 12223 | Reads `_TTS_ADMIN_MONITOR_EVENTS` deque | HARD — process-local state |
+| `_get_user_language_pair` | 3715 | DB query for user language preferences, 50+ callers, many subsystems | HARD — cross-domain DB query |
+| `_billing_log_event_safe` | 8702 | Billing DB write, complex subsystem | HARD — billing domain |
+| `_TTS_GENERATION_JOBS_LOCK` + `_TTS_GENERATION_JOBS` | 955–956 | Process-local dedup set | HARD — fundamental queue state |
+
+**Conclusion:** `_run_tts_generation_job` cannot move to `tts_generation.py` without also resolving 5 hard-category blockers. The trivial-category helpers (`_elapsed_ms_since`, `_log_flow_observation`, `_shorten_tts_admin_text`, `_sanitize_observability_id`) can be pre-moved but they alone don't unblock the function.
+
+### Prewarm synchronous execution — why it blocks scaling
+
+`_dispatch_tts_prewarm` (line 13936) calls `_run_tts_generation_job(...)` directly — bypassing `_TTS_GENERATION_QUEUE` and the worker pool entirely. The scheduler/Dramatiq thread blocks for the full synthesis duration (multiple Google TTS API calls + R2 uploads) per candidate, sequentially across all users.
+
+The recovery path (`_recover_stale_tts_generation_jobs`) already uses `_enqueue_tts_generation_job_result` — it is queue-driven. Only prewarm is synchronous.
+
+After `_run_tts_generation_job` completes, `_dispatch_tts_prewarm` immediately checks the DB to count whether status became `"ready"`:
+```python
+_run_tts_generation_job(...)          # line 13936 — blocks until synthesis done
+latest = get_tts_object_meta(...)     # line 13953 — check result
+if latest_status == "ready":
+    generated += 1                    # counted only because we waited
+```
+This synchronous check is the exact coupling that makes switching to a queue-driven model require a counter-semantics change: `generated` would become `queued`, and the ready-check at line 13953 would always return `"pending"`.
+
+### Process-local state is now the dominant scaling blocker
+
+All remaining TTS orchestration — dedup (`_TTS_GENERATION_JOBS`), queue (`_TTS_GENERATION_QUEUE`), worker threads, prewarm lock, in-memory monitoring events — is invisible across process boundaries. With multiple `BACKGROUND_JOBS` instances:
+- Two processes enqueue the same cache_key (dedup fails cross-process)
+- Two processes run prewarm simultaneously (only within-process lock)
+- Admin failure alerts aggregate only local events
+
+The `_TTS_ADMIN_MONITOR_EVENTS` deque does have a DB fallback (`persist_tts_admin_monitor_event`), but `_maybe_send_tts_admin_failure_alert` reads the deque first and only falls back to DB if deque is empty — so cross-process events are invisible to the alerting path in practice.
+
+### Recommended next step
+
+**Make prewarm queue-driven**: change `_dispatch_tts_prewarm` to call `_enqueue_tts_generation_job_result` instead of `_run_tts_generation_job` directly, and update the counter semantics to count `"queued"` rather than waiting for `"ready"`.
+
+This:
+1. Eliminates synchronous synthesis blocking the scheduler/Dramatiq thread
+2. Reuses the existing worker pool (same queue mechanism recovery already uses)
+3. Is a contained change confined to `_dispatch_tts_prewarm` and its counter logic
+4. Does NOT require Redis, new infrastructure, or moving any functions
+5. Is the direct predecessor step to horizontal scaling — once prewarm is queue-driven, the next step is replacing `queue.Queue` with a distributed queue (Redis, etc.)
+
+**This is a behavior change** (prewarm becomes async) that must be implemented deliberately, not as a side effect of cleanup. It cannot be made while following the "do not change runtime behavior" constraint of the current task — it is the next standalone step after this audit.
+
+---
+
+## 16. ORCHESTRATION RE-VALIDATION (2026-04-20)
+
+This section re-validates the remaining TTS orchestration layer against the current codebase after the helper extractions and scheduler-wrapper seam work. It is intentionally limited to the remaining process-local execution model.
+
+### Current orchestration entry points
+
+| Function | File | Line | Caller(s) | Execution style |
+|----------|------|------|-----------|-----------------|
+| `run_tts_prewarm_scheduler_actor()` | `backend/background_jobs.py` | 1450 | Dramatiq `scheduler_jobs` queue | Scheduler actor |
+| `run_tts_prewarm_scheduler_job()` | `backend/tts_scheduler.py` | 11 | `run_tts_prewarm_scheduler_actor()` | Scheduler wrapper |
+| `_run_tts_prewarm_scheduler_job()` | `backend/backend_server.py` | 14164 | `backend.tts_scheduler.run_tts_prewarm_scheduler_job`, APScheduler registration in `backend_server.py:38676` | Scheduler wrapper |
+| `_dispatch_tts_prewarm(force, tz_name)` | `backend/backend_server.py` | 13701 | `_run_tts_prewarm_scheduler_job()`, admin route `prewarm_tts_now()` | **Synchronous inline execution** |
+| `prewarm_tts_now()` | `backend/backend_server.py` | 38991 | `POST /api/admin/prewarm-tts` | HTTP-triggered synchronous prewarm |
+| `webapp_tts_generate()` | `backend/backend_server.py` | 30500 | `POST /api/webapp/tts/generate` | HTTP-triggered queue enqueue |
+| `_enqueue_tts_generation_job_result(**kwargs)` | `backend/backend_server.py` | 30263 | `webapp_tts_generate()`, `_recover_stale_tts_generation_jobs()`, `_run_tts_generation_recovery_scheduler_job()` callers via recovery chain, dictionary-save paths in `backend_server.py` | Queue insertion + in-process dedup |
+| `_enqueue_tts_generation_job(**kwargs)` | `backend/backend_server.py` | 30302 | Thin internal wrapper | Queue insertion wrapper |
+| `_ensure_tts_generation_workers_started()` | `backend/backend_server.py` | 30234 | `_enqueue_tts_generation_job_result()`, `_recover_stale_tts_generation_jobs()`, startup call in `backend_server.py:38450` | Thread-pool bootstrap |
+| `_tts_generation_worker_loop(worker_index)` | `backend/backend_server.py` | 30220 | Threads spawned by `_ensure_tts_generation_workers_started()` | Daemon-thread execution |
+| `_run_tts_generation_job(...)` | `backend/backend_server.py` | 29960 | `_tts_generation_worker_loop()`, `_dispatch_tts_prewarm()`, legacy route `webapp_tts()` | Core generation unit; async in worker loop, sync in prewarm/legacy route |
+| `run_tts_generation_recovery_actor()` | `backend/background_jobs.py` | 1456 | Dramatiq `scheduler_jobs` queue | Scheduler actor |
+| `run_tts_generation_recovery_scheduler_job()` | `backend/tts_scheduler.py` | 16 | `run_tts_generation_recovery_actor()` | Scheduler wrapper |
+| `_run_tts_generation_recovery_scheduler_job()` | `backend/backend_server.py` | 30366 | `backend.tts_scheduler.run_tts_generation_recovery_scheduler_job`, APScheduler registration in `backend_server.py:38685` | Scheduler wrapper |
+| `_recover_stale_tts_generation_jobs(source)` | `backend/backend_server.py` | 30306 | `_run_tts_generation_recovery_scheduler_job()`, `_maybe_send_tts_admin_pending_alert()` | DB recovery scan + queue enqueue |
+| `webapp_tts()` | `backend/backend_server.py` | 30740 | `POST /api/webapp/tts` | Legacy direct synchronous execution |
+
+### Current process-local state
+
+| Symbol | File | Line | Written by | Read by | Invariant | Scaling blocker |
+|--------|------|------|-----------|---------|-----------|-----------------|
+| `_TTS_GENERATION_QUEUE` | `backend/backend_server.py` | 639 | `_get_tts_generation_queue()` init, `_enqueue_tts_generation_job_result()` put | `_tts_generation_worker_loop()`, `_tts_generation_queue_size()` | Single bounded in-process work queue | Each process sees a different queue; jobs are not shared across replicas |
+| `_TTS_GENERATION_WORKER_THREADS` | `backend/backend_server.py` | 640 | `_ensure_tts_generation_workers_started()` | `_ensure_tts_generation_workers_started()` liveness filter | Avoid overspawning threads in one process | Worker capacity is per-process, not globally coordinated |
+| `_TTS_PREWARM_LOCK` | `backend/backend_server.py` | 954 | `_dispatch_tts_prewarm()` acquire/release | `_dispatch_tts_prewarm()` | Only one prewarm run per process | Two replicas can prewarm simultaneously |
+| `_TTS_GENERATION_JOBS_LOCK` | `backend/backend_server.py` | 955 | Lock only | `_enqueue_tts_generation_job_result()`, `_run_tts_generation_job()` | Atomic access to dedup set | Lock is local and cannot coordinate cross-process dedup |
+| `_TTS_GENERATION_JOBS` | `backend/backend_server.py` | 956 | `_enqueue_tts_generation_job_result()` add, `_run_tts_generation_job()` finally discard | `_enqueue_tts_generation_job_result()` membership test | One in-flight generation per `cache_key` within one process | Duplicate enqueue protection fails across replicas |
+| `_TTS_ADMIN_MONITOR_EVENTS` | `backend/backend_server.py` | 636 | `_record_tts_admin_monitor_event()` append/prune | `_get_tts_admin_monitor_window()`, `_maybe_send_tts_admin_failure_alert()` | Hot in-memory monitor window for admin alerts | Alerts see only local events unless deque is empty and DB fallback is used |
+| `_TTS_URL_POLL_ATTEMPTS` | `backend/backend_server.py` | 627 | `_increment_tts_url_poll_attempt()` | `webapp_tts_url()`, `_clear_tts_url_poll_attempt()` | Track URL poll attempts per cache key | Poll counters diverge by web process and disappear on restart |
+
+### Current exact execution model
+
+**A. On-demand generation**
+
+`POST /api/webapp/tts/generate` → `webapp_tts_generate()` → `get_tts_object_meta()` DB read → `create_tts_object_pending()` / `requeue_tts_object_pending()` DB state transition → `_enqueue_tts_generation_job_result()` → `_ensure_tts_generation_workers_started()` → `_TTS_GENERATION_JOBS` dedup check → `_TTS_GENERATION_QUEUE.put()` async boundary → `_tts_generation_worker_loop()` daemon thread → `_run_tts_generation_job()` → optional `r2_exists()` HEAD → `_synthesize_mp3()` → `r2_put_bytes()` R2 write → `mark_tts_object_ready()` / `mark_tts_object_failed()` DB completion state transition.
+
+**B. Stale recovery**
+
+`run_tts_generation_recovery_actor()` → `backend.tts_scheduler.run_tts_generation_recovery_scheduler_job()` → `_run_tts_generation_recovery_scheduler_job()` → `_recover_stale_tts_generation_jobs(source="scheduler")` → `list_stale_pending_tts_objects()` DB read → `_build_tts_generation_job_kwargs_from_meta()` → `_enqueue_tts_generation_job_result()` → `_TTS_GENERATION_QUEUE.put()` async boundary → `_tts_generation_worker_loop()` → `_run_tts_generation_job()` → R2 + DB completion path as above.
+
+**C. Prewarm**
+
+`run_tts_prewarm_scheduler_actor()` or `POST /api/admin/prewarm-tts` → `backend.tts_scheduler.run_tts_prewarm_scheduler_job()` or `prewarm_tts_now()` → `_run_tts_prewarm_scheduler_job()` / direct route → `_dispatch_tts_prewarm()` → `_TTS_PREWARM_LOCK.acquire(blocking=False)` → planning DB reads (`_list_tts_prewarm_active_user_ids()`, `_get_tts_prewarm_user_activity_map()`, candidate/meta reads) → `create_tts_object_pending()` / `requeue_tts_object_pending()` DB state transition → **direct `_run_tts_generation_job()` inline** → optional `r2_exists()` → `_synthesize_mp3()` → `r2_put_bytes()` → `mark_tts_object_ready()` / `mark_tts_object_failed()` → immediate `get_tts_object_meta()` DB read to count `generated`.
+
+### Current blocker summary for `_run_tts_generation_job()`
+
+`_run_tts_generation_job()` still cannot move to `backend/tts_generation.py` as-is. The current hard blockers remain:
+
+- process-local cleanup/dedup dependency: `_TTS_GENERATION_JOBS_LOCK`, `_TTS_GENERATION_JOBS`
+- process-local poll state mutation: `_clear_tts_url_poll_attempt()`
+- process-local admin monitoring: `_record_tts_admin_monitor_event()`, `_maybe_send_tts_admin_failure_alert()`
+- cross-domain server helper dependency: `_get_user_language_pair()`
+- billing subsystem dependency: `_billing_log_event_safe()`
+
+The already-extracted helpers in `backend/tts_generation.py` reduce synthesis-domain coupling, but they do not remove the orchestration-layer dependence on `backend/backend_server.py`.
+
+### Single recommended next step
+
+**Change `_dispatch_tts_prewarm()` to enqueue generation via `_enqueue_tts_generation_job_result()` instead of calling `_run_tts_generation_job()` inline, and explicitly change the prewarm result counters from `generated/ready-now` semantics to `queued` semantics.**
+
+This is the smallest meaningful move because it removes the only remaining synchronous orchestration path that bypasses the existing queue/worker model, without introducing Redis or moving `_run_tts_generation_job()` prematurely.
