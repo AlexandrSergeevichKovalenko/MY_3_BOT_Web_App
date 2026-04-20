@@ -7369,17 +7369,38 @@ def finish_translation_webapp(user_id: int, timing_breakdown: dict | None = None
         _t_session_lookup = time.perf_counter()
         cursor.execute(
             """
-            SELECT session_id, start_time
-            FROM bt_3_user_progress
-            WHERE user_id = %s
-              AND completed = FALSE
-            ORDER BY start_time DESC NULLS LAST, session_id DESC;
+            SELECT
+                up.session_id,
+                COALESCE(c.total_sentences, 0),
+                COALESCE(c.translated_count, 0)
+            FROM bt_3_user_progress up
+            LEFT JOIN LATERAL (
+                SELECT
+                    COUNT(*) FILTER (WHERE COALESCE(ds.shown_to_user, FALSE) = TRUE) AS total_sentences,
+                    COUNT(*) FILTER (
+                        WHERE COALESCE(ds.shown_to_user, FALSE) = TRUE
+                          AND EXISTS (
+                              SELECT 1
+                              FROM bt_3_translations t
+                              WHERE t.user_id = up.user_id
+                                AND t.session_id = up.session_id
+                                AND t.sentence_id = ds.id
+                          )
+                    ) AS translated_count
+                FROM bt_3_daily_sentences ds
+                WHERE ds.user_id = up.user_id
+                  AND ds.session_id = up.session_id
+            ) c ON TRUE
+            WHERE up.user_id = %s
+              AND up.completed = FALSE
+            ORDER BY up.start_time DESC NULLS LAST, up.session_id DESC;
             """,
             (user_id,),
         )
         session_rows = list(cursor.fetchall() or [])
         if isinstance(timing_breakdown, dict):
             timing_breakdown["finish_core_session_lookup_ms"] = int((time.perf_counter() - _t_session_lookup) * 1000)
+            timing_breakdown["finish_core_counts_ms"] = 0
         if not session_rows or session_rows[0][0] is None:
             return {
                 "message": (
@@ -7391,35 +7412,8 @@ def finish_translation_webapp(user_id: int, timing_breakdown: dict | None = None
 
         session_id = session_rows[0][0]
         active_session_ids = [row[0] for row in session_rows if row[0] is not None]
-        total_sentences = 0
-        translated_count = 0
-        if session_id is not None:
-            _t_counts = time.perf_counter()
-            cursor.execute(
-                """
-                SELECT
-                    COUNT(*) FILTER (WHERE COALESCE(ds.shown_to_user, FALSE) = TRUE) AS total_sentences,
-                    COUNT(*) FILTER (
-                        WHERE COALESCE(ds.shown_to_user, FALSE) = TRUE
-                          AND EXISTS (
-                              SELECT 1
-                              FROM bt_3_translations t
-                              WHERE t.user_id = %s
-                                AND t.session_id = %s
-                                AND t.sentence_id = ds.id
-                          )
-                    ) AS translated_count
-                FROM bt_3_daily_sentences ds
-                WHERE ds.user_id = %s
-                  AND ds.session_id = %s;
-                """,
-                (user_id, session_id, user_id, session_id),
-            )
-            _counts_row = cursor.fetchone() or (0, 0)
-            total_sentences = int(_counts_row[0] or 0)
-            translated_count = int(_counts_row[1] or 0)
-            if isinstance(timing_breakdown, dict):
-                timing_breakdown["finish_core_counts_ms"] = int((time.perf_counter() - _t_counts) * 1000)
+        total_sentences = int(session_rows[0][1] or 0)
+        translated_count = int(session_rows[0][2] or 0)
 
         if len(active_session_ids) > 1:
             logging.warning(
