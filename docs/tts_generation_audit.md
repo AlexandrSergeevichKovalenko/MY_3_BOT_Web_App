@@ -398,3 +398,44 @@ After extraction, admin monitor in `BACKEND_WEB` will always see an empty deque.
 | `backend/tts_scheduler.py` | Already-created seam module (3 wrappers) |
 | `backend/tts_generation.py` | **Does not exist yet** — target for extraction |
 | `backend/background_jobs.py` | Actor registrations for TTS jobs |
+
+---
+
+## 9. SLICE 1 EXTRACTION RESULTS
+
+**Completed** — `backend/tts_generation.py` created; `backend_server.py` updated to import from it.
+
+### Moved (4 safe items)
+
+| Symbol | Why safe |
+|--------|----------|
+| `_TTS_VOICES` dict | Pure constant, no deps |
+| `_TTS_LANG_CODES` dict | Pure constant, no deps |
+| `TTS_OBJECT_PREFIX` | `os.getenv` read, no other imports |
+| `_normalize_short_lang_code` | Pure string transform, no deps |
+| `_sanitize_object_segment` | Pure string transform, no deps |
+| `_normalize_tts_language_code` | Calls only the two helpers above |
+| `_normalize_tts_voice_name` | Calls only `_TTS_VOICES` |
+| `_tts_object_key` | Calls `_sanitize_object_segment` + `TTS_OBJECT_PREFIX` |
+| `GoogleTTSBudgetBlockedError` | Pure exception class |
+
+`backend_server.py` now imports all of the above from `backend.tts_generation`.  No circular dependency: `tts_generation` imports only `os` and `re`.
+
+### NOT moved (3 blocked items)
+
+| Symbol | Blocker |
+|--------|---------|
+| `_enforce_google_tts_monthly_budget` (line 16308) | Calls `_notify_google_tts_budget_thresholds` → `_send_private_message`, which has 50+ other callers across `backend_server.py` and cannot be moved without a larger refactor |
+| `_synthesize_mp3` (line 16361) | Depends on `_enforce_google_tts_monthly_budget` (blocked above) |
+| `_build_tts_generation_job_kwargs_from_meta` (line 30573) | Calls `_build_observability_correlation_id` (line 2380) and `_to_epoch_ms` (line 2410) — generic helpers with 50–100+ callers across unrelated subsystems in `backend_server.py`; extracting them as part of TTS would be wrong scope |
+
+### What stays in backend_server.py (intentionally)
+
+- `_tts_object_cache_key` — uses `_TTS_CACHE_HMAC_SECRET` (process-wide secret read at startup)
+- All TTS in-process state globals (`_TTS_GENERATION_QUEUE`, `_TTS_GENERATION_JOBS`, etc.)
+- `_run_tts_prewarm_scheduler_job`, `_run_tts_generation_recovery_scheduler_job`, `_run_tts_prewarm_quota_control_scheduler_job` — exposed via `tts_scheduler.py` seam
+
+### Next slice options
+
+1. **Extract `_send_private_message` into a shared module** → unblocks `_notify_google_tts_budget_thresholds` → unblocks `_enforce_google_tts_monthly_budget` → unblocks `_synthesize_mp3`
+2. **Extract `_build_observability_correlation_id` / `_to_epoch_ms` into a generic utils module** → unblocks `_build_tts_generation_job_kwargs_from_meta`

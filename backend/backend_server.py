@@ -516,6 +516,17 @@ from backend.scheduler_jobs_core import run_tts_db_cache_cleanup_job
 from backend.scheduler_jobs_core import run_tts_r2_cache_cleanup_job
 from backend.scheduler_jobs_core import run_system_message_cleanup_job
 from backend.scheduler_jobs_core import run_database_table_sizes_report_job
+from backend.tts_generation import (
+    _TTS_VOICES,
+    _TTS_LANG_CODES,
+    TTS_OBJECT_PREFIX,
+    _normalize_short_lang_code,
+    _sanitize_object_segment,
+    _normalize_tts_language_code,
+    _normalize_tts_voice_name,
+    _tts_object_key,
+    GoogleTTSBudgetBlockedError,
+)
 from backend.analytics import (
     _calculate_final_score,
     fetch_user_summary,
@@ -774,7 +785,7 @@ TTS_GENERATION_RECOVERY_PENDING_AGE_MINUTES = max(
     1,
     min(240, int((os.getenv("TTS_GENERATION_RECOVERY_PENDING_AGE_MINUTES") or "2").strip() or "2")),
 )
-TTS_OBJECT_PREFIX = str(os.getenv("TTS_OBJECT_PREFIX") or "tts").strip().strip("/") or "tts"
+# TTS_OBJECT_PREFIX lives in backend.tts_generation (imported above)
 KEY_SALT = (os.getenv("KEY_SALT") or "").strip()
 _RAILWAY_RUNTIME_DETECTED = any(
     str(os.getenv(env_name) or "").strip()
@@ -9317,14 +9328,7 @@ def _format_today_plan_response(plan: dict | None) -> dict:
     }
 
 
-def _normalize_short_lang_code(value: str | None, fallback: str = "ru") -> str:
-    raw = str(value or "").strip().lower()
-    if not raw:
-        return fallback
-    raw = raw.replace("_", "-")
-    if "-" in raw:
-        raw = raw.split("-", 1)[0]
-    return raw or fallback
+# _normalize_short_lang_code lives in backend.tts_generation (imported above)
 
 
 def _is_unclassified_focus_topic(main_category: str | None, sub_category: str | None) -> bool:
@@ -12972,20 +12976,7 @@ _CHAIN_CACHE: dict[str, AudioSegment] = {}
 _SILENCE_CACHE: dict[int, AudioSegment] = {}
 _AUDIO_GRAMMAR_EXPL_CACHE: dict[str, str] = {}
 
-_TTS_VOICES = {
-    "de": "de-DE-Neural2-C",
-    "ru": "ru-RU-Wavenet-B",
-    "en": "en-US-Wavenet-D",
-    "es": "es-ES-Standard-A",
-    "it": "it-IT-Standard-A",
-}
-_TTS_LANG_CODES = {
-    "de": "de-DE",
-    "ru": "ru-RU",
-    "en": "en-US",
-    "es": "es-ES",
-    "it": "it-IT",
-}
+# _TTS_VOICES and _TTS_LANG_CODES live in backend.tts_generation (imported above)
 
 _TTS_SPEED_DEFAULT = 0.9
 _PAUSE_BETWEEN_REPEATS_MS = 500
@@ -13180,27 +13171,8 @@ def _tts_cache_key(lang: str, voice: str, speed: float, text: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _sanitize_object_segment(value: str, fallback: str) -> str:
-    cleaned = re.sub(r"[^a-zA-Z0-9._-]+", "-", str(value or "").strip())
-    cleaned = re.sub(r"-{2,}", "-", cleaned).strip("-.")
-    if not cleaned:
-        return fallback
-    if ".." in cleaned:
-        cleaned = cleaned.replace("..", ".")
-    return cleaned or fallback
-
-
-def _normalize_tts_language_code(language: str | None) -> tuple[str, str]:
-    short_lang = _normalize_short_lang_code(language, fallback="de")
-    language_code = _TTS_LANG_CODES.get(short_lang, _TTS_LANG_CODES["de"])
-    return short_lang, language_code
-
-
-def _normalize_tts_voice_name(voice: str | None, short_lang: str) -> str:
-    candidate = str(voice or "").strip()
-    if candidate:
-        return candidate
-    return str(_TTS_VOICES.get(short_lang, _TTS_VOICES["de"])).strip()
+# _sanitize_object_segment, _normalize_tts_language_code, _normalize_tts_voice_name,
+# and _tts_object_key live in backend.tts_generation (imported above)
 
 
 def _tts_object_cache_key(short_lang: str, voice: str, speed: float, text: str) -> str:
@@ -13220,11 +13192,7 @@ def _tts_object_cache_key(short_lang: str, voice: str, speed: float, text: str) 
     ).hexdigest()
 
 
-def _tts_object_key(short_lang: str, voice: str, cache_key: str) -> str:
-    safe_lang = _sanitize_object_segment(short_lang, "de")
-    safe_voice = _sanitize_object_segment(voice, "voice")
-    safe_key = _sanitize_object_segment(cache_key, "key")
-    return f"{TTS_OBJECT_PREFIX}/{safe_lang}/{safe_voice}/{safe_key}.mp3"
+# _tts_object_key lives in backend.tts_generation (imported above)
 
 
 def _read_webapp_tts_request_payload(*, payload: dict | None = None) -> tuple[dict | None, tuple[dict, int] | None]:
@@ -16126,10 +16094,7 @@ def _test_build_de_script() -> None:
     assert script[-1]["chunks"] == chunks[:3]
 
 
-class GoogleTTSBudgetBlockedError(RuntimeError):
-    def __init__(self, message: str, *, payload: dict | None = None):
-        super().__init__(message)
-        self.payload = dict(payload or {})
+# GoogleTTSBudgetBlockedError lives in backend.tts_generation (imported above)
 
 
 class GoogleTranslateBudgetExceededError(RuntimeError):
