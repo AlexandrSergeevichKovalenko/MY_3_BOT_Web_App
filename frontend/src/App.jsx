@@ -14490,6 +14490,30 @@ function AppInner() {
       const jitterMs = Math.floor(Math.random() * 420);
       return Math.round(recommended + jitterMs);
     };
+    const fetchTerminalTranslationCheckDetails = async ({ checkSessionId, attemptCount }) => {
+      const response = await fetch('/api/webapp/check/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          check_session_id: checkSessionId,
+          poll_count: attemptCount,
+          include_items: true,
+          language_pair: getWebappLanguagePairHint() || undefined,
+        }),
+      });
+      if (!response.ok) {
+        const apiMessage = await readApiError(
+          response,
+          'Не удалось загрузить результаты проверки.',
+          'Pruefungsergebnisse konnten nicht geladen werden.'
+        );
+        throw new Error(apiMessage);
+      }
+      const terminalPayload = await response.json();
+      applyTranslationCheckStatusPayload(terminalPayload);
+      return terminalPayload;
+    };
     let attempt = 0;
     let suggestedDelayMs = 0;
     while (!translationCheckUnmountedRef.current && translationCheckPollTokenRef.current === pollToken) {
@@ -14525,13 +14549,19 @@ function AppInner() {
         throw new Error(apiMessage);
       }
 
-      const data = await response.json();
+      let data = await response.json();
       suggestedDelayMs = Number(data?.polling?.suggested_delay_ms || 0);
       const nextState = applyTranslationCheckStatusPayload(data);
       if (!nextState.sessionId) {
         throw new Error(tr('Сессия проверки не найдена.', 'Pruefungssession wurde nicht gefunden.'));
       }
       if (nextState.status === 'done' || nextState.status === 'failed' || nextState.status === 'canceled') {
+        if (data?.items_included === false) {
+          data = await fetchTerminalTranslationCheckDetails({
+            checkSessionId: nextState.sessionId,
+            attemptCount: attempt,
+          });
+        }
         void loadTodayPlan();
         return data;
       }
