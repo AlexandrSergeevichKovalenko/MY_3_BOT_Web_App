@@ -4550,7 +4550,8 @@ async def start_translation_session_webapp(
         phase_metrics["session_insert_ms"] = int((time.perf_counter() - session_insert_started_at) * 1000)
 
         immediate_entries: list[dict[str, Any]] = []
-        sync_seed_target_count = 1 if _translation_sentence_fill_async_enabled() else 7
+        # Even with async background fill enabled, return all ready cached/pool items immediately.
+        sync_seed_target_count = 7
         focus_key = ""
         focus_kind = "legacy"
         focus_label = ""

@@ -9886,7 +9886,7 @@ def finalize_translation_check_items_batch(
                 RETURNING incoming.status AS final_status;
                 """,
                 normalized_rows,
-                template="(%s, %s, %s::jsonb, %s, %s, %s)",
+                template="(%s, %s, %s::jsonb, %s, %s, %s::bigint)",
                 page_size=200,
             )
             updated_rows = cursor.fetchall() or []
