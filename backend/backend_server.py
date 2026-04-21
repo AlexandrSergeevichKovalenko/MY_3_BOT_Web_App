@@ -24286,6 +24286,70 @@ def _load_skills_card_projection_with_source(
     return None, None
 
 
+def _build_today_card_projection_fallback_from_source_snapshot(
+    *,
+    user_id: int,
+    username: str | None,
+    plan_date: date,
+) -> tuple[dict[str, Any], str]:
+    source_payload, source_meta = _get_today_plan_response_cached(
+        user_id=int(user_id),
+        username=username,
+        plan_date=plan_date,
+    )
+    synthetic_snapshot = {
+        "payload": source_payload,
+        "source_lang": source_meta.get("source_lang"),
+        "target_lang": source_meta.get("target_lang"),
+        "refreshed_at": source_meta.get("_snapshot_refreshed_at") or datetime.now(timezone.utc).isoformat(),
+    }
+    payload, _meta = _build_today_card_payload_from_today_snapshot(
+        user_id=int(user_id),
+        plan_date=plan_date,
+        today_snapshot=synthetic_snapshot,
+        card_version=f"source_fallback:{plan_date.isoformat()}",
+    )
+    if bool(source_payload.get("snapshot_pending")):
+        payload["projection_status"] = "refreshing"
+    return payload, str(source_meta.get("cache_tier") or "today_plan_fallback").strip() or "today_plan_fallback"
+
+
+def _build_skills_card_projection_fallback_from_source_snapshot(
+    *,
+    user_id: int,
+    username: str | None,
+    lookback_days: int,
+    existing_projection_payload: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], str]:
+    source_payload, source_meta = _get_skill_progress_response_cached(
+        user_id=int(user_id),
+        username=username,
+        lookback_days=int(lookback_days),
+    )
+    synthetic_snapshot = {
+        "payload": source_payload,
+        "source_lang": source_meta.get("source_lang"),
+        "target_lang": source_meta.get("target_lang"),
+        "refreshed_at": source_meta.get("_snapshot_refreshed_at") or datetime.now(timezone.utc).isoformat(),
+    }
+    existing_recent_session = (
+        dict(existing_projection_payload.get("recent_session") or {})
+        if isinstance(existing_projection_payload, dict) and isinstance(existing_projection_payload.get("recent_session"), dict)
+        else None
+    )
+    projection_status = "refreshing" if bool(source_payload.get("snapshot_pending")) else "ready"
+    payload, _meta = _build_skills_card_payload_from_skill_snapshot(
+        user_id=int(user_id),
+        lookback_days=int(lookback_days),
+        skill_snapshot=synthetic_snapshot,
+        card_version=f"source_fallback:{int(lookback_days)}",
+        recent_session_seed=existing_recent_session,
+        projection_status=projection_status,
+        pending_finish_session_id=None,
+    )
+    return payload, str(source_meta.get("cache_tier") or "skill_progress_fallback").strip() or "skill_progress_fallback"
+
+
 def _build_skills_card_response_payload(payload: dict[str, Any], *, user_id: int, username: str | None) -> dict[str, Any]:
     aggregate_summary = dict(payload.get("aggregate_summary") or {})
     top_weak = [dict(item or {}) for item in list(payload.get("top_weak") or []) if isinstance(item, dict)]
@@ -25562,11 +25626,11 @@ def get_today_plan():
             plan_date=plan_date,
         )
         if not isinstance(projection_payload, dict):
-            projection_payload = _materialize_today_card_projection(
+            projection_payload, cache_tier = _build_today_card_projection_fallback_from_source_snapshot(
                 user_id=int(user_id),
+                username=username,
                 plan_date=plan_date,
             )
-            cache_tier = "projection_materialized_sync"
         if not isinstance(projection_payload, dict):
             response_payload = {
                 "error": "Today card projection is not ready",
@@ -27371,12 +27435,12 @@ def get_skill_progress():
         lookback_days=int(lookback_days),
     )
     if not isinstance(payload, dict) or str(payload.get("projection_status") or "").strip().lower() != "ready":
-        payload = _materialize_skills_card_projection(
+        payload, projection_source = _build_skills_card_projection_fallback_from_source_snapshot(
             user_id=int(user_id),
+            username=username,
             lookback_days=int(lookback_days),
-            source_session_id=None,
+            existing_projection_payload=payload if isinstance(payload, dict) else None,
         )
-        projection_source = "projection_materialized_sync"
     if not isinstance(payload, dict):
         _log_flow_observation(
             "skill_progress",
