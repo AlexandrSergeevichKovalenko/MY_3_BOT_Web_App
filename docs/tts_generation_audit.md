@@ -1269,3 +1269,92 @@ Important limitation:
 Remaining `_run_tts_generation_job()` blockers after this extraction:
 - `_get_user_language_pair()`
 - `_billing_log_event_safe()`
+
+---
+
+## 24. RUNNER-BOUNDARY AUDIT: `_run_tts_generation_job()` (2026-04-21)
+
+**Question**: Can `_run_tts_generation_job()` be split into a TTS execution core (→ `tts_generation.py`) and a backend-specific shell (stays in `backend_server.py`)?
+
+### 24.1 Current dependency state
+
+All non-stdlib dependencies used in `_run_tts_generation_job()`:
+
+| Symbol | Module | Status |
+|--------|--------|--------|
+| `r2_exists`, `r2_put_bytes`, `r2_public_url` | `backend/r2_storage.py` | ✅ portable |
+| `mark_tts_object_ready`, `mark_tts_object_failed` | `backend/database.py` | ✅ portable |
+| `_release_tts_generation_in_flight`, `_clear_tts_url_poll_attempt` | `backend/tts_runtime_state.py` | ✅ portable |
+| `_record_tts_admin_monitor_event`, `_maybe_send_tts_admin_failure_alert`, `_shorten_tts_admin_text` | `backend/tts_admin_monitor.py` | ✅ portable |
+| `_synthesize_mp3`, `GoogleTTSBudgetBlockedError` | `backend/tts_generation.py` | ✅ portable |
+| `_sanitize_observability_id` | `backend/backend_server.py` line 2376 | ❌ trivially extractable (6 lines, pure) |
+| `_build_observability_correlation_id` | `backend/backend_server.py` line 2407 | ❌ trivially extractable (28 lines, Flask-guarded) |
+| `_elapsed_ms_since` | `backend/backend_server.py` line 2441 | ❌ trivially extractable (3 lines, pure) |
+| `_log_flow_observation` | `backend/backend_server.py` line 2464 | ❌ trivially extractable (13 lines, pure) |
+| `_get_user_language_pair` | `backend/backend_server.py` line 3701 | ❌ HARD BLOCKER — forbidden to extract |
+| `_billing_log_event_safe` | `backend/backend_server.py` line 8688 | ❌ HARD BLOCKER — forbidden to extract |
+
+### 24.2 Phase breakdown
+
+| Phase | Lines | Classification | Blockers |
+|-------|-------|----------------|----------|
+| Setup / correlation | 29764–29799 | Mixed | `_sanitize_observability_id`, `_build_observability_correlation_id`, `_log_flow_observation` — all trivially extractable |
+| Language-pair resolution | 29800–29804 | Backend shell only | `_get_user_language_pair` — hard blocker, inside `try` block |
+| Cache-hit short-circuit (R2 HEAD) | 29805–29838 | Mixed | `_billing_log_event_safe` ×1 — hard blocker interleaved with portable R2/DB ops |
+| Synthesis | 29840–29848 | TTS core ✅ | `_elapsed_ms_since` — trivially extractable |
+| Upload (R2 put) | 29849–29882 | Mixed | `_billing_log_event_safe` ×2 — hard blocker interleaved with portable R2 ops |
+| Ready transition | 29883–29917 | Mixed | `_billing_log_event_safe` ×1 — hard blocker interleaved with portable DB ops |
+| Failure handling | 29918–29948 | TTS core ✅ | None — all symbols already portable |
+| Final cleanup / side effects | 29949–29989 | Mixed | `_elapsed_ms_since`, `_log_flow_observation` — trivially extractable; rest already portable |
+
+### 24.3 Boundary decision: NO
+
+**A clean split is not possible yet.**
+
+The hard reason: `_get_user_language_pair()` is called inside the `try` block specifically so its failure routes to `except Exception → mark_tts_object_failed()`. Moving it to a shell wrapper breaks this error-handling contract — a failed lang pair resolution would no longer mark the TTS object as failed.
+
+`_billing_log_event_safe()` appears in 4 places across phases 3, 5, and 6. Each call uses `user_source_lang` / `user_target_lang` from the lang pair resolution above. These two symbols cannot be addressed independently.
+
+Callback injection (passing `billing_log_fn` as a parameter) is structurally possible but requires simultaneously:
+1. Moving `_get_user_language_pair` out of the try block or replicating its error-handling in the shell
+2. Threading `user_source_lang`/`user_target_lang` through a new parameter surface
+
+That is a behavioral change that must be explicitly approved.
+
+### 24.4 What the 4 trivially extractable helpers are
+
+`_sanitize_observability_id`, `_build_observability_correlation_id`, `_elapsed_ms_since`, `_log_flow_observation` — all pure or Flask-guarded helpers. No backend_server state, no DB, no queue. Total ~50 lines. Natural home: `backend/observability.py` (new module). These are NOT the primary blocker, but extracting them reduces the noise and makes the real blocker picture exact.
+
+### 24.5 Single recommended next step
+
+**Extract the 4 observability helpers to `backend/observability.py`.**
+
+Why this is next:
+- It is the only technically trivial step remaining.
+- After this, the dependency table for `_run_tts_generation_job()` reduces to exactly 2 backend_server-only items: `_get_user_language_pair` and `_billing_log_event_safe`.
+- That clean 2-item picture is the correct foundation for the billing/lang-pair decision — whether to inject them as callbacks or extract them.
+
+What this step does NOT do:
+- Does not extract `_get_user_language_pair`
+- Does not extract `_billing_log_event_safe`
+- Does not change any behavior
+- Does not enable the split by itself — it only removes the observability noise so the real decision can be made clearly
+
+---
+
+## 25. OBSERVABILITY HELPERS EXTRACTION (2026-04-21)
+
+Moved from `backend/backend_server.py` to new module `backend/observability.py`:
+
+- `_sanitize_observability_id`
+- `_build_observability_correlation_id`
+- `_elapsed_ms_since`
+- `_log_flow_observation`
+
+All 4 are re-exported into `backend_server.py` namespace via `from backend.observability import ...`. Zero call sites required updating.
+
+Remaining `_run_tts_generation_job()` blockers after this extraction:
+- `_get_user_language_pair`
+- `_billing_log_event_safe`
+
+These are the only two `backend_server`-only dependencies left in the function. No other trivially extractable helpers remain.

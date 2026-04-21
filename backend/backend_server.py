@@ -513,6 +513,12 @@ from backend.scheduler_jobs_core import run_tts_db_cache_cleanup_job
 from backend.scheduler_jobs_core import run_tts_r2_cache_cleanup_job
 from backend.scheduler_jobs_core import run_system_message_cleanup_job
 from backend.scheduler_jobs_core import run_database_table_sizes_report_job
+from backend.observability import (
+    _sanitize_observability_id,
+    _build_observability_correlation_id,
+    _elapsed_ms_since,
+    _log_flow_observation,
+)
 from backend.telegram_notify import (
     _send_private_message,
     _send_private_message_chunks,
@@ -2373,13 +2379,7 @@ def _build_webapp_instance_conflict_payload(lease: dict | None = None) -> dict:
     return payload
 
 
-def _sanitize_observability_id(value: Any, *, max_len: int = 128) -> str | None:
-    raw = str(value or "").strip()
-    if not raw:
-        return None
-    candidate = raw[:max_len]
-    cleaned = re.sub(r"[^a-zA-Z0-9._:-]+", "-", candidate).strip("-")
-    return cleaned or None
+# _sanitize_observability_id lives in backend.observability (imported above)
 
 
 def _extract_observability_request_id(payload: dict | None = None) -> str:
@@ -2404,43 +2404,14 @@ def _extract_observability_request_id(payload: dict | None = None) -> str:
     return f"req_{uuid4().hex[:20]}"
 
 
-def _build_observability_correlation_id(
-    *,
-    payload: dict | None = None,
-    fallback_seed: Any = None,
-    prefix: str = "flow",
-) -> str:
-    body = payload if isinstance(payload, dict) else {}
-    candidates = [
-        body.get("correlation_id"),
-        body.get("request_id"),
-    ]
-    if has_request_context():
-        candidates = [
-            request.headers.get("X-Correlation-ID"),
-            request.headers.get("X-Request-ID"),
-            request.args.get("correlation_id"),
-            request.args.get("request_id"),
-            *candidates,
-        ]
-    for candidate in candidates:
-        safe = _sanitize_observability_id(candidate)
-        if safe:
-            return safe
-    safe_prefix = _sanitize_observability_id(prefix, max_len=24) or "flow"
-    safe_seed = _sanitize_observability_id(fallback_seed, max_len=64)
-    if safe_seed:
-        return f"{safe_prefix}_{safe_seed}"
-    return f"{safe_prefix}_{uuid4().hex[:16]}"
+# _build_observability_correlation_id lives in backend.observability (imported above)
 
 
 def _to_epoch_ms() -> int:
     return int(time.time() * 1000)
 
 
-def _elapsed_ms_since(start_perf: float, end_perf: float | None = None) -> int:
-    end_value = end_perf if end_perf is not None else time.perf_counter()
-    return max(0, int((end_value - start_perf) * 1000))
+# _elapsed_ms_since lives in backend.observability (imported above)
 
 
 def _parse_iso_datetime(value: Any) -> datetime | None:
@@ -2461,20 +2432,7 @@ def _duration_between_ms(start_dt: datetime | None, end_dt: datetime | None) -> 
     return max(0, int((end_value - start_value).total_seconds() * 1000))
 
 
-def _log_flow_observation(flow: str, stage: str, **fields: Any) -> None:
-    event: dict[str, Any] = {
-        "flow": str(flow or "").strip() or "unknown",
-        "stage": str(stage or "").strip() or "unknown",
-        "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
-    }
-    for key, value in fields.items():
-        if value is None:
-            continue
-        event[str(key)] = value
-    try:
-        logging.info("obs %s", json.dumps(event, ensure_ascii=False, separators=(",", ":"), default=str))
-    except Exception:
-        logging.info("obs flow=%s stage=%s fields=%s", event.get("flow"), event.get("stage"), fields)
+# _log_flow_observation lives in backend.observability (imported above)
 
 
 def _estimate_json_payload_size_bytes(payload: Any) -> int | None:
