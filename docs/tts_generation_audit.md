@@ -1386,3 +1386,29 @@ Behavior preserved:
 - `GoogleTTSBudgetBlockedError` still handled inside core, result surfaced via dict
 
 Next step: move `_run_tts_generation_core()` to `backend/tts_generation.py`
+
+---
+
+## 27. `_run_tts_generation_core` MOVED TO `tts_generation.py` (2026-04-21)
+
+Moved `_run_tts_generation_core()` from `backend/backend_server.py` to `backend/tts_generation.py`.
+
+Additional imports added to `tts_generation.py`:
+- `mark_tts_object_ready`, `mark_tts_object_failed` ← `backend.database`
+- `_elapsed_ms_since` ← `backend.observability`
+- `r2_exists`, `r2_put_bytes`, `r2_public_url` ← `backend.r2_storage`
+- `_shorten_tts_admin_text` ← `backend.tts_admin_monitor`
+- `_clear_tts_url_poll_attempt` ← `backend.tts_runtime_state`
+
+All dependencies were already in portable modules — zero new backend_server imports introduced.
+
+Re-exported into `backend_server.py` namespace via `from backend.tts_generation import _run_tts_generation_core`.
+
+Shell (`_run_tts_generation_job`) remains in `backend_server.py` and continues to:
+- call `_get_user_language_pair()` (backend_server only)
+- inject `billing_fn=_billing_log_event_safe` (backend_server only)
+- own the finally block (process-local state, admin monitor, observability)
+
+Remaining blockers at the shell boundary:
+- `_get_user_language_pair` — business logic, stays in backend_server for now
+- `_billing_log_event_safe` — billing DB, stays in backend_server for now

@@ -11,6 +11,11 @@ Slice 4 — budget enforcement, admin alerting, and Google TTS synthesis.
          _synthesize_mp3.
   These were previously blocked by _send_private_message living only in
   backend_server; that primitive now lives in backend.telegram_notify.
+
+Slice 5 — TTS execution core.
+  Added: _run_tts_generation_core.
+  Shell (_run_tts_generation_job) remains in backend_server and injects
+  _billing_log_event_safe + pre-resolved language pair.
 """
 
 import io
@@ -26,9 +31,15 @@ from backend.database import (
     get_admin_telegram_ids,
     get_google_tts_monthly_budget_status,
     mark_provider_budget_threshold_notified,
+    mark_tts_object_failed,
+    mark_tts_object_ready,
     set_provider_budget_block_state,
 )
+from backend.observability import _elapsed_ms_since
+from backend.r2_storage import r2_exists, r2_put_bytes, r2_public_url
 from backend.telegram_notify import _send_private_message
+from backend.tts_admin_monitor import _shorten_tts_admin_text
+from backend.tts_runtime_state import _clear_tts_url_poll_attempt
 from backend.utils import prepare_google_creds_for_tts
 
 
@@ -424,3 +435,205 @@ def _synthesize_mp3(
     out = io.BytesIO()
     combined.export(out, format="mp3", bitrate="192k")
     return out.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# TTS execution core (Slice 5)
+# ---------------------------------------------------------------------------
+
+
+def _run_tts_generation_core(
+    *,
+    user_id_int: int,
+    language: str,
+    tts_lang_short: str,
+    voice: str,
+    speaking_rate: float,
+    normalized_text: str,
+    cache_key: str,
+    object_key: str,
+    had_existing_meta: bool,
+    user_source_lang: str | None,
+    user_target_lang: str | None,
+    billing_fn,
+) -> dict:
+    """Execute the TTS pipeline: cache-hit check, synthesis, upload, mark-ready.
+
+    Receives pre-resolved language pair and billing callable from the shell so
+    this function has no direct dependency on _get_user_language_pair or
+    _billing_log_event_safe. Always returns a result dict; never raises.
+    """
+    provider_duration_ms = None
+    storage_upload_duration_ms = None
+    r2_head_duration_ms = None
+    final_status = "error"
+    cache_hit = False
+    error_code: str | None = None
+    exception_type: str | None = None
+    error_message: str | None = None
+    failure_stage = "prepare"
+    try:
+        if had_existing_meta:
+            failure_stage = "r2_head"
+            r2_head_started_perf = time.perf_counter()
+            object_exists = bool(r2_exists(object_key))
+            r2_head_duration_ms = _elapsed_ms_since(r2_head_started_perf)
+            if user_id_int > 0 and billing_fn is not None:
+                billing_fn(
+                    user_id=user_id_int,
+                    action_type="r2_head_object",
+                    provider="cloudflare_r2_class_b",
+                    units_type="operations",
+                    units_value=1.0,
+                    source_lang=user_source_lang,
+                    target_lang=user_target_lang,
+                    idempotency_seed=f"r2-head:{user_id_int}:{object_key}:{time.time_ns()}",
+                    status="estimated",
+                    metadata={"storage": "r2", "operation": "head_object", "cached": object_exists},
+                )
+            if object_exists:
+                url = r2_public_url(object_key)
+                mark_tts_object_ready(
+                    cache_key=cache_key,
+                    object_key=object_key,
+                    url=url,
+                    size_bytes=None,
+                    language=language,
+                    voice=voice,
+                    speed=speaking_rate,
+                    source_text=normalized_text,
+                )
+                final_status = "hit"
+                cache_hit = True
+                _clear_tts_url_poll_attempt(cache_key)
+                return {
+                    "final_status": final_status,
+                    "cache_hit": cache_hit,
+                    "error_code": error_code,
+                    "exception_type": exception_type,
+                    "error_message": error_message,
+                    "failure_stage": failure_stage,
+                    "provider_duration_ms": provider_duration_ms,
+                    "storage_upload_duration_ms": storage_upload_duration_ms,
+                    "r2_head_duration_ms": r2_head_duration_ms,
+                }
+
+        failure_stage = "google_synthesize"
+        provider_started_perf = time.perf_counter()
+        response_audio = _synthesize_mp3(
+            normalized_text,
+            language=language,
+            voice=voice,
+            speed=speaking_rate,
+        )
+        provider_duration_ms = _elapsed_ms_since(provider_started_perf)
+        failure_stage = "r2_upload"
+        upload_started_perf = time.perf_counter()
+        r2_put_bytes(
+            object_key,
+            response_audio,
+            content_type="audio/mpeg",
+            cache_control="public, max-age=31536000, immutable",
+        )
+        storage_upload_duration_ms = _elapsed_ms_since(upload_started_perf)
+        if user_id_int > 0 and billing_fn is not None:
+            billing_fn(
+                user_id=user_id_int,
+                action_type="r2_put_object",
+                provider="cloudflare_r2_class_a",
+                units_type="operations",
+                units_value=1.0,
+                source_lang=user_source_lang,
+                target_lang=user_target_lang,
+                idempotency_seed=f"r2-put:{user_id_int}:{object_key}:{time.time_ns()}",
+                status="estimated",
+                metadata={"storage": "r2", "operation": "put_object", "bytes": len(response_audio)},
+            )
+            billing_fn(
+                user_id=user_id_int,
+                action_type="r2_storage_allocation",
+                provider="cloudflare_r2_storage",
+                units_type="mb_month",
+                units_value=float(len(response_audio)) / (1024.0 * 1024.0),
+                source_lang=user_source_lang,
+                target_lang=user_target_lang,
+                idempotency_seed=f"r2-storage:{user_id_int}:{object_key}:{len(response_audio)}:{time.time_ns()}",
+                status="estimated",
+                metadata={"storage": "r2", "bytes": len(response_audio)},
+            )
+        failure_stage = "mark_ready"
+        public_url = r2_public_url(object_key)
+        mark_tts_object_ready(
+            cache_key=cache_key,
+            object_key=object_key,
+            url=public_url,
+            size_bytes=len(response_audio),
+            language=language,
+            voice=voice,
+            speed=speaking_rate,
+            source_text=normalized_text,
+        )
+        if user_id_int > 0 and billing_fn is not None:
+            billing_fn(
+                user_id=user_id_int,
+                action_type="webapp_tts_chars",
+                provider="google_tts",
+                units_type="chars",
+                units_value=float(len(normalized_text)),
+                source_lang=user_source_lang,
+                target_lang=user_target_lang,
+                idempotency_seed=f"webapp-tts-generate:{user_id_int}:{cache_key}:{int(time.time())}",
+                status="estimated",
+                metadata={
+                    "cached": False,
+                    "language": language,
+                    "tts_lang": tts_lang_short,
+                    "voice": voice,
+                    "storage": "r2",
+                },
+            )
+        final_status = "generated"
+        cache_hit = False
+        _clear_tts_url_poll_attempt(cache_key)
+    except GoogleTTSBudgetBlockedError as exc:
+        error_code = "google_tts_budget_blocked"
+        exception_type = exc.__class__.__name__
+        error_message = _shorten_tts_admin_text(str(exc), 220)
+        mark_tts_object_failed(
+            cache_key=cache_key,
+            error_code="google_tts_budget_blocked",
+            error_msg=str(exc),
+            language=language,
+            voice=voice,
+            speed=speaking_rate,
+            source_text=normalized_text,
+            object_key=object_key,
+        )
+        final_status = "error"
+    except Exception as exc:
+        error_code = "tts_generation_failed"
+        exception_type = exc.__class__.__name__
+        error_message = _shorten_tts_admin_text(str(exc), 220)
+        logging.exception("R2 TTS generation failed for cache_key=%s", cache_key)
+        mark_tts_object_failed(
+            cache_key=cache_key,
+            error_code="tts_generation_failed",
+            error_msg=str(exc),
+            language=language,
+            voice=voice,
+            speed=speaking_rate,
+            source_text=normalized_text,
+            object_key=object_key,
+        )
+        final_status = "error"
+    return {
+        "final_status": final_status,
+        "cache_hit": cache_hit,
+        "error_code": error_code,
+        "exception_type": exception_type,
+        "error_message": error_message,
+        "failure_stage": failure_stage,
+        "provider_duration_ms": provider_duration_ms,
+        "storage_upload_duration_ms": storage_upload_duration_ms,
+        "r2_head_duration_ms": r2_head_duration_ms,
+    }
