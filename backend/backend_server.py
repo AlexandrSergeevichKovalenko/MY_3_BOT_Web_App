@@ -17211,6 +17211,13 @@ def bootstrap_webapp_session():
         parsed_user = parsed.get("user") if isinstance(parsed.get("user"), dict) else {}
         parsed_user_id = _safe_int(parsed_user.get("id"))
         if parsed_user_id is not None and parsed_user_id > 0:
+            plan_date = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
+            _ensure_webapp_home_phase1_projections(
+                user_id=int(parsed_user_id),
+                username=_extract_display_name(parsed_user),
+                plan_date=plan_date,
+                lookback_days=7,
+            )
             starter_dictionary = _build_starter_dictionary_offer(user_id=int(parsed_user_id))
             _prime_webapp_home_snapshots_async(
                 user_id=int(parsed_user_id),
@@ -24358,6 +24365,58 @@ def _materialize_skills_card_projection(
         projection_status="ready",
         pending_finish_session_id=None,
     )
+
+
+def _projection_payload_is_ready(payload: dict[str, Any] | None) -> bool:
+    return (
+        isinstance(payload, dict)
+        and str(payload.get("projection_status") or "").strip().lower() == "ready"
+    )
+
+
+def _ensure_webapp_home_phase1_projections(
+    *,
+    user_id: int,
+    username: str | None,
+    plan_date: date,
+    lookback_days: int,
+) -> None:
+    today_payload, _today_source = _load_today_card_projection_with_source(
+        user_id=int(user_id),
+        plan_date=plan_date,
+    )
+    if not _projection_payload_is_ready(today_payload):
+        try:
+            _materialize_today_card_projection(
+                user_id=int(user_id),
+                plan_date=plan_date,
+            )
+        except Exception:
+            logging.warning(
+                "Failed to ensure today_card projection during webapp bootstrap: user_id=%s plan_date=%s",
+                int(user_id),
+                plan_date.isoformat(),
+                exc_info=True,
+            )
+
+    skills_payload, _skills_source = _load_skills_card_projection_with_source(
+        user_id=int(user_id),
+        lookback_days=int(lookback_days),
+    )
+    if not _projection_payload_is_ready(skills_payload):
+        try:
+            _materialize_skills_card_projection(
+                user_id=int(user_id),
+                lookback_days=int(lookback_days),
+                source_session_id=None,
+            )
+        except Exception:
+            logging.warning(
+                "Failed to ensure skills_card projection during webapp bootstrap: user_id=%s lookback_days=%s",
+                int(user_id),
+                int(lookback_days),
+                exc_info=True,
+            )
 
 
 def materialize_projection_job_payload(projection_job: dict[str, Any]) -> dict | None:
