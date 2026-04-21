@@ -14406,10 +14406,115 @@ def _build_translation_readiness_report(
     }
 
 
+def _upsert_translation_focus_pool_daily_snapshot_from_inventory(
+    *,
+    snapshot_date: date,
+    source_lang: str,
+    target_lang: str,
+) -> int:
+    current_rows = get_translation_focus_pool_bucket_counts(
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    if not current_rows:
+        return 0
+
+    focus_payload_by_key = _all_translation_focus_pool_payloads()
+    focus_payloads: list[dict[str, Any]] = []
+    seen_focus_keys: set[str] = set()
+    levels: list[str] = []
+    seen_levels: set[str] = set()
+
+    for level in list(TRANSLATION_FOCUS_POOL_PREWARM_LEVELS or []):
+        normalized_level = str(level or "").strip().lower()
+        if normalized_level and normalized_level not in seen_levels:
+            levels.append(normalized_level)
+            seen_levels.add(normalized_level)
+
+    for row in list(current_rows or []):
+        focus_key = str(row.get("focus_key") or "").strip()
+        focus_label = str(row.get("focus_label") or focus_key).strip() or focus_key
+        level = str(row.get("level") or "").strip().lower()
+        if not focus_key or not level:
+            continue
+        if level not in seen_levels:
+            levels.append(level)
+            seen_levels.add(level)
+        if focus_key in seen_focus_keys:
+            continue
+        payload = dict(focus_payload_by_key.get(focus_key) or {})
+        payload["key"] = focus_key
+        if not str(payload.get("label") or "").strip():
+            payload["label"] = focus_label
+        focus_payloads.append(payload)
+        seen_focus_keys.add(focus_key)
+
+    low_watermark_by_bucket, target_ready_by_bucket = _build_translation_focus_pool_bucket_targets(
+        focus_payloads,
+        levels=levels,
+    )
+    snapshot_rows = [
+        {
+            "focus_key": str(row.get("focus_key") or "").strip(),
+            "focus_label": str(row.get("focus_label") or row.get("focus_key") or "").strip(),
+            "level": str(row.get("level") or "").strip().lower(),
+            "ready_count": int(row.get("ready_count") or 0),
+            "low_watermark": int(
+                low_watermark_by_bucket.get(
+                    (
+                        str(row.get("focus_key") or "").strip(),
+                        str(row.get("level") or "").strip().lower(),
+                    )
+                )
+                or 0
+            ),
+            "target_ready": int(
+                target_ready_by_bucket.get(
+                    (
+                        str(row.get("focus_key") or "").strip(),
+                        str(row.get("level") or "").strip().lower(),
+                    )
+                )
+                or 0
+            ),
+        }
+        for row in list(current_rows or [])
+        if str(row.get("focus_key") or "").strip() and str(row.get("level") or "").strip()
+    ]
+    return upsert_translation_focus_pool_daily_snapshot(
+        snapshot_date=snapshot_date,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        rows=snapshot_rows,
+    )
+
+
 def _dispatch_translation_focus_pool_refill(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFAULT_TZ) -> dict:
+    snapshot_date = _get_local_today_date(tz_name)
+
+    def _persist_daily_snapshot() -> None:
+        try:
+            upserted = _upsert_translation_focus_pool_daily_snapshot_from_inventory(
+                snapshot_date=snapshot_date,
+                source_lang="ru",
+                target_lang="de",
+            )
+            logging.info(
+                "Translation focus pool daily snapshot upserted: snapshot_date=%s rows=%s",
+                snapshot_date.isoformat(),
+                int(upserted or 0),
+            )
+        except Exception:
+            logging.exception(
+                "Translation focus pool daily snapshot upsert failed snapshot_date=%s",
+                snapshot_date.isoformat(),
+            )
+
     if not (TRANSLATION_FOCUS_POOL_PREWARM_ENABLED or force):
+        _persist_daily_snapshot()
         return {"ok": True, "skipped": True, "reason": "disabled", "generated": 0, "upserted": 0, "focuses": 0}
     if not force and not _should_run_sentence_prewarm_now(tz_name):
+        _persist_daily_snapshot()
         return {"ok": True, "skipped": True, "reason": "outside_offpeak_window", "generated": 0, "upserted": 0, "focuses": 0}
     try:
         focus_candidates = _list_translation_focus_pool_prewarm_candidates(
@@ -14417,6 +14522,7 @@ def _dispatch_translation_focus_pool_refill(*, force: bool = False, tz_name: str
             lookback_days=TRANSLATION_FOCUS_POOL_PREWARM_LOOKBACK_DAYS,
         )
         if not focus_candidates:
+            _persist_daily_snapshot()
             return {
                 "ok": True,
                 "skipped": True,
@@ -14442,6 +14548,7 @@ def _dispatch_translation_focus_pool_refill(*, force: bool = False, tz_name: str
             )
         )
         focus_pool_result["skipped"] = False
+        _persist_daily_snapshot()
         return focus_pool_result
     except Exception:
         logging.exception("Translation focus pool refill failed")
