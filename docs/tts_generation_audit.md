@@ -1358,3 +1358,31 @@ Remaining `_run_tts_generation_job()` blockers after this extraction:
 - `_billing_log_event_safe`
 
 These are the only two `backend_server`-only dependencies left in the function. No other trivially extractable helpers remain.
+
+---
+
+## 26. CORE/SHELL BOUNDARY INTRODUCED (2026-04-21)
+
+`_run_tts_generation_job()` split into two functions in `backend/backend_server.py`:
+
+**`_run_tts_generation_core()`** (new, line 29707):
+- Contains: cache-hit check, synthesis, upload, mark-ready, failure handling
+- Receives pre-resolved `user_source_lang`, `user_target_lang` as parameters
+- Receives `billing_fn` callable — no direct call to `_billing_log_event_safe`
+- No direct call to `_get_user_language_pair`
+- Always returns a result dict; never raises
+- No `backend_server` globals in scope
+
+**`_run_tts_generation_job()`** (shell, line 29904):
+- Keeps: setup, observability ID resolution, `generation_runner_started` log
+- Calls `_get_user_language_pair()` inside the existing try block
+- Passes `billing_fn=_billing_log_event_safe` to core
+- Keeps: finally block with `_release_tts_generation_in_flight`, `_record_tts_admin_monitor_event`, `_maybe_send_tts_admin_failure_alert`, `generation_runner_finished` log
+- Error handling for lang pair failures preserved: `except Exception` in shell calls `mark_tts_object_failed` exactly as before
+
+Behavior preserved:
+- Same billing events, same timing, same DB transitions, same observability logs
+- `_get_user_language_pair` failure still marks TTS object as failed
+- `GoogleTTSBudgetBlockedError` still handled inside core, result surfaced via dict
+
+Next step: move `_run_tts_generation_core()` to `backend/tts_generation.py`

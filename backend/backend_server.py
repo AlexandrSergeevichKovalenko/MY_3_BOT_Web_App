@@ -29704,9 +29704,9 @@ def set_flashcard_feel_feedback():
     )
 
 
-def _run_tts_generation_job(
+def _run_tts_generation_core(
     *,
-    user_id: int,
+    user_id_int: int,
     language: str,
     tts_lang_short: str,
     voice: str,
@@ -29715,25 +29715,16 @@ def _run_tts_generation_job(
     cache_key: str,
     object_key: str,
     had_existing_meta: bool,
-    correlation_id: str | None = None,
-    request_id: str | None = None,
-    enqueue_ts_ms: int | None = None,
-) -> None:
-    user_id_int = int(user_id or 0)
-    observability_user_id = user_id_int if user_id_int > 0 else None
-    job_started_perf = time.perf_counter()
-    generation_start_ts_ms = _to_epoch_ms()
-    resolved_request_id = _sanitize_observability_id(request_id) or f"req_{uuid4().hex[:20]}"
-    resolved_correlation_id = (
-        _sanitize_observability_id(correlation_id)
-        or _build_observability_correlation_id(fallback_seed=str(cache_key)[:24], prefix="tts")
-    )
-    runner_start_delay_ms = None
-    if enqueue_ts_ms is not None:
-        try:
-            runner_start_delay_ms = max(0, int(generation_start_ts_ms - int(enqueue_ts_ms)))
-        except Exception:
-            runner_start_delay_ms = None
+    user_source_lang: str | None,
+    user_target_lang: str | None,
+    billing_fn,
+) -> dict:
+    """Execute the TTS pipeline: cache-hit check, synthesis, upload, mark-ready.
+
+    Receives pre-resolved language pair and billing callable from the shell so
+    this function has no direct dependency on _get_user_language_pair or
+    _billing_log_event_safe. Always returns a result dict; never raises.
+    """
     provider_duration_ms = None
     storage_upload_duration_ms = None
     r2_head_duration_ms = None
@@ -29743,30 +29734,14 @@ def _run_tts_generation_job(
     exception_type: str | None = None
     error_message: str | None = None
     failure_stage = "prepare"
-    _log_flow_observation(
-        "tts",
-        "generation_runner_started",
-        request_id=resolved_request_id,
-        correlation_id=resolved_correlation_id,
-        user_id=observability_user_id,
-        cache_key=cache_key,
-        object_key=object_key,
-        generation_start_ts_ms=generation_start_ts_ms,
-        runner_start_delay_ms=runner_start_delay_ms,
-        cache_hit=bool(had_existing_meta),
-    )
     try:
-        user_source_lang = None
-        user_target_lang = None
-        if user_id_int > 0:
-            user_source_lang, user_target_lang, _profile = _get_user_language_pair(user_id_int)
         if had_existing_meta:
             failure_stage = "r2_head"
             r2_head_started_perf = time.perf_counter()
             object_exists = bool(r2_exists(object_key))
             r2_head_duration_ms = _elapsed_ms_since(r2_head_started_perf)
-            if user_id_int > 0:
-                _billing_log_event_safe(
+            if user_id_int > 0 and billing_fn is not None:
+                billing_fn(
                     user_id=user_id_int,
                     action_type="r2_head_object",
                     provider="cloudflare_r2_class_b",
@@ -29793,7 +29768,17 @@ def _run_tts_generation_job(
                 final_status = "hit"
                 cache_hit = True
                 _clear_tts_url_poll_attempt(cache_key)
-                return
+                return {
+                    "final_status": final_status,
+                    "cache_hit": cache_hit,
+                    "error_code": error_code,
+                    "exception_type": exception_type,
+                    "error_message": error_message,
+                    "failure_stage": failure_stage,
+                    "provider_duration_ms": provider_duration_ms,
+                    "storage_upload_duration_ms": storage_upload_duration_ms,
+                    "r2_head_duration_ms": r2_head_duration_ms,
+                }
 
         failure_stage = "google_synthesize"
         provider_started_perf = time.perf_counter()
@@ -29813,8 +29798,8 @@ def _run_tts_generation_job(
             cache_control="public, max-age=31536000, immutable",
         )
         storage_upload_duration_ms = _elapsed_ms_since(upload_started_perf)
-        if user_id_int > 0:
-            _billing_log_event_safe(
+        if user_id_int > 0 and billing_fn is not None:
+            billing_fn(
                 user_id=user_id_int,
                 action_type="r2_put_object",
                 provider="cloudflare_r2_class_a",
@@ -29826,7 +29811,7 @@ def _run_tts_generation_job(
                 status="estimated",
                 metadata={"storage": "r2", "operation": "put_object", "bytes": len(response_audio)},
             )
-            _billing_log_event_safe(
+            billing_fn(
                 user_id=user_id_int,
                 action_type="r2_storage_allocation",
                 provider="cloudflare_r2_storage",
@@ -29850,9 +29835,8 @@ def _run_tts_generation_job(
             speed=speaking_rate,
             source_text=normalized_text,
         )
-
-        if user_id_int > 0:
-            _billing_log_event_safe(
+        if user_id_int > 0 and billing_fn is not None:
+            billing_fn(
                 user_id=user_id_int,
                 action_type="webapp_tts_chars",
                 provider="google_tts",
@@ -29904,9 +29888,121 @@ def _run_tts_generation_job(
             object_key=object_key,
         )
         final_status = "error"
+    return {
+        "final_status": final_status,
+        "cache_hit": cache_hit,
+        "error_code": error_code,
+        "exception_type": exception_type,
+        "error_message": error_message,
+        "failure_stage": failure_stage,
+        "provider_duration_ms": provider_duration_ms,
+        "storage_upload_duration_ms": storage_upload_duration_ms,
+        "r2_head_duration_ms": r2_head_duration_ms,
+    }
+
+
+def _run_tts_generation_job(
+    *,
+    user_id: int,
+    language: str,
+    tts_lang_short: str,
+    voice: str,
+    speaking_rate: float,
+    normalized_text: str,
+    cache_key: str,
+    object_key: str,
+    had_existing_meta: bool,
+    correlation_id: str | None = None,
+    request_id: str | None = None,
+    enqueue_ts_ms: int | None = None,
+) -> None:
+    user_id_int = int(user_id or 0)
+    observability_user_id = user_id_int if user_id_int > 0 else None
+    job_started_perf = time.perf_counter()
+    generation_start_ts_ms = _to_epoch_ms()
+    resolved_request_id = _sanitize_observability_id(request_id) or f"req_{uuid4().hex[:20]}"
+    resolved_correlation_id = (
+        _sanitize_observability_id(correlation_id)
+        or _build_observability_correlation_id(fallback_seed=str(cache_key)[:24], prefix="tts")
+    )
+    runner_start_delay_ms = None
+    if enqueue_ts_ms is not None:
+        try:
+            runner_start_delay_ms = max(0, int(generation_start_ts_ms - int(enqueue_ts_ms)))
+        except Exception:
+            runner_start_delay_ms = None
+    _log_flow_observation(
+        "tts",
+        "generation_runner_started",
+        request_id=resolved_request_id,
+        correlation_id=resolved_correlation_id,
+        user_id=observability_user_id,
+        cache_key=cache_key,
+        object_key=object_key,
+        generation_start_ts_ms=generation_start_ts_ms,
+        runner_start_delay_ms=runner_start_delay_ms,
+        cache_hit=bool(had_existing_meta),
+    )
+    core_result: dict = {
+        "final_status": "error",
+        "cache_hit": False,
+        "error_code": None,
+        "exception_type": None,
+        "error_message": None,
+        "failure_stage": "prepare",
+        "provider_duration_ms": None,
+        "storage_upload_duration_ms": None,
+        "r2_head_duration_ms": None,
+    }
+    try:
+        user_source_lang = None
+        user_target_lang = None
+        if user_id_int > 0:
+            user_source_lang, user_target_lang, _profile = _get_user_language_pair(user_id_int)
+        core_result = _run_tts_generation_core(
+            user_id_int=user_id_int,
+            language=language,
+            tts_lang_short=tts_lang_short,
+            voice=voice,
+            speaking_rate=speaking_rate,
+            normalized_text=normalized_text,
+            cache_key=cache_key,
+            object_key=object_key,
+            had_existing_meta=had_existing_meta,
+            user_source_lang=user_source_lang,
+            user_target_lang=user_target_lang,
+            billing_fn=_billing_log_event_safe,
+        )
+    except Exception as exc:
+        error_code = "tts_generation_failed"
+        exception_type = exc.__class__.__name__
+        error_message = _shorten_tts_admin_text(str(exc), 220)
+        logging.exception("R2 TTS generation failed for cache_key=%s", cache_key)
+        mark_tts_object_failed(
+            cache_key=cache_key,
+            error_code="tts_generation_failed",
+            error_msg=str(exc),
+            language=language,
+            voice=voice,
+            speed=speaking_rate,
+            source_text=normalized_text,
+            object_key=object_key,
+        )
+        core_result = {
+            "final_status": "error",
+            "cache_hit": False,
+            "error_code": error_code,
+            "exception_type": exception_type,
+            "error_message": error_message,
+            "failure_stage": "prepare",
+            "provider_duration_ms": None,
+            "storage_upload_duration_ms": None,
+            "r2_head_duration_ms": None,
+        }
     finally:
         _release_tts_generation_in_flight(str(cache_key))
         runner_duration_ms = _elapsed_ms_since(job_started_perf)
+        final_status = core_result.get("final_status", "error")
         _record_tts_admin_monitor_event(
             "generation",
             "error" if final_status == "error" else str(final_status or "unknown"),
@@ -29919,10 +30015,10 @@ def _run_tts_generation_job(
                 "object_key": str(object_key),
                 "user_id": user_id_int if user_id_int > 0 else None,
                 "tts_lang_short": str(tts_lang_short or ""),
-                "error_code": error_code,
-                "exception_type": exception_type,
-                "error_message": error_message,
-                "failure_stage": str(failure_stage or ""),
+                "error_code": core_result.get("error_code"),
+                "exception_type": core_result.get("exception_type"),
+                "error_message": core_result.get("error_message"),
+                "failure_stage": str(core_result.get("failure_stage") or ""),
             },
         )
         if final_status == "error":
@@ -29937,13 +30033,13 @@ def _run_tts_generation_job(
             object_key=object_key,
             generation_start_ts_ms=generation_start_ts_ms,
             runner_start_delay_ms=runner_start_delay_ms,
-            cache_hit=cache_hit,
+            cache_hit=core_result.get("cache_hit", False),
             final_status=final_status,
-            external_tts_provider_duration_ms=provider_duration_ms,
-            storage_upload_duration_ms=storage_upload_duration_ms,
-            r2_head_duration_ms=r2_head_duration_ms,
+            external_tts_provider_duration_ms=core_result.get("provider_duration_ms"),
+            storage_upload_duration_ms=core_result.get("storage_upload_duration_ms"),
+            r2_head_duration_ms=core_result.get("r2_head_duration_ms"),
             duration_ms=runner_duration_ms,
-            error_code=error_code,
+            error_code=core_result.get("error_code"),
         )
 
 
