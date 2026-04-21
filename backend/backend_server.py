@@ -317,9 +317,7 @@ from backend.database import (
     mark_tts_object_failed,
     delete_tts_object_cache_entry,
     mark_flashcards_seen,
-    record_tts_admin_monitor_event as persist_tts_admin_monitor_event,
     list_tts_admin_monitor_events_since,
-    delete_old_tts_admin_monitor_events,
     get_next_due_srs_card,
     get_next_new_srs_candidate,
     count_due_srs_cards,
@@ -543,6 +541,12 @@ from backend.tts_runtime_state import (
     _increment_tts_url_poll_attempt,
     _release_tts_generation_in_flight,
 )
+from backend.tts_admin_monitor import (
+    _TTS_ADMIN_MONITOR_LOCK,
+    _get_tts_admin_monitor_fallback_window,
+    _prune_tts_admin_monitor_events_persistent,
+    _record_tts_admin_monitor_event,
+)
 from backend.analytics import (
     _calculate_final_score,
     fetch_user_summary,
@@ -637,8 +641,6 @@ _TRANSLATION_SESSION_FILL_LAUNCHED_AT_MS: dict[int, int] = {}
 
 _audio_scheduler = None
 _audio_scheduler_lock = None
-_TTS_ADMIN_MONITOR_LOCK = threading.Lock()
-_TTS_ADMIN_MONITOR_EVENTS = deque()
 _TTS_ADMIN_ALERT_LAST_SENT: dict[str, float] = {}
 _TTS_GENERATION_QUEUE_LOCK = threading.RLock()
 _TTS_GENERATION_QUEUE = None
@@ -11709,75 +11711,9 @@ def _send_tts_admin_message(text: str) -> bool:
     return sent
 
 
-def _tts_admin_monitor_retention_seconds() -> int:
-    return max(
-        4 * 3600,
-        int(TTS_ADMIN_DIGEST_WINDOW_MINUTES) * 120,
-        int(TTS_ADMIN_ALERT_BURST_WINDOW_MINUTES) * 120,
-        int(TTS_ADMIN_ALERT_FAILURE_WINDOW_MINUTES) * 120,
-        int(TTS_ADMIN_ALERT_PENDING_AGE_MINUTES) * 120,
-    )
-
-
-def _prune_tts_admin_monitor_events_persistent() -> None:
-    retention_seconds = _tts_admin_monitor_retention_seconds()
-    try:
-        delete_old_tts_admin_monitor_events(older_than_seconds=retention_seconds)
-    except Exception:
-        logging.debug("Failed to prune persistent TTS admin monitor events", exc_info=True)
-
-
-def _prune_tts_admin_monitor_events_locked(now_ts: float) -> None:
-    cutoff = float(now_ts) - float(_tts_admin_monitor_retention_seconds())
-    while _TTS_ADMIN_MONITOR_EVENTS and float(_TTS_ADMIN_MONITOR_EVENTS[0].get("ts") or 0.0) < cutoff:
-        _TTS_ADMIN_MONITOR_EVENTS.popleft()
-
-
-def _record_tts_admin_monitor_event(
-    kind: str,
-    status: str,
-    *,
-    source: str = "",
-    count: int = 1,
-    chars: int = 0,
-    duration_ms: int | None = None,
-    meta: dict | None = None,
-) -> None:
-    now_ts = time.time()
-    payload = {
-        "ts": now_ts,
-        "kind": str(kind or "").strip().lower() or "unknown",
-        "status": str(status or "").strip().lower() or "unknown",
-        "source": str(source or "").strip().lower() or "unknown",
-        "count": max(0, int(count or 0)),
-        "chars": max(0, int(chars or 0)),
-        "duration_ms": int(duration_ms) if duration_ms is not None else None,
-        "meta": meta if isinstance(meta, dict) else {},
-    }
-    with _TTS_ADMIN_MONITOR_LOCK:
-        _TTS_ADMIN_MONITOR_EVENTS.append(payload)
-        _prune_tts_admin_monitor_events_locked(now_ts)
-    try:
-        persist_tts_admin_monitor_event(
-            kind=payload["kind"],
-            status=payload["status"],
-            source=payload["source"],
-            count=payload["count"],
-            chars=payload["chars"],
-            duration_ms=payload["duration_ms"],
-            meta=payload["meta"],
-        )
-        _prune_tts_admin_monitor_events_persistent()
-    except Exception:
-        logging.debug("Failed to persist TTS admin monitor event", exc_info=True)
-
-
 def _get_tts_admin_monitor_window(seconds: int) -> list[dict]:
     window_seconds = max(1, int(seconds or 1))
-    now_ts = time.time()
-    with _TTS_ADMIN_MONITOR_LOCK:
-        _prune_tts_admin_monitor_events_locked(now_ts)
-        fallback_events = list(_TTS_ADMIN_MONITOR_EVENTS)
+    fallback_events = _get_tts_admin_monitor_fallback_window(window_seconds)
     _prune_tts_admin_monitor_events_persistent()
     try:
         db_events = list_tts_admin_monitor_events_since(window_seconds=window_seconds)
@@ -11785,8 +11721,7 @@ def _get_tts_admin_monitor_window(seconds: int) -> list[dict]:
             return db_events
     except Exception:
         logging.debug("Failed to load persistent TTS admin monitor window", exc_info=True)
-    cutoff = now_ts - window_seconds
-    return [item for item in fallback_events if float(item.get("ts") or 0.0) >= cutoff]
+    return fallback_events
 
 
 def _clamp_tts_prewarm_per_user_char_limit(value: Any) -> int:

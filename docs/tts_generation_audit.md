@@ -1216,3 +1216,30 @@ Why this is next:
 - `_maybe_send_tts_admin_failure_alert()` is deferred because it pulls in monitor-window reads, cooldown state, failure summarization, and Telegram admin messaging.
 - `_get_user_language_pair()` is deferred because it is a shared server helper with high blast radius.
 - `_billing_log_event_safe()` is deferred because it is a shared billing helper with high blast radius.
+
+---
+
+## 22. TTS ADMIN-MONITOR EVENT WRITER EXTRACTION (2026-04-21)
+
+Moved from `backend/backend_server.py` to [backend/tts_admin_monitor.py](/Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/backend/tts_admin_monitor.py):
+
+- `_record_tts_admin_monitor_event()`
+
+Moved with it as the minimal support slice it directly requires:
+
+- `_TTS_ADMIN_MONITOR_EVENTS`
+- `_TTS_ADMIN_MONITOR_LOCK`
+- `_tts_admin_monitor_retention_seconds()`
+- `_prune_tts_admin_monitor_events_locked()`
+- `_prune_tts_admin_monitor_events_persistent()`
+- `_get_tts_admin_monitor_fallback_window()`
+
+Important limitation:
+- this remains **process-local in-memory admin-monitor state**
+- it does **not** solve cross-replica monitoring visibility
+- this step is blocker isolation only, not a horizontal-scaling improvement
+
+Remaining `_run_tts_generation_job()` blockers after this extraction:
+- `_maybe_send_tts_admin_failure_alert()`
+- `_get_user_language_pair()`
+- `_billing_log_event_safe()`
