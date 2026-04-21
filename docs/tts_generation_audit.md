@@ -1243,3 +1243,29 @@ Remaining `_run_tts_generation_job()` blockers after this extraction:
 - `_maybe_send_tts_admin_failure_alert()`
 - `_get_user_language_pair()`
 - `_billing_log_event_safe()`
+
+---
+
+## 23. TTS ADMIN FAILURE-ALERT EXTRACTION (2026-04-21)
+
+Moved from `backend/backend_server.py` to [backend/tts_admin_monitor.py](/Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/backend/tts_admin_monitor.py):
+
+- `_maybe_send_tts_admin_failure_alert()`
+
+Moved with it as the minimal exact support slice it directly requires:
+
+- `_send_tts_admin_message()`
+- `_get_tts_admin_monitor_window()`
+- `_should_send_tts_admin_alert()`
+- `_shorten_tts_admin_text()`
+- `_tts_admin_event_weight()`
+- `_summarize_tts_failure_window()`
+
+Important limitation:
+- this remains **TTS-specific alerting over process-local monitor state**
+- it does **not** change cooldown semantics, queue semantics, or cross-replica visibility
+- this step is blocker isolation only, not a horizontal-scaling improvement
+
+Remaining `_run_tts_generation_job()` blockers after this extraction:
+- `_get_user_language_pair()`
+- `_billing_log_event_safe()`
