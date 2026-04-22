@@ -39771,6 +39771,7 @@ def finish_webapp_translation():
             translated_count=int(result.get("translated_count") or 0) if result.get("translated_count") is not None else None,
             total_sentences=int(result.get("total_sentences") or 0) if result.get("total_sentences") is not None else None,
         )
+        finish_result_status = str(result.get("status") or "").strip().lower()
         group_warning = None
         daily_summary_ms = 0
         summary_delivery_ms = 0
@@ -39779,7 +39780,8 @@ def finish_webapp_translation():
         summary_job_id = None
         summary_delivery_attempted = False
         summary_delivery_target = None
-        if can_enqueue_background_jobs():
+        should_run_post_finish_bookkeeping = finish_result_status == "completed"
+        if should_run_post_finish_bookkeeping and can_enqueue_background_jobs():
             try:
                 summary_enqueue_started_perf = time.perf_counter()
                 summary_job_id = enqueue_finish_daily_summary_job(
@@ -39800,7 +39802,7 @@ def finish_webapp_translation():
                     exc_info=True,
                 )
                 group_warning = f"Не удалось поставить сводку в очередь: {exc}"
-        else:
+        elif should_run_post_finish_bookkeeping:
             group_warning = "Фоновая очередь недоступна для отправки сводки."
         response_payload = {"ok": True, **result}
         if group_warning:
@@ -39833,12 +39835,14 @@ def finish_webapp_translation():
         finish_enqueue_skills_status_count_ms = 0
         finish_enqueue_skills_other_ms = 0
         finish_bookkeeping_dispatch_ms = 0
+        source_lang = "ru"
+        target_lang = "de"
         _log_finish_request_event(
             "finish_projection_publish_started",
             classification="success",
             finish_status=str(result.get("status") or "").strip() or None,
         )
-        if str(result.get("status") or "").strip().lower() == "completed":
+        if should_run_post_finish_bookkeeping:
             source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
             session_state_clear_started_perf = time.perf_counter()
             clear_active_translation_session_state(int(user_id))
@@ -39980,24 +39984,24 @@ def finish_webapp_translation():
                 _skills_seed_payload = _skills_hp.get("skills_payload")
                 _skills_seed_meta = _skills_hp.get("skills_meta")
             ensure_hotpaths_ms = int(ensured_hotpaths.get("wall_ms") or 0)
-        bookkeeping_dispatch_started_perf = time.perf_counter()
-        _dispatch_post_finish_snapshot_bookkeeping(
-            user_id=int(user_id),
-            username=username or user_name,
-            plan_date=plan_date,
-            finished_session_id=finished_session_id or None,
-            request_id=request_id,
-            correlation_id=correlation_id,
-            session_presence_source_lang=source_lang,
-            session_presence_target_lang=target_lang,
-            session_presence_translated_count=_sp_translated_count,
-            session_presence_total_sentences=_sp_total_sentences,
-            skills_seed_payload=_skills_seed_payload,
-            skills_seed_meta=_skills_seed_meta,
-            skills_seed_source_lang=source_lang,
-            skills_seed_target_lang=target_lang,
-        )
-        finish_bookkeeping_dispatch_ms = int((time.perf_counter() - bookkeeping_dispatch_started_perf) * 1000)
+            bookkeeping_dispatch_started_perf = time.perf_counter()
+            _dispatch_post_finish_snapshot_bookkeeping(
+                user_id=int(user_id),
+                username=username or user_name,
+                plan_date=plan_date,
+                finished_session_id=finished_session_id or None,
+                request_id=request_id,
+                correlation_id=correlation_id,
+                session_presence_source_lang=source_lang,
+                session_presence_target_lang=target_lang,
+                session_presence_translated_count=_sp_translated_count,
+                session_presence_total_sentences=_sp_total_sentences,
+                skills_seed_payload=_skills_seed_payload,
+                skills_seed_meta=_skills_seed_meta,
+                skills_seed_source_lang=source_lang,
+                skills_seed_target_lang=target_lang,
+            )
+            finish_bookkeeping_dispatch_ms = int((time.perf_counter() - bookkeeping_dispatch_started_perf) * 1000)
         _log_finish_request_event(
             "finish_completed",
             classification="success",
