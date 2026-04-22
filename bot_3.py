@@ -71,6 +71,7 @@ from backend.openai_manager import (
     run_dictionary_collocations_multilang,
     run_generate_word_quiz,
     run_language_learning_private_question,
+    run_language_learning_private_question_detailed,
     run_quiz_followup_question,
     run_translate_subtitles_ru,
     run_translate_subtitles_multilang,
@@ -1655,6 +1656,83 @@ async def handle_language_tutor_callback(update: Update, context: CallbackContex
         user_id=int(query.from_user.id),
         continue_from_last=continue_from_last,
     )
+
+
+async def handle_language_tutor_detail_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query or not query.from_user:
+        return
+    await query.answer()
+    if not (query.message and query.message.chat and query.message.chat.type == "private"):
+        if query.message:
+            await query.message.reply_text("Эта кнопка работает только в личке с ботом.")
+        return
+    if not is_telegram_user_allowed(int(query.from_user.id)):
+        await query.message.reply_text("Сначала получите доступ к боту, потом сможете задавать вопросы.")
+        return
+
+    last_exchange = context.user_data.get("language_tutor_last_exchange")
+    if not isinstance(last_exchange, dict) or not str(last_exchange.get("question") or "").strip():
+        await query.message.reply_text(
+            "Не удалось найти предыдущий вопрос. Задайте вопрос заново.",
+            reply_markup=_build_private_language_tutor_reply_keyboard(),
+        )
+        return
+
+    user_id = int(query.from_user.id)
+    question = str(last_exchange.get("question") or "").strip()
+    source_lang, target_lang = _language_tutor_pair_for_user(user_id)
+
+    await query.message.reply_text(
+        "📖 Готовлю подробный разбор...",
+        reply_markup=_build_private_language_tutor_reply_keyboard(),
+    )
+    try:
+        llm_payload: dict = {
+            "learner_question": question,
+            "source_language": source_lang,
+            "target_language": target_lang,
+        }
+        prev_answer = str(last_exchange.get("answer") or "").strip()
+        if question and prev_answer:
+            llm_payload["conversation_context"] = {
+                "previous_question": question,
+                "previous_answer": prev_answer,
+            }
+        llm_response = await run_language_learning_private_question_detailed(llm_payload)
+        normalized = _normalize_language_tutor_llm_response(
+            llm_response,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        is_language_question = bool(normalized.get("is_language_question"))
+        answer = str(normalized.get("answer") or "").strip()
+        if not answer:
+            answer = _language_tutor_default_refusal() if not is_language_question else "Не удалось подготовить ответ. Попробуйте переформулировать вопрос."
+        save_key = None
+        if normalized["save_source_text"] and normalized["save_target_text"]:
+            save_key = _store_pending_quiz_question_save_request(
+                user_id=user_id,
+                request_key=f"langgpt_detail:{user_id}",
+                source_text=normalized["save_source_text"],
+                target_text=normalized["save_target_text"],
+                source_lang=normalized["source_lang"],
+                target_lang=normalized["target_lang"],
+                continue_callback_data="langgpt:continue",
+                continue_button_text="❓ Задать вопрос",
+            )
+        await query.message.reply_text(
+            _truncate_telegram_reply_text(answer, max_chars=3000),
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+            reply_markup=_build_language_tutor_answer_keyboard(save_key=save_key, show_detail=False),
+        )
+    except Exception:
+        logging.exception("❌ Ошибка language tutor detail user_id=%s", user_id)
+        await query.message.reply_text(
+            "Не удалось подготовить подробный разбор. Попробуйте чуть позже.",
+            reply_markup=_build_private_language_tutor_reply_keyboard(),
+        )
 
 
 async def _notify_admins_access_request(context: CallbackContext, user) -> None:
@@ -10432,12 +10510,14 @@ def _build_quiz_question_answer_keyboard(*, request_key: str, save_key: str | No
     )
 
 
-def _build_language_tutor_answer_keyboard(*, save_key: str | None = None) -> InlineKeyboardMarkup:
-    return _build_followup_answer_keyboard(
-        continue_callback_data="langgpt:continue",
-        continue_button_text="❓ Задать вопрос",
-        save_key=save_key,
-    )
+def _build_language_tutor_answer_keyboard(*, save_key: str | None = None, show_detail: bool = True) -> InlineKeyboardMarkup:
+    rows = []
+    if save_key:
+        rows.append([InlineKeyboardButton("💾 Сохранить эту фразу", callback_data=f"quizqsave:{save_key}")])
+    if show_detail:
+        rows.append([InlineKeyboardButton("📖 Подробнее", callback_data="langgpt:detail")])
+    rows.append([InlineKeyboardButton("❓ Задать вопрос", callback_data="langgpt:continue")])
+    return InlineKeyboardMarkup(rows)
 
 
 def _build_quiz_question_prompt_keyboard() -> InlineKeyboardMarkup:
@@ -12712,6 +12792,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_dictionary_save_callback, pattern=r"^dictsave:"))
     application.add_handler(CallbackQueryHandler(handle_group_enrollment_callback, pattern=r"^groupenroll:confirm$"))
     application.add_handler(CallbackQueryHandler(handle_language_tutor_callback, pattern=r"^langgpt:(ask|continue)$"))
+    application.add_handler(CallbackQueryHandler(handle_language_tutor_detail_callback, pattern=r"^langgpt:detail$"))
     application.add_handler(CallbackQueryHandler(handle_image_quiz_callback, pattern=r"^iq:\d+:\d+$"))
 
     application.add_handler(CommandHandler("translate", check_user_translation))  # ✅ Проверка переводов
