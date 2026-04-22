@@ -14851,7 +14851,22 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await response.text());
+        if (response.status === 409) {
+          // Session already running — try to resume it silently
+          setWebappLoading(false);
+          const existing = await loadSessionInfo();
+          if (existing && existing.type !== 'none') {
+            // Loaded existing session — nothing more to do, UI will update
+            return;
+          }
+          // Stale lock with no real session — show clear message
+          setWebappError(tr(
+            'Предыдущая сессия ещё завершается. Подождите несколько секунд и попробуйте снова.',
+            'Die vorherige Sitzung wird noch beendet. Bitte warte einige Sekunden und versuche es erneut.'
+          ));
+          return;
+        }
+        throw new Error(await readApiError(response, 'Ошибка старта', 'Startfehler'));
       }
       const data = await response.json();
       if (data?.language_pair) {
@@ -14994,7 +15009,7 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await response.text());
+        throw new Error(await readApiError(response, 'Ошибка старта истории', 'Story-Startfehler'));
       }
       const data = await response.json();
       if (data.blocked) {
