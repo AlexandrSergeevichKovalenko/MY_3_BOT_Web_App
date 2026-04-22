@@ -39492,18 +39492,38 @@ def _format_selection_dictionary_explanation(result: dict, source_lang: str, tar
         block.extend([f"- {value}" for value in collocations])
         sections.append("\n".join(block))
 
+    _cyrillic_re = re.compile(r"[А-Яа-яЁё]")
+
+    def _split_example_fields(item: dict) -> tuple[str, str]:
+        """Return (learning_lang_sentence, native_lang_sentence).
+
+        The LLM occasionally swaps source/target fields.  For Cyrillic-based
+        source languages we detect the swap via script analysis: the learning
+        language sentence (target_lang, e.g. German) will have no Cyrillic.
+        """
+        field_a = _normalize_space(item.get("source") or "")
+        field_b = _normalize_space(item.get("target") or "")
+        if source_lang == "ru":
+            a_cyrillic = bool(_cyrillic_re.search(field_a))
+            b_cyrillic = bool(_cyrillic_re.search(field_b))
+            if a_cyrillic and not b_cyrillic:
+                return field_b, field_a  # correct: source=ru, target=de
+            if not a_cyrillic and b_cyrillic:
+                return field_a, field_b  # swapped: source=de, target=ru → fix
+        return field_b, field_a  # default: trust field names
+
     example_lines: list[str] = []
     for item in usage_examples[:3]:
         if not isinstance(item, dict):
             continue
-        native_sentence = _native_text(item.get("source"), source_lang)
-        target_sentence = _normalize_space(item.get("target"))
-        if not target_sentence:
+        learning_sentence, native_sentence_raw = _split_example_fields(item)
+        if not learning_sentence:
             continue
+        native_sentence = _native_text(native_sentence_raw, source_lang) if native_sentence_raw else ""
         if native_sentence:
-            example_lines.append(f"{len(example_lines) + 1}. {target_sentence} -> {native_sentence}")
+            example_lines.append(f"{len(example_lines) + 1}. {learning_sentence} — {native_sentence}")
         else:
-            example_lines.append(f"{len(example_lines) + 1}. {target_sentence}")
+            example_lines.append(f"{len(example_lines) + 1}. {learning_sentence}")
     if example_lines:
         examples_block = [f"📝 **{labels['examples']}**", f"{labels['examples']}:"]
         examples_block.extend(example_lines)

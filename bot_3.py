@@ -11800,6 +11800,7 @@ async def _generate_quiz_from_entry(
 
 async def _select_new_scheduled_quiz(
     ordered_generators: list[tuple[str, Callable[..., Any]]],
+    chat_id: int | None = None,
 ) -> dict | None:
     max_entries_per_generator = 4
     for quiz_type, generator in ordered_generators:
@@ -11809,12 +11810,14 @@ async def _select_new_scheduled_quiz(
                 cooldown_days=5,
                 source_lang="ru",
                 target_lang="de",
+                chat_id=chat_id,
             )
             if not entry:
                 entry = get_random_dictionary_entry(
                     cooldown_days=5,
                     source_lang="ru",
                     target_lang="de",
+                    chat_id=chat_id,
                 )
             if not entry:
                 break
@@ -11924,11 +11927,11 @@ async def _select_scheduled_quiz_for_target(
         if not selection:
             selection = await _select_prepared_scheduled_quiz(ordered_generators)
         if not selection:
-            selection = await _select_new_scheduled_quiz(ordered_generators)
+            selection = await _select_new_scheduled_quiz(ordered_generators, chat_id=int(target_chat_id))
     else:
         selection = await _select_prepared_scheduled_quiz(ordered_generators)
         if not selection:
-            selection = await _select_new_scheduled_quiz(ordered_generators)
+            selection = await _select_new_scheduled_quiz(ordered_generators, chat_id=int(target_chat_id))
         if not selection:
             selection = await _select_repeat_scheduled_quiz(int(target_chat_id), ordered_generators)
     if not selection:

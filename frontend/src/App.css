@@ -861,6 +861,32 @@ body {
   cursor: pointer;
 }
 
+.topbar-back-button,
+.topbar-leading-spacer {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  flex: 0 0 40px;
+}
+
+.topbar-back-button {
+  border: 1px solid rgba(120, 241, 179, 0.45);
+  background: rgba(12, 28, 35, 0.72);
+  color: #b7ffd8;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.topbar-back-button:hover {
+  border-color: rgba(120, 241, 179, 0.72);
+  background: rgba(16, 44, 48, 0.82);
+}
+
 .menu-toggle span {
   height: 2px;
   background: #f8fafc;
@@ -5238,12 +5264,13 @@ body {
 }
 
 .webapp-selection-translation {
-  font-size: 12px;
+  font-size: 14px;
+  line-height: 1.55;
   color: #e2e8f0;
   background: rgba(30, 41, 59, 0.8);
   border: 1px solid rgba(148, 163, 184, 0.25);
-  border-radius: 9px;
-  padding: 6px 8px;
+  border-radius: 10px;
+  padding: 10px 12px;
 }
 
 .webapp-selection-provider {
@@ -5342,15 +5369,15 @@ body {
 }
 
 .webapp-gpt-save-button {
-  min-height: 28px;
+  min-height: 32px;
   border-radius: 8px;
-  font-size: 11px;
-  padding: 5px 9px;
+  font-size: 13px;
+  padding: 6px 12px;
 }
 
 .webapp-gpt-save-status {
-  font-size: 12px;
-  line-height: 1.35;
+  font-size: 13px;
+  line-height: 1.4;
   color: #86efac;
   white-space: pre-line;
 }
@@ -13870,6 +13897,25 @@ body {
     gap: 5px;
   }
 
+  .topbar-back-button,
+  .topbar-leading-spacer {
+    width: 44px;
+    height: 44px;
+    border-radius: 16px;
+    flex-basis: 44px;
+  }
+
+  .topbar-back-button {
+    border: 1px solid #334155;
+    background: transparent;
+    color: #cbd5e1;
+    font-size: 22px;
+  }
+
+  .topbar-back-button:active {
+    background: #1f2937;
+  }
+
   .menu-toggle span {
     background: #cbd5e1;
     height: 2px;
@@ -17312,7 +17358,8 @@ body {
 .webapp-page.is-theme-light .language-toggle,
 .webapp-page.is-theme-light .language-pair-button,
 .webapp-page.is-theme-light .telegram-fullscreen-button,
-.webapp-page.is-theme-light .menu-toggle {
+.webapp-page.is-theme-light .menu-toggle,
+.webapp-page.is-theme-light .topbar-back-button {
   border-color: rgba(130, 101, 67, 0.32);
   background: rgba(246, 236, 220, 0.86);
   color: #1f1a14;

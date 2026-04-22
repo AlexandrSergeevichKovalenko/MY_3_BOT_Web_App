@@ -1,6 +1,8 @@
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import BlocksTrainer from './components/BlocksTrainer';
+import HomeDashboardTiles from './components/HomeDashboardTiles';
+import HomeMoreTiles from './components/HomeMoreTiles';
 import WeeklySummaryModal from './components/WeeklySummaryModal';
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
 import { buildWeeklySummaryHeroFacts, buildWeeklySummaryVisitConfig } from './utils/weeklySummary';
@@ -2897,6 +2899,8 @@ const TranslationsSection = React.memo(function TranslationsSection({
 const HomeScreenSection = React.memo(function HomeScreenSection({
   tr,
   uiLang,
+  sectionRefs = {},
+  visiblePanels = {},
   planAnalyticsPeriod,
   setPlanAnalyticsPeriod,
   planAnalyticsLoading,
@@ -2945,6 +2949,15 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
   skillTrainingStatusMap,
   getStoredSkillTrainingSnapshot,
 }) {
+  const {
+    weeklyPlanRef = null,
+    todayRef = null,
+    skillsRef = null,
+  } = sectionRefs || {};
+  const showWeeklyPlanPanel = visiblePanels.weeklyPlan !== false;
+  const showTodayPlanPanel = visiblePanels.todayPlan !== false;
+  const showSkillReportPanel = visiblePanels.skillReport !== false;
+
   useAppPerfRenderProbe('HomeScreenSection', {
     weeklyPlanLoading: Boolean(weeklyPlanLoading),
     weeklyPlanHasData: Boolean(weeklyPlan?.week),
@@ -3126,7 +3139,8 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
   return (
     <PerfProfiler id="section.home">
       <>
-        <section className="weekly-plan-panel">
+        {showWeeklyPlanPanel && (
+        <section className="weekly-plan-panel" ref={weeklyPlanRef}>
           <div className="weekly-plan-head">
             <div className="home-panel-head-main">
               <div className="home-panel-head-copy">
@@ -3352,8 +3366,10 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
             </div>
           )}
         </section>
+        )}
 
-        <section className="today-plan-panel">
+        {showTodayPlanPanel && (
+        <section className="today-plan-panel" ref={todayRef}>
           <div className="today-plan-head">
             <div className="home-panel-head-main">
               <div className="today-plan-title-wrap">
@@ -3515,8 +3531,10 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
             </div>
           )}
         </section>
+        )}
 
-        <section className="skill-report-panel">
+        {showSkillReportPanel && (
+        <section className="skill-report-panel" ref={skillsRef}>
           <div className="skill-report-head">
             <div className="home-panel-head-main">
               <div className="home-panel-head-copy">
@@ -3690,6 +3708,7 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
             </div>
           )}
         </section>
+        )}
       </>
     </PerfProfiler>
   );
@@ -4407,6 +4426,10 @@ function AppInner() {
   const dictionaryRef = useRef(null);
   const theoryRef = useRef(null);
   const skillTrainingRef = useRef(null);
+  const homeWeeklyPlanRef = useRef(null);
+  const homeTodayPlanRef = useRef(null);
+  const homeSkillsRef = useRef(null);
+  const homeMoreRef = useRef(null);
   const readerRef = useRef(null);
   const readerArticleRef = useRef(null);
   const flashcardsRef = useRef(null);
@@ -9413,6 +9436,7 @@ function AppInner() {
     }
     return selectedSections.has(key);
   };
+  const HOME_SUBSECTION_KEYS = new Set(['home_today', 'home_weekly_plan', 'home_skills', 'home_more']);
   const youtubeSectionVisible = isSectionVisible('youtube');
   const dictionarySectionVisible = isSectionVisible('dictionary');
   const readerSectionVisible = !flashcardsOnly && isSectionVisible('reader');
@@ -9420,6 +9444,12 @@ function AppInner() {
   const isSkillTrainingReady = Boolean(skillTrainingData?.package);
 
   const isHomeScreen = !flashcardsOnly && selectedSections.size === 0;
+  const activeHomeSubsectionKey = useMemo(() => {
+    if (flashcardsOnly || selectedSections.size !== 1) return '';
+    const [key] = Array.from(selectedSections);
+    return HOME_SUBSECTION_KEYS.has(key) ? key : '';
+  }, [flashcardsOnly, selectedSections]);
+  const isHomeRouteActive = isHomeScreen || Boolean(activeHomeSubsectionKey);
   const isGuideScreen = !flashcardsOnly && selectedSections.size === 1 && selectedSections.has('guide');
   const showHomeGuideQuickCard = isHomeScreen && !guideQuickCardDismissed;
   /* Legacy guide/onboarding copy removed from runtime path.
@@ -10640,6 +10670,21 @@ function AppInner() {
     if (keys.length === 1) return String(keys[0]);
     return '';
   }, [flashcardsOnly, menuMultiSelect, selectedSections]);
+  const activeHomeSectionVisibility = useMemo(() => {
+    if (activeHomeSubsectionKey === 'home_today') {
+      return { weeklyPlan: false, todayPlan: true, skillReport: false };
+    }
+    if (activeHomeSubsectionKey === 'home_weekly_plan') {
+      return { weeklyPlan: true, todayPlan: false, skillReport: false };
+    }
+    if (activeHomeSubsectionKey === 'home_skills') {
+      return { weeklyPlan: false, todayPlan: false, skillReport: true };
+    }
+    if (activeHomeSubsectionKey === 'home_more') {
+      return { weeklyPlan: false, todayPlan: false, skillReport: false };
+    }
+    return { weeklyPlan: true, todayPlan: true, skillReport: true };
+  }, [activeHomeSubsectionKey]);
   const economicsProviderOptions = useMemo(() => {
     const knownOrder = [
       'openai',
@@ -10951,6 +10996,18 @@ function AppInner() {
   };
 
   const openSingleSectionAndScroll = (key, ref) => {
+    if (key === 'flashcards') {
+      setFlashcardsVisible(true);
+      setFlashcardsOnly(false);
+      setFlashcardActiveMode(null);
+      setFlashcardSettingsModalMode(null);
+      setFlashcardSessionActive(false);
+      setFlashcardPreviewActive(false);
+      setFlashcardExitSummary(false);
+    }
+    if (key === 'movies') {
+      setMoviesCollapsed(false);
+    }
     setSelectedSections(new Set([key]));
     setTimeout(() => {
       scrollToRef(ref, { center: key === 'flashcards', block: 'start' });
@@ -10969,6 +11026,10 @@ function AppInner() {
 
   const getSectionRefByKey = (key) => {
     if (key === 'guide') return guideRef;
+    if (key === 'home_today') return homeTodayPlanRef;
+    if (key === 'home_weekly_plan') return homeWeeklyPlanRef;
+    if (key === 'home_skills') return homeSkillsRef;
+    if (key === 'home_more') return homeMoreRef;
     if (key === 'translations') return translationsRef;
     if (key === 'youtube') return youtubeRef;
     if (key === 'movies') return moviesRef;
@@ -11179,6 +11240,20 @@ function AppInner() {
       }, 120);
     }
   };
+
+  const openMoreFunctionsPanel = useCallback(() => {
+    openSingleSectionAndScroll('home_more', homeMoreRef);
+  }, [openSingleSectionAndScroll]);
+
+  const canTopbarGoBack = !menuOpen && !flashcardsOnly && selectedSections.size > 0;
+  const handleTopbarBack = useCallback(() => {
+    if (menuOpen) return;
+    if (currentSingleSectionRouteKey && currentSingleSectionRouteKey !== 'home') {
+      const navigated = goBackToPreviousSection();
+      if (navigated) return;
+    }
+    goHomeScreen();
+  }, [currentSingleSectionRouteKey, goBackToPreviousSection, goHomeScreen, menuOpen]);
 
   const loadSupportUnread = useCallback(async () => {
     try {
@@ -21993,7 +22068,7 @@ function AppInner() {
               </button>
               <button
                 type="button"
-                className={`menu-item menu-item-today ${isHomeScreen ? 'is-active' : ''}`}
+                className={`menu-item menu-item-today ${isHomeRouteActive ? 'is-active' : ''}`}
                 onClick={goHomeScreen}
               >
                 <span className="menu-icon menu-icon-today">{renderMenuIcon('today')}</span>
@@ -22134,15 +22209,19 @@ function AppInner() {
           <div className="webapp-main">
             <div className="webapp-topbar">
               <div className="topbar-row topbar-row-main">
-                <button
-                  type="button"
-                  className="menu-toggle"
-                  onClick={() => setMenuOpen(true)}
-                >
-                  <span />
-                  <span />
-                  <span />
-                </button>
+                {canTopbarGoBack ? (
+                  <button
+                    type="button"
+                    className="topbar-back-button"
+                    onClick={handleTopbarBack}
+                    aria-label={tr('Назад', 'Zurueck')}
+                    title={tr('Назад', 'Zurueck')}
+                  >
+                    ←
+                  </button>
+                ) : (
+                  <div className="topbar-leading-spacer" aria-hidden="true" />
+                )}
                 <div className="topbar-title">Das Deutsche Schlümpfchen</div>
                 <div className="topbar-profile">
                   <input
@@ -22250,7 +22329,7 @@ function AppInner() {
                     </button>
                     <button
                       type="button"
-                      className={`menu-item menu-item-today ${isHomeScreen ? 'is-active' : ''}`}
+                      className={`menu-item menu-item-today ${isHomeRouteActive ? 'is-active' : ''}`}
                       onClick={() => {
                         goHomeScreen();
                         setMenuOpen(false);
@@ -22858,8 +22937,59 @@ function AppInner() {
             )}
 
             {isHomeScreen && initData && (
+              <HomeDashboardTiles
+                tr={tr}
+                uiLang={uiLang}
+                todayPlan={todayPlan}
+                srsQueueInfo={srsQueueInfo}
+                openSection={openSingleSectionAndScroll}
+                onOpenMore={openMoreFunctionsPanel}
+                refs={{
+                  translationsRef,
+                  flashcardsRef,
+                  youtubeRef,
+                  readerRef,
+                  assistantRef,
+                  dictionaryRef,
+                  todayRef: homeTodayPlanRef,
+                  weeklyPlanRef: homeWeeklyPlanRef,
+                  skillsRef: homeSkillsRef,
+                  homeMoreRef,
+                }}
+              />
+            )}
+
+            {activeHomeSubsectionKey === 'home_more' && initData && (
+              <HomeMoreTiles
+                tr={tr}
+                uiLang={uiLang}
+                openSection={openSingleSectionAndScroll}
+                canViewEconomics={canViewEconomics}
+                isSkillTrainingReady={isSkillTrainingReady}
+                refs={{
+                  homeMoreRef,
+                  billingRef,
+                  guideRef,
+                  moviesRef,
+                  dictionaryRef,
+                  supportRef,
+                  analyticsRef,
+                  economicsRef,
+                  skillTrainingRef,
+                }}
+              />
+            )}
+
+            {activeHomeSubsectionKey && activeHomeSubsectionKey !== 'home_more' && initData && (
               <HomeScreenSection
                 tr={tr}
+                uiLang={uiLang}
+                sectionRefs={{
+                  todayRef: homeTodayPlanRef,
+                  weeklyPlanRef: homeWeeklyPlanRef,
+                  skillsRef: homeSkillsRef,
+                }}
+                visiblePanels={activeHomeSectionVisibility}
                 planAnalyticsPeriod={planAnalyticsPeriod}
                 setPlanAnalyticsPeriod={setPlanAnalyticsPeriod}
                 planAnalyticsLoading={planAnalyticsLoading}
@@ -22902,7 +23032,6 @@ function AppInner() {
                 skillReportSnapshotTone={skillReportSnapshotTone}
                 skillPracticeLoading={skillPracticeLoading}
                 loadSkillReport={loadSkillReportStable}
-                uiLang={uiLang}
                 startSkillPractice={startSkillPracticeStable}
                 resumeSkillPractice={resumeSkillPracticeStable}
                 skillTrainingStatusMap={homeSkillTrainingStatusMap}
@@ -27235,52 +27364,52 @@ function AppInner() {
                 <section
                   style={{
                     width: 'min(100%, 760px)',
-                    maxHeight: '82vh',
+                    maxHeight: '85vh',
                     overflow: 'auto',
                     background: isLightTheme ? 'rgba(253, 247, 236, 0.98)' : 'rgba(10, 18, 36, 0.98)',
-                    borderTopLeftRadius: 16,
-                    borderTopRightRadius: 16,
+                    borderTopLeftRadius: 20,
+                    borderTopRightRadius: 20,
                     border: isLightTheme
                       ? '1px solid rgba(171, 139, 98, 0.34)'
                       : '1px solid rgba(148, 163, 184, 0.35)',
                     boxShadow: isLightTheme
                       ? '0 -12px 34px rgba(105, 78, 47, 0.28)'
                       : '0 -12px 34px rgba(2, 6, 23, 0.58)',
-                    padding: '14px 14px 18px',
+                    padding: '18px 16px 24px',
                     display: 'grid',
-                    gap: 10,
+                    gap: 12,
                   }}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                    <strong style={{ fontSize: 14 }}>{tr('GPT Объяснение', 'GPT-Erklaerung')}</strong>
+                    <strong style={{ fontSize: 17 }}>{tr('GPT Объяснение', 'GPT-Erklaerung')}</strong>
                     <button type="button" className="secondary-button" onClick={closeSelectionGptSheet}>
                       {tr('Закрыть', 'Schliessen')}
                     </button>
                   </div>
-                  <div className="webapp-muted" style={{ fontSize: 12 }}>
+                  <div className="webapp-muted" style={{ fontSize: 13, fontStyle: 'italic' }}>
                     {selectionText}
                   </div>
-                  {selectionGptLoading && <div className="webapp-muted">{tr('Готовим объяснение...', 'Erklaerung wird vorbereitet...')}</div>}
+                  {selectionGptLoading && <div className="webapp-muted" style={{ fontSize: 14 }}>{tr('Готовим объяснение...', 'Erklaerung wird vorbereitet...')}</div>}
                   {selectionGptError && <div className="webapp-error">{selectionGptError}</div>}
                   {!selectionGptLoading && !selectionGptError && (
                     <>
                       <div className="webapp-selection-translation">
-                        <div style={{ fontWeight: 700, marginBottom: 4 }}>{tr('Перевод', 'Uebersetzung')}</div>
-                        <div>{selectionGptData.translation || '—'}</div>
+                        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6, opacity: 0.7, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{tr('Перевод', 'Übersetzung')}</div>
+                        <div style={{ fontSize: 16, fontWeight: 600 }}>{selectionGptData.translation || '—'}</div>
                       </div>
-                  <div className="webapp-selection-translation">
-                    <div style={{ fontWeight: 700, marginBottom: 4 }}>{tr('Смысл / заметки', 'Bedeutung / Hinweise')}</div>
-                    <div
-                      style={{ whiteSpace: 'pre-wrap' }}
-                      dangerouslySetInnerHTML={{ __html: renderRichText(selectionGptData.notes || '—') }}
-                    />
-                  </div>
                       <div className="webapp-selection-translation">
-                        <div style={{ fontWeight: 700, marginBottom: 4 }}>{tr('Примеры', 'Beispiele')}</div>
+                        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6, opacity: 0.7, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{tr('Смысл / заметки', 'Bedeutung / Hinweise')}</div>
+                        <div
+                          style={{ whiteSpace: 'pre-wrap', fontSize: 14, lineHeight: 1.6 }}
+                          dangerouslySetInnerHTML={{ __html: renderRichText(selectionGptData.notes || '—') }}
+                        />
+                      </div>
+                      <div className="webapp-selection-translation">
+                        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, opacity: 0.7, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{tr('Примеры', 'Beispiele')}</div>
                         {Array.isArray(selectionGptData.examples) && selectionGptData.examples.length > 0 ? (
-                          <div style={{ display: 'grid', gap: 6 }}>
+                          <div style={{ display: 'grid', gap: 8 }}>
                             {selectionGptData.examples.map((item, index) => (
-                              <label key={`gpt-example-${index}`} className="webapp-gpt-save-option">
+                              <label key={`gpt-example-${index}`} className="webapp-gpt-save-option" style={{ fontSize: 14, lineHeight: 1.5 }}>
                                 <input
                                   type="checkbox"
                                   checked={Boolean(selectionGptSaveExamplesChecked[index])}
@@ -27299,11 +27428,11 @@ function AppInner() {
                             ))}
                           </div>
                         ) : (
-                          <div>—</div>
+                          <div style={{ opacity: 0.5 }}>—</div>
                         )}
                       </div>
                       <div className="webapp-selection-translation webapp-gpt-save-block">
-                        <div style={{ fontWeight: 700, marginBottom: 6 }}>{tr('Сохранить в словарь', 'Im Woerterbuch speichern')}</div>
+                        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, opacity: 0.7, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{tr('Сохранить в словарь', 'Im Wörterbuch speichern')}</div>
                         <label className="webapp-gpt-save-option">
                           <input
                             type="checkbox"

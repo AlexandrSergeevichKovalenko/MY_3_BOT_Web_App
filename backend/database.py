@@ -10774,10 +10774,24 @@ def get_random_dictionary_entry(
     cooldown_days: int = 5,
     source_lang: str = "ru",
     target_lang: str = "de",
+    chat_id: int | None = None,
 ) -> dict | None:
+    mastery_filter = ""
+    mastery_params: list = []
+    if chat_id is not None:
+        mastery_filter = """
+                  AND NOT EXISTS (
+                      SELECT 1 FROM bt_3_telegram_quiz_attempts a
+                      WHERE a.word_ru = bt_3_webapp_dictionary_queries.word_ru
+                        AND a.chat_id = %s
+                      GROUP BY a.word_ru
+                      HAVING COUNT(*) >= 3
+                         AND SUM(CASE WHEN a.is_correct THEN 1 ELSE 0 END)::float / COUNT(*) >= 0.80
+                  )"""
+        mastery_params = [chat_id]
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT
                     id,
                     user_id,
@@ -10795,10 +10809,10 @@ def get_random_dictionary_entry(
                       FROM bt_3_quiz_history h
                       WHERE h.word_ru = bt_3_webapp_dictionary_queries.word_ru
                         AND h.asked_at >= NOW() - INTERVAL %s
-                  )
+                  ){mastery_filter}
                 ORDER BY RANDOM()
                 LIMIT 1;
-            """, (source_lang, target_lang, f"{cooldown_days} days",))
+            """, [source_lang, target_lang, f"{cooldown_days} days"] + mastery_params)
             row = cursor.fetchone()
             if not row:
                 cursor.execute("""
@@ -10836,6 +10850,7 @@ def get_random_dictionary_entry_for_quiz_type(
     cooldown_days: int = 5,
     source_lang: str = "ru",
     target_lang: str = "de",
+    chat_id: int | None = None,
 ) -> dict | None:
     quiz_type = (quiz_type or "").strip().lower()
 
@@ -10866,6 +10881,20 @@ def get_random_dictionary_entry_for_quiz_type(
     }
     extra_where = where_by_type.get(quiz_type, "TRUE")
 
+    mastery_filter = ""
+    mastery_params: list = []
+    if chat_id is not None:
+        mastery_filter = """
+                  AND NOT EXISTS (
+                      SELECT 1 FROM bt_3_telegram_quiz_attempts a
+                      WHERE a.word_ru = bt_3_webapp_dictionary_queries.word_ru
+                        AND a.chat_id = %s
+                      GROUP BY a.word_ru
+                      HAVING COUNT(*) >= 3
+                         AND SUM(CASE WHEN a.is_correct THEN 1 ELSE 0 END)::float / COUNT(*) >= 0.80
+                  )"""
+        mastery_params = [chat_id]
+
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -10888,11 +10917,11 @@ def get_random_dictionary_entry_for_quiz_type(
                       FROM bt_3_quiz_history h
                       WHERE h.word_ru = bt_3_webapp_dictionary_queries.word_ru
                         AND h.asked_at >= NOW() - INTERVAL %s
-                  )
+                  ){mastery_filter}
                 ORDER BY RANDOM()
                 LIMIT 1;
                 """,
-                (source_lang, target_lang, f"{cooldown_days} days"),
+                [source_lang, target_lang, f"{cooldown_days} days"] + mastery_params,
             )
             row = cursor.fetchone()
             if not row:
