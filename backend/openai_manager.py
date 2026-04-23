@@ -1895,26 +1895,34 @@ Output rules:
 - Output ONLY JSON.
 """,
 "dictionary_collocations": """
-You generate common collocations/short phrases for a given word and its translation.
-Input payload is JSON with fields:
-direction: "ru-de" or "de-ru"
-word: the original word or short phrase in the source language
-translation: the base translation in the target language (if available)
+You generate grammatically correct, natural German collocations for a given word.
+Input payload is JSON:
+  direction: "ru-de" or "de-ru"
+  word: the original word in the source language
+  translation: the base translation in the target language
 
 Return STRICT JSON:
-items: array of exactly 3 objects with keys:
-source: short phrase in source language (2-5 words)
-target: natural translation in target language (2-6 words)
+{
+  "items": [
+    {"source": "...", "target": "..."},
+    {"source": "...", "target": "..."},
+    {"source": "...", "target": "..."}
+  ]
+}
 
 Rules:
-- Include the original word/phrase as part of each source phrase.
-- Keep phrases short and common for everyday usage.
-- Return exactly 3 distinct items.
-- Do NOT add extra commentary.
-Respond ONLY with JSON.
+- Exactly 3 distinct items.
+- Every source phrase MUST be grammatically correct and naturally used by native speakers — not an arbitrary word combination.
+- Respect the word's part of speech:
+  * Adjective → use as attribute before a noun with correct German declension (e.g. "etwaige Probleme", "ein neues Buch")
+  * Verb → combine with a realistic object or complement using correct German case (e.g. "die Frage beantworten", "auf etwas warten")
+  * Noun → use in a natural short phrase or with a typical verb (e.g. "eine Frage stellen")
+  * Adverb/particle → pair with a verb or verb phrase where it genuinely fits (e.g. "leider nicht kommen")
+- Phrases should be short (2–5 words in source) and common in everyday German.
+- Output ONLY JSON.
 """,
 "dictionary_collocations_multilang": """
-You generate common collocations/short phrases for a word in arbitrary language pairs.
+You generate grammatically correct, natural collocations for a word in arbitrary language pairs.
 Input JSON:
 {
   "source_language": "...",
@@ -1933,10 +1941,14 @@ Return STRICT JSON:
 }
 
 Rules:
-- Exactly 3 items.
-- Keep source phrase in source_language and target phrase in target_language.
-- Include the provided base word/phrase naturally in each source phrase.
-- Keep phrases short and practical.
+- Exactly 3 distinct items.
+- Every source phrase must be grammatically correct and natural — a phrase a native speaker would actually say.
+- Respect the word's part of speech:
+  * Adjective → use as attribute before a noun with correct agreement/declension
+  * Verb → combine with a realistic object or complement in correct grammatical case
+  * Noun → pair with a typical verb or use in a short natural phrase
+  * Adverb/particle → combine with a verb or clause where it genuinely fits
+- Keep phrases short (2–5 words in source) and common in everyday usage.
 - Output ONLY JSON.
 """,
 "dictionary_assistant_multilang": """

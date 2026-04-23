@@ -8,6 +8,8 @@ import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18
 import { buildWeeklySummaryHeroFacts, buildWeeklySummaryVisitConfig } from './utils/weeklySummary';
 import { detectAppMode } from './utils/appMode';
 
+import './styles/topbar-redesign.css';
+
 // URL вашего сервера LiveKit
 const livekitUrl = "wss://implemrntingvoicetobot-vhsnc86g.livekit.cloud";
 const loadLiveKitRuntime = () => import('./components/LiveKitRuntime');
@@ -2410,11 +2412,6 @@ const TranslationsSection = React.memo(function TranslationsSection({
         <div className="webapp-section-title webapp-section-title-with-logo translations-title-row">
           <div className="translations-title-main">
             <h2>{tr('Ваши переводы', 'Ihre Uebersetzungen')}</h2>
-            {isFocusedTranslations && (
-              <button type="button" className="section-home-back" onClick={goHomeScreen}>
-                {tr('На главную', 'Startseite')}
-              </button>
-            )}
           </div>
           <div className="translations-title-side">
             <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo translations-corner-logo" />
@@ -13116,6 +13113,37 @@ function AppInner() {
     return () => window.clearTimeout(timerId);
   }, [homeSnapshotResumeTick, initData, isWebAppMode, loadSkillReport, pageVisible, readSkillReportSnapshot, startupPhase3Ready]);
 
+  const loadWeeklyPlanRef = useRef(loadWeeklyPlan);
+  loadWeeklyPlanRef.current = loadWeeklyPlan;
+  const loadSkillReportRef = useRef(loadSkillReport);
+  loadSkillReportRef.current = loadSkillReport;
+  const weeklyPlanRef2 = useRef(weeklyPlan);
+  weeklyPlanRef2.current = weeklyPlan;
+  const skillReportRef2 = useRef(skillReport);
+  skillReportRef2.current = skillReport;
+  const weeklyPlanLoadingRef = useRef(weeklyPlanLoading);
+  weeklyPlanLoadingRef.current = weeklyPlanLoading;
+  const skillReportLoadingRef = useRef(skillReportLoading);
+  skillReportLoadingRef.current = skillReportLoading;
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData || !pageVisible || !startupPhase3Ready) return;
+    if (activeHomeSubsectionKey === 'home_weekly_plan' && !weeklyPlanLoadingRef.current) {
+      const savedAt = weeklyPlanRef2.current?.snapshot_saved_at;
+      if (!savedAt || isSnapshotRefreshDue(savedAt)) {
+        void loadWeeklyPlanRef.current();
+      }
+    }
+    if (activeHomeSubsectionKey === 'home_skills' && !skillReportLoadingRef.current) {
+      const savedAt = skillReportRef2.current?.snapshot_saved_at;
+      if (!savedAt || isSnapshotRefreshDue(savedAt)) {
+        void loadSkillReportRef.current();
+      }
+    }
+  // Intentionally only re-run when the active subsection changes, not on loading state changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeHomeSubsectionKey, initData, isWebAppMode, pageVisible, startupPhase3Ready]);
+
   useEffect(() => {
     if (!isWebAppMode) {
       skillTrainingDraftMapRef.current = {};
@@ -22222,85 +22250,89 @@ function AppInner() {
           </aside>
 
           <div className="webapp-main">
-            <div className="webapp-topbar">
-              <div className="topbar-row topbar-row-main">
-                {canTopbarGoBack ? (
+            <div className={`webapp-topbar${canTopbarGoBack ? ' is-back-mode' : ''}`}>
+              {canTopbarGoBack ? (
+                <div className="topbar-home-row">
                   <button
                     type="button"
-                    className="topbar-back-button"
+                    className="topbar-home-button"
                     onClick={handleTopbarBack}
-                    aria-label={tr('Назад', 'Zurueck')}
-                    title={tr('Назад', 'Zurueck')}
+                    aria-label={tr('На главную', 'Startseite')}
                   >
-                    ←
-                  </button>
-                ) : (
-                  <div className="topbar-leading-spacer" aria-hidden="true" />
-                )}
-                <div className="topbar-title">Das Deutsche Schlümpfchen</div>
-                <div className="topbar-profile">
-                  <input
-                    ref={avatarInputRef}
-                    type="file"
-                    accept="image/*"
-                    className="avatar-input"
-                    onChange={handleAvatarUpload}
-                  />
-                  <button
-                    type="button"
-                    className="avatar-button topbar-avatar"
-                    onClick={() => avatarInputRef.current?.click()}
-                  >
-                    {userAvatar ? <img src={userAvatar} alt="User avatar" /> : <span className="avatar-placeholder" />}
+                    <span className="topbar-home-arrow" aria-hidden="true">←</span>
+                    <span>{tr('На главную', 'Startseite')}</span>
                   </button>
                 </div>
-              </div>
-              <div className="topbar-row topbar-row-controls">
-                <div className="topbar-controls">
-                  {telegramTabletLike && !telegramFullscreenMode && typeof telegramApp?.requestFullscreen === 'function' && (
-                    <button
-                      type="button"
-                      className="telegram-fullscreen-button"
-                      onClick={requestTelegramFullscreen}
-                      title={tr('Развернуть на весь экран', 'Vollbild aktivieren')}
-                      aria-label={tr('Развернуть на весь экран', 'Vollbild aktivieren')}
-                    >
-                      ⤢
-                    </button>
-                  )}
-                  <button type="button" className="language-toggle language-toggle-compact" onClick={toggleLanguage} aria-label={t('language_toggle_label')}>
-                    <span className={`language-chip ${uiLang === 'ru' ? 'is-active' : ''}`}>{t('language_ru')}</span>
-                    <span className={`language-chip ${uiLang === 'de' ? 'is-active' : ''}`}>{t('language_de')}</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="language-toggle language-toggle-compact theme-toggle-compact"
-                    onClick={toggleThemeMode}
-                    title={themeMode === 'light' ? tr('Светлая тема', 'Helles Thema') : tr('Тёмная тема', 'Dunkles Thema')}
-                    aria-label={tr('Переключить тему', 'Theme wechseln')}
-                  >
-                    <span className={`language-chip theme-chip ${themeMode === 'dark' ? 'is-active' : ''}`}>DARK</span>
-                    <span className={`language-chip theme-chip ${themeMode === 'light' ? 'is-active' : ''}`}>LIGHT</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="language-pair-button"
-                    onClick={openLanguageProfileModal}
-                    title={tr('Изменить языковую пару обучения', 'Sprachpaar aendern')}
-                  >
-                    {getActiveLanguagePairLabel()}
-                  </button>
-                  <button
-                    type="button"
-                    className="topbar-help-button"
-                    onClick={openGuideSection}
-                    title={t('guide_topbar_button')}
-                    aria-label={t('guide_topbar_button')}
-                  >
-                    ?
-                  </button>
-                </div>
-              </div>
+              ) : (
+                <>
+                  <div className="topbar-row topbar-row-main">
+                    <div className="topbar-leading-spacer" aria-hidden="true" />
+                    <div className="topbar-title">Das Deutsche Schlümpfchen</div>
+                    <div className="topbar-profile">
+                      <input
+                        ref={avatarInputRef}
+                        type="file"
+                        accept="image/*"
+                        className="avatar-input"
+                        onChange={handleAvatarUpload}
+                      />
+                      <button
+                        type="button"
+                        className="avatar-button topbar-avatar"
+                        onClick={() => avatarInputRef.current?.click()}
+                      >
+                        {userAvatar ? <img src={userAvatar} alt="User avatar" /> : <span className="avatar-placeholder" />}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="topbar-row topbar-row-controls">
+                    <div className="topbar-controls">
+                      {telegramTabletLike && !telegramFullscreenMode && typeof telegramApp?.requestFullscreen === 'function' && (
+                        <button
+                          type="button"
+                          className="telegram-fullscreen-button"
+                          onClick={requestTelegramFullscreen}
+                          title={tr('Развернуть на весь экран', 'Vollbild aktivieren')}
+                          aria-label={tr('Развернуть на весь экран', 'Vollbild aktivieren')}
+                        >
+                          ⤢
+                        </button>
+                      )}
+                      <button type="button" className="language-toggle language-toggle-compact" onClick={toggleLanguage} aria-label={t('language_toggle_label')}>
+                        <span className={`language-chip ${uiLang === 'ru' ? 'is-active' : ''}`}>{t('language_ru')}</span>
+                        <span className={`language-chip ${uiLang === 'de' ? 'is-active' : ''}`}>{t('language_de')}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="language-toggle language-toggle-compact theme-toggle-compact"
+                        onClick={toggleThemeMode}
+                        title={themeMode === 'light' ? tr('Светлая тема', 'Helles Thema') : tr('Тёмная тема', 'Dunkles Thema')}
+                        aria-label={tr('Переключить тему', 'Theme wechseln')}
+                      >
+                        <span className={`language-chip theme-chip ${themeMode === 'dark' ? 'is-active' : ''}`}>DARK</span>
+                        <span className={`language-chip theme-chip ${themeMode === 'light' ? 'is-active' : ''}`}>LIGHT</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="language-pair-button"
+                        onClick={openLanguageProfileModal}
+                        title={tr('Изменить языковую пару обучения', 'Sprachpaar aendern')}
+                      >
+                        {getActiveLanguagePairLabel()}
+                      </button>
+                      <button
+                        type="button"
+                        className="topbar-help-button"
+                        onClick={openGuideSection}
+                        title={t('guide_topbar_button')}
+                        aria-label={t('guide_topbar_button')}
+                      >
+                        ?
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
 
             {menuOpen && (
@@ -23186,9 +23218,6 @@ function AppInner() {
                   </div>
 
                   <div className="skill-training-action-row">
-                    <button type="button" className="section-home-back skill-training-back-btn" onClick={goHomeScreen}>
-                      {tr('← Назад', '← Zurueck')}
-                    </button>
                     <button
                       type="button"
                       className="secondary-button skill-training-refresh-btn"
@@ -23481,11 +23510,6 @@ function AppInner() {
               <section className="webapp-section theory-section" ref={theoryRef}>
                 <div className="webapp-section-title webapp-section-title-with-logo">
                   <h2>{tr('Теория', 'Theorie')}</h2>
-                  {isFocusedSection('theory') && (
-                    <button type="button" className="section-home-back" onClick={goHomeScreen}>
-                      {tr('На главную', 'Startseite')}
-                    </button>
-                  )}
                   {renderTodaySectionTaskHud('theory')}
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
@@ -23884,20 +23908,15 @@ function AppInner() {
                           </div>
                         </div>
                         {isFocusedSection('youtube') && (
-                          <div className="section-head-nav">
-                            <button
-                              type="button"
-                              className="section-home-back is-compact-arrow"
-                              onClick={goBackFromYoutube}
-                              title={tr('Назад', 'Zurueck')}
-                              aria-label={tr('Назад', 'Zurueck')}
-                            >
-                              ⏪
-                            </button>
-                            <button type="button" className="section-home-back" onClick={goHomeScreen}>
-                              {tr('На главную', 'Startseite')}
-                            </button>
-                          </div>
+                          <button
+                            type="button"
+                            className="section-home-back is-compact-arrow"
+                            onClick={goBackFromYoutube}
+                            title={tr('Назад', 'Zurueck')}
+                            aria-label={tr('Назад', 'Zurueck')}
+                          >
+                            ⏪
+                          </button>
                         )}
                         <div className="youtube-player-first-head-controls">
                           <button
@@ -24781,13 +24800,7 @@ function AppInner() {
                     return (
                       <div className="reader-library-mode">
                         <div className="reader-topbar">
-                          <div className="reader-topbar-left">
-                            {isFocusedSection('reader') && (
-                              <button type="button" className="section-home-back" onClick={goHomeScreen}>
-                                {tr('← Назад', '← Zurueck')}
-                              </button>
-                            )}
-                          </div>
+                          <div className="reader-topbar-left" />
                           <div className="reader-topbar-center">
                             <div className="reader-topbar-title">{tr('Библиотека', 'Bibliothek')}</div>
                             <div className="webapp-muted reader-topbar-meta">
@@ -25346,13 +25359,8 @@ function AppInner() {
             {isSectionVisible('flashcards') && (
               <PerfProfiler id="section.flashcards">
                 <section className="webapp-flashcards" ref={flashcardsRef}>
-                {flashcardActiveMode && !flashcardsOnly && (isFocusedSection('flashcards') || Boolean(getTodayTaskForSection('flashcards'))) && (
+                {flashcardActiveMode && !flashcardsOnly && Boolean(getTodayTaskForSection('flashcards')) && (
                   <div className="section-inline-actions section-inline-actions-task">
-                    {isFocusedSection('flashcards') && (
-                      <button type="button" className="section-home-back" onClick={goHomeScreen}>
-                        {tr('На главную', 'Startseite')}
-                      </button>
-                    )}
                     {renderTodaySectionTaskHud('flashcards')}
                   </div>
                 )}

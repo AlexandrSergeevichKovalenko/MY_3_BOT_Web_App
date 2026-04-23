@@ -887,6 +887,52 @@ body {
   background: rgba(16, 44, 48, 0.82);
 }
 
+.webapp-topbar.is-back-mode {
+  padding: 6px 10px;
+  flex-direction: row;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.topbar-home-row {
+  display: flex;
+  align-items: center;
+}
+
+.topbar-home-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 36px;
+  padding: 0 18px 0 13px;
+  border-radius: 999px;
+  border: 1.5px solid rgba(120, 241, 179, 0.48);
+  background: rgba(12, 28, 35, 0.82);
+  color: #b7ffd8;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22);
+}
+
+.topbar-home-button:hover,
+.topbar-home-button:focus-visible {
+  border-color: rgba(120, 241, 179, 0.78);
+  background: rgba(16, 44, 48, 0.92);
+  outline: none;
+}
+
+.topbar-home-arrow {
+  font-size: 16px;
+  line-height: 1;
+  margin-top: -1px;
+}
+
 .menu-toggle span {
   height: 2px;
   background: #f8fafc;
@@ -2688,6 +2734,14 @@ body {
 .webapp-page.is-guide-screen .topbar-help-button {
   min-width: 40px;
   color: var(--dmps-text-secondary);
+}
+
+.webapp-page.is-guide-screen .webapp-topbar.is-back-mode {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  padding: 4px 6px;
+  gap: 0;
 }
 
 .webapp-page.is-guide-screen .guide-step-number {
@@ -5537,6 +5591,10 @@ body {
 
   .webapp-topbar {
     display: flex;
+  }
+
+  .webapp-topbar.is-back-mode {
+    padding: 4px 6px;
   }
 
   .webapp-card {
@@ -17320,6 +17378,23 @@ body {
   background: rgba(253, 247, 236, 0.94);
   border: 1px solid rgba(171, 139, 98, 0.28);
   box-shadow: 0 12px 24px rgba(105, 78, 47, 0.12);
+}
+
+.webapp-page.is-theme-light .webapp-topbar.is-back-mode {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.webapp-page.is-theme-light .topbar-home-button {
+  border-color: rgba(139, 100, 45, 0.5);
+  background: rgba(253, 247, 236, 0.88);
+  color: #6b4a1e;
+}
+
+.webapp-page.is-theme-light .topbar-home-button:hover {
+  border-color: rgba(139, 100, 45, 0.78);
+  background: rgba(248, 239, 220, 0.96);
 }
 
 .webapp-page.is-theme-light .brand-subtitle,
