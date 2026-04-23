@@ -7,7 +7,6 @@ const TILE_DEFS = [
   { key: 're', labelRu: 'Чтение\nЧиталка', labelDe: 'Lesen\nReader', emoji: '📖', cls: 'hdt-emerald', sectionKey: 'reader', refKey: 'readerRef' },
   { key: 'ca', labelRu: 'Карточки\nFSRS', labelDe: 'Karten\nFSRS', emoji: '🗂', cls: 'hdt-violet', sectionKey: 'flashcards', refKey: 'flashcardsRef' },
   { key: 'sp', labelRu: 'Разговорная\nпрактика', labelDe: 'Sprech-\nuebung', emoji: '💬', cls: 'hdt-cyan', sectionKey: 'assistant', refKey: 'assistantRef' },
-  { key: 'ag', labelRu: 'Разговор\nс агентом', labelDe: 'Gespräch\nAssistent', emoji: '🤖', cls: 'hdt-amber', sectionKey: 'assistant', refKey: 'assistantRef' },
   { key: 'ta', labelRu: 'Задачи\nна сегодня', labelDe: 'Aufgaben\nheute', emoji: '✅', cls: 'hdt-rose', sectionKey: 'home_today', refKey: 'todayRef' },
   { key: 'pl', labelRu: 'План\nна неделю', labelDe: 'Wochen-\nplan', emoji: '📅', cls: 'hdt-indigo', sectionKey: 'home_weekly_plan', refKey: 'weeklyPlanRef' },
   { key: 'sk', labelRu: 'Карта\nнавыков', labelDe: 'Skill-\nMap', emoji: '🧠', cls: 'hdt-green', sectionKey: 'home_skills', refKey: 'skillsRef' },
