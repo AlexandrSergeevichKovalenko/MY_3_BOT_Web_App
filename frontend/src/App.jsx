@@ -14057,46 +14057,6 @@ function AppInner() {
     }
   };
 
-  const ensureTranslationsBootstrapped = useCallback(async ({ preserveFinishMessage = false } = {}) => {
-    if (!isWebAppMode || !initData) {
-      return null;
-    }
-    const bootstrapKey = String(initData || '').trim();
-    if (!bootstrapKey) {
-      return null;
-    }
-    if (translationBootstrapReadyRef.current === bootstrapKey) {
-      return null;
-    }
-    if (translationBootstrapPromiseRef.current) {
-      return translationBootstrapPromiseRef.current;
-    }
-
-    // Keep translation bootstrap off the default tile dashboard; only hydrate when Translations is actually entered.
-    const bootstrapPromise = (async () => {
-      loadTopics();
-      const sessionInfo = await loadSessionInfo();
-      const restoredSessionId = String(
-        sessionInfo?.type === 'regular' ? (sessionInfo?.session_id || '') : ''
-      ).trim();
-      const sentencesData = await loadSentences({
-        sessionId: restoredSessionId || undefined,
-        preserveFinishMessage,
-      });
-      if (sentencesData !== null) {
-        translationBootstrapReadyRef.current = bootstrapKey;
-      }
-      return sessionInfo;
-    })();
-
-    translationBootstrapPromiseRef.current = bootstrapPromise;
-    try {
-      return await bootstrapPromise;
-    } finally {
-      translationBootstrapPromiseRef.current = null;
-    }
-  }, [initData, isWebAppMode, loadSentences, loadSessionInfo, loadTopics]);
-
   useEffect(() => {
     translationDraftsRef.current = translationDrafts;
   }, [translationDrafts]);
@@ -15040,6 +15000,46 @@ function AppInner() {
       return null;
     }
   };
+
+  const ensureTranslationsBootstrapped = useCallback(async ({ preserveFinishMessage = false } = {}) => {
+    if (!isWebAppMode || !initData) {
+      return null;
+    }
+    const bootstrapKey = String(initData || '').trim();
+    if (!bootstrapKey) {
+      return null;
+    }
+    if (translationBootstrapReadyRef.current === bootstrapKey) {
+      return null;
+    }
+    if (translationBootstrapPromiseRef.current) {
+      return translationBootstrapPromiseRef.current;
+    }
+
+    // Keep translation bootstrap off the default tile dashboard; only hydrate when Translations is actually entered.
+    const bootstrapPromise = (async () => {
+      loadTopics();
+      const sessionInfo = await loadSessionInfo();
+      const restoredSessionId = String(
+        sessionInfo?.type === 'regular' ? (sessionInfo?.session_id || '') : ''
+      ).trim();
+      const sentencesData = await loadSentences({
+        sessionId: restoredSessionId || undefined,
+        preserveFinishMessage,
+      });
+      if (sentencesData !== null) {
+        translationBootstrapReadyRef.current = bootstrapKey;
+      }
+      return sessionInfo;
+    })();
+
+    translationBootstrapPromiseRef.current = bootstrapPromise;
+    try {
+      return await bootstrapPromise;
+    } finally {
+      translationBootstrapPromiseRef.current = null;
+    }
+  }, [initData, isWebAppMode, loadSentences, loadSessionInfo, loadTopics]);
 
   const handleStartStory = async () => {
     if (!initData) {
