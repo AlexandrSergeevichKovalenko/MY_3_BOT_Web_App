@@ -3,13 +3,13 @@ import './HomeDashboardTiles.css';
 
 const TILE_DEFS = [
   { key: 'tr', labelRu: 'Переводы\nпредложений', labelDe: 'Satz-\nUebersetzungen', emoji: '🔤', cls: 'hdt-blue', sectionKey: 'translations', refKey: 'translationsRef' },
-  { key: 'vi', labelRu: 'Видео\nYouTube', labelDe: 'YouTube\nVideos', emoji: '▶️', cls: 'hdt-red', sectionKey: 'youtube', refKey: 'youtubeRef' },
-  { key: 're', labelRu: 'Чтение\nЧиталка', labelDe: 'Lesen\nReader', emoji: '📖', cls: 'hdt-emerald', sectionKey: 'reader', refKey: 'readerRef' },
   { key: 'ca', labelRu: 'Карточки\nFSRS', labelDe: 'Karten\nFSRS', emoji: '🗂', cls: 'hdt-violet', sectionKey: 'flashcards', refKey: 'flashcardsRef' },
+  { key: 're', labelRu: 'Чтение\nЧиталка', labelDe: 'Lesen\nReader', emoji: '📖', cls: 'hdt-emerald', sectionKey: 'reader', refKey: 'readerRef' },
   { key: 'sp', labelRu: 'Разговорная\nпрактика', labelDe: 'Sprech-\nuebung', emoji: '💬', cls: 'hdt-cyan', sectionKey: 'assistant', refKey: 'assistantRef' },
-  { key: 'ta', labelRu: 'Задачи\nна сегодня', labelDe: 'Aufgaben\nheute', emoji: '✅', cls: 'hdt-rose', sectionKey: 'home_today', refKey: 'todayRef' },
-  { key: 'pl', labelRu: 'План\nна неделю', labelDe: 'Wochen-\nplan', emoji: '📅', cls: 'hdt-indigo', sectionKey: 'home_weekly_plan', refKey: 'weeklyPlanRef' },
-  { key: 'sk', labelRu: 'Карта\nнавыков', labelDe: 'Skill-\nMap', emoji: '🧠', cls: 'hdt-green', sectionKey: 'home_skills', refKey: 'skillsRef' },
+  { key: 'vi', labelRu: 'Видео\nYouTube', labelDe: 'YouTube\nVideos', emoji: '▶️', cls: 'hdt-red', sectionKey: 'youtube', refKey: 'youtubeRef' },
+  { key: 'di', labelRu: 'Словарь\nи поиск', labelDe: 'Wörterbuch\nund Suche', emoji: '📚', cls: 'hdt-indigo', sectionKey: 'dictionary', refKey: 'dictionaryRef' },
+  { key: 'an', labelRu: 'Аналитика\nпрогресса', labelDe: 'Analytics\nund Fortschritt', emoji: '📊', cls: 'hdt-green', sectionKey: 'analytics', refKey: 'analyticsRef' },
+  { key: 'so', labelRu: 'Техподдержка\nи связь', labelDe: 'Support\nund Kontakt', emoji: '🛟', cls: 'hdt-amber', sectionKey: 'support', refKey: 'supportRef' },
 ];
 
 function normalizeStatus(value) {
@@ -167,7 +167,6 @@ export default function HomeDashboardTiles({
 }) {
   const currentUiLang = uiLang === 'de' ? 'de' : 'ru';
   const badges = {
-    ta: getTodayBadge(todayPlan),
     tr: getTranslationBadge(todayPlan),
     ca: getCardsBadge(todayPlan, srsQueueInfo),
   };

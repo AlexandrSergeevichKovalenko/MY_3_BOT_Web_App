@@ -55,13 +55,13 @@ export default function HomeMoreTiles({
 
   const tileDefs = useMemo(() => {
     const defs = [
+      { key: 'ta', labelRu: 'Задачи\nна сегодня', labelDe: 'Aufgaben\nheute', emoji: '✅', cls: 'hdt-rose', sectionKey: 'home_today', refKey: 'todayRef' },
+      { key: 'pl', labelRu: 'План\nна неделю', labelDe: 'Wochen-\nplan', emoji: '📅', cls: 'hdt-blue', sectionKey: 'home_weekly_plan', refKey: 'weeklyPlanRef' },
+      { key: 'sk', labelRu: 'Карта\nнавыков', labelDe: 'Skill-\nMap', emoji: '🧠', cls: 'hdt-green', sectionKey: 'home_skills', refKey: 'skillsRef' },
       { key: 'su', labelRu: 'Подписка\nи тариф', labelDe: 'Abo\nund Tarif', emoji: '💳', cls: 'hdt-indigo', sectionKey: 'subscription', refKey: 'billingRef' },
       { key: 'gu', labelRu: 'Как\nпользоваться', labelDe: 'So\nbenutzt du es', emoji: '❓', cls: 'hdt-cyan', sectionKey: 'guide', refKey: 'guideRef' },
       { key: 'mo', labelRu: 'Фильмы\nи сцены', labelDe: 'Filme\nund Szenen', emoji: '🎬', cls: 'hdt-red', sectionKey: 'movies', refKey: 'moviesRef' },
-      { key: 'di', labelRu: 'Словарь\nи поиск', labelDe: 'Wörterbuch\nund Suche', emoji: '📚', cls: 'hdt-emerald', sectionKey: 'dictionary', refKey: 'dictionaryRef' },
-      { key: 'sp', labelRu: 'Техподдержка\nи связь', labelDe: 'Support\nund Kontakt', emoji: '🛟', cls: 'hdt-amber', sectionKey: 'support', refKey: 'supportRef' },
-      { key: 'an', labelRu: 'Аналитика\nпрогресса', labelDe: 'Analytics\nund Fortschritt', emoji: '📊', cls: 'hdt-blue', sectionKey: 'analytics', refKey: 'analyticsRef' },
-      { key: 'sk', labelRu: 'Тренировка\nнавыка', labelDe: 'Skill-\nTraining', emoji: '🧩', cls: 'hdt-violet', sectionKey: 'skill_training', refKey: 'skillTrainingRef', disabled: !isSkillTrainingReady, badge: !isSkillTrainingReady ? tr('Позже', 'Spaeter') : '' },
+      { key: 'str', labelRu: 'Тренировка\nнавыка', labelDe: 'Skill-\nTraining', emoji: '🧩', cls: 'hdt-violet', sectionKey: 'skill_training', refKey: 'skillTrainingRef', disabled: !isSkillTrainingReady, badge: !isSkillTrainingReady ? tr('Позже', 'Spaeter') : '' },
     ];
     if (canViewEconomics) {
       defs.splice(6, 0, { key: 'ec', labelRu: 'Экономика\nи лимиты', labelDe: 'Kosten\nund Limits', emoji: '💹', cls: 'hdt-green', sectionKey: 'economics', refKey: 'economicsRef' });

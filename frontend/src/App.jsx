@@ -23001,9 +23001,8 @@ function AppInner() {
                   readerRef,
                   assistantRef,
                   dictionaryRef,
-                  todayRef: homeTodayPlanRef,
-                  weeklyPlanRef: homeWeeklyPlanRef,
-                  skillsRef: homeSkillsRef,
+                  analyticsRef,
+                  supportRef,
                   homeMoreRef,
                 }}
               />
@@ -23018,12 +23017,12 @@ function AppInner() {
                 isSkillTrainingReady={isSkillTrainingReady}
                 refs={{
                   homeMoreRef,
+                  todayRef: homeTodayPlanRef,
+                  weeklyPlanRef: homeWeeklyPlanRef,
+                  skillsRef: homeSkillsRef,
                   billingRef,
                   guideRef,
                   moviesRef,
-                  dictionaryRef,
-                  supportRef,
-                  analyticsRef,
                   economicsRef,
                   skillTrainingRef,
                 }}
