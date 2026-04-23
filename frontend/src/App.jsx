@@ -14238,18 +14238,6 @@ function AppInner() {
     persistTranslationDraftsToServer,
   ]);
 
-  useEffect(() => {
-    if (!isWebAppMode || !initData) {
-      translationBootstrapReadyRef.current = '';
-      translationBootstrapPromiseRef.current = null;
-      return;
-    }
-    if (flashcardsOnly || !selectedSections.has('translations')) {
-      return;
-    }
-    void ensureTranslationsBootstrapped();
-  }, [ensureTranslationsBootstrapped, flashcardsOnly, initData, isWebAppMode, selectedSections]);
-
   const syncTranslationSessionActivity = useCallback(async (action, options = {}) => {
     const normalizedAction = String(action || '').trim().toLowerCase();
     if (!['start', 'resume', 'pause', 'stop'].includes(normalizedAction)) {
@@ -15040,6 +15028,18 @@ function AppInner() {
       translationBootstrapPromiseRef.current = null;
     }
   }, [initData, isWebAppMode, loadSentences, loadSessionInfo, loadTopics]);
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData) {
+      translationBootstrapReadyRef.current = '';
+      translationBootstrapPromiseRef.current = null;
+      return;
+    }
+    if (flashcardsOnly || !selectedSections.has('translations')) {
+      return;
+    }
+    void ensureTranslationsBootstrapped();
+  }, [ensureTranslationsBootstrapped, flashcardsOnly, initData, isWebAppMode, selectedSections]);
 
   const handleStartStory = async () => {
     if (!initData) {
