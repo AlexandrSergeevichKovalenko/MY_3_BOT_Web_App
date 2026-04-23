@@ -1412,3 +1412,17 @@ Shell (`_run_tts_generation_job`) remains in `backend_server.py` and continues t
 Remaining blockers at the shell boundary:
 - `_get_user_language_pair` — business logic, stays in backend_server for now
 - `_billing_log_event_safe` — billing DB, stays in backend_server for now
+
+### Proof run (deployment `30213f13-447c-4c93-901a-ed5edd5e0f4f`, 2026-04-21T18:16)
+
+Single authenticated POST `/api/webapp/tts/generate`, text `"Die Sonne scheint heute."`, user `9100019824`.
+
+Key log lines from `railway logs`:
+
+```
+18:16:24 obs generation_runner_started  cache_key=684bec866f61ba...  runner_start_delay_ms=1
+18:16:25 obs tts_generate_completed     final_status=pending         duration_ms=1403
+18:16:33 obs generation_runner_finished final_status=generated       external_tts_provider_duration_ms=1340  storage_upload_duration_ms=469  duration_ms=7410
+```
+
+**Conclusion: core move preserved parity.** Full generation cycle completed successfully with `final_status: generated`.
