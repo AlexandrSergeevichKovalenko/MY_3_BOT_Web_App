@@ -59,7 +59,6 @@ export default function HomeMoreTiles({
       { key: 'pl', labelRu: 'План\nна неделю', labelDe: 'Wochen-\nplan', emoji: '📅', cls: 'hdt-blue', sectionKey: 'home_weekly_plan', refKey: 'weeklyPlanRef' },
       { key: 'sk', labelRu: 'Карта\nнавыков', labelDe: 'Skill-\nMap', emoji: '🧠', cls: 'hdt-green', sectionKey: 'home_skills', refKey: 'skillsRef' },
       { key: 'su', labelRu: 'Подписка\nи тариф', labelDe: 'Abo\nund Tarif', emoji: '💳', cls: 'hdt-indigo', sectionKey: 'subscription', refKey: 'billingRef' },
-      { key: 'gu', labelRu: 'Как\nпользоваться', labelDe: 'So\nbenutzt du es', emoji: '❓', cls: 'hdt-cyan', sectionKey: 'guide', refKey: 'guideRef' },
       { key: 'mo', labelRu: 'Фильмы\nи сцены', labelDe: 'Filme\nund Szenen', emoji: '🎬', cls: 'hdt-red', sectionKey: 'movies', refKey: 'moviesRef' },
       { key: 'str', labelRu: 'Тренировка\nнавыка', labelDe: 'Skill-\nTraining', emoji: '🧩', cls: 'hdt-violet', sectionKey: 'skill_training', refKey: 'skillTrainingRef', disabled: !isSkillTrainingReady, badge: !isSkillTrainingReady ? tr('Позже', 'Spaeter') : '' },
     ];

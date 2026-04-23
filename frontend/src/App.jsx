@@ -23003,6 +23003,7 @@ function AppInner() {
                   dictionaryRef,
                   analyticsRef,
                   supportRef,
+                  guideRef,
                   homeMoreRef,
                 }}
               />

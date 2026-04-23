@@ -10,6 +10,7 @@ const TILE_DEFS = [
   { key: 'di', labelRu: 'Словарь\nи поиск', labelDe: 'Wörterbuch\nund Suche', emoji: '📚', cls: 'hdt-indigo', sectionKey: 'dictionary', refKey: 'dictionaryRef' },
   { key: 'an', labelRu: 'Аналитика\nпрогресса', labelDe: 'Analytics\nund Fortschritt', emoji: '📊', cls: 'hdt-green', sectionKey: 'analytics', refKey: 'analyticsRef' },
   { key: 'so', labelRu: 'Техподдержка\nи связь', labelDe: 'Support\nund Kontakt', emoji: '🛟', cls: 'hdt-amber', sectionKey: 'support', refKey: 'supportRef' },
+  { key: 'gu', labelRu: 'Как\nпользоваться', labelDe: 'So\nbenutzt du es', emoji: '❓', cls: 'hdt-rose', sectionKey: 'guide', refKey: 'guideRef' },
 ];
 
 function normalizeStatus(value) {
