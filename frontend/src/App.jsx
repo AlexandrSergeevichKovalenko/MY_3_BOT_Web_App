@@ -4525,6 +4525,8 @@ function AppInner() {
   const inlineToastTimeoutRef = useRef(null);
   const browserAuthRequestIdRef = useRef(0);
   const bootstrapRequestIdRef = useRef(0);
+  const translationBootstrapPromiseRef = useRef(null);
+  const translationBootstrapReadyRef = useRef('');
   const todayPlanRequestIdRef = useRef(0);
   const skillReportRequestIdRef = useRef(0);
   const weeklyPlanRequestIdRef = useRef(0);
@@ -14055,6 +14057,46 @@ function AppInner() {
     }
   };
 
+  const ensureTranslationsBootstrapped = useCallback(async ({ preserveFinishMessage = false } = {}) => {
+    if (!isWebAppMode || !initData) {
+      return null;
+    }
+    const bootstrapKey = String(initData || '').trim();
+    if (!bootstrapKey) {
+      return null;
+    }
+    if (translationBootstrapReadyRef.current === bootstrapKey) {
+      return null;
+    }
+    if (translationBootstrapPromiseRef.current) {
+      return translationBootstrapPromiseRef.current;
+    }
+
+    // Keep translation bootstrap off the default tile dashboard; only hydrate when Translations is actually entered.
+    const bootstrapPromise = (async () => {
+      loadTopics();
+      const sessionInfo = await loadSessionInfo();
+      const restoredSessionId = String(
+        sessionInfo?.type === 'regular' ? (sessionInfo?.session_id || '') : ''
+      ).trim();
+      const sentencesData = await loadSentences({
+        sessionId: restoredSessionId || undefined,
+        preserveFinishMessage,
+      });
+      if (sentencesData !== null) {
+        translationBootstrapReadyRef.current = bootstrapKey;
+      }
+      return sessionInfo;
+    })();
+
+    translationBootstrapPromiseRef.current = bootstrapPromise;
+    try {
+      return await bootstrapPromise;
+    } finally {
+      translationBootstrapPromiseRef.current = null;
+    }
+  }, [initData, isWebAppMode, loadSentences, loadSessionInfo, loadTopics]);
+
   useEffect(() => {
     translationDraftsRef.current = translationDrafts;
   }, [translationDrafts]);
@@ -14238,24 +14280,15 @@ function AppInner() {
 
   useEffect(() => {
     if (!isWebAppMode || !initData) {
+      translationBootstrapReadyRef.current = '';
+      translationBootstrapPromiseRef.current = null;
       return;
     }
-    let cancelled = false;
-    loadTopics();
-    (async () => {
-      const sessionInfo = await loadSessionInfo();
-      if (cancelled) return;
-      const restoredSessionId = String(
-        sessionInfo?.type === 'regular' ? (sessionInfo?.session_id || '') : ''
-      ).trim();
-      await loadSentences({
-        sessionId: restoredSessionId || undefined,
-      });
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [initData, isWebAppMode]);
+    if (flashcardsOnly || !selectedSections.has('translations')) {
+      return;
+    }
+    void ensureTranslationsBootstrapped();
+  }, [ensureTranslationsBootstrapped, flashcardsOnly, initData, isWebAppMode, selectedSections]);
 
   const syncTranslationSessionActivity = useCallback(async (action, options = {}) => {
     const normalizedAction = String(action || '').trim().toLowerCase();
