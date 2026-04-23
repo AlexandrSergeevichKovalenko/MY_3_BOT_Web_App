@@ -8410,9 +8410,12 @@ function AppInner() {
     const item = getTodayTaskForSection(sectionKey);
     if (!item) return null;
     const inline = Boolean(options?.inline);
+    // ignoreProgress: always show timer button even when daily goal is met.
+    // Without this, progress >= 100 replaces the timer with ✅ which hides it mid-session.
+    const ignoreProgress = Boolean(options?.ignoreProgress);
     const elapsed = getTodayItemElapsedSeconds(item, todayTimerNowMs);
     const progress = getTodayItemProgressPercent(item, todayTimerNowMs);
-    const done = String(item?.status || '').toLowerCase() === 'done' || progress >= 100;
+    const done = String(item?.status || '').toLowerCase() === 'done' || (!ignoreProgress && progress >= 100);
     const running = isTodayItemTimerRunning(item);
     return (
       <div className={`today-section-task-hud ${inline ? 'is-inline' : ''}`.trim()}>
@@ -25416,7 +25419,7 @@ function AppInner() {
                           <button type="button" className="secondary-button" onClick={() => void exitFlashcardsTraining()}>
                             {tr('Назад', 'Zurueck')}
                           </button>
-                          {renderTodaySectionTaskHud('flashcards')}
+                          {renderTodaySectionTaskHud('flashcards', { ignoreProgress: true })}
                         </div>
                         <div className="fsrs-study-screen">
                           <div className="fsrs-study-header">
@@ -25596,7 +25599,7 @@ function AppInner() {
                           <button type="button" className="secondary-button" onClick={() => void exitFlashcardsTraining()}>
                             {tr('Назад', 'Zurueck')}
                           </button>
-                          {renderTodaySectionTaskHud('flashcards')}
+                          {renderTodaySectionTaskHud('flashcards', { ignoreProgress: true })}
                         </div>
                         {flashcardsLoading && <div className="webapp-muted">{t('loading_cards')}</div>}
                         {flashcardsError && <div className="webapp-error">{flashcardsError}</div>}
