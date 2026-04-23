@@ -12854,6 +12854,15 @@ function AppInner() {
         const starterOffer = normalizeStarterDictionaryOffer(data?.starter_dictionary);
         setStarterDictionaryOffer(starterOffer);
         setStarterDictionaryPromptOpen(Boolean(starterOffer?.should_prompt));
+        const bootstrapTranslationSessionId = String(data?.translation_session?.session_id || '').trim();
+        if (String(data?.translation_session?.type || '').trim().toLowerCase() === 'regular' && bootstrapTranslationSessionId) {
+          setSelectedSections((prev) => {
+            if (flashcardsOnly || prev.size > 0) {
+              return prev;
+            }
+            return new Set(['translations']);
+          });
+        }
       } catch (error) {
         if (cancelled || !isAsyncGuardCurrent(bootstrapRequestIdRef, requestId)) {
           return;
@@ -12870,7 +12879,7 @@ function AppInner() {
     return () => {
       cancelled = true;
     };
-  }, [fetchWithTimeout, handleInitDataAuthFailure, initData, isInitDataAuthFailureMessage, isWebAppMode, normalizeStarterDictionaryOffer, readApiError, telegramApp, tr]);
+  }, [fetchWithTimeout, flashcardsOnly, handleInitDataAuthFailure, initData, isInitDataAuthFailureMessage, isWebAppMode, normalizeStarterDictionaryOffer, readApiError, telegramApp, tr]);
 
   useEffect(() => {
     invalidateAsyncGuards(

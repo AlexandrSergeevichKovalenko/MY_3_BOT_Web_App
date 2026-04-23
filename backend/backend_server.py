@@ -17067,11 +17067,15 @@ def bootstrap_webapp_session():
     session_id = str(uuid4())
     parsed = _parse_telegram_init_data(init_data)
     starter_dictionary = None
+    translation_session = None
     try:
         parsed_user = parsed.get("user") if isinstance(parsed.get("user"), dict) else {}
         parsed_user_id = _safe_int(parsed_user.get("id"))
         if parsed_user_id is not None and parsed_user_id > 0:
             starter_dictionary = _build_starter_dictionary_offer(user_id=int(parsed_user_id))
+            session_projection_payload, _session_lookup_mode = _load_session_presence_projection_with_source(int(parsed_user_id))
+            if isinstance(session_projection_payload, dict):
+                translation_session = _build_session_presence_response_payload(session_projection_payload)
             _prime_webapp_home_snapshots_async(
                 user_id=int(parsed_user_id),
                 username=_extract_display_name(parsed_user),
@@ -17084,6 +17088,7 @@ def bootstrap_webapp_session():
             "session_id": session_id,
             **parsed,
             "starter_dictionary": starter_dictionary,
+            "translation_session": translation_session,
         }
     )
 
