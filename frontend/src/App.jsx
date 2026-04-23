@@ -482,16 +482,16 @@ function buildOnboardingSlides(uiLang = 'ru') {
         body: 'Unbekannte Woerter solltest du nicht nur nachschlagen, sondern sofort speichern, anhoeren und spaeter wiederholen.',
         bullets: [
           'Es gibt einen schnellen Lookup und eine tiefere GPT-Erklaerung.',
-          'Gespeicherte Woerter und Phrasen gehen spaeter in Karten und FSRS ein.',
+          'Gespeicherte Woerter und Phrasen gehen spaeter in Karten und Space Repetition ein.',
           'Du kannst fuer dein Material Ordner anlegen und ein PDF exportieren.',
         ],
       },
       {
         eyebrow: 'Schritt 4 von 8',
         title: 'Wiederholen und automatisieren',
-        body: 'Karten, Quiz, Blocks und FSRS machen aus passivem Verstehen aktive Erinnerung.',
+        body: 'Karten, Quiz, Blocks und Space Repetition machen aus passivem Verstehen aktive Erinnerung.',
         bullets: [
-          'FSRS plant Wiederholungen automatisch nach deinem echten Erinnern.',
+          'Space Repetition plant Wiederholungen automatisch nach deinem echten Erinnern.',
           'Quiz und Blocks sind kuerzer und spielerischer fuer Zwischendurch.',
           'Neue und alte Karten werden sinnvoll gemischt statt chaotisch zufaellig gezeigt.',
         ],
@@ -566,16 +566,16 @@ function buildOnboardingSlides(uiLang = 'ru') {
       body: 'Незнакомые слова лучше не просто переводить, а сразу сохранять, слушать и затем повторять.',
       bullets: [
         'В словаре есть быстрый перевод и более глубокий GPT-разбор.',
-        'Сохраненные слова и фразы потом идут в карточки и FSRS.',
+        'Сохраненные слова и фразы потом идут в карточки и Space Repetition.',
         'Можно создавать папки под свои темы и выгружать словарь в PDF.',
       ],
     },
     {
       eyebrow: 'Шаг 4 из 8',
       title: 'Повторяйте и автоматизируйте',
-      body: 'Карточки, quiz, blocks и FSRS превращают пассивное понимание слова в активное вспоминание.',
+      body: 'Карточки, quiz, blocks и Space Repetition превращают пассивное понимание слова в активное вспоминание.',
       bullets: [
-        'FSRS сам рассчитывает интервалы повторения по вашему реальному ответу.',
+        'Space Repetition сам рассчитывает интервалы повторения по вашему реальному ответу.',
         'Quiz и Blocks подходят для коротких и более игровых сессий.',
         'Новые и старые карточки смешиваются осмысленно, а не случайно.',
       ],
@@ -840,7 +840,7 @@ function buildGuideStepItems(uiLang = 'ru') {
             items: [
               'Speichere Woerter und Phrasen direkt in einen Ordner.',
               'Lege neue Ordner an, wenn du Themen sauber trennen willst.',
-              'Spaeter tauchen diese Inhalte in Karten, FSRS und weiteren Uebungen wieder auf.',
+              'Spaeter tauchen diese Inhalte in Karten, Space Repetition und weiteren Uebungen wieder auf.',
             ],
           },
         ],
@@ -884,7 +884,7 @@ function buildGuideStepItems(uiLang = 'ru') {
           {
             title: 'Die Trainingsmodi',
             items: [
-              'FSRS fuer intelligentes spaced repetition.',
+              'Space Repetition fuer intelligentes spaced repetition.',
               'Quiz fuer schnelle Entscheidungen mit Antwortoptionen.',
               'Blocks fuer aktives Zusammenbauen.',
               'Sentence fuer Kontext-Ergaenzung.',
@@ -894,7 +894,7 @@ function buildGuideStepItems(uiLang = 'ru') {
             title: 'Wie die Inhalte gebildet werden',
             items: [
               'Die Kernwarteschlange kommt aus deinem persoenlichen Material: gespeicherte Woerter und Phrasen.',
-              'In FSRS kommen zuerst faellige Wiederholungen und danach neue Karten.',
+              'In Space Repetition kommen zuerst faellige Wiederholungen und danach neue Karten.',
               'Die Telegram-Quizze mischen nicht blind, sondern wechseln neue Inhalte mit Wiederholungen schwacher Karten ab.',
             ],
           },
@@ -1313,7 +1313,7 @@ function buildGuideStepItems(uiLang = 'ru') {
           items: [
             'Сохраняйте слово или фразу сразу в нужную папку.',
             'При желании создавайте свои папки под темы, поездки, работу, фильмы и так далее.',
-            'Позже именно это личное содержимое идет в карточки, FSRS и другие тренировки.',
+            'Позже именно это личное содержимое идет в карточки, Space Repetition и другие тренировки.',
           ],
         },
       ],
@@ -1357,7 +1357,7 @@ function buildGuideStepItems(uiLang = 'ru') {
         {
           title: 'Какие режимы есть',
           items: [
-            'FSRS для умного интервального повторения.',
+            'Space Repetition для умного интервального повторения.',
             'Quiz для быстрых решений с вариантами ответа.',
             'Blocks для активной сборки ответа.',
             'Sentence для работы со словом в контексте.',
@@ -1367,7 +1367,7 @@ function buildGuideStepItems(uiLang = 'ru') {
           title: 'Как формируется содержимое',
           items: [
             'Ядро очереди строится из вашего личного материала: сохраненных слов и фраз.',
-            'В FSRS сначала идут due-карточки, потом новые.',
+            'В Space Repetition сначала идут due-карточки, потом новые.',
             'Telegram-квизы в течение дня не шлют все подряд, а чередуют новое и повтор слабых слов.',
           ],
         },
@@ -2999,7 +2999,7 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
     },
     {
       key: 'learned_words',
-      title: tr('Выученные слова (FSRS)', 'Gelernte Woerter (FSRS)'),
+      title: tr('Выученные слова (Space Repetition)', 'Gelernte Woerter (Space Repetition)'),
       unit: tr('слов', 'Woerter'),
       data: weeklyMetrics.learned_words || {},
     },
@@ -5323,7 +5323,7 @@ function AppInner() {
 
   const weeklySummaryMetricTitles = useMemo(() => ({
     translations: tr('переводы', 'Uebersetzungen'),
-    learned_words: tr('слова и FSRS', 'Woerter und FSRS'),
+    learned_words: tr('слова и Space Repetition', 'Woerter und Space Repetition'),
     reading_minutes: tr('чтение', 'Lesen'),
     youtube_minutes: tr('видео и YouTube', 'Video und YouTube'),
     agent_minutes: tr('разговорная практика', 'Sprechpraxis'),
@@ -5337,7 +5337,7 @@ function AppInner() {
     },
     {
       key: 'learned_words',
-      title: tr('Слова / FSRS', 'Woerter / FSRS'),
+      title: tr('Слова / Space Repetition', 'Woerter / Space Repetition'),
       unit: tr('слов', 'Woerter'),
       digits: 0,
     },
@@ -5514,8 +5514,8 @@ function AppInner() {
       } else if (lagging.key === 'learned_words') {
         const amount = Math.max(5, Math.min(15, Math.ceil(lagging.remaining || 5)));
         nextAction = tr(
-          `Чтобы выйти на план, сегодня лучше пройти ещё ${amount} слов в FSRS.`,
-          `Um in den Plan zu kommen, geh heute am besten noch ${amount} FSRS-Woerter durch.`
+          `Чтобы выйти на план, сегодня лучше пройти ещё ${amount} слов в Space Repetition.`,
+          `Um in den Plan zu kommen, geh heute am besten noch ${amount} Space Repetition-Wörter durch.`
         );
       } else if (lagging.key === 'reading_minutes') {
         const amount = Math.max(10, Math.min(25, Math.ceil(lagging.remaining || 10)));
@@ -7406,7 +7406,7 @@ function AppInner() {
           // ignore probe errors and show original timeout message
         }
       }
-      const friendly = normalizeNetworkErrorMessage(error, 'Не удалось загрузить FSRS карточку.', 'FSRS-Karte konnte nicht geladen werden.');
+      const friendly = normalizeNetworkErrorMessage(error, 'Не удалось загрузить Space Repetition карточку.', 'FSRS-Karte konnte nicht geladen werden.');
       setSrsError(friendly);
       setWebappError(`${tr('Ошибка загрузки SRS карточки', 'Fehler beim Laden der SRS-Karte')}: ${friendly}`);
     } finally {
@@ -7459,7 +7459,7 @@ function AppInner() {
       const items = Array.isArray(data?.items) ? data.items : [];
       appendToSrsPrefetchQueue(items);
     } catch (error) {
-      console.warn('FSRS card prefetch failed', error);
+      console.warn('Space Repetition card prefetch failed', error);
     } finally {
       srsPrefetchInFlightRef.current = false;
     }
@@ -9471,13 +9471,13 @@ function AppInner() {
       eyebrow: tr('Шаг 2 из 6', 'Schritt 2 von 6'),
       title: tr('Сохраняйте слова и повторяйте их', 'Speichere Woerter und wiederhole sie'),
       body: tr(
-        'Полезные слова и выражения отправляйте в словарь, а затем закрепляйте их через карточки и FSRS-повторение.',
-        'Speichere nuetzliche Woerter und Ausdruecke im Woerterbuch und festige sie dann mit Karten und FSRS-Wiederholung.'
+        'Полезные слова и выражения отправляйте в словарь, а затем закрепляйте их через карточки и Space Repetition.',
+        'Speichere nuetzliche Woerter und Ausdruecke im Woerterbuch und festige sie dann mit Karten und Space Repetition.'
       ),
       bullets: [
         tr('Словарь хранит лексику и формы слова.', 'Das Woerterbuch speichert Wortschatz und Wortformen.'),
         tr('Карточки закрепляют слова в памяти.', 'Karten verankern Woerter im Gedaechtnis.'),
-        tr('FSRS сам рассчитывает интервалы повторения.', 'FSRS berechnet die Wiederholungsabstaende automatisch.'),
+        tr('Space Repetition сам рассчитывает интервалы повторения.', 'Space Repetition berechnet die Wiederholungsabstaende automatisch.'),
       ],
     },
     {
@@ -9700,7 +9700,7 @@ function AppInner() {
             {
               title: 'Die 4 Modi',
               items: [
-                'FSRS: intelligentes spaced repetition für langfristiges Behalten.',
+                'Space Repetition: intelligentes spaced repetition für langfristiges Behalten.',
                 'Quiz: 4 Antwortoptionen, damit du schnell Bedeutung und Form erkennst.',
                 'Blocks: du baust die richtige Antwort aus Teilen auf.',
                 'Sentence: ergänzende Kontextpraxis; dieser Modus bleibt bewusst supplemental.',
@@ -9712,27 +9712,27 @@ function AppInner() {
                 'Für Quiz, Blocks und Sentence kannst du Set-Größe, Ordner, Geschwindigkeit und automatischen oder manuellen Übergang wählen.',
                 'Im Blocks-Modus stellst du zusätzlich den Timer ein: adaptiv, fest oder ohne Timer.',
                 'Im Sentence-Modus kannst du die Schwierigkeit wählen: easy, medium oder hard.',
-                'Im FSRS-Modus siehst du vor allem Queue-Infos wie „Due“ und „New Today“.',
+                'Im Space Repetition-Modus siehst du vor allem Queue-Infos wie „Due“ und „New Today“.',
               ],
             },
             {
               title: 'Wie Karten entstehen',
               items: [
-                'Quiz und Blocks ziehen Karten aus derselben FSRS-Kernwarteschlange: due zuerst, danach neue Karten.',
+                'Quiz und Blocks ziehen Karten aus derselben Space Repetition-Warteschlange: due zuerst, danach neue Karten.',
                 'Sentence nutzt ergänzendes Material aus Wörterbuch und GPT-Seed-Sätzen und bleibt ein supplemental mode.',
                 'Vor dem eigentlichen Training zeigt die App zuerst Karten zur kurzen Orientierung, danach startet die Session.',
-                'FSRS nutzt dieselbe Kernwarteschlange direkt als Review-Modus.',
+                'Space Repetition nutzt dieselbe Kernwarteschlange direkt als Review-Modus.',
               ],
             },
             {
-              title: 'So benutzt du FSRS richtig',
+              title: 'So benutzt du Space Repetition richtig',
               items: [
-                'In FSRS siehst du zuerst die Karte in deiner Muttersprache. Versuche die Übersetzung zuerst laut oder innerlich selbst abzurufen.',
+                'In Space Repetition siehst du zuerst die Karte in deiner Muttersprache. Versuche die Übersetzung zuerst laut oder innerlich selbst abzurufen.',
                 'Dann drehst du die Karte um und bewertest, wie gut du die Antwort wirklich aus dem Kopf holen konntest.',
                 'Again: du konntest nicht antworten oder lagst daneben. Die Karte kommt sehr bald wieder.',
                 'Hard: du hast es geschafft, aber mit viel Mühe oder Unsicherheit. Die Wiederholung kommt früher.',
                 'Good: du hast korrekt erinnert. Das ist der Standard-Schritt für normales Lernen.',
-                'Easy: du wusstest es sofort und sicher. Dann legt FSRS ein längeres Intervall fest.',
+                'Easy: du wusstest es sofort und sicher. Dann legt Space Repetition ein längeres Intervall fest.',
               ],
             },
           ],
@@ -10110,13 +10110,13 @@ function AppInner() {
             title: 'Как использовать дальше',
             items: [
               'Словарь удобно держать рядом с переводами, YouTube и Reader, когда попадаются незнакомые слова.',
-              'Всё сохранённое затем можно повторять в карточках и FSRS.',
+              'Всё сохранённое затем можно повторять в карточках и Space Repetition.',
               'Если словарь в самом начале ещё пустой, но вы хотите сразу запустить Quiz, карточки и тренировку выражений, можно подключить базовый стартовый набор.',
               'Это примерно 1000 слов и выражений из заранее подготовленной разработчиком полезной повседневной выборки.',
               'Важно: набор удобен именно для старта, но контекст и состав не всегда идеально совпадают с личными задачами конкретного пользователя.',
               'Поэтому стартовый словарь лучше воспринимать как базу для разгона, а дальше постепенно расширять его своими словами.',
               'Новые слова потом удобно добавлять из YouTube, Reader, лички с ботом, обычного словаря и блока переводов.',
-              'Когда вы наберёте свой словарь, именно эти ваши слова и выражения дальше будут использоваться в карточках, FSRS и quiz-режимах.',
+              'Когда вы наберёте свой словарь, именно эти ваши слова и выражения дальше будут использоваться в карточках, Space Repetition и quiz-режимах.',
             ],
           },
         ],
@@ -10125,12 +10125,12 @@ function AppInner() {
         key: 'flashcards',
         number: '4',
         title: 'Карточки',
-        summary: 'Закрепляйте лексику через повторение, FSRS и быстрые режимы тренировки.',
+        summary: 'Закрепляйте лексику через повторение, Space Repetition и быстрые режимы тренировки.',
         sections: [
           {
             title: '4 режима тренировки',
             items: [
-              'FSRS: интервальное повторение для долгой памяти.',
+              'Space Repetition: интервальное повторение для долгой памяти.',
               'Quiz: 4 варианта ответа для быстрой проверки знания слова.',
               'Blocks: сборка правильного ответа из частей.',
               'Sentence: дополнительная контекстная практика; этот режим остаётся supplemental.',
@@ -10142,22 +10142,22 @@ function AppInner() {
               'Для Quiz, Blocks и Sentence можно выбрать размер набора, папку, скорость и режим перехода: автоматический или ручной.',
               'В режиме Blocks дополнительно настраивается таймер: adaptive, fixed или без таймера.',
               'В режиме Sentence можно выбрать сложность: easy, medium или hard.',
-              'В FSRS-режиме показывается очередь карточек: сколько due и сколько new today.',
+              'В Space Repetition-режиме показывается очередь карточек: сколько due и сколько new today.',
             ],
           },
           {
             title: 'Как формируются карточки',
             items: [
-              'Quiz и Blocks берут карточки из одной общей FSRS-очереди: сначала due, потом новые.',
+              'Quiz и Blocks берут карточки из одной общей Space Repetition-очереди: сначала due, потом новые.',
               'Sentence использует дополнительный материал из словаря и GPT-seed предложений и остаётся supplemental mode.',
               'Перед самой тренировкой приложение сначала показывает карточки для быстрого ознакомления, а затем уже запускает quiz, blocks или sentence session.',
-              'FSRS использует ту же общую очередь напрямую как основной review-режим.',
+              'Space Repetition использует ту же общую очередь напрямую как основной review-режим.',
             ],
           },
           {
-            title: 'Как работать в FSRS',
+            title: 'Как работать в Space Repetition',
             items: [
-              'В FSRS вы сначала видите карточку на родном языке. Сначала попробуйте сами произнести перевод вслух или про себя.',
+              'В Space Repetition вы сначала видите карточку на родном языке. Сначала попробуйте сами произнести перевод вслух или про себя.',
               'Потом переверните карточку и честно оцените, насколько легко вы достали ответ из памяти.',
               'Снова / Again: не смогли ответить или ответили неверно. Карточка вернётся очень скоро.',
               'Сложно / Hard: вспомнили, но с большим усилием или ошибками. Повтор придёт раньше обычного.',
@@ -10860,7 +10860,7 @@ function AppInner() {
     },
     {
       key: 'learned_words',
-      title: tr('Выученные слова (FSRS)', 'Gelernte Woerter (FSRS)'),
+      title: tr('Выученные слова (Space Repetition)', 'Gelernte Woerter (Space Repetition)'),
       unit: tr('слов', 'Woerter'),
       data: weeklyMetrics.learned_words || {},
     },
@@ -11245,15 +11245,20 @@ function AppInner() {
     openSingleSectionAndScroll('home_more', homeMoreRef);
   }, [openSingleSectionAndScroll]);
 
-  const canTopbarGoBack = !menuOpen && !flashcardsOnly && selectedSections.size > 0;
+  const canTopbarGoBack = !menuOpen && ((!flashcardsOnly && selectedSections.size > 0) || Boolean(flashcardActiveMode));
   const handleTopbarBack = useCallback(() => {
     if (menuOpen) return;
+    if (flashcardActiveMode) {
+      void exitFlashcardsTraining();
+      return;
+    }
     if (currentSingleSectionRouteKey && currentSingleSectionRouteKey !== 'home') {
       const navigated = goBackToPreviousSection();
       if (navigated) return;
     }
     goHomeScreen();
-  }, [currentSingleSectionRouteKey, goBackToPreviousSection, goHomeScreen, menuOpen]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSingleSectionRouteKey, flashcardActiveMode, goBackToPreviousSection, goHomeScreen, menuOpen]);
 
   const loadSupportUnread = useCallback(async () => {
     try {
@@ -17529,8 +17534,8 @@ function AppInner() {
         badge: normalizedMode === 'blocks' ? 'Blocks' : normalizedMode === 'quiz' ? 'Quiz' : 'Training',
         title: tr('На сегодня слова для тренировки уже закончились', 'Fuer heute sind die Trainingswoerter schon erledigt'),
         body: tr(
-          'Вы уже прошли доступные карточки из общей очереди через FSRS или другой режим. Возвращайтесь позже или добавьте новые слова в словарь.',
-          'Du hast die verfuegbaren Karten aus der gemeinsamen Warteschlange bereits in FSRS oder einem anderen Modus durchgearbeitet. Komm spaeter wieder oder fuege neue Woerter zum Woerterbuch hinzu.'
+          'Вы уже прошли доступные карточки из общей очереди через Space Repetition или другой режим. Возвращайтесь позже или добавьте новые слова в словарь.',
+          'Du hast die verfuegbaren Karten aus der gemeinsamen Warteschlange bereits in Space Repetition oder einem anderen Modus durchgearbeitet. Komm spaeter wieder oder fuege neue Woerter zum Woerterbuch hinzu.'
         ),
       };
     }
@@ -22260,11 +22265,12 @@ function AppInner() {
                     type="button"
                     className="topbar-home-button"
                     onClick={handleTopbarBack}
-                    aria-label={tr('На главную', 'Startseite')}
+                    aria-label={Boolean(flashcardActiveMode) ? tr('Назад', 'Zurück') : tr('На главную', 'Startseite')}
                   >
                     <span className="topbar-home-arrow" aria-hidden="true">←</span>
-                    <span>{tr('На главную', 'Startseite')}</span>
+                    <span>{Boolean(flashcardActiveMode) ? tr('Назад', 'Zurück') : tr('На главную', 'Startseite')}</span>
                   </button>
+                  {Boolean(flashcardActiveMode) && renderTodaySectionTaskHud('flashcards', { ignoreProgress: true, inline: true })}
                 </div>
               ) : (
                 <>
@@ -25362,11 +25368,6 @@ function AppInner() {
             {isSectionVisible('flashcards') && (
               <PerfProfiler id="section.flashcards">
                 <section className="webapp-flashcards" ref={flashcardsRef}>
-                {flashcardActiveMode && !flashcardsOnly && Boolean(getTodayTaskForSection('flashcards')) && (
-                  <div className="section-inline-actions section-inline-actions-task">
-                    {renderTodaySectionTaskHud('flashcards')}
-                  </div>
-                )}
                 {!flashcardsVisible && (
                   <div className="webapp-muted">
                     {t('flashcards_start_hint')}
@@ -25382,7 +25383,7 @@ function AppInner() {
                         </div>
                         <div className="flashcard-mode-list">
                           {[
-                            { mode: 'fsrs', title: 'FSRS', subtitle: 'Smart spaced repetition' },
+                            { mode: 'fsrs', title: 'Space Repetition', subtitle: 'Smart spaced repetition' },
                             { mode: 'quiz', title: 'Quiz', subtitle: 'Quiz - test +4 options' },
                             { mode: 'blocks', title: 'Blocks', subtitle: 'Blocks - assemble the word' },
                             { mode: 'sentence', title: 'Sentence', subtitle: 'Sentence - supplemental context practice' },
@@ -25415,15 +25416,9 @@ function AppInner() {
                     {flashcardsOnly && flashcardActiveMode === 'fsrs' && (
                       <PerfProfiler id="subsection.fsrs">
                         <div className="flashcard-mode-screen">
-                        <div className="flashcard-mode-topbar">
-                          <button type="button" className="secondary-button" onClick={() => void exitFlashcardsTraining()}>
-                            {tr('Назад', 'Zurueck')}
-                          </button>
-                          {renderTodaySectionTaskHud('flashcards', { ignoreProgress: true })}
-                        </div>
                         <div className="fsrs-study-screen">
                           <div className="fsrs-study-header">
-                            <div className="fsrs-study-title">FSRS Study</div>
+                            <div className="fsrs-study-title">Space Repetition</div>
                             <div className="fsrs-study-queue">
                               {t('due')}: {srsQueueInfo?.due_count ?? 0} · {t('new_today')}: {srsQueueInfo?.new_remaining_today ?? 0}
                             </div>
@@ -25431,7 +25426,7 @@ function AppInner() {
 
                           {!srsLoading && !srsCard && !srsError && (srsQueueInfo?.due_count ?? 0) === 0 && (srsQueueInfo?.new_remaining_today ?? 0) === 0 && (
                             <div className="fsrs-empty-note">
-                              {tr('Сегодня по FSRS всё повторено. Можно отдыхать.', 'Heute ist alles in FSRS wiederholt. Du kannst entspannen.')}
+                              {tr('Сегодня по Space Repetition всё повторено. Можно отдыхать.', 'Heute ist alles in Space Repetition wiederholt. Du kannst entspannen.')}
                             </div>
                           )}
                           {!srsLoading && !srsCard && srsError && (
@@ -25473,7 +25468,7 @@ function AppInner() {
                               <div className="fsrs-hourglass">⌛</div>
                               <div className="fsrs-loading-title">Preparing next card…</div>
                               <div className="fsrs-divider" />
-                              <div className="fsrs-loading-subtitle">Optimizing repetition interval (FSRS)</div>
+                              <div className="fsrs-loading-subtitle">Optimizing repetition interval (Space Repetition)</div>
                             </div>
                           )}
 
@@ -25595,12 +25590,6 @@ function AppInner() {
 
                     {flashcardsOnly && (flashcardActiveMode === 'quiz' || flashcardActiveMode === 'blocks' || flashcardActiveMode === 'sentence') && (
                       <>
-                        <div className="flashcard-mode-topbar">
-                          <button type="button" className="secondary-button" onClick={() => void exitFlashcardsTraining()}>
-                            {tr('Назад', 'Zurueck')}
-                          </button>
-                          {renderTodaySectionTaskHud('flashcards', { ignoreProgress: true })}
-                        </div>
                         {flashcardsLoading && <div className="webapp-muted">{t('loading_cards')}</div>}
                         {flashcardsError && <div className="webapp-error">{flashcardsError}</div>}
                         {!flashcardsLoading && !flashcardsError && flashcards.length === 0 && flashcardsEmptyState && (
@@ -26049,7 +26038,7 @@ function AppInner() {
                             </button>
                             <h4>
                               {flashcardSettingsModalMode === 'fsrs'
-                                ? 'FSRS Settings'
+                                ? 'Space Repetition Settings'
                                 : flashcardSettingsModalMode === 'quiz'
                                   ? 'Quiz 4 Options Settings'
                                   : flashcardSettingsModalMode === 'blocks'

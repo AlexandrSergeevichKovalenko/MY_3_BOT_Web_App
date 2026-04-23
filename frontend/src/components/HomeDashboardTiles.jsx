@@ -3,7 +3,7 @@ import './HomeDashboardTiles.css';
 
 const TILE_DEFS = [
   { key: 'tr', labelRu: 'Переводы\nпредложений', labelDe: 'Satz-\nUebersetzungen', emoji: '🔤', cls: 'hdt-blue', sectionKey: 'translations', refKey: 'translationsRef' },
-  { key: 'ca', labelRu: 'Карточки\nFSRS', labelDe: 'Karten\nFSRS', emoji: '🗂', cls: 'hdt-violet', sectionKey: 'flashcards', refKey: 'flashcardsRef' },
+  { key: 'ca', labelRu: 'Карточки\nSpace Rep', labelDe: 'Karten\nSpace Rep', emoji: '🗂', cls: 'hdt-violet', sectionKey: 'flashcards', refKey: 'flashcardsRef' },
   { key: 're', labelRu: 'Чтение\nЧиталка', labelDe: 'Lesen\nReader', emoji: '📖', cls: 'hdt-emerald', sectionKey: 'reader', refKey: 'readerRef' },
   { key: 'sp', labelRu: 'Разговорная\nпрактика', labelDe: 'Sprech-\nuebung', emoji: '💬', cls: 'hdt-cyan', sectionKey: 'assistant', refKey: 'assistantRef' },
   { key: 'vi', labelRu: 'Видео\nYouTube', labelDe: 'YouTube\nVideos', emoji: '▶️', cls: 'hdt-red', sectionKey: 'youtube', refKey: 'youtubeRef' },
