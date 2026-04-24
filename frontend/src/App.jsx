@@ -21643,7 +21643,10 @@ function AppInner() {
   }, [analyticsBootstrapReady, flashcardsOnly, selectedSections]);
 
   useEffect(() => {
-    if (!isWebAppMode || !initData || !analyticsBootstrapReady || !analyticsTrendVisible) {
+    // analyticsSummary guard: timeseries must not fire before summary has loaded.
+    // The trend chart div is visible immediately on section open, so IntersectionObserver
+    // would set analyticsTrendVisible=true right away without this gate.
+    if (!isWebAppMode || !initData || !analyticsBootstrapReady || !analyticsTrendVisible || !analyticsSummary) {
       return;
     }
     if (!flashcardsOnly && isSectionVisible('analytics')) {
@@ -21657,6 +21660,7 @@ function AppInner() {
     isWebAppMode,
     analyticsBootstrapReady,
     analyticsTrendVisible,
+    analyticsSummary,
     analyticsPeriod,
     analyticsScopeKey,
     analyticsCalendarRangeValid,
@@ -21666,7 +21670,8 @@ function AppInner() {
   ]);
 
   useEffect(() => {
-    if (!isWebAppMode || !initData || !analyticsBootstrapReady || !analyticsCompareVisible) {
+    // analyticsSummary guard: compare must not fire before summary has loaded.
+    if (!isWebAppMode || !initData || !analyticsBootstrapReady || !analyticsCompareVisible || !analyticsSummary) {
       return;
     }
     if (!flashcardsOnly && isSectionVisible('analytics')) {
@@ -21680,6 +21685,7 @@ function AppInner() {
     isWebAppMode,
     analyticsBootstrapReady,
     analyticsCompareVisible,
+    analyticsSummary,
     analyticsPeriod,
     analyticsScopeKey,
     analyticsCalendarRangeValid,
