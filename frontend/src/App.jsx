@@ -21568,19 +21568,12 @@ function AppInner() {
       return;
     }
     if (!flashcardsOnly && isSectionVisible('analytics')) {
-      let cancelled = false;
-      setAnalyticsBootstrapReady(false);
-      (async () => {
-        await Promise.all([
-          loadAnalyticsScope(),
-          loadProgressResetStatus(),
-        ]);
-        if (cancelled) return;
-        setAnalyticsBootstrapReady(true);
-      })();
-      return () => {
-        cancelled = true;
-      };
+      // Keep Analytics visible content independent from slower bootstrap metadata.
+      // Scope and reset status still load on section entry, but they must not block summary/chart hydration.
+      setAnalyticsBootstrapReady(true);
+      void loadAnalyticsScope();
+      void loadProgressResetStatus();
+      return undefined;
     }
     setAnalyticsBootstrapReady(false);
     return undefined;
