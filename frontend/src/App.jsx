@@ -13111,18 +13111,12 @@ function AppInner() {
 
   useEffect(() => {
     if (!isWebAppMode || !initData || !pageVisible || !startupPhase3Ready) return;
-    // Weekly plan and skills now live behind home subsection navigation, so keep them off the default dashboard startup path.
+    // Weekly plan and skills now live behind home subsection navigation, so hydrate them on explicit entry only.
     if (activeHomeSubsectionKey === 'home_weekly_plan' && !weeklyPlanLoadingRef.current) {
-      const savedAt = weeklyPlanRef2.current?.snapshot_saved_at;
-      if (!savedAt || isSnapshotRefreshDue(savedAt)) {
-        void loadWeeklyPlanRef.current();
-      }
+      void loadWeeklyPlanRef.current({ manual: true });
     }
     if (activeHomeSubsectionKey === 'home_skills' && !skillReportLoadingRef.current) {
-      const savedAt = skillReportRef2.current?.snapshot_saved_at;
-      if (!savedAt || isSnapshotRefreshDue(savedAt)) {
-        void loadSkillReportRef.current();
-      }
+      void loadSkillReportRef.current({ manual: true });
     }
   // Intentionally only re-run when the active subsection changes, not on loading state changes.
   // eslint-disable-next-line react-hooks/exhaustive-deps
