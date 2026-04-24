@@ -21277,9 +21277,9 @@ function AppInner() {
     }
     setAnalyticsLoading(true);
     setAnalyticsError('');
-    setAnalyticsSummary(null);
     try {
-      const { personalPayloadBase } = resolveAnalyticsLoadContext(overridePeriod, overrideScopeKey, overrideRange);
+      // Summary cards stay personal and should not be blanked by scope bootstrap changes.
+      const { personalPayloadBase } = resolveAnalyticsLoadContext(overridePeriod, undefined, overrideRange);
       const summaryResponse = await postJsonWithRetry('/api/webapp/analytics/summary', personalPayloadBase);
       if (!summaryResponse.ok) {
         throw new Error(await readApiError(summaryResponse, 'Ошибка загрузки аналитики', 'Fehler beim Laden der Analytik'));
@@ -21595,14 +21595,13 @@ function AppInner() {
       if (analyticsPeriod === 'calendar' && !analyticsCalendarRangeValid) {
         return;
       }
-      void loadAnalyticsSummary(undefined, analyticsScopeKey);
+      void loadAnalyticsSummary(undefined, undefined);
     }
   }, [
     initData,
     isWebAppMode,
     analyticsBootstrapReady,
     analyticsPeriod,
-    analyticsScopeKey,
     analyticsCalendarRangeValid,
     selectedSections,
     flashcardsOnly,
