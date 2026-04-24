@@ -5391,6 +5391,14 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_tts_audio_cache (updated_at);
             """)
             cursor.execute("""
+                ALTER TABLE bt_3_tts_audio_cache
+                ADD COLUMN IF NOT EXISTS object_key TEXT;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_tts_audio_cache
+                ADD COLUMN IF NOT EXISTS r2_url TEXT;
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_translation_sentence_pool (
                     id BIGSERIAL PRIMARY KEY,
                     source_lang TEXT NOT NULL,
