@@ -4356,6 +4356,8 @@ function AppInner() {
   const [analyticsScopeLoading, setAnalyticsScopeLoading] = useState(false);
   const [analyticsScopeSaving, setAnalyticsScopeSaving] = useState(false);
   const [analyticsScopeError, setAnalyticsScopeError] = useState('');
+  const [analyticsTrendVisible, setAnalyticsTrendVisible] = useState(false);
+  const [analyticsCompareVisible, setAnalyticsCompareVisible] = useState(false);
   const [progressResetInfo, setProgressResetInfo] = useState(null);
   const [progressResetLoading, setProgressResetLoading] = useState(false);
   const [progressResetSaving, setProgressResetSaving] = useState(false);
@@ -21020,7 +21022,7 @@ function AppInner() {
         loadSkillReport(),
         loadWeeklyPlan(),
         loadPlanAnalytics(planAnalyticsPeriod),
-        loadAnalytics(undefined, analyticsScopeKey),
+        reloadVisibleAnalytics(undefined, analyticsScopeKey),
       ]);
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(error, 'Не удалось сохранить reset progress.', 'Reset-Status konnte nicht gespeichert werden.');
@@ -21215,11 +21217,7 @@ function AppInner() {
     setAnalyticsCalendarOpen(true);
   }, [ensureAnalyticsCalendarDraftRange]);
 
-  const loadAnalytics = async (overridePeriod, overrideScopeKey, overrideRange = null) => {
-    if (!initData) {
-      setAnalyticsError(initDataMissingMsg);
-      return;
-    }
+  const resolveAnalyticsLoadContext = useCallback((overridePeriod, overrideScopeKey, overrideRange = null) => {
     const period = overridePeriod || analyticsPeriod;
     const effectiveRange = overrideRange && typeof overrideRange === 'object'
       ? {
@@ -21232,8 +21230,7 @@ function AppInner() {
       };
     const useCalendarRange = period === 'calendar';
     if (useCalendarRange && (!effectiveRange.startDate || !effectiveRange.endDate || effectiveRange.startDate > effectiveRange.endDate)) {
-      setAnalyticsError(tr('Выберите корректный диапазон дат для аналитики.', 'Waehle einen gueltigen Datumsbereich fuer die Analytik.'));
-      return;
+      throw new Error(tr('Выберите корректный диапазон дат для аналитики.', 'Waehle einen gueltigen Datumsbereich fuer die Analytik.'));
     }
     const granularity = resolveAnalyticsGranularity(period, effectiveRange);
     const scope = parseAnalyticsScopeKey(overrideScopeKey || analyticsScopeKey);
@@ -21252,47 +21249,130 @@ function AppInner() {
     if (Object.keys(scopeContext).length > 0) {
       payloadBase.scope_context = scopeContext;
     }
-    const personalPayloadBase = {
-      ...payloadBase,
-      scope: 'personal',
-      scope_kind: 'personal',
-      scope_chat_id: null,
+    return {
+      granularity,
+      payloadBase,
+      personalPayloadBase: {
+        ...payloadBase,
+        scope: 'personal',
+        scope_kind: 'personal',
+        scope_chat_id: null,
+      },
+      scope,
     };
+  }, [
+    analyticsCustomEndDate,
+    analyticsCustomStartDate,
+    analyticsPeriod,
+    analyticsScopeKey,
+    initData,
+    resolveAnalyticsGranularity,
+    tr,
+  ]);
+
+  const loadAnalyticsSummary = useCallback(async (overridePeriod, overrideScopeKey, overrideRange = null) => {
+    if (!initData) {
+      setAnalyticsError(initDataMissingMsg);
+      return;
+    }
     setAnalyticsLoading(true);
     setAnalyticsError('');
     setAnalyticsSummary(null);
-    setAnalyticsPoints([]);
-    setAnalyticsCompare([]);
-    setAnalyticsRank(null);
     try {
+      const { personalPayloadBase } = resolveAnalyticsLoadContext(overridePeriod, overrideScopeKey, overrideRange);
       const summaryResponse = await postJsonWithRetry('/api/webapp/analytics/summary', personalPayloadBase);
       if (!summaryResponse.ok) {
         throw new Error(await readApiError(summaryResponse, 'Ошибка загрузки аналитики', 'Fehler beim Laden der Analytik'));
       }
       const summaryData = await summaryResponse.json();
       setAnalyticsSummary(summaryData.summary || null);
-
-      const seriesResponse = await postJsonWithRetry('/api/webapp/analytics/timeseries', { ...personalPayloadBase, granularity });
-      if (!seriesResponse.ok) {
-        throw new Error(await readApiError(seriesResponse, 'Ошибка загрузки динамики', 'Fehler beim Laden des Verlaufs'));
-      }
-      const seriesData = await seriesResponse.json();
-      setAnalyticsPoints(seriesData.points || []);
-
-      const compareResponse = await postJsonWithRetry('/api/webapp/analytics/compare', { ...payloadBase, limit: 8 });
-      if (!compareResponse.ok) {
-        throw new Error(await readApiError(compareResponse, 'Ошибка загрузки сравнения', 'Fehler beim Laden des Vergleichs'));
-      }
-      const compareData = await compareResponse.json();
-      setAnalyticsCompare(compareData.items || []);
-      setAnalyticsRank(scope.scope_kind === 'group' ? (compareData.self?.rank ?? null) : null);
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(error, 'Не удалось загрузить аналитику.', 'Analytik konnte nicht geladen werden.');
       setAnalyticsError(`${tr('Ошибка аналитики', 'Analytikfehler')}: ${friendly}`);
     } finally {
       setAnalyticsLoading(false);
     }
-  };
+  }, [
+    initData,
+    initDataMissingMsg,
+    normalizeNetworkErrorMessage,
+    postJsonWithRetry,
+    readApiError,
+    resolveAnalyticsLoadContext,
+    tr,
+  ]);
+
+  const loadAnalyticsTimeseries = useCallback(async (overridePeriod, overrideScopeKey, overrideRange = null) => {
+    if (!initData) {
+      return null;
+    }
+    try {
+      const { granularity, personalPayloadBase } = resolveAnalyticsLoadContext(overridePeriod, overrideScopeKey, overrideRange);
+      const response = await postJsonWithRetry('/api/webapp/analytics/timeseries', { ...personalPayloadBase, granularity });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка загрузки динамики', 'Fehler beim Laden des Verlaufs'));
+      }
+      const data = await response.json();
+      setAnalyticsPoints(data.points || []);
+      return data;
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(error, 'Не удалось загрузить динамику.', 'Verlauf konnte nicht geladen werden.');
+      setAnalyticsError(`${tr('Ошибка аналитики', 'Analytikfehler')}: ${friendly}`);
+      return null;
+    }
+  }, [
+    initData,
+    normalizeNetworkErrorMessage,
+    postJsonWithRetry,
+    readApiError,
+    resolveAnalyticsLoadContext,
+    tr,
+  ]);
+
+  const loadAnalyticsCompare = useCallback(async (overridePeriod, overrideScopeKey, overrideRange = null) => {
+    if (!initData) {
+      return null;
+    }
+    try {
+      const { payloadBase, scope } = resolveAnalyticsLoadContext(overridePeriod, overrideScopeKey, overrideRange);
+      const response = await postJsonWithRetry('/api/webapp/analytics/compare', { ...payloadBase, limit: 8 });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка загрузки сравнения', 'Fehler beim Laden des Vergleichs'));
+      }
+      const data = await response.json();
+      setAnalyticsCompare(data.items || []);
+      setAnalyticsRank(scope.scope_kind === 'group' ? (data.self?.rank ?? null) : null);
+      return data;
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(error, 'Не удалось загрузить сравнение.', 'Vergleich konnte nicht geladen werden.');
+      setAnalyticsError(`${tr('Ошибка аналитики', 'Analytikfehler')}: ${friendly}`);
+      return null;
+    }
+  }, [
+    initData,
+    normalizeNetworkErrorMessage,
+    postJsonWithRetry,
+    readApiError,
+    resolveAnalyticsLoadContext,
+    tr,
+  ]);
+
+  const reloadVisibleAnalytics = useCallback(async (overridePeriod, overrideScopeKey, overrideRange = null) => {
+    const tasks = [loadAnalyticsSummary(overridePeriod, overrideScopeKey, overrideRange)];
+    if (analyticsTrendVisible) {
+      tasks.push(loadAnalyticsTimeseries(overridePeriod, overrideScopeKey, overrideRange));
+    }
+    if (analyticsCompareVisible) {
+      tasks.push(loadAnalyticsCompare(overridePeriod, overrideScopeKey, overrideRange));
+    }
+    await Promise.all(tasks);
+  }, [
+    analyticsCompareVisible,
+    analyticsTrendVisible,
+    loadAnalyticsCompare,
+    loadAnalyticsSummary,
+    loadAnalyticsTimeseries,
+  ]);
 
   const applyAnalyticsCalendarRange = useCallback(() => {
     if (!analyticsCalendarDraftValid) {
@@ -21326,13 +21406,13 @@ function AppInner() {
       }
       setAnalyticsPeriodSelectVersion((value) => value + 1);
     }, 0);
-    loadAnalytics('calendar', analyticsScopeKey, nextRange);
+    void reloadVisibleAnalytics('calendar', analyticsScopeKey, nextRange);
   }, [
     analyticsCalendarDraftEndDate,
     analyticsCalendarDraftStartDate,
     analyticsCalendarDraftValid,
     analyticsScopeKey,
-    loadAnalytics,
+    reloadVisibleAnalytics,
     tr,
   ]);
 
@@ -21491,9 +21571,10 @@ function AppInner() {
       let cancelled = false;
       setAnalyticsBootstrapReady(false);
       (async () => {
-        await loadAnalyticsScope();
-        if (cancelled) return;
-        await loadProgressResetStatus();
+        await Promise.all([
+          loadAnalyticsScope(),
+          loadProgressResetStatus(),
+        ]);
         if (cancelled) return;
         setAnalyticsBootstrapReady(true);
       })();
@@ -21521,7 +21602,7 @@ function AppInner() {
       if (analyticsPeriod === 'calendar' && !analyticsCalendarRangeValid) {
         return;
       }
-      loadAnalytics(undefined, analyticsScopeKey);
+      void loadAnalyticsSummary(undefined, analyticsScopeKey);
     }
   }, [
     initData,
@@ -21532,6 +21613,87 @@ function AppInner() {
     analyticsCalendarRangeValid,
     selectedSections,
     flashcardsOnly,
+    loadAnalyticsSummary,
+  ]);
+
+  useEffect(() => {
+    const analyticsSectionVisible = !flashcardsOnly && isSectionVisible('analytics');
+    if (!analyticsSectionVisible || !analyticsBootstrapReady || typeof window === 'undefined') {
+      setAnalyticsTrendVisible(false);
+      setAnalyticsCompareVisible(false);
+      return undefined;
+    }
+    const trendNode = analyticsTrendRef.current;
+    const compareNode = analyticsCompareRef.current;
+    if (!trendNode && !compareNode) {
+      return undefined;
+    }
+    const observer = new window.IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        if (trendNode && entry.target === trendNode) {
+          setAnalyticsTrendVisible(true);
+        }
+        if (compareNode && entry.target === compareNode) {
+          setAnalyticsCompareVisible(true);
+        }
+      });
+    }, { threshold: 0.6 });
+    if (trendNode) {
+      observer.observe(trendNode);
+    }
+    if (compareNode) {
+      observer.observe(compareNode);
+    }
+    return () => {
+      observer.disconnect();
+    };
+  }, [analyticsBootstrapReady, flashcardsOnly, selectedSections]);
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData || !analyticsBootstrapReady || !analyticsTrendVisible) {
+      return;
+    }
+    if (!flashcardsOnly && isSectionVisible('analytics')) {
+      if (analyticsPeriod === 'calendar' && !analyticsCalendarRangeValid) {
+        return;
+      }
+      void loadAnalyticsTimeseries(undefined, analyticsScopeKey);
+    }
+  }, [
+    initData,
+    isWebAppMode,
+    analyticsBootstrapReady,
+    analyticsTrendVisible,
+    analyticsPeriod,
+    analyticsScopeKey,
+    analyticsCalendarRangeValid,
+    selectedSections,
+    flashcardsOnly,
+    loadAnalyticsTimeseries,
+  ]);
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData || !analyticsBootstrapReady || !analyticsCompareVisible) {
+      return;
+    }
+    if (!flashcardsOnly && isSectionVisible('analytics')) {
+      if (analyticsPeriod === 'calendar' && !analyticsCalendarRangeValid) {
+        return;
+      }
+      void loadAnalyticsCompare(undefined, analyticsScopeKey);
+    }
+  }, [
+    initData,
+    isWebAppMode,
+    analyticsBootstrapReady,
+    analyticsCompareVisible,
+    analyticsPeriod,
+    analyticsScopeKey,
+    analyticsCalendarRangeValid,
+    selectedSections,
+    flashcardsOnly,
+    loadAnalyticsCompare,
   ]);
 
   useEffect(() => {
@@ -26655,7 +26817,7 @@ function AppInner() {
                   <button
                     type="button"
                     className="secondary-button"
-                    onClick={() => loadAnalytics(undefined, analyticsScopeKey)}
+                    onClick={() => reloadVisibleAnalytics(undefined, analyticsScopeKey)}
                     disabled={analyticsLoading || analyticsScopeLoading || analyticsScopeSaving || (analyticsPeriod === 'calendar' && !analyticsCalendarRangeValid)}
                   >
                     {analyticsLoading ? tr('Считаем...', 'Berechnen...') : tr('Обновить', 'Aktualisieren')}
