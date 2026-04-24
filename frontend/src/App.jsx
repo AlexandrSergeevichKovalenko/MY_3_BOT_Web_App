@@ -12114,7 +12114,7 @@ function AppInner() {
   ]);
 
   useEffect(() => {
-    if (!isWebAppMode || !initData || singleInstanceBlocked || typeof window === 'undefined') {
+    if (!isWebAppMode || !initData || !pageVisible || singleInstanceBlocked || typeof window === 'undefined') {
       return undefined;
     }
 
@@ -12143,23 +12143,15 @@ function AppInner() {
     void claimServerLease('claim');
     heartbeatTimer = window.setInterval(() => {
       void claimServerLease('heartbeat');
-    }, 10000);
-
-    const handleVisible = () => {
-      if (document.visibilityState === 'visible') {
-        void claimServerLease('heartbeat');
-      }
-    };
-    document.addEventListener('visibilitychange', handleVisible);
+    }, 20000);
 
     return () => {
       stopped = true;
-      document.removeEventListener('visibilitychange', handleVisible);
       if (heartbeatTimer) {
         window.clearInterval(heartbeatTimer);
       }
     };
-  }, [appMode, initData, isWebAppMode, sessionId, singleInstanceBlocked, telegramApp]);
+  }, [appMode, initData, isWebAppMode, pageVisible, sessionId, singleInstanceBlocked, telegramApp]);
 
   const resumeAutoPausedVisibleTimers = useCallback(async () => {
     if (globalTimerAutoResumeInFlightRef.current) return;
@@ -13189,15 +13181,18 @@ function AppInner() {
       setSupportFailedMessages([]);
       return;
     }
+    if (!pageVisible) {
+      return undefined;
+    }
     void loadSupportUnread();
     const timer = window.setInterval(() => {
       void loadSupportUnread();
-    }, 15000);
+    }, 30000);
     return () => window.clearInterval(timer);
-  }, [isWebAppMode, initData, startupPhase3Ready, loadSupportUnread]);
+  }, [isWebAppMode, initData, pageVisible, startupPhase3Ready, loadSupportUnread]);
 
   useEffect(() => {
-    if (!supportSectionVisible || !initData) return;
+    if (!supportSectionVisible || !initData || !pageVisible) return;
     void loadSupportMessages();
     void markSupportMessagesRead();
     const timer = window.setInterval(() => {
@@ -13208,6 +13203,7 @@ function AppInner() {
   }, [
     supportSectionVisible,
     initData,
+    pageVisible,
     loadSupportMessages,
     markSupportMessagesRead,
     loadSupportUnread,
