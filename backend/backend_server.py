@@ -25042,28 +25042,13 @@ def _refresh_post_finish_user_critical_snapshots(
 
 
 def _prime_webapp_home_snapshots_async(*, user_id: int, username: str | None) -> None:
-    """Warm the most visible home-screen snapshots outside the request path."""
+    """Warm only the default dashboard snapshots that are still visible on app open."""
     try:
         plan_date = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
         _schedule_today_plan_snapshot_refresh(
             user_id=int(user_id),
             username=username,
             plan_date=plan_date,
-        )
-        _schedule_skill_progress_snapshot_refresh(
-            user_id=int(user_id),
-            username=username,
-            lookback_days=7,
-        )
-        _schedule_weekly_plan_snapshot_refresh(
-            user_id=int(user_id),
-            anchor_date=plan_date,
-        )
-        _schedule_plan_analytics_snapshot_refresh(
-            user_id=int(user_id),
-            period="week",
-            week_start=None,
-            as_of_date=plan_date,
         )
     except Exception:
         logging.warning("Failed to prime webapp home snapshots: user_id=%s", user_id, exc_info=True)

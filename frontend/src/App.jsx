@@ -13096,42 +13096,6 @@ function AppInner() {
     return () => window.clearTimeout(timerId);
   }, [homeSnapshotResumeTick, initData, isWebAppMode, loadTodayPlan, pageVisible, readTodayPlanSnapshot, startupPhase2Ready]);
 
-  useEffect(() => {
-    if (!isWebAppMode || !initData || !pageVisible || !startupPhase3Ready || weeklyPlanStartupRefreshDoneRef.current) {
-      return undefined;
-    }
-    const snapshot = readWeeklyPlanSnapshot();
-    const shouldRefresh = !snapshot?.plan || isSnapshotRefreshDue(snapshot?.plan?.snapshot_saved_at);
-    if (!shouldRefresh) {
-      weeklyPlanStartupRefreshDoneRef.current = true;
-      return undefined;
-    }
-    const delayMs = snapshot?.plan ? 2400 : 1100;
-    const timerId = window.setTimeout(() => {
-      weeklyPlanStartupRefreshDoneRef.current = true;
-      void loadWeeklyPlan();
-    }, delayMs);
-    return () => window.clearTimeout(timerId);
-  }, [homeSnapshotResumeTick, initData, isWebAppMode, loadWeeklyPlan, pageVisible, readWeeklyPlanSnapshot, startupPhase3Ready]);
-
-  useEffect(() => {
-    if (!isWebAppMode || !initData || !pageVisible || !startupPhase3Ready || skillReportStartupRefreshDoneRef.current) {
-      return undefined;
-    }
-    const snapshot = readSkillReportSnapshot();
-    const shouldRefresh = !snapshot || isSnapshotRefreshDue(snapshot?.snapshot_saved_at);
-    if (!shouldRefresh) {
-      skillReportStartupRefreshDoneRef.current = true;
-      return undefined;
-    }
-    const delayMs = snapshot ? 3200 : 1800;
-    const timerId = window.setTimeout(() => {
-      skillReportStartupRefreshDoneRef.current = true;
-      void loadSkillReport();
-    }, delayMs);
-    return () => window.clearTimeout(timerId);
-  }, [homeSnapshotResumeTick, initData, isWebAppMode, loadSkillReport, pageVisible, readSkillReportSnapshot, startupPhase3Ready]);
-
   const loadWeeklyPlanRef = useRef(loadWeeklyPlan);
   loadWeeklyPlanRef.current = loadWeeklyPlan;
   const loadSkillReportRef = useRef(loadSkillReport);
@@ -13147,6 +13111,7 @@ function AppInner() {
 
   useEffect(() => {
     if (!isWebAppMode || !initData || !pageVisible || !startupPhase3Ready) return;
+    // Weekly plan and skills now live behind home subsection navigation, so keep them off the default dashboard startup path.
     if (activeHomeSubsectionKey === 'home_weekly_plan' && !weeklyPlanLoadingRef.current) {
       const savedAt = weeklyPlanRef2.current?.snapshot_saved_at;
       if (!savedAt || isSnapshotRefreshDue(savedAt)) {
