@@ -141,6 +141,26 @@ def r2_delete_object(object_key: str) -> bool:
         raise
 
 
+def r2_get_bytes(object_key: str) -> bytes | None:
+    cfg = load_r2_config_from_env()
+    key = _normalize_object_key(object_key)
+    client = _r2_client()
+    try:
+        from botocore.exceptions import ClientError
+    except Exception as exc:
+        raise RuntimeError(
+            "boto3/botocore are required for R2 support. Add boto3 to requirements."
+        ) from exc
+    try:
+        response = client.get_object(Bucket=cfg.bucket_name, Key=key)
+        return response["Body"].read()
+    except ClientError as exc:
+        code = str((exc.response or {}).get("Error", {}).get("Code", "")).strip()
+        if code in {"404", "NoSuchKey", "NotFound"}:
+            return None
+        raise
+
+
 def r2_bucket_usage_summary(
     *,
     prefix_depth: int = 1,

@@ -5,6 +5,7 @@ from psycopg2 import sql
 from psycopg2.extras import Json, execute_values
 from psycopg2.pool import ThreadedConnectionPool, PoolError
 import os
+from backend.r2_storage import r2_get_bytes, r2_put_bytes, r2_public_url
 import hashlib
 import atexit
 import math
@@ -5397,6 +5398,10 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 ALTER TABLE bt_3_tts_audio_cache
                 ADD COLUMN IF NOT EXISTS r2_url TEXT;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_tts_audio_cache
+                ALTER COLUMN audio_mp3 DROP NOT NULL;
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_translation_sentence_pool (
@@ -11953,14 +11958,23 @@ def upsert_tts_chunk_cache(
             )
 
 
+def _tts_audio_cache_r2_key(language: str, voice: str, cache_key: str) -> str:
+    lang_safe = re.sub(r"[^a-zA-Z0-9_-]", "_", str(language or "unknown"))[:16]
+    voice_safe = re.sub(r"[^a-zA-Z0-9_-]", "_", str(voice or "unknown"))[:32]
+    return f"tts_legacy/{lang_safe}/{voice_safe}/{cache_key}.mp3"
+
+
 def get_tts_audio_cache(cache_key: str) -> bytes | None:
     if not cache_key:
         return None
+    legacy_bytes: bytes | None = None
+    r2_url: str | None = None
+    object_key: str | None = None
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT audio_mp3
+                SELECT audio_mp3, r2_url, object_key
                 FROM bt_3_tts_audio_cache
                 WHERE cache_key = %s;
                 """,
@@ -11978,12 +11992,24 @@ def get_tts_audio_cache(cache_key: str) -> bytes | None:
                 """,
                 (cache_key,),
             )
-            payload = row[0]
-            if payload is None:
-                return None
-            if isinstance(payload, memoryview):
-                return payload.tobytes()
-            return bytes(payload)
+            raw, r2_url, object_key = row[0], row[1], row[2]
+            # Convert BYTEA inside cursor context for legacy rows
+            if raw is not None:
+                legacy_bytes = raw.tobytes() if isinstance(raw, memoryview) else bytes(raw)
+
+    # R2-first: new rows have r2_url and object_key set
+    if r2_url and object_key:
+        try:
+            data = r2_get_bytes(object_key)
+            if data:
+                return data
+            logging.warning("TTS audio cache R2 object missing cache_key=%s object_key=%s", cache_key, object_key)
+        except Exception as exc:
+            logging.warning("TTS audio cache R2 fetch failed cache_key=%s: %s — will regenerate", cache_key, exc)
+        return None  # allow upstream regeneration, no BYTEA fallback for R2 rows
+
+    # Legacy fallback: old rows have audio_mp3 BYTEA, no r2_url
+    return legacy_bytes
 
 
 def upsert_tts_audio_cache(
@@ -11996,6 +12022,13 @@ def upsert_tts_audio_cache(
 ) -> None:
     if not cache_key or not source_text or not audio_mp3:
         return
+    object_key = _tts_audio_cache_r2_key(language, voice, cache_key)
+    try:
+        r2_put_bytes(object_key, audio_mp3)
+        r2_url = r2_public_url(object_key)
+    except Exception as exc:
+        logging.warning("TTS audio cache R2 upload failed cache_key=%s: %s — entry not cached", cache_key, exc)
+        return
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -12007,17 +12040,21 @@ def upsert_tts_audio_cache(
                     speed,
                     source_text,
                     audio_mp3,
+                    object_key,
+                    r2_url,
                     hit_count,
                     created_at,
                     updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, 1, NOW(), NOW())
+                VALUES (%s, %s, %s, %s, %s, NULL, %s, %s, 1, NOW(), NOW())
                 ON CONFLICT (cache_key) DO UPDATE
                 SET language = EXCLUDED.language,
                     voice = EXCLUDED.voice,
                     speed = EXCLUDED.speed,
                     source_text = EXCLUDED.source_text,
-                    audio_mp3 = EXCLUDED.audio_mp3,
+                    audio_mp3 = NULL,
+                    object_key = EXCLUDED.object_key,
+                    r2_url = EXCLUDED.r2_url,
                     hit_count = bt_3_tts_audio_cache.hit_count + 1,
                     updated_at = NOW();
                 """,
@@ -12027,7 +12064,8 @@ def upsert_tts_audio_cache(
                     voice,
                     speed,
                     source_text,
-                    Binary(audio_mp3),
+                    object_key,
+                    r2_url,
                 ),
             )
 
