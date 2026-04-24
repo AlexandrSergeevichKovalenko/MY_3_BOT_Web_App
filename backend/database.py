@@ -12070,6 +12070,94 @@ def upsert_tts_audio_cache(
             )
 
 
+def backfill_tts_audio_cache_to_r2(*, limit: int = 10) -> dict:
+    """
+    Backfill existing BYTEA rows to R2. Idempotent: skips rows already having object_key+r2_url.
+    Does NOT null audio_mp3 — that is a separate phase.
+    """
+    limit = max(1, int(limit or 10))
+    selected = 0
+    uploaded = 0
+    updated = 0
+    skipped = 0
+    errors = 0
+    sample: list[dict] = []
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT cache_key, language, voice, audio_mp3
+                FROM bt_3_tts_audio_cache
+                WHERE audio_mp3 IS NOT NULL
+                  AND (object_key IS NULL OR r2_url IS NULL)
+                ORDER BY created_at ASC
+                LIMIT %s;
+                """,
+                (limit,),
+            )
+            rows = cursor.fetchall()
+
+    selected = len(rows)
+
+    for row in rows:
+        cache_key_val = row[0]
+        language_val = str(row[1] or "unknown")
+        voice_val = str(row[2] or "unknown")
+        raw = row[3]
+        audio_bytes: bytes | None = None
+        if raw is not None:
+            audio_bytes = raw.tobytes() if isinstance(raw, memoryview) else bytes(raw)
+
+        if not audio_bytes:
+            skipped += 1
+            continue
+
+        object_key = _tts_audio_cache_r2_key(language_val, voice_val, cache_key_val)
+        try:
+            r2_put_bytes(object_key, audio_bytes)
+            r2_url = r2_public_url(object_key)
+        except Exception as exc:
+            logging.warning("TTS backfill R2 upload failed cache_key=%s: %s", cache_key_val, exc)
+            errors += 1
+            continue
+
+        uploaded += 1
+
+        try:
+            with get_db_connection_context() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        UPDATE bt_3_tts_audio_cache
+                        SET object_key = %s,
+                            r2_url = %s,
+                            updated_at = NOW()
+                        WHERE cache_key = %s
+                          AND (object_key IS NULL OR r2_url IS NULL);
+                        """,
+                        (object_key, r2_url, cache_key_val),
+                    )
+                    updated += cursor.rowcount
+        except Exception as exc:
+            logging.warning("TTS backfill DB update failed cache_key=%s: %s", cache_key_val, exc)
+            errors += 1
+            continue
+
+        if len(sample) < 3:
+            sample.append({"cache_key": cache_key_val, "object_key": object_key, "r2_url": r2_url, "bytes": len(audio_bytes)})
+
+    return {
+        "limit": limit,
+        "selected": selected,
+        "uploaded": uploaded,
+        "updated": updated,
+        "skipped": skipped,
+        "errors": errors,
+        "sample": sample,
+    }
+
+
 def delete_stale_tts_db_cache(*, older_than_days: int) -> dict[str, int]:
     safe_older_than_days = max(1, int(older_than_days or 1))
     with get_db_connection_context() as conn:

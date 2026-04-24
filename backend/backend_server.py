@@ -308,6 +308,7 @@ from backend.database import (
     upsert_tts_chunk_cache,
     get_tts_audio_cache,
     upsert_tts_audio_cache,
+    backfill_tts_audio_cache_to_r2,
     get_tts_object_meta,
     create_tts_object_pending,
     requeue_tts_object_pending,
@@ -40113,6 +40114,23 @@ try:
         )
 except Exception as exc:
     logging.warning("Billing OpenAI snapshot sync failed: %s", exc)
+
+
+@app.route("/api/admin/tts-cache-backfill", methods=["POST"])
+def tts_cache_backfill():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN not set"}), 500
+    if token != required_token:
+        return jsonify({"error": "wrong token"}), 401
+    limit = max(1, min(500, int(payload.get("limit") or 10)))
+    try:
+        result = backfill_tts_audio_cache_to_r2(limit=limit)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    return jsonify({"ok": True, **result})
 
 
 if _should_start_backend_runtime_side_effects():
