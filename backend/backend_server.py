@@ -40115,56 +40115,6 @@ except Exception as exc:
     logging.warning("Billing OpenAI snapshot sync failed: %s", exc)
 
 
-@app.route("/api/admin/tts-audio-cache-probe", methods=["POST"])
-def tts_audio_cache_probe():
-    payload = request.get_json(silent=True) or {}
-    token = payload.get("token") or request.headers.get("X-Admin-Token")
-    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
-    if not required_token:
-        return jsonify({"error": "AUDIO_DISPATCH_TOKEN not set"}), 500
-    if token != required_token:
-        return jsonify({"error": "wrong token"}), 401
-    import time as _time
-    probe_key = f"probe_{int(_time.time() * 1000)}"
-    probe_audio = b"\xff\xfb\x90\x04" + b"\x00" * 128
-    try:
-        upsert_tts_audio_cache(
-            cache_key=probe_key, language="de", voice="probe",
-            speed=1.0, source_text="probe test entry", audio_mp3=probe_audio,
-        )
-    except Exception as exc:
-        return jsonify({"ok": False, "upsert_error": str(exc)}), 500
-    try:
-        with get_db_connection_context() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    "SELECT audio_mp3, r2_url, object_key FROM bt_3_tts_audio_cache WHERE cache_key = %s",
-                    (probe_key,),
-                )
-                row = cursor.fetchone()
-                cursor.execute("DELETE FROM bt_3_tts_audio_cache WHERE cache_key = %s", (probe_key,))
-    except Exception as exc:
-        return jsonify({"ok": False, "db_error": str(exc)}), 500
-    if not row:
-        return jsonify({"ok": False, "error": "row not found after upsert"}), 500
-    audio_mp3_raw, r2_url, object_key = row[0], row[1], row[2]
-    try:
-        from backend.r2_storage import r2_get_bytes, r2_delete_object
-        r2_bytes = r2_get_bytes(object_key) if object_key else None
-        if object_key:
-            r2_delete_object(object_key)
-    except Exception as exc:
-        return jsonify({"ok": False, "r2_error": str(exc), "r2_url": r2_url}), 500
-    return jsonify({
-        "ok": True,
-        "r2_url": r2_url,
-        "object_key": object_key,
-        "audio_mp3_is_null": audio_mp3_raw is None,
-        "r2_bytes_returned": len(r2_bytes) if r2_bytes else 0,
-        "r2_bytes_match": r2_bytes == probe_audio if r2_bytes is not None else None,
-    })
-
-
 if _should_start_backend_runtime_side_effects():
     try:
         threading.Thread(
