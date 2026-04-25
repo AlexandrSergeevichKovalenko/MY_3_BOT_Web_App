@@ -40211,6 +40211,33 @@ def tts_actor_proof_check():
     })
 
 
+@app.route("/api/admin/tts-queue-debug", methods=["POST"])
+def tts_queue_debug():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN not set"}), 500
+    if token != required_token:
+        return jsonify({"error": "wrong token"}), 401
+    from backend.job_queue import get_redis_client
+    client = get_redis_client()
+    result = {}
+    if client:
+        try:
+            # Dramatiq RedisBroker stores messages in dramatiq:{queue_name}.msgs
+            q_len = client.llen("dramatiq:tts_generation.msgs")
+            dq_len = client.llen("dramatiq:tts_generation.DQ.msgs")
+            result["queue_len"] = q_len
+            result["dead_queue_len"] = dq_len
+            result["redis_ok"] = True
+        except Exception as exc:
+            result["redis_error"] = str(exc)
+    else:
+        result["redis_ok"] = False
+    return jsonify({"ok": True, **result})
+
+
 if _should_start_backend_runtime_side_effects():
     try:
         threading.Thread(
