@@ -40115,6 +40115,102 @@ except Exception as exc:
     logging.warning("Billing OpenAI snapshot sync failed: %s", exc)
 
 
+@app.route("/api/admin/tts-actor-proof-enqueue", methods=["POST"])
+def tts_actor_proof_enqueue():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN not set"}), 500
+    if token != required_token:
+        return jsonify({"error": "wrong token"}), 401
+    import time as _time
+    from backend.background_jobs import run_tts_generation_actor
+    from backend.job_queue import claim_tts_generation_in_flight
+    from backend.tts_generation import _tts_object_key
+    ts = int(_time.time() * 1000)
+    test_cache_key = f"ttsproofactor{ts}"
+    test_object_key = _tts_object_key("de", "de-DE-Neural2-C", test_cache_key)
+    claimed = claim_tts_generation_in_flight(test_cache_key)
+    msg = run_tts_generation_actor.send(
+        cache_key=test_cache_key,
+        user_id=0,
+        language="de-DE",
+        tts_lang_short="de",
+        voice="de-DE-Neural2-C",
+        speaking_rate=0.9,
+        normalized_text="Hallo das ist ein Test.",
+        object_key=test_object_key,
+        had_existing_meta=False,
+        correlation_id="tts_actor_proof",
+        request_id="tts_actor_proof",
+        enqueue_ts_ms=ts,
+    )
+    return jsonify({
+        "ok": True,
+        "test_cache_key": test_cache_key,
+        "test_object_key": test_object_key,
+        "redis_claimed": claimed,
+        "message_id": str(getattr(msg, "message_id", None) or ""),
+    })
+
+
+@app.route("/api/admin/tts-actor-proof-check", methods=["POST"])
+def tts_actor_proof_check():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN not set"}), 500
+    if token != required_token:
+        return jsonify({"error": "wrong token"}), 401
+    cache_key = str(payload.get("cache_key") or "").strip()
+    object_key = str(payload.get("object_key") or "").strip()
+    if not cache_key:
+        return jsonify({"error": "cache_key required"}), 400
+    db_row = None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT status, url, size_bytes, error_code, error_msg FROM bt_3_tts_object_cache WHERE cache_key = %s",
+                (cache_key,),
+            )
+            db_row = cursor.fetchone()
+    db_status = db_row[0] if db_row else None
+    db_url = db_row[1] if db_row else None
+    db_size = db_row[2] if db_row else None
+    db_error_code = db_row[3] if db_row else None
+    db_error_msg = db_row[4] if db_row else None
+    r2_exists = False
+    if object_key:
+        try:
+            from backend.r2_storage import r2_get_bytes
+            data = r2_get_bytes(object_key)
+            r2_exists = bool(data)
+        except Exception:
+            pass
+    from backend.job_queue import get_redis_client
+    redis_claim_held = False
+    client = get_redis_client()
+    if client:
+        try:
+            redis_claim_held = bool(client.exists(f"tts:in_flight:{cache_key}"))
+        except Exception:
+            pass
+    return jsonify({
+        "ok": True,
+        "cache_key": cache_key,
+        "db_status": db_status,
+        "db_url": db_url,
+        "db_size_bytes": db_size,
+        "db_error_code": db_error_code,
+        "db_error_msg": db_error_msg,
+        "r2_object_exists": r2_exists,
+        "redis_claim_held": redis_claim_held,
+        "redis_claim_released": not redis_claim_held,
+    })
+
+
 if _should_start_backend_runtime_side_effects():
     try:
         threading.Thread(
