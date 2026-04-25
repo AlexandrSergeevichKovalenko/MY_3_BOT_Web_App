@@ -40225,11 +40225,19 @@ def tts_queue_debug():
     result = {}
     if client:
         try:
-            # Dramatiq RedisBroker stores messages in dramatiq:{queue_name}.msgs
-            q_len = client.llen("dramatiq:tts_generation.msgs")
-            dq_len = client.llen("dramatiq:tts_generation.DQ.msgs")
-            result["queue_len"] = q_len
-            result["dead_queue_len"] = dq_len
+            keys_info = {}
+            for key in ["dramatiq:tts_generation.msgs", "dramatiq:tts_generation.DQ.msgs",
+                        "dramatiq:tts_generation", "dramatiq:tts_generation.DQ"]:
+                ktype = client.type(key)
+                if ktype == "none":
+                    keys_info[key] = {"type": "none", "len": 0}
+                elif ktype == "list":
+                    keys_info[key] = {"type": "list", "len": client.llen(key)}
+                elif ktype == "zset":
+                    keys_info[key] = {"type": "zset", "len": client.zcard(key)}
+                else:
+                    keys_info[key] = {"type": ktype}
+            result["keys"] = keys_info
             result["redis_ok"] = True
         except Exception as exc:
             result["redis_error"] = str(exc)
