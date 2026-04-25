@@ -40133,6 +40133,57 @@ def tts_cache_backfill():
     return jsonify({"ok": True, **result})
 
 
+@app.route("/api/admin/tts-cache-stats", methods=["POST"])
+def tts_cache_stats():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN not set"}), 500
+    if token != required_token:
+        return jsonify({"error": "wrong token"}), 401
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT
+                    pg_database_size(current_database()) AS db_bytes,
+                    pg_total_relation_size('bt_3_tts_audio_cache') AS tbl_total_bytes,
+                    pg_relation_size('bt_3_tts_audio_cache') AS tbl_heap_bytes,
+                    pg_total_relation_size('bt_3_tts_audio_cache')
+                        - pg_relation_size('bt_3_tts_audio_cache') AS tbl_toast_idx_bytes,
+                    (SELECT COUNT(*) FROM bt_3_tts_audio_cache WHERE audio_mp3 IS NOT NULL) AS bytea_rows,
+                    (SELECT COUNT(*) FROM bt_3_tts_audio_cache WHERE audio_mp3 IS NOT NULL AND (object_key IS NULL OR r2_url IS NULL)) AS missing_r2_meta,
+                    (SELECT COUNT(*) FROM bt_3_tts_audio_cache) AS total_rows;
+            """)
+            r = cursor.fetchone()
+            cursor.execute("""
+                SELECT
+                    n_dead_tup,
+                    last_vacuum,
+                    last_autovacuum,
+                    last_analyze,
+                    last_autoanalyze
+                FROM pg_stat_user_tables
+                WHERE relname = 'bt_3_tts_audio_cache';
+            """)
+            s = cursor.fetchone()
+    return jsonify({
+        "ok": True,
+        "db_bytes": r[0],
+        "tbl_total_bytes": r[1],
+        "tbl_heap_bytes": r[2],
+        "tbl_toast_idx_bytes": r[3],
+        "bytea_rows": r[4],
+        "missing_r2_meta": r[5],
+        "total_rows": r[6],
+        "n_dead_tup": s[0] if s else None,
+        "last_vacuum": str(s[1]) if s and s[1] else None,
+        "last_autovacuum": str(s[2]) if s and s[2] else None,
+        "last_analyze": str(s[3]) if s and s[3] else None,
+        "last_autoanalyze": str(s[4]) if s and s[4] else None,
+    })
+
+
 if _should_start_backend_runtime_side_effects():
     try:
         threading.Thread(
