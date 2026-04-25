@@ -40115,53 +40115,6 @@ except Exception as exc:
     logging.warning("Billing OpenAI snapshot sync failed: %s", exc)
 
 
-@app.route("/api/admin/tts-cache-r2-proof", methods=["POST"])
-def tts_cache_r2_proof():
-    payload = request.get_json(silent=True) or {}
-    token = payload.get("token") or request.headers.get("X-Admin-Token")
-    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
-    if not required_token:
-        return jsonify({"error": "AUDIO_DISPATCH_TOKEN not set"}), 500
-    if token != required_token:
-        return jsonify({"error": "wrong token"}), 401
-    import time as _time
-    probe_key = f"r2proof_{int(_time.time() * 1000)}"
-    probe_audio = b"\xff\xfb\x90\x04" + b"\x00" * 256
-    try:
-        upsert_tts_audio_cache(
-            cache_key=probe_key, language="de", voice="proof",
-            speed=1.0, source_text="r2 proof entry", audio_mp3=probe_audio,
-        )
-    except Exception as exc:
-        return jsonify({"ok": False, "step": "upsert", "error": str(exc)}), 500
-    try:
-        result_bytes = get_tts_audio_cache(probe_key)
-    except Exception as exc:
-        return jsonify({"ok": False, "step": "get", "error": str(exc)}), 500
-    try:
-        with get_db_connection_context() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    "SELECT audio_mp3, object_key, r2_url FROM bt_3_tts_audio_cache WHERE cache_key = %s",
-                    (probe_key,),
-                )
-                row = cursor.fetchone()
-                cursor.execute("DELETE FROM bt_3_tts_audio_cache WHERE cache_key = %s", (probe_key,))
-        from backend.r2_storage import r2_delete_object
-        if row and row[1]:
-            r2_delete_object(row[1])
-    except Exception as exc:
-        return jsonify({"ok": False, "step": "cleanup", "error": str(exc)}), 500
-    return jsonify({
-        "ok": True,
-        "audio_mp3_in_db_is_null": row[0] is None if row else None,
-        "object_key_set": bool(row[1]) if row else False,
-        "r2_url_set": bool(row[2]) if row else False,
-        "bytes_returned": len(result_bytes) if result_bytes else 0,
-        "bytes_match": result_bytes == probe_audio if result_bytes is not None else False,
-    })
-
-
 if _should_start_backend_runtime_side_effects():
     try:
         threading.Thread(
