@@ -40115,6 +40115,41 @@ except Exception as exc:
     logging.warning("Billing OpenAI snapshot sync failed: %s", exc)
 
 
+@app.route("/api/admin/tts-final-size-check", methods=["POST"])
+def tts_final_size_check():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN not set"}), 500
+    if token != required_token:
+        return jsonify({"error": "wrong token"}), 401
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT
+                    pg_database_size(current_database()),
+                    pg_total_relation_size('bt_3_tts_audio_cache'),
+                    pg_relation_size('bt_3_tts_audio_cache'),
+                    pg_indexes_size('bt_3_tts_audio_cache'),
+                    (SELECT COUNT(*) FROM bt_3_tts_audio_cache),
+                    (SELECT COUNT(*) FROM bt_3_tts_audio_cache WHERE object_key IS NOT NULL AND r2_url IS NOT NULL),
+                    (SELECT COUNT(*) FROM information_schema.columns
+                     WHERE table_name='bt_3_tts_audio_cache' AND column_name='audio_mp3');
+            """)
+            r = cursor.fetchone()
+    return jsonify({
+        "ok": True,
+        "db_bytes": r[0],
+        "tbl_total_bytes": r[1],
+        "tbl_heap_bytes": r[2],
+        "tbl_index_bytes": r[3],
+        "total_rows": r[4],
+        "rows_with_r2": r[5],
+        "audio_mp3_col_exists": r[6] > 0,
+    })
+
+
 if _should_start_backend_runtime_side_effects():
     try:
         threading.Thread(
