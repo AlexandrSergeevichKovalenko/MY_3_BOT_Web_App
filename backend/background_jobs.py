@@ -1492,3 +1492,41 @@ def run_semantic_audit_actor() -> None:
 def run_skill_state_v2_aggregation_actor() -> None:
     from backend.backend_server import _run_skill_state_v2_aggregation_scheduler_job
     _run_skill_state_v2_aggregation_scheduler_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="tts_generation")
+def run_tts_generation_actor(
+    *,
+    cache_key: str,
+    user_id: int,
+    language: str,
+    tts_lang_short: str,
+    voice: str,
+    speaking_rate: float,
+    normalized_text: str,
+    object_key: str,
+    had_existing_meta: bool,
+    correlation_id: str | None = None,
+    request_id: str | None = None,
+    enqueue_ts_ms: int | None = None,
+) -> None:
+    from backend.job_queue import release_tts_generation_in_flight
+    from backend.backend_server import _run_tts_generation_job
+
+    try:
+        _run_tts_generation_job(
+            cache_key=cache_key,
+            user_id=user_id,
+            language=language,
+            tts_lang_short=tts_lang_short,
+            voice=voice,
+            speaking_rate=speaking_rate,
+            normalized_text=normalized_text,
+            object_key=object_key,
+            had_existing_meta=had_existing_meta,
+            correlation_id=correlation_id,
+            request_id=request_id,
+            enqueue_ts_ms=enqueue_ts_ms,
+        )
+    finally:
+        release_tts_generation_in_flight(cache_key)

@@ -22,6 +22,9 @@ except Exception:  # pragma: no cover - optional until redis is installed
 
 _BROKER = None
 _REDIS_CLIENT = None
+_TTS_GENERATION_IN_FLIGHT_TTL_SEC = max(
+    10, min(600, int((os.getenv("TTS_GENERATION_IN_FLIGHT_TTL_SEC") or "120").strip() or "120"))
+)
 _YOUTUBE_TRANSCRIPT_JOB_TTL_SEC = max(
     300, int((os.getenv("YOUTUBE_TRANSCRIPT_JOB_TTL_SEC") or "1800").strip())
 )
@@ -243,6 +246,63 @@ def is_translation_check_async_enabled() -> bool:
 
 def is_translation_sentence_fill_async_enabled() -> bool:
     return _env_flag_enabled("TRANSLATION_SENTENCE_FILL_ASYNC_ENABLED", default=False) and bool(get_redis_url())
+
+
+def is_tts_generation_async_enabled() -> bool:
+    return _env_flag_enabled("TTS_GENERATION_ASYNC_ENABLED", default=False) and bool(get_redis_url())
+
+
+def _tts_in_flight_key(cache_key: str) -> str:
+    return f"tts:in_flight:{str(cache_key or '').strip()}"
+
+
+def claim_tts_generation_in_flight(cache_key: str) -> bool:
+    safe_key = str(cache_key or "").strip()
+    if not safe_key:
+        return False
+    client = get_redis_client()
+    if client is None:
+        logging.warning("claim_tts_generation_in_flight: Redis unavailable, refusing async claim cache_key=%s", safe_key)
+        return False
+    try:
+        claimed = client.set(_tts_in_flight_key(safe_key), "1", nx=True, ex=int(_TTS_GENERATION_IN_FLIGHT_TTL_SEC))
+        return bool(claimed)
+    except Exception:
+        logging.warning("claim_tts_generation_in_flight: Redis error cache_key=%s", safe_key, exc_info=True)
+        return False
+
+
+def release_tts_generation_in_flight(cache_key: str) -> None:
+    safe_key = str(cache_key or "").strip()
+    if not safe_key:
+        return
+    client = get_redis_client()
+    if client is None:
+        return
+    try:
+        client.delete(_tts_in_flight_key(safe_key))
+    except Exception:
+        logging.warning("release_tts_generation_in_flight: Redis error cache_key=%s", safe_key, exc_info=True)
+
+
+def enqueue_tts_generation_job(payload: dict) -> dict:
+    if not is_tts_generation_async_enabled():
+        return {"queued": False, "reason": "tts_generation_async_disabled"}
+    cache_key = str((payload or {}).get("cache_key") or "").strip()
+    if not cache_key:
+        return {"queued": False, "reason": "missing_cache_key"}
+    if not claim_tts_generation_in_flight(cache_key):
+        return {"queued": False, "reason": "duplicate_in_flight"}
+    try:
+        get_dramatiq_broker()
+        from backend.background_jobs import run_tts_generation_actor
+
+        run_tts_generation_actor.send(**{k: v for k, v in (payload or {}).items()})
+        return {"queued": True, "reason": "queued"}
+    except Exception:
+        release_tts_generation_in_flight(cache_key)
+        logging.exception("enqueue_tts_generation_job failed cache_key=%s", cache_key)
+        return {"queued": False, "reason": "broker_error"}
 
 
 def can_enqueue_background_jobs() -> bool:
