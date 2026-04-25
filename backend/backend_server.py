@@ -40246,6 +40246,55 @@ def tts_queue_debug():
     return jsonify({"ok": True, **result})
 
 
+@app.route("/api/admin/tts-actor-direct-proof", methods=["POST"])
+def tts_actor_direct_proof():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN not set"}), 500
+    if token != required_token:
+        return jsonify({"error": "wrong token"}), 401
+    import time as _time
+    from backend.tts_generation import _tts_object_key
+    ts = int(_time.time() * 1000)
+    test_cache_key = f"ttsdirectproof{ts}"
+    test_object_key = _tts_object_key("de", "de-DE-Neural2-C", test_cache_key)
+    try:
+        _run_tts_generation_job(
+            cache_key=test_cache_key,
+            user_id=0,
+            language="de-DE",
+            tts_lang_short="de",
+            voice="de-DE-Neural2-C",
+            speaking_rate=0.9,
+            normalized_text="Hallo das ist ein direkter Test.",
+            object_key=test_object_key,
+            had_existing_meta=False,
+            correlation_id="tts_direct_proof",
+            request_id="tts_direct_proof",
+            enqueue_ts_ms=ts,
+        )
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT status, url, size_bytes, error_code FROM bt_3_tts_object_cache WHERE cache_key = %s",
+                    (test_cache_key,),
+                )
+                row = cursor.fetchone()
+        return jsonify({
+            "ok": True,
+            "test_cache_key": test_cache_key,
+            "test_object_key": test_object_key,
+            "db_status": row[0] if row else None,
+            "db_url": row[1] if row else None,
+            "db_size_bytes": row[2] if row else None,
+            "db_error_code": row[3] if row else None,
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
 if _should_start_backend_runtime_side_effects():
     try:
         threading.Thread(
