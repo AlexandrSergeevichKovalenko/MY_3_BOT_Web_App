@@ -40115,6 +40115,30 @@ except Exception as exc:
     logging.warning("Billing OpenAI snapshot sync failed: %s", exc)
 
 
+@app.route("/api/admin/tts-actor-proof", methods=["POST"])
+def tts_actor_proof():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN not set"}), 500
+    if token != required_token:
+        return jsonify({"error": "wrong token"}), 401
+    try:
+        from backend.background_jobs import run_tts_generation_actor
+        from backend.job_queue import is_tts_generation_async_enabled
+        actor_queue = getattr(run_tts_generation_actor, "queue_name", None)
+        async_enabled = is_tts_generation_async_enabled()
+        return jsonify({
+            "ok": True,
+            "actor_importable": True,
+            "actor_queue": actor_queue,
+            "async_enabled": async_enabled,
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
 if _should_start_backend_runtime_side_effects():
     try:
         threading.Thread(
