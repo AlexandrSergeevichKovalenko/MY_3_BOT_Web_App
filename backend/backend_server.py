@@ -40133,62 +40133,6 @@ def tts_cache_backfill():
     return jsonify({"ok": True, **result})
 
 
-@app.route("/api/admin/tts-cache-null-batch", methods=["POST"])
-def tts_cache_null_batch():
-    payload = request.get_json(silent=True) or {}
-    token = payload.get("token") or request.headers.get("X-Admin-Token")
-    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
-    if not required_token:
-        return jsonify({"error": "AUDIO_DISPATCH_TOKEN not set"}), 500
-    if token != required_token:
-        return jsonify({"error": "wrong token"}), 401
-    limit = max(1, min(1000, int(payload.get("limit") or 250)))
-    include_stats = bool(payload.get("stats"))
-    with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                UPDATE bt_3_tts_audio_cache
-                SET audio_mp3 = NULL, updated_at = NOW()
-                WHERE cache_key IN (
-                    SELECT cache_key FROM bt_3_tts_audio_cache
-                    WHERE audio_mp3 IS NOT NULL
-                      AND object_key IS NOT NULL
-                      AND r2_url IS NOT NULL
-                    ORDER BY created_at ASC
-                    LIMIT %s
-                );
-                """,
-                (limit,),
-            )
-            nulled = cursor.rowcount
-            remaining = None
-            missing_r2_meta = None
-            total_size_bytes = None
-            table_size_bytes = None
-            cursor.execute(
-                "SELECT COUNT(*) FROM bt_3_tts_audio_cache WHERE audio_mp3 IS NOT NULL;"
-            )
-            remaining = cursor.fetchone()[0]
-            if include_stats:
-                cursor.execute(
-                    "SELECT COUNT(*) FROM bt_3_tts_audio_cache WHERE audio_mp3 IS NOT NULL AND (object_key IS NULL OR r2_url IS NULL);"
-                )
-                missing_r2_meta = cursor.fetchone()[0]
-                cursor.execute("SELECT pg_total_relation_size('bt_3_tts_audio_cache'), pg_relation_size('bt_3_tts_audio_cache');")
-                row = cursor.fetchone()
-                total_size_bytes = row[0]
-                table_size_bytes = row[1]
-    return jsonify({
-        "ok": True,
-        "nulled": nulled,
-        "remaining": remaining,
-        "missing_r2_meta": missing_r2_meta,
-        "total_size_bytes": total_size_bytes,
-        "table_size_bytes": table_size_bytes,
-    })
-
-
 if _should_start_backend_runtime_side_effects():
     try:
         threading.Thread(
