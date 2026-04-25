@@ -40115,6 +40115,55 @@ except Exception as exc:
     logging.warning("Billing OpenAI snapshot sync failed: %s", exc)
 
 
+@app.route("/api/admin/tts-drop-column-proof", methods=["POST"])
+def tts_drop_column_proof():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN not set"}), 500
+    if token != required_token:
+        return jsonify({"error": "wrong token"}), 401
+    import time as _time
+    # Check column existence
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT COUNT(*) FROM information_schema.columns
+                WHERE table_name = 'bt_3_tts_audio_cache' AND column_name = 'audio_mp3';
+            """)
+            col_exists = cursor.fetchone()[0] > 0
+    # upsert + get round-trip
+    probe_key = f"dropcol_{int(_time.time() * 1000)}"
+    probe_audio = b"\xff\xfb\x90\x04" + b"\x00" * 256
+    try:
+        upsert_tts_audio_cache(
+            cache_key=probe_key, language="de", voice="proof",
+            speed=1.0, source_text="drop col proof", audio_mp3=probe_audio,
+        )
+        result_bytes = get_tts_audio_cache(probe_key)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "col_exists": col_exists}), 500
+    finally:
+        try:
+            with get_db_connection_context() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT object_key FROM bt_3_tts_audio_cache WHERE cache_key = %s", (probe_key,))
+                    ok_row = cursor.fetchone()
+                    cursor.execute("DELETE FROM bt_3_tts_audio_cache WHERE cache_key = %s", (probe_key,))
+            from backend.r2_storage import r2_delete_object
+            if ok_row and ok_row[0]:
+                r2_delete_object(ok_row[0])
+        except Exception:
+            pass
+    return jsonify({
+        "ok": True,
+        "col_exists": col_exists,
+        "bytes_returned": len(result_bytes) if result_bytes else 0,
+        "bytes_match": result_bytes == probe_audio if result_bytes is not None else False,
+    })
+
+
 if _should_start_backend_runtime_side_effects():
     try:
         threading.Thread(

@@ -5381,7 +5381,6 @@ def ensure_webapp_tables() -> None:
                     voice TEXT NOT NULL,
                     speed DOUBLE PRECISION NOT NULL,
                     source_text TEXT NOT NULL,
-                    audio_mp3 BYTEA,
                     hit_count BIGINT NOT NULL DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -5401,7 +5400,7 @@ def ensure_webapp_tables() -> None:
             """)
             cursor.execute("""
                 ALTER TABLE bt_3_tts_audio_cache
-                ALTER COLUMN audio_mp3 DROP NOT NULL;
+                DROP COLUMN IF EXISTS audio_mp3;
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_translation_sentence_pool (
