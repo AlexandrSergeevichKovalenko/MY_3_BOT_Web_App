@@ -40140,6 +40140,23 @@ else:
     )
 
 
+@app.route("/tts-queue-probe", methods=["GET"])
+def tts_queue_probe():
+    from backend.job_queue import get_redis_client
+    r = get_redis_client()
+    if r is None:
+        return jsonify({"ok": False, "error": "redis_unavailable"}), 503
+    q = "dramatiq:tts_generation"
+    key_type = r.type(q).decode() if hasattr(r.type(q), "decode") else str(r.type(q))
+    if key_type == "list":
+        queue_len = r.llen(q)
+    elif key_type == "none":
+        queue_len = 0
+    else:
+        queue_len = -1
+    return jsonify({"ok": True, "queue_len": queue_len, "key_type": key_type})
+
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5001"))
     debug = os.getenv("FLASK_DEBUG", "0") == "1"
