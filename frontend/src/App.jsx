@@ -15049,16 +15049,18 @@ function AppInner() {
       const data = await response.json();
       if (data.blocked) {
         setFinishMessage(activeTranslationSessionWarning);
-        const sessionInfo = await loadSessionInfo();
-        if (String(sessionInfo?.type || '') === 'story') {
-          await loadSentences();
+        const blockedSessionId = String(data.session_id || '').trim() || undefined;
+        await loadSessionInfo();
+        if (blockedSessionId) {
+          await loadSentences({ sessionId: blockedSessionId, preserveFinishMessage: true });
         } else {
           setSentences([]);
         }
         return;
       }
+      const storySessionId = String(data.session_id || '').trim() || undefined;
       await loadSessionInfo();
-      await loadSentences();
+      await loadSentences({ sessionId: storySessionId });
     } catch (error) {
       setWebappError(`${tr('Ошибка старта истории', 'Story-Startfehler')}: ${error.message}`);
     } finally {
