@@ -39241,6 +39241,118 @@ def cleanup_flashcard_feel_now():
     return jsonify({"ok": True})
 
 
+@app.route("/api/admin/tts-actor-proof-run", methods=["POST"])
+def tts_actor_proof_run():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = os.getenv("AUDIO_DISPATCH_TOKEN") or ""
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN not set"}), 500
+    if token != required_token:
+        return jsonify({"error": "wrong token"}), 401
+
+    from backend.background_jobs import run_tts_generation_actor
+    from backend.job_queue import (
+        claim_tts_generation_in_flight,
+        get_redis_client,
+        is_tts_generation_async_enabled,
+        release_tts_generation_in_flight,
+    )
+    from backend.r2_storage import r2_exists
+    from backend.tts_generation import _tts_object_key
+
+    ts_ms = _to_epoch_ms()
+    nonce = uuid4().hex[:10]
+    cache_key = f"tts-actor-proof-{ts_ms}-{nonce}"
+    object_key = _tts_object_key("de", "de-DE-Neural2-C", cache_key)
+    request_id = f"req_tts_actor_proof_{uuid4().hex[:16]}"
+    correlation_id = f"tts_actor_proof_{uuid4().hex[:16]}"
+    proof_text = f"Hallo das ist ein manueller TTS Actor Proof {nonce}."
+    proof_started_perf = time.perf_counter()
+
+    if not claim_tts_generation_in_flight(cache_key):
+        return jsonify({"error": "duplicate_in_flight", "cache_key": cache_key}), 409
+
+    message_id = ""
+    try:
+        message = run_tts_generation_actor.send(
+            cache_key=cache_key,
+            user_id=0,
+            language="de-DE",
+            tts_lang_short="de",
+            voice="de-DE-Neural2-C",
+            speaking_rate=0.9,
+            normalized_text=proof_text,
+            object_key=object_key,
+            had_existing_meta=False,
+            correlation_id=correlation_id,
+            request_id=request_id,
+            enqueue_ts_ms=ts_ms,
+        )
+        message_id = str(getattr(message, "message_id", None) or "")
+    except Exception as exc:
+        release_tts_generation_in_flight(cache_key)
+        return jsonify({
+            "ok": False,
+            "cache_key": cache_key,
+            "object_key": object_key,
+            "request_id": request_id,
+            "correlation_id": correlation_id,
+            "enqueued": False,
+            "error": str(exc),
+        }), 500
+
+    final_meta = None
+    redis_claim_released = False
+    actor_job_consumed = False
+    deadline_ts = time.time() + 120.0
+    while time.time() < deadline_ts:
+        final_meta = get_tts_object_meta(cache_key, touch_hit=False) or {}
+        redis_client = get_redis_client()
+        redis_claim_held = False
+        if redis_client is not None:
+            try:
+                redis_claim_held = bool(redis_client.exists(f"tts:in_flight:{cache_key}"))
+            except Exception:
+                redis_claim_held = False
+        redis_claim_released = not redis_claim_held
+        status_value = str(final_meta.get("status") or "").strip().lower()
+        if status_value in {"ready", "failed"}:
+            actor_job_consumed = True
+            if redis_claim_released:
+                break
+        time.sleep(2.0)
+
+    final_meta = final_meta or (get_tts_object_meta(cache_key, touch_hit=False) or {})
+    final_status = str(final_meta.get("status") or "").strip().lower() or "missing"
+    r2_object_written = False
+    if final_status == "ready":
+        try:
+            r2_object_written = bool(r2_exists(object_key))
+        except Exception:
+            r2_object_written = False
+
+    return jsonify({
+        "ok": True,
+        "cache_key": cache_key,
+        "object_key": object_key,
+        "request_id": request_id,
+        "correlation_id": correlation_id,
+        "message_id": message_id,
+        "actor_job_enqueued": True,
+        "actor_job_consumed": bool(actor_job_consumed),
+        "final_status": final_status,
+        "db_url": final_meta.get("url"),
+        "db_size_bytes": final_meta.get("size_bytes"),
+        "db_error_code": final_meta.get("error_code"),
+        "db_error_msg": final_meta.get("error_msg"),
+        "r2_object_written": bool(r2_object_written) if final_status == "ready" else None,
+        "redis_claim_released": bool(redis_claim_released),
+        "production_routing_unchanged": not bool(is_tts_generation_async_enabled()),
+        "duration_ms": _elapsed_ms_since(proof_started_perf),
+    })
+
+
 def _format_selection_dictionary_explanation(result: dict, source_lang: str, target_lang: str) -> str:
     if not isinstance(result, dict):
         return "📘 **Перевод**\n—"
