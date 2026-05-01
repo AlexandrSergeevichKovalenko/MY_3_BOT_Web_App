@@ -40140,6 +40140,120 @@ else:
     )
 
 
+@app.route("/api/admin/tts-actor-proof-enqueue", methods=["POST"])
+def tts_actor_proof_enqueue():
+    if not _admin_token_is_valid():
+        return jsonify({"error": "Неверный токен"}), 401
+
+    # Temporary proof path: enqueue once and return immediately so the web
+    # request never waits for synthesis, R2 upload, or DB completion.
+    ts_ms = _to_epoch_ms()
+    proof_suffix = uuid4().hex[:10]
+    cache_key = f"ttsproofactor{ts_ms}{proof_suffix}"
+    object_key = _tts_object_key("de", "de-DE-Neural2-C", cache_key)
+    request_id = f"tts_actor_proof_{proof_suffix}"
+    correlation_id = f"tts_actor_proof_{proof_suffix}"
+    normalized_text = f"Hallo das ist ein Test {proof_suffix}."
+
+    create_tts_object_pending(
+        cache_key=cache_key,
+        language="de-DE",
+        voice="de-DE-Neural2-C",
+        speed=0.95,
+        source_text=normalized_text,
+        object_key=object_key,
+    )
+    if not _claim_tts_generation_in_flight(cache_key):
+        return jsonify({"ok": False, "error": "duplicate_in_flight"}), 409
+
+    try:
+        from backend.background_jobs import run_tts_generation_actor
+
+        message = run_tts_generation_actor.send(
+            cache_key=cache_key,
+            user_id=0,
+            language="de-DE",
+            tts_lang_short="de",
+            voice="de-DE-Neural2-C",
+            speaking_rate=0.95,
+            normalized_text=normalized_text,
+            object_key=object_key,
+            had_existing_meta=False,
+            correlation_id=correlation_id,
+            request_id=request_id,
+            enqueue_ts_ms=ts_ms,
+        )
+    except Exception as exc:
+        _release_tts_generation_in_flight(cache_key)
+        mark_tts_object_failed(
+            cache_key=cache_key,
+            error_code="proof_enqueue_failed",
+            error_msg=str(exc),
+            language="de-DE",
+            voice="de-DE-Neural2-C",
+            speed=0.95,
+            source_text=normalized_text,
+            object_key=object_key,
+        )
+        logging.exception("TTS actor proof enqueue failed cache_key=%s", cache_key)
+        return jsonify({"ok": False, "error": "enqueue_failed", "cache_key": cache_key}), 500
+
+    return jsonify(
+        {
+            "ok": True,
+            "cache_key": cache_key,
+            "object_key": object_key,
+            "request_id": request_id,
+            "correlation_id": correlation_id,
+            "message_id": str(getattr(message, "message_id", "") or ""),
+        }
+    )
+
+
+@app.route("/api/admin/tts-actor-proof-check", methods=["GET"])
+def tts_actor_proof_check():
+    if not _admin_token_is_valid():
+        return jsonify({"error": "Неверный токен"}), 401
+
+    cache_key = str(request.args.get("cache_key") or "").strip()
+    if not cache_key:
+        return jsonify({"error": "cache_key обязателен"}), 400
+
+    meta = get_tts_object_meta(cache_key, touch_hit=False) or {}
+    object_key = str(meta.get("object_key") or request.args.get("object_key") or "").strip()
+
+    redis_claim_held = False
+    client = get_redis_client()
+    if client is not None:
+        try:
+            redis_claim_held = bool(client.exists(f"tts:in_flight:{cache_key}"))
+        except Exception:
+            redis_claim_held = False
+
+    r2_object_exists = False
+    if object_key:
+        try:
+            r2_object_exists = bool(r2_exists(object_key))
+        except Exception:
+            r2_object_exists = False
+
+    return jsonify(
+        {
+            "ok": True,
+            "cache_key": cache_key,
+            "object_key": object_key or None,
+            "status": str(meta.get("status") or "").strip() or None,
+            "url": str(meta.get("url") or "").strip() or None,
+            "size_bytes": int(meta.get("size_bytes") or 0) if meta.get("size_bytes") is not None else None,
+            "error_code": str(meta.get("error_code") or "").strip() or None,
+            "error_msg": str(meta.get("error_msg") or "").strip() or None,
+            "r2_object_exists": r2_object_exists,
+            "redis_claim_held": redis_claim_held,
+            "redis_claim_released": not redis_claim_held,
+        }
+    )
+
+
 @app.route("/tts-queue-probe", methods=["GET"])
 def tts_queue_probe():
     from backend.job_queue import get_redis_client
