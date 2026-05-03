@@ -18,4 +18,4 @@ ENV BACKGROUND_JOBS_THREADS=8
 ENV TRANSLATION_CHECK_GLOBAL_ITEM_CONCURRENCY=12
 ENV TRANSLATION_CHECK_ITEM_MAX_CONCURRENCY=4
 
-CMD ["sh", "-c", "if [ -n \"$DRAMATIQ_QUEUES\" ]; then exec python -m dramatiq backend.background_jobs --processes ${BACKGROUND_JOBS_PROCESSES:-1} --threads ${BACKGROUND_JOBS_THREADS:-8} --queues ${DRAMATIQ_QUEUES}; else exec python -m dramatiq backend.background_jobs --processes ${BACKGROUND_JOBS_PROCESSES:-1} --threads ${BACKGROUND_JOBS_THREADS:-8}; fi"]
+CMD ["sh", "-c", "if [ -n \"$DRAMATIQ_QUEUES\" ]; then queues=$(printf '%s' \"$DRAMATIQ_QUEUES\" | tr ',' ' '); exec python -m dramatiq backend.background_jobs --processes ${BACKGROUND_JOBS_PROCESSES:-1} --threads ${BACKGROUND_JOBS_THREADS:-8} --queues $queues; else exec python -m dramatiq backend.background_jobs --processes ${BACKGROUND_JOBS_PROCESSES:-1} --threads ${BACKGROUND_JOBS_THREADS:-8}; fi"]
