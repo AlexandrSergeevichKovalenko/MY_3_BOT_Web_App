@@ -3445,6 +3445,7 @@ def _apply_billing_guard(path: str) -> tuple[dict | None, int | None]:
     if user_id is None:
         return {"error": "user_id не определён для billing guard"}, 400
 
+    _sync_user_subscription_from_live_stripe(user_id=int(user_id))
     now_utc = datetime.now(timezone.utc)
     if bool(rule.get("cap")):
         cap_error = enforce_daily_cost_cap(user_id=int(user_id), now_ts_utc=now_utc, tz="Europe/Vienna")
@@ -3535,7 +3536,7 @@ def _check_flashcards_words_daily_limit(
     normalized_mode = _normalize_flashcards_mode(mode)
     safe_requested = max(1, int(requested_words or 1))
     now_utc = datetime.now(timezone.utc)
-    entitlement = resolve_entitlement(user_id=int(user_id), now_ts_utc=now_utc, tz=tz_name)
+    entitlement, _subscription = _resolve_user_entitlement(user_id=int(user_id), now_ts_utc=now_utc, tz=tz_name)
     effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
     if effective_mode != "free":
         return {
@@ -3608,7 +3609,7 @@ def _check_voice_minutes_daily_limit(
     tz_name: str = "Europe/Vienna",
 ) -> dict:
     now_utc = datetime.now(timezone.utc)
-    entitlement = resolve_entitlement(user_id=int(user_id), now_ts_utc=now_utc, tz=tz_name)
+    entitlement, _subscription = _resolve_user_entitlement(user_id=int(user_id), now_ts_utc=now_utc, tz=tz_name)
     effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
     daily_limit = float(FREE_VOICE_MINUTES_DAILY_LIMIT if effective_mode == "free" else PAID_VOICE_MINUTES_DAILY_LIMIT)
     used_minutes = _sum_billing_units_today(
@@ -4670,6 +4671,54 @@ def _extract_plan_code_from_stripe_payload(payload_obj, default: str = "pro") ->
     return value or default
 
 
+def _stripe_subscription_rank(status: str | None) -> int:
+    value = str(status or "").strip().lower()
+    if value == "active":
+        return 4
+    if value == "trialing":
+        return 3
+    if value in {"past_due", "unpaid"}:
+        return 2
+    if value in {"incomplete", "incomplete_expired"}:
+        return 1
+    return 0
+
+
+def _select_effective_stripe_subscription(
+    subscriptions: list,
+    *,
+    preferred_subscription_id: str | None = None,
+):
+    candidates = [item for item in (subscriptions or []) if str(_stripe_subscription_value(item, "id", "") or "").strip()]
+    if not candidates:
+        return None
+
+    preferred_id = str(preferred_subscription_id or "").strip()
+    active_like = [
+        item
+        for item in candidates
+        if str(_stripe_subscription_value(item, "status", "") or "").strip().lower()
+        in {"active", "trialing", "past_due", "unpaid"}
+    ]
+    pool = active_like or candidates
+
+    def _sort_key(item) -> tuple[int, int, int, int, int]:
+        subscription_id = str(_stripe_subscription_value(item, "id", "") or "").strip()
+        status_value = str(_stripe_subscription_value(item, "status", "") or "").strip().lower()
+        cancel_at_period_end = bool(_stripe_subscription_value(item, "cancel_at_period_end", False))
+        current_period_end_ts = _safe_int(_stripe_subscription_value(item, "current_period_end", 0)) or 0
+        created_ts = _safe_int(_stripe_subscription_value(item, "created", 0)) or 0
+        return (
+            _stripe_subscription_rank(status_value),
+            1 if not cancel_at_period_end else 0,
+            1 if preferred_id and subscription_id == preferred_id else 0,
+            current_period_end_ts,
+            created_ts,
+        )
+
+    return max(pool, key=_sort_key)
+
+
 def _get_live_billing_price_snapshot(stripe_price_id: str | None) -> dict:
     price_id_value = str(stripe_price_id or "").strip()
     if not price_id_value:
@@ -4751,6 +4800,113 @@ def _stripe_subscription_value(subscription_obj, field: str, default=None):
         except Exception:
             pass
     return default
+
+
+def _sync_user_subscription_from_live_stripe(
+    *,
+    user_id: int,
+    subscription: dict | None = None,
+    force: bool = False,
+) -> dict:
+    user_id_value = int(user_id)
+    subscription_row = dict(subscription) if isinstance(subscription, dict) else (get_user_subscription(user_id_value) or {})
+    if not subscription_row:
+        return {}
+
+    stripe_customer_id = str(subscription_row.get("stripe_customer_id") or "").strip() or None
+    stripe_subscription_id = str(subscription_row.get("stripe_subscription_id") or "").strip() or None
+    if stripe is None or not STRIPE_SECRET_KEY or (not stripe_customer_id and not stripe_subscription_id):
+        return subscription_row
+
+    local_status = str(subscription_row.get("status") or "").strip().lower()
+    local_plan_code = str(subscription_row.get("plan_code") or "").strip().lower()
+    if not force and local_status in {"active", "trialing"} and local_plan_code and local_plan_code != "free":
+        return subscription_row
+
+    try:
+        subscriptions = []
+        if stripe_customer_id:
+            listed = stripe.Subscription.list(customer=stripe_customer_id, status="all", limit=100)
+            if hasattr(listed, "auto_paging_iter"):
+                subscriptions = list(listed.auto_paging_iter())
+            else:
+                subscriptions = list((listed or {}).get("data") or [])
+        elif stripe_subscription_id:
+            live_subscription = stripe.Subscription.retrieve(stripe_subscription_id)
+            subscriptions = [live_subscription] if live_subscription else []
+
+        selected = _select_effective_stripe_subscription(
+            subscriptions,
+            preferred_subscription_id=stripe_subscription_id,
+        )
+        if not selected and stripe_subscription_id:
+            selected = stripe.Subscription.retrieve(stripe_subscription_id)
+        if not selected:
+            return subscription_row
+
+        live_subscription_id = str(_stripe_subscription_value(selected, "id", "") or "").strip() or None
+        live_customer_id = str(_stripe_subscription_value(selected, "customer", "") or "").strip() or stripe_customer_id
+        live_status_raw = str(_stripe_subscription_value(selected, "status", "") or "").strip().lower()
+        live_status = _map_stripe_subscription_status(live_status_raw)
+        live_plan_code = _extract_plan_code_from_stripe_payload(
+            selected,
+            default=local_plan_code or "pro",
+        )
+        should_upsert = force or any((
+            live_plan_code != local_plan_code,
+            live_status != local_status,
+            (live_subscription_id or "") != (stripe_subscription_id or ""),
+            (live_customer_id or "") != (stripe_customer_id or ""),
+        ))
+        if not should_upsert:
+            return subscription_row
+
+        updated = _upsert_subscription_from_stripe_payload(
+            user_id=user_id_value,
+            plan_code=live_plan_code,
+            stripe_customer_id=live_customer_id,
+            stripe_subscription_id=live_subscription_id,
+            stripe_status=live_status_raw or live_status,
+            current_period_end_ts=_stripe_subscription_value(selected, "current_period_end"),
+        )
+        _invalidate_billing_front_caches_for_user(user_id_value)
+        return updated
+    except Exception:
+        logging.warning(
+            "Live Stripe subscription sync failed user_id=%s customer=%s subscription=%s",
+            user_id_value,
+            stripe_customer_id,
+            stripe_subscription_id,
+            exc_info=True,
+        )
+        return subscription_row
+
+
+def _resolve_user_entitlement(
+    *,
+    user_id: int,
+    now_ts_utc: datetime | None = None,
+    tz: str = "Europe/Vienna",
+    subscription: dict | None = None,
+    refresh_from_stripe: bool = True,
+) -> tuple[dict, dict]:
+    subscription_row = dict(subscription) if isinstance(subscription, dict) else (get_user_subscription(int(user_id)) or {})
+    if refresh_from_stripe:
+        subscription_row = _sync_user_subscription_from_live_stripe(
+            user_id=int(user_id),
+            subscription=subscription_row or None,
+        )
+    entitlement = resolve_entitlement(
+        user_id=int(user_id),
+        now_ts_utc=now_ts_utc,
+        tz=tz,
+        subscription=subscription_row or None,
+    )
+    return entitlement, subscription_row
+
+
+def _refresh_subscription_before_translation_start(user_id: int) -> None:
+    _sync_user_subscription_from_live_stripe(user_id=int(user_id))
 
 
 def _schedule_customer_active_subscriptions_for_period_end(
@@ -20177,14 +20333,15 @@ def _invalidate_analytics_front_caches_for_user(user_id: int) -> None:
 def _build_billing_status_response_payload(*, user_id: int) -> tuple[dict, dict]:
     now_utc = datetime.now(timezone.utc)
     subscription_started_at = time.perf_counter()
-    subscription = get_user_subscription(int(user_id)) or {}
+    subscription = _sync_user_subscription_from_live_stripe(user_id=int(user_id))
     subscription_duration_ms = int((time.perf_counter() - subscription_started_at) * 1000)
     entitlement_started_at = time.perf_counter()
-    entitlement = resolve_entitlement(
+    entitlement, subscription = _resolve_user_entitlement(
         user_id=int(user_id),
         now_ts_utc=now_utc,
         tz="Europe/Vienna",
         subscription=subscription,
+        refresh_from_stripe=False,
     )
     entitlement_duration_ms = int((time.perf_counter() - entitlement_started_at) * 1000)
     spent_started_at = time.perf_counter()
@@ -21958,7 +22115,7 @@ def admin_billing_debug_entitlement():
         return jsonify({"error": "user_id обязателен"}), 400
 
     now_utc = datetime.now(timezone.utc)
-    entitlement = resolve_entitlement(user_id=user_id, now_ts_utc=now_utc, tz="Europe/Vienna")
+    entitlement, _subscription = _resolve_user_entitlement(user_id=user_id, now_ts_utc=now_utc, tz="Europe/Vienna")
     spent_today = float(get_today_cost_eur(user_id=user_id, tz="Europe/Vienna"))
     return jsonify(
         {
@@ -25721,6 +25878,7 @@ def start_today_translation_item(item_id: int):
     )
 
     try:
+        _refresh_subscription_before_translation_start(int(user_id))
         session = asyncio.run(
             start_translation_session_webapp(
                 user_id=int(user_id),
@@ -27723,6 +27881,7 @@ def start_skill_practice(skill_id: str):
         topic_label = f"{topic_label}: {main_category}"
 
     try:
+        _refresh_subscription_before_translation_start(int(user_id))
         session = asyncio.run(
             start_translation_session_webapp(
                 user_id=int(user_id),
@@ -32323,7 +32482,7 @@ def ingest_reader_content():
         return jsonify({"error": "Не удалось извлечь текст"}), 422
 
     try:
-        entitlement = resolve_entitlement(user_id=int(user_id))
+        entitlement, _subscription = _resolve_user_entitlement(user_id=int(user_id))
         if str(entitlement.get("effective_mode") or "free").lower() == "free":
             text_hash = hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
             existing_docs = list_reader_library_documents(
@@ -32469,7 +32628,7 @@ def reader_library_list():
         list_duration_ms = _elapsed_ms_since(list_started_perf)
 
         entitlement_started_perf = time.perf_counter()
-        entitlement = resolve_entitlement(user_id=int(user_id))
+        entitlement, _subscription = _resolve_user_entitlement(user_id=int(user_id))
         entitlement_duration_ms = _elapsed_ms_since(entitlement_started_perf)
         effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
         if effective_mode == "free":
@@ -32617,7 +32776,7 @@ def reader_library_open():
             )
             return jsonify({"error": "Книга не найдена"}), 404
         entitlement_started_perf = time.perf_counter()
-        entitlement = resolve_entitlement(user_id=int(user_id))
+        entitlement, _subscription = _resolve_user_entitlement(user_id=int(user_id))
         entitlement_duration_ms = _elapsed_ms_since(entitlement_started_perf)
         effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
         if effective_mode == "free":
@@ -32891,7 +33050,7 @@ def reader_audio_export():
     )
     now_utc = datetime.now(timezone.utc)
     source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
-    entitlement = resolve_entitlement(user_id=user_id_int, now_ts_utc=now_utc, tz="Europe/Vienna")
+    entitlement, _subscription = _resolve_user_entitlement(user_id=user_id_int, now_ts_utc=now_utc, tz="Europe/Vienna")
     effective_mode = str(entitlement.get("effective_mode") or "free").lower()
     if effective_mode not in {"pro", "trial"}:
         return jsonify(
@@ -34036,6 +34195,7 @@ def start_webapp_translation():
                 return jsonify({"error": "custom_focus обязателен для пользовательского грамматического фокуса"}), 400
 
             try:
+                _refresh_subscription_before_translation_start(int(user_id))
                 workflow_started_at = time.perf_counter()
                 result = asyncio.run(
                     start_translation_session_webapp(

@@ -2229,6 +2229,29 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
     sentenceId,
   ]);
 
+  useEffect(() => {
+    const node = textareaRef.current;
+    if (!node || !isAndroidClient || isPureTextareaExperiment) {
+      return undefined;
+    }
+    const eventName = isChangeDrivenAndroidExperiment ? 'change' : 'input';
+    const handler = (event) => {
+      const targetValue = event?.target && 'value' in event.target
+        ? String(event.target.value || '')
+        : String(node.value || '');
+      processInputValue(targetValue, `native_${eventName}`);
+    };
+    node.addEventListener(eventName, handler);
+    return () => {
+      node.removeEventListener(eventName, handler);
+    };
+  }, [
+    isAndroidClient,
+    isChangeDrivenAndroidExperiment,
+    isPureTextareaExperiment,
+    processInputValue,
+  ]);
+
   const handleInput = useCallback((event) => {
     processInputValue(String(event.target.value || ''), 'input');
   }, [processInputValue]);
@@ -2270,7 +2293,7 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
     textareaProps.spellCheck = false;
   }
 
-  if (!isPureTextareaExperiment) {
+  if (!isAndroidClient && !isPureTextareaExperiment) {
     if (isChangeDrivenAndroidExperiment) {
       textareaProps.onChange = handleChange;
     } else {
