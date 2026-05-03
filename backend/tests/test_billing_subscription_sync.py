@@ -107,6 +107,45 @@ class BillingSubscriptionSyncTests(unittest.TestCase):
         fake_stripe.Subscription.list.assert_not_called()
         fake_stripe.Subscription.retrieve.assert_not_called()
 
+    def test_extract_plan_code_from_attr_only_payload_uses_metadata(self):
+        class StripeLikeObject:
+            def __init__(self, **kwargs):
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+
+        payload = StripeLikeObject(
+            metadata=StripeLikeObject(plan_code="pro"),
+            items=StripeLikeObject(data=[]),
+        )
+
+        result = server._extract_plan_code_from_stripe_payload(payload, default="free")
+
+        self.assertEqual(result, "pro")
+
+    def test_extract_plan_code_from_attr_only_payload_falls_back_to_price_id(self):
+        class StripeLikeObject:
+            def __init__(self, **kwargs):
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+
+        payload = StripeLikeObject(
+            metadata=StripeLikeObject(),
+            items=StripeLikeObject(
+                data=[
+                    StripeLikeObject(
+                        price=StripeLikeObject(id="price_pro"),
+                    )
+                ]
+            ),
+        )
+
+        with patch.object(server, "STRIPE_PRICE_ID_PRO", "price_pro"), \
+             patch.object(server, "STRIPE_PRICE_ID_SUPPORT_COFFEE", ""), \
+             patch.object(server, "STRIPE_PRICE_ID_SUPPORT_CHEESECAKE", ""):
+            result = server._extract_plan_code_from_stripe_payload(payload, default="free")
+
+        self.assertEqual(result, "pro")
+
     def test_webapp_start_refreshes_subscription_before_workflow_limit_check(self):
         client = server.app.test_client()
         workflow_mock = AsyncMock(return_value={

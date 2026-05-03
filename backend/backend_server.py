@@ -4663,12 +4663,75 @@ def _resolve_billing_plan_checkout_config(plan_code: str | None) -> tuple[str, s
     return plan_code_value, price_id
 
 
-def _extract_plan_code_from_stripe_payload(payload_obj, default: str = "pro") -> str:
-    if payload_obj is None or not hasattr(payload_obj, "get"):
+def _stripe_object_value(payload_obj, field: str, default=None):
+    if payload_obj is None:
         return default
-    metadata = payload_obj.get("metadata") or {}
-    value = str(metadata.get("plan_code") or payload_obj.get("plan_code") or default).strip().lower()
-    return value or default
+    try:
+        value = getattr(payload_obj, field)
+        if value is not None:
+            return value
+    except Exception:
+        pass
+    if isinstance(payload_obj, dict):
+        value = payload_obj.get(field)
+        if value is not None:
+            return value
+    get_method = getattr(payload_obj, "get", None)
+    if callable(get_method):
+        try:
+            value = get_method(field)
+            if value is not None:
+                return value
+        except Exception:
+            pass
+    return default
+
+
+def _extract_plan_code_from_stripe_payload(payload_obj, default: str = "pro") -> str:
+    if payload_obj is None:
+        return default
+    metadata = _stripe_object_value(payload_obj, "metadata", {}) or {}
+    value = str(
+        _stripe_object_value(metadata, "plan_code", "")
+        or _stripe_object_value(payload_obj, "plan_code", "")
+        or ""
+    ).strip().lower()
+    if value:
+        return value
+
+    price_id_candidates: list[str] = []
+    top_level_price = _stripe_object_value(payload_obj, "price")
+    if top_level_price is not None:
+        top_level_price_id = str(_stripe_object_value(top_level_price, "id", "") or "").strip()
+        if top_level_price_id:
+            price_id_candidates.append(top_level_price_id)
+    top_level_plan = _stripe_object_value(payload_obj, "plan")
+    if top_level_plan is not None:
+        top_level_plan_id = str(_stripe_object_value(top_level_plan, "id", "") or "").strip()
+        if top_level_plan_id:
+            price_id_candidates.append(top_level_plan_id)
+    items = _stripe_object_value(payload_obj, "items")
+    item_entries = _stripe_object_value(items, "data", []) or []
+    for item in item_entries:
+        item_price = _stripe_object_value(item, "price")
+        item_price_id = str(_stripe_object_value(item_price, "id", "") or "").strip()
+        if item_price_id:
+            price_id_candidates.append(item_price_id)
+        item_plan = _stripe_object_value(item, "plan")
+        item_plan_id = str(_stripe_object_value(item_plan, "id", "") or "").strip()
+        if item_plan_id:
+            price_id_candidates.append(item_plan_id)
+
+    price_to_plan = {
+        str(STRIPE_PRICE_ID_PRO or "").strip(): "pro",
+        str(STRIPE_PRICE_ID_SUPPORT_COFFEE or "").strip(): "support_coffee",
+        str(STRIPE_PRICE_ID_SUPPORT_CHEESECAKE or "").strip(): "support_cheesecake",
+    }
+    for price_id in price_id_candidates:
+        mapped = price_to_plan.get(str(price_id or "").strip())
+        if mapped:
+            return mapped
+    return default
 
 
 def _stripe_subscription_rank(status: str | None) -> int:
@@ -4786,20 +4849,7 @@ def _get_live_billing_price_snapshot(stripe_price_id: str | None) -> dict:
 
 
 def _stripe_subscription_value(subscription_obj, field: str, default=None):
-    try:
-        value = getattr(subscription_obj, field)
-        if value is not None:
-            return value
-    except Exception:
-        pass
-    if hasattr(subscription_obj, "get"):
-        try:
-            value = subscription_obj.get(field)
-            if value is not None:
-                return value
-        except Exception:
-            pass
-    return default
+    return _stripe_object_value(subscription_obj, field, default)
 
 
 def _sync_user_subscription_from_live_stripe(
@@ -4830,7 +4880,7 @@ def _sync_user_subscription_from_live_stripe(
             if hasattr(listed, "auto_paging_iter"):
                 subscriptions = list(listed.auto_paging_iter())
             else:
-                subscriptions = list((listed or {}).get("data") or [])
+                subscriptions = list(_stripe_object_value(listed, "data", []) or [])
         elif stripe_subscription_id:
             live_subscription = stripe.Subscription.retrieve(stripe_subscription_id)
             subscriptions = [live_subscription] if live_subscription else []
@@ -4944,7 +4994,7 @@ def _schedule_customer_active_subscriptions_for_period_end(
     if hasattr(listed, "auto_paging_iter"):
         subscriptions = list(listed.auto_paging_iter())
     else:
-        subscriptions = list((listed or {}).get("data") or [])
+        subscriptions = list(_stripe_object_value(listed, "data", []) or [])
 
     for subscription in subscriptions:
         subscription_id = str(_stripe_subscription_value(subscription, "id", "") or "").strip()
@@ -5102,7 +5152,7 @@ def _normalize_customer_stripe_subscriptions(
     if hasattr(listed, "auto_paging_iter"):
         subscriptions = list(listed.auto_paging_iter())
     else:
-        subscriptions = list((listed or {}).get("data") or [])
+        subscriptions = list(_stripe_object_value(listed, "data", []) or [])
 
     candidates: list[dict] = []
     for subscription in subscriptions:
@@ -21971,7 +22021,7 @@ def stripe_billing_webhook():
         return jsonify({"error": "Stripe event.id отсутствует"}), 400
 
     event_type = str(getattr(event, "type", "") or "")
-    data_object = (getattr(event, "data", None) or {}).get("object", {}) or {}
+    data_object = _stripe_object_value(getattr(event, "data", None), "object", {}) or {}
 
     with get_db_connection_context() as db_conn:
         try:
@@ -21980,13 +22030,13 @@ def stripe_billing_webhook():
                 return jsonify({"ok": True, "duplicate": True}), 200
 
             if event_type == "checkout.session.completed":
-                metadata = data_object.get("metadata") or {}
-                stripe_customer_id = str(data_object.get("customer") or "") or None
-                stripe_subscription_id = str(data_object.get("subscription") or "") or None
+                metadata = _stripe_object_value(data_object, "metadata", {}) or {}
+                stripe_customer_id = str(_stripe_object_value(data_object, "customer", "") or "") or None
+                stripe_subscription_id = str(_stripe_object_value(data_object, "subscription", "") or "") or None
                 plan_code = _extract_plan_code_from_stripe_payload(data_object)
                 user_id = _resolve_user_id_for_stripe_event(
-                    metadata_user_id=metadata.get("user_id"),
-                    client_reference_id=data_object.get("client_reference_id"),
+                    metadata_user_id=_stripe_object_value(metadata, "user_id"),
+                    client_reference_id=_stripe_object_value(data_object, "client_reference_id"),
                     stripe_customer_id=stripe_customer_id,
                     stripe_subscription_id=stripe_subscription_id,
                 )
@@ -22006,20 +22056,20 @@ def stripe_billing_webhook():
                     plan_code=plan_code,
                     stripe_customer_id=stripe_customer_id,
                     stripe_subscription_id=stripe_subscription_id,
-                    stripe_status=(subscription_obj or {}).get("status") or "active",
-                    current_period_end_ts=(subscription_obj or {}).get("current_period_end"),
+                    stripe_status=_stripe_object_value(subscription_obj, "status", "active") or "active",
+                    current_period_end_ts=_stripe_object_value(subscription_obj, "current_period_end"),
                     db_conn=db_conn,
                 )
                 _invalidate_billing_front_caches_for_user(int(user_id))
                 return jsonify({"ok": True}), 200
 
             if event_type in {"customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"}:
-                metadata = data_object.get("metadata") or {}
-                stripe_customer_id = str(data_object.get("customer") or "") or None
-                stripe_subscription_id = str(data_object.get("id") or "") or None
+                metadata = _stripe_object_value(data_object, "metadata", {}) or {}
+                stripe_customer_id = str(_stripe_object_value(data_object, "customer", "") or "") or None
+                stripe_subscription_id = str(_stripe_object_value(data_object, "id", "") or "") or None
                 plan_code = _extract_plan_code_from_stripe_payload(data_object)
                 user_id = _resolve_user_id_for_stripe_event(
-                    metadata_user_id=metadata.get("user_id"),
+                    metadata_user_id=_stripe_object_value(metadata, "user_id"),
                     client_reference_id=None,
                     stripe_customer_id=stripe_customer_id,
                     stripe_subscription_id=stripe_subscription_id,
@@ -22033,20 +22083,20 @@ def stripe_billing_webhook():
                     plan_code=plan_code,
                     stripe_customer_id=stripe_customer_id,
                     stripe_subscription_id=stripe_subscription_id,
-                    stripe_status=data_object.get("status") or ("canceled" if event_type.endswith(".deleted") else "inactive"),
-                    current_period_end_ts=data_object.get("current_period_end"),
+                    stripe_status=_stripe_object_value(data_object, "status") or ("canceled" if event_type.endswith(".deleted") else "inactive"),
+                    current_period_end_ts=_stripe_object_value(data_object, "current_period_end"),
                     db_conn=db_conn,
                 )
                 _invalidate_billing_front_caches_for_user(int(user_id))
                 return jsonify({"ok": True}), 200
 
             if event_type in {"invoice.payment_succeeded", "invoice.payment_failed"}:
-                metadata = data_object.get("metadata") or {}
-                stripe_customer_id = str(data_object.get("customer") or "") or None
-                stripe_subscription_id = str(data_object.get("subscription") or "") or None
+                metadata = _stripe_object_value(data_object, "metadata", {}) or {}
+                stripe_customer_id = str(_stripe_object_value(data_object, "customer", "") or "") or None
+                stripe_subscription_id = str(_stripe_object_value(data_object, "subscription", "") or "") or None
                 plan_code = _extract_plan_code_from_stripe_payload(data_object)
                 user_id = _resolve_user_id_for_stripe_event(
-                    metadata_user_id=metadata.get("user_id"),
+                    metadata_user_id=_stripe_object_value(metadata, "user_id"),
                     client_reference_id=None,
                     stripe_customer_id=stripe_customer_id,
                     stripe_subscription_id=stripe_subscription_id,
@@ -22069,14 +22119,18 @@ def stripe_billing_webhook():
                     plan_code=plan_code,
                     stripe_customer_id=stripe_customer_id,
                     stripe_subscription_id=stripe_subscription_id,
-                    stripe_status=(subscription_obj or {}).get("status") or fallback_status,
-                    current_period_end_ts=(subscription_obj or {}).get("current_period_end"),
+                    stripe_status=_stripe_object_value(subscription_obj, "status", fallback_status) or fallback_status,
+                    current_period_end_ts=_stripe_object_value(subscription_obj, "current_period_end"),
                     db_conn=db_conn,
                 )
                 _invalidate_billing_front_caches_for_user(int(user_id))
                 if event_type == "invoice.payment_succeeded":
                     try:
-                        invoice_amount_minor = int(data_object.get("amount_paid") or data_object.get("amount_due") or 0)
+                        invoice_amount_minor = int(
+                            _stripe_object_value(data_object, "amount_paid")
+                            or _stripe_object_value(data_object, "amount_due")
+                            or 0
+                        )
                     except Exception:
                         invoice_amount_minor = 0
                     if invoice_amount_minor > 0:
@@ -22086,7 +22140,7 @@ def stripe_billing_webhook():
                             source_lang=user_source_lang,
                             target_lang=user_target_lang,
                             event_id=event_id,
-                            invoice_id=str(data_object.get("id") or ""),
+                            invoice_id=str(_stripe_object_value(data_object, "id", "") or ""),
                             amount_minor=invoice_amount_minor,
                             event_type=event_type,
                         )
