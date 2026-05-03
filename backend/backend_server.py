@@ -111,6 +111,7 @@ from backend.job_queue import (
     clear_translation_session_card,
     enqueue_projection_materialization_job,
     enqueue_finish_daily_summary_job,
+    enqueue_tts_generation_job,
     enqueue_translation_check_completion_job,
     enqueue_translation_check_job,
     enqueue_translation_fill_job,
@@ -134,6 +135,7 @@ from backend.job_queue import (
     get_today_card,
     get_translation_session_card,
     get_translation_session_state,
+    is_tts_generation_async_enabled,
     is_translation_fill_job_status_fast_path_eligible,
     is_translation_check_job_status_fast_path_eligible,
     is_translation_check_async_enabled,
@@ -30010,6 +30012,22 @@ def _enqueue_tts_generation_job_result(**kwargs) -> dict:
     cache_key = str(kwargs.get("cache_key") or "").strip()
     if not cache_key:
         return {"queued": False, "reason": "missing_cache_key"}
+    if is_tts_generation_async_enabled():
+        enqueue_result = enqueue_tts_generation_job(dict(kwargs))
+        queued = bool(enqueue_result.get("queued"))
+        reason = str(enqueue_result.get("reason") or "").strip().lower() or "broker_error"
+        if queued:
+            logging.info("Distributed TTS enqueue accepted: cache_key=%s queue=tts_generation", cache_key)
+            return {"queued": True, "reason": "queued", "queue_size": None}
+        if reason == "duplicate_in_flight":
+            logging.info("Distributed TTS enqueue duplicate: cache_key=%s queue=tts_generation", cache_key)
+            return {"queued": False, "reason": "duplicate_in_process", "queue_size": None}
+        logging.warning(
+            "Distributed TTS enqueue failed: cache_key=%s queue=tts_generation reason=%s",
+            cache_key,
+            reason,
+        )
+        return {"queued": False, "reason": reason, "queue_size": None}
     _ensure_tts_generation_workers_started()
     if not _claim_tts_generation_in_flight(cache_key):
         return {"queued": False, "reason": "duplicate_in_process"}
