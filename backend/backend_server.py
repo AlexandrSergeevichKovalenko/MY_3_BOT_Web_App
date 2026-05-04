@@ -1389,7 +1389,6 @@ _BILLING_GUARD_RULES: dict[str, dict] = {
     "/api/webapp/flashcards/feel/dispatch": {"cap": True},
     "/api/webapp/flashcards/enrich": {"cap": True},
     "/api/webapp/explain": {"cap": True},
-    "/api/webapp/tts": {"cap": True, "feature_code": "tts_chars_daily"},
     "/api/webapp/tts/generate": {"cap": True, "feature_code": "tts_chars_daily"},
     "/api/webapp/youtube/transcript": {"cap": True, "feature_code": "youtube_fetch_daily"},
     "/api/webapp/youtube/translate": {"cap": True},
@@ -1848,6 +1847,11 @@ def web_auth_config():
             "telegram_login_enabled": bool(TELEGRAM_BOT_USERNAME),
         }
     )
+
+
+@app.route("/api/healthz", methods=["GET"])
+def api_healthz():
+    return jsonify({"ok": True, "service": "backend_web"}), 200
 
 
 @app.route("/api/web/auth/telegram", methods=["POST"])
@@ -2415,6 +2419,91 @@ def _to_epoch_ms() -> int:
 
 
 # _elapsed_ms_since lives in backend.observability (imported above)
+
+
+_AUTH_TRACE_PATHS = {
+    "/api/webapp/start",
+    "/api/webapp/session",
+    "/api/billing/status",
+}
+
+
+def _log_compact_trace(event: str, **fields) -> None:
+    parts = [str(event or "").strip() or "trace"]
+    for key, value in fields.items():
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            rendered = "true" if value else "false"
+        elif isinstance(value, (int, float)):
+            rendered = str(value)
+        else:
+            rendered = json.dumps(str(value), ensure_ascii=False)
+        parts.append(f"{key}={rendered}")
+    logging.info(" ".join(parts))
+
+
+@app.before_request
+def trace_authenticated_webapp_request_entry():
+    path = request.path or ""
+    if path not in _AUTH_TRACE_PATHS:
+        return None
+    payload = request.get_json(silent=True) if request.method in {"POST", "PUT", "PATCH"} else None
+    request_id = _extract_observability_request_id(payload if isinstance(payload, dict) else None)
+    g.request_id = request_id
+    g.auth_trace_started_at_ms = _to_epoch_ms()
+    g.auth_trace_started_perf = time.perf_counter()
+    _log_compact_trace(
+        "auth_req",
+        stage="entry",
+        request_id=request_id,
+        path=path,
+        method=request.method,
+        started_at_ms=int(g.auth_trace_started_at_ms),
+    )
+    return None
+
+
+@app.after_request
+def trace_authenticated_webapp_request_exit(response):
+    path = request.path or ""
+    if path not in _AUTH_TRACE_PATHS:
+        return response
+    started_perf = getattr(g, "auth_trace_started_perf", None)
+    duration_ms = int((time.perf_counter() - started_perf) * 1000) if started_perf is not None else None
+    _log_compact_trace(
+        "auth_req",
+        stage="exit",
+        request_id=getattr(g, "request_id", None),
+        path=path,
+        method=request.method,
+        user_id=getattr(g, "trace_auth_user_id", None),
+        duration_ms=duration_ms,
+        status=getattr(response, "status_code", None),
+    )
+    return response
+
+
+@app.teardown_request
+def trace_authenticated_webapp_request_exception(exc):
+    if exc is None or not has_request_context():
+        return None
+    path = request.path or ""
+    if path not in _AUTH_TRACE_PATHS:
+        return None
+    started_perf = getattr(g, "auth_trace_started_perf", None)
+    duration_ms = int((time.perf_counter() - started_perf) * 1000) if started_perf is not None else None
+    _log_compact_trace(
+        "auth_req",
+        stage="exception",
+        request_id=getattr(g, "request_id", None),
+        path=path,
+        method=request.method,
+        user_id=getattr(g, "trace_auth_user_id", None),
+        duration_ms=duration_ms,
+        exception=exc.__class__.__name__,
+    )
+    return None
 
 
 def _parse_iso_datetime(value: Any) -> datetime | None:
@@ -4859,22 +4948,68 @@ def _sync_user_subscription_from_live_stripe(
     force: bool = False,
 ) -> dict:
     user_id_value = int(user_id)
+    trace_enabled = has_request_context() and (request.path or "") in _AUTH_TRACE_PATHS
+    trace_request_id = getattr(g, "request_id", None) if trace_enabled else None
+    trace_started_perf = time.perf_counter()
     subscription_row = dict(subscription) if isinstance(subscription, dict) else (get_user_subscription(user_id_value) or {})
     if not subscription_row:
+        if trace_enabled:
+            _log_compact_trace(
+                "auth_sync",
+                stage="skip_no_subscription",
+                request_id=trace_request_id,
+                path=request.path,
+                user_id=user_id_value,
+                duration_ms=int((time.perf_counter() - trace_started_perf) * 1000),
+            )
         return {}
 
     stripe_customer_id = str(subscription_row.get("stripe_customer_id") or "").strip() or None
     stripe_subscription_id = str(subscription_row.get("stripe_subscription_id") or "").strip() or None
     if stripe is None or not STRIPE_SECRET_KEY or (not stripe_customer_id and not stripe_subscription_id):
+        if trace_enabled:
+            _log_compact_trace(
+                "auth_sync",
+                stage="skip_no_live_sync",
+                request_id=trace_request_id,
+                path=request.path,
+                user_id=user_id_value,
+                had_stripe_customer_id=bool(stripe_customer_id),
+                had_stripe_subscription_id=bool(stripe_subscription_id),
+                duration_ms=int((time.perf_counter() - trace_started_perf) * 1000),
+            )
         return subscription_row
 
     local_status = str(subscription_row.get("status") or "").strip().lower()
     local_plan_code = str(subscription_row.get("plan_code") or "").strip().lower()
     if not force and local_status in {"active", "trialing"} and local_plan_code and local_plan_code != "free":
+        if trace_enabled:
+            _log_compact_trace(
+                "auth_sync",
+                stage="skip_active_paid",
+                request_id=trace_request_id,
+                path=request.path,
+                user_id=user_id_value,
+                plan_code=local_plan_code,
+                status=local_status,
+                duration_ms=int((time.perf_counter() - trace_started_perf) * 1000),
+            )
         return subscription_row
 
     try:
         subscriptions = []
+        stripe_call_duration_ms = 0
+        if trace_enabled:
+            _log_compact_trace(
+                "auth_sync",
+                stage="live_stripe_start",
+                request_id=trace_request_id,
+                path=request.path,
+                user_id=user_id_value,
+                by_customer=bool(stripe_customer_id),
+                by_subscription=(not bool(stripe_customer_id)) and bool(stripe_subscription_id),
+            )
+        stripe_call_started_perf = time.perf_counter()
         if stripe_customer_id:
             listed = stripe.Subscription.list(customer=stripe_customer_id, status="all", limit=100)
             if hasattr(listed, "auto_paging_iter"):
@@ -4884,6 +5019,17 @@ def _sync_user_subscription_from_live_stripe(
         elif stripe_subscription_id:
             live_subscription = stripe.Subscription.retrieve(stripe_subscription_id)
             subscriptions = [live_subscription] if live_subscription else []
+        stripe_call_duration_ms = int((time.perf_counter() - stripe_call_started_perf) * 1000)
+        if trace_enabled:
+            _log_compact_trace(
+                "auth_sync",
+                stage="live_stripe_done",
+                request_id=trace_request_id,
+                path=request.path,
+                user_id=user_id_value,
+                stripe_duration_ms=stripe_call_duration_ms,
+                subscription_count=len(subscriptions),
+            )
 
         selected = _select_effective_stripe_subscription(
             subscriptions,
@@ -4909,6 +5055,18 @@ def _sync_user_subscription_from_live_stripe(
             (live_customer_id or "") != (stripe_customer_id or ""),
         ))
         if not should_upsert:
+            if trace_enabled:
+                _log_compact_trace(
+                    "auth_sync",
+                    stage="done_no_change",
+                    request_id=trace_request_id,
+                    path=request.path,
+                    user_id=user_id_value,
+                    stripe_duration_ms=stripe_call_duration_ms,
+                    plan_code=local_plan_code or live_plan_code,
+                    status=local_status or live_status,
+                    duration_ms=int((time.perf_counter() - trace_started_perf) * 1000),
+                )
             return subscription_row
 
         updated = _upsert_subscription_from_stripe_payload(
@@ -4920,8 +5078,30 @@ def _sync_user_subscription_from_live_stripe(
             current_period_end_ts=_stripe_subscription_value(selected, "current_period_end"),
         )
         _invalidate_billing_front_caches_for_user(user_id_value)
+        if trace_enabled:
+            _log_compact_trace(
+                "auth_sync",
+                stage="done",
+                request_id=trace_request_id,
+                path=request.path,
+                user_id=user_id_value,
+                stripe_duration_ms=stripe_call_duration_ms,
+                plan_code=str(updated.get("plan_code") or live_plan_code or ""),
+                status=str(updated.get("status") or live_status or ""),
+                duration_ms=int((time.perf_counter() - trace_started_perf) * 1000),
+            )
         return updated
     except Exception:
+        if trace_enabled:
+            _log_compact_trace(
+                "auth_sync",
+                stage="error",
+                request_id=trace_request_id,
+                path=request.path,
+                user_id=user_id_value,
+                duration_ms=int((time.perf_counter() - trace_started_perf) * 1000),
+                exception=sys.exc_info()[0].__name__ if sys.exc_info()[0] else "Exception",
+            )
         logging.warning(
             "Live Stripe subscription sync failed user_id=%s customer=%s subscription=%s",
             user_id_value,
@@ -4956,7 +5136,78 @@ def _resolve_user_entitlement(
 
 
 def _refresh_subscription_before_translation_start(user_id: int) -> None:
-    _sync_user_subscription_from_live_stripe(user_id=int(user_id))
+    user_id_value = int(user_id)
+    trace_request_id = getattr(g, "request_id", None) if has_request_context() else None
+    trace_path = request.path if has_request_context() else None
+    started_perf = time.perf_counter()
+    db_lookup_started_perf = time.perf_counter()
+    subscription_before = get_user_subscription(user_id_value) or {}
+    db_lookup_duration_ms = int((time.perf_counter() - db_lookup_started_perf) * 1000)
+    stripe_customer_id = str(subscription_before.get("stripe_customer_id") or "").strip()
+    stripe_subscription_id = str(subscription_before.get("stripe_subscription_id") or "").strip()
+    local_status = str(subscription_before.get("status") or "").strip().lower()
+    local_plan_code = str(subscription_before.get("plan_code") or "").strip().lower()
+    live_sync_eligible = bool(
+        stripe is not None
+        and STRIPE_SECRET_KEY
+        and (stripe_customer_id or stripe_subscription_id)
+        and not (local_status in {"active", "trialing"} and local_plan_code and local_plan_code != "free")
+    )
+    _log_compact_trace(
+        "auth_refresh",
+        stage="enter",
+        request_id=trace_request_id,
+        path=trace_path,
+        user_id=user_id_value,
+        entered=True,
+        db_lookup_duration_ms=db_lookup_duration_ms,
+        had_stripe_customer_id=bool(stripe_customer_id),
+        had_stripe_subscription_id=bool(stripe_subscription_id),
+        called_sync=True,
+        live_sync_eligible=live_sync_eligible,
+    )
+    try:
+        sync_started_perf = time.perf_counter()
+        subscription_after = _sync_user_subscription_from_live_stripe(
+            user_id=user_id_value,
+            subscription=subscription_before or None,
+        )
+        sync_duration_ms = int((time.perf_counter() - sync_started_perf) * 1000)
+        entitlement_started_perf = time.perf_counter()
+        entitlement = resolve_entitlement(
+            user_id=user_id_value,
+            now_ts_utc=datetime.now(timezone.utc),
+            tz="Europe/Vienna",
+            subscription=subscription_after or None,
+        )
+        entitlement_duration_ms = int((time.perf_counter() - entitlement_started_perf) * 1000)
+        _log_compact_trace(
+            "auth_refresh",
+            stage="done",
+            request_id=trace_request_id,
+            path=trace_path,
+            user_id=user_id_value,
+            db_lookup_duration_ms=db_lookup_duration_ms,
+            sync_duration_ms=sync_duration_ms,
+            stripe_duration_ms=sync_duration_ms if live_sync_eligible else 0,
+            entitlement_duration_ms=entitlement_duration_ms,
+            plan_code=str((subscription_after or {}).get("plan_code") or ""),
+            status=str((subscription_after or {}).get("status") or ""),
+            effective_mode=str(entitlement.get("effective_mode") or ""),
+            duration_ms=int((time.perf_counter() - started_perf) * 1000),
+        )
+    except Exception:
+        _log_compact_trace(
+            "auth_refresh",
+            stage="error",
+            request_id=trace_request_id,
+            path=trace_path,
+            user_id=user_id_value,
+            db_lookup_duration_ms=db_lookup_duration_ms,
+            duration_ms=int((time.perf_counter() - started_perf) * 1000),
+            exception=sys.exc_info()[0].__name__ if sys.exc_info()[0] else "Exception",
+        )
+        raise
 
 
 def _schedule_customer_active_subscriptions_for_period_end(
@@ -13610,6 +13861,7 @@ def _dispatch_tts_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFA
         unique_assigned_items = 0
         unique_assigned_chars = 0
         processed = 0
+        queued = 0
         generated = 0
         cached_hits = 0
         pending_hits = 0
@@ -13812,7 +14064,8 @@ def _dispatch_tts_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFA
                         )
                     continue
 
-                _run_tts_generation_job(
+                request_id = f"req_prewarm_{uuid4().hex[:20]}"
+                enqueue_result = _enqueue_tts_generation_job_result(
                     user_id=billing_user_id,
                     language=language_code,
                     tts_lang_short=tts_lang_short,
@@ -13822,25 +14075,32 @@ def _dispatch_tts_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFA
                     cache_key=cache_key,
                     object_key=object_key,
                     had_existing_meta=had_existing_meta,
-                    request_id=f"req_prewarm_{uuid4().hex[:20]}",
+                    request_id=request_id,
                     correlation_id=_build_observability_correlation_id(
                         fallback_seed=f"prewarm:{billing_user_id}:{cache_key[:16]}",
                         prefix="tts",
                     ),
                     enqueue_ts_ms=_to_epoch_ms(),
                 )
+                if bool(enqueue_result.get("queued")):
+                    queued += 1
+                    continue
+
+                enqueue_reason = str(enqueue_result.get("reason") or "").strip().lower() or "unknown"
                 latest = get_tts_object_meta(cache_key, touch_hit=False) or {}
                 latest_status = str(latest.get("status") or "").strip().lower()
                 if latest_status == "ready":
-                    generated += 1
-                elif latest_status == "pending":
+                    cached_hits += 1
+                elif latest_status == "pending" or enqueue_reason == "duplicate_in_process":
                     pending_hits += 1
                 else:
                     errors += 1
                     logging.warning(
-                        "TTS personalized prewarm did not reach ready status for cache_key=%s status=%s users=%s",
+                        "TTS personalized prewarm enqueue failed for cache_key=%s reason=%s status=%s request_id=%s users=%s",
                         cache_key,
+                        enqueue_reason,
                         latest_status or "unknown",
+                        request_id,
                         assigned_user_ids,
                     )
             except Exception:
@@ -13879,6 +14139,7 @@ def _dispatch_tts_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFA
             "final_quota_fit_users": final_quota_fit_users,
             "final_quota_fit_pct": int(round((final_quota_fit_users / prediction_denominator) * 100.0)) if users_with_prediction > 0 else 0,
             "processed": processed,
+            "queued": queued,
             "generated": generated,
             "cached_hits": cached_hits,
             "pending_hits": pending_hits,
@@ -21557,6 +21818,7 @@ def get_billing_plans():
 def get_billing_status():
     started_perf = time.perf_counter()
     request_id = _extract_observability_request_id()
+    g.request_id = request_id
     correlation_id = _build_observability_correlation_id(prefix="billing_status")
     with db_acquire_scope("billing_status") as db_acquire_events:
         auth_started_at = time.perf_counter()
@@ -21577,6 +21839,16 @@ def get_billing_status():
                 **summarize_db_acquire_events(db_acquire_events),
             )
             return jsonify({"error": error}), status
+        g.trace_auth_user_id = int(user_id)
+        _log_compact_trace(
+            "auth_billing",
+            stage="auth_resolved",
+            request_id=request_id,
+            path=request.path,
+            method=request.method,
+            user_id=int(user_id),
+            auth_duration_ms=auth_duration_ms,
+        )
 
         response_payload, cache_meta = _get_billing_status_response_cached(user_id=int(user_id))
         plan_code = str(response_payload.get("plan_code") or "free")
@@ -21585,6 +21857,25 @@ def get_billing_status():
         entitlement_duration_ms = int(cache_meta.get("entitlement_duration_ms") or 0)
         subscription_duration_ms = int(cache_meta.get("subscription_duration_ms") or 0)
         spent_today_duration_ms = int(cache_meta.get("spent_today_duration_ms") or 0)
+        db_trace_meta = summarize_db_acquire_events(db_acquire_events)
+        _log_compact_trace(
+            "auth_billing",
+            stage="response_ready",
+            request_id=request_id,
+            path=request.path,
+            user_id=int(user_id),
+            plan_code=plan_code,
+            status=status_value,
+            effective_mode=effective_mode,
+            cache_hit=bool(cache_meta.get("cache_hit")),
+            cache_tier=cache_meta.get("cache_tier"),
+            cache_state=cache_meta.get("cache_state"),
+            entitlement_duration_ms=entitlement_duration_ms,
+            subscription_duration_ms=subscription_duration_ms,
+            spent_today_duration_ms=spent_today_duration_ms,
+            db_pool_acquire_count=int(db_trace_meta.get("db_pool_acquire_count") or 0),
+            db_pool_acquire_wait_ms_total=int(db_trace_meta.get("db_pool_acquire_wait_ms_total") or 0),
+        )
         _log_flow_observation(
             "billing_status",
             "status_completed",
@@ -21606,7 +21897,7 @@ def get_billing_status():
             final_status="success",
             duration_ms=_elapsed_ms_since(started_perf),
             http_status=200,
-            **summarize_db_acquire_events(db_acquire_events),
+            **db_trace_meta,
         )
         return jsonify(response_payload), 200
 
@@ -24783,6 +25074,14 @@ def _build_today_plan_response_payload(
         stale_after_seconds=int((os.getenv("TODAY_PLAN_TIMER_STALE_AFTER_SECONDS") or "120").strip() or "120"),
     )
     plan = _sync_today_plan_translation_progress(
+        user_id=int(user_id),
+        username=username,
+        plan=plan,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        trigger="today_fetch",
+    )
+    plan = _sync_today_plan_cards_progress(
         user_id=int(user_id),
         username=username,
         plan=plan,
@@ -30226,7 +30525,11 @@ def _enqueue_tts_generation_job_result(**kwargs) -> dict:
     if not cache_key:
         return {"queued": False, "reason": "missing_cache_key"}
     if is_tts_generation_async_enabled():
-        enqueue_result = enqueue_tts_generation_job(dict(kwargs))
+        try:
+            enqueue_result = enqueue_tts_generation_job(dict(kwargs))
+        except Exception:
+            logging.exception("Distributed TTS enqueue raised unexpectedly: cache_key=%s queue=tts_generation", cache_key)
+            return {"queued": False, "reason": "broker_error", "queue_size": None}
         queued = bool(enqueue_result.get("queued"))
         reason = str(enqueue_result.get("reason") or "").strip().lower() or "broker_error"
         if queued:
@@ -30282,7 +30585,8 @@ def _recover_stale_tts_generation_jobs(*, source: str = "scheduler") -> dict:
         result = {"ok": True, "skipped": True, "reason": "disabled"}
         _record_tts_admin_monitor_event("recovery_run", "skipped", source=source, count=1, meta=result)
         return result
-    _ensure_tts_generation_workers_started()
+    if not is_tts_generation_async_enabled():
+        _ensure_tts_generation_workers_started()
     attempted = 0
     queued = 0
     duplicates = 0
@@ -30708,295 +31012,6 @@ def webapp_tts_generate():
         http_status=int(status_code),
     )
     return jsonify(response_payload), int(status_code)
-
-
-@app.route("/api/webapp/tts", methods=["POST"])
-def webapp_tts():
-    started_at = time.perf_counter()
-    stage_marks: dict[str, float] = {"start": started_at}
-    had_error = False
-    is_cached_response = False
-    payload = request.get_json(silent=True) or {}
-    request_id = _extract_observability_request_id(payload)
-    correlation_id = _build_observability_correlation_id(payload=payload, prefix="tts")
-    user_id: int | None = None
-    cache_key: str | None = None
-    db_lookup_duration_ms: int | None = None
-    provider_duration_ms: int | None = None
-    cache_saved_duration_ms: int | None = None
-    generation_start_ts_ms: int | None = None
-
-    def mark(stage_name: str) -> None:
-        stage_marks[stage_name] = time.perf_counter()
-
-    def _log_tts_profile(user_id_value: int | None, normalized_text: str, cached: bool, error_text: str | None = None) -> None:
-        if not TTS_PROFILING_ENABLED:
-            return
-        try:
-            end_ts = time.perf_counter()
-            points = {"start": started_at, **stage_marks, "end": end_ts}
-            ordered = [("start", points.get("start"))]
-            for key in (
-                "parse_body",
-                "hash_check",
-                "parse_init_data",
-                "lang_pair",
-                "db_cache_read",
-                "db_cache_hit",
-                "synth_done",
-                "cache_saved",
-                "send_file",
-            ):
-                if key in points:
-                    ordered.append((key, points[key]))
-            ordered.append(("end", end_ts))
-            prev = ordered[0][1] or started_at
-            parts = []
-            for name, ts in ordered[1:]:
-                if ts is None:
-                    continue
-                parts.append(f"{name}={int((ts - prev) * 1000)}ms")
-                prev = ts
-            total_ms = int((end_ts - started_at) * 1000)
-            logging.info(
-                "TTS profile: user_id=%s cached=%s chars=%s total=%sms %s%s",
-                user_id_value,
-                cached,
-                len(normalized_text),
-                total_ms,
-                " ".join(parts),
-                f" error={error_text}" if error_text else "",
-            )
-        except Exception:
-            logging.debug("Failed to log TTS profile", exc_info=True)
-
-    init_data = payload.get("initData")
-    text = (payload.get("text") or "").strip()
-    language = (payload.get("language") or "de-DE").strip()
-    voice = (payload.get("voice") or "de-DE-Neural2-C").strip()
-    mark("parse_body")
-
-    if not init_data:
-        _log_flow_observation(
-            "tts",
-            "tts_legacy_completed",
-            request_id=request_id,
-            correlation_id=correlation_id,
-            final_status="error",
-            duration_ms=_elapsed_ms_since(started_at),
-            http_status=400,
-        )
-        return jsonify({"error": "initData обязателен"}), 400
-    if not text:
-        _log_flow_observation(
-            "tts",
-            "tts_legacy_completed",
-            request_id=request_id,
-            correlation_id=correlation_id,
-            final_status="error",
-            duration_ms=_elapsed_ms_since(started_at),
-            http_status=400,
-        )
-        return jsonify({"error": "text обязателен"}), 400
-
-    if not _telegram_hash_is_valid(init_data):
-        _log_flow_observation(
-            "tts",
-            "tts_legacy_completed",
-            request_id=request_id,
-            correlation_id=correlation_id,
-            final_status="error",
-            duration_ms=_elapsed_ms_since(started_at),
-            http_status=401,
-        )
-        return jsonify({"error": "initData не прошёл проверку"}), 401
-    mark("hash_check")
-    parsed = _parse_telegram_init_data(init_data)
-    mark("parse_init_data")
-    user_data = parsed.get("user") or {}
-    user_id_raw = user_data.get("id")
-    if not user_id_raw:
-        _log_flow_observation(
-            "tts",
-            "tts_legacy_completed",
-            request_id=request_id,
-            correlation_id=correlation_id,
-            final_status="error",
-            duration_ms=_elapsed_ms_since(started_at),
-            http_status=400,
-        )
-        return jsonify({"error": "user_id отсутствует в initData"}), 400
-    user_id = int(user_id_raw)
-    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
-    mark("lang_pair")
-
-    speaking_rate = 0.95
-    normalized = _normalize_utterance_text(text)
-    chars_count = float(len(normalized))
-    cache_key = _tts_cache_key(language, voice, speaking_rate, normalized)
-    correlation_id = _build_observability_correlation_id(
-        payload=payload,
-        fallback_seed=cache_key[:24],
-        prefix="tts",
-    )
-
-    try:
-        db_lookup_started_perf = time.perf_counter()
-        cached_audio = get_tts_audio_cache(cache_key)
-        db_lookup_duration_ms = _elapsed_ms_since(db_lookup_started_perf)
-        mark("db_cache_read")
-        if cached_audio:
-            mark("db_cache_hit")
-            response = send_file(
-                BytesIO(cached_audio),
-                mimetype="audio/mpeg",
-                as_attachment=False,
-                download_name="tts.mp3",
-            )
-            is_cached_response = True
-            mark("send_file")
-            _log_flow_observation(
-                "tts",
-                "tts_legacy_completed",
-                request_id=request_id,
-                correlation_id=correlation_id,
-                user_id=user_id,
-                cache_key=cache_key,
-                cache_hit=True,
-                cache_miss=False,
-                db_lookup_duration_ms=db_lookup_duration_ms,
-                generation_start_ts_ms=None,
-                external_tts_provider_duration_ms=None,
-                final_status="hit",
-                duration_ms=_elapsed_ms_since(started_at),
-                http_status=200,
-            )
-            return response
-
-        generation_start_ts_ms = _to_epoch_ms()
-        provider_started_perf = time.perf_counter()
-        response_audio = _synthesize_mp3(
-            normalized,
-            language=language,
-            voice=voice,
-            speed=speaking_rate,
-        )
-        provider_duration_ms = _elapsed_ms_since(provider_started_perf)
-        mark("synth_done")
-        try:
-            cache_save_started_perf = time.perf_counter()
-            upsert_tts_audio_cache(
-                cache_key=cache_key,
-                language=language,
-                voice=voice,
-                speed=speaking_rate,
-                source_text=normalized,
-                audio_mp3=response_audio,
-            )
-            cache_saved_duration_ms = _elapsed_ms_since(cache_save_started_perf)
-            mark("cache_saved")
-        except Exception as exc:
-            logging.warning("Failed to persist webapp TTS cache: %s", exc)
-        _billing_log_event_safe(
-            user_id=int(user_id),
-            action_type="webapp_tts_chars",
-            provider="google_tts",
-            units_type="chars",
-            units_value=chars_count,
-            source_lang=source_lang,
-            target_lang=target_lang,
-            idempotency_seed=f"webapp-tts:{user_id}:{cache_key}:{time.time_ns()}",
-            status="estimated",
-            metadata={"cached": False, "language": language, "voice": voice},
-        )
-        response = send_file(
-            BytesIO(response_audio),
-            mimetype="audio/mpeg",
-            as_attachment=False,
-            download_name="tts.mp3",
-        )
-        mark("send_file")
-        _log_flow_observation(
-            "tts",
-            "tts_legacy_completed",
-            request_id=request_id,
-            correlation_id=correlation_id,
-            user_id=user_id,
-            cache_key=cache_key,
-            cache_hit=False,
-            cache_miss=True,
-            db_lookup_duration_ms=db_lookup_duration_ms,
-            generation_start_ts_ms=generation_start_ts_ms,
-            external_tts_provider_duration_ms=provider_duration_ms,
-            cache_write_duration_ms=cache_saved_duration_ms,
-            final_status="generated",
-            duration_ms=_elapsed_ms_since(started_at),
-            http_status=200,
-        )
-        return response
-    except GoogleTTSBudgetBlockedError as exc:
-        had_error = True
-        _log_tts_profile(
-            user_id_value=user_id,
-            normalized_text=_normalize_utterance_text(text),
-            cached=False,
-            error_text=str(exc),
-        )
-        _log_flow_observation(
-            "tts",
-            "tts_legacy_completed",
-            request_id=request_id,
-            correlation_id=correlation_id,
-            user_id=user_id,
-            cache_key=cache_key,
-            cache_hit=False,
-            cache_miss=True,
-            db_lookup_duration_ms=db_lookup_duration_ms,
-            generation_start_ts_ms=generation_start_ts_ms,
-            external_tts_provider_duration_ms=provider_duration_ms,
-            final_status="error",
-            error_code="google_tts_budget_blocked",
-            duration_ms=_elapsed_ms_since(started_at),
-            http_status=429,
-        )
-        response_payload = {"error": "google_tts_budget_blocked", "message": str(exc)}
-        if isinstance(getattr(exc, "payload", None), dict):
-            response_payload.update(exc.payload)
-        return jsonify(response_payload), 429
-    except Exception as exc:
-        had_error = True
-        _log_tts_profile(
-            user_id_value=user_id,
-            normalized_text=_normalize_utterance_text(text),
-            cached=False,
-            error_text=str(exc),
-        )
-        _log_flow_observation(
-            "tts",
-            "tts_legacy_completed",
-            request_id=request_id,
-            correlation_id=correlation_id,
-            user_id=user_id,
-            cache_key=cache_key,
-            cache_hit=False,
-            cache_miss=True,
-            db_lookup_duration_ms=db_lookup_duration_ms,
-            generation_start_ts_ms=generation_start_ts_ms,
-            external_tts_provider_duration_ms=provider_duration_ms,
-            final_status="error",
-            error_code="tts_generation_failed",
-            duration_ms=_elapsed_ms_since(started_at),
-            http_status=500,
-        )
-        return jsonify({"error": f"TTS error: {exc}"}), 500
-    finally:
-        if request.method == "POST" and not had_error:
-            _log_tts_profile(
-                user_id_value=user_id,
-                normalized_text=normalized,
-                cached=is_cached_response,
-                error_text=None,
-            )
 
 
 @app.route("/api/webapp/flashcards/enrich", methods=["POST"])
@@ -34148,12 +34163,14 @@ def start_webapp_translation():
     started_at = time.perf_counter()
     payload = request.get_json(silent=True) or {}
     request_id = _extract_observability_request_id(payload)
+    g.request_id = request_id
     correlation_id = _build_observability_correlation_id(payload=payload, prefix="webapp_start")
     init_data = payload.get("initData")
     topic = (payload.get("topic") or "Random sentences").strip()
     custom_focus = str(payload.get("custom_focus") or "").strip()
     level = str(payload.get("level") or "c1").strip().lower() or "c1"
     force_new_session = bool(payload.get("force_new_session"))
+    auth_resolution_started_perf = time.perf_counter()
 
     if not init_data:
         _log_flow_observation(
@@ -34195,6 +34212,17 @@ def start_webapp_translation():
             http_status=400,
         )
         return jsonify({"error": "user_id отсутствует в initData"}), 400
+    g.trace_auth_user_id = int(user_id)
+    _log_compact_trace(
+        "auth_start",
+        stage="auth_resolved",
+        request_id=request_id,
+        path=request.path,
+        method=request.method,
+        user_id=int(user_id),
+        auth_resolution_duration_ms=int((time.perf_counter() - auth_resolution_started_perf) * 1000),
+        force_new_session=force_new_session,
+    )
 
     start_idempotency_key = _webapp_start_idempotency_key(int(user_id))
     start_idempotency_token = _try_acquire_shared_idempotency(
@@ -34227,6 +34255,18 @@ def start_webapp_translation():
             focus_started_perf = time.perf_counter()
             resolved_focus = resolve_webapp_focus(topic, custom_focus)
             focus_duration_ms = _elapsed_ms_since(focus_started_perf)
+            _log_compact_trace(
+                "auth_start",
+                stage="preflight_done",
+                request_id=request_id,
+                path=request.path,
+                user_id=int(user_id),
+                language_pair_lookup_duration_ms=language_pair_duration_ms,
+                language_pair_lookup_mode=language_pair_lookup_mode,
+                focus_duration_ms=focus_duration_ms,
+                focus_kind=str(resolved_focus.get("kind") or "").strip() or None,
+                focus_key=str(resolved_focus.get("key") or "").strip() or None,
+            )
             if str(resolved_focus.get("kind") or "") == "custom" and not str(resolved_focus.get("custom_text") or "").strip():
                 _log_flow_observation(
                     "webapp_translation",
@@ -34249,7 +34289,16 @@ def start_webapp_translation():
                 return jsonify({"error": "custom_focus обязателен для пользовательского грамматического фокуса"}), 400
 
             try:
+                refresh_started_perf = time.perf_counter()
                 _refresh_subscription_before_translation_start(int(user_id))
+                _log_compact_trace(
+                    "auth_start",
+                    stage="refresh_done",
+                    request_id=request_id,
+                    path=request.path,
+                    user_id=int(user_id),
+                    refresh_duration_ms=int((time.perf_counter() - refresh_started_perf) * 1000),
+                )
                 workflow_started_at = time.perf_counter()
                 result = asyncio.run(
                     start_translation_session_webapp(
@@ -34264,7 +34313,38 @@ def start_webapp_translation():
                     )
                 )
                 workflow_elapsed_ms = int((time.perf_counter() - workflow_started_at) * 1000)
+                workflow_phase_metrics = dict(result.get("phase_metrics") or {}) if isinstance(result, dict) else {}
+                workflow_readiness = dict((result or {}).get("readiness_diagnostics") or {}) if isinstance(result, dict) else {}
+                _log_compact_trace(
+                    "auth_start",
+                    stage="workflow_done",
+                    request_id=request_id,
+                    path=request.path,
+                    user_id=int(user_id),
+                    workflow_duration_ms=workflow_elapsed_ms,
+                    feature_limit_duration_ms=int(workflow_phase_metrics.get("feature_limit_ms") or 0),
+                    session_lookup_duration_ms=int(workflow_phase_metrics.get("active_lookup_ms") or 0),
+                    session_state_duration_ms=int(workflow_phase_metrics.get("session_state_ms") or 0),
+                    session_insert_duration_ms=int(workflow_phase_metrics.get("session_insert_ms") or 0),
+                    seed_collect_duration_ms=int(workflow_phase_metrics.get("seed_collect_ms") or 0),
+                    seed_topup_duration_ms=int(workflow_phase_metrics.get("seed_topup_ms") or 0),
+                    seed_insert_duration_ms=int(workflow_phase_metrics.get("seed_insert_ms") or 0),
+                    commit_duration_ms=int(workflow_phase_metrics.get("commit_ms") or 0),
+                    personal_added=int(workflow_readiness.get("personal_added") or 0),
+                    pool_added=int(workflow_readiness.get("pool_added") or 0),
+                    generic_added=int(workflow_readiness.get("generic_added") or 0),
+                    llm_added_on_start=int(workflow_readiness.get("quick_topup_added") or 0),
+                )
             except Exception as exc:
+                _log_compact_trace(
+                    "auth_start",
+                    stage="workflow_exception",
+                    request_id=request_id,
+                    path=request.path,
+                    user_id=int(user_id),
+                    duration_ms=_elapsed_ms_since(started_at),
+                    exception=exc.__class__.__name__,
+                )
                 _log_flow_observation(
                     "webapp_translation",
                     "start_completed",
@@ -34385,6 +34465,24 @@ def start_webapp_translation():
                 int(readiness_diagnostics.get("quick_topup_added") or 0),
                 bool(refill_trigger_result.get("triggered")),
             )
+            db_trace_meta = summarize_db_acquire_events(db_acquire_events)
+            _log_compact_trace(
+                "auth_start",
+                stage="response_ready",
+                request_id=request_id,
+                path=request.path,
+                user_id=int(user_id),
+                build_payload_duration_ms=build_payload_duration_ms,
+                session_id=int(session_id or 0) if session_id else None,
+                ready_count=ready_count,
+                expected_total=expected_total,
+                remaining_count=remaining_count,
+                generation_in_progress=bool(generation_started),
+                background_fill_required=bool(background_fill_required),
+                deficit_refill_triggered=bool(refill_trigger_result.get("triggered")),
+                db_pool_acquire_count=int(db_trace_meta.get("db_pool_acquire_count") or 0),
+                db_pool_acquire_wait_ms_total=int(db_trace_meta.get("db_pool_acquire_wait_ms_total") or 0),
+            )
             response_body = {
                 "ok": True,
                 **response_payload,
@@ -34451,7 +34549,7 @@ def start_webapp_translation():
                 final_status="success",
                 duration_ms=_elapsed_ms_since(started_at),
                 http_status=200,
-                **summarize_db_acquire_events(db_acquire_events),
+                **db_trace_meta,
             )
             return jsonify(response_body)
     finally:
@@ -34600,6 +34698,7 @@ def get_webapp_session():
     started_perf = time.perf_counter()
     payload = request.get_json(silent=True) or {}
     request_id = _extract_observability_request_id(payload)
+    g.request_id = request_id
     correlation_id = _build_observability_correlation_id(payload=payload, prefix="webapp_session")
     init_data = payload.get("initData")
 
@@ -34642,10 +34741,29 @@ def get_webapp_session():
             http_status=400,
         )
         return jsonify({"error": "user_id отсутствует в initData"}), 400
+    g.trace_auth_user_id = int(user_id)
+    _log_compact_trace(
+        "auth_session",
+        stage="auth_resolved",
+        request_id=request_id,
+        path=request.path,
+        method=request.method,
+        user_id=int(user_id),
+        auth_resolution_duration_ms=_elapsed_ms_since(started_perf),
+    )
 
     lookup_started_perf = time.perf_counter()
     projection_payload, session_lookup_mode = _load_session_presence_projection_with_source(int(user_id))
     lookup_duration_ms = _elapsed_ms_since(lookup_started_perf)
+    _log_compact_trace(
+        "auth_session",
+        stage="lookup_done",
+        request_id=request_id,
+        path=request.path,
+        user_id=int(user_id),
+        session_lookup_mode=session_lookup_mode,
+        session_lookup_duration_ms=lookup_duration_ms,
+    )
     if not isinstance(projection_payload, dict):
         response_payload = {
             "error": "Session presence projection is not ready",
@@ -37651,6 +37769,127 @@ def _sync_today_plan_translation_progress(
     }
 
 
+def _sync_today_plan_cards_progress(
+    *,
+    user_id: int,
+    username: str | None,
+    plan: dict | None,
+    source_lang: str,
+    target_lang: str,
+    trigger: str,
+) -> dict | None:
+    if not isinstance(plan, dict):
+        return plan
+    items = list(plan.get("items") or [])
+    if not items:
+        return plan
+
+    now_utc = datetime.now(timezone.utc)
+    srs_queue_computed = False
+    current_due = 0
+
+    synced_items: list[dict] = []
+    changed = False
+    for item in items:
+        task_type = str(item.get("task_type") or "").strip().lower()
+        if task_type != "cards":
+            synced_items.append(item)
+            continue
+
+        current_status = str(item.get("status") or "todo").strip().lower() or "todo"
+        if current_status == "done":
+            synced_items.append(item)
+            continue
+
+        payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        mode = str(payload.get("mode") or "").strip().lower()
+        limit = max(1, int(payload.get("limit") or 1))
+
+        desired_status = current_status
+
+        if mode == "fsrs_due":
+            if not srs_queue_computed:
+                try:
+                    current_due = int(
+                        count_due_srs_cards(
+                            user_id=int(user_id),
+                            now_utc=now_utc,
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                        )
+                    )
+                except Exception:
+                    current_due = -1
+                srs_queue_computed = True
+            if current_due < 0:
+                synced_items.append(item)
+                continue
+            initial_due = max(0, int(payload.get("due_total") or limit))
+            reviewed = max(0, min(limit, initial_due - current_due))
+            if current_due <= 0 or reviewed >= limit:
+                desired_status = "done"
+            elif reviewed > 0 and current_status == "todo":
+                desired_status = "doing"
+
+        elif mode == "cards_new":
+            try:
+                introduced_today = int(
+                    count_new_cards_introduced_today(
+                        user_id=int(user_id),
+                        now_utc=now_utc,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                    )
+                )
+            except Exception:
+                synced_items.append(item)
+                continue
+            if introduced_today >= limit:
+                desired_status = "done"
+            elif introduced_today > 0 and current_status == "todo":
+                desired_status = "doing"
+
+        if desired_status != current_status:
+            try:
+                updated = update_daily_plan_item_status(
+                    user_id=int(user_id),
+                    item_id=int(item.get("id") or 0),
+                    status=desired_status,
+                )
+                if updated:
+                    if desired_status == "done":
+                        try:
+                            _announce_today_task_completion_to_group(
+                                user_id=int(user_id),
+                                username=username,
+                                item=updated,
+                                trigger=trigger,
+                            )
+                        except Exception:
+                            logging.warning(
+                                "Today cards task group announcement failed: user=%s item=%s",
+                                user_id,
+                                (updated or {}).get("id"),
+                                exc_info=True,
+                            )
+                    synced_items.append(updated)
+                    changed = True
+                    continue
+            except Exception:
+                logging.warning(
+                    "Failed to sync cards item status: user=%s item=%s trigger=%s",
+                    user_id,
+                    item.get("id"),
+                    trigger,
+                    exc_info=True,
+                )
+        synced_items.append(item)
+
+    if not changed:
+        return plan
+    return {**plan, "items": synced_items}
+
+
 _PLAN_NOT_PROVIDED = object()
 
 
@@ -38422,7 +38661,8 @@ def _start_audio_scheduler() -> None:
     tz_name = (os.getenv("AUDIO_SCHEDULER_TZ") or "UTC").strip()
     hour = int((os.getenv("AUDIO_SCHEDULER_HOUR") or "13").strip())
     minute = int((os.getenv("AUDIO_SCHEDULER_MINUTE") or "0").strip())
-    _ensure_tts_generation_workers_started()
+    if not is_tts_generation_async_enabled():
+        _ensure_tts_generation_workers_started()
     _audio_scheduler = BackgroundScheduler(timezone=tz_name)
     _audio_scheduler.add_job(
         _run_audio_scheduler_job,
