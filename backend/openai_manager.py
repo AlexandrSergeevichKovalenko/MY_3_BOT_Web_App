@@ -1895,10 +1895,10 @@ Output rules:
 - Output ONLY JSON.
 """,
 "dictionary_collocations": """
-You generate grammatically correct, natural German collocations for a given word.
+You generate grammatically correct, natural German collocations or usage examples for a given word or phrase.
 Input payload is JSON:
   direction: "ru-de" or "de-ru"
-  word: the original word in the source language
+  word: the original word or phrase in the source language
   translation: the base translation in the target language
 
 Return STRICT JSON:
@@ -1911,18 +1911,23 @@ Return STRICT JSON:
 }
 
 Rules:
-- Exactly 3 distinct items.
-- Every source phrase MUST be grammatically correct and naturally used by native speakers — not an arbitrary word combination.
-- Respect the word's part of speech:
-  * Adjective → use as attribute before a noun with correct German declension (e.g. "etwaige Probleme", "ein neues Buch")
-  * Verb → combine with a realistic object or complement using correct German case (e.g. "die Frage beantworten", "auf etwas warten")
-  * Noun → use in a natural short phrase or with a typical verb (e.g. "eine Frage stellen")
-  * Adverb/particle → pair with a verb or verb phrase where it genuinely fits (e.g. "leider nicht kommen")
-- Phrases should be short (2–5 words in source) and common in everyday German.
+- Exactly 3 items.
+- CRITICAL: Every item must be GENUINELY DISTINCT from the others. Different punctuation spacing, capitalisation, or one-word swaps do NOT make items distinct. Each item must use a clearly different noun, object, context, or sentence structure.
+- If "word" is a SHORT WORD or SHORT PHRASE (up to 4 words):
+  * Generate 3 short natural collocations (2–5 source words each).
+  * Respect the word's part of speech:
+    - Adjective → noun phrase with correct German declension (e.g. "ein neues Buch")
+    - Verb → realistic object/complement with correct German case (e.g. "die Frage beantworten")
+    - Noun → natural phrase with a typical verb (e.g. "eine Frage stellen")
+    - Adverb/particle → pair with a verb phrase (e.g. "leider nicht kommen")
+- If "word" is a FULL SENTENCE or long phrase (more than 4 words):
+  * Generate 3 complete example sentences that illustrate the SAME grammatical construction but with COMPLETELY DIFFERENT objects, nouns, or contexts.
+  * Each example must feel like an independent real-life usage, not a minor variant of the same sentence.
+  * Example: if input is "Hättest du vielleicht ..., das du mir leihen könntest?" then generate three sentences about three unrelated objects (e.g. a ladder, a book, a bicycle) — never repeat the same object.
 - Output ONLY JSON.
 """,
 "dictionary_collocations_multilang": """
-You generate grammatically correct, natural collocations for a word in arbitrary language pairs.
+You generate grammatically correct, natural collocations or usage examples for a word or phrase in arbitrary language pairs.
 Input JSON:
 {
   "source_language": "...",
@@ -1941,14 +1946,19 @@ Return STRICT JSON:
 }
 
 Rules:
-- Exactly 3 distinct items.
-- Every source phrase must be grammatically correct and natural — a phrase a native speaker would actually say.
-- Respect the word's part of speech:
-  * Adjective → use as attribute before a noun with correct agreement/declension
-  * Verb → combine with a realistic object or complement in correct grammatical case
-  * Noun → pair with a typical verb or use in a short natural phrase
-  * Adverb/particle → combine with a verb or clause where it genuinely fits
-- Keep phrases short (2–5 words in source) and common in everyday usage.
+- Exactly 3 items.
+- CRITICAL: Every item must be GENUINELY DISTINCT from the others. Different punctuation spacing, capitalisation, or one-word swaps do NOT make items distinct. Each item must use a clearly different noun, object, context, or sentence structure.
+- If "word_source" is a SHORT WORD or SHORT PHRASE (up to 4 words):
+  * Generate 3 short natural collocations (2–5 source words each).
+  * Respect the word's part of speech:
+    - Adjective → noun phrase with correct agreement/declension
+    - Verb → realistic object/complement in correct grammatical case
+    - Noun → natural phrase with a typical verb
+    - Adverb/particle → combine with a verb or clause where it fits
+- If "word_source" is a FULL SENTENCE or long phrase (more than 4 words):
+  * Generate 3 complete example sentences illustrating the SAME grammatical construction but with COMPLETELY DIFFERENT objects, nouns, or contexts.
+  * Each example must feel like an independent real-life usage, not a minor variant of the same sentence.
+  * Never repeat the same noun or object across the 3 examples.
 - Output ONLY JSON.
 """,
 "dictionary_assistant_multilang": """

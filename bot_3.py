@@ -5446,12 +5446,19 @@ async def _generate_dictionary_save_options(payload: dict) -> list[dict]:
     unique: set[tuple[str, str]] = set()
     options: list[dict] = []
 
+    def _dedup_key(v: str) -> str:
+        # Collapse whitespace and remove spaces before punctuation so that
+        # "könntest ?" and "könntest?" are treated as the same variant.
+        v = re.sub(r"\s+", " ", v.lower().strip())
+        v = re.sub(r"\s+([?!.,;:»\)])", r"\1", v)
+        return v
+
     def _add_option(source_value: str, target_value: str, is_original: bool = False) -> None:
         s = source_value.strip()
         t = target_value.strip()
         if not s or not t:
             return
-        key = (s.lower(), t.lower())
+        key = (_dedup_key(s), _dedup_key(t))
         if key in unique:
             return
         unique.add(key)
