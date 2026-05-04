@@ -19318,6 +19318,7 @@ def get_global_billing_summary(
                 FROM bt_3_billing_events
                 WHERE currency = %s
                   AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s
+                  AND COALESCE(metadata->>'cached', 'false') <> 'true'
                   {event_provider_sql};
                 """,
                 totals_params,
@@ -19395,6 +19396,7 @@ def get_global_billing_summary(
                     FROM bt_3_billing_events
                     WHERE currency = %s
                       AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s
+                      AND COALESCE(metadata->>'cached', 'false') <> 'true'
                     GROUP BY provider
                     ORDER BY cost_total DESC, units_total DESC;
                     """,
@@ -19415,6 +19417,7 @@ def get_global_billing_summary(
                     FROM bt_3_billing_events
                     WHERE currency = %s
                       AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s
+                      AND COALESCE(metadata->>'cached', 'false') <> 'true'
                     GROUP BY provider, units_type
                     ORDER BY provider ASC, units_total DESC;
                     """,
@@ -19462,6 +19465,7 @@ def get_global_billing_summary(
                     WHERE currency = %s
                       AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s
                       AND provider = %s
+                      AND COALESCE(metadata->>'cached', 'false') <> 'true'
                     GROUP BY units_type
                     ORDER BY units_total DESC;
                     """,
@@ -19493,6 +19497,7 @@ def get_global_billing_summary(
                 FROM bt_3_billing_events
                 WHERE currency = %s
                   AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s
+                  AND COALESCE(metadata->>'cached', 'false') <> 'true'
                   {event_provider_sql}
                 GROUP BY action_type
                 ORDER BY cost_total DESC, units_total DESC
@@ -19524,6 +19529,7 @@ def get_global_billing_summary(
                 FROM bt_3_billing_events
                 WHERE currency = %s
                   AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s
+                  AND COALESCE(metadata->>'cached', 'false') <> 'true'
                   AND COALESCE(metadata->>'model', '') <> ''
                   {event_provider_sql}
                 GROUP BY COALESCE(metadata->>'model', '')
@@ -19552,6 +19558,7 @@ def get_global_billing_summary(
                 FROM bt_3_billing_events
                 WHERE currency = %s
                   AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s
+                  AND COALESCE(metadata->>'cached', 'false') <> 'true'
                   {event_provider_sql}
                 GROUP BY units_type
                 ORDER BY cost_total DESC, units_total DESC

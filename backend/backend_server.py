@@ -30705,7 +30705,6 @@ def _billing_snapshot_r2_storage(total_bytes: int) -> None:
                        SET metadata = metadata || '{"cached": true}'::jsonb
                      WHERE provider = 'cloudflare_r2_storage'
                        AND units_type = 'mb_month'
-                       AND action_type = 'r2_storage_snapshot'
                        AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s;
                     """,
                     (month_start, month_end),
