@@ -13195,6 +13195,8 @@ def _build_private_grammar_message(
     sentence_number: int | None,
     original_text: str,
     correct_translation: str,
+    user_translation: str | None,
+    error_analysis_text: str,
     explanation_text: str,
     source_lang: str,
     target_lang: str,
@@ -13204,23 +13206,32 @@ def _build_private_grammar_message(
     title = "🧠 Грамматический разбор"
     if sentence_number is not None and int(sentence_number) > 0:
         title = f"{title} · Satz {int(sentence_number)}"
-    pretty_explanation = _render_private_grammar_explanation_text(explanation_text) or "—"
-    explanation_lines = pretty_explanation.splitlines()
-    if explanation_lines:
-        first_line = explanation_lines[0].strip() or "—"
-        rest_lines = explanation_lines[1:]
-        explanation_block = f"Разбор: {first_line}"
-        if rest_lines:
-            explanation_block = f"{explanation_block}\n" + "\n".join(rest_lines)
-    else:
-        explanation_block = "Разбор: —"
-    return (
-        f"{title}\n"
-        f"Пара: {src} → {tgt}\n\n"
-        f"Исходное предложение:\n{(original_text or '—').strip()}\n\n"
-        f"Корректный вариант:\n{(correct_translation or '—').strip()}\n\n"
-        f"{explanation_block}"
-    )
+
+    parts: list[str] = [
+        f"{title}",
+        f"Пара: {src} → {tgt}",
+        "",
+        f"Исходное предложение:\n{(original_text or '—').strip()}",
+        "",
+    ]
+    if user_translation and user_translation.strip():
+        parts.append(f"Твой перевод:\n{user_translation.strip()}")
+        parts.append("")
+    parts.append(f"Корректный вариант:\n{(correct_translation or '—').strip()}")
+
+    if error_analysis_text:
+        parts.append("")
+        parts.append("Разбор ошибок:")
+        parts.append(error_analysis_text.strip())
+
+    if explanation_text:
+        pretty = _render_private_grammar_explanation_text(explanation_text)
+        if pretty:
+            parts.append("")
+            parts.append("Грамматика корректного предложения:")
+            parts.append(pretty)
+
+    return "\n".join(parts)
 
 
 def _dispatch_private_grammar_explanation(
@@ -13229,22 +13240,48 @@ def _dispatch_private_grammar_explanation(
     sentence_number: int | None,
     original_text: str,
     correct_translation: str,
+    user_translation: str | None,
     source_lang: str,
     target_lang: str,
 ) -> None:
     try:
-        explanation_text = _generate_audio_grammar_explanation(
-            sentence=str(correct_translation or ""),
-            source_lang=source_lang,
-            target_lang=target_lang,
-        )
-        if not explanation_text:
+        has_user_translation = bool(user_translation and user_translation.strip())
+
+        async def _noop() -> str:
+            return ""
+
+        async def _gather() -> tuple[str, str]:
+            error_coro = (
+                run_translation_explanation_multilang(
+                    original_text=str(original_text or ""),
+                    user_translation=str(user_translation or ""),
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    explanation_lang=source_lang,
+                )
+                if has_user_translation
+                else _noop()
+            )
+            grammar_coro = run_audio_sentence_grammar_explain_multilang(
+                sentence=str(correct_translation or ""),
+                language=_normalize_short_lang_code(target_lang, fallback="de"),
+                explanation_language=_normalize_short_lang_code(source_lang, fallback="ru"),
+            )
+            error_result, grammar_result = await asyncio.gather(error_coro, grammar_coro)
+            return str(error_result or "").strip(), str(grammar_result or "").strip()
+
+        error_analysis, grammar_text = asyncio.run(_gather())
+
+        if not error_analysis and not grammar_text:
             return
+
         text = _build_private_grammar_message(
             sentence_number=sentence_number,
             original_text=original_text,
             correct_translation=correct_translation,
-            explanation_text=explanation_text,
+            user_translation=user_translation,
+            error_analysis_text=error_analysis,
+            explanation_text=grammar_text,
             source_lang=source_lang,
             target_lang=target_lang,
         )
@@ -18184,6 +18221,7 @@ def _queue_private_grammar_explanation_for_result(
     except Exception:
         sentence_number = None
     original_sentence = str(result_item.get("original_text") or "").strip()
+    user_trans = str(result_item.get("user_translation") or "").strip()
     threading.Thread(
         target=_dispatch_private_grammar_explanation,
         kwargs={
@@ -18191,6 +18229,7 @@ def _queue_private_grammar_explanation_for_result(
             "sentence_number": sentence_number,
             "original_text": original_sentence,
             "correct_translation": correct_translation,
+            "user_translation": user_trans or None,
             "source_lang": source_lang,
             "target_lang": target_lang,
         },
