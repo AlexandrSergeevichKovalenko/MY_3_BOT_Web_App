@@ -30688,6 +30688,42 @@ def _run_tts_generation_recovery_scheduler_job() -> None:
         logging.exception("❌ TTS generation recovery scheduler failed")
 
 
+def _billing_snapshot_r2_storage(total_bytes: int) -> None:
+    """Record a fresh R2 storage snapshot for the current billing month.
+
+    Old snapshots for the same month are marked cached=true so the SUM query
+    reflects only the latest value rather than accumulating across runs.
+    """
+    try:
+        total_mib = float(max(0, int(total_bytes or 0))) / (1024.0 * 1024.0)
+        month_start, month_end = _billing_month_bounds()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_billing_events
+                       SET metadata = metadata || '{"cached": true}'::jsonb
+                     WHERE provider = 'cloudflare_r2_storage'
+                       AND units_type = 'mb_month'
+                       AND action_type = 'r2_storage_snapshot'
+                       AND (event_time AT TIME ZONE 'UTC')::date BETWEEN %s AND %s;
+                    """,
+                    (month_start, month_end),
+                )
+        _billing_log_event_safe(
+            user_id=None,
+            action_type="r2_storage_snapshot",
+            provider="cloudflare_r2_storage",
+            units_type="mb_month",
+            units_value=total_mib,
+            status="actual",
+            metadata={"total_bytes": int(total_bytes or 0)},
+        )
+        logging.info("✅ R2 storage billing snapshot: %.2f MiB (%d bytes)", total_mib, int(total_bytes or 0))
+    except Exception:
+        logging.exception("❌ Failed to record R2 storage billing snapshot")
+
+
 def _billing_log_r2_delivery_estimate(
     *,
     user_id: int,
@@ -38519,6 +38555,7 @@ def _run_database_table_sizes_report_job() -> None:
                     min_prefix_bytes=r2_threshold_bytes,
                     max_prefixes=r2_max_prefixes,
                 )
+                _billing_snapshot_r2_storage(int(r2_summary.get("total_bytes") or 0))
                 r2_lines = [
                     "☁️ Отчёт по Cloudflare R2",
                     f"Bucket: {r2_summary.get('bucket_name') or '-'}",
