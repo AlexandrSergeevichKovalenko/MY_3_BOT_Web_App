@@ -15820,16 +15820,19 @@ function AppInner() {
         youtubePausedBySelectionRef.current = false;
       }
     }
-    const clientX = event?.clientX ?? event?.touches?.[0]?.clientX ?? window.innerWidth / 2;
-    const clientY = event?.clientY ?? event?.touches?.[0]?.clientY ?? window.innerHeight / 3;
+    const isTouchEvent = !!(event?.touches?.[0] || event?.changedTouches?.[0]);
+    const touchCoords = event?.changedTouches?.[0] || event?.touches?.[0];
+    const clientX = event?.clientX ?? touchCoords?.clientX ?? window.innerWidth / 2;
+    const clientY = event?.clientY ?? touchCoords?.clientY ?? window.innerHeight / 3;
     const menuWidth = youtubeAppFullscreen ? Math.min(220, window.innerWidth * 0.58) : 210;
     const menuHeight = youtubeAppFullscreen ? 128 : (options?.compact ? 116 : 144);
     const margin = 10;
     const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
     const safeX = clamp(clientX + 8, margin, Math.max(margin, window.innerWidth - menuWidth - margin));
+    // On touch devices position the menu above the finger so it isn't hidden under it.
     const rawY = youtubeAppFullscreen
       ? clientY - menuHeight - 12
-      : clientY + 8;
+      : isTouchEvent ? clientY - menuHeight - 16 : clientY + 8;
     const safeY = clamp(rawY, margin, Math.max(margin, window.innerHeight - menuHeight - margin));
     setSelectionText(text);
     setSelectionPos({ x: safeX, y: safeY });

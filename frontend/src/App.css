@@ -4744,6 +4744,8 @@ body {
   display: inline;
   border-radius: 6px;
   transition: background-color 0.16s ease;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .reader-sentence.is-selected {
@@ -4755,6 +4757,9 @@ body {
   border-radius: 5px;
   cursor: pointer;
   transition: background-color 0.14s ease;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .reader-word:hover {
@@ -4773,6 +4778,8 @@ body {
 
 .reader-token {
   display: inline;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .translation-structured-text {
@@ -4782,6 +4789,9 @@ body {
   font-size: inherit;
   font-weight: inherit;
   line-height: inherit;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .translation-structured-text .reader-word,
