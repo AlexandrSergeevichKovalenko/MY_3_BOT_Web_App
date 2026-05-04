@@ -1783,6 +1783,7 @@ Output rules:
   2) one common collocation,
   3) one high-frequency useful phrase.
 - save_worthy_options must be natural and worth saving, not random.
+- ARTICLES in save_worthy_options: if the "source" side of an item is a German noun standing alone (not inside a phrase), ALWAYS prepend the correct definite article (der/die/das). Never output a bare noun. Example: write "der Ersatzstift", NOT "Ersatzstift".
 - Do not invent obscure meanings unless clearly relevant.
 - Output ONLY JSON.
 """,
@@ -1891,6 +1892,7 @@ Output rules:
   2) one common collocation,
   3) one high-frequency useful phrase.
 - save_worthy_options must be realistic and worth saving.
+- ARTICLES in save_worthy_options: if the "source" side of an item is a German noun standing alone (not inside a phrase), ALWAYS prepend the correct definite article (der/die/das). Never output a bare noun. Example: write "der Ersatzstift", NOT "Ersatzstift".
 - Do not overload with obscure meanings.
 - Output ONLY JSON.
 """,
@@ -1913,12 +1915,13 @@ Return STRICT JSON:
 Rules:
 - Exactly 3 items.
 - CRITICAL: Every item must be GENUINELY DISTINCT from the others. Different punctuation spacing, capitalisation, or one-word swaps do NOT make items distinct. Each item must use a clearly different noun, object, context, or sentence structure.
+- ARTICLES: When the source side contains a German noun standing alone (not inside a longer phrase), ALWAYS include the correct definite article (der/die/das). Never output a bare noun without an article. Example: write "der Ersatzstift", NOT "Ersatzstift".
 - If "word" is a SHORT WORD or SHORT PHRASE (up to 4 words):
   * Generate 3 short natural collocations (2–5 source words each).
   * Respect the word's part of speech:
     - Adjective → noun phrase with correct German declension (e.g. "ein neues Buch")
     - Verb → realistic object/complement with correct German case (e.g. "die Frage beantworten")
-    - Noun → natural phrase with a typical verb (e.g. "eine Frage stellen")
+    - Noun → natural phrase with a typical verb (e.g. "eine Frage stellen"); if showing the noun in isolation, prepend the correct definite article (e.g. "der Tisch", "die Frage", "das Buch")
     - Adverb/particle → pair with a verb phrase (e.g. "leider nicht kommen")
 - If "word" is a FULL SENTENCE or long phrase (more than 4 words):
   * Generate 3 complete example sentences that illustrate the SAME grammatical construction but with COMPLETELY DIFFERENT objects, nouns, or contexts.
@@ -1948,12 +1951,13 @@ Return STRICT JSON:
 Rules:
 - Exactly 3 items.
 - CRITICAL: Every item must be GENUINELY DISTINCT from the others. Different punctuation spacing, capitalisation, or one-word swaps do NOT make items distinct. Each item must use a clearly different noun, object, context, or sentence structure.
+- ARTICLES: When source_language is German and the source side contains a German noun standing alone (not inside a longer phrase), ALWAYS include the correct definite article (der/die/das). Never output a bare German noun without an article. Example: write "der Ersatzstift", NOT "Ersatzstift".
 - If "word_source" is a SHORT WORD or SHORT PHRASE (up to 4 words):
   * Generate 3 short natural collocations (2–5 source words each).
   * Respect the word's part of speech:
     - Adjective → noun phrase with correct agreement/declension
     - Verb → realistic object/complement in correct grammatical case
-    - Noun → natural phrase with a typical verb
+    - Noun → natural phrase with a typical verb; if showing the noun in isolation, prepend the correct definite article
     - Adverb/particle → combine with a verb or clause where it fits
 - If "word_source" is a FULL SENTENCE or long phrase (more than 4 words):
   * Generate 3 complete example sentences illustrating the SAME grammatical construction but with COMPLETELY DIFFERENT objects, nouns, or contexts.
