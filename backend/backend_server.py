@@ -35095,7 +35095,7 @@ def _dispatch_daily_audio(target_date: date) -> dict:
                         ORDER BY t.timestamp DESC, t.id DESC
                         LIMIT 1
                     ) latest_tr ON TRUE
-                    WHERE COALESCE(latest_tr.session_id, '') NOT IN %s
+                    WHERE (latest_tr.session_id IS NULL OR latest_tr.session_id::text NOT IN %s)
                     ORDER BY dm.user_id, ds.unique_id;
                     """,
                     (target_date, target_date, tuple(story_session_ids)),
