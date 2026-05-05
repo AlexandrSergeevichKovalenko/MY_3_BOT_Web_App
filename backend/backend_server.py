@@ -24095,6 +24095,7 @@ def _build_skills_card_payload_from_skill_snapshot(
         },
         "recent_session": recent_session_seed if isinstance(recent_session_seed, dict) else None,
         "top_weak": top_weak_items,
+        "groups": list(snapshot_payload.get("groups") or []),
     }
     meta = {
         "projection_status": safe_projection_status,
@@ -24792,6 +24793,7 @@ def _build_skills_card_projection_fallback_from_source_snapshot(
 def _build_skills_card_response_payload(payload: dict[str, Any], *, user_id: int, username: str | None) -> dict[str, Any]:
     aggregate_summary = dict(payload.get("aggregate_summary") or {})
     top_weak = [dict(item or {}) for item in list(payload.get("top_weak") or []) if isinstance(item, dict)]
+    groups = [dict(g or {}) for g in list(payload.get("groups") or []) if isinstance(g, dict)]
     recent_session = payload.get("recent_session") if isinstance(payload.get("recent_session"), dict) else None
     source_lang = str(payload.get("source_lang") or "").strip() or None
     target_lang = str(payload.get("target_lang") or "").strip() or None
@@ -24809,6 +24811,7 @@ def _build_skills_card_response_payload(payload: dict[str, Any], *, user_id: int
         "aggregate_summary": aggregate_summary,
         "recent_session": recent_session,
         "top_weak": top_weak,
+        "groups": groups,
         "groups_count": int(aggregate_summary.get("groups_count") or 0),
         "total_skills": int(aggregate_summary.get("total_skills") or 0),
         "skills_with_data": int(aggregate_summary.get("skills_with_data") or 0),

@@ -13100,7 +13100,7 @@ function AppInner() {
       return undefined;
     }
     const snapshot = readTodayPlanSnapshot();
-    const shouldRefresh = !snapshot || isSnapshotRefreshDue(snapshot?.snapshot_saved_at);
+    const shouldRefresh = !snapshot || isSnapshotRefreshDue(snapshot?.snapshot_saved_at) || !(snapshot?.items?.length > 0);
     if (!shouldRefresh) {
       todayPlanStartupRefreshDoneRef.current = true;
       return undefined;
