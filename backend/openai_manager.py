@@ -2561,27 +2561,36 @@ Task:
 - Produce a short image prompt describing one concrete scene.
 - Produce exactly 4 answer options in answer_language.
 - One option must be the correct short German answer for the shown scene.
-- The other 3 must be plausible but wrong.
-- Wrong options should be semantically close enough to be believable, but clearly incorrect for the exact scene.
-- Keep options short: usually 1-5 words.
+- The other 3 must be plausible near-synonyms or semantically adjacent concepts — close enough to be tempting, but clearly wrong for this exact scene.
+- Keep options short: usually 1–5 words.
+- Place the correct option at a RANDOM position: pick correct_option_index from 0, 1, 2, or 3 with roughly equal probability. NEVER default to 0 — vary the position each time.
+- Write question_de as a specific, scene-relevant question that tests the exact word/concept. Do NOT use the generic "Was zeigt das Bild?" — instead craft something like:
+    * "Welche Situation ist hier dargestellt?"
+    * "Was passiert in dieser Szene?"
+    * "Welcher Begriff beschreibt dieses Ereignis am genauesten?"
+    * "Was ermittelt die Polizei in dieser Szene?" (scene-specific)
+    * "Welche Handlung führt die Person auf dem Bild aus?"
+    * "Welches Konzept illustriert dieses Bild?"
+  Adapt the question to the specific target_text word and scene — make it feel intentional, not generic.
 
 Return STRICT JSON:
 {
   "source_sentence": "...",
   "image_prompt": "...",
-  "question_de": "Was zeigt das Bild?",
+  "question_de": "...",
   "answer_options": ["...", "...", "...", "..."],
-  "correct_option_index": 0,
+  "correct_option_index": <integer 0–3, chosen randomly — NOT always 0>,
   "explanation": "..."
 }
 
 Rules:
 - answer_options must contain exactly 4 distinct strings.
-- correct_option_index must be 0-based.
-- The correct option must be the best match for the image prompt and source_sentence.
+- correct_option_index must be 0-based and MUST NOT always be 0 — distribute it across 0, 1, 2, 3.
+- The option at correct_option_index must be the best match for the image prompt and source_sentence.
 - Every answer option must be written only in answer_language.
 - If answer_language is "de", never use Russian or Cyrillic in answer_options.
-- explanation should be short and optional in spirit, but always include a brief string.
+- question_de must be in German and specific to the depicted scene and the word being practised.
+- explanation must briefly say why the correct answer is right and why the three distractors are wrong or less precise.
 - Output ONLY JSON.
 """,
 "check_translation_multilang": """

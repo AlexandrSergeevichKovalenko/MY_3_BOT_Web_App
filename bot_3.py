@@ -12145,6 +12145,24 @@ def _format_image_quiz_option_text(option_text: str, *, max_chars: int = 84) -> 
     return _truncate_telegram_reply_text(compact, max_chars=max_chars)
 
 
+def _shuffle_image_quiz_options(
+    options: list[str],
+    correct_option_id: int,
+    seed: int,
+) -> tuple[list[str], int]:
+    """Deterministically shuffle quiz options using dispatch_id as seed.
+
+    Returns the shuffled list and the new index of the correct answer.
+    Using the same seed in the callback reproduces the identical order.
+    """
+    rng = random.Random(seed)
+    indices = list(range(len(options)))
+    rng.shuffle(indices)
+    shuffled = [options[i] for i in indices]
+    new_correct_id = indices.index(correct_option_id)
+    return shuffled, new_correct_id
+
+
 def _build_image_quiz_keyboard(dispatch_id: int, answer_options: list[str]) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     current_row: list[InlineKeyboardButton] = []
@@ -12281,6 +12299,9 @@ async def _send_image_quiz_for_target(
         return False
 
     dispatch_id = int(dispatch["id"])
+    answer_options, _ = _shuffle_image_quiz_options(
+        answer_options, int(quiz_data.get("correct_option_id") or 0), dispatch_id
+    )
     try:
         photo_message = await context.bot.send_photo(
             chat_id=int(target_chat_id),
@@ -12619,8 +12640,9 @@ async def handle_image_quiz_callback(update: Update, context: CallbackContext) -
     if not quiz_data:
         await query.answer("Quiz unavailable")
         return
-    answer_options = list(quiz_data["options"])
-    correct_option_index = int(quiz_data["correct_option_id"])
+    answer_options, correct_option_index = _shuffle_image_quiz_options(
+        list(quiz_data["options"]), int(quiz_data["correct_option_id"]), dispatch_id
+    )
     if selected_option_index < 0 or selected_option_index >= len(answer_options):
         await query.answer("Quiz unavailable")
         return
