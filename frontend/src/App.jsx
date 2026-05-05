@@ -19540,6 +19540,26 @@ function AppInner() {
     return lines.map((line, index) => {
       const matchers = [
         {
+          pattern: /^🟢\s*\*?Sentence number:\*?\s*(.+)$/i,
+          label: '🟢 Sentence number:',
+        },
+        {
+          pattern: /^✅\s*\*?Score:\*?\s*(.+)$/i,
+          label: '✅ Score:',
+        },
+        {
+          pattern: /^🔵\s*\*?Original Sentence:\*?\s*(.+)$/i,
+          label: '🔵 Original Sentence:',
+        },
+        {
+          pattern: /^🟡\s*\*?User Translation:\*?\s*(.+)$/i,
+          label: '🟡 User Translation:',
+        },
+        {
+          pattern: /^(?:🟣\s*)?\*?Correct Translation:\*?\s*(.+)$/i,
+          label: correctTranslationLabel,
+        },
+        {
           pattern: /^(?:[-•]\s*)?(Original Word):\*?\s*(.+)$/i,
           label: '• Original Word:',
         },
@@ -19552,15 +19572,11 @@ function AppInner() {
           label: '➡️ Synonyms:',
         },
         {
-          pattern: /^Correct Translation:\*?\s*(.+)$/i,
-          label: correctTranslationLabel,
-        },
-        {
-          pattern: /^Grammar Explanation:\*?\s*(.+)$/i,
+          pattern: /^(?:🟡\s*)?\*?Grammar Explanation:\*?\s*(.+)$/i,
           label: '🟡 Grammar Explanation:',
         },
         {
-          pattern: /^(?:Alternative Sentence Construction|Alternative Construction):\*?\s*(.+)$/i,
+          pattern: /^(?:🔵\s*)?(?:Alternative Sentence Construction|Alternative Construction):\*?\s*(.+)$/i,
           label: '🔵 Alternative Sentence Construction:',
         },
       ];
