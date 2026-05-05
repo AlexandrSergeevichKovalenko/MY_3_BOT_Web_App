@@ -146,6 +146,96 @@ class BillingSubscriptionSyncTests(unittest.TestCase):
 
         self.assertEqual(result, "pro")
 
+    def test_sync_user_subscription_from_attr_only_list_object_updates_to_pro(self):
+        class StripeLikeObject:
+            def __init__(self, **kwargs):
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+
+        local_subscription = {
+            "user_id": 77,
+            "plan_code": "free",
+            "status": "inactive",
+            "trial_ends_at": None,
+            "current_period_end": None,
+            "stripe_customer_id": "cus_attr",
+            "stripe_subscription_id": "sub_old",
+            "created_at": None,
+            "updated_at": None,
+        }
+        listed = StripeLikeObject(
+            data=[
+                StripeLikeObject(
+                    id="sub_live",
+                    customer="cus_attr",
+                    status="active",
+                    cancel_at_period_end=False,
+                    current_period_end=1720000000,
+                    created=1715000000,
+                    metadata=StripeLikeObject(plan_code="pro"),
+                )
+            ]
+        )
+        fake_stripe = SimpleNamespace(
+            Subscription=SimpleNamespace(
+                list=Mock(return_value=listed),
+                retrieve=Mock(),
+            )
+        )
+        updated_subscription = {
+            **local_subscription,
+            "plan_code": "pro",
+            "status": "active",
+            "stripe_subscription_id": "sub_live",
+        }
+
+        with patch.object(server, "STRIPE_SECRET_KEY", "sk_test"), \
+             patch.object(server, "stripe", fake_stripe), \
+             patch.object(server, "_upsert_subscription_from_stripe_payload", return_value=updated_subscription) as upsert_mock, \
+             patch.object(server, "_invalidate_billing_front_caches_for_user"):
+            result = server._sync_user_subscription_from_live_stripe(
+                user_id=77,
+                subscription=local_subscription,
+            )
+
+        self.assertEqual(result["plan_code"], "pro")
+        self.assertEqual(result["status"], "active")
+        upsert_mock.assert_called_once_with(
+            user_id=77,
+            plan_code="pro",
+            stripe_customer_id="cus_attr",
+            stripe_subscription_id="sub_live",
+            stripe_status="active",
+            current_period_end_ts=1720000000,
+        )
+
+    def test_build_billing_status_response_payload_reports_pro_effective_mode(self):
+        subscription = {
+            "stripe_customer_id": "cus_live",
+            "stripe_subscription_id": "sub_live",
+            "current_period_end": 1720000000,
+        }
+        entitlement = {
+            "plan_code": "pro",
+            "plan_name": "Pro",
+            "status": "active",
+            "effective_mode": "pro",
+            "trial_ends_at": None,
+            "cap_eur": None,
+            "reset_at": "2026-05-04T00:00:00+02:00",
+        }
+
+        with patch.object(server, "_sync_user_subscription_from_live_stripe", return_value=subscription), \
+             patch.object(server, "_resolve_user_entitlement", return_value=(entitlement, subscription)), \
+             patch.object(server, "get_today_cost_eur_fast", return_value=0.0):
+            payload, meta = server._build_billing_status_response_payload(user_id=77)
+
+        self.assertEqual(payload["effective_mode"], "pro")
+        self.assertEqual(payload["status"], "active")
+        self.assertFalse(payload["upgrade"]["available"])
+        self.assertTrue(payload["manage"]["available"])
+        self.assertEqual(meta["effective_mode"], "pro")
+
     def test_webapp_start_refreshes_subscription_before_workflow_limit_check(self):
         client = server.app.test_client()
         workflow_mock = AsyncMock(return_value={

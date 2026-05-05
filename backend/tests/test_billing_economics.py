@@ -279,6 +279,23 @@ class BillingEconomicsTests(unittest.TestCase):
         self.assertEqual(result["limit"], 1)
         self.assertEqual(result["used"], 1)
 
+    def test_enforce_feature_limit_allows_pro_translation_set_rerequest(self):
+        with patch("backend.database.resolve_entitlement", return_value={
+            "plan_code": "pro",
+            "effective_mode": "pro",
+            "reset_at": "2026-03-23T00:00:00+01:00",
+        }):
+            with patch("backend.database.get_plan_limit", return_value=None):
+                with patch("backend.database._get_feature_usage_today", return_value=5.0):
+                    result = enforce_feature_limit(
+                        user_id=77,
+                        feature_code="translation_daily_sets",
+                        requested_units=1.0,
+                        tz="Europe/Vienna",
+                    )
+
+        self.assertIsNone(result)
+
 
 if __name__ == "__main__":
     unittest.main()

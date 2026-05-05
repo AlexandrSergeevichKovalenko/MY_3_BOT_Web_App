@@ -61,7 +61,22 @@
       "Bash(tee /tmp/railway_live.txt)",
       "Bash(git *)",
       "Bash(railway --version)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(railway services *)",
+      "Bash(psql $DB_URL *)",
+      "Bash(psql postgresql://postgres:XyakpIaJMJeDLpxACWzHIgEQaXDumMqa@centerbeam.proxy.rlwy.net:26757/railway -c ' *)",
+      "Bash(railway exec *)",
+      "Bash(grep -E \"3[,.]1[0-9][0-9]|85.{0,5}MB|78.{0,5}MB|1[,.]4[0-9][0-9]|39.{0,5}MB|row|audio_mp3|BYTEA\")",
+      "Bash(pip3 show *)",
+      "Bash(pip show *)",
+      "Bash(node *)",
+      "Bash(python3.11 --version)",
+      "Read(//Users/alexandr/.local/bin/**)",
+      "Read(//Users/alexandr/**)",
+      "Bash(/Users/alexandr/anaconda3/bin/pytest backend/tests/test_billing_economics.py -v)",
+      "Bash(python3.11 *)",
+      "Bash(railway link *)",
+      "Bash(awk -F'│' '{print $3}')"
     ]
   }
 }
