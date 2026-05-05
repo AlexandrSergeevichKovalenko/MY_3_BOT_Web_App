@@ -38780,7 +38780,7 @@ def _start_audio_scheduler() -> None:
         minute=minute,
         max_instances=1,
         coalesce=True,
-        misfire_grace_time=300,
+        misfire_grace_time=21600,
     )
     analytics_enabled = (os.getenv("ANALYTICS_PRIVATE_SCHEDULER_ENABLED") or "1").strip().lower()
     if analytics_enabled in ("1", "true", "yes", "on"):
