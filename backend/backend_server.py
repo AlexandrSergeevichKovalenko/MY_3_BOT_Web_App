@@ -24705,6 +24705,20 @@ def _build_today_card_projection_fallback_from_source_snapshot(
         username=username,
         plan_date=plan_date,
     )
+    if bool(source_payload.get("snapshot_pending")):
+        fresh = _refresh_today_plan_snapshot_now(
+            user_id=int(user_id),
+            username=username,
+            plan_date=plan_date,
+        )
+        if isinstance(fresh, dict):
+            payload, _meta = _build_today_card_payload_from_today_snapshot(
+                user_id=int(user_id),
+                plan_date=plan_date,
+                today_snapshot=fresh,
+                card_version=f"source_fallback:{plan_date.isoformat()}",
+            )
+            return payload, "today_plan_sync_build"
     synthetic_snapshot = {
         "payload": source_payload,
         "source_lang": source_meta.get("source_lang"),
@@ -24734,17 +24748,34 @@ def _build_skills_card_projection_fallback_from_source_snapshot(
         username=username,
         lookback_days=int(lookback_days),
     )
+    existing_recent_session = (
+        dict(existing_projection_payload.get("recent_session") or {})
+        if isinstance(existing_projection_payload, dict) and isinstance(existing_projection_payload.get("recent_session"), dict)
+        else None
+    )
+    if bool(source_payload.get("snapshot_pending")):
+        fresh = _refresh_skill_progress_snapshot_now(
+            user_id=int(user_id),
+            username=username,
+            lookback_days=int(lookback_days),
+        )
+        if isinstance(fresh, dict):
+            payload, _meta = _build_skills_card_payload_from_skill_snapshot(
+                user_id=int(user_id),
+                lookback_days=int(lookback_days),
+                skill_snapshot=fresh,
+                card_version=f"source_fallback:{int(lookback_days)}",
+                recent_session_seed=existing_recent_session,
+                projection_status="ready",
+                pending_finish_session_id=None,
+            )
+            return payload, "skill_progress_sync_build"
     synthetic_snapshot = {
         "payload": source_payload,
         "source_lang": source_meta.get("source_lang"),
         "target_lang": source_meta.get("target_lang"),
         "refreshed_at": source_meta.get("_snapshot_refreshed_at") or datetime.now(timezone.utc).isoformat(),
     }
-    existing_recent_session = (
-        dict(existing_projection_payload.get("recent_session") or {})
-        if isinstance(existing_projection_payload, dict) and isinstance(existing_projection_payload.get("recent_session"), dict)
-        else None
-    )
     projection_status = "refreshing" if bool(source_payload.get("snapshot_pending")) else "ready"
     payload, _meta = _build_skills_card_payload_from_skill_snapshot(
         user_id=int(user_id),
