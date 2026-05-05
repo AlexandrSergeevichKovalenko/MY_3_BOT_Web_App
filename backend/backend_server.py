@@ -24122,6 +24122,7 @@ def _build_skills_card_seed_payload(
     existing = dict(existing_projection_payload or {})
     existing_summary = existing.get("aggregate_summary") if isinstance(existing.get("aggregate_summary"), dict) else {}
     existing_top_weak = existing.get("top_weak") if isinstance(existing.get("top_weak"), list) else []
+    existing_groups = existing.get("groups") if isinstance(existing.get("groups"), list) else []
     payload = {
         "user_id": int(user_id),
         "projection_status": str(projection_status or "refreshing").strip().lower() or "refreshing",
@@ -24152,6 +24153,7 @@ def _build_skills_card_seed_payload(
             for item in existing_top_weak
             if isinstance(item, dict)
         ],
+        "groups": [dict(g or {}) for g in existing_groups if isinstance(g, dict)],
     }
     meta = {
         "projection_status": payload.get("projection_status"),
@@ -27870,7 +27872,12 @@ def get_skill_progress():
         user_id=int(user_id),
         lookback_days=int(lookback_days),
     )
-    if not isinstance(payload, dict) or str(payload.get("projection_status") or "").strip().lower() != "ready":
+    _projection_status = str(payload.get("projection_status") or "").strip().lower() if isinstance(payload, dict) else ""
+    _has_groups = bool(list(payload.get("groups") or [])) if isinstance(payload, dict) else False
+    _groups_count = int(((payload.get("aggregate_summary") or {}) if isinstance(payload, dict) else {}).get("groups_count") or 0)
+    _skills_with_data = int(((payload.get("aggregate_summary") or {}) if isinstance(payload, dict) else {}).get("skills_with_data") or 0)
+    _groups_missing = not _has_groups and (_groups_count > 0 or _skills_with_data > 0)
+    if not isinstance(payload, dict) or _projection_status != "ready" or _groups_missing:
         payload, projection_source = _build_skills_card_projection_fallback_from_source_snapshot(
             user_id=int(user_id),
             username=username,
