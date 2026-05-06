@@ -19082,7 +19082,11 @@ function AppInner() {
       if (!touch) return;
       const dx = touch.clientX - Number(gesture.startX || 0);
       const dy = touch.clientY - Number(gesture.startY || 0);
-      if (Math.abs(dx) < 10 || Math.abs(dx) <= Math.abs(dy)) return;
+      // Before the first word is reached require a primarily-horizontal drag to
+      // distinguish word-selection intent from a plain vertical page scroll.
+      // Once the selection is in progress (gesture.moved) allow any direction
+      // so the user can drag down to words on the next wrapped line.
+      if (!gesture.moved && (Math.abs(dx) < 10 || Math.abs(dx) <= Math.abs(dy))) return;
       const wordEl = getWordElementByPoint(touch.clientX, touch.clientY);
       if (!wordEl) return;
       const sid = String(wordEl.getAttribute('data-sid') || '').trim();
@@ -19522,16 +19526,14 @@ function AppInner() {
       </span>
     );
     const renderLabeledFeedbackLine = (key, label, value = '') => (
-      <div
-        key={key}
-        className="webapp-feedback-line"
-        onMouseUp={handleSelection}
-        onTouchEnd={handleSelection}
-      >
+      <div key={key} className="webapp-feedback-line">
         <span className="webapp-feedback-label">{label}</span>
         {String(value || '').trim() ? (
           <span className="webapp-feedback-value">
-            {renderClickableText(String(value || '').trim(), clickableOptions)}
+            <StructuredSelectableText
+              text={String(value || '').trim()}
+              keyPrefix={`${key}-value`}
+            />
           </span>
         ) : null}
       </div>
@@ -19589,11 +19591,12 @@ function AppInner() {
       }
 
       return (
-        <div
-          key={`fb-${index}`}
-          className="webapp-feedback-line"
-          dangerouslySetInnerHTML={{ __html: renderRichText(line) }}
-        />
+        <div key={`fb-${index}`} className="webapp-feedback-line">
+          <StructuredSelectableText
+            text={stripMarkdownEmphasis(line)}
+            keyPrefix={`fb-${index}`}
+          />
+        </div>
       );
     });
   };
