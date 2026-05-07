@@ -27995,7 +27995,7 @@ function AppInner() {
                             const supplementalMeaningRows = getSavedEntrySupplementalMeaningRows(srsCard, targetText, 2);
                             const srsReplayTtsKey = `srs-replay-${srsCard?.id || srsCard?.entry_id || 'current'}`;
                             const srsReplayTtsLoading = isTtsPending(srsReplayTtsKey);
-                            const srsReplayLang = getTtsLocaleForLang(detectTtsLangFromText(targetText));
+                            const srsReplayTtsTarget = resolveDictionaryTargetTts(srsCard, direction);
                             const srsFeelEntryId = resolveFlashcardFeelEntryId(srsCard);
                             const srsFeelQueued = srsFeelEntryId ? !!flashcardFeelQueuedMap[srsFeelEntryId] : false;
                             const srsFeelStatus = srsFeelEntryId ? String(flashcardFeelStatusMap[srsFeelEntryId] || '').trim() : '';
@@ -28047,7 +28047,7 @@ function AppInner() {
                                         type="button"
                                         className={`flashcard-audio-replay ${srsReplayTtsLoading ? 'is-loading' : ''}`}
                                         onClick={() => {
-                                          void playTtsWithUi(srsReplayTtsKey, targetText, srsReplayLang);
+                                          void playTtsWithUi(srsReplayTtsKey, srsReplayTtsTarget.text || sourceText, srsReplayTtsTarget.locale || getLearningTtsLocale());
                                         }}
                                         aria-label={tr('Повторить аудио', 'Audio wiederholen')}
                                         title={tr('Повторить аудио', 'Audio wiederholen')}
