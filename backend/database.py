@@ -13648,8 +13648,6 @@ def replace_manual_training_selection(
                 SELECT %s, %s, %s, q.id, NOW()
                 FROM bt_3_webapp_dictionary_queries q
                 WHERE q.user_id = %s
-                  AND q.source_lang = %s
-                  AND q.target_lang = %s
                   AND q.id = ANY(%s::bigint[])
                   AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
                 RETURNING card_id;
@@ -13659,8 +13657,6 @@ def replace_manual_training_selection(
                     safe_source_lang,
                     safe_target_lang,
                     int(user_id),
-                    safe_source_lang,
-                    safe_target_lang,
                     normalized_ids,
                 ),
             )

@@ -27545,8 +27545,8 @@ function AppInner() {
                     {!flashcardsOnly && !flashcardActiveMode && (
                       <div className="flashcard-mode-menu">
                         <div className="flashcard-mode-title-wrap">
-                          <h3>{tr('Choose Training Mode', 'Choose Training Mode')}</h3>
-                          <p>{tr('Select how you want to train', 'Select how you want to train')}</p>
+                          <h3>{tr('Режим тренировки', 'Trainingsmodus')}</h3>
+                          <p>{tr('Выбери способ тренировки', 'Wähle deinen Trainingsmodus')}</p>
                         </div>
                         <div className="flashcard-queue-source-card">
                           <div className="setup-label">{tr('Источник слов', 'Wortquelle')}</div>
@@ -27598,10 +27598,10 @@ function AppInner() {
                         </div>
                         <div className="flashcard-mode-list">
                           {[
-                            { mode: 'fsrs', title: 'Space Repetition', subtitle: 'Smart spaced repetition' },
-                            { mode: 'quiz', title: 'Quiz', subtitle: 'Quiz - test +4 options' },
-                            { mode: 'blocks', title: 'Blocks', subtitle: 'Blocks - assemble the word' },
-                            { mode: 'sentence', title: 'Sentence', subtitle: 'Sentence - supplemental context practice' },
+                            { mode: 'fsrs', title: tr('Карточки SRS', 'Karteikarten SRS'), subtitle: tr('Интервальное повторение', 'Intelligentes Spaced Repetition') },
+                            { mode: 'quiz', title: tr('Квиз', 'Quiz'), subtitle: tr('Тест с 4 вариантами ответа', '4 Antwortmöglichkeiten') },
+                            { mode: 'blocks', title: tr('Блоки', 'Blöcke'), subtitle: tr('Собери слово из блоков', 'Wort aus Blöcken zusammensetzen') },
+                            { mode: 'sentence', title: tr('Предложения', 'Sätze'), subtitle: tr('Практика в контексте', 'Übung im Kontext') },
                           ].map((entry) => {
                             const requiresManualSelection = flashcardQueueSource === 'manual'
                               && entry.mode !== 'sentence'

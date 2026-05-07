@@ -19870,6 +19870,46 @@ body {
   --t-shadow-button: 0 8px 16px rgba(166, 121, 67, 0.2);
 }
 
+/* Flashcard mode-menu light theme: source card + pills adapt to beige */
+.webapp-page.is-theme-light .webapp-flashcards .flashcard-queue-source-card {
+  background: var(--t-bg-card-alt);
+  border-color: var(--t-border);
+}
+.webapp-page.is-theme-light .webapp-flashcards .flashcard-queue-source-meta {
+  color: var(--t-text-secondary);
+}
+.webapp-page.is-theme-light .webapp-flashcards .flashcard-queue-source-note {
+  color: var(--t-text-muted);
+}
+.webapp-page.is-theme-light .webapp-flashcards .flashcard-queue-source-link {
+  border-color: rgba(167, 125, 75, 0.45);
+  background: rgba(207, 157, 99, 0.14);
+  color: var(--t-text-secondary);
+}
+.webapp-page.is-theme-light .webapp-flashcards .option-pill {
+  background: var(--t-bg-hover);
+  border-color: var(--t-border);
+  color: var(--t-text-secondary);
+}
+.webapp-page.is-theme-light .webapp-flashcards .option-pill.is-active {
+  background: linear-gradient(135deg, #cf9d63, #e8845a);
+  color: #fff;
+  border-color: transparent;
+  box-shadow: 0 8px 18px rgba(207, 157, 99, 0.38);
+}
+.webapp-page.is-theme-light .webapp-flashcards .setup-label {
+  color: var(--t-text-muted);
+  letter-spacing: 0.06em;
+}
+.webapp-page.is-theme-light .webapp-flashcards .flashcard-mode-list {
+  border-color: var(--t-border);
+  background: var(--t-bg-card-alt);
+  box-shadow: none;
+}
+.webapp-page.is-theme-light .webapp-flashcards .flashcard-mode-item {
+  border-bottom-color: var(--t-border);
+}
+
 .webapp-page.is-theme-light .webapp-video.youtube-player-first {
   --yt-bg-app: #efe4d1;
   --yt-bg-panel: #f9f1e4;
