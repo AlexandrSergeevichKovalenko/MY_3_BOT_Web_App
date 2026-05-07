@@ -25458,6 +25458,18 @@ function AppInner() {
                             {!youtubeTaskDone && renderTodaySectionTaskHud('youtube', { inline: true })}
                             <button
                               type="button"
+                              className={`youtube-dock-icon-btn youtube-head-dict-btn ${youtubeDictOpen ? 'is-active' : ''}`}
+                              onClick={() => setYoutubeDictOpen((prev) => !prev)}
+                              aria-label={tr('Словарь', 'Wörterbuch')}
+                              title={tr('Словарь', 'Wörterbuch')}
+                            >
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="17" height="17" aria-hidden="true">
+                                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+                                <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+                              </svg>
+                            </button>
+                            <button
+                              type="button"
                               className="youtube-dock-icon-btn youtube-head-settings-btn"
                               onClick={() => setYoutubeSettingsOpen(true)}
                               aria-label={tr('Настройки', 'Settings')}
@@ -25879,24 +25891,7 @@ function AppInner() {
                       </div>
                     )}
 
-                    {/* Floating dictionary widget */}
-                    {!youtubeDictOpen && (
-                      <div className="yt-dict-fab">
-                        <button
-                          type="button"
-                          className="yt-dict-pill-btn"
-                          onClick={() => setYoutubeDictOpen(true)}
-                          aria-label={tr('Словарь', 'Wörterbuch')}
-                          title={tr('Открыть словарь', 'Wörterbuch öffnen')}
-                        >
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
-                            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
-                          </svg>
-                        </button>
-                      </div>
-                    )}
-
+                    {/* Dictionary widget (trigger in title-actions row) */}
                     {youtubeDictOpen && (
                       <div
                         className="yt-dict-widget"

@@ -14378,45 +14378,14 @@ body {
 }
 
 /* YouTube — floating dictionary widget */
-.yt-dict-fab {
-  position: sticky;
-  bottom: 0;
-  display: flex;
-  justify-content: flex-end;
-  pointer-events: none;
-  padding: 0 4px 4px 0;
-  margin-top: -44px;
-  z-index: 20;
+.youtube-head-dict-btn {
+  color: var(--yt-text-muted);
+  transition: color 0.15s ease, background 0.15s ease;
 }
-
-.yt-dict-pill-btn {
-  pointer-events: all;
-  width: 44px;
-  height: 44px;
-  border-radius: 14px;
-  border: 1px solid rgba(99, 102, 241, 0.4);
-  background: linear-gradient(135deg, rgba(79, 70, 229, 0.88), rgba(99, 102, 241, 0.92));
-  box-shadow: 0 8px 24px rgba(99, 102, 241, 0.35), 0 2px 8px rgba(0, 0, 0, 0.3);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
-  cursor: pointer;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
-}
-
-.yt-dict-pill-btn:hover {
-  transform: scale(1.06);
-  box-shadow: 0 10px 28px rgba(99, 102, 241, 0.45);
-}
-
-.yt-dict-pill-btn:active {
-  transform: scale(0.96);
-}
-
-.yt-dict-pill-btn svg {
-  width: 20px;
-  height: 20px;
+.youtube-head-dict-btn.is-active {
+  color: #818cf8;
+  background: rgba(99, 102, 241, 0.15);
+  border-color: rgba(99, 102, 241, 0.35);
 }
 
 .yt-dict-widget {
@@ -14659,10 +14628,10 @@ body {
 }
 
 /* Light-theme overrides for dict widget */
-.webapp-page.is-theme-light .yt-dict-pill-btn {
-  background: linear-gradient(135deg, rgba(166, 121, 67, 0.9), rgba(207, 157, 99, 0.92));
-  border-color: rgba(166, 121, 67, 0.5);
-  box-shadow: 0 8px 20px rgba(166, 121, 67, 0.3), 0 2px 6px rgba(0, 0, 0, 0.12);
+.webapp-page.is-theme-light .youtube-head-dict-btn.is-active {
+  color: #6d4c1f;
+  background: rgba(166, 121, 67, 0.14);
+  border-color: rgba(166, 121, 67, 0.35);
 }
 
 .webapp-page.is-theme-light .yt-dict-widget {
