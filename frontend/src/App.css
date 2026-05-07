@@ -6168,8 +6168,34 @@ body {
   transition: border-color 0.15s;
 }
 .vocab-word-item.is-expanded {
-  border-color: rgba(99,102,241,0.3);
-  background: rgba(99,102,241,0.04);
+  border-color: rgba(99,102,241,0.35);
+  background: rgba(99,102,241,0.05);
+}
+.vocab-word-item.is-expanded .vocab-word-row {
+  align-items: flex-start;
+  padding: 13px 12px 11px;
+}
+.vocab-word-item.is-expanded .vocab-word-body {
+  gap: 5px;
+}
+.vocab-word-item.is-expanded .vocab-word-main {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  font-size: 15.5px;
+  line-height: 1.35;
+  color: #f1f5f9;
+}
+.vocab-word-item.is-expanded .vocab-word-sub {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  font-size: 13px;
+  line-height: 1.4;
+  color: #94a3b8;
+}
+.vocab-word-item.is-expanded .vocab-srs-dot {
+  margin-top: 5px;
 }
 .vocab-word-row-shell {
   display: flex;
@@ -6851,7 +6877,13 @@ body {
 }
 .webapp-page.is-theme-light .vocab-word-item.is-expanded {
   background: rgba(79,70,229,0.06);
-  border-color: rgba(79,70,229,0.25);
+  border-color: rgba(79,70,229,0.28);
+}
+.webapp-page.is-theme-light .vocab-word-item.is-expanded .vocab-word-main {
+  color: #1f1a14;
+}
+.webapp-page.is-theme-light .vocab-word-item.is-expanded .vocab-word-sub {
+  color: #5a4a39;
 }
 .webapp-page.is-theme-light .vocab-select-toggle {
   background: rgba(0,0,0,0.03);
