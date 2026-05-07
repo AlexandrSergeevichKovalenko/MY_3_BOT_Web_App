@@ -40820,6 +40820,21 @@ def send_today_evening_reminders_now():
     return jsonify(result)
 
 
+@app.route("/api/admin/send-translation-focus-pool-report", methods=["POST"])
+def send_translation_focus_pool_report_now():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = (os.getenv("AUDIO_DISPATCH_TOKEN") or os.getenv("ADMIN_TOKEN") or "").strip()
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    force = str(payload.get("force") or "1").strip().lower() in {"1", "true", "yes", "on"}
+    result = _send_translation_focus_pool_admin_report(force=force)
+    return jsonify(result)
+
+
 @app.route("/api/admin/send-daily-group-summary", methods=["POST"])
 def send_daily_group_summary_now():
     payload = request.get_json(silent=True) or {}
