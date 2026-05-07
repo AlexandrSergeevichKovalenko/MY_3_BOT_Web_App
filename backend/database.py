@@ -14339,6 +14339,41 @@ def edit_vocabulary_entry(
             }
 
 
+def bulk_assign_vocabulary_folder(
+    user_id: int,
+    entry_ids: list[int],
+    folder_id: int | None,
+) -> int:
+    """Set folder_id on multiple vocabulary entries. Returns number of updated rows."""
+    if not entry_ids:
+        return 0
+    safe_ids = [int(eid) for eid in entry_ids]
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            placeholders = ", ".join(["%s"] * len(safe_ids))
+            if folder_id is None:
+                params: list = [int(user_id)] + safe_ids
+                cursor.execute(
+                    f"""
+                    UPDATE bt_3_webapp_dictionary_queries
+                    SET folder_id = NULL
+                    WHERE user_id = %s AND id IN ({placeholders})
+                    """,
+                    params,
+                )
+            else:
+                params = [int(folder_id), int(user_id)] + safe_ids
+                cursor.execute(
+                    f"""
+                    UPDATE bt_3_webapp_dictionary_queries
+                    SET folder_id = %s
+                    WHERE user_id = %s AND id IN ({placeholders})
+                    """,
+                    params,
+                )
+            return cursor.rowcount
+
+
 def record_telegram_system_message(
     chat_id: int,
     message_id: int,

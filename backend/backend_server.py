@@ -309,6 +309,7 @@ from backend.database import (
     get_vocabulary_folders_with_counts,
     delete_vocabulary_entry,
     edit_vocabulary_entry,
+    bulk_assign_vocabulary_folder,
     rename_dictionary_folder,
     delete_dictionary_folder,
     create_flashcard_feel_feedback_token,
@@ -30396,6 +30397,43 @@ def webapp_vocabulary_edit():
     if updated is None:
         return jsonify({"error": "Запись не найдена"}), 404
     return jsonify({"ok": True, "item": updated})
+
+
+@app.route("/api/webapp/vocabulary/bulk-assign-folder", methods=["POST"])
+def webapp_vocabulary_bulk_assign_folder():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    entry_ids = payload.get("entry_ids")
+    folder_id = payload.get("folder_id")
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not isinstance(entry_ids, list) or not entry_ids:
+        return jsonify({"error": "entry_ids обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_id = (parsed.get("user") or {}).get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует"}), 400
+    target_folder_id = None
+    if folder_id is not None:
+        try:
+            target_folder_id = int(folder_id)
+        except (TypeError, ValueError):
+            return jsonify({"error": "folder_id должен быть числом"}), 400
+    try:
+        safe_ids = [int(eid) for eid in entry_ids[:500]]
+    except (TypeError, ValueError):
+        return jsonify({"error": "entry_ids должны быть числами"}), 400
+    try:
+        updated_count = bulk_assign_vocabulary_folder(
+            user_id=user_id,
+            entry_ids=safe_ids,
+            folder_id=target_folder_id,
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    return jsonify({"ok": True, "updated": updated_count})
 
 
 @app.route("/api/webapp/vocabulary/folders/rename", methods=["POST"])

@@ -6014,6 +6014,194 @@ body {
   opacity: 0.55;
   cursor: default;
 }
+
+/* ── 3-tab selection toolbar ─────────────────────────────────────────── */
+.vocab-sel-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 7px;
+}
+.vocab-sel-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 9px 6px 8px;
+  border-radius: 14px;
+  border: 1.5px solid rgba(148,163,184,0.2);
+  background: rgba(15,23,42,0.38);
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease, color 140ms ease, transform 80ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.vocab-sel-tab:active:not(:disabled) {
+  transform: scale(0.95);
+}
+.vocab-sel-tab-icon {
+  font-size: 16px;
+  line-height: 1;
+  display: block;
+}
+.vocab-sel-tab.is-learn {
+  border-color: rgba(99,102,241,0.5);
+  background: linear-gradient(135deg, rgba(79,70,229,0.32), rgba(99,102,241,0.18));
+  color: #a5b4fc;
+}
+.vocab-sel-tab.is-learn:hover:not(:disabled) {
+  background: linear-gradient(135deg, rgba(79,70,229,0.44), rgba(99,102,241,0.28));
+  color: #c7d2fe;
+}
+.vocab-sel-tab.is-reset {
+  border-color: rgba(148,163,184,0.28);
+  background: rgba(15,23,42,0.28);
+  color: #64748b;
+}
+.vocab-sel-tab.is-reset:hover:not(:disabled) {
+  border-color: rgba(148,163,184,0.42);
+  color: #94a3b8;
+}
+.vocab-sel-tab.is-move {
+  border-color: rgba(52,211,153,0.42);
+  background: linear-gradient(135deg, rgba(16,185,129,0.22), rgba(52,211,153,0.1));
+  color: #6ee7b7;
+}
+.vocab-sel-tab.is-move:hover:not(:disabled) {
+  background: linear-gradient(135deg, rgba(16,185,129,0.32), rgba(52,211,153,0.18));
+  color: #a7f3d0;
+}
+.vocab-sel-tab:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+/* ── Move-to-folder modal ─────────────────────────────────────────────── */
+.vocab-move-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.62);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  z-index: 9999;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.vocab-move-modal {
+  width: 100%;
+  max-width: 480px;
+  max-height: 80vh;
+  overflow-y: auto;
+  background: #0f172a;
+  border: 1px solid rgba(99,102,241,0.28);
+  border-radius: 24px 24px 0 0;
+  padding: 20px 16px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.vocab-move-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.vocab-move-modal-head h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: #f1f5f9;
+}
+.vocab-move-modal-close {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid rgba(148,163,184,0.22);
+  background: rgba(255,255,255,0.06);
+  color: #94a3b8;
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.vocab-move-modal-sub {
+  margin: 0;
+  font-size: 12px;
+  color: #64748b;
+}
+.vocab-move-folder-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.vocab-move-folder-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+  border-radius: 14px;
+  border: 1.5px solid rgba(255,255,255,0.07);
+  background: rgba(255,255,255,0.03);
+  color: #e2e8f0;
+  font-size: 14px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 130ms ease, background 130ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.vocab-move-folder-item:hover:not(:disabled) {
+  border-color: var(--fc, rgba(99,102,241,0.5));
+  background: rgba(99,102,241,0.08);
+}
+.vocab-move-folder-item:active:not(:disabled) {
+  transform: scale(0.97);
+}
+.vocab-move-folder-item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.vocab-move-folder-item.is-none {
+  border-color: rgba(148,163,184,0.18);
+  color: #64748b;
+}
+.vocab-move-folder-icon {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.vocab-move-folder-icon svg {
+  width: 22px;
+  height: 22px;
+}
+.vocab-move-folder-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vocab-move-folder-count {
+  font-size: 11px;
+  color: #475569;
+  flex-shrink: 0;
+}
+.vocab-move-modal-loading {
+  margin: 0;
+  font-size: 13px;
+  color: #6ee7b7;
+  text-align: center;
+}
 .vocab-selection-error {
   margin: 0 16px 12px;
 }
@@ -6835,6 +7023,51 @@ body {
 }
 .webapp-page.is-theme-light .vocab-selection-btn.is-primary {
   color: #ffffff;
+}
+.webapp-page.is-theme-light .vocab-sel-tab {
+  background: rgba(255,255,255,0.6);
+  border-color: rgba(0,0,0,0.12);
+  color: #7a6552;
+}
+.webapp-page.is-theme-light .vocab-sel-tab.is-learn {
+  border-color: rgba(79,70,229,0.42);
+  background: rgba(224,231,255,0.6);
+  color: #4338ca;
+}
+.webapp-page.is-theme-light .vocab-sel-tab.is-reset {
+  border-color: rgba(0,0,0,0.1);
+  background: rgba(255,255,255,0.5);
+  color: #7a6552;
+}
+.webapp-page.is-theme-light .vocab-sel-tab.is-move {
+  border-color: rgba(16,185,129,0.38);
+  background: rgba(209,250,229,0.5);
+  color: #065f46;
+}
+.webapp-page.is-theme-light .vocab-move-modal {
+  background: #f9f1e4;
+  border-color: rgba(79,70,229,0.2);
+  border-radius: 24px 24px 0 0;
+}
+.webapp-page.is-theme-light .vocab-move-modal-head h3 {
+  color: #1f1a14;
+}
+.webapp-page.is-theme-light .vocab-move-modal-close {
+  background: rgba(0,0,0,0.06);
+  border-color: rgba(0,0,0,0.1);
+  color: #5a4a39;
+}
+.webapp-page.is-theme-light .vocab-move-folder-item {
+  background: rgba(255,255,255,0.7);
+  border-color: rgba(0,0,0,0.1);
+  color: #1f1a14;
+}
+.webapp-page.is-theme-light .vocab-move-folder-item:hover:not(:disabled) {
+  background: rgba(224,231,255,0.5);
+  border-color: rgba(79,70,229,0.35);
+}
+.webapp-page.is-theme-light .vocab-move-folder-count {
+  color: #7a6552;
 }
 .webapp-page.is-theme-light .vocab-folder-chip {
   background: rgba(0,0,0,0.04);

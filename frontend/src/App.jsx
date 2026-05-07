@@ -4377,6 +4377,9 @@ function AppInner() {
   const [manualTrainingSelectionSaving, setManualTrainingSelectionSaving] = useState(false);
   const [manualTrainingSelectionFolderBusyKey, setManualTrainingSelectionFolderBusyKey] = useState('');
   const [manualTrainingSelectionError, setManualTrainingSelectionError] = useState('');
+  const [vocabMoveModalOpen, setVocabMoveModalOpen] = useState(false);
+  const [vocabMoveLoading, setVocabMoveLoading] = useState(false);
+  const [vocabMoveError, setVocabMoveError] = useState('');
   const [vocabEditItem, setVocabEditItem] = useState(null);
   const [vocabEditWord, setVocabEditWord] = useState('');
   const [vocabEditTrans, setVocabEditTrans] = useState('');
@@ -18628,6 +18631,41 @@ function AppInner() {
     void loadManualTrainingSelection();
   }, [initData, loadManualTrainingSelection]);
 
+  const moveWordsToFolder = useCallback(async (folderId) => {
+    if (!initData) { setVocabMoveError(initDataMissingMsg); return; }
+    if (manualTrainingSelectionIds.length === 0) return;
+    setVocabMoveLoading(true);
+    setVocabMoveError('');
+    try {
+      const response = await fetchWithTimeout('/api/webapp/vocabulary/bulk-assign-folder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          entry_ids: manualTrainingSelectionIds,
+          folder_id: folderId,
+        }),
+      }, 15000);
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Не удалось переместить слова.', 'Wörter konnten nicht verschoben werden.'));
+      }
+      setVocabMoveModalOpen(false);
+      // Optimistically update folder_id in vocabItems
+      setVocabItems((prev) => prev.map((it) =>
+        manualTrainingSelectionIds.includes(Number(it.id))
+          ? { ...it, folder_id: folderId ?? null }
+          : it
+      ));
+      // Reload folders meta to refresh counts
+      void loadVocabLibrary({ reset: true });
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(error, 'Не удалось переместить слова.', 'Wörter konnten nicht verschoben werden.');
+      setVocabMoveError(friendly);
+    } finally {
+      setVocabMoveLoading(false);
+    }
+  }, [fetchWithTimeout, initData, initDataMissingMsg, manualTrainingSelectionIds, normalizeNetworkErrorMessage, readApiError, loadVocabLibrary]);
+
   const manualTrainingSelectionCount = manualTrainingSelectionIds.length;
 
   const toggleManualTrainingSelectionCard = useCallback((cardId) => {
@@ -25862,27 +25900,94 @@ function AppInner() {
                                 </span>
                               )}
                             </div>
-                            <div className="vocab-selection-actions">
+                            <div className="vocab-sel-tabs">
                               <button
                                 type="button"
-                                className="vocab-selection-btn is-primary"
+                                className="vocab-sel-tab is-learn"
                                 onClick={() => { void openTrainingForManualSelection(); }}
                                 disabled={manualTrainingSelectionSaving || manualTrainingSelectionCount <= 0}
                               >
-                                {tr('Учить', 'Lernen')}
+                                <span className="vocab-sel-tab-icon">▶</span>
+                                <span>{tr('Учить', 'Lernen')}</span>
                               </button>
                               <button
                                 type="button"
-                                className="vocab-selection-btn"
+                                className="vocab-sel-tab is-reset"
                                 onClick={() => { void clearManualTrainingSelectionRemote(); }}
                                 disabled={manualTrainingSelectionSaving || manualTrainingSelectionCount <= 0}
                               >
-                                {tr('Сбросить выбор', 'Auswahl zurücksetzen')}
+                                <span className="vocab-sel-tab-icon">↺</span>
+                                <span>{tr('Сбросить', 'Zurücksetzen')}</span>
+                              </button>
+                              <button
+                                type="button"
+                                className="vocab-sel-tab is-move"
+                                onClick={() => { setVocabMoveError(''); setVocabMoveModalOpen(true); }}
+                                disabled={manualTrainingSelectionSaving || manualTrainingSelectionCount <= 0}
+                              >
+                                <span className="vocab-sel-tab-icon">→</span>
+                                <span>{tr('Переместить', 'Verschieben')}</span>
                               </button>
                             </div>
                           </div>
                           {manualTrainingSelectionError && (
                             <div className="webapp-error vocab-selection-error">{manualTrainingSelectionError}</div>
+                          )}
+                          {vocabMoveModalOpen && (
+                            <div
+                              className="vocab-move-overlay"
+                              role="dialog"
+                              aria-modal="true"
+                              onClick={() => setVocabMoveModalOpen(false)}
+                            >
+                              <div className="vocab-move-modal" onClick={(e) => e.stopPropagation()}>
+                                <div className="vocab-move-modal-head">
+                                  <h3>{tr('Переместить в папку', 'In Ordner verschieben')}</h3>
+                                  <button
+                                    type="button"
+                                    className="vocab-move-modal-close"
+                                    onClick={() => setVocabMoveModalOpen(false)}
+                                    aria-label={tr('Закрыть', 'Schließen')}
+                                  >✕</button>
+                                </div>
+                                <p className="vocab-move-modal-sub">
+                                  {tr(`Выбрано ${manualTrainingSelectionCount} слов`, `${manualTrainingSelectionCount} Wörter ausgewählt`)}
+                                </p>
+                                <div className="vocab-move-folder-list">
+                                  <button
+                                    type="button"
+                                    className="vocab-move-folder-item is-none"
+                                    onClick={() => { void moveWordsToFolder(null); }}
+                                    disabled={vocabMoveLoading}
+                                  >
+                                    <span className="vocab-move-folder-icon">🗂</span>
+                                    <span>{tr('Без папки', 'Ohne Ordner')}</span>
+                                  </button>
+                                  {(vocabFoldersMeta?.folders || []).map((f) => (
+                                    <button
+                                      key={f.id}
+                                      type="button"
+                                      className="vocab-move-folder-item"
+                                      style={{ '--fc': f.color || '#5ddcff' }}
+                                      onClick={() => { void moveWordsToFolder(f.id); }}
+                                      disabled={vocabMoveLoading}
+                                    >
+                                      <span className="vocab-move-folder-icon">
+                                        {renderFolderIcon(f.icon, f.color || '#5ddcff')}
+                                      </span>
+                                      <span className="vocab-move-folder-name">{f.name}</span>
+                                      <span className="vocab-move-folder-count">{f.word_count ?? ''}</span>
+                                    </button>
+                                  ))}
+                                </div>
+                                {vocabMoveLoading && (
+                                  <p className="vocab-move-modal-loading">{tr('Перемещаем...', 'Wird verschoben...')}</p>
+                                )}
+                                {vocabMoveError && (
+                                  <div className="webapp-error">{vocabMoveError}</div>
+                                )}
+                              </div>
+                            </div>
                           )}
 
                           {/* Folder grid */}
