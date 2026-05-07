@@ -11516,8 +11516,8 @@ function AppInner() {
     if (normalizedMode !== 'sentence' && flashcardQueueSource === 'manual') {
       if (manualTrainingSelectionCount <= 0) {
         setFlashcardsError(tr(
-          'Сначала выберите слова для своей очереди в словаре.',
-          'Bitte wähle zuerst Wörter für deine eigene Auswahl im Wörterbuch aus.'
+          'Сначала выберите слова для текущей тренировки в словаре.',
+          'Bitte wähle zuerst Wörter für das aktuelle Training im Wörterbuch aus.'
         ));
         setFlashcardsOnly(false);
         setFlashcardActiveMode(null);
@@ -18089,8 +18089,8 @@ function AppInner() {
     if (normalizedReason === 'manual_selection_empty') {
       return {
         kind: normalizedReason,
-        badge: tr('Моя выборка', 'Meine Auswahl'),
-        title: tr('Вы ещё не выбрали слова для своей очереди', 'Du hast noch keine Wörter für deine eigene Auswahl markiert'),
+        badge: tr('Текущая выборка', 'Aktuelle Auswahl'),
+        title: tr('Вы ещё не выбрали слова для текущей тренировки', 'Du hast noch keine Wörter für die aktuelle Trainingsauswahl markiert'),
         body: tr(
           'Откройте словарь, отметьте слова чекбоксами и нажмите «Учить». Только после этого ручная очередь начнёт работать.',
           'Öffne das Wörterbuch, markiere Wörter per Checkbox und tippe auf „Lernen“. Erst danach startet die manuelle Warteschlange.'
@@ -18112,17 +18112,17 @@ function AppInner() {
       return {
         kind: normalizedReason,
         badge: queueSource === 'manual'
-          ? tr('Моя выборка', 'Meine Auswahl')
+          ? tr('Текущая выборка', 'Aktuelle Auswahl')
           : (normalizedMode === 'blocks' ? 'Blocks' : normalizedMode === 'quiz' ? 'Quiz' : 'Training'),
         title: queueSource === 'manual'
-          ? tr('В вашей выборке сейчас нет доступных карточек', 'In deiner Auswahl gibt es aktuell keine verfügbaren Karten')
+          ? tr('В текущей выборке сейчас нет доступных карточек', 'In deiner aktuellen Auswahl gibt es aktuell keine verfügbaren Karten')
           : tr('На сегодня слова для тренировки уже закончились', 'Fuer heute sind die Trainingswoerter schon erledigt'),
         body: tr(
           queueSource === 'manual'
-            ? 'Выбранные слова уже повторены или ещё не дошли по интервалу до следующего показа. Можно вернуться позже или изменить выборку.'
+            ? 'Выбранные слова уже повторены или ещё не дошли по интервалу до следующего показа. Можно вернуться позже или собрать другую текущую выборку.'
             : 'Вы уже прошли доступные карточки из общей очереди через Space Repetition или другой режим. Возвращайтесь позже или добавьте новые слова в словарь.',
           queueSource === 'manual'
-            ? 'Die ausgewählten Wörter wurden bereits wiederholt oder sind noch nicht wieder fällig. Komm später wieder oder ändere die Auswahl.'
+            ? 'Die ausgewählten Wörter wurden bereits wiederholt oder sind noch nicht wieder fällig. Komm später wieder oder stelle eine andere aktuelle Auswahl zusammen.'
             : 'Du hast die verfuegbaren Karten aus der gemeinsamen Warteschlange bereits in Space Repetition oder einem anderen Modus durchgearbeitet. Komm spaeter wieder oder fuege neue Woerter zum Woerterbuch hinzu.'
         ),
       };
@@ -18190,15 +18190,15 @@ function AppInner() {
         body: JSON.stringify({ initData }),
       }, 12000);
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Не удалось загрузить мою выборку.', 'Meine Auswahl konnte nicht geladen werden.'));
+        throw new Error(await readApiError(response, 'Не удалось загрузить текущую выборку.', 'Die aktuelle Auswahl konnte nicht geladen werden.'));
       }
       const data = await response.json();
       setManualTrainingSelectionIds(normalizePositiveIdList(data?.card_ids || []));
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
         error,
-        'Не удалось загрузить мою выборку.',
-        'Meine Auswahl konnte nicht geladen werden.'
+        'Не удалось загрузить текущую выборку.',
+        'Die aktuelle Auswahl konnte nicht geladen werden.'
       );
       setManualTrainingSelectionError(friendly);
     } finally {
@@ -18229,7 +18229,7 @@ function AppInner() {
         }),
       }, 15000);
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Не удалось сохранить мою выборку.', 'Meine Auswahl konnte nicht gespeichert werden.'));
+        throw new Error(await readApiError(response, 'Не удалось подготовить текущую выборку.', 'Die aktuelle Auswahl konnte nicht vorbereitet werden.'));
       }
       const data = await response.json();
       const savedIds = normalizePositiveIdList(data?.card_ids || normalizedCardIds);
@@ -18238,8 +18238,8 @@ function AppInner() {
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
         error,
-        'Не удалось сохранить мою выборку.',
-        'Meine Auswahl konnte nicht gespeichert werden.'
+        'Не удалось подготовить текущую выборку.',
+        'Die aktuelle Auswahl konnte nicht vorbereitet werden.'
       );
       if (!silent) {
         setManualTrainingSelectionError(friendly);
@@ -18268,15 +18268,15 @@ function AppInner() {
         body: JSON.stringify({ initData }),
       }, 12000);
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Не удалось очистить мою выборку.', 'Meine Auswahl konnte nicht geleert werden.'));
+        throw new Error(await readApiError(response, 'Не удалось сбросить текущую выборку.', 'Die aktuelle Auswahl konnte nicht zurückgesetzt werden.'));
       }
       setManualTrainingSelectionIds([]);
       return true;
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
         error,
-        'Не удалось очистить мою выборку.',
-        'Meine Auswahl konnte nicht geleert werden.'
+        'Не удалось сбросить текущую выборку.',
+        'Die aktuelle Auswahl konnte nicht zurückgesetzt werden.'
       );
       if (!silent) {
         setManualTrainingSelectionError(friendly);
@@ -18412,8 +18412,8 @@ function AppInner() {
   const persistManualTrainingSelection = useCallback(async () => {
     if (manualTrainingSelectionCount <= 0) {
       const message = tr(
-        'Сначала выберите слова в словаре.',
-        'Bitte wähle zuerst Wörter im Wörterbuch aus.'
+        'Сначала выберите слова для текущей тренировки.',
+        'Bitte wähle zuerst Wörter für das aktuelle Training im Wörterbuch aus.'
       );
       setManualTrainingSelectionError(message);
       return null;
@@ -25489,7 +25489,7 @@ function AppInner() {
                           <div className="vocab-selection-toolbar">
                             <div className="vocab-selection-toolbar-main">
                               <span className="vocab-selection-title">
-                                {tr('Моя выборка', 'Meine Auswahl')}
+                                {tr('Текущая выборка', 'Aktuelle Auswahl')}
                               </span>
                               <span className="vocab-selection-count">
                                 {manualTrainingSelectionCount}
@@ -25501,14 +25501,6 @@ function AppInner() {
                               )}
                             </div>
                             <div className="vocab-selection-actions">
-                              <button
-                                type="button"
-                                className="vocab-selection-btn"
-                                onClick={() => { void persistManualTrainingSelection(); }}
-                                disabled={manualTrainingSelectionSaving || manualTrainingSelectionCount <= 0}
-                              >
-                                {manualTrainingSelectionSaving ? tr('Сохранение...', 'Speichern...') : tr('Сохранить', 'Speichern')}
-                              </button>
                               <button
                                 type="button"
                                 className="vocab-selection-btn is-primary"
@@ -25523,7 +25515,7 @@ function AppInner() {
                                 onClick={() => { void clearManualTrainingSelectionRemote(); }}
                                 disabled={manualTrainingSelectionSaving || manualTrainingSelectionCount <= 0}
                               >
-                                {tr('Очистить', 'Leeren')}
+                                {tr('Сбросить выбор', 'Auswahl zurücksetzen')}
                               </button>
                             </div>
                           </div>
@@ -25641,7 +25633,7 @@ function AppInner() {
                                           type="button"
                                           className={`vocab-select-toggle ${isSelectedForManual ? 'is-active' : ''}`}
                                           onClick={() => toggleManualTrainingSelectionCard(item.id)}
-                                          aria-label={tr('Добавить слово в мою выборку', 'Wort zu meiner Auswahl hinzufügen')}
+                                          aria-label={tr('Добавить слово в текущую выборку', 'Wort zur aktuellen Auswahl hinzufügen')}
                                         >
                                           {isSelectedForManual ? '✓' : ''}
                                         </button>
@@ -27107,13 +27099,13 @@ function AppInner() {
                                 setFlashcardsError('');
                               }}
                             >
-                              {tr('Моя выборка', 'Meine Auswahl')}
+                              {tr('Текущая выборка', 'Aktuelle Auswahl')}
                             </button>
                           </div>
                           {flashcardQueueSource === 'manual' && (
                             <div className="flashcard-queue-source-meta">
                               <span>
-                                {tr('Выбрано слов', 'Ausgewählte Wörter')}: <strong>{manualTrainingSelectionCount}</strong>
+                                {tr('Выбрано сейчас', 'Jetzt gewählt')}: <strong>{manualTrainingSelectionCount}</strong>
                               </span>
                               <button
                                 type="button"
@@ -27128,8 +27120,8 @@ function AppInner() {
                           {flashcardQueueSource === 'manual' && manualTrainingSelectionCount <= 0 && !manualTrainingSelectionLoading && (
                             <div className="flashcard-queue-source-note">
                               {tr(
-                                'Сначала отметьте слова в словаре чекбоксами и нажмите «Учить» или «Сохранить выборку».',
-                                'Markiere zuerst Wörter im Wörterbuch per Checkbox und tippe dann auf „Lernen“ oder „Auswahl speichern“.'
+                                'Сначала отметьте слова в словаре чекбоксами и нажмите «Учить». Завтра можно собрать уже другую текущую выборку.',
+                                'Markiere zuerst Wörter im Wörterbuch per Checkbox und tippe dann auf „Lernen“. Morgen kannst du bereits eine andere aktuelle Auswahl zusammenstellen.'
                               )}
                             </div>
                           )}
@@ -27189,12 +27181,12 @@ function AppInner() {
                                 ? (
                                   manualTrainingSelectionCount <= 0
                                     ? tr(
-                                      'Для вашей выборки ещё не отмечены слова. Откройте словарь и выберите их чекбоксами.',
-                                      'Für deine Auswahl sind noch keine Wörter markiert. Öffne das Wörterbuch und wähle sie per Checkbox aus.'
+                                      'Для текущей тренировки ещё не отмечены слова. Откройте словарь и выберите их чекбоксами.',
+                                      'Für das aktuelle Training sind noch keine Wörter markiert. Öffne das Wörterbuch und wähle sie per Checkbox aus.'
                                     )
                                     : tr(
-                                      'По вашей выборке сейчас нет доступных карточек: выбранные слова уже повторены или ещё не дошли до следующего интервала.',
-                                      'In deiner Auswahl gibt es aktuell keine verfügbaren Karten: Die ausgewählten Wörter wurden bereits wiederholt oder sind noch nicht wieder fällig.'
+                                      'По текущей выборке сейчас нет доступных карточек: выбранные слова уже повторены или ещё не дошли до следующего интервала.',
+                                      'In deiner aktuellen Auswahl gibt es aktuell keine verfügbaren Karten: Die ausgewählten Wörter wurden bereits wiederholt oder sind noch nicht wieder fällig.'
                                     )
                                 )
                                 : tr('Сегодня по Space Repetition всё повторено. Можно отдыхать.', 'Heute ist alles in Space Repetition wiederholt. Du kannst entspannen.')}
@@ -27883,13 +27875,13 @@ function AppInner() {
                                       className={`option-pill flashcard-settings-pill ${flashcardQueueSource === 'manual' ? 'is-active' : ''}`}
                                       onClick={() => setFlashcardQueueSource('manual')}
                                     >
-                                      {tr('Моя выборка', 'Meine Auswahl')}
+                                      {tr('Текущая выборка', 'Aktuelle Auswahl')}
                                     </button>
                                   </div>
                                   {flashcardQueueSource === 'manual' && (
                                     <div className="flashcard-settings-manual-note">
                                       <span>
-                                        {tr('Выбрано слов', 'Ausgewählte Wörter')}: <strong>{manualTrainingSelectionCount}</strong>
+                                        {tr('Выбрано сейчас', 'Jetzt gewählt')}: <strong>{manualTrainingSelectionCount}</strong>
                                       </span>
                                       <button
                                         type="button"
@@ -27941,13 +27933,13 @@ function AppInner() {
                                         className={`option-pill flashcard-settings-pill ${flashcardQueueSource === 'manual' ? 'is-active' : ''}`}
                                         onClick={() => setFlashcardQueueSource('manual')}
                                       >
-                                        {tr('Моя выборка', 'Meine Auswahl')}
+                                        {tr('Текущая выборка', 'Aktuelle Auswahl')}
                                       </button>
                                     </div>
                                     {flashcardQueueSource === 'manual' && (
                                       <div className="flashcard-settings-manual-note">
                                         <span>
-                                          {tr('Выбрано слов', 'Ausgewählte Wörter')}: <strong>{manualTrainingSelectionCount}</strong>
+                                          {tr('Выбрано сейчас', 'Jetzt gewählt')}: <strong>{manualTrainingSelectionCount}</strong>
                                         </span>
                                         <button
                                           type="button"
