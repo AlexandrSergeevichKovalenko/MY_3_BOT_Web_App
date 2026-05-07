@@ -5916,6 +5916,27 @@ body {
   max-width: 100%;
 }
 
+.vocab-offline-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 16px 4px;
+  padding: 7px 12px;
+  border-radius: 10px;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+.vocab-offline-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+.vocab-offline-text {
+  font-size: 12px;
+  font-weight: 500;
+  color: #F59E0B;
+  letter-spacing: 0.01em;
+}
+
 .vocab-stats-bar {
   display: flex;
   align-items: center;
@@ -6689,6 +6710,13 @@ body {
 .webapp-page.is-theme-light .vocab-tab-count {
   background: rgba(79,70,229,0.12);
   color: #4F46E5;
+}
+.webapp-page.is-theme-light .vocab-offline-banner {
+  background: rgba(180, 120, 0, 0.08);
+  border-color: rgba(180, 120, 0, 0.25);
+}
+.webapp-page.is-theme-light .vocab-offline-text {
+  color: #9a6400;
 }
 .webapp-page.is-theme-light .vocab-stats-total {
   color: #7a6552;

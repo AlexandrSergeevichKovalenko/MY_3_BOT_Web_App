@@ -7,6 +7,15 @@ import WeeklySummaryModal from './components/WeeklySummaryModal';
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
 import { buildWeeklySummaryHeroFacts, buildWeeklySummaryVisitConfig } from './utils/weeklySummary';
 import { detectAppMode } from './utils/appMode';
+import {
+  isOfflineCacheAvailable,
+  saveVocabBatch,
+  getCachedVocab,
+  getVocabCacheMeta,
+  getCachedFolderStats,
+  deleteCachedVocabEntry,
+  updateCachedVocabEntry,
+} from './offline/vocabCache';
 
 import './styles/topbar-redesign.css';
 
@@ -4393,6 +4402,9 @@ function AppInner() {
   const [folderDeleteMode, setFolderDeleteMode] = useState(null);
   const [folderDeleteLoading, setFolderDeleteLoading] = useState(false);
 
+  // Network state for offline cache
+  const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+
   const [flashcardFolderMode, setFlashcardFolderMode] = useState('all');
   const [flashcardFolderId, setFlashcardFolderId] = useState('');
   const [flashcardAutoAdvance, setFlashcardAutoAdvance] = useState(true);
@@ -7608,6 +7620,53 @@ function AppInner() {
     setVocabLoading(true);
     setVocabError('');
     const currentOffset = reset ? 0 : vocabOffset;
+    const userId = webappUser?.id ? Number(webappUser.id) : null;
+
+    // ── Offline path ─────────────────────────────────────────────────────────
+    if (!isOnline && userId && isOfflineCacheAvailable()) {
+      try {
+        const folderParam = vocabFolderFilter === 'all' ? null
+          : vocabFolderFilter === 'none' ? -1
+          : Number(vocabFolderFilter);
+        const [cached, folderStats] = await Promise.all([
+          getCachedVocab(userId, {
+            folder_id: folderParam,
+            search:    vocabSearch || null,
+            sort:      vocabSort,
+            limit:     VOCAB_PAGE_SIZE,
+            offset:    currentOffset,
+          }),
+          currentOffset === 0 ? getCachedFolderStats(userId) : Promise.resolve(null),
+        ]);
+        const newItems = (cached.items || []).map((item) => ({
+          ...item,
+          response_json: coerceResponseJson(item.response_json),
+        }));
+        if (reset) {
+          setVocabItems(newItems);
+          setVocabOffset(newItems.length);
+        } else {
+          setVocabItems((prev) => [...prev, ...newItems]);
+          setVocabOffset(currentOffset + newItems.length);
+        }
+        setVocabTotal(cached.total);
+        setVocabHasMore((currentOffset + newItems.length) < cached.total);
+        if (folderStats) {
+          setVocabFoldersMeta({
+            folders:         folderStats.folders,
+            no_folder_count: folderStats.no_folder_count,
+            total_count:     folderStats.total_count,
+          });
+        }
+      } catch (_err) {
+        setVocabError(tr('Нет кэша для офлайн-режима', 'Kein Cache verfügbar'));
+      } finally {
+        setVocabLoading(false);
+      }
+      return;
+    }
+
+    // ── Online path ───────────────────────────────────────────────────────────
     try {
       const folderParam = vocabFolderFilter === 'all' ? null
         : vocabFolderFilter === 'none' ? -1
@@ -7646,12 +7705,17 @@ function AppInner() {
       setVocabTotal(Number(data.total || 0));
       setVocabHasMore((currentOffset + newItems.length) < Number(data.total || 0));
       if (data.folders_meta) setVocabFoldersMeta(data.folders_meta);
+
+      // Save raw API items to IndexedDB (no coerced response_json — keep originals)
+      if (userId && isOfflineCacheAvailable() && Array.isArray(data.items) && data.items.length > 0) {
+        saveVocabBatch(userId, data.items, Number(data.total || 0)).catch(() => {});
+      }
     } catch (err) {
       setVocabError(tr('Ошибка загрузки', 'Fehler beim Laden'));
     } finally {
       setVocabLoading(false);
     }
-  }, [initData, vocabFolderFilter, vocabSearch, vocabSort, vocabOffset, fetchWithTimeout, tr]);
+  }, [initData, vocabFolderFilter, vocabSearch, vocabSort, vocabOffset, fetchWithTimeout, tr, isOnline, webappUser?.id]);
 
   const deleteVocabEntry = useCallback(async () => {
     if (!vocabDeleteItem || !initData) return;
@@ -7665,6 +7729,9 @@ function AppInner() {
       if (!response.ok) return;
       setVocabItems((prev) => prev.filter((it) => it.id !== vocabDeleteItem.id));
       setVocabTotal((prev) => Math.max(0, prev - 1));
+      if (isOfflineCacheAvailable()) {
+        deleteCachedVocabEntry(vocabDeleteItem.id).catch(() => {});
+      }
       setVocabDeleteItem(null);
       setVocabExpandedId(null);
     } catch (_err) {
@@ -7730,6 +7797,10 @@ function AppInner() {
               display_translation: updatedPrimarySense || updated.translation_ru || updated.translation_de || it.display_translation,
             }
           : it));
+        const userId = webappUser?.id ? Number(webappUser.id) : null;
+        if (userId && isOfflineCacheAvailable()) {
+          updateCachedVocabEntry(userId, updated).catch(() => {});
+        }
       }
       setVocabEditItem(null);
       setVocabExpandedId(null);
@@ -7748,6 +7819,7 @@ function AppInner() {
     initData,
     fetchWithTimeout,
     tr,
+    webappUser?.id,
   ]);
 
   const renameFolderSubmit = useCallback(async () => {
@@ -13987,6 +14059,17 @@ function AppInner() {
     setVocabOffset(0);
     void loadVocabLibrary({ reset: true });
   }, [vocabTab, vocabFolderFilter, vocabSearch, vocabSort, initData]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const handleOnline  = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online',  handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online',  handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   const fsrsSectionActive = Boolean(
     initData
@@ -25467,8 +25550,23 @@ function AppInner() {
                         }] : []),
                       ];
 
+                      const offlineMeta = !isOnline && vocabFoldersMeta?.last_updated
+                        ? vocabFoldersMeta.last_updated
+                        : null;
+
                       return (
                         <div className="vocab-library">
+                          {!isOnline && (
+                            <div className="vocab-offline-banner">
+                              <span className="vocab-offline-icon">📵</span>
+                              <span className="vocab-offline-text">
+                                {tr('Офлайн', 'Offline')}
+                                {offlineMeta && (
+                                  <> · {new Date(offlineMeta).toLocaleDateString(uiLang === 'de' ? 'de-DE' : 'ru-RU', { day: 'numeric', month: 'short' })}</>
+                                )}
+                              </span>
+                            </div>
+                          )}
                           {/* Stats + Sort */}
                           <div className="vocab-stats-bar">
                             <span className="vocab-stats-total">
