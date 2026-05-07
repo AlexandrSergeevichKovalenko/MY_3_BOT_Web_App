@@ -13722,6 +13722,13 @@ function AppInner() {
     setSkillReportLoadedOnce(true);
   }, [initData, isWebAppMode, readSkillReportSnapshot, skillReport]);
 
+  // In GERMAN_ONLY_MODE auto-save the fixed profile so the gate never appears.
+  useEffect(() => {
+    if (!GERMAN_ONLY_MODE) return;
+    if (!needsLanguageProfileChoice || languageProfileSaving) return;
+    void saveLanguageProfile();
+  }, [needsLanguageProfileChoice, languageProfileSaving]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     if (!isWebAppMode || !initData || !startupPhase3Ready || !languageProfile?.has_profile) {
       return;
