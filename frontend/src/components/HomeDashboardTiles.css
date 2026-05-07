@@ -50,23 +50,23 @@
 }
 
 .hdt-today-card {
-  margin: 14px 15px 0;
-  border-radius: 20px;
+  margin: 10px 15px 0;
+  border-radius: 18px;
   padding: 1.5px;
   background: linear-gradient(135deg, rgba(79,70,229,0.55), rgba(16,185,129,0.3), rgba(59,130,246,0.35));
 }
 
 .hdt-today-inner {
   background: var(--dmps-card-alt, #0B1220);
-  border-radius: 19px;
-  padding: 13px 15px;
+  border-radius: 17px;
+  padding: 10px 13px;
 }
 
 .hdt-today-row1 {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 11px;
+  margin-bottom: 8px;
 }
 
 .hdt-today-label {
@@ -84,18 +84,18 @@
 .hdt-metrics {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 7px;
+  gap: 6px;
 }
 
 .hdt-metric {
   background: rgba(255,255,255,0.04);
   border: 1px solid rgba(255,255,255,0.07);
-  border-radius: 13px;
-  padding: 9px 7px;
+  border-radius: 12px;
+  padding: 7px 5px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
 }
 
 .hdt-metric.hdt-metric-btn {
@@ -110,17 +110,17 @@
 }
 
 .hdt-metric-icon {
-  width: 28px;
-  height: 28px;
-  border-radius: 9px;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 14px;
+  font-size: 12px;
 }
 
 .hdt-metric-val {
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 800;
   color: var(--dmps-text-primary, #F8FAFC);
   line-height: 1;
@@ -128,13 +128,14 @@
 }
 
 .hdt-metric-lbl {
-  font-size: 10px;
+  font-size: 9.5px;
   color: var(--dmps-text-subtle, #64748B);
   text-align: center;
+  line-height: 1.2;
 }
 
 .hdt-section-head {
-  padding: 16px 16px 9px;
+  padding: 11px 16px 7px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -157,7 +158,7 @@
 .hdt-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
+  gap: 8px;
   padding: 0 15px;
 }
 
@@ -286,30 +287,42 @@
   aspect-ratio: 1;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 6px;
 }
 
 .hdt-tile-pair .hdt-tile {
   aspect-ratio: auto;
   flex: 1;
   min-height: 0;
+  gap: 3px;
+  border-radius: 16px;
+}
+
+.hdt-tile-pair .hdt-icon {
+  font-size: 17px;
+}
+
+.hdt-tile-pair .hdt-label {
+  font-size: 9px;
+  line-height: 1.2;
+  padding: 0 4px;
 }
 
 .hdt-quick-row {
-  margin: 13px 15px 0;
+  margin: 10px 15px 0;
   display: flex;
-  gap: 10px;
+  gap: 8px;
 }
 
 .hdt-quick-block {
   flex: 1;
   border: 1px solid rgba(255,255,255,0.09);
-  border-radius: 18px;
-  padding: 14px 10px;
+  border-radius: 16px;
+  padding: 11px 10px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
   transition: opacity 0.12s, transform 0.12s;
@@ -331,19 +344,19 @@
 }
 
 .hdt-quick-block-icon {
-  font-size: 22px;
+  font-size: 20px;
   line-height: 1;
 }
 
 .hdt-quick-block-title {
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 700;
   color: rgba(255,255,255,0.95);
   text-align: center;
 }
 
 .hdt-quick-block-sub-lbl {
-  font-size: 10px;
+  font-size: 9.5px;
   color: rgba(255,255,255,0.6);
   text-align: center;
 }
