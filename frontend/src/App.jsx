@@ -2427,6 +2427,8 @@ const TranslationsSection = React.memo(function TranslationsSection({
   activeLanguagePairLabel,
   historyItems,
 }) {
+  const [focusSheetOpen, setFocusSheetOpen] = React.useState(false);
+
   const progressiveReadyCount = Math.max(
     sentences.length,
     Number(translationProgressiveFill?.readyCount || 0),
@@ -2447,6 +2449,11 @@ const TranslationsSection = React.memo(function TranslationsSection({
     && hasActiveRegularTranslationSession
     && (translationProgressiveFillActive || webappLoading)
   );
+
+  const selectFocusTopic = (value) => {
+    handleTopicChange({ target: { value } });
+    setFocusSheetOpen(false);
+  };
 
   return (
     <PerfProfiler id="section.translations">
@@ -2494,67 +2501,78 @@ const TranslationsSection = React.memo(function TranslationsSection({
           </div>
         )}
         {showTranslationStartConfigurator && (
-          <div className={`webapp-translation-start ${isAndroidTelegramClient ? 'is-android-layout' : ''}`}>
-            <label className="webapp-field">
-              <span>{tr('Грамматический фокус тренировки', 'Grammatikfokus fuer das Training')}</span>
-              <select
-                value={selectedTopic}
-                onChange={handleTopicChange}
+          <div className={`tr-config-card ${isAndroidTelegramClient ? 'is-android-layout' : ''}`}>
+
+            {/* Level chips — only when not story mode */}
+            {!selectedTopicIsStoryTopic && (
+              <div className="tr-field-block">
+                <div className="tr-field-label">{tr('Уровень', 'Niveau')}</div>
+                <div className="tr-level-chips">
+                  {['a1','a2','b1','b2','c1','c2'].map((lvl) => (
+                    <button
+                      key={lvl}
+                      type="button"
+                      className={`tr-level-chip ${selectedLevel === lvl ? 'is-on' : ''}`}
+                      onClick={() => setSelectedLevel(lvl)}
+                      disabled={webappLoading || showPreparingTranslationEmptyState}
+                    >
+                      {lvl.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Grammar focus row — tap to open sheet */}
+            <div className="tr-field-block">
+              <div className="tr-field-label">{tr('Грамматический фокус', 'Grammatikfokus')}</div>
+              <button
+                type="button"
+                className="tr-focus-row"
+                onClick={() => setFocusSheetOpen(true)}
                 disabled={topicsLoading || webappLoading || showPreparingTranslationEmptyState}
               >
-                {topics.map((topic) => (
-                  <option key={topic} value={topic}>
-                    {topic}
-                  </option>
-                ))}
-              </select>
-            </label>
+                <span className="tr-focus-row-value">{selectedTopic || tr('Выберите тему...', 'Thema wählen...')}</span>
+                <svg className="tr-focus-row-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
+              </button>
+            </div>
+
+            {/* Custom topic input — shown when custom topic selected */}
             {!selectedTopicIsStoryTopic && selectedTopicIsCustomTopic && (
-              <label className="webapp-field">
-                <span>{tr('Свой грамматический фокус', 'Eigener Grammatikfokus')}</span>
+              <div className="tr-field-block">
+                <div className="tr-field-label">{tr('Свой фокус', 'Eigener Fokus')}</div>
                 <input
+                  className="tr-custom-input"
                   type="text"
                   value={customTopicInput}
                   onChange={(event) => setCustomTopicInput(event.target.value)}
-                  placeholder={tr('Например: Genitiv, Passiv mit Modalverben, nicht vs kein', 'Zum Beispiel: Genitiv, Passiv mit Modalverben, nicht vs kein')}
+                  placeholder={tr('Например: Genitiv, Passiv mit Modalverben…', 'z.B. Genitiv, Passiv mit Modalverben…')}
                   disabled={webappLoading || showPreparingTranslationEmptyState}
                 />
-              </label>
+              </div>
             )}
-            {!selectedTopicIsStoryTopic && (
-              <label className="webapp-field">
-                <span>{tr('Уровень', 'Niveau')}</span>
-                <select
-                  value={selectedLevel}
-                  onChange={(event) => setSelectedLevel(event.target.value)}
-                  disabled={webappLoading || showPreparingTranslationEmptyState}
-                >
-                  <option value="a1">A1</option>
-                  <option value="a2">A2</option>
-                  <option value="b1">B1</option>
-                  <option value="b2">B2</option>
-                  <option value="c1">C1</option>
-                  <option value="c2">C2</option>
-                </select>
-              </label>
-            )}
+
+            {/* Story-specific options — shown when story topic selected */}
             {selectedTopicIsStoryTopic && (
-              <>
-                <label className="webapp-field">
-                  <span>{tr('История', 'Story')}</span>
-                  <select
-                    value={storyMode}
-                    onChange={(event) => setStoryMode(event.target.value)}
-                    disabled={webappLoading}
-                  >
-                    <option value="new">{tr('Новая', 'Neu')}</option>
-                    <option value="repeat">{tr('Повторить старую', 'Alte wiederholen')}</option>
-                  </select>
-                </label>
+              <div className="tr-story-options">
+                <div className="tr-field-block">
+                  <div className="tr-field-label">{tr('Режим истории', 'Story-Modus')}</div>
+                  <div className="tr-story-chips">
+                    <button type="button" className={`tr-story-chip ${storyMode === 'new' ? 'is-on' : ''}`} onClick={() => setStoryMode('new')} disabled={webappLoading}>
+                      {tr('Новая', 'Neu')}
+                    </button>
+                    <button type="button" className={`tr-story-chip ${storyMode === 'repeat' ? 'is-on' : ''}`} onClick={() => setStoryMode('repeat')} disabled={webappLoading}>
+                      {tr('Повторить', 'Wiederholen')}
+                    </button>
+                  </div>
+                </div>
                 {storyMode === 'repeat' && (
-                  <label className="webapp-field">
-                    <span>{tr('Выберите историю', 'Story auswaehlen')}</span>
+                  <div className="tr-field-block">
+                    <div className="tr-field-label">{tr('Выберите историю', 'Story wählen')}</div>
                     <select
+                      className="tr-story-select"
                       value={selectedStoryId}
                       onChange={(event) => setSelectedStoryId(event.target.value)}
                       disabled={webappLoading || storyHistoryLoading}
@@ -2566,43 +2584,48 @@ const TranslationsSection = React.memo(function TranslationsSection({
                         </option>
                       ))}
                     </select>
-                  </label>
+                  </div>
                 )}
-                <label className="webapp-field">
-                  <span>{tr('Тип истории', 'Story-Typ')}</span>
+                <div className="tr-field-block">
+                  <div className="tr-field-label">{tr('Тип истории', 'Story-Typ')}</div>
                   <select
+                    className="tr-story-select"
                     value={storyType}
                     onChange={(event) => setStoryType(event.target.value)}
                     disabled={webappLoading}
                   >
-                    <option value="знаменитая личность">{tr('Знаменитая личность', 'Beruehmte Persoenlichkeit')}</option>
+                    <option value="знаменитая личность">{tr('Знаменитая личность', 'Berühmte Persönlichkeit')}</option>
                     <option value="историческое событие">{tr('Историческое событие', 'Historisches Ereignis')}</option>
                     <option value="выдающееся открытие">{tr('Выдающееся открытие', 'Bedeutende Entdeckung')}</option>
                     <option value="выдающееся изобретение">{tr('Выдающееся изобретение', 'Bedeutende Erfindung')}</option>
                     <option value="география">{tr('География', 'Geografie')}</option>
                     <option value="космос">{tr('Космос', 'Weltraum')}</option>
-                    <option value="культура">{tr('Культура', 'Kultur')}</option>
-                    <option value="спорт">{tr('Спорт', 'Sport')}</option>
-                    <option value="политика">{tr('Политика', 'Politik')}</option>
+                    <option value="культура">{tr('Kultur', 'Kultur')}</option>
+                    <option value="спорт">{tr('Sport', 'Sport')}</option>
+                    <option value="политика">{tr('Politik', 'Politik')}</option>
                   </select>
-                </label>
-                <label className="webapp-field">
-                  <span>{tr('Сложность', 'Schwierigkeit')}</span>
-                  <select
-                    value={storyDifficulty}
-                    onChange={(event) => setStoryDifficulty(event.target.value)}
-                    disabled={webappLoading}
-                  >
-                    <option value="начальный">{tr('Начальный', 'Anfaenger')}</option>
-                    <option value="средний">{tr('Средний', 'Mittel')}</option>
-                    <option value="продвинутый">{tr('Продвинутый', 'Fortgeschritten')}</option>
-                  </select>
-                </label>
-              </>
+                </div>
+                <div className="tr-field-block">
+                  <div className="tr-field-label">{tr('Сложность', 'Schwierigkeit')}</div>
+                  <div className="tr-story-chips">
+                    {[
+                      { value: 'начальный', label: tr('Начальный', 'Anfänger') },
+                      { value: 'средний',   label: tr('Средний',   'Mittel') },
+                      { value: 'продвинутый', label: tr('Продвинутый', 'Fortgeschritten') },
+                    ].map(({ value, label }) => (
+                      <button key={value} type="button" className={`tr-story-chip ${storyDifficulty === value ? 'is-on' : ''}`} onClick={() => setStoryDifficulty(value)} disabled={webappLoading}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
             )}
+
+            {/* Start CTA */}
             <button
               type="button"
-              className="primary-button translation-start-cta"
+              className={`tr-start-cta ${(webappLoading || showPreparingTranslationEmptyState) ? 'is-loading' : ''}`}
               onClick={selectedTopicIsStoryTopic ? handleStartStory : handleStartTranslation}
               disabled={
                 webappLoading
@@ -2612,9 +2635,35 @@ const TranslationsSection = React.memo(function TranslationsSection({
               }
             >
               {(webappLoading || showPreparingTranslationEmptyState)
-                ? tr('Загружаем...', 'Laden...')
-                : tr('🚀 Начать перевод', '🚀 Uebersetzung starten')}
+                ? <><span className="tr-cta-spinner" />{tr('Загружаем…', 'Laden…')}</>
+                : tr('🚀 Начать перевод', '🚀 Übersetzung starten')}
             </button>
+          </div>
+        )}
+
+        {/* Grammar focus bottom sheet */}
+        {focusSheetOpen && (
+          <div className="tr-focus-sheet-overlay" onClick={() => setFocusSheetOpen(false)}>
+            <div className="tr-focus-sheet" onClick={(e) => e.stopPropagation()}>
+              <div className="tr-focus-sheet-handle" />
+              <div className="tr-focus-sheet-head">
+                <span className="tr-focus-sheet-title">{tr('Грамматический фокус', 'Grammatikfokus')}</span>
+                <button type="button" className="tr-focus-sheet-close" onClick={() => setFocusSheetOpen(false)}>×</button>
+              </div>
+              <div className="tr-focus-sheet-list">
+                {topics.map((topic) => (
+                  <button
+                    key={topic}
+                    type="button"
+                    className={`tr-focus-sheet-item ${selectedTopic === topic ? 'is-on' : ''}`}
+                    onClick={() => selectFocusTopic(topic)}
+                  >
+                    <span className="tr-focus-sheet-item-text">{topic}</span>
+                    {selectedTopic === topic && <span className="tr-focus-sheet-item-check">✓</span>}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
         )}
         {topicsError && <div className="webapp-error">{topicsError}</div>}
@@ -2631,17 +2680,21 @@ const TranslationsSection = React.memo(function TranslationsSection({
                 </p>
               )}
               {sentences.length === 0 ? (
-                <p className="webapp-muted translation-empty-state">
-                  {showPreparingTranslationEmptyState
-                    ? tr(
-                        `Подготавливаем предложения... ${progressiveReadyCount}/${progressiveExpectedTotal}`,
-                        `Saetze werden vorbereitet... ${progressiveReadyCount}/${progressiveExpectedTotal}`
-                      )
-                    : tr(
-                        'Нет активных предложений. Нажмите «🚀 Начать перевод», чтобы получить новые.',
-                        'Keine aktiven Saetze. Druecke «🚀 Uebersetzung starten», um neue zu laden.'
-                      )}
-                </p>
+                <div className="tr-empty-card">
+                  <div className="tr-empty-icon">
+                    {showPreparingTranslationEmptyState ? '⏳' : '📭'}
+                  </div>
+                  <div className="tr-empty-copy">
+                    <strong>
+                      {showPreparingTranslationEmptyState
+                        ? tr(`Подготавливаем предложения… ${progressiveReadyCount}/${progressiveExpectedTotal}`, `Sätze werden vorbereitet… ${progressiveReadyCount}/${progressiveExpectedTotal}`)
+                        : tr('Нет активных предложений', 'Keine aktiven Sätze')}
+                    </strong>
+                    {!showPreparingTranslationEmptyState && (
+                      <span>{tr('Нажмите «🚀 Начать перевод», чтобы загрузить новые.', 'Drücke «🚀 Übersetzung starten», um neue zu laden.')}</span>
+                    )}
+                  </div>
+                </div>
               ) : (
                 sentences.map((item, index) => {
                   const draft = translationDrafts[String(item.id_for_mistake_table)] || '';
@@ -2874,35 +2927,39 @@ const TranslationsSection = React.memo(function TranslationsSection({
           </section>
         )}
 
-        <div className="webapp-actions webapp-actions-footer">
+        <div className="tr-footer-actions">
           {sentences.length === 0 && !webappLoading && !showPreparingTranslationEmptyState && (
-            <div className="webapp-muted">
-              {tr('Если сессия зависла, можно завершить её вручную.', 'Wenn die Session haengt, kann sie manuell beendet werden.')}
+            <div className="tr-footer-hint">
+              {tr('Если сессия зависла, можно завершить её вручную.', 'Wenn die Session hängt, kann sie manuell beendet werden.')}
+            </div>
+          )}
+          {results.length === 0 && !storyResult && !webappLoading && sentences.length > 0 && (
+            <div className="tr-footer-hint">
+              {tr('Сначала проверьте перевод, чтобы завершить.', 'Bitte erst prüfen, dann beenden.')}
             </div>
           )}
           <button
             type="button"
             onClick={handleFinishTranslation}
-            className={`primary-button finish-button ${finishStatus === 'done' ? 'status-done' : ''}`}
+            className={`tr-finish-btn ${finishStatus === 'done' ? 'is-done' : ''}`}
             disabled={webappLoading || ((results.length === 0 && !storyResult) && sentences.length > 0)}
           >
-            {finishStatus === 'done' ? tr('Завершено', 'Abgeschlossen') : tr('Завершить перевод', 'Uebersetzung beenden')}
+            {finishStatus === 'done'
+              ? <><span>✓</span> {tr('Завершено', 'Abgeschlossen')}</>
+              : <><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>{tr('Завершить перевод', 'Übersetzung beenden')}</>}
           </button>
           <button
             type="button"
             onClick={handleLoadDailyHistory}
-            className="secondary-button"
+            className="tr-history-btn"
             disabled={webappLoading || historyLoading}
           >
             {historyLoading
-              ? tr('Загружаем...', 'Laden...')
+              ? tr('Загружаем…', 'Laden…')
               : historyVisible
                 ? tr('Скрыть результаты', 'Ergebnisse ausblenden')
-                : tr('Посмотреть результат за сегодня', 'Ergebnis fuer heute anzeigen')}
+                : tr('Посмотреть результат за сегодня', 'Ergebnis für heute anzeigen')}
           </button>
-          {results.length === 0 && !storyResult && !webappLoading && (
-            <div className="webapp-muted">{tr('Сначала проверьте перевод, чтобы завершить.', 'Bitte erst pruefen, dann beenden.')}</div>
-          )}
         </div>
 
         {historyError && <div className="webapp-error">{historyError}</div>}
@@ -3932,6 +3989,12 @@ function AppInner() {
   const [moviesLanguageFilter, setMoviesLanguageFilter] = useState('all');
   const [showManualTranscript, setShowManualTranscript] = useState(false);
   const [youtubeSettingsOpen, setYoutubeSettingsOpen] = useState(false);
+  const [youtubeDictOpen, setYoutubeDictOpen] = useState(false);
+  const [youtubeDictQuery, setYoutubeDictQuery] = useState('');
+  const [youtubeDictResult, setYoutubeDictResult] = useState(null);
+  const [youtubeDictLoading, setYoutubeDictLoading] = useState(false);
+  const [youtubeDictError, setYoutubeDictError] = useState('');
+  const [youtubeDictSaved, setYoutubeDictSaved] = useState(false);
   const [manualTranscript, setManualTranscript] = useState('');
   const [readerInput, setReaderInput] = useState('');
   const [readerSelectedFile, setReaderSelectedFile] = useState(null);
@@ -4531,6 +4594,8 @@ function AppInner() {
   const youtubeDragSelectionMetaRef = useRef(null);
   const youtubeSuppressWordTapRef = useRef(0);
   const youtubeSuppressSentenceTapRef = useRef(0);
+  const youtubeDictDragRef = useRef({ dragging: false, startX: 0, startY: 0, startLeft: 0, startTop: 0 });
+  const youtubeDictWidgetRef = useRef(null);
   const youtubeTranslateInFlightRef = useRef(false);
   const youtubeTranslateIndexRef = useRef(-1);
   const autoAdvanceTimeoutRef = useRef(null);
@@ -19317,6 +19382,56 @@ function AppInner() {
       .trim();
   };
 
+  const lookupYoutubeDict = async (word) => {
+    const q = (word || '').trim();
+    if (!q) return;
+    setYoutubeDictOpen(true);
+    setYoutubeDictQuery(q);
+    setYoutubeDictLoading(true);
+    setYoutubeDictError('');
+    setYoutubeDictResult(null);
+    setYoutubeDictSaved(false);
+    try {
+      const response = await fetch('/api/webapp/dictionary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, word: q }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Fehler');
+      setYoutubeDictResult(data.item || null);
+    } catch (err) {
+      setYoutubeDictError(String(err.message || 'Fehler'));
+    } finally {
+      setYoutubeDictLoading(false);
+    }
+  };
+
+  const saveYoutubeDictWord = async () => {
+    if (!youtubeDictResult) return;
+    const wordDe = youtubeDictResult.word_de || '';
+    const wordRu = youtubeDictResult.word_ru || '';
+    const translation = youtubeDictResult.translation_ru || youtubeDictResult.translation_de || '';
+    try {
+      const saveResponse = await fetch('/api/webapp/dictionary/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          word_de: wordDe,
+          word_ru: wordRu,
+          translation: translation,
+          source: 'youtube_dict_widget',
+        }),
+      });
+      if (saveResponse.ok) {
+        setYoutubeDictSaved(true);
+      }
+    } catch (_err) {
+      // ignore save errors silently
+    }
+  };
+
   const renderClickableText = (text, options = {}) => {
     const className = options.className || 'clickable-word';
     const compact = Boolean(options.compact);
@@ -19347,6 +19462,10 @@ function AppInner() {
             }
             if (stopPropagation) {
               event.stopPropagation();
+            }
+            if (isYoutubeWordSelection && youtubeDictOpen) {
+              lookupYoutubeDict(cleaned);
+              return;
             }
             handleSelection(event, cleaned, {
               compact,
@@ -19608,7 +19727,11 @@ function AppInner() {
           disabled={!canJumpPrev}
           aria-label={tr('Предыдущее предложение', 'Vorheriger Satz')}
         >
-          <span className="youtube-sentence-jump-icon" aria-hidden="true">←</span>
+          <span className="youtube-sentence-jump-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="19 20 9 12 19 4"/><line x1="5" y1="4" x2="5" y2="20"/>
+            </svg>
+          </span>
         </button>
         <button
           type="button"
@@ -19620,7 +19743,10 @@ function AppInner() {
             : tr('Поставить видео и субтитры на паузу', 'Video und Untertitel pausieren')}
         >
           <span className="youtube-sentence-jump-icon" aria-hidden="true">
-            {youtubeIsPaused ? '▶' : '❚❚'}
+            {youtubeIsPaused
+              ? <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              : <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+            }
           </span>
         </button>
         <button
@@ -19630,7 +19756,11 @@ function AppInner() {
           disabled={!canJumpNext}
           aria-label={tr('Следующее предложение', 'Naechster Satz')}
         >
-          <span className="youtube-sentence-jump-icon" aria-hidden="true">→</span>
+          <span className="youtube-sentence-jump-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="5 4 15 12 5 20"/><line x1="19" y1="4" x2="19" y2="20"/>
+            </svg>
+          </span>
         </button>
       </div>
     );
@@ -25337,6 +25467,7 @@ function AppInner() {
                             </button>
                           </div>
                         </div>
+                        <div className="youtube-player-first-controls-row">
                         {isFocusedSection('youtube') && (
                           <button
                             type="button"
@@ -25345,7 +25476,11 @@ function AppInner() {
                             title={tr('Назад', 'Zurueck')}
                             aria-label={tr('Назад', 'Zurueck')}
                           >
-                            ⏪
+                            <span className="youtube-back-arrow-icon" aria-hidden="true">
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="15 18 9 12 15 6"/>
+                              </svg>
+                            </span>
                           </button>
                         )}
                         <div className="youtube-player-first-head-controls">
@@ -25388,6 +25523,7 @@ function AppInner() {
                               ? tr('Full screen: ON', 'Full screen: ON')
                               : tr('Full screen: OFF', 'Full screen: OFF')}
                           </button>
+                        </div>
                         </div>
                       </div>
                     </div>
@@ -25740,6 +25876,145 @@ function AppInner() {
                             </div>
                           )}
                         </div>
+                      </div>
+                    )}
+
+                    {/* Floating dictionary widget */}
+                    {!youtubeDictOpen && (
+                      <div className="yt-dict-fab">
+                        <button
+                          type="button"
+                          className="yt-dict-pill-btn"
+                          onClick={() => setYoutubeDictOpen(true)}
+                          aria-label={tr('Словарь', 'Wörterbuch')}
+                          title={tr('Открыть словарь', 'Wörterbuch öffnen')}
+                        >
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+                            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+                          </svg>
+                        </button>
+                      </div>
+                    )}
+
+                    {youtubeDictOpen && (
+                      <div
+                        className="yt-dict-widget"
+                        ref={youtubeDictWidgetRef}
+                        onMouseDown={(e) => {
+                          const el = youtubeDictWidgetRef.current;
+                          if (!el) return;
+                          const handle = e.target.closest('.yt-dict-widget-handle');
+                          if (!handle) return;
+                          const rect = el.getBoundingClientRect();
+                          youtubeDictDragRef.current = { dragging: true, startX: e.clientX, startY: e.clientY, startLeft: rect.left, startTop: rect.top };
+                          e.preventDefault();
+                        }}
+                        onTouchStart={(e) => {
+                          const el = youtubeDictWidgetRef.current;
+                          if (!el) return;
+                          const handle = e.target.closest('.yt-dict-widget-handle');
+                          if (!handle) return;
+                          const rect = el.getBoundingClientRect();
+                          const t = e.touches[0];
+                          youtubeDictDragRef.current = { dragging: true, startX: t.clientX, startY: t.clientY, startLeft: rect.left, startTop: rect.top };
+                        }}
+                      >
+                        <div
+                          className="yt-dict-widget-handle"
+                          onMouseMove={(e) => {
+                            const d = youtubeDictDragRef.current;
+                            if (!d.dragging) return;
+                            const el = youtubeDictWidgetRef.current;
+                            if (!el) return;
+                            const dx = e.clientX - d.startX;
+                            const dy = e.clientY - d.startY;
+                            el.style.left = `${d.startLeft + dx}px`;
+                            el.style.top = `${d.startTop + dy}px`;
+                            el.style.bottom = 'auto';
+                            el.style.transform = 'none';
+                          }}
+                          onMouseUp={() => { youtubeDictDragRef.current.dragging = false; }}
+                          onTouchMove={(e) => {
+                            const d = youtubeDictDragRef.current;
+                            if (!d.dragging) return;
+                            const el = youtubeDictWidgetRef.current;
+                            if (!el) return;
+                            const t = e.touches[0];
+                            const dx = t.clientX - d.startX;
+                            const dy = t.clientY - d.startY;
+                            el.style.left = `${d.startLeft + dx}px`;
+                            el.style.top = `${d.startTop + dy}px`;
+                            el.style.bottom = 'auto';
+                            el.style.transform = 'none';
+                          }}
+                          onTouchEnd={() => { youtubeDictDragRef.current.dragging = false; }}
+                        >
+                          <div className="yt-dict-drag-dots">
+                            {[0,1,2,3,4,5].map((i) => <span key={i}/>)}
+                          </div>
+                          <span className="yt-dict-widget-title">{tr('Словарь', 'Wörterbuch')}</span>
+                          <button
+                            type="button"
+                            className="yt-dict-widget-close"
+                            onClick={() => { setYoutubeDictOpen(false); setYoutubeDictResult(null); setYoutubeDictQuery(''); setYoutubeDictError(''); }}
+                            aria-label={tr('Закрыть', 'Schließen')}
+                          >×</button>
+                        </div>
+                        <div className="yt-dict-search-row">
+                          <div className="yt-dict-input-wrap">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                              <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                            </svg>
+                            <input
+                              className="yt-dict-input"
+                              value={youtubeDictQuery}
+                              onChange={(e) => setYoutubeDictQuery(e.target.value)}
+                              onKeyDown={(e) => { if (e.key === 'Enter') lookupYoutubeDict(youtubeDictQuery); }}
+                              placeholder={tr('Слово для поиска…', 'Wort suchen…')}
+                              autoFocus={false}
+                            />
+                          </div>
+                        </div>
+                        {youtubeDictLoading && (
+                          <div className="yt-dict-loading">
+                            <span>⏳</span> {tr('Ищем…', 'Suche…')}
+                          </div>
+                        )}
+                        {!youtubeDictLoading && youtubeDictError && (
+                          <div className="yt-dict-error">{youtubeDictError}</div>
+                        )}
+                        {!youtubeDictLoading && !youtubeDictError && !youtubeDictResult && (
+                          <div className="yt-dict-empty">
+                            {tr('Нажми на слово в субтитрах или введи слово вручную', 'Wort antippen oder manuell eingeben')}
+                          </div>
+                        )}
+                        {!youtubeDictLoading && youtubeDictResult && (
+                          <div className="yt-dict-result">
+                            <div className="yt-dict-word-row">
+                              <span className="yt-dict-word-main">
+                                {youtubeDictResult.article ? `${youtubeDictResult.article} ` : ''}
+                                {youtubeDictResult.word_de || youtubeDictResult.word_ru || youtubeDictQuery}
+                              </span>
+                              {youtubeDictResult.part_of_speech && (
+                                <span className="yt-dict-pos-badge">{youtubeDictResult.part_of_speech}</span>
+                              )}
+                            </div>
+                            <div className="yt-dict-translation">
+                              {youtubeDictResult.translation_ru || youtubeDictResult.translation_de || '—'}
+                            </div>
+                            <div className="yt-dict-actions">
+                              <button
+                                type="button"
+                                className="yt-dict-save-btn"
+                                onClick={saveYoutubeDictWord}
+                                disabled={youtubeDictSaved}
+                              >
+                                {youtubeDictSaved ? `✓ ${tr('Сохранено', 'Gespeichert')}` : `+ ${tr('В словарь', 'Speichern')}`}
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
                     </section>
