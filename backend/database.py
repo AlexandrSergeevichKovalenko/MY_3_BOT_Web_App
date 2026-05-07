@@ -13255,6 +13255,92 @@ def count_available_new_srs_cards(
             return int(row[0] if row else 0)
 
 
+def count_due_cards_reviewed_today(
+    user_id: int,
+    now_utc: datetime | None = None,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+    cursor=None,
+) -> int:
+    """Count distinct due (non-new-introduction) cards reviewed today."""
+    now_utc = now_utc or datetime.now(timezone.utc)
+    day_start = datetime(now_utc.year, now_utc.month, now_utc.day, tzinfo=timezone.utc)
+
+    def _count(cur):
+        language_filter_sql, language_params = _build_language_pair_filter(
+            source_lang, target_lang, table_alias="q",
+        )
+        cur.execute(
+            f"""
+            SELECT COUNT(DISTINCT rl.card_id)
+            FROM bt_3_card_review_log rl
+            JOIN bt_3_card_srs_state s
+              ON s.user_id = rl.user_id AND s.card_id = rl.card_id
+            JOIN bt_3_webapp_dictionary_queries q
+              ON q.id = rl.card_id AND q.user_id = rl.user_id
+            WHERE rl.user_id = %s
+              AND rl.reviewed_at >= %s
+              AND s.created_at < %s
+              AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
+              {language_filter_sql}
+            """,
+            [int(user_id), day_start, day_start, *language_params],
+        )
+        row = cur.fetchone()
+        return int(row[0] if row else 0)
+
+    if cursor is not None:
+        return _count(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own_cursor:
+            return _count(own_cursor)
+
+
+def reschedule_overdue_srs_cards(
+    user_id: int,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+    cards_per_day: int = 30,
+    cursor=None,
+) -> int:
+    """Spread overdue cards evenly across future days at cards_per_day/day. Returns affected count."""
+    safe_cpd = max(1, int(cards_per_day))
+
+    def _reschedule(cur):
+        language_filter_sql, language_params = _build_language_pair_filter(
+            source_lang, target_lang, table_alias="q",
+        )
+        cur.execute(
+            f"""
+            WITH ranked AS (
+                SELECT s.id,
+                       ((ROW_NUMBER() OVER (ORDER BY s.due_at ASC, s.id ASC) - 1) / %s) AS day_offset
+                FROM bt_3_card_srs_state s
+                JOIN bt_3_webapp_dictionary_queries q
+                  ON q.id = s.card_id AND q.user_id = s.user_id
+                WHERE s.user_id = %s
+                  AND s.status <> 'suspended'
+                  AND s.due_at < NOW()
+                  AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
+                  {language_filter_sql}
+            )
+            UPDATE bt_3_card_srs_state upd
+            SET due_at = NOW() + (ranked.day_offset * INTERVAL '1 day')
+            FROM ranked
+            WHERE upd.id = ranked.id
+            """,
+            [safe_cpd, int(user_id), *language_params],
+        )
+        return cur.rowcount
+
+    if cursor is not None:
+        return _reschedule(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own_cursor:
+            result = _reschedule(own_cursor)
+        return result
+
+
 def get_next_due_srs_card(
     user_id: int,
     now_utc: datetime | None = None,

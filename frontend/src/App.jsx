@@ -4018,7 +4018,7 @@ function AppInner() {
   const [flashcardPreviewIndex, setFlashcardPreviewIndex] = useState(0);
   const [srsCard, setSrsCard] = useState(null);
   const [srsState, setSrsState] = useState(null);
-  const [srsQueueInfo, setSrsQueueInfo] = useState({ due_count: 0, new_remaining_today: 0 });
+  const [srsQueueInfo, setSrsQueueInfo] = useState({ due_count: 0, new_remaining_today: 0, due_count_total: 0, due_reviewed_today: 0, due_limit_today: 30 });
   const [srsPreview, setSrsPreview] = useState(null);
   const [srsPrefetchQueue, setSrsPrefetchQueue] = useState([]);
   const [todayPlan, setTodayPlan] = useState(null);
@@ -4076,6 +4076,7 @@ function AppInner() {
     reading_minutes: false,
   });
   const [srsLoading, setSrsLoading] = useState(false);
+  const [srsRescheduling, setSrsRescheduling] = useState(false);
   const [srsSubmitting, setSrsSubmitting] = useState(false);
   const [srsSubmittingRating, setSrsSubmittingRating] = useState(null);
   const [srsRevealAnswer, setSrsRevealAnswer] = useState(false);
@@ -7341,6 +7342,15 @@ function AppInner() {
         new_remaining_today: Number.isFinite(nextNewRemaining)
           ? Math.max(0, Math.trunc(nextNewRemaining))
           : Math.max(0, Math.trunc(Number(prev?.new_remaining_today || 0))),
+        due_count_total: Number.isFinite(Number(incomingQueue?.due_count_total))
+          ? Math.max(0, Math.trunc(Number(incomingQueue.due_count_total)))
+          : Math.max(0, Math.trunc(Number(prev?.due_count_total || 0))),
+        due_reviewed_today: Number.isFinite(Number(incomingQueue?.due_reviewed_today))
+          ? Math.max(0, Math.trunc(Number(incomingQueue.due_reviewed_today)))
+          : Math.max(0, Math.trunc(Number(prev?.due_reviewed_today || 0))),
+        due_limit_today: Number.isFinite(Number(incomingQueue?.due_limit_today))
+          ? Math.max(1, Math.trunc(Number(incomingQueue.due_limit_today)))
+          : Math.max(1, Math.trunc(Number(prev?.due_limit_today || 30))),
       }));
     }
     const activeCardId = getSrsCardId(nextCard);
@@ -7355,13 +7365,28 @@ function AppInner() {
     setSrsQueueInfo((prev) => {
       const dueCount = Math.max(0, Math.trunc(Number(prev?.due_count || 0)));
       const newRemaining = Math.max(0, Math.trunc(Number(prev?.new_remaining_today || 0)));
+      const dueCountTotal = Math.max(0, Math.trunc(Number(prev?.due_count_total || 0)));
+      const dueReviewedToday = Math.max(0, Math.trunc(Number(prev?.due_reviewed_today || 0)));
+      const dueLimitToday = Math.max(1, Math.trunc(Number(prev?.due_limit_today || 30)));
       if (dueCount > 0) {
-        return { due_count: dueCount - 1, new_remaining_today: newRemaining };
+        return {
+          due_count: dueCount - 1,
+          new_remaining_today: newRemaining,
+          due_count_total: Math.max(0, dueCountTotal - 1),
+          due_reviewed_today: dueReviewedToday + 1,
+          due_limit_today: dueLimitToday,
+        };
       }
       if (newRemaining > 0) {
-        return { due_count: dueCount, new_remaining_today: newRemaining - 1 };
+        return {
+          due_count: dueCount,
+          new_remaining_today: newRemaining - 1,
+          due_count_total: dueCountTotal,
+          due_reviewed_today: dueReviewedToday,
+          due_limit_today: dueLimitToday,
+        };
       }
-      return { due_count: dueCount, new_remaining_today: newRemaining };
+      return { due_count: dueCount, new_remaining_today: newRemaining, due_count_total: dueCountTotal, due_reviewed_today: dueReviewedToday, due_limit_today: dueLimitToday };
     });
   };
 
@@ -7481,6 +7506,15 @@ function AppInner() {
             new_remaining_today: Number.isFinite(nextNewRemaining)
               ? Math.max(0, Math.trunc(nextNewRemaining))
               : Math.max(0, Math.trunc(Number(prev?.new_remaining_today || 0))),
+            due_count_total: Number.isFinite(Number(queueInfo?.due_count_total))
+              ? Math.max(0, Math.trunc(Number(queueInfo.due_count_total)))
+              : Math.max(0, Math.trunc(Number(prev?.due_count_total || 0))),
+            due_reviewed_today: Number.isFinite(Number(queueInfo?.due_reviewed_today))
+              ? Math.max(0, Math.trunc(Number(queueInfo.due_reviewed_today)))
+              : Math.max(0, Math.trunc(Number(prev?.due_reviewed_today || 0))),
+            due_limit_today: Number.isFinite(Number(queueInfo?.due_limit_today))
+              ? Math.max(1, Math.trunc(Number(queueInfo.due_limit_today)))
+              : Math.max(1, Math.trunc(Number(prev?.due_limit_today || 30))),
           }));
         }
       }
@@ -7492,6 +7526,34 @@ function AppInner() {
       srsPrefetchInFlightRef.current = false;
     }
   }, [appendToSrsPrefetchQueue, fetchWithTimeout, initData]);
+
+  const rescheduleBacklog = useCallback(async () => {
+    if (!initData || srsRescheduling) return;
+    setSrsRescheduling(true);
+    try {
+      const response = await fetchWithTimeout('/api/cards/reschedule_backlog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData }),
+      }, 15000);
+      if (!response.ok) return;
+      const data = await response.json();
+      const queueInfo = data?.queue_info && typeof data.queue_info === 'object' ? data.queue_info : null;
+      if (queueInfo) {
+        setSrsQueueInfo({
+          due_count: Math.max(0, Math.trunc(Number(queueInfo.due_count || 0))),
+          new_remaining_today: Math.max(0, Math.trunc(Number(queueInfo.new_remaining_today || 0))),
+          due_count_total: Math.max(0, Math.trunc(Number(queueInfo.due_count_total || 0))),
+          due_reviewed_today: Math.max(0, Math.trunc(Number(queueInfo.due_reviewed_today || 0))),
+          due_limit_today: Math.max(1, Math.trunc(Number(queueInfo.due_limit_today || 30))),
+        });
+      }
+    } catch (error) {
+      console.warn('Reschedule backlog failed', error);
+    } finally {
+      setSrsRescheduling(false);
+    }
+  }, [fetchWithTimeout, initData, srsRescheduling]);
 
   const buildWeeklyPlanDraftFromPlan = useCallback((plan) => ({
     translations_goal: String(Number(plan?.plan?.translations_goal || 0)),
@@ -25712,7 +25774,7 @@ function AppInner() {
                           <div className="fsrs-study-header">
                             <div className="fsrs-study-title">Space Repetition</div>
                             <div className="fsrs-study-queue">
-                              {t('due')}: {srsQueueInfo?.due_count ?? 0} · {t('new_today')}: {srsQueueInfo?.new_remaining_today ?? 0}
+                              {tr('Сегодня', 'Heute')}: {srsQueueInfo?.due_reviewed_today ?? 0}/{srsQueueInfo?.due_limit_today ?? 30} · {tr('Очередь', 'Warteschlange')}: {srsQueueInfo?.due_count_total ?? srsQueueInfo?.due_count ?? 0}
                             </div>
                           </div>
 
@@ -26351,12 +26413,23 @@ function AppInner() {
                                 <div className="setup-group">
                                   <div className="setup-label">{tr('Card Queue', 'Card Queue')}</div>
                                   <div className="flashcard-settings-queue">
-                                    <span>{tr('Due', 'Due')}: {srsQueueInfo?.due_count ?? 0}</span>
-                                    <span>{tr('New Today', 'New Today')}: {srsQueueInfo?.new_remaining_today ?? 0}</span>
+                                    <span>{tr('Сегодня', 'Heute')}: {srsQueueInfo?.due_reviewed_today ?? 0}/{srsQueueInfo?.due_limit_today ?? 30}</span>
+                                    <span>{tr('Очередь', 'Warteschlange')}: {srsQueueInfo?.due_count_total ?? srsQueueInfo?.due_count ?? 0}</span>
+                                    <span>{tr('Новые', 'Neu')}: {srsQueueInfo?.new_remaining_today ?? 0}</span>
                                   </div>
                                   <button type="button" className="flashcard-settings-update-btn" onClick={() => void loadSrsNextCard()}>
-                                    {tr('Update Queue', 'Update Queue')}
+                                    {tr('Обновить', 'Aktualisieren')}
                                   </button>
+                                  {(srsQueueInfo?.due_count_total ?? 0) > (srsQueueInfo?.due_limit_today ?? 30) * 2 && (
+                                    <button
+                                      type="button"
+                                      className="flashcard-settings-update-btn flashcard-settings-reschedule-btn"
+                                      disabled={srsRescheduling}
+                                      onClick={() => void rescheduleBacklog()}
+                                    >
+                                      {srsRescheduling ? '…' : tr('Сбросить расписание', 'Zeitplan zurücksetzen')}
+                                    </button>
+                                  )}
                                 </div>
                               </>
                             ) : (

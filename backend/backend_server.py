@@ -323,7 +323,9 @@ from backend.database import (
     get_next_new_srs_candidate,
     count_due_srs_cards,
     count_new_cards_introduced_today,
+    count_due_cards_reviewed_today,
     has_available_new_srs_cards,
+    reschedule_overdue_srs_cards,
     ensure_new_srs_state,
     get_card_srs_state,
     upsert_card_srs_state,
@@ -675,6 +677,7 @@ TELEGRAM_LOGIN_TTL_SECONDS = int(os.getenv("TELEGRAM_LOGIN_TTL_SECONDS", "86400"
 TELEGRAM_WEBAPP_INIT_TTL_SECONDS = int(os.getenv("TELEGRAM_WEBAPP_INIT_TTL_SECONDS", "86400"))
 WEBAPP_INSTANCE_LEASE_TTL_SECONDS = max(15, int(os.getenv("WEBAPP_INSTANCE_LEASE_TTL_SECONDS", "45")))
 NEW_PER_DAY = int(os.getenv("SRS_NEW_PER_DAY", "20"))
+SRS_DUE_PER_DAY = int(os.getenv("SRS_DUE_PER_DAY", "30"))
 TELEGRAM_BOT_USERNAME = (os.getenv("TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@")
 TODAY_PLAN_DEFAULT_TZ = (os.getenv("TODAY_PLAN_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
 YOUTUBE_API_KEY = (os.getenv("YOUTUBE_API_KEY") or "").strip()
@@ -5676,7 +5679,7 @@ def _compute_srs_queue_info(
     target_lang: str,
     cursor=None,
 ) -> dict:
-    due_count = count_due_srs_cards(
+    due_count_total = count_due_srs_cards(
         user_id=user_id,
         now_utc=now_utc,
         source_lang=source_lang,
@@ -5690,16 +5693,33 @@ def _compute_srs_queue_info(
         target_lang=target_lang,
         cursor=cursor,
     )
+    due_reviewed_today = count_due_cards_reviewed_today(
+        user_id=user_id,
+        now_utc=now_utc,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        cursor=cursor,
+    )
     has_new_candidates = has_available_new_srs_cards(
         user_id=user_id,
         source_lang=source_lang,
         target_lang=target_lang,
         cursor=cursor,
     )
+    # Daily cap: show at most SRS_DUE_PER_DAY cards per day
+    due_limit_today = SRS_DUE_PER_DAY
+    due_remaining_today = max(0, due_limit_today - due_reviewed_today)
+    due_count = min(due_count_total, due_remaining_today)
+    # Block new cards when backlog exceeds 2× the daily limit
     new_remaining_today = max(NEW_PER_DAY - introduced_today, 0)
+    if due_count_total > SRS_DUE_PER_DAY * 2:
+        new_remaining_today = 0
     new_remaining_today = new_remaining_today if has_new_candidates else 0
     return {
         "due_count": int(due_count),
+        "due_count_total": int(due_count_total),
+        "due_reviewed_today": int(due_reviewed_today),
+        "due_limit_today": int(due_limit_today),
         "new_remaining_today": int(new_remaining_today),
         "available_new_total": int(1 if has_new_candidates else 0),
     }
@@ -30001,6 +30021,37 @@ def review_srs_card():
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
+
+
+@app.route("/api/cards/reschedule_backlog", methods=["POST"])
+def reschedule_srs_backlog():
+    payload = request.get_json(silent=True) or {}
+    init_data = _extract_request_init_data(payload)
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    user_id, _username = _extract_webapp_user_from_init_data(init_data)
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        affected = reschedule_overdue_srs_cards(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            cards_per_day=SRS_DUE_PER_DAY,
+        )
+        queue_info = _compute_srs_queue_info(
+            user_id=int(user_id),
+            now_utc=datetime.now(timezone.utc),
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        return jsonify({"ok": True, "rescheduled": int(affected), "queue_info": queue_info})
+    except Exception as exc:
+        logging.warning("reschedule_srs_backlog failed: user=%s error=%s", user_id, exc, exc_info=True)
+        return jsonify({"error": str(exc)}), 500
 
 
 @app.route("/api/webapp/flashcards/feel", methods=["POST"])

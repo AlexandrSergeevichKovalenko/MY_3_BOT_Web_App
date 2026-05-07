@@ -16742,6 +16742,17 @@ body {
   color: #cbd5e1 !important;
 }
 
+.flashcard-settings-reschedule-btn {
+  background: linear-gradient(135deg, #7C3AED, #5B21B6) !important;
+  border-color: #6D28D9 !important;
+  color: #fff !important;
+  margin-top: 4px;
+}
+
+.flashcard-settings-reschedule-btn:disabled {
+  opacity: 0.6;
+}
+
 .flashcard-settings-save-start {
   height: 48px !important;
   border-radius: 16px !important;
