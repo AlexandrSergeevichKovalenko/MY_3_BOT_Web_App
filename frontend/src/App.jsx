@@ -25927,13 +25927,16 @@ function AppInner() {
                                       key={fKey}
                                       type="button"
                                       className={`vocab-folder-card ${isActive ? 'is-active' : ''}`}
+                                      style={{ '--fc': f.color || '#5ddcff' }}
                                       onClick={() => { setVocabFolderFilter(fKey); setVocabExpandedId(null); }}
                                       onPointerDown={handleLongPressStart}
                                       onPointerUp={handleLongPressEnd}
                                       onPointerLeave={handleLongPressEnd}
                                       onPointerCancel={handleLongPressEnd}
                                     >
-                                      <span className="vfc-card-icon">{resolveFolderIconLabel(f.icon)}</span>
+                                      <span className="vfc-card-icon-wrap">
+                                        {renderFolderIcon(f.icon, f.color || '#5ddcff')}
+                                      </span>
                                       <span className="vfc-card-name">{f.name}</span>
                                       <span className="vfc-card-count">{f.word_count ?? 0}</span>
                                     </button>
@@ -25997,7 +26000,7 @@ function AppInner() {
                                           onClick={() => toggleManualTrainingSelectionCard(item.id)}
                                           aria-label={tr('Добавить слово в текущую выборку', 'Wort zur aktuellen Auswahl hinzufügen')}
                                         >
-                                          {isSelectedForManual ? '✓' : ''}
+                                          {isSelectedForManual ? '✅' : ''}
                                         </button>
                                         <button
                                           type="button"
