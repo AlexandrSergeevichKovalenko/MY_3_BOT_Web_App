@@ -3401,17 +3401,17 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
                 aria-modal="true"
               >
                 <div className="weekly-metric-modal" onClick={(e) => e.stopPropagation()}>
+                  <button
+                    type="button"
+                    className="weekly-metric-modal-close"
+                    onClick={() => setWeeklyMetricModalKey(null)}
+                    aria-label={tr('Закрыть', 'Schließen')}
+                  >✕</button>
                   <div className="weekly-metric-modal-head">
                     <div className="weekly-plan-progress-ring" style={mRingStyle}>
                       <span>{Math.round(mClamped)}%</span>
                     </div>
                     <h3>{modalItem.title}</h3>
-                    <button
-                      type="button"
-                      className="secondary-button weekly-metric-modal-close"
-                      onClick={() => setWeeklyMetricModalKey(null)}
-                      aria-label={tr('Закрыть', 'Schließen')}
-                    >✕</button>
                   </div>
                   <div className="weekly-plan-values">
                     <div>
@@ -3427,7 +3427,7 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
                       <strong>{formatWeeklyValue(mForecast, 1)} {modalItem.unit}</strong>
                     </div>
                     <div className={mForecastClass}>
-                      <span>{tr('Отклонение прогноза', 'Abweichung Prognose')}</span>
+                      <span>{tr('Abw. Prognose', 'Abw. Prognose')}</span>
                       <strong>{mForecastDelta >= 0 ? '+' : ''}{formatWeeklyValue(mForecastDelta, 1)} {modalItem.unit}</strong>
                     </div>
                   </div>
