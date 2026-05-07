@@ -3242,32 +3242,38 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
           <div className="weekly-plan-head">
             <div className="home-panel-head-main">
               <div className="home-panel-head-copy">
-                <h2>{tr('План на неделю', 'Wochenplan')}</h2>
+                <div className="home-panel-title-row">
+                  <h2>{tr('План на неделю', 'Wochenplan')}</h2>
+                  <div className="home-panel-head-actions">
+                    <button
+                      type="button"
+                      className="home-panel-action-btn"
+                      onClick={refreshWeeklyPlan}
+                      disabled={weeklyPlanLoading || planAnalyticsLoading}
+                      title={tr('Актуализировать данные', 'Daten aktualisieren')}
+                      aria-label={tr('Актуализировать данные', 'Daten aktualisieren')}
+                    >
+                      <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="14" height="14" aria-hidden="true" className={(weeklyPlanLoading || planAnalyticsLoading) ? 'is-spinning' : ''}>
+                        <path d="M16 2v4h-4"/><path d="M2 11a7 7 0 0 0 12.9 2.9L16 6"/><path d="M2 16v-4h4"/><path d="M16 7a7 7 0 0 0-12.9-2.9L2 12"/>
+                      </svg>
+                      {tr('Обновить', 'Aktualisieren')}
+                    </button>
+                    <button
+                      type="button"
+                      className="home-panel-action-btn"
+                      onClick={() => setWeeklyPlanCollapsed((prev) => !prev)}
+                      title={weeklyPlanCollapsed ? tr('Развернуть', 'Aufklappen') : tr('Свернуть', 'Einklappen')}
+                      aria-label={weeklyPlanCollapsed ? tr('Развернуть', 'Aufklappen') : tr('Свернуть', 'Einklappen')}
+                      aria-pressed={!weeklyPlanCollapsed}
+                    >
+                      <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" width="14" height="14" aria-hidden="true" style={{ transform: weeklyPlanCollapsed ? 'rotate(0deg)' : 'rotate(180deg)', transition: 'transform 0.2s ease' }}>
+                        <polyline points="4 7 9 12 14 7"/>
+                      </svg>
+                      {weeklyPlanCollapsed ? tr('Развернуть', 'Aufklappen') : tr('Свернуть', 'Einklappen')}
+                    </button>
+                  </div>
+                </div>
                 <small className={`home-panel-snapshot-meta is-${weeklyPlanSnapshotTone === 'manual' ? 'fresh' : 'stale'}`}>{weeklyPlanSnapshotLabel}</small>
-              </div>
-              <div className="home-panel-head-actions">
-                <button
-                  type="button"
-                  className="secondary-button home-panel-icon-button"
-                  onClick={refreshWeeklyPlan}
-                  disabled={weeklyPlanLoading || planAnalyticsLoading}
-                  title={tr('Актуализировать данные', 'Daten aktualisieren')}
-                  aria-label={tr('Актуализировать данные', 'Daten aktualisieren')}
-                >
-                  <span className="home-panel-icon-glyph" aria-hidden="true">
-                    {(weeklyPlanLoading || planAnalyticsLoading) ? '…' : '↻'}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  className="secondary-button home-panel-icon-button"
-                  onClick={() => setWeeklyPlanCollapsed((prev) => !prev)}
-                  title={weeklyPlanCollapsed ? tr('Развернуть блок', 'Block aufklappen') : tr('Свернуть блок', 'Block einklappen')}
-                  aria-label={weeklyPlanCollapsed ? tr('Развернуть блок', 'Block aufklappen') : tr('Свернуть блок', 'Block einklappen')}
-                  aria-pressed={!weeklyPlanCollapsed}
-                >
-                  <span className="home-panel-icon-glyph" aria-hidden="true">{weeklyPlanCollapsed ? '⌄' : '⌃'}</span>
-                </button>
               </div>
             </div>
             <div className="weekly-plan-head-toolbar">
@@ -3500,31 +3506,39 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
           <div className="today-plan-head">
             <div className="home-panel-head-main">
               <div className="today-plan-title-wrap">
-                <h2>{tr('Задачи на сегодня', 'Aufgaben fuer heute')}</h2>
+                <div className="home-panel-title-row">
+                  <h2>{tr('Задачи на сегодня', 'Aufgaben fuer heute')}</h2>
+                  <div className="home-panel-head-actions today-plan-head-actions">
+                    <button
+                      type="button"
+                      className="home-panel-action-btn is-accent"
+                      onClick={regenerateTodayPlan}
+                      disabled={todayPlanLoading}
+                      title={tr('Пересобрать план', 'Plan neu erstellen')}
+                      aria-label={tr('Пересобрать план', 'Plan neu erstellen')}
+                    >
+                      <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="14" height="14" aria-hidden="true">
+                        <path d="M9 1v4m0 0 2-2m-2 2L7 3"/><circle cx="9" cy="9" r="6"/><path d="M9 6v3l2 2"/>
+                      </svg>
+                      {tr('Новый план', 'Neu erstellen')}
+                    </button>
+                    <button
+                      type="button"
+                      className="home-panel-action-btn"
+                      onClick={() => loadTodayPlan({ manual: true })}
+                      disabled={todayPlanLoading}
+                      title={tr('Актуализировать данные', 'Daten aktualisieren')}
+                      aria-label={tr('Актуализировать данные', 'Daten aktualisieren')}
+                    >
+                      <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="14" height="14" aria-hidden="true" className={todayPlanLoading ? 'is-spinning' : ''}>
+                        <path d="M16 2v4h-4"/><path d="M2 11a7 7 0 0 0 12.9 2.9L16 6"/><path d="M2 16v-4h4"/><path d="M16 7a7 7 0 0 0-12.9-2.9L2 12"/>
+                      </svg>
+                      {tr('Обновить', 'Aktualisieren')}
+                    </button>
+                  </div>
+                </div>
                 <p>{tr('Короткий персональный маршрут на день', 'Dein kurzer persoenlicher Plan fuer heute')}</p>
                 <small className={`home-panel-snapshot-meta is-${todayPlanSnapshotTone === 'manual' ? 'fresh' : 'stale'}`}>{todayPlanSnapshotLabel}</small>
-              </div>
-              <div className="home-panel-head-actions today-plan-head-actions">
-                <button
-                  type="button"
-                  className="secondary-button home-panel-icon-button"
-                  onClick={regenerateTodayPlan}
-                  disabled={todayPlanLoading}
-                  title={tr('Пересобрать задачи', 'Aufgaben neu erstellen')}
-                  aria-label={tr('Пересобрать задачи', 'Aufgaben neu erstellen')}
-                >
-                  <span className="home-panel-icon-glyph" aria-hidden="true">{todayPlanLoading ? '…' : '✦'}</span>
-                </button>
-                <button
-                  type="button"
-                  className="secondary-button home-panel-icon-button"
-                  onClick={() => loadTodayPlan({ manual: true })}
-                  disabled={todayPlanLoading}
-                  title={tr('Актуализировать данные', 'Daten aktualisieren')}
-                  aria-label={tr('Актуализировать данные', 'Daten aktualisieren')}
-                >
-                  <span className="home-panel-icon-glyph" aria-hidden="true">{todayPlanLoading ? '…' : '↻'}</span>
-                </button>
               </div>
             </div>
           </div>
@@ -3665,20 +3679,25 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
           <div className="skill-report-head">
             <div className="home-panel-head-main">
               <div className="home-panel-head-copy">
-                <h3>{tr('Карта навыков', 'Skill-Ringe')}</h3>
+                <div className="home-panel-title-row">
+                  <h3>{tr('Карта навыков', 'Skill-Ringe')}</h3>
+                  <div className="home-panel-head-actions">
+                    <button
+                      type="button"
+                      className="home-panel-action-btn"
+                      onClick={() => loadSkillReport({ manual: true })}
+                      disabled={skillReportLoading}
+                      title={tr('Актуализировать данные', 'Daten aktualisieren')}
+                      aria-label={tr('Актуализировать данные', 'Daten aktualisieren')}
+                    >
+                      <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="14" height="14" aria-hidden="true" className={skillReportLoading ? 'is-spinning' : ''}>
+                        <path d="M16 2v4h-4"/><path d="M2 11a7 7 0 0 0 12.9 2.9L16 6"/><path d="M2 16v-4h4"/><path d="M16 7a7 7 0 0 0-12.9-2.9L2 12"/>
+                      </svg>
+                      {tr('Обновить', 'Aktualisieren')}
+                    </button>
+                  </div>
+                </div>
                 <small className={`home-panel-snapshot-meta is-${skillReportSnapshotTone === 'manual' ? 'fresh' : 'stale'}`}>{skillReportSnapshotLabel}</small>
-              </div>
-              <div className="home-panel-head-actions">
-                <button
-                  type="button"
-                  className="secondary-button home-panel-icon-button"
-                  onClick={() => loadSkillReport({ manual: true })}
-                  disabled={skillReportLoading}
-                  title={tr('Актуализировать данные', 'Daten aktualisieren')}
-                  aria-label={tr('Актуализировать данные', 'Daten aktualisieren')}
-                >
-                  <span className="home-panel-icon-glyph" aria-hidden="true">{skillReportLoading ? '…' : '↻'}</span>
-                </button>
               </div>
             </div>
           </div>
