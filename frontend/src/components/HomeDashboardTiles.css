@@ -426,3 +426,22 @@
 .is-telegram-tablet .hdt-grid {
   grid-template-columns: repeat(5, 1fr);
 }
+
+.hdt-plan-bar {
+  width: calc(100% - 10px);
+  height: 3px;
+  background: rgba(255,255,255,0.12);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.hdt-plan-bar-fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #3B82F6, #6366F1);
+  border-radius: 2px;
+  transition: width 0.4s ease;
+  min-width: 3px;
+}
+.is-theme-light .hdt-plan-bar {
+  background: rgba(0,0,0,0.1);
+}

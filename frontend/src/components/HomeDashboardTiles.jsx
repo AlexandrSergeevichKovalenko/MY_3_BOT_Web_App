@@ -192,29 +192,19 @@ function TodayStrip({ tr, todayPlan, weeklyPlan, uiLang, showMetrics = true, ope
             </button>
             <button
               type="button"
-              className="hdt-metric hdt-metric-btn hdt-metric-plan"
+              className="hdt-metric hdt-metric-btn"
               onClick={() => handleMetric('home_weekly_plan', 'weeklyPlanRef')}
             >
               <div className="hdt-metric-icon" style={{ background: 'rgba(59,130,246,0.2)' }}>📅</div>
-              <div className="hdt-metric-val">{tr('План недели', 'Wochenplan')}</div>
-              {weeklyPlanSummary ? (
-                <div className="hdt-weekly-plan-compact">
-                  <div className="hdt-weekly-plan-meta">
-                    {tr(
-                      `${weeklyPlanSummary.completedGoals} из ${weeklyPlanSummary.totalGoals} целей`,
-                      `${weeklyPlanSummary.completedGoals} von ${weeklyPlanSummary.totalGoals} Zielen`
-                    )}
-                  </div>
-                  <div className="hdt-weekly-plan-bar" aria-hidden="true">
-                    <span
-                      className="hdt-weekly-plan-bar-fill"
-                      style={{ width: `${weeklyPlanSummary.percent}%` }}
-                    />
-                  </div>
+              <div className="hdt-metric-val">
+                {weeklyPlanSummary ? `${weeklyPlanSummary.percent}%` : '—'}
+              </div>
+              {weeklyPlanSummary && (
+                <div className="hdt-plan-bar" aria-hidden="true">
+                  <span className="hdt-plan-bar-fill" style={{ width: `${weeklyPlanSummary.percent}%` }} />
                 </div>
-              ) : (
-                <div className="hdt-metric-lbl">{tr('План не задан', 'Noch kein Plan')}</div>
               )}
+              <div className="hdt-metric-lbl">Wochenplan</div>
             </button>
           </div>
         )}

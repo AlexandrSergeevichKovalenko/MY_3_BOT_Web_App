@@ -11687,14 +11687,14 @@ function AppInner() {
 
   const resolveFolderIconLabel = (icon) => {
     const map = {
-      book: 'Book',
-      bolt: 'Bolt',
-      star: 'Star',
-      target: 'Target',
-      flag: 'Flag',
-      check: 'Check',
+      book: '📖',
+      bolt: '⚡',
+      star: '⭐',
+      target: '🎯',
+      flag: '🚩',
+      check: '✅',
     };
-    return map[icon] || 'Folder';
+    return map[icon] || '📂';
   };
 
   const renderFolderIcon = (icon, color) => {
