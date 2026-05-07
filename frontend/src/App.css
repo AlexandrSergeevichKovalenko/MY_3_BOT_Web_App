@@ -4049,6 +4049,8 @@ body {
 .webapp-video-dictionary {
   display: grid;
   gap: 16px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .webapp-reader {
@@ -5910,6 +5912,8 @@ body {
 
 .vocab-library {
   padding-bottom: 20px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .vocab-stats-bar {
@@ -6051,6 +6055,7 @@ body {
   align-items: center;
   gap: 9px;
   width: 100%;
+  min-width: 0;
   background: none;
   border: none;
   padding: 10px 12px;
@@ -6340,7 +6345,8 @@ body {
 
 /* ── Vocabulary Library — Light Theme ── */
 .webapp-page.is-theme-light .vocab-tabs {
-  background: rgba(0,0,0,0.06);
+  background: rgba(0,0,0,0.07);
+  border: 1px solid rgba(0,0,0,0.1);
 }
 .webapp-page.is-theme-light .vocab-tab {
   color: #7a6552;
@@ -16608,6 +16614,7 @@ body {
   --dict-collocation-tag-bg: rgba(93, 220, 255, 0.2);
   --dict-collocation-tag-border: rgba(93, 220, 255, 0.4);
   width: min(350px, 100%);
+  min-width: 0;
   margin: 0 auto;
   padding: 24px;
   gap: 24px;
@@ -16615,6 +16622,7 @@ body {
   border: 1px solid var(--dict-border);
   background: var(--dict-bg-card);
   box-shadow: 0 25px 50px rgba(0, 0, 0, 0.45);
+  overflow-x: hidden;
 }
 
 .webapp-dictionary .webapp-local-section-head {
@@ -16922,6 +16930,22 @@ body {
 }
 
 @media (max-width: 420px) {
+  .webapp-page.is-dictionary-layout {
+    padding-left: 10px;
+    padding-right: 10px;
+    overflow-x: hidden;
+  }
+
+  .webapp-page.is-dictionary-layout .webapp-shell,
+  .webapp-page.is-dictionary-layout .webapp-main,
+  .webapp-page.is-dictionary-layout .webapp-video-dictionary,
+  .webapp-page.is-dictionary-layout .webapp-dictionary {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
   .language-profile-card {
     padding: 20px;
     gap: 20px;
@@ -16942,12 +16966,70 @@ body {
   }
 
   .webapp-dictionary {
-    padding: 20px;
-    gap: 20px;
+    padding: 16px;
+    gap: 16px;
   }
 
   .webapp-dictionary .webapp-local-section-head h3 {
     font-size: 20px;
+  }
+
+  .webapp-page.is-dictionary-layout .vocab-tabs,
+  .webapp-page.is-dictionary-layout .vocab-stats-bar,
+  .webapp-page.is-dictionary-layout .vocab-search-wrap,
+  .webapp-page.is-dictionary-layout .vocab-word-list,
+  .webapp-page.is-dictionary-layout .vocab-legend {
+    margin-left: 0;
+    margin-right: 0;
+  }
+
+  .webapp-page.is-dictionary-layout .vocab-folders-scroll,
+  .webapp-page.is-dictionary-layout .vocab-group-label {
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  .webapp-page.is-dictionary-layout .vocab-load-more {
+    width: 100%;
+    margin-left: 0;
+    margin-right: 0;
+  }
+
+  .webapp-page.is-dictionary-layout .vocab-word-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "dot body arrow"
+      "dot meta arrow";
+    align-items: start;
+    row-gap: 6px;
+  }
+
+  .webapp-page.is-dictionary-layout .vocab-srs-dot {
+    grid-area: dot;
+    margin-top: 5px;
+  }
+
+  .webapp-page.is-dictionary-layout .vocab-word-body {
+    grid-area: body;
+  }
+
+  .webapp-page.is-dictionary-layout .vocab-word-meta {
+    grid-area: meta;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 6px;
+  }
+
+  .webapp-page.is-dictionary-layout .vocab-expand-arrow {
+    grid-area: arrow;
+    align-self: center;
+  }
+
+  .webapp-page.is-dictionary-layout .vocab-folder-tag {
+    max-width: 100%;
   }
 
   .webapp-dictionary .webapp-dictionary-form {

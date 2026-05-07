@@ -81,6 +81,35 @@ function getCardsBadge(todayPlan, srsQueueInfo) {
   return { text: `${done}/${limit}`, done: done >= limit };
 }
 
+function getWeeklyPlanSummary(weeklyPlan) {
+  const metrics = weeklyPlan?.metrics && typeof weeklyPlan.metrics === 'object'
+    ? weeklyPlan.metrics
+    : {};
+  const metricKeys = ['translations', 'learned_words', 'agent_minutes', 'reading_minutes'];
+  const rows = metricKeys
+    .map((key) => metrics[key] || {})
+    .map((item) => {
+      const goal = Math.max(0, Number(item?.goal || 0) || 0);
+      const actual = Math.max(0, Number(item?.actual || 0) || 0);
+      const completion = goal > 0
+        ? Math.max(0, Math.min(100, Number(item?.completion_percent || 0) || 0))
+        : 0;
+      return { goal, actual, completion };
+    })
+    .filter((item) => item.goal > 0);
+
+  if (!rows.length) return null;
+
+  const completedGoals = rows.filter((item) => item.completion >= 100).length;
+  const percent = Math.round(rows.reduce((sum, item) => sum + item.completion, 0) / rows.length);
+
+  return {
+    percent,
+    completedGoals,
+    totalGoals: rows.length,
+  };
+}
+
 function DashTile({ def, label, badge, onClick, showBadge = true }) {
   const [state, setState] = useState('idle');
 
@@ -115,10 +144,11 @@ function DashTile({ def, label, badge, onClick, showBadge = true }) {
   );
 }
 
-function TodayStrip({ tr, todayPlan, uiLang, showMetrics = true, openSection, refs = {} }) {
+function TodayStrip({ tr, todayPlan, weeklyPlan, uiLang, showMetrics = true, openSection, refs = {} }) {
   const items = Array.isArray(todayPlan?.items) ? todayPlan.items : [];
   const doneCount = items.filter((item) => normalizeStatus(item?.status) === 'done').length;
   const totalCount = items.length;
+  const weeklyPlanSummary = getWeeklyPlanSummary(weeklyPlan);
   const now = new Date();
   const dateLabel = now.toLocaleDateString(uiLang === 'de' ? 'de-DE' : 'ru-RU', {
     day: 'numeric',
@@ -162,12 +192,29 @@ function TodayStrip({ tr, todayPlan, uiLang, showMetrics = true, openSection, re
             </button>
             <button
               type="button"
-              className="hdt-metric hdt-metric-btn"
+              className="hdt-metric hdt-metric-btn hdt-metric-plan"
               onClick={() => handleMetric('home_weekly_plan', 'weeklyPlanRef')}
             >
               <div className="hdt-metric-icon" style={{ background: 'rgba(59,130,246,0.2)' }}>📅</div>
-              <div className="hdt-metric-val">{totalCount > 0 ? tr('В фокусе', 'Im Fokus') : tr('Пусто', 'Leer')}</div>
-              <div className="hdt-metric-lbl">{tr('План недели', 'Wochenplan')}</div>
+              <div className="hdt-metric-val">{tr('План недели', 'Wochenplan')}</div>
+              {weeklyPlanSummary ? (
+                <div className="hdt-weekly-plan-compact">
+                  <div className="hdt-weekly-plan-meta">
+                    {tr(
+                      `${weeklyPlanSummary.completedGoals} из ${weeklyPlanSummary.totalGoals} целей`,
+                      `${weeklyPlanSummary.completedGoals} von ${weeklyPlanSummary.totalGoals} Zielen`
+                    )}
+                  </div>
+                  <div className="hdt-weekly-plan-bar" aria-hidden="true">
+                    <span
+                      className="hdt-weekly-plan-bar-fill"
+                      style={{ width: `${weeklyPlanSummary.percent}%` }}
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="hdt-metric-lbl">{tr('План не задан', 'Noch kein Plan')}</div>
+              )}
             </button>
           </div>
         )}
@@ -180,6 +227,7 @@ export default function HomeDashboardTiles({
   tr,
   uiLang,
   todayPlan,
+  weeklyPlan,
   srsQueueInfo,
   openSection,
   onOpenMore = null,
@@ -211,6 +259,7 @@ export default function HomeDashboardTiles({
       <TodayStrip
         tr={tr}
         todayPlan={todayPlan}
+        weeklyPlan={weeklyPlan}
         uiLang={currentUiLang}
         showMetrics={showMetrics}
         openSection={openSection}

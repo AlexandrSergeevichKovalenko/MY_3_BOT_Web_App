@@ -134,6 +134,43 @@
   line-height: 1.2;
 }
 
+.hdt-metric-plan {
+  justify-content: flex-start;
+}
+
+.hdt-weekly-plan-compact {
+  width: 100%;
+  display: grid;
+  gap: 4px;
+  margin-top: 1px;
+}
+
+.hdt-weekly-plan-meta {
+  width: 100%;
+  font-size: 9px;
+  line-height: 1.2;
+  text-align: center;
+  color: var(--dmps-text-subtle, #94A3B8);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.hdt-weekly-plan-bar {
+  width: 100%;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.16);
+}
+
+.hdt-weekly-plan-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #60A5FA, #7C3AED);
+  box-shadow: 0 0 10px rgba(96, 165, 250, 0.28);
+}
+
 .hdt-section-head {
   padding: 11px 16px 7px;
   display: flex;
@@ -372,6 +409,14 @@
 
 .is-theme-light .hdt-metric-val {
   color: #0F172A;
+}
+
+.is-theme-light .hdt-weekly-plan-meta {
+  color: #7A6552;
+}
+
+.is-theme-light .hdt-weekly-plan-bar {
+  background: rgba(160, 136, 112, 0.16);
 }
 
 .is-theme-light .hdt-tile {

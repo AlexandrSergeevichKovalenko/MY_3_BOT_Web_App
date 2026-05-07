@@ -23489,6 +23489,7 @@ function AppInner() {
                 tr={tr}
                 uiLang={uiLang}
                 todayPlan={todayPlan}
+                weeklyPlan={weeklyPlan}
                 srsQueueInfo={srsQueueInfo}
                 openSection={openSingleSectionAndScroll}
                 onOpenMore={openMoreFunctionsPanel}
