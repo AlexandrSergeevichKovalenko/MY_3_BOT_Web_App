@@ -6692,6 +6692,9 @@ function AppInner() {
     });
   };
 
+  // Returns a Promise that resolves after the feedback sound finishes (~300 ms).
+  // This lets callers await it before starting TTS so the two don't overlap.
+  const FEEDBACK_SOUND_MS = 300;
   const playFeedbackSound = (type) => {
     const audio = type === 'positive'
       ? positiveAudioRef.current
@@ -6711,35 +6714,41 @@ function AppInner() {
         if (playPromise && typeof playPromise.catch === 'function') {
           playPromise.catch(() => {});
         }
-        return;
-      } catch (error) {
+        // Cut the WAV short after FEEDBACK_SOUND_MS so it doesn't bleed into TTS.
+        setTimeout(() => {
+          try { audio.pause(); audio.currentTime = 0; } catch (_) {}
+        }, FEEDBACK_SOUND_MS);
+        return new Promise((resolve) => setTimeout(resolve, FEEDBACK_SOUND_MS));
+      } catch (_error) {
         // fall back to WebAudio
       }
     }
     const ctx = getAudioContext();
-    if (!ctx) return;
+    if (!ctx) return Promise.resolve();
     const now = ctx.currentTime;
+    const dur = FEEDBACK_SOUND_MS / 1000; // 0.30 s
     const gain = ctx.createGain();
     gain.gain.setValueAtTime(0, now);
-    gain.gain.linearRampToValueAtTime(0.12, now + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.9);
+    gain.gain.linearRampToValueAtTime(0.12, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
     gain.connect(ctx.destination);
 
     const osc = ctx.createOscillator();
     osc.type = type === 'positive' ? 'sine' : 'triangle';
     if (type === 'positive') {
       osc.frequency.setValueAtTime(660, now);
-      osc.frequency.exponentialRampToValueAtTime(980, now + 0.35);
+      osc.frequency.exponentialRampToValueAtTime(980, now + dur * 0.6);
     } else if (type === 'negative') {
       osc.frequency.setValueAtTime(220, now);
-      osc.frequency.exponentialRampToValueAtTime(140, now + 0.3);
+      osc.frequency.exponentialRampToValueAtTime(140, now + dur);
     } else {
       osc.frequency.setValueAtTime(330, now);
-      osc.frequency.exponentialRampToValueAtTime(220, now + 0.3);
+      osc.frequency.exponentialRampToValueAtTime(220, now + dur);
     }
     osc.connect(gain);
     osc.start(now);
-    osc.stop(now + 0.92);
+    osc.stop(now + dur + 0.01);
+    return new Promise((resolve) => setTimeout(resolve, FEEDBACK_SOUND_MS));
   };
 
   const fetchTtsUrlStatus = useCallback(async (text, language = 'de-DE', voice = '') => {
@@ -14537,10 +14546,10 @@ function AppInner() {
         wrong: prev.wrong + 1,
       }));
       setFlashcardTimedOut(true);
-      playFeedbackSound('timeout');
       setFlashcardSelection(-1);
       setFlashcardOutcome('timeout');
       (async () => {
+        await playFeedbackSound('timeout');
         const german = resolveFlashcardGerman(entry);
         if (german) {
           await playTts(german, getLearningTtsLocale());
@@ -27999,11 +28008,11 @@ function AppInner() {
                                           correctAnswer: t('blocks_correct_answer'),
                                           hintsUsed: t('blocks_hints_used'),
                                         }}
-                                        onRoundResult={({ isCorrect, timeSpentMs, hintsUsed, status }) => {
+                                        onRoundResult={async ({ isCorrect, timeSpentMs, hintsUsed, status }) => {
                                           setFlashcardTimedOut(status === 'timeout');
                                           setFlashcardOutcome(isCorrect ? 'correct' : (status === 'timeout' ? 'timeout' : 'wrong'));
                                           unlockAudio();
-                                          playFeedbackSound(status === 'timeout' ? 'timeout' : (isCorrect ? 'positive' : 'negative'));
+                                          await playFeedbackSound(status === 'timeout' ? 'timeout' : (isCorrect ? 'positive' : 'negative'));
                                           setFlashcardStats((prev) => ({
                                             ...prev,
                                             correct: prev.correct + (isCorrect ? 1 : 0),
@@ -28122,7 +28131,7 @@ function AppInner() {
                                                   setFlashcardTimedOut(false);
                                                   setFlashcardOutcome(option === correct ? 'correct' : 'wrong');
                                                   unlockAudio();
-                                                  playFeedbackSound(option === correct ? 'positive' : 'negative');
+                                                  await playFeedbackSound(option === correct ? 'positive' : 'negative');
                                                   const timeSpentMs = Math.max(0, Date.now() - flashcardRoundStartRef.current);
                                                   recordFlashcardAnswer(entry.id, option === correct, {
                                                     mode: flashcardTrainingMode,
