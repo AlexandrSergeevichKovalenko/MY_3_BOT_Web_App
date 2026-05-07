@@ -24514,10 +24514,59 @@ def _validate_session_presence_projection_payload(payload: dict[str, Any] | None
     return safe_payload
 
 
+def _is_translation_session_active_in_db(user_id: int, session_id: str) -> bool:
+    """Return True iff the session exists in bt_3_user_progress with completed=FALSE and date=CURRENT_DATE."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT 1
+                    FROM bt_3_user_progress up
+                    WHERE up.user_id = %s
+                      AND up.session_id = %s
+                      AND up.completed = FALSE
+                      AND EXISTS (
+                          SELECT 1 FROM bt_3_daily_sentences ds
+                          WHERE ds.user_id = up.user_id
+                            AND ds.session_id = up.session_id
+                            AND ds.date = CURRENT_DATE
+                      )
+                    LIMIT 1
+                    """,
+                    (int(user_id), str(session_id)),
+                )
+                return cursor.fetchone() is not None
+    except Exception:
+        logging.warning("_is_translation_session_active_in_db failed for user_id=%s", user_id, exc_info=True)
+        return True  # fail-open: don't evict on DB error
+
+
+def _evict_stale_session_presence_card(user_id: int) -> None:
+    try:
+        clear_session_presence_card(int(user_id))
+    except Exception:
+        logging.warning("Failed to evict stale session presence card for user_id=%s", user_id, exc_info=True)
+
+
 def _load_session_presence_projection_with_source(user_id: int) -> tuple[dict[str, Any] | None, str | None]:
     redis_payload = _validate_session_presence_projection_payload(get_session_presence_card(int(user_id)))
     if isinstance(redis_payload, dict):
-        return redis_payload, "projection_redis"
+        # Guard against stale Redis cards: if the cached state is "active",
+        # verify the session is still uncompleted and from today in the DB.
+        # This prevents auto-navigation to translations after an overnight suspension
+        # when the DB session was already closed by the nightly job but Redis TTL is still alive.
+        if str(redis_payload.get("state") or "").strip().lower() == "active":
+            session_id_val = str(redis_payload.get("session_id") or "").strip()
+            if session_id_val and not _is_translation_session_active_in_db(int(user_id), session_id_val):
+                logging.info(
+                    "Evicting stale session presence card: user_id=%s session_id=%s (DB shows closed/previous-day)",
+                    user_id, session_id_val,
+                )
+                _evict_stale_session_presence_card(int(user_id))
+                redis_payload = None
+        if isinstance(redis_payload, dict):
+            return redis_payload, "projection_redis"
     snapshot = get_user_api_snapshot(
         user_id=int(user_id),
         snapshot_kind=_SESSION_PRESENCE_CARD_KIND,
@@ -24527,7 +24576,17 @@ def _load_session_presence_projection_with_source(user_id: int) -> tuple[dict[st
         snapshot.get("payload") if isinstance(snapshot, dict) else None
     )
     if isinstance(snapshot_payload, dict):
-        return snapshot_payload, "projection_snapshot"
+        # Same stale-card guard for the DB snapshot fallback.
+        if str(snapshot_payload.get("state") or "").strip().lower() == "active":
+            session_id_val = str(snapshot_payload.get("session_id") or "").strip()
+            if session_id_val and not _is_translation_session_active_in_db(int(user_id), session_id_val):
+                logging.info(
+                    "Ignoring stale snapshot session presence card: user_id=%s session_id=%s",
+                    user_id, session_id_val,
+                )
+                snapshot_payload = None
+        if isinstance(snapshot_payload, dict):
+            return snapshot_payload, "projection_snapshot"
     return None, None
 
 

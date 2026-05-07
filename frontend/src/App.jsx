@@ -12893,12 +12893,28 @@ function AppInner() {
         setStarterDictionaryPromptOpen(Boolean(starterOffer?.should_prompt));
         const bootstrapTranslationSessionId = String(data?.translation_session?.session_id || '').trim();
         if (String(data?.translation_session?.type || '').trim().toLowerCase() === 'regular' && bootstrapTranslationSessionId) {
-          setSelectedSections((prev) => {
-            if (flashcardsOnly || prev.size > 0) {
-              return prev;
+          // Do not auto-navigate to translations if the app was hidden overnight.
+          // A stale Redis session card can survive across days (24h TTL), so we
+          // guard against it here as a second layer on top of the backend DB check.
+          const lastHideTs = Number(safeStorageGet('app_last_hide_ts') || 0);
+          const MIN_HIDE_MS_FOR_DAY_NAV_BLOCK = 4 * 60 * 60 * 1000;
+          let suppressTranslationNav = false;
+          if (lastHideTs) {
+            const todayStr = new Date().toISOString().slice(0, 10);
+            const lastHideDateStr = new Date(lastHideTs).toISOString().slice(0, 10);
+            const hiddenForMs = Date.now() - lastHideTs;
+            if (lastHideDateStr !== todayStr && hiddenForMs >= MIN_HIDE_MS_FOR_DAY_NAV_BLOCK) {
+              suppressTranslationNav = true;
             }
-            return new Set(['translations']);
-          });
+          }
+          if (!suppressTranslationNav) {
+            setSelectedSections((prev) => {
+              if (flashcardsOnly || prev.size > 0) {
+                return prev;
+              }
+              return new Set(['translations']);
+            });
+          }
         }
       } catch (error) {
         if (cancelled || !isAsyncGuardCurrent(bootstrapRequestIdRef, requestId)) {
