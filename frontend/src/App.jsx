@@ -23269,6 +23269,7 @@ function AppInner() {
                 srsQueueInfo={srsQueueInfo}
                 openSection={openSingleSectionAndScroll}
                 onOpenMore={openMoreFunctionsPanel}
+                canViewEconomics={canViewEconomics}
                 refs={{
                   translationsRef,
                   flashcardsRef,
@@ -23280,6 +23281,12 @@ function AppInner() {
                   supportRef,
                   guideRef,
                   homeMoreRef,
+                  todayRef: homeTodayPlanRef,
+                  skillsRef: homeSkillsRef,
+                  weeklyPlanRef: homeWeeklyPlanRef,
+                  moviesRef,
+                  billingRef,
+                  economicsRef,
                 }}
               />
             )}

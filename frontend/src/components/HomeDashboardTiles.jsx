@@ -6,12 +6,16 @@ const TILE_DEFS = [
   { key: 'ca', labelRu: 'Карточки\nSpace Rep', labelDe: 'Karten\nSpace Rep', emoji: '🗂', cls: 'hdt-violet', sectionKey: 'flashcards', refKey: 'flashcardsRef' },
   { key: 're', labelRu: 'Чтение\nЧиталка', labelDe: 'Lesen\nReader', emoji: '📖', cls: 'hdt-emerald', sectionKey: 'reader', refKey: 'readerRef' },
   { key: 'sp', labelRu: 'Разговорная\nпрактика', labelDe: 'Sprech-\nuebung', emoji: '💬', cls: 'hdt-cyan', sectionKey: 'assistant', refKey: 'assistantRef' },
-  { key: 'vi', labelRu: 'Видео\nYouTube', labelDe: 'YouTube\nVideos', emoji: '▶️', cls: 'hdt-red', sectionKey: 'youtube', refKey: 'youtubeRef' },
+  { key: 'vi', labelRu: 'Видео\nYouTube', labelDe: 'YouTube\nVideos', emoji: '▶️', cls: 'hdt-red', sectionKey: 'youtube', refKey: 'youtubeRef', isPaired: true },
   { key: 'di', labelRu: 'Словарь\nи поиск', labelDe: 'Wörterbuch\nund Suche', emoji: '📚', cls: 'hdt-indigo', sectionKey: 'dictionary', refKey: 'dictionaryRef' },
   { key: 'an', labelRu: 'Аналитика\nпрогресса', labelDe: 'Analytics\nund Fortschritt', emoji: '📊', cls: 'hdt-green', sectionKey: 'analytics', refKey: 'analyticsRef' },
   { key: 'so', labelRu: 'Техподдержка\nи связь', labelDe: 'Support\nund Kontakt', emoji: '🛟', cls: 'hdt-amber', sectionKey: 'support', refKey: 'supportRef' },
   { key: 'gu', labelRu: 'Как\nпользоваться', labelDe: 'So\nbenutzt du es', emoji: '❓', cls: 'hdt-rose', sectionKey: 'guide', refKey: 'guideRef' },
 ];
+
+const MOVIES_DEF = {
+  key: 'mv', labelRu: 'Фильмы\nи сцены', labelDe: 'Filme\nund Szenen', emoji: '🎬', cls: 'hdt-red', sectionKey: 'movies', refKey: 'moviesRef',
+};
 
 function normalizeStatus(value) {
   return String(value || '').trim().toLowerCase();
@@ -111,7 +115,7 @@ function DashTile({ def, label, badge, onClick, showBadge = true }) {
   );
 }
 
-function TodayStrip({ tr, todayPlan, uiLang, showMetrics = true }) {
+function TodayStrip({ tr, todayPlan, uiLang, showMetrics = true, openSection, refs = {} }) {
   const items = Array.isArray(todayPlan?.items) ? todayPlan.items : [];
   const doneCount = items.filter((item) => normalizeStatus(item?.status) === 'done').length;
   const totalCount = items.length;
@@ -123,6 +127,12 @@ function TodayStrip({ tr, todayPlan, uiLang, showMetrics = true }) {
   });
   const progressPct = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
 
+  const handleMetric = useCallback((sectionKey, refKey) => {
+    if (openSection && sectionKey) {
+      openSection(sectionKey, refs[refKey] || null);
+    }
+  }, [openSection, refs]);
+
   return (
     <div className="hdt-today-card">
       <div className="hdt-today-inner">
@@ -132,21 +142,33 @@ function TodayStrip({ tr, todayPlan, uiLang, showMetrics = true }) {
         </div>
         {showMetrics && (
           <div className="hdt-metrics">
-            <div className="hdt-metric">
+            <button
+              type="button"
+              className="hdt-metric hdt-metric-btn"
+              onClick={() => handleMetric('home_today', 'todayRef')}
+            >
               <div className="hdt-metric-icon" style={{ background: 'rgba(16,185,129,0.2)' }}>✅</div>
               <div className="hdt-metric-val">{totalCount > 0 ? `${doneCount}/${totalCount}` : '—'}</div>
               <div className="hdt-metric-lbl">{tr('Задачи', 'Aufgaben')}</div>
-            </div>
-            <div className="hdt-metric">
-              <div className="hdt-metric-icon" style={{ background: 'rgba(79,70,229,0.2)' }}>🎯</div>
+            </button>
+            <button
+              type="button"
+              className="hdt-metric hdt-metric-btn"
+              onClick={() => handleMetric('home_skills', 'skillsRef')}
+            >
+              <div className="hdt-metric-icon" style={{ background: 'rgba(79,70,229,0.2)' }}>🧠</div>
               <div className="hdt-metric-val">{progressPct}%</div>
-              <div className="hdt-metric-lbl">{tr('Прогресс', 'Fortschritt')}</div>
-            </div>
-            <div className="hdt-metric">
-              <div className="hdt-metric-icon" style={{ background: 'rgba(59,130,246,0.2)' }}>📈</div>
+              <div className="hdt-metric-lbl">{tr('Карта навыков', 'Skill-Map')}</div>
+            </button>
+            <button
+              type="button"
+              className="hdt-metric hdt-metric-btn"
+              onClick={() => handleMetric('home_weekly_plan', 'weeklyPlanRef')}
+            >
+              <div className="hdt-metric-icon" style={{ background: 'rgba(59,130,246,0.2)' }}>📅</div>
               <div className="hdt-metric-val">{totalCount > 0 ? tr('В фокусе', 'Im Fokus') : tr('Пусто', 'Leer')}</div>
-              <div className="hdt-metric-lbl">{tr('День', 'Tag')}</div>
-            </div>
+              <div className="hdt-metric-lbl">{tr('План недели', 'Wochenplan')}</div>
+            </button>
           </div>
         )}
       </div>
@@ -165,6 +187,7 @@ export default function HomeDashboardTiles({
   showBadges = true,
   showMetrics = true,
   showQuickAccess = true,
+  canViewEconomics = false,
 }) {
   const currentUiLang = uiLang === 'de' ? 'de' : 'ru';
   const badges = {
@@ -185,7 +208,14 @@ export default function HomeDashboardTiles({
 
   return (
     <div className="hdt-root">
-      <TodayStrip tr={tr} todayPlan={todayPlan} uiLang={currentUiLang} showMetrics={showMetrics} />
+      <TodayStrip
+        tr={tr}
+        todayPlan={todayPlan}
+        uiLang={currentUiLang}
+        showMetrics={showMetrics}
+        openSection={openSection}
+        refs={refs}
+      />
 
       <div className="hdt-section-head">
         <span className="hdt-section-label">{tr('Разделы', 'Bereiche')}</span>
@@ -195,6 +225,27 @@ export default function HomeDashboardTiles({
       <div className="hdt-grid">
         {TILE_DEFS.map((def) => {
           const label = currentUiLang === 'de' ? def.labelDe : def.labelRu;
+          if (def.isPaired) {
+            const moviesLabel = currentUiLang === 'de' ? MOVIES_DEF.labelDe : MOVIES_DEF.labelRu;
+            return (
+              <div key={def.key} className="hdt-tile-pair">
+                <DashTile
+                  def={def}
+                  label={label}
+                  badge={badges[def.key] || null}
+                  onClick={() => handleTile(def)}
+                  showBadge={showBadges}
+                />
+                <DashTile
+                  def={MOVIES_DEF}
+                  label={moviesLabel}
+                  badge={null}
+                  onClick={() => handleTile(MOVIES_DEF)}
+                  showBadge={showBadges}
+                />
+              </div>
+            );
+          }
           return (
             <DashTile
               key={def.key}
@@ -209,26 +260,28 @@ export default function HomeDashboardTiles({
       </div>
 
       {showQuickAccess && (
-        <button
-          type="button"
-          className="hdt-quick-bar"
-          onClick={() => {
-            if (onOpenMore) {
-              onOpenMore();
-              return;
-            }
-            openSection?.('dictionary', refs.dictionaryRef);
-          }}
-        >
-          <span className="hdt-quick-card">
-            <span className="hdt-quick-icon">⋯</span>
-            <span className="hdt-quick-text">
-              <span className="hdt-quick-title">{tr('Остальные функции', 'Weitere Funktionen')}</span>
-              <span className="hdt-quick-sub">{tr('Словарь · Подписка · Поддержка · Аналитика', 'Woerterbuch · Abo · Support · Analytics')}</span>
-            </span>
-            <span className="hdt-quick-arrow">›</span>
-          </span>
-        </button>
+        <div className="hdt-quick-row">
+          <button
+            type="button"
+            className="hdt-quick-block hdt-quick-block-sub"
+            onClick={() => openSection?.('subscription', refs.billingRef || null)}
+          >
+            <span className="hdt-quick-block-icon">💳</span>
+            <span className="hdt-quick-block-title">{tr('Подписка', 'Abonnement')}</span>
+            <span className="hdt-quick-block-sub-lbl">{tr('и тариф', 'und Tarif')}</span>
+          </button>
+          {canViewEconomics && (
+            <button
+              type="button"
+              className="hdt-quick-block hdt-quick-block-eco"
+              onClick={() => openSection?.('economics', refs.economicsRef || null)}
+            >
+              <span className="hdt-quick-block-icon">💹</span>
+              <span className="hdt-quick-block-title">{tr('Экономика', 'Kosten')}</span>
+              <span className="hdt-quick-block-sub-lbl">{tr('и лимиты', 'und Limits')}</span>
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
