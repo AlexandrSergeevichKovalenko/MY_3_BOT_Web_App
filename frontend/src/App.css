@@ -5947,10 +5947,10 @@ body {
 .vocab-stats-bar {
   display: flex;
   align-items: center;
-  margin: 12px 16px 10px;
+  margin: 12px 0 10px;
 }
 .vocab-selection-toolbar {
-  margin: 0 16px 12px;
+  margin: 0 0 12px;
   padding: 12px 14px;
   border-radius: 14px;
   border: 1.5px solid rgba(99,102,241,0.55);
@@ -6300,7 +6300,7 @@ body {
 }
 
 .vocab-search-wrap {
-  margin: 0 16px 12px;
+  margin: 0 0 12px;
   position: relative;
 }
 .vocab-search-input {
@@ -6775,7 +6775,7 @@ body {
 .vocab-folder-quick-row {
   display: flex;
   gap: 7px;
-  padding: 10px 16px 6px;
+  padding: 10px 0 6px;
   flex-wrap: wrap;
 }
 .vocab-qf-btn {
@@ -6801,8 +6801,8 @@ body {
 .vocab-folder-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 8px;
-  padding: 0 16px 10px;
+  gap: 10px;
+  padding: 0 0 10px;
 }
 .vocab-folder-card {
   display: flex;
