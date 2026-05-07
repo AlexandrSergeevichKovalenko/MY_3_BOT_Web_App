@@ -1441,6 +1441,12 @@ def run_tts_r2_cache_cleanup_actor() -> None:
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_image_quiz_r2_cleanup_actor() -> None:
+    from backend.scheduler_jobs_core import run_image_quiz_r2_cleanup_job
+    run_image_quiz_r2_cleanup_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_database_table_sizes_report_actor() -> None:
     from backend.scheduler_jobs_core import run_database_table_sizes_report_job
     run_database_table_sizes_report_job()
@@ -1492,6 +1498,12 @@ def run_semantic_audit_actor() -> None:
 def run_skill_state_v2_aggregation_actor() -> None:
     from backend.backend_server import _run_skill_state_v2_aggregation_scheduler_job
     _run_skill_state_v2_aggregation_scheduler_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_agent_worker_schedule_control_actor(action: str = "reconcile_stop") -> None:
+    from backend.agent_worker_schedule import run_agent_worker_schedule_control
+    run_agent_worker_schedule_control(action=action, source="scheduler_jobs_actor")
 
 
 @dramatiq.actor(max_retries=0, queue_name="tts_generation")

@@ -21792,6 +21792,36 @@ def claim_next_ready_template(
             return _map_image_quiz_template_row(cursor.fetchone())
 
 
+def count_total_active_image_quiz_templates(
+    *,
+    source_lang: str,
+    target_lang: str,
+) -> int:
+    """
+    Counts all templates across all users that are still in the pipeline
+    (pending / blueprint_ready / rendering / ready).  Used as a global cap
+    check before enqueuing more generation work.
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM bt_3_image_quiz_templates
+                WHERE source_lang = %s
+                  AND target_lang = %s
+                  AND generation_status IN ('pending', 'blueprint_ready', 'rendering', 'ready')
+                  AND (generation_status <> 'ready' OR (image_object_key IS NOT NULL AND image_object_key <> ''));
+                """,
+                (
+                    str(source_lang or "").strip().lower(),
+                    str(target_lang or "").strip().lower(),
+                ),
+            )
+            row = cursor.fetchone()
+            return int(row[0] or 0) if row else 0
+
+
 def count_available_image_quiz_templates(
     *,
     user_id: int,
@@ -22285,6 +22315,63 @@ def mark_image_quiz_answer_feedback_sent(dispatch_id: int, user_id: int) -> dict
                 (int(dispatch_id), int(user_id)),
             )
             return _map_image_quiz_answer_row(cursor.fetchone())
+
+
+def list_exhausted_image_quiz_r2_objects(
+    *,
+    limit: int = 200,
+    idle_days: int = 14,
+) -> list[dict]:
+    """
+    Returns ready image-quiz templates that have been shown to at least one user
+    (use_count >= 1) and have not been used for idle_days.  Their R2 objects are
+    safe to delete because every user who was shown the image has already answered.
+    Templates with use_count = 0 are never returned — they were paid for and may
+    still be dispatched to future users.
+    """
+    safe_limit = max(1, min(5000, int(limit or 200)))
+    safe_idle_days = max(1, int(idle_days or 14))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, image_object_key
+                FROM bt_3_image_quiz_templates
+                WHERE generation_status = 'ready'
+                  AND image_object_key IS NOT NULL
+                  AND image_object_key <> ''
+                  AND use_count >= 1
+                  AND last_used_at < NOW() - (%s || ' days')::interval
+                ORDER BY last_used_at ASC
+                LIMIT %s;
+                """,
+                (str(safe_idle_days), safe_limit),
+            )
+            rows = cursor.fetchall() or []
+    return [{"template_id": int(row[0]), "object_key": str(row[1])} for row in rows]
+
+
+def clear_image_quiz_template_r2_ref(template_id: int) -> bool:
+    """
+    Clears image_object_key and image_url on a template after its R2 object has
+    been deleted.  The template record itself is kept so history and stats remain.
+    Returns True if a row was updated.
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_image_quiz_templates
+                SET image_object_key = NULL,
+                    image_url        = NULL,
+                    updated_at       = NOW()
+                WHERE id = %s
+                  AND image_object_key IS NOT NULL
+                RETURNING id;
+                """,
+                (int(template_id),),
+            )
+            return cursor.fetchone() is not None
 
 
 def list_skills(category: str | None = None, language_code: str | None = None) -> list[dict]:

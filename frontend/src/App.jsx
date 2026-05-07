@@ -4552,6 +4552,7 @@ function AppInner() {
   const bootstrapRequestIdRef = useRef(0);
   const translationBootstrapPromiseRef = useRef(null);
   const translationBootstrapReadyRef = useRef('');
+  const onAppResumeTranslationCheckRef = useRef(null);
   const todayPlanRequestIdRef = useRef(0);
   const skillReportRequestIdRef = useRef(0);
   const weeklyPlanRequestIdRef = useRef(0);
@@ -7649,7 +7650,24 @@ function AppInner() {
         items: Array.isArray(data?.items) ? data.items : [],
         snapshot_saved_at: new Date().toISOString(),
       };
-      setTodayPlan(nextPlan);
+      setTodayPlan((prevPlan) => {
+        const prevItems = Array.isArray(prevPlan?.items) ? prevPlan.items : [];
+        const prevById = Object.fromEntries(prevItems.map((it) => [String(it?.id ?? ''), it]));
+        const mergedItems = nextPlan.items.map((newItem) => {
+          const newPayload = newItem?.payload && typeof newItem.payload === 'object' ? newItem.payload : null;
+          const hasTimerData = newPayload !== null && (
+            newPayload.timer_running !== undefined || newPayload.timer_seconds !== undefined
+          );
+          if (!hasTimerData) {
+            const prevItem = prevById[String(newItem?.id ?? '')];
+            if (prevItem?.payload && typeof prevItem.payload === 'object') {
+              return { ...newItem, payload: prevItem.payload };
+            }
+          }
+          return newItem;
+        });
+        return { ...nextPlan, items: mergedItems };
+      });
       setTodayPlanSnapshotTone(tone);
       persistTodayPlanSnapshot(nextPlan);
     } catch (error) {
@@ -12081,7 +12099,9 @@ function AppInner() {
         continueSingleInstanceHere(`stale_${reason}`);
         return;
       }
-      if (isSingleInstanceWindowPreferred()) {
+      // 'mount' means this window just opened — always claim leadership so the
+      // freshest window wins without requiring visibility/focus to be ready yet.
+      if (reason === 'mount' || isSingleInstanceWindowPreferred()) {
         continueSingleInstanceHere(reason);
         return;
       }
@@ -14330,6 +14350,25 @@ function AppInner() {
   }, [sessionType, translationSessionId]);
 
   useEffect(() => {
+    onAppResumeTranslationCheckRef.current = () => {
+      const isStalePreparingScreen = (
+        !flashcardsOnly
+        && selectedSections.has('translations')
+        && Boolean(translationProgressiveFill?.active)
+        && sentences.length === 0
+      );
+      if (!isStalePreparingScreen) return;
+      translationBootstrapReadyRef.current = '';
+      translationProgressiveFillPollTokenRef.current += 1;
+      setFlashcardsOnly(false);
+      setFlashcardSessionActive(false);
+      setSelectedSections(new Set());
+      setYoutubeBackSection('');
+      setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 60);
+    };
+  }, [flashcardsOnly, selectedSections, translationProgressiveFill, sentences]);
+
+  useEffect(() => {
     const resetHomeSnapshotStartupRefresh = () => {
       todayPlanStartupRefreshDoneRef.current = false;
       skillReportStartupRefreshDoneRef.current = false;
@@ -14338,6 +14377,30 @@ function AppInner() {
     const markHomeSnapshotForeground = () => {
       resetHomeSnapshotStartupRefresh();
       setHomeSnapshotResumeTick((value) => value + 1);
+
+      // If the app was last hidden on a different calendar day and the hide happened
+      // at least 4 hours ago, treat this as a "fresh next-day open" and reset to home.
+      // This prevents stale translation state (e.g. "preparing…") from persisting
+      // across overnight suspensions.
+      const MIN_HIDE_MS_FOR_DAY_RESET = 4 * 60 * 60 * 1000; // 4 hours
+      const lastHideTs = Number(safeStorageGet('app_last_hide_ts') || 0);
+      if (lastHideTs) {
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const lastHideDateStr = new Date(lastHideTs).toISOString().slice(0, 10);
+        const hiddenForMs = Date.now() - lastHideTs;
+        if (lastHideDateStr !== todayStr && hiddenForMs >= MIN_HIDE_MS_FOR_DAY_RESET) {
+          translationBootstrapReadyRef.current = '';
+          translationProgressiveFillPollTokenRef.current += 1;
+          setFlashcardsOnly(false);
+          setFlashcardSessionActive(false);
+          setSelectedSections(new Set());
+          setYoutubeBackSection('');
+          setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 60);
+          return;
+        }
+      }
+
+      onAppResumeTranslationCheckRef.current?.();
     };
     const onVisibilityChange = () => {
       const visible = document.visibilityState !== 'hidden';
@@ -14346,6 +14409,7 @@ function AppInner() {
         resetHomeSnapshotStartupRefresh();
         translationActivityRunningRef.current = false;
         void syncTranslationSessionActivity('pause', { force: true, keepalive: true });
+        safeStorageSet('app_last_hide_ts', String(Date.now()));
       } else {
         markHomeSnapshotForeground();
       }
@@ -14355,6 +14419,7 @@ function AppInner() {
       resetHomeSnapshotStartupRefresh();
       translationActivityRunningRef.current = false;
       void syncTranslationSessionActivity('pause', { force: true, keepalive: true });
+      safeStorageSet('app_last_hide_ts', String(Date.now()));
     };
     const onPageShow = () => {
       setPageVisible(document.visibilityState !== 'hidden');

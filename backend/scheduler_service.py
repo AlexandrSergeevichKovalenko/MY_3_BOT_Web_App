@@ -46,6 +46,7 @@ import os
 import signal
 import sys
 import time
+from datetime import time as dt_time
 from zoneinfo import ZoneInfo
 
 import dramatiq
@@ -74,6 +75,7 @@ from backend.background_jobs import (  # noqa: E402
     run_flashcard_feel_cleanup_actor,
     run_tts_db_cache_cleanup_actor,
     run_tts_r2_cache_cleanup_actor,
+    run_image_quiz_r2_cleanup_actor,
     run_database_table_sizes_report_actor,
     run_tts_prewarm_scheduler_actor,
     run_tts_generation_recovery_actor,
@@ -84,6 +86,7 @@ from backend.background_jobs import (  # noqa: E402
     run_semantic_benchmark_prep_actor,
     run_semantic_audit_actor,
     run_skill_state_v2_aggregation_actor,
+    run_agent_worker_schedule_control_actor,
 )
 
 # ---------------------------------------------------------------------------
@@ -108,6 +111,35 @@ def _int_env(key: str, default: int) -> int:
 
 def _enabled(key: str, default: str = "1") -> bool:
     return str(os.getenv(key) or default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_hhmm(value: str) -> dt_time:
+    parts = value.split(":", 1)
+    if len(parts) != 2:
+        raise ValueError(f"invalid time {value!r}")
+    hour = int(parts[0])
+    minute = int(parts[1])
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        raise ValueError(f"invalid time {value!r}")
+    return dt_time(hour=hour, minute=minute)
+
+
+def _parse_hhmm_list(raw: str | None) -> list[dt_time]:
+    values: list[dt_time] = []
+    for item in str(raw or "").split(","):
+        candidate = item.strip()
+        if not candidate:
+            continue
+        values.append(_parse_hhmm(candidate))
+    return values
+
+
+def _agent_worker_schedule_timezone_name() -> str:
+    return (os.getenv("AGENT_WORKER_TIMEZONE") or "Europe/Vienna").strip() or "Europe/Vienna"
+
+
+def _agent_worker_idle_stop_grace_minutes() -> int:
+    return max(1, _int_env("AGENT_WORKER_IDLE_STOP_GRACE_MINUTES", 10))
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +194,10 @@ def _dispatch_tts_r2_cache_cleanup() -> None:
     run_tts_r2_cache_cleanup_actor.send()
 
 
+def _dispatch_image_quiz_r2_cleanup() -> None:
+    run_image_quiz_r2_cleanup_actor.send()
+
+
 def _dispatch_database_table_sizes_report() -> None:
     run_database_table_sizes_report_actor.send()
 
@@ -201,6 +237,18 @@ def _dispatch_semantic_audit() -> None:
 
 def _dispatch_skill_state_v2_aggregation() -> None:
     run_skill_state_v2_aggregation_actor.send()
+
+
+def _dispatch_agent_worker_schedule_start() -> None:
+    run_agent_worker_schedule_control_actor.send(action="start")
+
+
+def _dispatch_agent_worker_schedule_stop() -> None:
+    run_agent_worker_schedule_control_actor.send(action="stop")
+
+
+def _dispatch_agent_worker_schedule_reconcile_stop() -> None:
+    run_agent_worker_schedule_control_actor.send(action="reconcile_stop")
 
 
 # ---------------------------------------------------------------------------
@@ -406,6 +454,19 @@ def _build_scheduler():
             misfire_grace_time=3600,
         )
 
+    # -- Image-quiz R2 cleanup (weekly) --
+    if _enabled("IMAGE_QUIZ_R2_CLEANUP_ENABLED"):
+        scheduler.add_job(
+            _dispatch_image_quiz_r2_cleanup,
+            "cron",
+            day_of_week=str(os.getenv("IMAGE_QUIZ_R2_CLEANUP_DAY_OF_WEEK") or "sun").strip() or "sun",
+            hour=_int_env("IMAGE_QUIZ_R2_CLEANUP_HOUR", 3),
+            minute=_int_env("IMAGE_QUIZ_R2_CLEANUP_MINUTE", 0),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+
     # -- TTS prewarm (interval) --
     if _enabled("TTS_PREWARM_ENABLED", "0"):
         scheduler.add_job(
@@ -489,6 +550,64 @@ def _build_scheduler():
             coalesce=True,
             misfire_grace_time=max(10, interval_secs),
         )
+
+    # -- AGENT_WORKER scheduled uptime --
+    if _enabled("AGENT_WORKER_SCHEDULE_ENABLED", "0"):
+        try:
+            start_times = _parse_hhmm_list(os.getenv("AGENT_WORKER_START_TIMES") or "06:55,15:55")
+            stop_times = _parse_hhmm_list(os.getenv("AGENT_WORKER_STOP_TIMES") or "10:00,19:00")
+            if len(start_times) != len(stop_times):
+                raise ValueError(
+                    f"AGENT_WORKER_START_TIMES count {len(start_times)} does not match "
+                    f"AGENT_WORKER_STOP_TIMES count {len(stop_times)}"
+                )
+            schedule_windows = list(zip(start_times, stop_times))
+        except Exception:
+            logging.exception("scheduler_service: failed to parse AGENT_WORKER schedule")
+            schedule_windows = []
+        if schedule_windows:
+            agent_worker_tz_name = _agent_worker_schedule_timezone_name()
+            agent_worker_tz = _tz(agent_worker_tz_name, default_tz_name)
+            for index, (start_time, stop_time) in enumerate(schedule_windows):
+                scheduler.add_job(
+                    _dispatch_agent_worker_schedule_start,
+                    "cron",
+                    hour=start_time.hour,
+                    minute=start_time.minute,
+                    timezone=agent_worker_tz,
+                    id=f"agent_worker_start_{index}",
+                    max_instances=1,
+                    coalesce=True,
+                    misfire_grace_time=300,
+                )
+                scheduler.add_job(
+                    _dispatch_agent_worker_schedule_stop,
+                    "cron",
+                    hour=stop_time.hour,
+                    minute=stop_time.minute,
+                    timezone=agent_worker_tz,
+                    id=f"agent_worker_stop_{index}",
+                    max_instances=1,
+                    coalesce=True,
+                    misfire_grace_time=300,
+                )
+            scheduler.add_job(
+                _dispatch_agent_worker_schedule_reconcile_stop,
+                "interval",
+                minutes=_agent_worker_idle_stop_grace_minutes(),
+                id="agent_worker_reconcile_stop",
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=180,
+            )
+            logging.info(
+                "scheduler_service: AGENT_WORKER schedule enabled tz=%s windows=%s reconcile_minutes=%s",
+                agent_worker_tz_name,
+                [f"{start.strftime('%H:%M')}-{stop.strftime('%H:%M')}" for start, stop in schedule_windows],
+                _agent_worker_idle_stop_grace_minutes(),
+            )
+        else:
+            logging.warning("scheduler_service: AGENT_WORKER schedule enabled but no valid windows were configured")
 
     return scheduler
 

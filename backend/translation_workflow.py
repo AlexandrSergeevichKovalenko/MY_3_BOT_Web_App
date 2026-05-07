@@ -46,6 +46,7 @@ from backend.database import (
 )
 from backend.job_queue import (
     clear_active_translation_session_state,
+    clear_session_presence_card,
     clear_translation_session_card,
     clear_translation_session_state,
     get_active_translation_session_state,
@@ -295,7 +296,7 @@ def _translation_fill_reached_target(result: dict[str, Any] | None) -> bool:
 
 
 def finalize_open_translation_sessions() -> dict[str, int]:
-    """Force-close only stale unfinished translation sessions from prior dates."""
+    """Force-close all unfinished translation sessions (including current-day sessions)."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -322,18 +323,28 @@ def finalize_open_translation_sessions() -> dict[str, int]:
                     FROM bt_3_daily_sentences ds
                     WHERE ds.user_id = up.user_id
                       AND ds.session_id = up.session_id
-                      AND ds.date < CURRENT_DATE
+                      AND ds.date <= CURRENT_DATE
                   )
                   AND NOT EXISTS (
                     SELECT 1
                     FROM bt_3_daily_sentences ds
                     WHERE ds.user_id = up.user_id
                       AND ds.session_id = up.session_id
-                      AND ds.date >= CURRENT_DATE
-                  );
+                      AND ds.date > CURRENT_DATE
+                  )
+                RETURNING up.user_id;
                 """
             )
-            closed_sessions = int(cursor.rowcount or 0)
+            rows = cursor.fetchall()
+            closed_sessions = len(rows)
+            affected_user_ids = list({int(row[0]) for row in rows if row[0] is not None})
+
+    for user_id in affected_user_ids:
+        try:
+            clear_session_presence_card(int(user_id))
+        except Exception:
+            logging.warning("Failed to clear session presence card for user %s", user_id, exc_info=True)
+
     return {"closed_sessions": closed_sessions}
 
 

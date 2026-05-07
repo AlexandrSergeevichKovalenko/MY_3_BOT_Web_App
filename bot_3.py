@@ -142,6 +142,7 @@ from backend.database import (
     store_prepared_telegram_quiz,
     count_prepared_telegram_quizzes,
     count_available_image_quiz_templates,
+    count_total_active_image_quiz_templates,
     claim_prepared_telegram_quiz,
     claim_next_ready_image_quiz_template,
     create_image_quiz_dispatch,
@@ -188,6 +189,9 @@ QUIZ_PREPARED_HOURLY_TOPUP_MINUTE = max(0, min(59, int((os.getenv("QUIZ_PREPARED
 IMAGE_QUIZ_READY_TARGET_PER_USER = max(1, int((os.getenv("IMAGE_QUIZ_READY_TARGET_PER_USER") or "1").strip() or "1"))
 IMAGE_QUIZ_TOPUP_LOOKBACK_DAYS = max(1, int((os.getenv("IMAGE_QUIZ_TOPUP_LOOKBACK_DAYS") or "30").strip() or "30"))
 IMAGE_QUIZ_TOPUP_ACTIVE_USERS_LIMIT = max(1, int((os.getenv("IMAGE_QUIZ_TOPUP_ACTIVE_USERS_LIMIT") or "32").strip() or "32"))
+IMAGE_QUIZ_GLOBAL_POOL_CAP = max(1, int((os.getenv("IMAGE_QUIZ_GLOBAL_POOL_CAP") or "40").strip() or "40"))
+IMAGE_QUIZ_POOL_TOPUP_HOUR = max(0, min(23, int((os.getenv("IMAGE_QUIZ_POOL_TOPUP_HOUR") or "2").strip() or "2")))
+IMAGE_QUIZ_POOL_TOPUP_MINUTE = max(0, min(59, int((os.getenv("IMAGE_QUIZ_POOL_TOPUP_MINUTE") or "0").strip() or "0")))
 FLASHCARD_REMINDER_TIMES = [(7, 0), (16, 30)]
 active_quizzes = {}
 pending_quiz_freeform = {}
@@ -5447,31 +5451,48 @@ async def _generate_dictionary_save_options(payload: dict) -> list[dict]:
     options: list[dict] = []
 
     def _dedup_key(v: str) -> str:
-        # Collapse whitespace and remove spaces before punctuation so that
-        # "könntest ?" and "könntest?" are treated as the same variant.
         v = re.sub(r"\s+", " ", v.lower().strip())
-        v = re.sub(r"\s+([?!.,;:»\)])", r"\1", v)
-        return v
+        v = re.sub(r"[.,;:!?»)\]]+$", "", v)  # strip trailing punctuation
+        v = re.sub(r"\s+([?!.,;:»\)])", r"\1", v)  # collapse space-before-punct
+        v = re.sub(r"[,]", "", v)  # ignore commas — prevents "word" vs "word," duplicates
+        return v.strip()
 
-    def _add_option(source_value: str, target_value: str, is_original: bool = False) -> None:
+    def _add_option(source_value: str, target_value: str, is_original: bool = False) -> bool:
         s = source_value.strip()
         t = target_value.strip()
         if not s or not t:
-            return
+            return False
         key = (_dedup_key(s), _dedup_key(t))
         if key in unique:
-            return
+            return False
         unique.add(key)
         options.append({"source": s, "target": t, "is_original": bool(is_original)})
+        return True
 
-    original_query = str(payload.get("original_query") or "").strip()
-    if original_query and _normalize_dictionary_compare_key(original_query) == _normalize_dictionary_compare_key(source_text):
-        _add_option(original_query, default_option.get("target") or "", is_original=True)
+    # Option 1: canonical phrase — the LLM-normalised form with its base translation.
+    # Do NOT also add the raw original_query: it is often a punctuation-only variant
+    # of source_text and produces a visually identical first entry.
+    canonical_source = (default_option.get("source") or source_text or "").strip()
+    canonical_target = (default_option.get("target") or "").strip()
+    _add_option(canonical_source, canonical_target, is_original=True)
 
-    _add_option(default_option.get("source") or "", default_option.get("target") or "", is_original=False)
+    # Option 2: first collocation returned by the LLM that is structurally distinct
+    # from Option 1 (collocations prompt is instructed to return a shorter phrase).
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            added = _add_option(
+                item.get("source") or item.get("word_source") or "",
+                item.get("target") or item.get("word_target") or "",
+                is_original=False,
+            )
+            if added and len(options) >= 2:
+                break
 
+    # Fallback: predefined save_worthy_options from the lookup payload
     predefined = lookup.get("save_worthy_options") if isinstance(lookup, dict) else None
-    if isinstance(predefined, list):
+    if isinstance(predefined, list) and len(options) < 2:
         for item in predefined:
             if not isinstance(item, dict):
                 continue
@@ -5480,19 +5501,7 @@ async def _generate_dictionary_save_options(payload: dict) -> list[dict]:
                 item.get("target") or item.get("word_target") or "",
                 is_original=False,
             )
-            if len(options) >= 3:
-                return options[:3]
-
-    if isinstance(items, list):
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            _add_option(
-                item.get("source") or item.get("word_source") or "",
-                item.get("target") or item.get("word_target") or "",
-                is_original=False,
-            )
-            if len(options) >= 3:
+            if len(options) >= 2:
                 break
 
     return options[:3]
@@ -12024,6 +12033,22 @@ async def prepare_image_quiz_pool(context: CallbackContext, target_ready_per_use
     if not can_enqueue_background_jobs():
         logging.info("ℹ️ image quiz pool topup skipped: background jobs unavailable")
         return
+    try:
+        global_total = await asyncio.to_thread(
+            count_total_active_image_quiz_templates,
+            source_lang="ru",
+            target_lang="de",
+        )
+    except Exception:
+        logging.warning("⚠️ image quiz pool topup: failed to count global pool, proceeding", exc_info=True)
+        global_total = 0
+    if global_total >= IMAGE_QUIZ_GLOBAL_POOL_CAP:
+        logging.info(
+            "ℹ️ image quiz pool topup skipped: global pool at cap (total=%s cap=%s)",
+            global_total,
+            IMAGE_QUIZ_GLOBAL_POOL_CAP,
+        )
+        return
     candidate_user_ids = await _collect_scheduler_candidate_user_ids(
         lookback_days=IMAGE_QUIZ_TOPUP_LOOKBACK_DAYS,
         include_allowed=True,
@@ -12953,7 +12978,8 @@ def main():
                 IMAGE_QUIZ_READY_TARGET_PER_USER,
             ),
             "cron",
-            minute=QUIZ_PREPARED_HOURLY_TOPUP_MINUTE,
+            hour=IMAGE_QUIZ_POOL_TOPUP_HOUR,
+            minute=IMAGE_QUIZ_POOL_TOPUP_MINUTE,
         )
 
     # scheduler.add_job(
