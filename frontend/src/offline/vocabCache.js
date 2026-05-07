@@ -1,7 +1,7 @@
 /**
  * Offline cache — IndexedDB layer.
  *
- * Schema (DB_VERSION 2):
+ * Schema (DB_VERSION 3):
  *   Store "vocab"
  *     keyPath : "id"
  *     indexes : user_id, folder_id, created_at, user_created (compound)
@@ -19,14 +19,20 @@
  *     keyPath : "_id" (autoIncrement)
  *     Fields  : _id, user_id, card_id, rating, response_ms, queue_source, recorded_at
  *     indexes : user_id
+ *
+ *   Store "vocab_mutations"   — edit/delete operations queued while offline
+ *     keyPath : "_id" (autoIncrement)
+ *     Fields  : _id, user_id, type ('delete'|'edit'), entry_id, payload (edit only), recorded_at
+ *     indexes : user_id
  */
 
 const DB_NAME    = 'DeutschLernApp';
-const DB_VERSION = 2;
-const STORE_VOCAB       = 'vocab';
-const STORE_META        = 'vocab_meta';
-const STORE_SRS_QUEUE   = 'srs_queue';
-const STORE_SRS_PENDING = 'srs_pending';
+const DB_VERSION = 3;
+const STORE_VOCAB            = 'vocab';
+const STORE_META             = 'vocab_meta';
+const STORE_SRS_QUEUE        = 'srs_queue';
+const STORE_SRS_PENDING      = 'srs_pending';
+const STORE_VOCAB_MUTATIONS  = 'vocab_mutations';
 
 // ─── DB open ────────────────────────────────────────────────────────────────
 
@@ -64,6 +70,11 @@ function _openDB() {
 
       if (!db.objectStoreNames.contains(STORE_SRS_PENDING)) {
         const s = db.createObjectStore(STORE_SRS_PENDING, { keyPath: '_id', autoIncrement: true });
+        s.createIndex('user_id', 'user_id', { unique: false });
+      }
+
+      if (!db.objectStoreNames.contains(STORE_VOCAB_MUTATIONS)) {
+        const s = db.createObjectStore(STORE_VOCAB_MUTATIONS, { keyPath: '_id', autoIncrement: true });
         s.createIndex('user_id', 'user_id', { unique: false });
       }
     };
@@ -420,5 +431,68 @@ export async function countPendingReviews(userId) {
   const tx = _tx(db, [STORE_SRS_PENDING], 'readonly');
   return _promisifyRequest(
     tx.objectStore(STORE_SRS_PENDING).index('user_id').count(IDBKeyRange.only(userId))
+  );
+}
+
+// ─── Public API — Vocab Mutations ─────────────────────────────────────────────
+
+/**
+ * Queue a vocabulary mutation (edit or delete) recorded while offline.
+ *
+ * @param {number} userId
+ * @param {{ type: 'delete'|'edit', entry_id: number, payload?: object }} mutation
+ *   payload is only required for type='edit' and contains the API request fields
+ *   (word_de, translation_ru, dictionary_senses, folder_id, clear_folder).
+ */
+export async function addVocabMutation(userId, { type, entry_id, payload = null }) {
+  const db = await _openDB();
+  const tx = _tx(db, [STORE_VOCAB_MUTATIONS], 'readwrite');
+  tx.objectStore(STORE_VOCAB_MUTATIONS).add({
+    user_id:     userId,
+    type,
+    entry_id:    Number(entry_id),
+    payload:     payload ?? null,
+    recorded_at: new Date().toISOString(),
+  });
+  await _promisifyTx(tx);
+}
+
+/**
+ * Return all queued vocab mutations for a user, in insertion order.
+ *
+ * @param {number} userId
+ * @returns {Array}
+ */
+export async function getVocabMutations(userId) {
+  const db = await _openDB();
+  const tx = _tx(db, [STORE_VOCAB_MUTATIONS], 'readonly');
+  return _promisifyRequest(
+    tx.objectStore(STORE_VOCAB_MUTATIONS).index('user_id').getAll(IDBKeyRange.only(userId))
+  );
+}
+
+/**
+ * Remove a mutation by its IDB auto-incremented key.
+ *
+ * @param {number} mutationId  — the _id field from getVocabMutations
+ */
+export async function clearVocabMutation(mutationId) {
+  const db = await _openDB();
+  const tx = _tx(db, [STORE_VOCAB_MUTATIONS], 'readwrite');
+  tx.objectStore(STORE_VOCAB_MUTATIONS).delete(mutationId);
+  await _promisifyTx(tx);
+}
+
+/**
+ * Count pending vocab mutations for a user.
+ *
+ * @param {number} userId
+ * @returns {number}
+ */
+export async function countVocabMutations(userId) {
+  const db = await _openDB();
+  const tx = _tx(db, [STORE_VOCAB_MUTATIONS], 'readonly');
+  return _promisifyRequest(
+    tx.objectStore(STORE_VOCAB_MUTATIONS).index('user_id').count(IDBKeyRange.only(userId))
   );
 }

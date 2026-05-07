@@ -21,6 +21,10 @@ import {
   getPendingReviews,
   clearPendingReview,
   countPendingReviews,
+  addVocabMutation,
+  getVocabMutations,
+  clearVocabMutation,
+  countVocabMutations,
 } from './offline/vocabCache';
 
 import './styles/topbar-redesign.css';
@@ -4411,6 +4415,7 @@ function AppInner() {
   // Network state for offline cache
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [srsOfflinePendingCount, setSrsOfflinePendingCount] = useState(0);
+  const [vocabOfflinePendingCount, setVocabOfflinePendingCount] = useState(0);
 
   const [flashcardFolderMode, setFlashcardFolderMode] = useState('all');
   const [flashcardFolderId, setFlashcardFolderId] = useState('');
@@ -7661,6 +7666,45 @@ function AppInner() {
     }
   }, [initData, fetchWithTimeout, webappUser?.id]);
 
+  const drainOfflineVocabMutations = useCallback(async () => {
+    if (!initData || !isOfflineCacheAvailable()) return;
+    const userId = webappUser?.id ? Number(webappUser.id) : null;
+    if (!userId) return;
+    let mutations;
+    try {
+      mutations = await getVocabMutations(userId);
+    } catch (_err) {
+      return;
+    }
+    if (!mutations.length) return;
+    for (const mutation of mutations) {
+      try {
+        let endpoint;
+        let body;
+        if (mutation.type === 'delete') {
+          endpoint = '/api/webapp/vocabulary/delete';
+          body = { initData, entry_id: mutation.entry_id };
+        } else {
+          endpoint = '/api/webapp/vocabulary/edit';
+          body = { initData, entry_id: mutation.entry_id, ...(mutation.payload || {}) };
+        }
+        const response = await fetchWithTimeout(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }, 10000);
+        if (response.ok || response.status === 404) {
+          await clearVocabMutation(mutation._id);
+          setVocabOfflinePendingCount((c) => Math.max(0, c - 1));
+        } else {
+          break;
+        }
+      } catch (_err) {
+        break;
+      }
+    }
+  }, [initData, fetchWithTimeout, webappUser?.id]);
+
   const rescheduleBacklog = useCallback(async () => {
     if (!initData || srsRescheduling) return;
     setSrsRescheduling(true);
@@ -7796,6 +7840,27 @@ function AppInner() {
   const deleteVocabEntry = useCallback(async () => {
     if (!vocabDeleteItem || !initData) return;
     setVocabDeleteLoading(true);
+
+    // ── Offline path ─────────────────────────────────────────────────────────
+    const delUserId = webappUser?.id ? Number(webappUser.id) : null;
+    if (!isOnline && delUserId && isOfflineCacheAvailable()) {
+      try {
+        await addVocabMutation(delUserId, { type: 'delete', entry_id: vocabDeleteItem.id });
+        deleteCachedVocabEntry(vocabDeleteItem.id).catch(() => {});
+        setVocabItems((prev) => prev.filter((it) => it.id !== vocabDeleteItem.id));
+        setVocabTotal((prev) => Math.max(0, prev - 1));
+        setVocabOfflinePendingCount((c) => c + 1);
+        setVocabDeleteItem(null);
+        setVocabExpandedId(null);
+      } catch (_err) {
+        // ignore IDB errors — UI is already updated optimistically
+      } finally {
+        setVocabDeleteLoading(false);
+      }
+      return;
+    }
+
+    // ── Online path ───────────────────────────────────────────────────────────
     try {
       const response = await fetchWithTimeout('/api/webapp/vocabulary/delete', {
         method: 'POST',
@@ -7815,24 +7880,64 @@ function AppInner() {
     } finally {
       setVocabDeleteLoading(false);
     }
-  }, [vocabDeleteItem, initData, fetchWithTimeout]);
+  }, [vocabDeleteItem, initData, fetchWithTimeout, isOnline, webappUser?.id]);
 
   const saveVocabEdit = useCallback(async () => {
     if (!vocabEditItem || !initData) return;
     setVocabEditLoading(true);
     setVocabEditError('');
-    try {
-      const supportsMeanings = canEditSavedEntryMeanings(vocabEditItem);
-      const primaryMeaning = vocabEditTrans.trim();
-      const secondaryMeaning = vocabEditTransSecondary.trim();
-      const tertiaryMeaning = vocabEditTransTertiary.trim();
-      if (supportsMeanings && !primaryMeaning) {
-        setVocabEditError(tr('Основное значение не должно быть пустым.', 'Die Hauptbedeutung darf nicht leer sein.'));
+
+    const supportsMeanings = canEditSavedEntryMeanings(vocabEditItem);
+    const primaryMeaning = vocabEditTrans.trim();
+    const secondaryMeaning = vocabEditTransSecondary.trim();
+    const tertiaryMeaning = vocabEditTransTertiary.trim();
+    const folderId = vocabEditFolder === 'none' ? null : Number(vocabEditFolder);
+    const clearFolder = vocabEditFolder === 'none';
+    const editUserId = webappUser?.id ? Number(webappUser.id) : null;
+
+    if (supportsMeanings && !primaryMeaning) {
+      setVocabEditError(tr('Основное значение не должно быть пустым.', 'Die Hauptbedeutung darf nicht leer sein.'));
+      setVocabEditLoading(false);
+      return;
+    }
+
+    // ── Offline path ─────────────────────────────────────────────────────────
+    if (!isOnline && editUserId && isOfflineCacheAvailable()) {
+      try {
+        const editPayload = {
+          word_de:           vocabEditWord.trim() || undefined,
+          translation_ru:    primaryMeaning || undefined,
+          dictionary_senses: supportsMeanings
+            ? [primaryMeaning, secondaryMeaning, tertiaryMeaning]
+            : undefined,
+          folder_id:   folderId,
+          clear_folder: clearFolder,
+        };
+        await addVocabMutation(editUserId, { type: 'edit', entry_id: vocabEditItem.id, payload: editPayload });
+        setVocabOfflinePendingCount((c) => c + 1);
+        // Optimistic local update
+        const localItem = {
+          ...vocabEditItem,
+          word_de:          vocabEditWord.trim() || vocabEditItem.word_de,
+          translation_ru:   primaryMeaning || vocabEditItem.translation_ru,
+          folder_id:        folderId,
+          display_word:     vocabEditWord.trim() || vocabEditItem.word_de || vocabEditItem.display_word,
+          display_translation: primaryMeaning || vocabEditItem.translation_ru || vocabEditItem.display_translation,
+        };
+        setVocabItems((prev) => prev.map((it) => it.id === localItem.id ? localItem : it));
+        updateCachedVocabEntry(editUserId, localItem).catch(() => {});
+        setVocabEditItem(null);
+        setVocabExpandedId(null);
+      } catch (_err) {
+        setVocabEditError(tr('Ошибка сохранения офлайн', 'Offline-Speicherfehler'));
+      } finally {
         setVocabEditLoading(false);
-        return;
       }
-      const folderId = vocabEditFolder === 'none' ? null : Number(vocabEditFolder);
-      const clearFolder = vocabEditFolder === 'none';
+      return;
+    }
+
+    // ── Online path ───────────────────────────────────────────────────────────
+    try {
       const response = await fetchWithTimeout('/api/webapp/vocabulary/edit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -7896,6 +8001,7 @@ function AppInner() {
     fetchWithTimeout,
     tr,
     webappUser?.id,
+    isOnline,
   ]);
 
   const renameFolderSubmit = useCallback(async () => {
@@ -14187,20 +14293,25 @@ function AppInner() {
     };
   }, []);
 
-  // Load pending count on mount, drain if already online.
+  // Load pending counts on mount.
   useEffect(() => {
     const userId = webappUser?.id ? Number(webappUser.id) : null;
     if (!userId || !isOfflineCacheAvailable()) return;
-    countPendingReviews(userId)
-      .then((count) => setSrsOfflinePendingCount(count))
-      .catch(() => {});
+    Promise.all([
+      countPendingReviews(userId),
+      countVocabMutations(userId),
+    ]).then(([srsCount, vocabCount]) => {
+      setSrsOfflinePendingCount(srsCount);
+      setVocabOfflinePendingCount(vocabCount);
+    }).catch(() => {});
   }, [webappUser?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Drain pending reviews whenever we (re)connect.
+  // Drain all offline queues whenever we (re)connect.
   useEffect(() => {
     if (!isOnline) return;
     void drainOfflineSrsReviews();
-  }, [isOnline, drainOfflineSrsReviews]);
+    void drainOfflineVocabMutations();
+  }, [isOnline, drainOfflineSrsReviews, drainOfflineVocabMutations]);
 
   const fsrsSectionActive = Boolean(
     initData
@@ -25687,13 +25798,24 @@ function AppInner() {
 
                       return (
                         <div className="vocab-library">
-                          {!isOnline && (
-                            <div className="vocab-offline-banner">
-                              <span className="vocab-offline-icon">📵</span>
+                          {(!isOnline || vocabOfflinePendingCount > 0) && (
+                            <div className={`vocab-offline-banner ${!isOnline ? '' : 'is-syncing'}`}>
+                              <span className="vocab-offline-icon">
+                                {!isOnline ? '📵' : '↑'}
+                              </span>
                               <span className="vocab-offline-text">
-                                {tr('Офлайн', 'Offline')}
-                                {offlineMeta && (
-                                  <> · {new Date(offlineMeta).toLocaleDateString(uiLang === 'de' ? 'de-DE' : 'ru-RU', { day: 'numeric', month: 'short' })}</>
+                                {!isOnline ? (
+                                  <>
+                                    {tr('Офлайн', 'Offline')}
+                                    {offlineMeta && (
+                                      <> · {new Date(offlineMeta).toLocaleDateString(uiLang === 'de' ? 'de-DE' : 'ru-RU', { day: 'numeric', month: 'short' })}</>
+                                    )}
+                                    {vocabOfflinePendingCount > 0 && (
+                                      <> · {vocabOfflinePendingCount} {tr('несинхр.', 'offline')}</>
+                                    )}
+                                  </>
+                                ) : (
+                                  <>{tr('синхр.', 'sync')} {vocabOfflinePendingCount}</>
                                 )}
                               </span>
                             </div>

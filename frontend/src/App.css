@@ -5926,6 +5926,13 @@ body {
   background: rgba(245, 158, 11, 0.12);
   border: 1px solid rgba(245, 158, 11, 0.3);
 }
+.vocab-offline-banner.is-syncing {
+  background: rgba(16, 185, 129, 0.10);
+  border-color: rgba(16, 185, 129, 0.26);
+}
+.vocab-offline-banner.is-syncing .vocab-offline-text {
+  color: #10B981;
+}
 .vocab-offline-icon {
   font-size: 14px;
   line-height: 1;
@@ -6717,6 +6724,13 @@ body {
 }
 .webapp-page.is-theme-light .vocab-offline-text {
   color: #9a6400;
+}
+.webapp-page.is-theme-light .vocab-offline-banner.is-syncing {
+  background: rgba(5, 120, 85, 0.08);
+  border-color: rgba(5, 120, 85, 0.22);
+}
+.webapp-page.is-theme-light .vocab-offline-banner.is-syncing .vocab-offline-text {
+  color: #0a7a57;
 }
 .webapp-page.is-theme-light .vocab-stats-total {
   color: #7a6552;
