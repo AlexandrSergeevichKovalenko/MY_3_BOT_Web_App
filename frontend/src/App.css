@@ -15657,9 +15657,9 @@ body {
 
 .weekly-plan-head-toolbar {
   display: flex;
-  align-items: flex-end;
-  gap: 12px;
-  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: nowrap;
 }
 
 .weekly-plan-period-select {
@@ -15686,15 +15686,20 @@ body {
 }
 
 .weekly-plan-period {
-  min-height: 40px;
+  flex: 1;
+  min-height: 36px;
   display: inline-flex;
   align-items: center;
-  padding: 0 16px;
-  border-radius: 999px;
+  justify-content: center;
+  padding: 0 12px;
+  border-radius: 12px;
   border: 1px solid var(--home-border);
   background: var(--home-bg-card-alt);
   color: var(--home-text-muted);
-  font-size: 14px;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .weekly-plan-form {
@@ -16414,31 +16419,39 @@ body {
 .weekly-plan-metrics-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
+  gap: 10px;
 }
 
 .weekly-plan-metric-compact-top {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
 }
 
 .weekly-plan-metric-compact-top h4 {
   margin: 0;
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.3;
   font-weight: 600;
   color: var(--home-text-title);
   flex: 1;
   min-width: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .weekly-plan-metrics-grid .weekly-plan-metric-card {
   cursor: pointer;
   transition: border-color 140ms ease, background 140ms ease;
-  gap: 12px;
-  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px;
+  min-height: 108px;
 }
 
 .weekly-plan-metrics-grid .weekly-plan-metric-card:hover {
@@ -16447,24 +16460,32 @@ body {
 }
 
 .weekly-plan-metrics-grid .weekly-plan-progress-ring {
-  width: 52px;
-  height: 52px;
+  width: 46px;
+  height: 46px;
   flex-shrink: 0;
 }
 
 .weekly-plan-metrics-grid .weekly-plan-progress-ring span {
+  font-size: 11px;
+}
+
+.weekly-plan-metrics-grid .weekly-plan-values-compact {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
   font-size: 12px;
 }
 
 .weekly-plan-period-select-inline {
   min-height: 36px;
-  padding: 0 12px;
+  padding: 0 10px;
   border: 1px solid var(--home-border);
   background: var(--home-bg-card-alt);
   color: var(--home-text-secondary);
   border-radius: 12px;
   font-size: 13px;
   line-height: 1.4;
+  flex-shrink: 0;
 }
 
 .weekly-metric-modal-overlay {
@@ -19362,6 +19383,22 @@ body {
   --home-text-muted: #5a4a39;
   --home-text-subtle: #7a6854;
   --home-shadow-card: 0 18px 35px rgba(105, 78, 47, 0.13);
+}
+.webapp-page.is-theme-light .weekly-plan-metric-card.is-translations {
+  border-color: rgba(59,130,246,0.32);
+  background: linear-gradient(135deg, rgba(219,234,254,0.7), #fff8ee);
+}
+.webapp-page.is-theme-light .weekly-plan-metric-card.is-words {
+  border-color: rgba(16,185,129,0.32);
+  background: linear-gradient(135deg, rgba(209,250,229,0.7), #fff8ee);
+}
+.webapp-page.is-theme-light .weekly-plan-metric-card.is-agent {
+  border-color: rgba(245,158,11,0.38);
+  background: linear-gradient(135deg, rgba(254,243,199,0.8), #fff8ee);
+}
+.webapp-page.is-theme-light .weekly-plan-metric-card.is-reading {
+  border-color: rgba(139,92,246,0.32);
+  background: linear-gradient(135deg, rgba(237,233,254,0.7), #fff8ee);
 }
 
 .webapp-page.is-theme-light .webapp-section.webapp-section-translations {

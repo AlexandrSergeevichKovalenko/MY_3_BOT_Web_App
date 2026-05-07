@@ -3035,25 +3035,25 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
   const weeklyMetricRows = useMemo(() => ([
     {
       key: 'translations',
-      title: tr('Переводы предложений', 'Satz-Uebersetzungen'),
+      title: tr('Переводы', 'Übersetzungen'),
       unit: tr('шт', 'Stk'),
       data: weeklyMetrics.translations || {},
     },
     {
       key: 'learned_words',
-      title: tr('Выученные слова (Space Repetition)', 'Gelernte Woerter (Space Repetition)'),
-      unit: tr('слов', 'Woerter'),
+      title: tr('Слова SRS', 'Vokabeln SRS'),
+      unit: tr('слов', 'Wörter'),
       data: weeklyMetrics.learned_words || {},
     },
     {
       key: 'agent_minutes',
-      title: tr('Минуты разговора с агентом', 'Gesprächsminuten mit Assistent'),
+      title: tr('Разговор', 'Gespräch'),
       unit: tr('мин', 'Min'),
       data: weeklyMetrics.agent_minutes || {},
     },
     {
       key: 'reading_minutes',
-      title: tr('Чтение (минуты)', 'Lesen (Minuten)'),
+      title: tr('Чтение', 'Lesen'),
       unit: tr('мин', 'Min'),
       data: weeklyMetrics.reading_minutes || {},
     },
