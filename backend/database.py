@@ -13734,6 +13734,7 @@ def list_user_vocabulary(
                     f.name          AS folder_name,
                     f.icon          AS folder_icon,
                     f.color         AS folder_color,
+                    q.response_json,
                     COALESCE(
                         NULLIF(q.word_de, ''),
                         q.word_ru
@@ -13757,6 +13758,16 @@ def list_user_vocabulary(
 
     items = []
     for row in rows:
+        response_json = _coerce_json_object(row[19])
+        dictionary_senses = response_json.get("dictionary_senses") if isinstance(response_json.get("dictionary_senses"), list) else []
+        primary_sense = next(
+            (
+                str(item.get("value") or "").strip()
+                for item in dictionary_senses
+                if isinstance(item, dict) and str(item.get("value") or "").strip()
+            ),
+            "",
+        )
         srs_due_at = row[11]
         srs_status = row[10]
         now_utc = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
@@ -13789,8 +13800,9 @@ def list_user_vocabulary(
             "folder_name": row[16] or None,
             "folder_icon": row[17] or None,
             "folder_color": row[18] or None,
-            "display_word": row[19] or "",
-            "display_translation": row[20] or "",
+            "response_json": response_json,
+            "display_word": row[20] or "",
+            "display_translation": primary_sense or row[21] or "",
         })
 
     return {"items": items, "total": total, "limit": limit, "offset": offset}
@@ -13882,6 +13894,7 @@ def edit_vocabulary_entry(
     entry_id: int,
     word_de: str | None = None,
     translation_ru: str | None = None,
+    dictionary_senses: list | None = None,
     folder_id: int | None = None,
     clear_folder: bool = False,
 ) -> dict | None:
@@ -13889,26 +13902,128 @@ def edit_vocabulary_entry(
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                "SELECT id FROM bt_3_webapp_dictionary_queries WHERE id = %s AND user_id = %s",
+                """
+                SELECT id, response_json
+                FROM bt_3_webapp_dictionary_queries
+                WHERE id = %s AND user_id = %s
+                """,
                 (int(entry_id), int(user_id)),
             )
-            if not cursor.fetchone():
+            existing_row = cursor.fetchone()
+            if not existing_row:
                 return None
+            response_json = _coerce_json_object(existing_row[1])
 
             set_parts = []
             params: list = []
+            normalized_word = word_de.strip() if isinstance(word_de, str) else None
+            normalized_translation = translation_ru.strip() if isinstance(translation_ru, str) else None
+            normalized_senses = None
+            if dictionary_senses is not None:
+                normalized_senses = []
+                for item in dictionary_senses:
+                    if isinstance(item, dict):
+                        value = str(item.get("value") or "").strip()
+                    else:
+                        value = str(item or "").strip()
+                    if value:
+                        normalized_senses.append(value)
+                normalized_senses = normalized_senses[:3]
 
             if word_de is not None:
                 set_parts.append("word_de = %s")
-                params.append(word_de.strip())
+                params.append(normalized_word)
                 set_parts.append("word_ru = %s")
-                params.append(word_de.strip())
+                params.append(normalized_word)
+                response_json["word_de"] = normalized_word
+                response_json["word_ru"] = normalized_word
+                response_json["source_text"] = normalized_word
 
             if translation_ru is not None:
                 set_parts.append("translation_ru = %s")
-                params.append(translation_ru.strip())
+                params.append(normalized_translation)
                 set_parts.append("translation_de = %s")
-                params.append(translation_ru.strip())
+                params.append(normalized_translation)
+                response_json["translation_ru"] = normalized_translation
+                response_json["translation_de"] = normalized_translation
+                response_json["target_text"] = normalized_translation
+                meanings = response_json.get("meanings")
+                if isinstance(meanings, dict) and isinstance(meanings.get("primary"), dict):
+                    meanings["primary"]["value"] = normalized_translation
+                translations = response_json.get("translations")
+                if isinstance(translations, list):
+                    first_translation = next((entry for entry in translations if isinstance(entry, dict)), None)
+                    if isinstance(first_translation, dict):
+                        first_translation["value"] = normalized_translation
+                senses = response_json.get("dictionary_senses")
+                if isinstance(senses, list) and senses:
+                    first_sense = senses[0]
+                    if isinstance(first_sense, dict):
+                        first_sense["value"] = normalized_translation
+
+            if normalized_senses is not None and normalized_senses:
+                primary_value = normalized_senses[0]
+                set_parts.append("translation_ru = %s")
+                params.append(primary_value)
+                set_parts.append("translation_de = %s")
+                params.append(primary_value)
+                response_json["translation_ru"] = primary_value
+                response_json["translation_de"] = primary_value
+                response_json["target_text"] = primary_value
+                existing_primary = response_json.get("meanings", {}).get("primary") if isinstance(response_json.get("meanings"), dict) else {}
+                existing_secondary = response_json.get("meanings", {}).get("secondary") if isinstance(response_json.get("meanings", {}).get("secondary"), list) else []
+                existing_senses = response_json.get("dictionary_senses") if isinstance(response_json.get("dictionary_senses"), list) else []
+                rebuilt_senses = []
+                rebuilt_secondary = []
+                rebuilt_translations = []
+                for index, value in enumerate(normalized_senses):
+                    base_sense = existing_senses[index] if index < len(existing_senses) and isinstance(existing_senses[index], dict) else {}
+                    if index == 0:
+                        base_meaning = existing_primary if isinstance(existing_primary, dict) else {}
+                    else:
+                        candidate_secondary = existing_secondary[index - 1] if index - 1 < len(existing_secondary) and isinstance(existing_secondary[index - 1], dict) else {}
+                        base_meaning = candidate_secondary
+                    context_value = str(base_sense.get("context") or base_meaning.get("context") or "").strip()
+                    example_source = str(base_sense.get("example_source") or base_meaning.get("example_source") or "").strip()
+                    example_target = str(base_sense.get("example_target") or base_meaning.get("example_target") or "").strip()
+                    rebuilt_sense = {
+                        "rank": index + 1,
+                        "label": "main" if index == 0 else "secondary",
+                        "value": value,
+                        "context": context_value,
+                        "example_source": example_source,
+                        "example_target": example_target,
+                    }
+                    rebuilt_senses.append(rebuilt_sense)
+                    rebuilt_translations.append(
+                        {
+                            "value": value,
+                            "context": context_value,
+                            "is_primary": index == 0,
+                        }
+                    )
+                    if index > 0:
+                        rebuilt_secondary.append(
+                            {
+                                "value": value,
+                                "priority": index + 1,
+                                "context": context_value,
+                                "example_source": example_source,
+                                "example_target": example_target,
+                            }
+                        )
+                response_json["dictionary_senses"] = rebuilt_senses
+                response_json["translations"] = rebuilt_translations
+                response_json["meanings"] = {
+                    "primary": {
+                        "value": rebuilt_senses[0]["value"],
+                        "priority": 1,
+                        "context": rebuilt_senses[0]["context"],
+                        "example_source": rebuilt_senses[0]["example_source"],
+                        "example_target": rebuilt_senses[0]["example_target"],
+                    },
+                    "secondary": rebuilt_secondary,
+                }
 
             if clear_folder:
                 set_parts.append("folder_id = NULL")
@@ -13916,11 +14031,15 @@ def edit_vocabulary_entry(
                 set_parts.append("folder_id = %s")
                 params.append(int(folder_id))
 
+            if word_de is not None or translation_ru is not None or normalized_senses is not None:
+                set_parts.append("response_json = %s")
+                params.append(json.dumps(response_json, ensure_ascii=False))
+
             if not set_parts:
                 cursor.execute(
                     """
                     SELECT id, word_ru, translation_de, word_de, translation_ru,
-                           source_lang, target_lang, folder_id, created_at, is_learned
+                           source_lang, target_lang, folder_id, created_at, is_learned, response_json
                     FROM bt_3_webapp_dictionary_queries WHERE id = %s
                     """,
                     (int(entry_id),),
@@ -13934,7 +14053,7 @@ def edit_vocabulary_entry(
                     SET {', '.join(set_parts)}
                     WHERE id = %s AND user_id = %s
                     RETURNING id, word_ru, translation_de, word_de, translation_ru,
-                              source_lang, target_lang, folder_id, created_at, is_learned
+                              source_lang, target_lang, folder_id, created_at, is_learned, response_json
                     """,
                     params,
                 )
@@ -13952,6 +14071,7 @@ def edit_vocabulary_entry(
                 "folder_id": row[7],
                 "created_at": row[8].isoformat() if row[8] else None,
                 "is_learned": bool(row[9]),
+                "response_json": _coerce_json_object(row[10]),
             }
 
 

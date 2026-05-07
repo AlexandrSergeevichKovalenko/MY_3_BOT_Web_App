@@ -4367,6 +4367,8 @@ function AppInner() {
   const [vocabEditItem, setVocabEditItem] = useState(null);
   const [vocabEditWord, setVocabEditWord] = useState('');
   const [vocabEditTrans, setVocabEditTrans] = useState('');
+  const [vocabEditTransSecondary, setVocabEditTransSecondary] = useState('');
+  const [vocabEditTransTertiary, setVocabEditTransTertiary] = useState('');
   const [vocabEditFolder, setVocabEditFolder] = useState('none');
   const [vocabEditLoading, setVocabEditLoading] = useState(false);
   const [vocabEditError, setVocabEditError] = useState('');
@@ -7606,7 +7608,12 @@ function AppInner() {
         return;
       }
       const data = await response.json();
-      const newItems = Array.isArray(data.items) ? data.items : [];
+      const newItems = Array.isArray(data.items)
+        ? data.items.map((item) => ({
+            ...item,
+            response_json: coerceResponseJson(item.response_json),
+          }))
+        : [];
       if (reset) {
         setVocabItems(newItems);
         setVocabOffset(newItems.length);
@@ -7650,6 +7657,15 @@ function AppInner() {
     setVocabEditLoading(true);
     setVocabEditError('');
     try {
+      const supportsMeanings = canEditSavedEntryMeanings(vocabEditItem);
+      const primaryMeaning = vocabEditTrans.trim();
+      const secondaryMeaning = vocabEditTransSecondary.trim();
+      const tertiaryMeaning = vocabEditTransTertiary.trim();
+      if (supportsMeanings && !primaryMeaning) {
+        setVocabEditError(tr('Основное значение не должно быть пустым.', 'Die Hauptbedeutung darf nicht leer sein.'));
+        setVocabEditLoading(false);
+        return;
+      }
       const folderId = vocabEditFolder === 'none' ? null : Number(vocabEditFolder);
       const clearFolder = vocabEditFolder === 'none';
       const response = await fetchWithTimeout('/api/webapp/vocabulary/edit', {
@@ -7659,7 +7675,10 @@ function AppInner() {
           initData,
           entry_id: vocabEditItem.id,
           word_de: vocabEditWord.trim() || undefined,
-          translation_ru: vocabEditTrans.trim() || undefined,
+          translation_ru: primaryMeaning || undefined,
+          dictionary_senses: supportsMeanings
+            ? [primaryMeaning, secondaryMeaning, tertiaryMeaning]
+            : undefined,
           folder_id: folderId,
           clear_folder: clearFolder,
         }),
@@ -7672,6 +7691,10 @@ function AppInner() {
       const data = await response.json();
       const updated = data.item;
       if (updated) {
+        const updatedResponseJson = coerceResponseJson(updated.response_json);
+        const updatedPrimarySense = Array.isArray(updatedResponseJson.dictionary_senses)
+          ? String(updatedResponseJson.dictionary_senses.find((entry) => entry && typeof entry === 'object' && String(entry.value || '').trim())?.value || '').trim()
+          : '';
         setVocabItems((prev) => prev.map((it) => it.id === updated.id
           ? {
               ...it,
@@ -7680,8 +7703,9 @@ function AppInner() {
               translation_ru: updated.translation_ru,
               translation_de: updated.translation_de,
               folder_id: updated.folder_id,
+              response_json: updatedResponseJson,
               display_word: updated.word_de || updated.word_ru || it.display_word,
-              display_translation: updated.translation_ru || updated.translation_de || it.display_translation,
+              display_translation: updatedPrimarySense || updated.translation_ru || updated.translation_de || it.display_translation,
             }
           : it));
       }
@@ -7692,7 +7716,17 @@ function AppInner() {
     } finally {
       setVocabEditLoading(false);
     }
-  }, [vocabEditItem, vocabEditWord, vocabEditTrans, vocabEditFolder, initData, fetchWithTimeout, tr]);
+  }, [
+    vocabEditItem,
+    vocabEditWord,
+    vocabEditTrans,
+    vocabEditTransSecondary,
+    vocabEditTransTertiary,
+    vocabEditFolder,
+    initData,
+    fetchWithTimeout,
+    tr,
+  ]);
 
   const buildWeeklyPlanDraftFromPlan = useCallback((plan) => ({
     translations_goal: String(Number(plan?.plan?.translations_goal || 0)),
@@ -15950,6 +15984,98 @@ function AppInner() {
   const getDictionarySecondaryMeanings = (item) => {
     const secondary = item?.meanings?.secondary;
     return Array.isArray(secondary) ? secondary.filter((entry) => entry && typeof entry === 'object') : [];
+  };
+  const isSingleWordSavedEntry = (value, lang) => {
+    const text = String(value || '').trim();
+    if (!text) return false;
+    const tokens = text.match(/[0-9A-Za-zÀ-ÿА-Яа-яЁёÄÖÜäöüß'-]+/gu) || [];
+    if (tokens.length === 0) return false;
+    if (tokens.length >= 5) return false;
+    if (tokens.length >= 3 && /[.!?]/.test(text)) return false;
+    const normalizedLang = normalizeLangCode(lang || '');
+    if (
+      normalizedLang === 'de'
+      && tokens.length === 2
+      && new Set(['der', 'die', 'das', 'den', 'dem', 'des', 'ein', 'eine', 'einen', 'einem', 'einer', 'eines']).has(tokens[0].toLowerCase())
+    ) {
+      return true;
+    }
+    return tokens.length === 1;
+  };
+  const getSavedEntryRankedMeanings = (item) => {
+    const responseJson = item?.response_json && typeof item.response_json === 'object' ? item.response_json : {};
+    const dictionarySenses = Array.isArray(responseJson.dictionary_senses)
+      ? responseJson.dictionary_senses.filter((entry) => entry && typeof entry === 'object' && String(entry.value || '').trim())
+      : [];
+    if (dictionarySenses.length > 0) return dictionarySenses;
+    const entryKind = String(responseJson.entry_kind || '').trim().toLowerCase();
+    const sourceText = String(
+      responseJson.source_text
+      || item?.word_ru
+      || responseJson.word_ru
+      || item?.word_de
+      || responseJson.word_de
+      || ''
+    ).trim();
+    const sourceLang = item?.source_lang || responseJson.source_lang || '';
+    if (entryKind && entryKind !== 'word') return [];
+    if (!entryKind && !isSingleWordSavedEntry(sourceText, sourceLang)) return [];
+    const fallback = [];
+    const primary = getDictionaryPrimaryMeaning(responseJson);
+    if (primary) {
+      fallback.push({ ...primary, rank: 1, label: 'main' });
+    }
+    getDictionarySecondaryMeanings(responseJson).forEach((entry, index) => {
+      fallback.push({ ...entry, rank: index + 2, label: 'secondary' });
+    });
+    return fallback;
+  };
+  const canEditSavedEntryMeanings = (item) => {
+    if (!item) return false;
+    const responseJson = item?.response_json && typeof item.response_json === 'object' ? item.response_json : {};
+    const entryKind = String(responseJson.entry_kind || '').trim().toLowerCase();
+    if (entryKind === 'word') return true;
+    if (getSavedEntryRankedMeanings(item).length > 0) return true;
+    const sourceText = String(
+      responseJson.source_text
+      || item?.word_ru
+      || responseJson.word_ru
+      || item?.word_de
+      || responseJson.word_de
+      || ''
+    ).trim();
+    return isSingleWordSavedEntry(sourceText, item?.source_lang || responseJson.source_lang || '');
+  };
+  const getSavedEntrySenseValues = (item) => {
+    const meanings = getSavedEntryRankedMeanings(item);
+    const primaryFallback = String(item?.translation_ru || item?.translation_de || item?.display_translation || '').trim();
+    return [
+      String(meanings[0]?.value || primaryFallback).trim(),
+      String(meanings[1]?.value || '').trim(),
+      String(meanings[2]?.value || '').trim(),
+    ];
+  };
+  const normalizeComparableText = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const getSavedEntryMeaningRows = (item, limit = 3) => {
+    const rows = [];
+    const seen = new Set();
+    getSavedEntryRankedMeanings(item).forEach((sense, index) => {
+      const text = formatDictionaryMeaningText(sense);
+      const normalized = normalizeComparableText(text);
+      if (!normalized || seen.has(normalized)) return;
+      seen.add(normalized);
+      rows.push({
+        rank: Number(sense?.rank) > 0 ? Number(sense.rank) : index + 1,
+        text,
+      });
+    });
+    return rows.slice(0, Math.max(0, Number(limit) || 0));
+  };
+  const getSavedEntrySupplementalMeaningRows = (item, baseText = '', limit = 2) => {
+    const normalizedBase = normalizeComparableText(baseText);
+    return getSavedEntryMeaningRows(item, 5)
+      .filter((row) => normalizeComparableText(row.text) !== normalizedBase)
+      .slice(0, Math.max(0, Number(limit) || 0));
   };
   const getDictionaryPronunciationRows = (item) => {
     const pronunciation = item?.pronunciation;
@@ -24993,6 +25119,7 @@ function AppInner() {
                                   const folder = (vocabFoldersMeta?.folders || []).find((f) => f.id === item.folder_id);
                                   const displayWord = item.display_word || item.word_de || item.word_ru || '—';
                                   const displayTrans = item.display_translation || item.translation_ru || item.translation_de || '';
+                                  const savedMeanings = getSavedEntryRankedMeanings(item);
                                   const partOfSpeech = item.srs_label !== 'none'
                                     ? `${srsLabels[item.srs_label]} · ${tr('повт.', 'Wdh.')} ${item.srs_reps}`
                                     : null;
@@ -25025,28 +25152,67 @@ function AppInner() {
                                         <span className={`vocab-expand-arrow ${isExpanded ? 'is-open' : ''}`}>›</span>
                                       </button>
                                       {isExpanded && (
-                                        <div className="vocab-word-actions">
-                                          <button
-                                            type="button"
-                                            className="vocab-action-btn vocab-action-edit"
-                                            onClick={() => {
-                                              setVocabEditItem(item);
-                                              setVocabEditWord(item.word_de || item.word_ru || '');
-                                              setVocabEditTrans(item.translation_ru || item.translation_de || '');
-                                              setVocabEditFolder(item.folder_id ? String(item.folder_id) : 'none');
-                                              setVocabEditError('');
-                                            }}
-                                          >
-                                            ✏️ {tr('Редактировать', 'Bearbeiten')}
-                                          </button>
-                                          <button
-                                            type="button"
-                                            className="vocab-action-btn vocab-action-delete"
-                                            onClick={() => setVocabDeleteItem(item)}
-                                          >
-                                            🗑 {tr('Удалить', 'Löschen')}
-                                          </button>
-                                        </div>
+                                        <>
+                                          {savedMeanings.length > 0 && (
+                                            <div className="vocab-word-details">
+                                              <div className="vocab-word-detail-title">
+                                                {tr('Значения', 'Bedeutungen')}
+                                              </div>
+                                              <div className="vocab-word-sense-list">
+                                                {savedMeanings.map((sense, index) => {
+                                                  const example = formatDictionaryBilingualExample(sense?.example_source, sense?.example_target);
+                                                  const rank = Number(sense?.rank) > 0 ? Number(sense.rank) : index + 1;
+                                                  const isPrimary = index === 0 || String(sense?.label || '').trim().toLowerCase() === 'main';
+                                                  return (
+                                                    <div key={`${item.id}-sense-${rank}-${String(sense?.value || '')}`} className="vocab-word-sense-item">
+                                                      <span className="vocab-word-sense-rank">{rank}.</span>
+                                                      <div className="vocab-word-sense-body">
+                                                        <div className="vocab-word-sense-line">
+                                                          <span className="vocab-word-sense-text">{formatDictionaryMeaningText(sense)}</span>
+                                                          {isPrimary && (
+                                                            <span className="vocab-word-sense-badge">
+                                                              {tr('основное', 'Haupt')}
+                                                            </span>
+                                                          )}
+                                                        </div>
+                                                        {example && (
+                                                          <div className="vocab-word-sense-example">
+                                                            <em>{example}</em>
+                                                          </div>
+                                                        )}
+                                                      </div>
+                                                    </div>
+                                                  );
+                                                })}
+                                              </div>
+                                            </div>
+                                          )}
+                                          <div className="vocab-word-actions">
+                                            <button
+                                              type="button"
+                                              className="vocab-action-btn vocab-action-edit"
+                                              onClick={() => {
+                                                const [primaryMeaning, secondaryMeaning, tertiaryMeaning] = getSavedEntrySenseValues(item);
+                                                setVocabEditItem(item);
+                                                setVocabEditWord(item.word_de || item.word_ru || '');
+                                                setVocabEditTrans(primaryMeaning || item.translation_ru || item.translation_de || '');
+                                                setVocabEditTransSecondary(secondaryMeaning);
+                                                setVocabEditTransTertiary(tertiaryMeaning);
+                                                setVocabEditFolder(item.folder_id ? String(item.folder_id) : 'none');
+                                                setVocabEditError('');
+                                              }}
+                                            >
+                                              ✏️ {tr('Редактировать', 'Bearbeiten')}
+                                            </button>
+                                            <button
+                                              type="button"
+                                              className="vocab-action-btn vocab-action-delete"
+                                              onClick={() => setVocabDeleteItem(item)}
+                                            >
+                                              🗑 {tr('Удалить', 'Löschen')}
+                                            </button>
+                                          </div>
+                                        </>
                                       )}
                                     </div>
                                   );
@@ -25553,15 +25719,47 @@ function AppInner() {
                               onChange={(e) => setVocabEditWord(e.target.value)}
                             />
                           </div>
-                          <div className="vocab-modal-field">
-                            <label className="vocab-modal-label">{tr('Перевод', 'Übersetzung')}</label>
-                            <input
-                              className="vocab-modal-input"
-                              type="text"
-                              value={vocabEditTrans}
-                              onChange={(e) => setVocabEditTrans(e.target.value)}
-                            />
-                          </div>
+                          {canEditSavedEntryMeanings(vocabEditItem) ? (
+                            <>
+                              <div className="vocab-modal-field">
+                                <label className="vocab-modal-label">{tr('Основное значение', 'Hauptbedeutung')}</label>
+                                <input
+                                  className="vocab-modal-input"
+                                  type="text"
+                                  value={vocabEditTrans}
+                                  onChange={(e) => setVocabEditTrans(e.target.value)}
+                                />
+                              </div>
+                              <div className="vocab-modal-field">
+                                <label className="vocab-modal-label">{tr('2. значение', '2. Bedeutung')}</label>
+                                <input
+                                  className="vocab-modal-input"
+                                  type="text"
+                                  value={vocabEditTransSecondary}
+                                  onChange={(e) => setVocabEditTransSecondary(e.target.value)}
+                                />
+                              </div>
+                              <div className="vocab-modal-field">
+                                <label className="vocab-modal-label">{tr('3. значение', '3. Bedeutung')}</label>
+                                <input
+                                  className="vocab-modal-input"
+                                  type="text"
+                                  value={vocabEditTransTertiary}
+                                  onChange={(e) => setVocabEditTransTertiary(e.target.value)}
+                                />
+                              </div>
+                            </>
+                          ) : (
+                            <div className="vocab-modal-field">
+                              <label className="vocab-modal-label">{tr('Перевод', 'Übersetzung')}</label>
+                              <input
+                                className="vocab-modal-input"
+                                type="text"
+                                value={vocabEditTrans}
+                                onChange={(e) => setVocabEditTrans(e.target.value)}
+                              />
+                            </div>
+                          )}
                           <div className="vocab-modal-field">
                             <label className="vocab-modal-label">{tr('Папка', 'Ordner')}</label>
                             <select
@@ -26316,6 +26514,7 @@ function AppInner() {
                             const cardTexts = getDictionarySourceTarget(srsCard, direction);
                             const sourceText = cardTexts?.sourceText || '—';
                             const targetText = cardTexts?.targetText || '—';
+                            const supplementalMeaningRows = getSavedEntrySupplementalMeaningRows(srsCard, targetText, 2);
                             const srsReplayTtsKey = `srs-replay-${srsCard?.id || srsCard?.entry_id || 'current'}`;
                             const srsReplayTtsLoading = isTtsPending(srsReplayTtsKey);
                             const srsReplayLang = getTtsLocaleForLang(detectTtsLangFromText(targetText));
@@ -26328,7 +26527,19 @@ function AppInner() {
                                   <div className="fsrs-card-source is-muted-top">{sourceText}</div>
                                   <div className="fsrs-divider" />
                                   {srsRevealAnswer && (
-                                    <div className="fsrs-card-target">{targetText}</div>
+                                    <>
+                                      <div className="fsrs-card-target">{targetText}</div>
+                                      {supplementalMeaningRows.length > 0 && (
+                                        <div className="flashcard-meaning-list">
+                                          {supplementalMeaningRows.map((row) => (
+                                            <div key={`srs-meaning-${srsCard?.id || 'current'}-${row.rank}-${row.text}`} className="flashcard-meaning-item">
+                                              <span className="flashcard-meaning-rank">{row.rank}.</span>
+                                              <span className="flashcard-meaning-text">{row.text}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </>
                                   )}
                                   {!srsRevealAnswer && (
                                     <div className="fsrs-card-meta">
@@ -26452,6 +26663,7 @@ function AppInner() {
                               const sentencePreviewRuHint = previewQuizType === 'sentence_gap_context'
                                 ? String(entry?.response_json?.translation_ru || entry?.translation_ru || '').trim()
                                 : '';
+                              const previewSupplementalMeaningRows = getSavedEntrySupplementalMeaningRows(entry, previewNativeText, 2);
                               const learningCode = String(languageProfile?.learning_language || 'de').toUpperCase();
                               const nativeCode = String(languageProfile?.native_language || 'ru').toUpperCase();
                               const previewModeLabel = flashcardActiveMode === 'blocks'
@@ -26481,6 +26693,16 @@ function AppInner() {
                                     <div className="flashcard-preview-divider" />
                                     <div className="flashcard-preview-native-box">
                                       <div className="flashcard-native-translation">{previewNativeText}</div>
+                                      {previewSupplementalMeaningRows.length > 0 && (
+                                        <div className="flashcard-meaning-list">
+                                          {previewSupplementalMeaningRows.map((row) => (
+                                            <div key={`preview-meaning-${entry.id || 'current'}-${row.rank}-${row.text}`} className="flashcard-meaning-item">
+                                              <span className="flashcard-meaning-rank">{row.rank}.</span>
+                                              <span className="flashcard-meaning-text">{row.text}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
                                     </div>
                                     {sentencePreviewRuHint && (
                                       <div className="flashcard-preview-ru-hint">{sentencePreviewRuHint}</div>
@@ -26650,6 +26872,11 @@ function AppInner() {
                                 const blocksAnswer = resolveBlocksAnswer(entry);
                                 const blocksPrompt = resolveBlocksPrompt(entry);
                                 const blocksType = resolveBlocksType(entry, blocksAnswer);
+                                const supplementalMeaningRows = getSavedEntrySupplementalMeaningRows(
+                                  entry,
+                                  isSentenceTrainingMode || isSentenceGapQuiz ? sentenceTranslation : correct,
+                                  2,
+                                );
 
                                 if (flashcardTrainingMode === 'blocks') {
                                   return (
@@ -26763,10 +26990,22 @@ function AppInner() {
                                       </div>
 
                                       {isAnswered && (
-                                        <div className={`quiz-result ${isCorrectAnswer ? 'is-correct' : 'is-wrong'}`}>
-                                          <div className="quiz-result-title">{isCorrectAnswer ? 'Correct!' : 'Incorrect'}</div>
-                                          <div className="quiz-result-subtitle">{isCorrectAnswer ? 'Great job - keep going' : 'Review and try again'}</div>
-                                        </div>
+                                        <>
+                                          <div className={`quiz-result ${isCorrectAnswer ? 'is-correct' : 'is-wrong'}`}>
+                                            <div className="quiz-result-title">{isCorrectAnswer ? 'Correct!' : 'Incorrect'}</div>
+                                            <div className="quiz-result-subtitle">{isCorrectAnswer ? 'Great job - keep going' : 'Review and try again'}</div>
+                                          </div>
+                                          {supplementalMeaningRows.length > 0 && (
+                                            <div className="flashcard-meaning-list">
+                                              {supplementalMeaningRows.map((row) => (
+                                                <div key={`quiz-meaning-${entry.id || flashcardIndex}-${row.rank}-${row.text}`} className="flashcard-meaning-item">
+                                                  <span className="flashcard-meaning-rank">{row.rank}.</span>
+                                                  <span className="flashcard-meaning-text">{row.text}</span>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          )}
+                                        </>
                                       )}
 
                                       <div className="flashcard-options quiz-options">

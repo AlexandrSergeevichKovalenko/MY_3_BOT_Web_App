@@ -6129,6 +6129,66 @@ body {
 }
 .vocab-expand-arrow.is-open { transform: rotate(90deg); }
 
+.vocab-word-details {
+  padding: 2px 12px 10px;
+  display: grid;
+  gap: 10px;
+}
+.vocab-word-detail-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #94A3B8;
+}
+.vocab-word-sense-list {
+  display: grid;
+  gap: 9px;
+}
+.vocab-word-sense-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.vocab-word-sense-rank {
+  min-width: 18px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #A5B4FC;
+  line-height: 1.45;
+}
+.vocab-word-sense-body {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+.vocab-word-sense-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.vocab-word-sense-text {
+  font-size: 13px;
+  line-height: 1.45;
+  color: #E2E8F0;
+}
+.vocab-word-sense-badge {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(99,102,241,0.16);
+  border: 1px solid rgba(129,140,248,0.25);
+  color: #C7D2FE;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.vocab-word-sense-example {
+  font-size: 12px;
+  line-height: 1.45;
+  color: #94A3B8;
+}
+
 .vocab-word-actions {
   display: flex;
   gap: 8px;
@@ -6414,6 +6474,15 @@ body {
 }
 .webapp-page.is-theme-light .vocab-word-sub { color: #7a6552; }
 .webapp-page.is-theme-light .vocab-word-sub em { color: #5a4a39; }
+.webapp-page.is-theme-light .vocab-word-detail-title { color: #a08870; }
+.webapp-page.is-theme-light .vocab-word-sense-rank { color: #6d5ce7; }
+.webapp-page.is-theme-light .vocab-word-sense-text { color: #1f1a14; }
+.webapp-page.is-theme-light .vocab-word-sense-badge {
+  background: rgba(109,92,231,0.1);
+  border-color: rgba(109,92,231,0.18);
+  color: #5b4bcc;
+}
+.webapp-page.is-theme-light .vocab-word-sense-example { color: #7a6552; }
 .webapp-page.is-theme-light .vocab-folder-tag {
   background: rgba(0,0,0,0.06);
   color: #7a6552;
@@ -7022,6 +7091,40 @@ body {
 
 .fsrs-card-meta.fsrs-card-meta-answer {
   margin-top: -2px;
+}
+
+.flashcard-meaning-list {
+  width: 100%;
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.flashcard-meaning-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 11px;
+  border-radius: 12px;
+  border: 1px solid rgba(136, 170, 232, 0.24);
+  background: rgba(10, 20, 42, 0.46);
+  color: rgba(223, 234, 252, 0.92);
+  font-size: 14px;
+  line-height: 1.4;
+  text-align: left;
+}
+
+.flashcard-meaning-rank {
+  flex: 0 0 auto;
+  font-weight: 800;
+  color: #9fc0ff;
+}
+
+.flashcard-meaning-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .fsrs-show-answer-btn {
@@ -8012,6 +8115,10 @@ body {
   word-break: break-word;
 }
 
+.flashcard-preview-native-box .flashcard-meaning-list {
+  margin-top: 14px;
+}
+
 .flashcard-preview-ru-hint {
   width: 100%;
   max-width: 100%;
@@ -8817,6 +8924,10 @@ body {
 
 .quiz-result.is-wrong .quiz-result-title {
   color: #f06464;
+}
+
+.quiz-result + .flashcard-meaning-list {
+  margin-top: 2px;
 }
 
 .quiz-options {

@@ -5562,8 +5562,7 @@ def _is_missing_dictionary_schema_error(exc: Exception) -> bool:
 
 def _save_dictionary_entry_with_schema_retry(**kwargs) -> None:
     try:
-        save_webapp_dictionary_query(**kwargs)
-        return
+        return save_webapp_dictionary_query_returning_id(**kwargs)
     except Exception as exc:
         if not _is_missing_dictionary_schema_error(exc):
             raise
@@ -5572,7 +5571,7 @@ def _save_dictionary_entry_with_schema_retry(**kwargs) -> None:
             exc,
         )
         ensure_webapp_tables()
-    save_webapp_dictionary_query(**kwargs)
+    return save_webapp_dictionary_query_returning_id(**kwargs)
 
 
 def _align_dictionary_legacy_ru_de_columns(
@@ -5621,6 +5620,371 @@ def _align_dictionary_legacy_ru_de_columns(
                 tgt_text = tgt
 
     return src_text, tgt_text, ru_word, de_word, de_translation, ru_translation
+
+
+_GERMAN_SINGLE_WORD_ARTICLES = {
+    "der",
+    "die",
+    "das",
+    "den",
+    "dem",
+    "des",
+    "ein",
+    "eine",
+    "einen",
+    "einem",
+    "einer",
+    "eines",
+}
+
+_DICTIONARY_SAVE_ENRICHMENT_LOCK = threading.Lock()
+_DICTIONARY_SAVE_ENRICHMENT_INFLIGHT: set[int] = set()
+
+
+def _dictionary_entry_tokens(value: str | None) -> list[str]:
+    return re.findall(r"[0-9A-Za-zÀ-ÿА-Яа-яЁёÄÖÜäöüß'-]+", str(value or "").strip(), flags=re.UNICODE)
+
+
+def _looks_like_dictionary_sentence(value: str | None) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    tokens = _dictionary_entry_tokens(text)
+    if len(tokens) >= 5:
+        return True
+    if len(tokens) >= 3 and re.search(r"[.!?]", text):
+        return True
+    return False
+
+
+def _is_single_word_dictionary_entry(value: str | None, lang: str | None) -> bool:
+    text = str(value or "").strip()
+    if not text or _looks_like_dictionary_sentence(text):
+        return False
+    tokens = _dictionary_entry_tokens(text)
+    if not tokens:
+        return False
+    normalized_lang = _normalize_short_lang_code(lang, fallback="")
+    if normalized_lang == "de" and len(tokens) == 2 and tokens[0].casefold() in _GERMAN_SINGLE_WORD_ARTICLES:
+        return True
+    return len(tokens) == 1
+
+
+def _detect_dictionary_entry_kind(
+    *,
+    source_text: str,
+    target_text: str,
+    source_lang: str,
+    target_lang: str,
+    response_json: dict | None = None,
+) -> str:
+    payload = response_json if isinstance(response_json, dict) else {}
+    part_of_speech = str(payload.get("part_of_speech") or "").strip().lower()
+    if part_of_speech == "phrase":
+        return "phrase"
+    probe_source = str(source_text or payload.get("source_text") or "").strip()
+    probe_target = str(target_text or payload.get("target_text") or "").strip()
+    if _looks_like_dictionary_sentence(probe_source) or _looks_like_dictionary_sentence(probe_target):
+        return "sentence"
+    if _is_single_word_dictionary_entry(probe_source, source_lang):
+        return "word"
+    return "phrase"
+
+
+def _build_dictionary_senses(response_json: dict | None, fallback_target: str) -> list[dict]:
+    payload = response_json if isinstance(response_json, dict) else {}
+    senses: list[dict] = []
+    seen_keys: set[tuple[str, str]] = set()
+
+    def _append(raw_entry: Any, *, default_label: str, is_primary: bool = False) -> None:
+        if isinstance(raw_entry, str):
+            value = str(raw_entry).strip()
+            context = ""
+            example_source = ""
+            example_target = ""
+        elif isinstance(raw_entry, dict):
+            value = str(
+                raw_entry.get("value")
+                or raw_entry.get("translation")
+                or raw_entry.get("target")
+                or raw_entry.get("translation_target")
+                or raw_entry.get("translation_de")
+                or ""
+            ).strip()
+            context = str(
+                raw_entry.get("context")
+                or raw_entry.get("note")
+                or raw_entry.get("explanation")
+                or ""
+            ).strip()
+            example_source = str(raw_entry.get("example_source") or raw_entry.get("source") or "").strip()
+            example_target = str(
+                raw_entry.get("example_target")
+                or raw_entry.get("target")
+                or raw_entry.get("example_de")
+                or ""
+            ).strip()
+        else:
+            return
+        if not value:
+            return
+        dedupe_key = (value.casefold(), context.casefold())
+        if dedupe_key in seen_keys:
+            return
+        seen_keys.add(dedupe_key)
+        senses.append(
+            {
+                "rank": 0,
+                "label": "main" if is_primary else default_label,
+                "value": value,
+                "context": context,
+                "example_source": example_source,
+                "example_target": example_target,
+            }
+        )
+
+    meanings = payload.get("meanings") if isinstance(payload.get("meanings"), dict) else {}
+    primary = meanings.get("primary") if isinstance(meanings, dict) else None
+    if isinstance(primary, dict):
+        _append(primary, default_label="main", is_primary=True)
+
+    for item in (meanings.get("secondary") if isinstance(meanings, dict) else []) or []:
+        _append(item, default_label="secondary")
+
+    for item in payload.get("translations") or []:
+        _append(item, default_label="secondary", is_primary=bool(isinstance(item, dict) and item.get("is_primary")))
+
+    if not senses:
+        fallback_value = str(fallback_target or payload.get("target_text") or payload.get("translation_de") or payload.get("translation_ru") or "").strip()
+        if fallback_value:
+            _append({"value": fallback_value}, default_label="main", is_primary=True)
+
+    ranked_senses: list[dict] = []
+    for index, item in enumerate(senses, start=1):
+        ranked_senses.append(
+            {
+                **item,
+                "rank": index,
+                "label": "main" if index == 1 else ("secondary" if item.get("label") != "main" else "main"),
+            }
+        )
+    return ranked_senses[:5]
+
+
+def _prepare_dictionary_response_json_for_save(
+    *,
+    response_json: dict | None,
+    source_text: str,
+    target_text: str,
+    source_lang: str,
+    target_lang: str,
+    word_ru: str | None,
+    word_de: str | None,
+    translation_de: str | None,
+    translation_ru: str | None,
+) -> dict:
+    payload = dict(response_json) if isinstance(response_json, dict) else {}
+    payload["source_text"] = source_text or str(word_ru or word_de or "").strip()
+    payload["target_text"] = target_text or str(translation_de or translation_ru or word_de or "").strip()
+    payload["source_lang"] = source_lang
+    payload["target_lang"] = target_lang
+    payload["language_pair"] = _build_language_pair_payload(source_lang, target_lang)
+    if word_ru:
+        payload["word_ru"] = str(word_ru).strip()
+    if word_de:
+        payload["word_de"] = str(word_de).strip()
+    if translation_de:
+        payload["translation_de"] = str(translation_de).strip()
+    if translation_ru:
+        payload["translation_ru"] = str(translation_ru).strip()
+
+    entry_kind = _detect_dictionary_entry_kind(
+        source_text=payload["source_text"],
+        target_text=payload["target_text"],
+        source_lang=source_lang,
+        target_lang=target_lang,
+        response_json=payload,
+    )
+    payload["entry_kind"] = entry_kind
+    if entry_kind == "word":
+        senses = _build_dictionary_senses(payload, payload["target_text"])
+        if senses:
+            payload["dictionary_senses"] = senses
+    else:
+        payload.pop("dictionary_senses", None)
+    return payload
+
+
+def _normalize_dictionary_enrich_payload(enrich: dict | None) -> dict:
+    enrich_data = dict(enrich) if isinstance(enrich, dict) else {}
+    prefixes = enrich_data.get("prefixes")
+    if isinstance(prefixes, list):
+        normalized_prefixes = []
+        for item in prefixes:
+            if not isinstance(item, dict):
+                continue
+            normalized = dict(item)
+            if normalized.get("translation_target") and not normalized.get("translation_de"):
+                normalized["translation_de"] = normalized.get("translation_target")
+            if normalized.get("translation_source") and not normalized.get("translation_ru"):
+                normalized["translation_ru"] = normalized.get("translation_source")
+            if normalized.get("example_target") and not normalized.get("example_de"):
+                normalized["example_de"] = normalized.get("example_target")
+            normalized_prefixes.append(normalized)
+        enrich_data["prefixes"] = normalized_prefixes
+    return enrich_data
+
+
+def _dictionary_payload_needs_enrichment(response_json: dict | None) -> bool:
+    payload = response_json if isinstance(response_json, dict) else {}
+    if str(payload.get("entry_kind") or "").strip().lower() != "word":
+        return False
+    if isinstance(payload.get("meanings"), dict):
+        primary = payload["meanings"].get("primary")
+        secondary = payload["meanings"].get("secondary")
+        if isinstance(primary, dict) and str(primary.get("value") or "").strip():
+            return False
+        if isinstance(secondary, list) and any(isinstance(item, dict) and str(item.get("value") or "").strip() for item in secondary):
+            return False
+    translations = payload.get("translations")
+    if isinstance(translations, list) and any(
+        (
+            isinstance(item, dict) and str(item.get("value") or item.get("translation") or "").strip()
+        ) or (
+            isinstance(item, str) and str(item).strip()
+        )
+        for item in translations
+    ):
+        return False
+    senses = payload.get("dictionary_senses")
+    if isinstance(senses, list) and len(senses) >= 2:
+        return False
+    first_sense = senses[0] if isinstance(senses, list) and senses else {}
+    if isinstance(first_sense, dict):
+        if str(first_sense.get("context") or "").strip():
+            return False
+        if str(first_sense.get("example_source") or "").strip():
+            return False
+        if str(first_sense.get("example_target") or "").strip():
+            return False
+    return True
+
+
+def _run_saved_dictionary_entry_enrichment(
+    *,
+    entry_id: int,
+    source_lang: str,
+    target_lang: str,
+    source_text_hint: str,
+    target_text_hint: str,
+) -> None:
+    try:
+        entry = get_dictionary_entry_by_id(int(entry_id))
+        if not entry:
+            return
+        response_json = entry.get("response_json")
+        if isinstance(response_json, str):
+            try:
+                response_json = json.loads(response_json)
+            except Exception:
+                response_json = {}
+        if not isinstance(response_json, dict):
+            response_json = {}
+        if not _dictionary_payload_needs_enrichment(response_json):
+            return
+
+        source_text, target_text = _resolve_entry_texts_for_pair(
+            entry=entry,
+            response_json=response_json,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            source_text_hint=source_text_hint,
+            target_text_hint=target_text_hint,
+        )
+        if not _is_single_word_dictionary_entry(source_text, source_lang):
+            return
+
+        if _is_legacy_ru_de_pair(source_lang, target_lang):
+            enrich = asyncio.run(run_enrich_word(source_text, target_text))
+        else:
+            enrich = asyncio.run(
+                run_enrich_word_multilang(
+                    source_text=source_text,
+                    target_text=target_text,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                )
+            )
+        enrich_data = _normalize_dictionary_enrich_payload(enrich)
+        if not enrich_data:
+            return
+
+        merged_response_json = dict(response_json)
+        merged_response_json.update(enrich_data)
+        merged_response_json = _prepare_dictionary_response_json_for_save(
+            response_json=merged_response_json,
+            source_text=source_text,
+            target_text=target_text,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            word_ru=str(entry.get("word_ru") or merged_response_json.get("word_ru") or "").strip() or None,
+            word_de=str(entry.get("word_de") or merged_response_json.get("word_de") or "").strip() or None,
+            translation_de=str(entry.get("translation_de") or merged_response_json.get("translation_de") or "").strip() or None,
+            translation_ru=str(entry.get("translation_ru") or merged_response_json.get("translation_ru") or "").strip() or None,
+        )
+        update_webapp_dictionary_entry(int(entry_id), merged_response_json)
+        logging.info(
+            "Dictionary save enrichment ready: entry_id=%s source_lang=%s target_lang=%s source_text=%r",
+            int(entry_id),
+            source_lang,
+            target_lang,
+            source_text,
+        )
+    except Exception as exc:
+        logging.warning(
+            "Dictionary save enrichment failed: entry_id=%s source_lang=%s target_lang=%s error=%s",
+            int(entry_id),
+            source_lang,
+            target_lang,
+            exc,
+            exc_info=True,
+        )
+    finally:
+        with _DICTIONARY_SAVE_ENRICHMENT_LOCK:
+            _DICTIONARY_SAVE_ENRICHMENT_INFLIGHT.discard(int(entry_id))
+
+
+def _start_saved_dictionary_entry_enrichment(
+    *,
+    entry_id: int,
+    response_json: dict | None,
+    source_lang: str,
+    target_lang: str,
+    source_text_hint: str,
+    target_text_hint: str,
+) -> None:
+    safe_entry_id = int(entry_id or 0)
+    if safe_entry_id <= 0:
+        return
+    payload = response_json if isinstance(response_json, dict) else {}
+    if not _dictionary_payload_needs_enrichment(payload):
+        return
+    with _DICTIONARY_SAVE_ENRICHMENT_LOCK:
+        if safe_entry_id in _DICTIONARY_SAVE_ENRICHMENT_INFLIGHT:
+            return
+        _DICTIONARY_SAVE_ENRICHMENT_INFLIGHT.add(safe_entry_id)
+    threading.Thread(
+        target=_run_saved_dictionary_entry_enrichment,
+        kwargs={
+            "entry_id": safe_entry_id,
+            "source_lang": source_lang,
+            "target_lang": target_lang,
+            "source_text_hint": source_text_hint,
+            "target_text_hint": target_text_hint,
+        },
+        daemon=True,
+        name=f"dictionary-save-enrich-{safe_entry_id}",
+    ).start()
 
 
 def _is_legacy_ru_de_pair(source_lang: str, target_lang: str) -> bool:
@@ -15268,7 +15632,7 @@ def _build_translation_focus_pool_report_rows(
 
     report_rows: list[dict[str, Any]] = []
     for focus_key in ordered_focus_keys:
-        preset_payload = candidate_map.get(focus_key) or preset_by_key.get(focus_key) or {}
+        preset_payload = candidate_map.get(focus_key) or focus_payload_by_key.get(focus_key) or {}
         focus_label = str(preset_payload.get("label") or focus_key).strip() or focus_key
         focus_is_candidate = focus_key in candidate_map
         for level in normalized_levels:
@@ -15566,6 +15930,73 @@ def _build_translation_focus_pool_admin_report_png(
     return buff.getvalue()
 
 
+def _build_translation_focus_pool_admin_report_text(
+    *,
+    rows: list[dict[str, Any]],
+    summary: dict[str, Any],
+    snapshot_date: date,
+    tz_name: str,
+) -> str:
+    ordered_themes = _build_translation_focus_pool_report_themes(
+        rows,
+        top_limit=max(1, len(rows or [])),
+    )
+    readiness = summary.get("readiness") if isinstance(summary.get("readiness"), dict) else {}
+    header_lines = [
+        "📊 Translation focus pool report",
+        f"Date: {snapshot_date.isoformat()} ({tz_name})",
+        f"Pair: {str(summary.get('source_lang') or '').upper()} -> {str(summary.get('target_lang') or '').upper()}",
+        (
+            f"Total ready now: {int(summary.get('total_today') or 0)} | "
+            f"Yesterday: {int(summary.get('total_yesterday') or 0)} | "
+            f"Delta: {int(summary.get('delta_total') or 0):+d}"
+        ),
+        (
+            f"Buckets at/above target: {int(summary.get('at_or_above_target') or 0)}/"
+            f"{int(summary.get('with_target') or 0)} | "
+            f"Rows: {int(summary.get('rows') or 0)}"
+        ),
+    ]
+    if readiness:
+        header_lines.append(
+            (
+                f"Readiness {int(readiness.get('lookback_days') or 0)}d: "
+                f"sessions={int(readiness.get('sessions_started') or 0)}, "
+                f"zero-ready={float(readiness.get('ready_count_eq_0_pct') or 0.0) * 100:.1f}%, "
+                f"fill-required={float(readiness.get('background_fill_required_rate') or 0.0) * 100:.1f}%"
+            )
+        )
+    if bool(summary.get("missing_previous_snapshot")):
+        header_lines.append("Note: yesterday snapshot was missing; delta is compared to zero baseline.")
+
+    body_lines: list[str] = []
+    for theme_index, theme in enumerate(ordered_themes, start=1):
+        body_lines.append(
+            (
+                f"{theme_index}. {str(theme.get('focus_label') or '').strip()} | "
+                f"today {int(theme.get('today_total') or 0)} | "
+                f"yesterday {int(theme.get('yesterday_total') or 0)} | "
+                f"delta {int(theme.get('delta_total') or 0):+d} | "
+                f"gap {int(theme.get('deficit_total') or 0)}"
+            )
+        )
+        for level_row in list(theme.get("levels") or []):
+            level = str(level_row.get("level") or "").strip().upper() or "?"
+            today_ready = int(level_row.get("today_ready") or 0)
+            yesterday_ready = int(level_row.get("yesterday_ready") or 0)
+            delta_value = int(level_row.get("delta") or 0)
+            target_ready = int(level_row.get("target_ready") or 0)
+            low_watermark = int(level_row.get("low_watermark") or 0)
+            body_lines.append(
+                (
+                    f"   {level}: today {today_ready} | yesterday {yesterday_ready} | "
+                    f"delta {delta_value:+d} | low {low_watermark} | target {target_ready}"
+                )
+            )
+
+    return "\n".join(header_lines + ["", "Per theme / level:", *body_lines]).strip()
+
+
 def _send_translation_focus_pool_admin_report(*, force: bool = False) -> dict[str, Any]:
     tz_name = TRANSLATION_FOCUS_POOL_ADMIN_REPORT_TZ
     snapshot_date = _today_local_date(tz_name)
@@ -15633,6 +16064,12 @@ def _send_translation_focus_pool_admin_report(*, force: bool = False) -> dict[st
             snapshot_date=snapshot_date,
             tz_name=tz_name,
         )
+        report_text = _build_translation_focus_pool_admin_report_text(
+            rows=rows,
+            summary=summary,
+            snapshot_date=snapshot_date,
+            tz_name=tz_name,
+        )
         caption = (
             f"📊 Translation focus pool\n"
             f"Date: {run_period}\n"
@@ -15642,8 +16079,16 @@ def _send_translation_focus_pool_admin_report(*, force: bool = False) -> dict[st
             f"Delta: {int(summary.get('delta_total') or 0):+d}"
         )
         sent = 0
+        photo_sent = 0
         errors: list[str] = []
         for admin_id in admin_ids:
+            try:
+                _send_private_message_chunks(int(admin_id), report_text, limit=3500)
+                sent += 1
+            except Exception as exc:
+                errors.append(f"admin {admin_id} text: {exc}")
+                logging.warning("Failed to send translation focus pool text report admin_id=%s", admin_id, exc_info=True)
+                continue
             try:
                 if chart_png:
                     _send_private_photo(
@@ -15654,11 +16099,18 @@ def _send_translation_focus_pool_admin_report(*, force: bool = False) -> dict[st
                     )
                 else:
                     _send_private_message(int(admin_id), caption)
-                sent += 1
+                photo_sent += 1
             except Exception as exc:
-                errors.append(f"admin {admin_id}: {exc}")
-                logging.warning("Failed to send translation focus pool report admin_id=%s", admin_id, exc_info=True)
-        result = {"ok": not errors, "sent": sent, "errors": errors, "snapshot_date": run_period, **summary}
+                errors.append(f"admin {admin_id} photo: {exc}")
+                logging.warning("Failed to send translation focus pool report photo admin_id=%s", admin_id, exc_info=True)
+        result = {
+            "ok": not errors,
+            "sent": sent,
+            "photo_sent": photo_sent,
+            "errors": errors,
+            "snapshot_date": run_period,
+            **summary,
+        }
         if not force:
             finish_scheduler_run_guard(
                 job_key="translation_focus_pool_admin_report",
@@ -28559,6 +29011,32 @@ def _build_dictionary_card_example_lines(examples: Any, *, limit: int = 4) -> li
     return result
 
 
+def _build_dictionary_meaning_lines(response_json: dict | None, *, limit: int = 3) -> list[str]:
+    payload = response_json if isinstance(response_json, dict) else {}
+    has_rich_meanings = (
+        (isinstance(payload.get("dictionary_senses"), list) and len(payload.get("dictionary_senses") or []) > 0)
+        or (isinstance(payload.get("meanings"), dict) and bool(payload.get("meanings")))
+        or (isinstance(payload.get("translations"), list) and len(payload.get("translations") or []) > 0)
+    )
+    if not has_rich_meanings:
+        return []
+    lines: list[str] = []
+    seen: set[str] = set()
+    for sense in _build_dictionary_senses(payload, ""):
+        value = str(sense.get("value") or "").strip()
+        context = str(sense.get("context") or "").strip()
+        text = f"{value} — {context}" if value and context else (value or context)
+        normalized = re.sub(r"\s+", " ", text).strip().casefold()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        rank = int(sense.get("rank") or (len(lines) + 1))
+        lines.append(f"{rank}. {text}")
+        if len(lines) >= limit:
+            break
+    return lines
+
+
 def _build_dictionary_card_pdf(
     *,
     item: dict[str, Any],
@@ -28628,6 +29106,7 @@ def _build_dictionary_card_pdf(
         payload.get("usage_examples") if payload.get("usage_examples") is not None else response_json.get("usage_examples"),
         limit=4,
     )
+    meaning_lines = _build_dictionary_meaning_lines(response_json, limit=3)
 
     metadata_rows: list[tuple[str, str]] = [
         ("Направление", f"{_lang_label(item_source_lang)} → {_lang_label(item_target_lang)}"),
@@ -28736,6 +29215,23 @@ def _build_dictionary_card_pdf(
     pdf.setStrokeColorRGB(0.88, 0.85, 0.78)
     pdf.line(cursor_x, cursor_y, cursor_x + content_width, cursor_y)
     cursor_y -= 18
+
+    if meaning_lines:
+        pdf.setFillColorRGB(0.18, 0.20, 0.26)
+        pdf.setFont(font_bold, 11.5)
+        pdf.drawString(cursor_x, cursor_y, "Значения")
+        cursor_y -= 16
+        pdf.setFont(font_name, 10.5)
+        for meaning in meaning_lines:
+            wrapped_lines = _wrap_text(meaning, 62)[:3]
+            if not wrapped_lines:
+                continue
+            pdf.drawString(cursor_x, cursor_y, wrapped_lines[0])
+            cursor_y -= 13
+            for line in wrapped_lines[1:]:
+                pdf.drawString(cursor_x + 12, cursor_y, line)
+                cursor_y -= 13
+            cursor_y -= 4
 
     pdf.setFont(font_bold, 11)
     pdf.setFillColorRGB(0.18, 0.20, 0.26)
@@ -28932,6 +29428,7 @@ def export_webapp_dictionary_pdf():
             examples = response_json.get("usage_examples") or []
             if isinstance(examples, str):
                 examples = [examples]
+            meaning_lines = _build_dictionary_meaning_lines(response_json, limit=3)
             headline_lines = _wrap_text(str(headline_word), 38) or ["—"]
             source_lines = _wrap_text(f"{_lang_label(item_source_lang)}: {source_word}", 62) or ["—"]
             example_lines = []
@@ -28942,6 +29439,14 @@ def export_webapp_dictionary_pdf():
                 example_lines.append(f"- {wrapped_example[0]}")
                 example_lines.extend([f"  {line}" for line in wrapped_example[1:]])
             body_lines = [f"Дата: {created_at_date}"] if created_at_date else []
+            if meaning_lines:
+                body_lines.append("Значения:")
+                for meaning in meaning_lines:
+                    wrapped_meaning = _wrap_text(str(meaning), 78)
+                    if not wrapped_meaning:
+                        continue
+                    body_lines.append(wrapped_meaning[0])
+                    body_lines.extend([f"  {line}" for line in wrapped_meaning[1:]])
             if example_lines:
                 body_lines.append("Примеры:")
                 body_lines.extend(example_lines)
@@ -29156,22 +29661,18 @@ def save_webapp_dictionary_entry():
         resolved_word_de = word_de or response_json.get("word_de")
         resolved_translation_de = translation_de or response_json.get("translation_de")
         resolved_translation_ru = translation_ru or response_json.get("translation_ru")
-        if isinstance(response_json, dict):
-            response_json = dict(response_json)
-            response_json["source_text"] = source_text or resolved_word_ru or resolved_word_de or ""
-            response_json["target_text"] = target_text or resolved_translation_de or resolved_translation_ru or resolved_word_de or ""
-            response_json["source_lang"] = source_lang
-            response_json["target_lang"] = target_lang
-            response_json["language_pair"] = _build_language_pair_payload(source_lang, target_lang)
-            if resolved_word_ru:
-                response_json["word_ru"] = resolved_word_ru
-            if resolved_word_de:
-                response_json["word_de"] = resolved_word_de
-            if resolved_translation_de:
-                response_json["translation_de"] = resolved_translation_de
-            if resolved_translation_ru:
-                response_json["translation_ru"] = resolved_translation_ru
-        _save_dictionary_entry_with_schema_retry(
+        response_json = _prepare_dictionary_response_json_for_save(
+            response_json=response_json if isinstance(response_json, dict) else {},
+            source_text=source_text or resolved_word_ru or resolved_word_de or "",
+            target_text=target_text or resolved_translation_de or resolved_translation_ru or resolved_word_de or "",
+            source_lang=source_lang,
+            target_lang=target_lang,
+            word_ru=resolved_word_ru,
+            word_de=resolved_word_de,
+            translation_de=resolved_translation_de,
+            translation_ru=resolved_translation_ru,
+        )
+        entry_id = _save_dictionary_entry_with_schema_retry(
             user_id=user_id,
             word_ru=resolved_word_ru if resolved_word_ru else None,
             translation_de=resolved_translation_de,
@@ -29183,6 +29684,14 @@ def save_webapp_dictionary_entry():
             target_lang=target_lang,
             origin_process=origin_process,
             origin_meta=origin_meta,
+        )
+        _start_saved_dictionary_entry_enrichment(
+            entry_id=int(entry_id or 0),
+            response_json=response_json,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            source_text_hint=source_text,
+            target_text_hint=target_text,
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка сохранения словаря: {exc}"}), 500
@@ -29308,23 +29817,19 @@ def save_mobile_dictionary_entry():
         resolved_word_de = word_de or (response_json.get("word_de") if isinstance(response_json, dict) else None)
         resolved_translation_de = translation_de or (response_json.get("translation_de") if isinstance(response_json, dict) else None)
         resolved_translation_ru = translation_ru or (response_json.get("translation_ru") if isinstance(response_json, dict) else None)
-        if isinstance(response_json, dict):
-            response_json = dict(response_json)
-            response_json["source_text"] = source_text or resolved_word_ru or resolved_word_de or ""
-            response_json["target_text"] = target_text or resolved_translation_de or resolved_translation_ru or resolved_word_de or ""
-            response_json["source_lang"] = source_lang
-            response_json["target_lang"] = target_lang
-            response_json["language_pair"] = _build_language_pair_payload(source_lang, target_lang)
-            if resolved_word_ru:
-                response_json["word_ru"] = resolved_word_ru
-            if resolved_word_de:
-                response_json["word_de"] = resolved_word_de
-            if resolved_translation_de:
-                response_json["translation_de"] = resolved_translation_de
-            if resolved_translation_ru:
-                response_json["translation_ru"] = resolved_translation_ru
+        response_json = _prepare_dictionary_response_json_for_save(
+            response_json=response_json if isinstance(response_json, dict) else {},
+            source_text=source_text or resolved_word_ru or resolved_word_de or "",
+            target_text=target_text or resolved_translation_de or resolved_translation_ru or resolved_word_de or "",
+            source_lang=source_lang,
+            target_lang=target_lang,
+            word_ru=resolved_word_ru,
+            word_de=resolved_word_de,
+            translation_de=resolved_translation_de,
+            translation_ru=resolved_translation_ru,
+        )
 
-        _save_dictionary_entry_with_schema_retry(
+        entry_id = _save_dictionary_entry_with_schema_retry(
             user_id=user_id,
             word_ru=resolved_word_ru if resolved_word_ru else None,
             translation_de=resolved_translation_de,
@@ -29336,6 +29841,14 @@ def save_mobile_dictionary_entry():
             target_lang=target_lang,
             origin_process=origin_process,
             origin_meta=origin_meta,
+        )
+        _start_saved_dictionary_entry_enrichment(
+            entry_id=int(entry_id or 0),
+            response_json=response_json if isinstance(response_json, dict) else {},
+            source_lang=source_lang,
+            target_lang=target_lang,
+            source_text_hint=source_text,
+            target_text_hint=target_text,
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка сохранения словаря: {exc}"}), 500
@@ -29363,6 +29876,209 @@ def save_mobile_dictionary_entry():
             "ok": True,
             "user_id": user_id,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
+
+
+@app.route("/api/internal/bot-private/dictionary/save", methods=["POST"])
+def save_bot_private_dictionary_entry():
+    payload = request.get_json(silent=True) or {}
+    token = str(payload.get("token") or request.headers.get("X-Admin-Token") or "").strip()
+    required_token = (os.getenv("ADMIN_TOKEN") or os.getenv("AUDIO_DISPATCH_TOKEN") or "").strip()
+    if not required_token:
+        return jsonify({"error": "ADMIN_TOKEN не задан"}), 500
+    if token != required_token:
+        return jsonify({"error": "Неверный токен"}), 401
+
+    user_id_raw = payload.get("user_id")
+    if user_id_raw is None or str(user_id_raw).strip() == "":
+        return jsonify({"error": "user_id обязателен"}), 400
+    try:
+        user_id = int(str(user_id_raw).strip())
+    except Exception:
+        return jsonify({"error": "user_id должен быть числом"}), 400
+    if not is_telegram_user_allowed(int(user_id)):
+        return jsonify({"error": "Доступ пользователя к Telegram-боту закрыт"}), 403
+
+    source_text = str(
+        payload.get("save_source_text")
+        or payload.get("source_text")
+        or payload.get("word")
+        or payload.get("word_ru")
+        or payload.get("word_de")
+        or ""
+    ).strip()
+    target_text = str(
+        payload.get("save_target_text")
+        or payload.get("target_text")
+        or payload.get("translation")
+        or payload.get("translation_ru")
+        or payload.get("translation_de")
+        or ""
+    ).strip()
+    response_json = payload.get("response_json") if isinstance(payload.get("response_json"), dict) else {}
+    payload_source_lang = payload.get("source_lang")
+    payload_target_lang = payload.get("target_lang")
+    payload_direction = payload.get("direction")
+    folder_id = payload.get("folder_id")
+    origin_meta = payload.get("origin_meta") if isinstance(payload.get("origin_meta"), dict) else {}
+
+    if not source_text and not response_json:
+        return jsonify({"error": "source_text/save_source_text обязателен"}), 400
+
+    profile_source_lang, profile_target_lang, _profile = _get_user_language_pair(int(user_id))
+    source_lang, target_lang = _resolve_dictionary_save_pair(
+        profile_source_lang=profile_source_lang,
+        profile_target_lang=profile_target_lang,
+        payload_source_lang=payload_source_lang,
+        payload_target_lang=payload_target_lang,
+        payload_direction=payload_direction,
+        response_json=response_json if isinstance(response_json, dict) else None,
+    )
+
+    lookup_used = False
+    if source_text and _is_single_word_dictionary_entry(source_text, source_lang):
+        try:
+            normalized_word = _normalize_dictionary_lookup_word(source_text)
+            query_source_lang, query_target_lang = _resolve_dictionary_query_languages(
+                word=normalized_word,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                lookup_lang=_normalize_short_lang_code(payload.get("lookup_lang"), fallback="") or source_lang,
+            )
+            lookup_payload = _run_dictionary_full_lookup_sync(
+                word=normalized_word,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                query_source_lang=query_source_lang,
+                query_target_lang=query_target_lang,
+                lookup_lang=query_source_lang,
+                user_id=int(user_id),
+            )
+            lookup_item = lookup_payload.get("item") if isinstance(lookup_payload.get("item"), dict) else {}
+            lookup_direction = str(lookup_payload.get("direction") or "").strip().lower()
+            if lookup_item:
+                response_json = lookup_item
+                payload_direction = lookup_direction or payload_direction
+                lookup_used = True
+                source_lang, target_lang = _resolve_dictionary_save_pair(
+                    profile_source_lang=profile_source_lang,
+                    profile_target_lang=profile_target_lang,
+                    payload_source_lang=payload_source_lang,
+                    payload_target_lang=payload_target_lang,
+                    payload_direction=payload_direction,
+                    response_json=response_json,
+                )
+                source_text = str(response_json.get("source_text") or source_text).strip()
+                target_text = str(response_json.get("target_text") or target_text).strip()
+        except Exception as exc:
+            logging.warning(
+                "Private bot dictionary auto-lookup failed user_id=%s source_text=%r: %s",
+                int(user_id),
+                source_text,
+                exc,
+                exc_info=True,
+            )
+
+    word_ru = str(payload.get("word_ru") or response_json.get("word_ru") or "").strip()
+    word_de = str(payload.get("word_de") or response_json.get("word_de") or "").strip()
+    translation_de = str(payload.get("translation_de") or response_json.get("translation_de") or "").strip()
+    translation_ru = str(payload.get("translation_ru") or response_json.get("translation_ru") or "").strip()
+
+    if source_lang == "ru" and target_lang == "de":
+        if source_text and not word_ru:
+            word_ru = source_text
+        if target_text and not translation_de:
+            translation_de = target_text
+        if target_text and not word_de:
+            word_de = target_text
+        if source_text and not translation_ru:
+            translation_ru = source_text
+    elif source_lang == "de" and target_lang == "ru":
+        if source_text and not word_de:
+            word_de = source_text
+        if target_text and not translation_ru:
+            translation_ru = target_text
+        if target_text and not word_ru:
+            word_ru = target_text
+        if source_text and not translation_de:
+            translation_de = source_text
+
+    source_text, target_text, word_ru, word_de, translation_de, translation_ru = _align_dictionary_legacy_ru_de_columns(
+        source_lang=source_lang,
+        target_lang=target_lang,
+        source_text=source_text,
+        target_text=target_text,
+        word_ru=word_ru,
+        word_de=word_de,
+        translation_de=translation_de,
+        translation_ru=translation_ru,
+    )
+
+    if folder_id is None:
+        try:
+            default_folder = get_or_create_dictionary_folder(
+                user_id=user_id,
+                name="GENERAL",
+                color="#7d8590",
+                icon="📁",
+            )
+            folder_id = default_folder.get("id")
+        except Exception:
+            folder_id = None
+
+    response_json = _prepare_dictionary_response_json_for_save(
+        response_json=response_json if isinstance(response_json, dict) else {},
+        source_text=source_text or word_ru or word_de or "",
+        target_text=target_text or translation_de or translation_ru or word_de or "",
+        source_lang=source_lang,
+        target_lang=target_lang,
+        word_ru=word_ru or None,
+        word_de=word_de or None,
+        translation_de=translation_de or None,
+        translation_ru=translation_ru or None,
+    )
+    origin_meta = {
+        **origin_meta,
+        "endpoint": "/api/internal/bot-private/dictionary/save",
+        "flow": str(origin_meta.get("flow") or "private_bot_save").strip() or "private_bot_save",
+        "lookup_used": bool(lookup_used),
+    }
+    if payload_direction and "direction" not in origin_meta:
+        origin_meta["direction"] = str(payload_direction)
+
+    try:
+        entry_id = _save_dictionary_entry_with_schema_retry(
+            user_id=user_id,
+            word_ru=word_ru or None,
+            translation_de=translation_de or None,
+            word_de=word_de or None,
+            translation_ru=translation_ru or None,
+            response_json=response_json,
+            folder_id=int(folder_id) if folder_id is not None else None,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            origin_process="bot_private_save",
+            origin_meta=origin_meta,
+        )
+        _start_saved_dictionary_entry_enrichment(
+            entry_id=int(entry_id or 0),
+            response_json=response_json,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            source_text_hint=source_text,
+            target_text_hint=target_text,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка сохранения словаря: {exc}"}), 500
+
+    return jsonify(
+        {
+            "ok": True,
+            "entry_id": int(entry_id or 0),
+            "lookup_used": bool(lookup_used),
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+            "item": response_json,
         }
     )
 
@@ -29565,6 +30281,7 @@ def webapp_vocabulary_edit():
 
     word_de = payload.get("word_de")
     translation_ru = payload.get("translation_ru")
+    dictionary_senses = payload.get("dictionary_senses") if isinstance(payload.get("dictionary_senses"), list) else None
     raw_folder = payload.get("folder_id")
     clear_folder = payload.get("clear_folder") is True
 
@@ -29581,6 +30298,7 @@ def webapp_vocabulary_edit():
             entry_id=int(entry_id),
             word_de=word_de if isinstance(word_de, str) else None,
             translation_ru=translation_ru if isinstance(translation_ru, str) else None,
+            dictionary_senses=dictionary_senses,
             folder_id=folder_id,
             clear_folder=clear_folder,
         )
@@ -31413,28 +32131,18 @@ def enrich_flashcard_entry():
     if not response_json:
         response_json = {}
     if isinstance(enrich, dict):
-        enrich_data = dict(enrich)
-        prefixes = enrich_data.get("prefixes")
-        if isinstance(prefixes, list):
-            normalized_prefixes = []
-            for item in prefixes:
-                if not isinstance(item, dict):
-                    continue
-                normalized = dict(item)
-                if normalized.get("translation_target") and not normalized.get("translation_de"):
-                    normalized["translation_de"] = normalized.get("translation_target")
-                if normalized.get("translation_source") and not normalized.get("translation_ru"):
-                    normalized["translation_ru"] = normalized.get("translation_source")
-                if normalized.get("example_target") and not normalized.get("example_de"):
-                    normalized["example_de"] = normalized.get("example_target")
-                normalized_prefixes.append(normalized)
-            enrich_data["prefixes"] = normalized_prefixes
-
-        response_json.update(enrich_data)
-        response_json["source_text"] = source_text
-        response_json["target_text"] = target_text
-        response_json["source_lang"] = source_lang
-        response_json["target_lang"] = target_lang
+        response_json.update(_normalize_dictionary_enrich_payload(enrich))
+        response_json = _prepare_dictionary_response_json_for_save(
+            response_json=response_json,
+            source_text=source_text,
+            target_text=target_text,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            word_ru=str(entry.get("word_ru") or response_json.get("word_ru") or "").strip() or None,
+            word_de=str(entry.get("word_de") or response_json.get("word_de") or "").strip() or None,
+            translation_de=str(entry.get("translation_de") or response_json.get("translation_de") or "").strip() or None,
+            translation_ru=str(entry.get("translation_ru") or response_json.get("translation_ru") or "").strip() or None,
+        )
 
     try:
         update_webapp_dictionary_entry(int(entry_id), response_json)
