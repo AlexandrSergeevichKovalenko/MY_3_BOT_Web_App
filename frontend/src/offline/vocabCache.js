@@ -1,23 +1,32 @@
 /**
- * Offline vocabulary cache — IndexedDB layer.
+ * Offline cache — IndexedDB layer.
  *
- * Schema (DB_VERSION 1):
+ * Schema (DB_VERSION 2):
  *   Store "vocab"
- *     keyPath : "id"          — server entry id (unique per entry globally)
- *     indexes : user_id, folder_id, created_at
+ *     keyPath : "id"
+ *     indexes : user_id, folder_id, created_at, user_created (compound)
  *
  *   Store "vocab_meta"
- *     keyPath : "key"         — string key e.g. "u_<userId>"
- *     Fields  : last_updated (ISO string), total_count (number)
+ *     keyPath : "key"   — e.g. "u_<userId>"
+ *     Fields  : last_updated (ISO), total_count
  *
- * All public functions are async and throw on unrecoverable IDB errors.
- * Callers should catch and degrade gracefully (show stale data / hide offline badge).
+ *   Store "srs_queue"         — prefetched SRS cards for offline review
+ *     keyPath : "_id" (autoIncrement)
+ *     Fields  : _id, user_id, _pos, ...card data from server
+ *     indexes : user_id, user_pos (compound ['user_id','_pos'])
+ *
+ *   Store "srs_pending"       — reviews recorded offline, waiting for sync
+ *     keyPath : "_id" (autoIncrement)
+ *     Fields  : _id, user_id, card_id, rating, response_ms, queue_source, recorded_at
+ *     indexes : user_id
  */
 
-const DB_NAME = 'DeutschLernApp';
-const DB_VERSION = 1;
-const STORE_VOCAB = 'vocab';
-const STORE_META = 'vocab_meta';
+const DB_NAME    = 'DeutschLernApp';
+const DB_VERSION = 2;
+const STORE_VOCAB       = 'vocab';
+const STORE_META        = 'vocab_meta';
+const STORE_SRS_QUEUE   = 'srs_queue';
+const STORE_SRS_PENDING = 'srs_pending';
 
 // ─── DB open ────────────────────────────────────────────────────────────────
 
@@ -40,22 +49,31 @@ function _openDB() {
         s.createIndex('user_id',    'user_id',    { unique: false });
         s.createIndex('folder_id',  'folder_id',  { unique: false });
         s.createIndex('created_at', 'created_at', { unique: false });
-        // Compound index for efficient user+date queries
         s.createIndex('user_created', ['user_id', 'created_at'], { unique: false });
       }
 
       if (!db.objectStoreNames.contains(STORE_META)) {
         db.createObjectStore(STORE_META, { keyPath: 'key' });
       }
+
+      if (!db.objectStoreNames.contains(STORE_SRS_QUEUE)) {
+        const s = db.createObjectStore(STORE_SRS_QUEUE, { keyPath: '_id', autoIncrement: true });
+        s.createIndex('user_id',  'user_id',            { unique: false });
+        s.createIndex('user_pos', ['user_id', '_pos'],  { unique: false });
+      }
+
+      if (!db.objectStoreNames.contains(STORE_SRS_PENDING)) {
+        const s = db.createObjectStore(STORE_SRS_PENDING, { keyPath: '_id', autoIncrement: true });
+        s.createIndex('user_id', 'user_id', { unique: false });
+      }
     };
 
     req.onsuccess  = (evt) => resolve(evt.target.result);
     req.onerror    = (evt) => {
-      _dbPromise = null; // allow retry next call
+      _dbPromise = null;
       reject(evt.target.error);
     };
     req.onblocked  = () => {
-      // Another tab has an older version open — wait for it to close.
       console.warn('[vocabCache] DB upgrade blocked by another tab.');
     };
   });
@@ -87,7 +105,7 @@ function _promisifyTx(tx) {
   });
 }
 
-// ─── Public API ─────────────────────────────────────────────────────────────
+// ─── Public API — Vocabulary ─────────────────────────────────────────────────
 
 /**
  * Returns true if IndexedDB is usable in this environment.
@@ -99,11 +117,10 @@ export function isOfflineCacheAvailable() {
 /**
  * Save a batch of vocabulary items for a user.
  * Uses put() — existing entries are overwritten with fresh data.
- * Safe to call repeatedly as pages load.
  *
  * @param {number} userId
- * @param {Array}  items         — from /api/webapp/vocabulary/list
- * @param {number} serverTotal   — total word count on server (for meta)
+ * @param {Array}  items       — from /api/webapp/vocabulary/list
+ * @param {number} serverTotal — total word count on server (for meta)
  */
 export async function saveVocabBatch(userId, items, serverTotal) {
   if (!items.length) return;
@@ -116,34 +133,31 @@ export async function saveVocabBatch(userId, items, serverTotal) {
     vocabStore.put({ ...item, user_id: userId });
   }
 
-  const meta = {
+  metaStore.put({
     key:          _metaKey(userId),
     last_updated: new Date().toISOString(),
     total_count:  serverTotal,
-  };
-  metaStore.put(meta);
+  });
 
   await _promisifyTx(tx);
 }
 
 /**
  * Return cached vocabulary for a user with optional filtering.
- * All filtering/sorting happens in JS — acceptable for ≤ ~20K entries.
  *
  * @param {number} userId
  * @param {object} opts
- *   folder_id  : number | -1 (no folder) | null (all)
- *   search     : string | null
- *   sort       : 'date_desc' | 'date_asc' | 'alpha_asc' | 'alpha_desc' | 'srs_status'
- *   limit      : number
- *   offset     : number
+ *   folder_id : number | -1 (no folder) | null (all)
+ *   search    : string | null
+ *   sort      : 'date_desc' | 'date_asc' | 'alpha_asc' | 'alpha_desc' | 'srs_status'
+ *   limit     : number
+ *   offset    : number
  * @returns {{ items: Array, total: number, meta: object|null }}
  */
 export async function getCachedVocab(userId, opts = {}) {
   const { folder_id = null, search = null, sort = 'date_desc', limit = 40, offset = 0 } = opts;
   const db = await _openDB();
 
-  // Load all entries for this user using the index
   const tx       = _tx(db, [STORE_VOCAB, STORE_META], 'readonly');
   const vocabIdx = tx.objectStore(STORE_VOCAB).index('user_id');
   const metaKey  = IDBKeyRange.only(userId);
@@ -153,7 +167,6 @@ export async function getCachedVocab(userId, opts = {}) {
     _promisifyRequest(tx.objectStore(STORE_META).get(_metaKey(userId))),
   ]);
 
-  // ── Filter ──
   let filtered = allItems;
 
   if (folder_id === -1) {
@@ -172,7 +185,6 @@ export async function getCachedVocab(userId, opts = {}) {
     );
   }
 
-  // ── Sort ──
   const sorters = {
     date_desc:  (a, b) => (b.created_at || '').localeCompare(a.created_at || ''),
     date_asc:   (a, b) => (a.created_at || '').localeCompare(b.created_at || ''),
@@ -193,7 +205,6 @@ export async function getCachedVocab(userId, opts = {}) {
 
 /**
  * Return cache metadata for a user (last_updated, total_count).
- * Returns null if no cache exists yet.
  */
 export async function getVocabCacheMeta(userId) {
   const db   = await _openDB();
@@ -233,7 +244,7 @@ export async function updateCachedVocabEntry(userId, updatedItem) {
 }
 
 /**
- * Compute folder stats from cached data (for folder chips when offline).
+ * Compute folder stats from cached data.
  */
 export async function getCachedFolderStats(userId) {
   const db  = await _openDB();
@@ -262,8 +273,152 @@ export async function getCachedFolderStats(userId) {
   }
 
   return {
-    folders:        Object.values(folderMap),
+    folders:         Object.values(folderMap),
     no_folder_count: noFolderCount,
-    total_count:    all.length,
+    total_count:     all.length,
   };
+}
+
+// ─── Public API — SRS Queue ──────────────────────────────────────────────────
+
+/**
+ * Replace the prefetched SRS card queue for a user with a fresh batch.
+ * Clears existing cards for the user, then inserts the new ones in order.
+ *
+ * @param {number} userId
+ * @param {Array}  cards  — card objects from /api/cards/prefetch
+ */
+export async function saveSrsQueue(userId, cards) {
+  if (!cards.length) return;
+  const db = await _openDB();
+  return new Promise((resolve, reject) => {
+    const tx    = db.transaction([STORE_SRS_QUEUE], 'readwrite');
+    const store = tx.objectStore(STORE_SRS_QUEUE);
+    const idx   = store.index('user_id');
+
+    // Delete all existing cards for this user, then insert fresh batch.
+    const clearReq = idx.openCursor(IDBKeyRange.only(userId));
+    clearReq.onsuccess = (e) => {
+      const cursor = e.target.result;
+      if (cursor) {
+        cursor.delete();
+        cursor.continue();
+        return;
+      }
+      // All old records deleted — insert fresh batch.
+      cards.forEach((card, pos) => {
+        store.add({ ...card, user_id: userId, _pos: pos });
+      });
+    };
+    clearReq.onerror = (e) => reject(e.target.error);
+    tx.oncomplete = () => resolve();
+    tx.onerror    = (e) => reject(e.target.error);
+    tx.onabort    = (e) => reject(e.target.error ?? new Error('Transaction aborted'));
+  });
+}
+
+/**
+ * Pop and return the next card from the offline SRS queue (lowest _pos for user).
+ * Returns null if the queue is empty.
+ *
+ * @param {number} userId
+ * @returns {object|null}
+ */
+export async function takeNextSrsCard(userId) {
+  const db = await _openDB();
+  return new Promise((resolve, reject) => {
+    const tx    = db.transaction([STORE_SRS_QUEUE], 'readwrite');
+    const idx   = tx.objectStore(STORE_SRS_QUEUE).index('user_pos');
+    const range = IDBKeyRange.bound([userId, 0], [userId, Number.MAX_SAFE_INTEGER]);
+    const req   = idx.openCursor(range);
+    let result  = null;
+
+    req.onsuccess = (e) => {
+      const cursor = e.target.result;
+      if (!cursor) return;
+      const record = { ...cursor.value };
+      delete record._id;
+      delete record._pos;
+      result = record;
+      cursor.delete();
+    };
+    req.onerror   = (e) => reject(e.target.error);
+    tx.oncomplete = () => resolve(result);
+    tx.onerror    = (e) => reject(e.target.error);
+    tx.onabort    = (e) => reject(e.target.error ?? new Error('Transaction aborted'));
+  });
+}
+
+/**
+ * Count how many SRS cards are queued for a user.
+ *
+ * @param {number} userId
+ * @returns {number}
+ */
+export async function countSrsQueue(userId) {
+  const db  = await _openDB();
+  const tx  = _tx(db, [STORE_SRS_QUEUE], 'readonly');
+  return _promisifyRequest(tx.objectStore(STORE_SRS_QUEUE).index('user_id').count(IDBKeyRange.only(userId)));
+}
+
+// ─── Public API — SRS Pending Reviews ────────────────────────────────────────
+
+/**
+ * Record a review that was made offline (to be synced later).
+ *
+ * @param {number} userId
+ * @param {{ card_id, rating, response_ms, queue_source }} review
+ */
+export async function addPendingReview(userId, { card_id, rating, response_ms, queue_source }) {
+  const db = await _openDB();
+  const tx = _tx(db, [STORE_SRS_PENDING], 'readwrite');
+  tx.objectStore(STORE_SRS_PENDING).add({
+    user_id:      userId,
+    card_id:      String(card_id),
+    rating,
+    response_ms:  Number(response_ms) || 0,
+    queue_source: queue_source || 'system',
+    recorded_at:  new Date().toISOString(),
+  });
+  await _promisifyTx(tx);
+}
+
+/**
+ * Return all pending (unsynced) reviews for a user, ordered by insertion.
+ *
+ * @param {number} userId
+ * @returns {Array}
+ */
+export async function getPendingReviews(userId) {
+  const db = await _openDB();
+  const tx = _tx(db, [STORE_SRS_PENDING], 'readonly');
+  return _promisifyRequest(
+    tx.objectStore(STORE_SRS_PENDING).index('user_id').getAll(IDBKeyRange.only(userId))
+  );
+}
+
+/**
+ * Remove a pending review by its IDB auto-incremented key.
+ *
+ * @param {number} pendingId  — the _id field returned by getPendingReviews
+ */
+export async function clearPendingReview(pendingId) {
+  const db = await _openDB();
+  const tx = _tx(db, [STORE_SRS_PENDING], 'readwrite');
+  tx.objectStore(STORE_SRS_PENDING).delete(pendingId);
+  await _promisifyTx(tx);
+}
+
+/**
+ * Count pending (unsynced) reviews for a user.
+ *
+ * @param {number} userId
+ * @returns {number}
+ */
+export async function countPendingReviews(userId) {
+  const db = await _openDB();
+  const tx = _tx(db, [STORE_SRS_PENDING], 'readonly');
+  return _promisifyRequest(
+    tx.objectStore(STORE_SRS_PENDING).index('user_id').count(IDBKeyRange.only(userId))
+  );
 }

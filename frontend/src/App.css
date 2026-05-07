@@ -7253,6 +7253,27 @@ body {
   color: rgba(214, 228, 255, 0.78);
 }
 
+.srs-offline-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  margin-top: 4px;
+}
+.srs-offline-badge.is-offline {
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: #F59E0B;
+}
+.srs-offline-badge.is-syncing {
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.28);
+  color: #10B981;
+}
+
 .fsrs-study-card {
   width: 100%;
   min-height: min(66vh, 560px);
@@ -19639,6 +19660,17 @@ body {
 .webapp-page.is-theme-light .fsrs-card-meta,
 .webapp-page.is-theme-light .fsrs-rate-hint {
   color: #5a4a39;
+}
+
+.webapp-page.is-theme-light .srs-offline-badge.is-offline {
+  background: rgba(180, 120, 0, 0.08);
+  border-color: rgba(180, 120, 0, 0.25);
+  color: #9a6400;
+}
+.webapp-page.is-theme-light .srs-offline-badge.is-syncing {
+  background: rgba(5, 120, 85, 0.08);
+  border-color: rgba(5, 120, 85, 0.22);
+  color: #0a7a57;
 }
 
 .webapp-page.is-theme-light .fsrs-card-source.is-muted-top {

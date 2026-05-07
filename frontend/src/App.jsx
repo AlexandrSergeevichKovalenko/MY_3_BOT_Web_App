@@ -15,6 +15,12 @@ import {
   getCachedFolderStats,
   deleteCachedVocabEntry,
   updateCachedVocabEntry,
+  saveSrsQueue,
+  takeNextSrsCard,
+  addPendingReview,
+  getPendingReviews,
+  clearPendingReview,
+  countPendingReviews,
 } from './offline/vocabCache';
 
 import './styles/topbar-redesign.css';
@@ -4404,6 +4410,7 @@ function AppInner() {
 
   // Network state for offline cache
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const [srsOfflinePendingCount, setSrsOfflinePendingCount] = useState(0);
 
   const [flashcardFolderMode, setFlashcardFolderMode] = useState('all');
   const [flashcardFolderId, setFlashcardFolderId] = useState('');
@@ -7452,6 +7459,32 @@ function AppInner() {
       && (flashcardsOnly || selectedSections.has('flashcards'));
     if (!fsrsContextActive) return;
     const resolvedQueueSource = flashcardQueueSource === 'manual' ? 'manual' : 'system';
+
+    // ── Offline path ─────────────────────────────────────────────────────────
+    if (!isOnline && isOfflineCacheAvailable()) {
+      const userId = webappUser?.id ? Number(webappUser.id) : null;
+      if (userId) {
+        setSrsLoading(true);
+        setSrsError('');
+        try {
+          const nextCard = await takeNextSrsCard(userId);
+          if (nextCard) {
+            applySrsPayload({ card: nextCard, srs: null, srs_preview: null, queue_info: null });
+          } else {
+            srsCardRef.current = null;
+            setSrsCard(null);
+            setSrsState(null);
+            setSrsPreview(null);
+          }
+        } catch (_err) {
+          setSrsError(tr('Нет карточек в офлайн-очереди', 'Keine Karten im Offline-Cache'));
+        } finally {
+          setSrsLoading(false);
+        }
+        return;
+      }
+    }
+
     const requestSignature = `${String(initData || '')}|${String(languageProfile?.native_language || '')}|${String(languageProfile?.learning_language || '')}|${resolvedQueueSource}`;
     const nowTs = Date.now();
     if (srsNextLoadInFlightRef.current) {
@@ -7542,6 +7575,8 @@ function AppInner() {
     languageProfile?.native_language,
     languageProfile?.learning_language,
     flashcardQueueSource,
+    isOnline,
+    webappUser?.id,
   ]);
 
   const prefetchSrsCards = useCallback(async () => {
@@ -7578,12 +7613,53 @@ function AppInner() {
       }
       const items = Array.isArray(data?.items) ? data.items : [];
       appendToSrsPrefetchQueue(items);
+      // Persist prefetched cards to IDB for offline review
+      if (items.length > 0 && isOfflineCacheAvailable()) {
+        const userId = webappUser?.id ? Number(webappUser.id) : null;
+        if (userId) saveSrsQueue(userId, items).catch(() => {});
+      }
     } catch (error) {
       console.warn('Space Repetition card prefetch failed', error);
     } finally {
       srsPrefetchInFlightRef.current = false;
     }
-  }, [appendToSrsPrefetchQueue, fetchWithTimeout, flashcardQueueSource, initData]);
+  }, [appendToSrsPrefetchQueue, fetchWithTimeout, flashcardQueueSource, initData, webappUser?.id]);
+
+  const drainOfflineSrsReviews = useCallback(async () => {
+    if (!initData || !isOfflineCacheAvailable()) return;
+    const userId = webappUser?.id ? Number(webappUser.id) : null;
+    if (!userId) return;
+    let pending;
+    try {
+      pending = await getPendingReviews(userId);
+    } catch (_err) {
+      return;
+    }
+    if (!pending.length) return;
+    for (const review of pending) {
+      try {
+        const response = await fetchWithTimeout('/api/cards/review', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            initData,
+            card_id:      review.card_id,
+            rating:       review.rating,
+            response_ms:  review.response_ms,
+            queue_source: review.queue_source,
+          }),
+        }, 60000);
+        if (response.ok) {
+          await clearPendingReview(review._id);
+          setSrsOfflinePendingCount((c) => Math.max(0, c - 1));
+        } else {
+          break; // server error — stop and retry next time
+        }
+      } catch (_err) {
+        break; // network error — stop and retry on next reconnect
+      }
+    }
+  }, [initData, fetchWithTimeout, webappUser?.id]);
 
   const rescheduleBacklog = useCallback(async () => {
     if (!initData || srsRescheduling) return;
@@ -9416,6 +9492,46 @@ function AppInner() {
     const responseMs = Math.max(0, Date.now() - startedAt);
     if (ratingValue === 'EASY' && srsEasyLocked) return;
     if (ratingValue === 'GOOD' && srsGoodLocked) return;
+
+    // ── Offline path ─────────────────────────────────────────────────────────
+    const srsUserId = webappUser?.id ? Number(webappUser.id) : null;
+    if (!isOnline && srsUserId && isOfflineCacheAvailable()) {
+      stopTtsPlayback();
+      setSrsError('');
+      setSrsSubmitting(true);
+      setSrsSubmittingRating(ratingValue);
+      try {
+        const resolvedQueueSource = flashcardQueueSource === 'manual' ? 'manual' : 'system';
+        await addPendingReview(srsUserId, {
+          card_id:      cardId,
+          rating:       ratingValue,
+          response_ms:  responseMs,
+          queue_source: resolvedQueueSource,
+        });
+        setSrsOfflinePendingCount((c) => c + 1);
+        decrementSrsQueueInfoLocal();
+        setSrsRevealAnswer(false);
+        setSrsRevealStartedAt(0);
+        setSrsRevealElapsedSec(0);
+        const nextCard = await takeNextSrsCard(srsUserId);
+        if (nextCard) {
+          applySrsPayload({ card: nextCard, srs: null, srs_preview: null, queue_info: null });
+        } else {
+          srsCardRef.current = null;
+          setSrsCard(null);
+          setSrsState(null);
+          setSrsPreview(null);
+        }
+      } catch (_err) {
+        setSrsError(tr('Ошибка сохранения офлайн', 'Offline-Speicherfehler'));
+      } finally {
+        setSrsSubmitting(false);
+        setSrsSubmittingRating(null);
+      }
+      return;
+    }
+
+    // ── Online path ───────────────────────────────────────────────────────────
     try {
       stopTtsPlayback();
       setSrsError('');
@@ -14070,6 +14186,21 @@ function AppInner() {
       window.removeEventListener('offline', handleOffline);
     };
   }, []);
+
+  // Load pending count on mount, drain if already online.
+  useEffect(() => {
+    const userId = webappUser?.id ? Number(webappUser.id) : null;
+    if (!userId || !isOfflineCacheAvailable()) return;
+    countPendingReviews(userId)
+      .then((count) => setSrsOfflinePendingCount(count))
+      .catch(() => {});
+  }, [webappUser?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Drain pending reviews whenever we (re)connect.
+  useEffect(() => {
+    if (!isOnline) return;
+    void drainOfflineSrsReviews();
+  }, [isOnline, drainOfflineSrsReviews]);
 
   const fsrsSectionActive = Boolean(
     initData
@@ -27271,6 +27402,13 @@ function AppInner() {
                             <div className="fsrs-study-queue">
                               {tr('Сегодня', 'Heute')}: {srsQueueInfo?.due_reviewed_today ?? 0}/{srsQueueInfo?.due_limit_today ?? 30} · {tr('Очередь', 'Warteschlange')}: {srsQueueInfo?.due_count_total ?? srsQueueInfo?.due_count ?? 0}
                             </div>
+                            {(!isOnline || srsOfflinePendingCount > 0) && (
+                              <div className={`srs-offline-badge ${!isOnline ? 'is-offline' : 'is-syncing'}`}>
+                                {!isOnline
+                                  ? `📵 ${tr('Офлайн', 'Offline')}`
+                                  : `↑ ${tr('синхр.', 'sync')} ${srsOfflinePendingCount}`}
+                              </div>
+                            )}
                           </div>
 
                           {!srsLoading && !srsCard && !srsError && (srsQueueInfo?.due_count ?? 0) === 0 && (srsQueueInfo?.new_remaining_today ?? 0) === 0 && (
