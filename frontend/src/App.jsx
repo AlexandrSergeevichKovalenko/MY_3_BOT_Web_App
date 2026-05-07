@@ -3175,6 +3175,8 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
     };
   }, [skillTrainingStatusMap]);
 
+  const [weeklyMetricModalKey, setWeeklyMetricModalKey] = useState(null);
+
   return (
     <PerfProfiler id="section.home">
       <>
@@ -3184,7 +3186,6 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
             <div className="home-panel-head-main">
               <div className="home-panel-head-copy">
                 <h2>{tr('План на неделю', 'Wochenplan')}</h2>
-                <p>{tr('Личные цели и факт с прогнозом до конца недели', 'Persoenliche Ziele mit Ist-Werten und Prognose bis Wochenende')}</p>
                 <small className={`home-panel-snapshot-meta is-${weeklyPlanSnapshotTone === 'manual' ? 'fresh' : 'stale'}`}>{weeklyPlanSnapshotLabel}</small>
               </div>
               <div className="home-panel-head-actions">
@@ -3213,22 +3214,20 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
               </div>
             </div>
             <div className="weekly-plan-head-toolbar">
-              <label className="weekly-plan-period-select">
-                <span>{tr('Период', 'Zeitraum')}</span>
-                <select
-                  value={planAnalyticsPeriod}
-                  onChange={(event) => setPlanAnalyticsPeriod(event.target.value)}
-                  disabled={planAnalyticsLoading}
-                >
-                  <option value="week">{tr('Неделя', 'Woche')}</option>
-                  <option value="month">{tr('Месяц', 'Monat')}</option>
-                  <option value="quarter">{tr('Квартал', 'Quartal')}</option>
-                  <option value="half-year">{tr('Полугодие', 'Halbjahr')}</option>
-                  <option value="year">{tr('Год', 'Jahr')}</option>
-                </select>
-              </label>
+              <select
+                className="weekly-plan-period-select-inline"
+                value={planAnalyticsPeriod}
+                onChange={(event) => setPlanAnalyticsPeriod(event.target.value)}
+                disabled={planAnalyticsLoading}
+              >
+                <option value="week">{tr('Неделя', 'Woche')}</option>
+                <option value="month">{tr('Месяц', 'Monat')}</option>
+                <option value="quarter">{tr('Квартал', 'Quartal')}</option>
+                <option value="half-year">{tr('Полугодие', 'Halbjahr')}</option>
+                <option value="year">{tr('Год', 'Jahr')}</option>
+              </select>
               {weeklyWeekLabel && (
-                <span className="weekly-plan-period">{planPeriodLabel}: {weeklyWeekLabel}</span>
+                <span className="weekly-plan-period">{weeklyWeekLabel}</span>
               )}
             </div>
           </div>
@@ -3307,14 +3306,11 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
           {weeklyPlanUsesDeferredAnalytics && planAnalyticsError && <div className="webapp-error">{planAnalyticsError}</div>}
 
           {showWeeklyPlanSkeleton && (
-            <div className="weekly-plan-metrics" aria-hidden="true">
+            <div className="weekly-plan-metrics weekly-plan-metrics-grid" aria-hidden="true">
               {weeklyMetricRows.map((item) => (
                 <article className={`weekly-plan-metric-card ${weeklyMetricToneClass(item.key)}`} key={`weekly-skeleton-${item.key}`} style={{ opacity: 0.72 }}>
-                  <div className="weekly-plan-metric-top">
-                    <div>
-                      <h4>{item.title}</h4>
-                      <p>{tr('Загружаем показатели...', 'Werte werden geladen...')}</p>
-                    </div>
+                  <div className="weekly-plan-metric-compact-top">
+                    <h4>{item.title}</h4>
                     <div className="weekly-plan-progress-ring" style={{ background: 'radial-gradient(circle at center, rgba(8, 16, 34, 0.96) 56%, transparent 57%), conic-gradient(rgba(94, 117, 159, 0.35) 0% 100%)' }}>
                       <span>…</span>
                     </div>
@@ -3329,15 +3325,13 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
           )}
 
           {canRenderWeeklyMetrics && (
-            <div className="weekly-plan-metrics">
+            <div className="weekly-plan-metrics weekly-plan-metrics-grid">
               {weeklyMetricRows.map((item) => {
                 const goal = Number(item.data?.goal || 0);
                 const actual = Number(item.data?.actual || 0);
-                const forecast = Number(item.data?.forecast || 0);
                 const completion = Number(item.data?.completion_percent || 0);
                 const completionClamped = Math.max(0, Math.min(100, completion));
                 const ringExpected = expectedProgressPercent;
-                const forecastDelta = Number(item.data?.forecast_delta_vs_goal || 0);
                 const deficit = Math.max(0, ringExpected - completionClamped);
                 const ahead = Math.max(0, completionClamped - ringExpected);
                 const expectedPart = Math.min(completionClamped, ringExpected);
@@ -3352,58 +3346,95 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
                 const completionRingStyle = {
                   background: `radial-gradient(circle at center, rgba(8, 16, 34, 0.96) 56%, transparent 57%), ${ringGradient}`,
                 };
-                const forecastClass = forecastDelta >= 0 ? 'is-good' : 'is-bad';
-                const expanded = Boolean(weeklyMetricExpanded[item.key]);
                 return (
-                  <article className={`weekly-plan-metric-card ${weeklyMetricToneClass(item.key)}`} key={item.key}>
-                    <div className="weekly-plan-metric-top">
-                      <div>
-                        <h4>{item.title}</h4>
-                        <p>{tr('План/Факт/Прогноз', 'Plan/Ist/Prognose')}</p>
-                      </div>
-                      <div className="weekly-plan-metric-actions">
-                        <div className="weekly-plan-progress-ring" style={completionRingStyle} title={`${tr('Факт', 'Ist')}: ${Math.round(completionClamped)}% • ${tr('Должно быть к текущему дню', 'Soll bis heute sein')}: ${Math.round(ringExpected)}%`}>
-                          <span>{Math.round(completionClamped)}%</span>
-                        </div>
-                        <button
-                          type="button"
-                          className="secondary-button weekly-plan-card-toggle"
-                          onClick={() => setWeeklyMetricExpanded((prev) => ({ ...prev, [item.key]: !prev[item.key] }))}
-                        >
-                          {expanded ? tr('Свернуть', 'Einklappen') : tr('Развернуть', 'Aufklappen')}
-                        </button>
+                  <article
+                    className={`weekly-plan-metric-card ${weeklyMetricToneClass(item.key)}`}
+                    key={item.key}
+                    onClick={() => setWeeklyMetricModalKey(item.key)}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setWeeklyMetricModalKey(item.key); }}
+                  >
+                    <div className="weekly-plan-metric-compact-top">
+                      <h4>{item.title}</h4>
+                      <div className="weekly-plan-progress-ring" style={completionRingStyle} title={`${tr('Факт', 'Ist')}: ${Math.round(completionClamped)}% • ${tr('Должно быть к текущему дню', 'Soll bis heute sein')}: ${Math.round(ringExpected)}%`}>
+                        <span>{Math.round(completionClamped)}%</span>
                       </div>
                     </div>
-                    {expanded ? (
-                      <div className="weekly-plan-values">
-                        <div>
-                          <span>{tr('План', 'Plan')}</span>
-                          <strong>{formatWeeklyValue(goal)} {item.unit}</strong>
-                        </div>
-                        <div>
-                          <span>{tr('Факт', 'Ist')}</span>
-                          <strong>{formatWeeklyValue(actual)} {item.unit}</strong>
-                        </div>
-                        <div>
-                          <span>{tr('Прогноз', 'Prognose')}</span>
-                          <strong>{formatWeeklyValue(forecast, 1)} {item.unit}</strong>
-                        </div>
-                        <div className={forecastClass}>
-                          <span>{tr('Отклонение прогноза', 'Abweichung Prognose')}</span>
-                          <strong>{forecastDelta >= 0 ? '+' : ''}{formatWeeklyValue(forecastDelta, 1)} {item.unit}</strong>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="weekly-plan-values-compact">
-                        <span>{tr('Факт', 'Ist')}: <strong>{formatWeeklyValue(actual)} {item.unit}</strong></span>
-                        <span>{tr('План', 'Plan')}: <strong>{formatWeeklyValue(goal)} {item.unit}</strong></span>
-                      </div>
-                    )}
+                    <div className="weekly-plan-values-compact">
+                      <span>{tr('Факт', 'Ist')}: <strong>{formatWeeklyValue(actual)} {item.unit}</strong></span>
+                      <span>{tr('План', 'Plan')}: <strong>{formatWeeklyValue(goal)} {item.unit}</strong></span>
+                    </div>
                   </article>
                 );
               })}
             </div>
           )}
+          {weeklyMetricModalKey && (() => {
+            const modalItem = weeklyMetricRows.find((r) => r.key === weeklyMetricModalKey);
+            if (!modalItem) return null;
+            const mGoal = Number(modalItem.data?.goal || 0);
+            const mActual = Number(modalItem.data?.actual || 0);
+            const mForecast = Number(modalItem.data?.forecast || 0);
+            const mForecastDelta = Number(modalItem.data?.forecast_delta_vs_goal || 0);
+            const mForecastClass = mForecastDelta >= 0 ? 'is-good' : 'is-bad';
+            const mCompletion = Number(modalItem.data?.completion_percent || 0);
+            const mClamped = Math.max(0, Math.min(100, mCompletion));
+            const mExpected = expectedProgressPercent;
+            const mDeficit = Math.max(0, mExpected - mClamped);
+            const mAhead = Math.max(0, mClamped - mExpected);
+            const mExpectedPart = Math.min(mClamped, mExpected);
+            let mGradient = '';
+            if (mDeficit > 0.01) {
+              mGradient = `conic-gradient(#7bf1b3 0% ${mExpectedPart}%, #ff6b6b ${mExpectedPart}% ${mExpected}%, rgba(94, 117, 159, 0.35) ${mExpected}% 100%)`;
+            } else if (mAhead > 0.01) {
+              mGradient = `conic-gradient(#7bf1b3 0% ${mExpected}%, #60a5fa ${mExpected}% ${mClamped}%, rgba(94, 117, 159, 0.35) ${mClamped}% 100%)`;
+            } else {
+              mGradient = `conic-gradient(#7bf1b3 0% ${mClamped}%, rgba(94, 117, 159, 0.35) ${mClamped}% 100%)`;
+            }
+            const mRingStyle = { background: `radial-gradient(circle at center, rgba(8, 16, 34, 0.96) 56%, transparent 57%), ${mGradient}` };
+            return (
+              <div
+                className="weekly-metric-modal-overlay"
+                onClick={() => setWeeklyMetricModalKey(null)}
+                role="dialog"
+                aria-modal="true"
+              >
+                <div className="weekly-metric-modal" onClick={(e) => e.stopPropagation()}>
+                  <div className="weekly-metric-modal-head">
+                    <div className="weekly-plan-progress-ring" style={mRingStyle}>
+                      <span>{Math.round(mClamped)}%</span>
+                    </div>
+                    <h3>{modalItem.title}</h3>
+                    <button
+                      type="button"
+                      className="secondary-button weekly-metric-modal-close"
+                      onClick={() => setWeeklyMetricModalKey(null)}
+                      aria-label={tr('Закрыть', 'Schließen')}
+                    >✕</button>
+                  </div>
+                  <div className="weekly-plan-values">
+                    <div>
+                      <span>{tr('План', 'Plan')}</span>
+                      <strong>{formatWeeklyValue(mGoal)} {modalItem.unit}</strong>
+                    </div>
+                    <div>
+                      <span>{tr('Факт', 'Ist')}</span>
+                      <strong>{formatWeeklyValue(mActual)} {modalItem.unit}</strong>
+                    </div>
+                    <div>
+                      <span>{tr('Прогноз', 'Prognose')}</span>
+                      <strong>{formatWeeklyValue(mForecast, 1)} {modalItem.unit}</strong>
+                    </div>
+                    <div className={mForecastClass}>
+                      <span>{tr('Отклонение прогноза', 'Abweichung Prognose')}</span>
+                      <strong>{mForecastDelta >= 0 ? '+' : ''}{formatWeeklyValue(mForecastDelta, 1)} {modalItem.unit}</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
         </section>
         )}
 
@@ -3507,63 +3538,63 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
                   );
                 return (
                   <div className={`today-plan-item is-${itemStatusClass}`} key={item.id}>
-                    <div className="today-plan-item-main">
+                    <div className="today-plan-item-row">
                       <div className="today-plan-item-title">{getTodayItemTitle(item)}</div>
-                      <div className="today-plan-item-meta">
-                        {!isVideoTask && <span>{item.estimated_minutes || 0} {tr('мин', 'Min')}</span>}
-                        <span>{done ? 'DONE' : String(item.status || 'todo').toUpperCase()}</span>
-                        <span>⏱ {formatCompactTimer(elapsedSeconds)}</span>
-                      </div>
-                      {isVideoTask && (
-                        <div className="today-video-hint">
-                          <div className="today-video-topic-line">
-                            <span>{tr('Тема для тренировки:', 'Thema fuer Training:')}</span>{' '}
-                            <span className="today-video-topic-value">{videoTopic || tr('не определена', 'nicht definiert')}</span>
-                          </div>
-                          {tr(
-                            'Если видео полезно по теме - поставьте 👍. Если не по теме - 👎.',
-                            'Wenn das Video zum Thema passt - 👍. Wenn nicht - 👎.'
-                          )}
-                          {' '}
-                          <span>{tr('Рейтинг', 'Bewertung')}: {videoLikes}/{videoDislikes} ({videoScore >= 0 ? '+' : ''}{videoScore})</span>
+                      <div className={`today-plan-item-actions ${isVideoTask ? 'is-video-task' : ''}`}>
+                        <button
+                          type="button"
+                          className={`secondary-button today-plan-start-btn ${isVideoTask ? 'today-video-start-btn' : ''}`}
+                          onClick={() => startTodayTask(item)}
+                          disabled={Boolean(loadingAction) || (!isVideoTask && done)}
+                        >
+                          {loadingAction === 'start' ? tr('Старт...', 'Start...') : tr('Начать', 'Starten')}
+                        </button>
+                        <div className={`today-task-progress-badge ${isVideoTask ? 'today-video-progress-badge' : ''} ${done ? 'is-done' : ''}`} title={progressBadgeTitle}>
+                          {progressBadgeText}
                         </div>
-                      )}
-                    </div>
-                    <div className={`today-plan-item-actions ${isVideoTask ? 'is-video-task' : ''}`}>
-                      <button
-                        type="button"
-                        className={`secondary-button ${isVideoTask ? 'today-video-start-btn' : ''}`}
-                        onClick={() => startTodayTask(item)}
-                        disabled={Boolean(loadingAction) || (!isVideoTask && done)}
-                      >
-                        {loadingAction === 'start' ? tr('Старт...', 'Start...') : tr('Начать', 'Starten')}
-                      </button>
-                      <div className={`today-task-progress-badge ${isVideoTask ? 'today-video-progress-badge' : ''} ${done ? 'is-done' : ''}`} title={progressBadgeTitle}>
-                        {progressBadgeText}
+                        {isVideoTask && (
+                          <>
+                            <button
+                              type="button"
+                              className={`secondary-button today-video-vote ${userVote === 1 ? 'is-active' : ''}`}
+                              onClick={() => submitTodayVideoFeedback(item, 'like')}
+                              disabled={Boolean(loadingAction)}
+                              title={tr('Лайк: видео полезно по теме', 'Like: Video passt zum Thema')}
+                            >
+                              {loadingAction === 'vote_like' ? '…' : '👍'}
+                            </button>
+                            <button
+                              type="button"
+                              className={`secondary-button today-video-vote ${userVote === -1 ? 'is-active is-negative' : ''}`}
+                              onClick={() => submitTodayVideoFeedback(item, 'dislike')}
+                              disabled={Boolean(loadingAction)}
+                              title={tr('Дизлайк: видео не по теме', 'Dislike: Video passt nicht zum Thema')}
+                            >
+                              {loadingAction === 'vote_dislike' ? '…' : '👎'}
+                            </button>
+                          </>
+                        )}
                       </div>
-                      {isVideoTask && (
-                        <>
-                          <button
-                            type="button"
-                            className={`secondary-button today-video-vote ${userVote === 1 ? 'is-active' : ''}`}
-                            onClick={() => submitTodayVideoFeedback(item, 'like')}
-                            disabled={Boolean(loadingAction)}
-                            title={tr('Лайк: видео полезно по теме', 'Like: Video passt zum Thema')}
-                          >
-                            {loadingAction === 'vote_like' ? '…' : '👍'}
-                          </button>
-                          <button
-                            type="button"
-                            className={`secondary-button today-video-vote ${userVote === -1 ? 'is-active is-negative' : ''}`}
-                            onClick={() => submitTodayVideoFeedback(item, 'dislike')}
-                            disabled={Boolean(loadingAction)}
-                            title={tr('Дизлайк: видео не по теме', 'Dislike: Video passt nicht zum Thema')}
-                          >
-                            {loadingAction === 'vote_dislike' ? '…' : '👎'}
-                          </button>
-                        </>
-                      )}
                     </div>
+                    <div className="today-plan-item-meta">
+                      {!isVideoTask && <span>{item.estimated_minutes || 0} {tr('мин', 'Min')}</span>}
+                      <span>{done ? 'DONE' : String(item.status || 'todo').toUpperCase()}</span>
+                      <span>⏱ {formatCompactTimer(elapsedSeconds)}</span>
+                    </div>
+                    {isVideoTask && (
+                      <div className="today-video-hint">
+                        <div className="today-video-topic-line">
+                          <span>{tr('Тема для тренировки:', 'Thema fuer Training:')}</span>{' '}
+                          <span className="today-video-topic-value">{videoTopic || tr('не определена', 'nicht definiert')}</span>
+                        </div>
+                        {tr(
+                          'Если видео полезно по теме - поставьте 👍. Если не по теме - 👎.',
+                          'Wenn das Video zum Thema passt - 👍. Wenn nicht - 👎.'
+                        )}
+                        {' '}
+                        <span>{tr('Рейтинг', 'Bewertung')}: {videoLikes}/{videoDislikes} ({videoScore >= 0 ? '+' : ''}{videoScore})</span>
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -3608,21 +3639,9 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
                   <span className="home-panel-skeleton home-panel-skeleton-line is-subtle" />
                 </div>
               </div>
-              <div className="skill-rings-legend">
-                {[0, 1, 2, 3].map((index) => (
-                  <div className="skill-rings-legend-item skill-rings-legend-item-skeleton" key={`skill-rings-skeleton-${index}`}>
-                    <span className="home-panel-skeleton skill-rings-dot-skeleton" />
-                    <div className="skill-rings-text">
-                      <span className="home-panel-skeleton home-panel-skeleton-line is-title" />
-                      <div className="skill-rings-meta">
-                        <span className="home-panel-skeleton home-panel-skeleton-line is-meta" />
-                        <span className="home-panel-skeleton home-panel-skeleton-line is-meta is-short" />
-                      </div>
-                    </div>
-                    <div className="skill-rings-actions">
-                      <span className="home-panel-skeleton home-panel-skeleton-pill" />
-                    </div>
-                  </div>
+              <div className="skill-rings-grid">
+                {[0, 1, 2, 3, 4, 5].map((index) => (
+                  <div className="skill-rings-grid-item-skeleton home-panel-skeleton" key={`skill-rings-skeleton-${index}`} />
                 ))}
               </div>
             </div>
@@ -3673,75 +3692,44 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
                   <div className="skill-rings-center-sub">{tr('3 слабых + 3 сильных', '3 schwache + 3 starke')}</div>
                 </div>
               </div>
-              <div className="skill-rings-legend">
+              <div className="skill-rings-grid">
                 {ringSkills.map((skill, index) => {
                   const color = ringPalette[index % ringPalette.length];
                   const trainingStatus = getSkillTrainingStatus(skill?.skill_id);
                   const isSkillComplete = Boolean(trainingStatus?.is_complete);
                   const showSkillInProgress = Boolean(trainingStatus && !isSkillComplete);
-                  const storedTrainingSnapshot = getStoredSkillTrainingSnapshot(skill?.skill_id);
-                  const canResumeSkillTraining = Boolean(storedTrainingSnapshot);
+                  const canResumeSkillTraining = Boolean(getStoredSkillTrainingSnapshot(skill?.skill_id));
                   const isSkillBusy = Boolean(skillPracticeLoading[String(skill.skill_id || '')]);
+                  const masteryDisplay = skill?.mastery !== null && skill?.mastery !== undefined
+                    ? `${Math.round(Number(skill.mastery || 0))}%`
+                    : '—';
                   return (
-                    <div
-                      className={`skill-rings-legend-item ${skill.ring_type === 'weak' ? 'is-weak' : 'is-strong'}`}
-                      key={`legend-${skill.skill_id}`}
+                    <button
+                      type="button"
+                      className={`skill-rings-grid-item ${skill.ring_type === 'weak' ? 'is-weak' : 'is-strong'} ${isSkillComplete ? 'is-complete' : ''} ${isSkillBusy ? 'is-busy' : ''}`}
+                      key={`grid-${skill.skill_id}`}
+                      onClick={() => canResumeSkillTraining
+                        ? resumeSkillPractice(skill)
+                        : startSkillPractice(skill, { forceRefresh: false })
+                      }
+                      disabled={isSkillBusy}
                     >
-                      <span className="skill-rings-dot" style={{ backgroundColor: color }} />
-                      <div className="skill-rings-text">
-                        <div className="skill-rings-name">
-                          {getDisplaySkillName(skill)}
-                          {isSkillComplete && (
-                            <span className="skill-train-status-badge is-complete">✅ {tr('Готово', 'Fertig')}</span>
-                          )}
-                          {showSkillInProgress && (
-                            <span className="skill-train-status-badge is-progress">
-                              {tr('в процессе', 'in Arbeit')}
-                            </span>
-                          )}
-                        </div>
-                        <div className="skill-rings-meta">
-                          <span>{skill.ring_type === 'weak' ? tr('Слабый', 'Schwach') : tr('Сильный', 'Stark')}</span>
-                          <span>
-                            {tr('Оценка', 'Score')}: {skill?.mastery === null || skill?.mastery === undefined
-                              ? tr('нет данных', 'keine Daten')
-                              : `${Math.round(Number(skill.mastery || 0))}%`}
-                          </span>
-                          <span>{tr('Ошибки 7д', 'Fehler 7T')}: {Number(skill.errors_7d || 0)}</span>
-                          {trainingStatus && (
-                            <span>
-                              {tr('Ссылки', 'Links')}: {Math.max(0, Number(trainingStatus.opened_count || 0))}/{Math.max(0, Number(trainingStatus.required_count || 0))}
-                            </span>
-                          )}
-                        </div>
+                      <div className="skill-rings-grid-item-top">
+                        <span className="skill-rings-dot" style={{ backgroundColor: color }} />
+                        {isSkillComplete && <span className="skill-grid-badge is-complete">✅</span>}
+                        {showSkillInProgress && <span className="skill-grid-badge is-progress">▶</span>}
+                        {isSkillBusy && <span className="skill-grid-badge is-loading">…</span>}
                       </div>
-                      <div className="skill-rings-actions">
-                        <button
-                          type="button"
-                          className="secondary-button skill-rings-train-btn"
-                          onClick={() => startSkillPractice(skill, { forceRefresh: false })}
-                          disabled={isSkillBusy}
-                        >
-                          {isSkillBusy
-                            ? tr('Запуск...', 'Start...')
-                            : tr('Прокачать', 'Trainieren')}
-                        </button>
-                        {canResumeSkillTraining && (
-                          <button
-                            type="button"
-                            className="secondary-button skill-rings-resume-btn"
-                            onClick={() => resumeSkillPractice(skill)}
-                            disabled={isSkillBusy}
-                          >
-                            {tr('Вернуться к тренировке', 'Zum Training zurueck')}
-                          </button>
-                        )}
+                      <div className="skill-rings-grid-name">{getDisplaySkillName(skill)}</div>
+                      <div className="skill-rings-grid-stats">
+                        <span className="skill-grid-score">{masteryDisplay}</span>
+                        <span className="skill-grid-errors">{Number(skill.errors_7d || 0)}F</span>
                       </div>
-                    </div>
+                    </button>
                   );
                 })}
                 {ringSkills.length === 0 && (
-                  <div className="webapp-muted">{tr('Пока нет данных по навыкам.', 'Noch keine Skill-Daten.')}</div>
+                  <div className="webapp-muted skill-rings-empty">{tr('Пока нет данных по навыкам.', 'Noch keine Skill-Daten.')}</div>
                 )}
               </div>
             </div>
@@ -8795,6 +8783,10 @@ function AppInner() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ initData }),
       });
+      if (response.status === 404) {
+        void loadTodayPlan({ manual: true });
+        return null;
+      }
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка обновления статуса задачи', 'Fehler beim Aktualisieren des Aufgabenstatus'));
       }
@@ -8939,6 +8931,9 @@ function AppInner() {
           running: running === undefined ? undefined : Boolean(running),
         }),
       });
+      if (response.status === 404) {
+        return null;
+      }
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка синхронизации таймера задачи', 'Fehler bei der Aufgaben-Timer-Synchronisierung'));
       }

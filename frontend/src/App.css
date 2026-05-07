@@ -11468,9 +11468,9 @@ body {
 }
 
 .today-plan-item {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   padding: 11px 12px;
   border-radius: 12px;
   border: 1px solid rgba(154, 191, 255, 0.2);
@@ -15901,13 +15901,15 @@ body {
 }
 
 .today-plan-items {
-  gap: 20px;
+  gap: 10px;
 }
 
 .today-plan-item {
-  gap: 16px;
-  padding: 20px;
-  border-radius: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 16px;
+  border-radius: 18px;
   border: 1px solid var(--home-border);
   background: var(--home-bg-card-alt);
 }
@@ -15921,21 +15923,30 @@ body {
   border-color: var(--home-warning);
 }
 
-.today-plan-item-main {
+.today-plan-item-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   min-width: 0;
 }
 
 .today-plan-item-title {
-  font-size: 18px;
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
   line-height: 1.3;
   font-weight: 600;
   color: var(--home-text-title);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 .today-plan-item-meta {
-  gap: 12px;
-  margin-top: 8px;
-  font-size: 14px;
+  display: flex;
+  gap: 10px;
+  font-size: 12px;
   line-height: 1.4;
   color: var(--home-text-muted);
   flex-wrap: wrap;
@@ -15950,23 +15961,28 @@ body {
 }
 
 .today-plan-item-actions {
-  gap: 12px;
+  display: flex;
+  gap: 6px;
   align-items: center;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+  flex-shrink: 0;
+  flex-wrap: nowrap;
 }
 
 .today-task-progress-badge {
-  min-width: 80px;
-  min-height: 40px;
-  padding: 0 16px;
+  min-width: 60px;
+  min-height: 32px;
+  padding: 0 10px;
   border-radius: 999px;
   border: 1px solid var(--home-border);
   background: transparent;
   color: var(--home-text-secondary);
-  font-size: 14px;
+  font-size: 12px;
   line-height: 1.4;
   font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
 }
 
 .today-task-progress-badge.is-done {
@@ -16005,18 +16021,18 @@ body {
 
 .today-plan-item-actions.is-video-task {
   flex-wrap: nowrap;
-  gap: 8px;
+  gap: 6px;
 }
 
 .today-plan-item-actions.is-video-task .today-video-start-btn {
   white-space: nowrap;
-  padding: 0 14px;
+  padding: 0 12px;
 }
 
 .today-plan-item-actions.is-video-task .today-video-progress-badge {
-  min-width: 72px;
-  min-height: 40px;
-  padding: 0 10px;
+  min-width: 60px;
+  min-height: 32px;
+  padding: 0 8px;
   font-size: 13px;
 }
 
@@ -16191,7 +16207,6 @@ body {
 }
 
 .weekly-plan-panel .secondary-button,
-.today-plan-panel .secondary-button,
 .skill-report-panel .secondary-button {
   min-height: 44px;
   padding: 0 16px;
@@ -16203,6 +16218,20 @@ body {
   line-height: 1.4;
   font-weight: 500;
   box-shadow: none;
+}
+
+.today-plan-panel .secondary-button {
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 12px;
+  border: 1px solid var(--home-border);
+  background: transparent;
+  color: var(--home-text-secondary);
+  font-size: 13px;
+  line-height: 1.4;
+  font-weight: 500;
+  box-shadow: none;
+  white-space: nowrap;
 }
 
 .weekly-plan-panel .home-panel-icon-button,
@@ -16257,16 +16286,8 @@ body {
     width: 100%;
   }
 
-  .today-plan-item {
-    grid-template-columns: 1fr;
-  }
-
   .today-plan-skeleton-card {
     grid-template-columns: 1fr;
-  }
-
-  .today-plan-item-actions {
-    justify-content: flex-start;
   }
 
   .today-plan-skeleton-actions {
@@ -16304,6 +16325,201 @@ body {
   .home-panel-head-actions {
     gap: 6px;
   }
+}
+
+/* Weekly plan: compact grid + modal */
+.weekly-plan-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+.weekly-plan-metric-compact-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.weekly-plan-metric-compact-top h4 {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.3;
+  font-weight: 600;
+  color: var(--home-text-title);
+  flex: 1;
+  min-width: 0;
+}
+
+.weekly-plan-metrics-grid .weekly-plan-metric-card {
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease;
+  gap: 12px;
+  padding: 14px;
+}
+
+.weekly-plan-metrics-grid .weekly-plan-metric-card:hover {
+  border-color: var(--home-text-muted);
+  background: var(--home-bg-hover);
+}
+
+.weekly-plan-metrics-grid .weekly-plan-progress-ring {
+  width: 52px;
+  height: 52px;
+  flex-shrink: 0;
+}
+
+.weekly-plan-metrics-grid .weekly-plan-progress-ring span {
+  font-size: 12px;
+}
+
+.weekly-plan-period-select-inline {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--home-border);
+  background: var(--home-bg-card-alt);
+  color: var(--home-text-secondary);
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.weekly-metric-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  z-index: 900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.weekly-metric-modal {
+  background: var(--home-bg-card);
+  border: 1px solid var(--home-border);
+  border-radius: 24px;
+  padding: 24px;
+  width: min(360px, 100%);
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 32px 64px rgba(0, 0, 0, 0.5);
+}
+
+.weekly-metric-modal-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.weekly-metric-modal-head h3 {
+  flex: 1;
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.3;
+  font-weight: 600;
+  color: var(--home-text-title);
+  min-width: 0;
+}
+
+.weekly-metric-modal-close {
+  min-height: 36px !important;
+  min-width: 36px !important;
+  padding: 0 !important;
+  border-radius: 50% !important;
+  flex-shrink: 0;
+  font-size: 16px !important;
+}
+
+/* Skill rings: 3×2 grid */
+.skill-rings-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.skill-rings-grid-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 10px;
+  border-radius: 16px;
+  border: 1px solid var(--home-border);
+  background: var(--home-bg-card-alt);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.skill-rings-grid-item.is-weak {
+  border-color: rgba(220, 38, 38, 0.45);
+}
+
+.skill-rings-grid-item.is-strong {
+  border-color: rgba(22, 163, 74, 0.35);
+}
+
+.skill-rings-grid-item:hover:not(:disabled) {
+  background: var(--home-bg-hover);
+}
+
+.skill-rings-grid-item:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.skill-rings-grid-item-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.skill-rings-grid-name {
+  font-size: 12px;
+  line-height: 1.3;
+  font-weight: 600;
+  color: var(--home-text-title);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  flex: 1;
+}
+
+.skill-rings-grid-stats {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: auto;
+}
+
+.skill-grid-score {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--home-text-primary);
+}
+
+.skill-grid-errors {
+  font-size: 11px;
+  color: var(--home-text-muted);
+}
+
+.skill-grid-badge {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.skill-rings-grid-item-skeleton {
+  min-height: 90px;
+  border-radius: 16px;
+}
+
+.skill-rings-empty {
+  grid-column: 1 / -1;
 }
 
 /* Translations Screen: Dark Minimal Premium Study Mode */
