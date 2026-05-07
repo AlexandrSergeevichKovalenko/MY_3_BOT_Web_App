@@ -4350,6 +4350,28 @@ function AppInner() {
   const [foldersLoading, setFoldersLoading] = useState(false);
   const [foldersError, setFoldersError] = useState('');
   const [dictionaryFolderId, setDictionaryFolderId] = useState('none');
+
+  // Vocabulary Library tab state
+  const [vocabTab, setVocabTab] = useState('search');
+  const [vocabItems, setVocabItems] = useState([]);
+  const [vocabTotal, setVocabTotal] = useState(0);
+  const [vocabLoading, setVocabLoading] = useState(false);
+  const [vocabError, setVocabError] = useState('');
+  const [vocabFolderFilter, setVocabFolderFilter] = useState('all');
+  const [vocabSearch, setVocabSearch] = useState('');
+  const [vocabSort, setVocabSort] = useState('date_desc');
+  const [vocabOffset, setVocabOffset] = useState(0);
+  const [vocabHasMore, setVocabHasMore] = useState(false);
+  const [vocabFoldersMeta, setVocabFoldersMeta] = useState(null);
+  const [vocabExpandedId, setVocabExpandedId] = useState(null);
+  const [vocabEditItem, setVocabEditItem] = useState(null);
+  const [vocabEditWord, setVocabEditWord] = useState('');
+  const [vocabEditTrans, setVocabEditTrans] = useState('');
+  const [vocabEditFolder, setVocabEditFolder] = useState('none');
+  const [vocabEditLoading, setVocabEditLoading] = useState(false);
+  const [vocabEditError, setVocabEditError] = useState('');
+  const [vocabDeleteItem, setVocabDeleteItem] = useState(null);
+  const [vocabDeleteLoading, setVocabDeleteLoading] = useState(false);
   const [flashcardFolderMode, setFlashcardFolderMode] = useState('all');
   const [flashcardFolderId, setFlashcardFolderId] = useState('');
   const [flashcardAutoAdvance, setFlashcardAutoAdvance] = useState(true);
@@ -7554,6 +7576,123 @@ function AppInner() {
       setSrsRescheduling(false);
     }
   }, [fetchWithTimeout, initData, srsRescheduling]);
+
+  const VOCAB_PAGE_SIZE = 40;
+
+  const loadVocabLibrary = useCallback(async ({ reset = false } = {}) => {
+    if (!initData) return;
+    setVocabLoading(true);
+    setVocabError('');
+    const currentOffset = reset ? 0 : vocabOffset;
+    try {
+      const folderParam = vocabFolderFilter === 'all' ? null
+        : vocabFolderFilter === 'none' ? -1
+        : Number(vocabFolderFilter);
+      const response = await fetchWithTimeout('/api/webapp/vocabulary/list', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          folder_id: folderParam,
+          search: vocabSearch || null,
+          sort: vocabSort,
+          limit: VOCAB_PAGE_SIZE,
+          offset: currentOffset,
+        }),
+      }, 15000);
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        setVocabError(err.error || tr('Ошибка загрузки словаря', 'Fehler beim Laden'));
+        return;
+      }
+      const data = await response.json();
+      const newItems = Array.isArray(data.items) ? data.items : [];
+      if (reset) {
+        setVocabItems(newItems);
+        setVocabOffset(newItems.length);
+      } else {
+        setVocabItems((prev) => [...prev, ...newItems]);
+        setVocabOffset(currentOffset + newItems.length);
+      }
+      setVocabTotal(Number(data.total || 0));
+      setVocabHasMore((currentOffset + newItems.length) < Number(data.total || 0));
+      if (data.folders_meta) setVocabFoldersMeta(data.folders_meta);
+    } catch (err) {
+      setVocabError(tr('Ошибка загрузки', 'Fehler beim Laden'));
+    } finally {
+      setVocabLoading(false);
+    }
+  }, [initData, vocabFolderFilter, vocabSearch, vocabSort, vocabOffset, fetchWithTimeout, tr]);
+
+  const deleteVocabEntry = useCallback(async () => {
+    if (!vocabDeleteItem || !initData) return;
+    setVocabDeleteLoading(true);
+    try {
+      const response = await fetchWithTimeout('/api/webapp/vocabulary/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, entry_id: vocabDeleteItem.id }),
+      }, 10000);
+      if (!response.ok) return;
+      setVocabItems((prev) => prev.filter((it) => it.id !== vocabDeleteItem.id));
+      setVocabTotal((prev) => Math.max(0, prev - 1));
+      setVocabDeleteItem(null);
+      setVocabExpandedId(null);
+    } catch (_err) {
+      // ignore
+    } finally {
+      setVocabDeleteLoading(false);
+    }
+  }, [vocabDeleteItem, initData, fetchWithTimeout]);
+
+  const saveVocabEdit = useCallback(async () => {
+    if (!vocabEditItem || !initData) return;
+    setVocabEditLoading(true);
+    setVocabEditError('');
+    try {
+      const folderId = vocabEditFolder === 'none' ? null : Number(vocabEditFolder);
+      const clearFolder = vocabEditFolder === 'none';
+      const response = await fetchWithTimeout('/api/webapp/vocabulary/edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          entry_id: vocabEditItem.id,
+          word_de: vocabEditWord.trim() || undefined,
+          translation_ru: vocabEditTrans.trim() || undefined,
+          folder_id: folderId,
+          clear_folder: clearFolder,
+        }),
+      }, 10000);
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        setVocabEditError(err.error || tr('Ошибка сохранения', 'Fehler beim Speichern'));
+        return;
+      }
+      const data = await response.json();
+      const updated = data.item;
+      if (updated) {
+        setVocabItems((prev) => prev.map((it) => it.id === updated.id
+          ? {
+              ...it,
+              word_de: updated.word_de,
+              word_ru: updated.word_ru,
+              translation_ru: updated.translation_ru,
+              translation_de: updated.translation_de,
+              folder_id: updated.folder_id,
+              display_word: updated.word_de || updated.word_ru || it.display_word,
+              display_translation: updated.translation_ru || updated.translation_de || it.display_translation,
+            }
+          : it));
+      }
+      setVocabEditItem(null);
+      setVocabExpandedId(null);
+    } catch (_err) {
+      setVocabEditError(tr('Ошибка сохранения', 'Fehler beim Speichern'));
+    } finally {
+      setVocabEditLoading(false);
+    }
+  }, [vocabEditItem, vocabEditWord, vocabEditTrans, vocabEditFolder, initData, fetchWithTimeout, tr]);
 
   const buildWeeklyPlanDraftFromPlan = useCallback((plan) => ({
     translations_goal: String(Number(plan?.plan?.translations_goal || 0)),
@@ -13695,6 +13834,12 @@ function AppInner() {
     }
     loadFolders();
   }, [initData, isWebAppMode]);
+
+  useEffect(() => {
+    if (vocabTab !== 'library' || !initData) return;
+    setVocabOffset(0);
+    void loadVocabLibrary({ reset: true });
+  }, [vocabTab, vocabFolderFilter, vocabSearch, vocabSort, initData]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fsrsSectionActive = Boolean(
     initData
@@ -24686,6 +24831,256 @@ function AppInner() {
                       <h3>{tr('Словарь', 'Woerterbuch')}</h3>
                       <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                     </div>
+
+                    {/* Tab switcher */}
+                    <div className="vocab-tabs">
+                      <button
+                        type="button"
+                        className={`vocab-tab ${vocabTab === 'search' ? 'is-active' : ''}`}
+                        onClick={() => setVocabTab('search')}
+                      >
+                        🔍 {tr('Поиск', 'Suche')}
+                      </button>
+                      <button
+                        type="button"
+                        className={`vocab-tab ${vocabTab === 'library' ? 'is-active' : ''}`}
+                        onClick={() => setVocabTab('library')}
+                      >
+                        📚 {tr('Библиотека', 'Bibliothek')}
+                        {vocabFoldersMeta?.total_count > 0 && (
+                          <span className="vocab-tab-count">{vocabFoldersMeta.total_count}</span>
+                        )}
+                      </button>
+                    </div>
+
+                    {/* ─── LIBRARY TAB ─── */}
+                    {vocabTab === 'library' && (() => {
+                      const sortLabels = {
+                        date_desc: tr('↓ Дата', '↓ Datum'),
+                        date_asc:  tr('↑ Дата', '↑ Datum'),
+                        alpha_asc: tr('А → Я', 'A → Z'),
+                        srs_status: tr('SRS статус', 'SRS Status'),
+                      };
+                      const sortKeys = Object.keys(sortLabels);
+
+                      const groupByDate = (items) => {
+                        const now = new Date();
+                        const todayStr = now.toISOString().slice(0, 10);
+                        const yesterday = new Date(now); yesterday.setDate(yesterday.getDate() - 1);
+                        const yesterdayStr = yesterday.toISOString().slice(0, 10);
+                        const weekAgo = new Date(now); weekAgo.setDate(weekAgo.getDate() - 7);
+                        const groups = [];
+                        let currentGroup = null;
+                        items.forEach((item) => {
+                          const dateStr = (item.created_at || '').slice(0, 10);
+                          let label;
+                          if (dateStr === todayStr) label = tr('Сегодня', 'Heute');
+                          else if (dateStr === yesterdayStr) label = tr('Вчера', 'Gestern');
+                          else if (new Date(dateStr) >= weekAgo) label = tr('На этой неделе', 'Diese Woche');
+                          else {
+                            const d = new Date(dateStr);
+                            label = d.toLocaleDateString(uiLang === 'de' ? 'de-DE' : 'ru-RU', { month: 'long', year: 'numeric' });
+                          }
+                          if (!currentGroup || currentGroup.label !== label) {
+                            currentGroup = { label, items: [] };
+                            groups.push(currentGroup);
+                          }
+                          currentGroup.items.push(item);
+                        });
+                        return groups;
+                      };
+
+                      const groups = vocabSort === 'date_desc' || vocabSort === 'date_asc'
+                        ? groupByDate(vocabItems)
+                        : [{ label: null, items: vocabItems }];
+
+                      const srsColors = { new: '#6366F1', due: '#F59E0B', ok: '#10B981', none: '#334155' };
+                      const srsLabels = {
+                        new: tr('Новое', 'Neu'),
+                        due: tr('К повторению', 'Fällig'),
+                        ok: tr('Усвоено', 'Gelernt'),
+                        none: tr('Без SRS', 'Ohne SRS'),
+                      };
+
+                      const folderChips = [
+                        { key: 'all', label: tr('Все', 'Alle'), icon: '📂', count: vocabFoldersMeta?.total_count ?? vocabTotal },
+                        ...(vocabFoldersMeta?.folders || []).map((f) => ({
+                          key: String(f.id),
+                          label: f.name,
+                          icon: resolveFolderIconLabel(f.icon),
+                          count: f.word_count,
+                        })),
+                        ...(vocabFoldersMeta?.no_folder_count > 0 ? [{
+                          key: 'none',
+                          label: tr('Без папки', 'Ohne Ordner'),
+                          icon: '🗂',
+                          count: vocabFoldersMeta.no_folder_count,
+                        }] : []),
+                      ];
+
+                      return (
+                        <div className="vocab-library">
+                          {/* Stats + Sort */}
+                          <div className="vocab-stats-bar">
+                            <span className="vocab-stats-total">
+                              {tr('Всего:', 'Gesamt:')} <strong>{vocabFoldersMeta?.total_count ?? vocabTotal}</strong>
+                            </span>
+                            <button
+                              type="button"
+                              className="vocab-sort-btn"
+                              onClick={() => {
+                                const idx = sortKeys.indexOf(vocabSort);
+                                setVocabSort(sortKeys[(idx + 1) % sortKeys.length]);
+                              }}
+                            >
+                              {sortLabels[vocabSort]}
+                            </button>
+                          </div>
+
+                          {/* Folder filter chips */}
+                          <div className="vocab-folders-scroll">
+                            {folderChips.map((chip) => (
+                              <button
+                                key={chip.key}
+                                type="button"
+                                className={`vocab-folder-chip ${vocabFolderFilter === chip.key ? 'is-active' : ''}`}
+                                onClick={() => { setVocabFolderFilter(chip.key); setVocabExpandedId(null); }}
+                              >
+                                <span className="vfc-icon">{chip.icon}</span>
+                                <span className="vfc-name">{chip.label}</span>
+                                <span className="vfc-count">{chip.count}</span>
+                              </button>
+                            ))}
+                          </div>
+
+                          {/* Search inside library */}
+                          <div className="vocab-search-wrap">
+                            <input
+                              className="vocab-search-input"
+                              type="text"
+                              value={vocabSearch}
+                              placeholder={tr('Поиск по словам...', 'Wörter suchen...')}
+                              onChange={(e) => { setVocabSearch(e.target.value); setVocabExpandedId(null); }}
+                            />
+                            {vocabSearch && (
+                              <button type="button" className="vocab-search-clear" onClick={() => setVocabSearch('')}>×</button>
+                            )}
+                          </div>
+
+                          {/* Loading / Error */}
+                          {vocabError && <div className="webapp-error" style={{ margin: '8px 16px' }}>{vocabError}</div>}
+                          {vocabLoading && vocabItems.length === 0 && (
+                            <div className="vocab-loading">{tr('Загрузка...', 'Wird geladen...')}</div>
+                          )}
+
+                          {/* Empty state */}
+                          {!vocabLoading && vocabItems.length === 0 && !vocabError && (
+                            <div className="vocab-empty">
+                              <div className="vocab-empty-icon">📭</div>
+                              <p>{tr('Слова не найдены', 'Keine Wörter gefunden')}</p>
+                            </div>
+                          )}
+
+                          {/* Word groups */}
+                          {groups.map((group) => (
+                            <div key={group.label ?? '__all'}>
+                              {group.label && <div className="vocab-group-label">{group.label}</div>}
+                              <div className="vocab-word-list">
+                                {group.items.map((item) => {
+                                  const isExpanded = vocabExpandedId === item.id;
+                                  const dotColor = srsColors[item.srs_label] || srsColors.none;
+                                  const folder = (vocabFoldersMeta?.folders || []).find((f) => f.id === item.folder_id);
+                                  const displayWord = item.display_word || item.word_de || item.word_ru || '—';
+                                  const displayTrans = item.display_translation || item.translation_ru || item.translation_de || '';
+                                  const partOfSpeech = item.srs_label !== 'none'
+                                    ? `${srsLabels[item.srs_label]} · ${tr('повт.', 'Wdh.')} ${item.srs_reps}`
+                                    : null;
+
+                                  return (
+                                    <div key={item.id} className={`vocab-word-item ${isExpanded ? 'is-expanded' : ''}`}>
+                                      <button
+                                        type="button"
+                                        className="vocab-word-row"
+                                        onClick={() => setVocabExpandedId(isExpanded ? null : item.id)}
+                                      >
+                                        <span className="vocab-srs-dot" style={{ background: dotColor }} />
+                                        <span className="vocab-word-body">
+                                          <span className="vocab-word-main">{displayWord}</span>
+                                          <span className="vocab-word-sub">
+                                            {displayTrans}
+                                            {partOfSpeech && <> · <em>{partOfSpeech}</em></>}
+                                          </span>
+                                        </span>
+                                        <span className="vocab-word-meta">
+                                          {folder && (
+                                            <span className="vocab-folder-tag">
+                                              {resolveFolderIconLabel(folder.icon)} {folder.name}
+                                            </span>
+                                          )}
+                                          <span className="vocab-word-date">
+                                            {(item.created_at || '').slice(0, 10)}
+                                          </span>
+                                        </span>
+                                        <span className={`vocab-expand-arrow ${isExpanded ? 'is-open' : ''}`}>›</span>
+                                      </button>
+                                      {isExpanded && (
+                                        <div className="vocab-word-actions">
+                                          <button
+                                            type="button"
+                                            className="vocab-action-btn vocab-action-edit"
+                                            onClick={() => {
+                                              setVocabEditItem(item);
+                                              setVocabEditWord(item.word_de || item.word_ru || '');
+                                              setVocabEditTrans(item.translation_ru || item.translation_de || '');
+                                              setVocabEditFolder(item.folder_id ? String(item.folder_id) : 'none');
+                                              setVocabEditError('');
+                                            }}
+                                          >
+                                            ✏️ {tr('Редактировать', 'Bearbeiten')}
+                                          </button>
+                                          <button
+                                            type="button"
+                                            className="vocab-action-btn vocab-action-delete"
+                                            onClick={() => setVocabDeleteItem(item)}
+                                          >
+                                            🗑 {tr('Удалить', 'Löschen')}
+                                          </button>
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
+
+                          {/* Load more */}
+                          {vocabHasMore && (
+                            <button
+                              type="button"
+                              className="vocab-load-more"
+                              disabled={vocabLoading}
+                              onClick={() => void loadVocabLibrary()}
+                            >
+                              {vocabLoading ? tr('Загрузка...', 'Wird geladen...') : tr('Загрузить ещё', 'Mehr laden')}
+                            </button>
+                          )}
+
+                          {/* SRS legend */}
+                          <div className="vocab-legend">
+                            {Object.entries(srsLabels).map(([key, label]) => (
+                              <span key={key} className="vocab-legend-item">
+                                <span className="vocab-legend-dot" style={{ background: srsColors[key] }} />
+                                {label}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* ─── SEARCH TAB ─── */}
+                    {vocabTab === 'search' && (<>
                     <form className="webapp-dictionary-form" onSubmit={handleDictionaryLookup}>
                       <label className="webapp-field">
                         <span>{tr('Слово или фраза', 'Wort oder Phrase')}</span>
@@ -25139,6 +25534,95 @@ function AppInner() {
                         </div>
                       </div>
                     )}
+                    </>)}
+                    {/* End of search tab */}
+
+                    {/* Edit modal */}
+                    {vocabEditItem && (
+                      <div className="vocab-modal-overlay" onClick={(e) => { if (e.target.classList.contains('vocab-modal-overlay')) setVocabEditItem(null); }}>
+                        <div className="vocab-modal-sheet">
+                          <div className="vocab-modal-handle" />
+                          <div className="vocab-modal-title">✏️ {tr('Редактировать слово', 'Wort bearbeiten')}</div>
+                          <div className="vocab-modal-field">
+                            <label className="vocab-modal-label">{tr('Слово / фраза', 'Wort / Phrase')}</label>
+                            <input
+                              className="vocab-modal-input"
+                              type="text"
+                              value={vocabEditWord}
+                              onChange={(e) => setVocabEditWord(e.target.value)}
+                            />
+                          </div>
+                          <div className="vocab-modal-field">
+                            <label className="vocab-modal-label">{tr('Перевод', 'Übersetzung')}</label>
+                            <input
+                              className="vocab-modal-input"
+                              type="text"
+                              value={vocabEditTrans}
+                              onChange={(e) => setVocabEditTrans(e.target.value)}
+                            />
+                          </div>
+                          <div className="vocab-modal-field">
+                            <label className="vocab-modal-label">{tr('Папка', 'Ordner')}</label>
+                            <select
+                              className="vocab-modal-input"
+                              value={vocabEditFolder}
+                              onChange={(e) => setVocabEditFolder(e.target.value)}
+                            >
+                              <option value="none">{tr('Без папки', 'Ohne Ordner')}</option>
+                              {(vocabFoldersMeta?.folders || folders).map((f) => (
+                                <option key={f.id} value={String(f.id)}>
+                                  {resolveFolderIconLabel(f.icon)} {f.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          {vocabEditError && <div className="webapp-error" style={{ marginBottom: 10 }}>{vocabEditError}</div>}
+                          <div className="vocab-modal-actions">
+                            <button type="button" className="vocab-modal-cancel" onClick={() => setVocabEditItem(null)}>
+                              {tr('Отмена', 'Abbrechen')}
+                            </button>
+                            <button
+                              type="button"
+                              className="vocab-modal-save"
+                              disabled={vocabEditLoading}
+                              onClick={() => void saveVocabEdit()}
+                            >
+                              {vocabEditLoading ? '…' : tr('Сохранить', 'Speichern')}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Delete confirm */}
+                    {vocabDeleteItem && (
+                      <div className="vocab-delete-overlay" onClick={(e) => { if (e.target.classList.contains('vocab-delete-overlay')) setVocabDeleteItem(null); }}>
+                        <div className="vocab-delete-card">
+                          <div className="vocab-delete-icon">🗑️</div>
+                          <div className="vocab-delete-title">{tr('Удалить слово?', 'Wort löschen?')}</div>
+                          <div className="vocab-delete-word">
+                            {vocabDeleteItem.display_word || vocabDeleteItem.word_de || vocabDeleteItem.word_ru}
+                          </div>
+                          <div className="vocab-delete-sub">
+                            {tr('Слово будет удалено из словаря и из очереди SRS. Это действие нельзя отменить.', 'Das Wort wird aus dem Wörterbuch und der SRS-Warteschlange gelöscht. Dies kann nicht rückgängig gemacht werden.')}
+                          </div>
+                          <div className="vocab-delete-actions">
+                            <button type="button" className="vocab-del-cancel" onClick={() => setVocabDeleteItem(null)}>
+                              {tr('Отмена', 'Abbrechen')}
+                            </button>
+                            <button
+                              type="button"
+                              className="vocab-del-confirm"
+                              disabled={vocabDeleteLoading}
+                              onClick={() => void deleteVocabEntry()}
+                            >
+                              {vocabDeleteLoading ? '…' : tr('Удалить', 'Löschen')}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
                     </section>
                   </PerfProfiler>
                 )}

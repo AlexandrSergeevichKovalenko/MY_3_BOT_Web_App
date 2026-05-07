@@ -13667,6 +13667,294 @@ def get_or_create_dictionary_folder(
             }
 
 
+def list_user_vocabulary(
+    user_id: int,
+    folder_id: int | None = None,
+    search: str | None = None,
+    sort: str = "date_desc",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    """Return paginated vocabulary entries with SRS state for the library view."""
+    conditions = ["q.user_id = %s"]
+    params: list = [int(user_id)]
+
+    if folder_id == -1:
+        conditions.append("q.folder_id IS NULL")
+    elif folder_id is not None:
+        conditions.append("q.folder_id = %s")
+        params.append(int(folder_id))
+
+    if search:
+        needle = f"%{search.strip().lower()}%"
+        conditions.append(
+            "(LOWER(q.word_ru) LIKE %s OR LOWER(q.word_de) LIKE %s"
+            " OR LOWER(q.translation_ru) LIKE %s OR LOWER(q.translation_de) LIKE %s)"
+        )
+        params.extend([needle, needle, needle, needle])
+
+    where_clause = " AND ".join(conditions)
+
+    order_map = {
+        "date_desc": "q.created_at DESC",
+        "date_asc":  "q.created_at ASC",
+        "alpha_asc": "COALESCE(NULLIF(q.word_de,''), q.word_ru) ASC",
+        "alpha_desc": "COALESCE(NULLIF(q.word_de,''), q.word_ru) DESC",
+        "srs_status": "COALESCE(s.due_at, 'epoch'::timestamptz) ASC",
+    }
+    order_clause = order_map.get(sort, "q.created_at DESC")
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT COUNT(*) FROM bt_3_webapp_dictionary_queries q WHERE {where_clause}",
+                params,
+            )
+            total = int(cursor.fetchone()[0])
+
+            cursor.execute(
+                f"""
+                SELECT
+                    q.id,
+                    q.word_ru,
+                    q.translation_de,
+                    q.word_de,
+                    q.translation_ru,
+                    q.source_lang,
+                    q.target_lang,
+                    q.folder_id,
+                    q.created_at,
+                    q.is_learned,
+                    s.status        AS srs_status,
+                    s.due_at        AS srs_due_at,
+                    s.reps          AS srs_reps,
+                    s.lapses        AS srs_lapses,
+                    s.stability     AS srs_stability,
+                    s.last_review_at,
+                    f.name          AS folder_name,
+                    f.icon          AS folder_icon,
+                    f.color         AS folder_color,
+                    COALESCE(
+                        NULLIF(q.word_de, ''),
+                        q.word_ru
+                    ) AS display_word,
+                    COALESCE(
+                        NULLIF(q.translation_ru, ''),
+                        q.translation_de
+                    ) AS display_translation
+                FROM bt_3_webapp_dictionary_queries q
+                LEFT JOIN bt_3_card_srs_state s
+                    ON s.user_id = q.user_id AND s.card_id = q.id
+                LEFT JOIN bt_3_dictionary_folders f
+                    ON f.id = q.folder_id
+                WHERE {where_clause}
+                ORDER BY {order_clause}
+                LIMIT %s OFFSET %s
+                """,
+                params + [int(limit), int(offset)],
+            )
+            rows = cursor.fetchall()
+
+    items = []
+    for row in rows:
+        srs_due_at = row[11]
+        srs_status = row[10]
+        now_utc = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+        if srs_status is None:
+            srs_label = "none"
+        elif srs_status == "new":
+            srs_label = "new"
+        elif srs_due_at and srs_due_at <= now_utc:
+            srs_label = "due"
+        else:
+            srs_label = "ok"
+
+        items.append({
+            "id": row[0],
+            "word_ru": row[1] or "",
+            "translation_de": row[2] or "",
+            "word_de": row[3] or "",
+            "translation_ru": row[4] or "",
+            "source_lang": row[5] or "",
+            "target_lang": row[6] or "",
+            "folder_id": row[7],
+            "created_at": row[8].isoformat() if row[8] else None,
+            "is_learned": bool(row[9]),
+            "srs_status": srs_status,
+            "srs_label": srs_label,
+            "srs_reps": int(row[12]) if row[12] is not None else 0,
+            "srs_lapses": int(row[13]) if row[13] is not None else 0,
+            "srs_stability": float(row[14]) if row[14] is not None else 0.0,
+            "last_review_at": row[15].isoformat() if row[15] else None,
+            "folder_name": row[16] or None,
+            "folder_icon": row[17] or None,
+            "folder_color": row[18] or None,
+            "display_word": row[19] or "",
+            "display_translation": row[20] or "",
+        })
+
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
+def get_vocabulary_folders_with_counts(user_id: int) -> list[dict]:
+    """Return all folders with word counts plus a synthetic 'no folder' entry."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    f.id,
+                    f.name,
+                    f.color,
+                    f.icon,
+                    f.created_at,
+                    COUNT(q.id) AS word_count
+                FROM bt_3_dictionary_folders f
+                LEFT JOIN bt_3_webapp_dictionary_queries q
+                    ON q.folder_id = f.id AND q.user_id = f.user_id
+                WHERE f.user_id = %s
+                GROUP BY f.id, f.name, f.color, f.icon, f.created_at
+                ORDER BY f.created_at DESC
+                """,
+                (int(user_id),),
+            )
+            folders = [
+                {
+                    "id": row[0],
+                    "name": row[1],
+                    "color": row[2],
+                    "icon": row[3],
+                    "created_at": row[4].isoformat() if row[4] else None,
+                    "word_count": int(row[5]),
+                }
+                for row in cursor.fetchall()
+            ]
+
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM bt_3_webapp_dictionary_queries
+                WHERE user_id = %s AND folder_id IS NULL
+                """,
+                (int(user_id),),
+            )
+            no_folder_count = int(cursor.fetchone()[0])
+
+            cursor.execute(
+                "SELECT COUNT(*) FROM bt_3_webapp_dictionary_queries WHERE user_id = %s",
+                (int(user_id),),
+            )
+            total_count = int(cursor.fetchone()[0])
+
+    return {
+        "folders": folders,
+        "no_folder_count": no_folder_count,
+        "total_count": total_count,
+    }
+
+
+def delete_vocabulary_entry(user_id: int, entry_id: int) -> bool:
+    """Delete a dictionary entry and its SRS state. Returns True if found and deleted."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id FROM bt_3_webapp_dictionary_queries WHERE id = %s AND user_id = %s",
+                (int(entry_id), int(user_id)),
+            )
+            if not cursor.fetchone():
+                return False
+            cursor.execute(
+                "DELETE FROM bt_3_card_srs_state WHERE card_id = %s AND user_id = %s",
+                (int(entry_id), int(user_id)),
+            )
+            cursor.execute(
+                "DELETE FROM bt_3_card_review_log WHERE card_id = %s AND user_id = %s",
+                (int(entry_id), int(user_id)),
+            )
+            cursor.execute(
+                "DELETE FROM bt_3_webapp_dictionary_queries WHERE id = %s AND user_id = %s",
+                (int(entry_id), int(user_id)),
+            )
+    return True
+
+
+def edit_vocabulary_entry(
+    user_id: int,
+    entry_id: int,
+    word_de: str | None = None,
+    translation_ru: str | None = None,
+    folder_id: int | None = None,
+    clear_folder: bool = False,
+) -> dict | None:
+    """Patch mutable fields of a vocabulary entry. Returns updated entry or None if not found."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id FROM bt_3_webapp_dictionary_queries WHERE id = %s AND user_id = %s",
+                (int(entry_id), int(user_id)),
+            )
+            if not cursor.fetchone():
+                return None
+
+            set_parts = []
+            params: list = []
+
+            if word_de is not None:
+                set_parts.append("word_de = %s")
+                params.append(word_de.strip())
+                set_parts.append("word_ru = %s")
+                params.append(word_de.strip())
+
+            if translation_ru is not None:
+                set_parts.append("translation_ru = %s")
+                params.append(translation_ru.strip())
+                set_parts.append("translation_de = %s")
+                params.append(translation_ru.strip())
+
+            if clear_folder:
+                set_parts.append("folder_id = NULL")
+            elif folder_id is not None:
+                set_parts.append("folder_id = %s")
+                params.append(int(folder_id))
+
+            if not set_parts:
+                cursor.execute(
+                    """
+                    SELECT id, word_ru, translation_de, word_de, translation_ru,
+                           source_lang, target_lang, folder_id, created_at, is_learned
+                    FROM bt_3_webapp_dictionary_queries WHERE id = %s
+                    """,
+                    (int(entry_id),),
+                )
+            else:
+                params.append(int(entry_id))
+                params.append(int(user_id))
+                cursor.execute(
+                    f"""
+                    UPDATE bt_3_webapp_dictionary_queries
+                    SET {', '.join(set_parts)}
+                    WHERE id = %s AND user_id = %s
+                    RETURNING id, word_ru, translation_de, word_de, translation_ru,
+                              source_lang, target_lang, folder_id, created_at, is_learned
+                    """,
+                    params,
+                )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "id": row[0],
+                "word_ru": row[1] or "",
+                "translation_de": row[2] or "",
+                "word_de": row[3] or "",
+                "translation_ru": row[4] or "",
+                "source_lang": row[5] or "",
+                "target_lang": row[6] or "",
+                "folder_id": row[7],
+                "created_at": row[8].isoformat() if row[8] else None,
+                "is_learned": bool(row[9]),
+            }
+
+
 def record_telegram_system_message(
     chat_id: int,
     message_id: int,

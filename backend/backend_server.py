@@ -305,6 +305,10 @@ from backend.database import (
     get_or_create_dictionary_folder,
     update_webapp_dictionary_entry,
     get_dictionary_entry_by_id,
+    list_user_vocabulary,
+    get_vocabulary_folders_with_counts,
+    delete_vocabulary_entry,
+    edit_vocabulary_entry,
     create_flashcard_feel_feedback_token,
     get_tts_chunk_cache,
     upsert_tts_chunk_cache,
@@ -29475,6 +29479,117 @@ def create_webapp_dictionary_folder():
         return jsonify({"error": f"Ошибка создания папки: {exc}"}), 500
 
     return jsonify({"ok": True, "item": folder})
+
+
+@app.route("/api/webapp/vocabulary/list", methods=["POST"])
+def webapp_vocabulary_list():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_id = (parsed.get("user") or {}).get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует"}), 400
+
+    raw_folder = payload.get("folder_id")
+    folder_id = None
+    if raw_folder is not None:
+        try:
+            folder_id = int(raw_folder)
+        except (TypeError, ValueError):
+            pass
+
+    search = (payload.get("search") or "").strip() or None
+    sort = str(payload.get("sort") or "date_desc").strip()
+    limit = max(1, min(100, int(payload.get("limit") or 50)))
+    offset = max(0, int(payload.get("offset") or 0))
+
+    try:
+        result = list_user_vocabulary(
+            user_id=user_id,
+            folder_id=folder_id,
+            search=search,
+            sort=sort,
+            limit=limit,
+            offset=offset,
+        )
+        folders_data = get_vocabulary_folders_with_counts(user_id=user_id)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+    return jsonify({"ok": True, **result, "folders_meta": folders_data})
+
+
+@app.route("/api/webapp/vocabulary/delete", methods=["POST"])
+def webapp_vocabulary_delete():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    entry_id = payload.get("entry_id")
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not entry_id:
+        return jsonify({"error": "entry_id обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_id = (parsed.get("user") or {}).get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует"}), 400
+    try:
+        found = delete_vocabulary_entry(user_id=user_id, entry_id=int(entry_id))
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    if not found:
+        return jsonify({"error": "Запись не найдена"}), 404
+    return jsonify({"ok": True})
+
+
+@app.route("/api/webapp/vocabulary/edit", methods=["POST"])
+def webapp_vocabulary_edit():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    entry_id = payload.get("entry_id")
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not entry_id:
+        return jsonify({"error": "entry_id обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_id = (parsed.get("user") or {}).get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует"}), 400
+
+    word_de = payload.get("word_de")
+    translation_ru = payload.get("translation_ru")
+    raw_folder = payload.get("folder_id")
+    clear_folder = payload.get("clear_folder") is True
+
+    folder_id = None
+    if raw_folder is not None and not clear_folder:
+        try:
+            folder_id = int(raw_folder)
+        except (TypeError, ValueError):
+            pass
+
+    try:
+        updated = edit_vocabulary_entry(
+            user_id=user_id,
+            entry_id=int(entry_id),
+            word_de=word_de if isinstance(word_de, str) else None,
+            translation_ru=translation_ru if isinstance(translation_ru, str) else None,
+            folder_id=folder_id,
+            clear_folder=clear_folder,
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+    if updated is None:
+        return jsonify({"error": "Запись не найдена"}), 404
+    return jsonify({"ok": True, "item": updated})
 
 
 @app.route("/api/webapp/flashcards/set", methods=["POST"])
