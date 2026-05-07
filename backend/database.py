@@ -119,6 +119,23 @@ EXCLUDED_UNCLASSIFIED_SKILL_IDS = {
 }
 
 
+def _normalize_positive_bigint_list(values: list[int] | tuple[int, ...] | None) -> list[int]:
+    if not values:
+        return []
+    normalized: list[int] = []
+    seen: set[int] = set()
+    for raw in values:
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value <= 0 or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
+
+
 def _normalize_skill_error_label(value: str | None) -> str:
     return str(value or "").strip().lower()
 
@@ -2965,6 +2982,21 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_user_origin_created
                 ON bt_3_webapp_dictionary_queries (user_id, origin_process, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_manual_training_selection (
+                    user_id BIGINT NOT NULL,
+                    source_lang TEXT NOT NULL,
+                    target_lang TEXT NOT NULL,
+                    card_id BIGINT NOT NULL,
+                    added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, source_lang, target_lang, card_id),
+                    FOREIGN KEY (card_id) REFERENCES bt_3_webapp_dictionary_queries(id) ON DELETE CASCADE
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_manual_training_selection_user_pair_added
+                ON bt_3_manual_training_selection (user_id, source_lang, target_lang, added_at DESC);
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_starter_dictionary_state (
@@ -13121,15 +13153,20 @@ def count_due_srs_cards(
     now_utc: datetime | None = None,
     source_lang: str | None = None,
     target_lang: str | None = None,
+    allowed_card_ids: list[int] | None = None,
     cursor=None,
 ) -> int:
     now_utc = now_utc or datetime.now(timezone.utc)
+    normalized_allowed_ids = _normalize_positive_bigint_list(allowed_card_ids)
+    if allowed_card_ids is not None and not normalized_allowed_ids:
+        return 0
     def _count(cur):
         language_filter_sql, language_params = _build_language_pair_filter(
             source_lang,
             target_lang,
             table_alias="q",
         )
+        allowed_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
         cur.execute(
             f"""
             SELECT COUNT(*)
@@ -13140,9 +13177,10 @@ def count_due_srs_cards(
               AND s.status <> 'suspended'
               AND s.due_at <= %s
               AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
-              {language_filter_sql};
+              {language_filter_sql}
+              {allowed_sql};
             """,
-            [int(user_id), now_utc, *language_params],
+            [int(user_id), now_utc, *language_params, *([normalized_allowed_ids] if normalized_allowed_ids else [])],
         )
         row = cur.fetchone()
         return int(row[0] if row else 0)
@@ -13158,17 +13196,22 @@ def count_new_cards_introduced_today(
     now_utc: datetime | None = None,
     source_lang: str | None = None,
     target_lang: str | None = None,
+    allowed_card_ids: list[int] | None = None,
     cursor=None,
 ) -> int:
     now_utc = now_utc or datetime.now(timezone.utc)
     day_start = datetime(now_utc.year, now_utc.month, now_utc.day, tzinfo=timezone.utc)
     day_end = day_start + timedelta(days=1)
+    normalized_allowed_ids = _normalize_positive_bigint_list(allowed_card_ids)
+    if allowed_card_ids is not None and not normalized_allowed_ids:
+        return 0
     def _count(cur):
         language_filter_sql, language_params = _build_language_pair_filter(
             source_lang,
             target_lang,
             table_alias="q",
         )
+        allowed_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
         cur.execute(
             f"""
             SELECT COUNT(*)
@@ -13179,9 +13222,10 @@ def count_new_cards_introduced_today(
               AND s.created_at >= %s
               AND s.created_at < %s
               AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
-              {language_filter_sql};
+              {language_filter_sql}
+              {allowed_sql};
             """,
-            [int(user_id), day_start, day_end, *language_params],
+            [int(user_id), day_start, day_end, *language_params, *([normalized_allowed_ids] if normalized_allowed_ids else [])],
         )
         row = cur.fetchone()
         return int(row[0] if row else 0)
@@ -13196,14 +13240,19 @@ def has_available_new_srs_cards(
     user_id: int,
     source_lang: str | None = None,
     target_lang: str | None = None,
+    allowed_card_ids: list[int] | None = None,
     cursor=None,
 ) -> bool:
+    normalized_allowed_ids = _normalize_positive_bigint_list(allowed_card_ids)
+    if allowed_card_ids is not None and not normalized_allowed_ids:
+        return False
     def _exists(cur):
         language_filter_sql, language_params = _build_language_pair_filter(
             source_lang,
             target_lang,
             table_alias="q",
         )
+        allowed_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
         cur.execute(
             f"""
             SELECT 1
@@ -13214,9 +13263,10 @@ def has_available_new_srs_cards(
               AND s.id IS NULL
               AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
               {language_filter_sql}
+              {allowed_sql}
             LIMIT 1;
             """,
-            [int(user_id), *language_params],
+            [int(user_id), *language_params, *([normalized_allowed_ids] if normalized_allowed_ids else [])],
         )
         return cur.fetchone() is not None
     if cursor is not None:
@@ -13260,16 +13310,21 @@ def count_due_cards_reviewed_today(
     now_utc: datetime | None = None,
     source_lang: str | None = None,
     target_lang: str | None = None,
+    allowed_card_ids: list[int] | None = None,
     cursor=None,
 ) -> int:
     """Count distinct due (non-new-introduction) cards reviewed today."""
     now_utc = now_utc or datetime.now(timezone.utc)
     day_start = datetime(now_utc.year, now_utc.month, now_utc.day, tzinfo=timezone.utc)
+    normalized_allowed_ids = _normalize_positive_bigint_list(allowed_card_ids)
+    if allowed_card_ids is not None and not normalized_allowed_ids:
+        return 0
 
     def _count(cur):
         language_filter_sql, language_params = _build_language_pair_filter(
             source_lang, target_lang, table_alias="q",
         )
+        allowed_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
         cur.execute(
             f"""
             SELECT COUNT(DISTINCT rl.card_id)
@@ -13283,8 +13338,9 @@ def count_due_cards_reviewed_today(
               AND s.created_at < %s
               AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
               {language_filter_sql}
+              {allowed_sql}
             """,
-            [int(user_id), day_start, day_start, *language_params],
+            [int(user_id), day_start, day_start, *language_params, *([normalized_allowed_ids] if normalized_allowed_ids else [])],
         )
         row = cur.fetchone()
         return int(row[0] if row else 0)
@@ -13346,15 +13402,20 @@ def get_next_due_srs_card(
     now_utc: datetime | None = None,
     source_lang: str | None = None,
     target_lang: str | None = None,
+    allowed_card_ids: list[int] | None = None,
     cursor=None,
 ) -> dict | None:
     now_utc = now_utc or datetime.now(timezone.utc)
+    normalized_allowed_ids = _normalize_positive_bigint_list(allowed_card_ids)
+    if allowed_card_ids is not None and not normalized_allowed_ids:
+        return None
     def _fetch(cur):
         language_filter_sql, language_params = _build_language_pair_filter(
             source_lang,
             target_lang,
             table_alias="q",
         )
+        allowed_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
         cur.execute(
             f"""
             SELECT
@@ -13381,10 +13442,11 @@ def get_next_due_srs_card(
               AND s.due_at <= %s
               AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
               {language_filter_sql}
+              {allowed_sql}
             ORDER BY s.due_at ASC
             LIMIT 1;
             """,
-            [int(user_id), now_utc, *language_params],
+            [int(user_id), now_utc, *language_params, *([normalized_allowed_ids] if normalized_allowed_ids else [])],
         )
         row = cur.fetchone()
         if not row:
@@ -13420,14 +13482,19 @@ def get_next_new_srs_candidate(
     user_id: int,
     source_lang: str | None = None,
     target_lang: str | None = None,
+    allowed_card_ids: list[int] | None = None,
     cursor=None,
 ) -> dict | None:
+    normalized_allowed_ids = _normalize_positive_bigint_list(allowed_card_ids)
+    if allowed_card_ids is not None and not normalized_allowed_ids:
+        return None
     def _fetch(cur):
         language_filter_sql, language_params = _build_language_pair_filter(
             source_lang,
             target_lang,
             table_alias="q",
         )
+        allowed_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
         cur.execute(
             f"""
             SELECT q.id, q.word_ru, q.translation_de, q.word_de, q.translation_ru, q.response_json
@@ -13438,10 +13505,11 @@ def get_next_new_srs_candidate(
               AND s.id IS NULL
               AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
               {language_filter_sql}
+              {allowed_sql}
             ORDER BY q.created_at ASC
             LIMIT 1;
             """,
-            [int(user_id), *language_params],
+            [int(user_id), *language_params, *([normalized_allowed_ids] if normalized_allowed_ids else [])],
         )
         row = cur.fetchone()
         if not row:
@@ -13518,6 +13586,125 @@ def get_dictionary_entry_for_user(user_id: int, card_id: int, cursor=None) -> di
     with get_db_connection_context() as conn:
         with conn.cursor() as own_cursor:
             return _fetch(own_cursor)
+
+
+def get_manual_training_selection_card_ids(
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    cursor=None,
+) -> list[int]:
+    safe_source_lang = str(source_lang or "").strip().lower()
+    safe_target_lang = str(target_lang or "").strip().lower()
+
+    def _fetch(cur):
+        cur.execute(
+            """
+            SELECT card_id
+            FROM bt_3_manual_training_selection
+            WHERE user_id = %s
+              AND source_lang = %s
+              AND target_lang = %s
+            ORDER BY added_at ASC, card_id ASC;
+            """,
+            (int(user_id), safe_source_lang, safe_target_lang),
+        )
+        return [int(row[0]) for row in (cur.fetchall() or []) if row and row[0] is not None]
+
+    if cursor is not None:
+        return _fetch(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own_cursor:
+            return _fetch(own_cursor)
+
+
+def replace_manual_training_selection(
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    card_ids: list[int] | tuple[int, ...] | None,
+    cursor=None,
+) -> dict:
+    normalized_ids = _normalize_positive_bigint_list(card_ids)
+    safe_source_lang = str(source_lang or "").strip().lower()
+    safe_target_lang = str(target_lang or "").strip().lower()
+
+    def _replace(cur):
+        cur.execute(
+            """
+            DELETE FROM bt_3_manual_training_selection
+            WHERE user_id = %s
+              AND source_lang = %s
+              AND target_lang = %s;
+            """,
+            (int(user_id), safe_source_lang, safe_target_lang),
+        )
+        deleted_count = int(cur.rowcount or 0)
+        inserted_ids: list[int] = []
+        if normalized_ids:
+            cur.execute(
+                """
+                INSERT INTO bt_3_manual_training_selection (user_id, source_lang, target_lang, card_id, added_at)
+                SELECT %s, %s, %s, q.id, NOW()
+                FROM bt_3_webapp_dictionary_queries q
+                WHERE q.user_id = %s
+                  AND q.source_lang = %s
+                  AND q.target_lang = %s
+                  AND q.id = ANY(%s::bigint[])
+                  AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
+                RETURNING card_id;
+                """,
+                (
+                    int(user_id),
+                    safe_source_lang,
+                    safe_target_lang,
+                    int(user_id),
+                    safe_source_lang,
+                    safe_target_lang,
+                    normalized_ids,
+                ),
+            )
+            inserted_ids = [int(row[0]) for row in (cur.fetchall() or []) if row and row[0] is not None]
+        return {
+            "requested_count": len(normalized_ids),
+            "selected_count": len(inserted_ids),
+            "deleted_count": deleted_count,
+            "card_ids": inserted_ids,
+        }
+
+    if cursor is not None:
+        return _replace(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own_cursor:
+            return _replace(own_cursor)
+
+
+def clear_manual_training_selection(
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    cursor=None,
+) -> int:
+    safe_source_lang = str(source_lang or "").strip().lower()
+    safe_target_lang = str(target_lang or "").strip().lower()
+
+    def _clear(cur):
+        cur.execute(
+            """
+            DELETE FROM bt_3_manual_training_selection
+            WHERE user_id = %s
+              AND source_lang = %s
+              AND target_lang = %s;
+            """,
+            (int(user_id), safe_source_lang, safe_target_lang),
+        )
+        return int(cur.rowcount or 0)
+
+    if cursor is not None:
+        return _clear(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own_cursor:
+            return _clear(own_cursor)
 
 
 def insert_card_review_log(
@@ -13665,6 +13852,83 @@ def get_or_create_dictionary_folder(
                 "icon": row[3],
                 "created_at": row[4].isoformat() if row[4] else None,
             }
+
+
+def rename_dictionary_folder(user_id: int, folder_id: int, name: str, icon: str | None = None, color: str | None = None) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            set_parts = ["name = %s"]
+            params: list = [name.strip()]
+            if icon is not None:
+                set_parts.append("icon = %s")
+                params.append(icon.strip())
+            if color is not None:
+                set_parts.append("color = %s")
+                params.append(color.strip())
+            params.extend([int(user_id), int(folder_id)])
+            cursor.execute(
+                f"""
+                UPDATE bt_3_dictionary_folders
+                SET {', '.join(set_parts)}
+                WHERE user_id = %s AND id = %s
+                RETURNING id, name, color, icon, created_at;
+                """,
+                params,
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return {"id": row[0], "name": row[1], "color": row[2], "icon": row[3],
+                    "created_at": row[4].isoformat() if row[4] else None}
+
+
+def delete_dictionary_folder(user_id: int, folder_id: int, delete_words: bool = False) -> dict:
+    """Delete folder. If delete_words=True, also deletes its words+SRS. Otherwise unlinks them."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id FROM bt_3_dictionary_folders WHERE id = %s AND user_id = %s",
+                (int(folder_id), int(user_id)),
+            )
+            if not cursor.fetchone():
+                return {"found": False}
+
+            if delete_words:
+                cursor.execute(
+                    """
+                    DELETE FROM bt_3_card_srs_state
+                    WHERE user_id = %s AND card_id IN (
+                        SELECT id FROM bt_3_webapp_dictionary_queries
+                        WHERE user_id = %s AND folder_id = %s
+                    )
+                    """,
+                    (int(user_id), int(user_id), int(folder_id)),
+                )
+                cursor.execute(
+                    """
+                    DELETE FROM bt_3_card_review_log
+                    WHERE user_id = %s AND card_id IN (
+                        SELECT id FROM bt_3_webapp_dictionary_queries
+                        WHERE user_id = %s AND folder_id = %s
+                    )
+                    """,
+                    (int(user_id), int(user_id), int(folder_id)),
+                )
+                cursor.execute(
+                    "DELETE FROM bt_3_webapp_dictionary_queries WHERE user_id = %s AND folder_id = %s",
+                    (int(user_id), int(folder_id)),
+                )
+            else:
+                cursor.execute(
+                    "UPDATE bt_3_webapp_dictionary_queries SET folder_id = NULL WHERE user_id = %s AND folder_id = %s",
+                    (int(user_id), int(folder_id)),
+                )
+
+            cursor.execute(
+                "DELETE FROM bt_3_dictionary_folders WHERE id = %s AND user_id = %s",
+                (int(folder_id), int(user_id)),
+            )
+            return {"found": True}
 
 
 def list_user_vocabulary(

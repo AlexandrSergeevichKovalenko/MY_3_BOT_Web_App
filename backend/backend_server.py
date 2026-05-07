@@ -309,6 +309,8 @@ from backend.database import (
     get_vocabulary_folders_with_counts,
     delete_vocabulary_entry,
     edit_vocabulary_entry,
+    rename_dictionary_folder,
+    delete_dictionary_folder,
     create_flashcard_feel_feedback_token,
     get_tts_chunk_cache,
     upsert_tts_chunk_cache,
@@ -329,6 +331,9 @@ from backend.database import (
     count_new_cards_introduced_today,
     count_due_cards_reviewed_today,
     has_available_new_srs_cards,
+    get_manual_training_selection_card_ids,
+    replace_manual_training_selection,
+    clear_manual_training_selection,
     reschedule_overdue_srs_cards,
     ensure_new_srs_state,
     get_card_srs_state,
@@ -3613,6 +3618,36 @@ def _normalize_flashcards_mode(mode: str | None) -> str:
     return "quiz"
 
 
+FLASHCARDS_QUEUE_SOURCE_ALLOWED = {"system", "manual"}
+MANUAL_TRAINING_SELECTION_MAX_CARDS = 5000
+
+
+def _normalize_flashcards_queue_source(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in FLASHCARDS_QUEUE_SOURCE_ALLOWED:
+        return normalized
+    return "system"
+
+
+def _resolve_flashcards_manual_selection(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    queue_source: str,
+    cursor=None,
+) -> list[int] | None:
+    normalized_queue_source = _normalize_flashcards_queue_source(queue_source)
+    if normalized_queue_source != "manual":
+        return None
+    return get_manual_training_selection_card_ids(
+        user_id=int(user_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        cursor=cursor,
+    )
+
+
 def _build_upgrade_payload(plan_code: str = "pro") -> dict:
     return {
         "available": True,
@@ -6045,6 +6080,8 @@ def _compute_srs_queue_info(
     now_utc: datetime,
     source_lang: str,
     target_lang: str,
+    queue_source: str = "system",
+    allowed_card_ids: list[int] | None = None,
     cursor=None,
 ) -> dict:
     due_count_total = count_due_srs_cards(
@@ -6052,6 +6089,7 @@ def _compute_srs_queue_info(
         now_utc=now_utc,
         source_lang=source_lang,
         target_lang=target_lang,
+        allowed_card_ids=allowed_card_ids,
         cursor=cursor,
     )
     introduced_today = count_new_cards_introduced_today(
@@ -6059,6 +6097,7 @@ def _compute_srs_queue_info(
         now_utc=now_utc,
         source_lang=source_lang,
         target_lang=target_lang,
+        allowed_card_ids=allowed_card_ids,
         cursor=cursor,
     )
     due_reviewed_today = count_due_cards_reviewed_today(
@@ -6066,12 +6105,14 @@ def _compute_srs_queue_info(
         now_utc=now_utc,
         source_lang=source_lang,
         target_lang=target_lang,
+        allowed_card_ids=allowed_card_ids,
         cursor=cursor,
     )
     has_new_candidates = has_available_new_srs_cards(
         user_id=user_id,
         source_lang=source_lang,
         target_lang=target_lang,
+        allowed_card_ids=allowed_card_ids,
         cursor=cursor,
     )
     # Daily cap: show at most SRS_DUE_PER_DAY cards per day
@@ -6084,6 +6125,7 @@ def _compute_srs_queue_info(
         new_remaining_today = 0
     new_remaining_today = new_remaining_today if has_new_candidates else 0
     return {
+        "queue_source": _normalize_flashcards_queue_source(queue_source),
         "due_count": int(due_count),
         "due_count_total": int(due_count_total),
         "due_reviewed_today": int(due_reviewed_today),
@@ -6127,11 +6169,33 @@ def _list_srs_queue_cards(
     limit: int,
     folder_mode: str = "all",
     folder_id: int | None = None,
+    queue_source: str = "system",
+    allowed_card_ids: list[int] | None = None,
     exclude_recent_seen: bool = False,
     cursor=None,
 ) -> tuple[list[dict], dict]:
     safe_limit = max(1, int(limit or 1))
     normalized_folder_mode = str(folder_mode or "all").strip().lower()
+    normalized_queue_source = _normalize_flashcards_queue_source(queue_source)
+    normalized_allowed_ids = [int(card_id) for card_id in (allowed_card_ids or []) if int(card_id) > 0]
+    if allowed_card_ids is not None and not normalized_allowed_ids:
+        return [], {
+            "selection_strategy": "manual_subset_empty",
+            "queue_source": normalized_queue_source,
+            "folder_mode": normalized_folder_mode,
+            "exclude_recent_seen": bool(exclude_recent_seen),
+            "recent_seen_hours": int(FLASHCARD_RECENT_SEEN_HOURS),
+            "due_count": 0,
+            "due_selected": 0,
+            "due_selected_recent_filtered": 0,
+            "due_fallback_selected": 0,
+            "new_remaining_today": 0,
+            "new_selected": 0,
+            "new_selected_recent_filtered": 0,
+            "new_fallback_selected": 0,
+            "returned_items": 0,
+            "manual_selected_count": 0,
+        }
 
     def _fetch(cur) -> tuple[list[dict], dict]:
         folder_filter_sql = ""
@@ -6141,6 +6205,8 @@ def _list_srs_queue_cards(
             folder_params.append(int(folder_id))
         elif normalized_folder_mode == "none":
             folder_filter_sql = " AND q.folder_id IS NULL"
+        allowed_filter_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
+        allowed_filter_params: list[object] = [normalized_allowed_ids] if normalized_allowed_ids else []
 
         base_params = [int(user_id), source_lang, target_lang]
         recent_seen_cutoff = now_utc - timedelta(hours=FLASHCARD_RECENT_SEEN_HOURS)
@@ -6171,9 +6237,10 @@ def _list_srs_queue_cards(
               AND s.status <> 'suspended'
               AND s.due_at <= %s
               AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
-              {folder_filter_sql};
+              {folder_filter_sql}
+              {allowed_filter_sql};
             """,
-            [*base_params, now_utc, *folder_params],
+            [*base_params, now_utc, *folder_params, *allowed_filter_params],
         )
         count_row = cur.fetchone()
         due_count = int(count_row[0] if count_row else 0)
@@ -6208,6 +6275,7 @@ def _list_srs_queue_cards(
                   AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
                   {recent_seen_sql if exclude_recent_seen else ""}
                   {folder_filter_sql}
+                  {allowed_filter_sql}
                 ORDER BY s.due_at ASC
                 LIMIT %s;
                 """,
@@ -6216,6 +6284,7 @@ def _list_srs_queue_cards(
                     now_utc,
                     *(recent_seen_params if exclude_recent_seen else []),
                     *folder_params,
+                    *allowed_filter_params,
                     int(due_limit),
                 ],
             )
@@ -6251,6 +6320,7 @@ def _list_srs_queue_cards(
                       AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
                       AND s.card_id <> ALL(%s::bigint[])
                       {folder_filter_sql}
+                      {allowed_filter_sql}
                     ORDER BY s.due_at ASC
                     LIMIT %s;
                     """,
@@ -6259,6 +6329,7 @@ def _list_srs_queue_cards(
                         now_utc,
                         list(due_selected_ids) or [0],
                         *folder_params,
+                        *allowed_filter_params,
                         int(due_limit - len(due_rows)),
                     ],
                 )
@@ -6272,6 +6343,7 @@ def _list_srs_queue_cards(
             now_utc=now_utc,
             source_lang=source_lang,
             target_lang=target_lang,
+            allowed_card_ids=normalized_allowed_ids if normalized_allowed_ids else allowed_card_ids,
             cursor=cur,
         )
         new_remaining_today = max(NEW_PER_DAY - int(introduced_today or 0), 0)
@@ -6304,6 +6376,7 @@ def _list_srs_queue_cards(
                   AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
                   {recent_seen_sql if exclude_recent_seen else ""}
                   {folder_filter_sql}
+                  {allowed_filter_sql}
                 ORDER BY q.created_at ASC
                 LIMIT %s;
                 """,
@@ -6311,6 +6384,7 @@ def _list_srs_queue_cards(
                     *base_params,
                     *(recent_seen_params if exclude_recent_seen else []),
                     *folder_params,
+                    *allowed_filter_params,
                     int(new_limit),
                 ],
             )
@@ -6340,6 +6414,7 @@ def _list_srs_queue_cards(
                       AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
                       AND q.id <> ALL(%s::bigint[])
                       {folder_filter_sql}
+                      {allowed_filter_sql}
                     ORDER BY q.created_at ASC
                     LIMIT %s;
                     """,
@@ -6347,6 +6422,7 @@ def _list_srs_queue_cards(
                         *base_params,
                         list(new_selected_ids) or [0],
                         *folder_params,
+                        *allowed_filter_params,
                         int(new_limit - len(new_rows)),
                     ],
                 )
@@ -6392,7 +6468,8 @@ def _list_srs_queue_cards(
             )
 
         diagnostics = {
-            "selection_strategy": "fsrs_core_queue",
+            "selection_strategy": "manual_subset_queue" if normalized_queue_source == "manual" else "fsrs_core_queue",
+            "queue_source": normalized_queue_source,
             "folder_mode": normalized_folder_mode,
             "exclude_recent_seen": bool(exclude_recent_seen),
             "recent_seen_hours": int(FLASHCARD_RECENT_SEEN_HOURS),
@@ -6405,6 +6482,7 @@ def _list_srs_queue_cards(
             "new_selected_recent_filtered": max(0, len(new_rows) - new_fallback_added),
             "new_fallback_selected": int(new_fallback_added),
             "returned_items": len(items),
+            "manual_selected_count": len(normalized_allowed_ids),
         }
         return items, diagnostics
 
@@ -6421,14 +6499,18 @@ def _build_next_srs_payload(
     source_lang: str,
     target_lang: str,
     now_utc: datetime,
+    queue_source: str = "system",
+    allowed_card_ids: list[int] | None = None,
     include_queue_info: bool = True,
     cursor=None,
 ) -> dict:
+    normalized_queue_source = _normalize_flashcards_queue_source(queue_source)
     due_payload = get_next_due_srs_card(
         user_id=user_id,
         now_utc=now_utc,
         source_lang=source_lang,
         target_lang=target_lang,
+        allowed_card_ids=allowed_card_ids,
         cursor=cursor,
     )
     card_payload = None
@@ -6442,6 +6524,8 @@ def _build_next_srs_payload(
             now_utc=now_utc,
             source_lang=source_lang,
             target_lang=target_lang,
+            queue_source=queue_source,
+            allowed_card_ids=allowed_card_ids,
             cursor=cursor,
         )
 
@@ -6468,6 +6552,7 @@ def _build_next_srs_payload(
                 now_utc=now_utc,
                 source_lang=source_lang,
                 target_lang=target_lang,
+                allowed_card_ids=allowed_card_ids,
                 cursor=cursor,
             )
             can_take_new = max(NEW_PER_DAY - int(introduced_today or 0), 0) > 0
@@ -6476,6 +6561,7 @@ def _build_next_srs_payload(
                 user_id=user_id,
                 source_lang=source_lang,
                 target_lang=target_lang,
+                allowed_card_ids=allowed_card_ids,
                 cursor=cursor,
             )
             if candidate:
@@ -6504,6 +6590,7 @@ def _build_next_srs_payload(
 
     if not card_payload:
         return {
+            "queue_source": normalized_queue_source,
             "card": None,
             "srs": None,
             "srs_preview": None,
@@ -6532,6 +6619,7 @@ def _build_next_srs_payload(
         direction=f"{source_lang}-{target_lang}",
     )
     return {
+        "queue_source": normalized_queue_source,
         "card": card_response,
         "srs": srs_response,
         "srs_preview": srs_preview,
@@ -30310,12 +30398,166 @@ def webapp_vocabulary_edit():
     return jsonify({"ok": True, "item": updated})
 
 
+@app.route("/api/webapp/vocabulary/folders/rename", methods=["POST"])
+def webapp_vocabulary_folder_rename():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    folder_id = payload.get("folder_id")
+    name = (payload.get("name") or "").strip()
+    icon = payload.get("icon")
+    color = payload.get("color")
+    if not init_data or not folder_id or not name:
+        return jsonify({"error": "initData, folder_id, name обязательны"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    user_id = (_parse_telegram_init_data(init_data).get("user") or {}).get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует"}), 400
+    try:
+        result = rename_dictionary_folder(
+            user_id=user_id,
+            folder_id=int(folder_id),
+            name=name,
+            icon=icon if isinstance(icon, str) else None,
+            color=color if isinstance(color, str) else None,
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    if result is None:
+        return jsonify({"error": "Папка не найдена"}), 404
+    return jsonify({"ok": True, "item": result})
+
+
+@app.route("/api/webapp/vocabulary/folders/delete", methods=["POST"])
+def webapp_vocabulary_folder_delete():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    folder_id = payload.get("folder_id")
+    delete_words = payload.get("delete_words") is True
+    if not init_data or not folder_id:
+        return jsonify({"error": "initData, folder_id обязательны"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    user_id = (_parse_telegram_init_data(init_data).get("user") or {}).get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует"}), 400
+    try:
+        result = delete_dictionary_folder(user_id=user_id, folder_id=int(folder_id), delete_words=delete_words)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    if not result.get("found"):
+        return jsonify({"error": "Папка не найдена"}), 404
+    return jsonify({"ok": True})
+
+
+@app.route("/api/webapp/flashcards/manual-selection", methods=["POST"])
+def get_flashcards_manual_selection():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_id = (parsed.get("user") or {}).get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        card_ids = get_manual_training_selection_card_ids(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    return jsonify(
+        {
+            "ok": True,
+            "queue_source": "manual",
+            "card_ids": card_ids,
+            "selected_count": len(card_ids),
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
+
+
+@app.route("/api/webapp/flashcards/manual-selection/save", methods=["POST"])
+def save_flashcards_manual_selection():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    requested_card_ids = payload.get("card_ids")
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not isinstance(requested_card_ids, list):
+        return jsonify({"error": "card_ids обязателен"}), 400
+    if len(requested_card_ids) > MANUAL_TRAINING_SELECTION_MAX_CARDS:
+        return jsonify({"error": f"Слишком много слов в выборке. Максимум: {MANUAL_TRAINING_SELECTION_MAX_CARDS}"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_id = (parsed.get("user") or {}).get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        result = replace_manual_training_selection(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            card_ids=requested_card_ids,
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    return jsonify(
+        {
+            "ok": True,
+            "queue_source": "manual",
+            **result,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
+
+
+@app.route("/api/webapp/flashcards/manual-selection/clear", methods=["POST"])
+def clear_flashcards_manual_selection():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_id = (parsed.get("user") or {}).get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        deleted_count = clear_manual_training_selection(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    return jsonify(
+        {
+            "ok": True,
+            "queue_source": "manual",
+            "deleted_count": deleted_count,
+            "selected_count": 0,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
+
+
 @app.route("/api/webapp/flashcards/set", methods=["POST"])
 def get_webapp_flashcard_set():
     started_at = time.perf_counter()
     payload = request.get_json(silent=True) or {}
     init_data = payload.get("initData")
     training_mode = _normalize_flashcards_mode(payload.get("training_mode"))
+    queue_source = _normalize_flashcards_queue_source(payload.get("queue_source"))
     set_size = int(payload.get("set_size", 15))
     folder_mode = payload.get("folder_mode", "all")
     folder_id = payload.get("folder_id")
@@ -30401,6 +30643,7 @@ def get_webapp_flashcard_set():
 
     profile_payload: dict[str, object] = {
         "mode": training_mode,
+        "queue_source": queue_source,
         "requested_set_size": requested_set_size,
         "effective_set_size": set_size,
         "daily_words_limit": flashcards_limit_state.get("limit_words"),
@@ -30412,6 +30655,13 @@ def get_webapp_flashcard_set():
     }
 
     try:
+        manual_selected_card_ids = _resolve_flashcards_manual_selection(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            queue_source=queue_source,
+        )
+        profile_payload["manual_selected_count"] = len(manual_selected_card_ids or [])
         if training_mode == "sentence":
             decorated_items = _build_sentence_training_set(
                 user_id=int(user_id),
@@ -30433,6 +30683,8 @@ def get_webapp_flashcard_set():
                 limit=set_size,
                 folder_mode=str(folder_mode or "all"),
                 folder_id=resolved_folder_id,
+                queue_source=queue_source,
+                allowed_card_ids=manual_selected_card_ids,
                 exclude_recent_seen=True,
             )
             profile_payload["server_items"] = len(items)
@@ -30499,10 +30751,11 @@ def get_webapp_flashcard_set():
         elif int(dictionary_pair_total or 0) <= 0:
             empty_reason = "dictionary_empty"
         elif training_mode in {"quiz", "blocks"}:
-            empty_reason = "shared_queue_completed_today"
+            empty_reason = "manual_selection_empty" if queue_source == "manual" and int(profile_payload.get("manual_selected_count") or 0) <= 0 else "shared_queue_completed_today"
             empty_meta = {
                 "due_count": int(selection_payload.get("due_count") or 0),
                 "new_remaining_today": int(selection_payload.get("new_remaining_today") or 0),
+                "queue_source": queue_source,
             }
     profile_payload["dictionary_pair_total"] = int(dictionary_pair_total)
     return jsonify(
@@ -30567,6 +30820,7 @@ def get_next_srs_card():
             logging.debug("Failed to log FSRS next profile", exc_info=True)
 
     init_data = request.args.get("initData") or request.headers.get("X-Telegram-Init-Data")
+    queue_source = _normalize_flashcards_queue_source(request.args.get("queue_source"))
     mark("parsed")
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
@@ -30581,6 +30835,12 @@ def get_next_srs_card():
     try:
         source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
         mark("lang_pair")
+        manual_selected_card_ids = _resolve_flashcards_manual_selection(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            queue_source=queue_source,
+        )
         fsrs_limit_state = _check_flashcards_words_daily_limit(
             user_id=int(user_id),
             mode="fsrs",
@@ -30596,6 +30856,8 @@ def get_next_srs_card():
                     source_lang=source_lang,
                     target_lang=target_lang,
                     now_utc=now_utc,
+                    queue_source=queue_source,
+                    allowed_card_ids=manual_selected_card_ids,
                     include_queue_info=True,
                     cursor=cursor,
                 )
@@ -30631,6 +30893,7 @@ def get_next_srs_card():
 @app.route("/api/cards/prefetch", methods=["GET"])
 def get_srs_prefetch_cards():
     init_data = request.args.get("initData") or request.headers.get("X-Telegram-Init-Data")
+    queue_source = _normalize_flashcards_queue_source(request.args.get("queue_source"))
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
 
@@ -30646,11 +30909,20 @@ def get_srs_prefetch_cards():
     try:
         with db_acquire_scope("srs_prefetch"), get_db_connection_context() as conn:
             with conn.cursor() as cursor:
+                manual_selected_card_ids = _resolve_flashcards_manual_selection(
+                    user_id=int(user_id),
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    queue_source=queue_source,
+                    cursor=cursor,
+                )
                 queue_info = _compute_srs_queue_info(
                     user_id=int(user_id),
                     now_utc=now_utc,
                     source_lang=source_lang,
                     target_lang=target_lang,
+                    queue_source=queue_source,
+                    allowed_card_ids=manual_selected_card_ids,
                     cursor=cursor,
                 )
                 due_count = max(0, int(queue_info.get("due_count") or 0))
@@ -30670,6 +30942,8 @@ def get_srs_prefetch_cards():
                     source_lang=source_lang,
                     target_lang=target_lang,
                     limit=max_items,
+                    queue_source=queue_source,
+                    allowed_card_ids=manual_selected_card_ids,
                     cursor=cursor,
                 )
 
@@ -30739,6 +31013,7 @@ def review_srs_card():
     card_id = payload.get("card_id")
     rating_raw = payload.get("rating")
     response_ms = payload.get("response_ms")
+    queue_source = _normalize_flashcards_queue_source(payload.get("queue_source"))
     mark("parsed")
 
     if not init_data:
@@ -30764,6 +31039,13 @@ def review_srs_card():
     try:
         with db_acquire_scope("srs_review"), get_db_connection_context() as conn:
             with conn.cursor() as cursor:
+                manual_selected_card_ids = _resolve_flashcards_manual_selection(
+                    user_id=int(user_id),
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    queue_source=queue_source,
+                    cursor=cursor,
+                )
                 card = get_dictionary_entry_for_user(user_id=user_id, card_id=card_id, cursor=cursor)
                 if not card:
                     return jsonify({"error": "Карточка не найдена"}), 404
@@ -30826,6 +31108,8 @@ def review_srs_card():
                     source_lang=source_lang,
                     target_lang=target_lang,
                     now_utc=datetime.now(timezone.utc),
+                    queue_source=queue_source,
+                    allowed_card_ids=manual_selected_card_ids,
                     include_queue_info=False,
                     cursor=cursor,
                 )
@@ -30851,6 +31135,7 @@ def review_srs_card():
             "is_mature": interval_days >= MATURE_INTERVAL_DAYS,
             "message": "Review saved",
             "next": payload_next,
+            "queue_source": queue_source,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )

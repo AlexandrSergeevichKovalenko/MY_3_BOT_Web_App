@@ -4010,6 +4010,7 @@ function AppInner() {
   const [flashcardSetSize, setFlashcardSetSize] = useState(15);
   const [flashcardDurationSec, setFlashcardDurationSec] = useState(10);
   const [flashcardTrainingMode, setFlashcardTrainingMode] = useState('quiz');
+  const [flashcardQueueSource, setFlashcardQueueSource] = useState('system');
   const [blocksTimerMode, setBlocksTimerMode] = useState('fixed');
   const [flashcardActiveMode, setFlashcardActiveMode] = useState(null); // 'fsrs' | 'quiz' | 'blocks' | 'sentence' | null
   const [flashcardSettingsModalMode, setFlashcardSettingsModalMode] = useState(null); // same domain as flashcardActiveMode
@@ -4364,6 +4365,11 @@ function AppInner() {
   const [vocabHasMore, setVocabHasMore] = useState(false);
   const [vocabFoldersMeta, setVocabFoldersMeta] = useState(null);
   const [vocabExpandedId, setVocabExpandedId] = useState(null);
+  const [manualTrainingSelectionIds, setManualTrainingSelectionIds] = useState([]);
+  const [manualTrainingSelectionLoading, setManualTrainingSelectionLoading] = useState(false);
+  const [manualTrainingSelectionSaving, setManualTrainingSelectionSaving] = useState(false);
+  const [manualTrainingSelectionFolderBusyKey, setManualTrainingSelectionFolderBusyKey] = useState('');
+  const [manualTrainingSelectionError, setManualTrainingSelectionError] = useState('');
   const [vocabEditItem, setVocabEditItem] = useState(null);
   const [vocabEditWord, setVocabEditWord] = useState('');
   const [vocabEditTrans, setVocabEditTrans] = useState('');
@@ -4374,6 +4380,19 @@ function AppInner() {
   const [vocabEditError, setVocabEditError] = useState('');
   const [vocabDeleteItem, setVocabDeleteItem] = useState(null);
   const [vocabDeleteLoading, setVocabDeleteLoading] = useState(false);
+
+  // Folder management state
+  const [folderContextMenu, setFolderContextMenu] = useState(null);
+  const [folderRenameItem, setFolderRenameItem] = useState(null);
+  const [folderRenameName, setFolderRenameName] = useState('');
+  const [folderRenameIcon, setFolderRenameIcon] = useState('book');
+  const [folderRenameColor, setFolderRenameColor] = useState('#5ddcff');
+  const [folderRenameLoading, setFolderRenameLoading] = useState(false);
+  const [folderRenameError, setFolderRenameError] = useState('');
+  const [folderDeleteItem, setFolderDeleteItem] = useState(null);
+  const [folderDeleteMode, setFolderDeleteMode] = useState(null);
+  const [folderDeleteLoading, setFolderDeleteLoading] = useState(false);
+
   const [flashcardFolderMode, setFlashcardFolderMode] = useState('all');
   const [flashcardFolderId, setFlashcardFolderId] = useState('');
   const [flashcardAutoAdvance, setFlashcardAutoAdvance] = useState(true);
@@ -7420,7 +7439,8 @@ function AppInner() {
       && flashcardsVisible
       && (flashcardsOnly || selectedSections.has('flashcards'));
     if (!fsrsContextActive) return;
-    const requestSignature = `${String(initData || '')}|${String(languageProfile?.native_language || '')}|${String(languageProfile?.learning_language || '')}`;
+    const resolvedQueueSource = flashcardQueueSource === 'manual' ? 'manual' : 'system';
+    const requestSignature = `${String(initData || '')}|${String(languageProfile?.native_language || '')}|${String(languageProfile?.learning_language || '')}|${resolvedQueueSource}`;
     const nowTs = Date.now();
     if (srsNextLoadInFlightRef.current) {
       if (srsNextLoadLastSignatureRef.current !== requestSignature) {
@@ -7441,10 +7461,10 @@ function AppInner() {
     try {
       setSrsLoading(true);
       setSrsError('');
-      let response = await fetchWithTimeout(`/api/cards/next?initData=${encodeURIComponent(initData)}`, {}, FSRS_LOAD_TIMEOUT_MS);
+      let response = await fetchWithTimeout(`/api/cards/next?initData=${encodeURIComponent(initData)}&queue_source=${encodeURIComponent(resolvedQueueSource)}`, {}, FSRS_LOAD_TIMEOUT_MS);
       if (!response.ok && response.status >= 500) {
         await new Promise((resolve) => setTimeout(resolve, 220));
-        response = await fetchWithTimeout(`/api/cards/next?initData=${encodeURIComponent(initData)}`, {}, FSRS_LOAD_TIMEOUT_MS);
+        response = await fetchWithTimeout(`/api/cards/next?initData=${encodeURIComponent(initData)}&queue_source=${encodeURIComponent(resolvedQueueSource)}`, {}, FSRS_LOAD_TIMEOUT_MS);
       }
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка загрузки SRS карточки', 'Fehler beim Laden der SRS-Karte'));
@@ -7459,7 +7479,7 @@ function AppInner() {
         || rawMessage.includes('timeout')
         || rawMessage.includes('timed out')
         || rawMessage.includes('aborted');
-      if (isTimeoutError) {
+      if (isTimeoutError && resolvedQueueSource === 'system') {
         try {
           const probe = await fetchWithTimeout('/api/webapp/dictionary/cards', {
             method: 'POST',
@@ -7509,13 +7529,15 @@ function AppInner() {
     selectedSections,
     languageProfile?.native_language,
     languageProfile?.learning_language,
+    flashcardQueueSource,
   ]);
 
   const prefetchSrsCards = useCallback(async () => {
     if (!initData || srsPrefetchInFlightRef.current) return;
     srsPrefetchInFlightRef.current = true;
     try {
-      const response = await fetchWithTimeout(`/api/cards/prefetch?initData=${encodeURIComponent(initData)}`, {}, 12000);
+      const resolvedQueueSource = flashcardQueueSource === 'manual' ? 'manual' : 'system';
+      const response = await fetchWithTimeout(`/api/cards/prefetch?initData=${encodeURIComponent(initData)}&queue_source=${encodeURIComponent(resolvedQueueSource)}`, {}, 12000);
       if (!response.ok) return;
       const data = await response.json();
       const queueInfo = data?.queue_info && typeof data.queue_info === 'object' ? data.queue_info : null;
@@ -7549,7 +7571,7 @@ function AppInner() {
     } finally {
       srsPrefetchInFlightRef.current = false;
     }
-  }, [appendToSrsPrefetchQueue, fetchWithTimeout, initData]);
+  }, [appendToSrsPrefetchQueue, fetchWithTimeout, flashcardQueueSource, initData]);
 
   const rescheduleBacklog = useCallback(async () => {
     if (!initData || srsRescheduling) return;
@@ -7727,6 +7749,72 @@ function AppInner() {
     fetchWithTimeout,
     tr,
   ]);
+
+  const renameFolderSubmit = useCallback(async () => {
+    if (!folderRenameItem || !initData || !folderRenameName.trim()) return;
+    setFolderRenameLoading(true);
+    setFolderRenameError('');
+    try {
+      const response = await fetchWithTimeout('/api/webapp/vocabulary/folders/rename', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          folder_id: folderRenameItem.id,
+          name: folderRenameName.trim(),
+          icon: folderRenameIcon,
+          color: folderRenameColor,
+        }),
+      }, 10000);
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        setFolderRenameError(err.error || tr('Ошибка', 'Fehler'));
+        return;
+      }
+      const data = await response.json();
+      const updated = data.item;
+      if (updated) {
+        setFolders((prev) => prev.map((f) => f.id === updated.id ? { ...f, ...updated } : f));
+        setVocabFoldersMeta((prev) => prev ? {
+          ...prev,
+          folders: (prev.folders || []).map((f) => f.id === updated.id ? { ...f, ...updated } : f),
+        } : prev);
+      }
+      setFolderRenameItem(null);
+    } catch (_err) {
+      setFolderRenameError(tr('Ошибка сохранения', 'Fehler beim Speichern'));
+    } finally {
+      setFolderRenameLoading(false);
+    }
+  }, [folderRenameItem, folderRenameName, folderRenameIcon, folderRenameColor, initData, fetchWithTimeout, tr]);
+
+  const deleteFolderConfirm = useCallback(async (deleteWords) => {
+    if (!folderDeleteItem || !initData) return;
+    setFolderDeleteLoading(true);
+    try {
+      const response = await fetchWithTimeout('/api/webapp/vocabulary/folders/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, folder_id: folderDeleteItem.id, delete_words: deleteWords }),
+      }, 12000);
+      if (!response.ok) return;
+      setFolders((prev) => prev.filter((f) => f.id !== folderDeleteItem.id));
+      setVocabFoldersMeta((prev) => prev ? {
+        ...prev,
+        folders: (prev.folders || []).filter((f) => f.id !== folderDeleteItem.id),
+      } : prev);
+      if (vocabFolderFilter === String(folderDeleteItem.id)) {
+        setVocabFolderFilter('all');
+      }
+      setFolderDeleteItem(null);
+      setFolderDeleteMode(null);
+      void loadVocabLibrary({ reset: true });
+    } catch (_err) {
+      // ignore
+    } finally {
+      setFolderDeleteLoading(false);
+    }
+  }, [folderDeleteItem, initData, fetchWithTimeout, vocabFolderFilter, loadVocabLibrary]);
 
   const buildWeeklyPlanDraftFromPlan = useCallback((plan) => ({
     translations_goal: String(Number(plan?.plan?.translations_goal || 0)),
@@ -9184,6 +9272,7 @@ function AppInner() {
       while (srsReviewBufferRef.current.length > 0) {
         const job = srsReviewBufferRef.current[0];
         const FSRS_REVIEW_TIMEOUT_MS = 60000;
+        const resolvedQueueSource = flashcardQueueSource === 'manual' ? 'manual' : 'system';
         try {
           let response = await fetchWithTimeout('/api/cards/review', {
             method: 'POST',
@@ -9193,6 +9282,7 @@ function AppInner() {
               card_id: job.cardId,
               rating: job.rating,
               response_ms: job.responseMs,
+              queue_source: resolvedQueueSource,
             }),
           }, FSRS_REVIEW_TIMEOUT_MS);
           if (!response.ok && response.status >= 500) {
@@ -9205,6 +9295,7 @@ function AppInner() {
                 card_id: job.cardId,
                 rating: job.rating,
                 response_ms: job.responseMs,
+                queue_source: resolvedQueueSource,
               }),
             }, FSRS_REVIEW_TIMEOUT_MS);
           }
@@ -9236,6 +9327,7 @@ function AppInner() {
     normalizeNetworkErrorMessage,
     readApiError,
     tr,
+    flashcardQueueSource,
   ]);
 
   const submitSrsReview = async (ratingValue) => {
@@ -9257,6 +9349,7 @@ function AppInner() {
       setSrsError('');
       setSrsSubmitting(true);
       setSrsSubmittingRating(ratingValue);
+      const resolvedQueueSource = flashcardQueueSource === 'manual' ? 'manual' : 'system';
       const optimisticCard = takeFromSrsPrefetchQueue();
       setSrsRevealAnswer(false);
       setSrsRevealStartedAt(0);
@@ -9291,6 +9384,7 @@ function AppInner() {
           card_id: cardId,
           rating: ratingValue,
           response_ms: responseMs,
+          queue_source: resolvedQueueSource,
         }),
       }, FSRS_REVIEW_TIMEOUT_MS);
       if (!response.ok && response.status >= 500) {
@@ -9303,6 +9397,7 @@ function AppInner() {
             card_id: cardId,
             rating: ratingValue,
             response_ms: responseMs,
+            queue_source: resolvedQueueSource,
           }),
         }, FSRS_REVIEW_TIMEOUT_MS);
       }
@@ -11418,6 +11513,24 @@ function AppInner() {
   const startFlashcardsMode = async (mode) => {
     const normalizedMode = String(mode || '').toLowerCase();
     if (!['fsrs', 'quiz', 'blocks', 'sentence'].includes(normalizedMode)) return;
+    if (normalizedMode !== 'sentence' && flashcardQueueSource === 'manual') {
+      if (manualTrainingSelectionCount <= 0) {
+        setFlashcardsError(tr(
+          'Сначала выберите слова для своей очереди в словаре.',
+          'Bitte wähle zuerst Wörter für deine eigene Auswahl im Wörterbuch aus.'
+        ));
+        setFlashcardsOnly(false);
+        setFlashcardActiveMode(null);
+        return;
+      }
+      const saved = await saveManualTrainingSelection(manualTrainingSelectionIds);
+      const savedIds = normalizePositiveIdList(saved?.card_ids || []);
+      if (!saved || savedIds.length <= 0) {
+        setFlashcardsOnly(false);
+        setFlashcardActiveMode(null);
+        return;
+      }
+    }
     stopTtsPlayback();
     setFlashcardsVisible(true);
     setFlashcardSettingsModalMode(null);
@@ -13881,7 +13994,7 @@ function AppInner() {
     && flashcardsVisible
     && flashcardActiveMode === 'fsrs'
   );
-  const fsrsInitSignature = `${String(initData || '')}|${flashcardsVisible ? 1 : 0}|${String(flashcardActiveMode || '')}|${String(languageProfile?.native_language || '')}|${String(languageProfile?.learning_language || '')}|${isSectionVisible('flashcards') ? 1 : 0}`;
+  const fsrsInitSignature = `${String(initData || '')}|${flashcardsVisible ? 1 : 0}|${String(flashcardActiveMode || '')}|${String(languageProfile?.native_language || '')}|${String(languageProfile?.learning_language || '')}|${isSectionVisible('flashcards') ? 1 : 0}|${String(flashcardQueueSource || 'system')}`;
 
   useEffect(() => {
     if (!fsrsSectionActive) {
@@ -16077,6 +16190,20 @@ function AppInner() {
       .filter((row) => normalizeComparableText(row.text) !== normalizedBase)
       .slice(0, Math.max(0, Number(limit) || 0));
   };
+  const normalizePositiveIdList = (values) => {
+    if (!Array.isArray(values)) return [];
+    const seen = new Set();
+    const normalized = [];
+    values.forEach((raw) => {
+      const value = Number(raw || 0);
+      if (!Number.isFinite(value) || value <= 0) return;
+      const safeValue = Math.trunc(value);
+      if (seen.has(safeValue)) return;
+      seen.add(safeValue);
+      normalized.push(safeValue);
+    });
+    return normalized;
+  };
   const getDictionaryPronunciationRows = (item) => {
     const pronunciation = item?.pronunciation;
     if (!pronunciation || typeof pronunciation !== 'object') return [];
@@ -17957,7 +18084,19 @@ function AppInner() {
   const buildFlashcardsEmptyState = useCallback((reason, meta = {}, mode = flashcardTrainingModeRef.current || flashcardTrainingMode || 'quiz') => {
     const normalizedReason = String(reason || '').trim().toLowerCase();
     const normalizedMode = String(mode || 'quiz').trim().toLowerCase();
+    const queueSource = String(meta?.queue_source || '').trim().toLowerCase();
     if (!normalizedReason) return null;
+    if (normalizedReason === 'manual_selection_empty') {
+      return {
+        kind: normalizedReason,
+        badge: tr('Моя выборка', 'Meine Auswahl'),
+        title: tr('Вы ещё не выбрали слова для своей очереди', 'Du hast noch keine Wörter für deine eigene Auswahl markiert'),
+        body: tr(
+          'Откройте словарь, отметьте слова чекбоксами и нажмите «Учить». Только после этого ручная очередь начнёт работать.',
+          'Öffne das Wörterbuch, markiere Wörter per Checkbox und tippe auf „Lernen“. Erst danach startet die manuelle Warteschlange.'
+        ),
+      };
+    }
     if (normalizedReason === 'dictionary_empty') {
       return {
         kind: normalizedReason,
@@ -17972,11 +18111,19 @@ function AppInner() {
     if (normalizedReason === 'shared_queue_completed_today') {
       return {
         kind: normalizedReason,
-        badge: normalizedMode === 'blocks' ? 'Blocks' : normalizedMode === 'quiz' ? 'Quiz' : 'Training',
-        title: tr('На сегодня слова для тренировки уже закончились', 'Fuer heute sind die Trainingswoerter schon erledigt'),
+        badge: queueSource === 'manual'
+          ? tr('Моя выборка', 'Meine Auswahl')
+          : (normalizedMode === 'blocks' ? 'Blocks' : normalizedMode === 'quiz' ? 'Quiz' : 'Training'),
+        title: queueSource === 'manual'
+          ? tr('В вашей выборке сейчас нет доступных карточек', 'In deiner Auswahl gibt es aktuell keine verfügbaren Karten')
+          : tr('На сегодня слова для тренировки уже закончились', 'Fuer heute sind die Trainingswoerter schon erledigt'),
         body: tr(
-          'Вы уже прошли доступные карточки из общей очереди через Space Repetition или другой режим. Возвращайтесь позже или добавьте новые слова в словарь.',
-          'Du hast die verfuegbaren Karten aus der gemeinsamen Warteschlange bereits in Space Repetition oder einem anderen Modus durchgearbeitet. Komm spaeter wieder oder fuege neue Woerter zum Woerterbuch hinzu.'
+          queueSource === 'manual'
+            ? 'Выбранные слова уже повторены или ещё не дошли по интервалу до следующего показа. Можно вернуться позже или изменить выборку.'
+            : 'Вы уже прошли доступные карточки из общей очереди через Space Repetition или другой режим. Возвращайтесь позже или добавьте новые слова в словарь.',
+          queueSource === 'manual'
+            ? 'Die ausgewählten Wörter wurden bereits wiederholt oder sind noch nicht wieder fällig. Komm später wieder oder ändere die Auswahl.'
+            : 'Du hast die verfuegbaren Karten aus der gemeinsamen Warteschlange bereits in Space Repetition oder einem anderen Modus durchgearbeitet. Komm spaeter wieder oder fuege neue Woerter zum Woerterbuch hinzu.'
         ),
       };
     }
@@ -18032,21 +18179,288 @@ function AppInner() {
     };
   }, [tr]);
 
+  const loadManualTrainingSelection = useCallback(async () => {
+    if (!initData) return;
+    setManualTrainingSelectionLoading(true);
+    setManualTrainingSelectionError('');
+    try {
+      const response = await fetchWithTimeout('/api/webapp/flashcards/manual-selection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData }),
+      }, 12000);
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Не удалось загрузить мою выборку.', 'Meine Auswahl konnte nicht geladen werden.'));
+      }
+      const data = await response.json();
+      setManualTrainingSelectionIds(normalizePositiveIdList(data?.card_ids || []));
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось загрузить мою выборку.',
+        'Meine Auswahl konnte nicht geladen werden.'
+      );
+      setManualTrainingSelectionError(friendly);
+    } finally {
+      setManualTrainingSelectionLoading(false);
+    }
+  }, [fetchWithTimeout, initData, normalizeNetworkErrorMessage, readApiError]);
+
+  const saveManualTrainingSelection = useCallback(async (cardIds, options = {}) => {
+    const { silent = false } = options || {};
+    if (!initData) {
+      if (!silent) {
+        setManualTrainingSelectionError(initDataMissingMsg);
+      }
+      return null;
+    }
+    const normalizedCardIds = normalizePositiveIdList(cardIds);
+    setManualTrainingSelectionSaving(true);
+    if (!silent) {
+      setManualTrainingSelectionError('');
+    }
+    try {
+      const response = await fetchWithTimeout('/api/webapp/flashcards/manual-selection/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          card_ids: normalizedCardIds,
+        }),
+      }, 15000);
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Не удалось сохранить мою выборку.', 'Meine Auswahl konnte nicht gespeichert werden.'));
+      }
+      const data = await response.json();
+      const savedIds = normalizePositiveIdList(data?.card_ids || normalizedCardIds);
+      setManualTrainingSelectionIds(savedIds);
+      return { ...data, card_ids: savedIds };
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось сохранить мою выборку.',
+        'Meine Auswahl konnte nicht gespeichert werden.'
+      );
+      if (!silent) {
+        setManualTrainingSelectionError(friendly);
+      }
+      return null;
+    } finally {
+      setManualTrainingSelectionSaving(false);
+    }
+  }, [fetchWithTimeout, initData, initDataMissingMsg, normalizeNetworkErrorMessage, readApiError]);
+
+  const clearManualTrainingSelectionRemote = useCallback(async ({ silent = false } = {}) => {
+    if (!initData) {
+      if (!silent) {
+        setManualTrainingSelectionError(initDataMissingMsg);
+      }
+      return false;
+    }
+    setManualTrainingSelectionSaving(true);
+    if (!silent) {
+      setManualTrainingSelectionError('');
+    }
+    try {
+      const response = await fetchWithTimeout('/api/webapp/flashcards/manual-selection/clear', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData }),
+      }, 12000);
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Не удалось очистить мою выборку.', 'Meine Auswahl konnte nicht geleert werden.'));
+      }
+      setManualTrainingSelectionIds([]);
+      return true;
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось очистить мою выборку.',
+        'Meine Auswahl konnte nicht geleert werden.'
+      );
+      if (!silent) {
+        setManualTrainingSelectionError(friendly);
+      }
+      return false;
+    } finally {
+      setManualTrainingSelectionSaving(false);
+    }
+  }, [fetchWithTimeout, initData, initDataMissingMsg, normalizeNetworkErrorMessage, readApiError]);
+
+  useEffect(() => {
+    if (!initData) return;
+    void loadManualTrainingSelection();
+  }, [initData, loadManualTrainingSelection]);
+
+  const manualTrainingSelectionCount = manualTrainingSelectionIds.length;
+
+  const toggleManualTrainingSelectionCard = useCallback((cardId) => {
+    const normalizedCardId = Number(cardId);
+    if (!Number.isFinite(normalizedCardId) || normalizedCardId <= 0) {
+      return;
+    }
+    setManualTrainingSelectionError('');
+    setManualTrainingSelectionIds((prev) => {
+      const current = new Set(normalizePositiveIdList(prev));
+      if (current.has(normalizedCardId)) {
+        current.delete(normalizedCardId);
+      } else {
+        current.add(normalizedCardId);
+      }
+      return Array.from(current);
+    });
+  }, []);
+
+  const openDictionaryForManualSelection = useCallback(() => {
+    setVocabTab('library');
+    setFlashcardSettingsModalMode(null);
+    setFlashcardsOnly(false);
+    setFlashcardActiveMode(null);
+    setFlashcardSessionActive(false);
+    setFlashcardPreviewActive(false);
+    setFlashcardExitSummary(false);
+    setFlashcardsError('');
+    setManualTrainingSelectionError('');
+    openSingleSectionAndScroll('dictionary', dictionaryRef);
+  }, [openSingleSectionAndScroll]);
+
+  const fetchVocabularySelectionCardIds = useCallback(async (folderKey) => {
+    if (!initData) {
+      throw new Error(initDataMissingMsg);
+    }
+    const normalizedFolderKey = String(folderKey || 'all').trim().toLowerCase();
+    const folderParam = normalizedFolderKey === 'all'
+      ? null
+      : normalizedFolderKey === 'none'
+        ? -1
+        : Number(normalizedFolderKey);
+    const collectedIds = [];
+    let offset = 0;
+    let total = Number.POSITIVE_INFINITY;
+    while (offset < total) {
+      const response = await fetchWithTimeout('/api/webapp/vocabulary/list', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          folder_id: folderParam,
+          search: null,
+          sort: 'date_desc',
+          limit: 100,
+          offset,
+        }),
+      }, 15000);
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Не удалось загрузить слова папки.', 'Die Wörter des Ordners konnten nicht geladen werden.'));
+      }
+      const data = await response.json();
+      const items = Array.isArray(data?.items) ? data.items : [];
+      const pageIds = normalizePositiveIdList(items.map((item) => item?.id));
+      collectedIds.push(...pageIds);
+      total = Math.max(0, Number(data?.total || 0));
+      offset += items.length;
+      if (items.length === 0) {
+        break;
+      }
+      if (collectedIds.length > 5000) {
+        throw new Error(tr(
+          'В одну личную выборку пока можно добавить максимум 5000 слов.',
+          'In eine persönliche Auswahl können derzeit maximal 5000 Wörter aufgenommen werden.'
+        ));
+      }
+    }
+    return normalizePositiveIdList(collectedIds);
+  }, [fetchWithTimeout, initData, initDataMissingMsg, readApiError, tr]);
+
+  const toggleManualTrainingSelectionFolder = useCallback(async (folderKey) => {
+    const normalizedFolderKey = String(folderKey || '').trim();
+    if (!normalizedFolderKey || normalizedFolderKey === 'all') {
+      return;
+    }
+    setManualTrainingSelectionFolderBusyKey(normalizedFolderKey);
+    setManualTrainingSelectionError('');
+    try {
+      const folderIds = await fetchVocabularySelectionCardIds(normalizedFolderKey);
+      const current = new Set(normalizePositiveIdList(manualTrainingSelectionIds));
+      const allSelected = folderIds.length > 0 && folderIds.every((id) => current.has(id));
+      if (allSelected) {
+        folderIds.forEach((id) => current.delete(id));
+      } else {
+        folderIds.forEach((id) => current.add(id));
+      }
+      const nextIds = Array.from(current);
+      if (nextIds.length > 5000) {
+        setManualTrainingSelectionError(tr(
+          'В одну личную выборку пока можно добавить максимум 5000 слов.',
+          'In eine persönliche Auswahl können derzeit maximal 5000 Wörter aufgenommen werden.'
+        ));
+        return;
+      }
+      setManualTrainingSelectionIds(nextIds);
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось обновить выбор слов для папки.',
+        'Die Auswahl für diesen Ordner konnte nicht aktualisiert werden.'
+      );
+      setManualTrainingSelectionError(friendly);
+    } finally {
+      setManualTrainingSelectionFolderBusyKey('');
+    }
+  }, [fetchVocabularySelectionCardIds, manualTrainingSelectionIds, normalizeNetworkErrorMessage, tr]);
+
+  const persistManualTrainingSelection = useCallback(async () => {
+    if (manualTrainingSelectionCount <= 0) {
+      const message = tr(
+        'Сначала выберите слова в словаре.',
+        'Bitte wähle zuerst Wörter im Wörterbuch aus.'
+      );
+      setManualTrainingSelectionError(message);
+      return null;
+    }
+    const saved = await saveManualTrainingSelection(manualTrainingSelectionIds);
+    if (!saved || normalizePositiveIdList(saved?.card_ids || []).length <= 0) {
+      return null;
+    }
+    return saved;
+  }, [manualTrainingSelectionCount, manualTrainingSelectionIds, saveManualTrainingSelection, tr]);
+
+  const openTrainingForManualSelection = useCallback(async () => {
+    const saved = await persistManualTrainingSelection();
+    if (!saved) {
+      return false;
+    }
+    setFlashcardQueueSource('manual');
+    setFlashcardsVisible(true);
+    setFlashcardsOnly(false);
+    setFlashcardActiveMode(null);
+    setFlashcardSessionActive(false);
+    setFlashcardPreviewActive(false);
+    setFlashcardExitSummary(false);
+    setFlashcardsError('');
+    openSingleSectionAndScroll('flashcards', flashcardsRef);
+    return true;
+  }, [flashcardsRef, openSingleSectionAndScroll, persistManualTrainingSelection]);
+
   const loadFlashcards = async () => {
     if (!initData) {
       setFlashcardsError(initDataMissingMsg);
       return;
     }
     const requestedMode = String(flashcardTrainingModeRef.current || flashcardTrainingMode || 'quiz').toLowerCase();
+    const resolvedQueueSource = requestedMode === 'sentence'
+      ? 'system'
+      : (flashcardQueueSource === 'manual' ? 'manual' : 'system');
     const requestedSetSize = requestedMode === 'blocks'
       ? Math.max(flashcardSetSize * 5, 40)
       : flashcardSetSize;
     const requestSignature = [
       requestedMode,
+      resolvedQueueSource,
       String(flashcardSetSize),
       String(requestedSetSize),
-      String(flashcardFolderMode || 'all'),
-      flashcardFolderMode === 'folder' ? String(flashcardFolderId || '') : '-',
+      resolvedQueueSource === 'system' ? String(flashcardFolderMode || 'all') : '-',
+      resolvedQueueSource === 'system' && flashcardFolderMode === 'folder' ? String(flashcardFolderId || '') : '-',
     ].join('|');
     const nowTs = Date.now();
 
@@ -18074,10 +18488,11 @@ function AppInner() {
       const requestPayload = {
         initData,
         training_mode: requestedMode,
+        queue_source: resolvedQueueSource,
         set_size: requestedSetSize,
         wrong_size: 5,
-        folder_mode: flashcardFolderMode,
-        folder_id: flashcardFolderMode === 'folder' && flashcardFolderId ? flashcardFolderId : null,
+        folder_mode: resolvedQueueSource === 'system' ? flashcardFolderMode : 'all',
+        folder_id: resolvedQueueSource === 'system' && flashcardFolderMode === 'folder' && flashcardFolderId ? flashcardFolderId : null,
       };
       const requestOptions = {
         method: 'POST',
@@ -18194,6 +18609,10 @@ function AppInner() {
 
     (async () => {
       try {
+        if (resolvedQueueSource === 'manual') {
+          setFlashcardPool(sessionItems);
+          return;
+        }
         const poolResponse = await fetchWithTimeout('/api/webapp/dictionary/cards', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -18204,7 +18623,9 @@ function AppInner() {
             folder_id: flashcardFolderMode === 'folder' && flashcardFolderId ? flashcardFolderId : null,
           }),
         }, 12000);
-        if (poolResponse.ok) {
+        if (resolvedQueueSource === 'manual') {
+          setFlashcardPool(sessionItems);
+        } else if (poolResponse.ok) {
           const poolData = await poolResponse.json();
           setDictionaryLanguagePair(resolveLanguagePairForUI(poolData.language_pair));
           const poolItems = (poolData.items || []).map((item) => ({
@@ -18212,9 +18633,11 @@ function AppInner() {
             response_json: coerceResponseJson(item.response_json),
           }));
           setFlashcardPool(poolItems);
+        } else {
+          setFlashcardPool([]);
         }
-      } catch (error) {
-        // ignore pool errors
+      } catch (_error) {
+        setFlashcardPool([]);
       }
     })();
   };
@@ -18330,10 +18753,7 @@ function AppInner() {
     while (options.length < 4 && values.length > 0) {
       options.push(values.shift());
     }
-    while (options.length < 4) {
-      options.push(correct);
-    }
-    return shuffleArray(options).slice(0, 4);
+    return shuffleArray(options).slice(0, Math.min(4, options.length));
   };
 
   const resolveQuizCorrectOption = (entry, options = []) => {
@@ -18436,6 +18856,7 @@ function AppInner() {
           card_id: entryId,
           rating: resolvedRating,
           response_ms: typeof meta.timeSpentMs === 'number' ? Math.max(0, Math.round(meta.timeSpentMs)) : null,
+          queue_source: flashcardQueueSource === 'manual' ? 'manual' : 'system',
           // legacy analytics fields are kept for backward-compatible payload shape on the client side.
           mode: meta.mode || flashcardTrainingMode || 'quiz',
           hints_used: typeof meta.hintsUsed === 'number' ? Math.max(0, Math.round(meta.hintsUsed)) : 0,
@@ -25028,6 +25449,7 @@ function AppInner() {
                         ok: tr('Усвоено', 'Gelernt'),
                         none: tr('Без SRS', 'Ohne SRS'),
                       };
+                      const manualSelectionIdSet = new Set(manualTrainingSelectionIds);
 
                       const folderChips = [
                         { key: 'all', label: tr('Все', 'Alle'), icon: '📂', count: vocabFoldersMeta?.total_count ?? vocabTotal },
@@ -25064,20 +25486,107 @@ function AppInner() {
                             </button>
                           </div>
 
-                          {/* Folder filter chips */}
-                          <div className="vocab-folders-scroll">
-                            {folderChips.map((chip) => (
+                          <div className="vocab-selection-toolbar">
+                            <div className="vocab-selection-toolbar-main">
+                              <span className="vocab-selection-title">
+                                {tr('Моя выборка', 'Meine Auswahl')}
+                              </span>
+                              <span className="vocab-selection-count">
+                                {manualTrainingSelectionCount}
+                              </span>
+                              {manualTrainingSelectionLoading && (
+                                <span className="vocab-selection-loading">
+                                  {tr('загрузка...', 'laden...')}
+                                </span>
+                              )}
+                            </div>
+                            <div className="vocab-selection-actions">
                               <button
-                                key={chip.key}
                                 type="button"
-                                className={`vocab-folder-chip ${vocabFolderFilter === chip.key ? 'is-active' : ''}`}
-                                onClick={() => { setVocabFolderFilter(chip.key); setVocabExpandedId(null); }}
+                                className="vocab-selection-btn"
+                                onClick={() => { void persistManualTrainingSelection(); }}
+                                disabled={manualTrainingSelectionSaving || manualTrainingSelectionCount <= 0}
                               >
-                                <span className="vfc-icon">{chip.icon}</span>
-                                <span className="vfc-name">{chip.label}</span>
-                                <span className="vfc-count">{chip.count}</span>
+                                {manualTrainingSelectionSaving ? tr('Сохранение...', 'Speichern...') : tr('Сохранить', 'Speichern')}
                               </button>
-                            ))}
+                              <button
+                                type="button"
+                                className="vocab-selection-btn is-primary"
+                                onClick={() => { void openTrainingForManualSelection(); }}
+                                disabled={manualTrainingSelectionSaving || manualTrainingSelectionCount <= 0}
+                              >
+                                {tr('Учить', 'Lernen')}
+                              </button>
+                              <button
+                                type="button"
+                                className="vocab-selection-btn"
+                                onClick={() => { void clearManualTrainingSelectionRemote(); }}
+                                disabled={manualTrainingSelectionSaving || manualTrainingSelectionCount <= 0}
+                              >
+                                {tr('Очистить', 'Leeren')}
+                              </button>
+                            </div>
+                          </div>
+                          {manualTrainingSelectionError && (
+                            <div className="webapp-error vocab-selection-error">{manualTrainingSelectionError}</div>
+                          )}
+
+                          {/* Folder grid */}
+                          <div className="vocab-folder-section">
+                            {/* Quick filters: All + No Folder */}
+                            <div className="vocab-folder-quick-row">
+                              <button
+                                type="button"
+                                className={`vocab-qf-btn ${vocabFolderFilter === 'all' ? 'is-active' : ''}`}
+                                onClick={() => { setVocabFolderFilter('all'); setVocabExpandedId(null); }}
+                              >
+                                📂 {tr('Все', 'Alle')} <span className="vfc-count">{vocabFoldersMeta?.total_count ?? vocabTotal}</span>
+                              </button>
+                              {(vocabFoldersMeta?.no_folder_count ?? 0) > 0 && (
+                                <button
+                                  type="button"
+                                  className={`vocab-qf-btn ${vocabFolderFilter === 'none' ? 'is-active' : ''}`}
+                                  onClick={() => { setVocabFolderFilter('none'); setVocabExpandedId(null); }}
+                                >
+                                  🗂 {tr('Без папки', 'Ohne Ordner')} <span className="vfc-count">{vocabFoldersMeta?.no_folder_count}</span>
+                                </button>
+                              )}
+                            </div>
+
+                            {/* Folder grid — long-press for context menu */}
+                            {(vocabFoldersMeta?.folders || []).length > 0 && (
+                              <div className="vocab-folder-grid">
+                                {(vocabFoldersMeta?.folders || []).map((f) => {
+                                  const fKey = String(f.id);
+                                  const isActive = vocabFolderFilter === fKey;
+                                  let longPressTimer = null;
+                                  const handleLongPressStart = () => {
+                                    longPressTimer = window.setTimeout(() => {
+                                      setFolderContextMenu({ folder: f });
+                                    }, 480);
+                                  };
+                                  const handleLongPressEnd = () => {
+                                    if (longPressTimer) { window.clearTimeout(longPressTimer); longPressTimer = null; }
+                                  };
+                                  return (
+                                    <button
+                                      key={fKey}
+                                      type="button"
+                                      className={`vocab-folder-card ${isActive ? 'is-active' : ''}`}
+                                      onClick={() => { setVocabFolderFilter(fKey); setVocabExpandedId(null); }}
+                                      onPointerDown={handleLongPressStart}
+                                      onPointerUp={handleLongPressEnd}
+                                      onPointerLeave={handleLongPressEnd}
+                                      onPointerCancel={handleLongPressEnd}
+                                    >
+                                      <span className="vfc-card-icon">{resolveFolderIconLabel(f.icon)}</span>
+                                      <span className="vfc-card-name">{f.name}</span>
+                                      <span className="vfc-card-count">{f.word_count ?? 0}</span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
                           </div>
 
                           {/* Search inside library */}
@@ -25115,6 +25624,7 @@ function AppInner() {
                               <div className="vocab-word-list">
                                 {group.items.map((item) => {
                                   const isExpanded = vocabExpandedId === item.id;
+                                  const isSelectedForManual = manualSelectionIdSet.has(Number(item.id));
                                   const dotColor = srsColors[item.srs_label] || srsColors.none;
                                   const folder = (vocabFoldersMeta?.folders || []).find((f) => f.id === item.folder_id);
                                   const displayWord = item.display_word || item.word_de || item.word_ru || '—';
@@ -25126,31 +25636,41 @@ function AppInner() {
 
                                   return (
                                     <div key={item.id} className={`vocab-word-item ${isExpanded ? 'is-expanded' : ''}`}>
-                                      <button
-                                        type="button"
-                                        className="vocab-word-row"
-                                        onClick={() => setVocabExpandedId(isExpanded ? null : item.id)}
-                                      >
-                                        <span className="vocab-srs-dot" style={{ background: dotColor }} />
-                                        <span className="vocab-word-body">
-                                          <span className="vocab-word-main">{displayWord}</span>
-                                          <span className="vocab-word-sub">
-                                            {displayTrans}
-                                            {partOfSpeech && <> · <em>{partOfSpeech}</em></>}
-                                          </span>
-                                        </span>
-                                        <span className="vocab-word-meta">
-                                          {folder && (
-                                            <span className="vocab-folder-tag">
-                                              {resolveFolderIconLabel(folder.icon)} {folder.name}
+                                      <div className="vocab-word-row-shell">
+                                        <button
+                                          type="button"
+                                          className={`vocab-select-toggle ${isSelectedForManual ? 'is-active' : ''}`}
+                                          onClick={() => toggleManualTrainingSelectionCard(item.id)}
+                                          aria-label={tr('Добавить слово в мою выборку', 'Wort zu meiner Auswahl hinzufügen')}
+                                        >
+                                          {isSelectedForManual ? '✓' : ''}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="vocab-word-row"
+                                          onClick={() => setVocabExpandedId(isExpanded ? null : item.id)}
+                                        >
+                                          <span className="vocab-srs-dot" style={{ background: dotColor }} />
+                                          <span className="vocab-word-body">
+                                            <span className="vocab-word-main">{displayWord}</span>
+                                            <span className="vocab-word-sub">
+                                              {displayTrans}
+                                              {partOfSpeech && <> · <em>{partOfSpeech}</em></>}
                                             </span>
-                                          )}
-                                          <span className="vocab-word-date">
-                                            {(item.created_at || '').slice(0, 10)}
                                           </span>
-                                        </span>
-                                        <span className={`vocab-expand-arrow ${isExpanded ? 'is-open' : ''}`}>›</span>
-                                      </button>
+                                          <span className="vocab-word-meta">
+                                            {folder && (
+                                              <span className="vocab-folder-tag">
+                                                {resolveFolderIconLabel(folder.icon)} {folder.name}
+                                              </span>
+                                            )}
+                                            <span className="vocab-word-date">
+                                              {(item.created_at || '').slice(0, 10)}
+                                            </span>
+                                          </span>
+                                          <span className={`vocab-expand-arrow ${isExpanded ? 'is-open' : ''}`}>›</span>
+                                        </button>
+                                      </div>
                                       {isExpanded && (
                                         <>
                                           {savedMeanings.length > 0 && (
@@ -25822,6 +26342,154 @@ function AppInner() {
                       </div>
                     )}
 
+                    {/* ── Folder context menu ── */}
+                    {folderContextMenu && (
+                      <div className="vocab-modal-overlay" onClick={() => setFolderContextMenu(null)}>
+                        <div className="vocab-modal-sheet" onClick={(e) => e.stopPropagation()}>
+                          <div className="vocab-modal-handle" />
+                          <div className="vfcm-folder-name">
+                            {resolveFolderIconLabel(folderContextMenu.folder.icon)} {folderContextMenu.folder.name}
+                          </div>
+                          <div className="vfcm-actions">
+                            <button type="button" className="vfcm-btn" onClick={() => {
+                              setFolderRenameItem(folderContextMenu.folder);
+                              setFolderRenameName(folderContextMenu.folder.name);
+                              setFolderRenameIcon(folderContextMenu.folder.icon || 'book');
+                              setFolderRenameColor(folderContextMenu.folder.color || '#5ddcff');
+                              setFolderRenameError('');
+                              setFolderContextMenu(null);
+                            }}>
+                              <span className="vfcm-btn-icon">✏️</span>
+                              <span>{tr('Переименовать', 'Umbenennen')}</span>
+                            </button>
+                            <button type="button" className="vfcm-btn" onClick={() => {
+                              if (openSection) openSection('flashcards', null);
+                              setFolderContextMenu(null);
+                            }}>
+                              <span className="vfcm-btn-icon">🃏</span>
+                              <span>{tr('Карточки по папке', 'Karten dieser Ordner')}</span>
+                            </button>
+                            <button type="button" className="vfcm-btn vfcm-btn-danger" onClick={() => {
+                              setFolderDeleteItem(folderContextMenu.folder);
+                              setFolderDeleteMode(null);
+                              setFolderContextMenu(null);
+                            }}>
+                              <span className="vfcm-btn-icon">🗑</span>
+                              <span>{tr('Удалить папку', 'Ordner löschen')}</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ── Rename folder modal ── */}
+                    {folderRenameItem && (
+                      <div className="vocab-modal-overlay" onClick={() => setFolderRenameItem(null)}>
+                        <div className="vocab-modal-sheet" onClick={(e) => e.stopPropagation()}>
+                          <div className="vocab-modal-handle" />
+                          <div className="vocab-modal-title">✏️ {tr('Переименовать папку', 'Ordner umbenennen')}</div>
+                          <div className="vocab-modal-field">
+                            <label className="vocab-modal-label">{tr('Название', 'Name')}</label>
+                            <input
+                              className="vocab-modal-input"
+                              type="text"
+                              value={folderRenameName}
+                              onChange={(e) => setFolderRenameName(e.target.value)}
+                              autoFocus
+                            />
+                          </div>
+                          <div className="vocab-modal-field">
+                            <label className="vocab-modal-label">{tr('Иконка', 'Symbol')}</label>
+                            <div className="folder-icon-options" style={{ marginTop: 4 }}>
+                              {['book','bolt','star','target','flag','check'].map((icon) => (
+                                <button
+                                  key={icon}
+                                  type="button"
+                                  className={`icon-dot ${folderRenameIcon === icon ? 'is-active' : ''}`}
+                                  onClick={() => setFolderRenameIcon(icon)}
+                                >
+                                  {renderFolderIcon(icon, folderRenameColor)}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="vocab-modal-field">
+                            <label className="vocab-modal-label">{tr('Цвет', 'Farbe')}</label>
+                            <div className="folder-color-options" style={{ marginTop: 4 }}>
+                              {['#5ddcff','#7c5cff','#ff6b6b','#ffd166','#06d6a0','#f78c6b'].map((color) => (
+                                <button
+                                  key={color}
+                                  type="button"
+                                  className={`color-dot ${folderRenameColor === color ? 'is-active' : ''}`}
+                                  style={{ background: color }}
+                                  onClick={() => setFolderRenameColor(color)}
+                                />
+                              ))}
+                            </div>
+                          </div>
+                          {folderRenameError && <div className="webapp-error" style={{ marginBottom: 8 }}>{folderRenameError}</div>}
+                          <div className="vocab-modal-actions">
+                            <button type="button" className="vocab-modal-cancel" onClick={() => setFolderRenameItem(null)}>
+                              {tr('Отмена', 'Abbrechen')}
+                            </button>
+                            <button
+                              type="button"
+                              className="vocab-modal-save"
+                              disabled={folderRenameLoading || !folderRenameName.trim()}
+                              onClick={() => void renameFolderSubmit()}
+                            >
+                              {folderRenameLoading ? '…' : tr('Сохранить', 'Speichern')}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ── Delete folder confirm ── */}
+                    {folderDeleteItem && (
+                      <div className="vocab-delete-overlay" onClick={() => { if (!folderDeleteMode) { setFolderDeleteItem(null); } }}>
+                        <div className="vocab-delete-card" onClick={(e) => e.stopPropagation()}>
+                          <div className="vocab-delete-icon">🗑️</div>
+                          <div className="vocab-delete-title">{tr('Удалить папку?', 'Ordner löschen?')}</div>
+                          <div className="vocab-delete-word">
+                            {resolveFolderIconLabel(folderDeleteItem.icon)} {folderDeleteItem.name}
+                          </div>
+                          <div className="vocab-delete-sub" style={{ marginBottom: 14 }}>
+                            {tr('Что сделать со словами в этой папке?', 'Was soll mit den Wörtern in diesem Ordner passieren?')}
+                          </div>
+                          <div className="vfd-options">
+                            <button
+                              type="button"
+                              className={`vfd-option-btn ${folderDeleteMode === 'keep' ? 'is-selected' : ''}`}
+                              onClick={() => setFolderDeleteMode('keep')}
+                            >
+                              📂 {tr('Оставить слова (убрать из папки)', 'Wörter behalten (aus Ordner entfernen)')}
+                            </button>
+                            <button
+                              type="button"
+                              className={`vfd-option-btn vfd-option-danger ${folderDeleteMode === 'delete' ? 'is-selected' : ''}`}
+                              onClick={() => setFolderDeleteMode('delete')}
+                            >
+                              🗑 {tr('Удалить слова вместе с папкой', 'Wörter zusammen mit Ordner löschen')}
+                            </button>
+                          </div>
+                          <div className="vocab-delete-actions" style={{ marginTop: 14 }}>
+                            <button type="button" className="vocab-del-cancel" onClick={() => { setFolderDeleteItem(null); setFolderDeleteMode(null); }}>
+                              {tr('Отмена', 'Abbrechen')}
+                            </button>
+                            <button
+                              type="button"
+                              className="vocab-del-confirm"
+                              disabled={!folderDeleteMode || folderDeleteLoading}
+                              onClick={() => void deleteFolderConfirm(folderDeleteMode === 'delete')}
+                            >
+                              {folderDeleteLoading ? '…' : tr('Удалить', 'Löschen')}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
                     </section>
                   </PerfProfiler>
                 )}
@@ -26418,34 +27086,88 @@ function AppInner() {
                           <h3>{tr('Choose Training Mode', 'Choose Training Mode')}</h3>
                           <p>{tr('Select how you want to train', 'Select how you want to train')}</p>
                         </div>
+                        <div className="flashcard-queue-source-card">
+                          <div className="setup-label">{tr('Источник слов', 'Wortquelle')}</div>
+                          <div className="setup-options flashcard-queue-source-options">
+                            <button
+                              type="button"
+                              className={`option-pill flashcard-settings-pill ${flashcardQueueSource === 'system' ? 'is-active' : ''}`}
+                              onClick={() => {
+                                setFlashcardQueueSource('system');
+                                setFlashcardsError('');
+                              }}
+                            >
+                              {tr('Очередь системы', 'System-Warteschlange')}
+                            </button>
+                            <button
+                              type="button"
+                              className={`option-pill flashcard-settings-pill ${flashcardQueueSource === 'manual' ? 'is-active' : ''}`}
+                              onClick={() => {
+                                setFlashcardQueueSource('manual');
+                                setFlashcardsError('');
+                              }}
+                            >
+                              {tr('Моя выборка', 'Meine Auswahl')}
+                            </button>
+                          </div>
+                          {flashcardQueueSource === 'manual' && (
+                            <div className="flashcard-queue-source-meta">
+                              <span>
+                                {tr('Выбрано слов', 'Ausgewählte Wörter')}: <strong>{manualTrainingSelectionCount}</strong>
+                              </span>
+                              <button
+                                type="button"
+                                className="flashcard-queue-source-link"
+                                onClick={() => openDictionaryForManualSelection()}
+                                disabled={manualTrainingSelectionLoading || manualTrainingSelectionSaving}
+                              >
+                                {tr('Выбрать слова', 'Wörter wählen')}
+                              </button>
+                            </div>
+                          )}
+                          {flashcardQueueSource === 'manual' && manualTrainingSelectionCount <= 0 && !manualTrainingSelectionLoading && (
+                            <div className="flashcard-queue-source-note">
+                              {tr(
+                                'Сначала отметьте слова в словаре чекбоксами и нажмите «Учить» или «Сохранить выборку».',
+                                'Markiere zuerst Wörter im Wörterbuch per Checkbox und tippe dann auf „Lernen“ oder „Auswahl speichern“.'
+                              )}
+                            </div>
+                          )}
+                        </div>
                         <div className="flashcard-mode-list">
                           {[
                             { mode: 'fsrs', title: 'Space Repetition', subtitle: 'Smart spaced repetition' },
                             { mode: 'quiz', title: 'Quiz', subtitle: 'Quiz - test +4 options' },
                             { mode: 'blocks', title: 'Blocks', subtitle: 'Blocks - assemble the word' },
                             { mode: 'sentence', title: 'Sentence', subtitle: 'Sentence - supplemental context practice' },
-                          ].map((entry) => (
-                            <div className="flashcard-mode-item" key={`mode-${entry.mode}`}>
-                              <button
-                                type="button"
-                                className="flashcard-mode-button"
-                                onClick={() => {
-                                  void startFlashcardsMode(entry.mode);
-                                }}
-                              >
-                                <span className="flashcard-mode-button-title">{entry.title}</span>
-                                <span className="flashcard-mode-button-subtitle">{entry.subtitle}</span>
-                              </button>
-                              <button
-                                type="button"
-                                className="flashcard-mode-settings"
-                                aria-label={tr('Настройки режима', 'Modus-Einstellungen')}
-                                onClick={() => setFlashcardSettingsModalMode(entry.mode)}
-                              >
-                                ⚙
-                              </button>
-                            </div>
-                          ))}
+                          ].map((entry) => {
+                            const requiresManualSelection = flashcardQueueSource === 'manual'
+                              && entry.mode !== 'sentence'
+                              && manualTrainingSelectionCount <= 0;
+                            return (
+                              <div className="flashcard-mode-item" key={`mode-${entry.mode}`}>
+                                <button
+                                  type="button"
+                                  className="flashcard-mode-button"
+                                  disabled={requiresManualSelection}
+                                  onClick={() => {
+                                    void startFlashcardsMode(entry.mode);
+                                  }}
+                                >
+                                  <span className="flashcard-mode-button-title">{entry.title}</span>
+                                  <span className="flashcard-mode-button-subtitle">{entry.subtitle}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  className="flashcard-mode-settings"
+                                  aria-label={tr('Настройки режима', 'Modus-Einstellungen')}
+                                  onClick={() => setFlashcardSettingsModalMode(entry.mode)}
+                                >
+                                  ⚙
+                                </button>
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
                     )}
@@ -26463,7 +27185,19 @@ function AppInner() {
 
                           {!srsLoading && !srsCard && !srsError && (srsQueueInfo?.due_count ?? 0) === 0 && (srsQueueInfo?.new_remaining_today ?? 0) === 0 && (
                             <div className="fsrs-empty-note">
-                              {tr('Сегодня по Space Repetition всё повторено. Можно отдыхать.', 'Heute ist alles in Space Repetition wiederholt. Du kannst entspannen.')}
+                              {flashcardQueueSource === 'manual'
+                                ? (
+                                  manualTrainingSelectionCount <= 0
+                                    ? tr(
+                                      'Для вашей выборки ещё не отмечены слова. Откройте словарь и выберите их чекбоксами.',
+                                      'Für deine Auswahl sind noch keine Wörter markiert. Öffne das Wörterbuch und wähle sie per Checkbox aus.'
+                                    )
+                                    : tr(
+                                      'По вашей выборке сейчас нет доступных карточек: выбранные слова уже повторены или ещё не дошли до следующего интервала.',
+                                      'In deiner Auswahl gibt es aktuell keine verfügbaren Karten: Die ausgewählten Wörter wurden bereits wiederholt oder sind noch nicht wieder fällig.'
+                                    )
+                                )
+                                : tr('Сегодня по Space Repetition всё повторено. Можно отдыхать.', 'Heute ist alles in Space Repetition wiederholt. Du kannst entspannen.')}
                             </div>
                           )}
                           {!srsLoading && !srsCard && srsError && (
@@ -27135,6 +27869,39 @@ function AppInner() {
                                   </div>
                                 </div>
                                 <div className="setup-group">
+                                  <div className="setup-label">{tr('Источник слов', 'Wortquelle')}</div>
+                                  <div className="setup-options">
+                                    <button
+                                      type="button"
+                                      className={`option-pill flashcard-settings-pill ${flashcardQueueSource === 'system' ? 'is-active' : ''}`}
+                                      onClick={() => setFlashcardQueueSource('system')}
+                                    >
+                                      {tr('Очередь системы', 'System-Warteschlange')}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={`option-pill flashcard-settings-pill ${flashcardQueueSource === 'manual' ? 'is-active' : ''}`}
+                                      onClick={() => setFlashcardQueueSource('manual')}
+                                    >
+                                      {tr('Моя выборка', 'Meine Auswahl')}
+                                    </button>
+                                  </div>
+                                  {flashcardQueueSource === 'manual' && (
+                                    <div className="flashcard-settings-manual-note">
+                                      <span>
+                                        {tr('Выбрано слов', 'Ausgewählte Wörter')}: <strong>{manualTrainingSelectionCount}</strong>
+                                      </span>
+                                      <button
+                                        type="button"
+                                        className="flashcard-queue-source-link"
+                                        onClick={() => openDictionaryForManualSelection()}
+                                      >
+                                        {tr('Выбрать слова', 'Wörter wählen')}
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="setup-group">
                                   <div className="setup-label">{tr('Card Queue', 'Card Queue')}</div>
                                   <div className="flashcard-settings-queue">
                                     <span>{tr('Сегодня', 'Heute')}: {srsQueueInfo?.due_reviewed_today ?? 0}/{srsQueueInfo?.due_limit_today ?? 30}</span>
@@ -27158,6 +27925,41 @@ function AppInner() {
                               </>
                             ) : (
                               <>
+                                {flashcardSettingsModalMode !== 'sentence' && (
+                                  <div className="setup-group">
+                                    <div className="setup-label">{tr('Источник слов', 'Wortquelle')}</div>
+                                    <div className="setup-options">
+                                      <button
+                                        type="button"
+                                        className={`option-pill flashcard-settings-pill ${flashcardQueueSource === 'system' ? 'is-active' : ''}`}
+                                        onClick={() => setFlashcardQueueSource('system')}
+                                      >
+                                        {tr('Очередь системы', 'System-Warteschlange')}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className={`option-pill flashcard-settings-pill ${flashcardQueueSource === 'manual' ? 'is-active' : ''}`}
+                                        onClick={() => setFlashcardQueueSource('manual')}
+                                      >
+                                        {tr('Моя выборка', 'Meine Auswahl')}
+                                      </button>
+                                    </div>
+                                    {flashcardQueueSource === 'manual' && (
+                                      <div className="flashcard-settings-manual-note">
+                                        <span>
+                                          {tr('Выбрано слов', 'Ausgewählte Wörter')}: <strong>{manualTrainingSelectionCount}</strong>
+                                        </span>
+                                        <button
+                                          type="button"
+                                          className="flashcard-queue-source-link"
+                                          onClick={() => openDictionaryForManualSelection()}
+                                        >
+                                          {tr('Выбрать слова', 'Wörter wählen')}
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
                                 <div className="setup-group">
                                   <div className="setup-label">{tr('Set Size', 'Set Size')}</div>
                                   <div className="setup-options">
@@ -27173,36 +27975,38 @@ function AppInner() {
                                     ))}
                                   </div>
                                 </div>
-                                <div className="setup-group">
-                                  <div className="setup-label">{tr('Folder', 'Folder')}</div>
-                                  <label className="webapp-field">
-                                    <select
-                                      className="flashcard-settings-select"
-                                      value={flashcardFolderMode === 'folder' ? flashcardFolderId : flashcardFolderMode}
-                                      onChange={(event) => {
-                                        const value = event.target.value;
-                                        if (value === 'all') {
-                                          setFlashcardFolderMode('all');
-                                          setFlashcardFolderId('');
-                                        } else if (value === 'none') {
-                                          setFlashcardFolderMode('none');
-                                          setFlashcardFolderId('');
-                                        } else {
-                                          setFlashcardFolderMode('folder');
-                                          setFlashcardFolderId(value);
-                                        }
-                                      }}
-                                    >
-                                      <option value="all">{tr('All Folders', 'All Folders')}</option>
-                                      <option value="none">{t('setup_without_folder')}</option>
-                                      {folders.map((folder) => (
-                                        <option key={folder.id} value={folder.id}>
-                                          {resolveFolderIconLabel(folder.icon)} • {folder.name}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  </label>
-                                </div>
+                                {(flashcardQueueSource === 'system' || flashcardSettingsModalMode === 'sentence') && (
+                                  <div className="setup-group">
+                                    <div className="setup-label">{tr('Folder', 'Folder')}</div>
+                                    <label className="webapp-field">
+                                      <select
+                                        className="flashcard-settings-select"
+                                        value={flashcardFolderMode === 'folder' ? flashcardFolderId : flashcardFolderMode}
+                                        onChange={(event) => {
+                                          const value = event.target.value;
+                                          if (value === 'all') {
+                                            setFlashcardFolderMode('all');
+                                            setFlashcardFolderId('');
+                                          } else if (value === 'none') {
+                                            setFlashcardFolderMode('none');
+                                            setFlashcardFolderId('');
+                                          } else {
+                                            setFlashcardFolderMode('folder');
+                                            setFlashcardFolderId(value);
+                                          }
+                                        }}
+                                      >
+                                        <option value="all">{tr('All Folders', 'All Folders')}</option>
+                                        <option value="none">{t('setup_without_folder')}</option>
+                                        {folders.map((folder) => (
+                                          <option key={folder.id} value={folder.id}>
+                                            {resolveFolderIconLabel(folder.icon)} • {folder.name}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </label>
+                                  </div>
+                                )}
                                 <div className="setup-group">
                                   <div className="setup-label">{tr('Speed', 'Speed')}</div>
                                   <div className="setup-options">
