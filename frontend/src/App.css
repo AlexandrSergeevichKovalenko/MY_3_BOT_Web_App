@@ -6338,6 +6338,130 @@ body {
 }
 .vocab-del-confirm:disabled { opacity: 0.6; }
 
+/* ── Vocabulary Library — Light Theme ── */
+.webapp-page.is-theme-light .vocab-tabs {
+  background: rgba(0,0,0,0.06);
+}
+.webapp-page.is-theme-light .vocab-tab {
+  color: #7a6552;
+}
+.webapp-page.is-theme-light .vocab-tab.is-active {
+  background: #fff8ee;
+  color: #1f1a14;
+  box-shadow: 0 2px 8px rgba(105,78,47,0.12);
+}
+.webapp-page.is-theme-light .vocab-tab-count {
+  background: rgba(79,70,229,0.12);
+  color: #4F46E5;
+}
+.webapp-page.is-theme-light .vocab-stats-total {
+  color: #7a6552;
+}
+.webapp-page.is-theme-light .vocab-stats-total strong {
+  color: #1f1a14;
+}
+.webapp-page.is-theme-light .vocab-sort-btn {
+  background: rgba(0,0,0,0.05);
+  border-color: rgba(0,0,0,0.1);
+  color: #5a4a39;
+}
+.webapp-page.is-theme-light .vocab-folder-chip {
+  background: rgba(0,0,0,0.04);
+  border-color: rgba(0,0,0,0.1);
+}
+.webapp-page.is-theme-light .vocab-folder-chip.is-active {
+  background: rgba(79,70,229,0.1);
+  border-color: rgba(79,70,229,0.4);
+}
+.webapp-page.is-theme-light .vfc-name {
+  color: #2f271f;
+}
+.webapp-page.is-theme-light .vocab-folder-chip.is-active .vfc-name { color: #3730A3; }
+.webapp-page.is-theme-light .vfc-count {
+  background: rgba(0,0,0,0.07);
+  color: #7a6552;
+}
+.webapp-page.is-theme-light .vocab-folder-chip.is-active .vfc-count {
+  background: rgba(79,70,229,0.15);
+  color: #3730A3;
+}
+.webapp-page.is-theme-light .vocab-search-input {
+  background: rgba(0,0,0,0.04);
+  border-color: rgba(0,0,0,0.1);
+  color: #1f1a14;
+}
+.webapp-page.is-theme-light .vocab-search-input::placeholder { color: #a08870; }
+.webapp-page.is-theme-light .vocab-search-clear { color: #a08870; }
+.webapp-page.is-theme-light .vocab-group-label { color: #a08870; }
+.webapp-page.is-theme-light .vocab-loading,
+.webapp-page.is-theme-light .vocab-empty { color: #a08870; }
+.webapp-page.is-theme-light .vocab-word-item {
+  background: rgba(255,255,255,0.65);
+  border-color: rgba(0,0,0,0.08);
+}
+.webapp-page.is-theme-light .vocab-word-item.is-expanded {
+  background: rgba(79,70,229,0.06);
+  border-color: rgba(79,70,229,0.25);
+}
+.webapp-page.is-theme-light .vocab-word-main {
+  color: #1f1a14;
+}
+.webapp-page.is-theme-light .vocab-word-sub { color: #7a6552; }
+.webapp-page.is-theme-light .vocab-word-sub em { color: #5a4a39; }
+.webapp-page.is-theme-light .vocab-folder-tag {
+  background: rgba(0,0,0,0.06);
+  color: #7a6552;
+}
+.webapp-page.is-theme-light .vocab-word-date { color: #b8a898; }
+.webapp-page.is-theme-light .vocab-expand-arrow { color: #b8a898; }
+.webapp-page.is-theme-light .vocab-action-edit {
+  background: rgba(79,70,229,0.08);
+  border-color: rgba(79,70,229,0.2);
+  color: #4F46E5;
+}
+.webapp-page.is-theme-light .vocab-action-delete {
+  background: rgba(220,38,38,0.07);
+  border-color: rgba(220,38,38,0.15);
+  color: #DC2626;
+}
+.webapp-page.is-theme-light .vocab-load-more {
+  background: rgba(0,0,0,0.04);
+  border-color: rgba(0,0,0,0.08);
+  color: #5a4a39;
+}
+.webapp-page.is-theme-light .vocab-legend-item { color: #7a6552; }
+.webapp-page.is-theme-light .vocab-modal-sheet {
+  background: #fff8ee;
+  border-top-color: rgba(0,0,0,0.1);
+}
+.webapp-page.is-theme-light .vocab-modal-handle { background: rgba(0,0,0,0.15); }
+.webapp-page.is-theme-light .vocab-modal-title { color: #1f1a14; }
+.webapp-page.is-theme-light .vocab-modal-label { color: #7a6552; }
+.webapp-page.is-theme-light .vocab-modal-input {
+  background: #fff;
+  border-color: rgba(0,0,0,0.12);
+  color: #1f1a14;
+}
+.webapp-page.is-theme-light .vocab-modal-input:focus {
+  border-color: rgba(79,70,229,0.4);
+  background: #fff;
+}
+.webapp-page.is-theme-light .vocab-modal-cancel {
+  background: rgba(0,0,0,0.05);
+  border-color: rgba(0,0,0,0.1);
+  color: #5a4a39;
+}
+.webapp-page.is-theme-light .vocab-delete-card {
+  background: #fff8ee;
+  border-color: rgba(220,38,38,0.2);
+}
+.webapp-page.is-theme-light .vocab-delete-title { color: #1f1a14; }
+.webapp-page.is-theme-light .vocab-del-cancel {
+  background: rgba(0,0,0,0.05);
+  border-color: rgba(0,0,0,0.1);
+  color: #5a4a39;
+}
+
 .webapp-dictionary .dictionary-save-button:hover {
   background: rgba(93, 220, 255, 0.2);
 }
