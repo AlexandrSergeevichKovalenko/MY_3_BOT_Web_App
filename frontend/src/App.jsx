@@ -19691,6 +19691,83 @@ function AppInner() {
     return activeIndex;
   };
 
+  const youtubeSubtitleDisplayRows = useMemo(() => {
+    const items = Array.isArray(youtubeTranscript) ? youtubeTranscript : [];
+    if (!items.length) return [];
+    const activeIndex = getActiveSubtitleIndex();
+    const hardStopPattern = /[.!?…]["»”']?$/u;
+    const softStopPattern = /[,;:)]["»”']?$/u;
+    const rows = [];
+    let current = null;
+
+    const flushCurrent = () => {
+      if (!current) return;
+      const targetText = String(current.targetText || '').trim();
+      const translationText = String(current.translationText || '').trim();
+      if (!targetText && !translationText) {
+        current = null;
+        return;
+      }
+      rows.push({
+        key: `yt-row-${current.indices[0]}-${current.indices[current.indices.length - 1]}`,
+        indices: current.indices,
+        targetText,
+        translationText,
+        isActive: current.indices.includes(activeIndex),
+      });
+      current = null;
+    };
+
+    items.forEach((item, index) => {
+      const targetText = normalizeSubtitleText(item?.text || '');
+      const translationText = String(youtubeTranslations[String(index)] || '').trim();
+      if (!targetText && !translationText) {
+        return;
+      }
+
+      if (!current) {
+        current = {
+          indices: [index],
+          targetText,
+          translationText,
+        };
+      } else {
+        current.indices.push(index);
+        current.targetText = [current.targetText, targetText].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+        current.translationText = [current.translationText, translationText].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+      }
+
+      const currentTarget = String(current.targetText || '').trim();
+      const currentTranslation = String(current.translationText || '').trim();
+      const targetLength = currentTarget.length;
+      const translationLength = currentTranslation.length;
+      const chunkCount = current.indices.length;
+      const targetEndsHard = hardStopPattern.test(targetText);
+      const translationEndsHard = hardStopPattern.test(translationText);
+      const targetEndsSoft = softStopPattern.test(targetText);
+      const translationEndsSoft = softStopPattern.test(translationText);
+      const nextItem = items[index + 1] || null;
+      const nextStart = Number(nextItem?.start ?? Number.POSITIVE_INFINITY);
+      const currentStart = Number(item?.start ?? 0);
+      const nextGapLarge = Number.isFinite(nextStart) && Number.isFinite(currentStart) && (nextStart - currentStart) > 3.2;
+
+      const shouldFlush = targetEndsHard
+        || translationEndsHard
+        || targetLength >= 110
+        || translationLength >= 135
+        || (chunkCount >= 2 && (targetEndsSoft || translationEndsSoft) && (targetLength >= 54 || translationLength >= 70))
+        || (chunkCount >= 3 && (targetLength >= 68 || translationLength >= 84))
+        || nextGapLarge;
+
+      if (shouldFlush) {
+        flushCurrent();
+      }
+    });
+
+    flushCurrent();
+    return rows;
+  }, [youtubeTranscript, youtubeTranslations, youtubeTranscriptHasTiming, youtubeCurrentTime]);
+
   const jumpYoutubeBySubtitle = (direction) => {
     const step = Number(direction);
     if (!step || !youtubeTranscript.length || !youtubePlayerRef.current?.seekTo) return;
@@ -25742,14 +25819,13 @@ function AppInner() {
                                 onTouchCancel={handleYoutubeSubtitlesTouchCancel}
                               >
                                 {(() => {
-                                  const activeIndex = getActiveSubtitleIndex();
-                                  return youtubeTranscript.map((item, index) => (
+                                  return youtubeSubtitleDisplayRows.map((row) => (
                                     <p
-                                      key={`${item.start}-${index}`}
-                                      className={index === activeIndex ? 'is-active' : ''}
-                                      onClick={(event) => openYoutubeSentenceSelection(event, item.text, 'youtube_sentence')}
+                                      key={row.key}
+                                      className={row.isActive ? 'is-active' : ''}
+                                      onClick={(event) => openYoutubeSentenceSelection(event, row.targetText, 'youtube_sentence')}
                                     >
-                                      {renderSubtitleText(item.text, 'youtube_word', index)}
+                                      {renderSubtitleText(row.targetText, 'youtube_word')}
                                     </p>
                                   ));
                                 })()}
@@ -25764,13 +25840,12 @@ function AppInner() {
                               <div className="webapp-subtitles is-translation">
                                 <div className="webapp-subtitles-list" onMouseUp={handleSelection}>
                                   {(() => {
-                                    const activeIndex = getActiveSubtitleIndex();
-                                    return youtubeTranscript.map((item, index) => {
-                                      const translation = youtubeTranslations[String(index)] || '…';
+                                    return youtubeSubtitleDisplayRows.map((row) => {
+                                      const translation = row.translationText || '…';
                                       return (
                                         <p
-                                          key={`translation-${item.start}-${index}`}
-                                          className={index === activeIndex ? 'is-active' : ''}
+                                          key={`translation-${row.key}`}
+                                          className={row.isActive ? 'is-active' : ''}
                                         >
                                           {translation}
                                         </p>

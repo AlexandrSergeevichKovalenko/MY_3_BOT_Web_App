@@ -13958,8 +13958,10 @@ body {
 
 .youtube-subtitles-block .webapp-subtitles-list p {
   margin: 0 0 10px;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  overflow-wrap: break-word;
+  word-break: normal;
+  white-space: normal;
+  text-wrap: pretty;
 }
 
 .webapp-video.youtube-player-first .youtube-subtitles-block-de .webapp-subtitles-list p {
