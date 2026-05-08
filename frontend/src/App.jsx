@@ -20164,32 +20164,6 @@ function AppInner() {
     return target.closest('[data-youtube-line-index][data-youtube-word-index]');
   };
 
-  const buildYoutubePhraseSelection = useCallback((lineIndex, anchorIndex, currentIndex) => {
-    const numericLineIndex = Number(lineIndex);
-    const numericAnchorIndex = Number(anchorIndex);
-    const numericCurrentIndex = Number(currentIndex);
-    if (!Number.isInteger(numericLineIndex) || numericLineIndex < 0) return null;
-    // lineIndex refers to position in youtubeSubtitleDisplayRows (merged display rows),
-    // not the raw transcript — word indices must match what was actually rendered.
-    const rawText = String(youtubeSubtitleDisplayRows[numericLineIndex]?.targetText || '').trim();
-    const normalized = normalizeSubtitleText(rawText);
-    if (!normalized) return null;
-    const words = normalized.split(/\s+/).filter(Boolean);
-    if (!words.length) return null;
-    const startIndex = Math.max(0, Math.min(numericAnchorIndex, numericCurrentIndex));
-    const endIndex = Math.min(words.length - 1, Math.max(numericAnchorIndex, numericCurrentIndex));
-    if (endIndex < startIndex) return null;
-    const selectedWords = words.slice(startIndex, endIndex + 1);
-    if (!selectedWords.length) return null;
-    return {
-      lineIndex: numericLineIndex,
-      startWordIndex: startIndex,
-      endWordIndex: endIndex,
-      wordCount: selectedWords.length,
-      text: selectedWords.join(' '),
-    };
-  }, [youtubeSubtitleDisplayRows]);
-
   const resetYoutubePhraseGesture = (clearMeta = true) => {
     youtubePhraseGestureRef.current = null;
     if (clearMeta) {
@@ -20437,6 +20411,32 @@ function AppInner() {
     flushCurrent();
     return rows;
   }, [youtubeTranscript, youtubeTranslations, youtubeTranscriptHasTiming, youtubeCurrentTime]);
+
+  const buildYoutubePhraseSelection = useCallback((lineIndex, anchorIndex, currentIndex) => {
+    const numericLineIndex = Number(lineIndex);
+    const numericAnchorIndex = Number(anchorIndex);
+    const numericCurrentIndex = Number(currentIndex);
+    if (!Number.isInteger(numericLineIndex) || numericLineIndex < 0) return null;
+    // lineIndex refers to position in youtubeSubtitleDisplayRows (merged display rows),
+    // not the raw transcript — word indices must match what was actually rendered.
+    const rawText = String(youtubeSubtitleDisplayRows[numericLineIndex]?.targetText || '').trim();
+    const normalized = normalizeSubtitleText(rawText);
+    if (!normalized) return null;
+    const words = normalized.split(/\s+/).filter(Boolean);
+    if (!words.length) return null;
+    const startIndex = Math.max(0, Math.min(numericAnchorIndex, numericCurrentIndex));
+    const endIndex = Math.min(words.length - 1, Math.max(numericAnchorIndex, numericCurrentIndex));
+    if (endIndex < startIndex) return null;
+    const selectedWords = words.slice(startIndex, endIndex + 1);
+    if (!selectedWords.length) return null;
+    return {
+      lineIndex: numericLineIndex,
+      startWordIndex: startIndex,
+      endWordIndex: endIndex,
+      wordCount: selectedWords.length,
+      text: selectedWords.join(' '),
+    };
+  }, [youtubeSubtitleDisplayRows]);
 
   const jumpYoutubeBySubtitle = (direction) => {
     const step = Number(direction);
