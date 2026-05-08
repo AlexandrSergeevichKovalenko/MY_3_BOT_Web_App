@@ -23911,6 +23911,7 @@ function AppInner() {
     const avgTime = analyticsPoints.map((item) => item.avg_time_min || 0);
 
     const option = {
+      animation: false,
       backgroundColor: 'transparent',
       tooltip: {
         trigger: 'axis',
@@ -24068,6 +24069,7 @@ function AppInner() {
       `;
     };
     const buildCompareOption = ({ metricKey, label, selfColor, peerColor }) => ({
+      animation: false,
       backgroundColor: 'transparent',
       tooltip: {
         trigger: 'item',
