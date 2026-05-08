@@ -956,36 +956,50 @@ async def entrypoint(ctx: JobContext):
 
     # Пытаемся найти участника, который уже в комнате (это наш юзер с браузера)
     user_name_for_greeting = "Student"
-    
+
     # Берем список всех участников (кроме самого бота)
     participants = list(ctx.room.remote_participants.values())
-    
+
     if participants:
-        # Берем первого попавшегося (обычно он один)
         p = participants[0]
-        # Берем имя, которое мы передали в токене (из поля Name на сайте)
         if p.name:
             user_name_for_greeting = p.name
-            # Сохраняем имя в логику учителя сразу
             teacher_logic.user_name = p.name
             logging.info(f"🚀 FAST START: Found user '{p.name}' immediately!")
-    await _resolve_user_id_from_room()
 
-    # 🔥 ПРИНУДИТЕЛЬНЫЙ ГЕНЕРАЦИЯ ПЕРВОГО ОТВЕТА
-    # Мы даем ИИ скрытую инструкцию: "Поздоровайся с [Имя]".
-    logging.info("🗣️ Invoking initial greeting...")
-    initial_reply_instructions = _build_initial_reply_instructions(user_name_for_greeting)
-    current_context = getattr(teacher_logic, "current_voice_session_context", None)
-    if current_context and current_context.topic_mode == "scenario" and current_context.scenario:
-        logging.info("🎭 Runtime opening uses scenario context: scenario_id=%s", current_context.scenario_id)
-    elif current_context and current_context.custom_topic_text:
-        logging.info("📝 Runtime opening uses custom topic context for session_id=%s", current_context.session_id)
-    if current_context and current_context.prep_pack:
-        logging.info("📚 Runtime prep guidance active for prep_pack_id=%s", current_context.prep_pack_id)
-    
-    await session.generate_reply(
-        instructions=initial_reply_instructions
-    )
+    # Запускаем резолв user_id/контекста в фоне — не блокируем приветствие.
+    # Контекст гарантированно загрузится до того, как пользователь успеет
+    # произнести первое слово (DB-запрос < 500ms, пользователь слушает ~2-3s).
+    asyncio.create_task(_resolve_user_id_from_room())
+
+    # === БЫСТРОЕ ПРИВЕТСТВИЕ ===
+    # session.say() → прямой TTS без LLM. Экономит ~8-12 секунд по сравнению
+    # с session.generate_reply() (там: GPT-4o ~3-5s + TTS ~4-7s = ~10-15s).
+    # Контекст (сценарий / тема) используется если уже загружен, иначе generic.
+    safe_name = str(user_name_for_greeting or "").strip() or "Student"
+    _ctx = getattr(teacher_logic, "current_voice_session_context", None)
+
+    if _ctx and _ctx.topic_mode == "scenario" and _ctx.scenario:
+        greeting_text = (
+            f"Hallo {safe_name}! "
+            f"Ich bin bereit. Lass uns mit dem Szenario beginnen, wann immer du möchtest."
+        )
+        logging.info("🎭 Scenario fast greeting, scenario_id=%s", getattr(_ctx, "scenario_id", None))
+    elif _ctx and _ctx.custom_topic_text:
+        greeting_text = (
+            f"Hallo {safe_name}! "
+            f"Schön, dass du da bist. Ich bin bereit über das Thema zu sprechen."
+        )
+        logging.info("📝 Custom topic fast greeting, session_id=%s", getattr(_ctx, "session_id", None))
+    else:
+        greeting_text = (
+            f"Hallo {safe_name}! "
+            f"Ich bin Gena, dein Deutschlehrer. Womit kann ich dir heute helfen?"
+        )
+
+    logging.info("🗣️ Fast greeting via say(): %r", greeting_text)
+    await session.say(greeting_text, allow_interruptions=True)
+    logging.info("✅ Fast greeting delivered. Agent is now listening.")
 
 
     logging.info("✅ AgentSession started. Running...")
