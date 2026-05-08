@@ -4079,6 +4079,7 @@ function AppInner() {
   const [readerSettingsOpen, setReaderSettingsOpen] = useState(false);
   const [readerTopbarCollapsed, setReaderTopbarCollapsed] = useState(false);
   const [readerLibrarySearch, setReaderLibrarySearch] = useState('');
+  const [readerAddOpen, setReaderAddOpen] = useState(false);
   const [readerFontSize, setReaderFontSize] = useState(18);
   const [readerFontWeight, setReaderFontWeight] = useState(500);
   const [readerDragSelectionMeta, setReaderDragSelectionMeta] = useState(null);
@@ -27851,155 +27852,176 @@ function AppInner() {
                   if (showLibraryMode) {
                     return (
                       <div className="reader-library-mode">
-                        <div className="reader-topbar">
-                          <div className="reader-topbar-left" />
-                          <div className="reader-topbar-center">
-                            <div className="reader-topbar-title">{tr('Библиотека', 'Bibliothek')}</div>
-                            <div className="webapp-muted reader-topbar-meta">
-                              {tr('Книги и тексты для чтения', 'Buecher und Texte zum Lesen')}
-                            </div>
-                          </div>
-                          <div className="reader-topbar-right">
-                            <button type="button" className="secondary-button" onClick={() => loadReaderLibrary()}>
-                              {readerLibraryLoading ? tr('Обновляем...', 'Aktualisieren...') : tr('Обновить', 'Aktualisieren')}
+
+                        {/* ── Library header ───────────────────────────────── */}
+                        <div className="reader-lib-header">
+                          <h2 className="reader-lib-header-title">
+                            {readerArchiveOpen ? tr('Архив', 'Archiv') : tr('Моя библиотека', 'Meine Bibliothek')}
+                          </h2>
+                          <div className="reader-lib-header-actions">
+                            <button
+                              type="button"
+                              className="reader-lib-icon-btn"
+                              onClick={() => loadReaderLibrary()}
+                              title={tr('Обновить', 'Aktualisieren')}
+                            >
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className={readerLibraryLoading ? 'is-spinning' : ''}>
+                                <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" />
+                                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+                              </svg>
+                            </button>
+                            <button
+                              type="button"
+                              className={`reader-lib-add-btn${readerAddOpen ? ' is-open' : ''}`}
+                              onClick={() => setReaderAddOpen((prev) => !prev)}
+                            >
+                              {readerAddOpen ? tr('✕ Скрыть', '✕ Schließen') : tr('+ Добавить', '+ Hinzufügen')}
                             </button>
                           </div>
                         </div>
 
-                        <form className="webapp-reader-form" onSubmit={handleReaderIngest}>
-                          <label className="webapp-field">
-                            <span>{tr('URL или текст', 'URL oder Text')}</span>
-                            <textarea
-                              rows={4}
-                              value={readerInput}
-                              onChange={(event) => setReaderInput(event.target.value)}
-                              placeholder={tr(
-                                'Вставьте URL статьи/книги (включая PDF) или сам текст.',
-                                'Fuege URL eines Artikels/Buchs (auch PDF) oder den Text selbst ein.'
-                              )}
-                            />
-                          </label>
-                          <label className="webapp-field">
-                            <span>{tr('Файл с телефона', 'Datei vom Telefon')}</span>
-                            <input
-                              type="file"
-                              accept=".txt,.md,.pdf,text/plain,application/pdf"
-                              onChange={handleReaderFileSelect}
-                            />
-                            {readerSelectedFile && (
-                              <small className="webapp-muted">
-                                {tr('Выбран файл', 'Datei gewaehlt')}: {readerSelectedFile.name}
-                              </small>
-                            )}
-                          </label>
-                          <div className="webapp-actions">
-                            <button type="submit" className="primary-button" disabled={readerLoading}>
-                              {readerLoading ? tr('Загружаем...', 'Laden...') : tr('Открыть в читалке', 'Im Leser oeffnen')}
-                            </button>
-                          </div>
-                        </form>
-
-                        {readerError && (
-                          <div className="webapp-error">
-                            <span>{readerError}</span>
-                            {readerErrorCode === 'LIMIT_FREE_PLAN_1_BOOK' && (
-                              <div>
-                                <button
-                                  type="button"
-                                  className="secondary-button"
-                                  onClick={handleBillingUpgrade}
-                                  disabled={billingActionLoading}
-                                >
-                                  {billingActionLoading ? tr('Открываем...', 'Oeffnen...') : tr('Upgrade', 'Upgrade')}
+                        {/* ── Collapsible upload form ───────────────────────── */}
+                        {readerAddOpen && (
+                          <div className="reader-add-form-wrap">
+                            <form className="webapp-reader-form" onSubmit={handleReaderIngest}>
+                              <label className="webapp-field">
+                                <span>{tr('URL или текст', 'URL oder Text')}</span>
+                                <textarea
+                                  rows={4}
+                                  value={readerInput}
+                                  onChange={(event) => setReaderInput(event.target.value)}
+                                  placeholder={tr(
+                                    'Вставьте URL статьи/книги (включая PDF) или сам текст.',
+                                    'Fuege URL eines Artikels/Buchs (auch PDF) oder den Text selbst ein.'
+                                  )}
+                                />
+                              </label>
+                              <label className="webapp-field">
+                                <span>{tr('Файл с телефона', 'Datei vom Telefon')}</span>
+                                <input
+                                  type="file"
+                                  accept=".txt,.md,.pdf,text/plain,application/pdf"
+                                  onChange={handleReaderFileSelect}
+                                />
+                                {readerSelectedFile && (
+                                  <small className="webapp-muted">
+                                    {tr('Выбран файл', 'Datei gewaehlt')}: {readerSelectedFile.name}
+                                  </small>
+                                )}
+                              </label>
+                              <div className="webapp-actions">
+                                <button type="submit" className="primary-button" disabled={readerLoading}>
+                                  {readerLoading ? tr('Загружаем...', 'Laden...') : tr('Открыть в читалке', 'Im Leser oeffnen')}
                                 </button>
+                              </div>
+                            </form>
+                            {readerError && (
+                              <div className="webapp-error">
+                                <span>{readerError}</span>
+                                {readerErrorCode === 'LIMIT_FREE_PLAN_1_BOOK' && (
+                                  <div>
+                                    <button
+                                      type="button"
+                                      className="secondary-button"
+                                      onClick={handleBillingUpgrade}
+                                      disabled={billingActionLoading}
+                                    >
+                                      {billingActionLoading ? tr('Открываем...', 'Oeffnen...') : tr('Upgrade', 'Upgrade')}
+                                    </button>
+                                  </div>
+                                )}
                               </div>
                             )}
                           </div>
                         )}
 
+                        {/* ── Library section ──────────────────────────────── */}
                         <section className="reader-library">
-                          <div className="reader-library-head">
-                            <h4>{readerArchiveOpen ? tr('Архив', 'Archiv') : tr('Моя библиотека', 'Meine Bibliothek')}</h4>
-                            <div className="reader-library-head-actions">
-                              <label className="menu-toggle-row">
-                                <input
-                                  type="checkbox"
-                                  checked={readerIncludeArchived}
-                                  onChange={(event) => setReaderIncludeArchived(event.target.checked)}
-                                />
-                                <span>{tr('Показывать архив', 'Archiv zeigen')}</span>
-                              </label>
-                            </div>
-                          </div>
-                          <label className="webapp-field">
-                            <span>{tr('Поиск по библиотеке', 'Suche in Bibliothek')}</span>
+                          <div className="reader-lib-controls">
                             <input
                               type="text"
+                              className="reader-lib-search"
                               value={readerLibrarySearch}
                               onChange={(event) => setReaderLibrarySearch(event.target.value)}
-                              placeholder={tr('Название книги...', 'Buchtitel...')}
+                              placeholder={tr('Поиск по библиотеке…', 'Suche in Bibliothek…')}
                             />
-                          </label>
+                            <label className="reader-lib-archive-toggle">
+                              <input
+                                type="checkbox"
+                                checked={readerIncludeArchived}
+                                onChange={(event) => setReaderIncludeArchived(event.target.checked)}
+                              />
+                              <span>{tr('Архив', 'Archiv')}</span>
+                            </label>
+                          </div>
+
                           {readerLibraryError && <div className="webapp-error">{readerLibraryError}</div>}
                           {!readerLibraryError && visibleLibraryItems.length === 0 && (
                             <div className="webapp-muted">{tr('Библиотека пока пуста.', 'Bibliothek ist noch leer.')}</div>
                           )}
+
                           {visibleLibraryItems.length > 0 && (
                             <div className="reader-library-grid">
                               {visibleLibraryItems.map((item) => {
                                 const progress = Math.max(0, Math.min(100, Number(item?.progress_percent || 0)));
                                 const coverUrl = getReaderCoverUrl(item);
                                 const initials = getReaderCoverInitials(item?.title);
+                                const gradient = getReaderCoverGradient(item);
                                 const meta = buildReaderArchiveMeta(item);
                                 return (
-                                  <button
-                                    type="button"
+                                  <div
                                     key={`reader-doc-${item.id}`}
-                                    className={`reader-library-card ${Number(readerDocumentId) === Number(item.id) ? 'is-active' : ''}`}
+                                    className={`reader-library-card${Number(readerDocumentId) === Number(item.id) ? ' is-active' : ''}`}
                                     onClick={() => openReaderDocument(item.id)}
+                                    role="button"
+                                    tabIndex={0}
+                                    onKeyDown={(e) => e.key === 'Enter' && openReaderDocument(item.id)}
                                   >
                                     <div
                                       className="reader-library-cover"
-                                      style={coverUrl ? undefined : { background: '#111827' }}
+                                      style={{ background: `linear-gradient(150deg, ${gradient[0]} 0%, ${gradient[1]} 100%)` }}
                                     >
                                       {coverUrl ? (
                                         <img src={coverUrl} alt="" loading="lazy" className="reader-archive-cover-img" />
                                       ) : (
                                         <span className="reader-archive-cover-fallback">{initials}</span>
                                       )}
+                                      <div className="reader-library-cover-progress" style={{ width: `${progress}%` }} />
                                     </div>
-                                    <div className="reader-library-title">{item.title || tr('Без названия', 'Ohne Titel')}</div>
-                                    <div className="reader-library-meta">
-                                      <span>{tr('Прогресс', 'Fortschritt')}: {Math.round(progress)}%</span>
-                                      {meta && <span>{meta}</span>}
+                                    <div className="reader-library-card-body">
+                                      <div className="reader-library-title">{item.title || tr('Без названия', 'Ohne Titel')}</div>
+                                      <div className="reader-library-meta">
+                                        <span>{Math.round(progress)}%</span>
+                                        {meta && <span>{meta}</span>}
+                                      </div>
+                                      <div className="reader-library-actions" onClick={(event) => event.stopPropagation()}>
+                                        <button
+                                          type="button"
+                                          className="reader-lib-action"
+                                          onClick={() => renameReaderDocument(item.id, item.title)}
+                                          title={tr('Переименовать', 'Umbenennen')}
+                                        >
+                                          ✎
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="reader-lib-action"
+                                          onClick={() => archiveReaderDocument(item.id, !Boolean(item?.is_archived))}
+                                          title={Boolean(item?.is_archived) ? tr('Разархивировать', 'Wiederherstellen') : tr('В архив', 'Archivieren')}
+                                        >
+                                          {Boolean(item?.is_archived) ? '↺' : '⤓'}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="reader-lib-action is-danger"
+                                          onClick={() => deleteReaderDocument(item.id)}
+                                          title={tr('Удалить', 'Loeschen')}
+                                        >
+                                          ×
+                                        </button>
+                                      </div>
                                     </div>
-                                    <div className="reader-library-actions" onClick={(event) => event.stopPropagation()}>
-                                      <button
-                                        type="button"
-                                        className="reader-lib-action"
-                                        onClick={() => renameReaderDocument(item.id, item.title)}
-                                        title={tr('Переименовать', 'Umbenennen')}
-                                      >
-                                        ✎
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="reader-lib-action"
-                                        onClick={() => archiveReaderDocument(item.id, !Boolean(item?.is_archived))}
-                                        title={Boolean(item?.is_archived) ? tr('Разархивировать', 'Wiederherstellen') : tr('В архив', 'Archivieren')}
-                                      >
-                                        {Boolean(item?.is_archived) ? '↺' : '⤓'}
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="reader-lib-action is-danger"
-                                        onClick={() => deleteReaderDocument(item.id)}
-                                        title={tr('Удалить', 'Loeschen')}
-                                      >
-                                        ×
-                                      </button>
-                                    </div>
-                                  </button>
+                                  </div>
                                 );
                               })}
                             </div>
