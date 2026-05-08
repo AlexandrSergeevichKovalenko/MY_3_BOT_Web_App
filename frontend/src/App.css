@@ -5764,8 +5764,18 @@ body {
     display: flex;
   }
 
+  /* Reader and Flashcards-only strip page padding to 0 — restore clearance
+     for the Telegram Mini-App header that overlaps the web content top. */
+  .webapp-page.is-reader-immersive .webapp-main {
+    padding-top: 20px;
+  }
+
+  .webapp-page.is-flashcards .webapp-main {
+    padding-top: 20px;
+  }
+
   .webapp-topbar.is-back-mode {
-    padding: 12px 6px 6px;
+    padding: 28px 6px 6px;
   }
 
   .webapp-topbar.is-back-mode .topbar-home-row {
