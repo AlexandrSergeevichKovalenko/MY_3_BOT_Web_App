@@ -59,6 +59,27 @@ class ImageQuizUtilsTests(unittest.TestCase):
 
         self.assertIsNone(payload)
 
+    def test_build_payload_rejects_when_correct_slot_mismatches_expected_answer(self):
+        payload = build_image_quiz_feedback_payload(
+            {
+                "source_lang": "ru",
+                "target_lang": "de",
+                "source_text": "оцепенеть",
+                "target_text": "in Erstarrung verfallen",
+                "answer_options": [
+                    "Starker Regen",
+                    "Schnee bedeckt den Boden",
+                    "Gefrorenes Wasser",
+                    "Fließendes Wasser",
+                ],
+                "correct_option_index": 2,
+                "question_de": "Was zeigt das Bild?",
+                "explanation": "Nur gefrorenes Wasser passt zur Szene.",
+            }
+        )
+
+        self.assertIsNone(payload)
+
     def test_feedback_alert_for_wrong_answer_includes_correct_option(self):
         alert = build_image_quiz_feedback_alert(
             is_correct=False,

@@ -322,6 +322,7 @@ async def _prepare_single_image_quiz_template_async(
     visual_payload = await run_image_quiz_visual_screen(
         {
             "answer_language": answer_language,
+            "answer_text": correct_answer,
             "source_text": str(candidate.get("source_text") or ""),
             "target_text": str(candidate.get("target_text") or ""),
             "source_sentence": selected_sentence,

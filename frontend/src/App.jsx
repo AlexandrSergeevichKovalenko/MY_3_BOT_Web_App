@@ -19703,7 +19703,11 @@ function AppInner() {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Fehler');
-      setYoutubeDictResult(data.item || null);
+      setYoutubeDictResult(data.item ? {
+        ...data.item,
+        direction: data.direction || '',
+        language_pair: data.language_pair || null,
+      } : null);
     } catch (err) {
       setYoutubeDictError(String(err.message || 'Fehler'));
     } finally {
@@ -19713,19 +19717,47 @@ function AppInner() {
 
   const saveYoutubeDictWord = async () => {
     if (!youtubeDictResult) return;
-    const wordDe = youtubeDictResult.word_de || '';
-    const wordRu = youtubeDictResult.word_ru || '';
-    const translation = youtubeDictResult.translation_ru || youtubeDictResult.translation_de || '';
+    const pair = resolveLanguagePairForUI(youtubeDictResult.language_pair || dictionaryLanguagePair);
+    const detectedDirection = String(youtubeDictResult.direction || resolveDictionaryDirection(youtubeDictResult) || '').trim().toLowerCase();
+    const directionPair = detectedDirection.includes('-')
+      ? detectedDirection.split('-', 2)
+      : [];
+    const saveSourceLang = normalizeLangCode(directionPair[0] || pair.source_lang);
+    const saveTargetLang = normalizeLangCode(directionPair[1] || pair.target_lang);
+    const isLegacyPair = pair.source_lang === 'ru' && pair.target_lang === 'de' && isLegacyRuDeDirection(detectedDirection);
+    const { sourceText, targetText } = getDictionarySourceTarget(youtubeDictResult, detectedDirection);
     try {
       const saveResponse = await fetch('/api/webapp/dictionary/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           initData,
-          word_de: wordDe,
-          word_ru: wordRu,
-          translation: translation,
-          source: 'youtube_dict_widget',
+          word_ru: isLegacyPair && detectedDirection === 'ru-de' ? sourceText : '',
+          word_de: isLegacyPair && detectedDirection === 'de-ru' ? sourceText : '',
+          translation_de: isLegacyPair && detectedDirection === 'ru-de' ? targetText : '',
+          translation_ru: isLegacyPair && detectedDirection === 'de-ru' ? targetText : '',
+          source_text: sourceText,
+          target_text: targetText,
+          source_lang: saveSourceLang || undefined,
+          target_lang: saveTargetLang || undefined,
+          direction: detectedDirection || undefined,
+          response_json: {
+            ...youtubeDictResult,
+            source_text: sourceText,
+            target_text: targetText,
+            source_lang: saveSourceLang || pair.source_lang,
+            target_lang: saveTargetLang || pair.target_lang,
+            language_pair: {
+              source_lang: saveSourceLang || pair.source_lang,
+              target_lang: saveTargetLang || pair.target_lang,
+            },
+          },
+          origin_process: 'youtube_dict_widget',
+          origin_meta: {
+            endpoint: '/api/webapp/dictionary/save',
+            flow: 'youtube_dictionary_widget',
+            from: 'youtube_dictionary_widget',
+          },
         }),
       });
       if (saveResponse.ok) {
@@ -28372,23 +28404,27 @@ function AppInner() {
                             )}
                           </div>
 
-                          {!srsLoading && !srsCard && !srsError && (srsQueueInfo?.due_count ?? 0) === 0 && (srsQueueInfo?.new_remaining_today ?? 0) === 0 && (
-                            <div className="fsrs-empty-note">
-                              {flashcardQueueSource === 'manual'
-                                ? (
-                                  manualTrainingSelectionCount <= 0
-                                    ? tr(
-                                      'Для текущей тренировки ещё не отмечены слова. Откройте словарь и выберите их чекбоксами.',
-                                      'Für das aktuelle Training sind noch keine Wörter markiert. Öffne das Wörterbuch und wähle sie per Checkbox aus.'
-                                    )
-                                    : tr(
-                                      'По текущей выборке сейчас нет доступных карточек: выбранные слова уже повторены или ещё не дошли до следующего интервала.',
-                                      'In deiner aktuellen Auswahl gibt es aktuell keine verfügbaren Karten: Die ausgewählten Wörter wurden bereits wiederholt oder sind noch nicht wieder fällig.'
-                                    )
-                                )
-                                : tr('Сегодня по Space Repetition всё повторено. Можно отдыхать.', 'Heute ist alles in Space Repetition wiederholt. Du kannst entspannen.')}
-                            </div>
-                          )}
+                          {!srsLoading && !srsCard && !srsError && (srsQueueInfo?.due_count ?? 0) === 0 && (srsQueueInfo?.new_remaining_today ?? 0) === 0 && (() => {
+                            const emptyReason = flashcardQueueSource === 'manual'
+                              ? (manualTrainingSelectionCount <= 0 ? 'manual_selection_empty' : 'shared_queue_completed_today')
+                              : 'shared_queue_completed_today';
+                            const emptyState = buildFlashcardsEmptyState(
+                              emptyReason,
+                              { queue_source: flashcardQueueSource === 'manual' ? 'manual' : 'system' },
+                              'fsrs'
+                            );
+                            return emptyState ? (
+                              <div className="flashcards-empty-state">
+                                <div className="flashcards-empty-state-badge">{emptyState.badge || 'Space Repetition'}</div>
+                                <h4>{emptyState.title}</h4>
+                                <p>{emptyState.body}</p>
+                              </div>
+                            ) : (
+                              <div className="fsrs-empty-note">
+                                {tr('Сегодня по Space Repetition всё повторено. Можно отдыхать.', 'Heute ist alles in Space Repetition wiederholt. Du kannst entspannen.')}
+                              </div>
+                            );
+                          })()}
                           {!srsLoading && !srsCard && srsError && (
                             <div className="fsrs-study-card fsrs-error-state" role="alert" aria-live="polite">
                               <div className="fsrs-error-badge">

@@ -14019,6 +14019,18 @@ def list_user_vocabulary(
     items = []
     for row in rows:
         response_json = _coerce_json_object(row[19])
+        entry_source_lang = str(row[5] or "").strip().lower()
+        entry_target_lang = str(row[6] or "").strip().lower()
+        response_source_text = str(response_json.get("source_text") or "").strip()
+        response_target_text = str(response_json.get("target_text") or "").strip()
+        german_display = str(
+            response_json.get("word_de")
+            or row[3]
+            or (response_source_text if entry_source_lang == "de" else "")
+            or (response_target_text if entry_target_lang == "de" else "")
+            or row[20]
+            or ""
+        ).strip()
         dictionary_senses = response_json.get("dictionary_senses") if isinstance(response_json.get("dictionary_senses"), list) else []
         primary_sense = next(
             (
@@ -14028,6 +14040,15 @@ def list_user_vocabulary(
             ),
             "",
         )
+        native_display = str(
+            primary_sense
+            or response_json.get("translation_ru")
+            or row[4]
+            or (response_source_text if entry_source_lang == "ru" else "")
+            or (response_target_text if entry_target_lang == "ru" else "")
+            or row[21]
+            or ""
+        ).strip()
         srs_due_at = row[11]
         srs_status = row[10]
         now_utc = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
@@ -14061,8 +14082,8 @@ def list_user_vocabulary(
             "folder_icon": row[17] or None,
             "folder_color": row[18] or None,
             "response_json": response_json,
-            "display_word": row[20] or "",
-            "display_translation": primary_sense or row[21] or "",
+            "display_word": german_display or row[20] or "",
+            "display_translation": native_display or row[21] or "",
         })
 
     return {"items": items, "total": total, "limit": limit, "offset": offset}
@@ -14189,6 +14210,11 @@ def edit_vocabulary_entry(
                     if value:
                         normalized_senses.append(value)
                 normalized_senses = normalized_senses[:3]
+                if normalized_translation:
+                    if normalized_senses:
+                        normalized_senses[0] = normalized_translation
+                    else:
+                        normalized_senses = [normalized_translation]
 
             if word_de is not None:
                 set_parts.append("word_de = %s")
@@ -14199,7 +14225,7 @@ def edit_vocabulary_entry(
                 response_json["word_ru"] = normalized_word
                 response_json["source_text"] = normalized_word
 
-            if translation_ru is not None:
+            if translation_ru is not None and not normalized_senses:
                 set_parts.append("translation_ru = %s")
                 params.append(normalized_translation)
                 set_parts.append("translation_de = %s")

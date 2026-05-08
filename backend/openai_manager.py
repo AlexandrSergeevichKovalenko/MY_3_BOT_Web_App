@@ -1757,6 +1757,9 @@ Output rules:
 - Separate MAIN meanings from ADDITIONAL meanings via the JSON structure.
 - If noun: provide article, plural, genitive if useful, pronunciation, stress.
 - If verb: provide separable/inseparable when relevant, up to 3 useful government patterns, and key forms.
+- GERMAN HEADWORD NORMALIZATION:
+  - If the main German word is a standalone noun, ALWAYS return it with the correct definite article in nominative: "der/die/das + noun". Never return a bare noun.
+  - If the main German word is a standalone verb, ALWAYS normalize it to the infinitive.
 - If adjective: provide comparative/superlative if useful and common collocations.
 - If phrase/expression: explain whether it is idiomatic, fixed, formal/informal, spoken/written.
 - memory_tip must help the learner feel and remember the word vividly.
@@ -1866,6 +1869,9 @@ Output rules:
 - Each meaning must include short context plus one practical German example and its Russian translation.
 - If noun: include article/gender, plural, genitive if useful, pronunciation and stress.
 - If verb: include separable/inseparable info, up to 3 useful constructions (preposition + case + example), and important forms.
+- GERMAN HEADWORD NORMALIZATION:
+  - If the looked-up word is a standalone noun, word_de must include the correct definite article in nominative: "der/die/das + noun". Never return a bare noun.
+  - If the looked-up word is a standalone verb, word_de must be the infinitive.
 - If adjective: include comparative/superlative if useful and common collocations.
 - If phrase/expression: explain whether it is fixed, idiomatic, formal/informal, spoken/written.
 - memory_tip must help the learner remember the word vividly.
@@ -2072,6 +2078,9 @@ Rules:
 - Keep explanations compact but clear.
 - If noun: include article/gender, plural, genitive if useful, pronunciation and stress.
 - If verb: include separable/inseparable if relevant, up to 3 useful government patterns, and key forms.
+- GERMAN HEADWORD NORMALIZATION:
+  - Whenever the source-side or target-side main German word is a standalone noun, word_source/word_target must include the correct definite article in nominative: "der/die/das + noun". Never return a bare German noun.
+  - Whenever the main German word is a standalone verb, normalize it to the infinitive.
 - If adjective: include comparative/superlative if useful and common collocations.
 - If phrase/expression: explain whether it is fixed, idiomatic, formal/informal, spoken/written.
 - real_life_usage must explain where native speakers actually use it.
@@ -2128,6 +2137,9 @@ Rules:
 - Keep everything compact.
 - Return at most 2 translation variants.
 - Return at most 1 usage example.
+- GERMAN HEADWORD NORMALIZATION:
+  - If the main German word is a standalone noun, word_source/word_target must include the correct definite article in nominative: "der/die/das + noun".
+  - If the main German word is a standalone verb, normalize it to the infinitive.
 - Do not include etymology, memory tips, long notes, collocations, prefixes, pronunciation, or extended grammar commentary here.
 - For sentence input, translations[0].value must be full-sentence translation and is_primary=true.
 - If information is unknown, use null.
@@ -2149,6 +2161,8 @@ Task:
 - Prioritize reading comprehension and high-frequency real usage.
 - If input is a full sentence, translate the FULL sentence literally and keep full-sentence mapping in word_source/word_target.
 - Never collapse sentence input to a single word/lemma.
+- If the main German word is a standalone noun, word_source/word_target must include the correct definite article in nominative: "der/die/das + noun".
+- If the main German word is a standalone verb, normalize it to the infinitive.
 
 Return STRICT JSON with keys:
 {
@@ -2516,14 +2530,15 @@ You are a strict visualizability filter for a Telegram image quiz.
 Input JSON:
 {
   "answer_language": "de",
+  "answer_text": "...",
   "source_text": "...",
   "target_text": "...",
   "source_sentence": "..."
 }
 
 Task:
-- Decide whether the sentence can be shown as one clear, concrete, unambiguous image.
-- Reject cases that are abstract, idiomatic, metaphorical, multi-step, internally ambiguous, or visually weak.
+- Decide whether the sentence can be shown as one clear, concrete, unambiguous image AND whether the exact answer_text would still be the best and most natural label for that image.
+- Reject cases that are abstract, idiomatic, metaphorical, multi-step, internally ambiguous, visually weak, or where the image would naturally point to a different concrete label than answer_text.
 - Be conservative: reject borderline cases.
 
 Return STRICT JSON:
@@ -2553,7 +2568,7 @@ Task:
 - Use source_sentence as the scene to be illustrated.
 - Produce a short image prompt describing one concrete scene.
 - Produce exactly 4 answer options in answer_language.
-- One option must be the correct short German answer for the shown scene.
+- One option must be the exact target_text answer for the shown scene. Do not replace it with a paraphrase, synonym, hypernym, or a more concrete alternative.
 - The other 3 must be plausible near-synonyms or semantically adjacent concepts — close enough to be tempting, but clearly wrong for this exact scene.
 - Keep options short: usually 1–5 words.
 - Place the correct option at a RANDOM position: pick correct_option_index from 0, 1, 2, or 3 with roughly equal probability. NEVER default to 0 — vary the position each time.
@@ -2579,7 +2594,7 @@ Return STRICT JSON:
 Rules:
 - answer_options must contain exactly 4 distinct strings.
 - correct_option_index must be 0-based and MUST NOT always be 0 — distribute it across 0, 1, 2, 3.
-- The option at correct_option_index must be the best match for the image prompt and source_sentence.
+- The option at correct_option_index must equal target_text exactly and must be the best match for the image prompt and source_sentence.
 - Every answer option must be written only in answer_language.
 - If answer_language is "de", never use Russian or Cyrillic in answer_options.
 - question_de must be in German and specific to the depicted scene and the word being practised.

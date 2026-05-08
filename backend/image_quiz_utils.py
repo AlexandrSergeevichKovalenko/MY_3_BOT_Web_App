@@ -20,6 +20,33 @@ def normalize_image_quiz_option_text(option_text: str | None) -> str:
     return _normalize_space(option_text)
 
 
+def _normalize_image_quiz_answer_key(value: str | None) -> str:
+    normalized = normalize_image_quiz_option_text(value).casefold()
+    normalized = re.sub(r"[„“\"'`´.,;:!?()\\[\\]{}]", "", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    parts = normalized.split(" ", 1)
+    if len(parts) == 2 and parts[0] in {
+        "der", "die", "das", "den", "dem", "des",
+        "ein", "eine", "einen", "einem", "einer", "eines",
+    }:
+        normalized = parts[1].strip()
+    return normalized
+
+
+def _expected_image_quiz_answer_text(template: Mapping[str, Any] | None) -> str:
+    if not isinstance(template, Mapping):
+        return ""
+    source_lang = _normalize_space(template.get("source_lang")).casefold()
+    target_lang = _normalize_space(template.get("target_lang")).casefold()
+    source_text = _normalize_space(template.get("source_text"))
+    target_text = _normalize_space(template.get("target_text"))
+    if target_lang == "de" and target_text:
+        return target_text
+    if source_lang == "de" and source_text:
+        return source_text
+    return target_text or source_text
+
+
 def is_valid_german_image_quiz_option(option_text: str | None) -> bool:
     normalized = normalize_image_quiz_option_text(option_text)
     if not normalized:
@@ -50,6 +77,11 @@ def build_image_quiz_feedback_payload(template: Mapping[str, Any] | None) -> dic
     except Exception:
         return None
     if correct_option_id < 0 or correct_option_id >= len(options):
+        return None
+    expected_answer = _expected_image_quiz_answer_text(template)
+    expected_key = _normalize_image_quiz_answer_key(expected_answer)
+    actual_key = _normalize_image_quiz_answer_key(options[correct_option_id])
+    if is_valid_german_image_quiz_option(expected_answer) and expected_key and actual_key and expected_key != actual_key:
         return None
 
     return {

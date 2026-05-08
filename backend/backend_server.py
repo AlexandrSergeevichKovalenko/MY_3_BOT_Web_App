@@ -5673,6 +5673,8 @@ _GERMAN_SINGLE_WORD_ARTICLES = {
     "eines",
 }
 
+_GERMAN_DEFINITE_ARTICLES = {"der", "die", "das"}
+
 _DICTIONARY_SAVE_ENRICHMENT_LOCK = threading.Lock()
 _DICTIONARY_SAVE_ENRICHMENT_INFLIGHT: set[int] = set()
 
@@ -5807,6 +5809,82 @@ def _build_dictionary_senses(response_json: dict | None, fallback_target: str) -
     return ranked_senses[:5]
 
 
+def _normalize_german_article(value: str | None) -> str:
+    normalized = str(value or "").strip().casefold()
+    if normalized in _GERMAN_DEFINITE_ARTICLES:
+        return normalized
+    return ""
+
+
+def _strip_german_leading_article(text: str) -> tuple[str, str]:
+    compact = re.sub(r"\s+", " ", str(text or "").strip())
+    if not compact:
+        return "", ""
+    parts = compact.split(" ", 1)
+    if len(parts) == 2 and parts[0].casefold() in _GERMAN_SINGLE_WORD_ARTICLES:
+        return parts[0].casefold(), parts[1].strip()
+    return "", compact
+
+
+def _normalize_saved_german_single_word(
+    value: str | None,
+    *,
+    part_of_speech: str,
+    article: str,
+) -> str:
+    compact = re.sub(r"\s+", " ", str(value or "").strip())
+    if not compact or not _is_single_word_dictionary_entry(compact, "de"):
+        return compact
+    _existing_article, bare = _strip_german_leading_article(compact)
+    probe = bare or compact
+    normalized_lemma = _normalize_german_text(probe)
+    if not normalized_lemma:
+        normalized_lemma = probe
+    normalized_pos = str(part_of_speech or "").strip().lower()
+    normalized_article = _normalize_german_article(article)
+    if normalized_pos == "noun" and normalized_article:
+        bare_noun = normalized_lemma[:1].upper() + normalized_lemma[1:] if normalized_lemma else normalized_lemma
+        return f"{normalized_article} {bare_noun}".strip()
+    if normalized_pos == "verb":
+        return normalized_lemma.lower()
+    return compact
+
+
+def _apply_german_headword_normalization(
+    *,
+    payload: dict[str, Any],
+    source_lang: str,
+    target_lang: str,
+) -> dict[str, Any]:
+    normalized = dict(payload)
+    if str(normalized.get("entry_kind") or "").strip().lower() != "word":
+        return normalized
+    part_of_speech = str(normalized.get("part_of_speech") or "").strip().lower()
+    article = str(normalized.get("article") or "").strip()
+    german_side_key = "source_text" if _normalize_short_lang_code(source_lang, fallback="") == "de" else (
+        "target_text" if _normalize_short_lang_code(target_lang, fallback="") == "de" else ""
+    )
+    if not german_side_key:
+        return normalized
+    current_german = str(normalized.get(german_side_key) or normalized.get("word_de") or "").strip()
+    if not _is_single_word_dictionary_entry(current_german, "de"):
+        return normalized
+    normalized_german = _normalize_saved_german_single_word(
+        current_german,
+        part_of_speech=part_of_speech,
+        article=article,
+    )
+    if not normalized_german:
+        return normalized
+    normalized[german_side_key] = normalized_german
+    normalized["word_de"] = normalized_german
+    if _normalize_short_lang_code(source_lang, fallback="") == "de":
+        normalized["translation_de"] = normalized_german
+    if _normalize_short_lang_code(target_lang, fallback="") == "de":
+        normalized["translation_de"] = normalized_german
+    return normalized
+
+
 def _prepare_dictionary_response_json_for_save(
     *,
     response_json: dict | None,
@@ -5848,6 +5926,11 @@ def _prepare_dictionary_response_json_for_save(
             payload["dictionary_senses"] = senses
     else:
         payload.pop("dictionary_senses", None)
+    payload = _apply_german_headword_normalization(
+        payload=payload,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
     return payload
 
 
@@ -11870,10 +11953,10 @@ def _build_multilang_dictionary_result(
         source_value = query_word
 
     result = {
-        "word_ru": source_value,
-        "translation_de": target_value,
-        "word_de": target_value,
-        "translation_ru": source_value,
+        "word_ru": "",
+        "translation_de": "",
+        "word_de": "",
+        "translation_ru": "",
         "source_text": source_value,
         "target_text": target_value,
         "part_of_speech": raw.get("part_of_speech"),
@@ -11882,6 +11965,20 @@ def _build_multilang_dictionary_result(
         "usage_examples": examples,
         "raw_text": raw.get("raw_text"),
     }
+    if source_lang == "ru" and source_value:
+        result["word_ru"] = source_value
+        result["translation_ru"] = source_value
+    if source_lang == "de" and source_value:
+        result["word_de"] = source_value
+        result["translation_de"] = source_value
+    if target_lang == "ru" and target_value:
+        result["translation_ru"] = target_value
+        if not result["word_ru"]:
+            result["word_ru"] = target_value
+    if target_lang == "de" and target_value:
+        result["translation_de"] = target_value
+        if not result["word_de"]:
+            result["word_de"] = target_value
     passthrough_keys = (
         "translations",
         "meanings",
@@ -29750,6 +29847,7 @@ def save_webapp_dictionary_entry():
     word_de = (payload.get("word_de") or "").strip()
     translation_de = (payload.get("translation_de") or "").strip()
     translation_ru = (payload.get("translation_ru") or "").strip()
+    generic_translation = (payload.get("translation") or "").strip()
     source_text = (payload.get("source_text") or "").strip()
     target_text = (payload.get("target_text") or "").strip()
     payload_source_lang = payload.get("source_lang")
@@ -29786,6 +29884,10 @@ def save_webapp_dictionary_entry():
     )
 
     if source_lang == "ru" and target_lang == "de":
+        if generic_translation and not target_text:
+            target_text = generic_translation
+        if generic_translation and not translation_de:
+            translation_de = generic_translation
         if source_text and not word_ru:
             word_ru = source_text
         if target_text and not translation_de:
@@ -29795,6 +29897,10 @@ def save_webapp_dictionary_entry():
         if source_text and not translation_ru:
             translation_ru = source_text
     elif source_lang == "de" and target_lang == "ru":
+        if generic_translation and not target_text:
+            target_text = generic_translation
+        if generic_translation and not translation_ru:
+            translation_ru = generic_translation
         if source_text and not word_de:
             word_de = source_text
         if target_text and not translation_ru:
@@ -29859,6 +29965,10 @@ def save_webapp_dictionary_entry():
             translation_de=resolved_translation_de,
             translation_ru=resolved_translation_ru,
         )
+        resolved_word_ru = str(response_json.get("word_ru") or resolved_word_ru or "").strip()
+        resolved_word_de = str(response_json.get("word_de") or resolved_word_de or "").strip()
+        resolved_translation_de = str(response_json.get("translation_de") or resolved_translation_de or "").strip()
+        resolved_translation_ru = str(response_json.get("translation_ru") or resolved_translation_ru or "").strip()
         entry_id = _save_dictionary_entry_with_schema_retry(
             user_id=user_id,
             word_ru=resolved_word_ru if resolved_word_ru else None,
@@ -29920,6 +30030,7 @@ def save_mobile_dictionary_entry():
     word_de = (payload.get("word_de") or "").strip()
     translation_de = (payload.get("translation_de") or "").strip()
     translation_ru = (payload.get("translation_ru") or "").strip()
+    generic_translation = (payload.get("translation") or "").strip()
     source_text = (payload.get("source_text") or "").strip()
     target_text = (payload.get("target_text") or "").strip()
     payload_source_lang = payload.get("source_lang")
@@ -29942,6 +30053,10 @@ def save_mobile_dictionary_entry():
     if not word_ru and not word_de and not source_text and not isinstance(response_json, dict):
         return jsonify({"error": "word_ru/word_de/source_text или response_json обязателен"}), 400
     if source_lang == "ru" and target_lang == "de":
+        if generic_translation and not target_text:
+            target_text = generic_translation
+        if generic_translation and not translation_de:
+            translation_de = generic_translation
         if source_text and not word_ru:
             word_ru = source_text
         if target_text and not translation_de:
@@ -29951,6 +30066,10 @@ def save_mobile_dictionary_entry():
         if source_text and not translation_ru:
             translation_ru = source_text
     elif source_lang == "de" and target_lang == "ru":
+        if generic_translation and not target_text:
+            target_text = generic_translation
+        if generic_translation and not translation_ru:
+            translation_ru = generic_translation
         if source_text and not word_de:
             word_de = source_text
         if target_text and not translation_ru:
@@ -30015,6 +30134,10 @@ def save_mobile_dictionary_entry():
             translation_de=resolved_translation_de,
             translation_ru=resolved_translation_ru,
         )
+        resolved_word_ru = str(response_json.get("word_ru") or resolved_word_ru or "").strip()
+        resolved_word_de = str(response_json.get("word_de") or resolved_word_de or "").strip()
+        resolved_translation_de = str(response_json.get("translation_de") or resolved_translation_de or "").strip()
+        resolved_translation_ru = str(response_json.get("translation_ru") or resolved_translation_ru or "").strip()
 
         entry_id = _save_dictionary_entry_with_schema_retry(
             user_id=user_id,
@@ -30225,6 +30348,10 @@ def save_bot_private_dictionary_entry():
         translation_de=translation_de or None,
         translation_ru=translation_ru or None,
     )
+    word_ru = str(response_json.get("word_ru") or word_ru or "").strip()
+    word_de = str(response_json.get("word_de") or word_de or "").strip()
+    translation_de = str(response_json.get("translation_de") or translation_de or "").strip()
+    translation_ru = str(response_json.get("translation_ru") or translation_ru or "").strip()
     origin_meta = {
         **origin_meta,
         "endpoint": "/api/internal/bot-private/dictionary/save",

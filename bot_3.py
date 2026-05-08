@@ -10731,18 +10731,22 @@ async def _send_quiz_result_private(
     selected_display = _normalize_quiz_option_for_private_message(selected_text or "")
     status_line = "✅ Верно" if is_correct else "❌ Неверно"
     lines = [
-        "🧠 Результат квиза",
-        f"Статус: {status_line}",
+        "🧠 <b>Результат квиза</b>",
+        "",
+        f"📍 <b>Статус:</b> {html.escape(status_line)}",
     ]
     if selected_display:
-        lines.append(f"Ваш ответ (DE): {selected_display}")
+        lines.append(f"🙋 <b>Ваш ответ (DE):</b> {html.escape(selected_display)}")
     lines.extend([
-        f"Правильный вариант (DE): {de_text or '—'}",
-        f"Перевод (RU): {ru_text or '—'}",
+        f"✅ <b>Правильный вариант (DE):</b> {html.escape(de_text or '—')}",
+        f"🇷🇺 <b>Перевод (RU):</b> {html.escape(ru_text or '—')}",
     ])
     explanation_text = _truncate_telegram_reply_text(str(quiz_data.get("explanation") or "").strip(), max_chars=220)
     if explanation_text:
-        lines.append(f"Пояснение: {explanation_text}")
+        lines.extend([
+            "",
+            f"💡 <b>Пояснение:</b> {html.escape(explanation_text)}",
+        ])
 
     reply_markup = None
     fallback_reply_markup = None
@@ -10810,6 +10814,7 @@ async def _send_quiz_result_private(
                     chat_id=int(user_id),
                     text="\n".join(lines),
                     reply_markup=variant_markup,
+                    parse_mode="HTML",
                 )
                 return True
             except RetryAfter as exc:
