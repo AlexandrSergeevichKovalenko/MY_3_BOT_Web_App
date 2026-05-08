@@ -4702,19 +4702,25 @@ body {
 
 .reader-lib-action {
   flex: 1;
-  height: 26px;
-  border-radius: 6px;
-  border: 1px solid rgba(180, 207, 245, 0.22);
-  background: rgba(10, 17, 33, 0.88);
-  color: #d8e8ff;
-  font-size: 12px;
+  height: 34px;
+  border-radius: 0;
+  border: none;
+  border-right: 1px solid rgba(30, 58, 95, 0.6);
+  background: rgba(10, 20, 40, 0.3);
+  color: #94a3b8;
+  font-size: 15px;
   display: grid;
   place-items: center;
+  transition: background 0.12s ease, color 0.12s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.reader-lib-action:last-child {
+  border-right: none;
 }
 
 .reader-lib-action.is-danger {
-  color: #ffb4b4;
-  border-color: rgba(255, 120, 120, 0.35);
+  color: #f87171;
 }
 
 .reader-audio-panel {
@@ -15292,6 +15298,8 @@ body {
   flex-direction: column;
   gap: 4px;
   padding: 10px 10px 8px;
+  flex: 1;
+  min-width: 0;
 }
 
 .reader-library-title {
@@ -15319,40 +15327,44 @@ body {
   font-weight: 600;
 }
 
-/* ── Card action buttons ────────────────────────────────── */
+/* ── Card action buttons — horizontal bar at bottom ─────── */
 .reader-library-actions {
   display: flex;
-  gap: 6px;
-  margin-top: 6px;
+  flex-direction: row;
+  gap: 0;
+  border-top: 1px solid rgba(30, 58, 95, 0.8);
 }
 
 .reader-lib-action {
   flex: 1;
-  height: 28px;
-  border-radius: 8px;
-  border: 1px solid #1e3a5f;
-  background: #111e31;
+  height: 34px;
+  border-radius: 0;
+  border: none;
+  border-right: 1px solid rgba(30, 58, 95, 0.6);
+  background: rgba(10, 20, 40, 0.3);
   color: #94a3b8;
-  font-size: 13px;
+  font-size: 15px;
   display: grid;
   place-items: center;
-  transition: background 0.12s ease, border-color 0.12s ease;
+  transition: background 0.12s ease, color 0.12s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.reader-lib-action:last-child {
+  border-right: none;
 }
 
 .reader-lib-action:hover {
   background: #1a2d47;
-  border-color: #334155;
   color: #cbd5e1;
 }
 
 .reader-lib-action.is-danger {
   color: #f87171;
-  border-color: rgba(248, 113, 113, 0.28);
 }
 
 .reader-lib-action.is-danger:hover {
   background: rgba(248, 113, 113, 0.1);
-  border-color: rgba(248, 113, 113, 0.5);
 }
 
 .reader-audio-panel {
@@ -15893,26 +15905,32 @@ body {
   }
 
   .reader-library-card {
-    grid-template-columns: 76px minmax(0, 1fr) auto;
-    grid-template-areas:
-      "cover title actions"
-      "cover meta actions";
-    align-items: start;
-    gap: 8px 12px;
-    padding: 12px;
+    display: grid;
+    grid-template-columns: 76px minmax(0, 1fr);
+    grid-template-rows: 1fr auto;
+    gap: 0;
+    padding: 0;
     border-radius: 18px;
+    align-items: start;
   }
 
   .reader-library-cover {
-    grid-area: cover;
+    grid-column: 1;
+    grid-row: 1;
     width: 76px;
     min-width: 76px;
     aspect-ratio: 3 / 4;
-    border-radius: 14px;
+    border-radius: 0;
+    align-self: stretch;
+  }
+
+  .reader-library-card-body {
+    grid-column: 2;
+    grid-row: 1;
+    padding: 12px 12px 8px;
   }
 
   .reader-library-title {
-    grid-area: title;
     min-width: 0;
     font-size: 15px;
     line-height: 1.3;
@@ -15920,25 +15938,22 @@ body {
   }
 
   .reader-library-meta {
-    grid-area: meta;
     min-width: 0;
     gap: 6px;
     font-size: 12px;
   }
 
   .reader-library-actions {
-    grid-area: actions;
-    position: static;
-    align-self: start;
-    justify-self: end;
-    flex-direction: column;
-    gap: 6px;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    flex-direction: row;
+    align-self: stretch;
   }
 
   .reader-lib-action {
-    width: 30px;
-    height: 30px;
-    border-radius: 10px;
+    height: 36px;
+    border-radius: 0;
+    font-size: 16px;
   }
 
   .reader-archive-cover-fallback {
@@ -21582,11 +21597,20 @@ body {
 .webapp-page.is-theme-light .reader-settings-sheet .webapp-field,
 .webapp-page.is-theme-light .reader-library-card,
 .webapp-page.is-theme-light .reader-library-cover,
-.webapp-page.is-theme-light .reader-lib-action,
 .webapp-page.is-theme-light .reader-immersive-indicator,
 .webapp-page.is-theme-light .reader-timer-pill.is-paused {
   border-color: #d2c2aa;
   background: #fff8ee;
+}
+
+.webapp-page.is-theme-light .reader-library-actions {
+  border-top-color: #d2c2aa;
+}
+
+.webapp-page.is-theme-light .reader-lib-action {
+  background: rgba(255, 248, 238, 0.6);
+  color: #5a4a39;
+  border-right-color: #d2c2aa;
 }
 
 .webapp-page.is-theme-light .reader-topbar-title,

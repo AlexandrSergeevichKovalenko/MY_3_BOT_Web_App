@@ -28145,32 +28145,32 @@ function AppInner() {
                                         <span>{Math.round(progress)}%</span>
                                         {meta && <span>{meta}</span>}
                                       </div>
-                                      <div className="reader-library-actions" onClick={(event) => event.stopPropagation()}>
-                                        <button
-                                          type="button"
-                                          className="reader-lib-action"
-                                          onClick={() => renameReaderDocument(item.id, item.title)}
-                                          title={tr('Переименовать', 'Umbenennen')}
-                                        >
-                                          ✎
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="reader-lib-action"
-                                          onClick={() => archiveReaderDocument(item.id, !Boolean(item?.is_archived))}
-                                          title={Boolean(item?.is_archived) ? tr('Разархивировать', 'Wiederherstellen') : tr('В архив', 'Archivieren')}
-                                        >
-                                          {Boolean(item?.is_archived) ? '↺' : '⤓'}
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="reader-lib-action is-danger"
-                                          onClick={() => deleteReaderDocument(item.id)}
-                                          title={tr('Удалить', 'Loeschen')}
-                                        >
-                                          ×
-                                        </button>
-                                      </div>
+                                    </div>
+                                    <div className="reader-library-actions" onClick={(event) => event.stopPropagation()}>
+                                      <button
+                                        type="button"
+                                        className="reader-lib-action"
+                                        onClick={() => renameReaderDocument(item.id, item.title)}
+                                        title={tr('Переименовать', 'Umbenennen')}
+                                      >
+                                        ✎
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="reader-lib-action"
+                                        onClick={() => archiveReaderDocument(item.id, !Boolean(item?.is_archived))}
+                                        title={Boolean(item?.is_archived) ? tr('Разархивировать', 'Wiederherstellen') : tr('В архив', 'Archivieren')}
+                                      >
+                                        {Boolean(item?.is_archived) ? '↺' : '⤓'}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="reader-lib-action is-danger"
+                                        onClick={() => deleteReaderDocument(item.id)}
+                                        title={tr('Удалить', 'Loeschen')}
+                                      >
+                                        ×
+                                      </button>
                                     </div>
                                   </div>
                                 );
