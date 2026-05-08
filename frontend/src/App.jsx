@@ -25153,6 +25153,7 @@ function AppInner() {
                 uiLang={uiLang}
                 todayPlan={todayPlan}
                 weeklyPlan={weeklyPlan}
+                skillReport={skillReport}
                 srsQueueInfo={srsQueueInfo}
                 openSection={openSingleSectionAndScroll}
                 onOpenMore={openMoreFunctionsPanel}
@@ -29579,71 +29580,89 @@ function AppInner() {
 
                 {!assistantToken && assistantSessionReviewRequested && (
                   assistantSessionAssessment ? (
-                    <div className={`webapp-card voice-assistant-review ${isLightTheme ? 'is-theme-light' : ''}`}>
+                    <div className="voice-assistant-review">
                       <div className="voice-assistant-review-head">
                         <span className="pill">{tr('После сессии', 'Nach der Session')}</span>
-                        <h3>{tr('Краткий review', 'Kurzes Review')}</h3>
+                        <h3>💬 {tr('Разбор сессии', 'Session-Analyse')}</h3>
                       </div>
-                      <p className="voice-assistant-review-summary">
-                        {String(assistantSessionAssessment?.summary || '')}
-                      </p>
-                      <div className="voice-assistant-review-block">
-                        <strong>{tr('Строгий фидбек', 'Strenges Feedback')}</strong>
-                        <p>{String(assistantSessionAssessment?.strict_feedback || '')}</p>
-                      </div>
+                      {assistantSessionAssessment.is_short_transcript ? (
+                        <div className="voice-assistant-review-short-notice">
+                          <span className="voice-assistant-review-short-notice-icon">⏱️</span>
+                          <span>{String(assistantSessionAssessment?.summary || tr('Сессия была слишком короткой для полного разбора. Попробуй поговорить подольше!', 'Die Sitzung war zu kurz für eine vollständige Analyse. Versuche länger zu sprechen!'))}</span>
+                        </div>
+                      ) : (
+                        <p className="voice-assistant-review-summary">
+                          {String(assistantSessionAssessment?.summary || '')}
+                        </p>
+                      )}
+                      {String(assistantSessionAssessment?.strict_feedback || '').trim() && (
+                        <div className="voice-assistant-review-block var-feedback">
+                          <strong>🔴 {tr('Строгий фидбек', 'Strenges Feedback')}</strong>
+                          <p>{String(assistantSessionAssessment?.strict_feedback || '')}</p>
+                        </div>
+                      )}
                       {String(assistantSessionAssessment?.recommended_next_focus || '').trim() && (
-                        <div className="voice-assistant-review-block">
-                          <strong>{tr('Следующий фокус', 'Naechster Fokus')}</strong>
+                        <div className="voice-assistant-review-block var-focus">
+                          <strong>🎯 {tr('Следующий фокус', 'Nächster Fokus')}</strong>
                           <p>{String(assistantSessionAssessment?.recommended_next_focus || '')}</p>
                         </div>
                       )}
-                      <details className="voice-assistant-review-details">
-                        <summary>{tr('Подробнее', 'Mehr Details')}</summary>
-                        <div className="voice-assistant-review-detail-list">
-                          {String(assistantSessionAssessment?.lexical_range_note || '').trim() && (
-                            <div className="voice-assistant-review-block">
-                              <strong>{tr('Лексика', 'Lexik')}</strong>
-                              <p>{String(assistantSessionAssessment?.lexical_range_note || '')}</p>
-                            </div>
-                          )}
-                          {String(assistantSessionAssessment?.grammar_control_note || '').trim() && (
-                            <div className="voice-assistant-review-block">
-                              <strong>{tr('Грамматика', 'Grammatik')}</strong>
-                              <p>{String(assistantSessionAssessment?.grammar_control_note || '')}</p>
-                            </div>
-                          )}
-                          {String(assistantSessionAssessment?.fluency_note || '').trim() && (
-                            <div className="voice-assistant-review-block">
-                              <strong>{tr('Беглость', 'Fluessigkeit')}</strong>
-                              <p>{String(assistantSessionAssessment?.fluency_note || '')}</p>
-                            </div>
-                          )}
-                          {String(assistantSessionAssessment?.coherence_relevance_note || '').trim() && (
-                            <div className="voice-assistant-review-block">
-                              <strong>{tr('Связность и релевантность', 'Kohärenz und Relevanz')}</strong>
-                              <p>{String(assistantSessionAssessment?.coherence_relevance_note || '')}</p>
-                            </div>
-                          )}
-                          {String(assistantSessionAssessment?.self_correction_note || '').trim() && (
-                            <div className="voice-assistant-review-block">
-                              <strong>{tr('Самокоррекция', 'Selbstkorrektur')}</strong>
-                              <p>{String(assistantSessionAssessment?.self_correction_note || '')}</p>
-                            </div>
-                          )}
-                          {Array.isArray(assistantSessionAssessment?.target_vocab_used) && assistantSessionAssessment.target_vocab_used.length > 0 && (
-                            <div className="voice-assistant-review-block">
-                              <strong>{tr('Использовано', 'Verwendet')}</strong>
-                              <p>{assistantSessionAssessment.target_vocab_used.join(', ')}</p>
-                            </div>
-                          )}
-                          {Array.isArray(assistantSessionAssessment?.target_vocab_missed) && assistantSessionAssessment.target_vocab_missed.length > 0 && (
-                            <div className="voice-assistant-review-block">
-                              <strong>{tr('Пока не прозвучало', 'Noch nicht verwendet')}</strong>
-                              <p>{assistantSessionAssessment.target_vocab_missed.join(', ')}</p>
-                            </div>
-                          )}
-                        </div>
-                      </details>
+                      {!assistantSessionAssessment.is_short_transcript && (
+                        <details className="voice-assistant-review-details">
+                          <summary>📋 {tr('Подробный разбор', 'Detaillierte Analyse')}</summary>
+                          <div className="voice-assistant-review-detail-list">
+                            {String(assistantSessionAssessment?.lexical_range_note || '').trim() && (
+                              <div className="voice-assistant-review-block">
+                                <strong>📖 {tr('Лексика', 'Wortschatz')}</strong>
+                                <p>{String(assistantSessionAssessment?.lexical_range_note || '')}</p>
+                              </div>
+                            )}
+                            {String(assistantSessionAssessment?.grammar_control_note || '').trim() && (
+                              <div className="voice-assistant-review-block">
+                                <strong>✏️ {tr('Грамматика', 'Grammatik')}</strong>
+                                <p>{String(assistantSessionAssessment?.grammar_control_note || '')}</p>
+                              </div>
+                            )}
+                            {String(assistantSessionAssessment?.fluency_note || '').trim() && (
+                              <div className="voice-assistant-review-block">
+                                <strong>💨 {tr('Беглость', 'Sprachfluss')}</strong>
+                                <p>{String(assistantSessionAssessment?.fluency_note || '')}</p>
+                              </div>
+                            )}
+                            {String(assistantSessionAssessment?.coherence_relevance_note || '').trim() && (
+                              <div className="voice-assistant-review-block">
+                                <strong>🔗 {tr('Связность', 'Kohärenz')}</strong>
+                                <p>{String(assistantSessionAssessment?.coherence_relevance_note || '')}</p>
+                              </div>
+                            )}
+                            {String(assistantSessionAssessment?.self_correction_note || '').trim() && (
+                              <div className="voice-assistant-review-block">
+                                <strong>🔄 {tr('Самокоррекция', 'Selbstkorrektur')}</strong>
+                                <p>{String(assistantSessionAssessment?.self_correction_note || '')}</p>
+                              </div>
+                            )}
+                          </div>
+                        </details>
+                      )}
+                      {(Array.isArray(assistantSessionAssessment?.target_vocab_used) && assistantSessionAssessment.target_vocab_used.length > 0) || (Array.isArray(assistantSessionAssessment?.target_vocab_missed) && assistantSessionAssessment.target_vocab_missed.length > 0) ? (
+                        <details className="voice-assistant-review-details">
+                          <summary>📚 {tr('Целевая лексика', 'Ziel-Vokabular')}</summary>
+                          <div className="voice-assistant-review-detail-list">
+                            {Array.isArray(assistantSessionAssessment?.target_vocab_used) && assistantSessionAssessment.target_vocab_used.length > 0 && (
+                              <div className="voice-assistant-review-block var-vocab-used">
+                                <strong>✅ {tr('Использовано', 'Verwendet')}</strong>
+                                <p>{assistantSessionAssessment.target_vocab_used.join(' · ')}</p>
+                              </div>
+                            )}
+                            {Array.isArray(assistantSessionAssessment?.target_vocab_missed) && assistantSessionAssessment.target_vocab_missed.length > 0 && (
+                              <div className="voice-assistant-review-block var-vocab-missed">
+                                <strong>⬜ {tr('Пока не прозвучало', 'Noch nicht verwendet')}</strong>
+                                <p>{assistantSessionAssessment.target_vocab_missed.join(' · ')}</p>
+                              </div>
+                            )}
+                          </div>
+                        </details>
+                      ) : null}
                     </div>
                   ) : (
                     <div className="webapp-muted voice-assistant-review-empty">

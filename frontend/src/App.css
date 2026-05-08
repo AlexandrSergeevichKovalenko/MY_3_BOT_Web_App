@@ -3589,37 +3589,103 @@ body {
   width: 100%;
   max-width: 960px;
   display: grid;
-  gap: 12px;
+  gap: 14px;
+  padding: 18px;
+  border-radius: 18px;
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid rgba(148, 163, 184, 0.15);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.25);
 }
 
 .voice-assistant-review-head {
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 
 .voice-assistant-review-head h3 {
   margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: rgba(248, 250, 252, 0.95);
 }
 
 .voice-assistant-review-summary {
   margin: 0;
   font-size: 15px;
-  line-height: 1.5;
+  line-height: 1.6;
+  color: rgba(248, 250, 252, 0.88);
+  padding: 12px 14px;
+  background: rgba(99, 102, 241, 0.12);
+  border-left: 3px solid rgba(99, 102, 241, 0.7);
+  border-radius: 0 10px 10px 0;
 }
 
 .voice-assistant-review-block {
   display: grid;
-  gap: 6px;
+  gap: 5px;
+  padding: 11px 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.voice-assistant-review-block.var-feedback {
+  background: rgba(245, 158, 11, 0.08);
+  border-color: rgba(245, 158, 11, 0.25);
+}
+
+.voice-assistant-review-block.var-focus {
+  background: rgba(59, 130, 246, 0.09);
+  border-color: rgba(59, 130, 246, 0.25);
+}
+
+.voice-assistant-review-block.var-vocab-used {
+  background: rgba(16, 185, 129, 0.08);
+  border-color: rgba(16, 185, 129, 0.22);
+}
+
+.voice-assistant-review-block.var-vocab-missed {
+  background: rgba(239, 68, 68, 0.07);
+  border-color: rgba(239, 68, 68, 0.2);
 }
 
 .voice-assistant-review-block strong {
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(148, 163, 184, 0.9);
 }
+
+.voice-assistant-review-block.var-feedback strong { color: rgba(251, 191, 36, 0.9); }
+.voice-assistant-review-block.var-focus strong { color: rgba(96, 165, 250, 0.9); }
+.voice-assistant-review-block.var-vocab-used strong { color: rgba(52, 211, 153, 0.9); }
+.voice-assistant-review-block.var-vocab-missed strong { color: rgba(248, 113, 113, 0.9); }
 
 .voice-assistant-review-block p {
   margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
   color: rgba(248, 250, 252, 0.88);
-  line-height: 1.5;
+}
+
+.voice-assistant-review-short-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.28);
+  font-size: 14px;
+  line-height: 1.55;
+  color: rgba(248, 250, 252, 0.85);
+}
+
+.voice-assistant-review-short-notice-icon {
+  font-size: 20px;
+  flex-shrink: 0;
+  margin-top: 1px;
 }
 
 .voice-assistant-review-details {
@@ -3630,16 +3696,90 @@ body {
 .voice-assistant-review-details summary {
   cursor: pointer;
   font-weight: 600;
+  font-size: 13px;
+  color: rgba(148, 163, 184, 0.85);
+  padding: 8px 0;
+  user-select: none;
 }
 
 .voice-assistant-review-detail-list {
   display: grid;
   gap: 10px;
-  padding-top: 8px;
+  padding-top: 4px;
 }
 
 .voice-assistant-review-empty {
   max-width: 960px;
+  color: rgba(148, 163, 184, 0.7);
+}
+
+/* Light theme overrides */
+.webapp-page.is-theme-light .voice-assistant-review {
+  background: rgba(255, 255, 255, 0.95);
+  border-color: rgba(100, 116, 139, 0.18);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+}
+
+.webapp-page.is-theme-light .voice-assistant-review-head h3 {
+  color: #0f172a;
+}
+
+.webapp-page.is-theme-light .voice-assistant-review-summary {
+  color: #1e293b;
+  background: rgba(99, 102, 241, 0.07);
+  border-left-color: rgba(99, 102, 241, 0.55);
+}
+
+.webapp-page.is-theme-light .voice-assistant-review-block {
+  background: rgba(0, 0, 0, 0.03);
+  border-color: rgba(100, 116, 139, 0.14);
+}
+
+.webapp-page.is-theme-light .voice-assistant-review-block.var-feedback {
+  background: rgba(245, 158, 11, 0.07);
+  border-color: rgba(245, 158, 11, 0.22);
+}
+
+.webapp-page.is-theme-light .voice-assistant-review-block.var-focus {
+  background: rgba(59, 130, 246, 0.07);
+  border-color: rgba(59, 130, 246, 0.22);
+}
+
+.webapp-page.is-theme-light .voice-assistant-review-block.var-vocab-used {
+  background: rgba(16, 185, 129, 0.07);
+  border-color: rgba(16, 185, 129, 0.2);
+}
+
+.webapp-page.is-theme-light .voice-assistant-review-block.var-vocab-missed {
+  background: rgba(239, 68, 68, 0.06);
+  border-color: rgba(239, 68, 68, 0.18);
+}
+
+.webapp-page.is-theme-light .voice-assistant-review-block strong {
+  color: #64748b;
+}
+
+.webapp-page.is-theme-light .voice-assistant-review-block.var-feedback strong { color: #b45309; }
+.webapp-page.is-theme-light .voice-assistant-review-block.var-focus strong { color: #1d4ed8; }
+.webapp-page.is-theme-light .voice-assistant-review-block.var-vocab-used strong { color: #065f46; }
+.webapp-page.is-theme-light .voice-assistant-review-block.var-vocab-missed strong { color: #b91c1c; }
+
+.webapp-page.is-theme-light .voice-assistant-review-block p {
+  color: #1e293b;
+}
+
+.webapp-page.is-theme-light .voice-assistant-review-short-notice {
+  color: #1e293b;
+  background: rgba(251, 191, 36, 0.09);
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+.webapp-page.is-theme-light .voice-assistant-review-details summary {
+  color: #475569;
+}
+
+.webapp-page.is-theme-light .voice-assistant-review-empty {
+  color: #64748b;
 }
 
 @media (min-width: 901px) {
@@ -20594,6 +20734,36 @@ body {
 .webapp-page.is-theme-light .webapp-field textarea::placeholder,
 .webapp-page.is-theme-light .webapp-field input::placeholder {
   color: rgba(88, 72, 54, 0.64);
+}
+
+.webapp-page.is-theme-light .webapp-browser-auth {
+  background: rgba(253, 247, 236, 0.95);
+  border-color: rgba(171, 139, 98, 0.3);
+  box-shadow: 0 14px 32px rgba(105, 78, 47, 0.13);
+  color: #1f1a14;
+}
+
+.webapp-page.is-theme-light .webapp-browser-auth strong {
+  color: #1f1a14;
+}
+
+.webapp-page.is-theme-light .webapp-result-card {
+  background: rgba(253, 247, 236, 0.95);
+  border: 1px solid rgba(171, 139, 98, 0.28);
+  box-shadow: 0 8px 20px rgba(105, 78, 47, 0.1);
+  color: #1f1a14;
+}
+
+.webapp-page.is-theme-light .webapp-result-card strong,
+.webapp-page.is-theme-light .webapp-result-card b {
+  color: #17120d;
+}
+
+.webapp-page.is-theme-light .webapp-result-text,
+.webapp-page.is-theme-light .webapp-explanation {
+  background: rgba(242, 232, 215, 0.7);
+  border-color: rgba(171, 139, 98, 0.3);
+  color: #1f1a14;
 }
 
 .webapp-page.is-theme-light .secondary-button {

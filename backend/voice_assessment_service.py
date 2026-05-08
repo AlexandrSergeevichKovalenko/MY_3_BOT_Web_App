@@ -85,6 +85,7 @@ class VoiceAssessment:
     target_vocab_used: list[str] = field(default_factory=list)
     target_vocab_missed: list[str] = field(default_factory=list)
     recommended_next_focus: str | None = None
+    is_short_transcript: bool = False
     created_at: str | None = None
     updated_at: str | None = None
 
@@ -282,23 +283,44 @@ def _build_short_transcript_fallback(
     session_id: int,
     transcript_text: str,
     prep_pack: dict | None,
+    source_lang: str = "ru",
 ) -> VoiceAssessment:
     used, missed = _compute_target_vocab_heuristics(
         transcript_text=transcript_text,
         prep_pack=prep_pack,
     )
+    lang = str(source_lang or "ru").strip().lower()
+    if lang == "de":
+        summary = "Das Gespräch war zu kurz für eine ausführliche Analyse."
+        strict_feedback = "Es gibt noch nicht genug Sprachmaterial, um verlässliche Aussagen über deine Sprechleistung zu machen."
+        lexical_range_note = "Zu wenig Material. Der Wortschatz lässt sich aus einem so kurzen Gespräch nicht zuverlässig beurteilen."
+        grammar_control_note = "Zu wenig Material. Für eine faire Grammatikbewertung brauchen wir einen längeren Austausch."
+        fluency_note = "Zu wenig Material. Das Gespräch war zu kurz, um die Sprechflüssigkeit einzuschätzen."
+        coherence_relevance_note = "Zu wenig Material. Kohärenz und Themenkontinuität lassen sich nicht zuverlässig bewerten."
+        self_correction_note = "Kein verlässliches Selbstkorrekturmuster aus dem kurzen Gespräch erkennbar."
+        recommended_next_focus = "Führe ein längeres Gespräch und sammle mehr Transkriptmaterial für eine fundierte Auswertung."
+    else:
+        summary = "Сессия была слишком короткой для подробного разбора."
+        strict_feedback = "Пока недостаточно разговорного материала, чтобы делать выводы о качестве речи."
+        lexical_range_note = "Мало материала. Из такого короткого разговора сложно судить о словарном запасе."
+        grammar_control_note = "Мало материала. Для честной оценки грамматики нужен более длинный диалог."
+        fluency_note = "Мало материала. Разговор слишком короткий, чтобы оценить беглость речи."
+        coherence_relevance_note = "Мало материала. Связность и поддержание темы нельзя надёжно оценить."
+        self_correction_note = "Из короткого разговора не удаётся выявить паттерны самокоррекции."
+        recommended_next_focus = "Проведи более длинную сессию — тогда разбор будет полноценным."
     return VoiceAssessment(
         session_id=int(session_id),
-        summary="Transcript too short for a detailed post-call assessment.",
-        strict_feedback="There is not enough spoken material yet to make strong claims about sustained speaking performance.",
-        lexical_range_note="Limited evidence. The learner produced too little language to judge lexical range reliably.",
-        grammar_control_note="Limited evidence. A longer exchange is needed to assess grammar control fairly.",
-        fluency_note="Limited evidence. The transcript is too short to assess sustained fluency.",
-        coherence_relevance_note="The available material is too short to evaluate coherence and topic maintenance in a reliable way.",
-        self_correction_note="No reliable self-correction pattern can be inferred from the short transcript.",
+        summary=summary,
+        strict_feedback=strict_feedback,
+        lexical_range_note=lexical_range_note,
+        grammar_control_note=grammar_control_note,
+        fluency_note=fluency_note,
+        coherence_relevance_note=coherence_relevance_note,
+        self_correction_note=self_correction_note,
         target_vocab_used=used,
         target_vocab_missed=missed,
-        recommended_next_focus="Run a longer speaking exchange and gather more transcript evidence before making a stronger assessment.",
+        recommended_next_focus=recommended_next_focus,
+        is_short_transcript=True,
     )
 
 
@@ -419,6 +441,7 @@ async def _build_voice_assessment_from_segments(
     resolved_context = session_context if session_context is not None else get_agent_voice_session_context(int(session_id))
     transcript_text = _build_transcript_text(transcript_segments)
     prep_pack = dict((resolved_context or {}).get("prep_pack") or {})
+    source_lang = str((resolved_context or {}).get("session", {}).get("source_lang") or "ru").strip().lower() or "ru"
     fallback_used, fallback_missed = _compute_target_vocab_heuristics(
         transcript_text=transcript_text,
         prep_pack=prep_pack,
@@ -429,6 +452,7 @@ async def _build_voice_assessment_from_segments(
             session_id=int(session_id),
             transcript_text="",
             prep_pack=prep_pack,
+            source_lang=source_lang,
         )
 
     if (
@@ -439,6 +463,7 @@ async def _build_voice_assessment_from_segments(
             session_id=int(session_id),
             transcript_text=transcript_text,
             prep_pack=prep_pack,
+            source_lang=source_lang,
         )
 
     try:
@@ -490,6 +515,7 @@ def get_stored_voice_assessment(*, session_id: int) -> VoiceAssessment | None:
         target_vocab_used=list(payload.get("target_vocab_used") or []),
         target_vocab_missed=list(payload.get("target_vocab_missed") or []),
         recommended_next_focus=payload.get("recommended_next_focus"),
+        is_short_transcript=bool(payload.get("is_short_transcript") or False),
         created_at=payload.get("created_at"),
         updated_at=payload.get("updated_at"),
     )
@@ -526,6 +552,7 @@ def store_voice_assessment(assessment: VoiceAssessment) -> VoiceAssessment | Non
         target_vocab_used=assessment.target_vocab_used,
         target_vocab_missed=assessment.target_vocab_missed,
         recommended_next_focus=assessment.recommended_next_focus,
+        is_short_transcript=assessment.is_short_transcript,
     )
     if not payload:
         return None

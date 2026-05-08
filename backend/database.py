@@ -4726,6 +4726,10 @@ def ensure_webapp_tables() -> None:
                 ADD COLUMN IF NOT EXISTS skill_bridge_updated_at TIMESTAMPTZ;
             """)
             cursor.execute("""
+                ALTER TABLE bt_3_voice_session_assessments
+                ADD COLUMN IF NOT EXISTS is_short_transcript BOOLEAN NOT NULL DEFAULT FALSE;
+            """)
+            cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_voice_session_assessments_updated
                 ON bt_3_voice_session_assessments (updated_at DESC);
             """)
@@ -16490,6 +16494,7 @@ def _voice_session_assessment_row_to_dict(row: tuple | None) -> dict | None:
         "skill_bridge_status": str(row[14] or "").strip().lower() or "pending",
         "skill_bridge_notes": raw_bridge_notes if isinstance(raw_bridge_notes, dict) else {},
         "skill_bridge_updated_at": row[16].isoformat() if row[16] else None,
+        "is_short_transcript": bool(row[17]) if len(row) > 17 else False,
     }
 
 
@@ -16815,6 +16820,7 @@ def upsert_voice_session_assessment(
     target_vocab_used: list[str] | None = None,
     target_vocab_missed: list[str] | None = None,
     recommended_next_focus: str | None = None,
+    is_short_transcript: bool = False,
 ) -> dict | None:
     normalized_used = [
         str(item).strip()
@@ -16842,9 +16848,10 @@ def upsert_voice_session_assessment(
                     target_vocab_used,
                     target_vocab_missed,
                     recommended_next_focus,
+                    is_short_transcript,
                     updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (session_id) DO UPDATE
                 SET
                     summary = EXCLUDED.summary,
@@ -16857,6 +16864,7 @@ def upsert_voice_session_assessment(
                     target_vocab_used = EXCLUDED.target_vocab_used,
                     target_vocab_missed = EXCLUDED.target_vocab_missed,
                     recommended_next_focus = EXCLUDED.recommended_next_focus,
+                    is_short_transcript = EXCLUDED.is_short_transcript,
                     updated_at = NOW()
                 RETURNING
                     id,
@@ -16875,7 +16883,8 @@ def upsert_voice_session_assessment(
                     updated_at,
                     skill_bridge_status,
                     skill_bridge_notes,
-                    skill_bridge_updated_at;
+                    skill_bridge_updated_at,
+                    is_short_transcript;
                 """,
                 (
                     int(session_id),
@@ -16889,6 +16898,7 @@ def upsert_voice_session_assessment(
                     Json(normalized_used),
                     Json(normalized_missed),
                     str(recommended_next_focus or "").strip() or None,
+                    bool(is_short_transcript),
                 ),
             )
             return _voice_session_assessment_row_to_dict(cursor.fetchone())
@@ -16916,7 +16926,8 @@ def get_voice_session_assessment(session_id: int) -> dict | None:
                     updated_at,
                     skill_bridge_status,
                     skill_bridge_notes,
-                    skill_bridge_updated_at
+                    skill_bridge_updated_at,
+                    is_short_transcript
                 FROM bt_3_voice_session_assessments
                 WHERE session_id = %s
                 LIMIT 1;
@@ -16954,7 +16965,8 @@ def claim_voice_session_assessment_for_skill_bridge(session_id: int) -> dict | N
                     updated_at,
                     skill_bridge_status,
                     skill_bridge_notes,
-                    skill_bridge_updated_at;
+                    skill_bridge_updated_at,
+                    is_short_transcript;
                 """,
                 (int(session_id),),
             )
@@ -16998,7 +17010,8 @@ def set_voice_session_assessment_skill_bridge_status(
                     updated_at,
                     skill_bridge_status,
                     skill_bridge_notes,
-                    skill_bridge_updated_at;
+                    skill_bridge_updated_at,
+                    is_short_transcript;
                 """,
                 (
                     normalized_status,
@@ -23229,6 +23242,38 @@ def list_exhausted_image_quiz_r2_objects(
                 LIMIT %s;
                 """,
                 (str(safe_idle_days), safe_limit),
+            )
+            rows = cursor.fetchall() or []
+    return [{"template_id": int(row[0]), "object_key": str(row[1])} for row in rows]
+
+
+def list_orphaned_image_quiz_r2_objects(
+    *,
+    limit: int = 200,
+    min_age_days: int = 30,
+) -> list[dict]:
+    """
+    Returns image-quiz templates that have an R2 object but use_count = 0 (never
+    dispatched to any user) and are older than min_age_days.  These are safe to
+    delete — any template sitting undelivered for that long will not be dispatched.
+    """
+    safe_limit = max(1, min(5000, int(limit or 200)))
+    safe_min_age_days = max(7, int(min_age_days or 180))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, image_object_key
+                FROM bt_3_image_quiz_templates
+                WHERE generation_status = 'ready'
+                  AND image_object_key IS NOT NULL
+                  AND image_object_key <> ''
+                  AND use_count = 0
+                  AND created_at < NOW() - (%s || ' days')::interval
+                ORDER BY created_at ASC
+                LIMIT %s;
+                """,
+                (str(safe_min_age_days), safe_limit),
             )
             rows = cursor.fetchall() or []
     return [{"template_id": int(row[0]), "object_key": str(row[1])} for row in rows]

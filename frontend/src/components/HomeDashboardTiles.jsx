@@ -144,18 +144,29 @@ function DashTile({ def, label, badge, onClick, showBadge = true }) {
   );
 }
 
-function TodayStrip({ tr, todayPlan, weeklyPlan, uiLang, showMetrics = true, openSection, refs = {} }) {
+function getSkillMasteryPct(skillReport) {
+  const groups = Array.isArray(skillReport?.groups) ? skillReport.groups : [];
+  const skills = groups.flatMap((g) => (Array.isArray(g?.skills) ? g.skills : []));
+  const withData = skills.filter(
+    (s) => Boolean(s?.has_data) && s?.mastery !== null && s?.mastery !== undefined,
+  );
+  if (!withData.length) return null;
+  const avg = withData.reduce((sum, s) => sum + Number(s.mastery || 0), 0) / withData.length;
+  return Math.round(avg);
+}
+
+function TodayStrip({ tr, todayPlan, weeklyPlan, skillReport, uiLang, showMetrics = true, openSection, refs = {} }) {
   const items = Array.isArray(todayPlan?.items) ? todayPlan.items : [];
   const doneCount = items.filter((item) => normalizeStatus(item?.status) === 'done').length;
   const totalCount = items.length;
   const weeklyPlanSummary = getWeeklyPlanSummary(weeklyPlan);
+  const skillMasteryPct = getSkillMasteryPct(skillReport);
   const now = new Date();
   const dateLabel = now.toLocaleDateString(uiLang === 'de' ? 'de-DE' : 'ru-RU', {
     day: 'numeric',
     month: 'long',
     weekday: 'short',
   });
-  const progressPct = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
 
   const handleMetric = useCallback((sectionKey, refKey) => {
     if (openSection && sectionKey) {
@@ -187,7 +198,7 @@ function TodayStrip({ tr, todayPlan, weeklyPlan, uiLang, showMetrics = true, ope
               onClick={() => handleMetric('home_skills', 'skillsRef')}
             >
               <div className="hdt-metric-icon" style={{ background: 'rgba(79,70,229,0.2)' }}>🧠</div>
-              <div className="hdt-metric-val">{progressPct}%</div>
+              <div className="hdt-metric-val">{skillMasteryPct !== null ? `${skillMasteryPct}%` : '—'}</div>
               <div className="hdt-metric-lbl">{tr('Карта навыков', 'Skill-Map')}</div>
             </button>
             <button
@@ -218,6 +229,7 @@ export default function HomeDashboardTiles({
   uiLang,
   todayPlan,
   weeklyPlan,
+  skillReport = null,
   srsQueueInfo,
   openSection,
   onOpenMore = null,
@@ -250,6 +262,7 @@ export default function HomeDashboardTiles({
         tr={tr}
         todayPlan={todayPlan}
         weeklyPlan={weeklyPlan}
+        skillReport={skillReport}
         uiLang={currentUiLang}
         showMetrics={showMetrics}
         openSection={openSection}
