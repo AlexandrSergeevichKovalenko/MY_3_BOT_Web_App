@@ -5684,7 +5684,12 @@ body {
   }
 
   .webapp-topbar.is-back-mode {
-    padding: 4px 6px;
+    padding: 12px 6px 6px;
+  }
+
+  .webapp-topbar.is-back-mode .topbar-home-row {
+    gap: 8px;
+    min-height: 36px;
   }
 
   .webapp-card {

@@ -76,7 +76,13 @@
       "Bash(/Users/alexandr/anaconda3/bin/pytest backend/tests/test_billing_economics.py -v)",
       "Bash(python3.11 *)",
       "Bash(railway link *)",
-      "Bash(awk -F'│' '{print $3}')"
+      "Bash(awk -F'│' '{print $3}')",
+      "Bash(psql *)",
+      "Bash(open *)",
+      "Bash(awk -F: '$1 >= 24900 && $1 <= 25600 {print}')",
+      "Bash(ping -c 2 github.com)",
+      "Bash(awk -F: '$2>17960 && $2<18100 {print}')",
+      "Bash(awk '/\\\\.webapp-shell/{found=NR} found && NR==found{print NR\": \"$0; found=0}' /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/frontend/src/App.css)"
     ]
   }
 }

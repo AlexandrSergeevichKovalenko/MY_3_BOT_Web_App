@@ -1,0 +1,1044 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YouTube Page — Redesign Mockup</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --yt-bg:            #080e22;
+    --yt-bg-card:       rgba(13, 20, 44, 0.90);
+    --yt-bg-card-alt:   rgba(255,255,255,0.045);
+    --yt-border:        rgba(99,102,241,0.15);
+    --yt-border-light:  rgba(255,255,255,0.07);
+    --yt-text-title:    #e2e8f0;
+    --yt-text-body:     #94a3b8;
+    --yt-text-muted:    #475569;
+    --yt-accent:        #6366f1;
+    --yt-accent-glow:   rgba(99,102,241,0.28);
+    --yt-glass:         rgba(13,20,44,0.82);
+    --yt-shadow:        0 24px 64px rgba(0,0,0,0.6);
+  }
+
+  body {
+    background: #04091a;
+    display: flex;
+    gap: 40px;
+    padding: 32px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    min-height: 100vh;
+    align-items: flex-start;
+    justify-content: center;
+  }
+
+  /* ── LABELS ── */
+  .col-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #475569;
+    text-align: center;
+    margin-bottom: 12px;
+  }
+
+  /* ── PHONE SHELL ── */
+  .phone {
+    width: 375px;
+    background: var(--yt-bg);
+    border-radius: 40px;
+    border: 1px solid rgba(255,255,255,0.06);
+    box-shadow: 0 40px 120px rgba(0,0,0,0.8), inset 0 1px 0 rgba(255,255,255,0.06);
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* Status bar */
+  .status-bar {
+    height: 44px;
+    background: rgba(0,0,0,0.25);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+  }
+  .status-bar span { font-size: 12px; font-weight: 600; color: #94a3b8; }
+
+  /* ── TOP TOOLBAR (NEW DESIGN) ── */
+  .yt-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px 8px;
+    background: rgba(8,14,34,0.95);
+    border-bottom: 1px solid var(--yt-border);
+  }
+
+  .yt-back-btn {
+    width: 34px;
+    height: 34px;
+    flex: 0 0 34px;
+    border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.04);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #94a3b8;
+    cursor: pointer;
+  }
+  .yt-back-btn svg { width: 16px; height: 16px; }
+
+  /* Chip strip */
+  .yt-chips {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    flex: 1;
+    min-width: 0;
+  }
+  .yt-chips::-webkit-scrollbar { display: none; }
+
+  .yt-chip {
+    flex: 0 0 auto;
+    height: 30px;
+    border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.09);
+    background: rgba(255,255,255,0.05);
+    color: #64748b;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 0 10px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .yt-chip.is-on {
+    background: rgba(99,102,241,0.18);
+    border-color: rgba(99,102,241,0.32);
+    color: #a5b4fc;
+  }
+  .yt-chip-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    flex: 0 0 6px;
+  }
+  .yt-chip.is-on .yt-chip-dot { background: #818cf8; }
+
+  /* Settings gear */
+  .yt-settings-btn {
+    width: 34px;
+    height: 34px;
+    flex: 0 0 34px;
+    border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.04);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #64748b;
+    cursor: pointer;
+  }
+
+  /* ── VIDEO FRAME ── */
+  .yt-player-wrap {
+    margin: 10px 12px;
+    border-radius: 18px;
+    overflow: hidden;
+    background: #000;
+    aspect-ratio: 16/9;
+    position: relative;
+    border: 1px solid rgba(255,255,255,0.06);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  }
+  .yt-player-thumb {
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(135deg, #0d1c3e, #1a0a2e);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .yt-play-circle {
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.15);
+    border: 2px solid rgba(255,255,255,0.2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    backdrop-filter: blur(8px);
+  }
+  .yt-player-thumb span {
+    font-size: 11px;
+    color: #475569;
+    font-weight: 500;
+  }
+
+  /* ── NAV BUTTONS (NEW DESIGN) ── */
+  .yt-nav-bar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 8px 16px 10px;
+  }
+
+  .yt-nav-btn {
+    width: 44px;
+    height: 38px;
+    border-radius: 12px;
+    border: 1px solid rgba(255,255,255,0.10);
+    background: rgba(255,255,255,0.06);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #94a3b8;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+    position: relative;
+  }
+  .yt-nav-btn:hover {
+    background: rgba(255,255,255,0.10);
+    border-color: rgba(255,255,255,0.16);
+    color: #e2e8f0;
+  }
+  .yt-nav-btn.is-play {
+    width: 56px;
+    background: rgba(99,102,241,0.18);
+    border-color: rgba(99,102,241,0.35);
+    color: #a5b4fc;
+  }
+  .yt-nav-btn.is-play:hover {
+    background: rgba(99,102,241,0.28);
+  }
+  .yt-nav-btn svg { width: 18px; height: 18px; }
+
+  /* ── SUBTITLES CARD ── */
+  .yt-subs-card {
+    margin: 0 12px 10px;
+    border-radius: 18px;
+    border: 1px solid var(--yt-border);
+    background: var(--yt-bg-card);
+    overflow: hidden;
+  }
+
+  .yt-subs-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 14px;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+  .yt-subs-badge {
+    width: 28px; height: 22px;
+    border-radius: 6px;
+    background: rgba(99,102,241,0.22);
+    border: 1px solid rgba(99,102,241,0.3);
+    color: #a5b4fc;
+    font-size: 10px;
+    font-weight: 800;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    letter-spacing: 0.05em;
+  }
+
+  .yt-subs-nav { display: flex; align-items: center; gap: 6px; }
+
+  /* Nav buttons INSIDE subtitle head — same unified style */
+  .yt-subs-nav-btn {
+    width: 32px;
+    height: 28px;
+    border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.09);
+    background: rgba(255,255,255,0.05);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #64748b;
+    cursor: pointer;
+  }
+  .yt-subs-nav-btn.is-play {
+    width: 40px;
+    background: rgba(99,102,241,0.15);
+    border-color: rgba(99,102,241,0.28);
+    color: #818cf8;
+  }
+  .yt-subs-nav-btn svg { width: 14px; height: 14px; }
+
+  .yt-subs-body {
+    padding: 12px 14px;
+    max-height: 160px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(99,102,241,0.25) transparent;
+  }
+  .yt-subs-line {
+    font-size: 14px;
+    line-height: 1.6;
+    color: #475569;
+    padding: 4px 0;
+    cursor: pointer;
+    border-radius: 6px;
+  }
+  .yt-subs-line.is-active {
+    color: #e2e8f0;
+    font-weight: 500;
+  }
+  .yt-subs-line.is-active span.word { color: #a5b4fc; }
+
+  /* ── FLOATING DICTIONARY WIDGET ── */
+  .yt-dict-fab {
+    position: absolute;
+    bottom: 80px;
+    right: 14px;
+    z-index: 100;
+  }
+
+  /* Collapsed state: pill */
+  .yt-dict-pill {
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    background: linear-gradient(135deg, rgba(99,102,241,0.85), rgba(79,70,229,0.92));
+    border: 1px solid rgba(99,102,241,0.5);
+    box-shadow: 0 8px 24px rgba(99,102,241,0.35), 0 2px 8px rgba(0,0,0,0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    cursor: pointer;
+    backdrop-filter: blur(8px);
+  }
+  .yt-dict-pill svg { width: 20px; height: 20px; }
+
+  /* ── SECOND PHONE: Dictionary Expanded ── */
+  .yt-dict-expanded {
+    position: absolute;
+    bottom: 72px;
+    right: 12px;
+    left: 12px;
+    z-index: 100;
+    border-radius: 18px;
+    background: linear-gradient(160deg, rgba(15,22,48,0.97), rgba(8,14,34,0.98));
+    border: 1px solid rgba(99,102,241,0.22);
+    box-shadow: 0 24px 64px rgba(0,0,0,0.7), 0 0 0 1px rgba(99,102,241,0.08) inset;
+    overflow: hidden;
+  }
+
+  .yt-dict-handle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px 8px;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+    cursor: grab;
+    gap: 8px;
+  }
+  .yt-dict-handle-dots {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+  }
+  .yt-dict-handle-dots span {
+    width: 4px; height: 4px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.2);
+    display: block;
+  }
+  .yt-dict-title {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #475569;
+    flex: 1;
+    text-align: center;
+  }
+  .yt-dict-close {
+    width: 24px; height: 24px;
+    border-radius: 6px;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.08);
+    display: flex; align-items: center; justify-content: center;
+    color: #475569; cursor: pointer; font-size: 14px; line-height: 1;
+  }
+
+  .yt-dict-search {
+    padding: 10px 12px 8px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+  }
+  .yt-dict-input-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 10px;
+    padding: 0 10px;
+    height: 36px;
+  }
+  .yt-dict-input-wrap svg { width: 14px; height: 14px; color: #475569; flex: 0 0 14px; }
+  .yt-dict-input {
+    flex: 1;
+    background: none;
+    border: 0;
+    outline: none;
+    font-size: 14px;
+    color: #e2e8f0;
+    font-family: inherit;
+    caret-color: #818cf8;
+  }
+  .yt-dict-input::placeholder { color: #475569; }
+
+  .yt-dict-result {
+    padding: 12px 14px;
+  }
+
+  .yt-dict-word-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .yt-dict-word {
+    font-size: 20px;
+    font-weight: 800;
+    color: #e2e8f0;
+    letter-spacing: -0.02em;
+  }
+  .yt-dict-pos {
+    font-size: 11px;
+    font-weight: 600;
+    color: #475569;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 5px;
+    padding: 2px 7px;
+    white-space: nowrap;
+  }
+
+  .yt-dict-translation {
+    font-size: 16px;
+    color: #94a3b8;
+    line-height: 1.4;
+    margin-bottom: 10px;
+  }
+
+  .yt-dict-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-bottom: 10px;
+  }
+  .yt-dict-tag {
+    height: 22px;
+    border-radius: 6px;
+    padding: 0 8px;
+    font-size: 11px;
+    font-weight: 600;
+    background: rgba(99,102,241,0.12);
+    border: 1px solid rgba(99,102,241,0.2);
+    color: #818cf8;
+    display: flex;
+    align-items: center;
+  }
+
+  .yt-dict-actions {
+    display: flex;
+    gap: 8px;
+  }
+  .yt-dict-save-btn {
+    flex: 1;
+    height: 34px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, rgba(99,102,241,0.85), rgba(79,70,229,0.9));
+    border: 1px solid rgba(99,102,241,0.4);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    letter-spacing: 0.02em;
+  }
+  .yt-dict-more-btn {
+    height: 34px;
+    width: 34px;
+    border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.04);
+    color: #64748b;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+
+  /* Highlight last-tapped word in subtitle */
+  .word-tapped {
+    background: rgba(99,102,241,0.25);
+    border-radius: 3px;
+    padding: 0 1px;
+    color: #c7d2fe;
+  }
+
+  /* ── BOTTOM NAV ── */
+  .bottom-nav {
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 58px;
+    background: rgba(8,14,34,0.96);
+    border-top: 1px solid rgba(255,255,255,0.05);
+    display: flex;
+    align-items: center;
+    justify-content: space-around;
+    padding-bottom: 4px;
+  }
+  .nav-item { display: flex; flex-direction: column; align-items: center; gap: 3px; color: #334155; }
+  .nav-item.active { color: #818cf8; }
+  .nav-item svg { width: 22px; height: 22px; }
+  .nav-item span { font-size: 9px; font-weight: 600; }
+
+  /* ANNOTATION LABELS */
+  .annotation {
+    position: absolute;
+    left: -220px;
+    width: 200px;
+    text-align: right;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 3px;
+  }
+  .annotation-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: #6366f1;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .annotation-body {
+    font-size: 11px;
+    color: #475569;
+    line-height: 1.4;
+  }
+  .annotation-line {
+    position: absolute;
+    right: -32px;
+    top: 50%;
+    width: 30px;
+    height: 1px;
+    background: rgba(99,102,241,0.35);
+  }
+
+  /* outer wrapper */
+  .mockup-col { display: flex; flex-direction: column; align-items: center; }
+
+  .section-divider {
+    margin: 14px 0 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .section-divider-line { flex: 1; height: 1px; background: rgba(255,255,255,0.05); }
+  .section-divider-label { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; color: #334155; white-space: nowrap; }
+
+  /* comparison panel */
+  .compare-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    max-width: 320px;
+    align-self: flex-start;
+  }
+  .compare-card {
+    border-radius: 16px;
+    border: 1px solid rgba(255,255,255,0.06);
+    overflow: hidden;
+  }
+  .compare-card-label {
+    padding: 8px 12px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+  .compare-card-label.before { background: rgba(220,38,38,0.08); color: #991b1b; }
+  .compare-card-label.after { background: rgba(99,102,241,0.12); color: #6366f1; }
+  .compare-card-body { padding: 16px; background: #080e22; display: flex; flex-direction: column; gap: 12px; }
+
+  /* OLD button style */
+  .old-nav-wrap { display: flex; align-items: center; justify-content: center; gap: 8px; }
+  .old-btn-prev {
+    width: 38px; height: 32px; border-radius: 50%;
+    border: 1px solid rgba(220,38,38,0.22);
+    background: rgba(220,38,38,0.12);
+    color: #b91c1c;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; font-weight: 700;
+  }
+  .old-btn-toggle {
+    width: 42px; height: 32px; border-radius: 10px;
+    border: 1px solid rgba(15,23,42,0.16);
+    background: rgba(15,23,42,0.08);
+    color: #475569;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px;
+  }
+  .old-btn-next {
+    width: 38px; height: 32px; border-radius: 50%;
+    border: 1px solid rgba(22,163,74,0.22);
+    background: rgba(22,163,74,0.12);
+    color: #15803d;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; font-weight: 700;
+  }
+  .old-chip {
+    height: 30px; border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.1);
+    background: rgba(255,255,255,0.06);
+    color: #334155; font-size: 11px; font-weight: 600;
+    padding: 0 10px; display: inline-flex; align-items: center;
+  }
+  .old-chip.on { background: rgba(220,38,38,0.14); border-color: rgba(220,38,38,0.3); color: #dc2626; }
+
+  /* NEW button style — small demo */
+  .new-nav-wrap { display: flex; align-items: center; justify-content: center; gap: 10px; }
+  .new-btn {
+    width: 44px; height: 38px; border-radius: 12px;
+    border: 1px solid rgba(255,255,255,0.10);
+    background: rgba(255,255,255,0.06);
+    color: #94a3b8;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .new-btn.play {
+    width: 56px;
+    background: rgba(99,102,241,0.18);
+    border-color: rgba(99,102,241,0.35);
+    color: #a5b4fc;
+  }
+  .new-btn svg { width: 18px; height: 18px; }
+
+  .old-chips-row, .new-chips-row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .new-chip {
+    height: 30px; border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.09);
+    background: rgba(255,255,255,0.05);
+    color: #64748b; font-size: 11px; font-weight: 600;
+    padding: 0 10px; display: inline-flex; align-items: center; gap: 5px;
+  }
+  .new-chip.on {
+    background: rgba(99,102,241,0.18);
+    border-color: rgba(99,102,241,0.32);
+    color: #a5b4fc;
+  }
+  .chip-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════════════════ -->
+<!-- COLUMN 1: FULL PHONE — CURRENT STATE (collapsed dict) -->
+<!-- ══════════════════════════════════════════════════════════════════ -->
+<div class="mockup-col">
+  <p class="col-label">State A — Normal (dictionary collapsed)</p>
+  <div class="phone" style="height: 720px;">
+    <div class="status-bar">
+      <span>9:41</span>
+      <span>●●● 5G 🔋</span>
+    </div>
+
+    <!-- NEW TOP TOOLBAR -->
+    <div class="yt-head">
+      <!-- back arrow -->
+      <div class="yt-back-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="15 18 9 12 15 6"/>
+        </svg>
+      </div>
+
+      <!-- chip strip -->
+      <div class="yt-chips">
+        <div class="yt-chip is-on">
+          <span class="yt-chip-dot"></span>Overlay
+        </div>
+        <div class="yt-chip">
+          <span class="yt-chip-dot"></span>RU
+        </div>
+        <div class="yt-chip">
+          Untertitel laden
+        </div>
+        <div class="yt-chip">
+          Vollbild
+        </div>
+      </div>
+
+      <!-- settings -->
+      <div class="yt-settings-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- VIDEO PLAYER -->
+    <div class="yt-player-wrap">
+      <div class="yt-player-thumb">
+        <div class="yt-play-circle">
+          <svg viewBox="0 0 24 24" fill="currentColor" style="width:22px;height:22px;margin-left:2px">
+            <polygon points="5 3 19 12 5 21 5 3"/>
+          </svg>
+        </div>
+        <span>Deutsch lernen — B2 Niveau</span>
+      </div>
+    </div>
+
+    <!-- NAV BUTTONS — NEW DESIGN -->
+    <div class="yt-nav-bar">
+      <div class="yt-nav-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="19 20 9 12 19 4"/><line x1="5" y1="4" x2="5" y2="20"/>
+        </svg>
+      </div>
+      <div class="yt-nav-btn is-play">
+        <svg viewBox="0 0 24 24" fill="currentColor" style="width:20px;height:20px">
+          <polygon points="5 3 19 12 5 21 5 3"/>
+        </svg>
+      </div>
+      <div class="yt-nav-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="5 4 15 12 5 20"/><line x1="19" y1="4" x2="19" y2="20"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- SUBTITLES CARD -->
+    <div class="yt-subs-card">
+      <div class="yt-subs-head">
+        <div class="yt-subs-badge">DE</div>
+        <div class="yt-subs-nav">
+          <div class="yt-subs-nav-btn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="19 20 9 12 19 4"/><line x1="5" y1="4" x2="5" y2="20"/>
+            </svg>
+          </div>
+          <div class="yt-subs-nav-btn is-play">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <polygon points="5 3 19 12 5 21 5 3"/>
+            </svg>
+          </div>
+          <div class="yt-subs-nav-btn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="5 4 15 12 5 20"/><line x1="19" y1="4" x2="19" y2="20"/>
+            </svg>
+          </div>
+        </div>
+      </div>
+      <div class="yt-subs-body">
+        <p class="yt-subs-line">Heute sprechen wir über die deutsche</p>
+        <p class="yt-subs-line">Geschichte und wie sie das moderne</p>
+        <p class="yt-subs-line is-active">Die <span class="word-tapped">Wiedervereinigung</span> war ein <span class="word">historischer</span></p>
+        <p class="yt-subs-line">Moment für das ganze Land und Europa.</p>
+        <p class="yt-subs-line">Viele Menschen erinnern sich noch heute</p>
+      </div>
+    </div>
+
+    <!-- FLOATING DICTIONARY PILL (collapsed) -->
+    <div class="yt-dict-fab">
+      <div class="yt-dict-pill">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+          <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- BOTTOM NAV -->
+    <div class="bottom-nav">
+      <div class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+        <span>Home</span>
+      </div>
+      <div class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+        <span>Lernen</span>
+      </div>
+      <div class="nav-item active">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M22.54 6.42a2.78 2.78 0 0 0-1.95-1.96C18.88 4 12 4 12 4s-6.88 0-8.59.46a2.78 2.78 0 0 0-1.95 1.96A29 29 0 0 0 1 12a29 29 0 0 0 .46 5.58A2.78 2.78 0 0 0 3.41 19.6C5.12 20 12 20 12 20s6.88 0 8.59-.46a2.78 2.78 0 0 0 1.95-1.95A29 29 0 0 0 23 12a29 29 0 0 0-.46-5.58z"/><polygon fill="#080e22" points="9.75 15.02 15.5 12 9.75 8.98 9.75 15.02"/></svg>
+        <span>YouTube</span>
+      </div>
+      <div class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+        <span>Lesen</span>
+      </div>
+      <div class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        <span>Profil</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════ -->
+<!-- COLUMN 2: FULL PHONE — DICTIONARY EXPANDED STATE -->
+<!-- ══════════════════════════════════════════════════════════════════ -->
+<div class="mockup-col">
+  <p class="col-label">State B — Dictionary widget expanded (draggable)</p>
+  <div class="phone" style="height: 720px; position: relative;">
+    <div class="status-bar">
+      <span>9:41</span>
+      <span>●●● 5G 🔋</span>
+    </div>
+
+    <!-- TOP TOOLBAR (same) -->
+    <div class="yt-head">
+      <div class="yt-back-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="15 18 9 12 15 6"/>
+        </svg>
+      </div>
+      <div class="yt-chips">
+        <div class="yt-chip is-on"><span class="yt-chip-dot"></span>Overlay</div>
+        <div class="yt-chip"><span class="yt-chip-dot"></span>RU</div>
+        <div class="yt-chip">Untertitel laden</div>
+        <div class="yt-chip">Vollbild</div>
+      </div>
+      <div class="yt-settings-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- VIDEO (slightly dimmed while dict open) -->
+    <div class="yt-player-wrap" style="opacity:0.55;">
+      <div class="yt-player-thumb">
+        <div class="yt-play-circle">
+          <svg viewBox="0 0 24 24" fill="currentColor" style="width:22px;height:22px;margin-left:2px"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        </div>
+        <span>Deutsch lernen — B2 Niveau</span>
+      </div>
+    </div>
+
+    <!-- NAV BAR (slightly dimmed) -->
+    <div class="yt-nav-bar" style="opacity:0.5;">
+      <div class="yt-nav-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="19 20 9 12 19 4"/><line x1="5" y1="4" x2="5" y2="20"/>
+        </svg>
+      </div>
+      <div class="yt-nav-btn is-play">
+        <svg viewBox="0 0 24 24" fill="currentColor" style="width:20px;height:20px"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+      </div>
+      <div class="yt-nav-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="5 4 15 12 5 20"/><line x1="19" y1="4" x2="19" y2="20"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- FLOATING DICTIONARY — EXPANDED -->
+    <div class="yt-dict-expanded">
+      <!-- drag handle row -->
+      <div class="yt-dict-handle">
+        <div class="yt-dict-handle-dots">
+          <span></span><span></span><span></span><span></span><span></span><span></span>
+        </div>
+        <div class="yt-dict-title">Wörterbuch</div>
+        <div class="yt-dict-close">×</div>
+      </div>
+
+      <!-- search row (pre-filled with tapped word) -->
+      <div class="yt-dict-search">
+        <div class="yt-dict-input-wrap">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <input class="yt-dict-input" value="Wiedervereinigung" readonly/>
+        </div>
+      </div>
+
+      <!-- result -->
+      <div class="yt-dict-result">
+        <div class="yt-dict-word-row">
+          <span class="yt-dict-word">Wiedervereinigung</span>
+          <span class="yt-dict-pos">das Subst.</span>
+        </div>
+        <div class="yt-dict-translation">воссоединение; объединение (напр. Германии)</div>
+        <div class="yt-dict-tags">
+          <span class="yt-dict-tag">C1</span>
+          <span class="yt-dict-tag">Geschichte</span>
+          <span class="yt-dict-tag">Politik</span>
+        </div>
+        <div class="yt-dict-actions">
+          <button class="yt-dict-save-btn">+ In Vokabeln speichern</button>
+          <div class="yt-dict-more-btn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px">
+              <circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>
+            </svg>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Subs card partially visible below the dict -->
+    <div style="margin: 0 12px; border-radius: 18px; border: 1px solid var(--yt-border); background: var(--yt-bg-card); padding: 10px 14px; opacity: 0.4;">
+      <div class="yt-subs-line is-active" style="font-size:13px;">Die <span class="word-tapped">Wiedervereinigung</span> war ein historischer…</div>
+    </div>
+
+    <!-- BOTTOM NAV -->
+    <div class="bottom-nav">
+      <div class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+        <span>Home</span>
+      </div>
+      <div class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+        <span>Lernen</span>
+      </div>
+      <div class="nav-item active">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M22.54 6.42a2.78 2.78 0 0 0-1.95-1.96C18.88 4 12 4 12 4s-6.88 0-8.59.46a2.78 2.78 0 0 0-1.95 1.96A29 29 0 0 0 1 12a29 29 0 0 0 .46 5.58A2.78 2.78 0 0 0 3.41 19.6C5.12 20 12 20 12 20s6.88 0 8.59-.46a2.78 2.78 0 0 0 1.95-1.95A29 29 0 0 0 23 12a29 29 0 0 0-.46-5.58z"/><polygon fill="#080e22" points="9.75 15.02 15.5 12 9.75 8.98 9.75 15.02"/></svg>
+        <span>YouTube</span>
+      </div>
+      <div class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+        <span>Lesen</span>
+      </div>
+      <div class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        <span>Profil</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════ -->
+<!-- COLUMN 3: BEFORE / AFTER COMPARISON -->
+<!-- ══════════════════════════════════════════════════════════════════ -->
+<div class="mockup-col">
+  <p class="col-label">Before / After comparison</p>
+  <div class="compare-wrap">
+
+    <!-- NAV BUTTONS -->
+    <div class="compare-card">
+      <div class="compare-card-label before">БЫЛО — Player nav buttons</div>
+      <div class="compare-card-body">
+        <div class="old-nav-wrap">
+          <div class="old-btn-prev">←</div>
+          <div class="old-btn-toggle">▶</div>
+          <div class="old-btn-next">→</div>
+        </div>
+        <div style="font-size:11px; color:#475569; line-height:1.4; margin-top:4px;">
+          Разные цвета (красный / зелёный), круглые кнопки — выглядит несерьёзно
+        </div>
+      </div>
+    </div>
+
+    <div class="compare-card">
+      <div class="compare-card-label after">СТАЛО — Player nav buttons</div>
+      <div class="compare-card-body">
+        <div class="new-nav-wrap">
+          <div class="new-btn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="19 20 9 12 19 4"/><line x1="5" y1="4" x2="5" y2="20"/>
+            </svg>
+          </div>
+          <div class="new-btn play">
+            <svg viewBox="0 0 24 24" fill="currentColor" style="width:20px;height:20px"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          </div>
+          <div class="new-btn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="5 4 15 12 5 20"/><line x1="19" y1="4" x2="19" y2="20"/>
+            </svg>
+          </div>
+        </div>
+        <div style="font-size:11px; color:#475569; line-height:1.4; margin-top:4px;">
+          Единый стиль, SVG иконки, Play акцентный (indigo glow), все одного размера
+        </div>
+      </div>
+    </div>
+
+    <!-- CHIPS -->
+    <div class="compare-card">
+      <div class="compare-card-label before">БЫЛО — Chips</div>
+      <div class="compare-card-body">
+        <div class="old-chips-row">
+          <div class="old-chip on">Overlay: ON</div>
+          <div class="old-chip">RU: OFF</div>
+          <div class="old-chip" style="font-size:10px;">Загрузить субтитры</div>
+          <div class="old-chip" style="font-size:10px;">Full screen: OFF</div>
+        </div>
+        <div style="font-size:11px; color:#475569; line-height:1.4; margin-top:4px;">
+          Нет иерархии, ON/OFF всегда в тексте, слишком длинные метки
+        </div>
+      </div>
+    </div>
+
+    <div class="compare-card">
+      <div class="compare-card-label after">СТАЛО — Chips</div>
+      <div class="compare-card-body">
+        <div class="new-chips-row">
+          <div class="new-chip on"><span class="chip-dot"></span>Overlay</div>
+          <div class="new-chip"><span class="chip-dot"></span>RU</div>
+          <div class="new-chip">Untertitel laden</div>
+          <div class="new-chip">Vollbild</div>
+        </div>
+        <div style="font-size:11px; color:#475569; line-height:1.4; margin-top:4px;">
+          Цветная точка = состояние, короткие метки, ⚙️ шестерня для остального
+        </div>
+      </div>
+    </div>
+
+    <!-- DICT WIDGET -->
+    <div class="compare-card">
+      <div class="compare-card-label before">БЫЛО — Словарь</div>
+      <div class="compare-card-body">
+        <div style="font-size:13px; color:#64748b; font-style:italic;">
+          Словаря нет совсем — нельзя искать слово пока смотришь видео
+        </div>
+      </div>
+    </div>
+
+    <div class="compare-card">
+      <div class="compare-card-label after">СТАЛО — Словарь</div>
+      <div class="compare-card-body" style="gap:8px;">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <!-- mini pill demo -->
+          <div style="width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,rgba(99,102,241,0.85),rgba(79,70,229,0.92));display:flex;align-items:center;justify-content:center;flex:0 0 36px;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" style="width:18px;height:18px;stroke-linecap:round">
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+            </svg>
+          </div>
+          <div style="font-size:11px; color:#475569; line-height:1.4;">
+            Кнопка-пилюля в правом нижнем углу. Нажать — раскроется карточка слова поверх интерфейса. Перетаскивается.
+          </div>
+        </div>
+        <div style="font-size:11px; color:#475569; line-height:1.4;">
+          Тап на слове в субтитрах → автоматически открывает виджет и вставляет слово в поиск.
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+</body>
+</html>

@@ -19916,6 +19916,13 @@ function AppInner() {
     const previewMeta = youtubeDragSelectionMetaRef.current;
     const touch = event?.changedTouches?.[0];
     if (gesture?.active && gesture.moved && previewMeta?.wordCount >= 2) {
+      if (youtubeDictOpen) {
+        void lookupYoutubeDict(previewMeta.text);
+        youtubeSuppressWordTapRef.current = Date.now();
+        youtubeSuppressSentenceTapRef.current = Date.now();
+        resetYoutubePhraseGesture(false);
+        return;
+      }
       const selectionEvent = touch
         ? { clientX: touch.clientX, clientY: touch.clientY }
         : event;
@@ -19943,6 +19950,10 @@ function AppInner() {
     }
     const normalized = normalizeSubtitleText(text);
     if (!normalized) return;
+    if (youtubeDictOpen) {
+      void lookupYoutubeDict(normalized);
+      return;
+    }
     handleSelection(event, normalized, {
       compact: true,
       inlineLookup: true,
@@ -25799,7 +25810,11 @@ function AppInner() {
               <div className={`webapp-video-dictionary ${videoExpanded ? 'is-split' : ''}`}>
                 {isSectionVisible('youtube') && (
                   <PerfProfiler id="section.youtube">
-                    <section className={`webapp-video youtube-player-first ${youtubeLearningMode ? 'is-learning' : 'is-setup'} ${youtubeAppFullscreen ? 'is-app-fullscreen-active' : ''}`} ref={youtubeRef}>
+                    <section
+                      className={`webapp-video youtube-player-first ${youtubeLearningMode ? 'is-learning' : 'is-setup'} ${youtubeAppFullscreen ? 'is-app-fullscreen-active' : ''}`}
+                      ref={youtubeRef}
+                      data-no-edge-swipe="true"
+                    >
                     <div className="webapp-local-section-head youtube-player-first-head">
                       <div className="youtube-desktop-command-bar">
                         <div className="youtube-desktop-command-row youtube-desktop-command-row-top">
