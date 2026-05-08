@@ -17105,71 +17105,60 @@ def _build_translation_focus_pool_admin_report_png(
     return buff.getvalue()
 
 
-def _build_translation_focus_pool_admin_report_text(
+def _build_translation_focus_pool_admin_report_caption(
     *,
     rows: list[dict[str, Any]],
     summary: dict[str, Any],
     snapshot_date: date,
     tz_name: str,
 ) -> str:
-    ordered_themes = _build_translation_focus_pool_report_themes(
-        rows,
-        top_limit=max(1, len(rows or [])),
-    )
+    """Build a Telegram photo caption (≤1024 chars) with key KPIs and top deficit themes."""
+    total_today = int(summary.get("total_today") or 0)
+    total_yesterday = int(summary.get("total_yesterday") or 0)
+    delta_total = int(summary.get("delta_total") or 0)
+    at_target = int(summary.get("at_or_above_target") or 0)
+    with_target = int(summary.get("with_target") or 0)
+    below_target = max(0, with_target - at_target)
+    delta_sign = "+" if delta_total >= 0 else ""
+    src = str(summary.get("source_lang") or "RU").upper()
+    tgt = str(summary.get("target_lang") or "DE").upper()
     readiness = summary.get("readiness") if isinstance(summary.get("readiness"), dict) else {}
-    header_lines = [
-        "📊 Translation focus pool report",
-        f"Date: {snapshot_date.isoformat()} ({tz_name})",
-        f"Pair: {str(summary.get('source_lang') or '').upper()} -> {str(summary.get('target_lang') or '').upper()}",
-        (
-            f"Total ready now: {int(summary.get('total_today') or 0)} | "
-            f"Yesterday: {int(summary.get('total_yesterday') or 0)} | "
-            f"Delta: {int(summary.get('delta_total') or 0):+d}"
-        ),
-        (
-            f"Buckets at/above target: {int(summary.get('at_or_above_target') or 0)}/"
-            f"{int(summary.get('with_target') or 0)} | "
-            f"Rows: {int(summary.get('rows') or 0)}"
-        ),
+
+    lines: list[str] = [
+        f"📊 Translation pool · {snapshot_date.isoformat()} ({tz_name})",
+        f"{src} → {tgt}  ·  Сегодня: {total_today}  |  Вчера: {total_yesterday}  |  Δ {delta_sign}{delta_total}",
+        f"Buckets ✅: {at_target}/{with_target}  ·  Ниже цели: {below_target}",
     ]
     if readiness:
-        header_lines.append(
-            (
-                f"Readiness {int(readiness.get('lookback_days') or 0)}d: "
-                f"sessions={int(readiness.get('sessions_started') or 0)}, "
-                f"zero-ready={float(readiness.get('ready_count_eq_0_pct') or 0.0) * 100:.1f}%, "
-                f"fill-required={float(readiness.get('background_fill_required_rate') or 0.0) * 100:.1f}%"
-            )
-        )
+        zero_pct = float(readiness.get("ready_count_eq_0_pct") or 0.0) * 100
+        fill_pct = float(readiness.get("background_fill_required_rate") or 0.0) * 100
+        lines.append(f"Readiness: zero-ready {zero_pct:.0f}%  ·  fill-required {fill_pct:.0f}%")
     if bool(summary.get("missing_previous_snapshot")):
-        header_lines.append("Note: yesterday snapshot was missing; delta is compared to zero baseline.")
+        lines.append("⚠️ Снэпшот вчерашнего дня отсутствует — дельта от нулевой базы")
 
-    body_lines: list[str] = []
-    for theme_index, theme in enumerate(ordered_themes, start=1):
-        body_lines.append(
-            (
-                f"{theme_index}. {str(theme.get('focus_label') or '').strip()} | "
-                f"today {int(theme.get('today_total') or 0)} | "
-                f"yesterday {int(theme.get('yesterday_total') or 0)} | "
-                f"delta {int(theme.get('delta_total') or 0):+d} | "
-                f"gap {int(theme.get('deficit_total') or 0)}"
-            )
-        )
-        for level_row in list(theme.get("levels") or []):
-            level = str(level_row.get("level") or "").strip().upper() or "?"
-            today_ready = int(level_row.get("today_ready") or 0)
-            yesterday_ready = int(level_row.get("yesterday_ready") or 0)
-            delta_value = int(level_row.get("delta") or 0)
-            target_ready = int(level_row.get("target_ready") or 0)
-            low_watermark = int(level_row.get("low_watermark") or 0)
-            body_lines.append(
-                (
-                    f"   {level}: today {today_ready} | yesterday {yesterday_ready} | "
-                    f"delta {delta_value:+d} | low {low_watermark} | target {target_ready}"
-                )
-            )
+    # Top deficit themes (most urgent first)
+    all_themes = _build_translation_focus_pool_report_themes(rows, top_limit=max(1, len(rows or [])))
+    deficit_themes = [t for t in all_themes if int(t.get("deficit_total") or 0) > 0]
+    if deficit_themes:
+        lines.append("")
+        lines.append("🔴 Дефицит (топ тем):")
+        budget = 1024 - sum(len(ln) + 1 for ln in lines) - 40
+        for theme in deficit_themes[:8]:
+            label = str(theme.get("focus_label") or theme.get("focus_key") or "?").strip()[:28]
+            deficit = int(theme.get("deficit_total") or 0)
+            today_t = int(theme.get("today_total") or 0)
+            target_t = int(theme.get("target_total") or 0)
+            delta_t = int(theme.get("delta_total") or 0)
+            d_sign = "+" if delta_t >= 0 else ""
+            entry = f"  {label}: {today_t}/{target_t}  Δ {d_sign}{delta_t}  gap −{deficit}"
+            if budget - len(entry) < 0:
+                lines.append("  ...")
+                break
+            lines.append(entry)
+            budget -= len(entry) + 1
 
-    return "\n".join(header_lines + ["", "Per theme / level:", *body_lines]).strip()
+    caption = "\n".join(lines)
+    return caption[:1020]
 
 
 def _send_translation_focus_pool_admin_report(*, force: bool = False) -> dict[str, Any]:
@@ -17239,31 +17228,21 @@ def _send_translation_focus_pool_admin_report(*, force: bool = False) -> dict[st
             snapshot_date=snapshot_date,
             tz_name=tz_name,
         )
-        report_text = _build_translation_focus_pool_admin_report_text(
+        if chart_png is None:
+            logging.warning(
+                "translation_focus_pool_admin_report: chart_png is None — matplotlib unavailable or rows empty. "
+                "Falling back to text-only report."
+            )
+        caption = _build_translation_focus_pool_admin_report_caption(
             rows=rows,
             summary=summary,
             snapshot_date=snapshot_date,
             tz_name=tz_name,
         )
-        caption = (
-            f"📊 Translation focus pool\n"
-            f"Date: {run_period}\n"
-            f"Pair: {str(summary.get('source_lang') or '').upper()} -> {str(summary.get('target_lang') or '').upper()}\n"
-            f"Today: {int(summary.get('total_today') or 0)} | "
-            f"Yesterday: {int(summary.get('total_yesterday') or 0)} | "
-            f"Delta: {int(summary.get('delta_total') or 0):+d}"
-        )
         sent = 0
         photo_sent = 0
         errors: list[str] = []
         for admin_id in admin_ids:
-            try:
-                _send_private_message_chunks(int(admin_id), report_text, limit=3500)
-                sent += 1
-            except Exception as exc:
-                errors.append(f"admin {admin_id} text: {exc}")
-                logging.warning("Failed to send translation focus pool text report admin_id=%s", admin_id, exc_info=True)
-                continue
             try:
                 if chart_png:
                     _send_private_photo(
@@ -17272,12 +17251,13 @@ def _send_translation_focus_pool_admin_report(*, force: bool = False) -> dict[st
                         filename=f"translation_focus_pool_{run_period}.png",
                         caption=caption,
                     )
+                    photo_sent += 1
                 else:
                     _send_private_message(int(admin_id), caption)
-                photo_sent += 1
+                sent += 1
             except Exception as exc:
-                errors.append(f"admin {admin_id} photo: {exc}")
-                logging.warning("Failed to send translation focus pool report photo admin_id=%s", admin_id, exc_info=True)
+                errors.append(f"admin {admin_id}: {exc}")
+                logging.warning("Failed to send translation focus pool report admin_id=%s", admin_id, exc_info=True)
         result = {
             "ok": not errors,
             "sent": sent,
