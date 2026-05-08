@@ -1287,6 +1287,7 @@ _BACKEND_SCHEMA_BOOTSTRAP_ON_STARTUP_ENABLED = str(
     os.getenv("BACKEND_SCHEMA_BOOTSTRAP_ON_STARTUP_ENABLED", "0")
 ).strip().lower() in {"1", "true", "yes", "on"}
 _WEBAPP_STARTUP_BOOTSTRAP_MARKER_NAME = "webapp_tables_startup_bootstrap"
+_WEBAPP_STARTUP_BOOTSTRAP_MARKER_STORE_LOCK_KEY = 94081016
 _WEBAPP_STARTUP_BOOTSTRAP_OWNER_LOCK_KEY = 94081017
 _WEBAPP_STARTUP_BOOTSTRAP_WAIT_TIMEOUT_MS = max(
     1000,
@@ -1305,6 +1306,7 @@ def _normalize_runtime_service_name(value: str | None) -> str:
 _STARTUP_PHASE_RECORDS: list[dict[str, Any]] = []
 _STARTUP_PHASE_RECORDS_LOCK = threading.Lock()
 _STARTUP_PHASE_CONTEXT = threading.local()
+_STARTUP_BOOTSTRAP_MARKER_STORE_READY = False
 
 
 def _startup_enabled_from_env(name: str, default: str = "0") -> bool:
@@ -1558,6 +1560,13 @@ def _ensure_startup_bootstrap_markers_table(conn) -> None:
     conn.commit()
 
 
+def _startup_bootstrap_marker_store_exists(conn) -> bool:
+    with conn.cursor() as cursor:
+        cursor.execute("SELECT to_regclass('public.bt_3_startup_bootstrap_markers');")
+        row = cursor.fetchone()
+    return bool(row and row[0])
+
+
 def _fetch_startup_bootstrap_marker(conn, bootstrap_name: str) -> dict[str, Any] | None:
     with conn.cursor() as cursor:
         cursor.execute(
@@ -1703,6 +1712,98 @@ def _emit_startup_schema_bootstrap_election(
     _log_startup_structured(payload, level=logging.INFO if success else logging.WARNING)
 
 
+def _emit_startup_marker_store_provisioning(
+    *,
+    role: str,
+    duration_ms: int,
+    lock_acquired: bool,
+    success: bool,
+    exception: Exception | None = None,
+) -> None:
+    payload: dict[str, Any] = {
+        "event": "startup_marker_store_provisioning",
+        "role": role,
+        "pid": os.getpid(),
+        "service": _startup_service_name(),
+        "worker": _startup_worker_info(),
+        "duration_ms": int(duration_ms),
+        "lock_acquired": bool(lock_acquired),
+        "success": bool(success),
+        "marker_store": "bt_3_startup_bootstrap_markers",
+    }
+    if exception is not None:
+        payload["error_type"] = exception.__class__.__name__
+        payload["error_message"] = str(exception)
+    _log_startup_structured(payload, level=logging.INFO if success else logging.WARNING)
+
+
+def _ensure_startup_bootstrap_marker_store_ready(conn) -> None:
+    global _STARTUP_BOOTSTRAP_MARKER_STORE_READY
+    started_perf = time.perf_counter()
+    if _STARTUP_BOOTSTRAP_MARKER_STORE_READY:
+        _emit_startup_marker_store_provisioning(
+            role="already_ready",
+            duration_ms=int((time.perf_counter() - started_perf) * 1000),
+            lock_acquired=False,
+            success=True,
+        )
+        return
+
+    role = "provision_waiter"
+    lock_acquired = False
+    lock_held = False
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT pg_try_advisory_lock(%s::bigint);",
+                (_WEBAPP_STARTUP_BOOTSTRAP_MARKER_STORE_LOCK_KEY,),
+            )
+            lock_acquired = bool((cursor.fetchone() or [False])[0])
+        lock_held = lock_acquired
+
+        if lock_acquired:
+            role = "provision_owner"
+            _ensure_startup_bootstrap_markers_table(conn)
+        else:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT pg_advisory_lock(%s::bigint);",
+                    (_WEBAPP_STARTUP_BOOTSTRAP_MARKER_STORE_LOCK_KEY,),
+                )
+            lock_held = True
+            if not _startup_bootstrap_marker_store_exists(conn):
+                raise RuntimeError(
+                    "Startup bootstrap marker store missing after provisioning wait"
+                )
+        _STARTUP_BOOTSTRAP_MARKER_STORE_READY = True
+        _emit_startup_marker_store_provisioning(
+            role=role,
+            duration_ms=int((time.perf_counter() - started_perf) * 1000),
+            lock_acquired=lock_acquired,
+            success=True,
+        )
+    except Exception as exc:
+        _emit_startup_marker_store_provisioning(
+            role=role,
+            duration_ms=int((time.perf_counter() - started_perf) * 1000),
+            lock_acquired=lock_acquired,
+            success=False,
+            exception=exc,
+        )
+        raise
+    finally:
+        if lock_held:
+            try:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT pg_advisory_unlock(%s::bigint);",
+                        (_WEBAPP_STARTUP_BOOTSTRAP_MARKER_STORE_LOCK_KEY,),
+                    )
+                conn.commit()
+            except Exception:
+                logging.exception("Failed to unlock startup bootstrap marker store advisory lock")
+
+
 def _is_retryable_schema_bootstrap_error(exc: Exception) -> bool:
     message = str(exc or "").strip().lower()
     return "deadlock detected" in message or "could not obtain lock" in message
@@ -1769,7 +1870,7 @@ def _coordinated_startup_bootstrap_backend_schema_or_raise() -> None:
 
     try:
         with get_db_connection_context() as conn:
-            _ensure_startup_bootstrap_markers_table(conn)
+            _ensure_startup_bootstrap_marker_store_ready(conn)
             marker = _fetch_startup_bootstrap_marker(conn, _WEBAPP_STARTUP_BOOTSTRAP_MARKER_NAME)
             if _is_valid_completed_marker(marker):
                 _BACKEND_SCHEMA_READY = True
@@ -1942,7 +2043,6 @@ def _coordinated_startup_bootstrap_backend_schema_or_raise() -> None:
         last_marker: dict[str, Any] | None = None
         while time.perf_counter() < deadline_perf:
             with get_db_connection_context() as wait_conn:
-                _ensure_startup_bootstrap_markers_table(wait_conn)
                 last_marker = _fetch_startup_bootstrap_marker(wait_conn, _WEBAPP_STARTUP_BOOTSTRAP_MARKER_NAME)
             if _is_valid_completed_marker(last_marker):
                 waited_for_owner_ms = int((time.perf_counter() - started_perf) * 1000)
