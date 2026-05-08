@@ -20090,7 +20090,9 @@ function AppInner() {
     const numericAnchorIndex = Number(anchorIndex);
     const numericCurrentIndex = Number(currentIndex);
     if (!Number.isInteger(numericLineIndex) || numericLineIndex < 0) return null;
-    const rawText = String(youtubeTranscript[numericLineIndex]?.text || '').trim();
+    // lineIndex refers to position in youtubeSubtitleDisplayRows (merged display rows),
+    // not the raw transcript — word indices must match what was actually rendered.
+    const rawText = String(youtubeSubtitleDisplayRows[numericLineIndex]?.targetText || '').trim();
     const normalized = normalizeSubtitleText(rawText);
     if (!normalized) return null;
     const words = normalized.split(/\s+/).filter(Boolean);
@@ -20107,7 +20109,7 @@ function AppInner() {
       wordCount: selectedWords.length,
       text: selectedWords.join(' '),
     };
-  }, [youtubeTranscript]);
+  }, [youtubeSubtitleDisplayRows]);
 
   const resetYoutubePhraseGesture = (clearMeta = true) => {
     youtubePhraseGestureRef.current = null;
@@ -26483,13 +26485,13 @@ function AppInner() {
                                 onTouchCancel={handleYoutubeSubtitlesTouchCancel}
                               >
                                 {(() => {
-                                  return youtubeSubtitleDisplayRows.map((row) => (
+                                  return youtubeSubtitleDisplayRows.map((row, rowIndex) => (
                                     <p
                                       key={row.key}
                                       className={row.isActive ? 'is-active' : ''}
                                       onClick={(event) => openYoutubeSentenceSelection(event, row.targetText, 'youtube_sentence')}
                                     >
-                                      {renderSubtitleText(row.targetText, 'youtube_word')}
+                                      {renderSubtitleText(row.targetText, 'youtube_word', rowIndex)}
                                     </p>
                                   ));
                                 })()}
