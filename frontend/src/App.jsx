@@ -4686,6 +4686,9 @@ function AppInner() {
   const ttsPlaybackSeqRef = useRef(0);
   const dictionaryLookupPollTokenRef = useRef(0);
   const analyticsScopeRequestRef = useRef(null);
+  const analyticsSummaryRequestIdRef = useRef(0);
+  const analyticsTimeseriesRequestIdRef = useRef(0);
+  const analyticsCompareRequestIdRef = useRef(0);
   const translationActivityRunningRef = useRef(false);
   const translationActivityInFlightRef = useRef(false);
   const translationActivitySessionRef = useRef('');
@@ -23039,6 +23042,8 @@ function AppInner() {
       setAnalyticsError(initDataMissingMsg);
       return;
     }
+    const requestId = analyticsSummaryRequestIdRef.current + 1;
+    analyticsSummaryRequestIdRef.current = requestId;
     setAnalyticsLoading(true);
     setAnalyticsError('');
     try {
@@ -23049,12 +23054,21 @@ function AppInner() {
         throw new Error(await readApiError(summaryResponse, 'Ошибка загрузки аналитики', 'Fehler beim Laden der Analytik'));
       }
       const summaryData = await summaryResponse.json();
+      if (analyticsSummaryRequestIdRef.current !== requestId) {
+        return;
+      }
       setAnalyticsSummary(summaryData.summary || null);
+      setAnalyticsError('');
     } catch (error) {
+      if (analyticsSummaryRequestIdRef.current !== requestId) {
+        return;
+      }
       const friendly = normalizeNetworkErrorMessage(error, 'Не удалось загрузить аналитику.', 'Analytik konnte nicht geladen werden.');
       setAnalyticsError(`${tr('Ошибка аналитики', 'Analytikfehler')}: ${friendly}`);
     } finally {
-      setAnalyticsLoading(false);
+      if (analyticsSummaryRequestIdRef.current === requestId) {
+        setAnalyticsLoading(false);
+      }
     }
   }, [
     initData,
@@ -23070,6 +23084,8 @@ function AppInner() {
     if (!initData) {
       return null;
     }
+    const requestId = analyticsTimeseriesRequestIdRef.current + 1;
+    analyticsTimeseriesRequestIdRef.current = requestId;
     try {
       const { granularity, personalPayloadBase } = resolveAnalyticsLoadContext(overridePeriod, overrideScopeKey, overrideRange);
       const response = await postJsonWithRetry('/api/webapp/analytics/timeseries', { ...personalPayloadBase, granularity });
@@ -23077,9 +23093,16 @@ function AppInner() {
         throw new Error(await readApiError(response, 'Ошибка загрузки динамики', 'Fehler beim Laden des Verlaufs'));
       }
       const data = await response.json();
+      if (analyticsTimeseriesRequestIdRef.current !== requestId) {
+        return null;
+      }
       setAnalyticsPoints(data.points || []);
+      setAnalyticsError('');
       return data;
     } catch (error) {
+      if (analyticsTimeseriesRequestIdRef.current !== requestId) {
+        return null;
+      }
       const friendly = normalizeNetworkErrorMessage(error, 'Не удалось загрузить динамику.', 'Verlauf konnte nicht geladen werden.');
       setAnalyticsError(`${tr('Ошибка аналитики', 'Analytikfehler')}: ${friendly}`);
       return null;
@@ -23097,6 +23120,8 @@ function AppInner() {
     if (!initData) {
       return null;
     }
+    const requestId = analyticsCompareRequestIdRef.current + 1;
+    analyticsCompareRequestIdRef.current = requestId;
     try {
       const { payloadBase, scope } = resolveAnalyticsLoadContext(overridePeriod, overrideScopeKey, overrideRange);
       const response = await postJsonWithRetry('/api/webapp/analytics/compare', { ...payloadBase, limit: 8 });
@@ -23104,10 +23129,17 @@ function AppInner() {
         throw new Error(await readApiError(response, 'Ошибка загрузки сравнения', 'Fehler beim Laden des Vergleichs'));
       }
       const data = await response.json();
+      if (analyticsCompareRequestIdRef.current !== requestId) {
+        return null;
+      }
       setAnalyticsCompare(data.items || []);
       setAnalyticsRank(scope.scope_kind === 'group' ? (data.self?.rank ?? null) : null);
+      setAnalyticsError('');
       return data;
     } catch (error) {
+      if (analyticsCompareRequestIdRef.current !== requestId) {
+        return null;
+      }
       const friendly = normalizeNetworkErrorMessage(error, 'Не удалось загрузить сравнение.', 'Vergleich konnte nicht geladen werden.');
       setAnalyticsError(`${tr('Ошибка аналитики', 'Analytikfehler')}: ${friendly}`);
       return null;

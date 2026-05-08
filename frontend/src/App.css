@@ -16866,6 +16866,10 @@ body {
   border: 1px solid var(--home-border);
   background: var(--home-bg-card);
   box-shadow: var(--home-shadow-card);
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: clip;
 }
 
 .skill-report-head {
@@ -16882,6 +16886,9 @@ body {
 }
 
 .skill-rings-layout {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   gap: 24px;
 }
 
@@ -16891,6 +16898,8 @@ body {
 
 .skill-rings-canvas {
   min-height: 264px;
+  width: 100%;
+  min-width: 0;
 }
 
 .skill-rings-canvas-skeleton {
@@ -17127,6 +17136,53 @@ body {
   }
 }
 
+@media (max-width: 640px) {
+  .skill-report-panel {
+    padding: 18px 14px;
+    border-radius: 22px;
+  }
+
+  .home-panel-head-main,
+  .home-panel-head-copy,
+  .home-panel-title-row {
+    min-width: 0;
+  }
+
+  .home-panel-title-row {
+    align-items: flex-start;
+  }
+
+  .home-panel-head-actions {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .home-panel-action-btn {
+    max-width: 100%;
+  }
+
+  .skill-rings-layout {
+    gap: 18px;
+  }
+
+  .skill-rings-canvas {
+    min-height: 236px;
+  }
+
+  .skill-rings-canvas svg {
+    width: min(220px, calc(100vw - 96px));
+  }
+
+  .skill-rings-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .skill-rings-grid-item {
+    padding: 12px 9px;
+  }
+}
+
 /* Weekly plan: compact grid + modal */
 .weekly-plan-metrics-grid {
   display: grid;
@@ -17344,6 +17400,9 @@ body {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 10px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .skill-rings-grid-item {
@@ -17357,6 +17416,7 @@ body {
   cursor: pointer;
   text-align: left;
   transition: border-color 140ms ease, background 140ms ease;
+  min-width: 0;
 }
 
 .skill-rings-grid-item.is-weak {
