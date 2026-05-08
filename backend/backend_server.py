@@ -17161,10 +17161,32 @@ def _build_translation_focus_pool_admin_report_caption(
     return caption[:1020]
 
 
+def _log_translation_focus_pool_admin_report_stage(stage: str, **fields: Any) -> None:
+    payload = {
+        "event": "translation_focus_pool_admin_report_stage",
+        "stage": str(stage or "").strip() or "unknown",
+        "service": _startup_service_name(),
+        "pid": os.getpid(),
+        "worker": _startup_worker_info(),
+    }
+    for key, value in fields.items():
+        if value is not None:
+            payload[key] = value
+    _log_startup_structured(payload)
+
+
 def _send_translation_focus_pool_admin_report(*, force: bool = False) -> dict[str, Any]:
     tz_name = TRANSLATION_FOCUS_POOL_ADMIN_REPORT_TZ
     snapshot_date = _today_local_date(tz_name)
     run_period = snapshot_date.isoformat()
+    started_perf = time.perf_counter()
+    _log_translation_focus_pool_admin_report_stage(
+        "start",
+        force=bool(force),
+        snapshot_date=run_period,
+        source_lang=TRANSLATION_FOCUS_POOL_ADMIN_REPORT_SOURCE_LANG,
+        target_lang=TRANSLATION_FOCUS_POOL_ADMIN_REPORT_TARGET_LANG,
+    )
     if not force:
         if not claim_scheduler_run_guard(
             job_key="translation_focus_pool_admin_report",
@@ -17176,17 +17198,42 @@ def _send_translation_focus_pool_admin_report(*, force: bool = False) -> dict[st
                 "target_lang": TRANSLATION_FOCUS_POOL_ADMIN_REPORT_TARGET_LANG,
             },
         ):
+            _log_translation_focus_pool_admin_report_stage(
+                "skip_already_sent",
+                force=bool(force),
+                snapshot_date=run_period,
+            )
             return {"ok": True, "skipped": True, "reason": "already_sent", "snapshot_date": run_period}
 
     try:
+        rows_started_perf = time.perf_counter()
         rows, summary = _build_translation_focus_pool_report_rows(
             snapshot_date=snapshot_date,
             source_lang=TRANSLATION_FOCUS_POOL_ADMIN_REPORT_SOURCE_LANG,
             target_lang=TRANSLATION_FOCUS_POOL_ADMIN_REPORT_TARGET_LANG,
         )
+        _log_translation_focus_pool_admin_report_stage(
+            "rows_ready",
+            snapshot_date=run_period,
+            duration_ms=int((time.perf_counter() - rows_started_perf) * 1000),
+            rows=len(rows),
+            total_today=int(summary.get("total_today") or 0),
+            total_yesterday=int(summary.get("total_yesterday") or 0),
+            delta_total=int(summary.get("delta_total") or 0),
+        )
         admin_ids = sorted(int(item) for item in get_admin_telegram_ids() if int(item) > 0)
+        _log_translation_focus_pool_admin_report_stage(
+            "admin_targets_resolved",
+            snapshot_date=run_period,
+            admin_count=len(admin_ids),
+        )
         if not admin_ids:
             result = {"ok": False, "sent": 0, "reason": "no_admin_ids", "snapshot_date": run_period, **summary}
+            _log_translation_focus_pool_admin_report_stage(
+                "no_admin_ids",
+                snapshot_date=run_period,
+                duration_ms=int((time.perf_counter() - started_perf) * 1000),
+            )
             if not force:
                 finish_scheduler_run_guard(
                     job_key="translation_focus_pool_admin_report",
@@ -17212,6 +17259,13 @@ def _send_translation_focus_pool_admin_report(*, force: bool = False) -> dict[st
                 except Exception as exc:
                     errors.append(f"admin {admin_id}: {exc}")
             result = {"ok": not errors, "sent": sent, "errors": errors, "snapshot_date": run_period, **summary}
+            _log_translation_focus_pool_admin_report_stage(
+                "no_rows_sent",
+                snapshot_date=run_period,
+                sent=sent,
+                error_count=len(errors),
+                duration_ms=int((time.perf_counter() - started_perf) * 1000),
+            )
             if not force:
                 finish_scheduler_run_guard(
                     job_key="translation_focus_pool_admin_report",
@@ -17222,27 +17276,48 @@ def _send_translation_focus_pool_admin_report(*, force: bool = False) -> dict[st
                 )
             return result
 
+        chart_started_perf = time.perf_counter()
         chart_png = _build_translation_focus_pool_admin_report_png(
             rows=rows,
             summary=summary,
             snapshot_date=snapshot_date,
             tz_name=tz_name,
         )
+        _log_translation_focus_pool_admin_report_stage(
+            "chart_ready",
+            snapshot_date=run_period,
+            duration_ms=int((time.perf_counter() - chart_started_perf) * 1000),
+            chart_available=bool(chart_png),
+            chart_bytes=len(chart_png) if chart_png else 0,
+        )
         if chart_png is None:
             logging.warning(
                 "translation_focus_pool_admin_report: chart_png is None — matplotlib unavailable or rows empty. "
                 "Falling back to text-only report."
             )
+            _log_translation_focus_pool_admin_report_stage(
+                "chart_missing",
+                snapshot_date=run_period,
+                reason="png_builder_returned_none",
+            )
+        caption_started_perf = time.perf_counter()
         caption = _build_translation_focus_pool_admin_report_caption(
             rows=rows,
             summary=summary,
             snapshot_date=snapshot_date,
             tz_name=tz_name,
         )
+        _log_translation_focus_pool_admin_report_stage(
+            "caption_ready",
+            snapshot_date=run_period,
+            duration_ms=int((time.perf_counter() - caption_started_perf) * 1000),
+            caption_len=len(caption or ""),
+        )
         sent = 0
         photo_sent = 0
         errors: list[str] = []
         for admin_id in admin_ids:
+            send_started_perf = time.perf_counter()
             try:
                 if chart_png:
                     _send_private_photo(
@@ -17252,11 +17327,34 @@ def _send_translation_focus_pool_admin_report(*, force: bool = False) -> dict[st
                         caption=caption,
                     )
                     photo_sent += 1
+                    _log_translation_focus_pool_admin_report_stage(
+                        "admin_delivery_ok",
+                        snapshot_date=run_period,
+                        admin_id=int(admin_id),
+                        mode="photo",
+                        duration_ms=int((time.perf_counter() - send_started_perf) * 1000),
+                    )
                 else:
                     _send_private_message(int(admin_id), caption)
+                    _log_translation_focus_pool_admin_report_stage(
+                        "admin_delivery_ok",
+                        snapshot_date=run_period,
+                        admin_id=int(admin_id),
+                        mode="text",
+                        duration_ms=int((time.perf_counter() - send_started_perf) * 1000),
+                    )
                 sent += 1
             except Exception as exc:
                 errors.append(f"admin {admin_id}: {exc}")
+                _log_translation_focus_pool_admin_report_stage(
+                    "admin_delivery_failed",
+                    snapshot_date=run_period,
+                    admin_id=int(admin_id),
+                    mode="photo" if chart_png else "text",
+                    duration_ms=int((time.perf_counter() - send_started_perf) * 1000),
+                    error_type=exc.__class__.__name__,
+                    error_message=str(exc),
+                )
                 logging.warning("Failed to send translation focus pool report admin_id=%s", admin_id, exc_info=True)
         result = {
             "ok": not errors,
@@ -17266,6 +17364,15 @@ def _send_translation_focus_pool_admin_report(*, force: bool = False) -> dict[st
             "snapshot_date": run_period,
             **summary,
         }
+        _log_translation_focus_pool_admin_report_stage(
+            "finish",
+            snapshot_date=run_period,
+            sent=sent,
+            photo_sent=photo_sent,
+            error_count=len(errors),
+            duration_ms=int((time.perf_counter() - started_perf) * 1000),
+            ok=not errors,
+        )
         if not force:
             finish_scheduler_run_guard(
                 job_key="translation_focus_pool_admin_report",
@@ -17277,6 +17384,13 @@ def _send_translation_focus_pool_admin_report(*, force: bool = False) -> dict[st
         return result
     except Exception as exc:
         result = {"ok": False, "snapshot_date": run_period, "error": str(exc)[:1000]}
+        _log_translation_focus_pool_admin_report_stage(
+            "failed",
+            snapshot_date=run_period,
+            duration_ms=int((time.perf_counter() - started_perf) * 1000),
+            error_type=exc.__class__.__name__,
+            error_message=str(exc),
+        )
         if not force:
             finish_scheduler_run_guard(
                 job_key="translation_focus_pool_admin_report",
