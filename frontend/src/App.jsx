@@ -46,6 +46,13 @@ const ANDROID_TRANSLATION_DRAFT_VARIANTS = new Set(['a', 'b', 'c', 'd', 'e']);
 const DEFAULT_ANDROID_TRANSLATION_DRAFT_VARIANT = 'd';
 const ECONOMICS_PERIOD_STORAGE_KEY = 'dds_economics_period_v2';
 const ECONOMICS_PROVIDER_STORAGE_KEY = 'dds_economics_provider_v2';
+const ECONOMICS_FORECAST_USERS_STORAGE_KEY = 'dds_economics_forecast_users_v1';
+const ECONOMICS_RAILWAY_APP_RAM_STORAGE_KEY = 'dds_economics_railway_app_ram_v1';
+const ECONOMICS_RAILWAY_APP_CPU_STORAGE_KEY = 'dds_economics_railway_app_cpu_v1';
+const ECONOMICS_RAILWAY_POSTGRES_RAM_STORAGE_KEY = 'dds_economics_railway_postgres_ram_v1';
+const ECONOMICS_RAILWAY_POSTGRES_VOLUME_STORAGE_KEY = 'dds_economics_railway_postgres_volume_v1';
+const ECONOMICS_RAILWAY_REDIS_RAM_STORAGE_KEY = 'dds_economics_railway_redis_ram_v1';
+const ECONOMICS_RAILWAY_EGRESS_STORAGE_KEY = 'dds_economics_railway_egress_v1';
 const ECONOMICS_PERIOD_OPTIONS = new Set(['day', 'week', 'month', 'quarter', 'half-year', 'year', 'all']);
 
 function readStoredEconomicsPeriod() {
@@ -65,6 +72,26 @@ function readStoredEconomicsProvider() {
     return raw || 'all';
   } catch (_error) {
     return 'all';
+  }
+}
+
+function readStoredEconomicsForecastUsers() {
+  if (typeof window === 'undefined') return '100';
+  try {
+    const raw = String(window.localStorage.getItem(ECONOMICS_FORECAST_USERS_STORAGE_KEY) || '').trim();
+    return raw || '100';
+  } catch (_error) {
+    return '100';
+  }
+}
+
+function readStoredDraftValue(key, fallback = '') {
+  if (typeof window === 'undefined') return fallback;
+  try {
+    const raw = String(window.localStorage.getItem(key) || '').trim();
+    return raw || fallback;
+  } catch (_error) {
+    return fallback;
   }
 }
 
@@ -4530,6 +4557,13 @@ function AppInner() {
   const [progressResetDraftDate, setProgressResetDraftDate] = useState('');
   const [economicsPeriod, setEconomicsPeriod] = useState(() => readStoredEconomicsPeriod());
   const [economicsProvider, setEconomicsProvider] = useState(() => readStoredEconomicsProvider());
+  const [economicsForecastUsersDraft, setEconomicsForecastUsersDraft] = useState(() => readStoredEconomicsForecastUsers());
+  const [economicsRailwayAppRamDraft, setEconomicsRailwayAppRamDraft] = useState(() => readStoredDraftValue(ECONOMICS_RAILWAY_APP_RAM_STORAGE_KEY, readStoredDraftValue('dds_economics_railway_ram_v1', '')));
+  const [economicsRailwayAppCpuDraft, setEconomicsRailwayAppCpuDraft] = useState(() => readStoredDraftValue(ECONOMICS_RAILWAY_APP_CPU_STORAGE_KEY, readStoredDraftValue('dds_economics_railway_cpu_v1', '')));
+  const [economicsRailwayPostgresRamDraft, setEconomicsRailwayPostgresRamDraft] = useState(() => readStoredDraftValue(ECONOMICS_RAILWAY_POSTGRES_RAM_STORAGE_KEY, ''));
+  const [economicsRailwayPostgresVolumeDraft, setEconomicsRailwayPostgresVolumeDraft] = useState(() => readStoredDraftValue(ECONOMICS_RAILWAY_POSTGRES_VOLUME_STORAGE_KEY, readStoredDraftValue('dds_economics_railway_volume_v1', '')));
+  const [economicsRailwayRedisRamDraft, setEconomicsRailwayRedisRamDraft] = useState(() => readStoredDraftValue(ECONOMICS_RAILWAY_REDIS_RAM_STORAGE_KEY, ''));
+  const [economicsRailwayEgressDraft, setEconomicsRailwayEgressDraft] = useState(() => readStoredDraftValue(ECONOMICS_RAILWAY_EGRESS_STORAGE_KEY, ''));
   const [economicsLoading, setEconomicsLoading] = useState(false);
   const [economicsError, setEconomicsError] = useState('');
   const [economicsSummary, setEconomicsSummary] = useState(null);
@@ -8970,6 +9004,81 @@ function AppInner() {
     return Boolean(payload?.timer_running) && String(item?.status || '').toLowerCase() !== 'done';
   };
 
+  const buildOptimisticTodayItemTimerState = (item, action, options = {}) => {
+    if (!item?.id) return item;
+    const normalizedAction = String(action || 'sync').trim().toLowerCase() || 'sync';
+    if (!['start', 'resume', 'pause', 'sync'].includes(normalizedAction)) return item;
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    const payload = { ...getTodayItemTimerPayload(item) };
+    const elapsedOverride = Number.isFinite(Number(options?.elapsedSeconds))
+      ? Math.max(0, Math.floor(Number(options.elapsedSeconds)))
+      : null;
+    const explicitRunning = options?.running === undefined ? undefined : Boolean(options.running);
+    const taskType = String(item?.task_type || '').trim().toLowerCase();
+    const goalSeconds = getTodayItemGoalSeconds(item);
+    let nextElapsed = elapsedOverride ?? getTodayItemElapsedSeconds(item, nowMs);
+    let nextRunning = isTodayItemTimerRunning(item);
+    let nextPaused = Boolean(payload?.timer_paused) && !nextRunning;
+    let nextStartedAt = nextRunning ? String(payload?.timer_started_at || '').trim() || nowIso : null;
+    let nextStatus = String(item?.status || 'todo').trim().toLowerCase() || 'todo';
+
+    if (normalizedAction === 'start' || normalizedAction === 'resume') {
+      if (nextStatus !== 'done') {
+        nextStatus = 'doing';
+        nextRunning = true;
+        nextPaused = false;
+        nextStartedAt = nowIso;
+      }
+    } else if (normalizedAction === 'pause') {
+      nextRunning = false;
+      nextPaused = nextStatus !== 'done';
+      nextStartedAt = null;
+    } else if (normalizedAction === 'sync' && explicitRunning !== undefined) {
+      if (explicitRunning && nextStatus !== 'done') {
+        nextStatus = 'doing';
+        nextRunning = true;
+        nextPaused = false;
+        nextStartedAt = nowIso;
+      } else {
+        nextRunning = false;
+        nextPaused = nextStatus !== 'done';
+        nextStartedAt = null;
+      }
+    }
+
+    let progressPercent = 0;
+    if (goalSeconds > 0) {
+      progressPercent = Math.min(100, (nextElapsed / goalSeconds) * 100);
+    } else if (nextElapsed > 0) {
+      progressPercent = 100;
+    }
+
+    if (taskType !== 'translation' && goalSeconds > 0 && nextElapsed >= goalSeconds) {
+      nextStatus = 'done';
+      nextRunning = false;
+      nextPaused = false;
+      nextStartedAt = null;
+    } else if (nextStatus !== 'done' && nextElapsed > 0 && ['todo', 'skipped'].includes(nextStatus)) {
+      nextStatus = 'doing';
+    }
+
+    return {
+      ...item,
+      status: nextStatus,
+      payload: {
+        ...payload,
+        timer_seconds: nextElapsed,
+        timer_goal_seconds: goalSeconds,
+        timer_progress_percent: Number(progressPercent.toFixed(2)),
+        timer_running: nextRunning,
+        timer_paused: nextPaused,
+        timer_started_at: nextStartedAt || null,
+        timer_updated_at: nowIso,
+      },
+    };
+  };
+
   const isTodayItemSectionVisible = useCallback((item) => {
     const taskType = String(item?.task_type || '').toLowerCase();
     if (taskType === 'cards') {
@@ -9005,7 +9114,19 @@ function AppInner() {
     const elapsedSeconds = options?.elapsedSeconds;
     const running = options?.running;
     const keepalive = Boolean(options?.keepalive);
+    const previousItemSnapshot = item ? { ...item, payload: { ...getTodayItemTimerPayload(item) } } : null;
+    const optimisticItem = buildOptimisticTodayItemTimerState(item, action, options);
     try {
+      if (optimisticItem?.id) {
+        setTodayPlan((prev) => {
+          if (!prev || !Array.isArray(prev.items)) return prev;
+          return {
+            ...prev,
+            items: prev.items.map((entry) => (entry.id === optimisticItem.id ? optimisticItem : entry)),
+          };
+        });
+        setTodayTimerNowMs(Date.now());
+      }
       setTodayItemLoading((prev) => ({ ...prev, [item.id]: action === 'sync' ? 'timer_sync' : `timer_${action}` }));
       const response = await fetch(`/api/today/items/${item.id}/timer`, {
         method: 'POST',
@@ -9037,6 +9158,15 @@ function AppInner() {
       }
       return updated;
     } catch (error) {
+      if (previousItemSnapshot?.id) {
+        setTodayPlan((prev) => {
+          if (!prev || !Array.isArray(prev.items)) return prev;
+          return {
+            ...prev,
+            items: prev.items.map((entry) => (entry.id === previousItemSnapshot.id ? previousItemSnapshot : entry)),
+          };
+        });
+      }
       setTodayPlanError(normalizeNetworkErrorMessage(
         error,
         'Не удалось синхронизировать таймер задачи.',
@@ -11492,6 +11622,158 @@ function AppInner() {
     if (!economicsProvider || economicsProvider === 'all') return rows;
     return rows.filter((item) => String(item?.provider || '').trim().toLowerCase() === economicsProvider);
   }, [economicsSummary, economicsProvider]);
+  const economicsPerUserResourceRows = useMemo(() => {
+    const rows = Array.isArray(economicsSummary?.breakdown?.by_provider) ? economicsSummary.breakdown.by_provider : [];
+    return rows
+      .filter((item) => Number(item?.active_users || 0) > 0 || Number(item?.avg_total_cost_per_active_user || 0) > 0)
+      .slice()
+      .sort((a, b) => Number(b?.avg_total_cost_per_active_user || 0) - Number(a?.avg_total_cost_per_active_user || 0))
+      .slice(0, 10);
+  }, [economicsSummary]);
+  const economicsFreeTierCapacityRows = useMemo(() => {
+    return economicsBudgetRows
+      .map((row) => {
+        const limitUnits = row?.effective_limit_units == null ? null : Number(row.effective_limit_units || 0);
+        const usedUnits = Number(row?.used_units || 0);
+        const avgUnitsPerActiveUser = Number(row?.avg_units_per_active_user || 0);
+        const budgetKind = String(row?.metadata?.budget_kind || '').trim().toLowerCase();
+        if (limitUnits == null || limitUnits <= 0 || avgUnitsPerActiveUser <= 0) {
+          return null;
+        }
+        const totalUsersCapacity = Math.floor(limitUnits / avgUnitsPerActiveUser);
+        const remainingUnits = Math.max(0, limitUnits - usedUnits);
+        const remainingUsersCapacity = Math.floor(remainingUnits / avgUnitsPerActiveUser);
+        return {
+          provider: String(row?.provider || '').trim(),
+          unitsType: String(row?.units_type || row?.unit || '').trim(),
+          avgUnitsPerActiveUser,
+          limitUnits,
+          usedUnits,
+          totalUsersCapacity,
+          remainingUsersCapacity,
+          budgetKind,
+          budgetLabel: String(row?.period_label || '').trim() || String(row?.period_month || '').slice(0, 7),
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => Number(a?.totalUsersCapacity || 0) - Number(b?.totalUsersCapacity || 0));
+  }, [economicsBudgetRows]);
+  const economicsFreeTierBottleneck = economicsFreeTierCapacityRows.length > 0 ? economicsFreeTierCapacityRows[0] : null;
+  const economicsForecastUsers = useMemo(() => {
+    const parsed = parseInt(String(economicsForecastUsersDraft || '').trim(), 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+    return parsed;
+  }, [economicsForecastUsersDraft]);
+  const economicsForecastResourceRows = useMemo(() => {
+    const rows = Array.isArray(economicsSummary?.breakdown?.by_provider) ? economicsSummary.breakdown.by_provider : [];
+    const freeTierCapacityByProvider = new Map(
+      economicsFreeTierCapacityRows.map((item) => [String(item?.provider || '').trim().toLowerCase(), item]),
+    );
+    if (economicsForecastUsers <= 0) return [];
+    return rows
+      .filter((item) => Number(item?.active_users || 0) > 0 || Number(item?.avg_total_cost_per_active_user || 0) > 0)
+      .map((item) => {
+        const providerKey = String(item?.provider || '').trim().toLowerCase();
+        const capacity = freeTierCapacityByProvider.get(providerKey);
+        return {
+          provider: String(item?.provider || '').trim(),
+          activeUsers: Number(item?.active_users || 0),
+          forecastUsers: economicsForecastUsers,
+          forecastVariableCost: Number(item?.avg_variable_cost_per_active_user || 0) * economicsForecastUsers,
+          forecastFixedCost: Number(item?.avg_fixed_cost_per_active_user || 0) * economicsForecastUsers,
+          forecastTotalCost: Number(item?.avg_total_cost_per_active_user || 0) * economicsForecastUsers,
+          forecastEvents: Number(item?.avg_events_per_active_user || 0) * economicsForecastUsers,
+          forecastUnitsByType: Array.isArray(item?.avg_units_by_type_per_active_user)
+            ? item.avg_units_by_type_per_active_user.map((unitRow) => ({
+              unitsType: String(unitRow?.units_type || '').trim(),
+              forecastUnits: Number(unitRow?.avg_units_per_active_user || 0) * economicsForecastUsers,
+            }))
+            : [],
+          freeTierTotalUsersCapacity: Number(capacity?.totalUsersCapacity || 0),
+          freeTierRemainingUsersCapacity: Number(capacity?.remainingUsersCapacity || 0),
+        };
+      })
+      .sort((a, b) => b.forecastTotalCost - a.forecastTotalCost);
+  }, [economicsSummary, economicsFreeTierCapacityRows, economicsForecastUsers]);
+  const economicsForecastTotals = useMemo(() => {
+    if (economicsForecastUsers <= 0) {
+      return {
+        users: 0,
+        forecastVariableCost: 0,
+        forecastFixedCost: 0,
+        forecastTotalCost: 0,
+        freeTierBottleneckProvider: '',
+        freeTierBottleneckUsers: 0,
+      };
+    }
+    return {
+      users: economicsForecastUsers,
+      forecastVariableCost: Number(economicsSummary?.totals?.avg_variable_cost_per_active_user || 0) * economicsForecastUsers,
+      forecastFixedCost: Number(economicsSummary?.totals?.avg_fixed_cost_per_active_user || 0) * economicsForecastUsers,
+      forecastTotalCost: Number(economicsSummary?.totals?.avg_cost_per_active_user || 0) * economicsForecastUsers,
+      freeTierBottleneckProvider: String(economicsFreeTierBottleneck?.provider || '').trim(),
+      freeTierBottleneckUsers: Number(economicsFreeTierBottleneck?.totalUsersCapacity || 0),
+    };
+  }, [economicsSummary, economicsForecastUsers, economicsFreeTierBottleneck]);
+  const economicsRailwayInfra = economicsProvider === 'all' ? (economicsSummary?.railway_infra || null) : null;
+  const economicsRailwayPricing = economicsRailwayInfra?.pricing || null;
+  const economicsRailwayLivePostgres = economicsRailwayInfra?.live?.postgres || null;
+  const economicsRailwayLiveRedis = economicsRailwayInfra?.live?.redis || null;
+  const economicsRailwayFixedComponents = Array.isArray(economicsRailwayInfra?.tracked_fixed_components)
+    ? economicsRailwayInfra.tracked_fixed_components
+    : [];
+  const economicsRailwayTrackedBaselineUsd = Number(economicsRailwayInfra?.tracked_fixed_baseline_month_usd || 0);
+  const economicsRailwayForecast = useMemo(() => {
+    const parseDraft = (value) => {
+      const parsed = Number.parseFloat(String(value || '').trim().replace(',', '.'));
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+    };
+    const appRamGb = parseDraft(economicsRailwayAppRamDraft);
+    const appCpuVcpu = parseDraft(economicsRailwayAppCpuDraft);
+    const postgresRamGb = parseDraft(economicsRailwayPostgresRamDraft);
+    const postgresVolumeGb = parseDraft(economicsRailwayPostgresVolumeDraft);
+    const redisRamGb = parseDraft(economicsRailwayRedisRamDraft);
+    const egressGb = parseDraft(economicsRailwayEgressDraft);
+    const ramRate = Number(economicsRailwayPricing?.ram_per_gb_month || 0);
+    const cpuRate = Number(economicsRailwayPricing?.cpu_per_vcpu_month || 0);
+    const volumeRate = Number(economicsRailwayPricing?.volume_per_gb_month || 0);
+    const egressRate = Number(economicsRailwayPricing?.egress_per_gb || 0);
+    const appRamCost = appRamGb * ramRate;
+    const appCpuCost = appCpuVcpu * cpuRate;
+    const postgresRamCost = postgresRamGb * ramRate;
+    const postgresVolumeCost = postgresVolumeGb * volumeRate;
+    const redisRamCost = redisRamGb * ramRate;
+    const egressCost = egressGb * Number(economicsRailwayPricing?.egress_per_gb || 0);
+    const totalRamGb = appRamGb + postgresRamGb + redisRamGb;
+    const variableCost = appRamCost + appCpuCost + postgresRamCost + postgresVolumeCost + redisRamCost + egressCost;
+    return {
+      appRamGb,
+      appCpuVcpu,
+      postgresRamGb,
+      postgresVolumeGb,
+      redisRamGb,
+      egressGb,
+      totalRamGb,
+      baselineFixedCost: economicsRailwayTrackedBaselineUsd,
+      appRamCost,
+      appCpuCost,
+      postgresRamCost,
+      postgresVolumeCost,
+      redisRamCost,
+      egressCost,
+      variableCost,
+      totalCost: economicsRailwayTrackedBaselineUsd + variableCost,
+    };
+  }, [
+    economicsRailwayPricing,
+    economicsRailwayTrackedBaselineUsd,
+    economicsRailwayAppRamDraft,
+    economicsRailwayAppCpuDraft,
+    economicsRailwayPostgresRamDraft,
+    economicsRailwayPostgresVolumeDraft,
+    economicsRailwayRedisRamDraft,
+    economicsRailwayEgressDraft,
+  ]);
   const economicsLedgerEventsCount = Number(economicsSummary?.totals?.events_count || 0);
   const economicsLedgerIsEmpty = !!economicsSummary && economicsLedgerEventsCount === 0;
   const selectedEconomicsProviderLabel = economicsProvider === 'all'
@@ -23228,6 +23510,48 @@ function AppInner() {
   }, [economicsProvider]);
 
   useEffect(() => {
+    writeStoredValue(ECONOMICS_FORECAST_USERS_STORAGE_KEY, economicsForecastUsersDraft);
+  }, [economicsForecastUsersDraft]);
+
+  useEffect(() => {
+    writeStoredValue(ECONOMICS_RAILWAY_APP_RAM_STORAGE_KEY, economicsRailwayAppRamDraft);
+  }, [economicsRailwayAppRamDraft]);
+
+  useEffect(() => {
+    writeStoredValue(ECONOMICS_RAILWAY_APP_CPU_STORAGE_KEY, economicsRailwayAppCpuDraft);
+  }, [economicsRailwayAppCpuDraft]);
+
+  useEffect(() => {
+    writeStoredValue(ECONOMICS_RAILWAY_POSTGRES_RAM_STORAGE_KEY, economicsRailwayPostgresRamDraft);
+  }, [economicsRailwayPostgresRamDraft]);
+
+  useEffect(() => {
+    writeStoredValue(ECONOMICS_RAILWAY_POSTGRES_VOLUME_STORAGE_KEY, economicsRailwayPostgresVolumeDraft);
+  }, [economicsRailwayPostgresVolumeDraft]);
+
+  useEffect(() => {
+    writeStoredValue(ECONOMICS_RAILWAY_REDIS_RAM_STORAGE_KEY, economicsRailwayRedisRamDraft);
+  }, [economicsRailwayRedisRamDraft]);
+
+  useEffect(() => {
+    writeStoredValue(ECONOMICS_RAILWAY_EGRESS_STORAGE_KEY, economicsRailwayEgressDraft);
+  }, [economicsRailwayEgressDraft]);
+
+  useEffect(() => {
+    const postgresVolumeGb = Number(economicsSummary?.railway_infra?.live?.postgres?.db_size_gb || 0);
+    if (!economicsRailwayPostgresVolumeDraft && postgresVolumeGb > 0) {
+      setEconomicsRailwayPostgresVolumeDraft(String(Math.max(0.1, Number(postgresVolumeGb.toFixed(3)))));
+    }
+  }, [economicsSummary, economicsRailwayPostgresVolumeDraft]);
+
+  useEffect(() => {
+    const redisMemoryGb = Number(economicsSummary?.railway_infra?.live?.redis?.memory_used_mb || 0) / 1024;
+    if (!economicsRailwayRedisRamDraft && redisMemoryGb > 0) {
+      setEconomicsRailwayRedisRamDraft(String(Math.max(0.05, Number(redisMemoryGb.toFixed(3)))));
+    }
+  }, [economicsSummary, economicsRailwayRedisRamDraft]);
+
+  useEffect(() => {
     if (!isWebAppMode || !initData) {
       return;
     }
@@ -29652,6 +29976,12 @@ function AppInner() {
                         'Billing-Ledger = internes Journal aller erfassten Kosten-Eintraege. Ein echter Nutzungsvorgang kann mehrere Billing-Events erzeugen: z. B. Modell, TTS, R2 und Voice getrennt.'
                       )}
                     </div>
+                    <div className="webapp-muted analytics-scope-hint">
+                      {tr(
+                        'Блоки реальной себестоимости ниже показывают номинальную цену ресурсов без вычета бесплатных лимитов. Это сделано специально, чтобы видеть настоящую стоимость продукта на пользователя.',
+                        'Die echten Kosten unten zeigen den nominalen Ressourcenpreis ohne Abzug von Freikontingenten. So sieht man bewusst die reale Produktkosten pro Nutzer.',
+                      )}
+                    </div>
 
                     {economicsLedgerIsEmpty && (
                       <div className="webapp-muted analytics-scope-hint is-warning">
@@ -29662,12 +29992,359 @@ function AppInner() {
                       </div>
                     )}
 
-                    {economicsBudgetRows.length > 0 && (
-                      <>
-                        <div className="webapp-muted analytics-scope-hint">
+                    {economicsPerUserResourceRows.length > 0 && (
+                      <div className="economics-breakdown-card economics-breakdown-card-spotlight">
+                        <h4>{tr('Реальная себестоимость на 1 активного пользователя по ресурсам', 'Echte Kosten pro 1 aktiven Nutzer nach Ressource')}</h4>
+                        <div className="webapp-muted" style={{ marginBottom: 10, fontSize: 12 }}>
                           {tr(
-                            'Ниже показано текущее quota/free-tier окно провайдера, а не суммарный usage за выбранный период.',
-                            'Unten steht das aktuelle Quota/Freikontingent-Fenster je Provider, nicht der gesamte Usage fuer den gewaehlten Zeitraum.',
+                            'Это средняя цена одного активного пользователя по каждому провайдеру. Здесь free tier не вычитается.',
+                            'Das ist der Durchschnittspreis eines aktiven Nutzers je Provider. Das Freikontingent wird hier nicht abgezogen.',
+                          )}
+                        </div>
+                        {economicsPerUserResourceRows.map((item) => {
+                          const avgUnitsRows = Array.isArray(item?.avg_units_by_type_per_active_user) ? item.avg_units_by_type_per_active_user : [];
+                          const avgUnitsLabel = avgUnitsRows
+                            .slice(0, 2)
+                            .map((unitRow) => `${formatEconomicsCompactNumber(unitRow?.avg_units_per_active_user || 0)} ${formatEconomicsUnitsLabel(unitRow?.units_type, uiLang)}`)
+                            .join(' • ');
+                          return (
+                            <div className="economics-breakdown-row economics-breakdown-row-rich" key={`provider-per-user-${item.provider}`}>
+                              <div className="economics-breakdown-copy">
+                                <span>{formatEconomicsProviderLabel(item.provider || 'n/a')}</span>
+                                <small>
+                                  {tr('активных', 'aktive')}: {Number(item.active_users || 0)}
+                                  {avgUnitsLabel ? ` • ${tr('ср. usage', 'Ø Usage')}: ${avgUnitsLabel}` : ''}
+                                  {Number(item.avg_events_per_active_user || 0) > 0
+                                    ? ` • ${tr('events/user', 'Events/Nutzer')}: ${Number(item.avg_events_per_active_user || 0).toFixed(1)}`
+                                    : ''}
+                                </small>
+                              </div>
+                              <div className="economics-breakdown-value">
+                                <strong>{Number(item.avg_total_cost_per_active_user || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                                <small>
+                                  {tr('переменные', 'variabel')}: {Number(item.avg_variable_cost_per_active_user || 0).toFixed(3)}
+                                  {' • '}
+                                  {tr('fixed', 'fix')}: {Number(item.avg_fixed_cost_per_active_user || 0).toFixed(3)}
+                                </small>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    <div className="economics-breakdown-card economics-breakdown-card-spotlight economics-forecast-block">
+                      <div className="economics-forecast-head">
+                        <h4>{tr('Прогноз затрат при выбранном количестве пользователей', 'Kostenprognose fuer eine gewaehlte Nutzerzahl')}</h4>
+                        <label className="webapp-field economics-forecast-field">
+                          <span>{tr('Сколько пользователей', 'Wie viele Nutzer')}</span>
+                          <input
+                            type="number"
+                            min="1"
+                            step="1"
+                            inputMode="numeric"
+                            value={economicsForecastUsersDraft}
+                            onChange={(event) => setEconomicsForecastUsersDraft(event.target.value)}
+                            placeholder="100"
+                          />
+                        </label>
+                      </div>
+                      <div className="webapp-muted" style={{ marginBottom: 10, fontSize: 12 }}>
+                        {tr(
+                          'Это линейный прогноз по текущему среднему usage на 1 активного пользователя. Railway сюда сознательно пока не включён, потому что для него нужна отдельная ступенчатая infra-модель.',
+                          'Das ist eine lineare Prognose auf Basis des aktuellen durchschnittlichen Usage pro aktivem Nutzer. Railway ist hier bewusst noch nicht enthalten, weil dafuer ein separates stufenweises Infra-Modell noetig ist.',
+                        )}
+                      </div>
+                      {economicsForecastUsers > 0 ? (
+                        <>
+                          <div className="analytics-cards economics-cards">
+                            <div className="analytics-card">
+                              <span>{tr('Прогноз: переменные', 'Prognose: variabel')}</span>
+                              <strong>{Number(economicsForecastTotals.forecastVariableCost || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                            </div>
+                            <div className="analytics-card">
+                              <span>{tr('Прогноз: fixed', 'Prognose: fix')}</span>
+                              <strong>{Number(economicsForecastTotals.forecastFixedCost || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                            </div>
+                            <div className="analytics-card">
+                              <span>{tr('Прогноз: итого', 'Prognose: gesamt')}</span>
+                              <strong>{Number(economicsForecastTotals.forecastTotalCost || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                            </div>
+                            <div className="analytics-card">
+                              <span>{tr('Free-tier bottleneck', 'Free-Tier-Bottleneck')}</span>
+                              <strong>
+                                {economicsForecastTotals.freeTierBottleneckProvider
+                                  ? `${formatEconomicsProviderLabel(economicsForecastTotals.freeTierBottleneckProvider)} · ${Number(economicsForecastTotals.freeTierBottleneckUsers || 0)}`
+                                  : '—'}
+                              </strong>
+                            </div>
+                          </div>
+                          <div className="economics-breakdown-grid economics-breakdown-grid-tight">
+                            {economicsForecastResourceRows.slice(0, 10).map((item) => {
+                              const unitsLabel = item.forecastUnitsByType
+                                .slice(0, 2)
+                                .map((unitRow) => `${formatEconomicsCompactNumber(unitRow.forecastUnits || 0)} ${formatEconomicsUnitsLabel(unitRow.unitsType, uiLang)}`)
+                                .join(' • ');
+                              return (
+                                <div className="economics-breakdown-card economics-breakdown-card-mini" key={`forecast-provider-${item.provider}`}>
+                                  <h4>{formatEconomicsProviderLabel(item.provider || 'n/a')}</h4>
+                                  <div className="economics-breakdown-row economics-breakdown-row-rich">
+                                    <div className="economics-breakdown-copy">
+                                      <span>{tr('Прогноз стоимости', 'Kostenprognose')}</span>
+                                      <small>{tr('для', 'fuer')} {economicsForecastUsers} {tr('польз.', 'Nutzer')}</small>
+                                    </div>
+                                    <div className="economics-breakdown-value">
+                                      <strong>{Number(item.forecastTotalCost || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                                      <small>
+                                        {tr('переменные', 'variabel')}: {Number(item.forecastVariableCost || 0).toFixed(3)}
+                                        {' • '}
+                                        {tr('fixed', 'fix')}: {Number(item.forecastFixedCost || 0).toFixed(3)}
+                                      </small>
+                                    </div>
+                                  </div>
+                                  <div className="economics-breakdown-row economics-breakdown-row-rich">
+                                    <div className="economics-breakdown-copy">
+                                      <span>{tr('Прогноз usage', 'Usage-Prognose')}</span>
+                                      <small>
+                                        {unitsLabel || '—'}
+                                        {Number(item.forecastEvents || 0) > 0
+                                          ? ` • ${tr('events', 'Events')}: ${Number(item.forecastEvents || 0).toFixed(0)}`
+                                          : ''}
+                                      </small>
+                                    </div>
+                                    <div className="economics-breakdown-value">
+                                      <strong>
+                                        {item.freeTierTotalUsersCapacity > 0
+                                          ? `${Math.max(0, economicsForecastUsers - item.freeTierTotalUsersCapacity)}`
+                                          : '—'}
+                                      </strong>
+                                      <small>
+                                        {item.freeTierTotalUsersCapacity > 0
+                                          ? tr('сверх free tier', 'ueber Free Tier')
+                                          : tr('нет free-tier data', 'keine Free-Tier-Daten')}
+                                      </small>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="webapp-muted">{tr('Введите количество пользователей больше нуля.', 'Bitte gib eine Nutzerzahl groesser als null ein.')}</div>
+                      )}
+                    </div>
+
+                    {economicsRailwayInfra && (
+                      <div className="economics-breakdown-card economics-breakdown-card-spotlight economics-railway-block">
+                        <div className="economics-forecast-head">
+                          <h4>{tr('Railway infra audit + forecast', 'Railway Infra Audit + Prognose')}</h4>
+                        </div>
+                        <div className="webapp-muted" style={{ marginBottom: 10, fontSize: 12 }}>
+                          {tr(
+                            'Здесь Railway считается отдельно и честно: live audit показывает только то, что backend реально видит сейчас, а ниже вы задаёте серверную модель слоями App / Postgres / Redis / Network.',
+                            'Railway wird hier separat und ehrlich gerechnet: Das Live-Audit zeigt nur, was das Backend jetzt wirklich sieht, und unten gibst du das Servermodell in den Schichten App / Postgres / Redis / Network an.',
+                          )}
+                        </div>
+                        <div className="analytics-cards economics-cards">
+                          <div className="analytics-card">
+                            <span>{tr('Tracked infra baseline', 'Tracked-Infra-Basis')}</span>
+                            <strong>{economicsRailwayTrackedBaselineUsd.toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                          </div>
+                          <div className="analytics-card">
+                            <span>{tr('Postgres size now', 'Postgres-Groesse jetzt')}</span>
+                            <strong>
+                              {economicsRailwayLivePostgres?.available
+                                ? `${Number(economicsRailwayLivePostgres?.db_size_mb || 0).toFixed(1)} MB`
+                                : '—'}
+                            </strong>
+                          </div>
+                          <div className="analytics-card">
+                            <span>{tr('Redis memory now', 'Redis-Speicher jetzt')}</span>
+                            <strong>
+                              {economicsRailwayLiveRedis?.available
+                                ? `${Number(economicsRailwayLiveRedis?.memory_used_mb || 0).toFixed(1)} MB`
+                                : '—'}
+                            </strong>
+                          </div>
+                          <div className="analytics-card">
+                            <span>{tr('Redis peak / keys', 'Redis Peak / Keys')}</span>
+                            <strong>
+                              {economicsRailwayLiveRedis?.available
+                                ? `${Number(economicsRailwayLiveRedis?.memory_peak_mb || 0).toFixed(1)} MB`
+                                : '—'}
+                            </strong>
+                            <small className="webapp-muted">
+                              {economicsRailwayLiveRedis?.available
+                                ? `${tr('keys', 'Keys')}: ${Number(economicsRailwayLiveRedis?.keys || 0)}`
+                                : ''}
+                            </small>
+                          </div>
+                        </div>
+                        {economicsRailwayFixedComponents.length > 0 && (
+                          <div className="economics-breakdown-grid economics-breakdown-grid-tight" style={{ marginTop: 10 }}>
+                            {economicsRailwayFixedComponents.map((item) => (
+                              <div className="economics-breakdown-card economics-breakdown-card-mini" key={`railway-fixed-${item.provider}`}>
+                                <h4>{formatEconomicsProviderLabel(item.provider || 'n/a')}</h4>
+                                <div className="economics-breakdown-row economics-breakdown-row-rich">
+                                  <div className="economics-breakdown-copy">
+                                    <span>{tr('Fixed / month', 'Fix / Monat')}</span>
+                                    <small>{tr('из tracked infra baseline', 'aus der getrackten Infra-Basis')}</small>
+                                  </div>
+                                  <div className="economics-breakdown-value">
+                                    <strong>{Number(item.fixed_cost_month_usd || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <div className="economics-breakdown-grid economics-breakdown-grid-tight">
+                          <div className="economics-breakdown-card economics-breakdown-card-mini">
+                            <h4>{tr('App layer', 'App-Schicht')}</h4>
+                            <div className="economics-railway-inputs">
+                              <label className="webapp-field economics-forecast-field">
+                                <span>{tr('App RAM GB / month', 'App-RAM GB / Monat')}</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.1"
+                                  inputMode="decimal"
+                                  value={economicsRailwayAppRamDraft}
+                                  onChange={(event) => setEconomicsRailwayAppRamDraft(event.target.value)}
+                                  placeholder="0"
+                                />
+                              </label>
+                              <label className="webapp-field economics-forecast-field">
+                                <span>{tr('App vCPU / month', 'App-vCPU / Monat')}</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.1"
+                                  inputMode="decimal"
+                                  value={economicsRailwayAppCpuDraft}
+                                  onChange={(event) => setEconomicsRailwayAppCpuDraft(event.target.value)}
+                                  placeholder="0"
+                                />
+                              </label>
+                            </div>
+                          </div>
+                          <div className="economics-breakdown-card economics-breakdown-card-mini">
+                            <h4>{tr('Postgres layer', 'Postgres-Schicht')}</h4>
+                            <div className="economics-railway-inputs">
+                              <label className="webapp-field economics-forecast-field">
+                                <span>{tr('Postgres RAM GB / month', 'Postgres-RAM GB / Monat')}</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.1"
+                                  inputMode="decimal"
+                                  value={economicsRailwayPostgresRamDraft}
+                                  onChange={(event) => setEconomicsRailwayPostgresRamDraft(event.target.value)}
+                                  placeholder="0"
+                                />
+                              </label>
+                              <label className="webapp-field economics-forecast-field">
+                                <span>{tr('Postgres volume GB / month', 'Postgres-Volume GB / Monat')}</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.1"
+                                  inputMode="decimal"
+                                  value={economicsRailwayPostgresVolumeDraft}
+                                  onChange={(event) => setEconomicsRailwayPostgresVolumeDraft(event.target.value)}
+                                  placeholder="0"
+                                />
+                              </label>
+                            </div>
+                          </div>
+                          <div className="economics-breakdown-card economics-breakdown-card-mini">
+                            <h4>{tr('Redis layer', 'Redis-Schicht')}</h4>
+                            <div className="economics-railway-inputs">
+                              <label className="webapp-field economics-forecast-field">
+                                <span>{tr('Redis RAM GB / month', 'Redis-RAM GB / Monat')}</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.1"
+                                  inputMode="decimal"
+                                  value={economicsRailwayRedisRamDraft}
+                                  onChange={(event) => setEconomicsRailwayRedisRamDraft(event.target.value)}
+                                  placeholder="0"
+                                />
+                              </label>
+                            </div>
+                          </div>
+                          <div className="economics-breakdown-card economics-breakdown-card-mini">
+                            <h4>{tr('Network layer', 'Netzwerk-Schicht')}</h4>
+                            <div className="economics-railway-inputs">
+                              <label className="webapp-field economics-forecast-field">
+                                <span>{tr('Egress GB', 'Egress GB')}</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.1"
+                                  inputMode="decimal"
+                                  value={economicsRailwayEgressDraft}
+                                  onChange={(event) => setEconomicsRailwayEgressDraft(event.target.value)}
+                                  placeholder="0"
+                                />
+                              </label>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="webapp-muted" style={{ marginTop: 10, marginBottom: 10, fontSize: 12 }}>
+                          {tr(
+                            'Ставки Railway сейчас считаются так: RAM $10 / GB-month, CPU $20 / vCPU-month, volume $0.15 / GB-month, egress $0.05 / GB. Postgres volume и Redis RAM могут подхватываться из live audit, а app RAM / app vCPU / Postgres RAM вы задаёте вручную.',
+                            'Railway wird aktuell so gerechnet: RAM $10 / GB-Monat, CPU $20 / vCPU-Monat, Volume $0.15 / GB-Monat, Egress $0.05 / GB. Postgres-Volume und Redis-RAM koennen aus dem Live-Audit kommen, waehrend App-RAM / App-vCPU / Postgres-RAM manuell gesetzt werden.',
+                          )}
+                        </div>
+                        <div className="analytics-cards economics-cards">
+                          <div className="analytics-card">
+                            <span>{tr('App compute', 'App-Compute')}</span>
+                            <strong>{(Number(economicsRailwayForecast.appRamCost || 0) + Number(economicsRailwayForecast.appCpuCost || 0)).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                            <small className="webapp-muted">
+                              {tr('RAM', 'RAM')}: {Number(economicsRailwayForecast.appRamCost || 0).toFixed(3)}
+                              {' • '}
+                              {tr('CPU', 'CPU')}: {Number(economicsRailwayForecast.appCpuCost || 0).toFixed(3)}
+                            </small>
+                          </div>
+                          <div className="analytics-card">
+                            <span>{tr('Postgres layer', 'Postgres-Schicht')}</span>
+                            <strong>{(Number(economicsRailwayForecast.postgresRamCost || 0) + Number(economicsRailwayForecast.postgresVolumeCost || 0)).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                            <small className="webapp-muted">
+                              {tr('RAM', 'RAM')}: {Number(economicsRailwayForecast.postgresRamCost || 0).toFixed(3)}
+                              {' • '}
+                              {tr('volume', 'Volume')}: {Number(economicsRailwayForecast.postgresVolumeCost || 0).toFixed(3)}
+                            </small>
+                          </div>
+                          <div className="analytics-card">
+                            <span>{tr('Redis + network', 'Redis + Netzwerk')}</span>
+                            <strong>{(Number(economicsRailwayForecast.redisRamCost || 0) + Number(economicsRailwayForecast.egressCost || 0)).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                            <small className="webapp-muted">
+                              {tr('Redis RAM', 'Redis-RAM')}: {Number(economicsRailwayForecast.redisRamCost || 0).toFixed(3)}
+                              {' • '}
+                              {tr('egress', 'Egress')}: {Number(economicsRailwayForecast.egressCost || 0).toFixed(3)}
+                            </small>
+                          </div>
+                          <div className="analytics-card">
+                            <span>{tr('Railway total with baseline', 'Railway gesamt mit Basis')}</span>
+                            <strong>{Number(economicsRailwayForecast.totalCost || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                            <small className="webapp-muted">
+                              {tr('sum RAM', 'RAM gesamt')}: {Number(economicsRailwayForecast.totalRamGb || 0).toFixed(2)} GB
+                            </small>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {economicsBudgetRows.length > 0 && (
+                      <div className="economics-breakdown-card economics-breakdown-card-spotlight economics-budget-monitor">
+                        <h4>{tr('Монитор free tier / quota по провайдерам', 'Free-Tier / Quota Monitor nach Providern')}</h4>
+                        <div className="webapp-muted" style={{ marginBottom: 10, fontSize: 12 }}>
+                          {tr(
+                            'Это отдельный operational monitor. Он показывает текущее бесплатное окно или quota провайдера и не равен реальной себестоимости продукта.',
+                            'Das ist ein separater operationaler Monitor. Er zeigt das aktuelle Freikontingent oder Quota-Fenster des Providers und ist nicht gleich den realen Produktkosten.',
                           )}
                         </div>
                         <div className="analytics-cards economics-voice-cards">
@@ -29720,7 +30397,62 @@ function AppInner() {
                           );
                         })}
                         </div>
-                      </>
+                      </div>
+                    )}
+
+                    {economicsFreeTierCapacityRows.length > 0 && (
+                      <div className="economics-breakdown-card economics-breakdown-card-spotlight economics-budget-capacity">
+                        <h4>{tr('Сколько пользователей помещается в free tier', 'Wie viele Nutzer in den Free Tier passen')}</h4>
+                        <div className="webapp-muted" style={{ marginBottom: 10, fontSize: 12 }}>
+                          {tr(
+                            'Расчёт идёт от среднего usage на 1 активного пользователя. Самый маленький показатель ниже — это bottleneck текущего бесплатного набора провайдеров.',
+                            'Die Rechnung basiert auf dem durchschnittlichen Usage pro aktivem Nutzer. Der kleinste Wert unten ist der aktuelle Bottleneck des kostenlosen Provider-Sets.',
+                          )}
+                        </div>
+                        {economicsFreeTierBottleneck && (
+                          <div className="economics-capacity-bottleneck">
+                            <span>{tr('Бутылочное горлышко сейчас', 'Aktueller Bottleneck')}</span>
+                            <strong>
+                              {formatEconomicsProviderLabel(economicsFreeTierBottleneck.provider || 'n/a')}: {Number(economicsFreeTierBottleneck.totalUsersCapacity || 0)} {tr('польз.', 'Nutzer')}
+                            </strong>
+                            <small className="webapp-muted">
+                              {tr('ещё осталось по текущему окну', 'noch frei im aktuellen Fenster')}: {Number(economicsFreeTierBottleneck.remainingUsersCapacity || 0)} {tr('польз.', 'Nutzer')}
+                            </small>
+                          </div>
+                        )}
+                        <div className="economics-breakdown-grid economics-breakdown-grid-tight">
+                          {economicsFreeTierCapacityRows.map((row) => (
+                            <div className="economics-breakdown-card economics-breakdown-card-mini" key={`free-tier-capacity-${row.provider}`}>
+                              <h4>{formatEconomicsProviderLabel(row.provider || 'n/a')}</h4>
+                              <div className="economics-breakdown-row economics-breakdown-row-rich">
+                                <div className="economics-breakdown-copy">
+                                  <span>{tr('Всего покрывает', 'Deckt insgesamt')}</span>
+                                  <small>
+                                    {row.budgetKind === 'daily_quota' ? tr('окно: день', 'Fenster: Tag') : tr('окно: месяц', 'Fenster: Monat')}
+                                    {row.budgetLabel ? ` ${row.budgetLabel}` : ''}
+                                  </small>
+                                </div>
+                                <div className="economics-breakdown-value">
+                                  <strong>{Number(row.totalUsersCapacity || 0)}</strong>
+                                  <small>{tr('пользователей', 'Nutzer')}</small>
+                                </div>
+                              </div>
+                              <div className="economics-breakdown-row economics-breakdown-row-rich">
+                                <div className="economics-breakdown-copy">
+                                  <span>{tr('Осталось сейчас', 'Noch frei jetzt')}</span>
+                                  <small>
+                                    {tr('ср. usage/user', 'Ø Usage/Nutzer')}: {formatEconomicsCompactNumber(row.avgUnitsPerActiveUser)} {formatEconomicsUnitsLabel(row.unitsType, uiLang)}
+                                  </small>
+                                </div>
+                                <div className="economics-breakdown-value">
+                                  <strong>{Number(row.remainingUsersCapacity || 0)}</strong>
+                                  <small>{tr('пользователей', 'Nutzer')}</small>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
                     )}
 
                     <div className="economics-breakdown-grid">

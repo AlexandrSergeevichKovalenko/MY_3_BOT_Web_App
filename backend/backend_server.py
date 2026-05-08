@@ -9256,6 +9256,103 @@ def _sync_billing_fixed_costs_from_env(anchor_date: date | None = None) -> dict:
     }
 
 
+RAILWAY_RAM_PRICE_PER_GB_MONTH_USD = 10.0
+RAILWAY_CPU_PRICE_PER_VCPU_MONTH_USD = 20.0
+RAILWAY_VOLUME_PRICE_PER_GB_MONTH_USD = 0.15
+RAILWAY_EGRESS_PRICE_PER_GB_USD = 0.05
+RAILWAY_INFRA_FIXED_PROVIDERS = ("railway", "network", "proxy", "infra")
+
+
+def _build_railway_infra_audit(summary: dict | None = None) -> dict:
+    fixed_components: list[dict] = []
+    tracked_fixed_baseline_month_usd = 0.0
+    if isinstance(summary, dict):
+        provider_rows = ((summary.get("breakdown") or {}).get("by_provider") or [])
+        for item in provider_rows:
+            provider_key = str((item or {}).get("provider") or "").strip().lower()
+            if provider_key not in RAILWAY_INFRA_FIXED_PROVIDERS:
+                continue
+            fixed_cost = float((item or {}).get("fixed_cost") or 0.0)
+            total_cost = float((item or {}).get("total_cost") or 0.0)
+            tracked_fixed_baseline_month_usd += fixed_cost
+            fixed_components.append(
+                {
+                    "provider": provider_key,
+                    "fixed_cost_month_usd": round(fixed_cost, 6),
+                    "total_cost_in_selected_period_usd": round(total_cost, 6),
+                }
+            )
+        fixed_components.sort(key=lambda item: (-float(item.get("fixed_cost_month_usd") or 0.0), str(item.get("provider") or "")))
+
+    postgres = {
+        "available": False,
+        "database_name": None,
+        "db_size_mb": None,
+        "db_size_gb": None,
+    }
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT current_database(), pg_database_size(current_database())
+                    """
+                )
+                row = cursor.fetchone() or (None, None)
+                db_name = str(row[0] or "").strip() or None
+                db_size_bytes = float(row[1] or 0.0)
+                postgres = {
+                    "available": True,
+                    "database_name": db_name,
+                    "db_size_mb": round(db_size_bytes / (1024.0 * 1024.0), 6),
+                    "db_size_gb": round(db_size_bytes / (1024.0 * 1024.0 * 1024.0), 6),
+                }
+    except Exception:
+        logging.warning("Railway infra audit: postgres size probe failed", exc_info=True)
+
+    redis_payload = {
+        "available": False,
+        "memory_used_mb": None,
+        "memory_peak_mb": None,
+        "memory_fragmentation_ratio": None,
+        "connected_clients": None,
+        "keys": None,
+    }
+    try:
+        redis_client = get_redis_client()
+        if redis_client is not None:
+            info = redis_client.info("memory") or {}
+            keys_count = int(redis_client.dbsize() or 0)
+            redis_payload = {
+                "available": True,
+                "memory_used_mb": round(float(info.get("used_memory", 0.0) or 0.0) / (1024.0 * 1024.0), 6),
+                "memory_peak_mb": round(float(info.get("used_memory_peak", 0.0) or 0.0) / (1024.0 * 1024.0), 6),
+                "memory_fragmentation_ratio": round(float(info.get("mem_fragmentation_ratio", 0.0) or 0.0), 4),
+                "connected_clients": int(info.get("connected_clients", 0) or 0),
+                "keys": keys_count,
+            }
+    except Exception:
+        logging.warning("Railway infra audit: redis probe failed", exc_info=True)
+
+    return {
+        "pricing": {
+            "currency": "USD",
+            "ram_per_gb_month": RAILWAY_RAM_PRICE_PER_GB_MONTH_USD,
+            "cpu_per_vcpu_month": RAILWAY_CPU_PRICE_PER_VCPU_MONTH_USD,
+            "volume_per_gb_month": RAILWAY_VOLUME_PRICE_PER_GB_MONTH_USD,
+            "egress_per_gb": RAILWAY_EGRESS_PRICE_PER_GB_USD,
+            "source_url": "https://docs.railway.com/reference/pricing",
+            "plan_url": "https://railway.com/pricing",
+        },
+        "tracked_fixed_baseline_month_usd": round(tracked_fixed_baseline_month_usd, 6),
+        "tracked_fixed_components": fixed_components,
+        "live": {
+            "postgres": postgres,
+            "redis": redis_payload,
+        },
+    }
+
+
 def _openai_model_key_to_model(model_key: str) -> str:
     key = str(model_key or "").strip().lower()
     if not key:
@@ -22135,6 +22232,7 @@ def get_economics_summary():
             provider=provider or None,
             currency=BILLING_CURRENCY_DEFAULT,
         )
+        summary["railway_infra"] = _build_railway_infra_audit(summary)
     except Exception as exc:
         logging.exception(
             "economics summary failed: period=%s provider=%s currency=%s",

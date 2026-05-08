@@ -3131,6 +3131,84 @@ body {
   color: #ffd166;
 }
 
+.economics-breakdown-card-spotlight {
+  margin-top: 12px;
+}
+
+.economics-budget-monitor {
+  border-color: rgba(93, 220, 255, 0.24);
+  background: rgba(8, 22, 40, 0.7);
+}
+
+.economics-forecast-block {
+  border-color: rgba(125, 211, 252, 0.24);
+  background: rgba(8, 24, 34, 0.76);
+}
+
+.economics-railway-block {
+  border-color: rgba(110, 231, 183, 0.24);
+  background: rgba(6, 32, 24, 0.72);
+}
+
+.economics-forecast-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.economics-forecast-field {
+  min-width: 220px;
+  margin: 0;
+}
+
+.economics-forecast-field input {
+  min-height: 42px;
+}
+
+.economics-railway-inputs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.economics-budget-capacity {
+  border-color: rgba(251, 191, 36, 0.24);
+  background: rgba(38, 25, 8, 0.52);
+}
+
+.economics-capacity-bottleneck {
+  border: 1px solid rgba(251, 191, 36, 0.24);
+  border-radius: 14px;
+  background: rgba(255, 196, 61, 0.08);
+  padding: 12px;
+  display: grid;
+  gap: 4px;
+}
+
+.economics-capacity-bottleneck span {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(252, 211, 77, 0.88);
+}
+
+.economics-capacity-bottleneck strong {
+  color: #f8fafc;
+  font-size: 20px;
+  line-height: 1.15;
+}
+
+.economics-breakdown-grid-tight {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.economics-breakdown-card-mini h4 {
+  margin-bottom: 4px;
+}
+
 .billing-support-grid {
   margin-top: 14px;
   display: grid;
@@ -21496,6 +21574,14 @@ body {
 .webapp-page.is-theme-light .economics-breakdown-card {
   border-color: rgba(171, 126, 72, 0.3);
   background: rgba(255, 248, 238, 0.92);
+}
+
+.webapp-page.is-theme-light .economics-forecast-block {
+  background: linear-gradient(135deg, rgba(224, 242, 254, 0.72), rgba(255, 248, 238, 0.94));
+}
+
+.webapp-page.is-theme-light .economics-railway-block {
+  background: linear-gradient(135deg, rgba(220, 252, 231, 0.76), rgba(255, 248, 238, 0.94));
 }
 
 .webapp-page.is-theme-light .economics-breakdown-card h4 {

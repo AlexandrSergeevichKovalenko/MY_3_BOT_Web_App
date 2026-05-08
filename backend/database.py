@@ -20236,9 +20236,43 @@ def get_global_billing_summary(
                     variable_cost = float(item.get("variable_cost") or 0.0)
                     fixed_cost = float(item.get("fixed_cost") or 0.0)
                     provider_key = str(item.get("provider") or "")
+                    provider_active_users = _get_product_active_users_count(
+                        cursor,
+                        period_start=period_start,
+                        period_end=period_end,
+                        provider=provider_key,
+                    )
                     item["fixed_cost"] = round(fixed_cost, 6)
                     item["total_cost"] = round(variable_cost + fixed_cost, 6)
                     item["units_by_type"] = provider_units_map.get(provider_key, [])
+                    item["active_users"] = provider_active_users
+                    item["avg_variable_cost_per_active_user"] = round(
+                        (variable_cost / provider_active_users) if provider_active_users > 0 else 0.0,
+                        6,
+                    )
+                    item["avg_fixed_cost_per_active_user"] = round(
+                        (fixed_cost / provider_active_users) if provider_active_users > 0 else 0.0,
+                        6,
+                    )
+                    item["avg_total_cost_per_active_user"] = round(
+                        ((variable_cost + fixed_cost) / provider_active_users) if provider_active_users > 0 else 0.0,
+                        6,
+                    )
+                    item["avg_events_per_active_user"] = round(
+                        (float(item.get("events") or 0.0) / provider_active_users) if provider_active_users > 0 else 0.0,
+                        6,
+                    )
+                    item["avg_units_by_type_per_active_user"] = [
+                        {
+                            "units_type": str(unit_row.get("units_type") or ""),
+                            "units": round(float(unit_row.get("units") or 0.0), 6),
+                            "avg_units_per_active_user": round(
+                                (float(unit_row.get("units") or 0.0) / provider_active_users) if provider_active_users > 0 else 0.0,
+                                6,
+                            ),
+                        }
+                        for unit_row in provider_units_map.get(provider_key, [])
+                    ]
                 provider_rows.sort(
                     key=lambda item: (
                         -float(item.get("total_cost") or 0.0),
@@ -20276,6 +20310,40 @@ def get_global_billing_summary(
                     "events": events_count,
                     "units_by_type": provider_units_map.get(provider_value, []),
                 }]
+                provider_active_users = _get_product_active_users_count(
+                    cursor,
+                    period_start=period_start,
+                    period_end=period_end,
+                    provider=provider_value,
+                )
+                provider_rows[0]["active_users"] = provider_active_users
+                provider_rows[0]["avg_variable_cost_per_active_user"] = round(
+                    (variable_cost_total / provider_active_users) if provider_active_users > 0 else 0.0,
+                    6,
+                )
+                provider_rows[0]["avg_fixed_cost_per_active_user"] = round(
+                    (fixed_cost_total / provider_active_users) if provider_active_users > 0 else 0.0,
+                    6,
+                )
+                provider_rows[0]["avg_total_cost_per_active_user"] = round(
+                    ((variable_cost_total + fixed_cost_total) / provider_active_users) if provider_active_users > 0 else 0.0,
+                    6,
+                )
+                provider_rows[0]["avg_events_per_active_user"] = round(
+                    (events_count / provider_active_users) if provider_active_users > 0 else 0.0,
+                    6,
+                )
+                provider_rows[0]["avg_units_by_type_per_active_user"] = [
+                    {
+                        "units_type": str(unit_row.get("units_type") or ""),
+                        "units": round(float(unit_row.get("units") or 0.0), 6),
+                        "avg_units_per_active_user": round(
+                            (float(unit_row.get("units") or 0.0) / provider_active_users) if provider_active_users > 0 else 0.0,
+                            6,
+                        ),
+                    }
+                    for unit_row in provider_units_map.get(provider_value, [])
+                ]
 
             actions_params = [currency_value, period_start, period_end]
             if provider_value:
