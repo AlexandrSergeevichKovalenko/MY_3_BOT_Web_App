@@ -262,7 +262,8 @@ function formatAnalyticsCalendarDisplayDate(value, locale = 'ru-RU') {
   }).format(safeDate);
 }
 
-const HOME_SNAPSHOT_AUTO_REFRESH_MAX_AGE_MS = 30 * 60 * 1000;
+const HOME_SNAPSHOT_AUTO_REFRESH_MAX_AGE_MS = 60 * 60 * 1000;
+const TODAY_PLAN_AUTO_REFRESH_MAX_AGE_MS = 60 * 60 * 1000;
 
 function parseIsoTimestampMs(value) {
   const raw = String(value || '').trim();
@@ -3275,7 +3276,7 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
                     <button
                       type="button"
                       className="home-panel-action-btn"
-                      onClick={refreshWeeklyPlan}
+                      onClick={() => loadWeeklyPlan({ manual: true, syncFacts: true })}
                       disabled={weeklyPlanLoading || planAnalyticsLoading}
                       title={tr('Актуализировать данные', 'Daten aktualisieren')}
                       aria-label={tr('Актуализировать данные', 'Daten aktualisieren')}
@@ -3552,15 +3553,15 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
                     <button
                       type="button"
                       className="home-panel-action-btn"
-                      onClick={() => loadTodayPlan({ manual: true })}
+                      onClick={() => loadTodayPlan({ manual: true, syncFacts: true })}
                       disabled={todayPlanLoading}
-                      title={tr('Актуализировать данные', 'Daten aktualisieren')}
-                      aria-label={tr('Актуализировать данные', 'Daten aktualisieren')}
+                      title={tr('Синхронизировать выполнение', 'Fortschritt synchronisieren')}
+                      aria-label={tr('Синхронизировать выполнение', 'Fortschritt synchronisieren')}
                     >
                       <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="14" height="14" aria-hidden="true" className={todayPlanLoading ? 'is-spinning' : ''}>
                         <path d="M16 2v4h-4"/><path d="M2 11a7 7 0 0 0 12.9 2.9L16 6"/><path d="M2 16v-4h4"/><path d="M16 7a7 7 0 0 0-12.9-2.9L2 12"/>
                       </svg>
-                      {tr('Обновить', 'Aktualisieren')}
+                      {tr('Синхронизировать', 'Synchronisieren')}
                     </button>
                   </div>
                 </div>
@@ -3590,7 +3591,7 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
             </div>
           )}
           {todayPlanLoading && hasTodayPlanSnapshot && (
-            <div className="webapp-muted">{tr('Обновляем план в фоне...', 'Plan wird im Hintergrund aktualisiert...')}</div>
+            <div className="webapp-muted">{tr('Синхронизируем выполнение в фоне...', 'Fortschritt wird im Hintergrund synchronisiert...')}</div>
           )}
           {todayPlanError && <div className="webapp-error">{todayPlanError}</div>}
           {!showTodayPlanSkeleton && !todayPlanLoading && !todayPlanError && !hasTodayPlanItems && (
@@ -3712,7 +3713,7 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
                     <button
                       type="button"
                       className="home-panel-action-btn"
-                      onClick={() => loadSkillReport({ manual: true })}
+                      onClick={() => loadSkillReport({ manual: true, syncFacts: true })}
                       disabled={skillReportLoading}
                       title={tr('Актуализировать данные', 'Daten aktualisieren')}
                       aria-label={tr('Актуализировать данные', 'Daten aktualisieren')}
@@ -8328,6 +8329,7 @@ function AppInner() {
     if (!initData) return;
     const requestId = beginAsyncGuard(todayPlanRequestIdRef);
     const tone = options?.manual ? 'manual' : 'snapshot';
+    const syncFacts = Boolean(options?.syncFacts);
     try {
       setTodayPlanLoading(true);
       setTodayPlanError('');
@@ -8335,9 +8337,22 @@ function AppInner() {
       const query = new URLSearchParams({ initData });
       if (pairHint?.source_lang) query.set('source_lang', pairHint.source_lang);
       if (pairHint?.target_lang) query.set('target_lang', pairHint.target_lang);
-      const response = await fetchGetWithRetry(`/api/today?${query.toString()}`, 45000);
+      const response = syncFacts
+        ? await fetch('/api/today/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            initData,
+            language_pair: pairHint || undefined,
+          }),
+        })
+        : await fetchGetWithRetry(`/api/today?${query.toString()}`, 45000);
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка загрузки плана на сегодня', 'Fehler beim Laden des Tagesplans'));
+        throw new Error(await readApiError(
+          response,
+          syncFacts ? 'Ошибка синхронизации выполнения' : 'Ошибка загрузки плана на сегодня',
+          syncFacts ? 'Fehler bei der Fortschritt-Synchronisierung' : 'Fehler beim Laden des Tagesplans'
+        ));
       }
       const data = await response.json();
       if (!isAsyncGuardCurrent(todayPlanRequestIdRef, requestId)) {
@@ -8372,8 +8387,8 @@ function AppInner() {
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
         error,
-        'Не удалось загрузить задачи на сегодня.',
-        'Tagesaufgaben konnten nicht geladen werden.'
+        syncFacts ? 'Не удалось синхронизировать выполнение на сегодня.' : 'Не удалось загрузить задачи на сегодня.',
+        syncFacts ? 'Fortschritt fuer heute konnte nicht synchronisiert werden.' : 'Tagesaufgaben konnten nicht geladen werden.'
       );
       if (!isAsyncGuardCurrent(todayPlanRequestIdRef, requestId)) {
         return;
@@ -8391,6 +8406,7 @@ function AppInner() {
     if (!initData) return;
     const requestId = beginAsyncGuard(skillReportRequestIdRef);
     const tone = options?.manual ? 'manual' : 'snapshot';
+    const syncFacts = Boolean(options?.syncFacts);
     try {
       setSkillReportLoading(true);
       setSkillReportError('');
@@ -8398,9 +8414,23 @@ function AppInner() {
       const query = new URLSearchParams({ period: '7d', initData });
       if (pairHint?.source_lang) query.set('source_lang', pairHint.source_lang);
       if (pairHint?.target_lang) query.set('target_lang', pairHint.target_lang);
-      const response = await fetchGetWithRetry(`/api/progress/skills?${query.toString()}`, 45000);
+      const response = syncFacts
+        ? await fetch('/api/progress/skills/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            initData,
+            period: '7d',
+            language_pair: pairHint || undefined,
+          }),
+        })
+        : await fetchGetWithRetry(`/api/progress/skills?${query.toString()}`, 45000);
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка загрузки отчета по навыкам', 'Fehler beim Laden des Skills-Reports'));
+        throw new Error(await readApiError(
+          response,
+          syncFacts ? 'Ошибка синхронизации навыков' : 'Ошибка загрузки отчета по навыкам',
+          syncFacts ? 'Fehler bei der Skill-Synchronisierung' : 'Fehler beim Laden des Skills-Reports'
+        ));
       }
       const data = await response.json();
       if (!isAsyncGuardCurrent(skillReportRequestIdRef, requestId)) {
@@ -8422,8 +8452,8 @@ function AppInner() {
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
         error,
-        'Не удалось загрузить прогресс навыков.',
-        'Skill-Fortschritt konnte nicht geladen werden.'
+        syncFacts ? 'Не удалось синхронизировать прогресс навыков.' : 'Не удалось загрузить прогресс навыков.',
+        syncFacts ? 'Skill-Fortschritt konnte nicht synchronisiert werden.' : 'Skill-Fortschritt konnte nicht geladen werden.'
       );
       if (!isAsyncGuardCurrent(skillReportRequestIdRef, requestId)) {
         return;
@@ -8441,12 +8471,23 @@ function AppInner() {
     if (!initData) return;
     const requestId = beginAsyncGuard(weeklyPlanRequestIdRef);
     const tone = options?.manual ? 'manual' : 'snapshot';
+    const syncFacts = Boolean(options?.syncFacts);
     try {
       setWeeklyPlanLoading(true);
       setWeeklyPlanError('');
-      const response = await fetchGetWithRetry(`/api/progress/weekly-plan?initData=${encodeURIComponent(initData)}`, 45000);
+      const response = syncFacts
+        ? await fetch('/api/progress/weekly-plan/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData }),
+        })
+        : await fetchGetWithRetry(`/api/progress/weekly-plan?initData=${encodeURIComponent(initData)}`, 45000);
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка загрузки недельного плана', 'Fehler beim Laden des Wochenplans'));
+        throw new Error(await readApiError(
+          response,
+          syncFacts ? 'Ошибка синхронизации недельного плана' : 'Ошибка загрузки недельного плана',
+          syncFacts ? 'Fehler bei der Wochenplan-Synchronisierung' : 'Fehler beim Laden des Wochenplans'
+        ));
       }
       const data = await response.json();
       if (!isAsyncGuardCurrent(weeklyPlanRequestIdRef, requestId)) {
@@ -8465,8 +8506,8 @@ function AppInner() {
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
         error,
-        'Не удалось загрузить недельный план.',
-        'Wochenplan konnte nicht geladen werden.'
+        syncFacts ? 'Не удалось синхронизировать недельный план.' : 'Не удалось загрузить недельный план.',
+        syncFacts ? 'Wochenplan konnte nicht synchronisiert werden.' : 'Wochenplan konnte nicht geladen werden.'
       );
       if (!isAsyncGuardCurrent(weeklyPlanRequestIdRef, requestId)) {
         return;
@@ -14158,11 +14199,23 @@ function AppInner() {
   }, [initData, isWebAppMode, pageVisible]);
 
   useEffect(() => {
-    if (!isWebAppMode || !initData || !pageVisible || !startupPhase2Ready || todayPlanStartupRefreshDoneRef.current) {
+    const shouldHydrateTodayPanel = Boolean(isHomeRouteActive);
+    if (
+      !isWebAppMode
+      || !initData
+      || !pageVisible
+      || !startupPhase2Ready
+      || !shouldHydrateTodayPanel
+      || todayPlanStartupRefreshDoneRef.current
+    ) {
       return undefined;
     }
     const snapshot = readTodayPlanSnapshot();
-    const shouldRefresh = !snapshot || isSnapshotRefreshDue(snapshot?.snapshot_saved_at) || !(snapshot?.items?.length > 0);
+    const shouldRefresh = (
+      !snapshot
+      || isSnapshotRefreshDue(snapshot?.snapshot_saved_at, TODAY_PLAN_AUTO_REFRESH_MAX_AGE_MS)
+      || !(snapshot?.items?.length > 0)
+    );
     if (!shouldRefresh) {
       todayPlanStartupRefreshDoneRef.current = true;
       return undefined;
@@ -14170,10 +14223,19 @@ function AppInner() {
     const delayMs = snapshot ? 1600 : 350;
     const timerId = window.setTimeout(() => {
       todayPlanStartupRefreshDoneRef.current = true;
-      void loadTodayPlan();
+      void loadTodayPlan({ syncFacts: true });
     }, delayMs);
     return () => window.clearTimeout(timerId);
-  }, [homeSnapshotResumeTick, initData, isWebAppMode, loadTodayPlan, pageVisible, readTodayPlanSnapshot, startupPhase2Ready]);
+  }, [
+    homeSnapshotResumeTick,
+    initData,
+    isHomeRouteActive,
+    isWebAppMode,
+    loadTodayPlan,
+    pageVisible,
+    readTodayPlanSnapshot,
+    startupPhase2Ready,
+  ]);
 
   const loadWeeklyPlanRef = useRef(loadWeeklyPlan);
   loadWeeklyPlanRef.current = loadWeeklyPlan;
@@ -14190,16 +14252,47 @@ function AppInner() {
 
   useEffect(() => {
     if (!isWebAppMode || !initData || !pageVisible || !startupPhase3Ready) return;
-    // Weekly plan and skills now live behind home subsection navigation, so hydrate them on explicit entry only.
-    if (activeHomeSubsectionKey === 'home_weekly_plan' && !weeklyPlanLoadingRef.current) {
-      void loadWeeklyPlanRef.current({ manual: true });
+    if (activeHomeSubsectionKey === 'home_weekly_plan') {
+      if (weeklyPlanLoadingRef.current || weeklyPlanStartupRefreshDoneRef.current) return;
+      const snapshot = readWeeklyPlanSnapshot();
+      const shouldRefresh = !snapshot || isSnapshotRefreshDue(snapshot?.snapshot_saved_at);
+      if (!shouldRefresh) {
+        weeklyPlanStartupRefreshDoneRef.current = true;
+        return;
+      }
+      const delayMs = snapshot ? 1200 : 250;
+      const timerId = window.setTimeout(() => {
+        weeklyPlanStartupRefreshDoneRef.current = true;
+        void loadWeeklyPlanRef.current();
+      }, delayMs);
+      return () => window.clearTimeout(timerId);
     }
-    if (activeHomeSubsectionKey === 'home_skills' && !skillReportLoadingRef.current) {
-      void loadSkillReportRef.current({ manual: true });
+    if (activeHomeSubsectionKey === 'home_skills') {
+      if (skillReportLoadingRef.current || skillReportStartupRefreshDoneRef.current) return;
+      const snapshot = readSkillReportSnapshot();
+      const shouldRefresh = !snapshot || isSnapshotRefreshDue(snapshot?.snapshot_saved_at);
+      if (!shouldRefresh) {
+        skillReportStartupRefreshDoneRef.current = true;
+        return;
+      }
+      const delayMs = snapshot ? 1200 : 250;
+      const timerId = window.setTimeout(() => {
+        skillReportStartupRefreshDoneRef.current = true;
+        void loadSkillReportRef.current();
+      }, delayMs);
+      return () => window.clearTimeout(timerId);
     }
-  // Intentionally only re-run when the active subsection changes, not on loading state changes.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeHomeSubsectionKey, initData, isWebAppMode, pageVisible, startupPhase3Ready]);
+    return undefined;
+  }, [
+    activeHomeSubsectionKey,
+    homeSnapshotResumeTick,
+    initData,
+    isWebAppMode,
+    pageVisible,
+    readSkillReportSnapshot,
+    readWeeklyPlanSnapshot,
+    startupPhase3Ready,
+  ]);
 
   useEffect(() => {
     if (!isWebAppMode) {

@@ -26949,6 +26949,93 @@ def get_today_plan():
     return jsonify(response_payload)
 
 
+@app.route("/api/today/sync", methods=["POST"])
+def sync_today_plan_facts():
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="today_plan_sync")
+    user_id, username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        _log_flow_observation(
+            "today_plan_sync",
+            "today_sync_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            error_code="auth_error",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=status,
+        )
+        return jsonify({"error": error}), status
+
+    payload = request.get_json(silent=True) or {}
+    requested_date = request.args.get("date")
+    if not requested_date and isinstance(payload, dict):
+        requested_date = payload.get("date")
+    plan_date = _safe_plan_date(requested_date, TODAY_PLAN_DEFAULT_TZ)
+
+    try:
+        today_snapshot = _refresh_today_plan_snapshot_now(
+            user_id=int(user_id),
+            username=username,
+            plan_date=plan_date,
+        )
+        if not isinstance(today_snapshot, dict):
+            raise RuntimeError("today_plan_snapshot_refresh_failed")
+        projection_snapshot = _write_today_card_projection_from_today_snapshot(
+            user_id=int(user_id),
+            plan_date=plan_date,
+            today_snapshot=today_snapshot,
+            card_version=f"fact_sync:{plan_date.isoformat()}",
+        )
+        projection_payload = (
+            dict(projection_snapshot.get("payload") or {})
+            if isinstance(projection_snapshot, dict)
+            else None
+        )
+        if not isinstance(projection_payload, dict):
+            raise RuntimeError("today_card_projection_write_failed")
+        response_payload = _build_today_card_response_payload(projection_payload, plan_date=plan_date)
+    except Exception as exc:
+        _log_flow_observation(
+            "today_plan_sync",
+            "today_sync_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            plan_date=plan_date.isoformat() if hasattr(plan_date, "isoformat") else str(plan_date),
+            final_status="error",
+            error_code=exc.__class__.__name__,
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=500,
+        )
+        return jsonify({"error": f"Ошибка синхронизации выполнения: {exc}"}), 500
+
+    source_lang = str(((response_payload.get("language_pair") or {}) if isinstance(response_payload.get("language_pair"), dict) else {}).get("source_lang") or "").strip() or None
+    target_lang = str(((response_payload.get("language_pair") or {}) if isinstance(response_payload.get("language_pair"), dict) else {}).get("target_lang") or "").strip() or None
+    _log_flow_observation(
+        "today_plan_sync",
+        "today_sync_completed",
+        request_id=request_id,
+        correlation_id=correlation_id,
+        user_id=int(user_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        plan_date=response_payload.get("date"),
+        items_count=len(response_payload.get("items") or []),
+        total_minutes=int(response_payload.get("total_minutes") or 0),
+        response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+        cache_hit=False,
+        cache_tier="fact_sync_refresh",
+        cache_state="ready",
+        final_status="success",
+        duration_ms=_elapsed_ms_since(started_perf),
+        http_status=200,
+    )
+    return jsonify(response_payload)
+
+
 @app.route("/api/today/regenerate", methods=["POST"])
 def regenerate_today_plan():
     user_id, username, error = _get_authenticated_user_from_request_init_data()
@@ -28764,6 +28851,104 @@ def get_skill_progress():
     return jsonify(response_payload)
 
 
+@app.route("/api/progress/skills/sync", methods=["POST"])
+def sync_skill_progress():
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="skill_progress_sync")
+    user_id, username, error = _get_authenticated_user_from_request_init_data()
+    if error:
+        status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+        _log_flow_observation(
+            "skill_progress_sync",
+            "skill_progress_sync_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            final_status="error",
+            error_code="auth_error",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=status,
+        )
+        return jsonify({"error": error}), status
+
+    payload = request.get_json(silent=True) or {}
+    raw_period = str(request.args.get("period") or (payload.get("period") if isinstance(payload, dict) else "") or "7d").strip().lower()
+    lookback_days = 7
+    if raw_period.endswith("d"):
+        try:
+            lookback_days = int(raw_period[:-1] or "7")
+        except Exception:
+            lookback_days = 7
+
+    try:
+        skill_snapshot = _refresh_skill_progress_snapshot_now(
+            user_id=int(user_id),
+            username=username,
+            lookback_days=int(lookback_days),
+        )
+        if not isinstance(skill_snapshot, dict):
+            raise RuntimeError("skill_progress_snapshot_refresh_failed")
+        projection_snapshot = _write_skills_card_projection_from_skill_snapshot(
+            user_id=int(user_id),
+            lookback_days=int(lookback_days),
+            skill_snapshot=skill_snapshot,
+            card_version=f"fact_sync:{int(lookback_days)}",
+            recent_session_seed=None,
+            projection_status="ready",
+            pending_finish_session_id=None,
+        )
+        projection_payload = (
+            dict(projection_snapshot.get("payload") or {})
+            if isinstance(projection_snapshot, dict)
+            else None
+        )
+        if not isinstance(projection_payload, dict):
+            raise RuntimeError("skills_card_projection_write_failed")
+        response_payload = _build_skills_card_response_payload(
+            projection_payload,
+            user_id=int(user_id),
+            username=username,
+        )
+    except Exception as exc:
+        _log_flow_observation(
+            "skill_progress_sync",
+            "skill_progress_sync_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            lookback_days=int(lookback_days),
+            final_status="error",
+            error_code=exc.__class__.__name__,
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=500,
+        )
+        return jsonify({"error": f"Ошибка синхронизации навыков: {exc}"}), 500
+
+    source_lang = str(((response_payload.get("language_pair") or {}) if isinstance(response_payload.get("language_pair"), dict) else {}).get("source_lang") or "").strip() or None
+    target_lang = str(((response_payload.get("language_pair") or {}) if isinstance(response_payload.get("language_pair"), dict) else {}).get("target_lang") or "").strip() or None
+    _log_flow_observation(
+        "skill_progress_sync",
+        "skill_progress_sync_completed",
+        request_id=request_id,
+        correlation_id=correlation_id,
+        user_id=int(user_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        lookback_days=int(lookback_days),
+        groups_count=int(response_payload.get("groups_count") or 0),
+        total_skills=int(response_payload.get("total_skills") or 0),
+        skills_with_data=int(response_payload.get("skills_with_data") or 0),
+        response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+        cache_hit=False,
+        cache_tier="fact_sync_refresh",
+        cache_state="ready",
+        final_status="success",
+        duration_ms=_elapsed_ms_since(started_perf),
+        http_status=200,
+    )
+    return jsonify(response_payload)
+
+
 @app.route("/api/progress/skills/<string:skill_id>/practice/event", methods=["POST"])
 def track_skill_practice_event(skill_id: str):
     user_id, username, error = _get_authenticated_user_from_request_init_data()
@@ -28954,6 +29139,87 @@ def weekly_plan_progress():
             progress_duration_ms=cache_meta.get("progress_duration_ms"),
             save_goals_duration_ms=save_goals_duration_ms,
             response_size_bytes=cache_meta.get("response_size_bytes") or _estimate_json_payload_size_bytes(response_payload),
+            final_status="success",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=200,
+            **summarize_db_acquire_events(db_acquire_events),
+        )
+        return jsonify(response_payload)
+
+
+@app.route("/api/progress/weekly-plan/sync", methods=["POST"])
+def sync_weekly_plan_progress():
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="weekly_plan_sync")
+    with db_acquire_scope("weekly_plan_sync") as db_acquire_events:
+        user_id, _username, error = _get_authenticated_user_from_request_init_data()
+        if error:
+            status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+            _log_flow_observation(
+                "weekly_plan_sync",
+                "weekly_plan_sync_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                final_status="error",
+                error_code="auth_error",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=status,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": error}), status
+
+        plan_anchor_date = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
+        try:
+            response_payload, meta = _build_weekly_plan_response_payload(user_id=int(user_id))
+            effective_snapshot_key = str(meta.get("snapshot_week_start") or _weekly_plan_snapshot_key(plan_anchor_date))
+            snapshot = upsert_user_api_snapshot(
+                user_id=int(user_id),
+                snapshot_kind="weekly_plan",
+                snapshot_key=effective_snapshot_key,
+                payload=response_payload,
+                source_lang=str(meta.get("source_lang") or "").strip() or None,
+                target_lang=str(meta.get("target_lang") or "").strip() or None,
+                meta=meta,
+                fresh_ttl_seconds=WEEKLY_PLAN_SNAPSHOT_FRESH_TTL_SEC,
+                stale_ttl_seconds=WEEKLY_PLAN_SNAPSHOT_STALE_TTL_SEC,
+            )
+            _store_snapshot_in_front_cache(
+                _HOTPATH_WEEKLY_PLAN_CACHE,
+                front_key=("weekly_plan", int(user_id), effective_snapshot_key),
+                snapshot=snapshot,
+                fresh_ttl_sec=WEEKLY_PLAN_SNAPSHOT_FRESH_TTL_SEC,
+                stale_ttl_sec=WEEKLY_PLAN_SNAPSHOT_STALE_TTL_SEC,
+            )
+        except Exception as exc:
+            _log_flow_observation(
+                "weekly_plan_sync",
+                "weekly_plan_sync_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
+                final_status="error",
+                error_code=exc.__class__.__name__,
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=500,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": f"Ошибка синхронизации недельного плана: {exc}"}), 500
+
+        _log_flow_observation(
+            "weekly_plan_sync",
+            "weekly_plan_sync_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            cache_hit=False,
+            cache_tier="fact_sync_refresh",
+            cache_state="ready",
+            snapshot_age_ms=0,
+            language_pair_lookup_duration_ms=meta.get("language_pair_lookup_duration_ms"),
+            goals_duration_ms=meta.get("goals_duration_ms"),
+            progress_duration_ms=meta.get("progress_duration_ms"),
+            response_size_bytes=meta.get("response_size_bytes") or _estimate_json_payload_size_bytes(response_payload),
             final_status="success",
             duration_ms=_elapsed_ms_since(started_perf),
             http_status=200,
