@@ -86,6 +86,7 @@ import http.cookiejar
 import re
 import html
 import multiprocessing
+import inspect
 from typing import Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from zoneinfo import ZoneInfo
@@ -1285,6 +1286,16 @@ _BACKEND_SCHEMA_BOOTSTRAP_BEFORE_REQUEST_ENABLED = str(
 _BACKEND_SCHEMA_BOOTSTRAP_ON_STARTUP_ENABLED = str(
     os.getenv("BACKEND_SCHEMA_BOOTSTRAP_ON_STARTUP_ENABLED", "0")
 ).strip().lower() in {"1", "true", "yes", "on"}
+_WEBAPP_STARTUP_BOOTSTRAP_MARKER_NAME = "webapp_tables_startup_bootstrap"
+_WEBAPP_STARTUP_BOOTSTRAP_OWNER_LOCK_KEY = 94081017
+_WEBAPP_STARTUP_BOOTSTRAP_WAIT_TIMEOUT_MS = max(
+    1000,
+    int((os.getenv("BACKEND_SCHEMA_BOOTSTRAP_WAIT_TIMEOUT_MS") or "420000").strip() or "420000"),
+)
+_WEBAPP_STARTUP_BOOTSTRAP_POLL_INTERVAL_MS = max(
+    100,
+    int((os.getenv("BACKEND_SCHEMA_BOOTSTRAP_WAIT_POLL_INTERVAL_MS") or "1000").strip() or "1000"),
+)
 
 
 def _normalize_runtime_service_name(value: str | None) -> str:
@@ -1293,6 +1304,7 @@ def _normalize_runtime_service_name(value: str | None) -> str:
 
 _STARTUP_PHASE_RECORDS: list[dict[str, Any]] = []
 _STARTUP_PHASE_RECORDS_LOCK = threading.Lock()
+_STARTUP_PHASE_CONTEXT = threading.local()
 
 
 def _startup_enabled_from_env(name: str, default: str = "0") -> bool:
@@ -1308,6 +1320,20 @@ def _startup_worker_info() -> str:
 
 def _startup_service_name() -> str:
     return str(_railway_service_name or "").strip() or "-"
+
+
+def _startup_phase_context_fields() -> dict[str, Any]:
+    raw = getattr(_STARTUP_PHASE_CONTEXT, "fields", None)
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def _set_startup_phase_context(**fields: Any) -> None:
+    _STARTUP_PHASE_CONTEXT.fields = {key: value for key, value in fields.items() if value is not None}
+
+
+def _clear_startup_phase_context() -> None:
+    if hasattr(_STARTUP_PHASE_CONTEXT, "fields"):
+        delattr(_STARTUP_PHASE_CONTEXT, "fields")
 
 
 def _log_startup_structured(payload: dict[str, Any], *, level: int = logging.INFO) -> None:
@@ -1328,6 +1354,9 @@ def _append_startup_phase_summary(payload: dict[str, Any]) -> None:
         "async_phase": bool(payload.get("async_phase")),
         "skipped": bool(payload.get("skipped")),
     }
+    for extra_key in ("owner_role", "waited_for_owner_ms", "skip_reason"):
+        if payload.get(extra_key) is not None:
+            summary[extra_key] = payload.get(extra_key)
     if payload.get("error_type"):
         summary["error_type"] = payload.get("error_type")
     with _STARTUP_PHASE_RECORDS_LOCK:
@@ -1362,6 +1391,7 @@ def _emit_startup_phase_log(
         "skipped": bool(skipped),
         "argv": " ".join(sys.argv[:4]),
     }
+    payload.update(_startup_phase_context_fields())
     if exception is not None:
         payload["error_type"] = exception.__class__.__name__
         payload["error_message"] = str(exception)
@@ -1474,6 +1504,205 @@ def _should_start_backend_runtime_side_effects() -> bool:
     return False
 
 
+def _should_coordinate_backend_web_startup_bootstrap() -> bool:
+    if _imported_by_bot_process:
+        return False
+    normalized_service_name = _normalize_runtime_service_name(_railway_service_name)
+    if normalized_service_name.startswith("backend_web"):
+        return True
+    return "gunicorn" in _argv_joined
+
+
+def _startup_deploy_ref() -> str:
+    for env_name in (
+        "RAILWAY_DEPLOYMENT_ID",
+        "RAILWAY_GIT_COMMIT_SHA",
+        "RAILWAY_GIT_COMMIT_SHA_SHORT",
+        "RAILWAY_REPLICA_ID",
+    ):
+        value = str(os.getenv(env_name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _webapp_startup_bootstrap_version() -> str:
+    try:
+        source = inspect.getsource(ensure_webapp_tables)
+    except Exception:
+        source = "ensure_webapp_tables_source_unavailable"
+    digest = hashlib.sha1(source.encode("utf-8")).hexdigest()
+    return digest[:16]
+
+
+def _ensure_startup_bootstrap_markers_table(conn) -> None:
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bt_3_startup_bootstrap_markers (
+                bootstrap_name TEXT PRIMARY KEY,
+                bootstrap_version TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL,
+                started_at TIMESTAMPTZ,
+                completed_at TIMESTAMPTZ,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                owner_pid INTEGER,
+                owner_service TEXT,
+                owner_worker TEXT,
+                deploy_ref TEXT,
+                error_type TEXT,
+                error_message TEXT
+            );
+            """
+        )
+    conn.commit()
+
+
+def _fetch_startup_bootstrap_marker(conn, bootstrap_name: str) -> dict[str, Any] | None:
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT
+                bootstrap_name,
+                bootstrap_version,
+                status,
+                started_at,
+                completed_at,
+                updated_at,
+                owner_pid,
+                owner_service,
+                owner_worker,
+                deploy_ref,
+                error_type,
+                error_message
+            FROM bt_3_startup_bootstrap_markers
+            WHERE bootstrap_name = %s
+            """,
+            (bootstrap_name,),
+        )
+        row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "bootstrap_name": row[0],
+        "bootstrap_version": row[1],
+        "status": row[2],
+        "started_at": row[3],
+        "completed_at": row[4],
+        "updated_at": row[5],
+        "owner_pid": row[6],
+        "owner_service": row[7],
+        "owner_worker": row[8],
+        "deploy_ref": row[9],
+        "error_type": row[10],
+        "error_message": row[11],
+    }
+
+
+def _write_startup_bootstrap_marker(
+    conn,
+    *,
+    bootstrap_name: str,
+    bootstrap_version: str,
+    status: str,
+    owner_pid: int | None,
+    owner_service: str,
+    owner_worker: str,
+    deploy_ref: str,
+    error_type: str | None = None,
+    error_message: str | None = None,
+) -> None:
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            INSERT INTO bt_3_startup_bootstrap_markers (
+                bootstrap_name,
+                bootstrap_version,
+                status,
+                started_at,
+                completed_at,
+                updated_at,
+                owner_pid,
+                owner_service,
+                owner_worker,
+                deploy_ref,
+                error_type,
+                error_message
+            )
+            VALUES (
+                %s,
+                %s,
+                %s,
+                CASE WHEN %s = 'running' THEN NOW() ELSE NULL END,
+                CASE WHEN %s = 'completed' THEN NOW() ELSE NULL END,
+                NOW(),
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s
+            )
+            ON CONFLICT (bootstrap_name) DO UPDATE SET
+                bootstrap_version = EXCLUDED.bootstrap_version,
+                status = EXCLUDED.status,
+                started_at = CASE WHEN EXCLUDED.status = 'running' THEN NOW() ELSE bt_3_startup_bootstrap_markers.started_at END,
+                completed_at = CASE WHEN EXCLUDED.status = 'completed' THEN NOW() ELSE NULL END,
+                updated_at = NOW(),
+                owner_pid = EXCLUDED.owner_pid,
+                owner_service = EXCLUDED.owner_service,
+                owner_worker = EXCLUDED.owner_worker,
+                deploy_ref = EXCLUDED.deploy_ref,
+                error_type = EXCLUDED.error_type,
+                error_message = EXCLUDED.error_message
+            """,
+            (
+                bootstrap_name,
+                bootstrap_version,
+                status,
+                status,
+                status,
+                owner_pid,
+                owner_service,
+                owner_worker,
+                deploy_ref,
+                error_type,
+                error_message,
+            ),
+        )
+    conn.commit()
+
+
+def _emit_startup_schema_bootstrap_election(
+    *,
+    role: str,
+    duration_ms: int,
+    marker_status: str,
+    lock_acquired: bool,
+    wait_timeout_ms: int,
+    success: bool,
+    exception: Exception | None = None,
+) -> None:
+    payload: dict[str, Any] = {
+        "event": "startup_schema_bootstrap_election",
+        "role": role,
+        "pid": os.getpid(),
+        "service": _startup_service_name(),
+        "worker": _startup_worker_info(),
+        "duration_ms": int(duration_ms),
+        "marker_status": marker_status,
+        "lock_acquired": bool(lock_acquired),
+        "wait_timeout_ms": int(wait_timeout_ms),
+        "success": bool(success),
+        "bootstrap_name": _WEBAPP_STARTUP_BOOTSTRAP_MARKER_NAME,
+        "bootstrap_version": _webapp_startup_bootstrap_version(),
+    }
+    if exception is not None:
+        payload["error_type"] = exception.__class__.__name__
+        payload["error_message"] = str(exception)
+    _log_startup_structured(payload, level=logging.INFO if success else logging.WARNING)
+
+
 def _is_retryable_schema_bootstrap_error(exc: Exception) -> bool:
     message = str(exc or "").strip().lower()
     return "deadlock detected" in message or "could not obtain lock" in message
@@ -1519,8 +1748,294 @@ def _bootstrap_backend_schema_or_raise() -> None:
             raise last_error
 
 
+def _coordinated_startup_bootstrap_backend_schema_or_raise() -> None:
+    global _BACKEND_SCHEMA_READY
+    if _BACKEND_SCHEMA_READY:
+        return
+    started_perf = time.perf_counter()
+    role = "waiter"
+    waited_for_owner_ms = 0
+    skip_reason: str | None = None
+    marker_status = "missing"
+    bootstrap_version = _webapp_startup_bootstrap_version()
+    deploy_ref = _startup_deploy_ref()
+
+    def _is_valid_completed_marker(marker: dict[str, Any] | None) -> bool:
+        return bool(
+            marker
+            and str(marker.get("status") or "").strip().lower() == "completed"
+            and str(marker.get("bootstrap_version") or "").strip() == bootstrap_version
+        )
+
+    try:
+        with get_db_connection_context() as conn:
+            _ensure_startup_bootstrap_markers_table(conn)
+            marker = _fetch_startup_bootstrap_marker(conn, _WEBAPP_STARTUP_BOOTSTRAP_MARKER_NAME)
+            if _is_valid_completed_marker(marker):
+                _BACKEND_SCHEMA_READY = True
+                role = "skip_completed"
+                marker_status = "completed"
+                skip_reason = "completed_marker"
+                _emit_startup_schema_bootstrap_election(
+                    role=role,
+                    duration_ms=int((time.perf_counter() - started_perf) * 1000),
+                    marker_status=marker_status,
+                    lock_acquired=False,
+                    wait_timeout_ms=_WEBAPP_STARTUP_BOOTSTRAP_WAIT_TIMEOUT_MS,
+                    success=True,
+                )
+                _set_startup_phase_context(
+                    owner_role=role,
+                    waited_for_owner_ms=0,
+                    skip_reason=skip_reason,
+                )
+                try:
+                    _emit_startup_phase_log(
+                        phase="bootstrap_backend_schema_or_raise",
+                        enabled=True,
+                        success=True,
+                        duration_ms=int((time.perf_counter() - started_perf) * 1000),
+                        category="schema_bootstrap",
+                        required_before_first_request=True,
+                        skipped=False,
+                    )
+                finally:
+                    _clear_startup_phase_context()
+                return
+
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT pg_try_advisory_lock(%s::bigint);",
+                    (_WEBAPP_STARTUP_BOOTSTRAP_OWNER_LOCK_KEY,),
+                )
+                lock_acquired = bool((cursor.fetchone() or [False])[0])
+
+            if lock_acquired:
+                role = "owner"
+                marker = _fetch_startup_bootstrap_marker(conn, _WEBAPP_STARTUP_BOOTSTRAP_MARKER_NAME)
+                if _is_valid_completed_marker(marker):
+                    _BACKEND_SCHEMA_READY = True
+                    marker_status = "completed"
+                    skip_reason = "completed_marker_after_lock"
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT pg_advisory_unlock(%s::bigint);",
+                            (_WEBAPP_STARTUP_BOOTSTRAP_OWNER_LOCK_KEY,),
+                        )
+                    conn.commit()
+                    _emit_startup_schema_bootstrap_election(
+                        role="skip_completed",
+                        duration_ms=int((time.perf_counter() - started_perf) * 1000),
+                        marker_status=marker_status,
+                        lock_acquired=True,
+                        wait_timeout_ms=_WEBAPP_STARTUP_BOOTSTRAP_WAIT_TIMEOUT_MS,
+                        success=True,
+                    )
+                    _set_startup_phase_context(
+                        owner_role="skip_completed",
+                        waited_for_owner_ms=0,
+                        skip_reason=skip_reason,
+                    )
+                    try:
+                        _emit_startup_phase_log(
+                            phase="bootstrap_backend_schema_or_raise",
+                            enabled=True,
+                            success=True,
+                            duration_ms=int((time.perf_counter() - started_perf) * 1000),
+                            category="schema_bootstrap",
+                            required_before_first_request=True,
+                            skipped=False,
+                        )
+                    finally:
+                        _clear_startup_phase_context()
+                    return
+                _write_startup_bootstrap_marker(
+                    conn,
+                    bootstrap_name=_WEBAPP_STARTUP_BOOTSTRAP_MARKER_NAME,
+                    bootstrap_version=bootstrap_version,
+                    status="running",
+                    owner_pid=os.getpid(),
+                    owner_service=_startup_service_name(),
+                    owner_worker=_startup_worker_info(),
+                    deploy_ref=deploy_ref,
+                )
+                _emit_startup_schema_bootstrap_election(
+                    role=role,
+                    duration_ms=int((time.perf_counter() - started_perf) * 1000),
+                    marker_status="running",
+                    lock_acquired=True,
+                    wait_timeout_ms=_WEBAPP_STARTUP_BOOTSTRAP_WAIT_TIMEOUT_MS,
+                    success=True,
+                )
+                _set_startup_phase_context(
+                    owner_role=role,
+                    waited_for_owner_ms=0,
+                    skip_reason=None,
+                )
+                try:
+                    owner_started_perf = time.perf_counter()
+                    _bootstrap_backend_schema_or_raise()
+                    owner_duration_ms = int((time.perf_counter() - owner_started_perf) * 1000)
+                    _write_startup_bootstrap_marker(
+                        conn,
+                        bootstrap_name=_WEBAPP_STARTUP_BOOTSTRAP_MARKER_NAME,
+                        bootstrap_version=bootstrap_version,
+                        status="completed",
+                        owner_pid=os.getpid(),
+                        owner_service=_startup_service_name(),
+                        owner_worker=_startup_worker_info(),
+                        deploy_ref=deploy_ref,
+                    )
+                    marker_status = "completed"
+                    _emit_startup_schema_bootstrap_election(
+                        role=role,
+                        duration_ms=int((time.perf_counter() - started_perf) * 1000),
+                        marker_status=marker_status,
+                        lock_acquired=True,
+                        wait_timeout_ms=_WEBAPP_STARTUP_BOOTSTRAP_WAIT_TIMEOUT_MS,
+                        success=True,
+                    )
+                    _emit_startup_phase_log(
+                        phase="bootstrap_backend_schema_or_raise",
+                        enabled=True,
+                        success=True,
+                        duration_ms=owner_duration_ms,
+                        category="schema_bootstrap",
+                        required_before_first_request=True,
+                        skipped=False,
+                    )
+                except Exception as exc:
+                    _write_startup_bootstrap_marker(
+                        conn,
+                        bootstrap_name=_WEBAPP_STARTUP_BOOTSTRAP_MARKER_NAME,
+                        bootstrap_version=bootstrap_version,
+                        status="failed",
+                        owner_pid=os.getpid(),
+                        owner_service=_startup_service_name(),
+                        owner_worker=_startup_worker_info(),
+                        deploy_ref=deploy_ref,
+                        error_type=exc.__class__.__name__,
+                        error_message=str(exc),
+                    )
+                    marker_status = "failed"
+                    _emit_startup_schema_bootstrap_election(
+                        role=role,
+                        duration_ms=int((time.perf_counter() - started_perf) * 1000),
+                        marker_status=marker_status,
+                        lock_acquired=True,
+                        wait_timeout_ms=_WEBAPP_STARTUP_BOOTSTRAP_WAIT_TIMEOUT_MS,
+                        success=False,
+                        exception=exc,
+                    )
+                    raise
+                finally:
+                    _clear_startup_phase_context()
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT pg_advisory_unlock(%s::bigint);",
+                            (_WEBAPP_STARTUP_BOOTSTRAP_OWNER_LOCK_KEY,),
+                        )
+                    conn.commit()
+                return
+
+        deadline_perf = time.perf_counter() + (_WEBAPP_STARTUP_BOOTSTRAP_WAIT_TIMEOUT_MS / 1000.0)
+        last_marker: dict[str, Any] | None = None
+        while time.perf_counter() < deadline_perf:
+            with get_db_connection_context() as wait_conn:
+                _ensure_startup_bootstrap_markers_table(wait_conn)
+                last_marker = _fetch_startup_bootstrap_marker(wait_conn, _WEBAPP_STARTUP_BOOTSTRAP_MARKER_NAME)
+            if _is_valid_completed_marker(last_marker):
+                waited_for_owner_ms = int((time.perf_counter() - started_perf) * 1000)
+                marker_status = "completed"
+                _BACKEND_SCHEMA_READY = True
+                _emit_startup_schema_bootstrap_election(
+                    role=role,
+                    duration_ms=waited_for_owner_ms,
+                    marker_status=marker_status,
+                    lock_acquired=False,
+                    wait_timeout_ms=_WEBAPP_STARTUP_BOOTSTRAP_WAIT_TIMEOUT_MS,
+                    success=True,
+                )
+                _set_startup_phase_context(
+                    owner_role=role,
+                    waited_for_owner_ms=waited_for_owner_ms,
+                    skip_reason="owner_completed_marker",
+                )
+                try:
+                    _emit_startup_phase_log(
+                        phase="bootstrap_backend_schema_or_raise",
+                        enabled=True,
+                        success=True,
+                        duration_ms=waited_for_owner_ms,
+                        category="schema_bootstrap",
+                        required_before_first_request=True,
+                        skipped=False,
+                    )
+                finally:
+                    _clear_startup_phase_context()
+                return
+            if last_marker and str(last_marker.get("status") or "").strip().lower() == "failed" and str(last_marker.get("bootstrap_version") or "").strip() == bootstrap_version:
+                waited_for_owner_ms = int((time.perf_counter() - started_perf) * 1000)
+                marker_status = "failed"
+                exc = RuntimeError(
+                    "Startup schema bootstrap failed in owner process: "
+                    f"{last_marker.get('error_type') or 'unknown'}: {last_marker.get('error_message') or 'no details'}"
+                )
+                _emit_startup_schema_bootstrap_election(
+                    role=role,
+                    duration_ms=waited_for_owner_ms,
+                    marker_status=marker_status,
+                    lock_acquired=False,
+                    wait_timeout_ms=_WEBAPP_STARTUP_BOOTSTRAP_WAIT_TIMEOUT_MS,
+                    success=False,
+                    exception=exc,
+                )
+                raise exc
+            time.sleep(_WEBAPP_STARTUP_BOOTSTRAP_POLL_INTERVAL_MS / 1000.0)
+
+        waited_for_owner_ms = int((time.perf_counter() - started_perf) * 1000)
+        marker_status = str((last_marker or {}).get("status") or "missing")
+        exc = TimeoutError(
+            "Timed out waiting for startup schema bootstrap completion marker: "
+            f"status={marker_status} timeout_ms={_WEBAPP_STARTUP_BOOTSTRAP_WAIT_TIMEOUT_MS}"
+        )
+        _emit_startup_schema_bootstrap_election(
+            role=role,
+            duration_ms=waited_for_owner_ms,
+            marker_status=marker_status,
+            lock_acquired=False,
+            wait_timeout_ms=_WEBAPP_STARTUP_BOOTSTRAP_WAIT_TIMEOUT_MS,
+            success=False,
+            exception=exc,
+        )
+        raise exc
+    except Exception as exc:
+        _set_startup_phase_context(
+            owner_role=role,
+            waited_for_owner_ms=waited_for_owner_ms,
+            skip_reason=skip_reason or ("wait_timeout" if isinstance(exc, TimeoutError) else marker_status),
+        )
+        try:
+            _emit_startup_phase_log(
+                phase="bootstrap_backend_schema_or_raise",
+                enabled=True,
+                success=False,
+                duration_ms=int((time.perf_counter() - started_perf) * 1000),
+                category="schema_bootstrap",
+                required_before_first_request=True,
+                skipped=False,
+                exception=exc,
+            )
+        finally:
+            _clear_startup_phase_context()
+        raise
+
+
 if _force_backend_schema_bootstrap or (_BACKEND_SCHEMA_BOOTSTRAP_ON_STARTUP_ENABLED and not _imported_by_bot_process):
-    _bootstrap_backend_schema_or_raise()
+    if _should_coordinate_backend_web_startup_bootstrap():
+        _coordinated_startup_bootstrap_backend_schema_or_raise()
+    else:
+        _bootstrap_backend_schema_or_raise()
 
 
 @app.before_request
@@ -42668,13 +43183,11 @@ try:
         except Exception as exc:
             logging.warning("Translation check recovery startup failed: %s", exc)
 
-        _run_startup_phase(
-            "bootstrap_backend_schema_or_raise",
-            _bootstrap_backend_schema_or_raise,
-            enabled=bool(_BACKEND_SCHEMA_BOOTSTRAP_ON_STARTUP_ENABLED or _force_backend_schema_bootstrap),
-            category="schema_bootstrap",
-            required_before_first_request=True,
-        )
+        if bool(_BACKEND_SCHEMA_BOOTSTRAP_ON_STARTUP_ENABLED or _force_backend_schema_bootstrap) and not _BACKEND_SCHEMA_READY:
+            if _should_coordinate_backend_web_startup_bootstrap():
+                _coordinated_startup_bootstrap_backend_schema_or_raise()
+            else:
+                _bootstrap_backend_schema_or_raise()
         _run_startup_phase(
             "start_audio_scheduler",
             _start_audio_scheduler,
