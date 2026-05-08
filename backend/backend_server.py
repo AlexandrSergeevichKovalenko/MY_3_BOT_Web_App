@@ -7090,9 +7090,12 @@ def _compute_srs_queue_info(
     due_limit_today = SRS_DUE_PER_DAY
     due_remaining_today = max(0, due_limit_today - due_reviewed_today)
     due_count = min(due_count_total, due_remaining_today)
-    # Block new cards when backlog exceeds 2× the daily limit
-    new_remaining_today = max(NEW_PER_DAY - introduced_today, 0)
-    if due_count_total > SRS_DUE_PER_DAY * 2:
+    # In manual-selection mode use the selection size as the cap; also skip the
+    # backlog-blocking condition so freshly selected words are always learnable.
+    is_manual = bool(allowed_card_ids)
+    effective_new_cap = len(allowed_card_ids) if is_manual else NEW_PER_DAY
+    new_remaining_today = max(effective_new_cap - introduced_today, 0)
+    if not is_manual and due_count_total > SRS_DUE_PER_DAY * 2:
         new_remaining_today = 0
     new_remaining_today = new_remaining_today if has_new_candidates else 0
     return {
@@ -7317,7 +7320,8 @@ def _list_srs_queue_cards(
             allowed_card_ids=normalized_allowed_ids if normalized_allowed_ids else allowed_card_ids,
             cursor=cur,
         )
-        new_remaining_today = max(NEW_PER_DAY - int(introduced_today or 0), 0)
+        _effective_new_cap = len(normalized_allowed_ids or allowed_card_ids or []) or NEW_PER_DAY
+        new_remaining_today = max(_effective_new_cap - int(introduced_today or 0), 0)
         remaining_slots = max(0, safe_limit - len(due_rows))
         new_limit = min(new_remaining_today, remaining_slots)
         new_rows: list[tuple] = []
@@ -7526,7 +7530,8 @@ def _build_next_srs_payload(
                 allowed_card_ids=allowed_card_ids,
                 cursor=cursor,
             )
-            can_take_new = max(NEW_PER_DAY - int(introduced_today or 0), 0) > 0
+            _cap = len(allowed_card_ids) if allowed_card_ids else NEW_PER_DAY
+            can_take_new = max(_cap - int(introduced_today or 0), 0) > 0
         if can_take_new:
             candidate = get_next_new_srs_candidate(
                 user_id=user_id,
