@@ -11476,10 +11476,15 @@ function AppInner() {
     );
   }, [analyticsSummary, tr]);
   const readerVisibleText = useMemo(() => {
-    if (readerPageCount > 0) {
-      return String(readerDisplayPages[Math.max(0, Number(readerCurrentPage || 1) - 1)]?.text || '');
-    }
-    return String(readerContent || '');
+    const raw = readerPageCount > 0
+      ? String(readerDisplayPages[Math.max(0, Number(readerCurrentPage || 1) - 1)]?.text || '')
+      : String(readerContent || '');
+    // Normalize PDF line-breaks: single \n within paragraphs → space; keep \n\n as paragraph break
+    return raw
+      .split(/\n\n+/)
+      .map((para) => para.replace(/\n/g, ' ').replace(/ {2,}/g, ' ').trim())
+      .filter(Boolean)
+      .join('\n\n');
   }, [readerPageCount, readerDisplayPages, readerCurrentPage, readerContent]);
   const readerSegmentationHash = useMemo(() => {
     const value = String(readerVisibleText || '');
