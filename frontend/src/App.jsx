@@ -25272,9 +25272,6 @@ function AppInner() {
                       {tr('Показать быстрый тур', 'Schnellstart zeigen')}
                     </button>
                   </div>
-                  <div className="guide-hero-mascot-wrap" aria-hidden="true">
-                    <img src={heroStickerSrc} alt="" className="guide-hero-mascot" />
-                  </div>
                 </div>
 
                 <div className="guide-step-grid">
