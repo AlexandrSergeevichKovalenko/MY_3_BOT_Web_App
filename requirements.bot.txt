@@ -1,0 +1,16 @@
+# Reuse the backend runtime dependency set because bot_3.py imports
+# backend.backend_server and many backend.* helpers directly.
+-r backend/requirements.txt
+
+# Definitely needed: direct bot runtime imports.
+openai
+python-telegram-bot==21.10
+google-api-python-client==2.160.0
+aiohttp==3.10.5
+pandas==2.2.2
+numpy==1.26.4
+python-dateutil==2.9.0.post0
+
+# Probably needed because the imported analytics helpers use them directly.
+# Keep explicit pins for parity with the current root requirements set.
+matplotlib==3.9.2

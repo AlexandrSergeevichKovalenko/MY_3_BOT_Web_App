@@ -2,6 +2,14 @@
 my-project-bot-453023-0fee9fd308c4.json
 find_gropu_id.py
 parsing.py
+
+# VCS / local noise
+.git/
+.DS_Store
+__pycache__/
+.coverage
+coverage/
+
 # Frontend
 frontend/node_modules/
 frontend/dist/
@@ -18,3 +26,17 @@ backend/.env*
 .idea/
 *.xlsx
 *.png
+
+# Local artifacts and reports
+tmp/
+docs/
+ios/
+test-results/
+.pytest_cache/
+railway_logs*.jsonl
+observability_summary*.json
+translation_*results*.json
+semantic_skill_benchmark_results_latest.json
+skill_shadow_eval_results.json
+skills_analytics_*.md
+skills_semantic_audit_*.md
