@@ -2131,6 +2131,125 @@ def _coordinated_startup_bootstrap_backend_schema_or_raise() -> None:
         raise
 
 
+def wait_for_completed_webapp_startup_bootstrap_marker_or_raise(
+    *,
+    timeout_ms: int | None = None,
+) -> dict[str, Any]:
+    started_perf = time.perf_counter()
+    role = "waiter"
+    marker_status = "missing"
+    bootstrap_version = _webapp_startup_bootstrap_version()
+    effective_timeout_ms = max(
+        1000,
+        int(timeout_ms if timeout_ms is not None else _WEBAPP_STARTUP_BOOTSTRAP_WAIT_TIMEOUT_MS),
+    )
+
+    def _is_valid_completed_marker(marker: dict[str, Any] | None) -> bool:
+        return bool(
+            marker
+            and str(marker.get("status") or "").strip().lower() == "completed"
+            and str(marker.get("bootstrap_version") or "").strip() == bootstrap_version
+        )
+
+    with get_db_connection_context() as conn:
+        _ensure_startup_bootstrap_marker_store_ready(conn)
+        marker = _fetch_startup_bootstrap_marker(conn, _WEBAPP_STARTUP_BOOTSTRAP_MARKER_NAME)
+
+    if _is_valid_completed_marker(marker):
+        marker_status = "completed"
+        duration_ms = int((time.perf_counter() - started_perf) * 1000)
+        _emit_startup_schema_bootstrap_election(
+            role="skip_completed",
+            duration_ms=duration_ms,
+            marker_status=marker_status,
+            lock_acquired=False,
+            wait_timeout_ms=effective_timeout_ms,
+            success=True,
+        )
+        return {
+            "owner_role": "skip_completed",
+            "waited_for_owner_ms": 0,
+            "skip_reason": "completed_marker",
+            "marker_status": marker_status,
+        }
+
+    if marker and str(marker.get("status") or "").strip().lower() == "failed" and str(marker.get("bootstrap_version") or "").strip() == bootstrap_version:
+        marker_status = "failed"
+        duration_ms = int((time.perf_counter() - started_perf) * 1000)
+        exc = RuntimeError(
+            "Web schema bootstrap marker is failed before bot startup readiness: "
+            f"{marker.get('error_type') or 'unknown'}: {marker.get('error_message') or 'no details'}"
+        )
+        _emit_startup_schema_bootstrap_election(
+            role=role,
+            duration_ms=duration_ms,
+            marker_status=marker_status,
+            lock_acquired=False,
+            wait_timeout_ms=effective_timeout_ms,
+            success=False,
+            exception=exc,
+        )
+        raise exc
+
+    deadline_perf = time.perf_counter() + (effective_timeout_ms / 1000.0)
+    last_marker = marker
+    while time.perf_counter() < deadline_perf:
+        with get_db_connection_context() as wait_conn:
+            last_marker = _fetch_startup_bootstrap_marker(wait_conn, _WEBAPP_STARTUP_BOOTSTRAP_MARKER_NAME)
+        if _is_valid_completed_marker(last_marker):
+            marker_status = "completed"
+            waited_for_owner_ms = int((time.perf_counter() - started_perf) * 1000)
+            _emit_startup_schema_bootstrap_election(
+                role=role,
+                duration_ms=waited_for_owner_ms,
+                marker_status=marker_status,
+                lock_acquired=False,
+                wait_timeout_ms=effective_timeout_ms,
+                success=True,
+            )
+            return {
+                "owner_role": role,
+                "waited_for_owner_ms": waited_for_owner_ms,
+                "skip_reason": "owner_completed_marker",
+                "marker_status": marker_status,
+            }
+        if last_marker and str(last_marker.get("status") or "").strip().lower() == "failed" and str(last_marker.get("bootstrap_version") or "").strip() == bootstrap_version:
+            marker_status = "failed"
+            waited_for_owner_ms = int((time.perf_counter() - started_perf) * 1000)
+            exc = RuntimeError(
+                "Web schema bootstrap marker failed while bot was waiting: "
+                f"{last_marker.get('error_type') or 'unknown'}: {last_marker.get('error_message') or 'no details'}"
+            )
+            _emit_startup_schema_bootstrap_election(
+                role=role,
+                duration_ms=waited_for_owner_ms,
+                marker_status=marker_status,
+                lock_acquired=False,
+                wait_timeout_ms=effective_timeout_ms,
+                success=False,
+                exception=exc,
+            )
+            raise exc
+        time.sleep(_WEBAPP_STARTUP_BOOTSTRAP_POLL_INTERVAL_MS / 1000.0)
+
+    waited_for_owner_ms = int((time.perf_counter() - started_perf) * 1000)
+    marker_status = str((last_marker or {}).get("status") or "missing")
+    exc = TimeoutError(
+        "Timed out waiting for completed web schema bootstrap marker before bot startup: "
+        f"status={marker_status} timeout_ms={effective_timeout_ms}"
+    )
+    _emit_startup_schema_bootstrap_election(
+        role=role,
+        duration_ms=waited_for_owner_ms,
+        marker_status=marker_status,
+        lock_acquired=False,
+        wait_timeout_ms=effective_timeout_ms,
+        success=False,
+        exception=exc,
+    )
+    raise exc
+
+
 if _force_backend_schema_bootstrap or (_BACKEND_SCHEMA_BOOTSTRAP_ON_STARTUP_ENABLED and not _imported_by_bot_process):
     if _should_coordinate_backend_web_startup_bootstrap():
         _coordinated_startup_bootstrap_backend_schema_or_raise()

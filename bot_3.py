@@ -55,6 +55,7 @@ from backend.backend_server import (
     get_or_create_tts_clip,
     chunk_sentence_llm_de,
     schedule_user_paid_subscription_cancel_at_period_end,
+    wait_for_completed_webapp_startup_bootstrap_marker_or_raise,
 )
 _BOT_BACKEND_SERVER_IMPORT_DURATION_MS = int((pytime.perf_counter() - _BOT_BACKEND_SERVER_IMPORT_STARTED_AT) * 1000)
 import os
@@ -96,7 +97,6 @@ from backend.database import (
     record_quiz_word,
     record_telegram_quiz_delivery,
     record_telegram_quiz_attempt,
-    ensure_webapp_tables,
     get_admin_telegram_ids,
     is_telegram_user_allowed,
     allow_telegram_user,
@@ -419,6 +419,7 @@ def _should_run_primary_telegram_bot_process() -> bool:
 
 
 _BOT_STARTUP_PHASE_RECORDS: list[dict[str, Any]] = []
+_BOT_STARTUP_PHASE_CONTEXT: dict[str, Any] = {}
 
 
 def _bot_startup_worker_info() -> str:
@@ -437,6 +438,16 @@ def _log_bot_startup_structured(payload: dict[str, Any], *, level: int = logging
         logging.log(level, json.dumps(payload, ensure_ascii=False, sort_keys=True))
     except Exception:
         logging.log(level, "bot_startup_log_unserializable payload=%s", payload)
+
+
+def _set_bot_startup_phase_context(**fields: Any) -> None:
+    global _BOT_STARTUP_PHASE_CONTEXT
+    _BOT_STARTUP_PHASE_CONTEXT = {key: value for key, value in fields.items() if value is not None}
+
+
+def _clear_bot_startup_phase_context() -> None:
+    global _BOT_STARTUP_PHASE_CONTEXT
+    _BOT_STARTUP_PHASE_CONTEXT = {}
 
 
 def _emit_bot_startup_phase(
@@ -465,21 +476,24 @@ def _emit_bot_startup_phase(
         "skipped": bool(skipped),
         "argv": " ".join(sys.argv[:4]),
     }
+    payload.update(_BOT_STARTUP_PHASE_CONTEXT)
     if exception is not None:
         payload["error_type"] = exception.__class__.__name__
         payload["error_message"] = str(exception)
-    _BOT_STARTUP_PHASE_RECORDS.append(
-        {
-            "phase": payload.get("phase"),
-            "enabled": bool(payload.get("enabled")),
-            "success": bool(payload.get("success")),
-            "duration_ms": int(payload.get("duration_ms") or 0),
-            "category": payload.get("category"),
-            "required_before_first_request": bool(payload.get("required_before_first_request")),
-            "skipped": bool(payload.get("skipped")),
-            **({"error_type": payload.get("error_type")} if payload.get("error_type") else {}),
-        }
-    )
+    summary = {
+        "phase": payload.get("phase"),
+        "enabled": bool(payload.get("enabled")),
+        "success": bool(payload.get("success")),
+        "duration_ms": int(payload.get("duration_ms") or 0),
+        "category": payload.get("category"),
+        "required_before_first_request": bool(payload.get("required_before_first_request")),
+        "skipped": bool(payload.get("skipped")),
+        **({"error_type": payload.get("error_type")} if payload.get("error_type") else {}),
+    }
+    for extra_key in ("owner_role", "waited_for_owner_ms", "skip_reason", "marker_status"):
+        if payload.get(extra_key) is not None:
+            summary[extra_key] = payload.get(extra_key)
+    _BOT_STARTUP_PHASE_RECORDS.append(summary)
     _log_bot_startup_structured(payload, level=logging.INFO if success else logging.WARNING)
 
 
@@ -506,25 +520,41 @@ def _run_bot_startup_phase(
     try:
         result = fn()
     except Exception as exc:
+        try:
+            _emit_bot_startup_phase(
+                phase=phase,
+                enabled=True,
+                success=False,
+                duration_ms=int((pytime.perf_counter() - started_at) * 1000),
+                category=category,
+                required_before_first_request=required_before_first_request,
+                exception=exc,
+            )
+        finally:
+            _clear_bot_startup_phase_context()
+        raise
+    try:
         _emit_bot_startup_phase(
             phase=phase,
             enabled=True,
-            success=False,
+            success=True,
             duration_ms=int((pytime.perf_counter() - started_at) * 1000),
             category=category,
             required_before_first_request=required_before_first_request,
-            exception=exc,
         )
-        raise
-    _emit_bot_startup_phase(
-        phase=phase,
-        enabled=True,
-        success=True,
-        duration_ms=int((pytime.perf_counter() - started_at) * 1000),
-        category=category,
-        required_before_first_request=required_before_first_request,
-    )
+    finally:
+        _clear_bot_startup_phase_context()
     return result
+
+
+def _ensure_bot_webapp_schema_ready_via_marker() -> None:
+    outcome = wait_for_completed_webapp_startup_bootstrap_marker_or_raise()
+    _set_bot_startup_phase_context(
+        owner_role=outcome.get("owner_role"),
+        waited_for_owner_ms=outcome.get("waited_for_owner_ms"),
+        skip_reason=outcome.get("skip_reason"),
+        marker_status=outcome.get("marker_status"),
+    )
 
 
 def _emit_bot_startup_total(*, success: bool) -> None:
@@ -12950,7 +12980,7 @@ def main():
     )
     _run_bot_startup_phase(
         "ensure_webapp_tables",
-        ensure_webapp_tables,
+        _ensure_bot_webapp_schema_ready_via_marker,
         enabled=True,
         category="schema_bootstrap",
         required_before_first_request=True,
