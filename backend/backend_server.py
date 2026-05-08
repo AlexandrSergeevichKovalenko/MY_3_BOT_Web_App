@@ -7061,6 +7061,7 @@ def _compute_srs_queue_info(
         source_lang=source_lang,
         target_lang=target_lang,
         allowed_card_ids=allowed_card_ids,
+        bypass_due_at=bool(allowed_card_ids),
         cursor=cursor,
     )
     introduced_today = count_new_cards_introduced_today(
@@ -7193,6 +7194,9 @@ def _list_srs_queue_cards(
             " )"
         )
         recent_seen_params = [int(user_id), recent_seen_cutoff]
+        bypass_due_at = bool(normalized_allowed_ids)
+        due_filter_sql = "" if bypass_due_at else "AND s.due_at <= %s"
+        due_params: list[object] = [] if bypass_due_at else [now_utc]
         due_count = 0
         due_rows: list[tuple] = []
         due_selected_ids: set[int] = set()
@@ -7209,12 +7213,12 @@ def _list_srs_queue_cards(
               AND q.source_lang = %s
               AND q.target_lang = %s
               AND s.status <> 'suspended'
-              AND s.due_at <= %s
+              {due_filter_sql}
               AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
               {folder_filter_sql}
               {allowed_filter_sql};
             """,
-            [*base_params, now_utc, *folder_params, *allowed_filter_params],
+            [*base_params, *due_params, *folder_params, *allowed_filter_params],
         )
         count_row = cur.fetchone()
         due_count = int(count_row[0] if count_row else 0)
@@ -7245,7 +7249,7 @@ def _list_srs_queue_cards(
                   AND q.source_lang = %s
                   AND q.target_lang = %s
                   AND s.status <> 'suspended'
-                  AND s.due_at <= %s
+                  {due_filter_sql}
                   AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
                   {recent_seen_sql if exclude_recent_seen else ""}
                   {folder_filter_sql}
@@ -7255,7 +7259,7 @@ def _list_srs_queue_cards(
                 """,
                 [
                     *base_params,
-                    now_utc,
+                    *due_params,
                     *(recent_seen_params if exclude_recent_seen else []),
                     *folder_params,
                     *allowed_filter_params,
@@ -7290,7 +7294,7 @@ def _list_srs_queue_cards(
                       AND q.source_lang = %s
                       AND q.target_lang = %s
                       AND s.status <> 'suspended'
-                      AND s.due_at <= %s
+                      {due_filter_sql}
                       AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
                       AND s.card_id <> ALL(%s::bigint[])
                       {folder_filter_sql}
@@ -7300,7 +7304,7 @@ def _list_srs_queue_cards(
                     """,
                     [
                         *base_params,
-                        now_utc,
+                        *due_params,
                         list(due_selected_ids) or [0],
                         *folder_params,
                         *allowed_filter_params,
@@ -7486,6 +7490,7 @@ def _build_next_srs_payload(
         source_lang=source_lang,
         target_lang=target_lang,
         allowed_card_ids=allowed_card_ids,
+        bypass_due_at=bool(allowed_card_ids),
         cursor=cursor,
     )
     card_payload = None

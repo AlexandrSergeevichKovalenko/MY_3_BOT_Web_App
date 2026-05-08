@@ -13168,6 +13168,7 @@ def count_due_srs_cards(
     source_lang: str | None = None,
     target_lang: str | None = None,
     allowed_card_ids: list[int] | None = None,
+    bypass_due_at: bool = False,
     cursor=None,
 ) -> int:
     now_utc = now_utc or datetime.now(timezone.utc)
@@ -13181,6 +13182,8 @@ def count_due_srs_cards(
             table_alias="q",
         )
         allowed_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
+        due_filter_sql = "" if bypass_due_at else " AND s.due_at <= %s"
+        due_params = [] if bypass_due_at else [now_utc]
         cur.execute(
             f"""
             SELECT COUNT(*)
@@ -13189,12 +13192,12 @@ def count_due_srs_cards(
               ON q.id = s.card_id AND q.user_id = s.user_id
             WHERE s.user_id = %s
               AND s.status <> 'suspended'
-              AND s.due_at <= %s
+              {due_filter_sql}
               AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
               {language_filter_sql}
               {allowed_sql};
             """,
-            [int(user_id), now_utc, *language_params, *([normalized_allowed_ids] if normalized_allowed_ids else [])],
+            [int(user_id), *due_params, *language_params, *([normalized_allowed_ids] if normalized_allowed_ids else [])],
         )
         row = cur.fetchone()
         return int(row[0] if row else 0)
@@ -13417,6 +13420,7 @@ def get_next_due_srs_card(
     source_lang: str | None = None,
     target_lang: str | None = None,
     allowed_card_ids: list[int] | None = None,
+    bypass_due_at: bool = False,
     cursor=None,
 ) -> dict | None:
     now_utc = now_utc or datetime.now(timezone.utc)
@@ -13430,6 +13434,8 @@ def get_next_due_srs_card(
             table_alias="q",
         )
         allowed_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
+        due_filter_sql = "" if bypass_due_at else "AND s.due_at <= %s"
+        due_params: list = [] if bypass_due_at else [now_utc]
         cur.execute(
             f"""
             SELECT
@@ -13453,14 +13459,14 @@ def get_next_due_srs_card(
              AND q.user_id = s.user_id
             WHERE s.user_id = %s
               AND s.status <> 'suspended'
-              AND s.due_at <= %s
+              {due_filter_sql}
               AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
               {language_filter_sql}
               {allowed_sql}
             ORDER BY s.due_at ASC
             LIMIT 1;
             """,
-            [int(user_id), now_utc, *language_params, *([normalized_allowed_ids] if normalized_allowed_ids else [])],
+            [int(user_id), *due_params, *language_params, *([normalized_allowed_ids] if normalized_allowed_ids else [])],
         )
         row = cur.fetchone()
         if not row:
