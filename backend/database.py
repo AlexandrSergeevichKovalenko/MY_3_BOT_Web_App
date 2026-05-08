@@ -7826,12 +7826,20 @@ def _map_user_api_snapshot_row(row) -> dict | None:
     }
 
 
+def _ensure_phase1_projection_schema_for_snapshot_access() -> None:
+    if _ENSURE_PHASE1_PROJECTION_SCHEMA_DONE:
+        return
+    logging.info("Phase1 projection schema lazy ensure triggered for snapshot access")
+    ensure_phase1_projection_schema()
+
+
 def get_user_api_snapshot(
     *,
     user_id: int,
     snapshot_kind: str,
     snapshot_key: str,
 ) -> dict | None:
+    _ensure_phase1_projection_schema_for_snapshot_access()
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -7875,6 +7883,7 @@ def upsert_user_api_snapshot(
     normalized_key = str(snapshot_key or "").strip()
     if not normalized_kind or not normalized_key:
         raise ValueError("snapshot_kind and snapshot_key are required")
+    _ensure_phase1_projection_schema_for_snapshot_access()
     safe_payload = payload if isinstance(payload, dict) else {}
     safe_meta = meta if isinstance(meta, dict) else {}
     safe_fresh_ttl = max(1, int(fresh_ttl_seconds or 1))
@@ -7947,6 +7956,7 @@ def mark_user_api_snapshots_stale(
     snapshot_kind: str | None = None,
     snapshot_key: str | None = None,
 ) -> int:
+    _ensure_phase1_projection_schema_for_snapshot_access()
     conditions = ["user_id = %s"]
     params: list[Any] = [int(user_id)]
     normalized_kind = str(snapshot_kind or "").strip()

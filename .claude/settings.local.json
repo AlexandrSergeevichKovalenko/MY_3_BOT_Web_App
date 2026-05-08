@@ -82,7 +82,13 @@
       "Bash(awk -F: '$1 >= 24900 && $1 <= 25600 {print}')",
       "Bash(ping -c 2 github.com)",
       "Bash(awk -F: '$2>17960 && $2<18100 {print}')",
-      "Bash(awk '/\\\\.webapp-shell/{found=NR} found && NR==found{print NR\": \"$0; found=0}' /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/frontend/src/App.css)"
+      "Bash(awk '/\\\\.webapp-shell/{found=NR} found && NR==found{print NR\": \"$0; found=0}' /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/frontend/src/App.css)",
+      "Bash(awk 'NR>=7000 && NR<=31400 && /^  return \\\\\\(/' /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/frontend/src/App.jsx)",
+      "Bash(awk -F: '$2 > 7000 && $2 < 31400')",
+      "Bash(awk 'NR>=7000 && NR<=31400 && /^  }$/' /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/frontend/src/App.jsx)",
+      "Bash(awk 'NR>=31340 && NR<=31360' /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/frontend/src/App.jsx)",
+      "Bash(awk 'NR==31349{print NR\": \"$0}' /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/frontend/src/App.jsx)",
+      "Bash(awk *)"
     ]
   }
 }

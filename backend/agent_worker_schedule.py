@@ -14,8 +14,10 @@ RAILWAY_GRAPHQL_URL = "https://backboard.railway.com/graphql/v2"
 DEFAULT_AGENT_WORKER_TIMEZONE = "Europe/Vienna"
 AGENT_WORKER_TRANSITION_LOCK_KEY = "agent_worker_schedule:transition"
 AGENT_WORKER_TRANSITION_LOCK_TTL_SEC = 15 * 60
-DEPLOYMENT_RUNNING_STATUSES = {"SUCCESS", "INITIALIZING", "BUILDING", "DEPLOYING", "QUEUED"}
-DEPLOYMENT_TERMINAL_STATUSES = {"REMOVED", "FAILED", "CRASHED", "CANCELED", "CANCELLED"}
+DEPLOYMENT_RUNNING_STATUSES = {"SUCCESS"}
+DEPLOYMENT_STARTING_STATUSES = {"INITIALIZING", "BUILDING", "DEPLOYING", "QUEUED", "WAITING", "REMOVING"}
+DEPLOYMENT_STOPPED_STATUSES = {"REMOVED"}
+DEPLOYMENT_FAILED_STATUSES = {"FAILED", "CRASHED", "CANCELED", "CANCELLED"}
 
 
 @dataclass(frozen=True)
@@ -247,23 +249,66 @@ def _normalize_deployment(item: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def _is_deployment_running(deployment: dict[str, Any]) -> bool:
-    if bool(deployment.get("deployment_stopped")):
-        return False
-    status = str(deployment.get("status") or "").upper()
-    return status in DEPLOYMENT_RUNNING_STATUSES or status not in DEPLOYMENT_TERMINAL_STATUSES
+    return _deployment_lifecycle_state(deployment) == "running"
 
 
 def _is_deployment_stoppable(deployment: dict[str, Any]) -> bool:
+    state = _deployment_lifecycle_state(deployment)
+    return state not in {"stopped", "failed"}
+
+
+def _deployment_lifecycle_state(deployment: dict[str, Any]) -> str:
     if bool(deployment.get("deployment_stopped")):
-        return False
+        return "stopped"
     status = str(deployment.get("status") or "").upper()
-    return status not in DEPLOYMENT_TERMINAL_STATUSES
+    if status in DEPLOYMENT_STOPPED_STATUSES:
+        return "stopped"
+    if status in DEPLOYMENT_RUNNING_STATUSES:
+        return "running"
+    if status in DEPLOYMENT_STARTING_STATUSES:
+        return "starting"
+    if status in DEPLOYMENT_FAILED_STATUSES:
+        return "failed"
+    if not status:
+        return "unknown"
+    return "unknown"
 
 
-def _select_start_method(service_state: dict[str, Any], running_deployments: list[dict[str, Any]]) -> tuple[str, str | None]:
+def _classify_deployments(deployments: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    buckets: dict[str, list[dict[str, Any]]] = {
+        "running": [],
+        "starting": [],
+        "stopped": [],
+        "failed": [],
+        "unknown": [],
+    }
+    for deployment in deployments:
+        buckets[_deployment_lifecycle_state(deployment)].append(deployment)
+    return buckets
+
+
+def _derive_actual_state(classified: dict[str, list[dict[str, Any]]]) -> str:
+    if classified["running"]:
+        return "running"
+    if classified["starting"]:
+        return "starting"
+    if classified["unknown"]:
+        return "unknown"
+    if classified["failed"]:
+        return "failed"
+    return "stopped"
+
+
+def _select_start_method(
+    service_state: dict[str, Any],
+    running_deployments: list[dict[str, Any]],
+    starting_deployments: list[dict[str, Any]],
+) -> tuple[str, str | None]:
     latest_deployment = service_state.get("latest_deployment") or {}
     if running_deployments:
         return "already_running", None
+    if starting_deployments:
+        return "start_in_progress", None
     if latest_deployment.get("id"):
         return "serviceInstanceRedeploy", str(latest_deployment.get("id") or "").strip()
     return "serviceInstanceDeployV2", None
@@ -272,22 +317,32 @@ def _select_start_method(service_state: dict[str, Any], running_deployments: lis
 def _apply_start(
     *,
     service_state: dict[str, Any],
-    running_deployments: list[dict[str, Any]],
+    classified: dict[str, list[dict[str, Any]]],
     dry_run: bool,
     source: str,
     requested_action: str,
+    selected_action: str,
+    schedule_state: dict[str, Any],
 ) -> dict[str, Any]:
-    method, target_deployment_id = _select_start_method(service_state, running_deployments)
+    running_deployments = classified["running"]
+    starting_deployments = classified["starting"]
+    stopped_deployments = classified["stopped"]
+    failed_deployments = classified["failed"]
+    method, target_deployment_id = _select_start_method(service_state, running_deployments, starting_deployments)
     logging.info(
-        "agent_worker_schedule_start_requested source=%s requested_action=%s dry_run=%s now_local=%s windows=%s running_deployments=%s latest_deployment_id=%s start_method=%s target_deployment_id=%s",
+        "agent_worker_schedule_start_requested source=%s requested_action=%s dry_run=%s now_local=%s windows=%s running_deployments=%s starting_deployments=%s stopped_deployments=%s failed_deployments=%s latest_deployment_id=%s start_method=%s selected_action=%s target_deployment_id=%s",
         source,
         requested_action,
         dry_run,
-        get_agent_worker_schedule_state().get("now_local"),
-        get_agent_worker_schedule_state().get("windows"),
+        schedule_state.get("now_local"),
+        schedule_state.get("windows"),
         [item.get("id") for item in running_deployments],
+        [item.get("id") for item in starting_deployments],
+        [item.get("id") for item in stopped_deployments],
+        [item.get("id") for item in failed_deployments],
         (service_state.get("latest_deployment") or {}).get("id"),
         method,
+        selected_action,
         target_deployment_id,
     )
     if method == "already_running":
@@ -298,6 +353,15 @@ def _apply_start(
             "actual_state": "running",
             "reason": "already_running",
             "running_deployment_ids": [item.get("id") for item in running_deployments],
+        }
+    if method == "start_in_progress":
+        return {
+            "ok": True,
+            "action": requested_action,
+            "desired_state": "running",
+            "actual_state": "starting",
+            "reason": "start_in_progress",
+            "starting_deployment_ids": [item.get("id") for item in starting_deployments],
         }
     if dry_run:
         logging.info(
@@ -358,21 +422,28 @@ def _apply_stop(
     *,
     service_state: dict[str, Any],
     active_deployments: list[dict[str, Any]],
+    classified: dict[str, list[dict[str, Any]]],
     dry_run: bool,
     source: str,
     requested_action: str,
+    selected_action: str,
     schedule_state: dict[str, Any],
     active_sessions: dict[str, Any],
 ) -> dict[str, Any]:
     logging.info(
-        "agent_worker_schedule_stop_requested source=%s action=%s dry_run=%s now_local=%s inside_window=%s active_sessions=%s active_deployments=%s",
+        "agent_worker_schedule_stop_requested source=%s action=%s dry_run=%s now_local=%s inside_window=%s active_sessions=%s running_deployments=%s starting_deployments=%s stopped_deployments=%s failed_deployments=%s active_deployments=%s selected_action=%s",
         source,
         requested_action,
         dry_run,
         schedule_state.get("now_local"),
         schedule_state.get("inside_window"),
         active_sessions.get("active_sessions"),
+        [item.get("id") for item in classified["running"]],
+        [item.get("id") for item in classified["starting"]],
+        [item.get("id") for item in classified["stopped"]],
+        [item.get("id") for item in classified["failed"]],
         [item.get("id") for item in active_deployments],
+        selected_action,
     )
     if int(active_sessions.get("active_sessions") or 0) > 0:
         logging.info(
@@ -460,18 +531,29 @@ def _apply_stop(
     }
 
 
-def _log_schedule_result(*, source: str, requested_action: str, result: dict[str, Any], service_state: dict[str, Any] | None) -> None:
+def _log_schedule_result(
+    *,
+    source: str,
+    requested_action: str,
+    selected_action: str,
+    result: dict[str, Any],
+    service_state: dict[str, Any] | None,
+) -> None:
     active_deployments = list((service_state or {}).get("active_deployments") or [])
-    running_deployments = [item for item in active_deployments if _is_deployment_running(item)]
-    actual_state = "running" if running_deployments else "stopped"
+    classified = _classify_deployments(active_deployments)
+    actual_state = _derive_actual_state(classified)
     logging.info(
-        "agent_worker_schedule_result source=%s requested_action=%s ok=%s desired_state=%s actual_state=%s running_deployments=%s active_deployments=%s method=%s reason=%s stopped_deployment_ids=%s skipped_non_stoppable_ids=%s stop_errors=%s",
+        "agent_worker_schedule_result source=%s requested_action=%s ok=%s selected_action=%s desired_state=%s actual_state=%s running_deployments=%s starting_deployments=%s stopped_deployments=%s failed_deployments=%s active_deployments=%s method=%s reason=%s stopped_deployment_ids=%s skipped_non_stoppable_ids=%s stop_errors=%s",
         source,
         requested_action,
         result.get("ok"),
+        selected_action,
         result.get("desired_state"),
         actual_state,
-        [item.get("id") for item in running_deployments],
+        [item.get("id") for item in classified["running"]],
+        [item.get("id") for item in classified["starting"]],
+        [item.get("id") for item in classified["stopped"]],
+        [item.get("id") for item in classified["failed"]],
         [item.get("id") for item in active_deployments],
         result.get("method"),
         result.get("reason"),
@@ -551,7 +633,7 @@ def run_agent_worker_schedule_control(action: str, *, source: str = "scheduler")
             return {"ok": False, "reason": "service_state_error", "action": normalized_action}
 
         active_deployments = list(service_state.get("active_deployments") or [])
-        running_deployments = [item for item in active_deployments if _is_deployment_running(item)]
+        classified = _classify_deployments(active_deployments)
         requested_action = normalized_action
         if normalized_action == "reconcile_stop":
             requested_action = "start" if bool(schedule_state.get("inside_window")) else "stop"
@@ -559,18 +641,22 @@ def run_agent_worker_schedule_control(action: str, *, source: str = "scheduler")
         if requested_action == "start":
             result = _apply_start(
                 service_state=service_state,
-                running_deployments=running_deployments,
+                classified=classified,
                 dry_run=dry_run,
                 source=source,
                 requested_action=normalized_action,
+                selected_action=requested_action,
+                schedule_state=schedule_state,
             )
         else:
             result = _apply_stop(
                 service_state=service_state,
                 active_deployments=active_deployments,
+                classified=classified,
                 dry_run=dry_run,
                 source=source,
                 requested_action=normalized_action,
+                selected_action=requested_action,
                 schedule_state=schedule_state,
                 active_sessions=active_sessions,
             )
@@ -588,6 +674,7 @@ def run_agent_worker_schedule_control(action: str, *, source: str = "scheduler")
         _log_schedule_result(
             source=source,
             requested_action=normalized_action,
+            selected_action=requested_action,
             result=result,
             service_state=refreshed_service_state,
         )

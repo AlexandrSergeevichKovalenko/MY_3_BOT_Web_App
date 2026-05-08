@@ -43,6 +43,23 @@ class AgentWorkerScheduleTests(unittest.TestCase):
             "latest_deployment": latest_deployment,
         }
 
+    def _deployment(
+        self,
+        deployment_id: str,
+        *,
+        status: str = "SUCCESS",
+        deployment_stopped: bool = False,
+        can_redeploy: bool = True,
+        created_at: str = "2026-05-07T04:17:59Z",
+    ) -> dict:
+        return {
+            "id": deployment_id,
+            "status": status,
+            "created_at": created_at,
+            "deployment_stopped": deployment_stopped,
+            "can_redeploy": can_redeploy,
+        }
+
     def test_schedule_windows_and_vienna_state(self) -> None:
         windows = get_agent_worker_schedule_windows()
         self.assertEqual([window.label() for window in windows], ["06:55-12:00", "15:55-19:00"])
@@ -61,21 +78,9 @@ class AgentWorkerScheduleTests(unittest.TestCase):
         now = datetime(2026, 5, 7, 6, 55, tzinfo=ZoneInfo("Europe/Vienna"))
         service_state = self._service_state(
             active_deployments=[
-                {
-                    "id": "dep_stopped",
-                    "status": "SUCCESS",
-                    "created_at": "2026-05-07T04:17:59Z",
-                    "deployment_stopped": True,
-                    "can_redeploy": True,
-                }
+                self._deployment("dep_stopped", deployment_stopped=True)
             ],
-            latest_deployment={
-                "id": "dep_stopped",
-                "status": "SUCCESS",
-                "created_at": "2026-05-07T04:17:59Z",
-                "deployment_stopped": True,
-                "can_redeploy": True,
-            },
+            latest_deployment=self._deployment("dep_stopped", deployment_stopped=True),
         )
         with patch("backend.agent_worker_schedule._claim_transition_lock", return_value="tok"), patch(
             "backend.agent_worker_schedule._release_transition_lock",
@@ -102,13 +107,7 @@ class AgentWorkerScheduleTests(unittest.TestCase):
         now = datetime(2026, 5, 7, 7, 0, tzinfo=ZoneInfo("Europe/Vienna"))
         service_state = self._service_state(
             active_deployments=[],
-            latest_deployment={
-                "id": "dep_old",
-                "status": "SUCCESS",
-                "created_at": "2026-05-07T04:17:59Z",
-                "deployment_stopped": True,
-                "can_redeploy": True,
-            },
+            latest_deployment=self._deployment("dep_old", deployment_stopped=True),
         )
         with patch.dict(os.environ, {"AGENT_WORKER_SCHEDULE_DRY_RUN": "0"}, clear=False), patch(
             "backend.agent_worker_schedule._claim_transition_lock", return_value="tok"
@@ -136,13 +135,7 @@ class AgentWorkerScheduleTests(unittest.TestCase):
         now = datetime(2026, 5, 7, 13, 0, tzinfo=ZoneInfo("Europe/Vienna"))
         service_state = self._service_state(
             active_deployments=[],
-            latest_deployment={
-                "id": "dep_old",
-                "status": "SUCCESS",
-                "created_at": "2026-05-07T04:17:59Z",
-                "deployment_stopped": True,
-                "can_redeploy": True,
-            },
+            latest_deployment=self._deployment("dep_old", deployment_stopped=True),
         )
         with patch("backend.agent_worker_schedule._claim_transition_lock", return_value="tok"), patch(
             "backend.agent_worker_schedule._release_transition_lock",
@@ -166,22 +159,8 @@ class AgentWorkerScheduleTests(unittest.TestCase):
     def test_stop_skips_when_active_session_exists(self) -> None:
         now = datetime(2026, 5, 7, 20, 0, tzinfo=ZoneInfo("Europe/Vienna"))
         service_state = self._service_state(
-            active_deployments=[
-                {
-                    "id": "dep_active",
-                    "status": "SUCCESS",
-                    "created_at": "2026-05-07T15:54:00Z",
-                    "deployment_stopped": False,
-                    "can_redeploy": True,
-                }
-            ],
-            latest_deployment={
-                "id": "dep_active",
-                "status": "SUCCESS",
-                "created_at": "2026-05-07T15:54:00Z",
-                "deployment_stopped": False,
-                "can_redeploy": True,
-            },
+            active_deployments=[self._deployment("dep_active", created_at="2026-05-07T15:54:00Z")],
+            latest_deployment=self._deployment("dep_active", created_at="2026-05-07T15:54:00Z"),
         )
         with patch("backend.agent_worker_schedule._claim_transition_lock", return_value="tok"), patch(
             "backend.agent_worker_schedule._release_transition_lock",
@@ -210,20 +189,8 @@ class AgentWorkerScheduleTests(unittest.TestCase):
     def test_stop_attempts_all_stoppable_active_deployments(self) -> None:
         now = datetime(2026, 5, 7, 20, 0, tzinfo=ZoneInfo("Europe/Vienna"))
         active = [
-            {
-                "id": "dep_a",
-                "status": "SUCCESS",
-                "created_at": "2026-05-07T15:54:00Z",
-                "deployment_stopped": False,
-                "can_redeploy": True,
-            },
-            {
-                "id": "dep_b",
-                "status": "INITIALIZING",
-                "created_at": "2026-05-07T15:55:00Z",
-                "deployment_stopped": False,
-                "can_redeploy": False,
-            },
+            self._deployment("dep_a", created_at="2026-05-07T15:54:00Z"),
+            self._deployment("dep_b", status="INITIALIZING", can_redeploy=False, created_at="2026-05-07T15:55:00Z"),
         ]
         service_state = self._service_state(active_deployments=active, latest_deployment=active[-1])
         with patch.dict(os.environ, {"AGENT_WORKER_SCHEDULE_DRY_RUN": "0"}, clear=False), patch(
@@ -251,20 +218,8 @@ class AgentWorkerScheduleTests(unittest.TestCase):
     def test_non_stoppable_deployment_is_logged_and_skipped_without_crash(self) -> None:
         now = datetime(2026, 5, 7, 20, 30, tzinfo=ZoneInfo("Europe/Vienna"))
         active = [
-            {
-                "id": "dep_a",
-                "status": "SUCCESS",
-                "created_at": "2026-05-07T15:54:00Z",
-                "deployment_stopped": False,
-                "can_redeploy": True,
-            },
-            {
-                "id": "dep_b",
-                "status": "SUCCESS",
-                "created_at": "2026-05-07T15:55:00Z",
-                "deployment_stopped": False,
-                "can_redeploy": True,
-            },
+            self._deployment("dep_a", created_at="2026-05-07T15:54:00Z"),
+            self._deployment("dep_b", created_at="2026-05-07T15:55:00Z"),
         ]
         service_state = self._service_state(active_deployments=active, latest_deployment=active[-1])
         with patch.dict(os.environ, {"AGENT_WORKER_SCHEDULE_DRY_RUN": "0"}, clear=False), patch(
@@ -291,6 +246,189 @@ class AgentWorkerScheduleTests(unittest.TestCase):
         self.assertEqual(result["skipped_non_stoppable_ids"], ["dep_b"])
         self.assertEqual(result["stop_errors"], [])
         self.assertIn("agent_worker_non_stoppable_deployment_skipped", "\n".join(captured.output))
+
+    def test_starting_deployment_blocks_second_redeploy(self) -> None:
+        now = datetime(2026, 5, 7, 15, 55, 22, tzinfo=ZoneInfo("Europe/Vienna"))
+        starting = self._deployment("dep_starting", status="QUEUED", deployment_stopped=False)
+        service_state = self._service_state(
+            active_deployments=[starting, self._deployment("dep_stopped", deployment_stopped=True)],
+            latest_deployment=starting,
+        )
+        with patch.dict(os.environ, {"AGENT_WORKER_SCHEDULE_DRY_RUN": "0"}, clear=False), patch(
+            "backend.agent_worker_schedule._claim_transition_lock", return_value="tok"
+        ), patch(
+            "backend.agent_worker_schedule._release_transition_lock",
+        ), patch(
+            "backend.agent_worker_schedule.count_active_agent_voice_sessions",
+            return_value={"active_sessions": 0, "oldest_started_at": None, "newest_started_at": None},
+        ), patch(
+            "backend.agent_worker_schedule.fetch_agent_worker_service_instance_state",
+            side_effect=[service_state, service_state],
+        ), patch(
+            "backend.agent_worker_schedule.get_agent_worker_schedule_state",
+            return_value=get_agent_worker_schedule_state(now=now),
+        ), patch(
+            "backend.agent_worker_schedule._railway_service_instance_redeploy",
+        ) as redeploy:
+            result = run_agent_worker_schedule_control("start", source="test")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["reason"], "start_in_progress")
+        self.assertEqual(result["actual_state"], "starting")
+        self.assertEqual(result["starting_deployment_ids"], ["dep_starting"])
+        redeploy.assert_not_called()
+
+    def test_reconcile_inside_window_returns_start_in_progress_for_starting_deployment(self) -> None:
+        now = datetime(2026, 5, 7, 15, 56, tzinfo=ZoneInfo("Europe/Vienna"))
+        starting = self._deployment("dep_starting", status="BUILDING")
+        service_state = self._service_state(
+            active_deployments=[starting],
+            latest_deployment=starting,
+        )
+        with patch("backend.agent_worker_schedule._claim_transition_lock", return_value="tok"), patch(
+            "backend.agent_worker_schedule._release_transition_lock",
+        ), patch(
+            "backend.agent_worker_schedule.count_active_agent_voice_sessions",
+            return_value={"active_sessions": 0, "oldest_started_at": None, "newest_started_at": None},
+        ), patch(
+            "backend.agent_worker_schedule.fetch_agent_worker_service_instance_state",
+            side_effect=[service_state, service_state],
+        ), patch(
+            "backend.agent_worker_schedule.get_agent_worker_schedule_state",
+            return_value=get_agent_worker_schedule_state(now=now),
+        ), patch(
+            "backend.agent_worker_schedule._railway_service_instance_redeploy",
+        ) as redeploy:
+            result = run_agent_worker_schedule_control("reconcile_stop", source="test")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["reason"], "start_in_progress")
+        self.assertEqual(result["actual_state"], "starting")
+        redeploy.assert_not_called()
+
+    def test_starting_deployment_that_becomes_running_returns_already_running(self) -> None:
+        now = datetime(2026, 5, 7, 16, 5, tzinfo=ZoneInfo("Europe/Vienna"))
+        running = self._deployment("dep_running", status="SUCCESS")
+        service_state = self._service_state(active_deployments=[running], latest_deployment=running)
+        with patch("backend.agent_worker_schedule._claim_transition_lock", return_value="tok"), patch(
+            "backend.agent_worker_schedule._release_transition_lock",
+        ), patch(
+            "backend.agent_worker_schedule.count_active_agent_voice_sessions",
+            return_value={"active_sessions": 0, "oldest_started_at": None, "newest_started_at": None},
+        ), patch(
+            "backend.agent_worker_schedule.fetch_agent_worker_service_instance_state",
+            side_effect=[service_state, service_state],
+        ), patch(
+            "backend.agent_worker_schedule.get_agent_worker_schedule_state",
+            return_value=get_agent_worker_schedule_state(now=now),
+        ):
+            result = run_agent_worker_schedule_control("reconcile_stop", source="test")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["reason"], "already_running")
+        self.assertEqual(result["running_deployment_ids"], ["dep_running"])
+
+    def test_outside_window_with_starting_non_stoppable_deployment_skips_without_crash(self) -> None:
+        now = datetime(2026, 5, 7, 20, 5, tzinfo=ZoneInfo("Europe/Vienna"))
+        starting = self._deployment("dep_starting", status="DEPLOYING")
+        service_state = self._service_state(
+            active_deployments=[starting],
+            latest_deployment=starting,
+        )
+        with patch.dict(os.environ, {"AGENT_WORKER_SCHEDULE_DRY_RUN": "0"}, clear=False), patch(
+            "backend.agent_worker_schedule._claim_transition_lock", return_value="tok"
+        ), patch(
+            "backend.agent_worker_schedule._release_transition_lock",
+        ), patch(
+            "backend.agent_worker_schedule.count_active_agent_voice_sessions",
+            return_value={"active_sessions": 0, "oldest_started_at": None, "newest_started_at": None},
+        ), patch(
+            "backend.agent_worker_schedule.fetch_agent_worker_service_instance_state",
+            side_effect=[service_state, service_state],
+        ), patch(
+            "backend.agent_worker_schedule.get_agent_worker_schedule_state",
+            return_value=get_agent_worker_schedule_state(now=now),
+        ), patch(
+            "backend.agent_worker_schedule._railway_deployment_stop",
+            side_effect=RuntimeError("Deployment is not stoppable"),
+        ):
+            with self.assertLogs(level="WARNING") as captured:
+                result = run_agent_worker_schedule_control("stop", source="test")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["stopped_deployment_ids"], [])
+        self.assertEqual(result["skipped_non_stoppable_ids"], ["dep_starting"])
+        self.assertEqual(result["stop_errors"], [])
+        self.assertIn("agent_worker_non_stoppable_deployment_skipped", "\n".join(captured.output))
+
+    def test_no_running_no_starting_still_starts(self) -> None:
+        now = datetime(2026, 5, 7, 15, 55, tzinfo=ZoneInfo("Europe/Vienna"))
+        stopped = self._deployment("dep_stopped", deployment_stopped=True)
+        service_state = self._service_state(active_deployments=[stopped], latest_deployment=stopped)
+        with patch.dict(os.environ, {"AGENT_WORKER_SCHEDULE_DRY_RUN": "0"}, clear=False), patch(
+            "backend.agent_worker_schedule._claim_transition_lock", return_value="tok"
+        ), patch(
+            "backend.agent_worker_schedule._release_transition_lock",
+        ), patch(
+            "backend.agent_worker_schedule.count_active_agent_voice_sessions",
+            return_value={"active_sessions": 0, "oldest_started_at": None, "newest_started_at": None},
+        ), patch(
+            "backend.agent_worker_schedule.fetch_agent_worker_service_instance_state",
+            side_effect=[service_state, service_state],
+        ), patch(
+            "backend.agent_worker_schedule.get_agent_worker_schedule_state",
+            return_value=get_agent_worker_schedule_state(now=now),
+        ), patch(
+            "backend.agent_worker_schedule._railway_service_instance_redeploy",
+            return_value=True,
+        ) as redeploy:
+            result = run_agent_worker_schedule_control("start", source="test")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["method"], "serviceInstanceRedeploy")
+        redeploy.assert_called_once()
+
+    def test_duplicate_start_then_immediate_reconcile_only_one_start_mutation(self) -> None:
+        now_start = datetime(2026, 5, 7, 15, 55, tzinfo=ZoneInfo("Europe/Vienna"))
+        now_reconcile = datetime(2026, 5, 7, 15, 55, 22, tzinfo=ZoneInfo("Europe/Vienna"))
+        stopped = self._deployment("dep_stopped", deployment_stopped=True)
+        starting = self._deployment("dep_starting", status="QUEUED")
+        pre_start_state = self._service_state(active_deployments=[stopped], latest_deployment=stopped)
+        starting_state = self._service_state(active_deployments=[starting, stopped], latest_deployment=starting)
+
+        state_iter = iter(
+            [
+                get_agent_worker_schedule_state(now=now_start),
+                get_agent_worker_schedule_state(now=now_reconcile),
+            ]
+        )
+        service_iter = iter(
+            [
+                pre_start_state,
+                starting_state,
+                starting_state,
+                starting_state,
+            ]
+        )
+
+        with patch.dict(os.environ, {"AGENT_WORKER_SCHEDULE_DRY_RUN": "0"}, clear=False), patch(
+            "backend.agent_worker_schedule._claim_transition_lock", side_effect=["tok1", "tok2"]
+        ), patch(
+            "backend.agent_worker_schedule._release_transition_lock",
+        ), patch(
+            "backend.agent_worker_schedule.count_active_agent_voice_sessions",
+            return_value={"active_sessions": 0, "oldest_started_at": None, "newest_started_at": None},
+        ), patch(
+            "backend.agent_worker_schedule.fetch_agent_worker_service_instance_state",
+            side_effect=lambda: next(service_iter),
+        ), patch(
+            "backend.agent_worker_schedule.get_agent_worker_schedule_state",
+            side_effect=lambda now=None: next(state_iter),
+        ), patch(
+            "backend.agent_worker_schedule._railway_service_instance_redeploy",
+            return_value=True,
+        ) as redeploy:
+            first = run_agent_worker_schedule_control("start", source="test")
+            second = run_agent_worker_schedule_control("reconcile_stop", source="test")
+        self.assertTrue(first["ok"])
+        self.assertTrue(second["ok"])
+        self.assertEqual(second["reason"], "start_in_progress")
+        self.assertEqual(redeploy.call_count, 1)
 
 
 if __name__ == "__main__":
