@@ -1,3 +1,6 @@
+import time as _bot_startup_clock
+_BOT_PROCESS_IMPORT_STARTED_AT = _bot_startup_clock.perf_counter()
+
 import os
 import openai
 from openai import OpenAI
@@ -34,8 +37,10 @@ from telegram.error import TimedOut, BadRequest, RetryAfter, Forbidden
 import tempfile
 import sys
 import livekit.api # Нужен для LiveKit комнат
+import multiprocessing
 from typing import Any, Callable
 from backend.analytics import fetch_user_summary, get_period_bounds
+_BOT_BACKEND_SERVER_IMPORT_STARTED_AT = pytime.perf_counter()
 from backend.backend_server import (
     GoogleTTSBudgetBlockedError,
     _build_tts_prewarm_quota_control_text,
@@ -51,6 +56,7 @@ from backend.backend_server import (
     chunk_sentence_llm_de,
     schedule_user_paid_subscription_cancel_at_period_end,
 )
+_BOT_BACKEND_SERVER_IMPORT_DURATION_MS = int((pytime.perf_counter() - _BOT_BACKEND_SERVER_IMPORT_STARTED_AT) * 1000)
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -410,6 +416,140 @@ def _should_run_primary_telegram_bot_process() -> bool:
     }
     normalized_service_name = _normalize_runtime_service_name(railway_service_name)
     return normalized_service_name in allowed_names
+
+
+_BOT_STARTUP_PHASE_RECORDS: list[dict[str, Any]] = []
+
+
+def _bot_startup_worker_info() -> str:
+    try:
+        return multiprocessing.current_process().name or "-"
+    except Exception:
+        return "-"
+
+
+def _bot_startup_service_name() -> str:
+    return str(os.getenv("RAILWAY_SERVICE_NAME") or "").strip() or "-"
+
+
+def _log_bot_startup_structured(payload: dict[str, Any], *, level: int = logging.INFO) -> None:
+    try:
+        logging.log(level, json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    except Exception:
+        logging.log(level, "bot_startup_log_unserializable payload=%s", payload)
+
+
+def _emit_bot_startup_phase(
+    *,
+    phase: str,
+    enabled: bool,
+    success: bool,
+    duration_ms: int,
+    category: str,
+    required_before_first_request: bool,
+    skipped: bool = False,
+    exception: Exception | None = None,
+) -> None:
+    payload: dict[str, Any] = {
+        "event": "startup_phase",
+        "phase": phase,
+        "service": _bot_startup_service_name(),
+        "pid": os.getpid(),
+        "worker": _bot_startup_worker_info(),
+        "imported_by_bot": True,
+        "enabled": bool(enabled),
+        "success": bool(success),
+        "duration_ms": int(duration_ms),
+        "category": category,
+        "required_before_first_request": bool(required_before_first_request),
+        "skipped": bool(skipped),
+        "argv": " ".join(sys.argv[:4]),
+    }
+    if exception is not None:
+        payload["error_type"] = exception.__class__.__name__
+        payload["error_message"] = str(exception)
+    _BOT_STARTUP_PHASE_RECORDS.append(
+        {
+            "phase": payload.get("phase"),
+            "enabled": bool(payload.get("enabled")),
+            "success": bool(payload.get("success")),
+            "duration_ms": int(payload.get("duration_ms") or 0),
+            "category": payload.get("category"),
+            "required_before_first_request": bool(payload.get("required_before_first_request")),
+            "skipped": bool(payload.get("skipped")),
+            **({"error_type": payload.get("error_type")} if payload.get("error_type") else {}),
+        }
+    )
+    _log_bot_startup_structured(payload, level=logging.INFO if success else logging.WARNING)
+
+
+def _run_bot_startup_phase(
+    phase: str,
+    fn,
+    *,
+    enabled: bool,
+    category: str,
+    required_before_first_request: bool,
+):
+    if not enabled:
+        _emit_bot_startup_phase(
+            phase=phase,
+            enabled=False,
+            success=True,
+            duration_ms=0,
+            category=category,
+            required_before_first_request=required_before_first_request,
+            skipped=True,
+        )
+        return None
+    started_at = pytime.perf_counter()
+    try:
+        result = fn()
+    except Exception as exc:
+        _emit_bot_startup_phase(
+            phase=phase,
+            enabled=True,
+            success=False,
+            duration_ms=int((pytime.perf_counter() - started_at) * 1000),
+            category=category,
+            required_before_first_request=required_before_first_request,
+            exception=exc,
+        )
+        raise
+    _emit_bot_startup_phase(
+        phase=phase,
+        enabled=True,
+        success=True,
+        duration_ms=int((pytime.perf_counter() - started_at) * 1000),
+        category=category,
+        required_before_first_request=required_before_first_request,
+    )
+    return result
+
+
+def _emit_bot_startup_total(*, success: bool) -> None:
+    payload = {
+        "event": "startup_total",
+        "service": _bot_startup_service_name(),
+        "pid": os.getpid(),
+        "worker": _bot_startup_worker_info(),
+        "imported_by_bot": True,
+        "success": bool(success),
+        "total_duration_ms": int((_bot_startup_clock.perf_counter() - _BOT_PROCESS_IMPORT_STARTED_AT) * 1000),
+        "phases_summary": list(_BOT_STARTUP_PHASE_RECORDS),
+        "argv": " ".join(sys.argv[:4]),
+    }
+    _log_bot_startup_structured(payload, level=logging.INFO if success else logging.WARNING)
+
+
+_emit_bot_startup_phase(
+    phase="import_backend_server",
+    enabled=True,
+    success=True,
+    duration_ms=int(_BOT_BACKEND_SERVER_IMPORT_DURATION_MS),
+    category="import_startup",
+    required_before_first_request=True,
+)
 
 
 # Buttons in Telegramm
@@ -12778,6 +12918,7 @@ async def handle_image_quiz_callback(update: Update, context: CallbackContext) -
 
 def main():
     global application
+    bot_startup_completed_successfully = False
 
     bot_polling_enabled = _should_run_primary_telegram_bot_process()
     logging.info(
@@ -12785,14 +12926,35 @@ def main():
         bot_polling_enabled,
         str(os.getenv("RAILWAY_SERVICE_NAME") or "").strip() or "-",
     )
+    _emit_bot_startup_phase(
+        phase="bot_polling_gate",
+        enabled=bot_polling_enabled,
+        success=True,
+        duration_ms=0,
+        category="runtime_gate",
+        required_before_first_request=True,
+        skipped=not bot_polling_enabled,
+    )
     if not bot_polling_enabled:
+        _emit_bot_startup_total(success=True)
         logging.info("Non-primary bot service detected; keeping process idle to avoid duplicate Telegram polling")
         while True:
             pytime.sleep(3600)
-    
     # Инициализация базы данных from database.py 
-    init_db()
-    ensure_webapp_tables()
+    _run_bot_startup_phase(
+        "init_db",
+        init_db,
+        enabled=True,
+        category="readiness",
+        required_before_first_request=True,
+    )
+    _run_bot_startup_phase(
+        "ensure_webapp_tables",
+        ensure_webapp_tables,
+        enabled=True,
+        category="schema_bootstrap",
+        required_before_first_request=True,
+    )
 
     #defaults = Defaults(timeout=60)  # увеличили таймаут до 60 секунд
     telegram_request = HTTPXRequest(
@@ -12803,7 +12965,13 @@ def main():
         connect_timeout=max(5.0, float((os.getenv("TELEGRAM_HTTP_CONNECT_TIMEOUT") or "20").strip())),
     )
     tracking_bot = TrackingExtBot(token=TELEGRAM_Deutsch_BOT_TOKEN, request=telegram_request)
-    application = Application.builder().bot(tracking_bot).build()
+    application = _run_bot_startup_phase(
+        "build_telegram_application",
+        lambda: Application.builder().bot(tracking_bot).build(),
+        enabled=True,
+        category="readiness",
+        required_before_first_request=True,
+    )
     application.bot.request.timeout = 60
 
     # 🔹 Добавляем обработчики команд (исправленный порядок)
@@ -12873,11 +13041,28 @@ def main():
         str(os.getenv("RAILWAY_SERVICE_NAME") or "").strip() or "-",
     )
     if application.job_queue and bot_scheduler_enabled:
-        application.job_queue.run_once(backfill_group_enrollment_prompts, when=20)
-        application.job_queue.run_once(prepare_scheduled_quiz_pool, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS)
-        application.job_queue.run_once(prepare_image_quiz_pool, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 20)
+        _run_bot_startup_phase(
+            "bot_startup_run_once_jobs",
+            lambda: (
+                application.job_queue.run_once(backfill_group_enrollment_prompts, when=20),
+                application.job_queue.run_once(prepare_scheduled_quiz_pool, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS),
+                application.job_queue.run_once(prepare_image_quiz_pool, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 20),
+            ),
+            enabled=True,
+            category="housekeeping",
+            required_before_first_request=False,
+        )
     elif application.job_queue:
         logging.info("Skipping bot startup run_once jobs in this process")
+        _emit_bot_startup_phase(
+            phase="bot_startup_run_once_jobs",
+            enabled=False,
+            success=True,
+            duration_ms=0,
+            category="housekeeping",
+            required_before_first_request=False,
+            skipped=True,
+        )
     
     # --- НОВЫЕ ОБРАБОТЧИКИ ДЛЯ LIVEKIT КНОПОК ---
     #application.add_handler(MessageHandler(filters.Regex(r'🎙 Начать урок'), start_lesson)) # Теперь обрабатываем текст кнопки
@@ -12939,7 +13124,13 @@ def main():
 
 
     # ✅ Добавляем задачу в `scheduler` ДЛЯ УТРА
-    scheduler = BackgroundScheduler() if bot_scheduler_enabled else None
+    scheduler = _run_bot_startup_phase(
+        "create_bot_scheduler",
+        lambda: BackgroundScheduler(),
+        enabled=bot_scheduler_enabled,
+        category="scheduler",
+        required_before_first_request=False,
+    )
 
     if scheduler is not None:
         print("📌 Добавляем задачу в scheduler...")
@@ -13071,10 +13262,27 @@ def main():
                 timezone=budget_report_timezone,
             )
 
-        scheduler.start()
+        _run_bot_startup_phase(
+            "start_bot_scheduler",
+            scheduler.start,
+            enabled=True,
+            category="scheduler",
+            required_before_first_request=False,
+        )
     else:
         logging.info("Skipping APScheduler startup in this bot process")
+        _emit_bot_startup_phase(
+            phase="start_bot_scheduler",
+            enabled=False,
+            success=True,
+            duration_ms=0,
+            category="scheduler",
+            required_before_first_request=False,
+            skipped=True,
+        )
     print("🚀 Бот запущен! Ожидаем сообщения...")
+    bot_startup_completed_successfully = True
+    _emit_bot_startup_total(success=bot_startup_completed_successfully)
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

@@ -1,3 +1,6 @@
+import time as _startup_clock
+_BACKEND_PROCESS_IMPORT_STARTED_AT = _startup_clock.perf_counter()
+
 # import os
 # from flask import Flask, request, jsonify
 # from flask_cors import CORS
@@ -82,6 +85,7 @@ import sys
 import http.cookiejar
 import re
 import html
+import multiprocessing
 from typing import Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from zoneinfo import ZoneInfo
@@ -1287,6 +1291,149 @@ def _normalize_runtime_service_name(value: str | None) -> str:
     return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
 
 
+_STARTUP_PHASE_RECORDS: list[dict[str, Any]] = []
+_STARTUP_PHASE_RECORDS_LOCK = threading.Lock()
+
+
+def _startup_enabled_from_env(name: str, default: str = "0") -> bool:
+    return str(os.getenv(name) or default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _startup_worker_info() -> str:
+    try:
+        return multiprocessing.current_process().name or "-"
+    except Exception:
+        return "-"
+
+
+def _startup_service_name() -> str:
+    return str(_railway_service_name or "").strip() or "-"
+
+
+def _log_startup_structured(payload: dict[str, Any], *, level: int = logging.INFO) -> None:
+    try:
+        logging.log(level, json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    except Exception:
+        logging.log(level, "startup_log_unserializable payload=%s", payload)
+
+
+def _append_startup_phase_summary(payload: dict[str, Any]) -> None:
+    summary = {
+        "phase": payload.get("phase"),
+        "enabled": bool(payload.get("enabled")),
+        "success": bool(payload.get("success")),
+        "duration_ms": int(payload.get("duration_ms") or 0),
+        "category": payload.get("category"),
+        "required_before_first_request": bool(payload.get("required_before_first_request")),
+        "async_phase": bool(payload.get("async_phase")),
+        "skipped": bool(payload.get("skipped")),
+    }
+    if payload.get("error_type"):
+        summary["error_type"] = payload.get("error_type")
+    with _STARTUP_PHASE_RECORDS_LOCK:
+        _STARTUP_PHASE_RECORDS.append(summary)
+
+
+def _emit_startup_phase_log(
+    *,
+    phase: str,
+    enabled: bool,
+    success: bool,
+    duration_ms: int,
+    category: str,
+    required_before_first_request: bool,
+    async_phase: bool = False,
+    skipped: bool = False,
+    exception: Exception | None = None,
+) -> None:
+    payload: dict[str, Any] = {
+        "event": "startup_phase",
+        "phase": phase,
+        "service": _startup_service_name(),
+        "pid": os.getpid(),
+        "worker": _startup_worker_info(),
+        "imported_by_bot": bool(_imported_by_bot_process),
+        "enabled": bool(enabled),
+        "success": bool(success),
+        "duration_ms": int(duration_ms),
+        "category": category,
+        "required_before_first_request": bool(required_before_first_request),
+        "async_phase": bool(async_phase),
+        "skipped": bool(skipped),
+        "argv": " ".join(sys.argv[:4]),
+    }
+    if exception is not None:
+        payload["error_type"] = exception.__class__.__name__
+        payload["error_message"] = str(exception)
+    _append_startup_phase_summary(payload)
+    _log_startup_structured(payload, level=logging.INFO if success else logging.WARNING)
+
+
+def _run_startup_phase(
+    phase: str,
+    fn,
+    *,
+    enabled: bool,
+    category: str,
+    required_before_first_request: bool,
+    async_phase: bool = False,
+):
+    if not enabled:
+        _emit_startup_phase_log(
+            phase=phase,
+            enabled=False,
+            success=True,
+            duration_ms=0,
+            category=category,
+            required_before_first_request=required_before_first_request,
+            async_phase=async_phase,
+            skipped=True,
+        )
+        return None
+    started_at = time.perf_counter()
+    try:
+        result = fn()
+    except Exception as exc:
+        _emit_startup_phase_log(
+            phase=phase,
+            enabled=True,
+            success=False,
+            duration_ms=int((time.perf_counter() - started_at) * 1000),
+            category=category,
+            required_before_first_request=required_before_first_request,
+            async_phase=async_phase,
+            exception=exc,
+        )
+        raise
+    _emit_startup_phase_log(
+        phase=phase,
+        enabled=True,
+        success=True,
+        duration_ms=int((time.perf_counter() - started_at) * 1000),
+        category=category,
+        required_before_first_request=required_before_first_request,
+        async_phase=async_phase,
+    )
+    return result
+
+
+def _emit_startup_total_log(*, success: bool) -> None:
+    with _STARTUP_PHASE_RECORDS_LOCK:
+        phases_summary = list(_STARTUP_PHASE_RECORDS)
+    payload = {
+        "event": "startup_total",
+        "service": _startup_service_name(),
+        "pid": os.getpid(),
+        "worker": _startup_worker_info(),
+        "imported_by_bot": bool(_imported_by_bot_process),
+        "success": bool(success),
+        "total_duration_ms": int((_startup_clock.perf_counter() - _BACKEND_PROCESS_IMPORT_STARTED_AT) * 1000),
+        "phases_summary": phases_summary,
+        "argv": " ".join(sys.argv[:4]),
+    }
+    _log_startup_structured(payload, level=logging.INFO if success else logging.WARNING)
+
+
 def _ensure_livekit_config() -> None:
     if LIVEKIT_API_KEY and LIVEKIT_API_SECRET:
         return
@@ -1342,7 +1489,13 @@ def _bootstrap_backend_schema_or_raise() -> None:
         last_error: Exception | None = None
         for attempt in range(1, _BACKEND_SCHEMA_BOOTSTRAP_RETRIES + 1):
             try:
-                ensure_webapp_tables()
+                _run_startup_phase(
+                    "ensure_webapp_tables",
+                    ensure_webapp_tables,
+                    enabled=True,
+                    category="schema_bootstrap",
+                    required_before_first_request=True,
+                )
                 missing_phase1_objects = get_missing_phase1_shadow_schema_objects()
                 if missing_phase1_objects:
                     raise RuntimeError(
@@ -40844,6 +40997,17 @@ def _start_audio_scheduler() -> None:
     logging.info("✅ Audio scheduler started: %02d:%02d %s", hour, minute, tz_name)
 
 
+def _run_translation_check_recovery_startup_phase() -> None:
+    _run_startup_phase(
+        "resume_all_active_translation_check_sessions",
+        _resume_all_active_translation_check_sessions,
+        enabled=True,
+        category="housekeeping",
+        required_before_first_request=False,
+        async_phase=True,
+    )
+
+
 @app.route("/api/admin/skill-state-v2/status", methods=["GET"])
 def admin_skill_state_v2_status():
     token = request.args.get("token") or request.headers.get("X-Admin-Token")
@@ -42446,48 +42610,95 @@ def finish_webapp_translation():
         _release_shared_idempotency(finish_idempotency_key, finish_idempotency_token)
 
 
+_backend_startup_completed_successfully = False
 try:
-    ensure_phase1_projection_schema()
-    logging.info("Phase1 projection schema ensured at worker startup")
-except Exception as exc:
-    logging.warning("Phase1 projection schema ensure at startup failed: %s", exc)
-
-try:
-    if str(os.getenv("BILLING_OPENAI_SNAPSHOT_SYNC_ON_STARTUP") or "1").strip().lower() in {"1", "true", "yes", "on"}:
-        snapshot_sync_result = _sync_openai_price_snapshots_public_then_env()
-        logging.info(
-            "Billing OpenAI snapshot sync: created=%s skipped=%s errors=%s",
-            (snapshot_sync_result.get("summary") or {}).get("created_count"),
-            (snapshot_sync_result.get("summary") or {}).get("skipped_count"),
-            (snapshot_sync_result.get("summary") or {}).get("errors_count"),
-        )
-except Exception as exc:
-    logging.warning("Billing OpenAI snapshot sync failed: %s", exc)
-
-
-if _should_start_backend_runtime_side_effects():
     try:
-        threading.Thread(
-            target=_resume_all_active_translation_check_sessions,
-            daemon=True,
-        ).start()
+        _run_startup_phase(
+            "ensure_phase1_projection_schema",
+            ensure_phase1_projection_schema,
+            enabled=True,
+            category="schema_bootstrap",
+            required_before_first_request=False,
+        )
     except Exception as exc:
-        logging.warning("Translation check recovery startup failed: %s", exc)
+        logging.warning("Phase1 projection schema ensure at startup failed: %s", exc)
 
-    if _BACKEND_SCHEMA_BOOTSTRAP_ON_STARTUP_ENABLED or _force_backend_schema_bootstrap:
-        _bootstrap_backend_schema_or_raise()
-    else:
-        logging.info("Skipping runtime backend schema bootstrap in web process")
-    if str(os.getenv("SCHEDULER_SERVICE_ENABLED") or "0").strip().lower() in {"1", "true", "yes", "on"}:
-        _start_audio_scheduler()
-    _start_skill_resource_domain_autoseed()
-else:
-    logging.info(
-        "Skipping backend runtime side effects: imported_by_bot=%s railway_service=%s argv=%s",
-        _imported_by_bot_process,
-        _railway_service_name or "-",
-        " ".join(sys.argv[:4]),
+    billing_startup_enabled = _startup_enabled_from_env("BILLING_OPENAI_SNAPSHOT_SYNC_ON_STARTUP", "1")
+    try:
+        snapshot_sync_result = _run_startup_phase(
+            "billing_openai_snapshot_sync_on_startup",
+            _sync_openai_price_snapshots_public_then_env,
+            enabled=billing_startup_enabled,
+            category="housekeeping",
+            required_before_first_request=False,
+        )
+        if billing_startup_enabled and snapshot_sync_result is not None:
+            logging.info(
+                "Billing OpenAI snapshot sync: created=%s skipped=%s errors=%s",
+                (snapshot_sync_result.get("summary") or {}).get("created_count"),
+                (snapshot_sync_result.get("summary") or {}).get("skipped_count"),
+                (snapshot_sync_result.get("summary") or {}).get("errors_count"),
+            )
+    except Exception as exc:
+        logging.warning("Billing OpenAI snapshot sync failed: %s", exc)
+
+    runtime_side_effects_enabled = _should_start_backend_runtime_side_effects()
+    _emit_startup_phase_log(
+        phase="backend_runtime_side_effects_gate",
+        enabled=runtime_side_effects_enabled,
+        success=True,
+        duration_ms=0,
+        category="runtime_gate",
+        required_before_first_request=False,
+        skipped=not runtime_side_effects_enabled,
     )
+    if runtime_side_effects_enabled:
+        try:
+            _run_startup_phase(
+                "resume_translation_check_recovery_thread_spawn",
+                lambda: threading.Thread(
+                    target=_run_translation_check_recovery_startup_phase,
+                    daemon=True,
+                    name="translation-check-recovery-startup",
+                ).start(),
+                enabled=True,
+                category="housekeeping",
+                required_before_first_request=False,
+            )
+        except Exception as exc:
+            logging.warning("Translation check recovery startup failed: %s", exc)
+
+        _run_startup_phase(
+            "bootstrap_backend_schema_or_raise",
+            _bootstrap_backend_schema_or_raise,
+            enabled=bool(_BACKEND_SCHEMA_BOOTSTRAP_ON_STARTUP_ENABLED or _force_backend_schema_bootstrap),
+            category="schema_bootstrap",
+            required_before_first_request=True,
+        )
+        _run_startup_phase(
+            "start_audio_scheduler",
+            _start_audio_scheduler,
+            enabled=_startup_enabled_from_env("SCHEDULER_SERVICE_ENABLED", "0"),
+            category="scheduler",
+            required_before_first_request=False,
+        )
+        _run_startup_phase(
+            "start_skill_resource_domain_autoseed",
+            _start_skill_resource_domain_autoseed,
+            enabled=_startup_enabled_from_env("SKILL_RESOURCE_AUTOSEED_ON_STARTUP", "0"),
+            category="housekeeping",
+            required_before_first_request=False,
+        )
+    else:
+        logging.info(
+            "Skipping backend runtime side effects: imported_by_bot=%s railway_service=%s argv=%s",
+            _imported_by_bot_process,
+            _railway_service_name or "-",
+            " ".join(sys.argv[:4]),
+        )
+    _backend_startup_completed_successfully = True
+finally:
+    _emit_startup_total_log(success=_backend_startup_completed_successfully)
 
 
 if __name__ == "__main__":
