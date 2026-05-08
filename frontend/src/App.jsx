@@ -906,6 +906,15 @@ function buildGuideStepItems(uiLang = 'ru') {
               'Im Offline-Modus erscheint oben ein 📵-Banner mit dem Datum der letzten Synchronisierung.',
             ],
           },
+          {
+            title: 'Audio fuer einen ganzen Ordner vorladen',
+            items: [
+              'Halte einen Ordner lang gedrückt — das Kontextmenu erscheint.',
+              'Tippe auf „Ordner-Audio laden": die App geht alle Wörter des Ordners durch und generiert die Aussprache vorab auf dem Server.',
+              'Den Fortschritt siehst du direkt unter der Ordnerliste. Nach Abschluss lädt das Audio bei jeder Karte sofort.',
+              'Praktisch vor dem Lernen mit schlechter Verbindung oder im Roaming.',
+            ],
+          },
         ],
       },
       {
@@ -984,6 +993,14 @@ function buildGuideStepItems(uiLang = 'ru') {
               'Im Woerterbuch erscheint oben ein 📵-Banner mit dem Datum des letzten Caches.',
               'Bei Karten erscheint ein Badge mit der Anzahl der nicht synchronisierten Antworten.',
               'Wenn du wieder online bist, startet die Synchronisierung automatisch im Hintergrund.',
+            ],
+          },
+          {
+            title: 'Audio (Aussprache) vorab generieren',
+            items: [
+              'Halte einen Ordner im Woerterbuch lange gedrückt und wähle „Ordner-Audio laden".',
+              'Die App generiert auf dem Server vorab eine Audiodatei fuer jedes Wort im Ordner — danach laedt der Ton auch bei langsamer Verbindung sofort.',
+              'Fortschritt wird direkt in der Oberflaeche angezeigt. Abbrechen mit dem X-Knopf moeglich.',
             ],
           },
         ],
@@ -1452,6 +1469,15 @@ function buildGuideStepItems(uiLang = 'ru') {
             'Чем больше страниц вы просматривали онлайн, тем больше слов будет доступно в офлайн-режиме.',
           ],
         },
+        {
+          title: 'Как заранее загрузить аудио всей папки',
+          items: [
+            'Удержите палец на нужной папке — появится контекстное меню.',
+            'Нажмите «Загрузить аудио папки» — приложение пройдёт по всем словам в папке и заранее сгенерирует для каждого произношение на сервере.',
+            'Прогресс видно прямо под списком папок. После завершения аудио будет готово мгновенно при следующем открытии карточки.',
+            'Это особенно удобно перед занятиями на слабом соединении или в роуминге.',
+          ],
+        },
       ],
     },
     {
@@ -1530,6 +1556,14 @@ function buildGuideStepItems(uiLang = 'ru') {
             'В Словаре вверху появляется баннер 📵 с датой последнего обновления кеша.',
             'В Карточках отображается значок с количеством ответов, ожидающих синхронизации.',
             'Когда связь восстанавливается, синхронизация начинается автоматически — вам ничего дополнительно нажимать не нужно.',
+          ],
+        },
+        {
+          title: 'Как подготовить аудио (произношение) заранее',
+          items: [
+            'Удержите палец на нужной папке в разделе Словарь, выберите «Загрузить аудио папки».',
+            'Приложение заранее сгенерирует аудиофайл для каждого слова из папки на сервере — после этого звук грузится мгновенно даже на медленном соединении.',
+            'Прогресс отображается прямо в интерфейсе. Операцию можно прервать крестиком.',
           ],
         },
       ],
@@ -4660,6 +4694,7 @@ function AppInner() {
   const [folderDeleteItem, setFolderDeleteItem] = useState(null);
   const [folderDeleteMode, setFolderDeleteMode] = useState(null);
   const [folderDeleteLoading, setFolderDeleteLoading] = useState(false);
+  const [folderTtsJob, setFolderTtsJob] = useState(null);
 
   // Network state for offline cache
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
@@ -19413,6 +19448,66 @@ function AppInner() {
     }
   }, [fetchVocabularySelectionCardIds, manualTrainingSelectionIds, normalizeNetworkErrorMessage, tr]);
 
+  const prewarmFolderTts = useCallback(async (folder) => {
+    const folderId = Number(folder.id);
+    const locale = getLearningTtsLocale();
+    const cancelRef = { cancelled: false };
+    setFolderContextMenu(null);
+    setFolderTtsJob({ folderId, folderName: folder.name, total: 0, done: 0, status: 'loading', cancelRef });
+    try {
+      const items = [];
+      let offset = 0;
+      let total = Infinity;
+      while (offset < total) {
+        if (cancelRef.cancelled) return;
+        const resp = await fetchWithTimeout('/api/webapp/vocabulary/list', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData, folder_id: folderId, search: null, sort: 'date_desc', limit: 100, offset }),
+        }, 15000);
+        if (!resp.ok) {
+          throw new Error(await readApiError(resp,
+            'Не удалось загрузить слова папки.',
+            'Die Wörter des Ordners konnten nicht geladen werden.'
+          ));
+        }
+        const data = await resp.json();
+        const page = Array.isArray(data?.items) ? data.items : [];
+        items.push(...page);
+        total = Math.max(0, Number(data?.total || 0));
+        offset += page.length;
+        if (page.length === 0) break;
+      }
+      const seen = new Set();
+      const words = [];
+      for (const item of items) {
+        const text = resolveFlashcardGerman({ ...item, response_json: coerceResponseJson(item.response_json) });
+        if (text && !seen.has(text)) { seen.add(text); words.push(text); }
+      }
+      if (words.length === 0) { setFolderTtsJob(null); return; }
+      setFolderTtsJob((prev) => prev ? { ...prev, total: words.length } : null);
+      const BATCH = 5;
+      for (let i = 0; i < words.length; i += BATCH) {
+        if (cancelRef.cancelled) return;
+        const batch = words.slice(i, i + BATCH);
+        await Promise.allSettled(
+          batch.map((text) =>
+            fetchTtsUrlStatus(text, locale, '')
+              .then((s) => { if (String(s?.status || '') !== 'ready') return requestTtsGenerate(text, locale, '').catch(() => null); })
+              .catch(() => null)
+          )
+        );
+        const done = Math.min(words.length, i + BATCH);
+        setFolderTtsJob((prev) => prev ? { ...prev, done } : null);
+        if (i + BATCH < words.length) await new Promise((r) => setTimeout(r, 250));
+      }
+      setFolderTtsJob((prev) => prev ? { ...prev, status: 'done' } : null);
+      setTimeout(() => setFolderTtsJob(null), 4000);
+    } catch (err) {
+      setFolderTtsJob((prev) => prev ? { ...prev, status: 'error', error: String(err?.message || err) } : null);
+    }
+  }, [initData, fetchWithTimeout, readApiError, fetchTtsUrlStatus, requestTtsGenerate]);
+
   const persistManualTrainingSelection = useCallback(async () => {
     if (manualTrainingSelectionCount <= 0) {
       const message = tr(
@@ -27079,6 +27174,28 @@ function AppInner() {
                                 })}
                               </div>
                             )}
+                            {folderTtsJob && (
+                              <div className="folder-tts-job-banner">
+                                {folderTtsJob.status === 'loading' && (
+                                  <span className="ftj-label">
+                                    🔊 {folderTtsJob.folderName}
+                                    {folderTtsJob.total > 0 ? (
+                                      <>
+                                        {': '}{folderTtsJob.done} / {folderTtsJob.total}
+                                        <span className="ftj-bar"><span className="ftj-fill" style={{ width: `${Math.round(folderTtsJob.done / folderTtsJob.total * 100)}%` }} /></span>
+                                      </>
+                                    ) : '…'}
+                                  </span>
+                                )}
+                                {folderTtsJob.status === 'done' && (
+                                  <span className="ftj-label ftj-done">✓ {tr('Аудио готово', 'Audio fertig')}: {folderTtsJob.done}</span>
+                                )}
+                                {folderTtsJob.status === 'error' && (
+                                  <span className="ftj-label ftj-error">⚠ {folderTtsJob.error}</span>
+                                )}
+                                <button type="button" className="ftj-close" onClick={() => { folderTtsJob.cancelRef && (folderTtsJob.cancelRef.cancelled = true); setFolderTtsJob(null); }}>×</button>
+                              </div>
+                            )}
                           </div>
 
                           {/* Search inside library */}
@@ -27860,6 +27977,10 @@ function AppInner() {
                             }}>
                               <span className="vfcm-btn-icon">🃏</span>
                               <span>{tr('Карточки по папке', 'Karten dieser Ordner')}</span>
+                            </button>
+                            <button type="button" className="vfcm-btn" onClick={() => void prewarmFolderTts(folderContextMenu.folder)}>
+                              <span className="vfcm-btn-icon">🔊</span>
+                              <span>{tr('Загрузить аудио папки', 'Ordner-Audio laden')}</span>
                             </button>
                             <button type="button" className="vfcm-btn vfcm-btn-danger" onClick={() => {
                               setFolderDeleteItem(folderContextMenu.folder);
