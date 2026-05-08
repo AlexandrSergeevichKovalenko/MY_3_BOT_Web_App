@@ -43238,7 +43238,7 @@ try:
     except Exception as exc:
         logging.warning("Phase1 projection schema ensure at startup failed: %s", exc)
 
-    billing_startup_enabled = _startup_enabled_from_env("BILLING_OPENAI_SNAPSHOT_SYNC_ON_STARTUP", "1")
+    billing_startup_enabled = _startup_enabled_from_env("BILLING_OPENAI_SNAPSHOT_SYNC_ON_STARTUP", "0")
     try:
         snapshot_sync_result = _run_startup_phase(
             "billing_openai_snapshot_sync_on_startup",
