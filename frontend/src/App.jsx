@@ -907,12 +907,12 @@ function buildGuideStepItems(uiLang = 'ru') {
             ],
           },
           {
-            title: 'Audio fuer einen ganzen Ordner vorladen',
+            title: 'Einen ganzen Ordner fuer Offline laden',
             items: [
-              'Halte einen Ordner lang gedrückt — das Kontextmenu erscheint.',
-              'Tippe auf „Ordner-Audio laden": die App geht alle Wörter des Ordners durch und generiert die Aussprache vorab auf dem Server.',
-              'Den Fortschritt siehst du direkt unter der Ordnerliste. Nach Abschluss lädt das Audio bei jeder Karte sofort.',
-              'Praktisch vor dem Lernen mit schlechter Verbindung oder im Roaming.',
+              'Halte einen Ordner lange gedrückt — das Kontextmenü erscheint.',
+              'Tippe auf „Für Offline laden": die App lädt seitenweise alle Wörter des Ordners und speichert sie im lokalen Cache des Geräts.',
+              'Den Fortschritt siehst du direkt unter der Ordnerliste: „X / Y". Nach Abschluss sind alle Wörter ohne Internet verfügbar.',
+              'So sparst du dir das manuelle Durchblättern von Tausenden von Wörtern.',
             ],
           },
         ],
@@ -996,11 +996,11 @@ function buildGuideStepItems(uiLang = 'ru') {
             ],
           },
           {
-            title: 'Audio (Aussprache) vorab generieren',
+            title: 'Schnell einen ganzen Ordner fuer Offline vorbereiten',
             items: [
-              'Halte einen Ordner im Woerterbuch lange gedrückt und wähle „Ordner-Audio laden".',
-              'Die App generiert auf dem Server vorab eine Audiodatei fuer jedes Wort im Ordner — danach laedt der Ton auch bei langsamer Verbindung sofort.',
-              'Fortschritt wird direkt in der Oberflaeche angezeigt. Abbrechen mit dem X-Knopf moeglich.',
+              'Ordner im Woerterbuch lange drücken und „Für Offline laden" waehlen.',
+              'Die App laedt alle Woerter des Ordners seitenweise und speichert sie automatisch im Geraete-Cache — kein manuelles Scrollen noetig.',
+              'Fortschritt ist direkt in der Oberflaeche sichtbar. Abbrechen jederzeit per X-Schaltflaeche moeglich.',
             ],
           },
         ],
@@ -1470,12 +1470,12 @@ function buildGuideStepItems(uiLang = 'ru') {
           ],
         },
         {
-          title: 'Как заранее загрузить аудио всей папки',
+          title: 'Как загрузить целую папку для офлайн-режима',
           items: [
             'Удержите палец на нужной папке — появится контекстное меню.',
-            'Нажмите «Загрузить аудио папки» — приложение пройдёт по всем словам в папке и заранее сгенерирует для каждого произношение на сервере.',
-            'Прогресс видно прямо под списком папок. После завершения аудио будет готово мгновенно при следующем открытии карточки.',
-            'Это особенно удобно перед занятиями на слабом соединении или в роуминге.',
+            'Нажмите «Загрузить слова для офлайн» — приложение само постранично скачает все слова из этой папки и сохранит их в локальный кеш устройства.',
+            'Прогресс отображается прямо под сеткой папок: «X / Y». После завершения все слова из папки доступны без интернета.',
+            'Так можно загрузить любую папку одной кнопкой вместо того чтобы вручную листать тысячи слов.',
           ],
         },
       ],
@@ -1559,11 +1559,11 @@ function buildGuideStepItems(uiLang = 'ru') {
           ],
         },
         {
-          title: 'Как подготовить аудио (произношение) заранее',
+          title: 'Как быстро загрузить всю папку для офлайн-режима',
           items: [
-            'Удержите палец на нужной папке в разделе Словарь, выберите «Загрузить аудио папки».',
-            'Приложение заранее сгенерирует аудиофайл для каждого слова из папки на сервере — после этого звук грузится мгновенно даже на медленном соединении.',
-            'Прогресс отображается прямо в интерфейсе. Операцию можно прервать крестиком.',
+            'Удержите палец на нужной папке в разделе Словарь и выберите «Загрузить слова для офлайн».',
+            'Приложение автоматически скачает все слова из этой папки постранично и сохранит их в локальный кеш — без необходимости вручную листать список.',
+            'Прогресс виден прямо под сеткой папок. Операцию можно прервать в любой момент крестиком.',
           ],
         },
       ],
@@ -19448,17 +19448,17 @@ function AppInner() {
     }
   }, [fetchVocabularySelectionCardIds, manualTrainingSelectionIds, normalizeNetworkErrorMessage, tr]);
 
-  const prewarmFolderTts = useCallback(async (folder) => {
+  const cacheVocabFolderOffline = useCallback(async (folder) => {
     const folderId = Number(folder.id);
-    const locale = getLearningTtsLocale();
+    const userId = webappUser?.id ? Number(webappUser.id) : null;
+    if (!userId || !isOfflineCacheAvailable()) return;
     const cancelRef = { cancelled: false };
     setFolderContextMenu(null);
     setFolderTtsJob({ folderId, folderName: folder.name, total: 0, done: 0, status: 'loading', cancelRef });
     try {
-      const items = [];
       let offset = 0;
-      let total = Infinity;
-      while (offset < total) {
+      let folderTotal = Infinity;
+      while (offset < folderTotal) {
         if (cancelRef.cancelled) return;
         const resp = await fetchWithTimeout('/api/webapp/vocabulary/list', {
           method: 'POST',
@@ -19473,40 +19473,24 @@ function AppInner() {
         }
         const data = await resp.json();
         const page = Array.isArray(data?.items) ? data.items : [];
-        items.push(...page);
-        total = Math.max(0, Number(data?.total || 0));
+        folderTotal = Math.max(0, Number(data?.total || 0));
+        if (offset === 0) setFolderTtsJob((prev) => prev ? { ...prev, total: folderTotal } : null);
+        if (page.length > 0) {
+          // Pass true total (all folders) so meta isn't corrupted
+          const trueTotalForMeta = Number(vocabFoldersMeta?.total_count || folderTotal);
+          await saveVocabBatch(userId, page, trueTotalForMeta);
+        }
         offset += page.length;
+        setFolderTtsJob((prev) => prev ? { ...prev, done: Math.min(folderTotal, offset) } : null);
         if (page.length === 0) break;
-      }
-      const seen = new Set();
-      const words = [];
-      for (const item of items) {
-        const text = resolveFlashcardGerman({ ...item, response_json: coerceResponseJson(item.response_json) });
-        if (text && !seen.has(text)) { seen.add(text); words.push(text); }
-      }
-      if (words.length === 0) { setFolderTtsJob(null); return; }
-      setFolderTtsJob((prev) => prev ? { ...prev, total: words.length } : null);
-      const BATCH = 5;
-      for (let i = 0; i < words.length; i += BATCH) {
-        if (cancelRef.cancelled) return;
-        const batch = words.slice(i, i + BATCH);
-        await Promise.allSettled(
-          batch.map((text) =>
-            fetchTtsUrlStatus(text, locale, '')
-              .then((s) => { if (String(s?.status || '') !== 'ready') return requestTtsGenerate(text, locale, '').catch(() => null); })
-              .catch(() => null)
-          )
-        );
-        const done = Math.min(words.length, i + BATCH);
-        setFolderTtsJob((prev) => prev ? { ...prev, done } : null);
-        if (i + BATCH < words.length) await new Promise((r) => setTimeout(r, 250));
+        if (offset < folderTotal) await new Promise((r) => setTimeout(r, 100));
       }
       setFolderTtsJob((prev) => prev ? { ...prev, status: 'done' } : null);
       setTimeout(() => setFolderTtsJob(null), 4000);
     } catch (err) {
       setFolderTtsJob((prev) => prev ? { ...prev, status: 'error', error: String(err?.message || err) } : null);
     }
-  }, [initData, fetchWithTimeout, readApiError, fetchTtsUrlStatus, requestTtsGenerate]);
+  }, [initData, fetchWithTimeout, readApiError, webappUser?.id, vocabFoldersMeta?.total_count]);
 
   const persistManualTrainingSelection = useCallback(async () => {
     if (manualTrainingSelectionCount <= 0) {
@@ -27178,7 +27162,7 @@ function AppInner() {
                               <div className="folder-tts-job-banner">
                                 {folderTtsJob.status === 'loading' && (
                                   <span className="ftj-label">
-                                    🔊 {folderTtsJob.folderName}
+                                    📥 {folderTtsJob.folderName}
                                     {folderTtsJob.total > 0 ? (
                                       <>
                                         {': '}{folderTtsJob.done} / {folderTtsJob.total}
@@ -27188,7 +27172,7 @@ function AppInner() {
                                   </span>
                                 )}
                                 {folderTtsJob.status === 'done' && (
-                                  <span className="ftj-label ftj-done">✓ {tr('Аудио готово', 'Audio fertig')}: {folderTtsJob.done}</span>
+                                  <span className="ftj-label ftj-done">✓ {tr('Загружено для офлайн', 'Für Offline geladen')}: {folderTtsJob.done}</span>
                                 )}
                                 {folderTtsJob.status === 'error' && (
                                   <span className="ftj-label ftj-error">⚠ {folderTtsJob.error}</span>
@@ -27978,9 +27962,9 @@ function AppInner() {
                               <span className="vfcm-btn-icon">🃏</span>
                               <span>{tr('Карточки по папке', 'Karten dieser Ordner')}</span>
                             </button>
-                            <button type="button" className="vfcm-btn" onClick={() => void prewarmFolderTts(folderContextMenu.folder)}>
-                              <span className="vfcm-btn-icon">🔊</span>
-                              <span>{tr('Загрузить аудио папки', 'Ordner-Audio laden')}</span>
+                            <button type="button" className="vfcm-btn" onClick={() => void cacheVocabFolderOffline(folderContextMenu.folder)}>
+                              <span className="vfcm-btn-icon">📥</span>
+                              <span>{tr('Загрузить слова для офлайн', 'Für Offline laden')}</span>
                             </button>
                             <button type="button" className="vfcm-btn vfcm-btn-danger" onClick={() => {
                               setFolderDeleteItem(folderContextMenu.folder);
