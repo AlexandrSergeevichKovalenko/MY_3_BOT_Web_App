@@ -367,6 +367,11 @@ logging.basicConfig(
     ]
 )
 
+# Suppress per-request transport chatter from Telegram long polling.
+# We still keep warnings/errors from the HTTP stack.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 load_dotenv(dotenv_path=Path(__file__).parent/".env") # Загружаем переменные из .env
 # Ты кладёшь GOOGLE_APPLICATION_CREDENTIALS=/path/... в .env.
 # load_dotenv() загружает .env и делает вид, что это переменные окружения.
