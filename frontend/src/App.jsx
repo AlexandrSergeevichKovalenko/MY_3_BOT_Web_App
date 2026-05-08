@@ -4452,6 +4452,7 @@ function AppInner() {
     error: '',
   });
   const [pageVisible, setPageVisible] = useState(() => (typeof document === 'undefined' ? true : document.visibilityState !== 'hidden'));
+  const pageVisibleRef = useRef(typeof document === 'undefined' ? true : document.visibilityState !== 'hidden');
   const [homeSnapshotResumeTick, setHomeSnapshotResumeTick] = useState(0);
   const [selectedSections, setSelectedSections] = useState(new Set());
   const [flashcardSetComplete, setFlashcardSetComplete] = useState(false);
@@ -15452,6 +15453,12 @@ function AppInner() {
       skillReportStartupRefreshDoneRef.current = false;
       weeklyPlanStartupRefreshDoneRef.current = false;
     };
+    const updatePageVisibility = (visible) => {
+      const nextVisible = Boolean(visible);
+      pageVisibleRef.current = nextVisible;
+      setPageVisible(nextVisible);
+      return nextVisible;
+    };
     const markHomeSnapshotForeground = () => {
       resetHomeSnapshotStartupRefresh();
       setHomeSnapshotResumeTick((value) => value + 1);
@@ -15482,30 +15489,39 @@ function AppInner() {
     };
     const onVisibilityChange = () => {
       const visible = document.visibilityState !== 'hidden';
-      setPageVisible(visible);
+      const wasVisible = pageVisibleRef.current;
+      updatePageVisibility(visible);
       if (!visible) {
         resetHomeSnapshotStartupRefresh();
         translationActivityRunningRef.current = false;
         void syncTranslationSessionActivity('pause', { force: true, keepalive: true });
         safeStorageSet('app_last_hide_ts', String(Date.now()));
-      } else {
+      } else if (!wasVisible) {
         markHomeSnapshotForeground();
       }
     };
     const onPageHide = () => {
-      setPageVisible(false);
+      updatePageVisibility(false);
       resetHomeSnapshotStartupRefresh();
       translationActivityRunningRef.current = false;
       void syncTranslationSessionActivity('pause', { force: true, keepalive: true });
       safeStorageSet('app_last_hide_ts', String(Date.now()));
     };
     const onPageShow = () => {
-      setPageVisible(document.visibilityState !== 'hidden');
-      markHomeSnapshotForeground();
+      const visible = document.visibilityState !== 'hidden';
+      const wasVisible = pageVisibleRef.current;
+      updatePageVisibility(visible);
+      if (visible && !wasVisible) {
+        markHomeSnapshotForeground();
+      }
     };
     const onWindowFocus = () => {
-      setPageVisible(true);
-      markHomeSnapshotForeground();
+      const visible = document.visibilityState !== 'hidden';
+      const wasVisible = pageVisibleRef.current;
+      updatePageVisibility(visible);
+      if (visible && !wasVisible) {
+        markHomeSnapshotForeground();
+      }
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('focus', onWindowFocus);
