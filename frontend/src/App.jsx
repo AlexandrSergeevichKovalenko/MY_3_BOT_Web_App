@@ -697,6 +697,14 @@ function buildGuideStepItems(uiLang = 'ru') {
             ],
           },
           {
+            title: 'Startbildschirm: 3 Schnellkacheln',
+            items: [
+              'Aufgaben zeigt den Tagesplan-Fortschritt (erledigt / gesamt).',
+              'Skill-Map zeigt deine durchschnittliche Beherrschung aller Grammatik- und Vokabelbereiche als Prozentzahl.',
+              'Wochenplan zeigt, wie weit du bei deinen Wochenzielen (Uebersetzungen, Woerter, Sprechminuten, Lesezeit) bist.',
+            ],
+          },
+          {
             title: 'Wie du sinnvoll startest',
             items: [
               'Lege zuerst Lernsprache und Muttersprache fest.',
@@ -751,18 +759,18 @@ function buildGuideStepItems(uiLang = 'ru') {
             ],
           },
           {
-            title: 'Wie der Plan entsteht',
+            title: 'Skill-Map: Ringe und Beherrschungsgrad',
             items: [
-              'Der Plan nutzt deine Ziele, deine Aktivitaet und deine Schwaechen.',
-              'Dadurch bekommst du nicht jeden Tag dieselben Aufgaben, sondern die momentan sinnvollsten.',
-              'Wenn ein Bereich hinterherhaengt, wird er im Plan frueher sichtbar.',
+              'Unterhalb des Tagesplans siehst du die Skill-Map-Karte mit Ringen fuer jeden Grammatik- und Vokabelbereich.',
+              'Je voller der Ring, desto besser beherrschst du dieses Thema laut deinen Uebungen und Tests.',
+              'Schwache Ringe sind deine aktuellen Luecken — tippe auf einen Ring, um gezielt daran zu arbeiten.',
             ],
           },
           {
-            title: 'Welche Nachrichten dazu kommen koennen',
+            title: 'Wochenplan und Nachrichten',
             items: [
-              'Nach den aktuellen Standardzeiten kommt der Tagesplan morgens etwa um 07:00.',
-              'Am Abend kommt meist gegen 18:00 eine sanfte Erinnerung oder eine Glueckwunsch-Nachricht, wenn alles erledigt ist.',
+              'Die Wochenplan-Karte zeigt Fortschritt bei deinen Wochenzielen: Uebersetzungen, gelernte Woerter, Sprechminuten und Lesezeit.',
+              'Nach den aktuellen Standardzeiten kommt der Tagesplan morgens etwa um 07:00, abends gegen 18:00 ein Erinnerungs- oder Glueckwunsch-Push.',
               'Diese Statusmeldungen sind mit dem Heute-Bildschirm synchron.',
             ],
           },
@@ -864,7 +872,7 @@ function buildGuideStepItems(uiLang = 'ru') {
       {
         key: 'dictionary',
         title: 'Woerterbuch',
-        summary: 'Hier uebersetzt, erklaerst, speicherst und organisierst du Woerter und Phrasen.',
+        summary: 'Hier uebersetzt, erklaerst, speicherst und organisierst du Woerter und Phrasen — auch ohne Internet.',
         sections: [
           {
             title: 'Welche zwei Lookup-Wege es gibt',
@@ -888,6 +896,94 @@ function buildGuideStepItems(uiLang = 'ru') {
               'Speichere Woerter und Phrasen direkt in einen Ordner.',
               'Lege neue Ordner an, wenn du Themen sauber trennen willst.',
               'Spaeter tauchen diese Inhalte in Karten, Space Repetition und weiteren Uebungen wieder auf.',
+            ],
+          },
+          {
+            title: 'Woerterbuch offline vorbereiten',
+            items: [
+              'Jede Seite deines Vokabular-Bibliothek, die du online durchgeblattert hast, wird automatisch im Geraete-Cache gespeichert.',
+              'Je mehr Seiten du online geoeffnet hast, desto mehr Woerter sind spaeter offline sichtbar — kein gesonderter Download noetig.',
+              'Im Offline-Modus erscheint oben ein 📵-Banner mit dem Datum der letzten Synchronisierung.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'flashcards',
+        title: 'Karten',
+        summary: 'Hier automatisierst du gespeicherte Woerter und Phrasen ueber mehrere Trainingsarten — inkl. Offline-Modus.',
+        sections: [
+          {
+            title: 'Die Trainingsmodi',
+            items: [
+              'Space Repetition fuer intelligentes spaced repetition.',
+              'Quiz fuer schnelle Entscheidungen mit Antwortoptionen.',
+              'Blocks fuer aktives Zusammenbauen.',
+              'Sentence fuer Kontext-Ergaenzung.',
+            ],
+          },
+          {
+            title: 'Wie die Inhalte gebildet werden',
+            items: [
+              'Die Kernwarteschlange kommt aus deinem persoenlichen Material: gespeicherte Woerter und Phrasen.',
+              'In Space Repetition kommen zuerst faellige Wiederholungen und danach neue Karten.',
+              'Die Telegram-Quizze mischen nicht blind, sondern wechseln neue Inhalte mit Wiederholungen schwacher Karten ab.',
+            ],
+          },
+          {
+            title: 'Offline-Modus fuer Karten',
+            items: [
+              'Space-Repetition-Karten werden beim Online-Start automatisch auf das Geraet geladen.',
+              'Verlierst du die Verbindung waehrend einer Sitzung, kannst du weitermachen — alle Antworten werden lokal gespeichert.',
+              'Sobald die Verbindung wiederhergestellt ist, synchronisiert die App die Ergebnisse automatisch mit dem Server.',
+              'Ein Badge zeigt dir, wie viele Antworten noch auf Synchronisierung warten.',
+            ],
+          },
+          {
+            title: 'Was du einstellen kannst',
+            items: [
+              'Set-Groesse, Ordner, Geschwindigkeit und automatischen oder manuellen Uebergang.',
+              'Je nach Modus kommen Timer oder Schwierigkeitsstufe dazu.',
+              'So kannst du denselben Wortschatz sehr kurz oder sehr gruendlich trainieren.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'offline_mode',
+        title: 'Offline-Modus',
+        summary: 'Woerterbuch und Karten funktionieren ohne Internet. Hier erfaehrst du, wie du dich vorbereitetest.',
+        sections: [
+          {
+            title: 'Was offline verfuegbar ist',
+            items: [
+              'Dein gesamtes Vokabular (alle Seiten, die du online geoeffnet hast) — fuer Anzeige und Bearbeitung.',
+              'Space-Repetition-Karten — fuer Wiederholungen und neue Karten.',
+              'Alle offline vorgenommenen Aenderungen (hinzufuegen, loeschen, Kartenantworten) warten in der lokalen Warteschlange.',
+            ],
+          },
+          {
+            title: 'So bereitest du dich vor (Woerterbuch)',
+            items: [
+              'Blade einfach durch deine Vokabular-Seiten, waehrend du online bist — jede angezeigte Seite wird automatisch gecacht.',
+              'Es gibt keine separate Schaltflaecheoffline speichern — der Cache baut sich beim normalen Scrollen auf.',
+              'Je mehr du vorab durchblattert hast, desto vollstaendiger ist der Offline-Bestand.',
+            ],
+          },
+          {
+            title: 'So bereitest du dich vor (Karten)',
+            items: [
+              'Starte mindestens einmal eine Space-Repetition-Sitzung online — dabei werden die naechsten Karten in den Geraete-Cache geladen.',
+              'Beim naechsten Mal ohne Internet erscheint automatisch der Offline-Modus mit den vorgeladenen Karten.',
+              'Nach Rueckkehr ins Netz werden alle gespeicherten Antworten automatisch hochgeladen.',
+            ],
+          },
+          {
+            title: 'Offline-Indikatoren verstehen',
+            items: [
+              'Im Woerterbuch erscheint oben ein 📵-Banner mit dem Datum des letzten Caches.',
+              'Bei Karten erscheint ein Badge mit der Anzahl der nicht synchronisierten Antworten.',
+              'Wenn du wieder online bist, startet die Synchronisierung automatisch im Hintergrund.',
             ],
           },
         ],
@@ -924,41 +1020,9 @@ function buildGuideStepItems(uiLang = 'ru') {
         ],
       },
       {
-        key: 'flashcards',
-        title: 'Karten',
-        summary: 'Hier automatisierst du gespeicherte Woerter und Phrasen ueber mehrere Trainingsarten.',
-        sections: [
-          {
-            title: 'Die Trainingsmodi',
-            items: [
-              'Space Repetition fuer intelligentes spaced repetition.',
-              'Quiz fuer schnelle Entscheidungen mit Antwortoptionen.',
-              'Blocks fuer aktives Zusammenbauen.',
-              'Sentence fuer Kontext-Ergaenzung.',
-            ],
-          },
-          {
-            title: 'Wie die Inhalte gebildet werden',
-            items: [
-              'Die Kernwarteschlange kommt aus deinem persoenlichen Material: gespeicherte Woerter und Phrasen.',
-              'In Space Repetition kommen zuerst faellige Wiederholungen und danach neue Karten.',
-              'Die Telegram-Quizze mischen nicht blind, sondern wechseln neue Inhalte mit Wiederholungen schwacher Karten ab.',
-            ],
-          },
-          {
-            title: 'Was du einstellen kannst',
-            items: [
-              'Set-Groesse, Ordner, Geschwindigkeit und automatischen oder manuellen Uebergang.',
-              'Je nach Modus kommen Timer oder Schwierigkeitsstufe dazu.',
-              'So kannst du denselben Wortschatz sehr kurz oder sehr gruendlich trainieren.',
-            ],
-          },
-        ],
-      },
-      {
         key: 'assistant',
         title: 'Sprachpraxis',
-        summary: 'Der Live-Assistent ist fuer echte muendliche Routine gedacht.',
+        summary: 'Der Live-Assistent ist fuer echte muendliche Routine gedacht — mit KI-Analyse nach jeder Sitzung.',
         sections: [
           {
             title: 'Wie du startest',
@@ -974,6 +1038,15 @@ function buildGuideStepItems(uiLang = 'ru') {
               'Aussprache, Spontanitaet, Reaktionsgeschwindigkeit und muendliche Sicherheit.',
               'Kurze taegliche Sprachpraxis statt nur stiller Lektuere.',
               'Der Bereich ergaenzt Uebersetzungen, ersetzt sie aber nicht.',
+            ],
+          },
+          {
+            title: 'Post-Session-Analyse',
+            items: [
+              'Nach jeder abgeschlossenen Sitzung erstellt die KI automatisch eine Session-Analyse.',
+              'Du siehst: strenges Feedback, naechster empfohlener Fokus sowie Detailnoten fuer Wortschatz, Grammatik, Sprachfluss, Kohaerenz und Selbstkorrektur.',
+              'Verwendetes und verfehltes Ziel-Vokabular wird separat aufgelistet.',
+              'War die Sitzung zu kurz, erscheint stattdessen ein kurzer Hinweis — sprich einfach laenger beim naechsten Mal.',
             ],
           },
           {
@@ -1072,7 +1145,7 @@ function buildGuideStepItems(uiLang = 'ru') {
           {
             title: 'Wann du ihn oeffnen solltest',
             items: [
-              'Wenn ein schwacher Ring oder eine Empfehlung sichtbar ist.',
+              'Wenn ein schwacher Ring in der Skill-Map oder eine Empfehlung sichtbar ist.',
               'Wenn du nicht breit, sondern punktgenau trainieren willst.',
               'Wenn du ein Thema wirklich schliessen statt nur wiederholen willst.',
             ],
@@ -1088,7 +1161,7 @@ function buildGuideStepItems(uiLang = 'ru') {
             title: 'So aktivierst du ihn',
             items: [
               'Bot privat oeffnen und einmal /start senden.',
-              'Danach erscheint unten die Taste „💬 Спросить у GPT“.',
+              'Danach erscheint unten die Taste „💬 Спросить у GPT”.',
               'Damit ist der schnelle Privatmodus fuer Sprache, Fragen und Speichern bereit.',
             ],
           },
@@ -1104,7 +1177,7 @@ function buildGuideStepItems(uiLang = 'ru') {
           {
             title: 'Welche Nachrichten privat ankommen koennen',
             items: [
-              'Nach den aktuellen Standardzeiten: Tagesplan morgens, Erinnerungen im Tagesverlauf und Abend-Erinnerung gegen spaeteren Nachmittag oder Abend.',
+              'Nach den aktuellen Standardzeiten: Tagesplan morgens, Erinnerungen im Tagesverlauf und Abend-Erinnerung.',
               'Audio-Fehlererklaerungen kommen typischerweise tagsueber und beziehen sich meist auf den letzten Lerntag.',
               'Private Analytik und Charts kommen regelmaessig, waehrend die Mini-App die volle Detailansicht liefert.',
             ],
@@ -1170,6 +1243,14 @@ function buildGuideStepItems(uiLang = 'ru') {
           ],
         },
         {
+          title: 'Главный экран: 3 быстрые метрики',
+          items: [
+            'Задачи — прогресс дневного плана (выполнено / всего).',
+            'Карта навыков — средний % освоения всех грамматических и лексических блоков. Нажмите, чтобы увидеть кольца по каждой теме.',
+            'Wochenplan — насколько вы выполнили недельные цели: переводы, слова, минуты разговора, время чтения.',
+          ],
+        },
+        {
           title: 'Как лучше начать',
           items: [
             'Сначала задайте язык изучения и родной язык.',
@@ -1196,7 +1277,7 @@ function buildGuideStepItems(uiLang = 'ru') {
           title: 'Как работает смена тарифа и отмена',
           items: [
             'Если вы отменяете платную подписку, она продолжает работать до конца уже оплаченного периода.',
-            'Новый платный тариф не должен запускаться с двойным списанием посреди текущего цикла, а аккуратно стартует со следующего расчетного периода.',
+            'Новый платный тариф стартует аккуратно со следующего расчетного периода, без двойного списания.',
             'Так вы не теряете уже оплаченный доступ и не платите дважды за один и тот же промежуток.',
           ],
         },
@@ -1213,30 +1294,30 @@ function buildGuideStepItems(uiLang = 'ru') {
     {
       key: 'today',
       title: 'Сегодня',
-      summary: 'План на сегодня показывает следующую разумную последовательность действий.',
+      summary: 'План на сегодня, карта навыков и недельные цели — всё на одном экране.',
       sections: [
         {
-          title: 'Что вы там видите',
+          title: 'Дневной план',
           items: [
             'Компактный маршрут дня: переводы, карточки, теория, видео или разговорная практика.',
-            'Статус каждой задачи: еще не начато, в процессе или закончено.',
-            'Быстрый вход в нужный раздел без долгого поиска по меню.',
-          ],
-        },
-        {
-          title: 'Как формируется план',
-          items: [
-            'План опирается на ваши цели, текущую активность и слабые места.',
-            'Поэтому задачи меняются не случайно, а под то, что сейчас полезнее делать именно вам.',
+            'Статус каждой задачи: ещё не начато, в процессе или закончено.',
             'Если какой-то блок проседает, он поднимается выше в плане.',
           ],
         },
         {
-          title: 'Какие сообщения с ним связаны',
+          title: 'Карта навыков (skill rings)',
           items: [
-            'По текущим стандартным настройкам план обычно приходит утром около 07:00.',
-            'Вечером примерно около 18:00 может приходить мягкое напоминание или поздравление, если все закрыто.',
-            'Эти сообщения синхронизированы с экраном Сегодня внутри приложения.',
+            'Ниже дневного плана находится блок Карта навыков с кольцами по каждому грамматическому и лексическому направлению.',
+            'Чем полнее кольцо — тем лучше вы освоили эту тему по результатам ваших упражнений и тестов.',
+            'Слабые кольца — ваши текущие пробелы. Нажмите на кольцо, чтобы открыть целевую тренировку.',
+          ],
+        },
+        {
+          title: 'Недельный план и уведомления',
+          items: [
+            'Блок Wochenplan показывает прогресс недельных целей: переводы, выученные слова, минуты разговора, время чтения.',
+            'По текущим стандартным настройкам план приходит утром около 07:00, вечером около 18:00 — напоминание или поздравление.',
+            'Эти уведомления синхронизированы с экраном Сегодня внутри приложения.',
           ],
         },
       ],
@@ -1266,7 +1347,7 @@ function buildGuideStepItems(uiLang = 'ru') {
           title: 'Что происходит после проверки',
           items: [
             'Вы видите балл, эталон, текстовый разбор и можете сразу озвучить корректный вариант.',
-            'Для отдельных ответов можно запросить еще более глубокое объяснение.',
+            'Для отдельных ответов можно запросить ещё более глубокое объяснение.',
             'Набор предложений смешивает ваши прошлые ошибки и новые предложения: слабые места возвращаются в работу, но система не зацикливается только на старом.',
           ],
         },
@@ -1337,7 +1418,7 @@ function buildGuideStepItems(uiLang = 'ru') {
     {
       key: 'dictionary',
       title: 'Словарь',
-      summary: 'Здесь вы переводите, разбираете, сохраняете и организуете слова и фразы.',
+      summary: 'Здесь вы переводите, разбираете, сохраняете и организуете слова и фразы — в том числе в офлайн-режиме.',
       sections: [
         {
           title: 'Два режима lookup',
@@ -1363,35 +1444,12 @@ function buildGuideStepItems(uiLang = 'ru') {
             'Позже именно это личное содержимое идет в карточки, Space Repetition и другие тренировки.',
           ],
         },
-      ],
-    },
-    {
-      key: 'reader',
-      title: 'Читалка',
-      summary: 'Раздел для спокойного чтения, аудио, учета времени и более глубокого погружения в текст.',
-      sections: [
         {
-          title: 'Как добавить материал',
+          title: 'Как подготовить словарь к работе офлайн',
           items: [
-            'Можно вставить текст, ссылку или загрузить файл.',
-            'После этого документ сохраняется в библиотеке и его можно открыть позже.',
-            'Для длинных текстов это гораздо удобнее, чем читать их как обычное сообщение в чате.',
-          ],
-        },
-        {
-          title: 'Что можно делать во время чтения',
-          items: [
-            'Нажимать на слова и фрагменты текста, чтобы быстрее разбираться в содержании.',
-            'Менять шрифт, направление прокрутки, режим чтения и фокусный вид.',
-            'Таймер чтения идет параллельно и учитывается в вашем прогрессе.',
-          ],
-        },
-        {
-          title: 'Какие есть дополнительные возможности',
-          items: [
-            'Закладки, сохранение прогресса, архив документов.',
-            'Оффлайн-аудио для всего документа или крупных частей.',
-            'Читалка нужна для спокойного понимания и глубокой работы с текстом, а не только для быстрого поиска слова.',
+            'Пока вы в сети, просто пролистывайте страницы своей библиотеки слов — каждая открытая страница автоматически сохраняется в локальный кеш устройства.',
+            'Никакой отдельной кнопки «скачать офлайн» нет: кеш накапливается сам по мере использования приложения.',
+            'Чем больше страниц вы просматривали онлайн, тем больше слов будет доступно в офлайн-режиме.',
           ],
         },
       ],
@@ -1399,7 +1457,7 @@ function buildGuideStepItems(uiLang = 'ru') {
     {
       key: 'flashcards',
       title: 'Карточки',
-      summary: 'Здесь автоматизируются сохраненные слова и фразы через несколько разных режимов тренировки.',
+      summary: 'Здесь автоматизируются сохраненные слова и фразы через несколько разных режимов тренировки — включая офлайн.',
       sections: [
         {
           title: 'Какие режимы есть',
@@ -1415,7 +1473,16 @@ function buildGuideStepItems(uiLang = 'ru') {
           items: [
             'Ядро очереди строится из вашего личного материала: сохраненных слов и фраз.',
             'В Space Repetition сначала идут due-карточки, потом новые.',
-            'Telegram-квизы в течение дня не шлют все подряд, а чередуют новое и повтор слабых слов.',
+            'Telegram-квизы в течение дня не шлют всё подряд, а чередуют новое и повтор слабых слов.',
+          ],
+        },
+        {
+          title: 'Офлайн-режим для карточек',
+          items: [
+            'Space Repetition карточки предзагружаются в локальный кеш устройства при каждом онлайн-запуске сессии.',
+            'Если интернет пропал во время тренировки — продолжайте, ответы сохраняются локально.',
+            'Как только связь восстановится, все отложенные результаты автоматически синхронизируются с сервером.',
+            'Значок со счётчиком показывает, сколько ответов ожидают отправки.',
           ],
         },
         {
@@ -1429,9 +1496,79 @@ function buildGuideStepItems(uiLang = 'ru') {
       ],
     },
     {
+      key: 'offline_mode',
+      title: 'Офлайн-режим',
+      summary: 'Словарь и карточки работают без интернета. Вот что нужно сделать заранее, пока вы онлайн.',
+      sections: [
+        {
+          title: 'Что доступно без интернета',
+          items: [
+            'Вся библиотека слов — все страницы, которые вы уже открывали онлайн: просмотр, редактирование заметок, смена папки.',
+            'Space Repetition карточки — повторение и новые карточки из предзагруженной очереди.',
+            'Все изменения (добавление, удаление слов, ответы на карточки), сделанные офлайн, ждут синхронизации в локальной очереди.',
+          ],
+        },
+        {
+          title: 'Как подготовить словарь (что делать заранее)',
+          items: [
+            'Будучи онлайн, откройте раздел Словарь и прокрутите несколько страниц своей библиотеки — каждая показанная страница автоматически сохраняется на устройство.',
+            'Специальной кнопки «сохранить для офлайна» нет — кеш строится в процессе обычного использования.',
+            'Чем больше страниц вы просмотрели онлайн, тем полнее ваша офлайн-библиотека.',
+          ],
+        },
+        {
+          title: 'Как подготовить карточки (что делать заранее)',
+          items: [
+            'Запустите хотя бы одну сессию Space Repetition онлайн — при этом следующая порция карточек автоматически скачивается на устройство.',
+            'При следующем открытии без интернета режим офлайн включается сам, без дополнительных действий.',
+            'После восстановления связи все отложенные ответы отправляются на сервер автоматически в фоне.',
+          ],
+        },
+        {
+          title: 'Что означают индикаторы',
+          items: [
+            'В Словаре вверху появляется баннер 📵 с датой последнего обновления кеша.',
+            'В Карточках отображается значок с количеством ответов, ожидающих синхронизации.',
+            'Когда связь восстанавливается, синхронизация начинается автоматически — вам ничего дополнительно нажимать не нужно.',
+          ],
+        },
+      ],
+    },
+    {
+      key: 'reader',
+      title: 'Читалка',
+      summary: 'Раздел для спокойного чтения, аудио, учёта времени и более глубокого погружения в текст.',
+      sections: [
+        {
+          title: 'Как добавить материал',
+          items: [
+            'Можно вставить текст, ссылку или загрузить файл.',
+            'После этого документ сохраняется в библиотеке и его можно открыть позже.',
+            'Для длинных текстов это гораздо удобнее, чем читать их как обычное сообщение в чате.',
+          ],
+        },
+        {
+          title: 'Что можно делать во время чтения',
+          items: [
+            'Нажимать на слова и фрагменты текста, чтобы быстрее разбираться в содержании.',
+            'Менять шрифт, направление прокрутки, режим чтения и фокусный вид.',
+            'Таймер чтения идёт параллельно и учитывается в вашем прогрессе.',
+          ],
+        },
+        {
+          title: 'Дополнительные возможности',
+          items: [
+            'Закладки, сохранение прогресса, архив документов.',
+            'Офлайн-аудио для всего документа или крупных частей.',
+            'Читалка нужна для спокойного понимания и глубокой работы с текстом, а не только для быстрого поиска слова.',
+          ],
+        },
+      ],
+    },
+    {
       key: 'assistant',
       title: 'Разговорная практика',
-      summary: 'Live-ассистент нужен для настоящей устной речи, а не только для чтения и письменных переводов.',
+      summary: 'Live-ассистент нужен для настоящей устной речи — с AI-разбором каждой сессии после её завершения.',
       sections: [
         {
           title: 'Как начать',
@@ -1450,9 +1587,18 @@ function buildGuideStepItems(uiLang = 'ru') {
           ],
         },
         {
-          title: 'Как он связан с остальной системой',
+          title: 'Разбор сессии после завершения',
           items: [
-            'Минуты разговора могут учитываться в целях и аналитике.',
+            'После каждой завершённой сессии AI автоматически генерирует детальный разбор.',
+            'Вы увидите: строгий фидбек, следующий рекомендуемый фокус, и развёрнутые заметки по лексике, грамматике, беглости речи, связности и самокоррекции.',
+            'Отдельно показывается целевая лексика: какие слова прозвучали в разговоре, а какие так и не были использованы.',
+            'Если сессия была слишком короткой, вместо полного разбора появится краткое уведомление — просто поговорите подольше в следующий раз.',
+          ],
+        },
+        {
+          title: 'Как разговорная практика связана с остальной системой',
+          items: [
+            'Минуты разговора учитываются в целях и в недельном плане.',
             'Этот блок может появляться как отдельная задача в плане на сегодня.',
             'Так живая речь становится регулярной частью учебной рутины.',
           ],
@@ -1508,14 +1654,14 @@ function buildGuideStepItems(uiLang = 'ru') {
           items: [
             'Сколько переводов сделано, сколько было запланировано и что осталось не закрытым.',
             'Сравнения, графики и рейтинги за выбранный период.',
-            'Где вы идете по плану, а где проседаете.',
+            'Где вы идёте по плану, а где проседаете.',
           ],
         },
         {
           title: 'Какие регулярные сообщения с этим связаны',
           items: [
             'Личная недельная аналитика по текущим стандартным настройкам обычно приходит вечером около 19:30 вместе с графиками.',
-            'Групповые итоги дня обычно приходят поздно вечером, а недельные итоги в воскресенье поздно вечером.',
+            'Групповые итоги дня обычно приходят поздно вечером, а недельные итоги — в воскресенье поздно вечером.',
             'Mini App нужна для полной детализации, Telegram для коротких регулярных сводок.',
           ],
         },
@@ -1529,7 +1675,7 @@ function buildGuideStepItems(uiLang = 'ru') {
         {
           title: 'Что делает этот раздел',
           items: [
-            'Берет одну слабую тему и собирает по ней компактный пакет.',
+            'Берёт одну слабую тему и собирает по ней компактный пакет.',
             'Вы получаете теорию, нередко подходящее видео и затем практические предложения.',
             'Этот раздел нужен не для общего просмотра всего подряд, а для точечного закрытия слабого места.',
           ],
@@ -1537,7 +1683,7 @@ function buildGuideStepItems(uiLang = 'ru') {
         {
           title: 'Что вы видите внутри',
           items: [
-            'Четко названный фокус на понятном пользовательском языке.',
+            'Чётко названный фокус на понятном пользовательском языке.',
             'Короткое ядро теории по теме.',
             'Практику и затем обратную связь по вашим ответам.',
           ],
@@ -1545,9 +1691,9 @@ function buildGuideStepItems(uiLang = 'ru') {
         {
           title: 'Когда его стоит открывать',
           items: [
-            'Когда видите слабое кольцо или рекомендацию на конкретный навык.',
+            'Когда видите слабое кольцо в Карте навыков или рекомендацию на конкретный навык.',
             'Когда хотите тренироваться не широко, а прицельно.',
-            'Когда нужно именно закрыть тему, а не просто снова ее увидеть.',
+            'Когда нужно именно закрыть тему, а не просто снова её увидеть.',
           ],
         },
       ],
@@ -1558,7 +1704,7 @@ function buildGuideStepItems(uiLang = 'ru') {
       summary: 'В личном чате вы получаете быструю помощь, приватные сообщения системы и прямой доступ к GPT-функциям.',
       sections: [
         {
-          title: 'Как ее активировать',
+          title: 'Как её активировать',
           items: [
             'Откройте бота в личке и один раз отправьте /start.',
             'После этого внизу появится кнопка «💬 Спросить у GPT».',
@@ -1578,8 +1724,8 @@ function buildGuideStepItems(uiLang = 'ru') {
           title: 'Что туда может приходить автоматически',
           items: [
             'По текущим стандартным настройкам: план на день утром, напоминания в течение дня и вечернее напоминание ближе к концу дня.',
-            'Аудио-разбор ошибок обычно приходит днем и чаще всего опирается на ошибки предыдущего учебного дня.',
-            'Личная аналитика и графики приходят регулярно, а Mini App остается местом для полной детализации.',
+            'Аудио-разбор ошибок обычно приходит днём и чаще всего опирается на ошибки предыдущего учебного дня.',
+            'Личная аналитика и графики приходят регулярно, а Mini App остаётся местом для полной детализации.',
           ],
         },
       ],
@@ -1600,7 +1746,7 @@ function buildGuideStepItems(uiLang = 'ru') {
         {
           title: 'Что может приходить в группу',
           items: [
-            'Квизы в течение дня. По текущим legacy-настройкам обычно в промежутке 06:00-22:30 каждые 30 минут.',
+            'Квизы в течение дня. По текущим legacy-настройкам обычно в промежутке 06:00–22:30 каждые 30 минут.',
             'Итоги дня вечером и итоги недели в воскресенье поздно вечером.',
             'В зависимости от маршрута доставки также могут приходить групповые планы, объявления о выполнении задач и аудио по ошибкам или историям.',
           ],
@@ -1608,9 +1754,9 @@ function buildGuideStepItems(uiLang = 'ru') {
         {
           title: 'Какой здесь общий принцип',
           items: [
-            'В рейтинг попадают только подтвержденные участники.',
+            'В рейтинг попадают только подтверждённые участники.',
             'Квизы чередуют новые и слабые повторные элементы, а не шлют только новое.',
-            'Группа нужна для мотивации, сравнения и ритма, а глубокая работа все равно происходит в Mini App и в личке.',
+            'Группа нужна для мотивации, сравнения и ритма, а глубокая работа всё равно происходит в Mini App и в личке.',
           ],
         },
       ],
