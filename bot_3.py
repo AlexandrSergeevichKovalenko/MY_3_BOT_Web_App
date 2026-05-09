@@ -9656,7 +9656,7 @@ async def send_daily_summary(context: CallbackContext):
             SELECT user_id, 
                 AVG({build_translation_session_minutes_sql('p')}) AS avg_time, 
                 SUM({build_translation_session_minutes_sql('p')}) AS total_time
-            FROM bt_3_user_progress
+            FROM bt_3_user_progress p
             WHERE completed = true
         		AND start_time::date = CURRENT_DATE -- ✅ Теперь только за день
             GROUP BY user_id
@@ -9777,7 +9777,7 @@ async def send_progress_report(context: CallbackContext):
         SELECT user_id, 
             AVG({build_translation_session_minutes_sql('p')}) AS avg_time, -- ✅ Среднее время сессии за день
             SUM({build_translation_session_minutes_sql('p')}) AS total_time -- ✅ Общее время за день
-        FROM bt_3_user_progress
+        FROM bt_3_user_progress p
         WHERE completed = TRUE 
             AND start_time::date = CURRENT_DATE -- ✅ Теперь только за день
         GROUP BY user_id
@@ -13126,7 +13126,13 @@ def main():
             async_func(context, *args, **kwargs),
             loop
         )
-        fut.add_done_callback(lambda f: f.exception() and logging.exception("❌ APScheduler job crashed"))
+        def _log_scheduler_failure(future):
+            try:
+                future.result()
+            except Exception:
+                logging.exception("❌ APScheduler job crashed")
+
+        fut.add_done_callback(_log_scheduler_failure)
 
     # def run_async_job(async_func, context=None, *args, **kwargs):
     #     if context is None:
