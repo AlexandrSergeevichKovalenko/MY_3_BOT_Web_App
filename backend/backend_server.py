@@ -12909,25 +12909,26 @@ def _decorate_training_dictionary_item(
     target_lang: str,
     direction: str,
 ) -> dict:
+    raw_item = dict(item or {})
+    raw_response_json = _coerce_response_json(raw_item.get("response_json"))
+    source_text, target_text = _resolve_training_entry_texts_for_pair(
+        item=raw_item,
+        response_json=raw_response_json,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
     data = _decorate_dictionary_item(
-        item if isinstance(item, dict) else {},
+        raw_item,
         source_lang=source_lang,
         target_lang=target_lang,
         direction=direction,
-    )
-    response_json = _coerce_response_json(data.get("response_json"))
-    source_text, target_text = _resolve_training_entry_texts_for_pair(
-        item=data,
-        response_json=response_json,
-        source_lang=source_lang,
-        target_lang=target_lang,
     )
     data["source_text"] = source_text
     data["target_text"] = target_text
     data["source_lang"] = source_lang
     data["target_lang"] = target_lang
-    if response_json:
-        normalized_response = dict(response_json)
+    if raw_response_json:
+        normalized_response = dict(raw_response_json)
         normalized_response["source_text"] = source_text
         normalized_response["target_text"] = target_text
         normalized_response["source_lang"] = source_lang
