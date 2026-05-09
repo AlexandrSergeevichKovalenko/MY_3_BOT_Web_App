@@ -9020,63 +9020,79 @@ function AppInner() {
     void loadWeeklySummaryHero();
   }, [loadWeeklySummaryHero, weeklySummaryModalOpen, weeklySummaryVisitConfig]);
 
-  const saveWeeklyPlan = async () => {
+  const saveWeeklyPlan = () => {
     if (!initData) return;
     const translationsGoal = Math.max(0, Number.parseInt(String(weeklyPlanDraft.translations_goal || '0'), 10) || 0);
     const learnedWordsGoal = Math.max(0, Number.parseInt(String(weeklyPlanDraft.learned_words_goal || '0'), 10) || 0);
     const agentMinutesGoal = Math.max(0, Number.parseInt(String(weeklyPlanDraft.agent_minutes_goal || '0'), 10) || 0);
     const readingMinutesGoal = Math.max(0, Number.parseInt(String(weeklyPlanDraft.reading_minutes_goal || '0'), 10) || 0);
-    try {
-      setWeeklyPlanSaving(true);
-      setWeeklyPlanError('');
-      const response = await fetch('/api/progress/weekly-plan/goals', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData,
-          translations_goal: translationsGoal,
-          learned_words_goal: learnedWordsGoal,
-          agent_minutes_goal: agentMinutesGoal,
-          reading_minutes_goal: readingMinutesGoal,
-        }),
-      });
-      if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка сохранения недельного плана', 'Fehler beim Speichern des Wochenplans'));
-      }
-      const data = await response.json();
-      const plan = {
-        week: data?.week || weeklyPlan?.week || null,
-        plan: data?.plan || { translations_goal: 0, learned_words_goal: 0, agent_minutes_goal: 0, reading_minutes_goal: 0 },
-        metrics: weeklyPlan?.metrics || {},
-        snapshot_saved_at: new Date().toISOString(),
-      };
-      setWeeklyPlan(plan);
-      setWeeklyPlanSnapshotTone('manual');
-      setWeeklyPlanDraft(buildWeeklyPlanDraftFromPlan(plan));
-      persistWeeklyPlanSnapshot(plan);
-      setWeeklyPlanCollapsed(true);
-      setWeeklyMetricExpanded({
-        translations: false,
-        learned_words: false,
-        agent_minutes: false,
-        reading_minutes: false,
-      });
-      window.setTimeout(() => {
+
+    // Apply plan to UI immediately from draft values
+    const optimisticPlan = {
+      week: weeklyPlan?.week || null,
+      plan: { translations_goal: translationsGoal, learned_words_goal: learnedWordsGoal, agent_minutes_goal: agentMinutesGoal, reading_minutes_goal: readingMinutesGoal },
+      metrics: weeklyPlan?.metrics || {},
+      snapshot_saved_at: new Date().toISOString(),
+    };
+    setWeeklyPlan(optimisticPlan);
+    setWeeklyPlanSnapshotTone('manual');
+    setWeeklyPlanDraft(buildWeeklyPlanDraftFromPlan(optimisticPlan));
+    persistWeeklyPlanSnapshot(optimisticPlan);
+    setWeeklyPlanCollapsed(true);
+    setWeeklyPlanError('');
+    setWeeklyMetricExpanded({
+      translations: false,
+      learned_words: false,
+      agent_minutes: false,
+      reading_minutes: false,
+    });
+    showInlineToast(tr('План сохранён ✅', 'Plan gespeichert ✅'));
+
+    (async () => {
+      try {
+        setWeeklyPlanSaving(true);
+        const response = await fetch('/api/progress/weekly-plan/goals', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            initData,
+            translations_goal: translationsGoal,
+            learned_words_goal: learnedWordsGoal,
+            agent_minutes_goal: agentMinutesGoal,
+            reading_minutes_goal: readingMinutesGoal,
+          }),
+        });
+        if (!response.ok) {
+          throw new Error(await readApiError(response, 'Ошибка сохранения недельного плана', 'Fehler beim Speichern des Wochenplans'));
+        }
+        const data = await response.json();
+        // Update with canonical server response (week key may differ)
+        const confirmedPlan = {
+          week: data?.week || optimisticPlan.week,
+          plan: data?.plan || optimisticPlan.plan,
+          metrics: weeklyPlan?.metrics || {},
+          snapshot_saved_at: new Date().toISOString(),
+        };
+        setWeeklyPlan(confirmedPlan);
+        setWeeklyPlanDraft(buildWeeklyPlanDraftFromPlan(confirmedPlan));
+        persistWeeklyPlanSnapshot(confirmedPlan);
         void loadWeeklyPlan({ manual: true, syncFacts: true, silent: true });
         if (planAnalyticsPeriod !== 'week') {
           void loadPlanAnalytics();
         }
-      }, 0);
-    } catch (error) {
-      const friendly = normalizeNetworkErrorMessage(
-        error,
-        'Не удалось сохранить недельный план.',
-        'Wochenplan konnte nicht gespeichert werden.'
-      );
-      setWeeklyPlanError(friendly);
-    } finally {
-      setWeeklyPlanSaving(false);
-    }
+      } catch (error) {
+        const friendly = normalizeNetworkErrorMessage(
+          error,
+          'Не удалось сохранить недельный план.',
+          'Wochenplan konnte nicht gespeichert werden.'
+        );
+        setWeeklyPlanError(friendly);
+        showInlineToast(friendly);
+        setWeeklyPlanCollapsed(false);
+      } finally {
+        setWeeklyPlanSaving(false);
+      }
+    })();
   };
 
   const startSkillPractice = async (skill, options = {}) => {
@@ -10671,83 +10687,95 @@ function AppInner() {
     }
   };
 
-  const saveLanguageProfile = async () => {
+  const saveLanguageProfile = () => {
     if (!initData) return;
-    try {
-      setLanguageProfileSaving(true);
-      setLanguageProfileError('');
-      const response = await fetch('/api/user/language-profile', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData,
-          learning_language: GERMAN_ONLY_MODE ? GERMAN_ONLY_PROFILE.learning_language : languageProfileDraft.learning_language,
-          native_language: GERMAN_ONLY_MODE ? GERMAN_ONLY_PROFILE.native_language : languageProfileDraft.native_language,
-        }),
-      });
-      if (!response.ok) {
-        let message = await response.text();
-        try {
-          const data = JSON.parse(message);
-          message = data.error || message;
-        } catch (error) {
-          // ignore parse errors
-        }
-        throw new Error(message);
-      }
-      const data = await response.json();
-      if (data?.profile) {
-        const prevPair = `${languageProfile?.native_language || 'ru'}-${languageProfile?.learning_language || 'de'}`;
-        setLanguageProfile(data.profile);
-        const nextPair = `${data.profile.native_language || 'ru'}-${data.profile.learning_language || 'de'}`;
-        const pairChanged = prevPair !== nextPair || Boolean(data.reset_sessions);
-        if (pairChanged) {
-          safeStorageRemove(weeklyPlanSnapshotStorageKey);
-          setSrsCard(null);
-          setSrsState(null);
-          setSrsQueueInfo({ due_count: 0, new_remaining_today: 0 });
-          setSrsRevealAnswer(false);
-          setSrsError('');
-          setSessionType('none');
-          setSentences([]);
-          setResults([]);
-          setTranslationAudioGrammarOptIn({});
-          setTranslationAudioGrammarSaving({});
-          setExplanations({});
-          if (translationDraftStorageTimeoutRef.current) {
-            clearTimeout(translationDraftStorageTimeoutRef.current);
-            translationDraftStorageTimeoutRef.current = null;
-          }
-          if (translationDraftSyncTimeoutRef.current) {
-            clearTimeout(translationDraftSyncTimeoutRef.current);
-            translationDraftSyncTimeoutRef.current = null;
-          }
-          translationDraftsRef.current = {};
-          recordTranslationDraftAndroidDebugEvent('draft.state_update.reset_after_finish', { focusedOnly: false, flush: true });
-          setTranslationDrafts({});
-          safeStorageRemove(translationDraftStorageKey);
-          void clearTranslationDraftsOnServer([], { clearAll: true, silent: true });
-          const sessionInfo = await loadSessionInfo();
-          const restoredSessionId = String(
-            sessionInfo?.type === 'regular' ? (sessionInfo?.session_id || '') : ''
-          ).trim();
-          await loadSentences({
-            sessionId: restoredSessionId || undefined,
-          });
-          if (!flashcardsOnly && isSectionVisible('flashcards')) {
-            await loadSrsNextCard();
-          }
-        }
-        await loadStarterDictionaryStatus();
-        if (!needsLanguageProfileChoice) {
-          setLanguageProfileModalOpen(false);
-        }
-      }
-    } catch (error) {
-      setLanguageProfileError(`${tr('Ошибка сохранения профиля', 'Fehler beim Speichern des Profils')}: ${error.message}`);
-    } finally {
-      setLanguageProfileSaving(false);
+    setLanguageProfileError('');
+
+    // Close modal immediately — save + any session reset runs in background
+    if (!needsLanguageProfileChoice) {
+      setLanguageProfileModalOpen(false);
     }
+    showInlineToast(tr('Профиль сохранён ✅', 'Profil gespeichert ✅'));
+
+    (async () => {
+      try {
+        setLanguageProfileSaving(true);
+        const response = await fetch('/api/user/language-profile', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            initData,
+            learning_language: GERMAN_ONLY_MODE ? GERMAN_ONLY_PROFILE.learning_language : languageProfileDraft.learning_language,
+            native_language: GERMAN_ONLY_MODE ? GERMAN_ONLY_PROFILE.native_language : languageProfileDraft.native_language,
+          }),
+        });
+        if (!response.ok) {
+          let message = await response.text();
+          try {
+            const data = JSON.parse(message);
+            message = data.error || message;
+          } catch (error) {
+            // ignore parse errors
+          }
+          throw new Error(message);
+        }
+        const data = await response.json();
+        if (data?.profile) {
+          const prevPair = `${languageProfile?.native_language || 'ru'}-${languageProfile?.learning_language || 'de'}`;
+          setLanguageProfile(data.profile);
+          const nextPair = `${data.profile.native_language || 'ru'}-${data.profile.learning_language || 'de'}`;
+          const pairChanged = prevPair !== nextPair || Boolean(data.reset_sessions);
+          if (pairChanged) {
+            safeStorageRemove(weeklyPlanSnapshotStorageKey);
+            setSrsCard(null);
+            setSrsState(null);
+            setSrsQueueInfo({ due_count: 0, new_remaining_today: 0 });
+            setSrsRevealAnswer(false);
+            setSrsError('');
+            setSessionType('none');
+            setSentences([]);
+            setResults([]);
+            setTranslationAudioGrammarOptIn({});
+            setTranslationAudioGrammarSaving({});
+            setExplanations({});
+            if (translationDraftStorageTimeoutRef.current) {
+              clearTimeout(translationDraftStorageTimeoutRef.current);
+              translationDraftStorageTimeoutRef.current = null;
+            }
+            if (translationDraftSyncTimeoutRef.current) {
+              clearTimeout(translationDraftSyncTimeoutRef.current);
+              translationDraftSyncTimeoutRef.current = null;
+            }
+            translationDraftsRef.current = {};
+            recordTranslationDraftAndroidDebugEvent('draft.state_update.reset_after_finish', { focusedOnly: false, flush: true });
+            setTranslationDrafts({});
+            safeStorageRemove(translationDraftStorageKey);
+            void clearTranslationDraftsOnServer([], { clearAll: true, silent: true });
+            const sessionInfo = await loadSessionInfo();
+            const restoredSessionId = String(
+              sessionInfo?.type === 'regular' ? (sessionInfo?.session_id || '') : ''
+            ).trim();
+            await loadSentences({
+              sessionId: restoredSessionId || undefined,
+            });
+            if (!flashcardsOnly && isSectionVisible('flashcards')) {
+              await loadSrsNextCard();
+            }
+          }
+          await loadStarterDictionaryStatus();
+          // Re-open modal only if profile choice is still required (first-time setup)
+          if (needsLanguageProfileChoice) {
+            setLanguageProfileModalOpen(false);
+          }
+        }
+      } catch (error) {
+        setLanguageProfileError(`${tr('Ошибка сохранения профиля', 'Fehler beim Speichern des Profils')}: ${error.message}`);
+        showInlineToast(`${tr('Ошибка сохранения профиля', 'Fehler beim Speichern des Profils')}: ${error.message}`);
+        setLanguageProfileModalOpen(true);
+      } finally {
+        setLanguageProfileSaving(false);
+      }
+    })();
   };
 
   const openLanguageProfileModal = () => {
