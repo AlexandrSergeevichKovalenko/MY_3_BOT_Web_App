@@ -9020,63 +9020,79 @@ function AppInner() {
     void loadWeeklySummaryHero();
   }, [loadWeeklySummaryHero, weeklySummaryModalOpen, weeklySummaryVisitConfig]);
 
-  const saveWeeklyPlan = async () => {
+  const saveWeeklyPlan = () => {
     if (!initData) return;
     const translationsGoal = Math.max(0, Number.parseInt(String(weeklyPlanDraft.translations_goal || '0'), 10) || 0);
     const learnedWordsGoal = Math.max(0, Number.parseInt(String(weeklyPlanDraft.learned_words_goal || '0'), 10) || 0);
     const agentMinutesGoal = Math.max(0, Number.parseInt(String(weeklyPlanDraft.agent_minutes_goal || '0'), 10) || 0);
     const readingMinutesGoal = Math.max(0, Number.parseInt(String(weeklyPlanDraft.reading_minutes_goal || '0'), 10) || 0);
-    try {
-      setWeeklyPlanSaving(true);
-      setWeeklyPlanError('');
-      const response = await fetch('/api/progress/weekly-plan/goals', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData,
-          translations_goal: translationsGoal,
-          learned_words_goal: learnedWordsGoal,
-          agent_minutes_goal: agentMinutesGoal,
-          reading_minutes_goal: readingMinutesGoal,
-        }),
-      });
-      if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка сохранения недельного плана', 'Fehler beim Speichern des Wochenplans'));
-      }
-      const data = await response.json();
-      const plan = {
-        week: data?.week || weeklyPlan?.week || null,
-        plan: data?.plan || { translations_goal: 0, learned_words_goal: 0, agent_minutes_goal: 0, reading_minutes_goal: 0 },
-        metrics: weeklyPlan?.metrics || {},
-        snapshot_saved_at: new Date().toISOString(),
-      };
-      setWeeklyPlan(plan);
-      setWeeklyPlanSnapshotTone('manual');
-      setWeeklyPlanDraft(buildWeeklyPlanDraftFromPlan(plan));
-      persistWeeklyPlanSnapshot(plan);
-      setWeeklyPlanCollapsed(true);
-      setWeeklyMetricExpanded({
-        translations: false,
-        learned_words: false,
-        agent_minutes: false,
-        reading_minutes: false,
-      });
-      window.setTimeout(() => {
+
+    // Apply plan to UI immediately from draft values
+    const optimisticPlan = {
+      week: weeklyPlan?.week || null,
+      plan: { translations_goal: translationsGoal, learned_words_goal: learnedWordsGoal, agent_minutes_goal: agentMinutesGoal, reading_minutes_goal: readingMinutesGoal },
+      metrics: weeklyPlan?.metrics || {},
+      snapshot_saved_at: new Date().toISOString(),
+    };
+    setWeeklyPlan(optimisticPlan);
+    setWeeklyPlanSnapshotTone('manual');
+    setWeeklyPlanDraft(buildWeeklyPlanDraftFromPlan(optimisticPlan));
+    persistWeeklyPlanSnapshot(optimisticPlan);
+    setWeeklyPlanCollapsed(true);
+    setWeeklyPlanError('');
+    setWeeklyMetricExpanded({
+      translations: false,
+      learned_words: false,
+      agent_minutes: false,
+      reading_minutes: false,
+    });
+    showInlineToast(tr('План сохранён ✅', 'Plan gespeichert ✅'));
+
+    (async () => {
+      try {
+        setWeeklyPlanSaving(true);
+        const response = await fetch('/api/progress/weekly-plan/goals', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            initData,
+            translations_goal: translationsGoal,
+            learned_words_goal: learnedWordsGoal,
+            agent_minutes_goal: agentMinutesGoal,
+            reading_minutes_goal: readingMinutesGoal,
+          }),
+        });
+        if (!response.ok) {
+          throw new Error(await readApiError(response, 'Ошибка сохранения недельного плана', 'Fehler beim Speichern des Wochenplans'));
+        }
+        const data = await response.json();
+        // Update with canonical server response (week key may differ)
+        const confirmedPlan = {
+          week: data?.week || optimisticPlan.week,
+          plan: data?.plan || optimisticPlan.plan,
+          metrics: weeklyPlan?.metrics || {},
+          snapshot_saved_at: new Date().toISOString(),
+        };
+        setWeeklyPlan(confirmedPlan);
+        setWeeklyPlanDraft(buildWeeklyPlanDraftFromPlan(confirmedPlan));
+        persistWeeklyPlanSnapshot(confirmedPlan);
         void loadWeeklyPlan({ manual: true, syncFacts: true, silent: true });
         if (planAnalyticsPeriod !== 'week') {
           void loadPlanAnalytics();
         }
-      }, 0);
-    } catch (error) {
-      const friendly = normalizeNetworkErrorMessage(
-        error,
-        'Не удалось сохранить недельный план.',
-        'Wochenplan konnte nicht gespeichert werden.'
-      );
-      setWeeklyPlanError(friendly);
-    } finally {
-      setWeeklyPlanSaving(false);
-    }
+      } catch (error) {
+        const friendly = normalizeNetworkErrorMessage(
+          error,
+          'Не удалось сохранить недельный план.',
+          'Wochenplan konnte nicht gespeichert werden.'
+        );
+        setWeeklyPlanError(friendly);
+        showInlineToast(friendly);
+        setWeeklyPlanCollapsed(false);
+      } finally {
+        setWeeklyPlanSaving(false);
+      }
+    })();
   };
 
   const startSkillPractice = async (skill, options = {}) => {
@@ -10671,83 +10687,95 @@ function AppInner() {
     }
   };
 
-  const saveLanguageProfile = async () => {
+  const saveLanguageProfile = () => {
     if (!initData) return;
-    try {
-      setLanguageProfileSaving(true);
-      setLanguageProfileError('');
-      const response = await fetch('/api/user/language-profile', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData,
-          learning_language: GERMAN_ONLY_MODE ? GERMAN_ONLY_PROFILE.learning_language : languageProfileDraft.learning_language,
-          native_language: GERMAN_ONLY_MODE ? GERMAN_ONLY_PROFILE.native_language : languageProfileDraft.native_language,
-        }),
-      });
-      if (!response.ok) {
-        let message = await response.text();
-        try {
-          const data = JSON.parse(message);
-          message = data.error || message;
-        } catch (error) {
-          // ignore parse errors
-        }
-        throw new Error(message);
-      }
-      const data = await response.json();
-      if (data?.profile) {
-        const prevPair = `${languageProfile?.native_language || 'ru'}-${languageProfile?.learning_language || 'de'}`;
-        setLanguageProfile(data.profile);
-        const nextPair = `${data.profile.native_language || 'ru'}-${data.profile.learning_language || 'de'}`;
-        const pairChanged = prevPair !== nextPair || Boolean(data.reset_sessions);
-        if (pairChanged) {
-          safeStorageRemove(weeklyPlanSnapshotStorageKey);
-          setSrsCard(null);
-          setSrsState(null);
-          setSrsQueueInfo({ due_count: 0, new_remaining_today: 0 });
-          setSrsRevealAnswer(false);
-          setSrsError('');
-          setSessionType('none');
-          setSentences([]);
-          setResults([]);
-          setTranslationAudioGrammarOptIn({});
-          setTranslationAudioGrammarSaving({});
-          setExplanations({});
-          if (translationDraftStorageTimeoutRef.current) {
-            clearTimeout(translationDraftStorageTimeoutRef.current);
-            translationDraftStorageTimeoutRef.current = null;
-          }
-          if (translationDraftSyncTimeoutRef.current) {
-            clearTimeout(translationDraftSyncTimeoutRef.current);
-            translationDraftSyncTimeoutRef.current = null;
-          }
-          translationDraftsRef.current = {};
-          recordTranslationDraftAndroidDebugEvent('draft.state_update.reset_after_finish', { focusedOnly: false, flush: true });
-          setTranslationDrafts({});
-          safeStorageRemove(translationDraftStorageKey);
-          void clearTranslationDraftsOnServer([], { clearAll: true, silent: true });
-          const sessionInfo = await loadSessionInfo();
-          const restoredSessionId = String(
-            sessionInfo?.type === 'regular' ? (sessionInfo?.session_id || '') : ''
-          ).trim();
-          await loadSentences({
-            sessionId: restoredSessionId || undefined,
-          });
-          if (!flashcardsOnly && isSectionVisible('flashcards')) {
-            await loadSrsNextCard();
-          }
-        }
-        await loadStarterDictionaryStatus();
-        if (!needsLanguageProfileChoice) {
-          setLanguageProfileModalOpen(false);
-        }
-      }
-    } catch (error) {
-      setLanguageProfileError(`${tr('Ошибка сохранения профиля', 'Fehler beim Speichern des Profils')}: ${error.message}`);
-    } finally {
-      setLanguageProfileSaving(false);
+    setLanguageProfileError('');
+
+    // Close modal immediately — save + any session reset runs in background
+    if (!needsLanguageProfileChoice) {
+      setLanguageProfileModalOpen(false);
     }
+    showInlineToast(tr('Профиль сохранён ✅', 'Profil gespeichert ✅'));
+
+    (async () => {
+      try {
+        setLanguageProfileSaving(true);
+        const response = await fetch('/api/user/language-profile', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            initData,
+            learning_language: GERMAN_ONLY_MODE ? GERMAN_ONLY_PROFILE.learning_language : languageProfileDraft.learning_language,
+            native_language: GERMAN_ONLY_MODE ? GERMAN_ONLY_PROFILE.native_language : languageProfileDraft.native_language,
+          }),
+        });
+        if (!response.ok) {
+          let message = await response.text();
+          try {
+            const data = JSON.parse(message);
+            message = data.error || message;
+          } catch (error) {
+            // ignore parse errors
+          }
+          throw new Error(message);
+        }
+        const data = await response.json();
+        if (data?.profile) {
+          const prevPair = `${languageProfile?.native_language || 'ru'}-${languageProfile?.learning_language || 'de'}`;
+          setLanguageProfile(data.profile);
+          const nextPair = `${data.profile.native_language || 'ru'}-${data.profile.learning_language || 'de'}`;
+          const pairChanged = prevPair !== nextPair || Boolean(data.reset_sessions);
+          if (pairChanged) {
+            safeStorageRemove(weeklyPlanSnapshotStorageKey);
+            setSrsCard(null);
+            setSrsState(null);
+            setSrsQueueInfo({ due_count: 0, new_remaining_today: 0 });
+            setSrsRevealAnswer(false);
+            setSrsError('');
+            setSessionType('none');
+            setSentences([]);
+            setResults([]);
+            setTranslationAudioGrammarOptIn({});
+            setTranslationAudioGrammarSaving({});
+            setExplanations({});
+            if (translationDraftStorageTimeoutRef.current) {
+              clearTimeout(translationDraftStorageTimeoutRef.current);
+              translationDraftStorageTimeoutRef.current = null;
+            }
+            if (translationDraftSyncTimeoutRef.current) {
+              clearTimeout(translationDraftSyncTimeoutRef.current);
+              translationDraftSyncTimeoutRef.current = null;
+            }
+            translationDraftsRef.current = {};
+            recordTranslationDraftAndroidDebugEvent('draft.state_update.reset_after_finish', { focusedOnly: false, flush: true });
+            setTranslationDrafts({});
+            safeStorageRemove(translationDraftStorageKey);
+            void clearTranslationDraftsOnServer([], { clearAll: true, silent: true });
+            const sessionInfo = await loadSessionInfo();
+            const restoredSessionId = String(
+              sessionInfo?.type === 'regular' ? (sessionInfo?.session_id || '') : ''
+            ).trim();
+            await loadSentences({
+              sessionId: restoredSessionId || undefined,
+            });
+            if (!flashcardsOnly && isSectionVisible('flashcards')) {
+              await loadSrsNextCard();
+            }
+          }
+          await loadStarterDictionaryStatus();
+          // Re-open modal only if profile choice is still required (first-time setup)
+          if (needsLanguageProfileChoice) {
+            setLanguageProfileModalOpen(false);
+          }
+        }
+      } catch (error) {
+        setLanguageProfileError(`${tr('Ошибка сохранения профиля', 'Fehler beim Speichern des Profils')}: ${error.message}`);
+        showInlineToast(`${tr('Ошибка сохранения профиля', 'Fehler beim Speichern des Profils')}: ${error.message}`);
+        setLanguageProfileModalOpen(true);
+      } finally {
+        setLanguageProfileSaving(false);
+      }
+    })();
   };
 
   const openLanguageProfileModal = () => {
@@ -17047,7 +17075,7 @@ function AppInner() {
     const text = String(rawText || '');
     if (!text) return [];
     const safeLang = normalizeLangCode(langHint || '') || 'de';
-    const wordRegex = /[A-Za-z0-9À-ÿА-Яа-яЁё'’-]/u;
+    const wordRegex = /[A-Za-z0-9À-ÿА-Яа-яЁё''-]/u;
 
     const tokenizeSentence = (sentenceText, sentenceStart, sid) => {
       const tokens = [];
@@ -17092,7 +17120,7 @@ function AppInner() {
         }
       }
 
-      const fallbackWordTokenRegex = /(\s+|[A-Za-z0-9À-ÿА-Яа-яЁё'’-]+|[^A-Za-z0-9À-ÿА-Яа-яЁё'’-\s]+)/g;
+      const fallbackWordTokenRegex = /(\s+|[A-Za-z0-9À-ÿА-Яа-яЁё''-]+|[^A-Za-z0-9À-ÿА-Яа-яЁё''-\s]+)/g;
       let match = fallbackWordTokenRegex.exec(sentenceText);
       while (match) {
         const value = String(match[0] || '');
@@ -17974,6 +18002,22 @@ function AppInner() {
         setDictionaryDirection(detectedDirection);
         scrollToDictionary();
       }
+
+      // Show success immediately after lookup — save runs in background
+      if (inlineMode) {
+        setSelectionInlineLookup((prev) => ({
+          ...prev,
+          translation: prev.translation ? `${prev.translation} • ${tr('Сохранено ✅', 'Gespeichert ✅')}` : tr('Сохранено ✅', 'Gespeichert ✅'),
+        }));
+        if (isYoutubeInline) {
+          showInlineToast(`${tr('Сохранено в папку', 'In Ordner gespeichert')}: ${autoFolder?.name || 'YouTube'}`);
+        }
+      } else {
+        setDictionarySaved(tr('Добавлено в словарь ✅', 'Zum Woerterbuch hinzugefuegt ✅'));
+      }
+      clearSelection();
+      setDictionaryLoading(false);
+
       const saveOriginProcess = inlineMode
         ? (isYoutubeInline ? 'youtube' : (isTranslationsInline ? 'translations_block' : 'reader'))
         : 'webapp_dictionary_save';
@@ -17989,50 +18033,45 @@ function AppInner() {
           : 'dictionary_lookup',
       };
 
-      const saveResponse = await fetch('/api/webapp/dictionary/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData,
-          word_ru: saveWordRu,
-          word_de: saveWordDe,
-          translation_de: data.item?.translation_de || '',
-          translation_ru: data.item?.translation_ru || '',
-          source_text: getDictionarySourceTarget(data.item, detectedDirection).sourceText || normalized,
-          target_text: getDictionarySourceTarget(data.item, detectedDirection).targetText || '',
-          source_lang: saveSourceLang || undefined,
-          target_lang: saveTargetLang || undefined,
-          direction: detectedDirection || undefined,
-          response_json: data.item || {},
-          folder_id: autoFolderId ?? (dictionaryFolderId !== 'none' ? dictionaryFolderId : null),
-          origin_process: saveOriginProcess,
-          origin_meta: saveOriginMeta,
-        }),
-      });
-      if (!saveResponse.ok) {
-        let message = await saveResponse.text();
+      (async () => {
         try {
-          const payload = JSON.parse(message);
-          message = payload.error || message;
+          const saveResponse = await fetch('/api/webapp/dictionary/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              initData,
+              word_ru: saveWordRu,
+              word_de: saveWordDe,
+              translation_de: data.item?.translation_de || '',
+              translation_ru: data.item?.translation_ru || '',
+              source_text: getDictionarySourceTarget(data.item, detectedDirection).sourceText || normalized,
+              target_text: getDictionarySourceTarget(data.item, detectedDirection).targetText || '',
+              source_lang: saveSourceLang || undefined,
+              target_lang: saveTargetLang || undefined,
+              direction: detectedDirection || undefined,
+              response_json: data.item || {},
+              folder_id: autoFolderId ?? (dictionaryFolderId !== 'none' ? dictionaryFolderId : null),
+              origin_process: saveOriginProcess,
+              origin_meta: saveOriginMeta,
+            }),
+          });
+          if (!saveResponse.ok) {
+            let message = await saveResponse.text();
+            try {
+              const payload = JSON.parse(message);
+              message = payload.error || message;
+            } catch (_error) {
+              // ignore parsing errors
+            }
+            throw new Error(message);
+          }
+          const savePayload = await saveResponse.json();
+          setDictionaryLanguagePair(resolveLanguagePairForUI(savePayload.language_pair));
         } catch (error) {
-          // ignore parsing errors
+          setDictionaryError(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${error.message}`);
+          showInlineToast(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${error.message}`);
         }
-        throw new Error(message);
-      }
-      const savePayload = await saveResponse.json();
-      setDictionaryLanguagePair(resolveLanguagePairForUI(savePayload.language_pair));
-      if (inlineMode) {
-      setSelectionInlineLookup((prev) => ({
-        ...prev,
-        translation: prev.translation ? `${prev.translation} • ${tr('Сохранено ✅', 'Gespeichert ✅')}` : tr('Сохранено ✅', 'Gespeichert ✅'),
-      }));
-        if (isYoutubeInline) {
-          showInlineToast(`${tr('Сохранено в папку', 'In Ordner gespeichert')}: ${autoFolder?.name || 'YouTube'}`);
-        }
-      } else {
-        setDictionarySaved(tr('Добавлено в словарь ✅', 'Zum Woerterbuch hinzugefuegt ✅'));
-      }
-      clearSelection();
+      })();
     } catch (error) {
       setDictionaryError(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${error.message}`);
     } finally {
@@ -18379,7 +18418,7 @@ function AppInner() {
     return true;
   };
 
-  const handleSelectionGptSaveToDictionary = async () => {
+  const handleSelectionGptSaveToDictionary = () => {
     if (!initData) {
       setSelectionGptSaveError(initDataMissingMsg);
       return;
@@ -18393,47 +18432,45 @@ function AppInner() {
       setSelectionGptSaveMessage('');
       return;
     }
-    setSelectionGptSaveLoading(true);
+    // Optimistic: release the user immediately, save in background
+    const label = tr('Сохранено в словарь ✅', 'Gespeichert ✅');
+    setSelectionGptSaveMessage(label);
     setSelectionGptSaveError('');
-    setSelectionGptSaveMessage('');
-    let savedCount = 0;
-    const failedItems = [];
-    if (shouldSaveOriginal) {
-      try {
-        const saved = await saveSelectionGptOriginalWord(selectionText);
-        if (saved) savedCount += 1;
-      } catch (error) {
-        failedItems.push(tr(
-          `Оригинальное слово: ${String(error?.message || '').trim()}`,
-          `Originalwort: ${String(error?.message || '').trim()}`
-        ));
+    showInlineToast(label);
+    // Close the panel so the user can continue reading
+    setTimeout(() => setSelectionGptOpen(false), 900);
+    // Background save — errors shown as toast, never block UI
+    (async () => {
+      let savedCount = 0;
+      const failedItems = [];
+      if (shouldSaveOriginal) {
+        try {
+          const saved = await saveSelectionGptOriginalWord(selectionText);
+          if (saved) savedCount += 1;
+        } catch (error) {
+          failedItems.push(tr(
+            `Оригинальное слово: ${String(error?.message || '').trim()}`,
+            `Originalwort: ${String(error?.message || '').trim()}`
+          ));
+        }
       }
-    }
-    for (const item of selectedExamples) {
-      try {
-        const saved = await saveSelectionGptExample(item.text, item.index);
-        if (saved) savedCount += 1;
-      } catch (error) {
-        failedItems.push(tr(
-          `Пример ${item.index + 1}: ${String(error?.message || '').trim()}`,
-          `Beispiel ${item.index + 1}: ${String(error?.message || '').trim()}`
-        ));
+      for (const item of selectedExamples) {
+        try {
+          const saved = await saveSelectionGptExample(item.text, item.index);
+          if (saved) savedCount += 1;
+        } catch (error) {
+          failedItems.push(tr(
+            `Пример ${item.index + 1}: ${String(error?.message || '').trim()}`,
+            `Beispiel ${item.index + 1}: ${String(error?.message || '').trim()}`
+          ));
+        }
       }
-    }
-    if (savedCount > 0) {
-      const successMessage = tr(
-        `Добавлено в словарь: ${savedCount}`,
-        `Zum Woerterbuch hinzugefuegt: ${savedCount}`
-      );
-      setSelectionGptSaveMessage(successMessage);
-      showInlineToast(successMessage);
-    }
-    if (failedItems.length > 0) {
-      setSelectionGptSaveError(failedItems.join('\n'));
-    } else {
-      setSelectionGptSaveError('');
-    }
-    setSelectionGptSaveLoading(false);
+      if (failedItems.length > 0) {
+        showInlineToast(tr('Ошибка сохранения: ', 'Speicherfehler: ') + failedItems[0]);
+        setSelectionGptSaveError(failedItems.join('\n'));
+        setSelectionGptOpen(true);
+      }
+    })();
   };
 
   const handleSelectionGptLookup = async () => {
@@ -20480,7 +20517,7 @@ function AppInner() {
     const stopPropagation = Boolean(options.stopPropagation);
     const keyPrefix = options.keyPrefix || 'w';
     const youtubeLineIndex = Number(options.lineIndex);
-    const isYoutubeWordSelection = selectionTypeOption.startsWith(‘youtube_’) && Number.isInteger(youtubeLineIndex) && youtubeLineIndex >= 0;
+    const isYoutubeWordSelection = selectionTypeOption.startsWith('youtube_') && Number.isInteger(youtubeLineIndex) && youtubeLineIndex >= 0;
     const hlStart = Number.isFinite(options.highlightStart) && options.highlightStart >= 0 ? options.highlightStart : -1;
     const hlEnd = Number.isFinite(options.highlightEnd) && options.highlightEnd > hlStart ? options.highlightEnd : -1;
     const hasCueHighlight = hlStart >= 0 && hlEnd > hlStart;
@@ -20495,7 +20532,7 @@ function AppInner() {
       if (/^\s+$/.test(segment)) {
         return <React.Fragment key={`${keyPrefix}-space-${index}`}>{segment}</React.Fragment>;
       }
-      const cleaned = segment.replace(/[^A-Za-zÄÖÜäöüßÀ-ÿА-Яа-яЁё’’-]/g, ‘’);
+      const cleaned = segment.replace(/[^A-Za-zÄÖÜäöüßÀ-ÿА-Яа-яЁё''-]/g, '');
       const currentWordIndex = wordIndex;
       wordIndex += 1;
       const isYoutubeSelected = isYoutubeWordSelection && youtubeSelectedWordKeySet.has(`${youtubeLineIndex}:${currentWordIndex}`);
@@ -20504,8 +20541,8 @@ function AppInner() {
         return <span key={`${keyPrefix}-${index}`}>{segment}</span>;
       }
       let cls = className;
-      if (isCueActive) cls += ‘ is-cue-active’;
-      if (isYoutubeSelected) cls += ‘ is-selected’;
+      if (isCueActive) cls += ' is-cue-active';
+      if (isYoutubeSelected) cls += ' is-selected';
       return (
         <span
           key={`${keyPrefix}-${index}`}
@@ -22468,7 +22505,7 @@ function AppInner() {
     }
   };
 
-  const handleConfirmSaveCollocation = async () => {
+  const handleConfirmSaveCollocation = () => {
     const selectedOptions = collocationOptions.filter((option) => (
       selectedCollocations.includes(`${String(option.source)}|||${String(option.target)}`)
     ));
@@ -22476,72 +22513,74 @@ function AppInner() {
       setCollocationsError(tr('Выберите минимум один вариант для сохранения.', 'Waehle mindestens eine Option zum Speichern.'));
       return;
     }
-    setDictionaryLoading(true);
+    const label = tr('Добавлено в словарь ✅', 'Zum Woerterbuch hinzugefuegt ✅');
+    setDictionarySaved(label);
     setDictionaryError('');
-    setDictionarySaved('');
-    try {
-      const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
-      const directionPair = String(dictionaryDirection || '').includes('-')
-        ? String(dictionaryDirection).toLowerCase().split('-', 2)
-        : [];
-      const saveSourceLang = normalizeLangCode(directionPair[0] || pair.source_lang);
-      const saveTargetLang = normalizeLangCode(directionPair[1] || pair.target_lang);
-      const isLegacyPair = pair.source_lang === 'ru' && pair.target_lang === 'de' && isLegacyRuDeDirection(dictionaryDirection);
-      for (const selectedCollocation of selectedOptions) {
-        const response = await fetch('/api/webapp/dictionary/save', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            initData,
-            word_ru: isLegacyPair && dictionaryDirection === 'ru-de' ? selectedCollocation.source : '',
-            word_de: isLegacyPair && dictionaryDirection === 'de-ru' ? selectedCollocation.source : '',
-            translation_de: isLegacyPair && dictionaryDirection === 'ru-de' ? selectedCollocation.target : '',
-            translation_ru: isLegacyPair && dictionaryDirection === 'de-ru' ? selectedCollocation.target : '',
-            source_text: selectedCollocation.source,
-            target_text: selectedCollocation.target,
-            response_json: {
-              ...(dictionaryResult || {}),
+    setCollocationsVisible(false);
+    showInlineToast(label);
+    (async () => {
+      try {
+        const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
+        const directionPair = String(dictionaryDirection || '').includes('-')
+          ? String(dictionaryDirection).toLowerCase().split('-', 2)
+          : [];
+        const saveSourceLang = normalizeLangCode(directionPair[0] || pair.source_lang);
+        const saveTargetLang = normalizeLangCode(directionPair[1] || pair.target_lang);
+        const isLegacyPair = pair.source_lang === 'ru' && pair.target_lang === 'de' && isLegacyRuDeDirection(dictionaryDirection);
+        for (const selectedCollocation of selectedOptions) {
+          const response = await fetch('/api/webapp/dictionary/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              initData,
+              word_ru: isLegacyPair && dictionaryDirection === 'ru-de' ? selectedCollocation.source : '',
+              word_de: isLegacyPair && dictionaryDirection === 'de-ru' ? selectedCollocation.source : '',
+              translation_de: isLegacyPair && dictionaryDirection === 'ru-de' ? selectedCollocation.target : '',
+              translation_ru: isLegacyPair && dictionaryDirection === 'de-ru' ? selectedCollocation.target : '',
               source_text: selectedCollocation.source,
               target_text: selectedCollocation.target,
-              source_lang: saveSourceLang || pair.source_lang,
-              target_lang: saveTargetLang || pair.target_lang,
-              language_pair: {
+              response_json: {
+                ...(dictionaryResult || {}),
+                source_text: selectedCollocation.source,
+                target_text: selectedCollocation.target,
                 source_lang: saveSourceLang || pair.source_lang,
                 target_lang: saveTargetLang || pair.target_lang,
+                language_pair: {
+                  source_lang: saveSourceLang || pair.source_lang,
+                  target_lang: saveTargetLang || pair.target_lang,
+                },
               },
-            },
-            source_lang: saveSourceLang || undefined,
-            target_lang: saveTargetLang || undefined,
-            direction: dictionaryDirection || undefined,
-            folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
-            origin_process: 'webapp_dictionary_save',
-            origin_meta: {
-              endpoint: '/api/webapp/dictionary/save',
-              flow: 'dictionary_collocations',
-              from: 'dictionary_manual',
-            },
-          }),
-        });
-        if (!response.ok) {
-          let message = await response.text();
-          try {
-            const data = JSON.parse(message);
-            message = data.error || message;
-          } catch (_error) {
-            // ignore parsing errors
+              source_lang: saveSourceLang || undefined,
+              target_lang: saveTargetLang || undefined,
+              direction: dictionaryDirection || undefined,
+              folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
+              origin_process: 'webapp_dictionary_save',
+              origin_meta: {
+                endpoint: '/api/webapp/dictionary/save',
+                flow: 'dictionary_collocations',
+                from: 'dictionary_manual',
+              },
+            }),
+          });
+          if (!response.ok) {
+            let message = await response.text();
+            try {
+              const data = JSON.parse(message);
+              message = data.error || message;
+            } catch (_error) {
+              // ignore parsing errors
+            }
+            throw new Error(message);
           }
-          throw new Error(message);
+          const payload = await response.json();
+          setDictionaryLanguagePair(resolveLanguagePairForUI(payload.language_pair));
         }
-        const payload = await response.json();
-        setDictionaryLanguagePair(resolveLanguagePairForUI(payload.language_pair));
+      } catch (error) {
+        setDictionaryError(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${error.message}`);
+        showInlineToast(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${error.message}`);
+        setCollocationsVisible(true);
       }
-      setDictionarySaved(tr('Добавлено в словарь ✅', 'Zum Woerterbuch hinzugefuegt ✅'));
-      setCollocationsVisible(false);
-    } catch (error) {
-      setDictionaryError(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${error.message}`);
-    } finally {
-      setDictionaryLoading(false);
-    }
+    })();
   };
 
   const handleExportDictionaryPdf = async () => {
@@ -26818,22 +26857,24 @@ function AppInner() {
                           </div>
                         </div>
                         <div className="youtube-player-first-controls-row">
-                        {isFocusedSection('youtube') && (
+                        <div className="youtube-player-first-head-controls">
                           <button
                             type="button"
-                            className="section-home-back is-compact-arrow"
-                            onClick={goBackFromYoutube}
-                            title={tr('Назад', 'Zurueck')}
-                            aria-label={tr('Назад', 'Zurueck')}
+                            className="youtube-status-action-btn youtube-status-load-btn"
+                            onClick={() => fetchTranscript()}
+                            disabled={youtubeLoadDisabled}
                           >
-                            <span className="youtube-back-arrow-icon" aria-hidden="true">
-                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                <polyline points="15 18 9 12 15 6"/>
-                              </svg>
-                            </span>
+                            {youtubeTranscriptLoading
+                              ? tr('Загружаем...', 'Loading...')
+                              : tr('Субтитры', 'Subtitles')}
                           </button>
-                        )}
-                        <div className="youtube-player-first-head-controls">
+                          <button
+                            type="button"
+                            className={`youtube-status-action-btn ${showManualTranscript ? 'is-active' : ''}`}
+                            onClick={() => setShowManualTranscript((prev) => !prev)}
+                          >
+                            {showManualTranscript ? tr('Транскрипция: ON', 'Transcript: ON') : tr('Транскрипция', 'Transcript')}
+                          </button>
                           <button
                             type="button"
                             className={`youtube-status-action-btn ${youtubeOverlayEnabled ? 'is-active' : ''}`}
@@ -26848,17 +26889,7 @@ function AppInner() {
                             onClick={() => setYoutubeTranslationEnabled((prev) => !prev)}
                             disabled={!youtubeSubtitlesReady}
                           >
-                            {youtubeTranslationEnabled ? tr('RU: ON', 'RU: ON') : tr('RU: OFF', 'RU: OFF')}
-                          </button>
-                          <button
-                            type="button"
-                            className="youtube-status-action-btn youtube-status-load-btn"
-                            onClick={() => fetchTranscript()}
-                            disabled={youtubeLoadDisabled}
-                          >
-                            {youtubeTranscriptLoading
-                              ? tr('Загружаем...', 'Loading...')
-                              : tr('Загрузить субтитры', 'Load subtitles')}
+                            {youtubeTranslationEnabled ? 'RU: ON' : 'RU: OFF'}
                           </button>
                           <button
                             type="button"
@@ -26869,12 +26900,43 @@ function AppInner() {
                             }}
                             disabled={!youtubeId}
                           >
-                            {youtubeAppFullscreen
-                              ? tr('Full screen: ON', 'Full screen: ON')
-                              : tr('Full screen: OFF', 'Full screen: OFF')}
+                            {youtubeAppFullscreen ? 'Fullscreen: ON' : 'Fullscreen: OFF'}
                           </button>
                         </div>
                         </div>
+                        {showManualTranscript && (
+                          <div className="webapp-subtitles-manual youtube-sheet-manual youtube-mobile-transcript-panel">
+                            <textarea
+                              rows={5}
+                              value={manualTranscript}
+                              onChange={(event) => setManualTranscript(event.target.value)}
+                              placeholder={tr('Вставьте .srt/.vtt с таймкодами. Если таймкодов нет, покажем статично.', 'Paste .srt/.vtt with timecodes. Without timecodes we show static lines.')}
+                            />
+                            <div className="webapp-video-actions">
+                              <button
+                                type="button"
+                                className="secondary-button"
+                                onClick={() => handleManualTranscript()}
+                              >
+                                {tr('Использовать транскрипцию', 'Use transcript')}
+                              </button>
+                              {youtubeManualOverride && (
+                                <button
+                                  type="button"
+                                  className="secondary-button"
+                                  onClick={() => {
+                                    setYoutubeManualOverride(false);
+                                    setManualTranscript('');
+                                    setYoutubeTranscriptHasTiming(true);
+                                    setShowManualTranscript(false);
+                                  }}
+                                >
+                                  {tr('Сбросить', 'Reset')}
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
                     <div className="youtube-player-card">
