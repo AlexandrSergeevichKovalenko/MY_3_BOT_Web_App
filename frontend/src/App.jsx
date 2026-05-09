@@ -28193,24 +28193,24 @@ function AppInner() {
                           disabled={dictionaryLoading}
                         >
                           {dictionaryLoading && dictionaryLookupMode === 'quick'
-                            ? tr('Быстро...', 'Schnell...')
+                            ? tr('Перевод...', 'Übersetzen...')
                             : tr('⚡ Перевод', '⚡ Übersetzen')}
                         </button>
                         <button className="secondary-button dictionary-button" type="submit" disabled={dictionaryLoading}>
                           {dictionaryLoading && dictionaryLookupMode === 'gpt'
-                            ? tr('GPT...', 'GPT...')
-                            : tr('🤖 GPT-разбор', '🤖 GPT')}
+                            ? tr('Разбор AI...', 'KI-Analyse...')
+                            : tr('🤖 Разбор AI', '🤖 KI-Analyse')}
                         </button>
                         <button
                           className="secondary-button dictionary-base-button"
                           type="button"
                           onClick={handleDictionaryBaseLookup}
                           disabled={dictionaryLoading}
-                          title={tr('Словарный перевод — работает онлайн и офлайн', 'Wörterbuch — funktioniert online und offline')}
+                          title={tr('Базовый словарь — работает онлайн и офлайн', 'Basiswörterbuch — funktioniert online und offline')}
                         >
                           {dictionaryLoading && dictionaryLookupMode === 'base'
-                            ? tr('Словарь...', 'Wörterbuch...')
-                            : tr('📖 Словарь', '📖 Wörterbuch')}
+                            ? tr('Офлайн...', 'Offline...')
+                            : tr('📖 Офлайн', '📖 Offline')}
                         </button>
                         {lastLookupScrollY !== null && (
                           <button
