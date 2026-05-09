@@ -197,6 +197,13 @@ def _normalize_image_quiz_dispatch_status(value: str | None) -> str:
     return "claimed"
 
 
+def _normalize_reader_processing_status(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"pending", "processing", "ready", "failed"}:
+        return normalized
+    return "pending"
+
+
 def _normalize_image_quiz_delivery_scope(value: str | None) -> str:
     normalized = str(value or "").strip().lower()
     if normalized in {"private", "group"}:
@@ -4643,6 +4650,10 @@ def ensure_webapp_tables() -> None:
                     progress_percent DOUBLE PRECISION NOT NULL DEFAULT 0,
                     bookmark_percent DOUBLE PRECISION NOT NULL DEFAULT 0,
                     reading_mode TEXT NOT NULL DEFAULT 'vertical',
+                    processing_status TEXT NOT NULL DEFAULT 'ready',
+                    processing_error TEXT,
+                    processing_started_at TIMESTAMPTZ,
+                    processing_finished_at TIMESTAMPTZ,
                     is_archived BOOLEAN NOT NULL DEFAULT FALSE,
                     archived_at TIMESTAMPTZ,
                     last_opened_at TIMESTAMPTZ,
@@ -4662,6 +4673,27 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 ALTER TABLE bt_3_reader_library
                 ADD COLUMN IF NOT EXISTS content_pages JSONB NOT NULL DEFAULT '[]'::jsonb;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_reader_library
+                ADD COLUMN IF NOT EXISTS processing_status TEXT NOT NULL DEFAULT 'ready';
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_reader_library
+                ADD COLUMN IF NOT EXISTS processing_error TEXT;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_reader_library
+                ADD COLUMN IF NOT EXISTS processing_started_at TIMESTAMPTZ;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_reader_library
+                ADD COLUMN IF NOT EXISTS processing_finished_at TIMESTAMPTZ;
+            """)
+            cursor.execute("""
+                UPDATE bt_3_reader_library
+                SET processing_status = 'ready'
+                WHERE processing_status IS NULL OR processing_status = '';
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_reader_library_user_pair
@@ -17453,15 +17485,19 @@ def _reader_library_row_to_dict(row: tuple, *, include_content: bool = False) ->
         "progress_percent": round(max(0.0, min(100.0, float(row[9] or 0.0))), 2),
         "bookmark_percent": round(max(0.0, min(100.0, float(row[10] or 0.0))), 2),
         "reading_mode": str(row[11] or "vertical"),
-        "is_archived": bool(row[12]),
-        "archived_at": row[13].isoformat() if row[13] else None,
-        "last_opened_at": row[14].isoformat() if row[14] else None,
-        "created_at": row[15].isoformat() if row[15] else None,
-        "updated_at": row[16].isoformat() if row[16] else None,
+        "processing_status": _normalize_reader_processing_status(row[12] or "ready"),
+        "processing_error": str(row[13] or "").strip() or None,
+        "processing_started_at": row[14].isoformat() if row[14] else None,
+        "processing_finished_at": row[15].isoformat() if row[15] else None,
+        "is_archived": bool(row[16]),
+        "archived_at": row[17].isoformat() if row[17] else None,
+        "last_opened_at": row[18].isoformat() if row[18] else None,
+        "created_at": row[19].isoformat() if row[19] else None,
+        "updated_at": row[20].isoformat() if row[20] else None,
     }
     if include_content:
-        payload["content_text"] = str(row[17] or "")
-        payload["content_pages"] = row[18] if isinstance(row[18], list) else []
+        payload["content_text"] = str(row[21] or "")
+        payload["content_pages"] = row[22] if isinstance(row[22], list) else []
     return payload
 
 
@@ -17502,9 +17538,13 @@ def upsert_reader_library_document(
                     content_pages,
                     total_chars,
                     last_opened_at,
-                    updated_at
+                    updated_at,
+                    processing_status,
+                    processing_error,
+                    processing_started_at,
+                    processing_finished_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, NOW(), NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, NOW(), NOW(), 'ready', NULL, NOW(), NOW())
                 ON CONFLICT (user_id, source_lang, target_lang, text_hash) DO UPDATE
                 SET
                     title = EXCLUDED.title,
@@ -17515,11 +17555,16 @@ def upsert_reader_library_document(
                     total_chars = EXCLUDED.total_chars,
                     is_archived = FALSE,
                     archived_at = NULL,
+                    processing_status = 'ready',
+                    processing_error = NULL,
+                    processing_started_at = COALESCE(bt_3_reader_library.processing_started_at, NOW()),
+                    processing_finished_at = NOW(),
                     last_opened_at = NOW(),
                     updated_at = NOW()
                 RETURNING
                     id, user_id, source_lang, target_lang, title, source_type, source_url,
                     text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
+                    processing_status, processing_error, processing_started_at, processing_finished_at,
                     is_archived, archived_at, last_opened_at, created_at, updated_at, content_text, content_pages;
                 """,
                 (
@@ -17536,6 +17581,248 @@ def upsert_reader_library_document(
                 ),
             )
             row = cursor.fetchone()
+    return _reader_library_row_to_dict(row, include_content=True)
+
+
+def create_reader_library_document_placeholder(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    title: str,
+    source_type: str,
+    source_url: str | None,
+) -> dict:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    resolved_title = str(title or "Untitled").strip() or "Untitled"
+    resolved_source_type = str(source_type or "text").strip().lower() or "text"
+    resolved_source_url = str(source_url or "").strip() or None
+    placeholder_hash = f"pending:{uuid4().hex}"
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_reader_library (
+                    user_id,
+                    source_lang,
+                    target_lang,
+                    title,
+                    source_type,
+                    source_url,
+                    text_hash,
+                    content_text,
+                    content_pages,
+                    total_chars,
+                    last_opened_at,
+                    updated_at,
+                    processing_status,
+                    processing_error,
+                    processing_started_at,
+                    processing_finished_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, '', '[]'::jsonb, 0, NULL, NOW(), 'pending', NULL, NULL, NULL)
+                RETURNING
+                    id, user_id, source_lang, target_lang, title, source_type, source_url,
+                    text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
+                    processing_status, processing_error, processing_started_at, processing_finished_at,
+                    is_archived, archived_at, last_opened_at, created_at, updated_at;
+                """,
+                (
+                    int(user_id),
+                    normalized_source,
+                    normalized_target,
+                    resolved_title,
+                    resolved_source_type,
+                    resolved_source_url,
+                    placeholder_hash,
+                ),
+            )
+            row = cursor.fetchone()
+    return _reader_library_row_to_dict(row, include_content=False)
+
+
+def set_reader_library_document_processing_status(
+    *,
+    user_id: int,
+    document_id: int,
+    source_lang: str,
+    target_lang: str,
+    status: str,
+    error: str | None = None,
+) -> dict | None:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    normalized_status = _normalize_reader_processing_status(status)
+    resolved_error = str(error or "").strip() or None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_reader_library
+                SET
+                    processing_status = %s,
+                    processing_error = %s,
+                    processing_started_at = CASE
+                        WHEN %s = 'processing' THEN COALESCE(processing_started_at, NOW())
+                        WHEN %s = 'pending' THEN NULL
+                        ELSE processing_started_at
+                    END,
+                    processing_finished_at = CASE
+                        WHEN %s IN ('ready', 'failed') THEN NOW()
+                        ELSE NULL
+                    END,
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND user_id = %s
+                  AND source_lang = %s
+                  AND target_lang = %s
+                RETURNING
+                    id, user_id, source_lang, target_lang, title, source_type, source_url,
+                    text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
+                    processing_status, processing_error, processing_started_at, processing_finished_at,
+                    is_archived, archived_at, last_opened_at, created_at, updated_at;
+                """,
+                (
+                    normalized_status,
+                    resolved_error,
+                    normalized_status,
+                    normalized_status,
+                    normalized_status,
+                    int(document_id),
+                    int(user_id),
+                    normalized_source,
+                    normalized_target,
+                ),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return _reader_library_row_to_dict(row, include_content=False)
+
+
+def finalize_reader_library_document_processing(
+    *,
+    user_id: int,
+    document_id: int,
+    source_lang: str,
+    target_lang: str,
+    title: str,
+    source_type: str,
+    source_url: str | None,
+    content_text: str,
+    content_pages: list | None = None,
+) -> dict | None:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    resolved_title = str(title or "Untitled").strip() or "Untitled"
+    resolved_source_type = str(source_type or "text").strip().lower() or "text"
+    resolved_source_url = str(source_url or "").strip() or None
+    resolved_content = str(content_text or "").strip()
+    resolved_pages = content_pages if isinstance(content_pages, list) else []
+    total_chars = len(resolved_content)
+    text_hash = hashlib.sha256(resolved_content.encode("utf-8")).hexdigest()
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT progress_percent, bookmark_percent, reading_mode
+                FROM bt_3_reader_library
+                WHERE user_id = %s
+                  AND source_lang = %s
+                  AND target_lang = %s
+                  AND text_hash = %s
+                  AND id <> %s
+                ORDER BY COALESCE(last_opened_at, updated_at, created_at) DESC
+                LIMIT 1;
+                """,
+                (
+                    int(user_id),
+                    normalized_source,
+                    normalized_target,
+                    text_hash,
+                    int(document_id),
+                ),
+            )
+            duplicate_row = cursor.fetchone()
+            duplicate_progress = float(duplicate_row[0] or 0.0) if duplicate_row else None
+            duplicate_bookmark = float(duplicate_row[1] or 0.0) if duplicate_row else None
+            duplicate_mode = str(duplicate_row[2] or "").strip().lower() if duplicate_row else ""
+            if duplicate_mode not in {"vertical", "horizontal"}:
+                duplicate_mode = ""
+            if duplicate_row:
+                cursor.execute(
+                    """
+                    DELETE FROM bt_3_reader_library
+                    WHERE user_id = %s
+                      AND source_lang = %s
+                      AND target_lang = %s
+                      AND text_hash = %s
+                      AND id <> %s;
+                    """,
+                    (
+                        int(user_id),
+                        normalized_source,
+                        normalized_target,
+                        text_hash,
+                        int(document_id),
+                    ),
+                )
+
+            cursor.execute(
+                """
+                UPDATE bt_3_reader_library
+                SET
+                    title = %s,
+                    source_type = %s,
+                    source_url = %s,
+                    text_hash = %s,
+                    content_text = %s,
+                    content_pages = %s::jsonb,
+                    total_chars = %s,
+                    progress_percent = COALESCE(%s, progress_percent),
+                    bookmark_percent = COALESCE(%s, bookmark_percent),
+                    reading_mode = COALESCE(NULLIF(%s, ''), reading_mode),
+                    processing_status = 'ready',
+                    processing_error = NULL,
+                    processing_started_at = COALESCE(processing_started_at, NOW()),
+                    processing_finished_at = NOW(),
+                    is_archived = FALSE,
+                    archived_at = NULL,
+                    last_opened_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND user_id = %s
+                  AND source_lang = %s
+                  AND target_lang = %s
+                RETURNING
+                    id, user_id, source_lang, target_lang, title, source_type, source_url,
+                    text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
+                    processing_status, processing_error, processing_started_at, processing_finished_at,
+                    is_archived, archived_at, last_opened_at, created_at, updated_at, content_text, content_pages;
+                """,
+                (
+                    resolved_title,
+                    resolved_source_type,
+                    resolved_source_url,
+                    text_hash,
+                    resolved_content,
+                    json.dumps(resolved_pages, ensure_ascii=False),
+                    total_chars,
+                    duplicate_progress,
+                    duplicate_bookmark,
+                    duplicate_mode,
+                    int(document_id),
+                    int(user_id),
+                    normalized_source,
+                    normalized_target,
+                ),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
     return _reader_library_row_to_dict(row, include_content=True)
 
 
@@ -17557,6 +17844,7 @@ def list_reader_library_documents(
                 SELECT
                     id, user_id, source_lang, target_lang, title, source_type, source_url,
                     text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
+                    processing_status, processing_error, processing_started_at, processing_finished_at,
                     is_archived, archived_at, last_opened_at, created_at, updated_at
                 FROM bt_3_reader_library
                 WHERE user_id = %s
@@ -17578,18 +17866,21 @@ def get_reader_library_document(
     document_id: int,
     source_lang: str,
     target_lang: str,
+    include_content: bool = True,
 ) -> dict | None:
     normalized_source = str(source_lang or "ru").strip().lower() or "ru"
     normalized_target = str(target_lang or "de").strip().lower() or "de"
+    content_select = ", content_text, content_pages" if include_content else ""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                """
+                f"""
                 SELECT
                     id, user_id, source_lang, target_lang, title, source_type, source_url,
                     text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
-                    is_archived, archived_at, last_opened_at, created_at, updated_at, content_text
-                    , content_pages
+                    processing_status, processing_error, processing_started_at, processing_finished_at,
+                    is_archived, archived_at, last_opened_at, created_at, updated_at
+                    {content_select}
                 FROM bt_3_reader_library
                 WHERE id = %s
                   AND user_id = %s
@@ -17602,15 +17893,16 @@ def get_reader_library_document(
             row = cursor.fetchone()
             if not row:
                 return None
-            cursor.execute(
-                """
-                UPDATE bt_3_reader_library
-                SET last_opened_at = NOW(), updated_at = NOW()
-                WHERE id = %s;
-                """,
-                (int(document_id),),
-            )
-    return _reader_library_row_to_dict(row, include_content=True)
+            if _normalize_reader_processing_status(row[12] or "ready") == "ready":
+                cursor.execute(
+                    """
+                    UPDATE bt_3_reader_library
+                    SET last_opened_at = NOW(), updated_at = NOW()
+                    WHERE id = %s;
+                    """,
+                    (int(document_id),),
+                )
+    return _reader_library_row_to_dict(row, include_content=include_content)
 
 
 def update_reader_library_state(
@@ -17649,6 +17941,7 @@ def update_reader_library_state(
                 RETURNING
                     id, user_id, source_lang, target_lang, title, source_type, source_url,
                     text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
+                    processing_status, processing_error, processing_started_at, processing_finished_at,
                     is_archived, archived_at, last_opened_at, created_at, updated_at;
                 """,
                 (
@@ -17693,6 +17986,7 @@ def rename_reader_library_document(
                 RETURNING
                     id, user_id, source_lang, target_lang, title, source_type, source_url,
                     text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
+                    processing_status, processing_error, processing_started_at, processing_finished_at,
                     is_archived, archived_at, last_opened_at, created_at, updated_at;
                 """,
                 (resolved_title, int(document_id), int(user_id), normalized_source, normalized_target),
@@ -17729,6 +18023,7 @@ def archive_reader_library_document(
                 RETURNING
                     id, user_id, source_lang, target_lang, title, source_type, source_url,
                     text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
+                    processing_status, processing_error, processing_started_at, processing_finished_at,
                     is_archived, archived_at, last_opened_at, created_at, updated_at;
                 """,
                 (bool(archived), bool(archived), int(document_id), int(user_id), normalized_source, normalized_target),
@@ -24407,6 +24702,66 @@ def lookup_base_dictionary_entry(word: str, source_lang: str = "de") -> dict | N
         "wikt_fetched", "frequency_rank", "hit_count", "created_at", "updated_at",
     ]
     return dict(zip(cols, row))
+
+
+def lookup_base_dictionary_entry_by_translation(word: str, entry_source_lang: str = "de") -> dict | None:
+    normalized_word = _normalize_dictionary_text_key(word)
+    if not normalized_word:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH candidate AS (
+                    SELECT id
+                    FROM bt_base_dictionary
+                    WHERE source_lang = %s
+                      AND EXISTS (
+                          SELECT 1
+                          FROM unnest(COALESCE(translations_ru, ARRAY[]::text[])) AS translation_item
+                          WHERE LOWER(BTRIM(COALESCE(translation_item, ''))) = %s
+                      )
+                    ORDER BY
+                        COALESCE(frequency_rank, 999999) ASC,
+                        hit_count DESC,
+                        updated_at DESC
+                    LIMIT 1
+                )
+                UPDATE bt_base_dictionary AS d
+                SET hit_count = d.hit_count + 1
+                FROM candidate
+                WHERE d.id = candidate.id
+                RETURNING
+                    d.id, d.lemma, d.lemma_key, d.source_lang, d.pos, d.article,
+                    d.translations_ru, d.glosses_en, d.senses_json, d.forms_json,
+                    d.wikt_fetched, d.frequency_rank, d.hit_count, d.created_at, d.updated_at;
+                """,
+                (entry_source_lang, normalized_word),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    cols = [
+        "id", "lemma", "lemma_key", "source_lang", "pos", "article",
+        "translations_ru", "glosses_en", "senses_json", "forms_json",
+        "wikt_fetched", "frequency_rank", "hit_count", "created_at", "updated_at",
+    ]
+    return dict(zip(cols, row))
+
+
+def count_base_dictionary_entries(source_lang: str = "de") -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM bt_base_dictionary
+                WHERE source_lang = %s;
+                """,
+                (str(source_lang or "de").strip() or "de",),
+            )
+            row = cursor.fetchone()
+    return int(row[0] or 0) if row else 0
 
 
 def upsert_base_dictionary_entry(entry: dict) -> dict:

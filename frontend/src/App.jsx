@@ -5178,6 +5178,7 @@ function AppInner() {
     startY: 0,
   });
   const readerSuppressStructuredClickRef = useRef(0);
+  const readerStatusPollTokenRef = useRef(0);
   const todayTimerCompletionLockRef = useRef(new Set());
   const globalTimerAutoPauseInFlightRef = useRef(false);
   const globalTimerAutoResumeInFlightRef = useRef(false);
@@ -19003,9 +19004,15 @@ function AppInner() {
     const bits = [];
     const lang = String(item?.target_lang || '').toUpperCase();
     const sourceType = String(item?.source_type || '').toUpperCase();
+    const processingStatus = String(item?.processing_status || 'ready').trim().toLowerCase();
     const dateLabel = formatReaderArchiveDate(item?.updated_at || item?.last_opened_at || item?.created_at);
     if (lang) bits.push(lang);
     if (sourceType) bits.push(sourceType);
+    if (processingStatus === 'pending' || processingStatus === 'processing') {
+      bits.push(tr('Обработка…', 'Wird verarbeitet…'));
+    } else if (processingStatus === 'failed') {
+      bits.push(tr('Ошибка', 'Fehler'));
+    }
     if (dateLabel) bits.push(dateLabel);
     return bits.join(' • ');
   };
@@ -19018,7 +19025,7 @@ function AppInner() {
       const response = await fetch('/api/webapp/reader/library', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, limit: 120, include_archived: includeArchivedOverride }),
+        body: JSON.stringify({ initData, limit: 20, include_archived: includeArchivedOverride }),
       });
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка загрузки библиотеки', 'Fehler beim Laden der Bibliothek'));
@@ -19031,6 +19038,60 @@ function AppInner() {
       setReaderLibraryLoading(false);
     }
   }, [initData, normalizeNetworkErrorMessage, readApiError, readerIncludeArchived]);
+
+  async function pollReaderDocumentStatus(documentId, { openWhenReady = false } = {}) {
+    if (!initData || !documentId) return null;
+    const pollToken = readerStatusPollTokenRef.current + 1;
+    readerStatusPollTokenRef.current = pollToken;
+    let attempt = 0;
+    let suggestedDelayMs = 0;
+    while (readerStatusPollTokenRef.current === pollToken) {
+      if (attempt > 0) {
+        const waitMs = Math.max(900, Number.isFinite(Number(suggestedDelayMs)) ? Number(suggestedDelayMs) : 0);
+        // Let the UI update immediately after the first enqueue response.
+        await new Promise((resolve) => window.setTimeout(resolve, waitMs));
+      }
+      attempt += 1;
+      let response;
+      try {
+        response = await fetch('/api/webapp/reader/library/status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData, document_id: documentId }),
+        });
+      } catch (error) {
+        if (attempt >= 4) throw error;
+        continue;
+      }
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка статуса книги', 'Fehler beim Dokumentstatus'));
+      }
+      const data = await response.json();
+      const doc = data?.document || {};
+      suggestedDelayMs = Number(data?.polling?.suggested_delay_ms || 0);
+      setReaderDocuments((prev) => prev.map((item) => (
+        Number(item?.id) === Number(doc?.id || documentId)
+          ? { ...item, ...doc }
+          : item
+      )));
+      const status = String(data?.status || doc?.processing_status || 'pending').trim().toLowerCase() || 'pending';
+      if (status === 'ready') {
+        await loadReaderLibrary();
+        if (openWhenReady) {
+          await openReaderDocument(Number(doc?.id || documentId));
+        }
+        return data;
+      }
+      if (status === 'failed') {
+        const message = String(data?.error || doc?.processing_error || '').trim()
+          || tr('Не удалось обработать документ.', 'Dokument konnte nicht verarbeitet werden.');
+        setReaderLibraryError(message);
+        await loadReaderLibrary();
+        return data;
+      }
+    }
+    return null;
+  }
 
   const openReaderArchive = async () => {
     setReaderArchiveOpen(true);
@@ -19152,6 +19213,7 @@ function AppInner() {
     try {
       setReaderLoading(true);
       setReaderError('');
+      setReaderLibraryError('');
       const response = await fetch('/api/webapp/reader/library/open', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -19162,6 +19224,17 @@ function AppInner() {
       }
       const data = await response.json();
       const doc = data?.document || {};
+      const processingStatus = String(data?.status || doc?.processing_status || 'ready').trim().toLowerCase() || 'ready';
+      if (processingStatus !== 'ready') {
+        const pendingMessage = processingStatus === 'failed'
+          ? String(data?.error || doc?.processing_error || '').trim() || tr('Не удалось обработать книгу.', 'Dokument konnte nicht verarbeitet werden.')
+          : tr('Книга ещё обрабатывается. Откроем автоматически, когда всё будет готово.', 'Das Dokument wird noch verarbeitet. Es wird automatisch geoeffnet, sobald es fertig ist.');
+        setReaderLibraryError(pendingMessage);
+        if (processingStatus !== 'failed') {
+          await pollReaderDocumentStatus(Number(doc?.id || documentId), { openWhenReady: true });
+        }
+        return;
+      }
       const progress = Number(doc?.progress_percent || 0);
       const bookmark = Number(doc?.bookmark_percent || 0);
       const pages = Array.isArray(doc?.content_pages) ? doc.content_pages : [];
@@ -19373,6 +19446,10 @@ function AppInner() {
     }
   }, [readerAudioPreviewUrl]);
 
+  useEffect(() => () => {
+    readerStatusPollTokenRef.current += 1;
+  }, []);
+
   async function handleReaderIngest(event) {
     event?.preventDefault?.();
     const rawInput = String(readerInput || '').trim();
@@ -19388,28 +19465,8 @@ function AppInner() {
     setReaderError('');
     setReaderErrorCode('');
     try {
-      const looksLikeUrl = /^https?:\/\//i.test(rawInput) || /^[a-z0-9.-]+\.[a-z]{2,}(\/.*)?$/i.test(rawInput);
-      let filePayload = {};
-      if (readerSelectedFile) {
-        const fileBase64 = await readFileAsBase64(readerSelectedFile);
-        filePayload = {
-          file_name: readerSelectedFile.name,
-          file_mime: readerSelectedFile.type,
-          file_content_base64: fileBase64,
-        };
-      }
-      const response = await fetch('/api/webapp/reader/ingest', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData,
-          url: readerSelectedFile ? '' : (looksLikeUrl ? rawInput : ''),
-          text: readerSelectedFile ? '' : (looksLikeUrl ? '' : rawInput),
-          ...filePayload,
-        }),
-      });
-      if (!response.ok) {
-        const fallback = tr('Ошибка загрузки читалки', 'Fehler beim Laden des Leser-Modus');
+      const buildReaderApiError = async (response, fallbackRu, fallbackDe) => {
+        const fallback = tr(fallbackRu, fallbackDe);
         let message = fallback;
         let errorCode = '';
         try {
@@ -19430,11 +19487,168 @@ function AppInner() {
         }
         const apiError = new Error(message);
         apiError.code = errorCode;
-        throw apiError;
+        return apiError;
+      };
+      const looksLikeUrl = /^https?:\/\//i.test(rawInput) || /^[a-z0-9.-]+\.[a-z]{2,}(\/.*)?$/i.test(rawInput);
+      const shouldUseAsyncReaderFlow = Boolean(readerSelectedFile || looksLikeUrl);
+      if (shouldUseAsyncReaderFlow) {
+        setReaderArchiveOpen(true);
+        setReaderImmersive(false);
+        setReaderSettingsOpen(false);
+        setReaderAddOpen(false);
+        setSelectedSections(new Set(['reader']));
+        ensureSectionVisible('reader');
+        setReaderLibraryError(tr(
+          'Файл отправляется на сервер. Как только документ встанет в очередь, покажем его в библиотеке.',
+          'Die Datei wird an den Server gesendet. Sobald das Dokument in der Warteschlange ist, erscheint es in der Bibliothek.'
+        ));
       }
-      const data = await response.json();
+      let data;
+      if (readerSelectedFile) {
+        let usedDirectUpload = false;
+        let directDocId = null;
+        try {
+          const initResponse = await fetch('/api/webapp/reader/upload-init', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              initData,
+              file_name: readerSelectedFile.name,
+              file_mime: readerSelectedFile.type,
+            }),
+          });
+          if (!initResponse.ok) {
+            throw await buildReaderApiError(initResponse, 'Ошибка подготовки загрузки', 'Fehler bei der Upload-Vorbereitung');
+          }
+          const initDataPayload = await initResponse.json();
+          const upload = initDataPayload?.upload || {};
+          const directDoc = initDataPayload?.document || {};
+          directDocId = Number(directDoc?.id || 0) || null;
+          if (!upload?.url || !directDocId || !upload?.object_key) {
+            throw new Error(tr('Сервер не вернул параметры прямой загрузки.', 'Der Server hat keine Direct-Upload-Parameter zurückgegeben.'));
+          }
+          usedDirectUpload = true;
+          setReaderDocumentId(directDocId);
+          setReaderTitle(String(initDataPayload?.title || directDoc?.title || readerSelectedFile.name || rawInput.slice(0, 80)));
+          setReaderSourceType(String(initDataPayload?.source_type || directDoc?.source_type || 'file'));
+          setReaderSourceUrl('');
+          setReaderContent('');
+          setReaderPages([]);
+          setReaderCurrentPage(1);
+          setReaderAddOpen(false);
+          setReaderSelectedFile(null);
+          setReaderLibraryError(tr(
+            'Файл загружается напрямую в object storage. Как только upload завершится, сразу запустим обработку.',
+            'Die Datei wird direkt in den Object Storage geladen. Sobald der Upload fertig ist, startet sofort die Verarbeitung.'
+          ));
+          await loadReaderLibrary(true);
+
+          const uploadResponse = await fetch(String(upload.url), {
+            method: String(upload.method || 'PUT').toUpperCase(),
+            headers: upload.headers && typeof upload.headers === 'object' ? upload.headers : undefined,
+            body: readerSelectedFile,
+          });
+          if (!uploadResponse.ok) {
+            throw new Error(tr('Прямая загрузка файла в storage не удалась.', 'Direkter Upload in den Storage ist fehlgeschlagen.'));
+          }
+          const completeResponse = await fetch('/api/webapp/reader/ingest/complete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              initData,
+              document_id: directDocId,
+              object_key: String(upload.object_key || ''),
+              file_name: readerSelectedFile.name,
+              file_mime: readerSelectedFile.type,
+            }),
+          });
+          if (!completeResponse.ok) {
+            throw await buildReaderApiError(completeResponse, 'Ошибка постановки книги в обработку', 'Fehler beim Start der Dokumentverarbeitung');
+          }
+          data = await completeResponse.json();
+        } catch (directUploadError) {
+          if (usedDirectUpload) {
+            if (directDocId) {
+              try {
+                await fetch('/api/webapp/reader/ingest/abort', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    initData,
+                    document_id: directDocId,
+                    error: String(directUploadError?.message || 'direct_upload_failed'),
+                  }),
+                });
+              } catch (_abortError) {
+                // ignore best-effort status update
+              }
+            }
+            throw directUploadError;
+          }
+          const formData = new FormData();
+          formData.append('initData', initData);
+          formData.append('url', '');
+          formData.append('text', '');
+          formData.append('file', readerSelectedFile, readerSelectedFile.name || 'reader-upload');
+          const fallbackResponse = await fetch('/api/webapp/reader/ingest', {
+            method: 'POST',
+            body: formData,
+          });
+          if (!fallbackResponse.ok) {
+            throw await buildReaderApiError(fallbackResponse, 'Ошибка загрузки читалки', 'Fehler beim Laden des Leser-Modus');
+          }
+          data = await fallbackResponse.json();
+        }
+      } else {
+        const response = await fetch('/api/webapp/reader/ingest', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            initData,
+            url: looksLikeUrl ? rawInput : '',
+            text: looksLikeUrl ? '' : rawInput,
+          }),
+        });
+        if (!response.ok) {
+          throw await buildReaderApiError(response, 'Ошибка загрузки читалки', 'Fehler beim Laden des Leser-Modus');
+        }
+        data = await response.json();
+      }
       const doc = data?.document || {};
       const docId = Number(doc?.id || 0) || null;
+      const processingStatus = String(data?.status || doc?.processing_status || 'ready').trim().toLowerCase() || 'ready';
+      if (processingStatus !== 'ready') {
+        setReaderDocumentId(docId);
+        setReaderTitle(String(data?.title || doc?.title || rawInput.slice(0, 80)));
+        setReaderSourceType(String(data?.source_type || doc?.source_type || 'text'));
+        setReaderSourceUrl(String(data?.source_url || doc?.source_url || rawInput));
+        setReaderContent('');
+        setReaderPages([]);
+        setReaderCurrentPage(1);
+        setReaderAudioFromPage('');
+        setReaderAudioToPage('');
+        setReaderAudioError('');
+        setReaderLiveSeconds(0);
+        setReaderTimerPaused(false);
+        setReaderImmersive(false);
+        setReaderTopbarCollapsed(false);
+        setReaderArchiveOpen(true);
+        setReaderSettingsOpen(false);
+        setReaderAddOpen(false);
+        setSelectedSections(new Set(['reader']));
+        ensureSectionVisible('reader');
+        setReaderSelectedFile(null);
+        setReaderErrorCode('');
+        setReaderLibraryError(tr(
+          'Книга загружена в очередь. Обработка идёт в фоне, откроем автоматически, когда всё будет готово.',
+          'Das Dokument wurde zur Verarbeitung eingereiht und wird automatisch geoeffnet, sobald es fertig ist.'
+        ));
+        await loadReaderLibrary(true);
+        if (docId) {
+          await pollReaderDocumentStatus(docId, { openWhenReady: true });
+        }
+        return;
+      }
       const pages = Array.isArray(doc?.content_pages) ? doc.content_pages : [];
       setReaderContent(String(data?.text || '').trim());
       setReaderTitle(String(data?.title || doc?.title || rawInput.slice(0, 80)));
@@ -22380,6 +22594,8 @@ function AppInner() {
       setDictionaryError(tr('Введите слово для поиска.', 'Bitte gib ein Wort ein.'));
       return;
     }
+    const queryLang = /[А-Яа-яЁё]/.test(sourceWord) ? 'ru' : 'de';
+    const resolvedDirection = queryLang === 'ru' ? 'ru-de' : 'de-ru';
     setDictionaryLoading(true);
     setDictionaryLookupMode('base');
     dictionaryLookupPollTokenRef.current += 1;
@@ -22394,8 +22610,11 @@ function AppInner() {
       const offlineResult = await lookupOfflineBaseDictEntry(sourceWord);
       if (offlineResult) {
         setDictionaryResult(offlineResult);
-        setDictionaryDirection('de-ru');
-        setDictionaryLanguagePair(resolveLanguagePairForUI({ source_lang: 'de', target_lang: 'ru' }));
+        setDictionaryDirection(resolvedDirection);
+        setDictionaryLanguagePair(resolveLanguagePairForUI({
+          source_lang: queryLang,
+          target_lang: queryLang === 'ru' ? 'de' : 'ru',
+        }));
         return;
       }
 
@@ -22407,13 +22626,21 @@ function AppInner() {
       const response = await fetch('/api/webapp/dictionary/base-lookup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, word: sourceWord, source_lang: 'de' }),
+        body: JSON.stringify({ initData, word: sourceWord, source_lang: queryLang }),
       });
-      if (!response.ok) {
+      if (!response.ok && response.status !== 202) {
         setDictionaryError(tr('Ошибка соединения со словарём.', 'Verbindungsfehler zum Wörterbuch.'));
         return;
       }
       const data = await response.json();
+
+      if (data.warming_up) {
+        setDictionaryError(tr(
+          'Базовый словарь ещё загружается на сервер. Попробуйте снова чуть позже или используйте ⚡ Перевод.',
+          'Das Basiswörterbuch wird auf dem Server noch geladen. Versuche es gleich noch einmal oder nutze ⚡ Übersetzen.'
+        ));
+        return;
+      }
 
       if (data.not_found || !data.item) {
         setDictionaryError(tr('Слово не найдено в словаре. Попробуйте ⚡ Перевод.', 'Wort nicht gefunden. Versuche ⚡ Übersetzen.'));
@@ -22421,16 +22648,22 @@ function AppInner() {
       }
 
       setDictionaryResult(data.item);
-      setDictionaryDirection('de-ru');
-      setDictionaryLanguagePair(resolveLanguagePairForUI({ source_lang: 'de', target_lang: 'ru' }));
+      setDictionaryDirection(String(data.direction || resolvedDirection).trim().toLowerCase() || resolvedDirection);
+      setDictionaryLanguagePair(resolveLanguagePairForUI({
+        source_lang: queryLang,
+        target_lang: queryLang === 'ru' ? 'de' : 'ru',
+      }));
       void saveBaseDictEntryFromServerResult(sourceWord, data.item);
     } catch {
       // Network failure — try offline cache only
       const offlineFallback = await lookupOfflineBaseDictEntry(sourceWord);
       if (offlineFallback) {
         setDictionaryResult(offlineFallback);
-        setDictionaryDirection('de-ru');
-        setDictionaryLanguagePair(resolveLanguagePairForUI({ source_lang: 'de', target_lang: 'ru' }));
+        setDictionaryDirection(resolvedDirection);
+        setDictionaryLanguagePair(resolveLanguagePairForUI({
+          source_lang: queryLang,
+          target_lang: queryLang === 'ru' ? 'de' : 'ru',
+        }));
       } else {
         setDictionaryError(tr('Нет соединения и слово не найдено офлайн.', 'Kein Netz und Wort nicht offline gefunden.'));
       }

@@ -83,7 +83,7 @@ export async function saveBaseDictEntry(entry) {
 
 export async function saveBaseDictEntryFromServerResult(word, serverItem) {
   if (!serverItem || !serverItem.is_base_dict) return;
-  const key = _normKey(word);
+  const key = _normKey(serverItem.translation_de || serverItem.word_de || word);
   if (!key) return;
   const entry = {
     k:  key,
@@ -102,7 +102,7 @@ export async function saveBaseDictEntryFromServerResult(word, serverItem) {
   await saveBaseDictEntry(entry);
 }
 
-function _entryToResult(entry, word) {
+function _entryToResult(entry, word, queryLang = 'de') {
   const ruList = Array.isArray(entry.ru) ? entry.ru : [];
   const enList = Array.isArray(entry.en) ? entry.en : [];
   const senses = Array.isArray(entry.senses)
@@ -110,15 +110,18 @@ function _entryToResult(entry, word) {
     : ruList.map((ru, i) => ({ value: enList[i] || '', translation_ru: ru }));
   const translationRu = ruList.slice(0, 5).join(', ');
   const displayWord = entry.a ? `${entry.a} ${entry.w}` : (entry.w || word);
+  const normalizedQueryLang = String(queryLang || 'de').trim().toLowerCase() || 'de';
+  const sourceText = normalizedQueryLang === 'ru' ? word : displayWord;
+  const targetText = normalizedQueryLang === 'ru' ? displayWord : translationRu;
   return {
     word_de: displayWord,
     word_ru: translationRu,
     translation_de: entry.w || word,
     translation_ru: translationRu,
-    source_text: displayWord,
-    target_text: translationRu,
-    source_lang: 'de',
-    target_lang: 'ru',
+    source_text: sourceText,
+    target_text: targetText,
+    source_lang: normalizedQueryLang === 'ru' ? 'ru' : 'de',
+    target_lang: normalizedQueryLang === 'ru' ? 'de' : 'ru',
     part_of_speech: entry.p || '',
     article: entry.a || '',
     forms: entry.forms || {},
@@ -133,8 +136,23 @@ function _entryToResult(entry, word) {
 
 export async function lookupOfflineBaseDictEntry(word) {
   const entry = await getBaseDictEntry(word);
-  if (!entry || !entry.ru || entry.ru.length === 0) return null;
-  return _entryToResult(entry, word);
+  if (entry && entry.ru && entry.ru.length > 0) {
+    return _entryToResult(entry, word, 'de');
+  }
+  const query = String(word || '').trim().toLowerCase();
+  if (!query) return null;
+  try {
+    const db = await _openBD();
+    const tx = db.transaction(STORE_BD, 'readonly');
+    const rows = await _pr(tx.objectStore(STORE_BD).getAll());
+    const reverseHit = Array.isArray(rows)
+      ? rows.find((item) => Array.isArray(item?.ru) && item.ru.some((ru) => String(ru || '').trim().toLowerCase() === query))
+      : null;
+    if (!reverseHit || !reverseHit.ru || reverseHit.ru.length === 0) return null;
+    return _entryToResult(reverseHit, word, 'ru');
+  } catch {
+    return null;
+  }
 }
 
 async function _getPackVersion() {
