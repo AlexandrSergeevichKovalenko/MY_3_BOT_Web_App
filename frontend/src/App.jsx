@@ -20365,6 +20365,7 @@ function AppInner() {
     const activeIndex = getActiveSubtitleIndex();
     const hardStopPattern = /[.!?…]["»”']?$/u;
     const softStopPattern = /[,;:)]["»”']?$/u;
+    const lowercaseStartPattern = /^[a-zäöüßà-ÿ]/u;
     const rows = [];
     let current = null;
 
@@ -20417,14 +20418,25 @@ function AppInner() {
       const nextItem = items[index + 1] || null;
       const nextStart = Number(nextItem?.start ?? Number.POSITIVE_INFINITY);
       const currentStart = Number(item?.start ?? 0);
+      const nextTargetText = normalizeSubtitleText(nextItem?.text || '');
+      const nextStartsContinuation = lowercaseStartPattern.test(String(nextTargetText || '').trim());
       const nextGapLarge = Number.isFinite(nextStart) && Number.isFinite(currentStart) && (nextStart - currentStart) > 3.2;
 
       const shouldFlush = targetEndsHard
         || translationEndsHard
-        || targetLength >= 110
-        || translationLength >= 135
-        || (chunkCount >= 2 && (targetEndsSoft || translationEndsSoft) && (targetLength >= 54 || translationLength >= 70))
-        || (chunkCount >= 3 && (targetLength >= 68 || translationLength >= 84))
+        || targetLength >= 150
+        || translationLength >= 180
+        || (
+          !nextStartsContinuation
+          && chunkCount >= 2
+          && (targetEndsSoft || translationEndsSoft)
+          && (targetLength >= 88 || translationLength >= 104)
+        )
+        || (
+          !nextStartsContinuation
+          && chunkCount >= 4
+          && (targetLength >= 118 || translationLength >= 142)
+        )
         || nextGapLarge;
 
       if (shouldFlush) {
