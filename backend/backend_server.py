@@ -43233,6 +43233,26 @@ def cleanup_flashcard_feel_now():
     return jsonify({"ok": True})
 
 
+@app.route("/api/admin/load-freedict", methods=["POST"])
+def admin_load_freedict():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or (request.headers.get("X-Admin-Token") or "").strip()
+    required = (os.getenv("ADMIN_TOKEN") or os.getenv("AUDIO_DISPATCH_TOKEN") or "").strip()
+    if not required:
+        return jsonify({"error": "ADMIN_TOKEN not set"}), 500
+    if token != required:
+        return jsonify({"error": "Unauthorized"}), 401
+    try:
+        from backend.load_freedict import _download, _parse, _bulk_insert, FREEDICT_URL
+        data = _download(FREEDICT_URL)
+        entries = _parse(data)
+        inserted = _bulk_insert(entries)
+        return jsonify({"ok": True, "downloaded_bytes": len(data), "parsed": len(entries), "inserted": inserted})
+    except Exception as exc:
+        logging.exception("load_freedict admin endpoint failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
 def _format_selection_dictionary_explanation(result: dict, source_lang: str, target_lang: str) -> str:
     if not isinstance(result, dict):
         return "📘 **Перевод**\n—"

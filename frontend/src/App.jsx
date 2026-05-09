@@ -20772,23 +20772,25 @@ function AppInner() {
       const nextGapSeconds = Number.isFinite(nextStart) && Number.isFinite(currentEnd)
         ? nextStart - currentEnd
         : 0;
-      const nextGapLarge = nextGapSeconds > 0.9;
+      const nextGapHard = nextGapSeconds > 2.5;
+      const nextGapSentence = nextGapSeconds > 0.9 && !nextStartsContinuation;
 
       const shouldFlush = targetEndsHard
-        || targetLength >= 150
-        || translationLength >= 180
+        || targetLength >= 105
+        || translationLength >= 130
         || (
           !nextStartsContinuation
           && chunkCount >= 2
           && targetEndsSoft
-          && (targetLength >= 88 || translationLength >= 104)
+          && (targetLength >= 70 || translationLength >= 88)
         )
         || (
           !nextStartsContinuation
-          && chunkCount >= 4
-          && (targetLength >= 118 || translationLength >= 142)
+          && chunkCount >= 3
+          && (targetLength >= 90 || translationLength >= 115)
         )
-        || nextGapLarge;
+        || nextGapHard
+        || nextGapSentence;
 
       if (shouldFlush) {
         flushCurrent();
