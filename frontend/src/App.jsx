@@ -8887,16 +8887,26 @@ function AppInner() {
       if (!isAsyncGuardCurrent(weeklyPlanRequestIdRef, requestId)) {
         return;
       }
+      const snapshotPending = Boolean(data?.snapshot_pending);
+      const cachedSnapshotPlan = readWeeklyPlanSnapshot()?.plan || null;
+      const preservedPlan = weeklyPlan || cachedSnapshotPlan || null;
       const plan = {
-        week: data?.week || null,
-        plan: data?.plan || { translations_goal: 0, learned_words_goal: 0, agent_minutes_goal: 0, reading_minutes_goal: 0 },
-        metrics: data?.metrics || {},
-        snapshot_saved_at: new Date().toISOString(),
+        week: data?.week || preservedPlan?.week || null,
+        plan: data?.plan || preservedPlan?.plan || { translations_goal: 0, learned_words_goal: 0, agent_minutes_goal: 0, reading_minutes_goal: 0 },
+        metrics: snapshotPending
+          ? (preservedPlan?.metrics || data?.metrics || {})
+          : (data?.metrics || {}),
+        snapshot_saved_at: snapshotPending
+          ? String(preservedPlan?.snapshot_saved_at || '').trim() || new Date().toISOString()
+          : new Date().toISOString(),
+        snapshot_pending: snapshotPending,
       };
       setWeeklyPlan(plan);
       setWeeklyPlanSnapshotTone(tone);
       setWeeklyPlanDraft(buildWeeklyPlanDraftFromPlan(plan));
-      persistWeeklyPlanSnapshot(plan);
+      if (!snapshotPending) {
+        persistWeeklyPlanSnapshot(plan);
+      }
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
         error,

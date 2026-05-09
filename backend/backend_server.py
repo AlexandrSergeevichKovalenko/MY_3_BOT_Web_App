@@ -3720,6 +3720,17 @@ def _build_weekly_plan_snapshot_pending_payload(
     safe_as_of_date = min(bounds.end_date, today_local)
     days_total = max(1, (bounds.end_date - bounds.start_date).days + 1)
     days_elapsed = max(1, (safe_as_of_date - bounds.start_date).days + 1)
+    goals = get_weekly_goals(
+        user_id=int(user_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        week_start=bounds.start_date,
+    ) or {
+        "translations_goal": 0,
+        "learned_words_goal": 0,
+        "agent_minutes_goal": 0,
+        "reading_minutes_goal": 0,
+    }
     response_payload = {
         "ok": True,
         "snapshot_pending": True,
@@ -3732,10 +3743,10 @@ def _build_weekly_plan_snapshot_pending_payload(
             "days_total": int(days_total),
         },
         "plan": {
-            "translations_goal": 0,
-            "learned_words_goal": 0,
-            "agent_minutes_goal": 0,
-            "reading_minutes_goal": 0,
+            "translations_goal": int(goals.get("translations_goal") or 0),
+            "learned_words_goal": int(goals.get("learned_words_goal") or 0),
+            "agent_minutes_goal": int(goals.get("agent_minutes_goal") or 0),
+            "reading_minutes_goal": int(goals.get("reading_minutes_goal") or 0),
         },
         "metrics": {
             "translations": _build_zero_plan_metric(),
