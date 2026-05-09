@@ -17974,6 +17974,22 @@ function AppInner() {
         setDictionaryDirection(detectedDirection);
         scrollToDictionary();
       }
+
+      // Show success immediately after lookup — save runs in background
+      if (inlineMode) {
+        setSelectionInlineLookup((prev) => ({
+          ...prev,
+          translation: prev.translation ? `${prev.translation} • ${tr('Сохранено ✅', 'Gespeichert ✅')}` : tr('Сохранено ✅', 'Gespeichert ✅'),
+        }));
+        if (isYoutubeInline) {
+          showInlineToast(`${tr('Сохранено в папку', 'In Ordner gespeichert')}: ${autoFolder?.name || 'YouTube'}`);
+        }
+      } else {
+        setDictionarySaved(tr('Добавлено в словарь ✅', 'Zum Woerterbuch hinzugefuegt ✅'));
+      }
+      clearSelection();
+      setDictionaryLoading(false);
+
       const saveOriginProcess = inlineMode
         ? (isYoutubeInline ? 'youtube' : (isTranslationsInline ? 'translations_block' : 'reader'))
         : 'webapp_dictionary_save';
@@ -17989,50 +18005,45 @@ function AppInner() {
           : 'dictionary_lookup',
       };
 
-      const saveResponse = await fetch('/api/webapp/dictionary/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData,
-          word_ru: saveWordRu,
-          word_de: saveWordDe,
-          translation_de: data.item?.translation_de || '',
-          translation_ru: data.item?.translation_ru || '',
-          source_text: getDictionarySourceTarget(data.item, detectedDirection).sourceText || normalized,
-          target_text: getDictionarySourceTarget(data.item, detectedDirection).targetText || '',
-          source_lang: saveSourceLang || undefined,
-          target_lang: saveTargetLang || undefined,
-          direction: detectedDirection || undefined,
-          response_json: data.item || {},
-          folder_id: autoFolderId ?? (dictionaryFolderId !== 'none' ? dictionaryFolderId : null),
-          origin_process: saveOriginProcess,
-          origin_meta: saveOriginMeta,
-        }),
-      });
-      if (!saveResponse.ok) {
-        let message = await saveResponse.text();
+      (async () => {
         try {
-          const payload = JSON.parse(message);
-          message = payload.error || message;
+          const saveResponse = await fetch('/api/webapp/dictionary/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              initData,
+              word_ru: saveWordRu,
+              word_de: saveWordDe,
+              translation_de: data.item?.translation_de || '',
+              translation_ru: data.item?.translation_ru || '',
+              source_text: getDictionarySourceTarget(data.item, detectedDirection).sourceText || normalized,
+              target_text: getDictionarySourceTarget(data.item, detectedDirection).targetText || '',
+              source_lang: saveSourceLang || undefined,
+              target_lang: saveTargetLang || undefined,
+              direction: detectedDirection || undefined,
+              response_json: data.item || {},
+              folder_id: autoFolderId ?? (dictionaryFolderId !== 'none' ? dictionaryFolderId : null),
+              origin_process: saveOriginProcess,
+              origin_meta: saveOriginMeta,
+            }),
+          });
+          if (!saveResponse.ok) {
+            let message = await saveResponse.text();
+            try {
+              const payload = JSON.parse(message);
+              message = payload.error || message;
+            } catch (_error) {
+              // ignore parsing errors
+            }
+            throw new Error(message);
+          }
+          const savePayload = await saveResponse.json();
+          setDictionaryLanguagePair(resolveLanguagePairForUI(savePayload.language_pair));
         } catch (error) {
-          // ignore parsing errors
+          setDictionaryError(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${error.message}`);
+          showInlineToast(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${error.message}`);
         }
-        throw new Error(message);
-      }
-      const savePayload = await saveResponse.json();
-      setDictionaryLanguagePair(resolveLanguagePairForUI(savePayload.language_pair));
-      if (inlineMode) {
-      setSelectionInlineLookup((prev) => ({
-        ...prev,
-        translation: prev.translation ? `${prev.translation} • ${tr('Сохранено ✅', 'Gespeichert ✅')}` : tr('Сохранено ✅', 'Gespeichert ✅'),
-      }));
-        if (isYoutubeInline) {
-          showInlineToast(`${tr('Сохранено в папку', 'In Ordner gespeichert')}: ${autoFolder?.name || 'YouTube'}`);
-        }
-      } else {
-        setDictionarySaved(tr('Добавлено в словарь ✅', 'Zum Woerterbuch hinzugefuegt ✅'));
-      }
-      clearSelection();
+      })();
     } catch (error) {
       setDictionaryError(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${error.message}`);
     } finally {
