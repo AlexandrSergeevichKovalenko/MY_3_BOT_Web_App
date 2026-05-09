@@ -25108,41 +25108,47 @@ def lookup_wiktionary_entry_by_translation(word: str, entry_source_lang: str = "
 def bulk_insert_wiktionary_entries(entries: list[dict], source_lang: str = "de") -> int:
     if not entries:
         return 0
+    import json as _json
     lang = str(source_lang or "de").strip() or "de"
     inserted = 0
-    with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            for entry in entries:
-                key = _normalize_lemma_key(str(entry.get("lemma") or ""))
-                if not key:
-                    continue
-                cursor.execute(
-                    """
-                    INSERT INTO bt_wiktionary_dictionary
-                        (lemma, lemma_key, source_lang, pos, article,
-                         translations_ru, glosses_en, senses_json)
-                    SELECT %s, %s, %s, %s, %s, %s, %s, %s
-                    WHERE NOT EXISTS (
-                        SELECT 1 FROM bt_base_dictionary
-                        WHERE lemma_key = %s AND source_lang = %s
+    # Process in small batches and release the connection between batches so
+    # the pool stays available for regular app requests during background seeding.
+    _BATCH = 300
+    for batch_start in range(0, len(entries), _BATCH):
+        batch = entries[batch_start: batch_start + _BATCH]
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                for entry in batch:
+                    key = _normalize_lemma_key(str(entry.get("lemma") or ""))
+                    if not key:
+                        continue
+                    cursor.execute(
+                        """
+                        INSERT INTO bt_wiktionary_dictionary
+                            (lemma, lemma_key, source_lang, pos, article,
+                             translations_ru, glosses_en, senses_json)
+                        SELECT %s, %s, %s, %s, %s, %s, %s, %s
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM bt_base_dictionary
+                            WHERE lemma_key = %s AND source_lang = %s
+                        )
+                        ON CONFLICT (lemma_key, source_lang) DO NOTHING;
+                        """,
+                        (
+                            str(entry.get("lemma") or ""),
+                            key,
+                            lang,
+                            str(entry.get("pos") or "") or None,
+                            str(entry.get("article") or "") or None,
+                            list(entry.get("translations_ru") or []),
+                            list(entry.get("glosses_en") or []),
+                            _json.dumps(list(entry.get("senses") or []),
+                                        ensure_ascii=False),
+                            key,
+                            lang,
+                        ),
                     )
-                    ON CONFLICT (lemma_key, source_lang) DO NOTHING;
-                    """,
-                    (
-                        str(entry.get("lemma") or ""),
-                        key,
-                        lang,
-                        str(entry.get("pos") or "") or None,
-                        str(entry.get("article") or "") or None,
-                        list(entry.get("translations_ru") or []),
-                        list(entry.get("glosses_en") or []),
-                        __import__("json").dumps(list(entry.get("senses") or []),
-                                                 ensure_ascii=False),
-                        key,
-                        lang,
-                    ),
-                )
-                inserted += cursor.rowcount
+                    inserted += cursor.rowcount
     return inserted
 
 
