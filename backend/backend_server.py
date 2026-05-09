@@ -463,6 +463,13 @@ from backend.database import (
     count_base_dictionary_entries,
     get_base_dictionary_seed_state,
     upsert_base_dictionary_seed_state,
+    get_wiktionary_seed_state,
+    upsert_wiktionary_seed_state,
+    count_wiktionary_entries,
+    lookup_wiktionary_entry,
+    lookup_wiktionary_entry_by_translation,
+    bulk_insert_wiktionary_entries,
+    list_combined_dictionary_for_offline_pack,
     start_agent_voice_session,
     get_agent_voice_session,
     get_voice_scenario,
@@ -656,6 +663,8 @@ _YOUTUBE_MANUAL_SEARCH_CACHE_LOCK = threading.Lock()
 _YOUTUBE_MANUAL_SEARCH_CACHE_TTL_SEC = max(60, int((os.getenv("YOUTUBE_MANUAL_SEARCH_CACHE_TTL_SEC") or "600").strip()))
 _BASE_DICTIONARY_AUTOSEED_LOCK = threading.Lock()
 _BASE_DICTIONARY_AUTOSEED_STARTED = False
+_WIKTIONARY_AUTOSEED_LOCK = threading.Lock()
+_WIKTIONARY_AUTOSEED_STARTED = False
 _READER_INGEST_MAX_WORKERS = max(
     1,
     min(4, int((os.getenv("READER_INGEST_MAX_WORKERS") or "2").strip() or "2")),
@@ -9849,6 +9858,62 @@ def _start_freedict_autoseed_if_needed() -> None:
         target=_worker,
         daemon=True,
         name="freedict-autoseed-on-demand",
+    ).start()
+
+
+def _load_wikdict_if_needed() -> None:
+    try:
+        source_lang = "de"
+        seed_state = get_wiktionary_seed_state(source_lang)
+        if bool(seed_state.get("seed_complete")):
+            logging.info(
+                "WikDict autoseed: source_lang=%s already complete with %s entries, skipping",
+                source_lang,
+                seed_state.get("entry_count"),
+            )
+            return
+        count = count_wiktionary_entries(source_lang)
+        logging.info(
+            "WikDict autoseed: source_lang=%s seed_complete=False current_entries=%s, starting download...",
+            source_lang,
+            count,
+        )
+        from backend.load_wiktionary import _download, _parse, WIKDICT_URL
+        upsert_wiktionary_seed_state(source_lang=source_lang, seed_complete=False,
+                                      entry_count=count, source_url=WIKDICT_URL)
+        data = _download(WIKDICT_URL)
+        entries = _parse(data)
+        inserted = bulk_insert_wiktionary_entries(entries, source_lang=source_lang)
+        final_count = count_wiktionary_entries(source_lang)
+        upsert_wiktionary_seed_state(source_lang=source_lang, seed_complete=True,
+                                      entry_count=final_count, source_url=WIKDICT_URL)
+        logging.info(
+            "WikDict autoseed: source_lang=%s loaded=%s final_entries=%s seed_complete=true",
+            source_lang, inserted, final_count,
+        )
+    except Exception as exc:
+        logging.warning("WikDict autoseed failed (non-fatal): %s", exc)
+
+
+def _start_wikdict_autoseed_if_needed() -> None:
+    global _WIKTIONARY_AUTOSEED_STARTED
+    with _WIKTIONARY_AUTOSEED_LOCK:
+        if _WIKTIONARY_AUTOSEED_STARTED:
+            return
+        _WIKTIONARY_AUTOSEED_STARTED = True
+
+    def _worker() -> None:
+        global _WIKTIONARY_AUTOSEED_STARTED
+        try:
+            _load_wikdict_if_needed()
+        finally:
+            with _WIKTIONARY_AUTOSEED_LOCK:
+                _WIKTIONARY_AUTOSEED_STARTED = False
+
+    threading.Thread(
+        target=_worker,
+        daemon=True,
+        name="wikdict-autoseed",
     ).start()
 
 
@@ -25830,7 +25895,7 @@ def base_dictionary_lookup():
     requested_source_lang = str(payload.get("source_lang") or "").strip().lower()
     query_lang = requested_source_lang or ("ru" if re.search(r"[А-Яа-яЁё]", word) else "de")
 
-    # 1. Check existing cache / base table
+    # 1. Check FreeDict base table first
     if query_lang == "ru":
         db_entry = lookup_base_dictionary_entry_by_translation(word, "de")
     else:
@@ -25838,10 +25903,26 @@ def base_dictionary_lookup():
     if db_entry and db_entry.get("translations_ru"):
         return jsonify({
             "item": _build_base_dict_result_from_entry(db_entry, query_lang=query_lang, query_word=word),
-            "source": "cache",
+            "source": "freedict",
             "query_lang": query_lang,
             "direction": "ru-de" if query_lang == "ru" else "de-ru",
         })
+
+    # 2. Fall back to WikDict extended table
+    try:
+        if query_lang == "ru":
+            wikt_entry = lookup_wiktionary_entry_by_translation(word, "de")
+        else:
+            wikt_entry = lookup_wiktionary_entry(word, "de")
+        if wikt_entry and wikt_entry.get("translations_ru"):
+            return jsonify({
+                "item": _build_base_dict_result_from_entry(wikt_entry, query_lang=query_lang, query_word=word),
+                "source": "wikdict",
+                "query_lang": query_lang,
+                "direction": "ru-de" if query_lang == "ru" else "de-ru",
+            })
+    except Exception:
+        pass
 
     try:
         seed_state = get_base_dictionary_seed_state("de")
@@ -25857,7 +25938,7 @@ def base_dictionary_lookup():
     except Exception:
         pass
 
-    # Word not found in the pre-loaded dictionary
+    # Word not found in either dictionary
     return jsonify({"not_found": True, "query_lang": query_lang})
 
 
@@ -25867,7 +25948,7 @@ def dictionary_offline_pack():
     import json as _json
     source_lang = str(request.args.get("lang") or "de").strip() or "de"
     limit = min(int(request.args.get("limit") or 10000), 30000)
-    rows = list_base_dictionary_for_offline_pack(source_lang=source_lang, limit=limit)
+    rows = list_combined_dictionary_for_offline_pack(source_lang=source_lang, limit=limit)
     pack = [
         {
             "w": r["lemma"],
@@ -43907,13 +43988,42 @@ def admin_load_freedict():
     if token != required:
         return jsonify({"error": "Unauthorized"}), 401
     try:
-        from backend.load_freedict import _download, _parse, _bulk_insert, FREEDICT_URL
-        data = _download(FREEDICT_URL)
-        entries = _parse(data)
+        from backend.load_freedict import _download, _parse, _bulk_insert, resolve_freedict_source_url_with_fallback
+        source_url = resolve_freedict_source_url_with_fallback()
+        from backend.load_freedict import _extract_tei_from_src_archive
+        archive_data = _download(source_url)
+        tei_data = _extract_tei_from_src_archive(archive_data)
+        entries = _parse(tei_data)
         inserted = _bulk_insert(entries)
-        return jsonify({"ok": True, "downloaded_bytes": len(data), "parsed": len(entries), "inserted": inserted})
+        return jsonify({"ok": True, "downloaded_bytes": len(archive_data), "parsed": len(entries), "inserted": inserted})
     except Exception as exc:
         logging.exception("load_freedict admin endpoint failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/admin/load-wikdict", methods=["POST"])
+def admin_load_wikdict():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or (request.headers.get("X-Admin-Token") or "").strip()
+    required = (os.getenv("ADMIN_TOKEN") or os.getenv("AUDIO_DISPATCH_TOKEN") or "").strip()
+    if not required:
+        return jsonify({"error": "ADMIN_TOKEN not set"}), 500
+    if token != required:
+        return jsonify({"error": "Unauthorized"}), 401
+    try:
+        from backend.load_wiktionary import _download, _parse, WIKDICT_URL
+        data = _download(WIKDICT_URL)
+        entries = _parse(data)
+        upsert_wiktionary_seed_state(source_lang="de", seed_complete=False,
+                                      entry_count=count_wiktionary_entries("de"), source_url=WIKDICT_URL)
+        inserted = bulk_insert_wiktionary_entries(entries, source_lang="de")
+        final_count = count_wiktionary_entries("de")
+        upsert_wiktionary_seed_state(source_lang="de", seed_complete=True,
+                                      entry_count=final_count, source_url=WIKDICT_URL)
+        return jsonify({"ok": True, "downloaded_bytes": len(data), "parsed": len(entries),
+                        "inserted": inserted, "total_entries": final_count})
+    except Exception as exc:
+        logging.exception("load_wikdict admin endpoint failed")
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
@@ -44852,6 +44962,14 @@ try:
         _run_startup_phase(
             "load_freedict_if_empty",
             _start_freedict_autoseed_if_needed,
+            enabled=True,
+            category="housekeeping",
+            required_before_first_request=False,
+            async_phase=True,
+        )
+        _run_startup_phase(
+            "load_wikdict_if_needed",
+            _start_wikdict_autoseed_if_needed,
             enabled=True,
             category="housekeeping",
             required_before_first_request=False,

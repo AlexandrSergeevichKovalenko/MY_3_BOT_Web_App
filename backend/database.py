@@ -5811,6 +5811,35 @@ def ensure_webapp_tables() -> None:
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
             """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_wiktionary_dictionary (
+                    id BIGSERIAL PRIMARY KEY,
+                    lemma TEXT NOT NULL,
+                    lemma_key TEXT NOT NULL,
+                    source_lang TEXT NOT NULL DEFAULT 'de',
+                    pos TEXT,
+                    article TEXT,
+                    translations_ru TEXT[] NOT NULL DEFAULT '{}',
+                    glosses_en TEXT[] NOT NULL DEFAULT '{}',
+                    senses_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (lemma_key, source_lang)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_wiktionary_lemma_key
+                ON bt_wiktionary_dictionary (lemma_key, source_lang);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_wiktionary_seed_state (
+                    source_lang TEXT PRIMARY KEY,
+                    seed_complete BOOLEAN NOT NULL DEFAULT FALSE,
+                    entry_count INT NOT NULL DEFAULT 0,
+                    source_url TEXT,
+                    completed_at TIMESTAMPTZ,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
             cursor.close()
             _run_dictionary_canonical_schema_migration(conn)
         missing_phase1_objects = get_missing_phase1_shadow_schema_objects()
@@ -24966,6 +24995,184 @@ def list_base_dictionary_for_offline_pack(source_lang: str = "de", limit: int = 
         "lemma", "lemma_key", "source_lang", "pos", "article",
         "translations_ru", "glosses_en", "senses_json", "forms_json",
     ]
+    return [dict(zip(cols, row)) for row in rows]
+
+
+# ── WikDict extended dictionary ─────────────────────────────────────────────
+
+def get_wiktionary_seed_state(source_lang: str = "de") -> dict:
+    lang = str(source_lang or "de").strip() or "de"
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT source_lang, seed_complete, entry_count, source_url, completed_at, updated_at "
+                "FROM bt_wiktionary_seed_state WHERE source_lang = %s LIMIT 1;",
+                (lang,),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return {"source_lang": lang, "seed_complete": False, "entry_count": 0,
+                "source_url": None, "completed_at": None, "updated_at": None}
+    return {"source_lang": str(row[0]), "seed_complete": bool(row[1]),
+            "entry_count": max(0, int(row[2] or 0)), "source_url": str(row[3] or "") or None,
+            "completed_at": row[4].isoformat() if row[4] else None,
+            "updated_at": row[5].isoformat() if row[5] else None}
+
+
+def upsert_wiktionary_seed_state(*, source_lang: str = "de", seed_complete: bool,
+                                  entry_count: int | None = None, source_url: str | None = None) -> None:
+    lang = str(source_lang or "de").strip() or "de"
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_wiktionary_seed_state
+                    (source_lang, seed_complete, entry_count, source_url, completed_at, updated_at)
+                VALUES (%s, %s, %s, %s, CASE WHEN %s THEN NOW() ELSE NULL END, NOW())
+                ON CONFLICT (source_lang) DO UPDATE SET
+                    seed_complete = EXCLUDED.seed_complete,
+                    entry_count   = EXCLUDED.entry_count,
+                    source_url    = COALESCE(EXCLUDED.source_url, bt_wiktionary_seed_state.source_url),
+                    completed_at  = CASE WHEN EXCLUDED.seed_complete THEN NOW() ELSE NULL END,
+                    updated_at    = NOW();
+                """,
+                (lang, bool(seed_complete), max(0, int(entry_count or 0)),
+                 str(source_url or "").strip() or None, bool(seed_complete)),
+            )
+
+
+def count_wiktionary_entries(source_lang: str = "de") -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM bt_wiktionary_dictionary WHERE source_lang = %s;",
+                (str(source_lang or "de").strip() or "de",),
+            )
+            row = cursor.fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def lookup_wiktionary_entry(word: str, source_lang: str = "de") -> dict | None:
+    key = _normalize_lemma_key(word)
+    if not key:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, lemma, lemma_key, source_lang, pos, article,
+                       translations_ru, glosses_en, senses_json
+                FROM bt_wiktionary_dictionary
+                WHERE lemma_key = %s AND source_lang = %s
+                LIMIT 1;
+                """,
+                (key, source_lang),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    cols = ["id", "lemma", "lemma_key", "source_lang", "pos", "article",
+            "translations_ru", "glosses_en", "senses_json"]
+    return dict(zip(cols, row))
+
+
+def lookup_wiktionary_entry_by_translation(word: str, entry_source_lang: str = "de") -> dict | None:
+    normalized = _normalize_dictionary_text_key(word)
+    if not normalized:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, lemma, lemma_key, source_lang, pos, article,
+                       translations_ru, glosses_en, senses_json
+                FROM bt_wiktionary_dictionary
+                WHERE source_lang = %s
+                  AND EXISTS (
+                      SELECT 1 FROM unnest(COALESCE(translations_ru, ARRAY[]::text[])) AS t
+                      WHERE LOWER(BTRIM(COALESCE(t, ''))) = %s
+                  )
+                ORDER BY created_at DESC
+                LIMIT 1;
+                """,
+                (entry_source_lang, normalized),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    cols = ["id", "lemma", "lemma_key", "source_lang", "pos", "article",
+            "translations_ru", "glosses_en", "senses_json"]
+    return dict(zip(cols, row))
+
+
+def bulk_insert_wiktionary_entries(entries: list[dict], source_lang: str = "de") -> int:
+    if not entries:
+        return 0
+    lang = str(source_lang or "de").strip() or "de"
+    inserted = 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            for entry in entries:
+                key = _normalize_lemma_key(str(entry.get("lemma") or ""))
+                if not key:
+                    continue
+                cursor.execute(
+                    """
+                    INSERT INTO bt_wiktionary_dictionary
+                        (lemma, lemma_key, source_lang, pos, article,
+                         translations_ru, glosses_en, senses_json)
+                    SELECT %s, %s, %s, %s, %s, %s, %s, %s
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM bt_base_dictionary
+                        WHERE lemma_key = %s AND source_lang = %s
+                    )
+                    ON CONFLICT (lemma_key, source_lang) DO NOTHING;
+                    """,
+                    (
+                        str(entry.get("lemma") or ""),
+                        key,
+                        lang,
+                        str(entry.get("pos") or "") or None,
+                        str(entry.get("article") or "") or None,
+                        list(entry.get("translations_ru") or []),
+                        list(entry.get("glosses_en") or []),
+                        __import__("json").dumps(list(entry.get("senses") or []),
+                                                 ensure_ascii=False),
+                        key,
+                        lang,
+                    ),
+                )
+                inserted += cursor.rowcount
+    return inserted
+
+
+def list_combined_dictionary_for_offline_pack(source_lang: str = "de", limit: int = 30000) -> list[dict]:
+    """Returns entries from both bt_base_dictionary and bt_wiktionary_dictionary, deduplicated."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT lemma, lemma_key, pos, article, translations_ru, glosses_en
+                FROM bt_base_dictionary
+                WHERE source_lang = %s
+                  AND array_length(translations_ru, 1) > 0
+                UNION ALL
+                SELECT lemma, lemma_key, pos, article, translations_ru, glosses_en
+                FROM bt_wiktionary_dictionary
+                WHERE source_lang = %s
+                  AND array_length(translations_ru, 1) > 0
+                  AND NOT EXISTS (
+                      SELECT 1 FROM bt_base_dictionary b
+                      WHERE b.lemma_key = bt_wiktionary_dictionary.lemma_key
+                        AND b.source_lang = %s
+                  )
+                ORDER BY lemma_key
+                LIMIT %s;
+                """,
+                (source_lang, source_lang, source_lang, limit),
+            )
+            rows = cursor.fetchall()
+    cols = ["lemma", "lemma_key", "pos", "article", "translations_ru", "glosses_en"]
     return [dict(zip(cols, row)) for row in rows]
 
 
