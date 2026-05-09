@@ -44001,6 +44001,24 @@ def admin_load_freedict():
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
+@app.route("/api/admin/wiktionary-status", methods=["GET"])
+def admin_wiktionary_status():
+    token = (request.args.get("token") or request.headers.get("X-Admin-Token") or "").strip()
+    required = (os.getenv("ADMIN_TOKEN") or os.getenv("AUDIO_DISPATCH_TOKEN") or "").strip()
+    if not required:
+        return jsonify({"error": "ADMIN_TOKEN not set"}), 500
+    if token != required:
+        return jsonify({"error": "Unauthorized"}), 401
+    seed_state = get_wiktionary_seed_state("de")
+    wikt_count = count_wiktionary_entries("de")
+    free_count = count_base_dictionary_entries("de")
+    return jsonify({
+        "seed_state": seed_state,
+        "wiktionary_entries": wikt_count,
+        "freedict_entries": free_count,
+    })
+
+
 @app.route("/api/admin/load-wikdict", methods=["POST"])
 def admin_load_wikdict():
     payload = request.get_json(silent=True) or {}
