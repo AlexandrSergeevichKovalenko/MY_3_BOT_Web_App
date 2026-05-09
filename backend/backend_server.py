@@ -9758,6 +9758,21 @@ def _load_freedict_if_empty() -> None:
         source_lang = "de"
         seed_state = get_base_dictionary_seed_state(source_lang)
         count = count_base_dictionary_entries(source_lang)
+        ready_min_count = 22000
+        if count >= ready_min_count:
+            if not bool(seed_state.get("seed_complete")):
+                upsert_base_dictionary_seed_state(
+                    source_lang=source_lang,
+                    seed_complete=True,
+                    entry_count=count,
+                )
+            logging.info(
+                "FreeDict autoseed: source_lang=%s already has %s entries (threshold %s), marking complete and skipping download",
+                source_lang,
+                count,
+                ready_min_count,
+            )
+            return
         if bool(seed_state.get("seed_complete")) and count > 0:
             logging.info(
                 "FreeDict autoseed: source_lang=%s already marked complete with %s entries, skipping",
