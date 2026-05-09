@@ -21310,31 +21310,19 @@ def _start_translation_check_runner(
     accepted_at_ms: int | None = None,
     force_dispatch: bool = False,
 ) -> dict[str, Any] | None:
-    if is_translation_check_async_enabled() and not dispatch_job_id:
-        return enqueue_translation_check_job(
+    if not is_translation_check_async_enabled():
+        logging.error(
+            "Translation check local fallback disabled in BACKEND_WEB: session=%s reason=translation_check_async_disabled",
             int(session_id),
-            correlation_id=correlation_id,
-            request_id=request_id,
-            accepted_at_ms=accepted_at_ms,
-            force_dispatch=force_dispatch,
         )
-        
-    with _TRANSLATION_CHECK_RUNNERS_LOCK:
-        if int(session_id) in _TRANSLATION_CHECK_RUNNERS:
-            return None
-        _TRANSLATION_CHECK_RUNNERS.add(int(session_id))
-    threading.Thread(
-        target=_run_translation_check_session,
-        kwargs={
-            "session_id": int(session_id),
-            "dispatch_job_id": str(dispatch_job_id or "").strip() or None,
-            "correlation_id": correlation_id,
-            "request_id": request_id,
-            "accepted_at_ms": accepted_at_ms,
-        },
-        daemon=True,
-    ).start()
-    return None
+        return None
+    return enqueue_translation_check_job(
+        int(session_id),
+        correlation_id=correlation_id,
+        request_id=request_id,
+        accepted_at_ms=accepted_at_ms,
+        force_dispatch=force_dispatch,
+    )
 
 
 def _dispatch_translation_check_runner_async(
@@ -21359,6 +21347,8 @@ def _maybe_start_inline_translation_check_runner(
     correlation_id: str | None = None,
 ) -> bool:
     if not _TRANSLATION_CHECK_INLINE_FALLBACK_ENABLED:
+        return False
+    if not is_translation_check_async_enabled():
         return False
     session_id = session.get("id")
     if not session_id:
@@ -21415,16 +21405,11 @@ def _maybe_start_inline_translation_check_runner(
     if not dispatch_job_id:
         return False
     logging.warning(
-        "Translation check inline fallback activated: session=%s runtime_status=%s dispatched_age_ms=%s heartbeat_age_ms=%s",
+        "Translation check stale dispatch refresh requested: session=%s runtime_status=%s dispatched_age_ms=%s heartbeat_age_ms=%s",
         int(session_id),
         runtime_status,
         dispatched_age_ms,
         heartbeat_age_ms,
-    )
-    _start_translation_check_runner(
-        int(session_id),
-        dispatch_job_id=dispatch_job_id,
-        correlation_id=resolved_correlation_id,
     )
     return True
 
@@ -37587,8 +37572,8 @@ def get_webapp_sentences():
         generation_status = raw_generation_status
     elif raw_generation_status == "failed":
         generation_status = "failed"
-    elif requested_session_id and not is_translation_sentence_fill_async_enabled() and _translation_session_fill_runner_is_active(int(requested_session_id)):
-        generation_status = "running"
+    elif requested_session_id and ready_count < expected_total and not is_translation_sentence_fill_async_enabled():
+        generation_status = "failed"
     else:
         generation_status = "idle"
     generation_in_progress = generation_status in {"pending", "running"} and ready_count < expected_total
@@ -37599,7 +37584,14 @@ def get_webapp_sentences():
         "expected_total": expected_total,
         "generation_in_progress": generation_in_progress,
         "generation_status": generation_status,
-        "generation_error": str((generation_status_payload or {}).get("error") or "").strip() or None,
+        "generation_error": (
+            str((generation_status_payload or {}).get("error") or "").strip()
+            or (
+                "translation_sentence_fill_async_disabled"
+                if requested_session_id and ready_count < expected_total and not is_translation_sentence_fill_async_enabled()
+                else None
+            )
+        ),
         "language_pair": _build_language_pair_payload(source_lang, target_lang),
     }
     source_session_id = str(deduped[0].get("source_session_id") or "").strip() if deduped else requested_session_id
@@ -37887,8 +37879,10 @@ def _build_translation_session_start_payload(
         generation_status = raw_generation_status
     elif raw_generation_status == "failed":
         generation_status = "failed"
+    elif generation_started and is_translation_sentence_fill_async_enabled():
+        generation_status = "pending"
     elif generation_started:
-        generation_status = "pending" if is_translation_sentence_fill_async_enabled() else "running"
+        generation_status = "failed"
     else:
         generation_status = "idle"
     generation_in_progress = generation_status in {"pending", "running"} and ready_count < expected_total
@@ -37901,7 +37895,14 @@ def _build_translation_session_start_payload(
         "remaining_count": remaining_count,
         "generation_in_progress": generation_in_progress,
         "generation_status": generation_status,
-        "generation_error": str((generation_status_payload or {}).get("error") or "").strip() or None,
+        "generation_error": (
+            str((generation_status_payload or {}).get("error") or "").strip()
+            or (
+                "translation_sentence_fill_async_disabled"
+                if generation_started and not is_translation_sentence_fill_async_enabled()
+                else None
+            )
+        ),
     }
     return response_payload
 
@@ -38143,26 +38144,10 @@ def _start_translation_session_fill_runner(
             tested_skill_profile_seed=tested_skill_profile_seed,
         )
         return
-    with _TRANSLATION_SESSION_FILL_RUNNERS_LOCK:
-        if int(session_id) in _TRANSLATION_SESSION_FILL_RUNNERS:
-            return
-        _TRANSLATION_SESSION_FILL_RUNNERS.add(int(session_id))
-    _remember_translation_session_fill_launched_at(int(session_id), int(time.time() * 1000))
-    threading.Thread(
-        target=_run_translation_session_fill,
-        kwargs={
-            "user_id": int(user_id),
-            "username": username,
-            "session_id": int(session_id),
-            "topic": topic,
-            "level": level,
-            "source_lang": source_lang,
-            "target_lang": target_lang,
-            "grammar_focus": grammar_focus,
-            "tested_skill_profile_seed": tested_skill_profile_seed,
-        },
-        daemon=True,
-    ).start()
+    logging.error(
+        "Translation session fill local fallback disabled in BACKEND_WEB: session_id=%s reason=translation_sentence_fill_async_disabled",
+        int(session_id),
+    )
 
 
 @app.route("/api/webapp/topics", methods=["GET"])
