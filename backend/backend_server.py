@@ -33797,36 +33797,11 @@ def _enqueue_tts_generation_job_result(**kwargs) -> dict:
             reason,
         )
         return {"queued": False, "reason": reason, "queue_size": None}
-    _ensure_tts_generation_workers_started()
-    if not _claim_tts_generation_in_flight(cache_key):
-        return {"queued": False, "reason": "duplicate_in_process"}
-    generation_queue = _get_tts_generation_queue()
-    try:
-        generation_queue.put(kwargs, timeout=float(TTS_GENERATION_ENQUEUE_TIMEOUT_MS) / 1000.0)
-    except queue.Full:
-        _release_tts_generation_in_flight(cache_key)
-        queue_size = _tts_generation_queue_size()
-        logging.warning(
-            "TTS generation queue full: cache_key=%s queue_size=%s queue_maxsize=%s",
-            cache_key,
-            queue_size,
-            int(TTS_GENERATION_QUEUE_MAXSIZE),
-        )
-        _record_tts_admin_monitor_event(
-            "generation_enqueue",
-            "error",
-            source="queue_full",
-            count=1,
-            chars=len(str(kwargs.get("normalized_text") or "")),
-            meta={
-                "cache_key": cache_key,
-                "queue_size": queue_size,
-                "queue_maxsize": int(TTS_GENERATION_QUEUE_MAXSIZE),
-            },
-        )
-        _maybe_send_tts_admin_failure_alert()
-        return {"queued": False, "reason": "queue_full"}
-    return {"queued": True, "reason": "queued", "queue_size": _tts_generation_queue_size()}
+    logging.error(
+        "TTS local fallback disabled in BACKEND_WEB: cache_key=%s reason=tts_generation_async_disabled",
+        cache_key,
+    )
+    return {"queued": False, "reason": "tts_generation_async_disabled", "queue_size": None}
 
 
 def _enqueue_tts_generation_job(**kwargs) -> bool:
@@ -33839,7 +33814,10 @@ def _recover_stale_tts_generation_jobs(*, source: str = "scheduler") -> dict:
         _record_tts_admin_monitor_event("recovery_run", "skipped", source=source, count=1, meta=result)
         return result
     if not is_tts_generation_async_enabled():
-        _ensure_tts_generation_workers_started()
+        result = {"ok": False, "skipped": True, "reason": "tts_generation_async_disabled"}
+        _record_tts_admin_monitor_event("recovery_run", "skipped", source=source, count=1, meta=result)
+        logging.warning("TTS recovery skipped because async queue is disabled")
+        return result
     attempted = 0
     queued = 0
     duplicates = 0
@@ -42043,8 +42021,6 @@ def _start_audio_scheduler() -> None:
     tz_name = (os.getenv("AUDIO_SCHEDULER_TZ") or "UTC").strip()
     hour = int((os.getenv("AUDIO_SCHEDULER_HOUR") or "13").strip())
     minute = int((os.getenv("AUDIO_SCHEDULER_MINUTE") or "0").strip())
-    if not is_tts_generation_async_enabled():
-        _ensure_tts_generation_workers_started()
     _audio_scheduler = BackgroundScheduler(timezone=tz_name)
     _audio_scheduler.add_job(
         _run_audio_scheduler_job,
