@@ -22466,7 +22466,7 @@ function AppInner() {
     }
   };
 
-  const handleConfirmSaveCollocation = async () => {
+  const handleConfirmSaveCollocation = () => {
     const selectedOptions = collocationOptions.filter((option) => (
       selectedCollocations.includes(`${String(option.source)}|||${String(option.target)}`)
     ));
@@ -22474,72 +22474,74 @@ function AppInner() {
       setCollocationsError(tr('Выберите минимум один вариант для сохранения.', 'Waehle mindestens eine Option zum Speichern.'));
       return;
     }
-    setDictionaryLoading(true);
+    const label = tr('Добавлено в словарь ✅', 'Zum Woerterbuch hinzugefuegt ✅');
+    setDictionarySaved(label);
     setDictionaryError('');
-    setDictionarySaved('');
-    try {
-      const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
-      const directionPair = String(dictionaryDirection || '').includes('-')
-        ? String(dictionaryDirection).toLowerCase().split('-', 2)
-        : [];
-      const saveSourceLang = normalizeLangCode(directionPair[0] || pair.source_lang);
-      const saveTargetLang = normalizeLangCode(directionPair[1] || pair.target_lang);
-      const isLegacyPair = pair.source_lang === 'ru' && pair.target_lang === 'de' && isLegacyRuDeDirection(dictionaryDirection);
-      for (const selectedCollocation of selectedOptions) {
-        const response = await fetch('/api/webapp/dictionary/save', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            initData,
-            word_ru: isLegacyPair && dictionaryDirection === 'ru-de' ? selectedCollocation.source : '',
-            word_de: isLegacyPair && dictionaryDirection === 'de-ru' ? selectedCollocation.source : '',
-            translation_de: isLegacyPair && dictionaryDirection === 'ru-de' ? selectedCollocation.target : '',
-            translation_ru: isLegacyPair && dictionaryDirection === 'de-ru' ? selectedCollocation.target : '',
-            source_text: selectedCollocation.source,
-            target_text: selectedCollocation.target,
-            response_json: {
-              ...(dictionaryResult || {}),
+    setCollocationsVisible(false);
+    showInlineToast(label);
+    (async () => {
+      try {
+        const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
+        const directionPair = String(dictionaryDirection || '').includes('-')
+          ? String(dictionaryDirection).toLowerCase().split('-', 2)
+          : [];
+        const saveSourceLang = normalizeLangCode(directionPair[0] || pair.source_lang);
+        const saveTargetLang = normalizeLangCode(directionPair[1] || pair.target_lang);
+        const isLegacyPair = pair.source_lang === 'ru' && pair.target_lang === 'de' && isLegacyRuDeDirection(dictionaryDirection);
+        for (const selectedCollocation of selectedOptions) {
+          const response = await fetch('/api/webapp/dictionary/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              initData,
+              word_ru: isLegacyPair && dictionaryDirection === 'ru-de' ? selectedCollocation.source : '',
+              word_de: isLegacyPair && dictionaryDirection === 'de-ru' ? selectedCollocation.source : '',
+              translation_de: isLegacyPair && dictionaryDirection === 'ru-de' ? selectedCollocation.target : '',
+              translation_ru: isLegacyPair && dictionaryDirection === 'de-ru' ? selectedCollocation.target : '',
               source_text: selectedCollocation.source,
               target_text: selectedCollocation.target,
-              source_lang: saveSourceLang || pair.source_lang,
-              target_lang: saveTargetLang || pair.target_lang,
-              language_pair: {
+              response_json: {
+                ...(dictionaryResult || {}),
+                source_text: selectedCollocation.source,
+                target_text: selectedCollocation.target,
                 source_lang: saveSourceLang || pair.source_lang,
                 target_lang: saveTargetLang || pair.target_lang,
+                language_pair: {
+                  source_lang: saveSourceLang || pair.source_lang,
+                  target_lang: saveTargetLang || pair.target_lang,
+                },
               },
-            },
-            source_lang: saveSourceLang || undefined,
-            target_lang: saveTargetLang || undefined,
-            direction: dictionaryDirection || undefined,
-            folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
-            origin_process: 'webapp_dictionary_save',
-            origin_meta: {
-              endpoint: '/api/webapp/dictionary/save',
-              flow: 'dictionary_collocations',
-              from: 'dictionary_manual',
-            },
-          }),
-        });
-        if (!response.ok) {
-          let message = await response.text();
-          try {
-            const data = JSON.parse(message);
-            message = data.error || message;
-          } catch (_error) {
-            // ignore parsing errors
+              source_lang: saveSourceLang || undefined,
+              target_lang: saveTargetLang || undefined,
+              direction: dictionaryDirection || undefined,
+              folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
+              origin_process: 'webapp_dictionary_save',
+              origin_meta: {
+                endpoint: '/api/webapp/dictionary/save',
+                flow: 'dictionary_collocations',
+                from: 'dictionary_manual',
+              },
+            }),
+          });
+          if (!response.ok) {
+            let message = await response.text();
+            try {
+              const data = JSON.parse(message);
+              message = data.error || message;
+            } catch (_error) {
+              // ignore parsing errors
+            }
+            throw new Error(message);
           }
-          throw new Error(message);
+          const payload = await response.json();
+          setDictionaryLanguagePair(resolveLanguagePairForUI(payload.language_pair));
         }
-        const payload = await response.json();
-        setDictionaryLanguagePair(resolveLanguagePairForUI(payload.language_pair));
+      } catch (error) {
+        setDictionaryError(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${error.message}`);
+        showInlineToast(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${error.message}`);
+        setCollocationsVisible(true);
       }
-      setDictionarySaved(tr('Добавлено в словарь ✅', 'Zum Woerterbuch hinzugefuegt ✅'));
-      setCollocationsVisible(false);
-    } catch (error) {
-      setDictionaryError(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${error.message}`);
-    } finally {
-      setDictionaryLoading(false);
-    }
+    })();
   };
 
   const handleExportDictionaryPdf = async () => {
