@@ -18379,7 +18379,7 @@ function AppInner() {
     return true;
   };
 
-  const handleSelectionGptSaveToDictionary = async () => {
+  const handleSelectionGptSaveToDictionary = () => {
     if (!initData) {
       setSelectionGptSaveError(initDataMissingMsg);
       return;
@@ -18393,47 +18393,45 @@ function AppInner() {
       setSelectionGptSaveMessage('');
       return;
     }
-    setSelectionGptSaveLoading(true);
+    // Optimistic: release the user immediately, save in background
+    const label = tr('Сохранено в словарь ✅', 'Gespeichert ✅');
+    setSelectionGptSaveMessage(label);
     setSelectionGptSaveError('');
-    setSelectionGptSaveMessage('');
-    let savedCount = 0;
-    const failedItems = [];
-    if (shouldSaveOriginal) {
-      try {
-        const saved = await saveSelectionGptOriginalWord(selectionText);
-        if (saved) savedCount += 1;
-      } catch (error) {
-        failedItems.push(tr(
-          `Оригинальное слово: ${String(error?.message || '').trim()}`,
-          `Originalwort: ${String(error?.message || '').trim()}`
-        ));
+    showInlineToast(label);
+    // Close the panel so the user can continue reading
+    setTimeout(() => setSelectionGptOpen(false), 900);
+    // Background save — errors shown as toast, never block UI
+    (async () => {
+      let savedCount = 0;
+      const failedItems = [];
+      if (shouldSaveOriginal) {
+        try {
+          const saved = await saveSelectionGptOriginalWord(selectionText);
+          if (saved) savedCount += 1;
+        } catch (error) {
+          failedItems.push(tr(
+            `Оригинальное слово: ${String(error?.message || '').trim()}`,
+            `Originalwort: ${String(error?.message || '').trim()}`
+          ));
+        }
       }
-    }
-    for (const item of selectedExamples) {
-      try {
-        const saved = await saveSelectionGptExample(item.text, item.index);
-        if (saved) savedCount += 1;
-      } catch (error) {
-        failedItems.push(tr(
-          `Пример ${item.index + 1}: ${String(error?.message || '').trim()}`,
-          `Beispiel ${item.index + 1}: ${String(error?.message || '').trim()}`
-        ));
+      for (const item of selectedExamples) {
+        try {
+          const saved = await saveSelectionGptExample(item.text, item.index);
+          if (saved) savedCount += 1;
+        } catch (error) {
+          failedItems.push(tr(
+            `Пример ${item.index + 1}: ${String(error?.message || '').trim()}`,
+            `Beispiel ${item.index + 1}: ${String(error?.message || '').trim()}`
+          ));
+        }
       }
-    }
-    if (savedCount > 0) {
-      const successMessage = tr(
-        `Добавлено в словарь: ${savedCount}`,
-        `Zum Woerterbuch hinzugefuegt: ${savedCount}`
-      );
-      setSelectionGptSaveMessage(successMessage);
-      showInlineToast(successMessage);
-    }
-    if (failedItems.length > 0) {
-      setSelectionGptSaveError(failedItems.join('\n'));
-    } else {
-      setSelectionGptSaveError('');
-    }
-    setSelectionGptSaveLoading(false);
+      if (failedItems.length > 0) {
+        showInlineToast(tr('Ошибка сохранения: ', 'Speicherfehler: ') + failedItems[0]);
+        setSelectionGptSaveError(failedItems.join('\n'));
+        setSelectionGptOpen(true);
+      }
+    })();
   };
 
   const handleSelectionGptLookup = async () => {
