@@ -17047,7 +17047,7 @@ function AppInner() {
     const text = String(rawText || '');
     if (!text) return [];
     const safeLang = normalizeLangCode(langHint || '') || 'de';
-    const wordRegex = /[A-Za-z0-9À-ÿА-Яа-яЁё'’-]/u;
+    const wordRegex = /[A-Za-z0-9À-ÿА-Яа-яЁё''-]/u;
 
     const tokenizeSentence = (sentenceText, sentenceStart, sid) => {
       const tokens = [];
@@ -17092,7 +17092,7 @@ function AppInner() {
         }
       }
 
-      const fallbackWordTokenRegex = /(\s+|[A-Za-z0-9À-ÿА-Яа-яЁё'’-]+|[^A-Za-z0-9À-ÿА-Яа-яЁё'’-\s]+)/g;
+      const fallbackWordTokenRegex = /(\s+|[A-Za-z0-9À-ÿА-Яа-яЁё''-]+|[^A-Za-z0-9À-ÿА-Яа-яЁё''-\s]+)/g;
       let match = fallbackWordTokenRegex.exec(sentenceText);
       while (match) {
         const value = String(match[0] || '');
@@ -20480,7 +20480,7 @@ function AppInner() {
     const stopPropagation = Boolean(options.stopPropagation);
     const keyPrefix = options.keyPrefix || 'w';
     const youtubeLineIndex = Number(options.lineIndex);
-    const isYoutubeWordSelection = selectionTypeOption.startsWith(‘youtube_’) && Number.isInteger(youtubeLineIndex) && youtubeLineIndex >= 0;
+    const isYoutubeWordSelection = selectionTypeOption.startsWith('youtube_') && Number.isInteger(youtubeLineIndex) && youtubeLineIndex >= 0;
     const hlStart = Number.isFinite(options.highlightStart) && options.highlightStart >= 0 ? options.highlightStart : -1;
     const hlEnd = Number.isFinite(options.highlightEnd) && options.highlightEnd > hlStart ? options.highlightEnd : -1;
     const hasCueHighlight = hlStart >= 0 && hlEnd > hlStart;
@@ -20495,7 +20495,7 @@ function AppInner() {
       if (/^\s+$/.test(segment)) {
         return <React.Fragment key={`${keyPrefix}-space-${index}`}>{segment}</React.Fragment>;
       }
-      const cleaned = segment.replace(/[^A-Za-zÄÖÜäöüßÀ-ÿА-Яа-яЁё’’-]/g, ‘’);
+      const cleaned = segment.replace(/[^A-Za-zÄÖÜäöüßÀ-ÿА-Яа-яЁё''-]/g, '');
       const currentWordIndex = wordIndex;
       wordIndex += 1;
       const isYoutubeSelected = isYoutubeWordSelection && youtubeSelectedWordKeySet.has(`${youtubeLineIndex}:${currentWordIndex}`);
@@ -20504,8 +20504,8 @@ function AppInner() {
         return <span key={`${keyPrefix}-${index}`}>{segment}</span>;
       }
       let cls = className;
-      if (isCueActive) cls += ‘ is-cue-active’;
-      if (isYoutubeSelected) cls += ‘ is-selected’;
+      if (isCueActive) cls += ' is-cue-active';
+      if (isYoutubeSelected) cls += ' is-selected';
       return (
         <span
           key={`${keyPrefix}-${index}`}
