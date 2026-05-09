@@ -9723,6 +9723,26 @@ def _ensure_min_allowed_skill_resource_domains(
     }
 
 
+def _load_freedict_if_empty() -> None:
+    try:
+        from backend.database import get_db_connection_context
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM bt_base_dictionary WHERE source_lang = 'de'")
+                count = cur.fetchone()[0]
+        if count > 0:
+            logging.info("FreeDict autoseed: bt_base_dictionary already has %s entries, skipping", count)
+            return
+        logging.info("FreeDict autoseed: table empty, starting download...")
+        from backend.load_freedict import _download, _parse, _bulk_insert, FREEDICT_URL
+        data = _download(FREEDICT_URL)
+        entries = _parse(data)
+        inserted = _bulk_insert(entries)
+        logging.info("FreeDict autoseed: loaded %s entries into bt_base_dictionary", inserted)
+    except Exception as exc:
+        logging.warning("FreeDict autoseed failed (non-fatal): %s", exc)
+
+
 def _start_skill_resource_domain_autoseed() -> None:
     global _SKILL_RESOURCE_AUTOSEED_STARTED
     enabled = str(os.getenv("SKILL_RESOURCE_AUTOSEED_ON_STARTUP") or "0").strip().lower() in {"1", "true", "yes", "on"}
@@ -44182,6 +44202,13 @@ try:
             "start_skill_resource_domain_autoseed",
             _start_skill_resource_domain_autoseed,
             enabled=_startup_enabled_from_env("SKILL_RESOURCE_AUTOSEED_ON_STARTUP", "0"),
+            category="housekeeping",
+            required_before_first_request=False,
+        )
+        _run_startup_phase(
+            "load_freedict_if_empty",
+            _load_freedict_if_empty,
+            enabled=True,
             category="housekeeping",
             required_before_first_request=False,
         )

@@ -20480,26 +20480,36 @@ function AppInner() {
     const stopPropagation = Boolean(options.stopPropagation);
     const keyPrefix = options.keyPrefix || 'w';
     const youtubeLineIndex = Number(options.lineIndex);
-    const isYoutubeWordSelection = selectionTypeOption.startsWith('youtube_') && Number.isInteger(youtubeLineIndex) && youtubeLineIndex >= 0;
+    const isYoutubeWordSelection = selectionTypeOption.startsWith(‘youtube_’) && Number.isInteger(youtubeLineIndex) && youtubeLineIndex >= 0;
+    const hlStart = Number.isFinite(options.highlightStart) && options.highlightStart >= 0 ? options.highlightStart : -1;
+    const hlEnd = Number.isFinite(options.highlightEnd) && options.highlightEnd > hlStart ? options.highlightEnd : -1;
+    const hasCueHighlight = hlStart >= 0 && hlEnd > hlStart;
     if (!text) return null;
     const segments = text.split(/(\s+)/);
     let wordIndex = 0;
+    let charOffset = 0;
     return segments.map((segment, index) => {
       if (!segment) return null;
+      const segCharStart = charOffset;
+      charOffset += segment.length;
       if (/^\s+$/.test(segment)) {
         return <React.Fragment key={`${keyPrefix}-space-${index}`}>{segment}</React.Fragment>;
       }
-      const cleaned = segment.replace(/[^A-Za-zÄÖÜäöüßÀ-ÿА-Яа-яЁё'’-]/g, '');
+      const cleaned = segment.replace(/[^A-Za-zÄÖÜäöüßÀ-ÿА-Яа-яЁё’’-]/g, ‘’);
       const currentWordIndex = wordIndex;
       wordIndex += 1;
       const isYoutubeSelected = isYoutubeWordSelection && youtubeSelectedWordKeySet.has(`${youtubeLineIndex}:${currentWordIndex}`);
+      const isCueActive = hasCueHighlight && segCharStart >= hlStart && segCharStart < hlEnd;
       if (!cleaned) {
         return <span key={`${keyPrefix}-${index}`}>{segment}</span>;
       }
+      let cls = className;
+      if (isCueActive) cls += ‘ is-cue-active’;
+      if (isYoutubeSelected) cls += ‘ is-selected’;
       return (
         <span
           key={`${keyPrefix}-${index}`}
-          className={isYoutubeSelected ? `${className} is-selected` : className}
+          className={cls}
           data-youtube-line-index={isYoutubeWordSelection ? youtubeLineIndex : undefined}
           data-youtube-word-index={isYoutubeWordSelection ? currentWordIndex : undefined}
           onTouchStart={isYoutubeWordSelection ? handleYoutubeWordTouchStart : undefined}
@@ -20649,7 +20659,7 @@ function AppInner() {
     });
   };
 
-  const renderSubtitleText = (text, selectionType = (youtubeOverlayEnabled ? 'youtube_overlay_word' : 'youtube_word'), lineIndex = null) => {
+  const renderSubtitleText = (text, selectionType = (youtubeOverlayEnabled ? 'youtube_overlay_word' : 'youtube_word'), lineIndex = null, activeCueRange = null) => {
     const normalized = normalizeSubtitleText(text);
     return renderClickableText(
       normalized,
@@ -20660,6 +20670,8 @@ function AppInner() {
         selectionType,
         stopPropagation: true,
         lineIndex: Number.isInteger(lineIndex) ? lineIndex : undefined,
+        highlightStart: activeCueRange ? activeCueRange.start : -1,
+        highlightEnd: activeCueRange ? activeCueRange.end : -1,
       }
     );
   };
@@ -20724,12 +20736,24 @@ function AppInner() {
         current = null;
         return;
       }
+      const isActive = current.indices.includes(activeIndex);
+      let activeCueCharStart = -1;
+      let activeCueCharEnd = -1;
+      if (isActive && current.cueCharEnds) {
+        const localIdx = current.indices.indexOf(activeIndex);
+        if (localIdx >= 0) {
+          activeCueCharStart = localIdx === 0 ? 0 : (current.cueCharEnds[localIdx - 1] + 1);
+          activeCueCharEnd = current.cueCharEnds[localIdx] ?? targetText.length;
+        }
+      }
       rows.push({
         key: `yt-row-${current.indices[0]}-${current.indices[current.indices.length - 1]}`,
         indices: current.indices,
         targetText,
         translationText,
-        isActive: current.indices.includes(activeIndex),
+        isActive,
+        activeCueCharStart,
+        activeCueCharEnd,
       });
       current = null;
     };
@@ -20746,11 +20770,13 @@ function AppInner() {
           indices: [index],
           targetText,
           translationText,
+          cueCharEnds: [targetText.length],
         };
       } else {
         current.indices.push(index);
         current.targetText = [current.targetText, targetText].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
         current.translationText = [current.translationText, translationText].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+        current.cueCharEnds.push(current.targetText.length);
       }
 
       const currentTarget = String(current.targetText || '').trim();
@@ -27041,7 +27067,14 @@ function AppInner() {
                                       className={row.isActive ? 'is-active' : ''}
                                       onClick={(event) => openYoutubeSentenceSelection(event, row.targetText, 'youtube_sentence')}
                                     >
-                                      {renderSubtitleText(row.targetText, 'youtube_word', rowIndex)}
+                                      {renderSubtitleText(
+                                        row.targetText,
+                                        'youtube_word',
+                                        rowIndex,
+                                        row.isActive && row.activeCueCharStart >= 0
+                                          ? { start: row.activeCueCharStart, end: row.activeCueCharEnd }
+                                          : null
+                                      )}
                                     </p>
                                   ));
                                 })()}

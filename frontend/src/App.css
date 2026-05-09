@@ -14177,7 +14177,7 @@ body {
   overflow-wrap: break-word;
   word-break: normal;
   white-space: normal;
-  text-wrap: wrap;
+  text-wrap: balance;
 }
 
 .webapp-video.youtube-player-first .youtube-subtitles-block-de .webapp-subtitles-list p {
@@ -14209,13 +14209,20 @@ body {
 .youtube-subtitles-block .webapp-subtitles-list p.is-active {
   background: var(--yt-bg-hover);
   color: var(--yt-text-primary);
-  border-radius: 14px;
-  padding: 10px 12px;
+  border-radius: 12px;
+  padding: 6px 10px;
 }
 
 .webapp-video.youtube-player-first .youtube-subtitles-block-ru .webapp-subtitles-list p.is-active {
   color: #fde68a;
   background: rgba(250, 204, 21, 0.16);
+}
+
+.youtube-subtitles-block .webapp-subtitles-list p.is-active .clickable-word.is-cue-active {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 2px;
+  text-decoration-color: var(--yt-action-primary);
 }
 
 .youtube-control-dock {
