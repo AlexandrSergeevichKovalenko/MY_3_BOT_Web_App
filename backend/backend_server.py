@@ -44028,21 +44028,15 @@ def admin_load_wikdict():
         return jsonify({"error": "ADMIN_TOKEN not set"}), 500
     if token != required:
         return jsonify({"error": "Unauthorized"}), 401
-    try:
-        from backend.load_wiktionary import _download, _parse, WIKDICT_URL
-        data = _download(WIKDICT_URL)
-        entries = _parse(data)
-        upsert_wiktionary_seed_state(source_lang="de", seed_complete=False,
-                                      entry_count=count_wiktionary_entries("de"), source_url=WIKDICT_URL)
-        inserted = bulk_insert_wiktionary_entries(entries, source_lang="de")
-        final_count = count_wiktionary_entries("de")
-        upsert_wiktionary_seed_state(source_lang="de", seed_complete=True,
-                                      entry_count=final_count, source_url=WIKDICT_URL)
-        return jsonify({"ok": True, "downloaded_bytes": len(data), "parsed": len(entries),
-                        "inserted": inserted, "total_entries": final_count})
-    except Exception as exc:
-        logging.exception("load_wikdict admin endpoint failed")
-        return jsonify({"ok": False, "error": str(exc)}), 500
+    # Check current state before triggering
+    seed_state = get_wiktionary_seed_state("de")
+    if seed_state.get("seed_complete"):
+        return jsonify({"ok": True, "message": "already_complete",
+                        "entry_count": seed_state.get("entry_count", 0)})
+    # Start seeding in background so the HTTP request returns immediately
+    _start_wikdict_autoseed_if_needed()
+    return jsonify({"ok": True, "message": "seeding_started",
+                    "seed_state": seed_state})
 
 
 def _format_selection_dictionary_explanation(result: dict, source_lang: str, target_lang: str) -> str:
@@ -44988,7 +44982,7 @@ try:
         _run_startup_phase(
             "load_wikdict_if_needed",
             _start_wikdict_autoseed_if_needed,
-            enabled=True,
+            enabled=_startup_enabled_from_env("WIKDICT_AUTOSEED_ON_STARTUP", "0"),
             category="housekeeping",
             required_before_first_request=False,
             async_phase=True,
