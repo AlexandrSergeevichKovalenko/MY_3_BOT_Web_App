@@ -2774,11 +2774,14 @@ const TranslationsSection = React.memo(function TranslationsSection({
                 <div className="tr-field-block">
                   <div className="tr-field-label">{tr('Режим истории', 'Story-Modus')}</div>
                   <div className="tr-story-chips">
-                    <button type="button" className={`tr-story-chip ${storyMode === 'new' ? 'is-on' : ''}`} onClick={() => setStoryMode('new')} disabled={webappLoading}>
+                    <button type="button" className={`tr-story-chip ${storyMode === 'new' ? 'is-on' : ''}`} onClick={() => { setStoryMode('new'); setArenaPhase(''); }} disabled={webappLoading}>
                       {tr('Новая', 'Neu')}
                     </button>
-                    <button type="button" className={`tr-story-chip ${storyMode === 'repeat' ? 'is-on' : ''}`} onClick={() => setStoryMode('repeat')} disabled={webappLoading}>
+                    <button type="button" className={`tr-story-chip ${storyMode === 'repeat' ? 'is-on' : ''}`} onClick={() => { setStoryMode('repeat'); setArenaPhase(''); }} disabled={webappLoading}>
                       {tr('Повторить', 'Wiederholen')}
+                    </button>
+                    <button type="button" className={`tr-story-chip is-arena ${storyMode === 'arena' ? 'is-on' : ''}`} onClick={() => { setStoryMode('arena'); setArenaPhase(''); }} disabled={webappLoading}>
+                      {tr('⚔️ Арена', '⚔️ Arena')}
                     </button>
                   </div>
                 </div>
@@ -2882,7 +2885,75 @@ const TranslationsSection = React.memo(function TranslationsSection({
         )}
         {topicsError && <div className="webapp-error">{topicsError}</div>}
         {storyHistoryError && <div className="webapp-error">{storyHistoryError}</div>}
-        {!isStoryResultMode && (
+
+        {/* Arena candidate selection screen */}
+        {storyMode === 'arena' && arenaPhase === 'selecting' && (
+          <div className="arena-screen">
+            <div className="arena-screen-head">
+              <span className="arena-screen-icon">⚔️</span>
+              <h3 className="arena-screen-title">{tr('Выбери соперника', 'Wähle deinen Gegner')}</h3>
+              <p className="arena-screen-sub">
+                {tr(
+                  `Истории: ${storyType} · ${storyDifficulty}`,
+                  `Geschichten: ${storyType} · ${storyDifficulty}`
+                )}
+              </p>
+            </div>
+
+            {arenaCandidatesLoading && (
+              <div className="arena-loading">{tr('Ищем соперников…', 'Suche nach Gegnern…')}</div>
+            )}
+
+            {!arenaCandidatesLoading && arenaCandidates.length > 0 && (
+              <div className="arena-candidates">
+                {arenaCandidates.map((c) => (
+                  <button
+                    key={c.story_id}
+                    type="button"
+                    className="arena-candidate-card"
+                    onClick={() => handleStartArenaWithCandidateStable(c)}
+                    disabled={webappLoading}
+                  >
+                    <div className="arena-candidate-title">{c.title || tr(`История #${c.story_id}`, `Story #${c.story_id}`)}</div>
+                    <div className="arena-candidate-meta">
+                      <span className="arena-meta-chip">🏆 {c.best_username}: {c.best_user_score}/100</span>
+                      <span className="arena-meta-chip">👥 {c.translator_count} {tr('чел.', 'Pers.')}</span>
+                      <span className="arena-meta-chip">⭐ Ø {c.avg_score}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {!arenaCandidatesLoading && (
+              <div className="arena-no-match">
+                {arenaCandidates.length === 0 && (
+                  <div className="arena-empty-note">
+                    {tr('По этим параметрам пока нет соперников.', 'Für diese Parameter gibt es noch keine Gegner.')}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  className="arena-first-btn"
+                  onClick={() => handleStartArenaWithCandidateStable(null)}
+                  disabled={webappLoading}
+                >
+                  🚩 {tr('Стать первым вызывающим', 'Als Erster herausfordern')}
+                </button>
+                <button
+                  type="button"
+                  className="arena-cancel-btn"
+                  onClick={() => { setArenaPhase(''); setStoryMode('new'); }}
+                  disabled={webappLoading}
+                >
+                  {tr('Отмена', 'Abbrechen')}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {!isStoryResultMode && !(storyMode === 'arena' && arenaPhase === 'selecting') && (
           <form className="webapp-form translation-form" onSubmit={handleTranslationSubmit}>
             <section className="webapp-translation-list">
               {translationProgressiveFillActive && hasActiveTranslationSentences && (
@@ -3012,8 +3083,118 @@ const TranslationsSection = React.memo(function TranslationsSection({
           <section className="webapp-result">
             <h3>{tr('Результат истории', 'Story-Ergebnis')}</h3>
             <div className="webapp-result-card story-result">
+
+              {/* Arena verdict banner */}
+              {storyMode === 'arena' && storyResult.arena_scores && arenaSelectedCandidate && (() => {
+                const myTotal = storyResult.arena_scores.total ?? 0;
+                const theirTotal = arenaSelectedCandidate.best_user_score ?? 0;
+                const won = myTotal > theirTotal;
+                const tied = myTotal === theirTotal;
+                return (
+                  <div className={`arena-verdict ${won ? 'is-win' : tied ? 'is-tie' : 'is-loss'}`}>
+                    <div className="arena-verdict-medal">{won ? '🥇' : tied ? '🤝' : '🥈'}</div>
+                    <div className="arena-verdict-text">
+                      {won ? tr('Ты победил!', 'Du hast gewonnen!') : tied ? tr('Ничья!', 'Unentschieden!') : tr('В следующий раз!', 'Beim nächsten Mal!')}
+                    </div>
+                    <div className="arena-verdict-scores">
+                      <span className="arena-vs-me">{tr('Ты', 'Du')}: <strong>{myTotal}</strong></span>
+                      <span className="arena-vs-sep">vs</span>
+                      <span className="arena-vs-them">{arenaSelectedCandidate.best_username}: <strong>{theirTotal}</strong></span>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* 4-criteria score bars */}
+              {storyResult.arena_scores && (() => {
+                const sc = storyResult.arena_scores;
+                const bars = [
+                  { label: tr('Грамматика', 'Grammatik'),      val: sc.grammar,      max: 40 },
+                  { label: tr('Точность',   'Genauigkeit'),    val: sc.accuracy,     max: 20 },
+                  { label: tr('Стиль',      'Stil'),           val: sc.style,        max: 20 },
+                  { label: tr('Полнота',    'Vollständigkeit'), val: sc.completeness, max: 20 },
+                ];
+                return (
+                  <div className="arena-score-card">
+                    <div className="arena-score-total">
+                      {sc.total ?? 0} <span className="arena-score-total-max">/ 100</span>
+                    </div>
+                    <div className="arena-score-bars">
+                      {bars.map(({ label, val, max }) => (
+                        <div key={label} className="arena-bar-row">
+                          <span className="arena-bar-label">{label}</span>
+                          <div className="arena-bar-track">
+                            <div className="arena-bar-fill" style={{ width: `${Math.round((val / max) * 100)}%` }} />
+                          </div>
+                          <span className="arena-bar-val">{val}/{max}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Leaderboard */}
+              {storyResult.story_id && (
+                <div className="arena-leaderboard-wrap">
+                  {storyLeaderboardLoading && (
+                    <div className="arena-lb-loading">{tr('Загружаем таблицу…', 'Tabelle wird geladen…')}</div>
+                  )}
+                  {storyLeaderboard && storyLeaderboard.length > 0 && (
+                    <div className="arena-leaderboard">
+                      <div className="arena-lb-title">
+                        {tr(`📊 Переводчики этой истории (${storyLeaderboard.length})`, `📊 Übersetzer dieser Geschichte (${storyLeaderboard.length})`)}
+                      </div>
+                      {storyLeaderboard.map((entry, idx) => {
+                        const medals = ['🥇','🥈','🥉'];
+                        const isMe = String(entry.username) === String(storyLeaderboard.find((e) => e.user_id === entry.user_id)?.username);
+                        return (
+                          <div key={entry.score_id} className={`arena-lb-row ${idx < 3 ? 'is-top' : ''}`}>
+                            <span className="arena-lb-rank">{medals[idx] || `#${idx + 1}`}</span>
+                            <span className="arena-lb-name">{entry.username}</span>
+                            <span className="arena-lb-score">{entry.total_score}</span>
+                            <button
+                              type="button"
+                              className={`arena-lb-heart ${entry.peoples_votes > 0 ? 'has-votes' : ''}`}
+                              onClick={() => handleTranslationVoteStable(entry.score_id)}
+                              disabled={!!translationVoteLoading[entry.score_id]}
+                              title={tr('Народный любимец', 'Volkslieblings-Stimme')}
+                            >
+                              ❤️ {entry.peoples_votes > 0 ? entry.peoples_votes : ''}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Story like/dislike */}
+              {storyResult.story_id && (
+                <div className="arena-vote-row">
+                  <span className="arena-vote-label">{tr('История понравилась?', 'Hat dir die Geschichte gefallen?')}</span>
+                  <button
+                    type="button"
+                    className={`arena-vote-btn is-like ${storyVotes?.my_vote === 1 ? 'is-active' : ''}`}
+                    onClick={() => handleStoryVoteStable(1)}
+                    disabled={storyVoteLoading}
+                  >
+                    👍 {storyVotes?.likes ?? ''}
+                  </button>
+                  <button
+                    type="button"
+                    className={`arena-vote-btn is-dislike ${storyVotes?.my_vote === -1 ? 'is-active' : ''}`}
+                    onClick={() => handleStoryVoteStable(-1)}
+                    disabled={storyVoteLoading}
+                  >
+                    👎 {storyVotes?.dislikes ?? ''}
+                  </button>
+                </div>
+              )}
+
               <div className="story-result-head">
-                <strong>{tr('⭐ Итоговый балл:', '⭐ Gesamtscore:')}</strong> {storyResult.score ?? '—'} / 100
+                <strong>{tr('⭐ Итоговый балл (GPT-разбор):', '⭐ Gesamtscore (GPT):')}</strong> {storyResult.score ?? '—'} / 100
               </div>
 
               {storyResult.feedback && renderStoryFeedback(storyResult.feedback)}
@@ -4629,6 +4810,15 @@ function AppInner() {
   const [selectedStoryId, setSelectedStoryId] = useState('');
   const [storyGuess, setStoryGuess] = useState('');
   const [storyResult, setStoryResult] = useState(null);
+  const [arenaPhase, setArenaPhase] = useState('');
+  const [arenaCandidates, setArenaCandidates] = useState([]);
+  const [arenaCandidatesLoading, setArenaCandidatesLoading] = useState(false);
+  const [arenaSelectedCandidate, setArenaSelectedCandidate] = useState(null);
+  const [storyLeaderboard, setStoryLeaderboard] = useState(null);
+  const [storyLeaderboardLoading, setStoryLeaderboardLoading] = useState(false);
+  const [storyVotes, setStoryVotes] = useState(null);
+  const [storyVoteLoading, setStoryVoteLoading] = useState(false);
+  const [translationVoteLoading, setTranslationVoteLoading] = useState({});
   const [sessionType, setSessionType] = useState('none');
   const [translationSessionId, setTranslationSessionId] = useState(null);
   const [translationProgressiveFill, setTranslationProgressiveFill] = useState({
@@ -16498,6 +16688,11 @@ function AppInner() {
       setWebappError(initDataMissingMsg);
       return;
     }
+    if (storyMode === 'arena' && arenaPhase !== 'playing') {
+      setArenaPhase('selecting');
+      void handleFetchArenaCandidates();
+      return;
+    }
     setWebappLoading(true);
     translationProgressiveFillPollTokenRef.current += 1;
     setTranslationProgressiveFill({
@@ -16607,13 +16802,134 @@ function AppInner() {
       }
       const data = await response.json();
       setStoryResult(data);
+      setStoryLeaderboard(null);
+      setStoryVotes(null);
       setSentences([]);
       await loadSessionInfo();
+      if (data.story_id) void handleLoadStoryLeaderboard(data.story_id);
     } catch (error) {
       setWebappError(`${tr('Ошибка истории', 'Story-Fehler')}: ${error.message}`);
     } finally {
       setWebappLoading(false);
     }
+  };
+
+  const handleFetchArenaCandidates = async () => {
+    if (!initData) return;
+    setArenaCandidatesLoading(true);
+    setArenaCandidates([]);
+    try {
+      const resp = await fetch('/api/webapp/story/arena/candidates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, story_type: storyType, difficulty: storyDifficulty }),
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      setArenaCandidates(Array.isArray(data.candidates) ? data.candidates : []);
+    } catch { /* non-fatal */ }
+    finally { setArenaCandidatesLoading(false); }
+  };
+
+  const handleStartArenaWithCandidate = async (candidate) => {
+    setArenaSelectedCandidate(candidate || null);
+    setArenaPhase('playing');
+    const arenaStoryId = candidate ? candidate.story_id : null;
+    setWebappLoading(true);
+    translationProgressiveFillPollTokenRef.current += 1;
+    setTranslationProgressiveFill({ active: false, sessionId: null, readyCount: 0, expectedTotal: 7, status: 'idle', error: '' });
+    setWebappError('');
+    setFinishMessage('');
+    setFinishStatus('idle');
+    setTranslationCheckProgress({ active: false, done: 0, total: 0 });
+    setStoryResult(null);
+    setResults([]);
+    setTranslationAudioGrammarOptIn({});
+    setTranslationAudioGrammarSaving({});
+    setExplanations({});
+    try {
+      const response = await fetch('/api/webapp/story/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          mode: 'arena',
+          story_type: storyType,
+          difficulty: storyDifficulty,
+          story_id: arenaStoryId,
+        }),
+      });
+      if (!response.ok) throw new Error(await readApiError(response, 'Ошибка старта арены', 'Arena-Startfehler'));
+      const data = await response.json();
+      if (data.blocked) {
+        setFinishMessage(activeTranslationSessionWarning);
+        const blockedSessionId = String(data.session_id || '').trim() || undefined;
+        await loadSessionInfo();
+        if (blockedSessionId) await loadSentences({ sessionId: blockedSessionId, preserveFinishMessage: true });
+        else setSentences([]);
+        return;
+      }
+      const storySessionId = String(data.session_id || '').trim() || undefined;
+      await loadSessionInfo();
+      await loadSentences({ sessionId: storySessionId });
+    } catch (error) {
+      setWebappError(`${tr('Ошибка старта арены', 'Arena-Startfehler')}: ${error.message}`);
+    } finally {
+      setWebappLoading(false);
+    }
+  };
+
+  const handleStoryVote = async (vote) => {
+    if (!initData || !storyResult?.story_id || storyVoteLoading) return;
+    setStoryVoteLoading(true);
+    try {
+      const resp = await fetch('/api/webapp/story/vote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, story_id: storyResult.story_id, vote }),
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      setStoryVotes({ likes: data.likes, dislikes: data.dislikes, my_vote: data.action === 'removed' ? null : vote });
+    } catch { /* non-fatal */ }
+    finally { setStoryVoteLoading(false); }
+  };
+
+  const handleTranslationVote = async (scoreId) => {
+    if (!initData || translationVoteLoading[scoreId]) return;
+    setTranslationVoteLoading((prev) => ({ ...prev, [scoreId]: true }));
+    try {
+      const resp = await fetch('/api/webapp/story/translation/vote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, score_id: scoreId }),
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      setStoryLeaderboard((prev) => prev
+        ? prev.map((entry) => entry.score_id === scoreId
+          ? { ...entry, peoples_votes: data.peoples_votes }
+          : entry)
+        : prev);
+    } catch { /* non-fatal */ }
+    finally { setTranslationVoteLoading((prev) => ({ ...prev, [scoreId]: false })); }
+  };
+
+  const handleLoadStoryLeaderboard = async (storyId) => {
+    if (!initData || !storyId || storyLeaderboardLoading) return;
+    setStoryLeaderboardLoading(true);
+    try {
+      const resp = await fetch(`/api/webapp/story/${storyId}/leaderboard`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData }),
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      setStoryLeaderboard(Array.isArray(data.leaderboard) ? data.leaderboard : []);
+      if (data.votes) setStoryVotes(data.votes);
+    } catch { /* non-fatal */ }
+    finally { setStoryLeaderboardLoading(false); }
   };
 
   const handleDraftLiveChange = useCallback((sentenceId, value, options = {}) => {
@@ -20426,9 +20742,16 @@ function AppInner() {
       const nextItem = items[index + 1] || null;
       const nextStart = Number(nextItem?.start ?? Number.POSITIVE_INFINITY);
       const currentStart = Number(item?.start ?? 0);
+      const currentDuration = Number(item?.duration ?? 0);
+      const currentEnd = Number.isFinite(currentStart) && Number.isFinite(currentDuration)
+        ? currentStart + Math.max(0, currentDuration)
+        : currentStart;
       const nextTargetText = normalizeSubtitleText(nextItem?.text || '');
       const nextStartsContinuation = lowercaseStartPattern.test(String(nextTargetText || '').trim());
-      const nextGapLarge = Number.isFinite(nextStart) && Number.isFinite(currentStart) && (nextStart - currentStart) > 3.2;
+      const nextGapSeconds = Number.isFinite(nextStart) && Number.isFinite(currentEnd)
+        ? nextStart - currentEnd
+        : 0;
+      const nextGapLarge = nextGapSeconds > 0.9;
 
       const shouldFlush = targetEndsHard
         || translationEndsHard
@@ -23056,6 +23379,9 @@ function AppInner() {
   const handleTranslationSubmitStable = useStableCallback(handleTranslationSubmit);
   const handleStartTranslationStable = useStableCallback(handleStartTranslation);
   const handleStartStoryStable = useStableCallback(handleStartStory);
+  const handleStartArenaWithCandidateStable = useStableCallback(handleStartArenaWithCandidate);
+  const handleStoryVoteStable = useStableCallback(handleStoryVote);
+  const handleTranslationVoteStable = useStableCallback(handleTranslationVote);
   const extractCorrectTranslationTextStable = useStableCallback(extractCorrectTranslationText);
   const handleSelectionStable = useStableCallback(handleSelection);
   const renderStoryFeedbackStable = useStableCallback(renderStoryFeedback);
