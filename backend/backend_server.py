@@ -44836,10 +44836,11 @@ try:
         )
         _run_startup_phase(
             "load_freedict_if_empty",
-            _load_freedict_if_empty,
+            _start_freedict_autoseed_if_needed,
             enabled=True,
             category="housekeeping",
             required_before_first_request=False,
+            async_phase=True,
         )
     else:
         logging.info(
