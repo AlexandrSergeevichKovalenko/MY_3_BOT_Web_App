@@ -39713,7 +39713,7 @@ def _dispatch_today_evening_reminders(target_date: date, tz_name: str = TODAY_PL
                 continue
             if not snapshot.get("is_complete"):
                 text = (
-                    f"⏰ {username}, мягкое напоминание: сегодня выполнено "
+                    f"⏰ {username}, напоминание: сегодня выполнено "
                     f"{snapshot.get('done_items', 0)}/{snapshot.get('total_items', 0)} задач.\n"
                     "Если будет возможность, закрой дневной план до конца."
                 )
