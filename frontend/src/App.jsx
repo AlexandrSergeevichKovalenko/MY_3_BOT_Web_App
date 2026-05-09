@@ -26818,22 +26818,24 @@ function AppInner() {
                           </div>
                         </div>
                         <div className="youtube-player-first-controls-row">
-                        {isFocusedSection('youtube') && (
+                        <div className="youtube-player-first-head-controls">
                           <button
                             type="button"
-                            className="section-home-back is-compact-arrow"
-                            onClick={goBackFromYoutube}
-                            title={tr('Назад', 'Zurueck')}
-                            aria-label={tr('Назад', 'Zurueck')}
+                            className="youtube-status-action-btn youtube-status-load-btn"
+                            onClick={() => fetchTranscript()}
+                            disabled={youtubeLoadDisabled}
                           >
-                            <span className="youtube-back-arrow-icon" aria-hidden="true">
-                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                <polyline points="15 18 9 12 15 6"/>
-                              </svg>
-                            </span>
+                            {youtubeTranscriptLoading
+                              ? tr('Загружаем...', 'Loading...')
+                              : tr('Субтитры', 'Subtitles')}
                           </button>
-                        )}
-                        <div className="youtube-player-first-head-controls">
+                          <button
+                            type="button"
+                            className={`youtube-status-action-btn ${showManualTranscript ? 'is-active' : ''}`}
+                            onClick={() => setShowManualTranscript((prev) => !prev)}
+                          >
+                            {showManualTranscript ? tr('Транскрипция: ON', 'Transcript: ON') : tr('Транскрипция', 'Transcript')}
+                          </button>
                           <button
                             type="button"
                             className={`youtube-status-action-btn ${youtubeOverlayEnabled ? 'is-active' : ''}`}
@@ -26848,17 +26850,7 @@ function AppInner() {
                             onClick={() => setYoutubeTranslationEnabled((prev) => !prev)}
                             disabled={!youtubeSubtitlesReady}
                           >
-                            {youtubeTranslationEnabled ? tr('RU: ON', 'RU: ON') : tr('RU: OFF', 'RU: OFF')}
-                          </button>
-                          <button
-                            type="button"
-                            className="youtube-status-action-btn youtube-status-load-btn"
-                            onClick={() => fetchTranscript()}
-                            disabled={youtubeLoadDisabled}
-                          >
-                            {youtubeTranscriptLoading
-                              ? tr('Загружаем...', 'Loading...')
-                              : tr('Загрузить субтитры', 'Load subtitles')}
+                            {youtubeTranslationEnabled ? 'RU: ON' : 'RU: OFF'}
                           </button>
                           <button
                             type="button"
@@ -26869,12 +26861,43 @@ function AppInner() {
                             }}
                             disabled={!youtubeId}
                           >
-                            {youtubeAppFullscreen
-                              ? tr('Full screen: ON', 'Full screen: ON')
-                              : tr('Full screen: OFF', 'Full screen: OFF')}
+                            {youtubeAppFullscreen ? 'Fullscreen: ON' : 'Fullscreen: OFF'}
                           </button>
                         </div>
                         </div>
+                        {showManualTranscript && (
+                          <div className="webapp-subtitles-manual youtube-sheet-manual youtube-mobile-transcript-panel">
+                            <textarea
+                              rows={5}
+                              value={manualTranscript}
+                              onChange={(event) => setManualTranscript(event.target.value)}
+                              placeholder={tr('Вставьте .srt/.vtt с таймкодами. Если таймкодов нет, покажем статично.', 'Paste .srt/.vtt with timecodes. Without timecodes we show static lines.')}
+                            />
+                            <div className="webapp-video-actions">
+                              <button
+                                type="button"
+                                className="secondary-button"
+                                onClick={() => handleManualTranscript()}
+                              >
+                                {tr('Использовать транскрипцию', 'Use transcript')}
+                              </button>
+                              {youtubeManualOverride && (
+                                <button
+                                  type="button"
+                                  className="secondary-button"
+                                  onClick={() => {
+                                    setYoutubeManualOverride(false);
+                                    setManualTranscript('');
+                                    setYoutubeTranscriptHasTiming(true);
+                                    setShowManualTranscript(false);
+                                  }}
+                                >
+                                  {tr('Сбросить', 'Reset')}
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
                     <div className="youtube-player-card">
