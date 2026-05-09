@@ -25499,72 +25499,8 @@ def base_dictionary_lookup():
             "source": "cache",
         })
 
-    # 2. Fetch from Wiktionary (online path)
-    wikt = None
-    try:
-        wikt = _fetch_wiktionary_entry(word)
-    except Exception:
-        pass
-
-    if not wikt or not wikt.get("glosses_en"):
-        return jsonify({"not_found": True})
-
-    # 3. Translate English glosses → Russian using quick translate
-    ru_translations: list[str] = []
-    senses_json: list[dict] = []
-    for gloss_en in wikt["glosses_en"][:4]:
-        ru = ""
-        try:
-            ru = _force_translate_text(gloss_en, "en", "ru")
-        except Exception:
-            pass
-        senses_json.append({"gloss_en": gloss_en, "gloss_ru": ru})
-        if ru:
-            ru_translations.append(ru)
-
-    if not ru_translations:
-        return jsonify({"not_found": True})
-
-    # 4. Detect article for nouns
-    article = ""
-    pos = wikt.get("pos") or ""
-    if pos.lower() in ("noun", "proper noun") and source_lang == "de":
-        for article_de in ("der ", "die ", "das "):
-            normalized = word.lower()
-            if db_entry and db_entry.get("article"):
-                article = db_entry["article"]
-                break
-        # Try to infer from Wiktionary head templates (crude heuristic)
-        try:
-            first_gloss = wikt["glosses_en"][0].lower()
-            if " masculine " in first_gloss or first_gloss.startswith("masculine"):
-                article = "der"
-            elif " feminine " in first_gloss or first_gloss.startswith("feminine"):
-                article = "die"
-            elif " neuter " in first_gloss or first_gloss.startswith("neuter"):
-                article = "das"
-        except Exception:
-            pass
-
-    # 5. Save to cache for future lookups
-    new_entry: dict = {
-        "lemma": word,
-        "source_lang": source_lang,
-        "pos": pos,
-        "article": article,
-        "translations_ru": ru_translations[:6],
-        "glosses_en": wikt.get("glosses_en") or [],
-        "senses_json": senses_json,
-        "forms_json": {},
-        "wikt_fetched": True,
-    }
-    try:
-        saved = upsert_base_dictionary_entry(new_entry)
-        result = _build_base_dict_result_from_entry(saved)
-    except Exception:
-        result = _build_base_dict_result_from_entry(new_entry)
-
-    return jsonify({"item": result, "source": "wiktionary"})
+    # Word not found in the pre-loaded dictionary
+    return jsonify({"not_found": True})
 
 
 @app.route("/api/webapp/dictionary/offline-pack", methods=["GET"])

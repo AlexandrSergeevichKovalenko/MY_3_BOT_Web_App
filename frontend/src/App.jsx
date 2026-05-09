@@ -2640,6 +2640,19 @@ const TranslationsSection = React.memo(function TranslationsSection({
   historyError,
   activeLanguagePairLabel,
   historyItems,
+  arenaPhase,
+  setArenaPhase,
+  arenaCandidates,
+  arenaCandidatesLoading,
+  arenaSelectedCandidate,
+  storyLeaderboard,
+  storyLeaderboardLoading,
+  storyVotes,
+  storyVoteLoading,
+  translationVoteLoading,
+  handleStartArenaWithCandidateStable,
+  handleStoryVoteStable,
+  handleTranslationVoteStable,
 }) {
   const [focusSheetOpen, setFocusSheetOpen] = React.useState(false);
 
@@ -22311,46 +22324,40 @@ function AppInner() {
         return;
       }
 
-      // 2. Try server-side base dictionary (Wiktionary + translate cache)
+      // 2. Try server-side pre-loaded dictionary (PostgreSQL)
       if (!initData) {
-        // No network auth — just fall through to quick translate
-        throw new Error('no_auth');
+        setDictionaryError(tr('Слово не найдено в словаре.', 'Wort nicht im Wörterbuch gefunden.'));
+        return;
       }
       const response = await fetch('/api/webapp/dictionary/base-lookup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ initData, word: sourceWord, source_lang: 'de' }),
       });
-      if (!response.ok) throw new Error('server_error');
+      if (!response.ok) {
+        setDictionaryError(tr('Ошибка соединения со словарём.', 'Verbindungsfehler zum Wörterbuch.'));
+        return;
+      }
       const data = await response.json();
 
       if (data.not_found || !data.item) {
-        // Word not in dictionary — auto-fallback to quick translate
-        setDictionaryLoading(false);
-        setDictionaryLookupMode('');
-        await handleDictionaryQuickLookup();
+        setDictionaryError(tr('Слово не найдено в словаре. Попробуйте ⚡ Перевод.', 'Wort nicht gefunden. Versuche ⚡ Übersetzen.'));
         return;
       }
 
-      const item = data.item;
-      setDictionaryResult(item);
+      setDictionaryResult(data.item);
       setDictionaryDirection('de-ru');
       setDictionaryLanguagePair(resolveLanguagePairForUI({ source_lang: 'de', target_lang: 'ru' }));
-
-      // Cache the result offline for future use
-      void saveBaseDictEntryFromServerResult(sourceWord, item);
+      void saveBaseDictEntryFromServerResult(sourceWord, data.item);
     } catch {
-      // Network failure — try offline again, then fall back to quick translate
+      // Network failure — try offline cache only
       const offlineFallback = await lookupOfflineBaseDictEntry(sourceWord);
       if (offlineFallback) {
         setDictionaryResult(offlineFallback);
         setDictionaryDirection('de-ru');
         setDictionaryLanguagePair(resolveLanguagePairForUI({ source_lang: 'de', target_lang: 'ru' }));
       } else {
-        setDictionaryLoading(false);
-        setDictionaryLookupMode('');
-        await handleDictionaryQuickLookup();
-        return;
+        setDictionaryError(tr('Нет соединения и слово не найдено офлайн.', 'Kein Netz und Wort nicht offline gefunden.'));
       }
     } finally {
       setDictionaryLoading(false);
@@ -26584,6 +26591,19 @@ function AppInner() {
                 historyError={historyError}
                 activeLanguagePairLabel={activeLanguagePairLabel}
                 historyItems={historyItems}
+                arenaPhase={arenaPhase}
+                setArenaPhase={setArenaPhase}
+                arenaCandidates={arenaCandidates}
+                arenaCandidatesLoading={arenaCandidatesLoading}
+                arenaSelectedCandidate={arenaSelectedCandidate}
+                storyLeaderboard={storyLeaderboard}
+                storyLeaderboardLoading={storyLeaderboardLoading}
+                storyVotes={storyVotes}
+                storyVoteLoading={storyVoteLoading}
+                translationVoteLoading={translationVoteLoading}
+                handleStartArenaWithCandidateStable={handleStartArenaWithCandidateStable}
+                handleStoryVoteStable={handleStoryVoteStable}
+                handleTranslationVoteStable={handleTranslationVoteStable}
               />
             )}
 
