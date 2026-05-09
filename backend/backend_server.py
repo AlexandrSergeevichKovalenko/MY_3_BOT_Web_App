@@ -9758,10 +9758,22 @@ def _load_freedict_if_empty() -> None:
             with conn.cursor() as cur:
                 cur.execute("SELECT COUNT(*) FROM bt_base_dictionary WHERE source_lang = 'de'")
                 count = cur.fetchone()[0]
-        if count > 0:
-            logging.info("FreeDict autoseed: bt_base_dictionary already has %s entries, skipping", count)
+        # A partially-filled table is worse than an empty one here: base lookup
+        # starts returning hard "not found" for common words and the old logic
+        # would never re-seed because count was merely > 0.
+        ready_min_count = 22000
+        if count >= ready_min_count:
+            logging.info(
+                "FreeDict autoseed: bt_base_dictionary already has %s entries (ready threshold %s), skipping",
+                count,
+                ready_min_count,
+            )
             return
-        logging.info("FreeDict autoseed: table empty, starting download...")
+        logging.info(
+            "FreeDict autoseed: bt_base_dictionary has only %s entries (ready threshold %s), starting backfill...",
+            count,
+            ready_min_count,
+        )
         from backend.load_freedict import _download, _parse, _bulk_insert, FREEDICT_URL
         data = _download(FREEDICT_URL)
         entries = _parse(data)
@@ -25785,7 +25797,8 @@ def base_dictionary_lookup():
         })
 
     try:
-        if count_base_dictionary_entries("de") <= 0:
+        ready_min_count = 22000
+        if count_base_dictionary_entries("de") < ready_min_count:
             _start_freedict_autoseed_if_needed()
             return jsonify({"not_found": True, "warming_up": True, "query_lang": query_lang}), 202
     except Exception:

@@ -6058,6 +6058,10 @@ body {
   border-radius: 14px;
   padding: 3px;
   gap: 2px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
 }
 .vocab-tab {
   flex: 1;
@@ -6075,6 +6079,9 @@ body {
   color: #64748B;
   transition: all 0.15s;
   -webkit-tap-highlight-color: transparent;
+  min-width: 0;
+  padding: 0 8px;
+  overflow: hidden;
 }
 .vocab-tab.is-active {
   background: #1E293B;
@@ -19352,6 +19359,20 @@ body {
   overflow-x: hidden;
 }
 
+.webapp-dictionary > *,
+.webapp-dictionary .webapp-dictionary-form,
+.webapp-dictionary .dictionary-input-wrap,
+.webapp-dictionary .dictionary-actions,
+.webapp-dictionary .dictionary-actions > *,
+.webapp-dictionary .folder-panel,
+.webapp-dictionary .folder-row,
+.webapp-dictionary .folder-row > *,
+.webapp-dictionary .dictionary-pdf-actions,
+.webapp-dictionary .dictionary-pdf-actions > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .webapp-dictionary .webapp-local-section-head {
   min-height: auto;
   padding-right: 48px;
@@ -19412,6 +19433,7 @@ body {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
+  width: 100%;
 }
 
 .webapp-dictionary .dictionary-actions .dictionary-fast-button,
@@ -19484,6 +19506,7 @@ body {
   border-radius: 20px;
   border: 1px solid var(--dict-border);
   background: var(--dict-bg-card-alt);
+  width: 100%;
 }
 
 .webapp-dictionary .folder-row {
@@ -19491,6 +19514,7 @@ body {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   align-items: end;
+  width: 100%;
 }
 
 .webapp-dictionary .folder-select {
@@ -19527,6 +19551,8 @@ body {
   font-size: 14px;
   font-weight: 600;
   box-shadow: none;
+  width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .webapp-dictionary .folder-row > .secondary-button:hover {
@@ -19558,6 +19584,7 @@ body {
 
 .webapp-dictionary .dictionary-pdf-actions {
   gap: 12px;
+  width: 100%;
 }
 
 .webapp-dictionary .dictionary-pdf-actions .secondary-button {
@@ -19567,6 +19594,8 @@ body {
   background: transparent;
   color: var(--dict-text-secondary);
   box-shadow: none;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .webapp-dictionary .dictionary-pdf-actions .secondary-button:hover {
