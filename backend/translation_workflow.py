@@ -31,6 +31,7 @@ from backend.openai_manager import (
     llm_execute,
     run_check_translation_multilang,
     run_check_translation_story,
+    run_check_translation_story_arena,
     run_check_story_guess_semantic,
 )
 from backend.analytics import _calculate_final_score
@@ -43,6 +44,7 @@ from backend.database import (
     get_skill_mapping_for_error,
     build_translation_session_minutes_sql,
     enforce_feature_limit,
+    save_story_arena_score,
 )
 from backend.job_queue import (
     clear_active_translation_session_state,
@@ -913,6 +915,23 @@ def _parse_story_feedback(text: str) -> dict[str, Any]:
     }
 
 
+def _parse_arena_feedback(text: str) -> dict[str, int]:
+    """Parse JSON arena score from GPT. Returns dict with grammar/accuracy/style/completeness/total."""
+    defaults = {"grammar": 0, "accuracy": 0, "style": 0, "completeness": 0, "total": 0}
+    try:
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned).rstrip("`").strip()
+        parsed = json.loads(cleaned)
+        g = max(0, min(40, int(parsed.get("grammar", 0))))
+        a = max(0, min(20, int(parsed.get("accuracy", 0))))
+        s = max(0, min(20, int(parsed.get("style", 0))))
+        c = max(0, min(20, int(parsed.get("completeness", 0))))
+        return {"grammar": g, "accuracy": a, "style": s, "completeness": c, "total": g + a + s + c}
+    except Exception:
+        return defaults
+
+
 def _build_story_source_links(answer: str) -> list[dict[str, str]]:
     normalized = (answer or "").strip()
     if not normalized:
@@ -1217,6 +1236,12 @@ async def start_story_session_webapp(
         story_aliases: list[str] = []
         story_extra_de = None
 
+        # Determine whether to load an existing story or generate a new one.
+        # - mode "repeat": always load from DB (auto-pick last if no story_id given)
+        # - mode "arena" + story_id: load the chosen challenge story
+        # - mode "arena" + no story_id: generate new (user becomes first challenger)
+        # - mode "new" or anything else: generate new
+        load_from_db = False
         if mode == "repeat":
             if not story_id:
                 cursor.execute(
@@ -1233,7 +1258,11 @@ async def start_story_session_webapp(
                 story_id = row[0] if row else None
             if not story_id:
                 return {"error": "Нет сохранённых историй для повтора.", "created": False}
+            load_from_db = True
+        elif mode == "arena" and story_id:
+            load_from_db = True
 
+        if load_from_db:
             cursor.execute(
                 """
                 SELECT title, answer, answer_aliases, extra_de, story_type, difficulty
@@ -1406,7 +1435,13 @@ async def submit_story_translation_webapp(
         original_text = "\n".join(original_sentences)
         user_text = "\n".join(user_sentences)
         try:
-            raw_feedback = await run_check_translation_story(original_text, user_text)
+            raw_feedback, raw_arena = await asyncio.gather(
+                run_check_translation_story(original_text, user_text),
+                run_check_translation_story_arena(original_text, user_text),
+                return_exceptions=True,
+            )
+            if isinstance(raw_feedback, BaseException):
+                raise raw_feedback
         except Exception as exc:
             detailed_message = _extract_nested_error_message(exc)
             logging.warning(
@@ -1419,6 +1454,8 @@ async def submit_story_translation_webapp(
             if detailed_message:
                 return {"error": f"Не удалось проверить историю. {detailed_message}"}
             return {"error": "Не удалось проверить историю. Попробуйте ещё раз."}
+
+        arena_scores = _parse_arena_feedback(raw_arena) if isinstance(raw_arena, str) else {"grammar": 0, "accuracy": 0, "style": 0, "completeness": 0, "total": 0}
 
         if not isinstance(raw_feedback, str):
             detailed_message = _extract_nested_error_message(raw_feedback)
@@ -1510,6 +1547,23 @@ async def submit_story_translation_webapp(
 
         conn.commit()
 
+        # Save 4-criteria scores for arena leaderboard (non-fatal)
+        try:
+            save_story_arena_score(
+                story_id=story_id,
+                user_id=user_id,
+                username=username,
+                session_id=int(session_id),
+                total_score=arena_scores["total"],
+                score_grammar=arena_scores["grammar"],
+                score_accuracy=arena_scores["accuracy"],
+                score_style=arena_scores["style"],
+                score_completeness=arena_scores["completeness"],
+                full_translation=user_text,
+            )
+        except Exception as exc:
+            logging.warning("Failed to save arena score for user_id=%s: %s", user_id, exc)
+
         return {
             "ok": True,
             "score": score_value,
@@ -1519,6 +1573,8 @@ async def submit_story_translation_webapp(
             "answer": answer,
             "extra_de": extra_de,
             "source_links": source_links,
+            "arena_scores": arena_scores,
+            "story_id": story_id,
         }
     finally:
         cursor.close()

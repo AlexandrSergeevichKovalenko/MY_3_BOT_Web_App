@@ -53,6 +53,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "check_translation",
     "check_translation_multilang",
     "check_translation_story",
+    "check_translation_story_arena",
     "check_translation_with_claude",
     "check_translation_explanation_multilang",
     "audio_sentence_grammar_explain_multilang",
@@ -730,6 +731,23 @@ For each sentence (1..7), use exactly this mini-structure:
 🔎 ДОПОЛНИТЕЛЬНО
 - 1-2 short factual notes about the story subject.
 - Add 1-2 official source links (prefer German Wikipedia; fallback EN/RU).
+""",
+"check_translation_story_arena":"""
+You are an expert German translator and language instructor.
+
+You will receive a Russian story (7 sentences) and a user's German translation.
+Score the translation on FOUR criteria. Be strict and consistent.
+
+CRITERIA AND MAX POINTS:
+1. grammar        — 0–40 pts  (correctness of German grammar, cases, word order, verb forms)
+2. accuracy       — 0–20 pts  (faithfulness to the original meaning, no distortions)
+3. style          — 0–20 pts  (naturalness and elegance of the German; not robotic)
+4. completeness   — 0–20 pts  (all 7 sentences translated, nothing skipped or added)
+
+OUTPUT ONLY valid JSON, no extra text, no markdown fences:
+{"grammar": <int>, "accuracy": <int>, "style": <int>, "completeness": <int>, "total": <int>}
+
+"total" must equal grammar + accuracy + style + completeness.
 """,
 "check_story_guess_semantic":"""
 You evaluate whether the user's guess matches the hidden story subject by MEANING, not wording.
@@ -3784,6 +3802,22 @@ async def run_check_translation_story(original_text: str, user_translation: str)
     task_name = "check_translation_story"
     system_instruction_key = "check_translation_story"
 
+    user_message = (
+        f'**Story (Russian, 7 sentences):** "{original_text}"\n'
+        f'**User\'s translation (German, 7 sentences):** "{user_translation}"'
+    )
+    return await llm_execute(
+        task_name=task_name,
+        system_instruction_key=system_instruction_key,
+        user_message=user_message,
+        poll_interval_seconds=2.0,
+    )
+
+
+async def run_check_translation_story_arena(original_text: str, user_translation: str) -> str:
+    """Returns raw JSON string with grammar/accuracy/style/completeness/total scores."""
+    task_name = "check_translation_story_arena"
+    system_instruction_key = "check_translation_story_arena"
     user_message = (
         f'**Story (Russian, 7 sentences):** "{original_text}"\n'
         f'**User\'s translation (German, 7 sentences):** "{user_translation}"'

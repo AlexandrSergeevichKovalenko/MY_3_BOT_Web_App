@@ -10916,20 +10916,30 @@ def get_random_dictionary_entry(
     source_lang: str = "ru",
     target_lang: str = "de",
     chat_id: int | None = None,
+    mastered_accuracy_threshold: float = 0.5,
 ) -> dict | None:
     mastery_filter = ""
     mastery_params: list = []
     if chat_id is not None:
+        safe_mastered_threshold = min(1.0, max(0.0, float(mastered_accuracy_threshold)))
         mastery_filter = """
                   AND NOT EXISTS (
-                      SELECT 1 FROM bt_3_telegram_quiz_attempts a
-                      WHERE a.word_ru = bt_3_webapp_dictionary_queries.word_ru
-                        AND a.chat_id = %s
-                      GROUP BY a.word_ru
-                      HAVING COUNT(*) >= 3
-                         AND SUM(CASE WHEN a.is_correct THEN 1 ELSE 0 END)::float / COUNT(*) >= 0.80
+                      SELECT 1
+                      FROM (
+                          SELECT
+                              a.word_ru,
+                              a.user_id,
+                              BOOL_OR(a.is_correct) AS user_has_correct
+                          FROM bt_3_telegram_quiz_attempts a
+                          WHERE a.word_ru = bt_3_webapp_dictionary_queries.word_ru
+                            AND a.chat_id = %s
+                          GROUP BY a.word_ru, a.user_id
+                      ) mastered_users
+                      GROUP BY mastered_users.word_ru
+                      HAVING COUNT(*) > 0
+                         AND SUM(CASE WHEN mastered_users.user_has_correct THEN 1 ELSE 0 END)::float / COUNT(*) >= %s
                   )"""
-        mastery_params = [chat_id]
+        mastery_params = [chat_id, safe_mastered_threshold]
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(f"""
@@ -10992,6 +11002,7 @@ def get_random_dictionary_entry_for_quiz_type(
     source_lang: str = "ru",
     target_lang: str = "de",
     chat_id: int | None = None,
+    mastered_accuracy_threshold: float = 0.5,
 ) -> dict | None:
     quiz_type = (quiz_type or "").strip().lower()
 
@@ -11025,16 +11036,25 @@ def get_random_dictionary_entry_for_quiz_type(
     mastery_filter = ""
     mastery_params: list = []
     if chat_id is not None:
+        safe_mastered_threshold = min(1.0, max(0.0, float(mastered_accuracy_threshold)))
         mastery_filter = """
                   AND NOT EXISTS (
-                      SELECT 1 FROM bt_3_telegram_quiz_attempts a
-                      WHERE a.word_ru = bt_3_webapp_dictionary_queries.word_ru
-                        AND a.chat_id = %s
-                      GROUP BY a.word_ru
-                      HAVING COUNT(*) >= 3
-                         AND SUM(CASE WHEN a.is_correct THEN 1 ELSE 0 END)::float / COUNT(*) >= 0.80
+                      SELECT 1
+                      FROM (
+                          SELECT
+                              a.word_ru,
+                              a.user_id,
+                              BOOL_OR(a.is_correct) AS user_has_correct
+                          FROM bt_3_telegram_quiz_attempts a
+                          WHERE a.word_ru = bt_3_webapp_dictionary_queries.word_ru
+                            AND a.chat_id = %s
+                          GROUP BY a.word_ru, a.user_id
+                      ) mastered_users
+                      GROUP BY mastered_users.word_ru
+                      HAVING COUNT(*) > 0
+                         AND SUM(CASE WHEN mastered_users.user_has_correct THEN 1 ELSE 0 END)::float / COUNT(*) >= %s
                   )"""
-        mastery_params = [chat_id]
+        mastery_params = [chat_id, safe_mastered_threshold]
 
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -11119,17 +11139,25 @@ def list_low_accuracy_telegram_quiz_entries(
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                WITH attempt_stats AS (
+                WITH per_user_word AS (
                     SELECT
                         word_ru,
-                        COUNT(*)::int AS attempts,
-                        SUM(CASE WHEN is_correct THEN 1 ELSE 0 END)::int AS correct_attempts
+                        user_id,
+                        BOOL_OR(is_correct) AS user_has_correct
                     FROM bt_3_telegram_quiz_attempts
                     WHERE chat_id = %s
                       AND COALESCE(NULLIF(word_ru, ''), '') <> ''
+                    GROUP BY word_ru, user_id
+                ),
+                attempt_stats AS (
+                    SELECT
+                        word_ru,
+                        COUNT(*)::int AS attempts,
+                        SUM(CASE WHEN user_has_correct THEN 1 ELSE 0 END)::int AS correct_attempts
+                    FROM per_user_word
                     GROUP BY word_ru
                     HAVING COUNT(*) > 0
-                       AND (SUM(CASE WHEN is_correct THEN 1 ELSE 0 END)::float / COUNT(*)) <= %s
+                       AND (SUM(CASE WHEN user_has_correct THEN 1 ELSE 0 END)::float / COUNT(*)) < %s
                 ),
                 latest_quiz_type AS (
                     SELECT DISTINCT ON (word_ru)

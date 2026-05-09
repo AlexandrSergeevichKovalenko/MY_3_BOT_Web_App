@@ -18702,6 +18702,169 @@ body {
 
 .tr-story-chip:disabled { opacity: 0.45; cursor: default; }
 
+.tr-story-chip.is-arena { border-color: rgba(245, 158, 11, 0.3); color: #fbbf24; }
+.tr-story-chip.is-arena.is-on { background: rgba(245, 158, 11, 0.14); border-color: rgba(245, 158, 11, 0.5); color: #fcd34d; }
+
+/* ── Arena screens ─────────────────────────────────────────────────────── */
+.arena-screen {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px 0 4px;
+}
+.arena-screen-head { text-align: center; }
+.arena-screen-icon { font-size: 32px; display: block; margin-bottom: 6px; }
+.arena-screen-title { margin: 0 0 4px; font-size: 18px; font-weight: 700; color: #f1f5f9; }
+.arena-screen-sub { margin: 0; font-size: 13px; color: #94a3b8; }
+.arena-loading { text-align: center; color: #94a3b8; font-size: 14px; padding: 12px 0; }
+
+.arena-candidates { display: flex; flex-direction: column; gap: 10px; }
+.arena-candidate-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid #334155;
+  background: #1e293b;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.arena-candidate-card:hover { border-color: #f59e0b; background: #1f2a3c; }
+.arena-candidate-title { font-size: 14px; font-weight: 600; color: #e2e8f0; }
+.arena-candidate-meta { display: flex; gap: 8px; flex-wrap: wrap; }
+.arena-meta-chip {
+  font-size: 12px;
+  color: #94a3b8;
+  background: rgba(255,255,255,0.05);
+  border-radius: 999px;
+  padding: 2px 8px;
+  border: 1px solid #334155;
+}
+
+.arena-no-match { display: flex; flex-direction: column; gap: 10px; align-items: stretch; }
+.arena-empty-note { font-size: 13px; color: #64748b; text-align: center; padding: 4px 0; }
+.arena-first-btn {
+  padding: 13px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  background: rgba(245, 158, 11, 0.1);
+  color: #fbbf24;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.arena-first-btn:hover { background: rgba(245, 158, 11, 0.18); }
+.arena-cancel-btn {
+  padding: 11px 16px;
+  border-radius: 14px;
+  border: 1px solid #334155;
+  background: transparent;
+  color: #64748b;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* ── Arena verdict banner ────────────────────────────────────────────── */
+.arena-verdict {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 16px;
+  margin-bottom: 4px;
+}
+.arena-verdict.is-win  { background: rgba(5, 150, 105, 0.12); border: 1px solid rgba(5, 150, 105, 0.35); }
+.arena-verdict.is-loss { background: rgba(99, 102, 241, 0.10); border: 1px solid rgba(99, 102, 241, 0.3); }
+.arena-verdict.is-tie  { background: rgba(245, 158, 11, 0.10); border: 1px solid rgba(245, 158, 11, 0.3); }
+.arena-verdict-medal { font-size: 30px; flex-shrink: 0; }
+.arena-verdict-text { font-size: 16px; font-weight: 700; color: #f1f5f9; flex: 1; }
+.arena-verdict-scores { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #94a3b8; }
+.arena-vs-me, .arena-vs-them { color: #e2e8f0; }
+.arena-vs-sep { color: #475569; font-weight: 700; }
+
+/* ── Arena 4-criteria score card ─────────────────────────────────────── */
+.arena-score-card {
+  padding: 16px;
+  border-radius: 16px;
+  border: 1px solid #334155;
+  background: #1e293b;
+}
+.arena-score-total {
+  font-size: 38px;
+  font-weight: 800;
+  color: #f1f5f9;
+  text-align: center;
+  line-height: 1;
+  margin-bottom: 16px;
+}
+.arena-score-total-max { font-size: 18px; font-weight: 400; color: #64748b; }
+.arena-score-bars { display: flex; flex-direction: column; gap: 10px; }
+.arena-bar-row { display: grid; grid-template-columns: 90px 1fr 46px; align-items: center; gap: 8px; }
+.arena-bar-label { font-size: 12px; color: #94a3b8; font-weight: 500; }
+.arena-bar-track { height: 8px; border-radius: 999px; background: #334155; overflow: hidden; }
+.arena-bar-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, #059669 0%, #0891b2 100%); transition: width 0.5s ease; }
+.arena-bar-val { font-size: 12px; color: #94a3b8; text-align: right; }
+
+/* ── Leaderboard ─────────────────────────────────────────────────────── */
+.arena-leaderboard-wrap { margin-top: 4px; }
+.arena-lb-loading { font-size: 13px; color: #64748b; text-align: center; padding: 8px 0; }
+.arena-leaderboard { display: flex; flex-direction: column; gap: 6px; }
+.arena-lb-title { font-size: 13px; font-weight: 600; color: #94a3b8; margin-bottom: 6px; }
+.arena-lb-row {
+  display: grid;
+  grid-template-columns: 28px 1fr 40px 40px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid #1e293b;
+  background: #111827;
+  font-size: 13px;
+}
+.arena-lb-row.is-top { border-color: #334155; background: #1e293b; }
+.arena-lb-rank { font-size: 16px; text-align: center; }
+.arena-lb-name { color: #e2e8f0; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.arena-lb-score { color: #34d399; font-weight: 700; text-align: right; }
+.arena-lb-heart {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  color: #94a3b8;
+  padding: 2px;
+  text-align: center;
+  transition: color 0.15s;
+}
+.arena-lb-heart.has-votes { color: #f87171; }
+.arena-lb-heart:hover { color: #f87171; }
+
+/* ── Story vote row ──────────────────────────────────────────────────── */
+.arena-vote-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0 4px;
+  flex-wrap: wrap;
+}
+.arena-vote-label { font-size: 13px; color: #64748b; flex: 1; }
+.arena-vote-btn {
+  min-width: 52px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid #334155;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 14px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.arena-vote-btn.is-like.is-active  { border-color: rgba(52,211,153,0.5); background: rgba(52,211,153,0.1); color: #34d399; }
+.arena-vote-btn.is-dislike.is-active { border-color: rgba(248,113,113,0.5); background: rgba(248,113,113,0.1); color: #f87171; }
+.arena-vote-btn:hover { border-color: #64748b; }
+
 .tr-story-select {
   width: 100%;
   min-height: 40px;
@@ -19020,6 +19183,25 @@ body {
 .webapp-page.is-theme-light .webapp-section.webapp-section-translations .tr-story-options {
   background: rgba(99, 102, 241, 0.03);
 }
+
+.webapp-page.is-theme-light .arena-screen-title { color: #1f1a14; }
+.webapp-page.is-theme-light .arena-screen-sub   { color: #7a6854; }
+.webapp-page.is-theme-light .arena-candidate-card { background: #fff8ee; border-color: #d2c2aa; }
+.webapp-page.is-theme-light .arena-candidate-card:hover { border-color: #b8842a; background: #fdf3e3; }
+.webapp-page.is-theme-light .arena-candidate-title { color: #1f1a14; }
+.webapp-page.is-theme-light .arena-meta-chip { color: #5a4a39; background: rgba(0,0,0,0.04); border-color: #d2c2aa; }
+.webapp-page.is-theme-light .arena-first-btn { border-color: rgba(184,132,42,0.5); background: rgba(184,132,42,0.08); color: #8a5c10; }
+.webapp-page.is-theme-light .arena-cancel-btn { border-color: #d2c2aa; color: #7a6854; }
+.webapp-page.is-theme-light .arena-score-card { background: #fff8ee; border-color: #d2c2aa; }
+.webapp-page.is-theme-light .arena-score-total { color: #1f1a14; }
+.webapp-page.is-theme-light .arena-bar-label  { color: #5a4a39; }
+.webapp-page.is-theme-light .arena-bar-track  { background: #e2d5bf; }
+.webapp-page.is-theme-light .arena-bar-val    { color: #5a4a39; }
+.webapp-page.is-theme-light .arena-lb-row     { background: #fdf3e3; border-color: #e2d5bf; }
+.webapp-page.is-theme-light .arena-lb-row.is-top { background: #fff8ee; border-color: #d2c2aa; }
+.webapp-page.is-theme-light .arena-lb-name   { color: #1f1a14; }
+.webapp-page.is-theme-light .arena-vote-label { color: #7a6854; }
+.webapp-page.is-theme-light .arena-vote-btn   { border-color: #d2c2aa; color: #7a6854; }
 
 .webapp-page.is-android-client .webapp-section.webapp-section-translations .webapp-translation-start.is-android-layout {
   grid-template-columns: minmax(0, 1fr);

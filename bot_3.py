@@ -12007,6 +12007,7 @@ async def _select_new_scheduled_quiz(
                 source_lang="ru",
                 target_lang="de",
                 chat_id=chat_id,
+                mastered_accuracy_threshold=QUIZ_REPEAT_ACCURACY_THRESHOLD,
             )
             if not entry:
                 entry = get_random_dictionary_entry(
@@ -12014,6 +12015,7 @@ async def _select_new_scheduled_quiz(
                     source_lang="ru",
                     target_lang="de",
                     chat_id=chat_id,
+                    mastered_accuracy_threshold=QUIZ_REPEAT_ACCURACY_THRESHOLD,
                 )
             if not entry:
                 break

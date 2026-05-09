@@ -503,6 +503,12 @@ from backend.database import (
     lookup_base_dictionary_entry,
     upsert_base_dictionary_entry,
     list_base_dictionary_for_offline_pack,
+    get_arena_stories_for_params,
+    get_story_leaderboard,
+    get_story_vote_counts,
+    get_user_story_rank,
+    vote_story,
+    vote_translation,
 )
 from backend.r2_storage import r2_exists, r2_put_bytes, r2_public_url, r2_delete_object, r2_bucket_usage_summary
 from backend.srs import schedule_review, MATURE_INTERVAL_DAYS
@@ -38034,6 +38040,102 @@ def submit_webapp_story():
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
+
+
+@app.route("/api/webapp/story/arena/candidates", methods=["POST"])
+def get_story_arena_candidates():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    story_type = (payload.get("story_type") or "").strip()
+    difficulty = (payload.get("difficulty") or "").strip()
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_id = (parsed.get("user") or {}).get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует"}), 400
+
+    candidates = get_arena_stories_for_params(
+        story_type=story_type,
+        difficulty=difficulty,
+        exclude_user_id=int(user_id),
+    )
+    return jsonify({"ok": True, "candidates": candidates})
+
+
+@app.route("/api/webapp/story/<int:story_id>/leaderboard", methods=["POST"])
+def get_webapp_story_leaderboard(story_id: int):
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_id = (parsed.get("user") or {}).get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует"}), 400
+
+    board = get_story_leaderboard(story_id)
+    rank_info = get_user_story_rank(story_id, int(user_id))
+    votes = get_story_vote_counts(story_id, int(user_id))
+    return jsonify({
+        "ok": True,
+        "leaderboard": board,
+        "my_rank": rank_info,
+        "votes": votes,
+    })
+
+
+@app.route("/api/webapp/story/vote", methods=["POST"])
+def vote_webapp_story():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    story_id = payload.get("story_id")
+    vote_val = payload.get("vote")  # +1 or -1
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if story_id is None or vote_val not in (1, -1):
+        return jsonify({"error": "story_id и vote (+1/-1) обязательны"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_id = (parsed.get("user") or {}).get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует"}), 400
+
+    result = vote_story(int(story_id), int(user_id), int(vote_val))
+    return jsonify({"ok": True, **result})
+
+
+@app.route("/api/webapp/story/translation/vote", methods=["POST"])
+def vote_webapp_translation():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    score_id = payload.get("score_id")
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if score_id is None:
+        return jsonify({"error": "score_id обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_id = (parsed.get("user") or {}).get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует"}), 400
+
+    result = vote_translation(int(score_id), int(user_id))
+    return jsonify({"ok": True, **result})
 
 
 @app.route("/api/webapp/session", methods=["POST"])
