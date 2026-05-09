@@ -449,10 +449,18 @@ body {
   padding-top: calc(env(safe-area-inset-top, 0px) + 64px);
 }
 
+.webapp-page.is-telegram-fullscreen.is-topbar-back-mode {
+  padding-top: calc(env(safe-area-inset-top, 0px) + 26px);
+}
+
 @media (min-width: 700px) {
   .webapp-page.is-telegram-fullscreen {
     /* Tablet fullscreen in Telegram needs extra top clearance for native controls. */
     padding-top: calc(env(safe-area-inset-top, 0px) + 92px);
+  }
+
+  .webapp-page.is-telegram-fullscreen.is-topbar-back-mode {
+    padding-top: calc(env(safe-area-inset-top, 0px) + 40px);
   }
 }
 
@@ -16134,6 +16142,16 @@ body {
 
 /* Header v2 + Hamburger Menu Icon Refinement */
 @media (max-width: 900px) {
+  .webapp-page.is-topbar-back-mode .webapp-topbar.is-back-mode {
+    padding: 10px 6px 4px;
+    gap: 6px;
+  }
+
+  .webapp-page.is-topbar-back-mode .webapp-topbar.is-back-mode .topbar-home-row {
+    gap: 8px;
+    min-height: 32px;
+  }
+
   .webapp-topbar {
     display: grid;
     grid-template-columns: 1fr;

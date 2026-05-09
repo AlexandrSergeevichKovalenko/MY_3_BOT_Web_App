@@ -20135,18 +20135,26 @@ function AppInner() {
     const youtubeLineIndex = Number(options.lineIndex);
     const isYoutubeWordSelection = selectionTypeOption.startsWith('youtube_') && Number.isInteger(youtubeLineIndex) && youtubeLineIndex >= 0;
     if (!text) return null;
-    return text.split(/\s+/).map((word, index) => {
-      const cleaned = word.replace(/[^A-Za-zÄÖÜäöüßÀ-ÿА-Яа-яЁё'’-]/g, '');
-      const isYoutubeSelected = isYoutubeWordSelection && youtubeSelectedWordKeySet.has(`${youtubeLineIndex}:${index}`);
+    const segments = text.split(/(\s+)/);
+    let wordIndex = 0;
+    return segments.map((segment, index) => {
+      if (!segment) return null;
+      if (/^\s+$/.test(segment)) {
+        return <React.Fragment key={`${keyPrefix}-space-${index}`}>{segment}</React.Fragment>;
+      }
+      const cleaned = segment.replace(/[^A-Za-zÄÖÜäöüßÀ-ÿА-Яа-яЁё'’-]/g, '');
+      const currentWordIndex = wordIndex;
+      wordIndex += 1;
+      const isYoutubeSelected = isYoutubeWordSelection && youtubeSelectedWordKeySet.has(`${youtubeLineIndex}:${currentWordIndex}`);
       if (!cleaned) {
-        return <span key={`${keyPrefix}-${index}`}>{word} </span>;
+        return <span key={`${keyPrefix}-${index}`}>{segment}</span>;
       }
       return (
         <span
           key={`${keyPrefix}-${index}`}
           className={isYoutubeSelected ? `${className} is-selected` : className}
           data-youtube-line-index={isYoutubeWordSelection ? youtubeLineIndex : undefined}
-          data-youtube-word-index={isYoutubeWordSelection ? index : undefined}
+          data-youtube-word-index={isYoutubeWordSelection ? currentWordIndex : undefined}
           onTouchStart={isYoutubeWordSelection ? handleYoutubeWordTouchStart : undefined}
           onClick={(event) => {
             if (isYoutubeWordSelection && (Date.now() - Number(youtubeSuppressWordTapRef.current || 0)) < 420) {
@@ -20167,7 +20175,7 @@ function AppInner() {
             });
           }}
         >
-          {word}{' '}
+          {segment}
         </span>
       );
     });
@@ -24536,7 +24544,7 @@ function AppInner() {
       );
     }
     return (
-      <div className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isAndroidTelegramClient ? 'is-android-client' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''}`}>
+      <div className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isAndroidTelegramClient ? 'is-android-client' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''} ${canTopbarGoBack ? 'is-topbar-back-mode' : ''}`}>
         <pre id="app-perf-report" style={{ display: 'none' }} />
         <div className="webapp-shell">
           <aside className="webapp-sidebar">

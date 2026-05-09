@@ -7608,7 +7608,7 @@ def _build_next_srs_payload(
         current_state=srs_state_for_preview,
         reviewed_at=now_utc,
     )
-    card_response = _decorate_dictionary_item(
+    card_response = _decorate_training_dictionary_item(
         card_payload if isinstance(card_payload, dict) else {},
         source_lang=source_lang,
         target_lang=target_lang,
@@ -12820,6 +12820,119 @@ def _decorate_dictionary_item(
     data.setdefault("target_text", target_text)
     data.setdefault("source_lang", source_lang)
     data.setdefault("target_lang", target_lang)
+    return data
+
+
+def _resolve_training_entry_texts_for_pair(
+    *,
+    item: dict | None,
+    response_json: dict | None,
+    source_lang: str,
+    target_lang: str,
+) -> tuple[str, str]:
+    entry = item if isinstance(item, dict) else {}
+    payload = response_json if isinstance(response_json, dict) else {}
+    requested_source = _normalize_short_lang_code(source_lang, fallback="")
+    requested_target = _normalize_short_lang_code(target_lang, fallback="")
+    stored_source = _normalize_short_lang_code(
+        entry.get("source_lang") or payload.get("source_lang"),
+        fallback="",
+    )
+    stored_target = _normalize_short_lang_code(
+        entry.get("target_lang") or payload.get("target_lang"),
+        fallback="",
+    )
+    raw_source_text = str(entry.get("source_text") or payload.get("source_text") or "").strip()
+    raw_target_text = str(entry.get("target_text") or payload.get("target_text") or "").strip()
+
+    if stored_source == requested_source and stored_target == requested_target:
+        if raw_source_text or raw_target_text:
+            return raw_source_text, raw_target_text
+    if stored_source == requested_target and stored_target == requested_source:
+        if raw_source_text or raw_target_text:
+            return raw_target_text, raw_source_text
+
+    if requested_source == "ru" and requested_target == "de":
+        source_text = str(
+            entry.get("word_ru")
+            or payload.get("word_ru")
+            or entry.get("translation_ru")
+            or payload.get("translation_ru")
+            or raw_source_text
+            or raw_target_text
+            or ""
+        ).strip()
+        target_text = str(
+            entry.get("translation_de")
+            or payload.get("translation_de")
+            or entry.get("word_de")
+            or payload.get("word_de")
+            or raw_target_text
+            or raw_source_text
+            or ""
+        ).strip()
+        return source_text, target_text
+
+    if requested_source == "de" and requested_target == "ru":
+        source_text = str(
+            entry.get("word_de")
+            or payload.get("word_de")
+            or entry.get("translation_de")
+            or payload.get("translation_de")
+            or raw_source_text
+            or raw_target_text
+            or ""
+        ).strip()
+        target_text = str(
+            entry.get("translation_ru")
+            or payload.get("translation_ru")
+            or entry.get("word_ru")
+            or payload.get("word_ru")
+            or raw_target_text
+            or raw_source_text
+            or ""
+        ).strip()
+        return source_text, target_text
+
+    return _resolve_entry_texts_for_pair(
+        entry=entry,
+        response_json=payload,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+
+
+def _decorate_training_dictionary_item(
+    item: dict | None,
+    *,
+    source_lang: str,
+    target_lang: str,
+    direction: str,
+) -> dict:
+    data = _decorate_dictionary_item(
+        item if isinstance(item, dict) else {},
+        source_lang=source_lang,
+        target_lang=target_lang,
+        direction=direction,
+    )
+    response_json = _coerce_response_json(data.get("response_json"))
+    source_text, target_text = _resolve_training_entry_texts_for_pair(
+        item=data,
+        response_json=response_json,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    data["source_text"] = source_text
+    data["target_text"] = target_text
+    data["source_lang"] = source_lang
+    data["target_lang"] = target_lang
+    if response_json:
+        normalized_response = dict(response_json)
+        normalized_response["source_text"] = source_text
+        normalized_response["target_text"] = target_text
+        normalized_response["source_lang"] = source_lang
+        normalized_response["target_lang"] = target_lang
+        data["response_json"] = normalized_response
     return data
 
 
@@ -32461,7 +32574,7 @@ def get_webapp_flashcard_set():
             profile_payload["selection_strategy"] = selection_diagnostics.get("selection_strategy")
             direction = f"{source_lang}-{target_lang}"
             decorated_items = [
-                _decorate_dictionary_item(
+                _decorate_training_dictionary_item(
                     item if isinstance(item, dict) else {},
                     source_lang=source_lang,
                     target_lang=target_lang,
@@ -32718,7 +32831,7 @@ def get_srs_prefetch_cards():
 
         direction = f"{source_lang}-{target_lang}"
         decorated_items = [
-            _decorate_dictionary_item(
+            _decorate_training_dictionary_item(
                 item if isinstance(item, dict) else {},
                 source_lang=source_lang,
                 target_lang=target_lang,
