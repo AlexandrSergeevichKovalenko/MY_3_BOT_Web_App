@@ -188,12 +188,26 @@ export async function getCachedVocab(userId, opts = {}) {
 
   if (search) {
     const needle = search.trim().toLowerCase();
-    filtered = filtered.filter((it) =>
-      (it.word_de        || '').toLowerCase().includes(needle) ||
-      (it.word_ru        || '').toLowerCase().includes(needle) ||
-      (it.translation_ru || '').toLowerCase().includes(needle) ||
-      (it.translation_de || '').toLowerCase().includes(needle)
-    );
+    filtered = filtered.filter((it) => {
+      if ((it.word_de        || '').toLowerCase().includes(needle)) return true;
+      if ((it.word_ru        || '').toLowerCase().includes(needle)) return true;
+      if ((it.translation_ru || '').toLowerCase().includes(needle)) return true;
+      if ((it.translation_de || '').toLowerCase().includes(needle)) return true;
+      // Also check display fields which pull from response_json (richer than raw columns).
+      if ((it.display_word        || '').toLowerCase().includes(needle)) return true;
+      if ((it.display_translation || '').toLowerCase().includes(needle)) return true;
+      // Deep-search response_json for source_text / target_text / translation fields.
+      const rj = it.response_json && typeof it.response_json === 'object' ? it.response_json : null;
+      if (rj) {
+        if ((rj.source_text    || '').toLowerCase().includes(needle)) return true;
+        if ((rj.target_text    || '').toLowerCase().includes(needle)) return true;
+        if ((rj.word_de        || '').toLowerCase().includes(needle)) return true;
+        if ((rj.translation_ru || '').toLowerCase().includes(needle)) return true;
+        const senses = Array.isArray(rj.dictionary_senses) ? rj.dictionary_senses : [];
+        if (senses.some((s) => (s?.value || '').toLowerCase().includes(needle))) return true;
+      }
+      return false;
+    });
   }
 
   const sorters = {

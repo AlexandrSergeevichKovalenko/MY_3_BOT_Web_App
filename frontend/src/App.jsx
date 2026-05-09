@@ -26,6 +26,12 @@ import {
   clearVocabMutation,
   countVocabMutations,
 } from './offline/vocabCache';
+import {
+  lookupOfflineBaseDictEntry,
+  saveBaseDictEntryFromServerResult,
+  isOfflinePackFresh,
+  downloadOfflinePack,
+} from './offline/baseDictCache';
 
 import './styles/topbar-redesign.css';
 
@@ -14621,6 +14627,16 @@ function AppInner() {
   }, [planAnalyticsPeriod, isWebAppMode, initData, startupPhase3Ready]);
 
   useEffect(() => {
+    if (!isWebAppMode || !initData || !startupPhase3Ready) return;
+    // Download base dictionary offline pack in the background when stale
+    isOfflinePackFresh().then((fresh) => {
+      if (!fresh) {
+        void downloadOfflinePack('de', 10000);
+      }
+    });
+  }, [isWebAppMode, initData, startupPhase3Ready]);
+
+  useEffect(() => {
     if (!isWebAppMode || !initData) {
       startupLoadedLanguagePairRef.current = '';
       return;
@@ -21922,6 +21938,78 @@ function AppInner() {
     }
   };
 
+  const handleDictionaryBaseLookup = async () => {
+    const sourceWord = String(dictionaryWord || '').trim();
+    if (!sourceWord) {
+      setDictionaryError(tr('Введите слово для поиска.', 'Bitte gib ein Wort ein.'));
+      return;
+    }
+    setDictionaryLoading(true);
+    setDictionaryLookupMode('base');
+    dictionaryLookupPollTokenRef.current += 1;
+    setDictionaryLookupProgress({ lookupId: null, status: 'ready', saveLocked: false, error: '' });
+    setDictionaryError('');
+    setDictionaryResult(null);
+    setDictionarySaved('');
+    setLastLookupScrollY(null);
+
+    try {
+      // 1. Check offline IndexedDB first
+      const offlineResult = await lookupOfflineBaseDictEntry(sourceWord);
+      if (offlineResult) {
+        setDictionaryResult(offlineResult);
+        setDictionaryDirection('de-ru');
+        setDictionaryLanguagePair(resolveLanguagePairForUI({ source_lang: 'de', target_lang: 'ru' }));
+        return;
+      }
+
+      // 2. Try server-side base dictionary (Wiktionary + translate cache)
+      if (!initData) {
+        // No network auth — just fall through to quick translate
+        throw new Error('no_auth');
+      }
+      const response = await fetch('/api/webapp/dictionary/base-lookup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, word: sourceWord, source_lang: 'de' }),
+      });
+      if (!response.ok) throw new Error('server_error');
+      const data = await response.json();
+
+      if (data.not_found || !data.item) {
+        // Word not in dictionary — auto-fallback to quick translate
+        setDictionaryLoading(false);
+        setDictionaryLookupMode('');
+        await handleDictionaryQuickLookup();
+        return;
+      }
+
+      const item = data.item;
+      setDictionaryResult(item);
+      setDictionaryDirection('de-ru');
+      setDictionaryLanguagePair(resolveLanguagePairForUI({ source_lang: 'de', target_lang: 'ru' }));
+
+      // Cache the result offline for future use
+      void saveBaseDictEntryFromServerResult(sourceWord, item);
+    } catch {
+      // Network failure — try offline again, then fall back to quick translate
+      const offlineFallback = await lookupOfflineBaseDictEntry(sourceWord);
+      if (offlineFallback) {
+        setDictionaryResult(offlineFallback);
+        setDictionaryDirection('de-ru');
+        setDictionaryLanguagePair(resolveLanguagePairForUI({ source_lang: 'de', target_lang: 'ru' }));
+      } else {
+        setDictionaryLoading(false);
+        setDictionaryLookupMode('');
+        await handleDictionaryQuickLookup();
+        return;
+      }
+    } finally {
+      setDictionaryLoading(false);
+      setDictionaryLookupMode('');
+    }
+  };
+
   const handleDictionarySave = async () => {
     if (!initData) {
       setDictionaryError(initDataMissingMsg);
@@ -24649,7 +24737,7 @@ function AppInner() {
                     onClick={handleTopbarBack}
                     aria-label={Boolean(flashcardActiveMode) ? tr('Назад', 'Zurück') : tr('На главную', 'Startseite')}
                   >
-                    <span className="topbar-home-arrow" aria-hidden="true">←</span>
+                    <span className="topbar-home-arrow" aria-hidden="true">{Boolean(flashcardActiveMode) ? '◀️' : '🏠'}</span>
                     <span>{Boolean(flashcardActiveMode) ? tr('Назад', 'Zurück') : tr('На главную', 'Startseite')}</span>
                   </button>
                   {Boolean(flashcardActiveMode) && renderTodaySectionTaskHud('flashcards', { ignoreProgress: true, inline: true })}
@@ -27395,12 +27483,23 @@ function AppInner() {
                         >
                           {dictionaryLoading && dictionaryLookupMode === 'quick'
                             ? tr('Быстро...', 'Schnell...')
-                            : tr('Быстрый перевод', 'Schnell')}
+                            : tr('⚡ Перевод', '⚡ Übersetzen')}
                         </button>
                         <button className="secondary-button dictionary-button" type="submit" disabled={dictionaryLoading}>
                           {dictionaryLoading && dictionaryLookupMode === 'gpt'
                             ? tr('GPT...', 'GPT...')
-                            : tr('GPT-разбор', 'Mit GPT')}
+                            : tr('🤖 GPT-разбор', '🤖 GPT')}
+                        </button>
+                        <button
+                          className="secondary-button dictionary-base-button"
+                          type="button"
+                          onClick={handleDictionaryBaseLookup}
+                          disabled={dictionaryLoading}
+                          title={tr('Словарный перевод — работает онлайн и офлайн', 'Wörterbuch — funktioniert online und offline')}
+                        >
+                          {dictionaryLoading && dictionaryLookupMode === 'base'
+                            ? tr('Словарь...', 'Wörterbuch...')
+                            : tr('📖 Словарь', '📖 Wörterbuch')}
                         </button>
                         {lastLookupScrollY !== null && (
                           <button
@@ -27583,11 +27682,17 @@ function AppInner() {
                           <span className="dictionary-direction">
                             {getLookupDirectionLabel()}
                           </span>
-                          {!!String(dictionaryResult?.provider || '').trim() && (
+                          {dictionaryResult?.is_base_dict ? (
+                            <span className="dictionary-source-badge is-dict">
+                              {dictionaryResult.provider === 'base_dict_offline'
+                                ? tr('📖 Словарь (офлайн)', '📖 Wörterbuch (offline)')
+                                : tr('📖 Словарь', '📖 Wörterbuch')}
+                            </span>
+                          ) : !!String(dictionaryResult?.provider || '').trim() ? (
                             <span className="dictionary-direction">
                               {String(dictionaryResult.provider).toUpperCase()}
                             </span>
-                          )}
+                          ) : null}
                         </div>
                         <div className="dictionary-row">
                           <strong>{tr('Часть речи:', 'Wortart:')}</strong> {dictionaryResult.part_of_speech || '—'}
@@ -27650,6 +27755,27 @@ function AppInner() {
                             {getDictionaryNoteRows(dictionaryResult).map((row) => (
                               <div key={row.label}><strong>{row.label}:</strong> {row.value}</div>
                             ))}
+                          </div>
+                        )}
+
+                        {dictionaryResult.is_base_dict && Array.isArray(dictionaryResult.dictionary_senses) && dictionaryResult.dictionary_senses.filter((s) => s && (String(s.translation_ru || '').trim() || String(s.value || '').trim())).length > 0 && (
+                          <div className="dictionary-examples">
+                            <strong>{tr('Значения:', 'Bedeutungen:')}</strong>
+                            <ul>
+                              {dictionaryResult.dictionary_senses
+                                .filter((s) => s && (String(s.translation_ru || '').trim() || String(s.value || '').trim()))
+                                .map((sense, idx) => {
+                                  const ru = String(sense.translation_ru || '').trim();
+                                  const en = String(sense.value || '').trim();
+                                  return (
+                                    <li key={`sense-${idx}`}>
+                                      {ru && <span>{ru}</span>}
+                                      {ru && en && <span className="dict-sense-sep"> — </span>}
+                                      {en && <span className="dict-sense-en">{en}</span>}
+                                    </li>
+                                  );
+                                })}
+                            </ul>
                           </div>
                         )}
 
@@ -28145,12 +28271,12 @@ function AppInner() {
                               <label className="webapp-field">
                                 <span>{tr('URL или текст', 'URL oder Text')}</span>
                                 <textarea
-                                  rows={4}
+                                  rows={2}
                                   value={readerInput}
                                   onChange={(event) => setReaderInput(event.target.value)}
                                   placeholder={tr(
                                     'Вставьте URL статьи/книги (включая PDF) или сам текст.',
-                                    'Fuege URL eines Artikels/Buchs (auch PDF) oder den Text selbst ein.'
+                                    'Füge URL eines Artikels/Buchs (auch PDF) oder den Text selbst ein.'
                                   )}
                                 />
                               </label>
@@ -28158,7 +28284,7 @@ function AppInner() {
                                 <span>{tr('Файл с телефона', 'Datei vom Telefon')}</span>
                                 <input
                                   type="file"
-                                  accept=".txt,.md,.pdf,text/plain,application/pdf"
+                                  accept=".txt,.md,.pdf,.epub,text/plain,application/pdf,application/epub+zip"
                                   onChange={handleReaderFileSelect}
                                 />
                                 {readerSelectedFile && (

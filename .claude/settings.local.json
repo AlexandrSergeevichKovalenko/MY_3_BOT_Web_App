@@ -88,7 +88,12 @@
       "Bash(awk 'NR>=7000 && NR<=31400 && /^  }$/' /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/frontend/src/App.jsx)",
       "Bash(awk 'NR>=31340 && NR<=31360' /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/frontend/src/App.jsx)",
       "Bash(awk 'NR==31349{print NR\": \"$0}' /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/frontend/src/App.jsx)",
-      "Bash(awk *)"
+      "Bash(awk *)",
+      "Bash(pip3 install *)",
+      "Bash(grep -n \"^            conn.commit\\\\|conn.commit\\\\\\(\\\\\\)$\\\\|^        conn.commit\\\\\\(\\\\\\)\" /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/backend/database.py)",
+      "Bash(grep -n \"useEffect.*\\\\[\\\\]$\\\\|useEffect.*\\\\[initData\\\\]\\\\|downloadOfflineSrsQueue\\\\|prefetch.*srs\\\\|offline.*init\\\\|syncPending\" /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/frontend/src/App.jsx)",
+      "Bash(npx --prefix frontend vite build --mode development)",
+      "Bash(npx vite *)"
     ]
   }
 }

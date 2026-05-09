@@ -5642,6 +5642,61 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_story_bank_type
                 ON bt_3_story_bank (story_type, difficulty);
             """)
+            # Arena: per-session 4-criteria scores
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_story_scores (
+                    id            SERIAL PRIMARY KEY,
+                    story_id      INT     NOT NULL REFERENCES bt_3_story_bank(id),
+                    user_id       BIGINT  NOT NULL,
+                    username      TEXT,
+                    session_id    BIGINT  NOT NULL,
+                    total_score   INT     NOT NULL DEFAULT 0,
+                    score_grammar INT     NOT NULL DEFAULT 0,
+                    score_accuracy   INT  NOT NULL DEFAULT 0,
+                    score_style      INT  NOT NULL DEFAULT 0,
+                    score_completeness INT NOT NULL DEFAULT 0,
+                    full_translation TEXT,
+                    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (story_id, user_id, session_id)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_story_scores_story
+                ON bt_story_scores (story_id, total_score DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_story_scores_user
+                ON bt_story_scores (user_id);
+            """)
+            # Arena: story like/dislike votes
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_story_votes (
+                    id         SERIAL PRIMARY KEY,
+                    story_id   INT     NOT NULL REFERENCES bt_3_story_bank(id),
+                    user_id    BIGINT  NOT NULL,
+                    vote       SMALLINT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (story_id, user_id)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_story_votes_story
+                ON bt_story_votes (story_id);
+            """)
+            # Arena: people's-choice votes on individual translations
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_translation_votes (
+                    id             SERIAL PRIMARY KEY,
+                    score_id       INT    NOT NULL REFERENCES bt_story_scores(id),
+                    voter_user_id  BIGINT NOT NULL,
+                    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (score_id, voter_user_id)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_translation_votes_score
+                ON bt_translation_votes (score_id);
+            """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_active_quizzes (
                     poll_id TEXT PRIMARY KEY,
@@ -5685,6 +5740,34 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_detailed_mistakes_user_sentence
                 ON bt_3_detailed_mistakes (user_id, sentence_id);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_base_dictionary (
+                    id BIGSERIAL PRIMARY KEY,
+                    lemma TEXT NOT NULL,
+                    lemma_key TEXT NOT NULL,
+                    source_lang TEXT NOT NULL DEFAULT 'de',
+                    pos TEXT,
+                    article TEXT,
+                    translations_ru TEXT[] NOT NULL DEFAULT '{}',
+                    glosses_en TEXT[] NOT NULL DEFAULT '{}',
+                    senses_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    forms_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    wikt_fetched BOOLEAN NOT NULL DEFAULT FALSE,
+                    frequency_rank INT,
+                    hit_count BIGINT NOT NULL DEFAULT 0,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (lemma_key, source_lang)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_base_dictionary_lemma_key
+                ON bt_base_dictionary (lemma_key, source_lang);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_base_dictionary_updated
+                ON bt_base_dictionary (updated_at DESC);
             """)
             cursor.close()
             _run_dictionary_canonical_schema_migration(conn)
@@ -13176,11 +13259,14 @@ def count_due_srs_cards(
     if allowed_card_ids is not None and not normalized_allowed_ids:
         return 0
     def _count(cur):
-        language_filter_sql, language_params = _build_language_pair_filter(
-            source_lang,
-            target_lang,
-            table_alias="q",
-        )
+        # Skip language pair filter when card IDs are explicitly specified (manual mode):
+        # selected cards may have any direction (de→ru or ru→de) regardless of the user's profile.
+        if normalized_allowed_ids:
+            language_filter_sql, language_params = "", []
+        else:
+            language_filter_sql, language_params = _build_language_pair_filter(
+                source_lang, target_lang, table_alias="q",
+            )
         allowed_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
         due_filter_sql = "" if bypass_due_at else " AND s.due_at <= %s"
         due_params = [] if bypass_due_at else [now_utc]
@@ -13223,11 +13309,12 @@ def count_new_cards_introduced_today(
     if allowed_card_ids is not None and not normalized_allowed_ids:
         return 0
     def _count(cur):
-        language_filter_sql, language_params = _build_language_pair_filter(
-            source_lang,
-            target_lang,
-            table_alias="q",
-        )
+        if normalized_allowed_ids:
+            language_filter_sql, language_params = "", []
+        else:
+            language_filter_sql, language_params = _build_language_pair_filter(
+                source_lang, target_lang, table_alias="q",
+            )
         allowed_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
         cur.execute(
             f"""
@@ -13264,11 +13351,12 @@ def has_available_new_srs_cards(
     if allowed_card_ids is not None and not normalized_allowed_ids:
         return False
     def _exists(cur):
-        language_filter_sql, language_params = _build_language_pair_filter(
-            source_lang,
-            target_lang,
-            table_alias="q",
-        )
+        if normalized_allowed_ids:
+            language_filter_sql, language_params = "", []
+        else:
+            language_filter_sql, language_params = _build_language_pair_filter(
+                source_lang, target_lang, table_alias="q",
+            )
         allowed_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
         cur.execute(
             f"""
@@ -13338,9 +13426,12 @@ def count_due_cards_reviewed_today(
         return 0
 
     def _count(cur):
-        language_filter_sql, language_params = _build_language_pair_filter(
-            source_lang, target_lang, table_alias="q",
-        )
+        if normalized_allowed_ids:
+            language_filter_sql, language_params = "", []
+        else:
+            language_filter_sql, language_params = _build_language_pair_filter(
+                source_lang, target_lang, table_alias="q",
+            )
         allowed_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
         cur.execute(
             f"""
@@ -13428,11 +13519,12 @@ def get_next_due_srs_card(
     if allowed_card_ids is not None and not normalized_allowed_ids:
         return None
     def _fetch(cur):
-        language_filter_sql, language_params = _build_language_pair_filter(
-            source_lang,
-            target_lang,
-            table_alias="q",
-        )
+        if normalized_allowed_ids:
+            language_filter_sql, language_params = "", []
+        else:
+            language_filter_sql, language_params = _build_language_pair_filter(
+                source_lang, target_lang, table_alias="q",
+            )
         allowed_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
         due_filter_sql = "" if bypass_due_at else "AND s.due_at <= %s"
         due_params: list = [] if bypass_due_at else [now_utc]
@@ -13509,11 +13601,12 @@ def get_next_new_srs_candidate(
     if allowed_card_ids is not None and not normalized_allowed_ids:
         return None
     def _fetch(cur):
-        language_filter_sql, language_params = _build_language_pair_filter(
-            source_lang,
-            target_lang,
-            table_alias="q",
-        )
+        if normalized_allowed_ids:
+            language_filter_sql, language_params = "", []
+        else:
+            language_filter_sql, language_params = _build_language_pair_filter(
+                source_lang, target_lang, table_alias="q",
+            )
         allowed_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
         cur.execute(
             f"""
@@ -24244,3 +24337,407 @@ async def get_manager_contact_by_location(location: str) -> str | None:
             """, (location,))
             result = cursor.fetchone()
             return result[0] if result else None
+
+
+# ── Base Dictionary ────────────────────────────────────────────────────────────
+
+def _normalize_lemma_key(word: str) -> str:
+    import unicodedata
+    w = str(word or "").strip().lower()
+    # strip leading articles commonly typed by users
+    for prefix in ("der ", "die ", "das ", "ein ", "eine ", "einem ", "einen ", "einer ", "eines "):
+        if w.startswith(prefix):
+            w = w[len(prefix):]
+            break
+    return unicodedata.normalize("NFC", w)
+
+
+def lookup_base_dictionary_entry(word: str, source_lang: str = "de") -> dict | None:
+    key = _normalize_lemma_key(word)
+    if not key:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_base_dictionary
+                SET hit_count = hit_count + 1
+                WHERE lemma_key = %s AND source_lang = %s
+                RETURNING
+                    id, lemma, lemma_key, source_lang, pos, article,
+                    translations_ru, glosses_en, senses_json, forms_json,
+                    wikt_fetched, frequency_rank, hit_count, created_at, updated_at
+                """,
+                (key, source_lang),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    cols = [
+        "id", "lemma", "lemma_key", "source_lang", "pos", "article",
+        "translations_ru", "glosses_en", "senses_json", "forms_json",
+        "wikt_fetched", "frequency_rank", "hit_count", "created_at", "updated_at",
+    ]
+    return dict(zip(cols, row))
+
+
+def upsert_base_dictionary_entry(entry: dict) -> dict:
+    lemma = str(entry.get("lemma") or "").strip()
+    source_lang = str(entry.get("source_lang") or "de").strip() or "de"
+    key = _normalize_lemma_key(lemma)
+    if not key:
+        raise ValueError("lemma cannot be empty")
+    pos = str(entry.get("pos") or "").strip() or None
+    article = str(entry.get("article") or "").strip() or None
+    translations_ru = list(entry.get("translations_ru") or [])
+    glosses_en = list(entry.get("glosses_en") or [])
+    senses_json = entry.get("senses_json") or []
+    forms_json = entry.get("forms_json") or {}
+    wikt_fetched = bool(entry.get("wikt_fetched", False))
+    frequency_rank = entry.get("frequency_rank")
+
+    import json as _json
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_base_dictionary (
+                    lemma, lemma_key, source_lang, pos, article,
+                    translations_ru, glosses_en, senses_json, forms_json,
+                    wikt_fetched, frequency_rank, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (lemma_key, source_lang) DO UPDATE SET
+                    lemma        = EXCLUDED.lemma,
+                    pos          = COALESCE(EXCLUDED.pos, bt_base_dictionary.pos),
+                    article      = COALESCE(EXCLUDED.article, bt_base_dictionary.article),
+                    translations_ru = CASE
+                        WHEN array_length(EXCLUDED.translations_ru, 1) > 0
+                        THEN EXCLUDED.translations_ru
+                        ELSE bt_base_dictionary.translations_ru
+                    END,
+                    glosses_en   = CASE
+                        WHEN array_length(EXCLUDED.glosses_en, 1) > 0
+                        THEN EXCLUDED.glosses_en
+                        ELSE bt_base_dictionary.glosses_en
+                    END,
+                    senses_json  = CASE
+                        WHEN jsonb_array_length(EXCLUDED.senses_json) > 0
+                        THEN EXCLUDED.senses_json
+                        ELSE bt_base_dictionary.senses_json
+                    END,
+                    forms_json   = CASE
+                        WHEN EXCLUDED.forms_json <> '{}'::jsonb
+                        THEN EXCLUDED.forms_json
+                        ELSE bt_base_dictionary.forms_json
+                    END,
+                    wikt_fetched = EXCLUDED.wikt_fetched OR bt_base_dictionary.wikt_fetched,
+                    frequency_rank = COALESCE(EXCLUDED.frequency_rank, bt_base_dictionary.frequency_rank),
+                    updated_at   = NOW()
+                RETURNING
+                    id, lemma, lemma_key, source_lang, pos, article,
+                    translations_ru, glosses_en, senses_json, forms_json,
+                    wikt_fetched, frequency_rank, hit_count, created_at, updated_at
+                """,
+                (
+                    lemma, key, source_lang, pos, article,
+                    translations_ru, glosses_en,
+                    _json.dumps(senses_json, ensure_ascii=False),
+                    _json.dumps(forms_json, ensure_ascii=False),
+                    wikt_fetched, frequency_rank,
+                ),
+            )
+            row = cursor.fetchone()
+    cols = [
+        "id", "lemma", "lemma_key", "source_lang", "pos", "article",
+        "translations_ru", "glosses_en", "senses_json", "forms_json",
+        "wikt_fetched", "frequency_rank", "hit_count", "created_at", "updated_at",
+    ]
+    return dict(zip(cols, row))
+
+
+def list_base_dictionary_for_offline_pack(source_lang: str = "de", limit: int = 10000) -> list[dict]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    lemma, lemma_key, source_lang, pos, article,
+                    translations_ru, glosses_en, senses_json, forms_json
+                FROM bt_base_dictionary
+                WHERE source_lang = %s
+                  AND array_length(translations_ru, 1) > 0
+                ORDER BY
+                    COALESCE(frequency_rank, 999999) ASC,
+                    hit_count DESC,
+                    updated_at DESC
+                LIMIT %s
+                """,
+                (source_lang, limit),
+            )
+            rows = cursor.fetchall()
+    cols = [
+        "lemma", "lemma_key", "source_lang", "pos", "article",
+        "translations_ru", "glosses_en", "senses_json", "forms_json",
+    ]
+    return [dict(zip(cols, row)) for row in rows]
+
+
+# ── Arena DB helpers ────────────────────────────────────────────────────────
+
+def save_story_arena_score(
+    story_id: int,
+    user_id: int,
+    username: str | None,
+    session_id: int,
+    total_score: int,
+    score_grammar: int,
+    score_accuracy: int,
+    score_style: int,
+    score_completeness: int,
+    full_translation: str = "",
+) -> int | None:
+    """Insert or update 4-criteria score for a story session. Returns score row id."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_story_scores
+                    (story_id, user_id, username, session_id,
+                     total_score, score_grammar, score_accuracy,
+                     score_style, score_completeness, full_translation)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (story_id, user_id, session_id)
+                DO UPDATE SET
+                    total_score        = EXCLUDED.total_score,
+                    score_grammar      = EXCLUDED.score_grammar,
+                    score_accuracy     = EXCLUDED.score_accuracy,
+                    score_style        = EXCLUDED.score_style,
+                    score_completeness = EXCLUDED.score_completeness,
+                    full_translation   = EXCLUDED.full_translation
+                RETURNING id;
+                """,
+                (
+                    story_id, user_id, username, session_id,
+                    total_score, score_grammar, score_accuracy,
+                    score_style, score_completeness, full_translation,
+                ),
+            )
+            row = cursor.fetchone()
+            conn.commit()
+            return row[0] if row else None
+
+
+def get_story_leaderboard(story_id: int) -> list[dict]:
+    """Return all translations for a story ordered by score desc, with people's-choice count."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    sc.id, sc.user_id, sc.username, sc.total_score,
+                    sc.score_grammar, sc.score_accuracy, sc.score_style,
+                    sc.score_completeness, sc.created_at,
+                    COUNT(tv.id) AS peoples_votes
+                FROM bt_story_scores sc
+                LEFT JOIN bt_translation_votes tv ON tv.score_id = sc.id
+                WHERE sc.story_id = %s
+                GROUP BY sc.id
+                ORDER BY sc.total_score DESC, sc.created_at ASC;
+                """,
+                (story_id,),
+            )
+            rows = cursor.fetchall()
+    return [
+        {
+            "score_id":          row[0],
+            "user_id":           row[1],
+            "username":          row[2] or f"Пользователь_{row[1]}",
+            "total_score":       row[3],
+            "score_grammar":     row[4],
+            "score_accuracy":    row[5],
+            "score_style":       row[6],
+            "score_completeness": row[7],
+            "created_at":        row[8].isoformat() if row[8] else None,
+            "peoples_votes":     int(row[9]),
+        }
+        for row in rows
+    ]
+
+
+def get_arena_stories_for_params(story_type: str, difficulty: str, exclude_user_id: int | None = None) -> list[dict]:
+    """Return stories (with at least one scored translation) matching type+difficulty."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    b.id, b.title, b.story_type, b.difficulty,
+                    COUNT(DISTINCT sc.id)          AS translator_count,
+                    MAX(sc.total_score)            AS best_score,
+                    AVG(sc.total_score)::INT       AS avg_score,
+                    (SELECT sc2.username
+                     FROM bt_story_scores sc2
+                     WHERE sc2.story_id = b.id
+                     ORDER BY sc2.total_score DESC LIMIT 1) AS best_username,
+                    (SELECT sc2.total_score
+                     FROM bt_story_scores sc2
+                     WHERE sc2.story_id = b.id
+                     ORDER BY sc2.total_score DESC LIMIT 1) AS best_user_score
+                FROM bt_3_story_bank b
+                JOIN bt_story_scores sc ON sc.story_id = b.id
+                WHERE b.story_type ILIKE %s
+                  AND b.difficulty ILIKE %s
+                  AND (%s IS NULL OR sc.user_id != %s)
+                GROUP BY b.id
+                ORDER BY COUNT(DISTINCT sc.id) DESC, MAX(sc.total_score) DESC
+                LIMIT 20;
+                """,
+                (story_type, difficulty, exclude_user_id, exclude_user_id),
+            )
+            rows = cursor.fetchall()
+    return [
+        {
+            "story_id":         row[0],
+            "title":            row[1],
+            "story_type":       row[2],
+            "difficulty":       row[3],
+            "translator_count": int(row[4]),
+            "best_score":       int(row[5]) if row[5] is not None else 0,
+            "avg_score":        int(row[6]) if row[6] is not None else 0,
+            "best_username":    row[7] or "Аноним",
+            "best_user_score":  int(row[8]) if row[8] is not None else 0,
+        }
+        for row in rows
+    ]
+
+
+def vote_story(story_id: int, user_id: int, vote: int) -> dict:
+    """Like (+1) or dislike (-1) a story. Calling again with same vote removes it (toggle)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT vote FROM bt_story_votes WHERE story_id = %s AND user_id = %s",
+                (story_id, user_id),
+            )
+            existing = cursor.fetchone()
+            if existing and existing[0] == vote:
+                cursor.execute(
+                    "DELETE FROM bt_story_votes WHERE story_id = %s AND user_id = %s",
+                    (story_id, user_id),
+                )
+                action = "removed"
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO bt_story_votes (story_id, user_id, vote)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (story_id, user_id)
+                    DO UPDATE SET vote = EXCLUDED.vote, created_at = CURRENT_TIMESTAMP;
+                    """,
+                    (story_id, user_id, vote),
+                )
+                action = "added"
+            cursor.execute(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE vote = 1)  AS likes,
+                    COUNT(*) FILTER (WHERE vote = -1) AS dislikes
+                FROM bt_story_votes WHERE story_id = %s
+                """,
+                (story_id,),
+            )
+            counts = cursor.fetchone()
+            conn.commit()
+    return {
+        "action": action,
+        "vote":   vote,
+        "likes":  int(counts[0]),
+        "dislikes": int(counts[1]),
+    }
+
+
+def get_story_vote_counts(story_id: int, user_id: int | None = None) -> dict:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE vote = 1)  AS likes,
+                    COUNT(*) FILTER (WHERE vote = -1) AS dislikes
+                FROM bt_story_votes WHERE story_id = %s
+                """,
+                (story_id,),
+            )
+            counts = cursor.fetchone()
+            my_vote = None
+            if user_id:
+                cursor.execute(
+                    "SELECT vote FROM bt_story_votes WHERE story_id = %s AND user_id = %s",
+                    (story_id, user_id),
+                )
+                row = cursor.fetchone()
+                my_vote = row[0] if row else None
+    return {
+        "likes":   int(counts[0]),
+        "dislikes": int(counts[1]),
+        "my_vote": my_vote,
+    }
+
+
+def vote_translation(score_id: int, voter_user_id: int) -> dict:
+    """Toggle people's-choice vote for a translation. Returns updated vote count."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id FROM bt_translation_votes WHERE score_id = %s AND voter_user_id = %s",
+                (score_id, voter_user_id),
+            )
+            existing = cursor.fetchone()
+            if existing:
+                cursor.execute(
+                    "DELETE FROM bt_translation_votes WHERE score_id = %s AND voter_user_id = %s",
+                    (score_id, voter_user_id),
+                )
+                action = "removed"
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO bt_translation_votes (score_id, voter_user_id)
+                    VALUES (%s, %s);
+                    """,
+                    (score_id, voter_user_id),
+                )
+                action = "added"
+            cursor.execute(
+                "SELECT COUNT(*) FROM bt_translation_votes WHERE score_id = %s",
+                (score_id,),
+            )
+            count = cursor.fetchone()[0]
+            conn.commit()
+    return {"action": action, "score_id": score_id, "peoples_votes": int(count)}
+
+
+def get_user_story_rank(story_id: int, user_id: int) -> dict:
+    """Return user's rank and score for a story among all participants."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT total_score,
+                       RANK() OVER (ORDER BY total_score DESC) AS rank,
+                       COUNT(*) OVER ()                        AS total_participants
+                FROM bt_story_scores
+                WHERE story_id = %s AND user_id = %s
+                ORDER BY total_score DESC
+                LIMIT 1;
+                """,
+                (story_id, user_id),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return {"rank": None, "total_participants": 0, "total_score": None}
+    return {
+        "total_score":        int(row[0]),
+        "rank":               int(row[1]),
+        "total_participants": int(row[2]),
+    }

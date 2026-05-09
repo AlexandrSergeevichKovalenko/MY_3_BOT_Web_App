@@ -199,6 +199,11 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     PdfReader = None
 try:
+    from ebooklib import epub as _ebooklib_epub, ITEM_DOCUMENT as _EPUB_ITEM_DOCUMENT
+except Exception:  # pragma: no cover - optional dependency
+    _ebooklib_epub = None
+    _EPUB_ITEM_DOCUMENT = None
+try:
     import pyttsx3
 except Exception:  # pragma: no cover - optional dependency
     pyttsx3 = None
@@ -493,6 +498,11 @@ from backend.database import (
     SUPPORTED_NATIVE_LANGUAGES,
     build_translation_session_minutes_sql,
     sync_translation_session_activity,
+)
+from backend.database import (
+    lookup_base_dictionary_entry,
+    upsert_base_dictionary_entry,
+    list_base_dictionary_for_offline_pack,
 )
 from backend.r2_storage import r2_exists, r2_put_bytes, r2_public_url, r2_delete_object, r2_bucket_usage_summary
 from backend.srs import schedule_review, MATURE_INTERVAL_DAYS
@@ -7183,7 +7193,14 @@ def _list_srs_queue_cards(
         allowed_filter_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
         allowed_filter_params: list[object] = [normalized_allowed_ids] if normalized_allowed_ids else []
 
-        base_params = [int(user_id), source_lang, target_lang]
+        # Skip language pair filter in manual mode: user-selected cards may have any direction.
+        if normalized_allowed_ids:
+            lang_filter_sql = ""
+            lang_params: list[object] = []
+        else:
+            lang_filter_sql = "AND q.source_lang = %s AND q.target_lang = %s"
+            lang_params = [source_lang, target_lang]
+        base_params = [int(user_id), *lang_params]
         recent_seen_cutoff = now_utc - timedelta(hours=FLASHCARD_RECENT_SEEN_HOURS)
         recent_seen_sql = (
             " AND q.id NOT IN ("
@@ -7210,8 +7227,7 @@ def _list_srs_queue_cards(
               ON q.id = s.card_id
              AND q.user_id = s.user_id
             WHERE s.user_id = %s
-              AND q.source_lang = %s
-              AND q.target_lang = %s
+              {lang_filter_sql}
               AND s.status <> 'suspended'
               {due_filter_sql}
               AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
@@ -7246,8 +7262,7 @@ def _list_srs_queue_cards(
                   ON q.id = s.card_id
                  AND q.user_id = s.user_id
                 WHERE s.user_id = %s
-                  AND q.source_lang = %s
-                  AND q.target_lang = %s
+                  {lang_filter_sql}
                   AND s.status <> 'suspended'
                   {due_filter_sql}
                   AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
@@ -7291,8 +7306,7 @@ def _list_srs_queue_cards(
                       ON q.id = s.card_id
                      AND q.user_id = s.user_id
                     WHERE s.user_id = %s
-                      AND q.source_lang = %s
-                      AND q.target_lang = %s
+                      {lang_filter_sql}
                       AND s.status <> 'suspended'
                       {due_filter_sql}
                       AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
@@ -7349,8 +7363,7 @@ def _list_srs_queue_cards(
                   ON s.user_id = q.user_id
                  AND s.card_id = q.id
                 WHERE q.user_id = %s
-                  AND q.source_lang = %s
-                  AND q.target_lang = %s
+                  {lang_filter_sql}
                   AND s.id IS NULL
                   AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
                   {recent_seen_sql if exclude_recent_seen else ""}
@@ -7387,8 +7400,7 @@ def _list_srs_queue_cards(
                       ON s.user_id = q.user_id
                      AND s.card_id = q.id
                     WHERE q.user_id = %s
-                      AND q.source_lang = %s
-                      AND q.target_lang = %s
+                      {lang_filter_sql}
                       AND s.id IS NULL
                       AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
                       AND q.id <> ALL(%s::bigint[])
@@ -7567,6 +7579,9 @@ def _build_next_srs_payload(
         queue_payload = {
             "due_count": int(queue_info.get("due_count") or 0),
             "new_remaining_today": int(queue_info.get("new_remaining_today") or 0),
+            "due_count_total": int(queue_info.get("due_count_total") or 0),
+            "due_reviewed_today": int(queue_info.get("due_reviewed_today") or 0),
+            "due_limit_today": int(queue_info.get("due_limit_today") or 30),
         }
 
     if not card_payload:
@@ -12542,6 +12557,36 @@ def _extract_pdf_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
             continue
         chunks.append(normalized)
         pages.append({"page_number": idx + 1, "text": normalized})
+    return _normalize_reader_text("\n\n".join(chunks)), pages
+
+
+def _extract_epub_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
+    if not data:
+        return "", []
+    if _ebooklib_epub is None:
+        raise RuntimeError("EPUB extraction is unavailable: install EbookLib")
+    try:
+        book = _ebooklib_epub.read_epub(BytesIO(data), options={"ignore_ncx": True})
+    except Exception as exc:
+        raise ValueError(f"Не удалось прочитать EPUB файл: {exc}") from exc
+    chunks: list[str] = []
+    pages: list[dict] = []
+    chapter_num = 0
+    for item in book.get_items_of_type(_EPUB_ITEM_DOCUMENT):
+        chapter_num += 1
+        if chapter_num > 200:
+            break
+        try:
+            html_bytes = item.get_body_content()
+            raw_html = html_bytes.decode("utf-8", errors="ignore") if isinstance(html_bytes, bytes) else str(html_bytes or "")
+        except Exception:
+            continue
+        chapter_text = _extract_text_from_html(raw_html)
+        normalized = _normalize_reader_text(chapter_text, max_chars=50000)
+        if not normalized:
+            continue
+        chunks.append(normalized)
+        pages.append({"page_number": chapter_num, "text": normalized})
     return _normalize_reader_text("\n\n".join(chunks)), pages
 
 
@@ -25224,6 +25269,210 @@ def get_webapp_dictionary_lookup_status():
     return jsonify(response_payload)
 
 
+def _strip_html(html_text: str) -> str:
+    """Strip HTML tags and decode entities from Wiktionary definition text."""
+    import html as _html_module
+    import re as _re
+    text = _re.sub(r"<[^>]+>", " ", str(html_text or ""))
+    text = _html_module.unescape(text)
+    return " ".join(text.split()).strip()
+
+
+def _fetch_wiktionary_entry(word: str) -> dict | None:
+    """Fetch German entry from English Wiktionary REST API. Returns None on failure."""
+    import urllib.request as _urlreq
+    import urllib.parse as _urlparse
+    import json as _json
+    encoded = _urlparse.quote(word.strip(), safe="")
+    url = f"https://en.wiktionary.org/api/rest_v1/page/definition/{encoded}"
+    req = _urlreq.Request(url, headers={"User-Agent": "DeutschFlow/1.0"})
+    try:
+        with _urlreq.urlopen(req, timeout=6) as resp:
+            data = _json.loads(resp.read())
+    except Exception:
+        return None
+    de_entries = data.get("de") or []
+    if not de_entries:
+        return None
+    entry = de_entries[0]
+    pos = str(entry.get("partOfSpeech") or "").strip()
+    definitions = entry.get("definitions") or []
+    glosses_en: list[str] = []
+    examples_de: list[str] = []
+    for d in definitions[:5]:
+        clean = _strip_html(d.get("definition") or "")
+        if clean:
+            glosses_en.append(clean)
+        for ex in (d.get("examples") or [])[:2]:
+            ex_clean = _strip_html(ex)
+            if ex_clean:
+                examples_de.append(ex_clean)
+    return {
+        "pos": pos,
+        "glosses_en": glosses_en[:6],
+        "examples_de": examples_de[:4],
+    }
+
+
+def _build_base_dict_result_from_entry(db_entry: dict) -> dict:
+    """Convert a bt_base_dictionary row to the dictionaryResult format the frontend expects."""
+    translations_ru = list(db_entry.get("translations_ru") or [])
+    senses_json = db_entry.get("senses_json") or []
+    forms_json = db_entry.get("forms_json") or {}
+    lemma = str(db_entry.get("lemma") or "").strip()
+    article = str(db_entry.get("article") or "").strip()
+    pos = str(db_entry.get("pos") or "").strip()
+    translation_ru = ", ".join(t for t in translations_ru[:5] if t)
+    display_word = f"{article} {lemma}".strip() if article else lemma
+    return {
+        "word_de": display_word,
+        "word_ru": translation_ru,
+        "translation_de": lemma,
+        "translation_ru": translation_ru,
+        "source_text": display_word,
+        "target_text": translation_ru,
+        "source_lang": db_entry.get("source_lang") or "de",
+        "target_lang": "ru",
+        "part_of_speech": pos,
+        "article": article,
+        "forms": forms_json,
+        "usage_examples": [
+            {"source": s.get("example_de") or "", "target": s.get("example_ru") or ""}
+            for s in senses_json
+            if s.get("example_de") or s.get("example_ru")
+        ][:4],
+        "dictionary_senses": [
+            {
+                "value": s.get("gloss_en") or "",
+                "translation_ru": s.get("gloss_ru") or "",
+            }
+            for s in senses_json
+            if s.get("gloss_en") or s.get("gloss_ru")
+        ],
+        "provider": "base_dict",
+        "is_base_dict": True,
+        "wikt_fetched": bool(db_entry.get("wikt_fetched")),
+        "quick_mode": False,
+    }
+
+
+@app.route("/api/webapp/dictionary/base-lookup", methods=["POST"])
+def base_dictionary_lookup():
+    ensure_webapp_tables()
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    word = str(payload.get("word") or "").strip()
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not word:
+        return jsonify({"error": "word обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    source_lang = str(payload.get("source_lang") or "de").strip() or "de"
+
+    # 1. Check existing cache
+    db_entry = lookup_base_dictionary_entry(word, source_lang)
+    if db_entry and db_entry.get("translations_ru"):
+        return jsonify({
+            "item": _build_base_dict_result_from_entry(db_entry),
+            "source": "cache",
+        })
+
+    # 2. Fetch from Wiktionary (online path)
+    wikt = None
+    try:
+        wikt = _fetch_wiktionary_entry(word)
+    except Exception:
+        pass
+
+    if not wikt or not wikt.get("glosses_en"):
+        return jsonify({"not_found": True})
+
+    # 3. Translate English glosses → Russian using quick translate
+    ru_translations: list[str] = []
+    senses_json: list[dict] = []
+    for gloss_en in wikt["glosses_en"][:4]:
+        ru = ""
+        try:
+            ru = _force_translate_text(gloss_en, "en", "ru")
+        except Exception:
+            pass
+        senses_json.append({"gloss_en": gloss_en, "gloss_ru": ru})
+        if ru:
+            ru_translations.append(ru)
+
+    if not ru_translations:
+        return jsonify({"not_found": True})
+
+    # 4. Detect article for nouns
+    article = ""
+    pos = wikt.get("pos") or ""
+    if pos.lower() in ("noun", "proper noun") and source_lang == "de":
+        for article_de in ("der ", "die ", "das "):
+            normalized = word.lower()
+            if db_entry and db_entry.get("article"):
+                article = db_entry["article"]
+                break
+        # Try to infer from Wiktionary head templates (crude heuristic)
+        try:
+            first_gloss = wikt["glosses_en"][0].lower()
+            if " masculine " in first_gloss or first_gloss.startswith("masculine"):
+                article = "der"
+            elif " feminine " in first_gloss or first_gloss.startswith("feminine"):
+                article = "die"
+            elif " neuter " in first_gloss or first_gloss.startswith("neuter"):
+                article = "das"
+        except Exception:
+            pass
+
+    # 5. Save to cache for future lookups
+    new_entry: dict = {
+        "lemma": word,
+        "source_lang": source_lang,
+        "pos": pos,
+        "article": article,
+        "translations_ru": ru_translations[:6],
+        "glosses_en": wikt.get("glosses_en") or [],
+        "senses_json": senses_json,
+        "forms_json": {},
+        "wikt_fetched": True,
+    }
+    try:
+        saved = upsert_base_dictionary_entry(new_entry)
+        result = _build_base_dict_result_from_entry(saved)
+    except Exception:
+        result = _build_base_dict_result_from_entry(new_entry)
+
+    return jsonify({"item": result, "source": "wiktionary"})
+
+
+@app.route("/api/webapp/dictionary/offline-pack", methods=["GET"])
+def dictionary_offline_pack():
+    ensure_webapp_tables()
+    import json as _json
+    source_lang = str(request.args.get("lang") or "de").strip() or "de"
+    limit = min(int(request.args.get("limit") or 10000), 30000)
+    rows = list_base_dictionary_for_offline_pack(source_lang=source_lang, limit=limit)
+    pack = [
+        {
+            "w": r["lemma"],
+            "k": r["lemma_key"],
+            "p": r["pos"] or "",
+            "a": r["article"] or "",
+            "ru": list(r["translations_ru"] or [])[:4],
+            "en": list(r["glosses_en"] or [])[:2],
+        }
+        for r in rows
+    ]
+    body = _json.dumps({"count": len(pack), "entries": pack}, ensure_ascii=False)
+    return app.response_class(
+        response=body,
+        status=200,
+        mimetype="application/json",
+    )
+
+
 @app.route("/api/mobile/dictionary/lookup", methods=["POST"])
 def lookup_mobile_dictionary():
     user_id, _username, error = _get_mobile_authenticated_user()
@@ -32487,6 +32736,9 @@ def get_srs_prefetch_cards():
             "queue_info": {
                 "due_count": due_count,
                 "new_remaining_today": new_remaining_today,
+                "due_count_total": int(queue_info.get("due_count_total") or 0),
+                "due_reviewed_today": int(queue_info.get("due_reviewed_today") or 0),
+                "due_limit_today": int(queue_info.get("due_limit_today") or 30),
             },
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
@@ -35380,9 +35632,16 @@ def ingest_reader_content():
                 file_mime == "application/pdf"
                 or lower_name.endswith(".pdf")
             )
+            is_epub = (
+                file_mime in ("application/epub+zip", "application/epub")
+                or lower_name.endswith(".epub")
+            )
             if is_pdf:
                 normalized_text, content_pages = _extract_pdf_content_from_bytes(raw_bytes)
                 source_type = "pdf"
+            elif is_epub:
+                normalized_text, content_pages = _extract_epub_content_from_bytes(raw_bytes)
+                source_type = "epub"
             else:
                 decoded_text = raw_bytes.decode("utf-8", errors="ignore")
                 normalized_text = _normalize_reader_text(decoded_text)
