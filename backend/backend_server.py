@@ -9771,26 +9771,35 @@ def _load_freedict_if_empty() -> None:
             bool(seed_state.get("seed_complete")),
             count,
         )
-        from backend.load_freedict import _download, _parse, _bulk_insert, FREEDICT_URL
+        from backend.load_freedict import (
+            _download,
+            _parse,
+            _bulk_insert,
+            _extract_tei_from_src_archive,
+            resolve_freedict_source_url_with_fallback,
+        )
+        source_url = resolve_freedict_source_url_with_fallback()
         upsert_base_dictionary_seed_state(
             source_lang=source_lang,
             seed_complete=False,
             entry_count=count,
-            source_url=FREEDICT_URL,
+            source_url=source_url,
         )
-        data = _download(FREEDICT_URL)
-        entries = _parse(data)
+        archive_data = _download(source_url)
+        tei_data = _extract_tei_from_src_archive(archive_data)
+        entries = _parse(tei_data)
         inserted = _bulk_insert(entries)
         final_count = count_base_dictionary_entries(source_lang)
         upsert_base_dictionary_seed_state(
             source_lang=source_lang,
             seed_complete=True,
             entry_count=final_count,
-            source_url=FREEDICT_URL,
+            source_url=source_url,
         )
         logging.info(
-            "FreeDict autoseed: source_lang=%s loaded=%s final_entries=%s seed_complete=true",
+            "FreeDict autoseed: source_lang=%s source_url=%s loaded=%s final_entries=%s seed_complete=true",
             source_lang,
+            source_url,
             inserted,
             final_count,
         )
