@@ -8660,8 +8660,11 @@ function AppInner() {
     const requestId = beginAsyncGuard(weeklyPlanRequestIdRef);
     const tone = options?.manual ? 'manual' : 'snapshot';
     const syncFacts = Boolean(options?.syncFacts);
+    const silent = Boolean(options?.silent);
     try {
-      setWeeklyPlanLoading(true);
+      if (!silent) {
+        setWeeklyPlanLoading(true);
+      }
       setWeeklyPlanError('');
       const response = syncFacts
         ? await fetch('/api/progress/weekly-plan/sync', {
@@ -8703,7 +8706,9 @@ function AppInner() {
       setWeeklyPlanError(friendly);
     } finally {
       if (isAsyncGuardCurrent(weeklyPlanRequestIdRef, requestId)) {
-        setWeeklyPlanLoading(false);
+        if (!silent) {
+          setWeeklyPlanLoading(false);
+        }
       }
     }
   };
@@ -8811,7 +8816,7 @@ function AppInner() {
     try {
       setWeeklyPlanSaving(true);
       setWeeklyPlanError('');
-      const response = await fetch('/api/progress/weekly-plan', {
+      const response = await fetch('/api/progress/weekly-plan/goals', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -8827,9 +8832,9 @@ function AppInner() {
       }
       const data = await response.json();
       const plan = {
-        week: data?.week || null,
+        week: data?.week || weeklyPlan?.week || null,
         plan: data?.plan || { translations_goal: 0, learned_words_goal: 0, agent_minutes_goal: 0, reading_minutes_goal: 0 },
-        metrics: data?.metrics || {},
+        metrics: weeklyPlan?.metrics || {},
         snapshot_saved_at: new Date().toISOString(),
       };
       setWeeklyPlan(plan);
@@ -8843,9 +8848,12 @@ function AppInner() {
         agent_minutes: false,
         reading_minutes: false,
       });
-      if (planAnalyticsPeriod !== 'week') {
-        loadPlanAnalytics();
-      }
+      window.setTimeout(() => {
+        void loadWeeklyPlan({ manual: true, syncFacts: true, silent: true });
+        if (planAnalyticsPeriod !== 'week') {
+          void loadPlanAnalytics();
+        }
+      }, 0);
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
         error,

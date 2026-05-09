@@ -30501,6 +30501,123 @@ def weekly_plan_progress():
         return jsonify(response_payload)
 
 
+@app.route("/api/progress/weekly-plan/goals", methods=["POST"])
+def save_weekly_plan_goals_fast():
+    started_perf = time.perf_counter()
+    request_id = _extract_observability_request_id()
+    correlation_id = _build_observability_correlation_id(prefix="weekly_plan_goals")
+    with db_acquire_scope("weekly_plan_goals") as db_acquire_events:
+        user_id, _username, error = _get_authenticated_user_from_request_init_data()
+        if error:
+            status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
+            _log_flow_observation(
+                "weekly_plan_goals",
+                "weekly_plan_goals_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                final_status="error",
+                error_code="auth_error",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=status,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": error}), status
+
+        payload = request.get_json(silent=True) or {}
+        try:
+            translations_goal = max(0, int(payload.get("translations_goal", 0)))
+            learned_words_goal = max(0, int(payload.get("learned_words_goal", 0)))
+            agent_minutes_goal = max(0, int(payload.get("agent_minutes_goal", 0)))
+            reading_minutes_goal = max(0, int(payload.get("reading_minutes_goal", 0)))
+        except Exception:
+            _log_flow_observation(
+                "weekly_plan_goals",
+                "weekly_plan_goals_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
+                final_status="error",
+                error_code="invalid_goal_values",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=400,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": "Значения плана должны быть целыми числами"}), 400
+
+        save_goals_duration_ms = 0
+        try:
+            language_pair_started_perf = time.perf_counter()
+            source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+            language_pair_duration_ms = _elapsed_ms_since(language_pair_started_perf)
+            save_started_perf = time.perf_counter()
+            upsert_weekly_goals(
+                user_id=int(user_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                translations_goal=translations_goal,
+                learned_words_goal=learned_words_goal,
+                agent_minutes_goal=agent_minutes_goal,
+                reading_minutes_goal=reading_minutes_goal,
+            )
+            save_goals_duration_ms = _elapsed_ms_since(save_started_perf)
+            plan_anchor_date = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
+            _mark_weekly_plan_snapshot_stale(user_id=int(user_id), anchor_date=plan_anchor_date)
+            _mark_plan_analytics_snapshot_stale(user_id=int(user_id))
+            week_start = plan_anchor_date - timedelta(days=int(plan_anchor_date.weekday()))
+            week_end = week_start + timedelta(days=6)
+            days_elapsed = max(1, (plan_anchor_date - week_start).days + 1)
+            response_payload = {
+                "ok": True,
+                "language_pair": _build_language_pair_payload(source_lang, target_lang),
+                "week": {
+                    "start_date": week_start.isoformat(),
+                    "end_date": week_end.isoformat(),
+                    "as_of_date": plan_anchor_date.isoformat(),
+                    "days_elapsed": int(days_elapsed),
+                    "days_total": 7,
+                },
+                "plan": {
+                    "translations_goal": int(translations_goal),
+                    "learned_words_goal": int(learned_words_goal),
+                    "agent_minutes_goal": int(agent_minutes_goal),
+                    "reading_minutes_goal": int(reading_minutes_goal),
+                },
+            }
+            _log_flow_observation(
+                "weekly_plan_goals",
+                "weekly_plan_goals_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
+                cache_hit=False,
+                cache_tier="miss",
+                cache_state="goals_only_saved",
+                language_pair_lookup_duration_ms=language_pair_duration_ms,
+                save_goals_duration_ms=save_goals_duration_ms,
+                response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+                final_status="success",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=200,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify(response_payload)
+        except Exception as exc:
+            _log_flow_observation(
+                "weekly_plan_goals",
+                "weekly_plan_goals_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
+                final_status="error",
+                error_code=exc.__class__.__name__,
+                save_goals_duration_ms=save_goals_duration_ms,
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=500,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify({"error": f"Ошибка сохранения недельного плана: {exc}"}), 500
+
+
 @app.route("/api/progress/weekly-plan/sync", methods=["POST"])
 def sync_weekly_plan_progress():
     started_perf = time.perf_counter()
