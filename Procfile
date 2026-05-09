@@ -1,1 +1,1 @@
-web: gunicorn -b 0.0.0.0:$PORT -k gthread --workers ${WEB_CONCURRENCY:-4} --threads ${GUNICORN_THREADS:-8} --max-requests ${GUNICORN_MAX_REQUESTS:-2000} --max-requests-jitter ${GUNICORN_MAX_REQUESTS_JITTER:-200} --timeout 300 --graceful-timeout 30 backend.backend_server:app
+web: gunicorn -b 0.0.0.0:$PORT -k gthread --workers ${WEB_CONCURRENCY:-2} --threads ${GUNICORN_THREADS:-8} --max-requests ${GUNICORN_MAX_REQUESTS:-2000} --max-requests-jitter ${GUNICORN_MAX_REQUESTS_JITTER:-200} --timeout 300 --graceful-timeout 30 backend.backend_server:app

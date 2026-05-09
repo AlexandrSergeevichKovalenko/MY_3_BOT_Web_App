@@ -2,6 +2,7 @@ import asyncio
 import os
 import logging
 import sys
+from collections import deque
 from livekit import rtc
 from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli, llm
 from livekit.plugins import openai, silero
@@ -10,6 +11,10 @@ from openai_manager import system_message
 from dotenv import load_dotenv
 from datetime import datetime
 from database import get_db_connection_context # Імпорт контекстного менеджера для підключення до БД
+from voice_session_service import (
+    append_transcript_segment as persist_voice_transcript_segment,
+    load_voice_session_context as load_bound_voice_session_context,
+)
 from livekit.agents.voice import room_io
 
 
@@ -108,6 +113,8 @@ class GermanTeacherAgent(Agent):
         # Эти поля реально используются твоими wrapper-логиками
         self.current_user_id = None
         self.user_name = "Student"  # Имя по умолчанию
+        self.current_voice_session_id = None
+        self.current_voice_session_context = None
 
 
     def fetch_user_name(self, user_id):
@@ -125,6 +132,111 @@ class GermanTeacherAgent(Agent):
         return None
 
 from typing import Optional
+
+
+def _extract_voice_session_id_from_participant(participant) -> int | None:
+    participant_attributes = getattr(participant, "attributes", None) or {}
+    if not isinstance(participant_attributes, dict):
+        return None
+    bound_session_id_raw = participant_attributes.get("voice_session_id")
+    if bound_session_id_raw is None or str(bound_session_id_raw).strip() == "":
+        return None
+    try:
+        return int(str(bound_session_id_raw).strip())
+    except Exception:
+        logging.warning(
+            "⚠️ Failed to parse voice_session_id from participant attributes: %r",
+            bound_session_id_raw,
+        )
+        return None
+
+
+def _truncate_context_items(items, limit: int = 8) -> list[str]:
+    normalized = [str(item or "").strip() for item in (items or []) if str(item or "").strip()]
+    return normalized[:limit]
+
+
+def _normalize_intent_text(text: object) -> str:
+    normalized = str(text or "").casefold()
+    normalized = normalized.replace("ü", "u").replace("ä", "a").replace("ö", "o").replace("ß", "ss")
+    normalized = normalized.replace("ё", "е")
+    normalized = "".join(ch if ch.isalnum() or ch.isspace() else " " for ch in normalized)
+    normalized = " ".join(normalized.split())
+    return normalized
+
+
+def _contains_any_intent_cue(text: str, cues: tuple[str, ...]) -> bool:
+    normalized = _normalize_intent_text(text)
+    return any(cue in normalized for cue in cues)
+
+
+def _detect_translation_drill_intent(text: str) -> dict | None:
+    normalized = _normalize_intent_text(text)
+    if not normalized:
+        return None
+
+    sentence_cues = (
+        "ein satz",
+        "einen satz",
+        "nur einen satz",
+        "ein paar satze",
+        "auf russisch",
+        "russisch sagen",
+        "gib mir einen satz",
+        "sag einen satz",
+    )
+    translate_cues = (
+        "ich ubersetze",
+        "ich muss ubersetzen",
+        "ubersetzen",
+        "ubersetzt",
+        "translate",
+        "translation",
+        "ins deutsche",
+        "in deutsche sprache",
+    )
+    check_cues = (
+        "uberpruf",
+        "prufst du",
+        "pruft du",
+        "korrig",
+        "check",
+        "dann uberprufst du",
+        "dann kontrollierst du",
+    )
+    telegram_focus_cues = (
+        "telegram",
+        "fehler",
+        "falle",
+        "artikeln",
+        "artikel",
+        "praposition",
+        "grammatik",
+        "weak spots",
+        "schwach",
+    )
+
+    has_sentence = _contains_any_intent_cue(normalized, sentence_cues)
+    has_translate = _contains_any_intent_cue(normalized, translate_cues)
+    has_check = _contains_any_intent_cue(normalized, check_cues)
+    has_telegram_focus = _contains_any_intent_cue(normalized, telegram_focus_cues)
+
+    score = 0
+    if has_sentence:
+        score += 1
+    if has_translate:
+        score += 1
+    if has_check:
+        score += 1
+    if has_telegram_focus:
+        score += 1
+
+    if (has_sentence and has_translate) or (has_translate and has_check) or score >= 3:
+        return {
+            "mode": "translation_drill",
+            "telegram_focus": bool(has_telegram_focus),
+        }
+    return None
 
 # === ТОЧКА ВХОДА ===
 async def entrypoint(ctx: JobContext):
@@ -194,6 +306,183 @@ async def entrypoint(ctx: JobContext):
     # 3) Наша бизнес-логика (пока оставляем класс как есть)
     teacher_logic = GermanTeacherAgent(llm_instance=my_llm)
     teacher_logic._greeted_user_ids = set() # Для анти-спама приветствий
+    teacher_logic._ongoing_context_refresh_logged = False
+    teacher_logic._translation_drill_logged = False
+    teacher_logic._translation_drill_activation_pending = False
+    teacher_logic.current_translation_drill_mode = False
+    teacher_logic.current_translation_drill_use_telegram_focus = False
+    teacher_logic.recent_user_transcript_fragments = deque(maxlen=12)
+
+    def _build_runtime_context_block(*, include_turn_guidance: bool = False) -> str:
+        lines = [
+            "--- RUNTIME CONTEXT ---",
+            f"CURRENT STUDENT NAME: {teacher_logic.user_name or 'Student'}",
+        ]
+        if teacher_logic.current_user_id:
+            lines.append(f"CURRENT STUDENT ID: {teacher_logic.current_user_id}")
+        lines.append("IMPORTANT: Always address the student by name when appropriate.")
+
+        context = getattr(teacher_logic, "current_voice_session_context", None)
+        if not context:
+            return "\n".join(lines)
+
+        if context.topic_mode == "scenario" and context.scenario:
+            lines.extend([
+                "VOICE MODE: scenario",
+                f"SCENARIO TITLE: {context.scenario.title}",
+                f"SCENARIO TOPIC: {context.scenario.topic}",
+                f"SCENARIO LEVEL: {context.scenario.level}",
+            ])
+            if context.scenario.system_prompt:
+                lines.append(f"SCENARIO GUIDANCE: {context.scenario.system_prompt}")
+            if include_turn_guidance:
+                lines.append(
+                    "ONGOING ADHERENCE: Stay inside the active roleplay frame across later turns unless the learner clearly asks to change the topic."
+                )
+        elif context.custom_topic_text:
+            lines.extend([
+                "VOICE MODE: custom_topic",
+                f"CUSTOM TOPIC: {context.custom_topic_text}",
+            ])
+            if include_turn_guidance:
+                lines.append(
+                    "ONGOING ADHERENCE: Keep the conversation on this topic across later turns unless the learner clearly asks to change it."
+                )
+
+        prep_pack = context.prep_pack
+        if prep_pack:
+            target_vocab = _truncate_context_items(prep_pack.target_vocab, limit=10)
+            target_expressions = _truncate_context_items(prep_pack.target_expressions, limit=8)
+            if target_vocab:
+                lines.append("TARGET VOCABULARY: " + "; ".join(target_vocab))
+            if target_expressions:
+                lines.append("TARGET EXPRESSIONS: " + "; ".join(target_expressions))
+            if target_vocab or target_expressions:
+                lines.append(
+                    "SOFT GUIDANCE: Encourage the learner to use some of these items naturally during the conversation, "
+                    "but do not force all of them and do not turn this into a checklist."
+                )
+            if include_turn_guidance and (target_vocab or target_expressions):
+                lines.append(
+                    "ONGOING PREP GUIDANCE: Keep some target vocabulary and expressions softly active in later turns through natural follow-up questions."
+                )
+
+        if getattr(teacher_logic, "current_translation_drill_mode", False):
+            lines.append("VOICE MODE OVERRIDE: translation_drill")
+            if getattr(teacher_logic, "current_translation_drill_use_telegram_focus", False):
+                lines.append(
+                    "TRANSLATION DRILL FOCUS: Prefer one sentence that softly targets the learner's Telegram weaknesses or known grammar weak spots when possible."
+                )
+            elif context and (context.prep_pack or context.scenario):
+                lines.append(
+                    "TRANSLATION DRILL FOCUS: Prefer one sentence that softly matches the active prep/scenario focus when possible."
+                )
+            else:
+                lines.append(
+                    "TRANSLATION DRILL FOCUS: Use a practical everyday sentence in Russian for translation into German."
+                )
+            lines.append(
+                "TRANSLATION DRILL RULES: Stop menu-style tutoring and stop long grammar lectures. Work in a simple loop: give exactly one Russian sentence, wait for the learner's German translation, then check/correct that exact attempt briefly before offering the next one."
+            )
+            lines.append(
+                "TRANSLATION DRILL RULES: Do not give multiple numbered examples unless the learner explicitly asks for several sentences."
+            )
+            if include_turn_guidance:
+                lines.append(
+                    "ONGOING DRILL ADHERENCE: Stay in one-sentence translation-check mode across later turns unless the learner clearly asks to switch tasks."
+                )
+            if getattr(teacher_logic, "_translation_drill_activation_pending", False):
+                lines.append(
+                    "IMMEDIATE NEXT RESPONSE: Give exactly one Russian sentence to translate into German and say briefly that you will check the learner's attempt after they answer."
+                )
+
+        return "\n".join(lines)
+
+    async def _apply_runtime_context_to_agent(
+        *,
+        force: bool = False,
+        include_turn_guidance: bool = False,
+        log_reason: str | None = None,
+    ) -> bool:
+        next_instructions = (
+            f"{system_message['german_teacher_instructions']}\n\n"
+            f"{_build_runtime_context_block(include_turn_guidance=include_turn_guidance)}\n"
+        )
+        if not force and next_instructions == teacher_logic.current_instructions:
+            return False
+        try:
+            await teacher_logic.update_instructions(next_instructions)
+        except Exception:
+            logging.warning(
+                "⚠️ Failed to refresh runtime instructions reason=%s session_id=%s",
+                log_reason or "unspecified",
+                teacher_logic.current_voice_session_id,
+                exc_info=True,
+            )
+            return False
+        teacher_logic.current_instructions = next_instructions
+        if include_turn_guidance and getattr(teacher_logic, "current_voice_session_context", None):
+            if not teacher_logic._ongoing_context_refresh_logged:
+                teacher_logic._ongoing_context_refresh_logged = True
+                logging.info(
+                    "🔁 Ongoing runtime context refresh active for session_id=%s mode=%s prep=%s",
+                    teacher_logic.current_voice_session_id,
+                    getattr(teacher_logic.current_voice_session_context, "topic_mode", None),
+                    "yes" if getattr(teacher_logic.current_voice_session_context, "prep_pack", None) else "no",
+                )
+        if include_turn_guidance and getattr(teacher_logic, "current_translation_drill_mode", False):
+            if not teacher_logic._translation_drill_logged:
+                teacher_logic._translation_drill_logged = True
+                logging.info(
+                    "🎯 Translation drill runtime mode active for session_id=%s telegram_focus=%s",
+                    teacher_logic.current_voice_session_id,
+                    bool(getattr(teacher_logic, "current_translation_drill_use_telegram_focus", False)),
+                )
+        return True
+
+    def _build_initial_reply_instructions(user_name_for_greeting: str) -> str:
+        context = getattr(teacher_logic, "current_voice_session_context", None)
+        if not context:
+            return (
+                f"The user '{user_name_for_greeting}' has just joined. "
+                "Greet them warmly by name in German and offer help with learning German. "
+                "Use system instruction to proceed with the conversation appropriately."
+            )
+
+        prep_notes: list[str] = []
+        if context.prep_pack:
+            target_vocab = _truncate_context_items(context.prep_pack.target_vocab, limit=4)
+            target_expressions = _truncate_context_items(context.prep_pack.target_expressions, limit=3)
+            if target_vocab:
+                prep_notes.append("softly encourage some of this target vocabulary: " + ", ".join(target_vocab))
+            if target_expressions:
+                prep_notes.append("softly elicit some of these expressions: " + ", ".join(target_expressions))
+        prep_clause = ""
+        if prep_notes:
+            prep_clause = " Also, " + " and ".join(prep_notes) + "."
+
+        if context.topic_mode == "scenario" and context.scenario:
+            return (
+                f"The user '{user_name_for_greeting}' has just joined. "
+                f"Open directly inside this German roleplay scenario: '{context.scenario.title}' about '{context.scenario.topic}'. "
+                "Do not describe the system setup or mention that this is a scenario. "
+                "Start naturally in German, set the scene briefly, and ask the first in-character question."
+                f"{prep_clause}"
+            )
+
+        if context.custom_topic_text:
+            return (
+                f"The user '{user_name_for_greeting}' has just joined. "
+                f"Open directly in German on this conversation topic: '{context.custom_topic_text}'. "
+                "Greet them briefly by name and move into the topic quickly with a natural first question."
+                f"{prep_clause}"
+            )
+
+        return (
+            f"The user '{user_name_for_greeting}' has just joined. "
+            "Greet them warmly by name in German and offer help with learning German. "
+            "Use system instruction to proceed with the conversation appropriately."
+        )
 
     # Отримуємо SID сесії (унікальний ID дзвінка)
     # ctx.room.sid - це унікальний ідентифікатор саме цієї сесії розмови
@@ -288,25 +577,149 @@ async def entrypoint(ctx: JobContext):
             real_name = teacher_logic.fetch_user_name(teacher_logic.current_user_id)
             teacher_logic.user_name = real_name or "Student"
             logging.info(f"✅ Resolved username: {teacher_logic.user_name}")
+            bound_session_id = _extract_voice_session_id_from_participant(part)
+            if bound_session_id is not None:
+                teacher_logic.current_voice_session_id = int(bound_session_id)
+                logging.info(
+                    "✅ Resolved bound DB voice session id=%s from participant attributes",
+                    teacher_logic.current_voice_session_id,
+                )
+                await _load_voice_session_context_best_effort()
 
             # 4) Анти-спам приветствия (один раз на user_id)
             if teacher_logic.current_user_id not in teacher_logic._greeted_user_ids:
                 teacher_logic._greeted_user_ids.add(teacher_logic.current_user_id)
-
-                # Обновим instructions (если ты их реально используешь дальше)
-                teacher_logic.current_instructions = (
-                    f"{system_message['german_teacher_instructions']}\n\n"
-                    f"--- CONTEXT UPDATE ---\n"
-                    f"CURRENT STUDENT NAME: {teacher_logic.user_name}\n"
-                    f"CURRENT STUDENT ID: {teacher_logic.current_user_id}\n"
-                    f"IMPORTANT: Always address the student by name when appropriate.\n"
-                )
+                await _apply_runtime_context_to_agent(force=True, log_reason="user_resolved")
 
 
             return True
 
         logging.warning("❌ Cannot resolve user_id: no numeric participant.identity found.")
         return False
+
+    async def _resolve_bound_voice_session_id_from_room() -> bool:
+        if teacher_logic.current_voice_session_id:
+            return True
+        room = ctx.room
+        participants = []
+
+        rp = getattr(room, "remote_participants", None)
+        if rp:
+            if isinstance(rp, dict):
+                participants.extend(list(rp.values()))
+            else:
+                participants.extend(list(rp))
+
+        p = getattr(room, "participants", None)
+        if p:
+            if isinstance(p, dict):
+                participants.extend(list(p.values()))
+            else:
+                participants.extend(list(p))
+
+        participants = [x for x in participants if x is not None]
+        for part in participants:
+            bound_session_id = _extract_voice_session_id_from_participant(part)
+            if bound_session_id is None:
+                continue
+            teacher_logic.current_voice_session_id = int(bound_session_id)
+            logging.info(
+                "✅ Resolved bound DB voice session id=%s from room participants",
+                teacher_logic.current_voice_session_id,
+            )
+            await _load_voice_session_context_best_effort()
+            return True
+        return False
+
+    async def _load_voice_session_context_best_effort() -> bool:
+        session_id_value = teacher_logic.current_voice_session_id
+        if not session_id_value:
+            return False
+        current_context = getattr(teacher_logic, "current_voice_session_context", None)
+        if current_context and int(getattr(current_context, "session_id", 0) or 0) == int(session_id_value):
+            return True
+        try:
+            context = await asyncio.to_thread(
+                load_bound_voice_session_context,
+                int(session_id_value),
+            )
+        except Exception:
+            logging.warning(
+                "⚠️ Failed to load voice session context for session_id=%s",
+                session_id_value,
+                exc_info=True,
+            )
+            return False
+        if not context:
+            logging.info("ℹ️ No voice session context payload found for session_id=%s", session_id_value)
+            return False
+        teacher_logic.current_voice_session_context = context
+        await _apply_runtime_context_to_agent(force=True, log_reason="context_loaded")
+        logging.info(
+            "✅ Loaded voice session context for session_id=%s scenario=%s prep_pack=%s",
+            session_id_value,
+            "yes" if context.scenario else "no",
+            "yes" if context.prep_pack else "no",
+        )
+        return True
+
+    async def _persist_transcript_segment_best_effort(role: str, text: str) -> None:
+        normalized_text = str(text or "").strip()
+        if not normalized_text:
+            return
+        if not teacher_logic.current_voice_session_id:
+            await _resolve_bound_voice_session_id_from_room()
+        if not teacher_logic.current_voice_session_id:
+            await _resolve_user_id_from_room()
+        if teacher_logic.current_voice_session_id and not teacher_logic.current_voice_session_context:
+            await _load_voice_session_context_best_effort()
+        session_id_value = teacher_logic.current_voice_session_id
+        if not session_id_value:
+            return
+        try:
+            await asyncio.to_thread(
+                persist_voice_transcript_segment,
+                session_id=int(session_id_value),
+                speaker=str(role or "").strip().lower(),
+                text=normalized_text,
+            )
+        except Exception:
+            logging.warning(
+                "⚠️ Transcript DB persistence failed for session_id=%s role=%s",
+                session_id_value,
+                role,
+                exc_info=True,
+            )
+
+    async def _activate_translation_drill_mode_if_needed(user_text: str) -> bool:
+        normalized_text = str(user_text or "").strip()
+        if not normalized_text:
+            return False
+        teacher_logic.recent_user_transcript_fragments.append(normalized_text)
+        joined_recent_text = " ".join(teacher_logic.recent_user_transcript_fragments)
+        detection = _detect_translation_drill_intent(joined_recent_text)
+        if not detection:
+            return False
+        teacher_logic.current_translation_drill_use_telegram_focus = bool(
+            getattr(teacher_logic, "current_translation_drill_use_telegram_focus", False)
+            or detection.get("telegram_focus")
+        )
+        if getattr(teacher_logic, "current_translation_drill_mode", False):
+            return False
+        teacher_logic.current_translation_drill_mode = True
+        teacher_logic._translation_drill_activation_pending = True
+        logging.info(
+            "🎯 Detected translation-drill intent for session_id=%s buffer=%r telegram_focus=%s",
+            teacher_logic.current_voice_session_id,
+            joined_recent_text[:300],
+            bool(teacher_logic.current_translation_drill_use_telegram_focus),
+        )
+        await _apply_runtime_context_to_agent(
+            force=True,
+            include_turn_guidance=True,
+            log_reason="translation_drill_intent",
+        )
+        return True
 
     @llm.function_tool
     async def get_student_context() -> str:
@@ -382,6 +795,15 @@ async def entrypoint(ctx: JobContext):
                 asyncio.create_task(session.say("Hallo! Entschuldigung, ich kann deine ID nicht lesen."))
                 return
 
+            bound_session_id = _extract_voice_session_id_from_participant(participant)
+            if bound_session_id is not None:
+                teacher_logic.current_voice_session_id = int(bound_session_id)
+                logging.info(
+                    "✅ Bound DB voice session id=%s from participant_connected",
+                    teacher_logic.current_voice_session_id,
+                )
+                asyncio.create_task(_load_voice_session_context_best_effort())
+
             # анти-спам приветствия
             if user_id_int in teacher_logic._greeted_user_ids:
                 logging.info(f"👋 User {user_id_int} already greeted -> skip greeting")
@@ -394,6 +816,7 @@ async def entrypoint(ctx: JobContext):
             real_name = teacher_logic.fetch_user_name(user_id_int)
             teacher_logic.user_name = real_name or "Student"
             logging.info(f"✅ participant_connected resolved username: {teacher_logic.user_name}")
+            asyncio.create_task(_apply_runtime_context_to_agent(force=True, log_reason="participant_connected"))
 
             # # Обновляем инструкции (если используешь где-то)
             # teacher_logic.current_instructions = (
@@ -402,13 +825,6 @@ async def entrypoint(ctx: JobContext):
             #     f"CURRENT STUDENT NAME: {teacher_logic.user_name}\n"
             #     f"CURRENT STUDENT ID: {teacher_logic.current_user_id}\n"
             # )
-            teacher_logic.current_instructions = (
-                f"{system_message['german_teacher_instructions']}\n\n"
-                f"--- CONTEXT UPDATE ---\n"
-                f"CURRENT STUDENT NAME: {teacher_logic.user_name}\n"
-                f"CURRENT STUDENT ID: {teacher_logic.current_user_id}\n"
-            )
-
 
     def on_participant_disconnected(participant: rtc.RemoteParticipant):
         nonlocal disconnect_task
@@ -447,9 +863,37 @@ async def entrypoint(ctx: JobContext):
                 # при первом пользовательском сообщении пытаемся резолвить ID+имя
                 if not teacher_logic.current_user_id:
                     asyncio.create_task(_resolve_user_id_from_room())
+                asyncio.create_task(_activate_translation_drill_mode_if_needed(text))
+                if teacher_logic.current_voice_session_context:
+                    asyncio.create_task(
+                        _apply_runtime_context_to_agent(
+                            force=True,
+                            include_turn_guidance=True,
+                            log_reason="user_turn",
+                        )
+                    )
+                elif teacher_logic.current_translation_drill_mode:
+                    asyncio.create_task(
+                        _apply_runtime_context_to_agent(
+                            force=True,
+                            include_turn_guidance=True,
+                            log_reason="translation_drill_user_turn",
+                        )
+                    )
+
+            if role == "assistant" and getattr(teacher_logic, "_translation_drill_activation_pending", False):
+                teacher_logic._translation_drill_activation_pending = False
+                asyncio.create_task(
+                    _apply_runtime_context_to_agent(
+                        force=True,
+                        include_turn_guidance=True,
+                        log_reason="translation_drill_ack",
+                    )
+                )
 
             if role in ("user", "assistant"):
                 save_transcript(role.capitalize(), text)
+                asyncio.create_task(_persist_transcript_segment_best_effort(role, text))
 
         except Exception as e:
             logging.error(f"❌ Error in conversation_item_added handler: {e}", exc_info=True)
@@ -512,27 +956,50 @@ async def entrypoint(ctx: JobContext):
 
     # Пытаемся найти участника, который уже в комнате (это наш юзер с браузера)
     user_name_for_greeting = "Student"
-    
+
     # Берем список всех участников (кроме самого бота)
     participants = list(ctx.room.remote_participants.values())
-    
+
     if participants:
-        # Берем первого попавшегося (обычно он один)
         p = participants[0]
-        # Берем имя, которое мы передали в токене (из поля Name на сайте)
         if p.name:
             user_name_for_greeting = p.name
-            # Сохраняем имя в логику учителя сразу
             teacher_logic.user_name = p.name
             logging.info(f"🚀 FAST START: Found user '{p.name}' immediately!")
 
-    # 🔥 ПРИНУДИТЕЛЬНЫЙ ГЕНЕРАЦИЯ ПЕРВОГО ОТВЕТА
-    # Мы даем ИИ скрытую инструкцию: "Поздоровайся с [Имя]".
-    logging.info("🗣️ Invoking initial greeting...")
-    
-    await session.generate_reply(
-        instructions=f"The user '{user_name_for_greeting}' has just joined. Greet them warmly by name in German and offer help with learning German. Use system instruction to proceed with the conversation appropriately."
-    )
+    # Запускаем резолв user_id/контекста в фоне — не блокируем приветствие.
+    # Контекст гарантированно загрузится до того, как пользователь успеет
+    # произнести первое слово (DB-запрос < 500ms, пользователь слушает ~2-3s).
+    asyncio.create_task(_resolve_user_id_from_room())
+
+    # === БЫСТРОЕ ПРИВЕТСТВИЕ ===
+    # session.say() → прямой TTS без LLM. Экономит ~8-12 секунд по сравнению
+    # с session.generate_reply() (там: GPT-4o ~3-5s + TTS ~4-7s = ~10-15s).
+    # Контекст (сценарий / тема) используется если уже загружен, иначе generic.
+    safe_name = str(user_name_for_greeting or "").strip() or "Student"
+    _ctx = getattr(teacher_logic, "current_voice_session_context", None)
+
+    if _ctx and _ctx.topic_mode == "scenario" and _ctx.scenario:
+        greeting_text = (
+            f"Hallo {safe_name}! "
+            f"Ich bin bereit. Lass uns mit dem Szenario beginnen, wann immer du möchtest."
+        )
+        logging.info("🎭 Scenario fast greeting, scenario_id=%s", getattr(_ctx, "scenario_id", None))
+    elif _ctx and _ctx.custom_topic_text:
+        greeting_text = (
+            f"Hallo {safe_name}! "
+            f"Schön, dass du da bist. Ich bin bereit über das Thema zu sprechen."
+        )
+        logging.info("📝 Custom topic fast greeting, session_id=%s", getattr(_ctx, "session_id", None))
+    else:
+        greeting_text = (
+            f"Hallo {safe_name}! "
+            f"Ich bin Gena, dein Deutschlehrer. Womit kann ich dir heute helfen?"
+        )
+
+    logging.info("🗣️ Fast greeting via say(): %r", greeting_text)
+    await session.say(greeting_text, allow_interruptions=True)
+    logging.info("✅ Fast greeting delivered. Agent is now listening.")
 
 
     logging.info("✅ AgentSession started. Running...")

@@ -1,0 +1,23 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# No ffmpeg, no espeak, no libespeak — the scheduler process never calls TTS or audio tools.
+# It only enqueues Dramatiq jobs; the actual work runs in the worker services.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY backend/requirements.txt /app/backend/requirements.txt
+RUN pip install --no-cache-dir --progress-bar off --retries 10 --timeout 120 \
+    -r /app/backend/requirements.txt
+
+COPY backend/ /app/backend/
+
+ENV PYTHONPATH=/app
+# This service IS the scheduler — mark it so backend_server.py skips APScheduler on import.
+ENV SCHEDULER_SERVICE_ENABLED=1
+# TTS admin monitor jobs read in-process web state; they must stay in web, not here.
+ENV TTS_ADMIN_MONITOR_SCHEDULER_ENABLED=0
+
+CMD ["python", "-m", "backend.scheduler_service"]

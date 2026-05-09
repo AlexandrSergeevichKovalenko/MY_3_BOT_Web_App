@@ -1,0 +1,351 @@
+/**
+ * topbar-redesign.css  v2 — полностью исправленная версия
+ * ────────────────────────────────────────────────────
+ * Установка:
+ *   1. frontend/src/styles/topbar-redesign.css
+ *   2. В App.jsx добавить строку:
+ *      import './styles/topbar-redesign.css';
+ * ────────────────────────────────────────────────────
+ */
+
+/* ══════════════════════════════════════════════════
+   1. TOPBAR CONTAINER
+══════════════════════════════════════════════════ */
+.webapp-topbar {
+  background: rgba(8, 12, 26, 0.88) !important;
+  backdrop-filter: blur(28px) !important;
+  -webkit-backdrop-filter: blur(28px) !important;
+  border-color: rgba(255, 255, 255, 0.07) !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+  /* Убираем grid, делаем flex-column */
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 0 !important;
+  padding: 10px 14px 0 !important;
+}
+
+/* ══════════════════════════════════════════════════
+   2. ROW 1 — grid → flex, исправляем раскладку
+══════════════════════════════════════════════════ */
+.topbar-row-main {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 10px !important;
+  width: 100% !important;
+  padding-bottom: 10px !important;
+}
+
+/* Leading spacer — схлопываем до 0, не display:none! */
+.topbar-leading-spacer {
+  width: 0 !important;
+  min-width: 0 !important;
+  height: 0 !important;
+  flex: 0 0 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  overflow: hidden !important;
+}
+
+/* Заголовок — одна строка + подпись */
+.topbar-title {
+  flex: 1 1 0 !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.02em !important;
+  color: #F0F4FF !important;
+  text-align: left !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  line-height: 1.2 !important;
+}
+
+/* Подпись под заголовком через ::after */
+.topbar-title::after {
+  content: 'DEUTSCH LERNEN · MINI-APP';
+  display: block !important;
+  font-size: 9.5px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.07em !important;
+  color: rgba(255, 255, 255, 0.3) !important;
+  margin-top: 2px !important;
+  text-transform: uppercase !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+/* Аватар — фиолетовое кольцо */
+.topbar-avatar {
+  width: 34px !important;
+  height: 34px !important;
+  border-radius: 50% !important;
+  border: none !important;
+  box-shadow:
+    0 0 0 2px rgba(79, 70, 229, 0.55),
+    0 3px 10px rgba(79, 70, 229, 0.3) !important;
+  overflow: hidden !important;
+  flex-shrink: 0 !important;
+}
+
+.topbar-avatar .avatar-placeholder {
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  background: linear-gradient(135deg, #4F46E5, #7C3AED) !important;
+  border-radius: 50% !important;
+}
+
+/* ══════════════════════════════════════════════════
+   3. ROW 2 — controls
+══════════════════════════════════════════════════ */
+.topbar-row-controls {
+  display: flex !important;
+  justify-content: flex-start !important;
+  padding-bottom: 11px !important;
+}
+
+.topbar-controls {
+  display: flex !important;
+  align-items: center !important;
+  gap: 7px !important;
+  width: 100% !important;
+}
+
+/* ── RU / DE segmented control ── */
+.language-toggle-compact {
+  height: 32px !important;
+  border-radius: 10px !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  border: 1px solid rgba(255, 255, 255, 0.11) !important;
+  padding: 3px !important;
+  gap: 2px !important;
+  box-shadow: none !important;
+  flex-shrink: 0 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+}
+
+.language-chip {
+  height: 24px !important;
+  min-width: 28px !important;
+  border-radius: 7px !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  color: rgba(255, 255, 255, 0.4) !important;
+  padding: 0 9px !important;
+  transition: all 0.15s !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+.language-chip.is-active {
+  background: rgba(255, 255, 255, 0.16) !important;
+  color: #fff !important;
+  box-shadow: none !important;
+}
+
+/* ── Theme toggle → иконка (скрыть текст, показать эмодзи) ── */
+.theme-toggle-compact {
+  width: 32px !important;
+  height: 32px !important;
+  border-radius: 10px !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  border: 1px solid rgba(255, 255, 255, 0.11) !important;
+  padding: 0 !important;
+  gap: 0 !important;
+  flex-shrink: 0 !important;
+  position: relative !important;
+  overflow: hidden !important;
+  display: grid !important;
+  place-items: center !important;
+}
+
+/* Прячем оба chip */
+.theme-toggle-compact .theme-chip {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-size: 0 !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  min-width: unset !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  transition: opacity 0.2s !important;
+}
+
+.theme-toggle-compact .theme-chip:not(.is-active) {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+.theme-toggle-compact .theme-chip.is-active {
+  opacity: 1 !important;
+}
+
+/* Иконки через ::before */
+.theme-toggle-compact .theme-chip:first-child::before {
+  content: '🌙';
+  font-size: 16px !important;
+}
+.theme-toggle-compact .theme-chip:last-child::before {
+  content: '☀️';
+  font-size: 16px !important;
+}
+
+/* ── Language pair → featured кнопка ── */
+.language-pair-button {
+  flex: 1 1 0 !important;
+  height: 32px !important;
+  min-height: unset !important;
+  border-radius: 10px !important;
+  background: linear-gradient(135deg,
+    rgba(79, 70, 229, 0.35),
+    rgba(99, 102, 241, 0.2)) !important;
+  border: 1px solid rgba(99, 102, 241, 0.4) !important;
+  color: #fff !important;
+  font-size: 12px !important;
+  font-weight: 800 !important;
+  letter-spacing: 0.03em !important;
+  padding: 0 12px !important;
+  white-space: nowrap !important;
+  cursor: pointer !important;
+  transition: background 0.15s !important;
+}
+.language-pair-button:hover,
+.language-pair-button:active {
+  background: rgba(79, 70, 229, 0.55) !important;
+  border-color: rgba(99, 102, 241, 0.65) !important;
+}
+
+/* ── Help → чистая квадратная кнопка ── */
+.topbar-help-button {
+  width: 32px !important;
+  height: 32px !important;
+  min-width: unset !important;
+  min-height: unset !important;
+  border-radius: 10px !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  border: 1px solid rgba(255, 255, 255, 0.11) !important;
+  color: rgba(255, 255, 255, 0.5) !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  padding: 0 !important;
+  flex-shrink: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+.topbar-help-button:hover {
+  background: rgba(255, 255, 255, 0.14) !important;
+}
+
+/* ══════════════════════════════════════════════════
+   4. КНОПКА «← На главную» — убираем белую полосу
+══════════════════════════════════════════════════ */
+.webapp-topbar.is-back-mode {
+  background: rgba(8, 12, 26, 0.7) !important;
+  border-color: rgba(255, 255, 255, 0.06) !important;
+  padding: 8px 14px !important;
+}
+
+.topbar-home-row {
+  width: 100% !important;
+}
+
+.topbar-home-button {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 7px !important;
+  height: 34px !important;
+  padding: 0 16px 0 12px !important;
+  border-radius: 10px !important;
+  background: rgba(79, 70, 229, 0.2) !important;
+  border: 1px solid rgba(99, 102, 241, 0.4) !important;
+  color: #c7d2fe !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.01em !important;
+  cursor: pointer !important;
+  backdrop-filter: blur(8px) !important;
+  box-shadow: none !important;
+  transition: background 0.15s, border-color 0.15s !important;
+}
+.topbar-home-button:hover,
+.topbar-home-button:focus-visible {
+  background: rgba(79, 70, 229, 0.35) !important;
+  border-color: rgba(99, 102, 241, 0.6) !important;
+  outline: none !important;
+}
+
+.topbar-home-arrow {
+  font-size: 15px !important;
+  color: rgba(199, 210, 254, 0.7) !important;
+}
+
+/* ══════════════════════════════════════════════════
+   5. LIGHT THEME OVERRIDES
+══════════════════════════════════════════════════ */
+.webapp-page.is-theme-light .webapp-topbar {
+  background: rgba(253, 247, 236, 0.96) !important;
+  border-color: rgba(171, 139, 98, 0.2) !important;
+}
+
+.webapp-page.is-theme-light .topbar-title {
+  color: #1a1410 !important;
+}
+
+.webapp-page.is-theme-light .topbar-title::after {
+  color: rgba(26, 20, 16, 0.35) !important;
+}
+
+.webapp-page.is-theme-light .language-toggle-compact,
+.webapp-page.is-theme-light .theme-toggle-compact,
+.webapp-page.is-theme-light .topbar-help-button {
+  background: rgba(0, 0, 0, 0.06) !important;
+  border-color: rgba(0, 0, 0, 0.1) !important;
+}
+
+.webapp-page.is-theme-light .language-chip {
+  color: rgba(0, 0, 0, 0.38) !important;
+}
+.webapp-page.is-theme-light .language-chip.is-active {
+  background: rgba(0, 0, 0, 0.1) !important;
+  color: #1a1410 !important;
+}
+
+.webapp-page.is-theme-light .language-pair-button {
+  background: rgba(79, 70, 229, 0.1) !important;
+  border-color: rgba(79, 70, 229, 0.28) !important;
+  color: #3730A3 !important;
+}
+
+.webapp-page.is-theme-light .topbar-help-button {
+  color: rgba(26, 20, 16, 0.45) !important;
+}
+
+.webapp-page.is-theme-light .webapp-topbar.is-back-mode {
+  background: rgba(253, 247, 236, 0.95) !important;
+  border-color: rgba(171, 139, 98, 0.15) !important;
+}
+
+.webapp-page.is-theme-light .topbar-home-button {
+  background: rgba(79, 70, 229, 0.08) !important;
+  border-color: rgba(79, 70, 229, 0.25) !important;
+  color: #3730A3 !important;
+}
+
+.webapp-page.is-theme-light .topbar-home-arrow {
+  color: rgba(55, 48, 163, 0.6) !important;
+}

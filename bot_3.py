@@ -1,3 +1,6 @@
+import time as _bot_startup_clock
+_BOT_PROCESS_IMPORT_STARTED_AT = _bot_startup_clock.perf_counter()
+
 import os
 import openai
 from openai import OpenAI
@@ -34,8 +37,10 @@ from telegram.error import TimedOut, BadRequest, RetryAfter, Forbidden
 import tempfile
 import sys
 import livekit.api # Нужен для LiveKit комнат
+import multiprocessing
 from typing import Any, Callable
 from backend.analytics import fetch_user_summary, get_period_bounds
+_BOT_BACKEND_SERVER_IMPORT_STARTED_AT = pytime.perf_counter()
 from backend.backend_server import (
     GoogleTTSBudgetBlockedError,
     _build_tts_prewarm_quota_control_text,
@@ -50,7 +55,9 @@ from backend.backend_server import (
     get_or_create_tts_clip,
     chunk_sentence_llm_de,
     schedule_user_paid_subscription_cancel_at_period_end,
+    wait_for_completed_webapp_startup_bootstrap_marker_or_raise,
 )
+_BOT_BACKEND_SERVER_IMPORT_DURATION_MS = int((pytime.perf_counter() - _BOT_BACKEND_SERVER_IMPORT_STARTED_AT) * 1000)
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -71,9 +78,15 @@ from backend.openai_manager import (
     run_dictionary_collocations_multilang,
     run_generate_word_quiz,
     run_language_learning_private_question,
+    run_language_learning_private_question_detailed,
     run_quiz_followup_question,
     run_translate_subtitles_ru,
     run_translate_subtitles_multilang,
+)
+from backend.image_quiz_utils import (
+    build_image_quiz_feedback_alert,
+    build_image_quiz_feedback_payload,
+    normalize_image_quiz_option_text,
 )
 from backend.database import (
     init_db,
@@ -84,7 +97,6 @@ from backend.database import (
     record_quiz_word,
     record_telegram_quiz_delivery,
     record_telegram_quiz_attempt,
-    ensure_webapp_tables,
     get_admin_telegram_ids,
     is_telegram_user_allowed,
     allow_telegram_user,
@@ -135,16 +147,23 @@ from backend.database import (
     delete_active_quiz,
     store_prepared_telegram_quiz,
     count_prepared_telegram_quizzes,
+    count_available_image_quiz_templates,
+    count_total_active_image_quiz_templates,
     claim_prepared_telegram_quiz,
     claim_next_ready_image_quiz_template,
     create_image_quiz_dispatch,
     mark_image_quiz_dispatch_sent,
     mark_image_quiz_dispatch_failed,
+    mark_image_quiz_template_failed,
     get_image_quiz_dispatch,
     get_image_quiz_template,
     record_image_quiz_answer,
     mark_image_quiz_answer_feedback_sent,
     list_top_weak_topics,
+)
+from backend.job_queue import (
+    can_enqueue_background_jobs,
+    enqueue_image_quiz_template_refresh_job,
 )
 from user_analytics import prepare_aggregate_data_by_period_and_draw_analytic_for_user, aggregate_data_for_charts, create_analytics_figure_async
 from load_data_from_db import load_data_for_analytics 
@@ -173,6 +192,12 @@ QUIZ_REPEAT_CANDIDATE_LIMIT = max(1, int(os.getenv("QUIZ_REPEAT_CANDIDATE_LIMIT"
 QUIZ_PREPARED_TARGET_PER_TYPE = max(2, int((os.getenv("QUIZ_PREPARED_TARGET_PER_TYPE") or "8").strip() or "8"))
 QUIZ_PREPARED_STARTUP_DELAY_SECONDS = max(10, int((os.getenv("QUIZ_PREPARED_STARTUP_DELAY_SECONDS") or "45").strip() or "45"))
 QUIZ_PREPARED_HOURLY_TOPUP_MINUTE = max(0, min(59, int((os.getenv("QUIZ_PREPARED_HOURLY_TOPUP_MINUTE") or "35").strip() or "35")))
+IMAGE_QUIZ_READY_TARGET_PER_USER = max(1, int((os.getenv("IMAGE_QUIZ_READY_TARGET_PER_USER") or "1").strip() or "1"))
+IMAGE_QUIZ_TOPUP_LOOKBACK_DAYS = max(1, int((os.getenv("IMAGE_QUIZ_TOPUP_LOOKBACK_DAYS") or "30").strip() or "30"))
+IMAGE_QUIZ_TOPUP_ACTIVE_USERS_LIMIT = max(1, int((os.getenv("IMAGE_QUIZ_TOPUP_ACTIVE_USERS_LIMIT") or "32").strip() or "32"))
+IMAGE_QUIZ_GLOBAL_POOL_CAP = max(1, int((os.getenv("IMAGE_QUIZ_GLOBAL_POOL_CAP") or "40").strip() or "40"))
+IMAGE_QUIZ_POOL_TOPUP_HOUR = max(0, min(23, int((os.getenv("IMAGE_QUIZ_POOL_TOPUP_HOUR") or "2").strip() or "2")))
+IMAGE_QUIZ_POOL_TOPUP_MINUTE = max(0, min(59, int((os.getenv("IMAGE_QUIZ_POOL_TOPUP_MINUTE") or "0").strip() or "0")))
 FLASHCARD_REMINDER_TIMES = [(7, 0), (16, 30)]
 active_quizzes = {}
 pending_quiz_freeform = {}
@@ -342,6 +367,11 @@ logging.basicConfig(
     ]
 )
 
+# Suppress per-request transport chatter from Telegram long polling.
+# We still keep warnings/errors from the HTTP stack.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 load_dotenv(dotenv_path=Path(__file__).parent/".env") # Загружаем переменные из .env
 # Ты кладёшь GOOGLE_APPLICATION_CREDENTIALS=/path/... в .env.
 # load_dotenv() загружает .env и делает вид, что это переменные окружения.
@@ -391,6 +421,170 @@ def _should_run_primary_telegram_bot_process() -> bool:
     }
     normalized_service_name = _normalize_runtime_service_name(railway_service_name)
     return normalized_service_name in allowed_names
+
+
+_BOT_STARTUP_PHASE_RECORDS: list[dict[str, Any]] = []
+_BOT_STARTUP_PHASE_CONTEXT: dict[str, Any] = {}
+
+
+def _bot_startup_worker_info() -> str:
+    try:
+        return multiprocessing.current_process().name or "-"
+    except Exception:
+        return "-"
+
+
+def _bot_startup_service_name() -> str:
+    return str(os.getenv("RAILWAY_SERVICE_NAME") or "").strip() or "-"
+
+
+def _log_bot_startup_structured(payload: dict[str, Any], *, level: int = logging.INFO) -> None:
+    try:
+        logging.log(level, json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    except Exception:
+        logging.log(level, "bot_startup_log_unserializable payload=%s", payload)
+
+
+def _set_bot_startup_phase_context(**fields: Any) -> None:
+    global _BOT_STARTUP_PHASE_CONTEXT
+    _BOT_STARTUP_PHASE_CONTEXT = {key: value for key, value in fields.items() if value is not None}
+
+
+def _clear_bot_startup_phase_context() -> None:
+    global _BOT_STARTUP_PHASE_CONTEXT
+    _BOT_STARTUP_PHASE_CONTEXT = {}
+
+
+def _emit_bot_startup_phase(
+    *,
+    phase: str,
+    enabled: bool,
+    success: bool,
+    duration_ms: int,
+    category: str,
+    required_before_first_request: bool,
+    skipped: bool = False,
+    exception: Exception | None = None,
+) -> None:
+    payload: dict[str, Any] = {
+        "event": "startup_phase",
+        "phase": phase,
+        "service": _bot_startup_service_name(),
+        "pid": os.getpid(),
+        "worker": _bot_startup_worker_info(),
+        "imported_by_bot": True,
+        "enabled": bool(enabled),
+        "success": bool(success),
+        "duration_ms": int(duration_ms),
+        "category": category,
+        "required_before_first_request": bool(required_before_first_request),
+        "skipped": bool(skipped),
+        "argv": " ".join(sys.argv[:4]),
+    }
+    payload.update(_BOT_STARTUP_PHASE_CONTEXT)
+    if exception is not None:
+        payload["error_type"] = exception.__class__.__name__
+        payload["error_message"] = str(exception)
+    summary = {
+        "phase": payload.get("phase"),
+        "enabled": bool(payload.get("enabled")),
+        "success": bool(payload.get("success")),
+        "duration_ms": int(payload.get("duration_ms") or 0),
+        "category": payload.get("category"),
+        "required_before_first_request": bool(payload.get("required_before_first_request")),
+        "skipped": bool(payload.get("skipped")),
+        **({"error_type": payload.get("error_type")} if payload.get("error_type") else {}),
+    }
+    for extra_key in ("owner_role", "waited_for_owner_ms", "skip_reason", "marker_status"):
+        if payload.get(extra_key) is not None:
+            summary[extra_key] = payload.get(extra_key)
+    _BOT_STARTUP_PHASE_RECORDS.append(summary)
+    _log_bot_startup_structured(payload, level=logging.INFO if success else logging.WARNING)
+
+
+def _run_bot_startup_phase(
+    phase: str,
+    fn,
+    *,
+    enabled: bool,
+    category: str,
+    required_before_first_request: bool,
+):
+    if not enabled:
+        _emit_bot_startup_phase(
+            phase=phase,
+            enabled=False,
+            success=True,
+            duration_ms=0,
+            category=category,
+            required_before_first_request=required_before_first_request,
+            skipped=True,
+        )
+        return None
+    started_at = pytime.perf_counter()
+    try:
+        result = fn()
+    except Exception as exc:
+        try:
+            _emit_bot_startup_phase(
+                phase=phase,
+                enabled=True,
+                success=False,
+                duration_ms=int((pytime.perf_counter() - started_at) * 1000),
+                category=category,
+                required_before_first_request=required_before_first_request,
+                exception=exc,
+            )
+        finally:
+            _clear_bot_startup_phase_context()
+        raise
+    try:
+        _emit_bot_startup_phase(
+            phase=phase,
+            enabled=True,
+            success=True,
+            duration_ms=int((pytime.perf_counter() - started_at) * 1000),
+            category=category,
+            required_before_first_request=required_before_first_request,
+        )
+    finally:
+        _clear_bot_startup_phase_context()
+    return result
+
+
+def _ensure_bot_webapp_schema_ready_via_marker() -> None:
+    outcome = wait_for_completed_webapp_startup_bootstrap_marker_or_raise()
+    _set_bot_startup_phase_context(
+        owner_role=outcome.get("owner_role"),
+        waited_for_owner_ms=outcome.get("waited_for_owner_ms"),
+        skip_reason=outcome.get("skip_reason"),
+        marker_status=outcome.get("marker_status"),
+    )
+
+
+def _emit_bot_startup_total(*, success: bool) -> None:
+    payload = {
+        "event": "startup_total",
+        "service": _bot_startup_service_name(),
+        "pid": os.getpid(),
+        "worker": _bot_startup_worker_info(),
+        "imported_by_bot": True,
+        "success": bool(success),
+        "total_duration_ms": int((_bot_startup_clock.perf_counter() - _BOT_PROCESS_IMPORT_STARTED_AT) * 1000),
+        "phases_summary": list(_BOT_STARTUP_PHASE_RECORDS),
+        "argv": " ".join(sys.argv[:4]),
+    }
+    _log_bot_startup_structured(payload, level=logging.INFO if success else logging.WARNING)
+
+
+_emit_bot_startup_phase(
+    phase="import_backend_server",
+    enabled=True,
+    success=True,
+    duration_ms=int(_BOT_BACKEND_SERVER_IMPORT_DURATION_MS),
+    category="import_startup",
+    required_before_first_request=True,
+)
 
 
 # Buttons in Telegramm
@@ -1648,6 +1842,83 @@ async def handle_language_tutor_callback(update: Update, context: CallbackContex
         user_id=int(query.from_user.id),
         continue_from_last=continue_from_last,
     )
+
+
+async def handle_language_tutor_detail_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query or not query.from_user:
+        return
+    await query.answer()
+    if not (query.message and query.message.chat and query.message.chat.type == "private"):
+        if query.message:
+            await query.message.reply_text("Эта кнопка работает только в личке с ботом.")
+        return
+    if not is_telegram_user_allowed(int(query.from_user.id)):
+        await query.message.reply_text("Сначала получите доступ к боту, потом сможете задавать вопросы.")
+        return
+
+    last_exchange = context.user_data.get("language_tutor_last_exchange")
+    if not isinstance(last_exchange, dict) or not str(last_exchange.get("question") or "").strip():
+        await query.message.reply_text(
+            "Не удалось найти предыдущий вопрос. Задайте вопрос заново.",
+            reply_markup=_build_private_language_tutor_reply_keyboard(),
+        )
+        return
+
+    user_id = int(query.from_user.id)
+    question = str(last_exchange.get("question") or "").strip()
+    source_lang, target_lang = _language_tutor_pair_for_user(user_id)
+
+    await query.message.reply_text(
+        "📖 Готовлю подробный разбор...",
+        reply_markup=_build_private_language_tutor_reply_keyboard(),
+    )
+    try:
+        llm_payload: dict = {
+            "learner_question": question,
+            "source_language": source_lang,
+            "target_language": target_lang,
+        }
+        prev_answer = str(last_exchange.get("answer") or "").strip()
+        if question and prev_answer:
+            llm_payload["conversation_context"] = {
+                "previous_question": question,
+                "previous_answer": prev_answer,
+            }
+        llm_response = await run_language_learning_private_question_detailed(llm_payload)
+        normalized = _normalize_language_tutor_llm_response(
+            llm_response,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        is_language_question = bool(normalized.get("is_language_question"))
+        answer = str(normalized.get("answer") or "").strip()
+        if not answer:
+            answer = _language_tutor_default_refusal() if not is_language_question else "Не удалось подготовить ответ. Попробуйте переформулировать вопрос."
+        save_key = None
+        if normalized["save_source_text"] and normalized["save_target_text"]:
+            save_key = _store_pending_quiz_question_save_request(
+                user_id=user_id,
+                request_key=f"langgpt_detail:{user_id}",
+                source_text=normalized["save_source_text"],
+                target_text=normalized["save_target_text"],
+                source_lang=normalized["source_lang"],
+                target_lang=normalized["target_lang"],
+                continue_callback_data="langgpt:continue",
+                continue_button_text="❓ Задать вопрос",
+            )
+        await query.message.reply_text(
+            _truncate_telegram_reply_text(answer, max_chars=3000),
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+            reply_markup=_build_language_tutor_answer_keyboard(save_key=save_key, show_detail=False),
+        )
+    except Exception:
+        logging.exception("❌ Ошибка language tutor detail user_id=%s", user_id)
+        await query.message.reply_text(
+            "Не удалось подготовить подробный разбор. Попробуйте чуть позже.",
+            reply_markup=_build_private_language_tutor_reply_keyboard(),
+        )
 
 
 async def _notify_admins_access_request(context: CallbackContext, user) -> None:
@@ -5434,25 +5705,49 @@ async def _generate_dictionary_save_options(payload: dict) -> list[dict]:
     unique: set[tuple[str, str]] = set()
     options: list[dict] = []
 
-    def _add_option(source_value: str, target_value: str, is_original: bool = False) -> None:
+    def _dedup_key(v: str) -> str:
+        v = re.sub(r"\s+", " ", v.lower().strip())
+        v = re.sub(r"[.,;:!?»)\]]+$", "", v)  # strip trailing punctuation
+        v = re.sub(r"\s+([?!.,;:»\)])", r"\1", v)  # collapse space-before-punct
+        v = re.sub(r"[,]", "", v)  # ignore commas — prevents "word" vs "word," duplicates
+        return v.strip()
+
+    def _add_option(source_value: str, target_value: str, is_original: bool = False) -> bool:
         s = source_value.strip()
         t = target_value.strip()
         if not s or not t:
-            return
-        key = (s.lower(), t.lower())
+            return False
+        key = (_dedup_key(s), _dedup_key(t))
         if key in unique:
-            return
+            return False
         unique.add(key)
         options.append({"source": s, "target": t, "is_original": bool(is_original)})
+        return True
 
-    original_query = str(payload.get("original_query") or "").strip()
-    if original_query and _normalize_dictionary_compare_key(original_query) == _normalize_dictionary_compare_key(source_text):
-        _add_option(original_query, default_option.get("target") or "", is_original=True)
+    # Option 1: canonical phrase — the LLM-normalised form with its base translation.
+    # Do NOT also add the raw original_query: it is often a punctuation-only variant
+    # of source_text and produces a visually identical first entry.
+    canonical_source = (default_option.get("source") or source_text or "").strip()
+    canonical_target = (default_option.get("target") or "").strip()
+    _add_option(canonical_source, canonical_target, is_original=True)
 
-    _add_option(default_option.get("source") or "", default_option.get("target") or "", is_original=False)
+    # Option 2: first collocation returned by the LLM that is structurally distinct
+    # from Option 1 (collocations prompt is instructed to return a shorter phrase).
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            added = _add_option(
+                item.get("source") or item.get("word_source") or "",
+                item.get("target") or item.get("word_target") or "",
+                is_original=False,
+            )
+            if added and len(options) >= 2:
+                break
 
+    # Fallback: predefined save_worthy_options from the lookup payload
     predefined = lookup.get("save_worthy_options") if isinstance(lookup, dict) else None
-    if isinstance(predefined, list):
+    if isinstance(predefined, list) and len(options) < 2:
         for item in predefined:
             if not isinstance(item, dict):
                 continue
@@ -9518,7 +9813,7 @@ async def send_daily_summary(context: CallbackContext):
             SELECT user_id, 
                 AVG({build_translation_session_minutes_sql('p')}) AS avg_time, 
                 SUM({build_translation_session_minutes_sql('p')}) AS total_time
-            FROM bt_3_user_progress
+            FROM bt_3_user_progress p
             WHERE completed = true
         		AND start_time::date = CURRENT_DATE -- ✅ Теперь только за день
             GROUP BY user_id
@@ -9639,7 +9934,7 @@ async def send_progress_report(context: CallbackContext):
         SELECT user_id, 
             AVG({build_translation_session_minutes_sql('p')}) AS avg_time, -- ✅ Среднее время сессии за день
             SUM({build_translation_session_minutes_sql('p')}) AS total_time -- ✅ Общее время за день
-        FROM bt_3_user_progress
+        FROM bt_3_user_progress p
         WHERE completed = TRUE 
             AND start_time::date = CURRENT_DATE -- ✅ Теперь только за день
         GROUP BY user_id
@@ -10261,6 +10556,9 @@ def _normalize_quiz_payload(payload: dict, fallback: dict) -> dict:
         if correct_text not in cleaned_options:
             return fallback
         correct_option_id = cleaned_options.index(correct_text)
+
+    if any(_contains_cyrillic_text(option) or not _contains_latin_text(option) for option in cleaned_options):
+        return fallback
 
     if len(cleaned_options) < 4:
         for option in fallback["options"]:
@@ -10916,15 +11214,22 @@ async def _send_quiz_result_private(
     selected_display = _normalize_quiz_option_for_private_message(selected_text or "")
     status_line = "✅ Верно" if is_correct else "❌ Неверно"
     lines = [
-        "🧠 Результат квиза",
-        f"Статус: {status_line}",
+        "🧠 <b>Результат квиза</b>",
+        "",
+        f"📍 <b>Статус:</b> {html.escape(status_line)}",
     ]
     if selected_display:
-        lines.append(f"Ваш ответ (DE): {selected_display}")
+        lines.append(f"🙋 <b>Ваш ответ (DE):</b> {html.escape(selected_display)}")
     lines.extend([
-        f"Правильный вариант (DE): {de_text or '—'}",
-        f"Перевод (RU): {ru_text or '—'}",
+        f"✅ <b>Правильный вариант (DE):</b> {html.escape(de_text or '—')}",
+        f"🇷🇺 <b>Перевод (RU):</b> {html.escape(ru_text or '—')}",
     ])
+    explanation_text = _truncate_telegram_reply_text(str(quiz_data.get("explanation") or "").strip(), max_chars=220)
+    if explanation_text:
+        lines.extend([
+            "",
+            f"💡 <b>Пояснение:</b> {html.escape(explanation_text)}",
+        ])
 
     reply_markup = None
     fallback_reply_markup = None
@@ -10992,6 +11297,7 @@ async def _send_quiz_result_private(
                     chat_id=int(user_id),
                     text="\n".join(lines),
                     reply_markup=variant_markup,
+                    parse_mode="HTML",
                 )
                 return True
             except RetryAfter as exc:
@@ -11998,6 +12304,7 @@ async def _generate_quiz_from_entry(
 
 async def _select_new_scheduled_quiz(
     ordered_generators: list[tuple[str, Callable[..., Any]]],
+    chat_id: int | None = None,
 ) -> dict | None:
     max_entries_per_generator = 4
     for quiz_type, generator in ordered_generators:
@@ -12007,12 +12314,16 @@ async def _select_new_scheduled_quiz(
                 cooldown_days=5,
                 source_lang="ru",
                 target_lang="de",
+                chat_id=chat_id,
+                mastered_accuracy_threshold=QUIZ_REPEAT_ACCURACY_THRESHOLD,
             )
             if not entry:
                 entry = get_random_dictionary_entry(
                     cooldown_days=5,
                     source_lang="ru",
                     target_lang="de",
+                    chat_id=chat_id,
+                    mastered_accuracy_threshold=QUIZ_REPEAT_ACCURACY_THRESHOLD,
                 )
             if not entry:
                 break
@@ -12122,11 +12433,11 @@ async def _select_scheduled_quiz_for_target(
         if not selection:
             selection = await _select_prepared_scheduled_quiz(ordered_generators)
         if not selection:
-            selection = await _select_new_scheduled_quiz(ordered_generators)
+            selection = await _select_new_scheduled_quiz(ordered_generators, chat_id=int(target_chat_id))
     else:
         selection = await _select_prepared_scheduled_quiz(ordered_generators)
         if not selection:
-            selection = await _select_new_scheduled_quiz(ordered_generators)
+            selection = await _select_new_scheduled_quiz(ordered_generators, chat_id=int(target_chat_id))
         if not selection:
             selection = await _select_repeat_scheduled_quiz(int(target_chat_id), ordered_generators)
     if not selection:
@@ -12205,6 +12516,84 @@ async def prepare_scheduled_quiz_pool(context: CallbackContext, target_per_type:
             added += 1
         summary.append(f"{quiz_type}:+{added}/{missing}")
     logging.info("✅ prepared scheduled quiz pool updated: %s", ", ".join(summary))
+
+
+async def prepare_image_quiz_pool(context: CallbackContext, target_ready_per_user: int | None = None) -> None:
+    desired_ready = max(1, int(target_ready_per_user or IMAGE_QUIZ_READY_TARGET_PER_USER))
+    if not can_enqueue_background_jobs():
+        logging.info("ℹ️ image quiz pool topup skipped: background jobs unavailable")
+        return
+    try:
+        global_total = await asyncio.to_thread(
+            count_total_active_image_quiz_templates,
+            source_lang="ru",
+            target_lang="de",
+        )
+    except Exception:
+        logging.warning("⚠️ image quiz pool topup: failed to count global pool, proceeding", exc_info=True)
+        global_total = 0
+    if global_total >= IMAGE_QUIZ_GLOBAL_POOL_CAP:
+        logging.info(
+            "ℹ️ image quiz pool topup skipped: global pool at cap (total=%s cap=%s)",
+            global_total,
+            IMAGE_QUIZ_GLOBAL_POOL_CAP,
+        )
+        return
+    candidate_user_ids = await _collect_scheduler_candidate_user_ids(
+        lookback_days=IMAGE_QUIZ_TOPUP_LOOKBACK_DAYS,
+        include_allowed=True,
+        include_admins=True,
+    )
+    if not candidate_user_ids:
+        logging.info("ℹ️ image quiz pool topup skipped: no active users")
+        return
+
+    queued_users = 0
+    already_ready_users = 0
+    failed_users = 0
+    total_requested = 0
+    for user_id in sorted(candidate_user_ids)[:IMAGE_QUIZ_TOPUP_ACTIVE_USERS_LIMIT]:
+        try:
+            ready_count = await asyncio.to_thread(
+                count_available_image_quiz_templates,
+                user_id=int(user_id),
+                source_lang="ru",
+                target_lang="de",
+            )
+        except Exception:
+            failed_users += 1
+            logging.warning("⚠️ Не удалось посчитать image quiz templates для user_id=%s", int(user_id), exc_info=True)
+            continue
+
+        missing = max(0, desired_ready - int(ready_count or 0))
+        if missing <= 0:
+            already_ready_users += 1
+            continue
+
+        try:
+            await asyncio.to_thread(
+                enqueue_image_quiz_template_refresh_job,
+                user_id=int(user_id),
+                source_lang="ru",
+                target_lang="de",
+                requested_count=missing,
+                request_id=f"image_quiz_topup:{int(user_id)}:{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+            )
+            queued_users += 1
+            total_requested += missing
+        except Exception:
+            failed_users += 1
+            logging.warning("⚠️ Не удалось enqueue image quiz refresh для user_id=%s missing=%s", int(user_id), missing, exc_info=True)
+
+    logging.info(
+        "✅ image quiz pool topup queued: candidates=%s queued_users=%s requested=%s already_ready=%s failed=%s desired_ready=%s",
+        min(len(candidate_user_ids), IMAGE_QUIZ_TOPUP_ACTIVE_USERS_LIMIT),
+        queued_users,
+        total_requested,
+        already_ready_users,
+        failed_users,
+        desired_ready,
+    )
 
 
 async def delete_temporary_message(context: CallbackContext) -> None:
@@ -12289,13 +12678,40 @@ async def _collect_quiz_delivery_user_routes(context: CallbackContext) -> list[d
         return []
 
 
+def _build_image_quiz_button_label(option_index: int) -> str:
+    labels = ["1", "2", "3", "4"]
+    if 0 <= option_index < len(labels):
+        return labels[option_index]
+    return str(option_index + 1)
+
+
+def _format_image_quiz_option_text(option_text: str, *, max_chars: int = 84) -> str:
+    compact = normalize_image_quiz_option_text(option_text)
+    if not compact:
+        return "—"
+    return _truncate_telegram_reply_text(compact, max_chars=max_chars)
+
+
+def _shuffle_image_quiz_options(
+    options: list[str],
+    correct_option_id: int,
+    seed: int,
+) -> tuple[list[str], int]:
+    rng = random.Random(seed)
+    indices = list(range(len(options)))
+    rng.shuffle(indices)
+    shuffled = [options[i] for i in indices]
+    new_correct_id = indices.index(correct_option_id)
+    return shuffled, new_correct_id
+
+
 def _build_image_quiz_keyboard(dispatch_id: int, answer_options: list[str]) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     current_row: list[InlineKeyboardButton] = []
-    for idx, option in enumerate(answer_options[:4]):
+    for idx, _option in enumerate(answer_options[:4]):
         current_row.append(
             InlineKeyboardButton(
-                str(option),
+                _build_image_quiz_button_label(idx),
                 callback_data=f"iq:{int(dispatch_id)}:{int(idx)}",
             )
         )
@@ -12307,11 +12723,21 @@ def _build_image_quiz_keyboard(dispatch_id: int, answer_options: list[str]) -> I
     return InlineKeyboardMarkup(rows)
 
 
-def _build_image_quiz_caption(template: dict) -> str:
+def _build_image_quiz_caption(template: dict, answer_options: list[str]) -> str:
     question = str(template.get("question_de") or "").strip()
-    if question:
-        return question
-    return "Was passt zum Bild?"
+    lines = [question or "Was passt zum Bild?"]
+    normalized_options = [
+        _format_image_quiz_option_text(option)
+        for option in (answer_options or [])[:4]
+        if str(option or "").strip()
+    ]
+    if normalized_options:
+        lines.append("")
+        lines.extend(
+            f"{_build_image_quiz_button_label(idx)}. {option_text}"
+            for idx, option_text in enumerate(normalized_options)
+        )
+    return _truncate_telegram_reply_text("\n".join(lines), max_chars=900)
 
 
 async def _send_image_quiz_for_target(
@@ -12347,12 +12773,31 @@ async def _send_image_quiz_for_target(
             break
 
     if chosen_user_id is None or not chosen_template:
+        logging.info(
+            "ℹ️ No ready image quiz template for chat_id=%s candidate_user_ids=%s slot=%s",
+            int(target_chat_id),
+            [int(user_id) for user_id in candidate_user_ids[:8]],
+            delivery_slot,
+        )
         return False
 
-    answer_options = [str(option).strip() for option in (chosen_template.get("answer_options") or []) if str(option).strip()]
-    correct_option_index = chosen_template.get("correct_option_index")
+    quiz_data = build_image_quiz_feedback_payload(chosen_template)
     image_url = str(chosen_template.get("image_url") or "").strip()
-    if len(answer_options) != 4 or correct_option_index is None or not image_url:
+    if not quiz_data or not image_url:
+        try:
+            await asyncio.to_thread(
+                mark_image_quiz_template_failed,
+                int(chosen_template["id"]),
+                last_error="image_quiz_ready_template_invalid",
+                visual_status="rejected",
+                provider_name="telegram_bot_send",
+            )
+        except Exception:
+            logging.warning(
+                "⚠️ Не удалось отметить invalid ready image quiz template template_id=%s",
+                chosen_template.get("id"),
+                exc_info=True,
+            )
         logging.warning(
             "⚠️ Ready image quiz template is incomplete template_id=%s user_id=%s chat_id=%s",
             chosen_template.get("id"),
@@ -12360,6 +12805,7 @@ async def _send_image_quiz_for_target(
             int(target_chat_id),
         )
         return False
+    answer_options = list(quiz_data["options"])
 
     delivery_scope = "group" if int(target_chat_id) < 0 else "private"
     dispatch = None
@@ -12396,12 +12842,15 @@ async def _send_image_quiz_for_target(
         return False
 
     dispatch_id = int(dispatch["id"])
+    answer_options, _ = _shuffle_image_quiz_options(
+        answer_options, int(quiz_data.get("correct_option_id") or 0), dispatch_id
+    )
     photo_to_send = str(photo_override).strip() if photo_override is not None else image_url
     try:
         photo_message = await context.bot.send_photo(
             chat_id=int(target_chat_id),
             photo=photo_to_send,
-            caption=_build_image_quiz_caption(chosen_template),
+            caption=_build_image_quiz_caption(chosen_template, answer_options),
             reply_markup=_build_image_quiz_keyboard(dispatch_id, answer_options),
         )
     except Exception as exc:
@@ -12838,18 +13287,19 @@ async def handle_image_quiz_callback(update: Update, context: CallbackContext) -
         await query.answer("Quiz unavailable")
         return
 
-    answer_options = [str(option).strip() for option in (template.get("answer_options") or []) if str(option).strip()]
-    correct_option_index = template.get("correct_option_index")
-    if (
-        selected_option_index < 0
-        or selected_option_index >= len(answer_options)
-        or correct_option_index is None
-    ):
+    quiz_data = build_image_quiz_feedback_payload(template)
+    if not quiz_data:
+        await query.answer("Quiz unavailable")
+        return
+    answer_options, correct_option_index = _shuffle_image_quiz_options(
+        list(quiz_data["options"]), int(quiz_data["correct_option_id"]), dispatch_id
+    )
+    if selected_option_index < 0 or selected_option_index >= len(answer_options):
         await query.answer("Quiz unavailable")
         return
 
     selected_text = answer_options[selected_option_index]
-    is_correct = int(selected_option_index) == int(correct_option_index)
+    is_correct = int(selected_option_index) == correct_option_index
     try:
         answer = await asyncio.to_thread(
             record_image_quiz_answer,
@@ -12873,30 +13323,83 @@ async def handle_image_quiz_callback(update: Update, context: CallbackContext) -
         await query.answer("Quiz unavailable")
         return
 
-    if not bool(answer.get("created")):
-        await query.answer("Already answered")
+    answer_created = bool(answer.get("created"))
+    feedback_sent_at = answer.get("feedback_sent_at")
+    stored_selected_text = str(answer.get("selected_text") or selected_text).strip() or selected_text
+    stored_is_correct = bool(answer.get("is_correct")) if answer.get("is_correct") is not None else bool(is_correct)
+
+    if (not answer_created) and feedback_sent_at:
+        await query.answer(
+            build_image_quiz_feedback_alert(
+                is_correct=stored_is_correct,
+                correct_text=quiz_data.get("correct_text"),
+                answer_accepted=False,
+            ),
+            show_alert=True,
+        )
         return
 
     try:
-        await asyncio.to_thread(
-            mark_image_quiz_answer_feedback_sent,
-            int(dispatch_id),
-            int(user.id),
+        await query.answer(
+            build_image_quiz_feedback_alert(
+                is_correct=stored_is_correct,
+                correct_text=quiz_data.get("correct_text"),
+                answer_accepted=answer_created,
+            ),
+            show_alert=True,
         )
     except Exception:
         logging.warning(
-            "⚠️ Не удалось отметить feedback sent для image quiz dispatch_id=%s user_id=%s",
+            "⚠️ Не удалось показать image quiz alert dispatch_id=%s user_id=%s",
             dispatch_id,
             int(user.id),
             exc_info=True,
         )
 
-    await query.answer("✅ Correct" if is_correct else "❌ Incorrect")
+    sent_private = await _send_quiz_result_private(
+        context=context,
+        user_id=int(user.id),
+        quiz_data=quiz_data,
+        is_correct=stored_is_correct,
+        selected_text=stored_selected_text,
+    )
+
+    if sent_private:
+        try:
+            await asyncio.to_thread(
+                mark_image_quiz_answer_feedback_sent,
+                int(dispatch_id),
+                int(user.id),
+            )
+        except Exception:
+            logging.warning(
+                "⚠️ Не удалось отметить feedback sent для image quiz dispatch_id=%s user_id=%s",
+                dispatch_id,
+                int(user.id),
+                exc_info=True,
+            )
+        return
+
+    try:
+        if int(dispatch.get("chat_id") or 0) != int(user.id):
+            await context.bot.send_message(
+                chat_id=int(dispatch.get("chat_id") or 0),
+                text=f"{user.first_name}, откройте личку с ботом (/start), чтобы получить результат image quiz.",
+                reply_to_message_id=int(dispatch.get("message_id") or 0) or None,
+            )
+    except Exception:
+        logging.warning(
+            "⚠️ Не удалось отправить image quiz fallback в чат dispatch_id=%s user_id=%s",
+            dispatch_id,
+            int(user.id),
+            exc_info=True,
+        )
 
 
 
 def main():
     global application
+    bot_startup_completed_successfully = False
 
     bot_polling_enabled = _should_run_primary_telegram_bot_process()
     logging.info(
@@ -12904,14 +13407,35 @@ def main():
         bot_polling_enabled,
         str(os.getenv("RAILWAY_SERVICE_NAME") or "").strip() or "-",
     )
+    _emit_bot_startup_phase(
+        phase="bot_polling_gate",
+        enabled=bot_polling_enabled,
+        success=True,
+        duration_ms=0,
+        category="runtime_gate",
+        required_before_first_request=True,
+        skipped=not bot_polling_enabled,
+    )
     if not bot_polling_enabled:
+        _emit_bot_startup_total(success=True)
         logging.info("Non-primary bot service detected; keeping process idle to avoid duplicate Telegram polling")
         while True:
             pytime.sleep(3600)
-    
     # Инициализация базы данных from database.py 
-    init_db()
-    ensure_webapp_tables()
+    _run_bot_startup_phase(
+        "init_db",
+        init_db,
+        enabled=True,
+        category="readiness",
+        required_before_first_request=True,
+    )
+    _run_bot_startup_phase(
+        "ensure_webapp_tables",
+        _ensure_bot_webapp_schema_ready_via_marker,
+        enabled=True,
+        category="schema_bootstrap",
+        required_before_first_request=True,
+    )
 
     #defaults = Defaults(timeout=60)  # увеличили таймаут до 60 секунд
     telegram_request = HTTPXRequest(
@@ -12922,7 +13446,13 @@ def main():
         connect_timeout=max(5.0, float((os.getenv("TELEGRAM_HTTP_CONNECT_TIMEOUT") or "20").strip())),
     )
     tracking_bot = TrackingExtBot(token=TELEGRAM_Deutsch_BOT_TOKEN, request=telegram_request)
-    application = Application.builder().bot(tracking_bot).build()
+    application = _run_bot_startup_phase(
+        "build_telegram_application",
+        lambda: Application.builder().bot(tracking_bot).build(),
+        enabled=True,
+        category="readiness",
+        required_before_first_request=True,
+    )
     application.bot.request.timeout = 60
 
     # 🔹 Добавляем обработчики команд (исправленный порядок)
@@ -12975,6 +13505,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_dictionary_save_callback, pattern=r"^dictsave:"))
     application.add_handler(CallbackQueryHandler(handle_group_enrollment_callback, pattern=r"^groupenroll:confirm$"))
     application.add_handler(CallbackQueryHandler(handle_language_tutor_callback, pattern=r"^langgpt:(ask|continue)$"))
+    application.add_handler(CallbackQueryHandler(handle_language_tutor_detail_callback, pattern=r"^langgpt:detail$"))
     application.add_handler(CallbackQueryHandler(handle_image_quiz_callback, pattern=r"^iq:\d+:\d+$"))
 
     application.add_handler(CommandHandler("translate", check_user_translation))  # ✅ Проверка переводов
@@ -12993,10 +13524,28 @@ def main():
         str(os.getenv("RAILWAY_SERVICE_NAME") or "").strip() or "-",
     )
     if application.job_queue and bot_scheduler_enabled:
-        application.job_queue.run_once(backfill_group_enrollment_prompts, when=20)
-        application.job_queue.run_once(prepare_scheduled_quiz_pool, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS)
+        _run_bot_startup_phase(
+            "bot_startup_run_once_jobs",
+            lambda: (
+                application.job_queue.run_once(backfill_group_enrollment_prompts, when=20),
+                application.job_queue.run_once(prepare_scheduled_quiz_pool, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS),
+                application.job_queue.run_once(prepare_image_quiz_pool, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 20),
+            ),
+            enabled=True,
+            category="housekeeping",
+            required_before_first_request=False,
+        )
     elif application.job_queue:
         logging.info("Skipping bot startup run_once jobs in this process")
+        _emit_bot_startup_phase(
+            phase="bot_startup_run_once_jobs",
+            enabled=False,
+            success=True,
+            duration_ms=0,
+            category="housekeeping",
+            required_before_first_request=False,
+            skipped=True,
+        )
     
     # --- НОВЫЕ ОБРАБОТЧИКИ ДЛЯ LIVEKIT КНОПОК ---
     #application.add_handler(MessageHandler(filters.Regex(r'🎙 Начать урок'), start_lesson)) # Теперь обрабатываем текст кнопки
@@ -13025,7 +13574,13 @@ def main():
             async_func(context, *args, **kwargs),
             loop
         )
-        fut.add_done_callback(lambda f: f.exception() and logging.exception("❌ APScheduler job crashed"))
+        def _log_scheduler_failure(future):
+            try:
+                future.result()
+            except Exception:
+                logging.exception("❌ APScheduler job crashed")
+
+        fut.add_done_callback(_log_scheduler_failure)
 
     # def run_async_job(async_func, context=None, *args, **kwargs):
     #     if context is None:
@@ -13058,7 +13613,13 @@ def main():
 
 
     # ✅ Добавляем задачу в `scheduler` ДЛЯ УТРА
-    scheduler = BackgroundScheduler() if bot_scheduler_enabled else None
+    scheduler = _run_bot_startup_phase(
+        "create_bot_scheduler",
+        lambda: BackgroundScheduler(),
+        enabled=bot_scheduler_enabled,
+        category="scheduler",
+        required_before_first_request=False,
+    )
 
     if scheduler is not None:
         print("📌 Добавляем задачу в scheduler...")
@@ -13094,6 +13655,16 @@ def main():
             ),
             "cron",
             minute=QUIZ_PREPARED_HOURLY_TOPUP_MINUTE,
+        )
+        scheduler.add_job(
+            lambda: submit_async(
+                prepare_image_quiz_pool,
+                CallbackContext(application=application),
+                IMAGE_QUIZ_READY_TARGET_PER_USER,
+            ),
+            "cron",
+            hour=IMAGE_QUIZ_POOL_TOPUP_HOUR,
+            minute=IMAGE_QUIZ_POOL_TOPUP_MINUTE,
         )
 
     # scheduler.add_job(
@@ -13180,10 +13751,27 @@ def main():
                 timezone=budget_report_timezone,
             )
 
-        scheduler.start()
+        _run_bot_startup_phase(
+            "start_bot_scheduler",
+            scheduler.start,
+            enabled=True,
+            category="scheduler",
+            required_before_first_request=False,
+        )
     else:
         logging.info("Skipping APScheduler startup in this bot process")
+        _emit_bot_startup_phase(
+            phase="start_bot_scheduler",
+            enabled=False,
+            success=True,
+            duration_ms=0,
+            category="scheduler",
+            required_before_first_request=False,
+            skipped=True,
+        )
     print("🚀 Бот запущен! Ожидаем сообщения...")
+    bot_startup_completed_successfully = True
+    _emit_bot_startup_total(success=bot_startup_completed_successfully)
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

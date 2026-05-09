@@ -1,0 +1,1352 @@
+{
+  "id": "c0e448eb-db8c-41c0-8b17-dd3ae1ef53a6",
+  "name": "MY_THIRD_BOT",
+  "deletedAt": null,
+  "workspace": {
+    "name": "Oleksandr Kovalenko's Projects"
+  },
+  "buckets": {
+    "edges": []
+  },
+  "environments": {
+    "edges": [
+      {
+        "node": {
+          "id": "7760f665-85fe-4c64-aa20-d48053eb9fb2",
+          "name": "production",
+          "canAccess": true,
+          "deletedAt": null,
+          "unmergedChangesCount": null,
+          "serviceInstances": {
+            "edges": [
+              {
+                "node": {
+                  "id": "050ba53d-f221-4088-8396-953d5a5a497a",
+                  "serviceId": "d55e801d-60b3-4ba1-bb58-f7357238c1a1",
+                  "serviceName": "BACKGROUND_JOBS",
+                  "environmentId": "7760f665-85fe-4c64-aa20-d48053eb9fb2",
+                  "latestDeployment": {
+                    "canRedeploy": true,
+                    "id": "d85898dd-a651-4c0d-976c-f7c610267958",
+                    "meta": {
+                      "buildOnly": false,
+                      "fileServiceManifest": {},
+                      "imageDigest": "sha256:074bbc0c10f5c54dccff51273864755bcbd560b94c94929788d44e3952368be2",
+                      "logsV2": true,
+                      "nixpacksProviders": [],
+                      "propertyFileMapping": {},
+                      "reason": "deploy",
+                      "rootDirectory": null,
+                      "runtime": "V2",
+                      "serviceManifest": {
+                        "build": {
+                          "buildCommand": null,
+                          "buildEnvironment": null,
+                          "builder": "DOCKERFILE",
+                          "dockerfilePath": "Dockerfile.jobs",
+                          "nixpacksConfigPath": null,
+                          "nixpacksPlan": null,
+                          "watchPatterns": []
+                        },
+                        "deploy": {
+                          "cronSchedule": null,
+                          "drainingSeconds": null,
+                          "healthcheckPath": null,
+                          "healthcheckTimeout": null,
+                          "ipv6EgressEnabled": false,
+                          "limitOverride": null,
+                          "multiRegionConfig": {
+                            "europe-west4-drams3a": {
+                              "numReplicas": 1
+                            }
+                          },
+                          "numReplicas": 1,
+                          "overlapSeconds": null,
+                          "preDeployCommand": null,
+                          "region": null,
+                          "registryCredentials": null,
+                          "requiredMountPath": null,
+                          "restartPolicyMaxRetries": 10,
+                          "restartPolicyType": "ON_FAILURE",
+                          "runtime": "V2",
+                          "sleepApplication": false,
+                          "startCommand": null,
+                          "useLegacyStacker": false
+                        }
+                      },
+                      "volumeMounts": []
+                    },
+                    "status": "SUCCESS",
+                    "createdAt": "2026-05-08T19:15:40.169Z",
+                    "deploymentStopped": false
+                  },
+                  "activeDeployments": [
+                    {
+                      "id": "d85898dd-a651-4c0d-976c-f7c610267958",
+                      "status": "SUCCESS",
+                      "createdAt": "2026-05-08T19:15:40.169Z",
+                      "meta": {
+                        "buildOnly": false,
+                        "fileServiceManifest": {},
+                        "imageDigest": "sha256:074bbc0c10f5c54dccff51273864755bcbd560b94c94929788d44e3952368be2",
+                        "logsV2": true,
+                        "nixpacksProviders": [],
+                        "propertyFileMapping": {},
+                        "reason": "deploy",
+                        "rootDirectory": null,
+                        "runtime": "V2",
+                        "serviceManifest": {
+                          "build": {
+                            "buildCommand": null,
+                            "buildEnvironment": null,
+                            "builder": "DOCKERFILE",
+                            "dockerfilePath": "Dockerfile.jobs",
+                            "nixpacksConfigPath": null,
+                            "nixpacksPlan": null,
+                            "watchPatterns": []
+                          },
+                          "deploy": {
+                            "cronSchedule": null,
+                            "drainingSeconds": null,
+                            "healthcheckPath": null,
+                            "healthcheckTimeout": null,
+                            "ipv6EgressEnabled": false,
+                            "limitOverride": null,
+                            "multiRegionConfig": {
+                              "europe-west4-drams3a": {
+                                "numReplicas": 1
+                              }
+                            },
+                            "numReplicas": 1,
+                            "overlapSeconds": null,
+                            "preDeployCommand": null,
+                            "region": null,
+                            "registryCredentials": null,
+                            "requiredMountPath": null,
+                            "restartPolicyMaxRetries": 10,
+                            "restartPolicyType": "ON_FAILURE",
+                            "runtime": "V2",
+                            "sleepApplication": false,
+                            "startCommand": null,
+                            "useLegacyStacker": false
+                          }
+                        },
+                        "volumeMounts": []
+                      }
+                    }
+                  ],
+                  "source": {
+                    "repo": "AlexandrSergeevichKovalenko/MY_3_BOT_Web_App",
+                    "image": null
+                  },
+                  "domains": {
+                    "serviceDomains": [],
+                    "customDomains": []
+                  },
+                  "cronSchedule": null,
+                  "nextCronRunAt": null,
+                  "startCommand": null
+                }
+              },
+              {
+                "node": {
+                  "id": "364245e2-46a0-4b30-a1fe-c8ed6d20c27b",
+                  "serviceId": "a38326de-4eff-424d-a5f0-ad9a2ed60331",
+                  "serviceName": "AUX_BACKGROUND_WORKER",
+                  "environmentId": "7760f665-85fe-4c64-aa20-d48053eb9fb2",
+                  "latestDeployment": {
+                    "canRedeploy": true,
+                    "id": "536286c2-549d-44b0-885b-8344ce24d48e",
+                    "meta": {
+                      "buildOnly": false,
+                      "configFile": null,
+                      "deprecatedRegions": [
+                        {
+                          "region": "us-west1",
+                          "replacementRegion": "us-west2"
+                        }
+                      ],
+                      "fileServiceManifest": {},
+                      "ignoreWatchPatterns": true,
+                      "imageDigest": "sha256:f10ea1adccd936d16743d573135ab7e7f965c009357c43db293e537ce0a51752",
+                      "logsV2": true,
+                      "nixpacksProviders": [],
+                      "propertyFileMapping": {},
+                      "reason": "redeploy",
+                      "rootDirectory": null,
+                      "runtime": "V2",
+                      "serviceManifest": {
+                        "build": {
+                          "buildCommand": null,
+                          "buildEnvironment": null,
+                          "builder": "DOCKERFILE",
+                          "dockerfilePath": "Dockerfile",
+                          "nixpacksConfigPath": null,
+                          "nixpacksPlan": null,
+                          "watchPatterns": []
+                        },
+                        "deploy": {
+                          "cronSchedule": null,
+                          "drainingSeconds": null,
+                          "healthcheckPath": null,
+                          "healthcheckTimeout": null,
+                          "ipv6EgressEnabled": false,
+                          "limitOverride": null,
+                          "multiRegionConfig": {
+                            "us-west1": {
+                              "numReplicas": 1,
+                              "stackerAssignment": null
+                            }
+                          },
+                          "numReplicas": 1,
+                          "overlapSeconds": null,
+                          "preDeployCommand": null,
+                          "region": null,
+                          "registryCredentials": null,
+                          "requiredMountPath": null,
+                          "restartPolicyMaxRetries": 10,
+                          "restartPolicyType": "ON_FAILURE",
+                          "runtime": "V2",
+                          "sleepApplication": false,
+                          "startCommand": null,
+                          "useLegacyStacker": false
+                        }
+                      },
+                      "volumeMounts": []
+                    },
+                    "status": "SUCCESS",
+                    "createdAt": "2026-04-24T08:32:41.850Z",
+                    "deploymentStopped": false
+                  },
+                  "activeDeployments": [
+                    {
+                      "id": "536286c2-549d-44b0-885b-8344ce24d48e",
+                      "status": "SUCCESS",
+                      "createdAt": "2026-04-24T08:32:41.850Z",
+                      "meta": {
+                        "buildOnly": false,
+                        "configFile": null,
+                        "deprecatedRegions": [
+                          {
+                            "region": "us-west1",
+                            "replacementRegion": "us-west2"
+                          }
+                        ],
+                        "fileServiceManifest": {},
+                        "ignoreWatchPatterns": true,
+                        "imageDigest": "sha256:f10ea1adccd936d16743d573135ab7e7f965c009357c43db293e537ce0a51752",
+                        "logsV2": true,
+                        "nixpacksProviders": [],
+                        "propertyFileMapping": {},
+                        "reason": "redeploy",
+                        "rootDirectory": null,
+                        "runtime": "V2",
+                        "serviceManifest": {
+                          "build": {
+                            "buildCommand": null,
+                            "buildEnvironment": null,
+                            "builder": "DOCKERFILE",
+                            "dockerfilePath": "Dockerfile",
+                            "nixpacksConfigPath": null,
+                            "nixpacksPlan": null,
+                            "watchPatterns": []
+                          },
+                          "deploy": {
+                            "cronSchedule": null,
+                            "drainingSeconds": null,
+                            "healthcheckPath": null,
+                            "healthcheckTimeout": null,
+                            "ipv6EgressEnabled": false,
+                            "limitOverride": null,
+                            "multiRegionConfig": {
+                              "us-west1": {
+                                "numReplicas": 1,
+                                "stackerAssignment": null
+                              }
+                            },
+                            "numReplicas": 1,
+                            "overlapSeconds": null,
+                            "preDeployCommand": null,
+                            "region": null,
+                            "registryCredentials": null,
+                            "requiredMountPath": null,
+                            "restartPolicyMaxRetries": 10,
+                            "restartPolicyType": "ON_FAILURE",
+                            "runtime": "V2",
+                            "sleepApplication": false,
+                            "startCommand": null,
+                            "useLegacyStacker": false
+                          }
+                        },
+                        "volumeMounts": []
+                      }
+                    }
+                  ],
+                  "source": {
+                    "repo": null,
+                    "image": null
+                  },
+                  "domains": {
+                    "serviceDomains": [],
+                    "customDomains": []
+                  },
+                  "cronSchedule": null,
+                  "nextCronRunAt": null,
+                  "startCommand": null
+                }
+              },
+              {
+                "node": {
+                  "id": "4d45e088-3092-431d-b504-37ec885b7bc4",
+                  "serviceId": "e6b57f03-1fe8-4e53-aa5f-2b35feb9994d",
+                  "serviceName": "MY_3_BOT",
+                  "environmentId": "7760f665-85fe-4c64-aa20-d48053eb9fb2",
+                  "latestDeployment": {
+                    "canRedeploy": true,
+                    "id": "e0d03c32-a7a5-4a1d-9d19-9949003722b8",
+                    "meta": {
+                      "branch": "refactor/interface",
+                      "buildOnly": false,
+                      "commitAuthor": "AlexandrSergeevichKovalenko",
+                      "commitHash": "fdf06282d8b39ea2b662539c793e840a02216b12",
+                      "commitMessage": "feat: update guide with offline mode, skill map, weekly plan, voice review sections\n\nAdded new offline_mode section and updated dictionary, flashcards, assistant,\ntoday, and start_overview sections to cover all current features. Removed\noutdated content. Both Russian and German versions updated.\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>",
+                      "fileServiceManifest": {},
+                      "imageDigest": "sha256:01078c7968d848a852e7abf47c46ec47626f15ebea3d2a122844448467396ac4",
+                      "logsV2": true,
+                      "nixpacksProviders": [],
+                      "plan": "hobby",
+                      "propertyFileMapping": {},
+                      "reason": "deploy",
+                      "repo": "AlexandrSergeevichKovalenko/MY_3_BOT_Web_App",
+                      "rootDirectory": null,
+                      "runtime": "V2",
+                      "serviceManifest": {
+                        "build": {
+                          "buildCommand": null,
+                          "buildEnvironment": "V3",
+                          "builder": "DOCKERFILE",
+                          "dockerfilePath": "/Dockerfile",
+                          "nixpacksConfigPath": null,
+                          "nixpacksPlan": null,
+                          "watchPatterns": []
+                        },
+                        "deploy": {
+                          "cronSchedule": null,
+                          "drainingSeconds": null,
+                          "healthcheckPath": null,
+                          "healthcheckTimeout": null,
+                          "ipv6EgressEnabled": false,
+                          "limitOverride": null,
+                          "multiRegionConfig": {
+                            "europe-west4-drams3a": {
+                              "numReplicas": 1
+                            }
+                          },
+                          "numReplicas": 1,
+                          "overlapSeconds": null,
+                          "preDeployCommand": null,
+                          "region": null,
+                          "registryCredentials": null,
+                          "requiredMountPath": null,
+                          "restartPolicyMaxRetries": 10,
+                          "restartPolicyType": "ON_FAILURE",
+                          "runtime": "V2",
+                          "sleepApplication": false,
+                          "startCommand": null,
+                          "useLegacyStacker": false
+                        }
+                      },
+                      "volumeMounts": []
+                    },
+                    "status": "SUCCESS",
+                    "createdAt": "2026-05-08T17:48:01.532Z",
+                    "deploymentStopped": false
+                  },
+                  "activeDeployments": [
+                    {
+                      "id": "e0d03c32-a7a5-4a1d-9d19-9949003722b8",
+                      "status": "SUCCESS",
+                      "createdAt": "2026-05-08T17:48:01.532Z",
+                      "meta": {
+                        "branch": "refactor/interface",
+                        "buildOnly": false,
+                        "commitAuthor": "AlexandrSergeevichKovalenko",
+                        "commitHash": "fdf06282d8b39ea2b662539c793e840a02216b12",
+                        "commitMessage": "feat: update guide with offline mode, skill map, weekly plan, voice review sections\n\nAdded new offline_mode section and updated dictionary, flashcards, assistant,\ntoday, and start_overview sections to cover all current features. Removed\noutdated content. Both Russian and German versions updated.\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>",
+                        "fileServiceManifest": {},
+                        "imageDigest": "sha256:01078c7968d848a852e7abf47c46ec47626f15ebea3d2a122844448467396ac4",
+                        "logsV2": true,
+                        "nixpacksProviders": [],
+                        "plan": "hobby",
+                        "propertyFileMapping": {},
+                        "reason": "deploy",
+                        "repo": "AlexandrSergeevichKovalenko/MY_3_BOT_Web_App",
+                        "rootDirectory": null,
+                        "runtime": "V2",
+                        "serviceManifest": {
+                          "build": {
+                            "buildCommand": null,
+                            "buildEnvironment": "V3",
+                            "builder": "DOCKERFILE",
+                            "dockerfilePath": "/Dockerfile",
+                            "nixpacksConfigPath": null,
+                            "nixpacksPlan": null,
+                            "watchPatterns": []
+                          },
+                          "deploy": {
+                            "cronSchedule": null,
+                            "drainingSeconds": null,
+                            "healthcheckPath": null,
+                            "healthcheckTimeout": null,
+                            "ipv6EgressEnabled": false,
+                            "limitOverride": null,
+                            "multiRegionConfig": {
+                              "europe-west4-drams3a": {
+                                "numReplicas": 1
+                              }
+                            },
+                            "numReplicas": 1,
+                            "overlapSeconds": null,
+                            "preDeployCommand": null,
+                            "region": null,
+                            "registryCredentials": null,
+                            "requiredMountPath": null,
+                            "restartPolicyMaxRetries": 10,
+                            "restartPolicyType": "ON_FAILURE",
+                            "runtime": "V2",
+                            "sleepApplication": false,
+                            "startCommand": null,
+                            "useLegacyStacker": false
+                          }
+                        },
+                        "volumeMounts": []
+                      }
+                    }
+                  ],
+                  "source": {
+                    "repo": "AlexandrSergeevichKovalenko/MY_3_BOT_Web_App",
+                    "image": null
+                  },
+                  "domains": {
+                    "serviceDomains": [],
+                    "customDomains": []
+                  },
+                  "cronSchedule": null,
+                  "nextCronRunAt": null,
+                  "startCommand": null
+                }
+              },
+              {
+                "node": {
+                  "id": "812ae733-c2a6-4e00-8d06-6faf03bd9dc8",
+                  "serviceId": "9781d79a-c305-4bea-83df-d1000f7b7871",
+                  "serviceName": "BACKEND_WEB(backend:server.py)",
+                  "environmentId": "7760f665-85fe-4c64-aa20-d48053eb9fb2",
+                  "latestDeployment": {
+                    "canRedeploy": true,
+                    "id": "80186a0a-c8d0-47d2-a104-a2f083b33992",
+                    "meta": {
+                      "buildOnly": false,
+                      "fileServiceManifest": {},
+                      "imageDigest": "sha256:fb223adede7db22b1575906cdbe5603e0b0084f6f78ffae5ffc700f53a3cca21",
+                      "logsV2": true,
+                      "nixpacksProviders": [],
+                      "propertyFileMapping": {},
+                      "reason": "deploy",
+                      "rootDirectory": null,
+                      "runtime": "V2",
+                      "serviceManifest": {
+                        "build": {
+                          "buildCommand": null,
+                          "buildEnvironment": "V3",
+                          "builder": "DOCKERFILE",
+                          "dockerfilePath": "Dockerfile.backend",
+                          "nixpacksConfigPath": null,
+                          "nixpacksPlan": null,
+                          "watchPatterns": []
+                        },
+                        "deploy": {
+                          "cronSchedule": null,
+                          "drainingSeconds": null,
+                          "healthcheckPath": null,
+                          "healthcheckTimeout": null,
+                          "ipv6EgressEnabled": false,
+                          "limitOverride": null,
+                          "multiRegionConfig": {
+                            "europe-west4-drams3a": {
+                              "numReplicas": 1
+                            }
+                          },
+                          "numReplicas": 1,
+                          "overlapSeconds": null,
+                          "preDeployCommand": null,
+                          "region": null,
+                          "registryCredentials": null,
+                          "requiredMountPath": null,
+                          "restartPolicyMaxRetries": 10,
+                          "restartPolicyType": "ON_FAILURE",
+                          "runtime": "V2",
+                          "sleepApplication": false,
+                          "startCommand": null,
+                          "useLegacyStacker": false
+                        }
+                      },
+                      "volumeMounts": []
+                    },
+                    "status": "SUCCESS",
+                    "createdAt": "2026-05-08T19:54:36.367Z",
+                    "deploymentStopped": false
+                  },
+                  "activeDeployments": [
+                    {
+                      "id": "80186a0a-c8d0-47d2-a104-a2f083b33992",
+                      "status": "SUCCESS",
+                      "createdAt": "2026-05-08T19:54:36.367Z",
+                      "meta": {
+                        "buildOnly": false,
+                        "fileServiceManifest": {},
+                        "imageDigest": "sha256:fb223adede7db22b1575906cdbe5603e0b0084f6f78ffae5ffc700f53a3cca21",
+                        "logsV2": true,
+                        "nixpacksProviders": [],
+                        "propertyFileMapping": {},
+                        "reason": "deploy",
+                        "rootDirectory": null,
+                        "runtime": "V2",
+                        "serviceManifest": {
+                          "build": {
+                            "buildCommand": null,
+                            "buildEnvironment": "V3",
+                            "builder": "DOCKERFILE",
+                            "dockerfilePath": "Dockerfile.backend",
+                            "nixpacksConfigPath": null,
+                            "nixpacksPlan": null,
+                            "watchPatterns": []
+                          },
+                          "deploy": {
+                            "cronSchedule": null,
+                            "drainingSeconds": null,
+                            "healthcheckPath": null,
+                            "healthcheckTimeout": null,
+                            "ipv6EgressEnabled": false,
+                            "limitOverride": null,
+                            "multiRegionConfig": {
+                              "europe-west4-drams3a": {
+                                "numReplicas": 1
+                              }
+                            },
+                            "numReplicas": 1,
+                            "overlapSeconds": null,
+                            "preDeployCommand": null,
+                            "region": null,
+                            "registryCredentials": null,
+                            "requiredMountPath": null,
+                            "restartPolicyMaxRetries": 10,
+                            "restartPolicyType": "ON_FAILURE",
+                            "runtime": "V2",
+                            "sleepApplication": false,
+                            "startCommand": null,
+                            "useLegacyStacker": false
+                          }
+                        },
+                        "volumeMounts": []
+                      }
+                    }
+                  ],
+                  "source": {
+                    "repo": "AlexandrSergeevichKovalenko/MY_3_BOT_Web_App",
+                    "image": null
+                  },
+                  "domains": {
+                    "serviceDomains": [
+                      {
+                        "id": "477f9d91-c095-4d89-be91-9bc61a3be38a",
+                        "domain": "backendwebbackendserverpy-production.up.railway.app",
+                        "targetPort": 8080
+                      }
+                    ],
+                    "customDomains": []
+                  },
+                  "cronSchedule": null,
+                  "nextCronRunAt": null,
+                  "startCommand": null
+                }
+              },
+              {
+                "node": {
+                  "id": "85012f38-18f1-400f-b1d4-e043639f6d9a",
+                  "serviceId": "0b4f8f2f-f97e-45e2-a0d6-38085b7dae03",
+                  "serviceName": "SCHEDULER_SERVICE",
+                  "environmentId": "7760f665-85fe-4c64-aa20-d48053eb9fb2",
+                  "latestDeployment": {
+                    "canRedeploy": true,
+                    "id": "80d59a70-b7e2-438b-b170-cded92a661fe",
+                    "meta": {
+                      "branch": "refactor/interface",
+                      "buildOnly": false,
+                      "commitAuthor": "AlexandrSergeevichKovalenko",
+                      "commitHash": "fdf06282d8b39ea2b662539c793e840a02216b12",
+                      "commitMessage": "feat: update guide with offline mode, skill map, weekly plan, voice review sections\n\nAdded new offline_mode section and updated dictionary, flashcards, assistant,\ntoday, and start_overview sections to cover all current features. Removed\noutdated content. Both Russian and German versions updated.\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>",
+                      "fileServiceManifest": {},
+                      "imageDigest": "sha256:c9befe95f28498c920638096403074da87c6e2bffca81fbc5b3cfbd7899d261c",
+                      "logsV2": true,
+                      "nixpacksProviders": [],
+                      "plan": "hobby",
+                      "propertyFileMapping": {},
+                      "queuedReason": "Waiting for build slot",
+                      "reason": "deploy",
+                      "repo": "AlexandrSergeevichKovalenko/MY_3_BOT_Web_App",
+                      "rootDirectory": null,
+                      "runtime": "V2",
+                      "serviceManifest": {
+                        "build": {
+                          "buildCommand": null,
+                          "buildEnvironment": "V3",
+                          "builder": "DOCKERFILE",
+                          "dockerfilePath": "Dockerfile.scheduler",
+                          "nixpacksConfigPath": null,
+                          "nixpacksPlan": null,
+                          "watchPatterns": []
+                        },
+                        "deploy": {
+                          "cronSchedule": null,
+                          "drainingSeconds": null,
+                          "healthcheckPath": null,
+                          "healthcheckTimeout": null,
+                          "ipv6EgressEnabled": false,
+                          "limitOverride": null,
+                          "multiRegionConfig": {
+                            "europe-west4-drams3a": {
+                              "numReplicas": 1
+                            }
+                          },
+                          "numReplicas": 1,
+                          "overlapSeconds": null,
+                          "preDeployCommand": null,
+                          "region": null,
+                          "registryCredentials": null,
+                          "requiredMountPath": null,
+                          "restartPolicyMaxRetries": 10,
+                          "restartPolicyType": "ON_FAILURE",
+                          "runtime": "V2",
+                          "sleepApplication": false,
+                          "startCommand": null,
+                          "useLegacyStacker": false
+                        }
+                      },
+                      "volumeMounts": []
+                    },
+                    "status": "SUCCESS",
+                    "createdAt": "2026-05-08T17:48:02.082Z",
+                    "deploymentStopped": false
+                  },
+                  "activeDeployments": [
+                    {
+                      "id": "80d59a70-b7e2-438b-b170-cded92a661fe",
+                      "status": "SUCCESS",
+                      "createdAt": "2026-05-08T17:48:02.082Z",
+                      "meta": {
+                        "branch": "refactor/interface",
+                        "buildOnly": false,
+                        "commitAuthor": "AlexandrSergeevichKovalenko",
+                        "commitHash": "fdf06282d8b39ea2b662539c793e840a02216b12",
+                        "commitMessage": "feat: update guide with offline mode, skill map, weekly plan, voice review sections\n\nAdded new offline_mode section and updated dictionary, flashcards, assistant,\ntoday, and start_overview sections to cover all current features. Removed\noutdated content. Both Russian and German versions updated.\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>",
+                        "fileServiceManifest": {},
+                        "imageDigest": "sha256:c9befe95f28498c920638096403074da87c6e2bffca81fbc5b3cfbd7899d261c",
+                        "logsV2": true,
+                        "nixpacksProviders": [],
+                        "plan": "hobby",
+                        "propertyFileMapping": {},
+                        "queuedReason": "Waiting for build slot",
+                        "reason": "deploy",
+                        "repo": "AlexandrSergeevichKovalenko/MY_3_BOT_Web_App",
+                        "rootDirectory": null,
+                        "runtime": "V2",
+                        "serviceManifest": {
+                          "build": {
+                            "buildCommand": null,
+                            "buildEnvironment": "V3",
+                            "builder": "DOCKERFILE",
+                            "dockerfilePath": "Dockerfile.scheduler",
+                            "nixpacksConfigPath": null,
+                            "nixpacksPlan": null,
+                            "watchPatterns": []
+                          },
+                          "deploy": {
+                            "cronSchedule": null,
+                            "drainingSeconds": null,
+                            "healthcheckPath": null,
+                            "healthcheckTimeout": null,
+                            "ipv6EgressEnabled": false,
+                            "limitOverride": null,
+                            "multiRegionConfig": {
+                              "europe-west4-drams3a": {
+                                "numReplicas": 1
+                              }
+                            },
+                            "numReplicas": 1,
+                            "overlapSeconds": null,
+                            "preDeployCommand": null,
+                            "region": null,
+                            "registryCredentials": null,
+                            "requiredMountPath": null,
+                            "restartPolicyMaxRetries": 10,
+                            "restartPolicyType": "ON_FAILURE",
+                            "runtime": "V2",
+                            "sleepApplication": false,
+                            "startCommand": null,
+                            "useLegacyStacker": false
+                          }
+                        },
+                        "volumeMounts": []
+                      }
+                    }
+                  ],
+                  "source": {
+                    "repo": "AlexandrSergeevichKovalenko/MY_3_BOT_Web_App",
+                    "image": null
+                  },
+                  "domains": {
+                    "serviceDomains": [],
+                    "customDomains": []
+                  },
+                  "cronSchedule": null,
+                  "nextCronRunAt": null,
+                  "startCommand": null
+                }
+              },
+              {
+                "node": {
+                  "id": "8e03f367-b298-4493-9501-8506bb744c7b",
+                  "serviceId": "89478e37-cfc7-4271-b59b-f6b8f8c2dcd7",
+                  "serviceName": "Redis",
+                  "environmentId": "7760f665-85fe-4c64-aa20-d48053eb9fb2",
+                  "latestDeployment": {
+                    "canRedeploy": true,
+                    "id": "0105a9f7-cfb2-4c03-a191-0b46d128edac",
+                    "meta": {
+                      "ignoreWatchPatterns": true,
+                      "image": "redis:8.2.1",
+                      "imageDigest": "sha256:5fa2edb1e408fa8235e6db8fab01d1afaaae96c9403ba67b70feceb8661e8621",
+                      "logsV2": true,
+                      "patchId": "30020a6c-b694-4e6d-98d0-593f42484c47",
+                      "reason": "redeploy",
+                      "runtime": "V2",
+                      "serviceManifest": {
+                        "build": {
+                          "buildCommand": null,
+                          "buildEnvironment": null,
+                          "builder": "RAILPACK",
+                          "dockerfilePath": null,
+                          "nixpacksConfigPath": null,
+                          "nixpacksPlan": null,
+                          "watchPatterns": []
+                        },
+                        "deploy": {
+                          "cronSchedule": null,
+                          "drainingSeconds": null,
+                          "healthcheckPath": null,
+                          "healthcheckTimeout": null,
+                          "ipv6EgressEnabled": false,
+                          "limitOverride": null,
+                          "multiRegionConfig": {
+                            "europe-west4-drams3a": {
+                              "numReplicas": 1
+                            }
+                          },
+                          "numReplicas": 1,
+                          "overlapSeconds": null,
+                          "preDeployCommand": null,
+                          "region": null,
+                          "registryCredentials": null,
+                          "requiredMountPath": null,
+                          "restartPolicyMaxRetries": 10,
+                          "restartPolicyType": "ON_FAILURE",
+                          "runtime": "V2",
+                          "sleepApplication": false,
+                          "startCommand": "/bin/sh -c \"rm -rf $RAILWAY_VOLUME_MOUNT_PATH/lost+found/ && exec docker-entrypoint.sh redis-server --requirepass $REDIS_PASSWORD --save 60 1 --dir $RAILWAY_VOLUME_MOUNT_PATH\"",
+                          "useLegacyStacker": false
+                        }
+                      },
+                      "volumeMounts": [
+                        "/data"
+                      ]
+                    },
+                    "status": "SUCCESS",
+                    "createdAt": "2026-04-24T08:32:42.975Z",
+                    "deploymentStopped": false
+                  },
+                  "activeDeployments": [
+                    {
+                      "id": "0105a9f7-cfb2-4c03-a191-0b46d128edac",
+                      "status": "SUCCESS",
+                      "createdAt": "2026-04-24T08:32:42.975Z",
+                      "meta": {
+                        "ignoreWatchPatterns": true,
+                        "image": "redis:8.2.1",
+                        "imageDigest": "sha256:5fa2edb1e408fa8235e6db8fab01d1afaaae96c9403ba67b70feceb8661e8621",
+                        "logsV2": true,
+                        "patchId": "30020a6c-b694-4e6d-98d0-593f42484c47",
+                        "reason": "redeploy",
+                        "runtime": "V2",
+                        "serviceManifest": {
+                          "build": {
+                            "buildCommand": null,
+                            "buildEnvironment": null,
+                            "builder": "RAILPACK",
+                            "dockerfilePath": null,
+                            "nixpacksConfigPath": null,
+                            "nixpacksPlan": null,
+                            "watchPatterns": []
+                          },
+                          "deploy": {
+                            "cronSchedule": null,
+                            "drainingSeconds": null,
+                            "healthcheckPath": null,
+                            "healthcheckTimeout": null,
+                            "ipv6EgressEnabled": false,
+                            "limitOverride": null,
+                            "multiRegionConfig": {
+                              "europe-west4-drams3a": {
+                                "numReplicas": 1
+                              }
+                            },
+                            "numReplicas": 1,
+                            "overlapSeconds": null,
+                            "preDeployCommand": null,
+                            "region": null,
+                            "registryCredentials": null,
+                            "requiredMountPath": null,
+                            "restartPolicyMaxRetries": 10,
+                            "restartPolicyType": "ON_FAILURE",
+                            "runtime": "V2",
+                            "sleepApplication": false,
+                            "startCommand": "/bin/sh -c \"rm -rf $RAILWAY_VOLUME_MOUNT_PATH/lost+found/ && exec docker-entrypoint.sh redis-server --requirepass $REDIS_PASSWORD --save 60 1 --dir $RAILWAY_VOLUME_MOUNT_PATH\"",
+                            "useLegacyStacker": false
+                          }
+                        },
+                        "volumeMounts": [
+                          "/data"
+                        ]
+                      }
+                    }
+                  ],
+                  "source": {
+                    "repo": null,
+                    "image": "redis:8.2.1"
+                  },
+                  "domains": {
+                    "serviceDomains": [],
+                    "customDomains": []
+                  },
+                  "cronSchedule": null,
+                  "nextCronRunAt": null,
+                  "startCommand": "/bin/sh -c \"rm -rf $RAILWAY_VOLUME_MOUNT_PATH/lost+found/ && exec docker-entrypoint.sh redis-server --requirepass $REDIS_PASSWORD --save 60 1 --dir $RAILWAY_VOLUME_MOUNT_PATH\""
+                }
+              },
+              {
+                "node": {
+                  "id": "c4cea82d-6962-41d1-a257-772e850faa25",
+                  "serviceId": "ac679f1a-1468-4647-9e9a-123450ad19d3",
+                  "serviceName": "AGENT_WORKER",
+                  "environmentId": "7760f665-85fe-4c64-aa20-d48053eb9fb2",
+                  "latestDeployment": {
+                    "canRedeploy": true,
+                    "id": "a333db88-2819-46ce-b8fa-8cf221716f30",
+                    "meta": {
+                      "branch": "refactor/interface",
+                      "buildOnly": false,
+                      "commitAuthor": "AlexandrSergeevichKovalenko",
+                      "commitHash": "fdf06282d8b39ea2b662539c793e840a02216b12",
+                      "commitMessage": "feat: update guide with offline mode, skill map, weekly plan, voice review sections\n\nAdded new offline_mode section and updated dictionary, flashcards, assistant,\ntoday, and start_overview sections to cover all current features. Removed\noutdated content. Both Russian and German versions updated.\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>",
+                      "duration": 613,
+                      "fileServiceManifest": {},
+                      "imageDigest": "sha256:ef49dae6c9e4184856b03e971a87eebc61bfaf166fb5ad0c5cf51df56d82a872",
+                      "logsV2": true,
+                      "nixpacksProviders": [],
+                      "plan": "hobby",
+                      "propertyFileMapping": {},
+                      "queuedReason": "Waiting for build slot",
+                      "reason": "deploy",
+                      "repo": "AlexandrSergeevichKovalenko/MY_3_BOT_Web_App",
+                      "rootDirectory": null,
+                      "runtime": "V2",
+                      "serviceManifest": {
+                        "build": {
+                          "buildCommand": null,
+                          "buildEnvironment": "V3",
+                          "builder": "DOCKERFILE",
+                          "dockerfilePath": "Dockerfile.agent",
+                          "nixpacksConfigPath": null,
+                          "nixpacksPlan": null,
+                          "watchPatterns": []
+                        },
+                        "deploy": {
+                          "cronSchedule": null,
+                          "drainingSeconds": null,
+                          "healthcheckPath": null,
+                          "healthcheckTimeout": null,
+                          "ipv6EgressEnabled": false,
+                          "limitOverride": null,
+                          "multiRegionConfig": {
+                            "europe-west4-drams3a": {
+                              "numReplicas": 1
+                            }
+                          },
+                          "numReplicas": 1,
+                          "overlapSeconds": null,
+                          "preDeployCommand": null,
+                          "region": null,
+                          "registryCredentials": null,
+                          "requiredMountPath": null,
+                          "restartPolicyMaxRetries": 10,
+                          "restartPolicyType": "ON_FAILURE",
+                          "runtime": "V2",
+                          "sleepApplication": false,
+                          "startCommand": null,
+                          "useLegacyStacker": false
+                        }
+                      },
+                      "volumeMounts": []
+                    },
+                    "status": "SUCCESS",
+                    "createdAt": "2026-05-08T17:48:01.828Z",
+                    "deploymentStopped": true
+                  },
+                  "activeDeployments": [
+                    {
+                      "id": "a333db88-2819-46ce-b8fa-8cf221716f30",
+                      "status": "SUCCESS",
+                      "createdAt": "2026-05-08T17:48:01.828Z",
+                      "meta": {
+                        "branch": "refactor/interface",
+                        "buildOnly": false,
+                        "commitAuthor": "AlexandrSergeevichKovalenko",
+                        "commitHash": "fdf06282d8b39ea2b662539c793e840a02216b12",
+                        "commitMessage": "feat: update guide with offline mode, skill map, weekly plan, voice review sections\n\nAdded new offline_mode section and updated dictionary, flashcards, assistant,\ntoday, and start_overview sections to cover all current features. Removed\noutdated content. Both Russian and German versions updated.\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>",
+                        "duration": 613,
+                        "fileServiceManifest": {},
+                        "imageDigest": "sha256:ef49dae6c9e4184856b03e971a87eebc61bfaf166fb5ad0c5cf51df56d82a872",
+                        "logsV2": true,
+                        "nixpacksProviders": [],
+                        "plan": "hobby",
+                        "propertyFileMapping": {},
+                        "queuedReason": "Waiting for build slot",
+                        "reason": "deploy",
+                        "repo": "AlexandrSergeevichKovalenko/MY_3_BOT_Web_App",
+                        "rootDirectory": null,
+                        "runtime": "V2",
+                        "serviceManifest": {
+                          "build": {
+                            "buildCommand": null,
+                            "buildEnvironment": "V3",
+                            "builder": "DOCKERFILE",
+                            "dockerfilePath": "Dockerfile.agent",
+                            "nixpacksConfigPath": null,
+                            "nixpacksPlan": null,
+                            "watchPatterns": []
+                          },
+                          "deploy": {
+                            "cronSchedule": null,
+                            "drainingSeconds": null,
+                            "healthcheckPath": null,
+                            "healthcheckTimeout": null,
+                            "ipv6EgressEnabled": false,
+                            "limitOverride": null,
+                            "multiRegionConfig": {
+                              "europe-west4-drams3a": {
+                                "numReplicas": 1
+                              }
+                            },
+                            "numReplicas": 1,
+                            "overlapSeconds": null,
+                            "preDeployCommand": null,
+                            "region": null,
+                            "registryCredentials": null,
+                            "requiredMountPath": null,
+                            "restartPolicyMaxRetries": 10,
+                            "restartPolicyType": "ON_FAILURE",
+                            "runtime": "V2",
+                            "sleepApplication": false,
+                            "startCommand": null,
+                            "useLegacyStacker": false
+                          }
+                        },
+                        "volumeMounts": []
+                      }
+                    }
+                  ],
+                  "source": {
+                    "repo": "AlexandrSergeevichKovalenko/MY_3_BOT_Web_App",
+                    "image": null
+                  },
+                  "domains": {
+                    "serviceDomains": [],
+                    "customDomains": []
+                  },
+                  "cronSchedule": null,
+                  "nextCronRunAt": null,
+                  "startCommand": null
+                }
+              },
+              {
+                "node": {
+                  "id": "e6883ff2-5209-4c45-9c7f-c3daadb4b32e",
+                  "serviceId": "e99209c9-ffc5-4e41-9e16-79609329b039",
+                  "serviceName": "TRANSLATION_CHECK_WORKER",
+                  "environmentId": "7760f665-85fe-4c64-aa20-d48053eb9fb2",
+                  "latestDeployment": {
+                    "canRedeploy": true,
+                    "id": "c8c13423-aac5-4d87-97ba-eb8438a72782",
+                    "meta": {
+                      "buildOnly": false,
+                      "configFile": null,
+                      "fileServiceManifest": {},
+                      "ignoreWatchPatterns": true,
+                      "imageDigest": "sha256:455003ac0e8fcf89e00018b8b15f27e5fa03f2d4695b4ee9f65e1e614ba9a3ba",
+                      "logsV2": true,
+                      "nixpacksProviders": [
+                        "node"
+                      ],
+                      "propertyFileMapping": {},
+                      "queuedReason": "Waiting for build slot",
+                      "reason": "redeploy",
+                      "rootDirectory": null,
+                      "runtime": "V2",
+                      "serviceManifest": {
+                        "build": {
+                          "buildCommand": null,
+                          "buildEnvironment": null,
+                          "builder": "DOCKERFILE",
+                          "dockerfilePath": "Dockerfile.jobs.queue",
+                          "nixpacksConfigPath": null,
+                          "nixpacksPlan": null,
+                          "watchPatterns": []
+                        },
+                        "deploy": {
+                          "cronSchedule": null,
+                          "drainingSeconds": null,
+                          "healthcheckPath": null,
+                          "healthcheckTimeout": null,
+                          "ipv6EgressEnabled": false,
+                          "limitOverride": null,
+                          "multiRegionConfig": {
+                            "europe-west4-drams3a": {
+                              "numReplicas": 1
+                            }
+                          },
+                          "numReplicas": 1,
+                          "overlapSeconds": null,
+                          "preDeployCommand": null,
+                          "region": null,
+                          "registryCredentials": null,
+                          "requiredMountPath": null,
+                          "restartPolicyMaxRetries": 10,
+                          "restartPolicyType": "ON_FAILURE",
+                          "runtime": "V2",
+                          "sleepApplication": false,
+                          "startCommand": null,
+                          "useLegacyStacker": false
+                        }
+                      },
+                      "skipBuildCache": true,
+                      "volumeMounts": []
+                    },
+                    "status": "SUCCESS",
+                    "createdAt": "2026-05-05T08:43:04.294Z",
+                    "deploymentStopped": false
+                  },
+                  "activeDeployments": [
+                    {
+                      "id": "c8c13423-aac5-4d87-97ba-eb8438a72782",
+                      "status": "SUCCESS",
+                      "createdAt": "2026-05-05T08:43:04.294Z",
+                      "meta": {
+                        "buildOnly": false,
+                        "configFile": null,
+                        "fileServiceManifest": {},
+                        "ignoreWatchPatterns": true,
+                        "imageDigest": "sha256:455003ac0e8fcf89e00018b8b15f27e5fa03f2d4695b4ee9f65e1e614ba9a3ba",
+                        "logsV2": true,
+                        "nixpacksProviders": [
+                          "node"
+                        ],
+                        "propertyFileMapping": {},
+                        "queuedReason": "Waiting for build slot",
+                        "reason": "redeploy",
+                        "rootDirectory": null,
+                        "runtime": "V2",
+                        "serviceManifest": {
+                          "build": {
+                            "buildCommand": null,
+                            "buildEnvironment": null,
+                            "builder": "DOCKERFILE",
+                            "dockerfilePath": "Dockerfile.jobs.queue",
+                            "nixpacksConfigPath": null,
+                            "nixpacksPlan": null,
+                            "watchPatterns": []
+                          },
+                          "deploy": {
+                            "cronSchedule": null,
+                            "drainingSeconds": null,
+                            "healthcheckPath": null,
+                            "healthcheckTimeout": null,
+                            "ipv6EgressEnabled": false,
+                            "limitOverride": null,
+                            "multiRegionConfig": {
+                              "europe-west4-drams3a": {
+                                "numReplicas": 1
+                              }
+                            },
+                            "numReplicas": 1,
+                            "overlapSeconds": null,
+                            "preDeployCommand": null,
+                            "region": null,
+                            "registryCredentials": null,
+                            "requiredMountPath": null,
+                            "restartPolicyMaxRetries": 10,
+                            "restartPolicyType": "ON_FAILURE",
+                            "runtime": "V2",
+                            "sleepApplication": false,
+                            "startCommand": null,
+                            "useLegacyStacker": false
+                          }
+                        },
+                        "skipBuildCache": true,
+                        "volumeMounts": []
+                      }
+                    }
+                  ],
+                  "source": {
+                    "repo": null,
+                    "image": null
+                  },
+                  "domains": {
+                    "serviceDomains": [],
+                    "customDomains": []
+                  },
+                  "cronSchedule": null,
+                  "nextCronRunAt": null,
+                  "startCommand": null
+                }
+              },
+              {
+                "node": {
+                  "id": "ff78b456-d2b1-41d8-8d0a-c4db3e6e9d52",
+                  "serviceId": "66d27830-70af-4c7a-9722-71d51bf38c02",
+                  "serviceName": "LOAD_RUNNER",
+                  "environmentId": "7760f665-85fe-4c64-aa20-d48053eb9fb2",
+                  "latestDeployment": {
+                    "canRedeploy": true,
+                    "id": "3d1134d9-ec52-464e-8066-987d26f8841c",
+                    "meta": {
+                      "buildOnly": false,
+                      "configFile": null,
+                      "duration": 626,
+                      "fileServiceManifest": {},
+                      "ignoreWatchPatterns": true,
+                      "imageDigest": "sha256:77f05f73fce7269d8ebe038d27be9640a19233b42861c9091ef05ab6fd5614b5",
+                      "logsV2": true,
+                      "nixpacksProviders": [],
+                      "propertyFileMapping": {},
+                      "queuedReason": "Waiting for build slot",
+                      "reason": "redeploy",
+                      "rootDirectory": null,
+                      "runtime": "V2",
+                      "serviceManifest": {
+                        "build": {
+                          "buildCommand": null,
+                          "buildEnvironment": null,
+                          "builder": "DOCKERFILE",
+                          "dockerfilePath": "Dockerfile",
+                          "nixpacksConfigPath": null,
+                          "nixpacksPlan": null,
+                          "watchPatterns": []
+                        },
+                        "deploy": {
+                          "cronSchedule": null,
+                          "drainingSeconds": null,
+                          "healthcheckPath": null,
+                          "healthcheckTimeout": null,
+                          "ipv6EgressEnabled": false,
+                          "limitOverride": null,
+                          "multiRegionConfig": {
+                            "europe-west4-drams3a": {
+                              "numReplicas": 1
+                            }
+                          },
+                          "numReplicas": 1,
+                          "overlapSeconds": null,
+                          "preDeployCommand": null,
+                          "region": null,
+                          "registryCredentials": null,
+                          "requiredMountPath": null,
+                          "restartPolicyMaxRetries": 10,
+                          "restartPolicyType": "ON_FAILURE",
+                          "runtime": "V2",
+                          "sleepApplication": false,
+                          "startCommand": null,
+                          "useLegacyStacker": false
+                        }
+                      },
+                      "skipBuildCache": true,
+                      "volumeMounts": []
+                    },
+                    "status": "SUCCESS",
+                    "createdAt": "2026-04-24T08:32:43.047Z",
+                    "deploymentStopped": true
+                  },
+                  "activeDeployments": [
+                    {
+                      "id": "3d1134d9-ec52-464e-8066-987d26f8841c",
+                      "status": "SUCCESS",
+                      "createdAt": "2026-04-24T08:32:43.047Z",
+                      "meta": {
+                        "buildOnly": false,
+                        "configFile": null,
+                        "duration": 626,
+                        "fileServiceManifest": {},
+                        "ignoreWatchPatterns": true,
+                        "imageDigest": "sha256:77f05f73fce7269d8ebe038d27be9640a19233b42861c9091ef05ab6fd5614b5",
+                        "logsV2": true,
+                        "nixpacksProviders": [],
+                        "propertyFileMapping": {},
+                        "queuedReason": "Waiting for build slot",
+                        "reason": "redeploy",
+                        "rootDirectory": null,
+                        "runtime": "V2",
+                        "serviceManifest": {
+                          "build": {
+                            "buildCommand": null,
+                            "buildEnvironment": null,
+                            "builder": "DOCKERFILE",
+                            "dockerfilePath": "Dockerfile",
+                            "nixpacksConfigPath": null,
+                            "nixpacksPlan": null,
+                            "watchPatterns": []
+                          },
+                          "deploy": {
+                            "cronSchedule": null,
+                            "drainingSeconds": null,
+                            "healthcheckPath": null,
+                            "healthcheckTimeout": null,
+                            "ipv6EgressEnabled": false,
+                            "limitOverride": null,
+                            "multiRegionConfig": {
+                              "europe-west4-drams3a": {
+                                "numReplicas": 1
+                              }
+                            },
+                            "numReplicas": 1,
+                            "overlapSeconds": null,
+                            "preDeployCommand": null,
+                            "region": null,
+                            "registryCredentials": null,
+                            "requiredMountPath": null,
+                            "restartPolicyMaxRetries": 10,
+                            "restartPolicyType": "ON_FAILURE",
+                            "runtime": "V2",
+                            "sleepApplication": false,
+                            "startCommand": null,
+                            "useLegacyStacker": false
+                          }
+                        },
+                        "skipBuildCache": true,
+                        "volumeMounts": []
+                      }
+                    }
+                  ],
+                  "source": {
+                    "repo": null,
+                    "image": null
+                  },
+                  "domains": {
+                    "serviceDomains": [],
+                    "customDomains": []
+                  },
+                  "cronSchedule": null,
+                  "nextCronRunAt": null,
+                  "startCommand": null
+                }
+              }
+            ]
+          },
+          "volumeInstances": {
+            "edges": [
+              {
+                "node": {
+                  "serviceId": "89478e37-cfc7-4271-b59b-f6b8f8c2dcd7",
+                  "mountPath": "/data",
+                  "environmentId": "7760f665-85fe-4c64-aa20-d48053eb9fb2",
+                  "currentSizeMB": 239.747072,
+                  "sizeMB": 5000,
+                  "volume": {
+                    "name": "redis-volume",
+                    "id": "269b8f5a-76de-4712-934b-2ccbbbf8ac76"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "services": {
+    "edges": [
+      {
+        "node": {
+          "id": "0b4f8f2f-f97e-45e2-a0d6-38085b7dae03",
+          "name": "SCHEDULER_SERVICE"
+        }
+      },
+      {
+        "node": {
+          "id": "66d27830-70af-4c7a-9722-71d51bf38c02",
+          "name": "LOAD_RUNNER"
+        }
+      },
+      {
+        "node": {
+          "id": "89478e37-cfc7-4271-b59b-f6b8f8c2dcd7",
+          "name": "Redis"
+        }
+      },
+      {
+        "node": {
+          "id": "9781d79a-c305-4bea-83df-d1000f7b7871",
+          "name": "BACKEND_WEB(backend:server.py)"
+        }
+      },
+      {
+        "node": {
+          "id": "a38326de-4eff-424d-a5f0-ad9a2ed60331",
+          "name": "AUX_BACKGROUND_WORKER"
+        }
+      },
+      {
+        "node": {
+          "id": "ac679f1a-1468-4647-9e9a-123450ad19d3",
+          "name": "AGENT_WORKER"
+        }
+      },
+      {
+        "node": {
+          "id": "d55e801d-60b3-4ba1-bb58-f7357238c1a1",
+          "name": "BACKGROUND_JOBS"
+        }
+      },
+      {
+        "node": {
+          "id": "e6b57f03-1fe8-4e53-aa5f-2b35feb9994d",
+          "name": "MY_3_BOT"
+        }
+      },
+      {
+        "node": {
+          "id": "e99209c9-ffc5-4e41-9e16-79609329b039",
+          "name": "TRANSLATION_CHECK_WORKER"
+        }
+      }
+    ]
+  }
+}

@@ -22,7 +22,6 @@ TARGET_FLOWS = {"tts", "translation_check"}
 TTS_ENDPOINT_STAGES = {
     "tts_url_completed",
     "tts_generate_completed",
-    "tts_legacy_completed",
     "reader_audio_completed",
 }
 

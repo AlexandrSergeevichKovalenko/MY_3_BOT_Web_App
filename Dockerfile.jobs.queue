@@ -13,7 +13,9 @@ RUN pip install --no-cache-dir --progress-bar off --retries 10 --timeout 120 -r 
 COPY backend/ /app/backend/
 
 ENV PYTHONPATH=/app
-ENV DRAMATIQ_WORKER_THREADS=8
+ENV DRAMATIQ_WORKER_THREADS=24
 ENV DRAMATIQ_WORKER_TIMEOUT_MS=1000
+ENV TRANSLATION_CHECK_GLOBAL_ITEM_CONCURRENCY=24
+ENV TRANSLATION_CHECK_ITEM_MAX_CONCURRENCY=4
 
 CMD ["python", "-m", "backend.run_dramatiq_worker"]

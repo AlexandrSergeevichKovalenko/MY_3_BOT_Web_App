@@ -69,9 +69,25 @@ from backend.translation_workflow import (
     _insert_sentence_entries_into_session_with_cursor,
     _translation_fill_reached_target,
 )
+from backend.grammar_focuses import get_legacy_shared_pool_focus, resolve_shared_sentence_pool_focus
 
 
 class TranslationSentenceSelectionTests(unittest.TestCase):
+    def test_legacy_shared_pool_focus_uses_small_bucket_family(self):
+        payload = get_legacy_shared_pool_focus("b1")
+
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["kind"], "legacy_pool")
+        self.assertEqual(payload["key"], "legacy_general_b1")
+        self.assertEqual(payload["_pool_levels"], ["b1"])
+
+    def test_resolve_shared_sentence_pool_focus_maps_legacy_focus_by_level(self):
+        payload = resolve_shared_sentence_pool_focus({"kind": "legacy"}, "c1")
+
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["key"], "legacy_general_c1")
+        self.assertEqual(payload["_pool_levels"], ["c1"])
+
     def test_insert_limit_does_not_count_mastered_sentences_against_session_capacity(self):
         class _Cursor:
             def __init__(self):

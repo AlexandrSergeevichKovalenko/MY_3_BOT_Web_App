@@ -1,0 +1,1142 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Переводы — Redesign Mockup</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* ── THEMES ── */
+:root {
+  --bg:          #f5ead8;
+  --bg-card:     #fdf6ea;
+  --bg-card2:    #fff8ee;
+  --border:      rgba(171,139,98,0.28);
+  --border-s:    rgba(171,139,98,0.14);
+  --text-h:      #17120d;
+  --text-b:      #2f271f;
+  --text-m:      #5a4a39;
+  --text-sub:    #7a6854;
+  --accent:      #6366f1;
+  --accent-bg:   rgba(99,102,241,0.12);
+  --accent-bdr:  rgba(99,102,241,0.30);
+  --chip-bg:     rgba(171,139,98,0.10);
+  --chip-bdr:    rgba(171,139,98,0.22);
+  --chip-on-bg:  rgba(99,102,241,0.12);
+  --chip-on-bdr: rgba(99,102,241,0.32);
+  --chip-on-c:   #4f46e5;
+  --btn-primary-from: #4f46e5;
+  --btn-primary-to:   #6366f1;
+  --btn-sec-bg:  rgba(171,139,98,0.10);
+  --btn-sec-bdr: rgba(171,139,98,0.30);
+  --btn-sec-c:   #5a4a39;
+  --select-bg:   #fff8ee;
+  --select-bdr:  rgba(171,139,98,0.30);
+  --select-arr:  #a1866a;
+  --shadow:      0 8px 28px rgba(105,78,47,0.12);
+  --shadow-sm:   0 3px 10px rgba(105,78,47,0.08);
+  --rec-bg:      linear-gradient(135deg, rgba(99,102,241,0.09), rgba(99,102,241,0.04));
+  --rec-bdr:     rgba(99,102,241,0.22);
+  --empty-bg:    rgba(171,139,98,0.08);
+  --empty-bdr:   rgba(171,139,98,0.18);
+  --input-bg:    #fff8ee;
+  --input-bdr:   rgba(171,139,98,0.30);
+  --finish-bg:   rgba(171,139,98,0.12);
+  --finish-bdr:  rgba(171,139,98,0.28);
+  --finish-c:    #5a4a39;
+}
+
+.dark {
+  --bg:          #0d1428;
+  --bg-card:     #111827;
+  --bg-card2:    #0b1220;
+  --border:      #334155;
+  --border-s:    #1f2937;
+  --text-h:      #f8fafc;
+  --text-b:      #e2e8f0;
+  --text-m:      #94a3b8;
+  --text-sub:    #64748b;
+  --accent:      #6366f1;
+  --accent-bg:   rgba(99,102,241,0.14);
+  --accent-bdr:  rgba(99,102,241,0.32);
+  --chip-bg:     rgba(255,255,255,0.05);
+  --chip-bdr:    rgba(255,255,255,0.09);
+  --chip-on-bg:  rgba(99,102,241,0.18);
+  --chip-on-bdr: rgba(99,102,241,0.38);
+  --chip-on-c:   #a5b4fc;
+  --btn-primary-from: #4f46e5;
+  --btn-primary-to:   #6366f1;
+  --btn-sec-bg:  rgba(255,255,255,0.05);
+  --btn-sec-bdr: rgba(255,255,255,0.10);
+  --btn-sec-c:   #94a3b8;
+  --select-bg:   #1e293b;
+  --select-bdr:  #334155;
+  --select-arr:  #64748b;
+  --shadow:      0 8px 28px rgba(0,0,0,0.45);
+  --shadow-sm:   0 3px 10px rgba(0,0,0,0.3);
+  --rec-bg:      linear-gradient(135deg, rgba(99,102,241,0.12), rgba(99,102,241,0.05));
+  --rec-bdr:     rgba(99,102,241,0.22);
+  --empty-bg:    rgba(255,255,255,0.03);
+  --empty-bdr:   rgba(255,255,255,0.06);
+  --input-bg:    #0b1220;
+  --input-bdr:   #334155;
+  --finish-bg:   rgba(255,255,255,0.04);
+  --finish-bdr:  rgba(255,255,255,0.08);
+  --finish-c:    #94a3b8;
+}
+
+body {
+  background: #1a1a2e;
+  display: flex;
+  gap: 28px;
+  padding: 28px;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif;
+  justify-content: center;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+/* ── PHONE SHELL ── */
+.phone {
+  width: 370px;
+  border-radius: 38px;
+  border: 1px solid rgba(255,255,255,0.06);
+  box-shadow: 0 40px 100px rgba(0,0,0,0.7), inset 0 1px 0 rgba(255,255,255,0.05);
+  overflow: hidden;
+  position: relative;
+  background: var(--bg);
+}
+
+.status-bar {
+  height: 44px;
+  background: rgba(0,0,0,0.08);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 22px;
+}
+.status-bar span { font-size: 12px; font-weight: 600; color: var(--text-m); }
+
+.phone-scroll {
+  height: 660px;
+  overflow-y: auto;
+  scrollbar-width: none;
+  padding: 16px 14px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.phone-scroll::-webkit-scrollbar { display: none; }
+
+/* ── COLUMN LABEL ── */
+.col-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: #475569;
+  text-align: center;
+  margin-bottom: 8px;
+}
+
+.mockup-col { display: flex; flex-direction: column; align-items: center; }
+
+/* ── SECTION TITLE ── */
+.tr-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.tr-title-row h2 {
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--text-h);
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+}
+.tr-title-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-bdr);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  flex: 0 0 44px;
+}
+
+/* ── RECOMMENDATION CARD ── */
+.rec-card {
+  border-radius: 18px;
+  border: 1px solid var(--rec-bdr);
+  background: var(--rec-bg);
+  padding: 14px 16px;
+  display: grid;
+  gap: 8px;
+}
+.rec-eyebrow {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.rec-eyebrow::before {
+  content: '';
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  display: block;
+}
+.rec-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-h);
+  line-height: 1.3;
+}
+.rec-meta {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-sub);
+}
+.rec-meta strong { color: var(--text-m); font-weight: 600; }
+.rec-copy {
+  font-size: 12px;
+  color: var(--text-m);
+  line-height: 1.45;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--empty-bg);
+  border: 1px solid var(--empty-bdr);
+}
+.rec-apply-btn {
+  height: 34px;
+  border-radius: 10px;
+  border: 1px solid var(--accent-bdr);
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  letter-spacing: 0.02em;
+}
+.rec-hint {
+  font-size: 11px;
+  color: var(--text-sub);
+  text-align: center;
+}
+
+/* ── CONFIG CARD ── */
+.config-card {
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  box-shadow: var(--shadow);
+  padding: 18px 16px;
+  display: grid;
+  gap: 16px;
+}
+
+.field-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-sub);
+  margin-bottom: 7px;
+}
+
+/* Level chip row */
+.level-chips {
+  display: flex;
+  gap: 6px;
+}
+.level-chip {
+  flex: 1;
+  height: 32px;
+  border-radius: 9px;
+  border: 1px solid var(--chip-bdr);
+  background: var(--chip-bg);
+  color: var(--text-m);
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.13s;
+}
+.level-chip.on {
+  border-color: var(--chip-on-bdr);
+  background: var(--chip-on-bg);
+  color: var(--chip-on-c);
+  box-shadow: 0 0 0 2px rgba(99,102,241,0.12);
+}
+
+/* Grammar focus selector row */
+.focus-select-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 13px;
+  border-radius: 12px;
+  border: 1px solid var(--select-bdr);
+  background: var(--select-bg);
+  cursor: pointer;
+  min-height: 42px;
+}
+.focus-select-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+.focus-select-icon { font-size: 16px; flex: 0 0 20px; }
+.focus-select-value {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-b);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.focus-select-arrow {
+  flex: 0 0 18px;
+  color: var(--select-arr);
+}
+.focus-select-arrow svg { width: 16px; height: 16px; display: block; }
+
+/* Primary CTA */
+.btn-primary {
+  width: 100%;
+  height: 48px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, var(--btn-primary-from), var(--btn-primary-to));
+  border: 0;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  letter-spacing: 0.01em;
+  box-shadow: 0 6px 20px rgba(79,70,229,0.32);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+.btn-primary.is-loading {
+  background: var(--btn-sec-bg);
+  border: 1px solid var(--btn-sec-bdr);
+  color: var(--text-sub);
+  box-shadow: none;
+  cursor: default;
+}
+
+.btn-primary.is-loading .spinner {
+  width: 16px; height: 16px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── EMPTY STATE ── */
+.empty-state-card {
+  border-radius: 16px;
+  border: 1px solid var(--empty-bdr);
+  background: var(--empty-bg);
+  padding: 16px;
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+}
+.empty-state-icon {
+  width: 36px; height: 36px;
+  border-radius: 10px;
+  background: var(--chip-bg);
+  border: 1px solid var(--chip-bdr);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  flex: 0 0 36px;
+}
+.empty-state-copy { min-width: 0; }
+.empty-state-copy strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-b);
+  margin-bottom: 3px;
+}
+.empty-state-copy span {
+  font-size: 12px;
+  color: var(--text-sub);
+  line-height: 1.4;
+}
+
+/* ── FOOTER ACTIONS ── */
+.footer-actions {
+  display: grid;
+  gap: 9px;
+  padding-top: 4px;
+}
+
+.footer-hint {
+  font-size: 11px;
+  color: var(--text-sub);
+  text-align: center;
+  line-height: 1.4;
+  padding: 0 4px;
+}
+
+.btn-finish {
+  width: 100%;
+  height: 44px;
+  border-radius: 13px;
+  background: var(--finish-bg);
+  border: 1px solid var(--finish-bdr);
+  color: var(--finish-c);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  transition: background 0.15s;
+}
+.btn-finish:hover { background: var(--btn-sec-bdr); }
+
+.btn-history {
+  width: 100%;
+  height: 40px;
+  border-radius: 12px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-sub);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.btn-history svg { width: 14px; height: 14px; }
+
+/* ── ACTIVE TRANSLATION STATE ── */
+.sentence-card {
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.sentence-card-head {
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--border-s);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.sentence-num {
+  width: 22px; height: 22px;
+  border-radius: 7px;
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-bdr);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 22px;
+}
+.sentence-text {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-h);
+  line-height: 1.45;
+  flex: 1;
+}
+.sentence-dict-btn {
+  width: 28px; height: 28px;
+  border-radius: 8px;
+  border: 1px solid var(--chip-bdr);
+  background: var(--chip-bg);
+  color: var(--text-sub);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 13px;
+  flex: 0 0 28px;
+}
+
+.sentence-input-wrap {
+  padding: 10px 14px 13px;
+}
+.sentence-input {
+  width: 100%;
+  min-height: 56px;
+  border-radius: 11px;
+  border: 1.5px solid var(--input-bdr);
+  background: var(--input-bg);
+  color: var(--text-b);
+  font-size: 14px;
+  font-family: inherit;
+  padding: 10px 12px;
+  resize: none;
+  outline: none;
+  line-height: 1.5;
+  caret-color: var(--accent);
+  transition: border-color 0.15s;
+}
+.sentence-input:focus {
+  border-color: var(--accent-bdr);
+  background: var(--bg-card2);
+}
+.sentence-input::placeholder { color: var(--text-sub); }
+
+/* Grammar optin toggle */
+.grammar-optin {
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  padding: 12px 14px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.grammar-optin-copy { min-width: 0; }
+.grammar-optin-copy span {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-b);
+  margin-bottom: 3px;
+}
+.grammar-optin-copy small {
+  font-size: 11px;
+  color: var(--text-sub);
+  line-height: 1.4;
+}
+
+.toggle-track {
+  width: 36px; height: 22px;
+  border-radius: 11px;
+  background: var(--chip-bg);
+  border: 1px solid var(--chip-bdr);
+  position: relative;
+  flex: 0 0 36px;
+  cursor: pointer;
+}
+.toggle-track.on {
+  background: rgba(99,102,241,0.2);
+  border-color: var(--accent-bdr);
+}
+.toggle-thumb {
+  position: absolute;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: var(--text-sub);
+  top: 2px; left: 2px;
+  transition: transform 0.15s;
+}
+.toggle-track.on .toggle-thumb {
+  background: var(--accent);
+  transform: translateX(14px);
+}
+
+/* ── BOTTOM SHEET (Grammar focus picker) ── */
+.sheet-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  z-index: 10;
+  display: flex;
+  align-items: flex-end;
+}
+.sheet {
+  width: 100%;
+  border-radius: 22px 22px 0 0;
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  background: var(--bg-card);
+  box-shadow: 0 -20px 60px rgba(0,0,0,0.3);
+  overflow: hidden;
+}
+.sheet-head {
+  padding: 14px 16px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border-s);
+}
+.sheet-handle {
+  width: 36px; height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  top: 8px;
+}
+.sheet-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-h);
+}
+.sheet-close {
+  width: 28px; height: 28px;
+  border-radius: 8px;
+  border: 1px solid var(--chip-bdr);
+  background: var(--chip-bg);
+  color: var(--text-sub);
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.sheet-list {
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 8px 0;
+  scrollbar-width: none;
+}
+.sheet-list::-webkit-scrollbar { display: none; }
+.sheet-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 16px;
+  cursor: pointer;
+  gap: 10px;
+  transition: background 0.1s;
+}
+.sheet-item:hover { background: var(--empty-bg); }
+.sheet-item.on {
+  background: var(--chip-on-bg);
+}
+.sheet-item-left { display: flex; align-items: center; gap: 9px; }
+.sheet-item-emoji { font-size: 15px; flex: 0 0 22px; text-align: center; }
+.sheet-item-text {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-b);
+  line-height: 1.3;
+}
+.sheet-item.on .sheet-item-text { color: var(--chip-on-c); font-weight: 600; }
+.sheet-item-check { color: var(--accent); font-size: 14px; }
+
+/* ── RESULT CARD ── */
+.result-card {
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+.result-card-head {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-s);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.result-score-badge {
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.result-score-badge.good { background: rgba(52,211,153,0.15); border: 1px solid rgba(52,211,153,0.3); color: #059669; }
+.result-score-badge.mid  { background: rgba(251,191,36,0.12); border: 1px solid rgba(251,191,36,0.28); color: #d97706; }
+.result-sentence {
+  font-size: 13px;
+  color: var(--text-m);
+  line-height: 1.45;
+  flex: 1;
+}
+.result-card-body { padding: 10px 14px 12px; display: grid; gap: 6px; }
+.result-row { font-size: 12px; line-height: 1.45; color: var(--text-b); }
+.result-row strong { color: var(--text-h); font-weight: 600; }
+.result-row.correct strong { color: #059669; }
+.result-row.wrong strong { color: #dc2626; }
+
+/* ── COMPARISON PANEL ── */
+.compare-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 300px;
+}
+.compare-card {
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.06);
+  overflow: hidden;
+}
+.compare-label {
+  padding: 7px 12px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.compare-label.b { background: rgba(220,38,38,0.09); color: #991b1b; }
+.compare-label.a { background: rgba(99,102,241,0.12); color: #6366f1; }
+.compare-body { padding: 14px; background: #0d1428; display: flex; flex-direction: column; gap: 10px; }
+
+/* OLD styles */
+.old-select {
+  width: 100%;
+  height: 38px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.1);
+  background: rgba(255,255,255,0.06);
+  color: #94a3b8;
+  padding: 0 12px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.old-select-arrow { font-size: 11px; color: #64748b; }
+.old-btn-beige {
+  width: 100%;
+  height: 44px;
+  border-radius: 12px;
+  background: rgba(207,157,99,0.22);
+  border: 1px solid rgba(207,157,99,0.3);
+  color: #7a6854;
+  font-size: 14px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.new-level-chips { display: flex; gap: 5px; }
+.new-chip-sm {
+  flex: 1;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.09);
+  background: rgba(255,255,255,0.05);
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.new-chip-sm.on {
+  background: rgba(99,102,241,0.18);
+  border-color: rgba(99,102,241,0.38);
+  color: #a5b4fc;
+}
+.new-focus-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.09);
+  background: rgba(255,255,255,0.05);
+}
+.new-focus-val { font-size: 13px; color: #94a3b8; font-weight: 500; }
+.new-focus-arr { font-size: 11px; color: #475569; }
+.compare-note { font-size: 10px; color: #475569; line-height: 1.4; }
+</style>
+</head>
+<body>
+
+<!-- ══ COLUMN 1: LIGHT THEME — CONFIG STATE ══ -->
+<div class="mockup-col">
+  <p class="col-label">Light — Config (пустой старт)</p>
+  <div class="phone">
+    <div class="status-bar"><span>15:48</span><span>●●● 5G 🔋</span></div>
+    <div class="phone-scroll">
+
+      <!-- Title -->
+      <div class="tr-title-row">
+        <h2>Ваши переводы</h2>
+        <div class="tr-title-icon">✍️</div>
+      </div>
+
+      <!-- Recommendation card -->
+      <div class="rec-card">
+        <div class="rec-eyebrow">Рекомендация на сегодня</div>
+        <div class="rec-title">Порядок слов в придаточном</div>
+        <div class="rec-meta">
+          <span>Уровень: <strong>B2</strong></span>
+          <span>Тема: <strong>Nebensatz</strong></span>
+        </div>
+        <div class="rec-copy">Система предлагает потренировать это слабое место по вашим последним ошибкам.</div>
+        <div style="display:grid;gap:6px;">
+          <button class="rec-apply-btn">Применить рекомендацию</button>
+          <div class="rec-hint">Или настройте тему и уровень ниже вручную.</div>
+        </div>
+      </div>
+
+      <!-- Config card -->
+      <div class="config-card">
+
+        <!-- Level chips -->
+        <div>
+          <div class="field-label">Уровень</div>
+          <div class="level-chips">
+            <div class="level-chip">A1</div>
+            <div class="level-chip">A2</div>
+            <div class="level-chip">B1</div>
+            <div class="level-chip on">B2</div>
+            <div class="level-chip">C1</div>
+            <div class="level-chip">C2</div>
+          </div>
+        </div>
+
+        <!-- Grammar focus row -->
+        <div>
+          <div class="field-label">Грамматический фокус</div>
+          <div class="focus-select-row">
+            <div class="focus-select-left">
+              <span class="focus-select-icon">🔗</span>
+              <span class="focus-select-value">Порядок слов в придаточном</span>
+            </div>
+            <span class="focus-select-arrow">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </span>
+          </div>
+        </div>
+
+        <!-- CTA -->
+        <button class="btn-primary">
+          🚀 Начать перевод
+        </button>
+      </div>
+
+      <!-- Empty state -->
+      <div class="empty-state-card">
+        <div class="empty-state-icon">📭</div>
+        <div class="empty-state-copy">
+          <strong>Нет активных предложений</strong>
+          <span>Нажмите «🚀 Начать перевод», чтобы загрузить новые.</span>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="footer-actions">
+        <div class="footer-hint">Если сессия зависла, можно завершить её вручную.</div>
+        <button class="btn-finish">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px"><polyline points="20 6 9 17 4 12"/></svg>
+          Завершить перевод
+        </button>
+        <button class="btn-history">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          Посмотреть результат за сегодня
+        </button>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+
+<!-- ══ COLUMN 2: LIGHT THEME — GRAMMAR FOCUS SHEET OPEN ══ -->
+<div class="mockup-col">
+  <p class="col-label">Light — Grammar focus picker</p>
+  <div class="phone" style="position:relative;">
+    <div class="status-bar"><span>15:48</span><span>●●● 5G 🔋</span></div>
+    <div class="phone-scroll" style="filter:blur(1.5px);pointer-events:none;">
+      <div class="tr-title-row"><h2>Ваши переводы</h2><div class="tr-title-icon">✍️</div></div>
+      <div class="config-card">
+        <div>
+          <div class="field-label">Уровень</div>
+          <div class="level-chips">
+            <div class="level-chip">A1</div><div class="level-chip">A2</div><div class="level-chip">B1</div>
+            <div class="level-chip on">B2</div><div class="level-chip">C1</div><div class="level-chip">C2</div>
+          </div>
+        </div>
+        <div>
+          <div class="field-label">Грамматический фокус</div>
+          <div class="focus-select-row">
+            <div class="focus-select-left"><span class="focus-select-icon">🔗</span><span class="focus-select-value">Порядок слов в придаточном</span></div>
+            <span class="focus-select-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span>
+          </div>
+        </div>
+        <button class="btn-primary">🚀 Начать перевод</button>
+      </div>
+    </div>
+
+    <!-- Bottom sheet overlay -->
+    <div class="sheet-overlay">
+      <div class="sheet" style="position:relative;">
+        <div class="sheet-handle"></div>
+        <div class="sheet-head">
+          <span class="sheet-title">Грамматический фокус</span>
+          <button class="sheet-close">×</button>
+        </div>
+        <div class="sheet-list">
+          <div class="sheet-item"><div class="sheet-item-left"><span class="sheet-item-emoji">📝</span><span class="sheet-item-text">Артикли (der, die, das)</span></div></div>
+          <div class="sheet-item"><div class="sheet-item-left"><span class="sheet-item-emoji">🔢</span><span class="sheet-item-text">Падежи (Kasus)</span></div></div>
+          <div class="sheet-item on"><div class="sheet-item-left"><span class="sheet-item-emoji">🔗</span><span class="sheet-item-text">Порядок слов в придаточном</span></div><span class="sheet-item-check">✓</span></div>
+          <div class="sheet-item"><div class="sheet-item-left"><span class="sheet-item-emoji">🔄</span><span class="sheet-item-text">Пассивный залог</span></div></div>
+          <div class="sheet-item"><div class="sheet-item-left"><span class="sheet-item-emoji">⏱</span><span class="sheet-item-text">Перфект vs Präteritum</span></div></div>
+          <div class="sheet-item"><div class="sheet-item-left"><span class="sheet-item-emoji">🎯</span><span class="sheet-item-text">Модальные глаголы</span></div></div>
+          <div class="sheet-item"><div class="sheet-item-left"><span class="sheet-item-emoji">↔️</span><span class="sheet-item-text">Предлоги движения</span></div></div>
+          <div class="sheet-item"><div class="sheet-item-left"><span class="sheet-item-emoji">✏️</span><span class="sheet-item-text">Свой фокус...</span></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ══ COLUMN 3: LIGHT THEME — ACTIVE TRANSLATION ══ -->
+<div class="mockup-col">
+  <p class="col-label">Light — Активный перевод</p>
+  <div class="phone">
+    <div class="status-bar"><span>15:48</span><span>●●● 5G 🔋</span></div>
+    <div class="phone-scroll">
+
+      <div class="tr-title-row">
+        <h2>Ваши переводы</h2>
+        <div class="tr-title-icon">✍️</div>
+      </div>
+
+      <!-- Sentence 1 -->
+      <div class="sentence-card">
+        <div class="sentence-card-head">
+          <div class="sentence-num">1</div>
+          <div class="sentence-text">Я знаю, что он придёт завтра.</div>
+          <button class="sentence-dict-btn" title="Словарь">📖</button>
+        </div>
+        <div class="sentence-input-wrap">
+          <textarea class="sentence-input" placeholder="Введите перевод...">Ich weiß, dass er morgen kommt.</textarea>
+        </div>
+      </div>
+
+      <!-- Sentence 2 -->
+      <div class="sentence-card">
+        <div class="sentence-card-head">
+          <div class="sentence-num">2</div>
+          <div class="sentence-text">Она сказала, что не может прийти.</div>
+          <button class="sentence-dict-btn" title="Словарь">📖</button>
+        </div>
+        <div class="sentence-input-wrap">
+          <textarea class="sentence-input" placeholder="Введите перевод..."></textarea>
+        </div>
+      </div>
+
+      <!-- Grammar optin -->
+      <div class="grammar-optin">
+        <div class="grammar-optin-copy">
+          <span>Объяснение грамматики в личку</span>
+          <small>Разбор придёт отдельным сообщением после проверки.</small>
+        </div>
+        <div class="toggle-track on"><div class="toggle-thumb"></div></div>
+      </div>
+
+      <!-- Check button -->
+      <button class="btn-primary">Проверить перевод</button>
+
+      <!-- Footer -->
+      <div class="footer-actions">
+        <button class="btn-finish">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px"><polyline points="20 6 9 17 4 12"/></svg>
+          Завершить перевод
+        </button>
+        <button class="btn-history">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          Посмотреть результат за сегодня
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ══ COLUMN 4: DARK THEME — CONFIG STATE ══ -->
+<div class="mockup-col">
+  <p class="col-label">Dark — Config</p>
+  <div class="phone dark">
+    <div class="status-bar"><span>15:48</span><span>●●● 5G 🔋</span></div>
+    <div class="phone-scroll">
+
+      <div class="tr-title-row">
+        <h2>Ваши переводы</h2>
+        <div class="tr-title-icon">✍️</div>
+      </div>
+
+      <div class="rec-card">
+        <div class="rec-eyebrow">Рекомендация на сегодня</div>
+        <div class="rec-title">Порядок слов в придаточном</div>
+        <div class="rec-meta"><span>Уровень: <strong>B2</strong></span><span>Тема: <strong>Nebensatz</strong></span></div>
+        <div class="rec-copy">Потренируйте это слабое место по вашим последним ошибкам.</div>
+        <button class="rec-apply-btn">Применить рекомендацию</button>
+      </div>
+
+      <div class="config-card">
+        <div>
+          <div class="field-label">Уровень</div>
+          <div class="level-chips">
+            <div class="level-chip">A1</div><div class="level-chip">A2</div><div class="level-chip">B1</div>
+            <div class="level-chip on">B2</div><div class="level-chip">C1</div><div class="level-chip">C2</div>
+          </div>
+        </div>
+        <div>
+          <div class="field-label">Грамматический фокус</div>
+          <div class="focus-select-row">
+            <div class="focus-select-left"><span class="focus-select-icon">🔗</span><span class="focus-select-value">Порядок слов в придаточном</span></div>
+            <span class="focus-select-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span>
+          </div>
+        </div>
+        <!-- Loading state -->
+        <button class="btn-primary is-loading">
+          <span class="spinner"></span>
+          Загружаем...
+        </button>
+      </div>
+
+      <div class="empty-state-card">
+        <div class="empty-state-icon">📭</div>
+        <div class="empty-state-copy">
+          <strong>Нет активных предложений</strong>
+          <span>Нажмите «🚀 Начать перевод», чтобы загрузить новые.</span>
+        </div>
+      </div>
+
+      <div class="footer-actions">
+        <div class="footer-hint">Если сессия зависла, можно завершить её вручную.</div>
+        <button class="btn-finish">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px"><polyline points="20 6 9 17 4 12"/></svg>
+          Завершить перевод
+        </button>
+        <button class="btn-history">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          Посмотреть результат за сегодня
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ══ COLUMN 5: BEFORE / AFTER ══ -->
+<div class="mockup-col" style="margin-top:0;">
+  <p class="col-label">Before / After</p>
+  <div class="compare-wrap">
+
+    <div class="compare-card">
+      <div class="compare-label b">БЫЛО — Level select</div>
+      <div class="compare-body">
+        <div class="old-select"><span>B2</span><span class="old-select-arrow">⬆⬇</span></div>
+        <div class="compare-note">Стандартный браузерный select — на мобильном выглядит как система 2010 года</div>
+      </div>
+    </div>
+
+    <div class="compare-card">
+      <div class="compare-label a">СТАЛО — Level chips</div>
+      <div class="compare-body">
+        <div class="new-level-chips">
+          <div class="new-chip-sm">A1</div><div class="new-chip-sm">A2</div><div class="new-chip-sm">B1</div>
+          <div class="new-chip-sm on">B2</div><div class="new-chip-sm">C1</div><div class="new-chip-sm">C2</div>
+        </div>
+        <div class="compare-note">Один тап — визуально понятно что выбрано. Все 6 опций сразу видны.</div>
+      </div>
+    </div>
+
+    <div class="compare-card">
+      <div class="compare-label b">БЫЛО — Grammar focus</div>
+      <div class="compare-body">
+        <div class="old-select"><span style="font-size:12px;">🔗 Порядок слов в придаточном</span><span class="old-select-arrow">⬆⬇</span></div>
+        <div class="compare-note">Тот же браузерный select, стрелки ⬆⬇ несовременны</div>
+      </div>
+    </div>
+
+    <div class="compare-card">
+      <div class="compare-label a">СТАЛО — Grammar focus row</div>
+      <div class="compare-body">
+        <div class="new-focus-row">
+          <span style="font-size:14px;">🔗</span>
+          <span class="new-focus-val">Порядок слов в придаточном</span>
+          <span class="new-focus-arr">▼</span>
+        </div>
+        <div class="compare-note">Нажать → открывается красивый bottom sheet с листом из 15 пунктов</div>
+      </div>
+    </div>
+
+    <div class="compare-card">
+      <div class="compare-label b">БЫЛО — Loading / CTA</div>
+      <div class="compare-body">
+        <div class="old-btn-beige">Загружаем...</div>
+        <div class="compare-note">Непонятно — это кнопка? Активна? Нет индикатора загрузки</div>
+      </div>
+    </div>
+
+    <div class="compare-card">
+      <div class="compare-label a">СТАЛО — Loading state</div>
+      <div class="compare-body">
+        <button class="btn-primary is-loading" style="width:100%;height:44px;border-radius:12px;">
+          <span class="spinner"></span>
+          Загружаем...
+        </button>
+        <div class="compare-note">Spinner + disabled + тот же контейнер — чётко видно состояние</div>
+      </div>
+    </div>
+
+    <div class="compare-card">
+      <div class="compare-label b">БЫЛО — Footer кнопки</div>
+      <div class="compare-body" style="gap:6px;">
+        <div style="background:rgba(207,157,99,0.22);border:1px solid rgba(207,157,99,0.3);height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;color:#7a6854;font-size:13px;font-weight:600;">Завершить перевод</div>
+        <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;color:#475569;font-size:12px;">Посмотреть результат за сегодня</div>
+        <div class="compare-note">Обе кнопки одинакового веса, иерархии нет</div>
+      </div>
+    </div>
+
+    <div class="compare-card">
+      <div class="compare-label a">СТАЛО — Footer кнопки</div>
+      <div class="compare-body" style="gap:6px;">
+        <button class="btn-finish" style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><polyline points="20 6 9 17 4 12"/></svg>
+          Завершить перевод
+        </button>
+        <button class="btn-history">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:13px;height:13px"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          Посмотреть результат за сегодня
+        </button>
+        <div class="compare-note">Завершить = второстепенная (outline). История = призрак (ghost). Чёткая иерархия.</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+</body>
+</html>

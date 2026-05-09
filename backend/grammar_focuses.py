@@ -151,6 +151,90 @@ WEBAPP_TOPICS = [
     CUSTOM_FOCUS_LABEL,
 ]
 
+LEGACY_SHARED_POOL_BUCKETS: dict[str, dict[str, str]] = {
+    "b1": {
+        "key": "legacy_general_b1",
+        "label": "Legacy general · B1",
+        "prompt_topic": "Alltagssprache und allgemeine Grammatik auf B1",
+    },
+    "b2": {
+        "key": "legacy_general_b2",
+        "label": "Legacy general · B2",
+        "prompt_topic": "Alltagssprache und allgemeine Grammatik auf B2",
+    },
+    "c1": {
+        "key": "legacy_general_c1",
+        "label": "Legacy general · C1",
+        "prompt_topic": "Alltagssprache und allgemeine Grammatik auf C1",
+    },
+}
+
+
+def get_legacy_shared_pool_focus(level: str | None) -> dict[str, Any] | None:
+    normalized_level = str(level or "").strip().lower()
+    bucket = LEGACY_SHARED_POOL_BUCKETS.get(normalized_level)
+    if not bucket:
+        return None
+    return {
+        "kind": "legacy_pool",
+        "key": str(bucket.get("key") or "").strip(),
+        "label": str(bucket.get("label") or "").strip(),
+        "prompt_topic": str(bucket.get("prompt_topic") or "").strip(),
+        "main_categories": [],
+        "subcategories": [],
+        "custom_text": "",
+        "_pool_levels": [normalized_level],
+        "source_focus_kind": "legacy",
+    }
+
+
+def get_legacy_shared_pool_focus_by_key(key: str | None) -> dict[str, Any] | None:
+    normalized_key = str(key or "").strip()
+    if not normalized_key:
+        return None
+    for level, bucket in LEGACY_SHARED_POOL_BUCKETS.items():
+        if str(bucket.get("key") or "").strip() == normalized_key:
+            return get_legacy_shared_pool_focus(level)
+    return None
+
+
+def list_legacy_shared_pool_focuses() -> list[dict[str, Any]]:
+    return [
+        payload
+        for payload in (
+            get_legacy_shared_pool_focus(level)
+            for level in ("b1", "b2", "c1")
+        )
+        if payload
+    ]
+
+
+def resolve_shared_sentence_pool_focus(
+    focus: dict[str, Any] | None,
+    level: str | None,
+) -> dict[str, Any] | None:
+    if not isinstance(focus, dict):
+        return None
+    focus_kind = str(focus.get("kind") or "").strip().lower()
+    if focus_kind == "preset":
+        focus_key = str(focus.get("key") or "").strip()
+        if not focus_key:
+            return None
+        return {
+            "kind": "preset",
+            "key": focus_key,
+            "label": str(focus.get("label") or focus_key).strip() or focus_key,
+            "prompt_topic": str(focus.get("prompt_topic") or focus.get("label") or focus_key).strip() or focus_key,
+            "main_categories": [str(item or "").strip() for item in (focus.get("main_categories") or []) if str(item or "").strip()],
+            "subcategories": [str(item or "").strip() for item in (focus.get("subcategories") or []) if str(item or "").strip()],
+            "custom_text": "",
+            "_pool_levels": [str(level or "").strip().lower()] if str(level or "").strip() else [],
+            "source_focus_kind": "preset",
+        }
+    if focus_kind == "legacy":
+        return get_legacy_shared_pool_focus(level)
+    return None
+
 
 def get_grammar_focus_by_label(label: str | None) -> dict[str, Any] | None:
     normalized = str(label or "").strip()

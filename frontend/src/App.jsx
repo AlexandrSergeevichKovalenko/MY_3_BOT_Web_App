@@ -1,10 +1,39 @@
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import BlocksTrainer from './components/BlocksTrainer';
+import HomeDashboardTiles from './components/HomeDashboardTiles';
+import HomeMoreTiles from './components/HomeMoreTiles';
 import WeeklySummaryModal from './components/WeeklySummaryModal';
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
 import { buildWeeklySummaryHeroFacts, buildWeeklySummaryVisitConfig } from './utils/weeklySummary';
 import { detectAppMode } from './utils/appMode';
+import {
+  isOfflineCacheAvailable,
+  saveVocabBatch,
+  getCachedVocab,
+  getVocabCacheMeta,
+  getCachedFolderStats,
+  deleteCachedVocabEntry,
+  updateCachedVocabEntry,
+  saveSrsQueue,
+  takeNextSrsCard,
+  addPendingReview,
+  getPendingReviews,
+  clearPendingReview,
+  countPendingReviews,
+  addVocabMutation,
+  getVocabMutations,
+  clearVocabMutation,
+  countVocabMutations,
+} from './offline/vocabCache';
+import {
+  lookupOfflineBaseDictEntry,
+  saveBaseDictEntryFromServerResult,
+  isOfflinePackFresh,
+  downloadOfflinePack,
+} from './offline/baseDictCache';
+
+import './styles/topbar-redesign.css';
 
 // URL вашего сервера LiveKit
 const livekitUrl = "wss://implemrntingvoicetobot-vhsnc86g.livekit.cloud";
@@ -23,6 +52,13 @@ const ANDROID_TRANSLATION_DRAFT_VARIANTS = new Set(['a', 'b', 'c', 'd', 'e']);
 const DEFAULT_ANDROID_TRANSLATION_DRAFT_VARIANT = 'd';
 const ECONOMICS_PERIOD_STORAGE_KEY = 'dds_economics_period_v2';
 const ECONOMICS_PROVIDER_STORAGE_KEY = 'dds_economics_provider_v2';
+const ECONOMICS_FORECAST_USERS_STORAGE_KEY = 'dds_economics_forecast_users_v1';
+const ECONOMICS_RAILWAY_APP_RAM_STORAGE_KEY = 'dds_economics_railway_app_ram_v1';
+const ECONOMICS_RAILWAY_APP_CPU_STORAGE_KEY = 'dds_economics_railway_app_cpu_v1';
+const ECONOMICS_RAILWAY_POSTGRES_RAM_STORAGE_KEY = 'dds_economics_railway_postgres_ram_v1';
+const ECONOMICS_RAILWAY_POSTGRES_VOLUME_STORAGE_KEY = 'dds_economics_railway_postgres_volume_v1';
+const ECONOMICS_RAILWAY_REDIS_RAM_STORAGE_KEY = 'dds_economics_railway_redis_ram_v1';
+const ECONOMICS_RAILWAY_EGRESS_STORAGE_KEY = 'dds_economics_railway_egress_v1';
 const ECONOMICS_PERIOD_OPTIONS = new Set(['day', 'week', 'month', 'quarter', 'half-year', 'year', 'all']);
 
 function readStoredEconomicsPeriod() {
@@ -42,6 +78,26 @@ function readStoredEconomicsProvider() {
     return raw || 'all';
   } catch (_error) {
     return 'all';
+  }
+}
+
+function readStoredEconomicsForecastUsers() {
+  if (typeof window === 'undefined') return '100';
+  try {
+    const raw = String(window.localStorage.getItem(ECONOMICS_FORECAST_USERS_STORAGE_KEY) || '').trim();
+    return raw || '100';
+  } catch (_error) {
+    return '100';
+  }
+}
+
+function readStoredDraftValue(key, fallback = '') {
+  if (typeof window === 'undefined') return fallback;
+  try {
+    const raw = String(window.localStorage.getItem(key) || '').trim();
+    return raw || fallback;
+  } catch (_error) {
+    return fallback;
   }
 }
 
@@ -212,7 +268,8 @@ function formatAnalyticsCalendarDisplayDate(value, locale = 'ru-RU') {
   }).format(safeDate);
 }
 
-const HOME_SNAPSHOT_AUTO_REFRESH_MAX_AGE_MS = 30 * 60 * 1000;
+const HOME_SNAPSHOT_AUTO_REFRESH_MAX_AGE_MS = 60 * 60 * 1000;
+const TODAY_PLAN_AUTO_REFRESH_MAX_AGE_MS = 60 * 60 * 1000;
 
 function parseIsoTimestampMs(value) {
   const raw = String(value || '').trim();
@@ -478,16 +535,16 @@ function buildOnboardingSlides(uiLang = 'ru') {
         body: 'Unbekannte Woerter solltest du nicht nur nachschlagen, sondern sofort speichern, anhoeren und spaeter wiederholen.',
         bullets: [
           'Es gibt einen schnellen Lookup und eine tiefere GPT-Erklaerung.',
-          'Gespeicherte Woerter und Phrasen gehen spaeter in Karten und FSRS ein.',
+          'Gespeicherte Woerter und Phrasen gehen spaeter in Karten und Space Repetition ein.',
           'Du kannst fuer dein Material Ordner anlegen und ein PDF exportieren.',
         ],
       },
       {
         eyebrow: 'Schritt 4 von 8',
         title: 'Wiederholen und automatisieren',
-        body: 'Karten, Quiz, Blocks und FSRS machen aus passivem Verstehen aktive Erinnerung.',
+        body: 'Karten, Quiz, Blocks und Space Repetition machen aus passivem Verstehen aktive Erinnerung.',
         bullets: [
-          'FSRS plant Wiederholungen automatisch nach deinem echten Erinnern.',
+          'Space Repetition plant Wiederholungen automatisch nach deinem echten Erinnern.',
           'Quiz und Blocks sind kuerzer und spielerischer fuer Zwischendurch.',
           'Neue und alte Karten werden sinnvoll gemischt statt chaotisch zufaellig gezeigt.',
         ],
@@ -562,16 +619,16 @@ function buildOnboardingSlides(uiLang = 'ru') {
       body: 'Незнакомые слова лучше не просто переводить, а сразу сохранять, слушать и затем повторять.',
       bullets: [
         'В словаре есть быстрый перевод и более глубокий GPT-разбор.',
-        'Сохраненные слова и фразы потом идут в карточки и FSRS.',
+        'Сохраненные слова и фразы потом идут в карточки и Space Repetition.',
         'Можно создавать папки под свои темы и выгружать словарь в PDF.',
       ],
     },
     {
       eyebrow: 'Шаг 4 из 8',
       title: 'Повторяйте и автоматизируйте',
-      body: 'Карточки, quiz, blocks и FSRS превращают пассивное понимание слова в активное вспоминание.',
+      body: 'Карточки, quiz, blocks и Space Repetition превращают пассивное понимание слова в активное вспоминание.',
       bullets: [
-        'FSRS сам рассчитывает интервалы повторения по вашему реальному ответу.',
+        'Space Repetition сам рассчитывает интервалы повторения по вашему реальному ответу.',
         'Quiz и Blocks подходят для коротких и более игровых сессий.',
         'Новые и старые карточки смешиваются осмысленно, а не случайно.',
       ],
@@ -646,6 +703,14 @@ function buildGuideStepItems(uiLang = 'ru') {
             ],
           },
           {
+            title: 'Startbildschirm: 3 Schnellkacheln',
+            items: [
+              'Aufgaben zeigt den Tagesplan-Fortschritt (erledigt / gesamt).',
+              'Skill-Map zeigt deine durchschnittliche Beherrschung aller Grammatik- und Vokabelbereiche als Prozentzahl.',
+              'Wochenplan zeigt, wie weit du bei deinen Wochenzielen (Uebersetzungen, Woerter, Sprechminuten, Lesezeit) bist.',
+            ],
+          },
+          {
             title: 'Wie du sinnvoll startest',
             items: [
               'Lege zuerst Lernsprache und Muttersprache fest.',
@@ -700,18 +765,18 @@ function buildGuideStepItems(uiLang = 'ru') {
             ],
           },
           {
-            title: 'Wie der Plan entsteht',
+            title: 'Skill-Map: Ringe und Beherrschungsgrad',
             items: [
-              'Der Plan nutzt deine Ziele, deine Aktivitaet und deine Schwaechen.',
-              'Dadurch bekommst du nicht jeden Tag dieselben Aufgaben, sondern die momentan sinnvollsten.',
-              'Wenn ein Bereich hinterherhaengt, wird er im Plan frueher sichtbar.',
+              'Unterhalb des Tagesplans siehst du die Skill-Map-Karte mit Ringen fuer jeden Grammatik- und Vokabelbereich.',
+              'Je voller der Ring, desto besser beherrschst du dieses Thema laut deinen Uebungen und Tests.',
+              'Schwache Ringe sind deine aktuellen Luecken — tippe auf einen Ring, um gezielt daran zu arbeiten.',
             ],
           },
           {
-            title: 'Welche Nachrichten dazu kommen koennen',
+            title: 'Wochenplan und Nachrichten',
             items: [
-              'Nach den aktuellen Standardzeiten kommt der Tagesplan morgens etwa um 07:00.',
-              'Am Abend kommt meist gegen 18:00 eine sanfte Erinnerung oder eine Glueckwunsch-Nachricht, wenn alles erledigt ist.',
+              'Die Wochenplan-Karte zeigt Fortschritt bei deinen Wochenzielen: Uebersetzungen, gelernte Woerter, Sprechminuten und Lesezeit.',
+              'Nach den aktuellen Standardzeiten kommt der Tagesplan morgens etwa um 07:00, abends gegen 18:00 ein Erinnerungs- oder Glueckwunsch-Push.',
               'Diese Statusmeldungen sind mit dem Heute-Bildschirm synchron.',
             ],
           },
@@ -813,7 +878,7 @@ function buildGuideStepItems(uiLang = 'ru') {
       {
         key: 'dictionary',
         title: 'Woerterbuch',
-        summary: 'Hier uebersetzt, erklaerst, speicherst und organisierst du Woerter und Phrasen.',
+        summary: 'Hier uebersetzt, erklaerst, speicherst und organisierst du Woerter und Phrasen — auch ohne Internet.',
         sections: [
           {
             title: 'Welche zwei Lookup-Wege es gibt',
@@ -836,7 +901,112 @@ function buildGuideStepItems(uiLang = 'ru') {
             items: [
               'Speichere Woerter und Phrasen direkt in einen Ordner.',
               'Lege neue Ordner an, wenn du Themen sauber trennen willst.',
-              'Spaeter tauchen diese Inhalte in Karten, FSRS und weiteren Uebungen wieder auf.',
+              'Spaeter tauchen diese Inhalte in Karten, Space Repetition und weiteren Uebungen wieder auf.',
+            ],
+          },
+          {
+            title: 'Woerterbuch offline vorbereiten',
+            items: [
+              'Jede Seite deines Vokabular-Bibliothek, die du online durchgeblattert hast, wird automatisch im Geraete-Cache gespeichert.',
+              'Je mehr Seiten du online geoeffnet hast, desto mehr Woerter sind spaeter offline sichtbar — kein gesonderter Download noetig.',
+              'Im Offline-Modus erscheint oben ein 📵-Banner mit dem Datum der letzten Synchronisierung.',
+            ],
+          },
+          {
+            title: 'Einen ganzen Ordner fuer Offline laden',
+            items: [
+              'Halte einen Ordner lange gedrückt — das Kontextmenü erscheint.',
+              'Tippe auf „Für Offline laden": die App lädt seitenweise alle Wörter des Ordners und speichert sie im lokalen Cache des Geräts.',
+              'Den Fortschritt siehst du direkt unter der Ordnerliste: „X / Y". Nach Abschluss sind alle Wörter ohne Internet verfügbar.',
+              'So sparst du dir das manuelle Durchblättern von Tausenden von Wörtern.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'flashcards',
+        title: 'Karten',
+        summary: 'Hier automatisierst du gespeicherte Woerter und Phrasen ueber mehrere Trainingsarten — inkl. Offline-Modus.',
+        sections: [
+          {
+            title: 'Die Trainingsmodi',
+            items: [
+              'Space Repetition fuer intelligentes spaced repetition.',
+              'Quiz fuer schnelle Entscheidungen mit Antwortoptionen.',
+              'Blocks fuer aktives Zusammenbauen.',
+              'Sentence fuer Kontext-Ergaenzung.',
+            ],
+          },
+          {
+            title: 'Wie die Inhalte gebildet werden',
+            items: [
+              'Die Kernwarteschlange kommt aus deinem persoenlichen Material: gespeicherte Woerter und Phrasen.',
+              'In Space Repetition kommen zuerst faellige Wiederholungen und danach neue Karten.',
+              'Die Telegram-Quizze mischen nicht blind, sondern wechseln neue Inhalte mit Wiederholungen schwacher Karten ab.',
+            ],
+          },
+          {
+            title: 'Offline-Modus fuer Karten',
+            items: [
+              'Space-Repetition-Karten werden beim Online-Start automatisch auf das Geraet geladen.',
+              'Verlierst du die Verbindung waehrend einer Sitzung, kannst du weitermachen — alle Antworten werden lokal gespeichert.',
+              'Sobald die Verbindung wiederhergestellt ist, synchronisiert die App die Ergebnisse automatisch mit dem Server.',
+              'Ein Badge zeigt dir, wie viele Antworten noch auf Synchronisierung warten.',
+            ],
+          },
+          {
+            title: 'Was du einstellen kannst',
+            items: [
+              'Set-Groesse, Ordner, Geschwindigkeit und automatischen oder manuellen Uebergang.',
+              'Je nach Modus kommen Timer oder Schwierigkeitsstufe dazu.',
+              'So kannst du denselben Wortschatz sehr kurz oder sehr gruendlich trainieren.',
+            ],
+          },
+        ],
+      },
+      {
+        key: 'offline_mode',
+        title: 'Offline-Modus',
+        summary: 'Woerterbuch und Karten funktionieren ohne Internet. Hier erfaehrst du, wie du dich vorbereitetest.',
+        sections: [
+          {
+            title: 'Was offline verfuegbar ist',
+            items: [
+              'Dein gesamtes Vokabular (alle Seiten, die du online geoeffnet hast) — fuer Anzeige und Bearbeitung.',
+              'Space-Repetition-Karten — fuer Wiederholungen und neue Karten.',
+              'Alle offline vorgenommenen Aenderungen (hinzufuegen, loeschen, Kartenantworten) warten in der lokalen Warteschlange.',
+            ],
+          },
+          {
+            title: 'So bereitest du dich vor (Woerterbuch)',
+            items: [
+              'Blade einfach durch deine Vokabular-Seiten, waehrend du online bist — jede angezeigte Seite wird automatisch gecacht.',
+              'Es gibt keine separate Schaltflaecheoffline speichern — der Cache baut sich beim normalen Scrollen auf.',
+              'Je mehr du vorab durchblattert hast, desto vollstaendiger ist der Offline-Bestand.',
+            ],
+          },
+          {
+            title: 'So bereitest du dich vor (Karten)',
+            items: [
+              'Starte mindestens einmal eine Space-Repetition-Sitzung online — dabei werden die naechsten Karten in den Geraete-Cache geladen.',
+              'Beim naechsten Mal ohne Internet erscheint automatisch der Offline-Modus mit den vorgeladenen Karten.',
+              'Nach Rueckkehr ins Netz werden alle gespeicherten Antworten automatisch hochgeladen.',
+            ],
+          },
+          {
+            title: 'Offline-Indikatoren verstehen',
+            items: [
+              'Im Woerterbuch erscheint oben ein 📵-Banner mit dem Datum des letzten Caches.',
+              'Bei Karten erscheint ein Badge mit der Anzahl der nicht synchronisierten Antworten.',
+              'Wenn du wieder online bist, startet die Synchronisierung automatisch im Hintergrund.',
+            ],
+          },
+          {
+            title: 'Schnell einen ganzen Ordner fuer Offline vorbereiten',
+            items: [
+              'Ordner im Woerterbuch lange drücken und „Für Offline laden" waehlen.',
+              'Die App laedt alle Woerter des Ordners seitenweise und speichert sie automatisch im Geraete-Cache — kein manuelles Scrollen noetig.',
+              'Fortschritt ist direkt in der Oberflaeche sichtbar. Abbrechen jederzeit per X-Schaltflaeche moeglich.',
             ],
           },
         ],
@@ -873,41 +1043,9 @@ function buildGuideStepItems(uiLang = 'ru') {
         ],
       },
       {
-        key: 'flashcards',
-        title: 'Karten',
-        summary: 'Hier automatisierst du gespeicherte Woerter und Phrasen ueber mehrere Trainingsarten.',
-        sections: [
-          {
-            title: 'Die Trainingsmodi',
-            items: [
-              'FSRS fuer intelligentes spaced repetition.',
-              'Quiz fuer schnelle Entscheidungen mit Antwortoptionen.',
-              'Blocks fuer aktives Zusammenbauen.',
-              'Sentence fuer Kontext-Ergaenzung.',
-            ],
-          },
-          {
-            title: 'Wie die Inhalte gebildet werden',
-            items: [
-              'Die Kernwarteschlange kommt aus deinem persoenlichen Material: gespeicherte Woerter und Phrasen.',
-              'In FSRS kommen zuerst faellige Wiederholungen und danach neue Karten.',
-              'Die Telegram-Quizze mischen nicht blind, sondern wechseln neue Inhalte mit Wiederholungen schwacher Karten ab.',
-            ],
-          },
-          {
-            title: 'Was du einstellen kannst',
-            items: [
-              'Set-Groesse, Ordner, Geschwindigkeit und automatischen oder manuellen Uebergang.',
-              'Je nach Modus kommen Timer oder Schwierigkeitsstufe dazu.',
-              'So kannst du denselben Wortschatz sehr kurz oder sehr gruendlich trainieren.',
-            ],
-          },
-        ],
-      },
-      {
         key: 'assistant',
         title: 'Sprachpraxis',
-        summary: 'Der Live-Assistent ist fuer echte muendliche Routine gedacht.',
+        summary: 'Der Live-Assistent ist fuer echte muendliche Routine gedacht — mit KI-Analyse nach jeder Sitzung.',
         sections: [
           {
             title: 'Wie du startest',
@@ -923,6 +1061,15 @@ function buildGuideStepItems(uiLang = 'ru') {
               'Aussprache, Spontanitaet, Reaktionsgeschwindigkeit und muendliche Sicherheit.',
               'Kurze taegliche Sprachpraxis statt nur stiller Lektuere.',
               'Der Bereich ergaenzt Uebersetzungen, ersetzt sie aber nicht.',
+            ],
+          },
+          {
+            title: 'Post-Session-Analyse',
+            items: [
+              'Nach jeder abgeschlossenen Sitzung erstellt die KI automatisch eine Session-Analyse.',
+              'Du siehst: strenges Feedback, naechster empfohlener Fokus sowie Detailnoten fuer Wortschatz, Grammatik, Sprachfluss, Kohaerenz und Selbstkorrektur.',
+              'Verwendetes und verfehltes Ziel-Vokabular wird separat aufgelistet.',
+              'War die Sitzung zu kurz, erscheint stattdessen ein kurzer Hinweis — sprich einfach laenger beim naechsten Mal.',
             ],
           },
           {
@@ -1021,7 +1168,7 @@ function buildGuideStepItems(uiLang = 'ru') {
           {
             title: 'Wann du ihn oeffnen solltest',
             items: [
-              'Wenn ein schwacher Ring oder eine Empfehlung sichtbar ist.',
+              'Wenn ein schwacher Ring in der Skill-Map oder eine Empfehlung sichtbar ist.',
               'Wenn du nicht breit, sondern punktgenau trainieren willst.',
               'Wenn du ein Thema wirklich schliessen statt nur wiederholen willst.',
             ],
@@ -1037,7 +1184,7 @@ function buildGuideStepItems(uiLang = 'ru') {
             title: 'So aktivierst du ihn',
             items: [
               'Bot privat oeffnen und einmal /start senden.',
-              'Danach erscheint unten die Taste „💬 Спросить у GPT“.',
+              'Danach erscheint unten die Taste „💬 Спросить у GPT”.',
               'Damit ist der schnelle Privatmodus fuer Sprache, Fragen und Speichern bereit.',
             ],
           },
@@ -1053,7 +1200,7 @@ function buildGuideStepItems(uiLang = 'ru') {
           {
             title: 'Welche Nachrichten privat ankommen koennen',
             items: [
-              'Nach den aktuellen Standardzeiten: Tagesplan morgens, Erinnerungen im Tagesverlauf und Abend-Erinnerung gegen spaeteren Nachmittag oder Abend.',
+              'Nach den aktuellen Standardzeiten: Tagesplan morgens, Erinnerungen im Tagesverlauf und Abend-Erinnerung.',
               'Audio-Fehlererklaerungen kommen typischerweise tagsueber und beziehen sich meist auf den letzten Lerntag.',
               'Private Analytik und Charts kommen regelmaessig, waehrend die Mini-App die volle Detailansicht liefert.',
             ],
@@ -1119,6 +1266,14 @@ function buildGuideStepItems(uiLang = 'ru') {
           ],
         },
         {
+          title: 'Главный экран: 3 быстрые метрики',
+          items: [
+            'Задачи — прогресс дневного плана (выполнено / всего).',
+            'Карта навыков — средний % освоения всех грамматических и лексических блоков. Нажмите, чтобы увидеть кольца по каждой теме.',
+            'Wochenplan — насколько вы выполнили недельные цели: переводы, слова, минуты разговора, время чтения.',
+          ],
+        },
+        {
           title: 'Как лучше начать',
           items: [
             'Сначала задайте язык изучения и родной язык.',
@@ -1145,7 +1300,7 @@ function buildGuideStepItems(uiLang = 'ru') {
           title: 'Как работает смена тарифа и отмена',
           items: [
             'Если вы отменяете платную подписку, она продолжает работать до конца уже оплаченного периода.',
-            'Новый платный тариф не должен запускаться с двойным списанием посреди текущего цикла, а аккуратно стартует со следующего расчетного периода.',
+            'Новый платный тариф стартует аккуратно со следующего расчетного периода, без двойного списания.',
             'Так вы не теряете уже оплаченный доступ и не платите дважды за один и тот же промежуток.',
           ],
         },
@@ -1162,30 +1317,30 @@ function buildGuideStepItems(uiLang = 'ru') {
     {
       key: 'today',
       title: 'Сегодня',
-      summary: 'План на сегодня показывает следующую разумную последовательность действий.',
+      summary: 'План на сегодня, карта навыков и недельные цели — всё на одном экране.',
       sections: [
         {
-          title: 'Что вы там видите',
+          title: 'Дневной план',
           items: [
             'Компактный маршрут дня: переводы, карточки, теория, видео или разговорная практика.',
-            'Статус каждой задачи: еще не начато, в процессе или закончено.',
-            'Быстрый вход в нужный раздел без долгого поиска по меню.',
-          ],
-        },
-        {
-          title: 'Как формируется план',
-          items: [
-            'План опирается на ваши цели, текущую активность и слабые места.',
-            'Поэтому задачи меняются не случайно, а под то, что сейчас полезнее делать именно вам.',
+            'Статус каждой задачи: ещё не начато, в процессе или закончено.',
             'Если какой-то блок проседает, он поднимается выше в плане.',
           ],
         },
         {
-          title: 'Какие сообщения с ним связаны',
+          title: 'Карта навыков (skill rings)',
           items: [
-            'По текущим стандартным настройкам план обычно приходит утром около 07:00.',
-            'Вечером примерно около 18:00 может приходить мягкое напоминание или поздравление, если все закрыто.',
-            'Эти сообщения синхронизированы с экраном Сегодня внутри приложения.',
+            'Ниже дневного плана находится блок Карта навыков с кольцами по каждому грамматическому и лексическому направлению.',
+            'Чем полнее кольцо — тем лучше вы освоили эту тему по результатам ваших упражнений и тестов.',
+            'Слабые кольца — ваши текущие пробелы. Нажмите на кольцо, чтобы открыть целевую тренировку.',
+          ],
+        },
+        {
+          title: 'Недельный план и уведомления',
+          items: [
+            'Блок Wochenplan показывает прогресс недельных целей: переводы, выученные слова, минуты разговора, время чтения.',
+            'По текущим стандартным настройкам план приходит утром около 07:00, вечером около 18:00 — напоминание или поздравление.',
+            'Эти уведомления синхронизированы с экраном Сегодня внутри приложения.',
           ],
         },
       ],
@@ -1215,7 +1370,7 @@ function buildGuideStepItems(uiLang = 'ru') {
           title: 'Что происходит после проверки',
           items: [
             'Вы видите балл, эталон, текстовый разбор и можете сразу озвучить корректный вариант.',
-            'Для отдельных ответов можно запросить еще более глубокое объяснение.',
+            'Для отдельных ответов можно запросить ещё более глубокое объяснение.',
             'Набор предложений смешивает ваши прошлые ошибки и новые предложения: слабые места возвращаются в работу, но система не зацикливается только на старом.',
           ],
         },
@@ -1286,7 +1441,7 @@ function buildGuideStepItems(uiLang = 'ru') {
     {
       key: 'dictionary',
       title: 'Словарь',
-      summary: 'Здесь вы переводите, разбираете, сохраняете и организуете слова и фразы.',
+      summary: 'Здесь вы переводите, разбираете, сохраняете и организуете слова и фразы — в том числе в офлайн-режиме.',
       sections: [
         {
           title: 'Два режима lookup',
@@ -1309,7 +1464,112 @@ function buildGuideStepItems(uiLang = 'ru') {
           items: [
             'Сохраняйте слово или фразу сразу в нужную папку.',
             'При желании создавайте свои папки под темы, поездки, работу, фильмы и так далее.',
-            'Позже именно это личное содержимое идет в карточки, FSRS и другие тренировки.',
+            'Позже именно это личное содержимое идет в карточки, Space Repetition и другие тренировки.',
+          ],
+        },
+        {
+          title: 'Как подготовить словарь к работе офлайн',
+          items: [
+            'Пока вы в сети, просто пролистывайте страницы своей библиотеки слов — каждая открытая страница автоматически сохраняется в локальный кеш устройства.',
+            'Никакой отдельной кнопки «скачать офлайн» нет: кеш накапливается сам по мере использования приложения.',
+            'Чем больше страниц вы просматривали онлайн, тем больше слов будет доступно в офлайн-режиме.',
+          ],
+        },
+        {
+          title: 'Как загрузить целую папку для офлайн-режима',
+          items: [
+            'Удержите палец на нужной папке — появится контекстное меню.',
+            'Нажмите «Загрузить слова для офлайн» — приложение само постранично скачает все слова из этой папки и сохранит их в локальный кеш устройства.',
+            'Прогресс отображается прямо под сеткой папок: «X / Y». После завершения все слова из папки доступны без интернета.',
+            'Так можно загрузить любую папку одной кнопкой вместо того чтобы вручную листать тысячи слов.',
+          ],
+        },
+      ],
+    },
+    {
+      key: 'flashcards',
+      title: 'Карточки',
+      summary: 'Здесь автоматизируются сохраненные слова и фразы через несколько разных режимов тренировки — включая офлайн.',
+      sections: [
+        {
+          title: 'Какие режимы есть',
+          items: [
+            'Space Repetition для умного интервального повторения.',
+            'Quiz для быстрых решений с вариантами ответа.',
+            'Blocks для активной сборки ответа.',
+            'Sentence для работы со словом в контексте.',
+          ],
+        },
+        {
+          title: 'Как формируется содержимое',
+          items: [
+            'Ядро очереди строится из вашего личного материала: сохраненных слов и фраз.',
+            'В Space Repetition сначала идут due-карточки, потом новые.',
+            'Telegram-квизы в течение дня не шлют всё подряд, а чередуют новое и повтор слабых слов.',
+          ],
+        },
+        {
+          title: 'Офлайн-режим для карточек',
+          items: [
+            'Space Repetition карточки предзагружаются в локальный кеш устройства при каждом онлайн-запуске сессии.',
+            'Если интернет пропал во время тренировки — продолжайте, ответы сохраняются локально.',
+            'Как только связь восстановится, все отложенные результаты автоматически синхронизируются с сервером.',
+            'Значок со счётчиком показывает, сколько ответов ожидают отправки.',
+          ],
+        },
+        {
+          title: 'Что можно настроить',
+          items: [
+            'Размер набора, папку, скорость и автоматический или ручной переход.',
+            'В зависимости от режима появляются дополнительные параметры: таймер или сложность.',
+            'Так один и тот же словарь можно тренировать коротко, быстро или более глубоко.',
+          ],
+        },
+      ],
+    },
+    {
+      key: 'offline_mode',
+      title: 'Офлайн-режим',
+      summary: 'Словарь и карточки работают без интернета. Вот что нужно сделать заранее, пока вы онлайн.',
+      sections: [
+        {
+          title: 'Что доступно без интернета',
+          items: [
+            'Вся библиотека слов — все страницы, которые вы уже открывали онлайн: просмотр, редактирование заметок, смена папки.',
+            'Space Repetition карточки — повторение и новые карточки из предзагруженной очереди.',
+            'Все изменения (добавление, удаление слов, ответы на карточки), сделанные офлайн, ждут синхронизации в локальной очереди.',
+          ],
+        },
+        {
+          title: 'Как подготовить словарь (что делать заранее)',
+          items: [
+            'Будучи онлайн, откройте раздел Словарь и прокрутите несколько страниц своей библиотеки — каждая показанная страница автоматически сохраняется на устройство.',
+            'Специальной кнопки «сохранить для офлайна» нет — кеш строится в процессе обычного использования.',
+            'Чем больше страниц вы просмотрели онлайн, тем полнее ваша офлайн-библиотека.',
+          ],
+        },
+        {
+          title: 'Как подготовить карточки (что делать заранее)',
+          items: [
+            'Запустите хотя бы одну сессию Space Repetition онлайн — при этом следующая порция карточек автоматически скачивается на устройство.',
+            'При следующем открытии без интернета режим офлайн включается сам, без дополнительных действий.',
+            'После восстановления связи все отложенные ответы отправляются на сервер автоматически в фоне.',
+          ],
+        },
+        {
+          title: 'Что означают индикаторы',
+          items: [
+            'В Словаре вверху появляется баннер 📵 с датой последнего обновления кеша.',
+            'В Карточках отображается значок с количеством ответов, ожидающих синхронизации.',
+            'Когда связь восстанавливается, синхронизация начинается автоматически — вам ничего дополнительно нажимать не нужно.',
+          ],
+        },
+        {
+          title: 'Как быстро загрузить всю папку для офлайн-режима',
+          items: [
+            'Удержите палец на нужной папке в разделе Словарь и выберите «Загрузить слова для офлайн».',
+            'Приложение автоматически скачает все слова из этой папки постранично и сохранит их в локальный кеш — без необходимости вручную листать список.',
+            'Прогресс виден прямо под сеткой папок. Операцию можно прервать в любой момент крестиком.',
           ],
         },
       ],
@@ -1317,7 +1577,7 @@ function buildGuideStepItems(uiLang = 'ru') {
     {
       key: 'reader',
       title: 'Читалка',
-      summary: 'Раздел для спокойного чтения, аудио, учета времени и более глубокого погружения в текст.',
+      summary: 'Раздел для спокойного чтения, аудио, учёта времени и более глубокого погружения в текст.',
       sections: [
         {
           title: 'Как добавить материал',
@@ -1332,47 +1592,15 @@ function buildGuideStepItems(uiLang = 'ru') {
           items: [
             'Нажимать на слова и фрагменты текста, чтобы быстрее разбираться в содержании.',
             'Менять шрифт, направление прокрутки, режим чтения и фокусный вид.',
-            'Таймер чтения идет параллельно и учитывается в вашем прогрессе.',
+            'Таймер чтения идёт параллельно и учитывается в вашем прогрессе.',
           ],
         },
         {
-          title: 'Какие есть дополнительные возможности',
+          title: 'Дополнительные возможности',
           items: [
             'Закладки, сохранение прогресса, архив документов.',
-            'Оффлайн-аудио для всего документа или крупных частей.',
+            'Офлайн-аудио для всего документа или крупных частей.',
             'Читалка нужна для спокойного понимания и глубокой работы с текстом, а не только для быстрого поиска слова.',
-          ],
-        },
-      ],
-    },
-    {
-      key: 'flashcards',
-      title: 'Карточки',
-      summary: 'Здесь автоматизируются сохраненные слова и фразы через несколько разных режимов тренировки.',
-      sections: [
-        {
-          title: 'Какие режимы есть',
-          items: [
-            'FSRS для умного интервального повторения.',
-            'Quiz для быстрых решений с вариантами ответа.',
-            'Blocks для активной сборки ответа.',
-            'Sentence для работы со словом в контексте.',
-          ],
-        },
-        {
-          title: 'Как формируется содержимое',
-          items: [
-            'Ядро очереди строится из вашего личного материала: сохраненных слов и фраз.',
-            'В FSRS сначала идут due-карточки, потом новые.',
-            'Telegram-квизы в течение дня не шлют все подряд, а чередуют новое и повтор слабых слов.',
-          ],
-        },
-        {
-          title: 'Что можно настроить',
-          items: [
-            'Размер набора, папку, скорость и автоматический или ручной переход.',
-            'В зависимости от режима появляются дополнительные параметры: таймер или сложность.',
-            'Так один и тот же словарь можно тренировать коротко, быстро или более глубоко.',
           ],
         },
       ],
@@ -1380,7 +1608,7 @@ function buildGuideStepItems(uiLang = 'ru') {
     {
       key: 'assistant',
       title: 'Разговорная практика',
-      summary: 'Live-ассистент нужен для настоящей устной речи, а не только для чтения и письменных переводов.',
+      summary: 'Live-ассистент нужен для настоящей устной речи — с AI-разбором каждой сессии после её завершения.',
       sections: [
         {
           title: 'Как начать',
@@ -1399,9 +1627,18 @@ function buildGuideStepItems(uiLang = 'ru') {
           ],
         },
         {
-          title: 'Как он связан с остальной системой',
+          title: 'Разбор сессии после завершения',
           items: [
-            'Минуты разговора могут учитываться в целях и аналитике.',
+            'После каждой завершённой сессии AI автоматически генерирует детальный разбор.',
+            'Вы увидите: строгий фидбек, следующий рекомендуемый фокус, и развёрнутые заметки по лексике, грамматике, беглости речи, связности и самокоррекции.',
+            'Отдельно показывается целевая лексика: какие слова прозвучали в разговоре, а какие так и не были использованы.',
+            'Если сессия была слишком короткой, вместо полного разбора появится краткое уведомление — просто поговорите подольше в следующий раз.',
+          ],
+        },
+        {
+          title: 'Как разговорная практика связана с остальной системой',
+          items: [
+            'Минуты разговора учитываются в целях и в недельном плане.',
             'Этот блок может появляться как отдельная задача в плане на сегодня.',
             'Так живая речь становится регулярной частью учебной рутины.',
           ],
@@ -1457,14 +1694,14 @@ function buildGuideStepItems(uiLang = 'ru') {
           items: [
             'Сколько переводов сделано, сколько было запланировано и что осталось не закрытым.',
             'Сравнения, графики и рейтинги за выбранный период.',
-            'Где вы идете по плану, а где проседаете.',
+            'Где вы идёте по плану, а где проседаете.',
           ],
         },
         {
           title: 'Какие регулярные сообщения с этим связаны',
           items: [
             'Личная недельная аналитика по текущим стандартным настройкам обычно приходит вечером около 19:30 вместе с графиками.',
-            'Групповые итоги дня обычно приходят поздно вечером, а недельные итоги в воскресенье поздно вечером.',
+            'Групповые итоги дня обычно приходят поздно вечером, а недельные итоги — в воскресенье поздно вечером.',
             'Mini App нужна для полной детализации, Telegram для коротких регулярных сводок.',
           ],
         },
@@ -1478,7 +1715,7 @@ function buildGuideStepItems(uiLang = 'ru') {
         {
           title: 'Что делает этот раздел',
           items: [
-            'Берет одну слабую тему и собирает по ней компактный пакет.',
+            'Берёт одну слабую тему и собирает по ней компактный пакет.',
             'Вы получаете теорию, нередко подходящее видео и затем практические предложения.',
             'Этот раздел нужен не для общего просмотра всего подряд, а для точечного закрытия слабого места.',
           ],
@@ -1486,7 +1723,7 @@ function buildGuideStepItems(uiLang = 'ru') {
         {
           title: 'Что вы видите внутри',
           items: [
-            'Четко названный фокус на понятном пользовательском языке.',
+            'Чётко названный фокус на понятном пользовательском языке.',
             'Короткое ядро теории по теме.',
             'Практику и затем обратную связь по вашим ответам.',
           ],
@@ -1494,9 +1731,9 @@ function buildGuideStepItems(uiLang = 'ru') {
         {
           title: 'Когда его стоит открывать',
           items: [
-            'Когда видите слабое кольцо или рекомендацию на конкретный навык.',
+            'Когда видите слабое кольцо в Карте навыков или рекомендацию на конкретный навык.',
             'Когда хотите тренироваться не широко, а прицельно.',
-            'Когда нужно именно закрыть тему, а не просто снова ее увидеть.',
+            'Когда нужно именно закрыть тему, а не просто снова её увидеть.',
           ],
         },
       ],
@@ -1507,7 +1744,7 @@ function buildGuideStepItems(uiLang = 'ru') {
       summary: 'В личном чате вы получаете быструю помощь, приватные сообщения системы и прямой доступ к GPT-функциям.',
       sections: [
         {
-          title: 'Как ее активировать',
+          title: 'Как её активировать',
           items: [
             'Откройте бота в личке и один раз отправьте /start.',
             'После этого внизу появится кнопка «💬 Спросить у GPT».',
@@ -1527,8 +1764,8 @@ function buildGuideStepItems(uiLang = 'ru') {
           title: 'Что туда может приходить автоматически',
           items: [
             'По текущим стандартным настройкам: план на день утром, напоминания в течение дня и вечернее напоминание ближе к концу дня.',
-            'Аудио-разбор ошибок обычно приходит днем и чаще всего опирается на ошибки предыдущего учебного дня.',
-            'Личная аналитика и графики приходят регулярно, а Mini App остается местом для полной детализации.',
+            'Аудио-разбор ошибок обычно приходит днём и чаще всего опирается на ошибки предыдущего учебного дня.',
+            'Личная аналитика и графики приходят регулярно, а Mini App остаётся местом для полной детализации.',
           ],
         },
       ],
@@ -1549,7 +1786,7 @@ function buildGuideStepItems(uiLang = 'ru') {
         {
           title: 'Что может приходить в группу',
           items: [
-            'Квизы в течение дня. По текущим legacy-настройкам обычно в промежутке 06:00-22:30 каждые 30 минут.',
+            'Квизы в течение дня. По текущим legacy-настройкам обычно в промежутке 06:00–22:30 каждые 30 минут.',
             'Итоги дня вечером и итоги недели в воскресенье поздно вечером.',
             'В зависимости от маршрута доставки также могут приходить групповые планы, объявления о выполнении задач и аудио по ошибкам или историям.',
           ],
@@ -1557,9 +1794,9 @@ function buildGuideStepItems(uiLang = 'ru') {
         {
           title: 'Какой здесь общий принцип',
           items: [
-            'В рейтинг попадают только подтвержденные участники.',
+            'В рейтинг попадают только подтверждённые участники.',
             'Квизы чередуют новые и слабые повторные элементы, а не шлют только новое.',
-            'Группа нужна для мотивации, сравнения и ритма, а глубокая работа все равно происходит в Mini App и в личке.',
+            'Группа нужна для мотивации, сравнения и ритма, а глубокая работа всё равно происходит в Mini App и в личке.',
           ],
         },
       ],
@@ -2225,6 +2462,29 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
     sentenceId,
   ]);
 
+  useEffect(() => {
+    const node = textareaRef.current;
+    if (!node || !isAndroidClient || isPureTextareaExperiment) {
+      return undefined;
+    }
+    const eventName = isChangeDrivenAndroidExperiment ? 'change' : 'input';
+    const handler = (event) => {
+      const targetValue = event?.target && 'value' in event.target
+        ? String(event.target.value || '')
+        : String(node.value || '');
+      processInputValue(targetValue, `native_${eventName}`);
+    };
+    node.addEventListener(eventName, handler);
+    return () => {
+      node.removeEventListener(eventName, handler);
+    };
+  }, [
+    isAndroidClient,
+    isChangeDrivenAndroidExperiment,
+    isPureTextareaExperiment,
+    processInputValue,
+  ]);
+
   const handleInput = useCallback((event) => {
     processInputValue(String(event.target.value || ''), 'input');
   }, [processInputValue]);
@@ -2266,7 +2526,7 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
     textareaProps.spellCheck = false;
   }
 
-  if (!isPureTextareaExperiment) {
+  if (!isAndroidClient && !isPureTextareaExperiment) {
     if (isChangeDrivenAndroidExperiment) {
       textareaProps.onChange = handleChange;
     } else {
@@ -2380,7 +2640,22 @@ const TranslationsSection = React.memo(function TranslationsSection({
   historyError,
   activeLanguagePairLabel,
   historyItems,
+  arenaPhase,
+  setArenaPhase,
+  arenaCandidates,
+  arenaCandidatesLoading,
+  arenaSelectedCandidate,
+  storyLeaderboard,
+  storyLeaderboardLoading,
+  storyVotes,
+  storyVoteLoading,
+  translationVoteLoading,
+  handleStartArenaWithCandidateStable,
+  handleStoryVoteStable,
+  handleTranslationVoteStable,
 }) {
+  const [focusSheetOpen, setFocusSheetOpen] = React.useState(false);
+
   const progressiveReadyCount = Math.max(
     sentences.length,
     Number(translationProgressiveFill?.readyCount || 0),
@@ -2402,17 +2677,17 @@ const TranslationsSection = React.memo(function TranslationsSection({
     && (translationProgressiveFillActive || webappLoading)
   );
 
+  const selectFocusTopic = (value) => {
+    handleTopicChange({ target: { value } });
+    setFocusSheetOpen(false);
+  };
+
   return (
     <PerfProfiler id="section.translations">
       <section className="webapp-section webapp-section-translations" ref={translationsRef}>
         <div className="webapp-section-title webapp-section-title-with-logo translations-title-row">
           <div className="translations-title-main">
             <h2>{tr('Ваши переводы', 'Ihre Uebersetzungen')}</h2>
-            {isFocusedTranslations && (
-              <button type="button" className="section-home-back" onClick={goHomeScreen}>
-                {tr('На главную', 'Startseite')}
-              </button>
-            )}
           </div>
           <div className="translations-title-side">
             <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo translations-corner-logo" />
@@ -2453,67 +2728,81 @@ const TranslationsSection = React.memo(function TranslationsSection({
           </div>
         )}
         {showTranslationStartConfigurator && (
-          <div className={`webapp-translation-start ${isAndroidTelegramClient ? 'is-android-layout' : ''}`}>
-            <label className="webapp-field">
-              <span>{tr('Грамматический фокус тренировки', 'Grammatikfokus fuer das Training')}</span>
-              <select
-                value={selectedTopic}
-                onChange={handleTopicChange}
+          <div className={`tr-config-card ${isAndroidTelegramClient ? 'is-android-layout' : ''}`}>
+
+            {/* Level chips — only when not story mode */}
+            {!selectedTopicIsStoryTopic && (
+              <div className="tr-field-block">
+                <div className="tr-field-label">{tr('Уровень', 'Niveau')}</div>
+                <div className="tr-level-chips">
+                  {['a1','a2','b1','b2','c1','c2'].map((lvl) => (
+                    <button
+                      key={lvl}
+                      type="button"
+                      className={`tr-level-chip ${selectedLevel === lvl ? 'is-on' : ''}`}
+                      onClick={() => setSelectedLevel(lvl)}
+                      disabled={webappLoading || showPreparingTranslationEmptyState}
+                    >
+                      {lvl.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Grammar focus row — tap to open sheet */}
+            <div className="tr-field-block">
+              <div className="tr-field-label">{tr('Грамматический фокус', 'Grammatikfokus')}</div>
+              <button
+                type="button"
+                className="tr-focus-row"
+                onClick={() => setFocusSheetOpen(true)}
                 disabled={topicsLoading || webappLoading || showPreparingTranslationEmptyState}
               >
-                {topics.map((topic) => (
-                  <option key={topic} value={topic}>
-                    {topic}
-                  </option>
-                ))}
-              </select>
-            </label>
+                <span className="tr-focus-row-value">{selectedTopic || tr('Выберите тему...', 'Thema wählen...')}</span>
+                <svg className="tr-focus-row-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
+              </button>
+            </div>
+
+            {/* Custom topic input — shown when custom topic selected */}
             {!selectedTopicIsStoryTopic && selectedTopicIsCustomTopic && (
-              <label className="webapp-field">
-                <span>{tr('Свой грамматический фокус', 'Eigener Grammatikfokus')}</span>
+              <div className="tr-field-block">
+                <div className="tr-field-label">{tr('Свой фокус', 'Eigener Fokus')}</div>
                 <input
+                  className="tr-custom-input"
                   type="text"
                   value={customTopicInput}
                   onChange={(event) => setCustomTopicInput(event.target.value)}
-                  placeholder={tr('Например: Genitiv, Passiv mit Modalverben, nicht vs kein', 'Zum Beispiel: Genitiv, Passiv mit Modalverben, nicht vs kein')}
+                  placeholder={tr('Например: Genitiv, Passiv mit Modalverben…', 'z.B. Genitiv, Passiv mit Modalverben…')}
                   disabled={webappLoading || showPreparingTranslationEmptyState}
                 />
-              </label>
+              </div>
             )}
-            {!selectedTopicIsStoryTopic && (
-              <label className="webapp-field">
-                <span>{tr('Уровень', 'Niveau')}</span>
-                <select
-                  value={selectedLevel}
-                  onChange={(event) => setSelectedLevel(event.target.value)}
-                  disabled={webappLoading || showPreparingTranslationEmptyState}
-                >
-                  <option value="a1">A1</option>
-                  <option value="a2">A2</option>
-                  <option value="b1">B1</option>
-                  <option value="b2">B2</option>
-                  <option value="c1">C1</option>
-                  <option value="c2">C2</option>
-                </select>
-              </label>
-            )}
+
+            {/* Story-specific options — shown when story topic selected */}
             {selectedTopicIsStoryTopic && (
-              <>
-                <label className="webapp-field">
-                  <span>{tr('История', 'Story')}</span>
-                  <select
-                    value={storyMode}
-                    onChange={(event) => setStoryMode(event.target.value)}
-                    disabled={webappLoading}
-                  >
-                    <option value="new">{tr('Новая', 'Neu')}</option>
-                    <option value="repeat">{tr('Повторить старую', 'Alte wiederholen')}</option>
-                  </select>
-                </label>
+              <div className="tr-story-options">
+                <div className="tr-field-block">
+                  <div className="tr-field-label">{tr('Режим истории', 'Story-Modus')}</div>
+                  <div className="tr-story-chips">
+                    <button type="button" className={`tr-story-chip ${storyMode === 'new' ? 'is-on' : ''}`} onClick={() => { setStoryMode('new'); setArenaPhase(''); }} disabled={webappLoading}>
+                      {tr('Новая', 'Neu')}
+                    </button>
+                    <button type="button" className={`tr-story-chip ${storyMode === 'repeat' ? 'is-on' : ''}`} onClick={() => { setStoryMode('repeat'); setArenaPhase(''); }} disabled={webappLoading}>
+                      {tr('Повторить', 'Wiederholen')}
+                    </button>
+                    <button type="button" className={`tr-story-chip is-arena ${storyMode === 'arena' ? 'is-on' : ''}`} onClick={() => { setStoryMode('arena'); setArenaPhase(''); }} disabled={webappLoading}>
+                      {tr('⚔️ Арена', '⚔️ Arena')}
+                    </button>
+                  </div>
+                </div>
                 {storyMode === 'repeat' && (
-                  <label className="webapp-field">
-                    <span>{tr('Выберите историю', 'Story auswaehlen')}</span>
+                  <div className="tr-field-block">
+                    <div className="tr-field-label">{tr('Выберите историю', 'Story wählen')}</div>
                     <select
+                      className="tr-story-select"
                       value={selectedStoryId}
                       onChange={(event) => setSelectedStoryId(event.target.value)}
                       disabled={webappLoading || storyHistoryLoading}
@@ -2525,43 +2814,48 @@ const TranslationsSection = React.memo(function TranslationsSection({
                         </option>
                       ))}
                     </select>
-                  </label>
+                  </div>
                 )}
-                <label className="webapp-field">
-                  <span>{tr('Тип истории', 'Story-Typ')}</span>
+                <div className="tr-field-block">
+                  <div className="tr-field-label">{tr('Тип истории', 'Story-Typ')}</div>
                   <select
+                    className="tr-story-select"
                     value={storyType}
                     onChange={(event) => setStoryType(event.target.value)}
                     disabled={webappLoading}
                   >
-                    <option value="знаменитая личность">{tr('Знаменитая личность', 'Beruehmte Persoenlichkeit')}</option>
+                    <option value="знаменитая личность">{tr('Знаменитая личность', 'Berühmte Persönlichkeit')}</option>
                     <option value="историческое событие">{tr('Историческое событие', 'Historisches Ereignis')}</option>
                     <option value="выдающееся открытие">{tr('Выдающееся открытие', 'Bedeutende Entdeckung')}</option>
                     <option value="выдающееся изобретение">{tr('Выдающееся изобретение', 'Bedeutende Erfindung')}</option>
                     <option value="география">{tr('География', 'Geografie')}</option>
                     <option value="космос">{tr('Космос', 'Weltraum')}</option>
-                    <option value="культура">{tr('Культура', 'Kultur')}</option>
-                    <option value="спорт">{tr('Спорт', 'Sport')}</option>
-                    <option value="политика">{tr('Политика', 'Politik')}</option>
+                    <option value="культура">{tr('Kultur', 'Kultur')}</option>
+                    <option value="спорт">{tr('Sport', 'Sport')}</option>
+                    <option value="политика">{tr('Politik', 'Politik')}</option>
                   </select>
-                </label>
-                <label className="webapp-field">
-                  <span>{tr('Сложность', 'Schwierigkeit')}</span>
-                  <select
-                    value={storyDifficulty}
-                    onChange={(event) => setStoryDifficulty(event.target.value)}
-                    disabled={webappLoading}
-                  >
-                    <option value="начальный">{tr('Начальный', 'Anfaenger')}</option>
-                    <option value="средний">{tr('Средний', 'Mittel')}</option>
-                    <option value="продвинутый">{tr('Продвинутый', 'Fortgeschritten')}</option>
-                  </select>
-                </label>
-              </>
+                </div>
+                <div className="tr-field-block">
+                  <div className="tr-field-label">{tr('Сложность', 'Schwierigkeit')}</div>
+                  <div className="tr-story-chips">
+                    {[
+                      { value: 'начальный', label: tr('Начальный', 'Anfänger') },
+                      { value: 'средний',   label: tr('Средний',   'Mittel') },
+                      { value: 'продвинутый', label: tr('Продвинутый', 'Fortgeschritten') },
+                    ].map(({ value, label }) => (
+                      <button key={value} type="button" className={`tr-story-chip ${storyDifficulty === value ? 'is-on' : ''}`} onClick={() => setStoryDifficulty(value)} disabled={webappLoading}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
             )}
+
+            {/* Start CTA */}
             <button
               type="button"
-              className="primary-button translation-start-cta"
+              className={`tr-start-cta ${(webappLoading || showPreparingTranslationEmptyState) ? 'is-loading' : ''}`}
               onClick={selectedTopicIsStoryTopic ? handleStartStory : handleStartTranslation}
               disabled={
                 webappLoading
@@ -2571,14 +2865,108 @@ const TranslationsSection = React.memo(function TranslationsSection({
               }
             >
               {(webappLoading || showPreparingTranslationEmptyState)
-                ? tr('Загружаем...', 'Laden...')
-                : tr('🚀 Начать перевод', '🚀 Uebersetzung starten')}
+                ? <><span className="tr-cta-spinner" />{tr('Загружаем…', 'Laden…')}</>
+                : tr('🚀 Начать перевод', '🚀 Übersetzung starten')}
             </button>
+          </div>
+        )}
+
+        {/* Grammar focus bottom sheet */}
+        {focusSheetOpen && (
+          <div className="tr-focus-sheet-overlay" onClick={() => setFocusSheetOpen(false)}>
+            <div className="tr-focus-sheet" onClick={(e) => e.stopPropagation()}>
+              <div className="tr-focus-sheet-handle" />
+              <div className="tr-focus-sheet-head">
+                <span className="tr-focus-sheet-title">{tr('Грамматический фокус', 'Grammatikfokus')}</span>
+                <button type="button" className="tr-focus-sheet-close" onClick={() => setFocusSheetOpen(false)}>×</button>
+              </div>
+              <div className="tr-focus-sheet-list">
+                {topics.map((topic) => (
+                  <button
+                    key={topic}
+                    type="button"
+                    className={`tr-focus-sheet-item ${selectedTopic === topic ? 'is-on' : ''}`}
+                    onClick={() => selectFocusTopic(topic)}
+                  >
+                    <span className="tr-focus-sheet-item-text">{topic}</span>
+                    {selectedTopic === topic && <span className="tr-focus-sheet-item-check">✓</span>}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
         )}
         {topicsError && <div className="webapp-error">{topicsError}</div>}
         {storyHistoryError && <div className="webapp-error">{storyHistoryError}</div>}
-        {!isStoryResultMode && (
+
+        {/* Arena candidate selection screen */}
+        {storyMode === 'arena' && arenaPhase === 'selecting' && (
+          <div className="arena-screen">
+            <div className="arena-screen-head">
+              <span className="arena-screen-icon">⚔️</span>
+              <h3 className="arena-screen-title">{tr('Выбери соперника', 'Wähle deinen Gegner')}</h3>
+              <p className="arena-screen-sub">
+                {tr(
+                  `Истории: ${storyType} · ${storyDifficulty}`,
+                  `Geschichten: ${storyType} · ${storyDifficulty}`
+                )}
+              </p>
+            </div>
+
+            {arenaCandidatesLoading && (
+              <div className="arena-loading">{tr('Ищем соперников…', 'Suche nach Gegnern…')}</div>
+            )}
+
+            {!arenaCandidatesLoading && arenaCandidates.length > 0 && (
+              <div className="arena-candidates">
+                {arenaCandidates.map((c) => (
+                  <button
+                    key={c.story_id}
+                    type="button"
+                    className="arena-candidate-card"
+                    onClick={() => handleStartArenaWithCandidateStable(c)}
+                    disabled={webappLoading}
+                  >
+                    <div className="arena-candidate-title">{c.title || tr(`История #${c.story_id}`, `Story #${c.story_id}`)}</div>
+                    <div className="arena-candidate-meta">
+                      <span className="arena-meta-chip">🏆 {c.best_username}: {c.best_user_score}/100</span>
+                      <span className="arena-meta-chip">👥 {c.translator_count} {tr('чел.', 'Pers.')}</span>
+                      <span className="arena-meta-chip">⭐ Ø {c.avg_score}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {!arenaCandidatesLoading && (
+              <div className="arena-no-match">
+                {arenaCandidates.length === 0 && (
+                  <div className="arena-empty-note">
+                    {tr('По этим параметрам пока нет соперников.', 'Für diese Parameter gibt es noch keine Gegner.')}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  className="arena-first-btn"
+                  onClick={() => handleStartArenaWithCandidateStable(null)}
+                  disabled={webappLoading}
+                >
+                  🚩 {tr('Стать первым вызывающим', 'Als Erster herausfordern')}
+                </button>
+                <button
+                  type="button"
+                  className="arena-cancel-btn"
+                  onClick={() => { setArenaPhase(''); setStoryMode('new'); }}
+                  disabled={webappLoading}
+                >
+                  {tr('Отмена', 'Abbrechen')}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {!isStoryResultMode && !(storyMode === 'arena' && arenaPhase === 'selecting') && (
           <form className="webapp-form translation-form" onSubmit={handleTranslationSubmit}>
             <section className="webapp-translation-list">
               {translationProgressiveFillActive && hasActiveTranslationSentences && (
@@ -2590,17 +2978,21 @@ const TranslationsSection = React.memo(function TranslationsSection({
                 </p>
               )}
               {sentences.length === 0 ? (
-                <p className="webapp-muted translation-empty-state">
-                  {showPreparingTranslationEmptyState
-                    ? tr(
-                        `Подготавливаем предложения... ${progressiveReadyCount}/${progressiveExpectedTotal}`,
-                        `Saetze werden vorbereitet... ${progressiveReadyCount}/${progressiveExpectedTotal}`
-                      )
-                    : tr(
-                        'Нет активных предложений. Нажмите «🚀 Начать перевод», чтобы получить новые.',
-                        'Keine aktiven Saetze. Druecke «🚀 Uebersetzung starten», um neue zu laden.'
-                      )}
-                </p>
+                <div className="tr-empty-card">
+                  <div className="tr-empty-icon">
+                    {showPreparingTranslationEmptyState ? '⏳' : '📭'}
+                  </div>
+                  <div className="tr-empty-copy">
+                    <strong>
+                      {showPreparingTranslationEmptyState
+                        ? tr(`Подготавливаем предложения… ${progressiveReadyCount}/${progressiveExpectedTotal}`, `Sätze werden vorbereitet… ${progressiveReadyCount}/${progressiveExpectedTotal}`)
+                        : tr('Нет активных предложений', 'Keine aktiven Sätze')}
+                    </strong>
+                    {!showPreparingTranslationEmptyState && (
+                      <span>{tr('Нажмите «🚀 Начать перевод», чтобы загрузить новые.', 'Drücke «🚀 Übersetzung starten», um neue zu laden.')}</span>
+                    )}
+                  </div>
+                </div>
               ) : (
                 sentences.map((item, index) => {
                   const draft = translationDrafts[String(item.id_for_mistake_table)] || '';
@@ -2704,8 +3096,118 @@ const TranslationsSection = React.memo(function TranslationsSection({
           <section className="webapp-result">
             <h3>{tr('Результат истории', 'Story-Ergebnis')}</h3>
             <div className="webapp-result-card story-result">
+
+              {/* Arena verdict banner */}
+              {storyMode === 'arena' && storyResult.arena_scores && arenaSelectedCandidate && (() => {
+                const myTotal = storyResult.arena_scores.total ?? 0;
+                const theirTotal = arenaSelectedCandidate.best_user_score ?? 0;
+                const won = myTotal > theirTotal;
+                const tied = myTotal === theirTotal;
+                return (
+                  <div className={`arena-verdict ${won ? 'is-win' : tied ? 'is-tie' : 'is-loss'}`}>
+                    <div className="arena-verdict-medal">{won ? '🥇' : tied ? '🤝' : '🥈'}</div>
+                    <div className="arena-verdict-text">
+                      {won ? tr('Ты победил!', 'Du hast gewonnen!') : tied ? tr('Ничья!', 'Unentschieden!') : tr('В следующий раз!', 'Beim nächsten Mal!')}
+                    </div>
+                    <div className="arena-verdict-scores">
+                      <span className="arena-vs-me">{tr('Ты', 'Du')}: <strong>{myTotal}</strong></span>
+                      <span className="arena-vs-sep">vs</span>
+                      <span className="arena-vs-them">{arenaSelectedCandidate.best_username}: <strong>{theirTotal}</strong></span>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* 4-criteria score bars */}
+              {storyResult.arena_scores && (() => {
+                const sc = storyResult.arena_scores;
+                const bars = [
+                  { label: tr('Грамматика', 'Grammatik'),      val: sc.grammar,      max: 40 },
+                  { label: tr('Точность',   'Genauigkeit'),    val: sc.accuracy,     max: 20 },
+                  { label: tr('Стиль',      'Stil'),           val: sc.style,        max: 20 },
+                  { label: tr('Полнота',    'Vollständigkeit'), val: sc.completeness, max: 20 },
+                ];
+                return (
+                  <div className="arena-score-card">
+                    <div className="arena-score-total">
+                      {sc.total ?? 0} <span className="arena-score-total-max">/ 100</span>
+                    </div>
+                    <div className="arena-score-bars">
+                      {bars.map(({ label, val, max }) => (
+                        <div key={label} className="arena-bar-row">
+                          <span className="arena-bar-label">{label}</span>
+                          <div className="arena-bar-track">
+                            <div className="arena-bar-fill" style={{ width: `${Math.round((val / max) * 100)}%` }} />
+                          </div>
+                          <span className="arena-bar-val">{val}/{max}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Leaderboard */}
+              {storyResult.story_id && (
+                <div className="arena-leaderboard-wrap">
+                  {storyLeaderboardLoading && (
+                    <div className="arena-lb-loading">{tr('Загружаем таблицу…', 'Tabelle wird geladen…')}</div>
+                  )}
+                  {storyLeaderboard && storyLeaderboard.length > 0 && (
+                    <div className="arena-leaderboard">
+                      <div className="arena-lb-title">
+                        {tr(`📊 Переводчики этой истории (${storyLeaderboard.length})`, `📊 Übersetzer dieser Geschichte (${storyLeaderboard.length})`)}
+                      </div>
+                      {storyLeaderboard.map((entry, idx) => {
+                        const medals = ['🥇','🥈','🥉'];
+                        const isMe = String(entry.username) === String(storyLeaderboard.find((e) => e.user_id === entry.user_id)?.username);
+                        return (
+                          <div key={entry.score_id} className={`arena-lb-row ${idx < 3 ? 'is-top' : ''}`}>
+                            <span className="arena-lb-rank">{medals[idx] || `#${idx + 1}`}</span>
+                            <span className="arena-lb-name">{entry.username}</span>
+                            <span className="arena-lb-score">{entry.total_score}</span>
+                            <button
+                              type="button"
+                              className={`arena-lb-heart ${entry.peoples_votes > 0 ? 'has-votes' : ''}`}
+                              onClick={() => handleTranslationVoteStable(entry.score_id)}
+                              disabled={!!translationVoteLoading[entry.score_id]}
+                              title={tr('Народный любимец', 'Volkslieblings-Stimme')}
+                            >
+                              ❤️ {entry.peoples_votes > 0 ? entry.peoples_votes : ''}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Story like/dislike */}
+              {storyResult.story_id && (
+                <div className="arena-vote-row">
+                  <span className="arena-vote-label">{tr('История понравилась?', 'Hat dir die Geschichte gefallen?')}</span>
+                  <button
+                    type="button"
+                    className={`arena-vote-btn is-like ${storyVotes?.my_vote === 1 ? 'is-active' : ''}`}
+                    onClick={() => handleStoryVoteStable(1)}
+                    disabled={storyVoteLoading}
+                  >
+                    👍 {storyVotes?.likes ?? ''}
+                  </button>
+                  <button
+                    type="button"
+                    className={`arena-vote-btn is-dislike ${storyVotes?.my_vote === -1 ? 'is-active' : ''}`}
+                    onClick={() => handleStoryVoteStable(-1)}
+                    disabled={storyVoteLoading}
+                  >
+                    👎 {storyVotes?.dislikes ?? ''}
+                  </button>
+                </div>
+              )}
+
               <div className="story-result-head">
-                <strong>{tr('⭐ Итоговый балл:', '⭐ Gesamtscore:')}</strong> {storyResult.score ?? '—'} / 100
+                <strong>{tr('⭐ Итоговый балл (GPT-разбор):', '⭐ Gesamtscore (GPT):')}</strong> {storyResult.score ?? '—'} / 100
               </div>
 
               {storyResult.feedback && renderStoryFeedback(storyResult.feedback)}
@@ -2833,35 +3335,39 @@ const TranslationsSection = React.memo(function TranslationsSection({
           </section>
         )}
 
-        <div className="webapp-actions webapp-actions-footer">
+        <div className="tr-footer-actions">
           {sentences.length === 0 && !webappLoading && !showPreparingTranslationEmptyState && (
-            <div className="webapp-muted">
-              {tr('Если сессия зависла, можно завершить её вручную.', 'Wenn die Session haengt, kann sie manuell beendet werden.')}
+            <div className="tr-footer-hint">
+              {tr('Если сессия зависла, можно завершить её вручную.', 'Wenn die Session hängt, kann sie manuell beendet werden.')}
+            </div>
+          )}
+          {results.length === 0 && !storyResult && !webappLoading && sentences.length > 0 && (
+            <div className="tr-footer-hint">
+              {tr('Сначала проверьте перевод, чтобы завершить.', 'Bitte erst prüfen, dann beenden.')}
             </div>
           )}
           <button
             type="button"
             onClick={handleFinishTranslation}
-            className={`primary-button finish-button ${finishStatus === 'done' ? 'status-done' : ''}`}
+            className={`tr-finish-btn ${finishStatus === 'done' ? 'is-done' : ''}`}
             disabled={webappLoading || ((results.length === 0 && !storyResult) && sentences.length > 0)}
           >
-            {finishStatus === 'done' ? tr('Завершено', 'Abgeschlossen') : tr('Завершить перевод', 'Uebersetzung beenden')}
+            {finishStatus === 'done'
+              ? <><span>✓</span> {tr('Завершено', 'Abgeschlossen')}</>
+              : <><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>{tr('Завершить перевод', 'Übersetzung beenden')}</>}
           </button>
           <button
             type="button"
             onClick={handleLoadDailyHistory}
-            className="secondary-button"
+            className="tr-history-btn"
             disabled={webappLoading || historyLoading}
           >
             {historyLoading
-              ? tr('Загружаем...', 'Laden...')
+              ? tr('Загружаем…', 'Laden…')
               : historyVisible
                 ? tr('Скрыть результаты', 'Ergebnisse ausblenden')
-                : tr('Посмотреть результат за сегодня', 'Ergebnis fuer heute anzeigen')}
+                : tr('Посмотреть результат за сегодня', 'Ergebnis für heute anzeigen')}
           </button>
-          {results.length === 0 && !storyResult && !webappLoading && (
-            <div className="webapp-muted">{tr('Сначала проверьте перевод, чтобы завершить.', 'Bitte erst pruefen, dann beenden.')}</div>
-          )}
         </div>
 
         {historyError && <div className="webapp-error">{historyError}</div>}
@@ -2897,6 +3403,8 @@ const TranslationsSection = React.memo(function TranslationsSection({
 const HomeScreenSection = React.memo(function HomeScreenSection({
   tr,
   uiLang,
+  sectionRefs = {},
+  visiblePanels = {},
   planAnalyticsPeriod,
   setPlanAnalyticsPeriod,
   planAnalyticsLoading,
@@ -2945,6 +3453,15 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
   skillTrainingStatusMap,
   getStoredSkillTrainingSnapshot,
 }) {
+  const {
+    weeklyPlanRef = null,
+    todayRef = null,
+    skillsRef = null,
+  } = sectionRefs || {};
+  const showWeeklyPlanPanel = visiblePanels.weeklyPlan !== false;
+  const showTodayPlanPanel = visiblePanels.todayPlan !== false;
+  const showSkillReportPanel = visiblePanels.skillReport !== false;
+
   useAppPerfRenderProbe('HomeScreenSection', {
     weeklyPlanLoading: Boolean(weeklyPlanLoading),
     weeklyPlanHasData: Boolean(weeklyPlan?.week),
@@ -2983,25 +3500,25 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
   const weeklyMetricRows = useMemo(() => ([
     {
       key: 'translations',
-      title: tr('Переводы предложений', 'Satz-Uebersetzungen'),
+      title: tr('Переводы', 'Übersetzungen'),
       unit: tr('шт', 'Stk'),
       data: weeklyMetrics.translations || {},
     },
     {
       key: 'learned_words',
-      title: tr('Выученные слова (FSRS)', 'Gelernte Woerter (FSRS)'),
-      unit: tr('слов', 'Woerter'),
+      title: tr('Слова SRS', 'Vokabeln SRS'),
+      unit: tr('слов', 'Wörter'),
       data: weeklyMetrics.learned_words || {},
     },
     {
       key: 'agent_minutes',
-      title: tr('Минуты разговора с агентом', 'Gesprächsminuten mit Assistent'),
+      title: tr('Разговор', 'Gespräch'),
       unit: tr('мин', 'Min'),
       data: weeklyMetrics.agent_minutes || {},
     },
     {
       key: 'reading_minutes',
-      title: tr('Чтение (минуты)', 'Lesen (Minuten)'),
+      title: tr('Чтение', 'Lesen'),
       unit: tr('мин', 'Min'),
       data: weeklyMetrics.reading_minutes || {},
     },
@@ -3123,59 +3640,65 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
     };
   }, [skillTrainingStatusMap]);
 
+  const [weeklyMetricModalKey, setWeeklyMetricModalKey] = useState(null);
+
   return (
     <PerfProfiler id="section.home">
       <>
-        <section className="weekly-plan-panel">
+        {showWeeklyPlanPanel && (
+        <section className="weekly-plan-panel" ref={weeklyPlanRef}>
           <div className="weekly-plan-head">
             <div className="home-panel-head-main">
               <div className="home-panel-head-copy">
-                <h2>{tr('План на неделю', 'Wochenplan')}</h2>
-                <p>{tr('Личные цели и факт с прогнозом до конца недели', 'Persoenliche Ziele mit Ist-Werten und Prognose bis Wochenende')}</p>
+                <div className="home-panel-title-row">
+                  <h2>{tr('План на неделю', 'Wochenplan')}</h2>
+                  <div className="home-panel-head-actions">
+                    <button
+                      type="button"
+                      className="home-panel-action-btn"
+                      onClick={() => loadWeeklyPlan({ manual: true, syncFacts: true })}
+                      disabled={weeklyPlanLoading || planAnalyticsLoading}
+                      title={tr('Актуализировать данные', 'Daten aktualisieren')}
+                      aria-label={tr('Актуализировать данные', 'Daten aktualisieren')}
+                    >
+                      <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="14" height="14" aria-hidden="true" className={(weeklyPlanLoading || planAnalyticsLoading) ? 'is-spinning' : ''}>
+                        <path d="M16 2v4h-4"/><path d="M2 11a7 7 0 0 0 12.9 2.9L16 6"/><path d="M2 16v-4h4"/><path d="M16 7a7 7 0 0 0-12.9-2.9L2 12"/>
+                      </svg>
+                      {tr('Обновить', 'Aktualisieren')}
+                    </button>
+                    <button
+                      type="button"
+                      className="home-panel-action-btn"
+                      onClick={() => setWeeklyPlanCollapsed((prev) => !prev)}
+                      title={weeklyPlanCollapsed ? tr('Развернуть', 'Aufklappen') : tr('Свернуть', 'Einklappen')}
+                      aria-label={weeklyPlanCollapsed ? tr('Развернуть', 'Aufklappen') : tr('Свернуть', 'Einklappen')}
+                      aria-pressed={!weeklyPlanCollapsed}
+                    >
+                      <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" width="14" height="14" aria-hidden="true" style={{ transform: weeklyPlanCollapsed ? 'rotate(0deg)' : 'rotate(180deg)', transition: 'transform 0.2s ease' }}>
+                        <polyline points="4 7 9 12 14 7"/>
+                      </svg>
+                      {weeklyPlanCollapsed ? tr('Развернуть', 'Aufklappen') : tr('Свернуть', 'Einklappen')}
+                    </button>
+                  </div>
+                </div>
                 <small className={`home-panel-snapshot-meta is-${weeklyPlanSnapshotTone === 'manual' ? 'fresh' : 'stale'}`}>{weeklyPlanSnapshotLabel}</small>
-              </div>
-              <div className="home-panel-head-actions">
-                <button
-                  type="button"
-                  className="secondary-button home-panel-icon-button"
-                  onClick={refreshWeeklyPlan}
-                  disabled={weeklyPlanLoading || planAnalyticsLoading}
-                  title={tr('Актуализировать данные', 'Daten aktualisieren')}
-                  aria-label={tr('Актуализировать данные', 'Daten aktualisieren')}
-                >
-                  <span className="home-panel-icon-glyph" aria-hidden="true">
-                    {(weeklyPlanLoading || planAnalyticsLoading) ? '…' : '↻'}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  className="secondary-button home-panel-icon-button"
-                  onClick={() => setWeeklyPlanCollapsed((prev) => !prev)}
-                  title={weeklyPlanCollapsed ? tr('Развернуть блок', 'Block aufklappen') : tr('Свернуть блок', 'Block einklappen')}
-                  aria-label={weeklyPlanCollapsed ? tr('Развернуть блок', 'Block aufklappen') : tr('Свернуть блок', 'Block einklappen')}
-                  aria-pressed={!weeklyPlanCollapsed}
-                >
-                  <span className="home-panel-icon-glyph" aria-hidden="true">{weeklyPlanCollapsed ? '⌄' : '⌃'}</span>
-                </button>
               </div>
             </div>
             <div className="weekly-plan-head-toolbar">
-              <label className="weekly-plan-period-select">
-                <span>{tr('Период', 'Zeitraum')}</span>
-                <select
-                  value={planAnalyticsPeriod}
-                  onChange={(event) => setPlanAnalyticsPeriod(event.target.value)}
-                  disabled={planAnalyticsLoading}
-                >
-                  <option value="week">{tr('Неделя', 'Woche')}</option>
-                  <option value="month">{tr('Месяц', 'Monat')}</option>
-                  <option value="quarter">{tr('Квартал', 'Quartal')}</option>
-                  <option value="half-year">{tr('Полугодие', 'Halbjahr')}</option>
-                  <option value="year">{tr('Год', 'Jahr')}</option>
-                </select>
-              </label>
+              <select
+                className="weekly-plan-period-select-inline"
+                value={planAnalyticsPeriod}
+                onChange={(event) => setPlanAnalyticsPeriod(event.target.value)}
+                disabled={planAnalyticsLoading}
+              >
+                <option value="week">{tr('Неделя', 'Woche')}</option>
+                <option value="month">{tr('Месяц', 'Monat')}</option>
+                <option value="quarter">{tr('Квартал', 'Quartal')}</option>
+                <option value="half-year">{tr('Полугодие', 'Halbjahr')}</option>
+                <option value="year">{tr('Год', 'Jahr')}</option>
+              </select>
               {weeklyWeekLabel && (
-                <span className="weekly-plan-period">{planPeriodLabel}: {weeklyWeekLabel}</span>
+                <span className="weekly-plan-period">{weeklyWeekLabel}</span>
               )}
             </div>
           </div>
@@ -3254,14 +3777,11 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
           {weeklyPlanUsesDeferredAnalytics && planAnalyticsError && <div className="webapp-error">{planAnalyticsError}</div>}
 
           {showWeeklyPlanSkeleton && (
-            <div className="weekly-plan-metrics" aria-hidden="true">
+            <div className="weekly-plan-metrics weekly-plan-metrics-grid" aria-hidden="true">
               {weeklyMetricRows.map((item) => (
                 <article className={`weekly-plan-metric-card ${weeklyMetricToneClass(item.key)}`} key={`weekly-skeleton-${item.key}`} style={{ opacity: 0.72 }}>
-                  <div className="weekly-plan-metric-top">
-                    <div>
-                      <h4>{item.title}</h4>
-                      <p>{tr('Загружаем показатели...', 'Werte werden geladen...')}</p>
-                    </div>
+                  <div className="weekly-plan-metric-compact-top">
+                    <h4>{item.title}</h4>
                     <div className="weekly-plan-progress-ring" style={{ background: 'radial-gradient(circle at center, rgba(8, 16, 34, 0.96) 56%, transparent 57%), conic-gradient(rgba(94, 117, 159, 0.35) 0% 100%)' }}>
                       <span>…</span>
                     </div>
@@ -3276,15 +3796,13 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
           )}
 
           {canRenderWeeklyMetrics && (
-            <div className="weekly-plan-metrics">
+            <div className="weekly-plan-metrics weekly-plan-metrics-grid">
               {weeklyMetricRows.map((item) => {
                 const goal = Number(item.data?.goal || 0);
                 const actual = Number(item.data?.actual || 0);
-                const forecast = Number(item.data?.forecast || 0);
                 const completion = Number(item.data?.completion_percent || 0);
                 const completionClamped = Math.max(0, Math.min(100, completion));
                 const ringExpected = expectedProgressPercent;
-                const forecastDelta = Number(item.data?.forecast_delta_vs_goal || 0);
                 const deficit = Math.max(0, ringExpected - completionClamped);
                 const ahead = Math.max(0, completionClamped - ringExpected);
                 const expectedPart = Math.min(completionClamped, ringExpected);
@@ -3299,89 +3817,136 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
                 const completionRingStyle = {
                   background: `radial-gradient(circle at center, rgba(8, 16, 34, 0.96) 56%, transparent 57%), ${ringGradient}`,
                 };
-                const forecastClass = forecastDelta >= 0 ? 'is-good' : 'is-bad';
-                const expanded = Boolean(weeklyMetricExpanded[item.key]);
                 return (
-                  <article className={`weekly-plan-metric-card ${weeklyMetricToneClass(item.key)}`} key={item.key}>
-                    <div className="weekly-plan-metric-top">
-                      <div>
-                        <h4>{item.title}</h4>
-                        <p>{tr('План/Факт/Прогноз', 'Plan/Ist/Prognose')}</p>
-                      </div>
-                      <div className="weekly-plan-metric-actions">
-                        <div className="weekly-plan-progress-ring" style={completionRingStyle} title={`${tr('Факт', 'Ist')}: ${Math.round(completionClamped)}% • ${tr('Должно быть к текущему дню', 'Soll bis heute sein')}: ${Math.round(ringExpected)}%`}>
-                          <span>{Math.round(completionClamped)}%</span>
-                        </div>
-                        <button
-                          type="button"
-                          className="secondary-button weekly-plan-card-toggle"
-                          onClick={() => setWeeklyMetricExpanded((prev) => ({ ...prev, [item.key]: !prev[item.key] }))}
-                        >
-                          {expanded ? tr('Свернуть', 'Einklappen') : tr('Развернуть', 'Aufklappen')}
-                        </button>
+                  <article
+                    className={`weekly-plan-metric-card ${weeklyMetricToneClass(item.key)}`}
+                    key={item.key}
+                    onClick={() => setWeeklyMetricModalKey(item.key)}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setWeeklyMetricModalKey(item.key); }}
+                  >
+                    <div className="weekly-plan-metric-compact-top">
+                      <h4>{item.title}</h4>
+                      <div className="weekly-plan-progress-ring" style={completionRingStyle} title={`${tr('Факт', 'Ist')}: ${Math.round(completionClamped)}% • ${tr('Должно быть к текущему дню', 'Soll bis heute sein')}: ${Math.round(ringExpected)}%`}>
+                        <span>{Math.round(completionClamped)}%</span>
                       </div>
                     </div>
-                    {expanded ? (
-                      <div className="weekly-plan-values">
-                        <div>
-                          <span>{tr('План', 'Plan')}</span>
-                          <strong>{formatWeeklyValue(goal)} {item.unit}</strong>
-                        </div>
-                        <div>
-                          <span>{tr('Факт', 'Ist')}</span>
-                          <strong>{formatWeeklyValue(actual)} {item.unit}</strong>
-                        </div>
-                        <div>
-                          <span>{tr('Прогноз', 'Prognose')}</span>
-                          <strong>{formatWeeklyValue(forecast, 1)} {item.unit}</strong>
-                        </div>
-                        <div className={forecastClass}>
-                          <span>{tr('Отклонение прогноза', 'Abweichung Prognose')}</span>
-                          <strong>{forecastDelta >= 0 ? '+' : ''}{formatWeeklyValue(forecastDelta, 1)} {item.unit}</strong>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="weekly-plan-values-compact">
-                        <span>{tr('Факт', 'Ist')}: <strong>{formatWeeklyValue(actual)} {item.unit}</strong></span>
-                        <span>{tr('План', 'Plan')}: <strong>{formatWeeklyValue(goal)} {item.unit}</strong></span>
-                      </div>
-                    )}
+                    <div className="weekly-plan-values-compact">
+                      <span>{tr('Факт', 'Ist')}: <strong>{formatWeeklyValue(actual)} {item.unit}</strong></span>
+                      <span>{tr('План', 'Plan')}: <strong>{formatWeeklyValue(goal)} {item.unit}</strong></span>
+                    </div>
                   </article>
                 );
               })}
             </div>
           )}
+          {weeklyMetricModalKey && (() => {
+            const modalItem = weeklyMetricRows.find((r) => r.key === weeklyMetricModalKey);
+            if (!modalItem) return null;
+            const mGoal = Number(modalItem.data?.goal || 0);
+            const mActual = Number(modalItem.data?.actual || 0);
+            const mForecast = Number(modalItem.data?.forecast || 0);
+            const mForecastDelta = Number(modalItem.data?.forecast_delta_vs_goal || 0);
+            const mForecastClass = mForecastDelta >= 0 ? 'is-good' : 'is-bad';
+            const mCompletion = Number(modalItem.data?.completion_percent || 0);
+            const mClamped = Math.max(0, Math.min(100, mCompletion));
+            const mExpected = expectedProgressPercent;
+            const mDeficit = Math.max(0, mExpected - mClamped);
+            const mAhead = Math.max(0, mClamped - mExpected);
+            const mExpectedPart = Math.min(mClamped, mExpected);
+            let mGradient = '';
+            if (mDeficit > 0.01) {
+              mGradient = `conic-gradient(#7bf1b3 0% ${mExpectedPart}%, #ff6b6b ${mExpectedPart}% ${mExpected}%, rgba(94, 117, 159, 0.35) ${mExpected}% 100%)`;
+            } else if (mAhead > 0.01) {
+              mGradient = `conic-gradient(#7bf1b3 0% ${mExpected}%, #60a5fa ${mExpected}% ${mClamped}%, rgba(94, 117, 159, 0.35) ${mClamped}% 100%)`;
+            } else {
+              mGradient = `conic-gradient(#7bf1b3 0% ${mClamped}%, rgba(94, 117, 159, 0.35) ${mClamped}% 100%)`;
+            }
+            const mRingStyle = { background: `radial-gradient(circle at center, rgba(8, 16, 34, 0.96) 56%, transparent 57%), ${mGradient}` };
+            return (
+              <div
+                className="weekly-metric-modal-overlay"
+                onClick={() => setWeeklyMetricModalKey(null)}
+                role="dialog"
+                aria-modal="true"
+              >
+                <div className="weekly-metric-modal" onClick={(e) => e.stopPropagation()}>
+                  <button
+                    type="button"
+                    className="weekly-metric-modal-close"
+                    onClick={() => setWeeklyMetricModalKey(null)}
+                    aria-label={tr('Закрыть', 'Schließen')}
+                  >✕</button>
+                  <div className="weekly-metric-modal-head">
+                    <div className="weekly-plan-progress-ring" style={mRingStyle}>
+                      <span>{Math.round(mClamped)}%</span>
+                    </div>
+                    <h3>{modalItem.title}</h3>
+                  </div>
+                  <div className="weekly-plan-values">
+                    <div>
+                      <span>{tr('План', 'Plan')}</span>
+                      <strong>{formatWeeklyValue(mGoal)} {modalItem.unit}</strong>
+                    </div>
+                    <div>
+                      <span>{tr('Факт', 'Ist')}</span>
+                      <strong>{formatWeeklyValue(mActual)} {modalItem.unit}</strong>
+                    </div>
+                    <div>
+                      <span>{tr('Прогноз', 'Prognose')}</span>
+                      <strong>{formatWeeklyValue(mForecast, 1)} {modalItem.unit}</strong>
+                    </div>
+                    <div className={mForecastClass}>
+                      <span>{tr('Abw. Prognose', 'Abw. Prognose')}</span>
+                      <strong>{mForecastDelta >= 0 ? '+' : ''}{formatWeeklyValue(mForecastDelta, 1)} {modalItem.unit}</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
         </section>
+        )}
 
-        <section className="today-plan-panel">
+        {showTodayPlanPanel && (
+        <section className="today-plan-panel" ref={todayRef}>
           <div className="today-plan-head">
             <div className="home-panel-head-main">
               <div className="today-plan-title-wrap">
-                <h2>{tr('Задачи на сегодня', 'Aufgaben fuer heute')}</h2>
+                <div className="home-panel-title-row">
+                  <h2>{tr('Задачи на сегодня', 'Aufgaben fuer heute')}</h2>
+                  <div className="home-panel-head-actions today-plan-head-actions">
+                    <button
+                      type="button"
+                      className="home-panel-action-btn is-accent"
+                      onClick={regenerateTodayPlan}
+                      disabled={todayPlanLoading}
+                      title={tr('Пересобрать план', 'Plan neu erstellen')}
+                      aria-label={tr('Пересобрать план', 'Plan neu erstellen')}
+                    >
+                      <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="14" height="14" aria-hidden="true">
+                        <path d="M9 1v4m0 0 2-2m-2 2L7 3"/><circle cx="9" cy="9" r="6"/><path d="M9 6v3l2 2"/>
+                      </svg>
+                      {tr('Новый план', 'Neu erstellen')}
+                    </button>
+                    <button
+                      type="button"
+                      className="home-panel-action-btn"
+                      onClick={() => loadTodayPlan({ manual: true, syncFacts: true })}
+                      disabled={todayPlanLoading}
+                      title={tr('Синхронизировать выполнение', 'Fortschritt synchronisieren')}
+                      aria-label={tr('Синхронизировать выполнение', 'Fortschritt synchronisieren')}
+                    >
+                      <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="14" height="14" aria-hidden="true" className={todayPlanLoading ? 'is-spinning' : ''}>
+                        <path d="M16 2v4h-4"/><path d="M2 11a7 7 0 0 0 12.9 2.9L16 6"/><path d="M2 16v-4h4"/><path d="M16 7a7 7 0 0 0-12.9-2.9L2 12"/>
+                      </svg>
+                      {tr('Синхронизировать', 'Synchronisieren')}
+                    </button>
+                  </div>
+                </div>
                 <p>{tr('Короткий персональный маршрут на день', 'Dein kurzer persoenlicher Plan fuer heute')}</p>
                 <small className={`home-panel-snapshot-meta is-${todayPlanSnapshotTone === 'manual' ? 'fresh' : 'stale'}`}>{todayPlanSnapshotLabel}</small>
-              </div>
-              <div className="home-panel-head-actions today-plan-head-actions">
-                <button
-                  type="button"
-                  className="secondary-button home-panel-icon-button"
-                  onClick={regenerateTodayPlan}
-                  disabled={todayPlanLoading}
-                  title={tr('Пересобрать задачи', 'Aufgaben neu erstellen')}
-                  aria-label={tr('Пересобрать задачи', 'Aufgaben neu erstellen')}
-                >
-                  <span className="home-panel-icon-glyph" aria-hidden="true">{todayPlanLoading ? '…' : '✦'}</span>
-                </button>
-                <button
-                  type="button"
-                  className="secondary-button home-panel-icon-button"
-                  onClick={() => loadTodayPlan({ manual: true })}
-                  disabled={todayPlanLoading}
-                  title={tr('Актуализировать данные', 'Daten aktualisieren')}
-                  aria-label={tr('Актуализировать данные', 'Daten aktualisieren')}
-                >
-                  <span className="home-panel-icon-glyph" aria-hidden="true">{todayPlanLoading ? '…' : '↻'}</span>
-                </button>
               </div>
             </div>
           </div>
@@ -3406,7 +3971,7 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
             </div>
           )}
           {todayPlanLoading && hasTodayPlanSnapshot && (
-            <div className="webapp-muted">{tr('Обновляем план в фоне...', 'Plan wird im Hintergrund aktualisiert...')}</div>
+            <div className="webapp-muted">{tr('Синхронизируем выполнение в фоне...', 'Fortschritt wird im Hintergrund synchronisiert...')}</div>
           )}
           {todayPlanError && <div className="webapp-error">{todayPlanError}</div>}
           {!showTodayPlanSkeleton && !todayPlanLoading && !todayPlanError && !hasTodayPlanItems && (
@@ -3452,88 +4017,95 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
                   );
                 return (
                   <div className={`today-plan-item is-${itemStatusClass}`} key={item.id}>
-                    <div className="today-plan-item-main">
+                    <div className="today-plan-item-row">
                       <div className="today-plan-item-title">{getTodayItemTitle(item)}</div>
-                      <div className="today-plan-item-meta">
-                        {!isVideoTask && <span>{item.estimated_minutes || 0} {tr('мин', 'Min')}</span>}
-                        <span>{done ? 'DONE' : String(item.status || 'todo').toUpperCase()}</span>
-                        <span>⏱ {formatCompactTimer(elapsedSeconds)}</span>
-                      </div>
-                      {isVideoTask && (
-                        <div className="today-video-hint">
-                          <div className="today-video-topic-line">
-                            <span>{tr('Тема для тренировки:', 'Thema fuer Training:')}</span>{' '}
-                            <span className="today-video-topic-value">{videoTopic || tr('не определена', 'nicht definiert')}</span>
-                          </div>
-                          {tr(
-                            'Если видео полезно по теме - поставьте 👍. Если не по теме - 👎.',
-                            'Wenn das Video zum Thema passt - 👍. Wenn nicht - 👎.'
-                          )}
-                          {' '}
-                          <span>{tr('Рейтинг', 'Bewertung')}: {videoLikes}/{videoDislikes} ({videoScore >= 0 ? '+' : ''}{videoScore})</span>
+                      <div className={`today-plan-item-actions ${isVideoTask ? 'is-video-task' : ''}`}>
+                        <button
+                          type="button"
+                          className={`secondary-button today-plan-start-btn ${isVideoTask ? 'today-video-start-btn' : ''}`}
+                          onClick={() => startTodayTask(item)}
+                          disabled={Boolean(loadingAction) || (!isVideoTask && done)}
+                        >
+                          {loadingAction === 'start' ? tr('Старт...', 'Start...') : tr('Начать', 'Starten')}
+                        </button>
+                        <div className={`today-task-progress-badge ${isVideoTask ? 'today-video-progress-badge' : ''} ${done ? 'is-done' : ''}`} title={progressBadgeTitle}>
+                          {progressBadgeText}
                         </div>
-                      )}
-                    </div>
-                    <div className={`today-plan-item-actions ${isVideoTask ? 'is-video-task' : ''}`}>
-                      <button
-                        type="button"
-                        className={`secondary-button ${isVideoTask ? 'today-video-start-btn' : ''}`}
-                        onClick={() => startTodayTask(item)}
-                        disabled={Boolean(loadingAction) || (!isVideoTask && done)}
-                      >
-                        {loadingAction === 'start' ? tr('Старт...', 'Start...') : tr('Начать', 'Starten')}
-                      </button>
-                      <div className={`today-task-progress-badge ${isVideoTask ? 'today-video-progress-badge' : ''} ${done ? 'is-done' : ''}`} title={progressBadgeTitle}>
-                        {progressBadgeText}
+                        {isVideoTask && (
+                          <>
+                            <button
+                              type="button"
+                              className={`secondary-button today-video-vote ${userVote === 1 ? 'is-active' : ''}`}
+                              onClick={() => submitTodayVideoFeedback(item, 'like')}
+                              disabled={Boolean(loadingAction)}
+                              title={tr('Лайк: видео полезно по теме', 'Like: Video passt zum Thema')}
+                            >
+                              {loadingAction === 'vote_like' ? '…' : '👍'}
+                            </button>
+                            <button
+                              type="button"
+                              className={`secondary-button today-video-vote ${userVote === -1 ? 'is-active is-negative' : ''}`}
+                              onClick={() => submitTodayVideoFeedback(item, 'dislike')}
+                              disabled={Boolean(loadingAction)}
+                              title={tr('Дизлайк: видео не по теме', 'Dislike: Video passt nicht zum Thema')}
+                            >
+                              {loadingAction === 'vote_dislike' ? '…' : '👎'}
+                            </button>
+                          </>
+                        )}
                       </div>
-                      {isVideoTask && (
-                        <>
-                          <button
-                            type="button"
-                            className={`secondary-button today-video-vote ${userVote === 1 ? 'is-active' : ''}`}
-                            onClick={() => submitTodayVideoFeedback(item, 'like')}
-                            disabled={Boolean(loadingAction)}
-                            title={tr('Лайк: видео полезно по теме', 'Like: Video passt zum Thema')}
-                          >
-                            {loadingAction === 'vote_like' ? '…' : '👍'}
-                          </button>
-                          <button
-                            type="button"
-                            className={`secondary-button today-video-vote ${userVote === -1 ? 'is-active is-negative' : ''}`}
-                            onClick={() => submitTodayVideoFeedback(item, 'dislike')}
-                            disabled={Boolean(loadingAction)}
-                            title={tr('Дизлайк: видео не по теме', 'Dislike: Video passt nicht zum Thema')}
-                          >
-                            {loadingAction === 'vote_dislike' ? '…' : '👎'}
-                          </button>
-                        </>
-                      )}
                     </div>
+                    <div className="today-plan-item-meta">
+                      {!isVideoTask && <span>{item.estimated_minutes || 0} {tr('мин', 'Min')}</span>}
+                      <span>{done ? 'DONE' : String(item.status || 'todo').toUpperCase()}</span>
+                      <span>⏱ {formatCompactTimer(elapsedSeconds)}</span>
+                    </div>
+                    {isVideoTask && (
+                      <div className="today-video-hint">
+                        <div className="today-video-topic-line">
+                          <span>{tr('Тема для тренировки:', 'Thema fuer Training:')}</span>{' '}
+                          <span className="today-video-topic-value">{videoTopic || tr('не определена', 'nicht definiert')}</span>
+                        </div>
+                        {tr(
+                          'Если видео полезно по теме - поставьте 👍. Если не по теме - 👎.',
+                          'Wenn das Video zum Thema passt - 👍. Wenn nicht - 👎.'
+                        )}
+                        {' '}
+                        <span>{tr('Рейтинг', 'Bewertung')}: {videoLikes}/{videoDislikes} ({videoScore >= 0 ? '+' : ''}{videoScore})</span>
+                      </div>
+                    )}
                   </div>
                 );
               })}
             </div>
           )}
         </section>
+        )}
 
-        <section className="skill-report-panel">
+        {showSkillReportPanel && (
+        <section className="skill-report-panel" ref={skillsRef}>
           <div className="skill-report-head">
             <div className="home-panel-head-main">
               <div className="home-panel-head-copy">
-                <h3>{tr('Карта навыков', 'Skill-Ringe')}</h3>
+                <div className="home-panel-title-row">
+                  <h3>{tr('Карта навыков', 'Skill-Ringe')}</h3>
+                  <div className="home-panel-head-actions">
+                    <button
+                      type="button"
+                      className="home-panel-action-btn"
+                      onClick={() => loadSkillReport({ manual: true, syncFacts: true })}
+                      disabled={skillReportLoading}
+                      title={tr('Актуализировать данные', 'Daten aktualisieren')}
+                      aria-label={tr('Актуализировать данные', 'Daten aktualisieren')}
+                    >
+                      <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="14" height="14" aria-hidden="true" className={skillReportLoading ? 'is-spinning' : ''}>
+                        <path d="M16 2v4h-4"/><path d="M2 11a7 7 0 0 0 12.9 2.9L16 6"/><path d="M2 16v-4h4"/><path d="M16 7a7 7 0 0 0-12.9-2.9L2 12"/>
+                      </svg>
+                      {tr('Обновить', 'Aktualisieren')}
+                    </button>
+                  </div>
+                </div>
                 <small className={`home-panel-snapshot-meta is-${skillReportSnapshotTone === 'manual' ? 'fresh' : 'stale'}`}>{skillReportSnapshotLabel}</small>
-              </div>
-              <div className="home-panel-head-actions">
-                <button
-                  type="button"
-                  className="secondary-button home-panel-icon-button"
-                  onClick={() => loadSkillReport({ manual: true })}
-                  disabled={skillReportLoading}
-                  title={tr('Актуализировать данные', 'Daten aktualisieren')}
-                  aria-label={tr('Актуализировать данные', 'Daten aktualisieren')}
-                >
-                  <span className="home-panel-icon-glyph" aria-hidden="true">{skillReportLoading ? '…' : '↻'}</span>
-                </button>
               </div>
             </div>
           </div>
@@ -3551,21 +4123,9 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
                   <span className="home-panel-skeleton home-panel-skeleton-line is-subtle" />
                 </div>
               </div>
-              <div className="skill-rings-legend">
-                {[0, 1, 2, 3].map((index) => (
-                  <div className="skill-rings-legend-item skill-rings-legend-item-skeleton" key={`skill-rings-skeleton-${index}`}>
-                    <span className="home-panel-skeleton skill-rings-dot-skeleton" />
-                    <div className="skill-rings-text">
-                      <span className="home-panel-skeleton home-panel-skeleton-line is-title" />
-                      <div className="skill-rings-meta">
-                        <span className="home-panel-skeleton home-panel-skeleton-line is-meta" />
-                        <span className="home-panel-skeleton home-panel-skeleton-line is-meta is-short" />
-                      </div>
-                    </div>
-                    <div className="skill-rings-actions">
-                      <span className="home-panel-skeleton home-panel-skeleton-pill" />
-                    </div>
-                  </div>
+              <div className="skill-rings-grid">
+                {[0, 1, 2, 3, 4, 5].map((index) => (
+                  <div className="skill-rings-grid-item-skeleton home-panel-skeleton" key={`skill-rings-skeleton-${index}`} />
                 ))}
               </div>
             </div>
@@ -3616,80 +4176,50 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
                   <div className="skill-rings-center-sub">{tr('3 слабых + 3 сильных', '3 schwache + 3 starke')}</div>
                 </div>
               </div>
-              <div className="skill-rings-legend">
+              <div className="skill-rings-grid">
                 {ringSkills.map((skill, index) => {
                   const color = ringPalette[index % ringPalette.length];
                   const trainingStatus = getSkillTrainingStatus(skill?.skill_id);
                   const isSkillComplete = Boolean(trainingStatus?.is_complete);
                   const showSkillInProgress = Boolean(trainingStatus && !isSkillComplete);
-                  const storedTrainingSnapshot = getStoredSkillTrainingSnapshot(skill?.skill_id);
-                  const canResumeSkillTraining = Boolean(storedTrainingSnapshot);
+                  const canResumeSkillTraining = Boolean(getStoredSkillTrainingSnapshot(skill?.skill_id));
                   const isSkillBusy = Boolean(skillPracticeLoading[String(skill.skill_id || '')]);
+                  const masteryDisplay = skill?.mastery !== null && skill?.mastery !== undefined
+                    ? `${Math.round(Number(skill.mastery || 0))}%`
+                    : '—';
                   return (
-                    <div
-                      className={`skill-rings-legend-item ${skill.ring_type === 'weak' ? 'is-weak' : 'is-strong'}`}
-                      key={`legend-${skill.skill_id}`}
+                    <button
+                      type="button"
+                      className={`skill-rings-grid-item ${skill.ring_type === 'weak' ? 'is-weak' : 'is-strong'} ${isSkillComplete ? 'is-complete' : ''} ${isSkillBusy ? 'is-busy' : ''}`}
+                      key={`grid-${skill.skill_id}`}
+                      onClick={() => canResumeSkillTraining
+                        ? resumeSkillPractice(skill)
+                        : startSkillPractice(skill, { forceRefresh: false })
+                      }
+                      disabled={isSkillBusy}
                     >
-                      <span className="skill-rings-dot" style={{ backgroundColor: color }} />
-                      <div className="skill-rings-text">
-                        <div className="skill-rings-name">
-                          {getDisplaySkillName(skill)}
-                          {isSkillComplete && (
-                            <span className="skill-train-status-badge is-complete">✅ {tr('Готово', 'Fertig')}</span>
-                          )}
-                          {showSkillInProgress && (
-                            <span className="skill-train-status-badge is-progress">
-                              {tr('в процессе', 'in Arbeit')}
-                            </span>
-                          )}
-                        </div>
-                        <div className="skill-rings-meta">
-                          <span>{skill.ring_type === 'weak' ? tr('Слабый', 'Schwach') : tr('Сильный', 'Stark')}</span>
-                          <span>
-                            {tr('Оценка', 'Score')}: {skill?.mastery === null || skill?.mastery === undefined
-                              ? tr('нет данных', 'keine Daten')
-                              : `${Math.round(Number(skill.mastery || 0))}%`}
-                          </span>
-                          <span>{tr('Ошибки 7д', 'Fehler 7T')}: {Number(skill.errors_7d || 0)}</span>
-                          {trainingStatus && (
-                            <span>
-                              {tr('Ссылки', 'Links')}: {Math.max(0, Number(trainingStatus.opened_count || 0))}/{Math.max(0, Number(trainingStatus.required_count || 0))}
-                            </span>
-                          )}
-                        </div>
+                      <div className="skill-rings-grid-item-top">
+                        <span className="skill-rings-dot" style={{ backgroundColor: color }} />
+                        {isSkillComplete && <span className="skill-grid-badge is-complete">✅</span>}
+                        {showSkillInProgress && <span className="skill-grid-badge is-progress">▶</span>}
+                        {isSkillBusy && <span className="skill-grid-badge is-loading">…</span>}
                       </div>
-                      <div className="skill-rings-actions">
-                        <button
-                          type="button"
-                          className="secondary-button skill-rings-train-btn"
-                          onClick={() => startSkillPractice(skill, { forceRefresh: false })}
-                          disabled={isSkillBusy}
-                        >
-                          {isSkillBusy
-                            ? tr('Запуск...', 'Start...')
-                            : tr('Прокачать', 'Trainieren')}
-                        </button>
-                        {canResumeSkillTraining && (
-                          <button
-                            type="button"
-                            className="secondary-button skill-rings-resume-btn"
-                            onClick={() => resumeSkillPractice(skill)}
-                            disabled={isSkillBusy}
-                          >
-                            {tr('Вернуться к тренировке', 'Zum Training zurueck')}
-                          </button>
-                        )}
+                      <div className="skill-rings-grid-name">{getDisplaySkillName(skill)}</div>
+                      <div className="skill-rings-grid-stats">
+                        <span className="skill-grid-score">{masteryDisplay}</span>
+                        <span className="skill-grid-errors">{Number(skill.errors_7d || 0)}F</span>
                       </div>
-                    </div>
+                    </button>
                   );
                 })}
                 {ringSkills.length === 0 && (
-                  <div className="webapp-muted">{tr('Пока нет данных по навыкам.', 'Noch keine Skill-Daten.')}</div>
+                  <div className="webapp-muted skill-rings-empty">{tr('Пока нет данных по навыкам.', 'Noch keine Skill-Daten.')}</div>
                 )}
               </div>
             </div>
           )}
         </section>
+        )}
       </>
     </PerfProfiler>
   );
@@ -3886,6 +4416,12 @@ function AppInner() {
   const [moviesLanguageFilter, setMoviesLanguageFilter] = useState('all');
   const [showManualTranscript, setShowManualTranscript] = useState(false);
   const [youtubeSettingsOpen, setYoutubeSettingsOpen] = useState(false);
+  const [youtubeDictOpen, setYoutubeDictOpen] = useState(false);
+  const [youtubeDictQuery, setYoutubeDictQuery] = useState('');
+  const [youtubeDictResult, setYoutubeDictResult] = useState(null);
+  const [youtubeDictLoading, setYoutubeDictLoading] = useState(false);
+  const [youtubeDictError, setYoutubeDictError] = useState('');
+  const [youtubeDictSaved, setYoutubeDictSaved] = useState(false);
   const [manualTranscript, setManualTranscript] = useState('');
   const [readerInput, setReaderInput] = useState('');
   const [readerSelectedFile, setReaderSelectedFile] = useState(null);
@@ -3923,6 +4459,7 @@ function AppInner() {
   const [readerSettingsOpen, setReaderSettingsOpen] = useState(false);
   const [readerTopbarCollapsed, setReaderTopbarCollapsed] = useState(false);
   const [readerLibrarySearch, setReaderLibrarySearch] = useState('');
+  const [readerAddOpen, setReaderAddOpen] = useState(false);
   const [readerFontSize, setReaderFontSize] = useState(18);
   const [readerFontWeight, setReaderFontWeight] = useState(500);
   const [readerDragSelectionMeta, setReaderDragSelectionMeta] = useState(null);
@@ -3971,6 +4508,7 @@ function AppInner() {
   const [flashcardSetSize, setFlashcardSetSize] = useState(15);
   const [flashcardDurationSec, setFlashcardDurationSec] = useState(10);
   const [flashcardTrainingMode, setFlashcardTrainingMode] = useState('quiz');
+  const [flashcardQueueSource, setFlashcardQueueSource] = useState('system');
   const [blocksTimerMode, setBlocksTimerMode] = useState('fixed');
   const [flashcardActiveMode, setFlashcardActiveMode] = useState(null); // 'fsrs' | 'quiz' | 'blocks' | 'sentence' | null
   const [flashcardSettingsModalMode, setFlashcardSettingsModalMode] = useState(null); // same domain as flashcardActiveMode
@@ -3979,7 +4517,7 @@ function AppInner() {
   const [flashcardPreviewIndex, setFlashcardPreviewIndex] = useState(0);
   const [srsCard, setSrsCard] = useState(null);
   const [srsState, setSrsState] = useState(null);
-  const [srsQueueInfo, setSrsQueueInfo] = useState({ due_count: 0, new_remaining_today: 0 });
+  const [srsQueueInfo, setSrsQueueInfo] = useState({ due_count: 0, new_remaining_today: 0, due_count_total: 0, due_reviewed_today: 0, due_limit_today: 30 });
   const [srsPreview, setSrsPreview] = useState(null);
   const [srsPrefetchQueue, setSrsPrefetchQueue] = useState([]);
   const [todayPlan, setTodayPlan] = useState(null);
@@ -4037,6 +4575,7 @@ function AppInner() {
     reading_minutes: false,
   });
   const [srsLoading, setSrsLoading] = useState(false);
+  const [srsRescheduling, setSrsRescheduling] = useState(false);
   const [srsSubmitting, setSrsSubmitting] = useState(false);
   const [srsSubmittingRating, setSrsSubmittingRating] = useState(null);
   const [srsRevealAnswer, setSrsRevealAnswer] = useState(false);
@@ -4284,6 +4823,15 @@ function AppInner() {
   const [selectedStoryId, setSelectedStoryId] = useState('');
   const [storyGuess, setStoryGuess] = useState('');
   const [storyResult, setStoryResult] = useState(null);
+  const [arenaPhase, setArenaPhase] = useState('');
+  const [arenaCandidates, setArenaCandidates] = useState([]);
+  const [arenaCandidatesLoading, setArenaCandidatesLoading] = useState(false);
+  const [arenaSelectedCandidate, setArenaSelectedCandidate] = useState(null);
+  const [storyLeaderboard, setStoryLeaderboard] = useState(null);
+  const [storyLeaderboardLoading, setStoryLeaderboardLoading] = useState(false);
+  const [storyVotes, setStoryVotes] = useState(null);
+  const [storyVoteLoading, setStoryVoteLoading] = useState(false);
+  const [translationVoteLoading, setTranslationVoteLoading] = useState({});
   const [sessionType, setSessionType] = useState('none');
   const [translationSessionId, setTranslationSessionId] = useState(null);
   const [translationProgressiveFill, setTranslationProgressiveFill] = useState({
@@ -4295,6 +4843,7 @@ function AppInner() {
     error: '',
   });
   const [pageVisible, setPageVisible] = useState(() => (typeof document === 'undefined' ? true : document.visibilityState !== 'hidden'));
+  const pageVisibleRef = useRef(typeof document === 'undefined' ? true : document.visibilityState !== 'hidden');
   const [homeSnapshotResumeTick, setHomeSnapshotResumeTick] = useState(0);
   const [selectedSections, setSelectedSections] = useState(new Set());
   const [flashcardSetComplete, setFlashcardSetComplete] = useState(false);
@@ -4310,6 +4859,57 @@ function AppInner() {
   const [foldersLoading, setFoldersLoading] = useState(false);
   const [foldersError, setFoldersError] = useState('');
   const [dictionaryFolderId, setDictionaryFolderId] = useState('none');
+
+  // Vocabulary Library tab state
+  const [vocabTab, setVocabTab] = useState('search');
+  const [vocabItems, setVocabItems] = useState([]);
+  const [vocabTotal, setVocabTotal] = useState(0);
+  const [vocabLoading, setVocabLoading] = useState(false);
+  const [vocabError, setVocabError] = useState('');
+  const [vocabFolderFilter, setVocabFolderFilter] = useState('all');
+  const [vocabSearch, setVocabSearch] = useState('');
+  const [vocabSort, setVocabSort] = useState('date_desc');
+  const [vocabOffset, setVocabOffset] = useState(0);
+  const [vocabHasMore, setVocabHasMore] = useState(false);
+  const [vocabFoldersMeta, setVocabFoldersMeta] = useState(null);
+  const [vocabExpandedId, setVocabExpandedId] = useState(null);
+  const [manualTrainingSelectionIds, setManualTrainingSelectionIds] = useState([]);
+  const [manualTrainingSelectionLoading, setManualTrainingSelectionLoading] = useState(false);
+  const [manualTrainingSelectionSaving, setManualTrainingSelectionSaving] = useState(false);
+  const [manualTrainingSelectionFolderBusyKey, setManualTrainingSelectionFolderBusyKey] = useState('');
+  const [manualTrainingSelectionError, setManualTrainingSelectionError] = useState('');
+  const [vocabMoveModalOpen, setVocabMoveModalOpen] = useState(false);
+  const [vocabMoveLoading, setVocabMoveLoading] = useState(false);
+  const [vocabMoveError, setVocabMoveError] = useState('');
+  const [vocabEditItem, setVocabEditItem] = useState(null);
+  const [vocabEditWord, setVocabEditWord] = useState('');
+  const [vocabEditTrans, setVocabEditTrans] = useState('');
+  const [vocabEditTransSecondary, setVocabEditTransSecondary] = useState('');
+  const [vocabEditTransTertiary, setVocabEditTransTertiary] = useState('');
+  const [vocabEditFolder, setVocabEditFolder] = useState('none');
+  const [vocabEditLoading, setVocabEditLoading] = useState(false);
+  const [vocabEditError, setVocabEditError] = useState('');
+  const [vocabDeleteItem, setVocabDeleteItem] = useState(null);
+  const [vocabDeleteLoading, setVocabDeleteLoading] = useState(false);
+
+  // Folder management state
+  const [folderContextMenu, setFolderContextMenu] = useState(null);
+  const [folderRenameItem, setFolderRenameItem] = useState(null);
+  const [folderRenameName, setFolderRenameName] = useState('');
+  const [folderRenameIcon, setFolderRenameIcon] = useState('book');
+  const [folderRenameColor, setFolderRenameColor] = useState('#5ddcff');
+  const [folderRenameLoading, setFolderRenameLoading] = useState(false);
+  const [folderRenameError, setFolderRenameError] = useState('');
+  const [folderDeleteItem, setFolderDeleteItem] = useState(null);
+  const [folderDeleteMode, setFolderDeleteMode] = useState(null);
+  const [folderDeleteLoading, setFolderDeleteLoading] = useState(false);
+  const [folderTtsJob, setFolderTtsJob] = useState(null);
+
+  // Network state for offline cache
+  const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const [srsOfflinePendingCount, setSrsOfflinePendingCount] = useState(0);
+  const [vocabOfflinePendingCount, setVocabOfflinePendingCount] = useState(0);
+
   const [flashcardFolderMode, setFlashcardFolderMode] = useState('all');
   const [flashcardFolderId, setFlashcardFolderId] = useState('');
   const [flashcardAutoAdvance, setFlashcardAutoAdvance] = useState(true);
@@ -4340,6 +4940,8 @@ function AppInner() {
   const [analyticsScopeLoading, setAnalyticsScopeLoading] = useState(false);
   const [analyticsScopeSaving, setAnalyticsScopeSaving] = useState(false);
   const [analyticsScopeError, setAnalyticsScopeError] = useState('');
+  const [analyticsTrendVisible, setAnalyticsTrendVisible] = useState(false);
+  const [analyticsCompareVisible, setAnalyticsCompareVisible] = useState(false);
   const [progressResetInfo, setProgressResetInfo] = useState(null);
   const [progressResetLoading, setProgressResetLoading] = useState(false);
   const [progressResetSaving, setProgressResetSaving] = useState(false);
@@ -4348,6 +4950,13 @@ function AppInner() {
   const [progressResetDraftDate, setProgressResetDraftDate] = useState('');
   const [economicsPeriod, setEconomicsPeriod] = useState(() => readStoredEconomicsPeriod());
   const [economicsProvider, setEconomicsProvider] = useState(() => readStoredEconomicsProvider());
+  const [economicsForecastUsersDraft, setEconomicsForecastUsersDraft] = useState(() => readStoredEconomicsForecastUsers());
+  const [economicsRailwayAppRamDraft, setEconomicsRailwayAppRamDraft] = useState(() => readStoredDraftValue(ECONOMICS_RAILWAY_APP_RAM_STORAGE_KEY, readStoredDraftValue('dds_economics_railway_ram_v1', '')));
+  const [economicsRailwayAppCpuDraft, setEconomicsRailwayAppCpuDraft] = useState(() => readStoredDraftValue(ECONOMICS_RAILWAY_APP_CPU_STORAGE_KEY, readStoredDraftValue('dds_economics_railway_cpu_v1', '')));
+  const [economicsRailwayPostgresRamDraft, setEconomicsRailwayPostgresRamDraft] = useState(() => readStoredDraftValue(ECONOMICS_RAILWAY_POSTGRES_RAM_STORAGE_KEY, ''));
+  const [economicsRailwayPostgresVolumeDraft, setEconomicsRailwayPostgresVolumeDraft] = useState(() => readStoredDraftValue(ECONOMICS_RAILWAY_POSTGRES_VOLUME_STORAGE_KEY, readStoredDraftValue('dds_economics_railway_volume_v1', '')));
+  const [economicsRailwayRedisRamDraft, setEconomicsRailwayRedisRamDraft] = useState(() => readStoredDraftValue(ECONOMICS_RAILWAY_REDIS_RAM_STORAGE_KEY, ''));
+  const [economicsRailwayEgressDraft, setEconomicsRailwayEgressDraft] = useState(() => readStoredDraftValue(ECONOMICS_RAILWAY_EGRESS_STORAGE_KEY, ''));
   const [economicsLoading, setEconomicsLoading] = useState(false);
   const [economicsError, setEconomicsError] = useState('');
   const [economicsSummary, setEconomicsSummary] = useState(null);
@@ -4407,6 +5016,10 @@ function AppInner() {
   const dictionaryRef = useRef(null);
   const theoryRef = useRef(null);
   const skillTrainingRef = useRef(null);
+  const homeWeeklyPlanRef = useRef(null);
+  const homeTodayPlanRef = useRef(null);
+  const homeSkillsRef = useRef(null);
+  const homeMoreRef = useRef(null);
   const readerRef = useRef(null);
   const readerArticleRef = useRef(null);
   const flashcardsRef = useRef(null);
@@ -4427,6 +5040,8 @@ function AppInner() {
   const youtubeDragSelectionMetaRef = useRef(null);
   const youtubeSuppressWordTapRef = useRef(0);
   const youtubeSuppressSentenceTapRef = useRef(0);
+  const youtubeDictDragRef = useRef({ dragging: false, startX: 0, startY: 0, startLeft: 0, startTop: 0 });
+  const youtubeDictWidgetRef = useRef(null);
   const youtubeTranslateInFlightRef = useRef(false);
   const youtubeTranslateIndexRef = useRef(-1);
   const autoAdvanceTimeoutRef = useRef(null);
@@ -4464,6 +5079,9 @@ function AppInner() {
   const ttsPlaybackSeqRef = useRef(0);
   const dictionaryLookupPollTokenRef = useRef(0);
   const analyticsScopeRequestRef = useRef(null);
+  const analyticsSummaryRequestIdRef = useRef(0);
+  const analyticsTimeseriesRequestIdRef = useRef(0);
+  const analyticsCompareRequestIdRef = useRef(0);
   const translationActivityRunningRef = useRef(false);
   const translationActivityInFlightRef = useRef(false);
   const translationActivitySessionRef = useRef('');
@@ -4505,6 +5123,9 @@ function AppInner() {
   const inlineToastTimeoutRef = useRef(null);
   const browserAuthRequestIdRef = useRef(0);
   const bootstrapRequestIdRef = useRef(0);
+  const translationBootstrapPromiseRef = useRef(null);
+  const translationBootstrapReadyRef = useRef('');
+  const onAppResumeTranslationCheckRef = useRef(null);
   const todayPlanRequestIdRef = useRef(0);
   const skillReportRequestIdRef = useRef(0);
   const weeklyPlanRequestIdRef = useRef(0);
@@ -5303,7 +5924,7 @@ function AppInner() {
 
   const weeklySummaryMetricTitles = useMemo(() => ({
     translations: tr('переводы', 'Uebersetzungen'),
-    learned_words: tr('слова и FSRS', 'Woerter und FSRS'),
+    learned_words: tr('слова и Space Repetition', 'Woerter und Space Repetition'),
     reading_minutes: tr('чтение', 'Lesen'),
     youtube_minutes: tr('видео и YouTube', 'Video und YouTube'),
     agent_minutes: tr('разговорная практика', 'Sprechpraxis'),
@@ -5317,7 +5938,7 @@ function AppInner() {
     },
     {
       key: 'learned_words',
-      title: tr('Слова / FSRS', 'Woerter / FSRS'),
+      title: tr('Слова / Space Repetition', 'Woerter / Space Repetition'),
       unit: tr('слов', 'Woerter'),
       digits: 0,
     },
@@ -5494,8 +6115,8 @@ function AppInner() {
       } else if (lagging.key === 'learned_words') {
         const amount = Math.max(5, Math.min(15, Math.ceil(lagging.remaining || 5)));
         nextAction = tr(
-          `Чтобы выйти на план, сегодня лучше пройти ещё ${amount} слов в FSRS.`,
-          `Um in den Plan zu kommen, geh heute am besten noch ${amount} FSRS-Woerter durch.`
+          `Чтобы выйти на план, сегодня лучше пройти ещё ${amount} слов в Space Repetition.`,
+          `Um in den Plan zu kommen, geh heute am besten noch ${amount} Space Repetition-Wörter durch.`
         );
       } else if (lagging.key === 'reading_minutes') {
         const amount = Math.max(10, Math.min(25, Math.ceil(lagging.remaining || 10)));
@@ -6576,6 +7197,9 @@ function AppInner() {
     });
   };
 
+  // Returns a Promise that resolves after the feedback sound finishes (~300 ms).
+  // This lets callers await it before starting TTS so the two don't overlap.
+  const FEEDBACK_SOUND_MS = 300;
   const playFeedbackSound = (type) => {
     const audio = type === 'positive'
       ? positiveAudioRef.current
@@ -6595,35 +7219,41 @@ function AppInner() {
         if (playPromise && typeof playPromise.catch === 'function') {
           playPromise.catch(() => {});
         }
-        return;
-      } catch (error) {
+        // Cut the WAV short after FEEDBACK_SOUND_MS so it doesn't bleed into TTS.
+        setTimeout(() => {
+          try { audio.pause(); audio.currentTime = 0; } catch (_) {}
+        }, FEEDBACK_SOUND_MS);
+        return new Promise((resolve) => setTimeout(resolve, FEEDBACK_SOUND_MS));
+      } catch (_error) {
         // fall back to WebAudio
       }
     }
     const ctx = getAudioContext();
-    if (!ctx) return;
+    if (!ctx) return Promise.resolve();
     const now = ctx.currentTime;
+    const dur = FEEDBACK_SOUND_MS / 1000; // 0.30 s
     const gain = ctx.createGain();
     gain.gain.setValueAtTime(0, now);
-    gain.gain.linearRampToValueAtTime(0.12, now + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.9);
+    gain.gain.linearRampToValueAtTime(0.12, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
     gain.connect(ctx.destination);
 
     const osc = ctx.createOscillator();
     osc.type = type === 'positive' ? 'sine' : 'triangle';
     if (type === 'positive') {
       osc.frequency.setValueAtTime(660, now);
-      osc.frequency.exponentialRampToValueAtTime(980, now + 0.35);
+      osc.frequency.exponentialRampToValueAtTime(980, now + dur * 0.6);
     } else if (type === 'negative') {
       osc.frequency.setValueAtTime(220, now);
-      osc.frequency.exponentialRampToValueAtTime(140, now + 0.3);
+      osc.frequency.exponentialRampToValueAtTime(140, now + dur);
     } else {
       osc.frequency.setValueAtTime(330, now);
-      osc.frequency.exponentialRampToValueAtTime(220, now + 0.3);
+      osc.frequency.exponentialRampToValueAtTime(220, now + dur);
     }
     osc.connect(gain);
     osc.start(now);
-    osc.stop(now + 0.92);
+    osc.stop(now + dur + 0.01);
+    return new Promise((resolve) => setTimeout(resolve, FEEDBACK_SOUND_MS));
   };
 
   const fetchTtsUrlStatus = useCallback(async (text, language = 'de-DE', voice = '') => {
@@ -7293,6 +7923,15 @@ function AppInner() {
         new_remaining_today: Number.isFinite(nextNewRemaining)
           ? Math.max(0, Math.trunc(nextNewRemaining))
           : Math.max(0, Math.trunc(Number(prev?.new_remaining_today || 0))),
+        due_count_total: Number.isFinite(Number(incomingQueue?.due_count_total))
+          ? Math.max(0, Math.trunc(Number(incomingQueue.due_count_total)))
+          : Math.max(0, Math.trunc(Number(prev?.due_count_total || 0))),
+        due_reviewed_today: Number.isFinite(Number(incomingQueue?.due_reviewed_today))
+          ? Math.max(0, Math.trunc(Number(incomingQueue.due_reviewed_today)))
+          : Math.max(0, Math.trunc(Number(prev?.due_reviewed_today || 0))),
+        due_limit_today: Number.isFinite(Number(incomingQueue?.due_limit_today))
+          ? Math.max(1, Math.trunc(Number(incomingQueue.due_limit_today)))
+          : Math.max(1, Math.trunc(Number(prev?.due_limit_today || 30))),
       }));
     }
     const activeCardId = getSrsCardId(nextCard);
@@ -7307,13 +7946,28 @@ function AppInner() {
     setSrsQueueInfo((prev) => {
       const dueCount = Math.max(0, Math.trunc(Number(prev?.due_count || 0)));
       const newRemaining = Math.max(0, Math.trunc(Number(prev?.new_remaining_today || 0)));
+      const dueCountTotal = Math.max(0, Math.trunc(Number(prev?.due_count_total || 0)));
+      const dueReviewedToday = Math.max(0, Math.trunc(Number(prev?.due_reviewed_today || 0)));
+      const dueLimitToday = Math.max(1, Math.trunc(Number(prev?.due_limit_today || 30)));
       if (dueCount > 0) {
-        return { due_count: dueCount - 1, new_remaining_today: newRemaining };
+        return {
+          due_count: dueCount - 1,
+          new_remaining_today: newRemaining,
+          due_count_total: Math.max(0, dueCountTotal - 1),
+          due_reviewed_today: dueReviewedToday + 1,
+          due_limit_today: dueLimitToday,
+        };
       }
       if (newRemaining > 0) {
-        return { due_count: dueCount, new_remaining_today: newRemaining - 1 };
+        return {
+          due_count: dueCount,
+          new_remaining_today: newRemaining - 1,
+          due_count_total: dueCountTotal,
+          due_reviewed_today: dueReviewedToday,
+          due_limit_today: dueLimitToday,
+        };
       }
-      return { due_count: dueCount, new_remaining_today: newRemaining };
+      return { due_count: dueCount, new_remaining_today: newRemaining, due_count_total: dueCountTotal, due_reviewed_today: dueReviewedToday, due_limit_today: dueLimitToday };
     });
   };
 
@@ -7323,7 +7977,34 @@ function AppInner() {
       && flashcardsVisible
       && (flashcardsOnly || selectedSections.has('flashcards'));
     if (!fsrsContextActive) return;
-    const requestSignature = `${String(initData || '')}|${String(languageProfile?.native_language || '')}|${String(languageProfile?.learning_language || '')}`;
+    const resolvedQueueSource = flashcardQueueSource === 'manual' ? 'manual' : 'system';
+
+    // ── Offline path ─────────────────────────────────────────────────────────
+    if (!isOnline && isOfflineCacheAvailable()) {
+      const userId = webappUser?.id ? Number(webappUser.id) : null;
+      if (userId) {
+        setSrsLoading(true);
+        setSrsError('');
+        try {
+          const nextCard = await takeNextSrsCard(userId);
+          if (nextCard) {
+            applySrsPayload({ card: nextCard, srs: null, srs_preview: null, queue_info: null });
+          } else {
+            srsCardRef.current = null;
+            setSrsCard(null);
+            setSrsState(null);
+            setSrsPreview(null);
+          }
+        } catch (_err) {
+          setSrsError(tr('Нет карточек в офлайн-очереди', 'Keine Karten im Offline-Cache'));
+        } finally {
+          setSrsLoading(false);
+        }
+        return;
+      }
+    }
+
+    const requestSignature = `${String(initData || '')}|${String(languageProfile?.native_language || '')}|${String(languageProfile?.learning_language || '')}|${resolvedQueueSource}`;
     const nowTs = Date.now();
     if (srsNextLoadInFlightRef.current) {
       if (srsNextLoadLastSignatureRef.current !== requestSignature) {
@@ -7344,10 +8025,10 @@ function AppInner() {
     try {
       setSrsLoading(true);
       setSrsError('');
-      let response = await fetchWithTimeout(`/api/cards/next?initData=${encodeURIComponent(initData)}`, {}, FSRS_LOAD_TIMEOUT_MS);
+      let response = await fetchWithTimeout(`/api/cards/next?initData=${encodeURIComponent(initData)}&queue_source=${encodeURIComponent(resolvedQueueSource)}`, {}, FSRS_LOAD_TIMEOUT_MS);
       if (!response.ok && response.status >= 500) {
         await new Promise((resolve) => setTimeout(resolve, 220));
-        response = await fetchWithTimeout(`/api/cards/next?initData=${encodeURIComponent(initData)}`, {}, FSRS_LOAD_TIMEOUT_MS);
+        response = await fetchWithTimeout(`/api/cards/next?initData=${encodeURIComponent(initData)}&queue_source=${encodeURIComponent(resolvedQueueSource)}`, {}, FSRS_LOAD_TIMEOUT_MS);
       }
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка загрузки SRS карточки', 'Fehler beim Laden der SRS-Karte'));
@@ -7362,7 +8043,7 @@ function AppInner() {
         || rawMessage.includes('timeout')
         || rawMessage.includes('timed out')
         || rawMessage.includes('aborted');
-      if (isTimeoutError) {
+      if (isTimeoutError && resolvedQueueSource === 'system') {
         try {
           const probe = await fetchWithTimeout('/api/webapp/dictionary/cards', {
             method: 'POST',
@@ -7386,7 +8067,7 @@ function AppInner() {
           // ignore probe errors and show original timeout message
         }
       }
-      const friendly = normalizeNetworkErrorMessage(error, 'Не удалось загрузить FSRS карточку.', 'FSRS-Karte konnte nicht geladen werden.');
+      const friendly = normalizeNetworkErrorMessage(error, 'Не удалось загрузить Space Repetition карточку.', 'FSRS-Karte konnte nicht geladen werden.');
       setSrsError(friendly);
       setWebappError(`${tr('Ошибка загрузки SRS карточки', 'Fehler beim Laden der SRS-Karte')}: ${friendly}`);
     } finally {
@@ -7412,13 +8093,17 @@ function AppInner() {
     selectedSections,
     languageProfile?.native_language,
     languageProfile?.learning_language,
+    flashcardQueueSource,
+    isOnline,
+    webappUser?.id,
   ]);
 
   const prefetchSrsCards = useCallback(async () => {
     if (!initData || srsPrefetchInFlightRef.current) return;
     srsPrefetchInFlightRef.current = true;
     try {
-      const response = await fetchWithTimeout(`/api/cards/prefetch?initData=${encodeURIComponent(initData)}`, {}, 12000);
+      const resolvedQueueSource = flashcardQueueSource === 'manual' ? 'manual' : 'system';
+      const response = await fetchWithTimeout(`/api/cards/prefetch?initData=${encodeURIComponent(initData)}&queue_source=${encodeURIComponent(resolvedQueueSource)}`, {}, 12000);
       if (!response.ok) return;
       const data = await response.json();
       const queueInfo = data?.queue_info && typeof data.queue_info === 'object' ? data.queue_info : null;
@@ -7433,17 +8118,471 @@ function AppInner() {
             new_remaining_today: Number.isFinite(nextNewRemaining)
               ? Math.max(0, Math.trunc(nextNewRemaining))
               : Math.max(0, Math.trunc(Number(prev?.new_remaining_today || 0))),
+            due_count_total: Number.isFinite(Number(queueInfo?.due_count_total))
+              ? Math.max(0, Math.trunc(Number(queueInfo.due_count_total)))
+              : Math.max(0, Math.trunc(Number(prev?.due_count_total || 0))),
+            due_reviewed_today: Number.isFinite(Number(queueInfo?.due_reviewed_today))
+              ? Math.max(0, Math.trunc(Number(queueInfo.due_reviewed_today)))
+              : Math.max(0, Math.trunc(Number(prev?.due_reviewed_today || 0))),
+            due_limit_today: Number.isFinite(Number(queueInfo?.due_limit_today))
+              ? Math.max(1, Math.trunc(Number(queueInfo.due_limit_today)))
+              : Math.max(1, Math.trunc(Number(prev?.due_limit_today || 30))),
           }));
         }
       }
       const items = Array.isArray(data?.items) ? data.items : [];
       appendToSrsPrefetchQueue(items);
+      // Persist prefetched cards to IDB for offline review
+      if (items.length > 0 && isOfflineCacheAvailable()) {
+        const userId = webappUser?.id ? Number(webappUser.id) : null;
+        if (userId) saveSrsQueue(userId, items).catch(() => {});
+      }
     } catch (error) {
-      console.warn('FSRS card prefetch failed', error);
+      console.warn('Space Repetition card prefetch failed', error);
     } finally {
       srsPrefetchInFlightRef.current = false;
     }
-  }, [appendToSrsPrefetchQueue, fetchWithTimeout, initData]);
+  }, [appendToSrsPrefetchQueue, fetchWithTimeout, flashcardQueueSource, initData, webappUser?.id]);
+
+  const drainOfflineSrsReviews = useCallback(async () => {
+    if (!initData || !isOfflineCacheAvailable()) return;
+    const userId = webappUser?.id ? Number(webappUser.id) : null;
+    if (!userId) return;
+    let pending;
+    try {
+      pending = await getPendingReviews(userId);
+    } catch (_err) {
+      return;
+    }
+    if (!pending.length) return;
+    for (const review of pending) {
+      try {
+        const response = await fetchWithTimeout('/api/cards/review', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            initData,
+            card_id:      review.card_id,
+            rating:       review.rating,
+            response_ms:  review.response_ms,
+            queue_source: review.queue_source,
+          }),
+        }, 60000);
+        if (response.ok) {
+          await clearPendingReview(review._id);
+          setSrsOfflinePendingCount((c) => Math.max(0, c - 1));
+        } else {
+          break; // server error — stop and retry next time
+        }
+      } catch (_err) {
+        break; // network error — stop and retry on next reconnect
+      }
+    }
+  }, [initData, fetchWithTimeout, webappUser?.id]);
+
+  const drainOfflineVocabMutations = useCallback(async () => {
+    if (!initData || !isOfflineCacheAvailable()) return;
+    const userId = webappUser?.id ? Number(webappUser.id) : null;
+    if (!userId) return;
+    let mutations;
+    try {
+      mutations = await getVocabMutations(userId);
+    } catch (_err) {
+      return;
+    }
+    if (!mutations.length) return;
+    for (const mutation of mutations) {
+      try {
+        let endpoint;
+        let body;
+        if (mutation.type === 'delete') {
+          endpoint = '/api/webapp/vocabulary/delete';
+          body = { initData, entry_id: mutation.entry_id };
+        } else {
+          endpoint = '/api/webapp/vocabulary/edit';
+          body = { initData, entry_id: mutation.entry_id, ...(mutation.payload || {}) };
+        }
+        const response = await fetchWithTimeout(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }, 10000);
+        if (response.ok || response.status === 404) {
+          await clearVocabMutation(mutation._id);
+          setVocabOfflinePendingCount((c) => Math.max(0, c - 1));
+        } else {
+          break;
+        }
+      } catch (_err) {
+        break;
+      }
+    }
+  }, [initData, fetchWithTimeout, webappUser?.id]);
+
+  const rescheduleBacklog = useCallback(async () => {
+    if (!initData || srsRescheduling) return;
+    setSrsRescheduling(true);
+    try {
+      const response = await fetchWithTimeout('/api/cards/reschedule_backlog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData }),
+      }, 15000);
+      if (!response.ok) return;
+      const data = await response.json();
+      const queueInfo = data?.queue_info && typeof data.queue_info === 'object' ? data.queue_info : null;
+      if (queueInfo) {
+        setSrsQueueInfo({
+          due_count: Math.max(0, Math.trunc(Number(queueInfo.due_count || 0))),
+          new_remaining_today: Math.max(0, Math.trunc(Number(queueInfo.new_remaining_today || 0))),
+          due_count_total: Math.max(0, Math.trunc(Number(queueInfo.due_count_total || 0))),
+          due_reviewed_today: Math.max(0, Math.trunc(Number(queueInfo.due_reviewed_today || 0))),
+          due_limit_today: Math.max(1, Math.trunc(Number(queueInfo.due_limit_today || 30))),
+        });
+      }
+    } catch (error) {
+      console.warn('Reschedule backlog failed', error);
+    } finally {
+      setSrsRescheduling(false);
+    }
+  }, [fetchWithTimeout, initData, srsRescheduling]);
+
+  const VOCAB_PAGE_SIZE = 40;
+
+  const loadVocabLibrary = useCallback(async ({ reset = false } = {}) => {
+    if (!initData) return;
+    setVocabLoading(true);
+    setVocabError('');
+    const currentOffset = reset ? 0 : vocabOffset;
+    const userId = webappUser?.id ? Number(webappUser.id) : null;
+
+    // ── Offline path ─────────────────────────────────────────────────────────
+    if (!isOnline && userId && isOfflineCacheAvailable()) {
+      try {
+        const folderParam = vocabFolderFilter === 'all' ? null
+          : vocabFolderFilter === 'none' ? -1
+          : Number(vocabFolderFilter);
+        const [cached, folderStats] = await Promise.all([
+          getCachedVocab(userId, {
+            folder_id: folderParam,
+            search:    vocabSearch || null,
+            sort:      vocabSort,
+            limit:     VOCAB_PAGE_SIZE,
+            offset:    currentOffset,
+          }),
+          currentOffset === 0 ? getCachedFolderStats(userId) : Promise.resolve(null),
+        ]);
+        const newItems = (cached.items || []).map((item) => ({
+          ...item,
+          response_json: coerceResponseJson(item.response_json),
+        }));
+        if (reset) {
+          setVocabItems(newItems);
+          setVocabOffset(newItems.length);
+        } else {
+          setVocabItems((prev) => [...prev, ...newItems]);
+          setVocabOffset(currentOffset + newItems.length);
+        }
+        setVocabTotal(cached.total);
+        setVocabHasMore((currentOffset + newItems.length) < cached.total);
+        if (folderStats) {
+          setVocabFoldersMeta({
+            folders:         folderStats.folders,
+            no_folder_count: folderStats.no_folder_count,
+            total_count:     folderStats.total_count,
+          });
+        }
+      } catch (_err) {
+        setVocabError(tr('Нет кэша для офлайн-режима', 'Kein Cache verfügbar'));
+      } finally {
+        setVocabLoading(false);
+      }
+      return;
+    }
+
+    // ── Online path ───────────────────────────────────────────────────────────
+    try {
+      const folderParam = vocabFolderFilter === 'all' ? null
+        : vocabFolderFilter === 'none' ? -1
+        : Number(vocabFolderFilter);
+      const response = await fetchWithTimeout('/api/webapp/vocabulary/list', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          folder_id: folderParam,
+          search: vocabSearch || null,
+          sort: vocabSort,
+          limit: VOCAB_PAGE_SIZE,
+          offset: currentOffset,
+        }),
+      }, 15000);
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        setVocabError(err.error || tr('Ошибка загрузки словаря', 'Fehler beim Laden'));
+        return;
+      }
+      const data = await response.json();
+      const newItems = Array.isArray(data.items)
+        ? data.items.map((item) => ({
+            ...item,
+            response_json: coerceResponseJson(item.response_json),
+          }))
+        : [];
+      if (reset) {
+        setVocabItems(newItems);
+        setVocabOffset(newItems.length);
+      } else {
+        setVocabItems((prev) => [...prev, ...newItems]);
+        setVocabOffset(currentOffset + newItems.length);
+      }
+      setVocabTotal(Number(data.total || 0));
+      setVocabHasMore((currentOffset + newItems.length) < Number(data.total || 0));
+      if (data.folders_meta) setVocabFoldersMeta(data.folders_meta);
+
+      // Save raw API items to IndexedDB (no coerced response_json — keep originals)
+      if (userId && isOfflineCacheAvailable() && Array.isArray(data.items) && data.items.length > 0) {
+        saveVocabBatch(userId, data.items, Number(data.total || 0)).catch(() => {});
+      }
+    } catch (err) {
+      setVocabError(tr('Ошибка загрузки', 'Fehler beim Laden'));
+    } finally {
+      setVocabLoading(false);
+    }
+  }, [initData, vocabFolderFilter, vocabSearch, vocabSort, vocabOffset, fetchWithTimeout, tr, isOnline, webappUser?.id]);
+
+  const deleteVocabEntry = useCallback(async () => {
+    if (!vocabDeleteItem || !initData) return;
+    setVocabDeleteLoading(true);
+
+    // ── Offline path ─────────────────────────────────────────────────────────
+    const delUserId = webappUser?.id ? Number(webappUser.id) : null;
+    if (!isOnline && delUserId && isOfflineCacheAvailable()) {
+      try {
+        await addVocabMutation(delUserId, { type: 'delete', entry_id: vocabDeleteItem.id });
+        deleteCachedVocabEntry(vocabDeleteItem.id).catch(() => {});
+        setVocabItems((prev) => prev.filter((it) => it.id !== vocabDeleteItem.id));
+        setVocabTotal((prev) => Math.max(0, prev - 1));
+        setVocabOfflinePendingCount((c) => c + 1);
+        setVocabDeleteItem(null);
+        setVocabExpandedId(null);
+      } catch (_err) {
+        // ignore IDB errors — UI is already updated optimistically
+      } finally {
+        setVocabDeleteLoading(false);
+      }
+      return;
+    }
+
+    // ── Online path ───────────────────────────────────────────────────────────
+    try {
+      const response = await fetchWithTimeout('/api/webapp/vocabulary/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, entry_id: vocabDeleteItem.id }),
+      }, 10000);
+      if (!response.ok) return;
+      setVocabItems((prev) => prev.filter((it) => it.id !== vocabDeleteItem.id));
+      setVocabTotal((prev) => Math.max(0, prev - 1));
+      if (isOfflineCacheAvailable()) {
+        deleteCachedVocabEntry(vocabDeleteItem.id).catch(() => {});
+      }
+      setVocabDeleteItem(null);
+      setVocabExpandedId(null);
+    } catch (_err) {
+      // ignore
+    } finally {
+      setVocabDeleteLoading(false);
+    }
+  }, [vocabDeleteItem, initData, fetchWithTimeout, isOnline, webappUser?.id]);
+
+  const saveVocabEdit = useCallback(async () => {
+    if (!vocabEditItem || !initData) return;
+    setVocabEditLoading(true);
+    setVocabEditError('');
+
+    const supportsMeanings = canEditSavedEntryMeanings(vocabEditItem);
+    const primaryMeaning = vocabEditTrans.trim();
+    const secondaryMeaning = vocabEditTransSecondary.trim();
+    const tertiaryMeaning = vocabEditTransTertiary.trim();
+    const folderId = vocabEditFolder === 'none' ? null : Number(vocabEditFolder);
+    const clearFolder = vocabEditFolder === 'none';
+    const editUserId = webappUser?.id ? Number(webappUser.id) : null;
+
+    if (supportsMeanings && !primaryMeaning) {
+      setVocabEditError(tr('Основное значение не должно быть пустым.', 'Die Hauptbedeutung darf nicht leer sein.'));
+      setVocabEditLoading(false);
+      return;
+    }
+
+    // ── Offline path ─────────────────────────────────────────────────────────
+    if (!isOnline && editUserId && isOfflineCacheAvailable()) {
+      try {
+        const editPayload = {
+          word_de:           vocabEditWord.trim() || undefined,
+          translation_ru:    primaryMeaning || undefined,
+          dictionary_senses: supportsMeanings
+            ? [primaryMeaning, secondaryMeaning, tertiaryMeaning]
+            : undefined,
+          folder_id:   folderId,
+          clear_folder: clearFolder,
+        };
+        await addVocabMutation(editUserId, { type: 'edit', entry_id: vocabEditItem.id, payload: editPayload });
+        setVocabOfflinePendingCount((c) => c + 1);
+        // Optimistic local update
+        const localItem = {
+          ...vocabEditItem,
+          word_de:          vocabEditWord.trim() || vocabEditItem.word_de,
+          translation_ru:   primaryMeaning || vocabEditItem.translation_ru,
+          folder_id:        folderId,
+          display_word:     vocabEditWord.trim() || vocabEditItem.word_de || vocabEditItem.display_word,
+          display_translation: primaryMeaning || vocabEditItem.translation_ru || vocabEditItem.display_translation,
+        };
+        setVocabItems((prev) => prev.map((it) => it.id === localItem.id ? localItem : it));
+        updateCachedVocabEntry(editUserId, localItem).catch(() => {});
+        setVocabEditItem(null);
+        setVocabExpandedId(null);
+      } catch (_err) {
+        setVocabEditError(tr('Ошибка сохранения офлайн', 'Offline-Speicherfehler'));
+      } finally {
+        setVocabEditLoading(false);
+      }
+      return;
+    }
+
+    // ── Online path ───────────────────────────────────────────────────────────
+    try {
+      const response = await fetchWithTimeout('/api/webapp/vocabulary/edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          entry_id: vocabEditItem.id,
+          word_de: vocabEditWord.trim() || undefined,
+          translation_ru: primaryMeaning || undefined,
+          dictionary_senses: supportsMeanings
+            ? [primaryMeaning, secondaryMeaning, tertiaryMeaning]
+            : undefined,
+          folder_id: folderId,
+          clear_folder: clearFolder,
+        }),
+      }, 10000);
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        setVocabEditError(err.error || tr('Ошибка сохранения', 'Fehler beim Speichern'));
+        return;
+      }
+      const data = await response.json();
+      const updated = data.item;
+      if (updated) {
+        const updatedResponseJson = coerceResponseJson(updated.response_json);
+        const updatedPrimarySense = Array.isArray(updatedResponseJson.dictionary_senses)
+          ? String(updatedResponseJson.dictionary_senses.find((entry) => entry && typeof entry === 'object' && String(entry.value || '').trim())?.value || '').trim()
+          : '';
+        setVocabItems((prev) => prev.map((it) => it.id === updated.id
+          ? {
+              ...it,
+              word_de: updated.word_de,
+              word_ru: updated.word_ru,
+              translation_ru: updated.translation_ru,
+              translation_de: updated.translation_de,
+              folder_id: updated.folder_id,
+              response_json: updatedResponseJson,
+              display_word: updated.word_de || updated.word_ru || it.display_word,
+              display_translation: updatedPrimarySense || updated.translation_ru || updated.translation_de || it.display_translation,
+            }
+          : it));
+        const userId = webappUser?.id ? Number(webappUser.id) : null;
+        if (userId && isOfflineCacheAvailable()) {
+          updateCachedVocabEntry(userId, updated).catch(() => {});
+        }
+      }
+      setVocabEditItem(null);
+      setVocabExpandedId(null);
+    } catch (_err) {
+      setVocabEditError(tr('Ошибка сохранения', 'Fehler beim Speichern'));
+    } finally {
+      setVocabEditLoading(false);
+    }
+  }, [
+    vocabEditItem,
+    vocabEditWord,
+    vocabEditTrans,
+    vocabEditTransSecondary,
+    vocabEditTransTertiary,
+    vocabEditFolder,
+    initData,
+    fetchWithTimeout,
+    tr,
+    webappUser?.id,
+    isOnline,
+  ]);
+
+  const renameFolderSubmit = useCallback(async () => {
+    if (!folderRenameItem || !initData || !folderRenameName.trim()) return;
+    setFolderRenameLoading(true);
+    setFolderRenameError('');
+    try {
+      const response = await fetchWithTimeout('/api/webapp/vocabulary/folders/rename', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          folder_id: folderRenameItem.id,
+          name: folderRenameName.trim(),
+          icon: folderRenameIcon,
+          color: folderRenameColor,
+        }),
+      }, 10000);
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        setFolderRenameError(err.error || tr('Ошибка', 'Fehler'));
+        return;
+      }
+      const data = await response.json();
+      const updated = data.item;
+      if (updated) {
+        setFolders((prev) => prev.map((f) => f.id === updated.id ? { ...f, ...updated } : f));
+        setVocabFoldersMeta((prev) => prev ? {
+          ...prev,
+          folders: (prev.folders || []).map((f) => f.id === updated.id ? { ...f, ...updated } : f),
+        } : prev);
+      }
+      setFolderRenameItem(null);
+    } catch (_err) {
+      setFolderRenameError(tr('Ошибка сохранения', 'Fehler beim Speichern'));
+    } finally {
+      setFolderRenameLoading(false);
+    }
+  }, [folderRenameItem, folderRenameName, folderRenameIcon, folderRenameColor, initData, fetchWithTimeout, tr]);
+
+  const deleteFolderConfirm = useCallback(async (deleteWords) => {
+    if (!folderDeleteItem || !initData) return;
+    setFolderDeleteLoading(true);
+    try {
+      const response = await fetchWithTimeout('/api/webapp/vocabulary/folders/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, folder_id: folderDeleteItem.id, delete_words: deleteWords }),
+      }, 12000);
+      if (!response.ok) return;
+      setFolders((prev) => prev.filter((f) => f.id !== folderDeleteItem.id));
+      setVocabFoldersMeta((prev) => prev ? {
+        ...prev,
+        folders: (prev.folders || []).filter((f) => f.id !== folderDeleteItem.id),
+      } : prev);
+      if (vocabFolderFilter === String(folderDeleteItem.id)) {
+        setVocabFolderFilter('all');
+      }
+      setFolderDeleteItem(null);
+      setFolderDeleteMode(null);
+      void loadVocabLibrary({ reset: true });
+    } catch (_err) {
+      // ignore
+    } finally {
+      setFolderDeleteLoading(false);
+    }
+  }, [folderDeleteItem, initData, fetchWithTimeout, vocabFolderFilter, loadVocabLibrary]);
 
   const buildWeeklyPlanDraftFromPlan = useCallback((plan) => ({
     translations_goal: String(Number(plan?.plan?.translations_goal || 0)),
@@ -7581,6 +8720,7 @@ function AppInner() {
     if (!initData) return;
     const requestId = beginAsyncGuard(todayPlanRequestIdRef);
     const tone = options?.manual ? 'manual' : 'snapshot';
+    const syncFacts = Boolean(options?.syncFacts);
     try {
       setTodayPlanLoading(true);
       setTodayPlanError('');
@@ -7588,9 +8728,22 @@ function AppInner() {
       const query = new URLSearchParams({ initData });
       if (pairHint?.source_lang) query.set('source_lang', pairHint.source_lang);
       if (pairHint?.target_lang) query.set('target_lang', pairHint.target_lang);
-      const response = await fetchGetWithRetry(`/api/today?${query.toString()}`, 45000);
+      const response = syncFacts
+        ? await fetch('/api/today/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            initData,
+            language_pair: pairHint || undefined,
+          }),
+        })
+        : await fetchGetWithRetry(`/api/today?${query.toString()}`, 45000);
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка загрузки плана на сегодня', 'Fehler beim Laden des Tagesplans'));
+        throw new Error(await readApiError(
+          response,
+          syncFacts ? 'Ошибка синхронизации выполнения' : 'Ошибка загрузки плана на сегодня',
+          syncFacts ? 'Fehler bei der Fortschritt-Synchronisierung' : 'Fehler beim Laden des Tagesplans'
+        ));
       }
       const data = await response.json();
       if (!isAsyncGuardCurrent(todayPlanRequestIdRef, requestId)) {
@@ -7602,14 +8755,31 @@ function AppInner() {
         items: Array.isArray(data?.items) ? data.items : [],
         snapshot_saved_at: new Date().toISOString(),
       };
-      setTodayPlan(nextPlan);
+      setTodayPlan((prevPlan) => {
+        const prevItems = Array.isArray(prevPlan?.items) ? prevPlan.items : [];
+        const prevById = Object.fromEntries(prevItems.map((it) => [String(it?.id ?? ''), it]));
+        const mergedItems = nextPlan.items.map((newItem) => {
+          const newPayload = newItem?.payload && typeof newItem.payload === 'object' ? newItem.payload : null;
+          const hasTimerData = newPayload !== null && (
+            newPayload.timer_running !== undefined || newPayload.timer_seconds !== undefined
+          );
+          if (!hasTimerData) {
+            const prevItem = prevById[String(newItem?.id ?? '')];
+            if (prevItem?.payload && typeof prevItem.payload === 'object') {
+              return { ...newItem, payload: prevItem.payload };
+            }
+          }
+          return newItem;
+        });
+        return { ...nextPlan, items: mergedItems };
+      });
       setTodayPlanSnapshotTone(tone);
       persistTodayPlanSnapshot(nextPlan);
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
         error,
-        'Не удалось загрузить задачи на сегодня.',
-        'Tagesaufgaben konnten nicht geladen werden.'
+        syncFacts ? 'Не удалось синхронизировать выполнение на сегодня.' : 'Не удалось загрузить задачи на сегодня.',
+        syncFacts ? 'Fortschritt fuer heute konnte nicht synchronisiert werden.' : 'Tagesaufgaben konnten nicht geladen werden.'
       );
       if (!isAsyncGuardCurrent(todayPlanRequestIdRef, requestId)) {
         return;
@@ -7627,6 +8797,7 @@ function AppInner() {
     if (!initData) return;
     const requestId = beginAsyncGuard(skillReportRequestIdRef);
     const tone = options?.manual ? 'manual' : 'snapshot';
+    const syncFacts = Boolean(options?.syncFacts);
     try {
       setSkillReportLoading(true);
       setSkillReportError('');
@@ -7634,9 +8805,23 @@ function AppInner() {
       const query = new URLSearchParams({ period: '7d', initData });
       if (pairHint?.source_lang) query.set('source_lang', pairHint.source_lang);
       if (pairHint?.target_lang) query.set('target_lang', pairHint.target_lang);
-      const response = await fetchGetWithRetry(`/api/progress/skills?${query.toString()}`, 45000);
+      const response = syncFacts
+        ? await fetch('/api/progress/skills/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            initData,
+            period: '7d',
+            language_pair: pairHint || undefined,
+          }),
+        })
+        : await fetchGetWithRetry(`/api/progress/skills?${query.toString()}`, 45000);
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка загрузки отчета по навыкам', 'Fehler beim Laden des Skills-Reports'));
+        throw new Error(await readApiError(
+          response,
+          syncFacts ? 'Ошибка синхронизации навыков' : 'Ошибка загрузки отчета по навыкам',
+          syncFacts ? 'Fehler bei der Skill-Synchronisierung' : 'Fehler beim Laden des Skills-Reports'
+        ));
       }
       const data = await response.json();
       if (!isAsyncGuardCurrent(skillReportRequestIdRef, requestId)) {
@@ -7658,8 +8843,8 @@ function AppInner() {
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
         error,
-        'Не удалось загрузить прогресс навыков.',
-        'Skill-Fortschritt konnte nicht geladen werden.'
+        syncFacts ? 'Не удалось синхронизировать прогресс навыков.' : 'Не удалось загрузить прогресс навыков.',
+        syncFacts ? 'Skill-Fortschritt konnte nicht synchronisiert werden.' : 'Skill-Fortschritt konnte nicht geladen werden.'
       );
       if (!isAsyncGuardCurrent(skillReportRequestIdRef, requestId)) {
         return;
@@ -7677,12 +8862,26 @@ function AppInner() {
     if (!initData) return;
     const requestId = beginAsyncGuard(weeklyPlanRequestIdRef);
     const tone = options?.manual ? 'manual' : 'snapshot';
+    const syncFacts = Boolean(options?.syncFacts);
+    const silent = Boolean(options?.silent);
     try {
-      setWeeklyPlanLoading(true);
+      if (!silent) {
+        setWeeklyPlanLoading(true);
+      }
       setWeeklyPlanError('');
-      const response = await fetchGetWithRetry(`/api/progress/weekly-plan?initData=${encodeURIComponent(initData)}`, 45000);
+      const response = syncFacts
+        ? await fetch('/api/progress/weekly-plan/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData }),
+        })
+        : await fetchGetWithRetry(`/api/progress/weekly-plan?initData=${encodeURIComponent(initData)}`, 45000);
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка загрузки недельного плана', 'Fehler beim Laden des Wochenplans'));
+        throw new Error(await readApiError(
+          response,
+          syncFacts ? 'Ошибка синхронизации недельного плана' : 'Ошибка загрузки недельного плана',
+          syncFacts ? 'Fehler bei der Wochenplan-Synchronisierung' : 'Fehler beim Laden des Wochenplans'
+        ));
       }
       const data = await response.json();
       if (!isAsyncGuardCurrent(weeklyPlanRequestIdRef, requestId)) {
@@ -7701,8 +8900,8 @@ function AppInner() {
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
         error,
-        'Не удалось загрузить недельный план.',
-        'Wochenplan konnte nicht geladen werden.'
+        syncFacts ? 'Не удалось синхронизировать недельный план.' : 'Не удалось загрузить недельный план.',
+        syncFacts ? 'Wochenplan konnte nicht synchronisiert werden.' : 'Wochenplan konnte nicht geladen werden.'
       );
       if (!isAsyncGuardCurrent(weeklyPlanRequestIdRef, requestId)) {
         return;
@@ -7710,7 +8909,9 @@ function AppInner() {
       setWeeklyPlanError(friendly);
     } finally {
       if (isAsyncGuardCurrent(weeklyPlanRequestIdRef, requestId)) {
-        setWeeklyPlanLoading(false);
+        if (!silent) {
+          setWeeklyPlanLoading(false);
+        }
       }
     }
   };
@@ -7818,7 +9019,7 @@ function AppInner() {
     try {
       setWeeklyPlanSaving(true);
       setWeeklyPlanError('');
-      const response = await fetch('/api/progress/weekly-plan', {
+      const response = await fetch('/api/progress/weekly-plan/goals', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -7834,9 +9035,9 @@ function AppInner() {
       }
       const data = await response.json();
       const plan = {
-        week: data?.week || null,
+        week: data?.week || weeklyPlan?.week || null,
         plan: data?.plan || { translations_goal: 0, learned_words_goal: 0, agent_minutes_goal: 0, reading_minutes_goal: 0 },
-        metrics: data?.metrics || {},
+        metrics: weeklyPlan?.metrics || {},
         snapshot_saved_at: new Date().toISOString(),
       };
       setWeeklyPlan(plan);
@@ -7850,9 +9051,12 @@ function AppInner() {
         agent_minutes: false,
         reading_minutes: false,
       });
-      if (planAnalyticsPeriod !== 'week') {
-        loadPlanAnalytics();
-      }
+      window.setTimeout(() => {
+        void loadWeeklyPlan({ manual: true, syncFacts: true, silent: true });
+        if (planAnalyticsPeriod !== 'week') {
+          void loadPlanAnalytics();
+        }
+      }, 0);
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
         error,
@@ -8144,6 +9348,10 @@ function AppInner() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ initData }),
       });
+      if (response.status === 404) {
+        void loadTodayPlan({ manual: true });
+        return null;
+      }
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка обновления статуса задачи', 'Fehler beim Aktualisieren des Aufgabenstatus'));
       }
@@ -8240,6 +9448,81 @@ function AppInner() {
     return Boolean(payload?.timer_running) && String(item?.status || '').toLowerCase() !== 'done';
   };
 
+  const buildOptimisticTodayItemTimerState = (item, action, options = {}) => {
+    if (!item?.id) return item;
+    const normalizedAction = String(action || 'sync').trim().toLowerCase() || 'sync';
+    if (!['start', 'resume', 'pause', 'sync'].includes(normalizedAction)) return item;
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    const payload = { ...getTodayItemTimerPayload(item) };
+    const elapsedOverride = Number.isFinite(Number(options?.elapsedSeconds))
+      ? Math.max(0, Math.floor(Number(options.elapsedSeconds)))
+      : null;
+    const explicitRunning = options?.running === undefined ? undefined : Boolean(options.running);
+    const taskType = String(item?.task_type || '').trim().toLowerCase();
+    const goalSeconds = getTodayItemGoalSeconds(item);
+    let nextElapsed = elapsedOverride ?? getTodayItemElapsedSeconds(item, nowMs);
+    let nextRunning = isTodayItemTimerRunning(item);
+    let nextPaused = Boolean(payload?.timer_paused) && !nextRunning;
+    let nextStartedAt = nextRunning ? String(payload?.timer_started_at || '').trim() || nowIso : null;
+    let nextStatus = String(item?.status || 'todo').trim().toLowerCase() || 'todo';
+
+    if (normalizedAction === 'start' || normalizedAction === 'resume') {
+      if (nextStatus !== 'done') {
+        nextStatus = 'doing';
+        nextRunning = true;
+        nextPaused = false;
+        nextStartedAt = nowIso;
+      }
+    } else if (normalizedAction === 'pause') {
+      nextRunning = false;
+      nextPaused = nextStatus !== 'done';
+      nextStartedAt = null;
+    } else if (normalizedAction === 'sync' && explicitRunning !== undefined) {
+      if (explicitRunning && nextStatus !== 'done') {
+        nextStatus = 'doing';
+        nextRunning = true;
+        nextPaused = false;
+        nextStartedAt = nowIso;
+      } else {
+        nextRunning = false;
+        nextPaused = nextStatus !== 'done';
+        nextStartedAt = null;
+      }
+    }
+
+    let progressPercent = 0;
+    if (goalSeconds > 0) {
+      progressPercent = Math.min(100, (nextElapsed / goalSeconds) * 100);
+    } else if (nextElapsed > 0) {
+      progressPercent = 100;
+    }
+
+    if (taskType !== 'translation' && goalSeconds > 0 && nextElapsed >= goalSeconds) {
+      nextStatus = 'done';
+      nextRunning = false;
+      nextPaused = false;
+      nextStartedAt = null;
+    } else if (nextStatus !== 'done' && nextElapsed > 0 && ['todo', 'skipped'].includes(nextStatus)) {
+      nextStatus = 'doing';
+    }
+
+    return {
+      ...item,
+      status: nextStatus,
+      payload: {
+        ...payload,
+        timer_seconds: nextElapsed,
+        timer_goal_seconds: goalSeconds,
+        timer_progress_percent: Number(progressPercent.toFixed(2)),
+        timer_running: nextRunning,
+        timer_paused: nextPaused,
+        timer_started_at: nextStartedAt || null,
+        timer_updated_at: nowIso,
+      },
+    };
+  };
+
   const isTodayItemSectionVisible = useCallback((item) => {
     const taskType = String(item?.task_type || '').toLowerCase();
     if (taskType === 'cards') {
@@ -8275,7 +9558,19 @@ function AppInner() {
     const elapsedSeconds = options?.elapsedSeconds;
     const running = options?.running;
     const keepalive = Boolean(options?.keepalive);
+    const previousItemSnapshot = item ? { ...item, payload: { ...getTodayItemTimerPayload(item) } } : null;
+    const optimisticItem = buildOptimisticTodayItemTimerState(item, action, options);
     try {
+      if (optimisticItem?.id) {
+        setTodayPlan((prev) => {
+          if (!prev || !Array.isArray(prev.items)) return prev;
+          return {
+            ...prev,
+            items: prev.items.map((entry) => (entry.id === optimisticItem.id ? optimisticItem : entry)),
+          };
+        });
+        setTodayTimerNowMs(Date.now());
+      }
       setTodayItemLoading((prev) => ({ ...prev, [item.id]: action === 'sync' ? 'timer_sync' : `timer_${action}` }));
       const response = await fetch(`/api/today/items/${item.id}/timer`, {
         method: 'POST',
@@ -8288,6 +9583,9 @@ function AppInner() {
           running: running === undefined ? undefined : Boolean(running),
         }),
       });
+      if (response.status === 404) {
+        return null;
+      }
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка синхронизации таймера задачи', 'Fehler bei der Aufgaben-Timer-Synchronisierung'));
       }
@@ -8304,6 +9602,15 @@ function AppInner() {
       }
       return updated;
     } catch (error) {
+      if (previousItemSnapshot?.id) {
+        setTodayPlan((prev) => {
+          if (!prev || !Array.isArray(prev.items)) return prev;
+          return {
+            ...prev,
+            items: prev.items.map((entry) => (entry.id === previousItemSnapshot.id ? previousItemSnapshot : entry)),
+          };
+        });
+      }
       setTodayPlanError(normalizeNetworkErrorMessage(
         error,
         'Не удалось синхронизировать таймер задачи.',
@@ -8390,9 +9697,12 @@ function AppInner() {
     const item = getTodayTaskForSection(sectionKey);
     if (!item) return null;
     const inline = Boolean(options?.inline);
+    // ignoreProgress: always show timer button even when daily goal is met.
+    // Without this, progress >= 100 replaces the timer with ✅ which hides it mid-session.
+    const ignoreProgress = Boolean(options?.ignoreProgress);
     const elapsed = getTodayItemElapsedSeconds(item, todayTimerNowMs);
     const progress = getTodayItemProgressPercent(item, todayTimerNowMs);
-    const done = String(item?.status || '').toLowerCase() === 'done' || progress >= 100;
+    const done = String(item?.status || '').toLowerCase() === 'done' || (!ignoreProgress && progress >= 100);
     const running = isTodayItemTimerRunning(item);
     return (
       <div className={`today-section-task-hud ${inline ? 'is-inline' : ''}`.trim()}>
@@ -8881,6 +10191,7 @@ function AppInner() {
       while (srsReviewBufferRef.current.length > 0) {
         const job = srsReviewBufferRef.current[0];
         const FSRS_REVIEW_TIMEOUT_MS = 60000;
+        const resolvedQueueSource = flashcardQueueSource === 'manual' ? 'manual' : 'system';
         try {
           let response = await fetchWithTimeout('/api/cards/review', {
             method: 'POST',
@@ -8890,6 +10201,7 @@ function AppInner() {
               card_id: job.cardId,
               rating: job.rating,
               response_ms: job.responseMs,
+              queue_source: resolvedQueueSource,
             }),
           }, FSRS_REVIEW_TIMEOUT_MS);
           if (!response.ok && response.status >= 500) {
@@ -8902,6 +10214,7 @@ function AppInner() {
                 card_id: job.cardId,
                 rating: job.rating,
                 response_ms: job.responseMs,
+                queue_source: resolvedQueueSource,
               }),
             }, FSRS_REVIEW_TIMEOUT_MS);
           }
@@ -8933,6 +10246,7 @@ function AppInner() {
     normalizeNetworkErrorMessage,
     readApiError,
     tr,
+    flashcardQueueSource,
   ]);
 
   const submitSrsReview = async (ratingValue) => {
@@ -8949,11 +10263,52 @@ function AppInner() {
     const responseMs = Math.max(0, Date.now() - startedAt);
     if (ratingValue === 'EASY' && srsEasyLocked) return;
     if (ratingValue === 'GOOD' && srsGoodLocked) return;
+
+    // ── Offline path ─────────────────────────────────────────────────────────
+    const srsUserId = webappUser?.id ? Number(webappUser.id) : null;
+    if (!isOnline && srsUserId && isOfflineCacheAvailable()) {
+      stopTtsPlayback();
+      setSrsError('');
+      setSrsSubmitting(true);
+      setSrsSubmittingRating(ratingValue);
+      try {
+        const resolvedQueueSource = flashcardQueueSource === 'manual' ? 'manual' : 'system';
+        await addPendingReview(srsUserId, {
+          card_id:      cardId,
+          rating:       ratingValue,
+          response_ms:  responseMs,
+          queue_source: resolvedQueueSource,
+        });
+        setSrsOfflinePendingCount((c) => c + 1);
+        decrementSrsQueueInfoLocal();
+        setSrsRevealAnswer(false);
+        setSrsRevealStartedAt(0);
+        setSrsRevealElapsedSec(0);
+        const nextCard = await takeNextSrsCard(srsUserId);
+        if (nextCard) {
+          applySrsPayload({ card: nextCard, srs: null, srs_preview: null, queue_info: null });
+        } else {
+          srsCardRef.current = null;
+          setSrsCard(null);
+          setSrsState(null);
+          setSrsPreview(null);
+        }
+      } catch (_err) {
+        setSrsError(tr('Ошибка сохранения офлайн', 'Offline-Speicherfehler'));
+      } finally {
+        setSrsSubmitting(false);
+        setSrsSubmittingRating(null);
+      }
+      return;
+    }
+
+    // ── Online path ───────────────────────────────────────────────────────────
     try {
       stopTtsPlayback();
       setSrsError('');
       setSrsSubmitting(true);
       setSrsSubmittingRating(ratingValue);
+      const resolvedQueueSource = flashcardQueueSource === 'manual' ? 'manual' : 'system';
       const optimisticCard = takeFromSrsPrefetchQueue();
       setSrsRevealAnswer(false);
       setSrsRevealStartedAt(0);
@@ -8988,6 +10343,7 @@ function AppInner() {
           card_id: cardId,
           rating: ratingValue,
           response_ms: responseMs,
+          queue_source: resolvedQueueSource,
         }),
       }, FSRS_REVIEW_TIMEOUT_MS);
       if (!response.ok && response.status >= 500) {
@@ -9000,6 +10356,7 @@ function AppInner() {
             card_id: cardId,
             rating: ratingValue,
             response_ms: responseMs,
+            queue_source: resolvedQueueSource,
           }),
         }, FSRS_REVIEW_TIMEOUT_MS);
       }
@@ -9413,6 +10770,7 @@ function AppInner() {
     }
     return selectedSections.has(key);
   };
+  const HOME_SUBSECTION_KEYS = new Set(['home_today', 'home_weekly_plan', 'home_skills', 'home_more']);
   const youtubeSectionVisible = isSectionVisible('youtube');
   const dictionarySectionVisible = isSectionVisible('dictionary');
   const readerSectionVisible = !flashcardsOnly && isSectionVisible('reader');
@@ -9420,6 +10778,12 @@ function AppInner() {
   const isSkillTrainingReady = Boolean(skillTrainingData?.package);
 
   const isHomeScreen = !flashcardsOnly && selectedSections.size === 0;
+  const activeHomeSubsectionKey = useMemo(() => {
+    if (flashcardsOnly || selectedSections.size !== 1) return '';
+    const [key] = Array.from(selectedSections);
+    return HOME_SUBSECTION_KEYS.has(key) ? key : '';
+  }, [flashcardsOnly, selectedSections]);
+  const isHomeRouteActive = isHomeScreen || Boolean(activeHomeSubsectionKey);
   const isGuideScreen = !flashcardsOnly && selectedSections.size === 1 && selectedSections.has('guide');
   const showHomeGuideQuickCard = isHomeScreen && !guideQuickCardDismissed;
   /* Legacy guide/onboarding copy removed from runtime path.
@@ -9441,13 +10805,13 @@ function AppInner() {
       eyebrow: tr('Шаг 2 из 6', 'Schritt 2 von 6'),
       title: tr('Сохраняйте слова и повторяйте их', 'Speichere Woerter und wiederhole sie'),
       body: tr(
-        'Полезные слова и выражения отправляйте в словарь, а затем закрепляйте их через карточки и FSRS-повторение.',
-        'Speichere nuetzliche Woerter und Ausdruecke im Woerterbuch und festige sie dann mit Karten und FSRS-Wiederholung.'
+        'Полезные слова и выражения отправляйте в словарь, а затем закрепляйте их через карточки и Space Repetition.',
+        'Speichere nuetzliche Woerter und Ausdruecke im Woerterbuch und festige sie dann mit Karten und Space Repetition.'
       ),
       bullets: [
         tr('Словарь хранит лексику и формы слова.', 'Das Woerterbuch speichert Wortschatz und Wortformen.'),
         tr('Карточки закрепляют слова в памяти.', 'Karten verankern Woerter im Gedaechtnis.'),
-        tr('FSRS сам рассчитывает интервалы повторения.', 'FSRS berechnet die Wiederholungsabstaende automatisch.'),
+        tr('Space Repetition сам рассчитывает интервалы повторения.', 'Space Repetition berechnet die Wiederholungsabstaende automatisch.'),
       ],
     },
     {
@@ -9670,7 +11034,7 @@ function AppInner() {
             {
               title: 'Die 4 Modi',
               items: [
-                'FSRS: intelligentes spaced repetition für langfristiges Behalten.',
+                'Space Repetition: intelligentes spaced repetition für langfristiges Behalten.',
                 'Quiz: 4 Antwortoptionen, damit du schnell Bedeutung und Form erkennst.',
                 'Blocks: du baust die richtige Antwort aus Teilen auf.',
                 'Sentence: ergänzende Kontextpraxis; dieser Modus bleibt bewusst supplemental.',
@@ -9682,27 +11046,27 @@ function AppInner() {
                 'Für Quiz, Blocks und Sentence kannst du Set-Größe, Ordner, Geschwindigkeit und automatischen oder manuellen Übergang wählen.',
                 'Im Blocks-Modus stellst du zusätzlich den Timer ein: adaptiv, fest oder ohne Timer.',
                 'Im Sentence-Modus kannst du die Schwierigkeit wählen: easy, medium oder hard.',
-                'Im FSRS-Modus siehst du vor allem Queue-Infos wie „Due“ und „New Today“.',
+                'Im Space Repetition-Modus siehst du vor allem Queue-Infos wie „Due“ und „New Today“.',
               ],
             },
             {
               title: 'Wie Karten entstehen',
               items: [
-                'Quiz und Blocks ziehen Karten aus derselben FSRS-Kernwarteschlange: due zuerst, danach neue Karten.',
+                'Quiz und Blocks ziehen Karten aus derselben Space Repetition-Warteschlange: due zuerst, danach neue Karten.',
                 'Sentence nutzt ergänzendes Material aus Wörterbuch und GPT-Seed-Sätzen und bleibt ein supplemental mode.',
                 'Vor dem eigentlichen Training zeigt die App zuerst Karten zur kurzen Orientierung, danach startet die Session.',
-                'FSRS nutzt dieselbe Kernwarteschlange direkt als Review-Modus.',
+                'Space Repetition nutzt dieselbe Kernwarteschlange direkt als Review-Modus.',
               ],
             },
             {
-              title: 'So benutzt du FSRS richtig',
+              title: 'So benutzt du Space Repetition richtig',
               items: [
-                'In FSRS siehst du zuerst die Karte in deiner Muttersprache. Versuche die Übersetzung zuerst laut oder innerlich selbst abzurufen.',
+                'In Space Repetition siehst du zuerst die Karte in deiner Muttersprache. Versuche die Übersetzung zuerst laut oder innerlich selbst abzurufen.',
                 'Dann drehst du die Karte um und bewertest, wie gut du die Antwort wirklich aus dem Kopf holen konntest.',
                 'Again: du konntest nicht antworten oder lagst daneben. Die Karte kommt sehr bald wieder.',
                 'Hard: du hast es geschafft, aber mit viel Mühe oder Unsicherheit. Die Wiederholung kommt früher.',
                 'Good: du hast korrekt erinnert. Das ist der Standard-Schritt für normales Lernen.',
-                'Easy: du wusstest es sofort und sicher. Dann legt FSRS ein längeres Intervall fest.',
+                'Easy: du wusstest es sofort und sicher. Dann legt Space Repetition ein längeres Intervall fest.',
               ],
             },
           ],
@@ -10080,13 +11444,13 @@ function AppInner() {
             title: 'Как использовать дальше',
             items: [
               'Словарь удобно держать рядом с переводами, YouTube и Reader, когда попадаются незнакомые слова.',
-              'Всё сохранённое затем можно повторять в карточках и FSRS.',
+              'Всё сохранённое затем можно повторять в карточках и Space Repetition.',
               'Если словарь в самом начале ещё пустой, но вы хотите сразу запустить Quiz, карточки и тренировку выражений, можно подключить базовый стартовый набор.',
               'Это примерно 1000 слов и выражений из заранее подготовленной разработчиком полезной повседневной выборки.',
               'Важно: набор удобен именно для старта, но контекст и состав не всегда идеально совпадают с личными задачами конкретного пользователя.',
               'Поэтому стартовый словарь лучше воспринимать как базу для разгона, а дальше постепенно расширять его своими словами.',
               'Новые слова потом удобно добавлять из YouTube, Reader, лички с ботом, обычного словаря и блока переводов.',
-              'Когда вы наберёте свой словарь, именно эти ваши слова и выражения дальше будут использоваться в карточках, FSRS и quiz-режимах.',
+              'Когда вы наберёте свой словарь, именно эти ваши слова и выражения дальше будут использоваться в карточках, Space Repetition и quiz-режимах.',
             ],
           },
         ],
@@ -10095,12 +11459,12 @@ function AppInner() {
         key: 'flashcards',
         number: '4',
         title: 'Карточки',
-        summary: 'Закрепляйте лексику через повторение, FSRS и быстрые режимы тренировки.',
+        summary: 'Закрепляйте лексику через повторение, Space Repetition и быстрые режимы тренировки.',
         sections: [
           {
             title: '4 режима тренировки',
             items: [
-              'FSRS: интервальное повторение для долгой памяти.',
+              'Space Repetition: интервальное повторение для долгой памяти.',
               'Quiz: 4 варианта ответа для быстрой проверки знания слова.',
               'Blocks: сборка правильного ответа из частей.',
               'Sentence: дополнительная контекстная практика; этот режим остаётся supplemental.',
@@ -10112,22 +11476,22 @@ function AppInner() {
               'Для Quiz, Blocks и Sentence можно выбрать размер набора, папку, скорость и режим перехода: автоматический или ручной.',
               'В режиме Blocks дополнительно настраивается таймер: adaptive, fixed или без таймера.',
               'В режиме Sentence можно выбрать сложность: easy, medium или hard.',
-              'В FSRS-режиме показывается очередь карточек: сколько due и сколько new today.',
+              'В Space Repetition-режиме показывается очередь карточек: сколько due и сколько new today.',
             ],
           },
           {
             title: 'Как формируются карточки',
             items: [
-              'Quiz и Blocks берут карточки из одной общей FSRS-очереди: сначала due, потом новые.',
+              'Quiz и Blocks берут карточки из одной общей Space Repetition-очереди: сначала due, потом новые.',
               'Sentence использует дополнительный материал из словаря и GPT-seed предложений и остаётся supplemental mode.',
               'Перед самой тренировкой приложение сначала показывает карточки для быстрого ознакомления, а затем уже запускает quiz, blocks или sentence session.',
-              'FSRS использует ту же общую очередь напрямую как основной review-режим.',
+              'Space Repetition использует ту же общую очередь напрямую как основной review-режим.',
             ],
           },
           {
-            title: 'Как работать в FSRS',
+            title: 'Как работать в Space Repetition',
             items: [
-              'В FSRS вы сначала видите карточку на родном языке. Сначала попробуйте сами произнести перевод вслух или про себя.',
+              'В Space Repetition вы сначала видите карточку на родном языке. Сначала попробуйте сами произнести перевод вслух или про себя.',
               'Потом переверните карточку и честно оцените, насколько легко вы достали ответ из памяти.',
               'Снова / Again: не смогли ответить или ответили неверно. Карточка вернётся очень скоро.',
               'Сложно / Hard: вспомнили, но с большим усилием или ошибками. Повтор придёт раньше обычного.',
@@ -10510,10 +11874,15 @@ function AppInner() {
     );
   }, [analyticsSummary, tr]);
   const readerVisibleText = useMemo(() => {
-    if (readerPageCount > 0) {
-      return String(readerDisplayPages[Math.max(0, Number(readerCurrentPage || 1) - 1)]?.text || '');
-    }
-    return String(readerContent || '');
+    const raw = readerPageCount > 0
+      ? String(readerDisplayPages[Math.max(0, Number(readerCurrentPage || 1) - 1)]?.text || '')
+      : String(readerContent || '');
+    // Normalize PDF line-breaks: single \n within paragraphs → space; keep \n\n as paragraph break
+    return raw
+      .split(/\n\n+/)
+      .map((para) => para.replace(/\n/g, ' ').replace(/ {2,}/g, ' ').trim())
+      .filter(Boolean)
+      .join('\n\n');
   }, [readerPageCount, readerDisplayPages, readerCurrentPage, readerContent]);
   const readerSegmentationHash = useMemo(() => {
     const value = String(readerVisibleText || '');
@@ -10640,6 +12009,21 @@ function AppInner() {
     if (keys.length === 1) return String(keys[0]);
     return '';
   }, [flashcardsOnly, menuMultiSelect, selectedSections]);
+  const activeHomeSectionVisibility = useMemo(() => {
+    if (activeHomeSubsectionKey === 'home_today') {
+      return { weeklyPlan: false, todayPlan: true, skillReport: false };
+    }
+    if (activeHomeSubsectionKey === 'home_weekly_plan') {
+      return { weeklyPlan: true, todayPlan: false, skillReport: false };
+    }
+    if (activeHomeSubsectionKey === 'home_skills') {
+      return { weeklyPlan: false, todayPlan: false, skillReport: true };
+    }
+    if (activeHomeSubsectionKey === 'home_more') {
+      return { weeklyPlan: false, todayPlan: false, skillReport: false };
+    }
+    return { weeklyPlan: true, todayPlan: true, skillReport: true };
+  }, [activeHomeSubsectionKey]);
   const economicsProviderOptions = useMemo(() => {
     const knownOrder = [
       'openai',
@@ -10687,6 +12071,158 @@ function AppInner() {
     if (!economicsProvider || economicsProvider === 'all') return rows;
     return rows.filter((item) => String(item?.provider || '').trim().toLowerCase() === economicsProvider);
   }, [economicsSummary, economicsProvider]);
+  const economicsPerUserResourceRows = useMemo(() => {
+    const rows = Array.isArray(economicsSummary?.breakdown?.by_provider) ? economicsSummary.breakdown.by_provider : [];
+    return rows
+      .filter((item) => Number(item?.active_users || 0) > 0 || Number(item?.avg_total_cost_per_active_user || 0) > 0)
+      .slice()
+      .sort((a, b) => Number(b?.avg_total_cost_per_active_user || 0) - Number(a?.avg_total_cost_per_active_user || 0))
+      .slice(0, 10);
+  }, [economicsSummary]);
+  const economicsFreeTierCapacityRows = useMemo(() => {
+    return economicsBudgetRows
+      .map((row) => {
+        const limitUnits = row?.effective_limit_units == null ? null : Number(row.effective_limit_units || 0);
+        const usedUnits = Number(row?.used_units || 0);
+        const avgUnitsPerActiveUser = Number(row?.avg_units_per_active_user || 0);
+        const budgetKind = String(row?.metadata?.budget_kind || '').trim().toLowerCase();
+        if (limitUnits == null || limitUnits <= 0 || avgUnitsPerActiveUser <= 0) {
+          return null;
+        }
+        const totalUsersCapacity = Math.floor(limitUnits / avgUnitsPerActiveUser);
+        const remainingUnits = Math.max(0, limitUnits - usedUnits);
+        const remainingUsersCapacity = Math.floor(remainingUnits / avgUnitsPerActiveUser);
+        return {
+          provider: String(row?.provider || '').trim(),
+          unitsType: String(row?.units_type || row?.unit || '').trim(),
+          avgUnitsPerActiveUser,
+          limitUnits,
+          usedUnits,
+          totalUsersCapacity,
+          remainingUsersCapacity,
+          budgetKind,
+          budgetLabel: String(row?.period_label || '').trim() || String(row?.period_month || '').slice(0, 7),
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => Number(a?.totalUsersCapacity || 0) - Number(b?.totalUsersCapacity || 0));
+  }, [economicsBudgetRows]);
+  const economicsFreeTierBottleneck = economicsFreeTierCapacityRows.length > 0 ? economicsFreeTierCapacityRows[0] : null;
+  const economicsForecastUsers = useMemo(() => {
+    const parsed = parseInt(String(economicsForecastUsersDraft || '').trim(), 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+    return parsed;
+  }, [economicsForecastUsersDraft]);
+  const economicsForecastResourceRows = useMemo(() => {
+    const rows = Array.isArray(economicsSummary?.breakdown?.by_provider) ? economicsSummary.breakdown.by_provider : [];
+    const freeTierCapacityByProvider = new Map(
+      economicsFreeTierCapacityRows.map((item) => [String(item?.provider || '').trim().toLowerCase(), item]),
+    );
+    if (economicsForecastUsers <= 0) return [];
+    return rows
+      .filter((item) => Number(item?.active_users || 0) > 0 || Number(item?.avg_total_cost_per_active_user || 0) > 0)
+      .map((item) => {
+        const providerKey = String(item?.provider || '').trim().toLowerCase();
+        const capacity = freeTierCapacityByProvider.get(providerKey);
+        return {
+          provider: String(item?.provider || '').trim(),
+          activeUsers: Number(item?.active_users || 0),
+          forecastUsers: economicsForecastUsers,
+          forecastVariableCost: Number(item?.avg_variable_cost_per_active_user || 0) * economicsForecastUsers,
+          forecastFixedCost: Number(item?.avg_fixed_cost_per_active_user || 0) * economicsForecastUsers,
+          forecastTotalCost: Number(item?.avg_total_cost_per_active_user || 0) * economicsForecastUsers,
+          forecastEvents: Number(item?.avg_events_per_active_user || 0) * economicsForecastUsers,
+          forecastUnitsByType: Array.isArray(item?.avg_units_by_type_per_active_user)
+            ? item.avg_units_by_type_per_active_user.map((unitRow) => ({
+              unitsType: String(unitRow?.units_type || '').trim(),
+              forecastUnits: Number(unitRow?.avg_units_per_active_user || 0) * economicsForecastUsers,
+            }))
+            : [],
+          freeTierTotalUsersCapacity: Number(capacity?.totalUsersCapacity || 0),
+          freeTierRemainingUsersCapacity: Number(capacity?.remainingUsersCapacity || 0),
+        };
+      })
+      .sort((a, b) => b.forecastTotalCost - a.forecastTotalCost);
+  }, [economicsSummary, economicsFreeTierCapacityRows, economicsForecastUsers]);
+  const economicsForecastTotals = useMemo(() => {
+    if (economicsForecastUsers <= 0) {
+      return {
+        users: 0,
+        forecastVariableCost: 0,
+        forecastFixedCost: 0,
+        forecastTotalCost: 0,
+        freeTierBottleneckProvider: '',
+        freeTierBottleneckUsers: 0,
+      };
+    }
+    return {
+      users: economicsForecastUsers,
+      forecastVariableCost: Number(economicsSummary?.totals?.avg_variable_cost_per_active_user || 0) * economicsForecastUsers,
+      forecastFixedCost: Number(economicsSummary?.totals?.avg_fixed_cost_per_active_user || 0) * economicsForecastUsers,
+      forecastTotalCost: Number(economicsSummary?.totals?.avg_cost_per_active_user || 0) * economicsForecastUsers,
+      freeTierBottleneckProvider: String(economicsFreeTierBottleneck?.provider || '').trim(),
+      freeTierBottleneckUsers: Number(economicsFreeTierBottleneck?.totalUsersCapacity || 0),
+    };
+  }, [economicsSummary, economicsForecastUsers, economicsFreeTierBottleneck]);
+  const economicsRailwayInfra = economicsProvider === 'all' ? (economicsSummary?.railway_infra || null) : null;
+  const economicsRailwayPricing = economicsRailwayInfra?.pricing || null;
+  const economicsRailwayLivePostgres = economicsRailwayInfra?.live?.postgres || null;
+  const economicsRailwayLiveRedis = economicsRailwayInfra?.live?.redis || null;
+  const economicsRailwayFixedComponents = Array.isArray(economicsRailwayInfra?.tracked_fixed_components)
+    ? economicsRailwayInfra.tracked_fixed_components
+    : [];
+  const economicsRailwayTrackedBaselineUsd = Number(economicsRailwayInfra?.tracked_fixed_baseline_month_usd || 0);
+  const economicsRailwayForecast = useMemo(() => {
+    const parseDraft = (value) => {
+      const parsed = Number.parseFloat(String(value || '').trim().replace(',', '.'));
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+    };
+    const appRamGb = parseDraft(economicsRailwayAppRamDraft);
+    const appCpuVcpu = parseDraft(economicsRailwayAppCpuDraft);
+    const postgresRamGb = parseDraft(economicsRailwayPostgresRamDraft);
+    const postgresVolumeGb = parseDraft(economicsRailwayPostgresVolumeDraft);
+    const redisRamGb = parseDraft(economicsRailwayRedisRamDraft);
+    const egressGb = parseDraft(economicsRailwayEgressDraft);
+    const ramRate = Number(economicsRailwayPricing?.ram_per_gb_month || 0);
+    const cpuRate = Number(economicsRailwayPricing?.cpu_per_vcpu_month || 0);
+    const volumeRate = Number(economicsRailwayPricing?.volume_per_gb_month || 0);
+    const egressRate = Number(economicsRailwayPricing?.egress_per_gb || 0);
+    const appRamCost = appRamGb * ramRate;
+    const appCpuCost = appCpuVcpu * cpuRate;
+    const postgresRamCost = postgresRamGb * ramRate;
+    const postgresVolumeCost = postgresVolumeGb * volumeRate;
+    const redisRamCost = redisRamGb * ramRate;
+    const egressCost = egressGb * Number(economicsRailwayPricing?.egress_per_gb || 0);
+    const totalRamGb = appRamGb + postgresRamGb + redisRamGb;
+    const variableCost = appRamCost + appCpuCost + postgresRamCost + postgresVolumeCost + redisRamCost + egressCost;
+    return {
+      appRamGb,
+      appCpuVcpu,
+      postgresRamGb,
+      postgresVolumeGb,
+      redisRamGb,
+      egressGb,
+      totalRamGb,
+      baselineFixedCost: economicsRailwayTrackedBaselineUsd,
+      appRamCost,
+      appCpuCost,
+      postgresRamCost,
+      postgresVolumeCost,
+      redisRamCost,
+      egressCost,
+      variableCost,
+      totalCost: economicsRailwayTrackedBaselineUsd + variableCost,
+    };
+  }, [
+    economicsRailwayPricing,
+    economicsRailwayTrackedBaselineUsd,
+    economicsRailwayAppRamDraft,
+    economicsRailwayAppCpuDraft,
+    economicsRailwayPostgresRamDraft,
+    economicsRailwayPostgresVolumeDraft,
+    economicsRailwayRedisRamDraft,
+    economicsRailwayEgressDraft,
+  ]);
   const economicsLedgerEventsCount = Number(economicsSummary?.totals?.events_count || 0);
   const economicsLedgerIsEmpty = !!economicsSummary && economicsLedgerEventsCount === 0;
   const selectedEconomicsProviderLabel = economicsProvider === 'all'
@@ -10815,7 +12351,7 @@ function AppInner() {
     },
     {
       key: 'learned_words',
-      title: tr('Выученные слова (FSRS)', 'Gelernte Woerter (FSRS)'),
+      title: tr('Выученные слова (Space Repetition)', 'Gelernte Woerter (Space Repetition)'),
       unit: tr('слов', 'Woerter'),
       data: weeklyMetrics.learned_words || {},
     },
@@ -10951,6 +12487,18 @@ function AppInner() {
   };
 
   const openSingleSectionAndScroll = (key, ref) => {
+    if (key === 'flashcards') {
+      setFlashcardsVisible(true);
+      setFlashcardsOnly(false);
+      setFlashcardActiveMode(null);
+      setFlashcardSettingsModalMode(null);
+      setFlashcardSessionActive(false);
+      setFlashcardPreviewActive(false);
+      setFlashcardExitSummary(false);
+    }
+    if (key === 'movies') {
+      setMoviesCollapsed(false);
+    }
     setSelectedSections(new Set([key]));
     setTimeout(() => {
       scrollToRef(ref, { center: key === 'flashcards', block: 'start' });
@@ -10969,6 +12517,10 @@ function AppInner() {
 
   const getSectionRefByKey = (key) => {
     if (key === 'guide') return guideRef;
+    if (key === 'home_today') return homeTodayPlanRef;
+    if (key === 'home_weekly_plan') return homeWeeklyPlanRef;
+    if (key === 'home_skills') return homeSkillsRef;
+    if (key === 'home_more') return homeMoreRef;
     if (key === 'translations') return translationsRef;
     if (key === 'youtube') return youtubeRef;
     if (key === 'movies') return moviesRef;
@@ -11077,6 +12629,24 @@ function AppInner() {
   const startFlashcardsMode = async (mode) => {
     const normalizedMode = String(mode || '').toLowerCase();
     if (!['fsrs', 'quiz', 'blocks', 'sentence'].includes(normalizedMode)) return;
+    if (normalizedMode !== 'sentence' && flashcardQueueSource === 'manual') {
+      if (manualTrainingSelectionCount <= 0) {
+        setFlashcardsError(tr(
+          'Сначала выберите слова для текущей тренировки в словаре.',
+          'Bitte wähle zuerst Wörter für das aktuelle Training im Wörterbuch aus.'
+        ));
+        setFlashcardsOnly(false);
+        setFlashcardActiveMode(null);
+        return;
+      }
+      const saved = await saveManualTrainingSelection(manualTrainingSelectionIds);
+      const savedIds = normalizePositiveIdList(saved?.card_ids || []);
+      if (!saved || savedIds.length <= 0) {
+        setFlashcardsOnly(false);
+        setFlashcardActiveMode(null);
+        return;
+      }
+    }
     stopTtsPlayback();
     setFlashcardsVisible(true);
     setFlashcardSettingsModalMode(null);
@@ -11179,6 +12749,25 @@ function AppInner() {
       }, 120);
     }
   };
+
+  const openMoreFunctionsPanel = useCallback(() => {
+    openSingleSectionAndScroll('home_more', homeMoreRef);
+  }, [openSingleSectionAndScroll]);
+
+  const canTopbarGoBack = !menuOpen && ((!flashcardsOnly && selectedSections.size > 0) || Boolean(flashcardActiveMode));
+  const handleTopbarBack = useCallback(() => {
+    if (menuOpen) return;
+    if (flashcardActiveMode) {
+      void exitFlashcardsTraining();
+      return;
+    }
+    if (currentSingleSectionRouteKey && currentSingleSectionRouteKey !== 'home') {
+      const navigated = goBackToPreviousSection();
+      if (navigated) return;
+    }
+    goHomeScreen();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSingleSectionRouteKey, flashcardActiveMode, goBackToPreviousSection, goHomeScreen, menuOpen]);
 
   const loadSupportUnread = useCallback(async () => {
     try {
@@ -11327,14 +12916,14 @@ function AppInner() {
 
   const resolveFolderIconLabel = (icon) => {
     const map = {
-      book: 'Book',
-      bolt: 'Bolt',
-      star: 'Star',
-      target: 'Target',
-      flag: 'Flag',
-      check: 'Check',
+      book: '📖',
+      bolt: '⚡',
+      star: '⭐',
+      target: '🎯',
+      flag: '🚩',
+      check: '✅',
     };
-    return map[icon] || 'Folder';
+    return map[icon] || '📂';
   };
 
   const renderFolderIcon = (icon, color) => {
@@ -11518,6 +13107,8 @@ function AppInner() {
   const [assistantConnecting, setAssistantConnecting] = useState(false);
   const [assistantError, setAssistantError] = useState('');
   const [assistantSessionId, setAssistantSessionId] = useState(null);
+  const [assistantSessionAssessment, setAssistantSessionAssessment] = useState(null);
+  const [assistantSessionReviewRequested, setAssistantSessionReviewRequested] = useState(false);
   const [readerSessionId, setReaderSessionId] = useState(null);
 
   // LiveKit login state
@@ -11600,19 +13191,34 @@ function AppInner() {
       setAssistantError(tr('Не удалось определить пользователя Telegram. Обновите страницу.', 'Telegram-Nutzer konnte nicht bestimmt werden. Bitte Seite aktualisieren.'));
       return;
     }
+    let boundSessionId = null;
+    let startedSessionDuringConnect = false;
     try {
       setAssistantConnecting(true);
       setAssistantError('');
+      setAssistantSessionAssessment(null);
+      setAssistantSessionReviewRequested(false);
+      boundSessionId = assistantSessionId;
+      if (!boundSessionId) {
+        boundSessionId = await startAssistantSessionTracking();
+        startedSessionDuringConnect = Boolean(boundSessionId);
+      }
+      if (!boundSessionId) {
+        throw new Error(tr('Не удалось подготовить голосовую сессию.', 'Sprachsession konnte nicht vorbereitet werden.'));
+      }
       const response = await fetch(
-        `/api/token?user_id=${encodeURIComponent(userId)}&username=${encodeURIComponent(displayName)}`
+        `/api/token?user_id=${encodeURIComponent(userId)}&username=${encodeURIComponent(displayName)}&voice_session_id=${encodeURIComponent(boundSessionId)}`
       );
       if (!response.ok) {
         throw new Error(await response.text());
       }
       const data = await response.json();
       setAssistantToken(data.token);
-      setAssistantSessionId(null);
     } catch (error) {
+      if (startedSessionDuringConnect && boundSessionId) {
+        await stopAssistantSessionTracking(boundSessionId, { skipRefresh: true });
+      }
+      setAssistantToken(null);
       setAssistantError(`${tr('Ошибка подключения ассистента', 'Assistent-Verbindungsfehler')}: ${error.message}`);
     } finally {
       setAssistantConnecting(false);
@@ -11620,7 +13226,8 @@ function AppInner() {
   };
 
   const startAssistantSessionTracking = async () => {
-    if (!initData || assistantSessionId) return;
+    if (!initData) return null;
+    if (assistantSessionId) return assistantSessionId;
     try {
       const response = await fetch('/api/assistant/session/start', {
         method: 'POST',
@@ -11633,11 +13240,14 @@ function AppInner() {
       const data = await response.json();
       const nextSessionId = data?.session?.session_id;
       if (nextSessionId !== undefined && nextSessionId !== null) {
-        setAssistantSessionId(Number(nextSessionId));
+        const numericSessionId = Number(nextSessionId);
+        setAssistantSessionId(numericSessionId);
+        return numericSessionId;
       }
     } catch (error) {
       setAssistantError(`${tr('Ошибка старта сессии ассистента', 'Fehler beim Start der Assistent-Session')}: ${error.message}`);
     }
+    return null;
   };
 
   const stopAssistantSessionTracking = async (sessionIdOverride = null, options = {}) => {
@@ -11656,6 +13266,9 @@ function AppInner() {
       if (!response.ok) {
         throw new Error(await response.text());
       }
+      const data = await response.json().catch(() => null);
+      setAssistantSessionAssessment(data?.assessment || null);
+      setAssistantSessionReviewRequested(true);
       if (!shouldSkipRefresh) {
         await loadWeeklyPlan();
       }
@@ -11950,7 +13563,9 @@ function AppInner() {
         continueSingleInstanceHere(`stale_${reason}`);
         return;
       }
-      if (isSingleInstanceWindowPreferred()) {
+      // 'mount' means this window just opened — always claim leadership so the
+      // freshest window wins without requiring visibility/focus to be ready yet.
+      if (reason === 'mount' || isSingleInstanceWindowPreferred()) {
         continueSingleInstanceHere(reason);
         return;
       }
@@ -12008,7 +13623,7 @@ function AppInner() {
   ]);
 
   useEffect(() => {
-    if (!isWebAppMode || !initData || singleInstanceBlocked || typeof window === 'undefined') {
+    if (!isWebAppMode || !initData || !pageVisible || singleInstanceBlocked || typeof window === 'undefined') {
       return undefined;
     }
 
@@ -12037,23 +13652,15 @@ function AppInner() {
     void claimServerLease('claim');
     heartbeatTimer = window.setInterval(() => {
       void claimServerLease('heartbeat');
-    }, 10000);
-
-    const handleVisible = () => {
-      if (document.visibilityState === 'visible') {
-        void claimServerLease('heartbeat');
-      }
-    };
-    document.addEventListener('visibilitychange', handleVisible);
+    }, 20000);
 
     return () => {
       stopped = true;
-      document.removeEventListener('visibilitychange', handleVisible);
       if (heartbeatTimer) {
         window.clearInterval(heartbeatTimer);
       }
     };
-  }, [appMode, initData, isWebAppMode, sessionId, singleInstanceBlocked, telegramApp]);
+  }, [appMode, initData, isWebAppMode, pageVisible, sessionId, singleInstanceBlocked, telegramApp]);
 
   const resumeAutoPausedVisibleTimers = useCallback(async () => {
     if (globalTimerAutoResumeInFlightRef.current) return;
@@ -12748,6 +14355,31 @@ function AppInner() {
         const starterOffer = normalizeStarterDictionaryOffer(data?.starter_dictionary);
         setStarterDictionaryOffer(starterOffer);
         setStarterDictionaryPromptOpen(Boolean(starterOffer?.should_prompt));
+        const bootstrapTranslationSessionId = String(data?.translation_session?.session_id || '').trim();
+        if (String(data?.translation_session?.type || '').trim().toLowerCase() === 'regular' && bootstrapTranslationSessionId) {
+          // Do not auto-navigate to translations if the app was hidden overnight.
+          // A stale Redis session card can survive across days (24h TTL), so we
+          // guard against it here as a second layer on top of the backend DB check.
+          const lastHideTs = Number(safeStorageGet('app_last_hide_ts') || 0);
+          const MIN_HIDE_MS_FOR_DAY_NAV_BLOCK = 4 * 60 * 60 * 1000;
+          let suppressTranslationNav = false;
+          if (lastHideTs) {
+            const todayStr = new Date().toISOString().slice(0, 10);
+            const lastHideDateStr = new Date(lastHideTs).toISOString().slice(0, 10);
+            const hiddenForMs = Date.now() - lastHideTs;
+            if (lastHideDateStr !== todayStr && hiddenForMs >= MIN_HIDE_MS_FOR_DAY_NAV_BLOCK) {
+              suppressTranslationNav = true;
+            }
+          }
+          if (!suppressTranslationNav) {
+            setSelectedSections((prev) => {
+              if (flashcardsOnly || prev.size > 0) {
+                return prev;
+              }
+              return new Set(['translations']);
+            });
+          }
+        }
       } catch (error) {
         if (cancelled || !isAsyncGuardCurrent(bootstrapRequestIdRef, requestId)) {
           return;
@@ -12764,7 +14396,7 @@ function AppInner() {
     return () => {
       cancelled = true;
     };
-  }, [fetchWithTimeout, handleInitDataAuthFailure, initData, isInitDataAuthFailureMessage, isWebAppMode, normalizeStarterDictionaryOffer, readApiError, telegramApp, tr]);
+  }, [fetchWithTimeout, flashcardsOnly, handleInitDataAuthFailure, initData, isInitDataAuthFailureMessage, isWebAppMode, normalizeStarterDictionaryOffer, readApiError, telegramApp, tr]);
 
   useEffect(() => {
     invalidateAsyncGuards(
@@ -12912,6 +14544,13 @@ function AppInner() {
     setSkillReportLoadedOnce(true);
   }, [initData, isWebAppMode, readSkillReportSnapshot, skillReport]);
 
+  // In GERMAN_ONLY_MODE auto-save the fixed profile so the gate never appears.
+  useEffect(() => {
+    if (!GERMAN_ONLY_MODE) return;
+    if (!needsLanguageProfileChoice || languageProfileSaving) return;
+    void saveLanguageProfile();
+  }, [needsLanguageProfileChoice, languageProfileSaving]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     if (!isWebAppMode || !initData || !startupPhase3Ready || !languageProfile?.has_profile) {
       return;
@@ -12964,11 +14603,23 @@ function AppInner() {
   }, [initData, isWebAppMode, pageVisible]);
 
   useEffect(() => {
-    if (!isWebAppMode || !initData || !pageVisible || !startupPhase2Ready || todayPlanStartupRefreshDoneRef.current) {
+    const shouldHydrateTodayPanel = Boolean(isHomeRouteActive);
+    if (
+      !isWebAppMode
+      || !initData
+      || !pageVisible
+      || !startupPhase2Ready
+      || !shouldHydrateTodayPanel
+      || todayPlanStartupRefreshDoneRef.current
+    ) {
       return undefined;
     }
     const snapshot = readTodayPlanSnapshot();
-    const shouldRefresh = !snapshot || isSnapshotRefreshDue(snapshot?.snapshot_saved_at);
+    const shouldRefresh = (
+      !snapshot
+      || isSnapshotRefreshDue(snapshot?.snapshot_saved_at, TODAY_PLAN_AUTO_REFRESH_MAX_AGE_MS)
+      || !(snapshot?.items?.length > 0)
+    );
     if (!shouldRefresh) {
       todayPlanStartupRefreshDoneRef.current = true;
       return undefined;
@@ -12976,46 +14627,76 @@ function AppInner() {
     const delayMs = snapshot ? 1600 : 350;
     const timerId = window.setTimeout(() => {
       todayPlanStartupRefreshDoneRef.current = true;
-      void loadTodayPlan();
+      void loadTodayPlan({ syncFacts: true });
     }, delayMs);
     return () => window.clearTimeout(timerId);
-  }, [homeSnapshotResumeTick, initData, isWebAppMode, loadTodayPlan, pageVisible, readTodayPlanSnapshot, startupPhase2Ready]);
+  }, [
+    homeSnapshotResumeTick,
+    initData,
+    isHomeRouteActive,
+    isWebAppMode,
+    loadTodayPlan,
+    pageVisible,
+    readTodayPlanSnapshot,
+    startupPhase2Ready,
+  ]);
+
+  const loadWeeklyPlanRef = useRef(loadWeeklyPlan);
+  loadWeeklyPlanRef.current = loadWeeklyPlan;
+  const loadSkillReportRef = useRef(loadSkillReport);
+  loadSkillReportRef.current = loadSkillReport;
+  const weeklyPlanRef2 = useRef(weeklyPlan);
+  weeklyPlanRef2.current = weeklyPlan;
+  const skillReportRef2 = useRef(skillReport);
+  skillReportRef2.current = skillReport;
+  const weeklyPlanLoadingRef = useRef(weeklyPlanLoading);
+  weeklyPlanLoadingRef.current = weeklyPlanLoading;
+  const skillReportLoadingRef = useRef(skillReportLoading);
+  skillReportLoadingRef.current = skillReportLoading;
 
   useEffect(() => {
-    if (!isWebAppMode || !initData || !pageVisible || !startupPhase3Ready || weeklyPlanStartupRefreshDoneRef.current) {
-      return undefined;
+    if (!isWebAppMode || !initData || !pageVisible || !startupPhase3Ready) return;
+    if (activeHomeSubsectionKey === 'home_weekly_plan') {
+      if (weeklyPlanLoadingRef.current || weeklyPlanStartupRefreshDoneRef.current) return;
+      const snapshot = readWeeklyPlanSnapshot();
+      const shouldRefresh = !snapshot || isSnapshotRefreshDue(snapshot?.snapshot_saved_at);
+      if (!shouldRefresh) {
+        weeklyPlanStartupRefreshDoneRef.current = true;
+        return;
+      }
+      const delayMs = snapshot ? 1200 : 250;
+      const timerId = window.setTimeout(() => {
+        weeklyPlanStartupRefreshDoneRef.current = true;
+        void loadWeeklyPlanRef.current();
+      }, delayMs);
+      return () => window.clearTimeout(timerId);
     }
-    const snapshot = readWeeklyPlanSnapshot();
-    const shouldRefresh = !snapshot?.plan || isSnapshotRefreshDue(snapshot?.plan?.snapshot_saved_at);
-    if (!shouldRefresh) {
-      weeklyPlanStartupRefreshDoneRef.current = true;
-      return undefined;
+    if (activeHomeSubsectionKey === 'home_skills') {
+      if (skillReportLoadingRef.current || skillReportStartupRefreshDoneRef.current) return;
+      const snapshot = readSkillReportSnapshot();
+      const shouldRefresh = !snapshot || isSnapshotRefreshDue(snapshot?.snapshot_saved_at);
+      if (!shouldRefresh) {
+        skillReportStartupRefreshDoneRef.current = true;
+        return;
+      }
+      const delayMs = snapshot ? 1200 : 250;
+      const timerId = window.setTimeout(() => {
+        skillReportStartupRefreshDoneRef.current = true;
+        void loadSkillReportRef.current();
+      }, delayMs);
+      return () => window.clearTimeout(timerId);
     }
-    const delayMs = snapshot?.plan ? 2400 : 1100;
-    const timerId = window.setTimeout(() => {
-      weeklyPlanStartupRefreshDoneRef.current = true;
-      void loadWeeklyPlan();
-    }, delayMs);
-    return () => window.clearTimeout(timerId);
-  }, [homeSnapshotResumeTick, initData, isWebAppMode, loadWeeklyPlan, pageVisible, readWeeklyPlanSnapshot, startupPhase3Ready]);
-
-  useEffect(() => {
-    if (!isWebAppMode || !initData || !pageVisible || !startupPhase3Ready || skillReportStartupRefreshDoneRef.current) {
-      return undefined;
-    }
-    const snapshot = readSkillReportSnapshot();
-    const shouldRefresh = !snapshot || isSnapshotRefreshDue(snapshot?.snapshot_saved_at);
-    if (!shouldRefresh) {
-      skillReportStartupRefreshDoneRef.current = true;
-      return undefined;
-    }
-    const delayMs = snapshot ? 3200 : 1800;
-    const timerId = window.setTimeout(() => {
-      skillReportStartupRefreshDoneRef.current = true;
-      void loadSkillReport();
-    }, delayMs);
-    return () => window.clearTimeout(timerId);
-  }, [homeSnapshotResumeTick, initData, isWebAppMode, loadSkillReport, pageVisible, readSkillReportSnapshot, startupPhase3Ready]);
+    return undefined;
+  }, [
+    activeHomeSubsectionKey,
+    homeSnapshotResumeTick,
+    initData,
+    isWebAppMode,
+    pageVisible,
+    readSkillReportSnapshot,
+    readWeeklyPlanSnapshot,
+    startupPhase3Ready,
+  ]);
 
   useEffect(() => {
     if (!isWebAppMode) {
@@ -13084,15 +14765,18 @@ function AppInner() {
       setSupportFailedMessages([]);
       return;
     }
+    if (!pageVisible) {
+      return undefined;
+    }
     void loadSupportUnread();
     const timer = window.setInterval(() => {
       void loadSupportUnread();
-    }, 15000);
+    }, 30000);
     return () => window.clearInterval(timer);
-  }, [isWebAppMode, initData, startupPhase3Ready, loadSupportUnread]);
+  }, [isWebAppMode, initData, pageVisible, startupPhase3Ready, loadSupportUnread]);
 
   useEffect(() => {
-    if (!supportSectionVisible || !initData) return;
+    if (!supportSectionVisible || !initData || !pageVisible) return;
     void loadSupportMessages();
     void markSupportMessagesRead();
     const timer = window.setInterval(() => {
@@ -13103,6 +14787,7 @@ function AppInner() {
   }, [
     supportSectionVisible,
     initData,
+    pageVisible,
     loadSupportMessages,
     markSupportMessagesRead,
     loadSupportUnread,
@@ -13151,6 +14836,16 @@ function AppInner() {
     if (!isWebAppMode || !initData || !startupPhase3Ready || planAnalyticsPeriod === 'week') return;
     void loadPlanAnalytics(planAnalyticsPeriod);
   }, [planAnalyticsPeriod, isWebAppMode, initData, startupPhase3Ready]);
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData || !startupPhase3Ready) return;
+    // Download base dictionary offline pack in the background when stale
+    isOfflinePackFresh().then((fresh) => {
+      if (!fresh) {
+        void downloadOfflinePack('de', 10000);
+      }
+    });
+  }, [isWebAppMode, initData, startupPhase3Ready]);
 
   useEffect(() => {
     if (!isWebAppMode || !initData) {
@@ -13472,13 +15167,50 @@ function AppInner() {
     loadFolders();
   }, [initData, isWebAppMode]);
 
+  useEffect(() => {
+    if (vocabTab !== 'library' || !initData) return;
+    setVocabOffset(0);
+    void loadVocabLibrary({ reset: true });
+  }, [vocabTab, vocabFolderFilter, vocabSearch, vocabSort, initData]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const handleOnline  = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online',  handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online',  handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // Load pending counts on mount.
+  useEffect(() => {
+    const userId = webappUser?.id ? Number(webappUser.id) : null;
+    if (!userId || !isOfflineCacheAvailable()) return;
+    Promise.all([
+      countPendingReviews(userId),
+      countVocabMutations(userId),
+    ]).then(([srsCount, vocabCount]) => {
+      setSrsOfflinePendingCount(srsCount);
+      setVocabOfflinePendingCount(vocabCount);
+    }).catch(() => {});
+  }, [webappUser?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Drain all offline queues whenever we (re)connect.
+  useEffect(() => {
+    if (!isOnline) return;
+    void drainOfflineSrsReviews();
+    void drainOfflineVocabMutations();
+  }, [isOnline, drainOfflineSrsReviews, drainOfflineVocabMutations]);
+
   const fsrsSectionActive = Boolean(
     initData
     && isSectionVisible('flashcards')
     && flashcardsVisible
     && flashcardActiveMode === 'fsrs'
   );
-  const fsrsInitSignature = `${String(initData || '')}|${flashcardsVisible ? 1 : 0}|${String(flashcardActiveMode || '')}|${String(languageProfile?.native_language || '')}|${String(languageProfile?.learning_language || '')}|${isSectionVisible('flashcards') ? 1 : 0}`;
+  const fsrsInitSignature = `${String(initData || '')}|${flashcardsVisible ? 1 : 0}|${String(flashcardActiveMode || '')}|${String(languageProfile?.native_language || '')}|${String(languageProfile?.learning_language || '')}|${isSectionVisible('flashcards') ? 1 : 0}|${String(flashcardQueueSource || 'system')}`;
 
   useEffect(() => {
     if (!fsrsSectionActive) {
@@ -13689,10 +15421,10 @@ function AppInner() {
         wrong: prev.wrong + 1,
       }));
       setFlashcardTimedOut(true);
-      playFeedbackSound('timeout');
       setFlashcardSelection(-1);
       setFlashcardOutcome('timeout');
       (async () => {
+        await playFeedbackSound('timeout');
         const german = resolveFlashcardGerman(entry);
         if (german) {
           await playTts(german, getLearningTtsLocale());
@@ -14101,27 +15833,6 @@ function AppInner() {
     persistTranslationDraftsToServer,
   ]);
 
-  useEffect(() => {
-    if (!isWebAppMode || !initData) {
-      return;
-    }
-    let cancelled = false;
-    loadTopics();
-    (async () => {
-      const sessionInfo = await loadSessionInfo();
-      if (cancelled) return;
-      const restoredSessionId = String(
-        sessionInfo?.type === 'regular' ? (sessionInfo?.session_id || '') : ''
-      ).trim();
-      await loadSentences({
-        sessionId: restoredSessionId || undefined,
-      });
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [initData, isWebAppMode]);
-
   const syncTranslationSessionActivity = useCallback(async (action, options = {}) => {
     const normalizedAction = String(action || '').trim().toLowerCase();
     if (!['start', 'resume', 'pause', 'stop'].includes(normalizedAction)) {
@@ -14225,39 +15936,99 @@ function AppInner() {
   }, [sessionType, translationSessionId]);
 
   useEffect(() => {
+    onAppResumeTranslationCheckRef.current = () => {
+      const isStalePreparingScreen = (
+        !flashcardsOnly
+        && selectedSections.has('translations')
+        && Boolean(translationProgressiveFill?.active)
+        && sentences.length === 0
+      );
+      if (!isStalePreparingScreen) return;
+      translationBootstrapReadyRef.current = '';
+      translationProgressiveFillPollTokenRef.current += 1;
+      setFlashcardsOnly(false);
+      setFlashcardSessionActive(false);
+      setSelectedSections(new Set());
+      setYoutubeBackSection('');
+      setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 60);
+    };
+  }, [flashcardsOnly, selectedSections, translationProgressiveFill, sentences]);
+
+  useEffect(() => {
     const resetHomeSnapshotStartupRefresh = () => {
       todayPlanStartupRefreshDoneRef.current = false;
       skillReportStartupRefreshDoneRef.current = false;
       weeklyPlanStartupRefreshDoneRef.current = false;
     };
+    const updatePageVisibility = (visible) => {
+      const nextVisible = Boolean(visible);
+      pageVisibleRef.current = nextVisible;
+      setPageVisible(nextVisible);
+      return nextVisible;
+    };
     const markHomeSnapshotForeground = () => {
       resetHomeSnapshotStartupRefresh();
       setHomeSnapshotResumeTick((value) => value + 1);
+
+      // If the app was last hidden on a different calendar day and the hide happened
+      // at least 4 hours ago, treat this as a "fresh next-day open" and reset to home.
+      // This prevents stale translation state (e.g. "preparing…") from persisting
+      // across overnight suspensions.
+      const MIN_HIDE_MS_FOR_DAY_RESET = 4 * 60 * 60 * 1000; // 4 hours
+      const lastHideTs = Number(safeStorageGet('app_last_hide_ts') || 0);
+      if (lastHideTs) {
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const lastHideDateStr = new Date(lastHideTs).toISOString().slice(0, 10);
+        const hiddenForMs = Date.now() - lastHideTs;
+        if (lastHideDateStr !== todayStr && hiddenForMs >= MIN_HIDE_MS_FOR_DAY_RESET) {
+          translationBootstrapReadyRef.current = '';
+          translationProgressiveFillPollTokenRef.current += 1;
+          setFlashcardsOnly(false);
+          setFlashcardSessionActive(false);
+          setSelectedSections(new Set());
+          setYoutubeBackSection('');
+          setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 60);
+          return;
+        }
+      }
+
+      onAppResumeTranslationCheckRef.current?.();
     };
     const onVisibilityChange = () => {
       const visible = document.visibilityState !== 'hidden';
-      setPageVisible(visible);
+      const wasVisible = pageVisibleRef.current;
+      updatePageVisibility(visible);
       if (!visible) {
         resetHomeSnapshotStartupRefresh();
         translationActivityRunningRef.current = false;
         void syncTranslationSessionActivity('pause', { force: true, keepalive: true });
-      } else {
+        safeStorageSet('app_last_hide_ts', String(Date.now()));
+      } else if (!wasVisible) {
         markHomeSnapshotForeground();
       }
     };
     const onPageHide = () => {
-      setPageVisible(false);
+      updatePageVisibility(false);
       resetHomeSnapshotStartupRefresh();
       translationActivityRunningRef.current = false;
       void syncTranslationSessionActivity('pause', { force: true, keepalive: true });
+      safeStorageSet('app_last_hide_ts', String(Date.now()));
     };
     const onPageShow = () => {
-      setPageVisible(document.visibilityState !== 'hidden');
-      markHomeSnapshotForeground();
+      const visible = document.visibilityState !== 'hidden';
+      const wasVisible = pageVisibleRef.current;
+      updatePageVisibility(visible);
+      if (visible && !wasVisible) {
+        markHomeSnapshotForeground();
+      }
     };
     const onWindowFocus = () => {
-      setPageVisible(true);
-      markHomeSnapshotForeground();
+      const visible = document.visibilityState !== 'hidden';
+      const wasVisible = pageVisibleRef.current;
+      updatePageVisibility(visible);
+      if (visible && !wasVisible) {
+        markHomeSnapshotForeground();
+      }
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('focus', onWindowFocus);
@@ -14466,6 +16237,30 @@ function AppInner() {
       const jitterMs = Math.floor(Math.random() * 420);
       return Math.round(recommended + jitterMs);
     };
+    const fetchTerminalTranslationCheckDetails = async ({ checkSessionId, attemptCount }) => {
+      const response = await fetch('/api/webapp/check/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          check_session_id: checkSessionId,
+          poll_count: attemptCount,
+          include_items: true,
+          language_pair: getWebappLanguagePairHint() || undefined,
+        }),
+      });
+      if (!response.ok) {
+        const apiMessage = await readApiError(
+          response,
+          'Не удалось загрузить результаты проверки.',
+          'Pruefungsergebnisse konnten nicht geladen werden.'
+        );
+        throw new Error(apiMessage);
+      }
+      const terminalPayload = await response.json();
+      applyTranslationCheckStatusPayload(terminalPayload);
+      return terminalPayload;
+    };
     let attempt = 0;
     let suggestedDelayMs = 0;
     while (!translationCheckUnmountedRef.current && translationCheckPollTokenRef.current === pollToken) {
@@ -14501,13 +16296,19 @@ function AppInner() {
         throw new Error(apiMessage);
       }
 
-      const data = await response.json();
+      let data = await response.json();
       suggestedDelayMs = Number(data?.polling?.suggested_delay_ms || 0);
       const nextState = applyTranslationCheckStatusPayload(data);
       if (!nextState.sessionId) {
         throw new Error(tr('Сессия проверки не найдена.', 'Pruefungssession wurde nicht gefunden.'));
       }
       if (nextState.status === 'done' || nextState.status === 'failed' || nextState.status === 'canceled') {
+        if (data?.items_included === false) {
+          data = await fetchTerminalTranslationCheckDetails({
+            checkSessionId: nextState.sessionId,
+            attemptCount: attempt,
+          });
+        }
         void loadTodayPlan();
         return data;
       }
@@ -14722,7 +16523,22 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await response.text());
+        if (response.status === 409) {
+          // Session already running — try to resume it silently
+          setWebappLoading(false);
+          const existing = await loadSessionInfo();
+          if (existing && existing.type !== 'none') {
+            // Loaded existing session — nothing more to do, UI will update
+            return;
+          }
+          // Stale lock with no real session — show clear message
+          setWebappError(tr(
+            'Предыдущая сессия ещё завершается. Подождите несколько секунд и попробуйте снова.',
+            'Die vorherige Sitzung wird noch beendet. Bitte warte einige Sekunden und versuche es erneut.'
+          ));
+          return;
+        }
+        throw new Error(await readApiError(response, 'Ошибка старта', 'Startfehler'));
       }
       const data = await response.json();
       if (data?.language_pair) {
@@ -14828,9 +16644,66 @@ function AppInner() {
     }
   };
 
+  const ensureTranslationsBootstrapped = useCallback(async ({ preserveFinishMessage = false } = {}) => {
+    if (!isWebAppMode || !initData) {
+      return null;
+    }
+    const bootstrapKey = String(initData || '').trim();
+    if (!bootstrapKey) {
+      return null;
+    }
+    if (translationBootstrapReadyRef.current === bootstrapKey) {
+      return null;
+    }
+    if (translationBootstrapPromiseRef.current) {
+      return translationBootstrapPromiseRef.current;
+    }
+
+    // Keep translation bootstrap off the default tile dashboard; only hydrate when Translations is actually entered.
+    const bootstrapPromise = (async () => {
+      loadTopics();
+      const sessionInfo = await loadSessionInfo();
+      const restoredSessionId = String(
+        sessionInfo?.type === 'regular' ? (sessionInfo?.session_id || '') : ''
+      ).trim();
+      const sentencesData = await loadSentences({
+        sessionId: restoredSessionId || undefined,
+        preserveFinishMessage,
+      });
+      if (sentencesData !== null) {
+        translationBootstrapReadyRef.current = bootstrapKey;
+      }
+      return sessionInfo;
+    })();
+
+    translationBootstrapPromiseRef.current = bootstrapPromise;
+    try {
+      return await bootstrapPromise;
+    } finally {
+      translationBootstrapPromiseRef.current = null;
+    }
+  }, [initData, isWebAppMode, loadSentences, loadSessionInfo, loadTopics]);
+
+  useEffect(() => {
+    if (!isWebAppMode || !initData) {
+      translationBootstrapReadyRef.current = '';
+      translationBootstrapPromiseRef.current = null;
+      return;
+    }
+    if (flashcardsOnly || !selectedSections.has('translations')) {
+      return;
+    }
+    void ensureTranslationsBootstrapped();
+  }, [ensureTranslationsBootstrapped, flashcardsOnly, initData, isWebAppMode, selectedSections]);
+
   const handleStartStory = async () => {
     if (!initData) {
       setWebappError(initDataMissingMsg);
+      return;
+    }
+    if (storyMode === 'arena' && arenaPhase !== 'playing') {
+      setArenaPhase('selecting');
+      void handleFetchArenaCandidates();
       return;
     }
     setWebappLoading(true);
@@ -14865,21 +16738,23 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await response.text());
+        throw new Error(await readApiError(response, 'Ошибка старта истории', 'Story-Startfehler'));
       }
       const data = await response.json();
       if (data.blocked) {
         setFinishMessage(activeTranslationSessionWarning);
-        const sessionInfo = await loadSessionInfo();
-        if (String(sessionInfo?.type || '') === 'story') {
-          await loadSentences();
+        const blockedSessionId = String(data.session_id || '').trim() || undefined;
+        await loadSessionInfo();
+        if (blockedSessionId) {
+          await loadSentences({ sessionId: blockedSessionId, preserveFinishMessage: true });
         } else {
           setSentences([]);
         }
         return;
       }
+      const storySessionId = String(data.session_id || '').trim() || undefined;
       await loadSessionInfo();
-      await loadSentences();
+      await loadSentences({ sessionId: storySessionId });
     } catch (error) {
       setWebappError(`${tr('Ошибка старта истории', 'Story-Startfehler')}: ${error.message}`);
     } finally {
@@ -14940,13 +16815,134 @@ function AppInner() {
       }
       const data = await response.json();
       setStoryResult(data);
+      setStoryLeaderboard(null);
+      setStoryVotes(null);
       setSentences([]);
       await loadSessionInfo();
+      if (data.story_id) void handleLoadStoryLeaderboard(data.story_id);
     } catch (error) {
       setWebappError(`${tr('Ошибка истории', 'Story-Fehler')}: ${error.message}`);
     } finally {
       setWebappLoading(false);
     }
+  };
+
+  const handleFetchArenaCandidates = async () => {
+    if (!initData) return;
+    setArenaCandidatesLoading(true);
+    setArenaCandidates([]);
+    try {
+      const resp = await fetch('/api/webapp/story/arena/candidates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, story_type: storyType, difficulty: storyDifficulty }),
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      setArenaCandidates(Array.isArray(data.candidates) ? data.candidates : []);
+    } catch { /* non-fatal */ }
+    finally { setArenaCandidatesLoading(false); }
+  };
+
+  const handleStartArenaWithCandidate = async (candidate) => {
+    setArenaSelectedCandidate(candidate || null);
+    setArenaPhase('playing');
+    const arenaStoryId = candidate ? candidate.story_id : null;
+    setWebappLoading(true);
+    translationProgressiveFillPollTokenRef.current += 1;
+    setTranslationProgressiveFill({ active: false, sessionId: null, readyCount: 0, expectedTotal: 7, status: 'idle', error: '' });
+    setWebappError('');
+    setFinishMessage('');
+    setFinishStatus('idle');
+    setTranslationCheckProgress({ active: false, done: 0, total: 0 });
+    setStoryResult(null);
+    setResults([]);
+    setTranslationAudioGrammarOptIn({});
+    setTranslationAudioGrammarSaving({});
+    setExplanations({});
+    try {
+      const response = await fetch('/api/webapp/story/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          mode: 'arena',
+          story_type: storyType,
+          difficulty: storyDifficulty,
+          story_id: arenaStoryId,
+        }),
+      });
+      if (!response.ok) throw new Error(await readApiError(response, 'Ошибка старта арены', 'Arena-Startfehler'));
+      const data = await response.json();
+      if (data.blocked) {
+        setFinishMessage(activeTranslationSessionWarning);
+        const blockedSessionId = String(data.session_id || '').trim() || undefined;
+        await loadSessionInfo();
+        if (blockedSessionId) await loadSentences({ sessionId: blockedSessionId, preserveFinishMessage: true });
+        else setSentences([]);
+        return;
+      }
+      const storySessionId = String(data.session_id || '').trim() || undefined;
+      await loadSessionInfo();
+      await loadSentences({ sessionId: storySessionId });
+    } catch (error) {
+      setWebappError(`${tr('Ошибка старта арены', 'Arena-Startfehler')}: ${error.message}`);
+    } finally {
+      setWebappLoading(false);
+    }
+  };
+
+  const handleStoryVote = async (vote) => {
+    if (!initData || !storyResult?.story_id || storyVoteLoading) return;
+    setStoryVoteLoading(true);
+    try {
+      const resp = await fetch('/api/webapp/story/vote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, story_id: storyResult.story_id, vote }),
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      setStoryVotes({ likes: data.likes, dislikes: data.dislikes, my_vote: data.action === 'removed' ? null : vote });
+    } catch { /* non-fatal */ }
+    finally { setStoryVoteLoading(false); }
+  };
+
+  const handleTranslationVote = async (scoreId) => {
+    if (!initData || translationVoteLoading[scoreId]) return;
+    setTranslationVoteLoading((prev) => ({ ...prev, [scoreId]: true }));
+    try {
+      const resp = await fetch('/api/webapp/story/translation/vote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, score_id: scoreId }),
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      setStoryLeaderboard((prev) => prev
+        ? prev.map((entry) => entry.score_id === scoreId
+          ? { ...entry, peoples_votes: data.peoples_votes }
+          : entry)
+        : prev);
+    } catch { /* non-fatal */ }
+    finally { setTranslationVoteLoading((prev) => ({ ...prev, [scoreId]: false })); }
+  };
+
+  const handleLoadStoryLeaderboard = async (storyId) => {
+    if (!initData || !storyId || storyLeaderboardLoading) return;
+    setStoryLeaderboardLoading(true);
+    try {
+      const resp = await fetch(`/api/webapp/story/${storyId}/leaderboard`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData }),
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      setStoryLeaderboard(Array.isArray(data.leaderboard) ? data.leaderboard : []);
+      if (data.votes) setStoryVotes(data.votes);
+    } catch { /* non-fatal */ }
+    finally { setStoryLeaderboardLoading(false); }
   };
 
   const handleDraftLiveChange = useCallback((sentenceId, value, options = {}) => {
@@ -15459,6 +17455,112 @@ function AppInner() {
     const secondary = item?.meanings?.secondary;
     return Array.isArray(secondary) ? secondary.filter((entry) => entry && typeof entry === 'object') : [];
   };
+  const isSingleWordSavedEntry = (value, lang) => {
+    const text = String(value || '').trim();
+    if (!text) return false;
+    const tokens = text.match(/[0-9A-Za-zÀ-ÿА-Яа-яЁёÄÖÜäöüß'-]+/gu) || [];
+    if (tokens.length === 0) return false;
+    if (tokens.length >= 5) return false;
+    if (tokens.length >= 3 && /[.!?]/.test(text)) return false;
+    const normalizedLang = normalizeLangCode(lang || '');
+    if (
+      normalizedLang === 'de'
+      && tokens.length === 2
+      && new Set(['der', 'die', 'das', 'den', 'dem', 'des', 'ein', 'eine', 'einen', 'einem', 'einer', 'eines']).has(tokens[0].toLowerCase())
+    ) {
+      return true;
+    }
+    return tokens.length === 1;
+  };
+  const getSavedEntryRankedMeanings = (item) => {
+    const responseJson = item?.response_json && typeof item.response_json === 'object' ? item.response_json : {};
+    const dictionarySenses = Array.isArray(responseJson.dictionary_senses)
+      ? responseJson.dictionary_senses.filter((entry) => entry && typeof entry === 'object' && String(entry.value || '').trim())
+      : [];
+    if (dictionarySenses.length > 0) return dictionarySenses;
+    const entryKind = String(responseJson.entry_kind || '').trim().toLowerCase();
+    const sourceText = String(
+      responseJson.source_text
+      || item?.word_ru
+      || responseJson.word_ru
+      || item?.word_de
+      || responseJson.word_de
+      || ''
+    ).trim();
+    const sourceLang = item?.source_lang || responseJson.source_lang || '';
+    if (entryKind && entryKind !== 'word') return [];
+    if (!entryKind && !isSingleWordSavedEntry(sourceText, sourceLang)) return [];
+    const fallback = [];
+    const primary = getDictionaryPrimaryMeaning(responseJson);
+    if (primary) {
+      fallback.push({ ...primary, rank: 1, label: 'main' });
+    }
+    getDictionarySecondaryMeanings(responseJson).forEach((entry, index) => {
+      fallback.push({ ...entry, rank: index + 2, label: 'secondary' });
+    });
+    return fallback;
+  };
+  const canEditSavedEntryMeanings = (item) => {
+    if (!item) return false;
+    const responseJson = item?.response_json && typeof item.response_json === 'object' ? item.response_json : {};
+    const entryKind = String(responseJson.entry_kind || '').trim().toLowerCase();
+    if (entryKind === 'word') return true;
+    if (getSavedEntryRankedMeanings(item).length > 0) return true;
+    const sourceText = String(
+      responseJson.source_text
+      || item?.word_ru
+      || responseJson.word_ru
+      || item?.word_de
+      || responseJson.word_de
+      || ''
+    ).trim();
+    return isSingleWordSavedEntry(sourceText, item?.source_lang || responseJson.source_lang || '');
+  };
+  const getSavedEntrySenseValues = (item) => {
+    const meanings = getSavedEntryRankedMeanings(item);
+    const primaryFallback = String(item?.translation_ru || item?.translation_de || item?.display_translation || '').trim();
+    return [
+      String(meanings[0]?.value || primaryFallback).trim(),
+      String(meanings[1]?.value || '').trim(),
+      String(meanings[2]?.value || '').trim(),
+    ];
+  };
+  const normalizeComparableText = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const getSavedEntryMeaningRows = (item, limit = 3) => {
+    const rows = [];
+    const seen = new Set();
+    getSavedEntryRankedMeanings(item).forEach((sense, index) => {
+      const text = formatDictionaryMeaningText(sense);
+      const normalized = normalizeComparableText(text);
+      if (!normalized || seen.has(normalized)) return;
+      seen.add(normalized);
+      rows.push({
+        rank: Number(sense?.rank) > 0 ? Number(sense.rank) : index + 1,
+        text,
+      });
+    });
+    return rows.slice(0, Math.max(0, Number(limit) || 0));
+  };
+  const getSavedEntrySupplementalMeaningRows = (item, baseText = '', limit = 2) => {
+    const normalizedBase = normalizeComparableText(baseText);
+    return getSavedEntryMeaningRows(item, 5)
+      .filter((row) => normalizeComparableText(row.text) !== normalizedBase)
+      .slice(0, Math.max(0, Number(limit) || 0));
+  };
+  const normalizePositiveIdList = (values) => {
+    if (!Array.isArray(values)) return [];
+    const seen = new Set();
+    const normalized = [];
+    values.forEach((raw) => {
+      const value = Number(raw || 0);
+      if (!Number.isFinite(value) || value <= 0) return;
+      const safeValue = Math.trunc(value);
+      if (seen.has(safeValue)) return;
+      seen.add(safeValue);
+      normalized.push(safeValue);
+    });
+    return normalized;
+  };
   const getDictionaryPronunciationRows = (item) => {
     const pronunciation = item?.pronunciation;
     if (!pronunciation || typeof pronunciation !== 'object') return [];
@@ -15616,16 +17718,19 @@ function AppInner() {
         youtubePausedBySelectionRef.current = false;
       }
     }
-    const clientX = event?.clientX ?? event?.touches?.[0]?.clientX ?? window.innerWidth / 2;
-    const clientY = event?.clientY ?? event?.touches?.[0]?.clientY ?? window.innerHeight / 3;
+    const isTouchEvent = !!(event?.touches?.[0] || event?.changedTouches?.[0]);
+    const touchCoords = event?.changedTouches?.[0] || event?.touches?.[0];
+    const clientX = event?.clientX ?? touchCoords?.clientX ?? window.innerWidth / 2;
+    const clientY = event?.clientY ?? touchCoords?.clientY ?? window.innerHeight / 3;
     const menuWidth = youtubeAppFullscreen ? Math.min(220, window.innerWidth * 0.58) : 210;
     const menuHeight = youtubeAppFullscreen ? 128 : (options?.compact ? 116 : 144);
     const margin = 10;
     const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
     const safeX = clamp(clientX + 8, margin, Math.max(margin, window.innerWidth - menuWidth - margin));
+    // On touch devices position the menu above the finger so it isn't hidden under it.
     const rawY = youtubeAppFullscreen
       ? clientY - menuHeight - 12
-      : clientY + 8;
+      : isTouchEvent ? clientY - menuHeight - 16 : clientY + 8;
     const safeY = clamp(rawY, margin, Math.max(margin, window.innerHeight - menuHeight - margin));
     setSelectionText(text);
     setSelectionPos({ x: safeX, y: safeY });
@@ -17336,7 +19441,19 @@ function AppInner() {
   const buildFlashcardsEmptyState = useCallback((reason, meta = {}, mode = flashcardTrainingModeRef.current || flashcardTrainingMode || 'quiz') => {
     const normalizedReason = String(reason || '').trim().toLowerCase();
     const normalizedMode = String(mode || 'quiz').trim().toLowerCase();
+    const queueSource = String(meta?.queue_source || '').trim().toLowerCase();
     if (!normalizedReason) return null;
+    if (normalizedReason === 'manual_selection_empty') {
+      return {
+        kind: normalizedReason,
+        badge: tr('Текущая выборка', 'Aktuelle Auswahl'),
+        title: tr('Вы ещё не выбрали слова для текущей тренировки', 'Du hast noch keine Wörter für die aktuelle Trainingsauswahl markiert'),
+        body: tr(
+          'Откройте словарь, отметьте слова чекбоксами и нажмите «Учить». Только после этого ручная очередь начнёт работать.',
+          'Öffne das Wörterbuch, markiere Wörter per Checkbox und tippe auf „Lernen“. Erst danach startet die manuelle Warteschlange.'
+        ),
+      };
+    }
     if (normalizedReason === 'dictionary_empty') {
       return {
         kind: normalizedReason,
@@ -17351,11 +19468,19 @@ function AppInner() {
     if (normalizedReason === 'shared_queue_completed_today') {
       return {
         kind: normalizedReason,
-        badge: normalizedMode === 'blocks' ? 'Blocks' : normalizedMode === 'quiz' ? 'Quiz' : 'Training',
-        title: tr('На сегодня слова для тренировки уже закончились', 'Fuer heute sind die Trainingswoerter schon erledigt'),
+        badge: queueSource === 'manual'
+          ? tr('Текущая выборка', 'Aktuelle Auswahl')
+          : (normalizedMode === 'blocks' ? 'Blocks' : normalizedMode === 'quiz' ? 'Quiz' : 'Training'),
+        title: queueSource === 'manual'
+          ? tr('В текущей выборке сейчас нет доступных карточек', 'In deiner aktuellen Auswahl gibt es aktuell keine verfügbaren Karten')
+          : tr('На сегодня слова для тренировки уже закончились', 'Fuer heute sind die Trainingswoerter schon erledigt'),
         body: tr(
-          'Вы уже прошли доступные карточки из общей очереди через FSRS или другой режим. Возвращайтесь позже или добавьте новые слова в словарь.',
-          'Du hast die verfuegbaren Karten aus der gemeinsamen Warteschlange bereits in FSRS oder einem anderen Modus durchgearbeitet. Komm spaeter wieder oder fuege neue Woerter zum Woerterbuch hinzu.'
+          queueSource === 'manual'
+            ? 'Выбранные слова уже повторены или ещё не дошли по интервалу до следующего показа. Можно вернуться позже или собрать другую текущую выборку.'
+            : 'Вы уже прошли доступные карточки из общей очереди через Space Repetition или другой режим. Возвращайтесь позже или добавьте новые слова в словарь.',
+          queueSource === 'manual'
+            ? 'Die ausgewählten Wörter wurden bereits wiederholt oder sind noch nicht wieder fällig. Komm später wieder oder stelle eine andere aktuelle Auswahl zusammen.'
+            : 'Du hast die verfuegbaren Karten aus der gemeinsamen Warteschlange bereits in Space Repetition oder einem anderen Modus durchgearbeitet. Komm spaeter wieder oder fuege neue Woerter zum Woerterbuch hinzu.'
         ),
       };
     }
@@ -17411,21 +19536,367 @@ function AppInner() {
     };
   }, [tr]);
 
+  const loadManualTrainingSelection = useCallback(async () => {
+    if (!initData) return;
+    setManualTrainingSelectionLoading(true);
+    setManualTrainingSelectionError('');
+    try {
+      const response = await fetchWithTimeout('/api/webapp/flashcards/manual-selection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData }),
+      }, 12000);
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Не удалось загрузить текущую выборку.', 'Die aktuelle Auswahl konnte nicht geladen werden.'));
+      }
+      const data = await response.json();
+      setManualTrainingSelectionIds(normalizePositiveIdList(data?.card_ids || []));
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось загрузить текущую выборку.',
+        'Die aktuelle Auswahl konnte nicht geladen werden.'
+      );
+      setManualTrainingSelectionError(friendly);
+    } finally {
+      setManualTrainingSelectionLoading(false);
+    }
+  }, [fetchWithTimeout, initData, normalizeNetworkErrorMessage, readApiError]);
+
+  const saveManualTrainingSelection = useCallback(async (cardIds, options = {}) => {
+    const { silent = false } = options || {};
+    if (!initData) {
+      if (!silent) {
+        setManualTrainingSelectionError(initDataMissingMsg);
+      }
+      return null;
+    }
+    const normalizedCardIds = normalizePositiveIdList(cardIds);
+    setManualTrainingSelectionSaving(true);
+    if (!silent) {
+      setManualTrainingSelectionError('');
+    }
+    try {
+      const response = await fetchWithTimeout('/api/webapp/flashcards/manual-selection/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          card_ids: normalizedCardIds,
+        }),
+      }, 15000);
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Не удалось подготовить текущую выборку.', 'Die aktuelle Auswahl konnte nicht vorbereitet werden.'));
+      }
+      const data = await response.json();
+      const savedIds = normalizePositiveIdList(data?.card_ids || normalizedCardIds);
+      setManualTrainingSelectionIds(savedIds);
+      return { ...data, card_ids: savedIds };
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось подготовить текущую выборку.',
+        'Die aktuelle Auswahl konnte nicht vorbereitet werden.'
+      );
+      if (!silent) {
+        setManualTrainingSelectionError(friendly);
+      }
+      return null;
+    } finally {
+      setManualTrainingSelectionSaving(false);
+    }
+  }, [fetchWithTimeout, initData, initDataMissingMsg, normalizeNetworkErrorMessage, readApiError]);
+
+  const clearManualTrainingSelectionRemote = useCallback(async ({ silent = false } = {}) => {
+    if (!initData) {
+      if (!silent) {
+        setManualTrainingSelectionError(initDataMissingMsg);
+      }
+      return false;
+    }
+    setManualTrainingSelectionSaving(true);
+    if (!silent) {
+      setManualTrainingSelectionError('');
+    }
+    try {
+      const response = await fetchWithTimeout('/api/webapp/flashcards/manual-selection/clear', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData }),
+      }, 12000);
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Не удалось сбросить текущую выборку.', 'Die aktuelle Auswahl konnte nicht zurückgesetzt werden.'));
+      }
+      setManualTrainingSelectionIds([]);
+      return true;
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось сбросить текущую выборку.',
+        'Die aktuelle Auswahl konnte nicht zurückgesetzt werden.'
+      );
+      if (!silent) {
+        setManualTrainingSelectionError(friendly);
+      }
+      return false;
+    } finally {
+      setManualTrainingSelectionSaving(false);
+    }
+  }, [fetchWithTimeout, initData, initDataMissingMsg, normalizeNetworkErrorMessage, readApiError]);
+
+  useEffect(() => {
+    if (!initData) return;
+    void loadManualTrainingSelection();
+  }, [initData, loadManualTrainingSelection]);
+
+  const moveWordsToFolder = useCallback(async (folderId) => {
+    if (!initData) { setVocabMoveError(initDataMissingMsg); return; }
+    if (manualTrainingSelectionIds.length === 0) return;
+    setVocabMoveLoading(true);
+    setVocabMoveError('');
+    try {
+      const response = await fetchWithTimeout('/api/webapp/vocabulary/bulk-assign-folder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          entry_ids: manualTrainingSelectionIds,
+          folder_id: folderId,
+        }),
+      }, 15000);
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Не удалось переместить слова.', 'Wörter konnten nicht verschoben werden.'));
+      }
+      setVocabMoveModalOpen(false);
+      // Optimistically update folder_id in vocabItems
+      setVocabItems((prev) => prev.map((it) =>
+        manualTrainingSelectionIds.includes(Number(it.id))
+          ? { ...it, folder_id: folderId ?? null }
+          : it
+      ));
+      // Reload folders meta to refresh counts
+      void loadVocabLibrary({ reset: true });
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(error, 'Не удалось переместить слова.', 'Wörter konnten nicht verschoben werden.');
+      setVocabMoveError(friendly);
+    } finally {
+      setVocabMoveLoading(false);
+    }
+  }, [fetchWithTimeout, initData, initDataMissingMsg, manualTrainingSelectionIds, normalizeNetworkErrorMessage, readApiError, loadVocabLibrary]);
+
+  const manualTrainingSelectionCount = manualTrainingSelectionIds.length;
+
+  const toggleManualTrainingSelectionCard = useCallback((cardId) => {
+    const normalizedCardId = Number(cardId);
+    if (!Number.isFinite(normalizedCardId) || normalizedCardId <= 0) {
+      return;
+    }
+    setManualTrainingSelectionError('');
+    setManualTrainingSelectionIds((prev) => {
+      const current = new Set(normalizePositiveIdList(prev));
+      if (current.has(normalizedCardId)) {
+        current.delete(normalizedCardId);
+      } else {
+        current.add(normalizedCardId);
+      }
+      return Array.from(current);
+    });
+  }, []);
+
+  const openDictionaryForManualSelection = useCallback(() => {
+    setVocabTab('library');
+    setFlashcardSettingsModalMode(null);
+    setFlashcardsOnly(false);
+    setFlashcardActiveMode(null);
+    setFlashcardSessionActive(false);
+    setFlashcardPreviewActive(false);
+    setFlashcardExitSummary(false);
+    setFlashcardsError('');
+    setManualTrainingSelectionError('');
+    openSingleSectionAndScroll('dictionary', dictionaryRef);
+  }, [openSingleSectionAndScroll]);
+
+  const fetchVocabularySelectionCardIds = useCallback(async (folderKey) => {
+    if (!initData) {
+      throw new Error(initDataMissingMsg);
+    }
+    const normalizedFolderKey = String(folderKey || 'all').trim().toLowerCase();
+    const folderParam = normalizedFolderKey === 'all'
+      ? null
+      : normalizedFolderKey === 'none'
+        ? -1
+        : Number(normalizedFolderKey);
+    const collectedIds = [];
+    let offset = 0;
+    let total = Number.POSITIVE_INFINITY;
+    while (offset < total) {
+      const response = await fetchWithTimeout('/api/webapp/vocabulary/list', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          folder_id: folderParam,
+          search: null,
+          sort: 'date_desc',
+          limit: 100,
+          offset,
+        }),
+      }, 15000);
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Не удалось загрузить слова папки.', 'Die Wörter des Ordners konnten nicht geladen werden.'));
+      }
+      const data = await response.json();
+      const items = Array.isArray(data?.items) ? data.items : [];
+      const pageIds = normalizePositiveIdList(items.map((item) => item?.id));
+      collectedIds.push(...pageIds);
+      total = Math.max(0, Number(data?.total || 0));
+      offset += items.length;
+      if (items.length === 0) {
+        break;
+      }
+      if (collectedIds.length > 5000) {
+        throw new Error(tr(
+          'В одну личную выборку пока можно добавить максимум 5000 слов.',
+          'In eine persönliche Auswahl können derzeit maximal 5000 Wörter aufgenommen werden.'
+        ));
+      }
+    }
+    return normalizePositiveIdList(collectedIds);
+  }, [fetchWithTimeout, initData, initDataMissingMsg, readApiError, tr]);
+
+  const toggleManualTrainingSelectionFolder = useCallback(async (folderKey) => {
+    const normalizedFolderKey = String(folderKey || '').trim();
+    if (!normalizedFolderKey || normalizedFolderKey === 'all') {
+      return;
+    }
+    setManualTrainingSelectionFolderBusyKey(normalizedFolderKey);
+    setManualTrainingSelectionError('');
+    try {
+      const folderIds = await fetchVocabularySelectionCardIds(normalizedFolderKey);
+      const current = new Set(normalizePositiveIdList(manualTrainingSelectionIds));
+      const allSelected = folderIds.length > 0 && folderIds.every((id) => current.has(id));
+      if (allSelected) {
+        folderIds.forEach((id) => current.delete(id));
+      } else {
+        folderIds.forEach((id) => current.add(id));
+      }
+      const nextIds = Array.from(current);
+      if (nextIds.length > 5000) {
+        setManualTrainingSelectionError(tr(
+          'В одну личную выборку пока можно добавить максимум 5000 слов.',
+          'In eine persönliche Auswahl können derzeit maximal 5000 Wörter aufgenommen werden.'
+        ));
+        return;
+      }
+      setManualTrainingSelectionIds(nextIds);
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(
+        error,
+        'Не удалось обновить выбор слов для папки.',
+        'Die Auswahl für diesen Ordner konnte nicht aktualisiert werden.'
+      );
+      setManualTrainingSelectionError(friendly);
+    } finally {
+      setManualTrainingSelectionFolderBusyKey('');
+    }
+  }, [fetchVocabularySelectionCardIds, manualTrainingSelectionIds, normalizeNetworkErrorMessage, tr]);
+
+  const cacheVocabFolderOffline = useCallback(async (folder) => {
+    const folderId = Number(folder.id);
+    const userId = webappUser?.id ? Number(webappUser.id) : null;
+    if (!userId || !isOfflineCacheAvailable()) return;
+    const cancelRef = { cancelled: false };
+    setFolderContextMenu(null);
+    setFolderTtsJob({ folderId, folderName: folder.name, total: 0, done: 0, status: 'loading', cancelRef });
+    try {
+      let offset = 0;
+      let folderTotal = Infinity;
+      while (offset < folderTotal) {
+        if (cancelRef.cancelled) return;
+        const resp = await fetchWithTimeout('/api/webapp/vocabulary/list', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData, folder_id: folderId, search: null, sort: 'date_desc', limit: 100, offset }),
+        }, 15000);
+        if (!resp.ok) {
+          throw new Error(await readApiError(resp,
+            'Не удалось загрузить слова папки.',
+            'Die Wörter des Ordners konnten nicht geladen werden.'
+          ));
+        }
+        const data = await resp.json();
+        const page = Array.isArray(data?.items) ? data.items : [];
+        folderTotal = Math.max(0, Number(data?.total || 0));
+        if (offset === 0) setFolderTtsJob((prev) => prev ? { ...prev, total: folderTotal } : null);
+        if (page.length > 0) {
+          // Pass true total (all folders) so meta isn't corrupted
+          const trueTotalForMeta = Number(vocabFoldersMeta?.total_count || folderTotal);
+          await saveVocabBatch(userId, page, trueTotalForMeta);
+        }
+        offset += page.length;
+        setFolderTtsJob((prev) => prev ? { ...prev, done: Math.min(folderTotal, offset) } : null);
+        if (page.length === 0) break;
+        if (offset < folderTotal) await new Promise((r) => setTimeout(r, 100));
+      }
+      setFolderTtsJob((prev) => prev ? { ...prev, status: 'done' } : null);
+      setTimeout(() => setFolderTtsJob(null), 4000);
+    } catch (err) {
+      setFolderTtsJob((prev) => prev ? { ...prev, status: 'error', error: String(err?.message || err) } : null);
+    }
+  }, [initData, fetchWithTimeout, readApiError, webappUser?.id, vocabFoldersMeta?.total_count]);
+
+  const persistManualTrainingSelection = useCallback(async () => {
+    if (manualTrainingSelectionCount <= 0) {
+      const message = tr(
+        'Сначала выберите слова для текущей тренировки.',
+        'Bitte wähle zuerst Wörter für das aktuelle Training im Wörterbuch aus.'
+      );
+      setManualTrainingSelectionError(message);
+      return null;
+    }
+    const saved = await saveManualTrainingSelection(manualTrainingSelectionIds);
+    if (!saved || normalizePositiveIdList(saved?.card_ids || []).length <= 0) {
+      return null;
+    }
+    return saved;
+  }, [manualTrainingSelectionCount, manualTrainingSelectionIds, saveManualTrainingSelection, tr]);
+
+  const openTrainingForManualSelection = useCallback(async () => {
+    const saved = await persistManualTrainingSelection();
+    if (!saved) {
+      return false;
+    }
+    setFlashcardQueueSource('manual');
+    setFlashcardsVisible(true);
+    setFlashcardsOnly(false);
+    setFlashcardActiveMode(null);
+    setFlashcardSessionActive(false);
+    setFlashcardPreviewActive(false);
+    setFlashcardExitSummary(false);
+    setFlashcardsError('');
+    openSingleSectionAndScroll('flashcards', flashcardsRef);
+    return true;
+  }, [flashcardsRef, openSingleSectionAndScroll, persistManualTrainingSelection]);
+
   const loadFlashcards = async () => {
     if (!initData) {
       setFlashcardsError(initDataMissingMsg);
       return;
     }
     const requestedMode = String(flashcardTrainingModeRef.current || flashcardTrainingMode || 'quiz').toLowerCase();
+    const resolvedQueueSource = requestedMode === 'sentence'
+      ? 'system'
+      : (flashcardQueueSource === 'manual' ? 'manual' : 'system');
     const requestedSetSize = requestedMode === 'blocks'
       ? Math.max(flashcardSetSize * 5, 40)
       : flashcardSetSize;
     const requestSignature = [
       requestedMode,
+      resolvedQueueSource,
       String(flashcardSetSize),
       String(requestedSetSize),
-      String(flashcardFolderMode || 'all'),
-      flashcardFolderMode === 'folder' ? String(flashcardFolderId || '') : '-',
+      resolvedQueueSource === 'system' ? String(flashcardFolderMode || 'all') : '-',
+      resolvedQueueSource === 'system' && flashcardFolderMode === 'folder' ? String(flashcardFolderId || '') : '-',
     ].join('|');
     const nowTs = Date.now();
 
@@ -17453,10 +19924,11 @@ function AppInner() {
       const requestPayload = {
         initData,
         training_mode: requestedMode,
+        queue_source: resolvedQueueSource,
         set_size: requestedSetSize,
         wrong_size: 5,
-        folder_mode: flashcardFolderMode,
-        folder_id: flashcardFolderMode === 'folder' && flashcardFolderId ? flashcardFolderId : null,
+        folder_mode: resolvedQueueSource === 'system' ? flashcardFolderMode : 'all',
+        folder_id: resolvedQueueSource === 'system' && flashcardFolderMode === 'folder' && flashcardFolderId ? flashcardFolderId : null,
       };
       const requestOptions = {
         method: 'POST',
@@ -17573,6 +20045,10 @@ function AppInner() {
 
     (async () => {
       try {
+        if (resolvedQueueSource === 'manual') {
+          setFlashcardPool(sessionItems);
+          return;
+        }
         const poolResponse = await fetchWithTimeout('/api/webapp/dictionary/cards', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -17583,7 +20059,9 @@ function AppInner() {
             folder_id: flashcardFolderMode === 'folder' && flashcardFolderId ? flashcardFolderId : null,
           }),
         }, 12000);
-        if (poolResponse.ok) {
+        if (resolvedQueueSource === 'manual') {
+          setFlashcardPool(sessionItems);
+        } else if (poolResponse.ok) {
           const poolData = await poolResponse.json();
           setDictionaryLanguagePair(resolveLanguagePairForUI(poolData.language_pair));
           const poolItems = (poolData.items || []).map((item) => ({
@@ -17591,9 +20069,11 @@ function AppInner() {
             response_json: coerceResponseJson(item.response_json),
           }));
           setFlashcardPool(poolItems);
+        } else {
+          setFlashcardPool([]);
         }
-      } catch (error) {
-        // ignore pool errors
+      } catch (_error) {
+        setFlashcardPool([]);
       }
     })();
   };
@@ -17709,10 +20189,7 @@ function AppInner() {
     while (options.length < 4 && values.length > 0) {
       options.push(values.shift());
     }
-    while (options.length < 4) {
-      options.push(correct);
-    }
-    return shuffleArray(options).slice(0, 4);
+    return shuffleArray(options).slice(0, Math.min(4, options.length));
   };
 
   const resolveQuizCorrectOption = (entry, options = []) => {
@@ -17815,6 +20292,7 @@ function AppInner() {
           card_id: entryId,
           rating: resolvedRating,
           response_ms: typeof meta.timeSpentMs === 'number' ? Math.max(0, Math.round(meta.timeSpentMs)) : null,
+          queue_source: flashcardQueueSource === 'manual' ? 'manual' : 'system',
           // legacy analytics fields are kept for backward-compatible payload shape on the client side.
           mode: meta.mode || flashcardTrainingMode || 'quiz',
           hints_used: typeof meta.hintsUsed === 'number' ? Math.max(0, Math.round(meta.hintsUsed)) : 0,
@@ -17901,6 +20379,88 @@ function AppInner() {
       .trim();
   };
 
+  const lookupYoutubeDict = async (word) => {
+    const q = (word || '').trim();
+    if (!q) return;
+    setYoutubeDictOpen(true);
+    setYoutubeDictQuery(q);
+    setYoutubeDictLoading(true);
+    setYoutubeDictError('');
+    setYoutubeDictResult(null);
+    setYoutubeDictSaved(false);
+    try {
+      const response = await fetch('/api/webapp/dictionary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, word: q }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Fehler');
+      setYoutubeDictResult(data.item ? {
+        ...data.item,
+        direction: data.direction || '',
+        language_pair: data.language_pair || null,
+      } : null);
+    } catch (err) {
+      setYoutubeDictError(String(err.message || 'Fehler'));
+    } finally {
+      setYoutubeDictLoading(false);
+    }
+  };
+
+  const saveYoutubeDictWord = async () => {
+    if (!youtubeDictResult) return;
+    const pair = resolveLanguagePairForUI(youtubeDictResult.language_pair || dictionaryLanguagePair);
+    const detectedDirection = String(youtubeDictResult.direction || resolveDictionaryDirection(youtubeDictResult) || '').trim().toLowerCase();
+    const directionPair = detectedDirection.includes('-')
+      ? detectedDirection.split('-', 2)
+      : [];
+    const saveSourceLang = normalizeLangCode(directionPair[0] || pair.source_lang);
+    const saveTargetLang = normalizeLangCode(directionPair[1] || pair.target_lang);
+    const isLegacyPair = pair.source_lang === 'ru' && pair.target_lang === 'de' && isLegacyRuDeDirection(detectedDirection);
+    const { sourceText, targetText } = getDictionarySourceTarget(youtubeDictResult, detectedDirection);
+    try {
+      const saveResponse = await fetch('/api/webapp/dictionary/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          word_ru: isLegacyPair && detectedDirection === 'ru-de' ? sourceText : '',
+          word_de: isLegacyPair && detectedDirection === 'de-ru' ? sourceText : '',
+          translation_de: isLegacyPair && detectedDirection === 'ru-de' ? targetText : '',
+          translation_ru: isLegacyPair && detectedDirection === 'de-ru' ? targetText : '',
+          source_text: sourceText,
+          target_text: targetText,
+          source_lang: saveSourceLang || undefined,
+          target_lang: saveTargetLang || undefined,
+          direction: detectedDirection || undefined,
+          response_json: {
+            ...youtubeDictResult,
+            source_text: sourceText,
+            target_text: targetText,
+            source_lang: saveSourceLang || pair.source_lang,
+            target_lang: saveTargetLang || pair.target_lang,
+            language_pair: {
+              source_lang: saveSourceLang || pair.source_lang,
+              target_lang: saveTargetLang || pair.target_lang,
+            },
+          },
+          origin_process: 'youtube_dict_widget',
+          origin_meta: {
+            endpoint: '/api/webapp/dictionary/save',
+            flow: 'youtube_dictionary_widget',
+            from: 'youtube_dictionary_widget',
+          },
+        }),
+      });
+      if (saveResponse.ok) {
+        setYoutubeDictSaved(true);
+      }
+    } catch (_err) {
+      // ignore save errors silently
+    }
+  };
+
   const renderClickableText = (text, options = {}) => {
     const className = options.className || 'clickable-word';
     const compact = Boolean(options.compact);
@@ -17912,18 +20472,26 @@ function AppInner() {
     const youtubeLineIndex = Number(options.lineIndex);
     const isYoutubeWordSelection = selectionTypeOption.startsWith('youtube_') && Number.isInteger(youtubeLineIndex) && youtubeLineIndex >= 0;
     if (!text) return null;
-    return text.split(/\s+/).map((word, index) => {
-      const cleaned = word.replace(/[^A-Za-zÄÖÜäöüßÀ-ÿА-Яа-яЁё'’-]/g, '');
-      const isYoutubeSelected = isYoutubeWordSelection && youtubeSelectedWordKeySet.has(`${youtubeLineIndex}:${index}`);
+    const segments = text.split(/(\s+)/);
+    let wordIndex = 0;
+    return segments.map((segment, index) => {
+      if (!segment) return null;
+      if (/^\s+$/.test(segment)) {
+        return <React.Fragment key={`${keyPrefix}-space-${index}`}>{segment}</React.Fragment>;
+      }
+      const cleaned = segment.replace(/[^A-Za-zÄÖÜäöüßÀ-ÿА-Яа-яЁё'’-]/g, '');
+      const currentWordIndex = wordIndex;
+      wordIndex += 1;
+      const isYoutubeSelected = isYoutubeWordSelection && youtubeSelectedWordKeySet.has(`${youtubeLineIndex}:${currentWordIndex}`);
       if (!cleaned) {
-        return <span key={`${keyPrefix}-${index}`}>{word} </span>;
+        return <span key={`${keyPrefix}-${index}`}>{segment}</span>;
       }
       return (
         <span
           key={`${keyPrefix}-${index}`}
           className={isYoutubeSelected ? `${className} is-selected` : className}
           data-youtube-line-index={isYoutubeWordSelection ? youtubeLineIndex : undefined}
-          data-youtube-word-index={isYoutubeWordSelection ? index : undefined}
+          data-youtube-word-index={isYoutubeWordSelection ? currentWordIndex : undefined}
           onTouchStart={isYoutubeWordSelection ? handleYoutubeWordTouchStart : undefined}
           onClick={(event) => {
             if (isYoutubeWordSelection && (Date.now() - Number(youtubeSuppressWordTapRef.current || 0)) < 420) {
@@ -17931,6 +20499,10 @@ function AppInner() {
             }
             if (stopPropagation) {
               event.stopPropagation();
+            }
+            if (isYoutubeWordSelection && youtubeDictOpen) {
+              lookupYoutubeDict(cleaned);
+              return;
             }
             handleSelection(event, cleaned, {
               compact,
@@ -17940,7 +20512,7 @@ function AppInner() {
             });
           }}
         >
-          {word}{' '}
+          {segment}
         </span>
       );
     });
@@ -17952,30 +20524,6 @@ function AppInner() {
     if (!(target instanceof Element)) return null;
     return target.closest('[data-youtube-line-index][data-youtube-word-index]');
   };
-
-  const buildYoutubePhraseSelection = useCallback((lineIndex, anchorIndex, currentIndex) => {
-    const numericLineIndex = Number(lineIndex);
-    const numericAnchorIndex = Number(anchorIndex);
-    const numericCurrentIndex = Number(currentIndex);
-    if (!Number.isInteger(numericLineIndex) || numericLineIndex < 0) return null;
-    const rawText = String(youtubeTranscript[numericLineIndex]?.text || '').trim();
-    const normalized = normalizeSubtitleText(rawText);
-    if (!normalized) return null;
-    const words = normalized.split(/\s+/).filter(Boolean);
-    if (!words.length) return null;
-    const startIndex = Math.max(0, Math.min(numericAnchorIndex, numericCurrentIndex));
-    const endIndex = Math.min(words.length - 1, Math.max(numericAnchorIndex, numericCurrentIndex));
-    if (endIndex < startIndex) return null;
-    const selectedWords = words.slice(startIndex, endIndex + 1);
-    if (!selectedWords.length) return null;
-    return {
-      lineIndex: numericLineIndex,
-      startWordIndex: startIndex,
-      endWordIndex: endIndex,
-      wordCount: selectedWords.length,
-      text: selectedWords.join(' '),
-    };
-  }, [youtubeTranscript]);
 
   const resetYoutubePhraseGesture = (clearMeta = true) => {
     youtubePhraseGestureRef.current = null;
@@ -18045,6 +20593,13 @@ function AppInner() {
     const previewMeta = youtubeDragSelectionMetaRef.current;
     const touch = event?.changedTouches?.[0];
     if (gesture?.active && gesture.moved && previewMeta?.wordCount >= 2) {
+      if (youtubeDictOpen) {
+        void lookupYoutubeDict(previewMeta.text);
+        youtubeSuppressWordTapRef.current = Date.now();
+        youtubeSuppressSentenceTapRef.current = Date.now();
+        resetYoutubePhraseGesture(false);
+        return;
+      }
       const selectionEvent = touch
         ? { clientX: touch.clientX, clientY: touch.clientY }
         : event;
@@ -18072,6 +20627,10 @@ function AppInner() {
     }
     const normalized = normalizeSubtitleText(text);
     if (!normalized) return;
+    if (youtubeDictOpen) {
+      void lookupYoutubeDict(normalized);
+      return;
+    }
     handleSelection(event, normalized, {
       compact: true,
       inlineLookup: true,
@@ -18137,6 +20696,125 @@ function AppInner() {
     return activeIndex;
   };
 
+  const youtubeSubtitleDisplayRows = useMemo(() => {
+    const items = Array.isArray(youtubeTranscript) ? youtubeTranscript : [];
+    if (!items.length) return [];
+    const activeIndex = getActiveSubtitleIndex();
+    const hardStopPattern = /[.!?…]["»”']?$/u;
+    const softStopPattern = /[,;:)]["»”']?$/u;
+    const lowercaseStartPattern = /^[a-zäöüßà-ÿ]/u;
+    const rows = [];
+    let current = null;
+
+    const flushCurrent = () => {
+      if (!current) return;
+      const targetText = String(current.targetText || '').trim();
+      const translationText = String(current.translationText || '').trim();
+      if (!targetText && !translationText) {
+        current = null;
+        return;
+      }
+      rows.push({
+        key: `yt-row-${current.indices[0]}-${current.indices[current.indices.length - 1]}`,
+        indices: current.indices,
+        targetText,
+        translationText,
+        isActive: current.indices.includes(activeIndex),
+      });
+      current = null;
+    };
+
+    items.forEach((item, index) => {
+      const targetText = normalizeSubtitleText(item?.text || '');
+      const translationText = String(youtubeTranslations[String(index)] || '').trim();
+      if (!targetText && !translationText) {
+        return;
+      }
+
+      if (!current) {
+        current = {
+          indices: [index],
+          targetText,
+          translationText,
+        };
+      } else {
+        current.indices.push(index);
+        current.targetText = [current.targetText, targetText].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+        current.translationText = [current.translationText, translationText].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+      }
+
+      const currentTarget = String(current.targetText || '').trim();
+      const currentTranslation = String(current.translationText || '').trim();
+      const targetLength = currentTarget.length;
+      const translationLength = currentTranslation.length;
+      const chunkCount = current.indices.length;
+      const targetEndsHard = hardStopPattern.test(targetText);
+      const targetEndsSoft = softStopPattern.test(targetText);
+      const nextItem = items[index + 1] || null;
+      const nextStart = Number(nextItem?.start ?? Number.POSITIVE_INFINITY);
+      const currentStart = Number(item?.start ?? 0);
+      const currentDuration = Number(item?.duration ?? 0);
+      const currentEnd = Number.isFinite(currentStart) && Number.isFinite(currentDuration)
+        ? currentStart + Math.max(0, currentDuration)
+        : currentStart;
+      const nextTargetText = normalizeSubtitleText(nextItem?.text || '');
+      const nextStartsContinuation = lowercaseStartPattern.test(String(nextTargetText || '').trim());
+      const nextGapSeconds = Number.isFinite(nextStart) && Number.isFinite(currentEnd)
+        ? nextStart - currentEnd
+        : 0;
+      const nextGapLarge = nextGapSeconds > 0.9;
+
+      const shouldFlush = targetEndsHard
+        || targetLength >= 150
+        || translationLength >= 180
+        || (
+          !nextStartsContinuation
+          && chunkCount >= 2
+          && targetEndsSoft
+          && (targetLength >= 88 || translationLength >= 104)
+        )
+        || (
+          !nextStartsContinuation
+          && chunkCount >= 4
+          && (targetLength >= 118 || translationLength >= 142)
+        )
+        || nextGapLarge;
+
+      if (shouldFlush) {
+        flushCurrent();
+      }
+    });
+
+    flushCurrent();
+    return rows;
+  }, [youtubeTranscript, youtubeTranslations, youtubeTranscriptHasTiming, youtubeCurrentTime]);
+
+  const buildYoutubePhraseSelection = useCallback((lineIndex, anchorIndex, currentIndex) => {
+    const numericLineIndex = Number(lineIndex);
+    const numericAnchorIndex = Number(anchorIndex);
+    const numericCurrentIndex = Number(currentIndex);
+    if (!Number.isInteger(numericLineIndex) || numericLineIndex < 0) return null;
+    // lineIndex refers to position in youtubeSubtitleDisplayRows (merged display rows),
+    // not the raw transcript — word indices must match what was actually rendered.
+    const rawText = String(youtubeSubtitleDisplayRows[numericLineIndex]?.targetText || '').trim();
+    const normalized = normalizeSubtitleText(rawText);
+    if (!normalized) return null;
+    const words = normalized.split(/\s+/).filter(Boolean);
+    if (!words.length) return null;
+    const startIndex = Math.max(0, Math.min(numericAnchorIndex, numericCurrentIndex));
+    const endIndex = Math.min(words.length - 1, Math.max(numericAnchorIndex, numericCurrentIndex));
+    if (endIndex < startIndex) return null;
+    const selectedWords = words.slice(startIndex, endIndex + 1);
+    if (!selectedWords.length) return null;
+    return {
+      lineIndex: numericLineIndex,
+      startWordIndex: startIndex,
+      endWordIndex: endIndex,
+      wordCount: selectedWords.length,
+      text: selectedWords.join(' '),
+    };
+  }, [youtubeSubtitleDisplayRows]);
+
   const jumpYoutubeBySubtitle = (direction) => {
     const step = Number(direction);
     if (!step || !youtubeTranscript.length || !youtubePlayerRef.current?.seekTo) return;
@@ -18192,7 +20870,11 @@ function AppInner() {
           disabled={!canJumpPrev}
           aria-label={tr('Предыдущее предложение', 'Vorheriger Satz')}
         >
-          <span className="youtube-sentence-jump-icon" aria-hidden="true">←</span>
+          <span className="youtube-sentence-jump-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="19 20 9 12 19 4"/><line x1="5" y1="4" x2="5" y2="20"/>
+            </svg>
+          </span>
         </button>
         <button
           type="button"
@@ -18204,7 +20886,10 @@ function AppInner() {
             : tr('Поставить видео и субтитры на паузу', 'Video und Untertitel pausieren')}
         >
           <span className="youtube-sentence-jump-icon" aria-hidden="true">
-            {youtubeIsPaused ? '▶' : '❚❚'}
+            {youtubeIsPaused
+              ? <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              : <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+            }
           </span>
         </button>
         <button
@@ -18214,7 +20899,11 @@ function AppInner() {
           disabled={!canJumpNext}
           aria-label={tr('Следующее предложение', 'Naechster Satz')}
         >
-          <span className="youtube-sentence-jump-icon" aria-hidden="true">→</span>
+          <span className="youtube-sentence-jump-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="5 4 15 12 5 20"/><line x1="19" y1="4" x2="19" y2="20"/>
+            </svg>
+          </span>
         </button>
       </div>
     );
@@ -18875,7 +21564,11 @@ function AppInner() {
       if (!touch) return;
       const dx = touch.clientX - Number(gesture.startX || 0);
       const dy = touch.clientY - Number(gesture.startY || 0);
-      if (Math.abs(dx) < 10 || Math.abs(dx) <= Math.abs(dy)) return;
+      // Before the first word is reached require a primarily-horizontal drag to
+      // distinguish word-selection intent from a plain vertical page scroll.
+      // Once the selection is in progress (gesture.moved) allow any direction
+      // so the user can drag down to words on the next wrapped line.
+      if (!gesture.moved && (Math.abs(dx) < 10 || Math.abs(dx) <= Math.abs(dy))) return;
       const wordEl = getWordElementByPoint(touch.clientX, touch.clientY);
       if (!wordEl) return;
       const sid = String(wordEl.getAttribute('data-sid') || '').trim();
@@ -19315,16 +22008,14 @@ function AppInner() {
       </span>
     );
     const renderLabeledFeedbackLine = (key, label, value = '') => (
-      <div
-        key={key}
-        className="webapp-feedback-line"
-        onMouseUp={handleSelection}
-        onTouchEnd={handleSelection}
-      >
+      <div key={key} className="webapp-feedback-line">
         <span className="webapp-feedback-label">{label}</span>
         {String(value || '').trim() ? (
           <span className="webapp-feedback-value">
-            {renderClickableText(String(value || '').trim(), clickableOptions)}
+            <StructuredSelectableText
+              text={String(value || '').trim()}
+              keyPrefix={`${key}-value`}
+            />
           </span>
         ) : null}
       </div>
@@ -19332,6 +22023,26 @@ function AppInner() {
     const lines = feedback.split('\n').map((line) => line.trim()).filter(Boolean);
     return lines.map((line, index) => {
       const matchers = [
+        {
+          pattern: /^🟢\s*\*?Sentence number:\*?\s*(.+)$/i,
+          label: '🟢 Sentence number:',
+        },
+        {
+          pattern: /^✅\s*\*?Score:\*?\s*(.+)$/i,
+          label: '✅ Score:',
+        },
+        {
+          pattern: /^🔵\s*\*?Original Sentence:\*?\s*(.+)$/i,
+          label: '🔵 Original Sentence:',
+        },
+        {
+          pattern: /^🟡\s*\*?User Translation:\*?\s*(.+)$/i,
+          label: '🟡 User Translation:',
+        },
+        {
+          pattern: /^(?:🟣\s*)?\*?Correct Translation:\*?\s*(.+)$/i,
+          label: correctTranslationLabel,
+        },
         {
           pattern: /^(?:[-•]\s*)?(Original Word):\*?\s*(.+)$/i,
           label: '• Original Word:',
@@ -19345,15 +22056,11 @@ function AppInner() {
           label: '➡️ Synonyms:',
         },
         {
-          pattern: /^Correct Translation:\*?\s*(.+)$/i,
-          label: correctTranslationLabel,
-        },
-        {
-          pattern: /^Grammar Explanation:\*?\s*(.+)$/i,
+          pattern: /^(?:🟡\s*)?\*?Grammar Explanation:\*?\s*(.+)$/i,
           label: '🟡 Grammar Explanation:',
         },
         {
-          pattern: /^(?:Alternative Sentence Construction|Alternative Construction):\*?\s*(.+)$/i,
+          pattern: /^(?:🔵\s*)?(?:Alternative Sentence Construction|Alternative Construction):\*?\s*(.+)$/i,
           label: '🔵 Alternative Sentence Construction:',
         },
       ];
@@ -19366,11 +22073,12 @@ function AppInner() {
       }
 
       return (
-        <div
-          key={`fb-${index}`}
-          className="webapp-feedback-line"
-          dangerouslySetInnerHTML={{ __html: renderRichText(line) }}
-        />
+        <div key={`fb-${index}`} className="webapp-feedback-line">
+          <StructuredSelectableText
+            text={stripMarkdownEmphasis(line)}
+            keyPrefix={`fb-${index}`}
+          />
+        </div>
       );
     });
   };
@@ -19585,6 +22293,72 @@ function AppInner() {
       setDictionaryLanguagePair(resolveLanguagePairForUI({ source_lang: sourceLang, target_lang: targetLang }));
     } catch (error) {
       setDictionaryError(`${tr('Ошибка быстрого перевода', 'Fehler bei Schnelluebersetzung')}: ${error.message}`);
+    } finally {
+      setDictionaryLoading(false);
+      setDictionaryLookupMode('');
+    }
+  };
+
+  const handleDictionaryBaseLookup = async () => {
+    const sourceWord = String(dictionaryWord || '').trim();
+    if (!sourceWord) {
+      setDictionaryError(tr('Введите слово для поиска.', 'Bitte gib ein Wort ein.'));
+      return;
+    }
+    setDictionaryLoading(true);
+    setDictionaryLookupMode('base');
+    dictionaryLookupPollTokenRef.current += 1;
+    setDictionaryLookupProgress({ lookupId: null, status: 'ready', saveLocked: false, error: '' });
+    setDictionaryError('');
+    setDictionaryResult(null);
+    setDictionarySaved('');
+    setLastLookupScrollY(null);
+
+    try {
+      // 1. Check offline IndexedDB first
+      const offlineResult = await lookupOfflineBaseDictEntry(sourceWord);
+      if (offlineResult) {
+        setDictionaryResult(offlineResult);
+        setDictionaryDirection('de-ru');
+        setDictionaryLanguagePair(resolveLanguagePairForUI({ source_lang: 'de', target_lang: 'ru' }));
+        return;
+      }
+
+      // 2. Try server-side pre-loaded dictionary (PostgreSQL)
+      if (!initData) {
+        setDictionaryError(tr('Слово не найдено в словаре.', 'Wort nicht im Wörterbuch gefunden.'));
+        return;
+      }
+      const response = await fetch('/api/webapp/dictionary/base-lookup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, word: sourceWord, source_lang: 'de' }),
+      });
+      if (!response.ok) {
+        setDictionaryError(tr('Ошибка соединения со словарём.', 'Verbindungsfehler zum Wörterbuch.'));
+        return;
+      }
+      const data = await response.json();
+
+      if (data.not_found || !data.item) {
+        setDictionaryError(tr('Слово не найдено в словаре. Попробуйте ⚡ Перевод.', 'Wort nicht gefunden. Versuche ⚡ Übersetzen.'));
+        return;
+      }
+
+      setDictionaryResult(data.item);
+      setDictionaryDirection('de-ru');
+      setDictionaryLanguagePair(resolveLanguagePairForUI({ source_lang: 'de', target_lang: 'ru' }));
+      void saveBaseDictEntryFromServerResult(sourceWord, data.item);
+    } catch {
+      // Network failure — try offline cache only
+      const offlineFallback = await lookupOfflineBaseDictEntry(sourceWord);
+      if (offlineFallback) {
+        setDictionaryResult(offlineFallback);
+        setDictionaryDirection('de-ru');
+        setDictionaryLanguagePair(resolveLanguagePairForUI({ source_lang: 'de', target_lang: 'ru' }));
+      } else {
+        setDictionaryError(tr('Нет соединения и слово не найдено офлайн.', 'Kein Netz und Wort nicht offline gefunden.'));
+      }
     } finally {
       setDictionaryLoading(false);
       setDictionaryLookupMode('');
@@ -20609,6 +23383,9 @@ function AppInner() {
   const handleTranslationSubmitStable = useStableCallback(handleTranslationSubmit);
   const handleStartTranslationStable = useStableCallback(handleStartTranslation);
   const handleStartStoryStable = useStableCallback(handleStartStory);
+  const handleStartArenaWithCandidateStable = useStableCallback(handleStartArenaWithCandidate);
+  const handleStoryVoteStable = useStableCallback(handleStoryVote);
+  const handleTranslationVoteStable = useStableCallback(handleTranslationVote);
   const extractCorrectTranslationTextStable = useStableCallback(extractCorrectTranslationText);
   const handleSelectionStable = useStableCallback(handleSelection);
   const renderStoryFeedbackStable = useStableCallback(renderStoryFeedback);
@@ -20843,7 +23620,7 @@ function AppInner() {
         loadSkillReport(),
         loadWeeklyPlan(),
         loadPlanAnalytics(planAnalyticsPeriod),
-        loadAnalytics(undefined, analyticsScopeKey),
+        reloadVisibleAnalytics(undefined, analyticsScopeKey),
       ]);
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(error, 'Не удалось сохранить reset progress.', 'Reset-Status konnte nicht gespeichert werden.');
@@ -21038,11 +23815,7 @@ function AppInner() {
     setAnalyticsCalendarOpen(true);
   }, [ensureAnalyticsCalendarDraftRange]);
 
-  const loadAnalytics = async (overridePeriod, overrideScopeKey, overrideRange = null) => {
-    if (!initData) {
-      setAnalyticsError(initDataMissingMsg);
-      return;
-    }
+  const resolveAnalyticsLoadContext = useCallback((overridePeriod, overrideScopeKey, overrideRange = null) => {
     const period = overridePeriod || analyticsPeriod;
     const effectiveRange = overrideRange && typeof overrideRange === 'object'
       ? {
@@ -21055,8 +23828,7 @@ function AppInner() {
       };
     const useCalendarRange = period === 'calendar';
     if (useCalendarRange && (!effectiveRange.startDate || !effectiveRange.endDate || effectiveRange.startDate > effectiveRange.endDate)) {
-      setAnalyticsError(tr('Выберите корректный диапазон дат для аналитики.', 'Waehle einen gueltigen Datumsbereich fuer die Analytik.'));
-      return;
+      throw new Error(tr('Выберите корректный диапазон дат для аналитики.', 'Waehle einen gueltigen Datumsbereich fuer die Analytik.'));
     }
     const granularity = resolveAnalyticsGranularity(period, effectiveRange);
     const scope = parseAnalyticsScopeKey(overrideScopeKey || analyticsScopeKey);
@@ -21075,47 +23847,159 @@ function AppInner() {
     if (Object.keys(scopeContext).length > 0) {
       payloadBase.scope_context = scopeContext;
     }
-    const personalPayloadBase = {
-      ...payloadBase,
-      scope: 'personal',
-      scope_kind: 'personal',
-      scope_chat_id: null,
+    return {
+      granularity,
+      payloadBase,
+      personalPayloadBase: {
+        ...payloadBase,
+        scope: 'personal',
+        scope_kind: 'personal',
+        scope_chat_id: null,
+      },
+      scope,
     };
+  }, [
+    analyticsCustomEndDate,
+    analyticsCustomStartDate,
+    analyticsPeriod,
+    analyticsScopeKey,
+    initData,
+    resolveAnalyticsGranularity,
+    tr,
+  ]);
+
+  const loadAnalyticsSummary = useCallback(async (overridePeriod, overrideScopeKey, overrideRange = null) => {
+    if (!initData) {
+      setAnalyticsError(initDataMissingMsg);
+      return;
+    }
+    const requestId = analyticsSummaryRequestIdRef.current + 1;
+    analyticsSummaryRequestIdRef.current = requestId;
     setAnalyticsLoading(true);
     setAnalyticsError('');
-    setAnalyticsSummary(null);
-    setAnalyticsPoints([]);
-    setAnalyticsCompare([]);
-    setAnalyticsRank(null);
     try {
+      // Summary cards stay personal and should not be blanked by scope bootstrap changes.
+      const { personalPayloadBase } = resolveAnalyticsLoadContext(overridePeriod, undefined, overrideRange);
       const summaryResponse = await postJsonWithRetry('/api/webapp/analytics/summary', personalPayloadBase);
       if (!summaryResponse.ok) {
         throw new Error(await readApiError(summaryResponse, 'Ошибка загрузки аналитики', 'Fehler beim Laden der Analytik'));
       }
       const summaryData = await summaryResponse.json();
+      if (analyticsSummaryRequestIdRef.current !== requestId) {
+        return;
+      }
       setAnalyticsSummary(summaryData.summary || null);
-
-      const seriesResponse = await postJsonWithRetry('/api/webapp/analytics/timeseries', { ...personalPayloadBase, granularity });
-      if (!seriesResponse.ok) {
-        throw new Error(await readApiError(seriesResponse, 'Ошибка загрузки динамики', 'Fehler beim Laden des Verlaufs'));
-      }
-      const seriesData = await seriesResponse.json();
-      setAnalyticsPoints(seriesData.points || []);
-
-      const compareResponse = await postJsonWithRetry('/api/webapp/analytics/compare', { ...payloadBase, limit: 8 });
-      if (!compareResponse.ok) {
-        throw new Error(await readApiError(compareResponse, 'Ошибка загрузки сравнения', 'Fehler beim Laden des Vergleichs'));
-      }
-      const compareData = await compareResponse.json();
-      setAnalyticsCompare(compareData.items || []);
-      setAnalyticsRank(scope.scope_kind === 'group' ? (compareData.self?.rank ?? null) : null);
+      setAnalyticsError('');
     } catch (error) {
+      if (analyticsSummaryRequestIdRef.current !== requestId) {
+        return;
+      }
       const friendly = normalizeNetworkErrorMessage(error, 'Не удалось загрузить аналитику.', 'Analytik konnte nicht geladen werden.');
       setAnalyticsError(`${tr('Ошибка аналитики', 'Analytikfehler')}: ${friendly}`);
     } finally {
-      setAnalyticsLoading(false);
+      if (analyticsSummaryRequestIdRef.current === requestId) {
+        setAnalyticsLoading(false);
+      }
     }
-  };
+  }, [
+    initData,
+    initDataMissingMsg,
+    normalizeNetworkErrorMessage,
+    postJsonWithRetry,
+    readApiError,
+    resolveAnalyticsLoadContext,
+    tr,
+  ]);
+
+  const loadAnalyticsTimeseries = useCallback(async (overridePeriod, overrideScopeKey, overrideRange = null) => {
+    if (!initData) {
+      return null;
+    }
+    const requestId = analyticsTimeseriesRequestIdRef.current + 1;
+    analyticsTimeseriesRequestIdRef.current = requestId;
+    try {
+      const { granularity, personalPayloadBase } = resolveAnalyticsLoadContext(overridePeriod, overrideScopeKey, overrideRange);
+      const response = await postJsonWithRetry('/api/webapp/analytics/timeseries', { ...personalPayloadBase, granularity });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка загрузки динамики', 'Fehler beim Laden des Verlaufs'));
+      }
+      const data = await response.json();
+      if (analyticsTimeseriesRequestIdRef.current !== requestId) {
+        return null;
+      }
+      setAnalyticsPoints(data.points || []);
+      setAnalyticsError('');
+      return data;
+    } catch (error) {
+      if (analyticsTimeseriesRequestIdRef.current !== requestId) {
+        return null;
+      }
+      const friendly = normalizeNetworkErrorMessage(error, 'Не удалось загрузить динамику.', 'Verlauf konnte nicht geladen werden.');
+      setAnalyticsError(`${tr('Ошибка аналитики', 'Analytikfehler')}: ${friendly}`);
+      return null;
+    }
+  }, [
+    initData,
+    normalizeNetworkErrorMessage,
+    postJsonWithRetry,
+    readApiError,
+    resolveAnalyticsLoadContext,
+    tr,
+  ]);
+
+  const loadAnalyticsCompare = useCallback(async (overridePeriod, overrideScopeKey, overrideRange = null) => {
+    if (!initData) {
+      return null;
+    }
+    const requestId = analyticsCompareRequestIdRef.current + 1;
+    analyticsCompareRequestIdRef.current = requestId;
+    try {
+      const { payloadBase, scope } = resolveAnalyticsLoadContext(overridePeriod, overrideScopeKey, overrideRange);
+      const response = await postJsonWithRetry('/api/webapp/analytics/compare', { ...payloadBase, limit: 8 });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка загрузки сравнения', 'Fehler beim Laden des Vergleichs'));
+      }
+      const data = await response.json();
+      if (analyticsCompareRequestIdRef.current !== requestId) {
+        return null;
+      }
+      setAnalyticsCompare(data.items || []);
+      setAnalyticsRank(scope.scope_kind === 'group' ? (data.self?.rank ?? null) : null);
+      setAnalyticsError('');
+      return data;
+    } catch (error) {
+      if (analyticsCompareRequestIdRef.current !== requestId) {
+        return null;
+      }
+      const friendly = normalizeNetworkErrorMessage(error, 'Не удалось загрузить сравнение.', 'Vergleich konnte nicht geladen werden.');
+      setAnalyticsError(`${tr('Ошибка аналитики', 'Analytikfehler')}: ${friendly}`);
+      return null;
+    }
+  }, [
+    initData,
+    normalizeNetworkErrorMessage,
+    postJsonWithRetry,
+    readApiError,
+    resolveAnalyticsLoadContext,
+    tr,
+  ]);
+
+  const reloadVisibleAnalytics = useCallback(async (overridePeriod, overrideScopeKey, overrideRange = null) => {
+    const tasks = [loadAnalyticsSummary(overridePeriod, overrideScopeKey, overrideRange)];
+    if (analyticsTrendVisible) {
+      tasks.push(loadAnalyticsTimeseries(overridePeriod, overrideScopeKey, overrideRange));
+    }
+    if (analyticsCompareVisible) {
+      tasks.push(loadAnalyticsCompare(overridePeriod, overrideScopeKey, overrideRange));
+    }
+    await Promise.all(tasks);
+  }, [
+    analyticsCompareVisible,
+    analyticsTrendVisible,
+    loadAnalyticsCompare,
+    loadAnalyticsSummary,
+    loadAnalyticsTimeseries,
+  ]);
 
   const applyAnalyticsCalendarRange = useCallback(() => {
     if (!analyticsCalendarDraftValid) {
@@ -21149,13 +24033,13 @@ function AppInner() {
       }
       setAnalyticsPeriodSelectVersion((value) => value + 1);
     }, 0);
-    loadAnalytics('calendar', analyticsScopeKey, nextRange);
+    void reloadVisibleAnalytics('calendar', analyticsScopeKey, nextRange);
   }, [
     analyticsCalendarDraftEndDate,
     analyticsCalendarDraftStartDate,
     analyticsCalendarDraftValid,
     analyticsScopeKey,
-    loadAnalytics,
+    reloadVisibleAnalytics,
     tr,
   ]);
 
@@ -21311,18 +24195,12 @@ function AppInner() {
       return;
     }
     if (!flashcardsOnly && isSectionVisible('analytics')) {
-      let cancelled = false;
-      setAnalyticsBootstrapReady(false);
-      (async () => {
-        await loadAnalyticsScope();
-        if (cancelled) return;
-        await loadProgressResetStatus();
-        if (cancelled) return;
-        setAnalyticsBootstrapReady(true);
-      })();
-      return () => {
-        cancelled = true;
-      };
+      // Keep Analytics visible content independent from slower bootstrap metadata.
+      // Scope and reset status still load on section entry, but they must not block summary/chart hydration.
+      setAnalyticsBootstrapReady(true);
+      void loadAnalyticsScope();
+      void loadProgressResetStatus();
+      return undefined;
     }
     setAnalyticsBootstrapReady(false);
     return undefined;
@@ -21344,17 +24222,103 @@ function AppInner() {
       if (analyticsPeriod === 'calendar' && !analyticsCalendarRangeValid) {
         return;
       }
-      loadAnalytics(undefined, analyticsScopeKey);
+      void loadAnalyticsSummary(undefined, undefined);
     }
   }, [
     initData,
     isWebAppMode,
     analyticsBootstrapReady,
     analyticsPeriod,
+    analyticsCalendarRangeValid,
+    selectedSections,
+    flashcardsOnly,
+    loadAnalyticsSummary,
+  ]);
+
+  useEffect(() => {
+    const analyticsSectionVisible = !flashcardsOnly && isSectionVisible('analytics');
+    if (!analyticsSectionVisible || !analyticsBootstrapReady || typeof window === 'undefined') {
+      setAnalyticsTrendVisible(false);
+      setAnalyticsCompareVisible(false);
+      return undefined;
+    }
+    const trendNode = analyticsTrendRef.current;
+    const compareNode = analyticsCompareRef.current;
+    if (!trendNode && !compareNode) {
+      return undefined;
+    }
+    const observer = new window.IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        if (trendNode && entry.target === trendNode) {
+          setAnalyticsTrendVisible(true);
+        }
+        if (compareNode && entry.target === compareNode) {
+          setAnalyticsCompareVisible(true);
+        }
+      });
+    }, { threshold: 0.6 });
+    if (trendNode) {
+      observer.observe(trendNode);
+    }
+    if (compareNode) {
+      observer.observe(compareNode);
+    }
+    return () => {
+      observer.disconnect();
+    };
+  }, [analyticsBootstrapReady, flashcardsOnly, selectedSections]);
+
+  useEffect(() => {
+    // analyticsSummary guard: timeseries must not fire before summary has loaded.
+    // The trend chart div is visible immediately on section open, so IntersectionObserver
+    // would set analyticsTrendVisible=true right away without this gate.
+    if (!isWebAppMode || !initData || !analyticsBootstrapReady || !analyticsTrendVisible || !analyticsSummary) {
+      return;
+    }
+    if (!flashcardsOnly && isSectionVisible('analytics')) {
+      if (analyticsPeriod === 'calendar' && !analyticsCalendarRangeValid) {
+        return;
+      }
+      void loadAnalyticsTimeseries(undefined, analyticsScopeKey);
+    }
+  }, [
+    initData,
+    isWebAppMode,
+    analyticsBootstrapReady,
+    analyticsTrendVisible,
+    analyticsSummary,
+    analyticsPeriod,
     analyticsScopeKey,
     analyticsCalendarRangeValid,
     selectedSections,
     flashcardsOnly,
+    loadAnalyticsTimeseries,
+  ]);
+
+  useEffect(() => {
+    // analyticsSummary guard: compare must not fire before summary has loaded.
+    if (!isWebAppMode || !initData || !analyticsBootstrapReady || !analyticsCompareVisible || !analyticsSummary) {
+      return;
+    }
+    if (!flashcardsOnly && isSectionVisible('analytics')) {
+      if (analyticsPeriod === 'calendar' && !analyticsCalendarRangeValid) {
+        return;
+      }
+      void loadAnalyticsCompare(undefined, analyticsScopeKey);
+    }
+  }, [
+    initData,
+    isWebAppMode,
+    analyticsBootstrapReady,
+    analyticsCompareVisible,
+    analyticsSummary,
+    analyticsPeriod,
+    analyticsScopeKey,
+    analyticsCalendarRangeValid,
+    selectedSections,
+    flashcardsOnly,
+    loadAnalyticsCompare,
   ]);
 
   useEffect(() => {
@@ -21407,6 +24371,48 @@ function AppInner() {
   useEffect(() => {
     writeStoredValue(ECONOMICS_PROVIDER_STORAGE_KEY, economicsProvider);
   }, [economicsProvider]);
+
+  useEffect(() => {
+    writeStoredValue(ECONOMICS_FORECAST_USERS_STORAGE_KEY, economicsForecastUsersDraft);
+  }, [economicsForecastUsersDraft]);
+
+  useEffect(() => {
+    writeStoredValue(ECONOMICS_RAILWAY_APP_RAM_STORAGE_KEY, economicsRailwayAppRamDraft);
+  }, [economicsRailwayAppRamDraft]);
+
+  useEffect(() => {
+    writeStoredValue(ECONOMICS_RAILWAY_APP_CPU_STORAGE_KEY, economicsRailwayAppCpuDraft);
+  }, [economicsRailwayAppCpuDraft]);
+
+  useEffect(() => {
+    writeStoredValue(ECONOMICS_RAILWAY_POSTGRES_RAM_STORAGE_KEY, economicsRailwayPostgresRamDraft);
+  }, [economicsRailwayPostgresRamDraft]);
+
+  useEffect(() => {
+    writeStoredValue(ECONOMICS_RAILWAY_POSTGRES_VOLUME_STORAGE_KEY, economicsRailwayPostgresVolumeDraft);
+  }, [economicsRailwayPostgresVolumeDraft]);
+
+  useEffect(() => {
+    writeStoredValue(ECONOMICS_RAILWAY_REDIS_RAM_STORAGE_KEY, economicsRailwayRedisRamDraft);
+  }, [economicsRailwayRedisRamDraft]);
+
+  useEffect(() => {
+    writeStoredValue(ECONOMICS_RAILWAY_EGRESS_STORAGE_KEY, economicsRailwayEgressDraft);
+  }, [economicsRailwayEgressDraft]);
+
+  useEffect(() => {
+    const postgresVolumeGb = Number(economicsSummary?.railway_infra?.live?.postgres?.db_size_gb || 0);
+    if (!economicsRailwayPostgresVolumeDraft && postgresVolumeGb > 0) {
+      setEconomicsRailwayPostgresVolumeDraft(String(Math.max(0.1, Number(postgresVolumeGb.toFixed(3)))));
+    }
+  }, [economicsSummary, economicsRailwayPostgresVolumeDraft]);
+
+  useEffect(() => {
+    const redisMemoryGb = Number(economicsSummary?.railway_infra?.live?.redis?.memory_used_mb || 0) / 1024;
+    if (!economicsRailwayRedisRamDraft && redisMemoryGb > 0) {
+      setEconomicsRailwayRedisRamDraft(String(Math.max(0.05, Number(redisMemoryGb.toFixed(3)))));
+    }
+  }, [economicsSummary, economicsRailwayRedisRamDraft]);
 
   useEffect(() => {
     if (!isWebAppMode || !initData) {
@@ -21578,6 +24584,7 @@ function AppInner() {
     const avgTime = analyticsPoints.map((item) => item.avg_time_min || 0);
 
     const option = {
+      animation: false,
       backgroundColor: 'transparent',
       tooltip: {
         trigger: 'axis',
@@ -21735,6 +24742,7 @@ function AppInner() {
       `;
     };
     const buildCompareOption = ({ metricKey, label, selfColor, peerColor }) => ({
+      animation: false,
       backgroundColor: 'transparent',
       tooltip: {
         trigger: 'item',
@@ -21886,7 +24894,7 @@ function AppInner() {
       );
     }
     return (
-      <div className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isAndroidTelegramClient ? 'is-android-client' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''}`}>
+      <div className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isAndroidTelegramClient ? 'is-android-client' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''} ${canTopbarGoBack ? 'is-topbar-back-mode' : ''}`}>
         <pre id="app-perf-report" style={{ display: 'none' }} />
         <div className="webapp-shell">
           <aside className="webapp-sidebar">
@@ -21939,7 +24947,7 @@ function AppInner() {
               </button>
               <button
                 type="button"
-                className={`menu-item menu-item-today ${isHomeScreen ? 'is-active' : ''}`}
+                className={`menu-item menu-item-today ${isHomeRouteActive ? 'is-active' : ''}`}
                 onClick={goHomeScreen}
               >
                 <span className="menu-icon menu-icon-today">{renderMenuIcon('today')}</span>
@@ -22078,81 +25086,90 @@ function AppInner() {
           </aside>
 
           <div className="webapp-main">
-            <div className="webapp-topbar">
-              <div className="topbar-row topbar-row-main">
-                <button
-                  type="button"
-                  className="menu-toggle"
-                  onClick={() => setMenuOpen(true)}
-                >
-                  <span />
-                  <span />
-                  <span />
-                </button>
-                <div className="topbar-title">Das Deutsche Schlümpfchen</div>
-                <div className="topbar-profile">
-                  <input
-                    ref={avatarInputRef}
-                    type="file"
-                    accept="image/*"
-                    className="avatar-input"
-                    onChange={handleAvatarUpload}
-                  />
+            <div className={`webapp-topbar${canTopbarGoBack ? ' is-back-mode' : ''}`}>
+              {canTopbarGoBack ? (
+                <div className="topbar-home-row">
                   <button
                     type="button"
-                    className="avatar-button topbar-avatar"
-                    onClick={() => avatarInputRef.current?.click()}
+                    className="topbar-home-button"
+                    onClick={handleTopbarBack}
+                    aria-label={Boolean(flashcardActiveMode) ? tr('Назад', 'Zurück') : tr('На главную', 'Startseite')}
                   >
-                    {userAvatar ? <img src={userAvatar} alt="User avatar" /> : <span className="avatar-placeholder" />}
+                    <span className="topbar-home-arrow" aria-hidden="true">{Boolean(flashcardActiveMode) ? '◀️' : '🏠'}</span>
+                    <span>{Boolean(flashcardActiveMode) ? tr('Назад', 'Zurück') : tr('На главную', 'Startseite')}</span>
                   </button>
+                  {Boolean(flashcardActiveMode) && renderTodaySectionTaskHud('flashcards', { ignoreProgress: true, inline: true })}
                 </div>
-              </div>
-              <div className="topbar-row topbar-row-controls">
-                <div className="topbar-controls">
-                  {telegramTabletLike && !telegramFullscreenMode && typeof telegramApp?.requestFullscreen === 'function' && (
-                    <button
-                      type="button"
-                      className="telegram-fullscreen-button"
-                      onClick={requestTelegramFullscreen}
-                      title={tr('Развернуть на весь экран', 'Vollbild aktivieren')}
-                      aria-label={tr('Развернуть на весь экран', 'Vollbild aktivieren')}
-                    >
-                      ⤢
-                    </button>
-                  )}
-                  <button type="button" className="language-toggle language-toggle-compact" onClick={toggleLanguage} aria-label={t('language_toggle_label')}>
-                    <span className={`language-chip ${uiLang === 'ru' ? 'is-active' : ''}`}>{t('language_ru')}</span>
-                    <span className={`language-chip ${uiLang === 'de' ? 'is-active' : ''}`}>{t('language_de')}</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="language-toggle language-toggle-compact theme-toggle-compact"
-                    onClick={toggleThemeMode}
-                    title={themeMode === 'light' ? tr('Светлая тема', 'Helles Thema') : tr('Тёмная тема', 'Dunkles Thema')}
-                    aria-label={tr('Переключить тему', 'Theme wechseln')}
-                  >
-                    <span className={`language-chip theme-chip ${themeMode === 'dark' ? 'is-active' : ''}`}>DARK</span>
-                    <span className={`language-chip theme-chip ${themeMode === 'light' ? 'is-active' : ''}`}>LIGHT</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="language-pair-button"
-                    onClick={openLanguageProfileModal}
-                    title={tr('Изменить языковую пару обучения', 'Sprachpaar aendern')}
-                  >
-                    {getActiveLanguagePairLabel()}
-                  </button>
-                  <button
-                    type="button"
-                    className="topbar-help-button"
-                    onClick={openGuideSection}
-                    title={t('guide_topbar_button')}
-                    aria-label={t('guide_topbar_button')}
-                  >
-                    ?
-                  </button>
-                </div>
-              </div>
+              ) : (
+                <>
+                  <div className="topbar-row topbar-row-main">
+                    <div className="topbar-leading-spacer" aria-hidden="true" />
+                    <div className="topbar-title">Das Deutsche Schlümpfchen</div>
+                    <div className="topbar-profile">
+                      <input
+                        ref={avatarInputRef}
+                        type="file"
+                        accept="image/*"
+                        className="avatar-input"
+                        onChange={handleAvatarUpload}
+                      />
+                      <button
+                        type="button"
+                        className="avatar-button topbar-avatar"
+                        onClick={() => avatarInputRef.current?.click()}
+                      >
+                        {userAvatar ? <img src={userAvatar} alt="User avatar" /> : <span className="avatar-placeholder" />}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="topbar-row topbar-row-controls">
+                    <div className="topbar-controls">
+                      {telegramTabletLike && !telegramFullscreenMode && typeof telegramApp?.requestFullscreen === 'function' && (
+                        <button
+                          type="button"
+                          className="telegram-fullscreen-button"
+                          onClick={requestTelegramFullscreen}
+                          title={tr('Развернуть на весь экран', 'Vollbild aktivieren')}
+                          aria-label={tr('Развернуть на весь экран', 'Vollbild aktivieren')}
+                        >
+                          ⤢
+                        </button>
+                      )}
+                      <button type="button" className="language-toggle language-toggle-compact" onClick={toggleLanguage} aria-label={t('language_toggle_label')}>
+                        <span className={`language-chip ${uiLang === 'ru' ? 'is-active' : ''}`}>{t('language_ru')}</span>
+                        <span className={`language-chip ${uiLang === 'de' ? 'is-active' : ''}`}>{t('language_de')}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="language-toggle language-toggle-compact theme-toggle-compact"
+                        onClick={toggleThemeMode}
+                        title={themeMode === 'light' ? tr('Светлая тема', 'Helles Thema') : tr('Тёмная тема', 'Dunkles Thema')}
+                        aria-label={tr('Переключить тему', 'Theme wechseln')}
+                      >
+                        <span className={`language-chip theme-chip ${themeMode === 'dark' ? 'is-active' : ''}`}>DARK</span>
+                        <span className={`language-chip theme-chip ${themeMode === 'light' ? 'is-active' : ''}`}>LIGHT</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="language-pair-button"
+                        onClick={openLanguageProfileModal}
+                        title={tr('Изменить языковую пару обучения', 'Sprachpaar aendern')}
+                      >
+                        {getActiveLanguagePairLabel()}
+                      </button>
+                      <button
+                        type="button"
+                        className="topbar-help-button"
+                        onClick={openGuideSection}
+                        title={t('guide_topbar_button')}
+                        aria-label={t('guide_topbar_button')}
+                      >
+                        ?
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
 
             {menuOpen && (
@@ -22196,7 +25213,7 @@ function AppInner() {
                     </button>
                     <button
                       type="button"
-                      className={`menu-item menu-item-today ${isHomeScreen ? 'is-active' : ''}`}
+                      className={`menu-item menu-item-today ${isHomeRouteActive ? 'is-active' : ''}`}
                       onClick={() => {
                         goHomeScreen();
                         setMenuOpen(false);
@@ -22804,8 +25821,68 @@ function AppInner() {
             )}
 
             {isHomeScreen && initData && (
+              <HomeDashboardTiles
+                tr={tr}
+                uiLang={uiLang}
+                todayPlan={todayPlan}
+                weeklyPlan={weeklyPlan}
+                skillReport={skillReport}
+                srsQueueInfo={srsQueueInfo}
+                openSection={openSingleSectionAndScroll}
+                onOpenMore={openMoreFunctionsPanel}
+                canViewEconomics={canViewEconomics}
+                refs={{
+                  translationsRef,
+                  flashcardsRef,
+                  youtubeRef,
+                  readerRef,
+                  assistantRef,
+                  dictionaryRef,
+                  analyticsRef,
+                  supportRef,
+                  guideRef,
+                  homeMoreRef,
+                  todayRef: homeTodayPlanRef,
+                  skillsRef: homeSkillsRef,
+                  weeklyPlanRef: homeWeeklyPlanRef,
+                  moviesRef,
+                  billingRef,
+                  economicsRef,
+                }}
+              />
+            )}
+
+            {activeHomeSubsectionKey === 'home_more' && initData && (
+              <HomeMoreTiles
+                tr={tr}
+                uiLang={uiLang}
+                openSection={openSingleSectionAndScroll}
+                canViewEconomics={canViewEconomics}
+                isSkillTrainingReady={isSkillTrainingReady}
+                refs={{
+                  homeMoreRef,
+                  todayRef: homeTodayPlanRef,
+                  weeklyPlanRef: homeWeeklyPlanRef,
+                  skillsRef: homeSkillsRef,
+                  billingRef,
+                  guideRef,
+                  moviesRef,
+                  economicsRef,
+                  skillTrainingRef,
+                }}
+              />
+            )}
+
+            {activeHomeSubsectionKey && activeHomeSubsectionKey !== 'home_more' && initData && (
               <HomeScreenSection
                 tr={tr}
+                uiLang={uiLang}
+                sectionRefs={{
+                  todayRef: homeTodayPlanRef,
+                  weeklyPlanRef: homeWeeklyPlanRef,
+                  skillsRef: homeSkillsRef,
+                }}
+                visiblePanels={activeHomeSectionVisibility}
                 planAnalyticsPeriod={planAnalyticsPeriod}
                 setPlanAnalyticsPeriod={setPlanAnalyticsPeriod}
                 planAnalyticsLoading={planAnalyticsLoading}
@@ -22848,7 +25925,6 @@ function AppInner() {
                 skillReportSnapshotTone={skillReportSnapshotTone}
                 skillPracticeLoading={skillPracticeLoading}
                 loadSkillReport={loadSkillReportStable}
-                uiLang={uiLang}
                 startSkillPractice={startSkillPracticeStable}
                 resumeSkillPractice={resumeSkillPracticeStable}
                 skillTrainingStatusMap={homeSkillTrainingStatusMap}
@@ -22871,9 +25947,6 @@ function AppInner() {
                     <button type="button" className="secondary-button guide-tour-button" onClick={startOnboardingTour}>
                       {tr('Показать быстрый тур', 'Schnellstart zeigen')}
                     </button>
-                  </div>
-                  <div className="guide-hero-mascot-wrap" aria-hidden="true">
-                    <img src={heroStickerSrc} alt="" className="guide-hero-mascot" />
                   </div>
                 </div>
 
@@ -22988,9 +26061,6 @@ function AppInner() {
                   </div>
 
                   <div className="skill-training-action-row">
-                    <button type="button" className="section-home-back skill-training-back-btn" onClick={goHomeScreen}>
-                      {tr('← Назад', '← Zurueck')}
-                    </button>
                     <button
                       type="button"
                       className="secondary-button skill-training-refresh-btn"
@@ -23283,11 +26353,6 @@ function AppInner() {
               <section className="webapp-section theory-section" ref={theoryRef}>
                 <div className="webapp-section-title webapp-section-title-with-logo">
                   <h2>{tr('Теория', 'Theorie')}</h2>
-                  {isFocusedSection('theory') && (
-                    <button type="button" className="section-home-back" onClick={goHomeScreen}>
-                      {tr('На главную', 'Startseite')}
-                    </button>
-                  )}
                   {renderTodaySectionTaskHud('theory')}
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
@@ -23526,6 +26591,19 @@ function AppInner() {
                 historyError={historyError}
                 activeLanguagePairLabel={activeLanguagePairLabel}
                 historyItems={historyItems}
+                arenaPhase={arenaPhase}
+                setArenaPhase={setArenaPhase}
+                arenaCandidates={arenaCandidates}
+                arenaCandidatesLoading={arenaCandidatesLoading}
+                arenaSelectedCandidate={arenaSelectedCandidate}
+                storyLeaderboard={storyLeaderboard}
+                storyLeaderboardLoading={storyLeaderboardLoading}
+                storyVotes={storyVotes}
+                storyVoteLoading={storyVoteLoading}
+                translationVoteLoading={translationVoteLoading}
+                handleStartArenaWithCandidateStable={handleStartArenaWithCandidateStable}
+                handleStoryVoteStable={handleStoryVoteStable}
+                handleTranslationVoteStable={handleTranslationVoteStable}
               />
             )}
 
@@ -23533,7 +26611,11 @@ function AppInner() {
               <div className={`webapp-video-dictionary ${videoExpanded ? 'is-split' : ''}`}>
                 {isSectionVisible('youtube') && (
                   <PerfProfiler id="section.youtube">
-                    <section className={`webapp-video youtube-player-first ${youtubeLearningMode ? 'is-learning' : 'is-setup'} ${youtubeAppFullscreen ? 'is-app-fullscreen-active' : ''}`} ref={youtubeRef}>
+                    <section
+                      className={`webapp-video youtube-player-first ${youtubeLearningMode ? 'is-learning' : 'is-setup'} ${youtubeAppFullscreen ? 'is-app-fullscreen-active' : ''}`}
+                      ref={youtubeRef}
+                      data-no-edge-swipe="true"
+                    >
                     <div className="webapp-local-section-head youtube-player-first-head">
                       <div className="youtube-desktop-command-bar">
                         <div className="youtube-desktop-command-row youtube-desktop-command-row-top">
@@ -23676,6 +26758,18 @@ function AppInner() {
                             {!youtubeTaskDone && renderTodaySectionTaskHud('youtube', { inline: true })}
                             <button
                               type="button"
+                              className={`youtube-dock-icon-btn youtube-head-dict-btn ${youtubeDictOpen ? 'is-active' : ''}`}
+                              onClick={() => setYoutubeDictOpen((prev) => !prev)}
+                              aria-label={tr('Словарь', 'Wörterbuch')}
+                              title={tr('Словарь', 'Wörterbuch')}
+                            >
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="17" height="17" aria-hidden="true">
+                                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+                                <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+                              </svg>
+                            </button>
+                            <button
+                              type="button"
                               className="youtube-dock-icon-btn youtube-head-settings-btn"
                               onClick={() => setYoutubeSettingsOpen(true)}
                               aria-label={tr('Настройки', 'Settings')}
@@ -23685,21 +26779,21 @@ function AppInner() {
                             </button>
                           </div>
                         </div>
+                        <div className="youtube-player-first-controls-row">
                         {isFocusedSection('youtube') && (
-                          <div className="section-head-nav">
-                            <button
-                              type="button"
-                              className="section-home-back is-compact-arrow"
-                              onClick={goBackFromYoutube}
-                              title={tr('Назад', 'Zurueck')}
-                              aria-label={tr('Назад', 'Zurueck')}
-                            >
-                              ⏪
-                            </button>
-                            <button type="button" className="section-home-back" onClick={goHomeScreen}>
-                              {tr('На главную', 'Startseite')}
-                            </button>
-                          </div>
+                          <button
+                            type="button"
+                            className="section-home-back is-compact-arrow"
+                            onClick={goBackFromYoutube}
+                            title={tr('Назад', 'Zurueck')}
+                            aria-label={tr('Назад', 'Zurueck')}
+                          >
+                            <span className="youtube-back-arrow-icon" aria-hidden="true">
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="15 18 9 12 15 6"/>
+                              </svg>
+                            </span>
+                          </button>
                         )}
                         <div className="youtube-player-first-head-controls">
                           <button
@@ -23741,6 +26835,7 @@ function AppInner() {
                               ? tr('Full screen: ON', 'Full screen: ON')
                               : tr('Full screen: OFF', 'Full screen: OFF')}
                           </button>
+                        </div>
                         </div>
                       </div>
                     </div>
@@ -23928,14 +27023,13 @@ function AppInner() {
                                 onTouchCancel={handleYoutubeSubtitlesTouchCancel}
                               >
                                 {(() => {
-                                  const activeIndex = getActiveSubtitleIndex();
-                                  return youtubeTranscript.map((item, index) => (
+                                  return youtubeSubtitleDisplayRows.map((row, rowIndex) => (
                                     <p
-                                      key={`${item.start}-${index}`}
-                                      className={index === activeIndex ? 'is-active' : ''}
-                                      onClick={(event) => openYoutubeSentenceSelection(event, item.text, 'youtube_sentence')}
+                                      key={row.key}
+                                      className={row.isActive ? 'is-active' : ''}
+                                      onClick={(event) => openYoutubeSentenceSelection(event, row.targetText, 'youtube_sentence')}
                                     >
-                                      {renderSubtitleText(item.text, 'youtube_word', index)}
+                                      {renderSubtitleText(row.targetText, 'youtube_word', rowIndex)}
                                     </p>
                                   ));
                                 })()}
@@ -23950,13 +27044,12 @@ function AppInner() {
                               <div className="webapp-subtitles is-translation">
                                 <div className="webapp-subtitles-list" onMouseUp={handleSelection}>
                                   {(() => {
-                                    const activeIndex = getActiveSubtitleIndex();
-                                    return youtubeTranscript.map((item, index) => {
-                                      const translation = youtubeTranslations[String(index)] || '…';
+                                    return youtubeSubtitleDisplayRows.map((row) => {
+                                      const translation = row.translationText || '…';
                                       return (
                                         <p
-                                          key={`translation-${item.start}-${index}`}
-                                          className={index === activeIndex ? 'is-active' : ''}
+                                          key={`translation-${row.key}`}
+                                          className={row.isActive ? 'is-active' : ''}
                                         >
                                           {translation}
                                         </p>
@@ -24095,6 +27188,128 @@ function AppInner() {
                         </div>
                       </div>
                     )}
+
+                    {/* Dictionary widget (trigger in title-actions row) */}
+                    {youtubeDictOpen && (
+                      <div
+                        className="yt-dict-widget"
+                        ref={youtubeDictWidgetRef}
+                        onMouseDown={(e) => {
+                          const el = youtubeDictWidgetRef.current;
+                          if (!el) return;
+                          const handle = e.target.closest('.yt-dict-widget-handle');
+                          if (!handle) return;
+                          const rect = el.getBoundingClientRect();
+                          youtubeDictDragRef.current = { dragging: true, startX: e.clientX, startY: e.clientY, startLeft: rect.left, startTop: rect.top };
+                          e.preventDefault();
+                        }}
+                        onTouchStart={(e) => {
+                          const el = youtubeDictWidgetRef.current;
+                          if (!el) return;
+                          const handle = e.target.closest('.yt-dict-widget-handle');
+                          if (!handle) return;
+                          const rect = el.getBoundingClientRect();
+                          const t = e.touches[0];
+                          youtubeDictDragRef.current = { dragging: true, startX: t.clientX, startY: t.clientY, startLeft: rect.left, startTop: rect.top };
+                        }}
+                      >
+                        <div
+                          className="yt-dict-widget-handle"
+                          onMouseMove={(e) => {
+                            const d = youtubeDictDragRef.current;
+                            if (!d.dragging) return;
+                            const el = youtubeDictWidgetRef.current;
+                            if (!el) return;
+                            const dx = e.clientX - d.startX;
+                            const dy = e.clientY - d.startY;
+                            el.style.left = `${d.startLeft + dx}px`;
+                            el.style.top = `${d.startTop + dy}px`;
+                            el.style.bottom = 'auto';
+                            el.style.transform = 'none';
+                          }}
+                          onMouseUp={() => { youtubeDictDragRef.current.dragging = false; }}
+                          onTouchMove={(e) => {
+                            const d = youtubeDictDragRef.current;
+                            if (!d.dragging) return;
+                            const el = youtubeDictWidgetRef.current;
+                            if (!el) return;
+                            const t = e.touches[0];
+                            const dx = t.clientX - d.startX;
+                            const dy = t.clientY - d.startY;
+                            el.style.left = `${d.startLeft + dx}px`;
+                            el.style.top = `${d.startTop + dy}px`;
+                            el.style.bottom = 'auto';
+                            el.style.transform = 'none';
+                          }}
+                          onTouchEnd={() => { youtubeDictDragRef.current.dragging = false; }}
+                        >
+                          <div className="yt-dict-drag-dots">
+                            {[0,1,2,3,4,5].map((i) => <span key={i}/>)}
+                          </div>
+                          <span className="yt-dict-widget-title">{tr('Словарь', 'Wörterbuch')}</span>
+                          <button
+                            type="button"
+                            className="yt-dict-widget-close"
+                            onClick={() => { setYoutubeDictOpen(false); setYoutubeDictResult(null); setYoutubeDictQuery(''); setYoutubeDictError(''); }}
+                            aria-label={tr('Закрыть', 'Schließen')}
+                          >×</button>
+                        </div>
+                        <div className="yt-dict-search-row">
+                          <div className="yt-dict-input-wrap">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                              <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                            </svg>
+                            <input
+                              className="yt-dict-input"
+                              value={youtubeDictQuery}
+                              onChange={(e) => setYoutubeDictQuery(e.target.value)}
+                              onKeyDown={(e) => { if (e.key === 'Enter') lookupYoutubeDict(youtubeDictQuery); }}
+                              placeholder={tr('Слово для поиска…', 'Wort suchen…')}
+                              autoFocus={false}
+                            />
+                          </div>
+                        </div>
+                        {youtubeDictLoading && (
+                          <div className="yt-dict-loading">
+                            <span>⏳</span> {tr('Ищем…', 'Suche…')}
+                          </div>
+                        )}
+                        {!youtubeDictLoading && youtubeDictError && (
+                          <div className="yt-dict-error">{youtubeDictError}</div>
+                        )}
+                        {!youtubeDictLoading && !youtubeDictError && !youtubeDictResult && (
+                          <div className="yt-dict-empty">
+                            {tr('Нажми на слово в субтитрах или введи слово вручную', 'Wort antippen oder manuell eingeben')}
+                          </div>
+                        )}
+                        {!youtubeDictLoading && youtubeDictResult && (
+                          <div className="yt-dict-result">
+                            <div className="yt-dict-word-row">
+                              <span className="yt-dict-word-main">
+                                {youtubeDictResult.article ? `${youtubeDictResult.article} ` : ''}
+                                {youtubeDictResult.word_de || youtubeDictResult.word_ru || youtubeDictQuery}
+                              </span>
+                              {youtubeDictResult.part_of_speech && (
+                                <span className="yt-dict-pos-badge">{youtubeDictResult.part_of_speech}</span>
+                              )}
+                            </div>
+                            <div className="yt-dict-translation">
+                              {youtubeDictResult.translation_ru || youtubeDictResult.translation_de || '—'}
+                            </div>
+                            <div className="yt-dict-actions">
+                              <button
+                                type="button"
+                                className="yt-dict-save-btn"
+                                onClick={saveYoutubeDictWord}
+                                disabled={youtubeDictSaved}
+                              >
+                                {youtubeDictSaved ? `✓ ${tr('Сохранено', 'Gespeichert')}` : `+ ${tr('В словарь', 'Speichern')}`}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                     </section>
                   </PerfProfiler>
                 )}
@@ -24106,6 +27321,505 @@ function AppInner() {
                       <h3>{tr('Словарь', 'Woerterbuch')}</h3>
                       <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                     </div>
+
+                    {/* Tab switcher */}
+                    <div className="vocab-tabs">
+                      <button
+                        type="button"
+                        className={`vocab-tab ${vocabTab === 'search' ? 'is-active' : ''}`}
+                        onClick={() => setVocabTab('search')}
+                      >
+                        🔍 {tr('Поиск', 'Suche')}
+                      </button>
+                      <button
+                        type="button"
+                        className={`vocab-tab ${vocabTab === 'library' ? 'is-active' : ''}`}
+                        onClick={() => setVocabTab('library')}
+                      >
+                        📚 {tr('Библиотека', 'Bibliothek')}
+                        {vocabFoldersMeta?.total_count > 0 && (
+                          <span className="vocab-tab-count">{vocabFoldersMeta.total_count}</span>
+                        )}
+                      </button>
+                    </div>
+
+                    {/* ─── LIBRARY TAB ─── */}
+                    {vocabTab === 'library' && (() => {
+                      const sortLabels = {
+                        date_desc: tr('↓ Дата', '↓ Datum'),
+                        date_asc:  tr('↑ Дата', '↑ Datum'),
+                        alpha_asc: tr('А → Я', 'A → Z'),
+                        srs_status: tr('SRS статус', 'SRS Status'),
+                      };
+                      const sortKeys = Object.keys(sortLabels);
+
+                      const groupByDate = (items) => {
+                        const now = new Date();
+                        const todayStr = now.toISOString().slice(0, 10);
+                        const yesterday = new Date(now); yesterday.setDate(yesterday.getDate() - 1);
+                        const yesterdayStr = yesterday.toISOString().slice(0, 10);
+                        const weekAgo = new Date(now); weekAgo.setDate(weekAgo.getDate() - 7);
+                        const groups = [];
+                        let currentGroup = null;
+                        items.forEach((item) => {
+                          const dateStr = (item.created_at || '').slice(0, 10);
+                          let label;
+                          if (dateStr === todayStr) label = tr('Сегодня', 'Heute');
+                          else if (dateStr === yesterdayStr) label = tr('Вчера', 'Gestern');
+                          else if (new Date(dateStr) >= weekAgo) label = tr('На этой неделе', 'Diese Woche');
+                          else {
+                            const d = new Date(dateStr);
+                            label = d.toLocaleDateString(uiLang === 'de' ? 'de-DE' : 'ru-RU', { month: 'long', year: 'numeric' });
+                          }
+                          if (!currentGroup || currentGroup.label !== label) {
+                            currentGroup = { label, items: [] };
+                            groups.push(currentGroup);
+                          }
+                          currentGroup.items.push(item);
+                        });
+                        return groups;
+                      };
+
+                      const groups = vocabSort === 'date_desc' || vocabSort === 'date_asc'
+                        ? groupByDate(vocabItems)
+                        : [{ label: null, items: vocabItems }];
+
+                      const srsColors = { new: '#6366F1', due: '#F59E0B', ok: '#10B981', none: '#334155' };
+                      const srsLabels = {
+                        new: tr('Новое', 'Neu'),
+                        due: tr('К повторению', 'Fällig'),
+                        ok: tr('Усвоено', 'Gelernt'),
+                        none: tr('Без SRS', 'Ohne SRS'),
+                      };
+                      const manualSelectionIdSet = new Set(manualTrainingSelectionIds);
+
+                      const folderChips = [
+                        { key: 'all', label: tr('Все', 'Alle'), icon: '📂', count: vocabFoldersMeta?.total_count ?? vocabTotal },
+                        ...(vocabFoldersMeta?.folders || []).map((f) => ({
+                          key: String(f.id),
+                          label: f.name,
+                          icon: resolveFolderIconLabel(f.icon),
+                          count: f.word_count,
+                        })),
+                        ...(vocabFoldersMeta?.no_folder_count > 0 ? [{
+                          key: 'none',
+                          label: tr('Без папки', 'Ohne Ordner'),
+                          icon: '🗂',
+                          count: vocabFoldersMeta.no_folder_count,
+                        }] : []),
+                      ];
+
+                      const offlineMeta = !isOnline && vocabFoldersMeta?.last_updated
+                        ? vocabFoldersMeta.last_updated
+                        : null;
+
+                      return (
+                        <div className="vocab-library">
+                          {(!isOnline || vocabOfflinePendingCount > 0) && (
+                            <div className={`vocab-offline-banner ${!isOnline ? '' : 'is-syncing'}`}>
+                              <span className="vocab-offline-icon">
+                                {!isOnline ? '📵' : '↑'}
+                              </span>
+                              <span className="vocab-offline-text">
+                                {!isOnline ? (
+                                  <>
+                                    {tr('Офлайн', 'Offline')}
+                                    {offlineMeta && (
+                                      <> · {new Date(offlineMeta).toLocaleDateString(uiLang === 'de' ? 'de-DE' : 'ru-RU', { day: 'numeric', month: 'short' })}</>
+                                    )}
+                                    {vocabOfflinePendingCount > 0 && (
+                                      <> · {vocabOfflinePendingCount} {tr('несинхр.', 'offline')}</>
+                                    )}
+                                  </>
+                                ) : (
+                                  <>{tr('синхр.', 'sync')} {vocabOfflinePendingCount}</>
+                                )}
+                              </span>
+                            </div>
+                          )}
+                          {/* Stats + Sort */}
+                          <div className="vocab-stats-bar">
+                            <span className="vocab-stats-total">
+                              {tr('Всего:', 'Gesamt:')} <strong>{vocabFoldersMeta?.total_count ?? vocabTotal}</strong>
+                            </span>
+                            <button
+                              type="button"
+                              className="vocab-sort-btn"
+                              onClick={() => {
+                                const idx = sortKeys.indexOf(vocabSort);
+                                setVocabSort(sortKeys[(idx + 1) % sortKeys.length]);
+                              }}
+                            >
+                              {sortLabels[vocabSort]}
+                            </button>
+                          </div>
+
+                          <div className="vocab-selection-toolbar">
+                            <div className="vocab-selection-toolbar-main">
+                              <span className="vocab-selection-title">
+                                {tr('Текущая выборка', 'Aktuelle Auswahl')}
+                              </span>
+                              <span className="vocab-selection-count">
+                                {manualTrainingSelectionCount}
+                              </span>
+                              {manualTrainingSelectionLoading && (
+                                <span className="vocab-selection-loading">
+                                  {tr('загрузка...', 'laden...')}
+                                </span>
+                              )}
+                            </div>
+                            <div className="vocab-sel-tabs">
+                              <button
+                                type="button"
+                                className="vocab-sel-tab is-learn"
+                                onClick={() => { void openTrainingForManualSelection(); }}
+                                disabled={manualTrainingSelectionSaving || manualTrainingSelectionCount <= 0}
+                              >
+                                <span className="vocab-sel-tab-icon">▶</span>
+                                <span>{tr('Учить', 'Lernen')}</span>
+                              </button>
+                              <button
+                                type="button"
+                                className="vocab-sel-tab is-reset"
+                                onClick={() => { void clearManualTrainingSelectionRemote(); }}
+                                disabled={manualTrainingSelectionSaving || manualTrainingSelectionCount <= 0}
+                              >
+                                <span className="vocab-sel-tab-icon">↺</span>
+                                <span>{tr('Сбросить', 'Zurücksetzen')}</span>
+                              </button>
+                              <button
+                                type="button"
+                                className="vocab-sel-tab is-move"
+                                onClick={() => { setVocabMoveError(''); setVocabMoveModalOpen(true); }}
+                                disabled={manualTrainingSelectionSaving || manualTrainingSelectionCount <= 0}
+                              >
+                                <span className="vocab-sel-tab-icon">→</span>
+                                <span>{tr('Переместить', 'Verschieben')}</span>
+                              </button>
+                            </div>
+                          </div>
+                          {manualTrainingSelectionError && (
+                            <div className="webapp-error vocab-selection-error">{manualTrainingSelectionError}</div>
+                          )}
+                          {vocabMoveModalOpen && (
+                            <div
+                              className="vocab-move-overlay"
+                              role="dialog"
+                              aria-modal="true"
+                              onClick={() => setVocabMoveModalOpen(false)}
+                            >
+                              <div className="vocab-move-modal" onClick={(e) => e.stopPropagation()}>
+                                <div className="vocab-move-modal-head">
+                                  <h3>{tr('Переместить в папку', 'In Ordner verschieben')}</h3>
+                                  <button
+                                    type="button"
+                                    className="vocab-move-modal-close"
+                                    onClick={() => setVocabMoveModalOpen(false)}
+                                    aria-label={tr('Закрыть', 'Schließen')}
+                                  >✕</button>
+                                </div>
+                                <p className="vocab-move-modal-sub">
+                                  {tr(`Выбрано ${manualTrainingSelectionCount} слов`, `${manualTrainingSelectionCount} Wörter ausgewählt`)}
+                                </p>
+                                <div className="vocab-move-folder-list">
+                                  <button
+                                    type="button"
+                                    className="vocab-move-folder-item is-none"
+                                    onClick={() => { void moveWordsToFolder(null); }}
+                                    disabled={vocabMoveLoading}
+                                  >
+                                    <span className="vocab-move-folder-icon">🗂</span>
+                                    <span>{tr('Без папки', 'Ohne Ordner')}</span>
+                                  </button>
+                                  {(vocabFoldersMeta?.folders || []).map((f) => (
+                                    <button
+                                      key={f.id}
+                                      type="button"
+                                      className="vocab-move-folder-item"
+                                      style={{ '--fc': f.color || '#5ddcff' }}
+                                      onClick={() => { void moveWordsToFolder(f.id); }}
+                                      disabled={vocabMoveLoading}
+                                    >
+                                      <span className="vocab-move-folder-icon">
+                                        {renderFolderIcon(f.icon, f.color || '#5ddcff')}
+                                      </span>
+                                      <span className="vocab-move-folder-name">{f.name}</span>
+                                      <span className="vocab-move-folder-count">{f.word_count ?? ''}</span>
+                                    </button>
+                                  ))}
+                                </div>
+                                {vocabMoveLoading && (
+                                  <p className="vocab-move-modal-loading">{tr('Перемещаем...', 'Wird verschoben...')}</p>
+                                )}
+                                {vocabMoveError && (
+                                  <div className="webapp-error">{vocabMoveError}</div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Folder grid */}
+                          <div className="vocab-folder-section">
+                            {/* Quick filters: All + No Folder */}
+                            <div className="vocab-folder-quick-row">
+                              <button
+                                type="button"
+                                className={`vocab-qf-btn ${vocabFolderFilter === 'all' ? 'is-active' : ''}`}
+                                onClick={() => { setVocabFolderFilter('all'); setVocabExpandedId(null); }}
+                              >
+                                📂 {tr('Все', 'Alle')} <span className="vfc-count">{vocabFoldersMeta?.total_count ?? vocabTotal}</span>
+                              </button>
+                              {(vocabFoldersMeta?.no_folder_count ?? 0) > 0 && (
+                                <button
+                                  type="button"
+                                  className={`vocab-qf-btn ${vocabFolderFilter === 'none' ? 'is-active' : ''}`}
+                                  onClick={() => { setVocabFolderFilter('none'); setVocabExpandedId(null); }}
+                                >
+                                  🗂 {tr('Без папки', 'Ohne Ordner')} <span className="vfc-count">{vocabFoldersMeta?.no_folder_count}</span>
+                                </button>
+                              )}
+                            </div>
+
+                            {/* Folder grid — long-press for context menu */}
+                            {(vocabFoldersMeta?.folders || []).length > 0 && (
+                              <div className="vocab-folder-grid">
+                                {(vocabFoldersMeta?.folders || []).map((f) => {
+                                  const fKey = String(f.id);
+                                  const isActive = vocabFolderFilter === fKey;
+                                  let longPressTimer = null;
+                                  const handleLongPressStart = () => {
+                                    longPressTimer = window.setTimeout(() => {
+                                      setFolderContextMenu({ folder: f });
+                                    }, 480);
+                                  };
+                                  const handleLongPressEnd = () => {
+                                    if (longPressTimer) { window.clearTimeout(longPressTimer); longPressTimer = null; }
+                                  };
+                                  return (
+                                    <button
+                                      key={fKey}
+                                      type="button"
+                                      className={`vocab-folder-card ${isActive ? 'is-active' : ''}`}
+                                      style={{ '--fc': f.color || '#5ddcff' }}
+                                      onClick={() => { setVocabFolderFilter(fKey); setVocabExpandedId(null); }}
+                                      onPointerDown={handleLongPressStart}
+                                      onPointerUp={handleLongPressEnd}
+                                      onPointerLeave={handleLongPressEnd}
+                                      onPointerCancel={handleLongPressEnd}
+                                    >
+                                      <span className="vfc-card-icon-wrap">
+                                        {renderFolderIcon(f.icon, f.color || '#5ddcff')}
+                                      </span>
+                                      <span className="vfc-card-name">{f.name}</span>
+                                      <span className="vfc-card-count">{f.word_count ?? 0}</span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+                            {folderTtsJob && (
+                              <div className="folder-tts-job-banner">
+                                {folderTtsJob.status === 'loading' && (
+                                  <span className="ftj-label">
+                                    📥 {folderTtsJob.folderName}
+                                    {folderTtsJob.total > 0 ? (
+                                      <>
+                                        {': '}{folderTtsJob.done} / {folderTtsJob.total}
+                                        <span className="ftj-bar"><span className="ftj-fill" style={{ width: `${Math.round(folderTtsJob.done / folderTtsJob.total * 100)}%` }} /></span>
+                                      </>
+                                    ) : '…'}
+                                  </span>
+                                )}
+                                {folderTtsJob.status === 'done' && (
+                                  <span className="ftj-label ftj-done">✓ {tr('Загружено для офлайн', 'Für Offline geladen')}: {folderTtsJob.done}</span>
+                                )}
+                                {folderTtsJob.status === 'error' && (
+                                  <span className="ftj-label ftj-error">⚠ {folderTtsJob.error}</span>
+                                )}
+                                <button type="button" className="ftj-close" onClick={() => { folderTtsJob.cancelRef && (folderTtsJob.cancelRef.cancelled = true); setFolderTtsJob(null); }}>×</button>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Search inside library */}
+                          <div className="vocab-search-wrap">
+                            <input
+                              className="vocab-search-input"
+                              type="text"
+                              value={vocabSearch}
+                              placeholder={tr('Поиск по словам...', 'Wörter suchen...')}
+                              onChange={(e) => { setVocabSearch(e.target.value); setVocabExpandedId(null); }}
+                            />
+                            {vocabSearch && (
+                              <button type="button" className="vocab-search-clear" onClick={() => setVocabSearch('')}>×</button>
+                            )}
+                          </div>
+
+                          {/* Loading / Error */}
+                          {vocabError && <div className="webapp-error" style={{ margin: '8px 16px' }}>{vocabError}</div>}
+                          {vocabLoading && vocabItems.length === 0 && (
+                            <div className="vocab-loading">{tr('Загрузка...', 'Wird geladen...')}</div>
+                          )}
+
+                          {/* Empty state */}
+                          {!vocabLoading && vocabItems.length === 0 && !vocabError && (
+                            <div className="vocab-empty">
+                              <div className="vocab-empty-icon">📭</div>
+                              <p>{tr('Слова не найдены', 'Keine Wörter gefunden')}</p>
+                            </div>
+                          )}
+
+                          {/* Word groups */}
+                          {groups.map((group) => (
+                            <div key={group.label ?? '__all'}>
+                              {group.label && <div className="vocab-group-label">{group.label}</div>}
+                              <div className="vocab-word-list">
+                                {group.items.map((item) => {
+                                  const isExpanded = vocabExpandedId === item.id;
+                                  const isSelectedForManual = manualSelectionIdSet.has(Number(item.id));
+                                  const dotColor = srsColors[item.srs_label] || srsColors.none;
+                                  const folder = (vocabFoldersMeta?.folders || []).find((f) => f.id === item.folder_id);
+                                  const displayWord = item.display_word || item.word_de || item.word_ru || '—';
+                                  const displayTrans = item.display_translation || item.translation_ru || item.translation_de || '';
+                                  const savedMeanings = getSavedEntryRankedMeanings(item);
+                                  const partOfSpeech = item.srs_label !== 'none'
+                                    ? `${srsLabels[item.srs_label]} · ${tr('повт.', 'Wdh.')} ${item.srs_reps}`
+                                    : null;
+
+                                  return (
+                                    <div key={item.id} className={`vocab-word-item ${isExpanded ? 'is-expanded' : ''}`}>
+                                      <div className="vocab-word-row-shell">
+                                        <button
+                                          type="button"
+                                          className={`vocab-select-toggle ${isSelectedForManual ? 'is-active' : ''}`}
+                                          onClick={() => toggleManualTrainingSelectionCard(item.id)}
+                                          aria-label={tr('Добавить слово в текущую выборку', 'Wort zur aktuellen Auswahl hinzufügen')}
+                                        >
+                                          {isSelectedForManual ? '✅' : ''}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="vocab-word-row"
+                                          onClick={() => setVocabExpandedId(isExpanded ? null : item.id)}
+                                        >
+                                          <span className="vocab-srs-dot" style={{ background: dotColor }} />
+                                          <span className="vocab-word-body">
+                                            <span className="vocab-word-main">{displayWord}</span>
+                                            <span className="vocab-word-sub">
+                                              {displayTrans}
+                                              {partOfSpeech && <> · <em>{partOfSpeech}</em></>}
+                                            </span>
+                                          </span>
+                                          <span className="vocab-word-meta">
+                                            {folder && (
+                                              <span className="vocab-folder-tag">
+                                                {resolveFolderIconLabel(folder.icon)} {folder.name}
+                                              </span>
+                                            )}
+                                            <span className="vocab-word-date">
+                                              {(item.created_at || '').slice(0, 10)}
+                                            </span>
+                                          </span>
+                                          <span className={`vocab-expand-arrow ${isExpanded ? 'is-open' : ''}`}>›</span>
+                                        </button>
+                                      </div>
+                                      {isExpanded && (
+                                        <>
+                                          {savedMeanings.length > 0 && (
+                                            <div className="vocab-word-details">
+                                              <div className="vocab-word-detail-title">
+                                                {tr('Значения', 'Bedeutungen')}
+                                              </div>
+                                              <div className="vocab-word-sense-list">
+                                                {savedMeanings.map((sense, index) => {
+                                                  const example = formatDictionaryBilingualExample(sense?.example_source, sense?.example_target);
+                                                  const rank = Number(sense?.rank) > 0 ? Number(sense.rank) : index + 1;
+                                                  const isPrimary = index === 0 || String(sense?.label || '').trim().toLowerCase() === 'main';
+                                                  return (
+                                                    <div key={`${item.id}-sense-${rank}-${String(sense?.value || '')}`} className="vocab-word-sense-item">
+                                                      <span className="vocab-word-sense-rank">{rank}.</span>
+                                                      <div className="vocab-word-sense-body">
+                                                        <div className="vocab-word-sense-line">
+                                                          <span className="vocab-word-sense-text">{formatDictionaryMeaningText(sense)}</span>
+                                                          {isPrimary && (
+                                                            <span className="vocab-word-sense-badge">
+                                                              {tr('основное', 'Haupt')}
+                                                            </span>
+                                                          )}
+                                                        </div>
+                                                        {example && (
+                                                          <div className="vocab-word-sense-example">
+                                                            <em>{example}</em>
+                                                          </div>
+                                                        )}
+                                                      </div>
+                                                    </div>
+                                                  );
+                                                })}
+                                              </div>
+                                            </div>
+                                          )}
+                                          <div className="vocab-word-actions">
+                                            <button
+                                              type="button"
+                                              className="vocab-action-btn vocab-action-edit"
+                                              onClick={() => {
+                                                const [primaryMeaning, secondaryMeaning, tertiaryMeaning] = getSavedEntrySenseValues(item);
+                                                setVocabEditItem(item);
+                                                setVocabEditWord(item.word_de || item.word_ru || '');
+                                                setVocabEditTrans(primaryMeaning || item.translation_ru || item.translation_de || '');
+                                                setVocabEditTransSecondary(secondaryMeaning);
+                                                setVocabEditTransTertiary(tertiaryMeaning);
+                                                setVocabEditFolder(item.folder_id ? String(item.folder_id) : 'none');
+                                                setVocabEditError('');
+                                              }}
+                                            >
+                                              ✏️ {tr('Редактировать', 'Bearbeiten')}
+                                            </button>
+                                            <button
+                                              type="button"
+                                              className="vocab-action-btn vocab-action-delete"
+                                              onClick={() => setVocabDeleteItem(item)}
+                                            >
+                                              🗑 {tr('Удалить', 'Löschen')}
+                                            </button>
+                                          </div>
+                                        </>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
+
+                          {/* Load more */}
+                          {vocabHasMore && (
+                            <button
+                              type="button"
+                              className="vocab-load-more"
+                              disabled={vocabLoading}
+                              onClick={() => void loadVocabLibrary()}
+                            >
+                              {vocabLoading ? tr('Загрузка...', 'Wird geladen...') : tr('Загрузить ещё', 'Mehr laden')}
+                            </button>
+                          )}
+
+                          {/* SRS legend */}
+                          <div className="vocab-legend">
+                            {Object.entries(srsLabels).map(([key, label]) => (
+                              <span key={key} className="vocab-legend-item">
+                                <span className="vocab-legend-dot" style={{ background: srsColors[key] }} />
+                                {label}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* ─── SEARCH TAB ─── */}
+                    {vocabTab === 'search' && (<>
                     <form className="webapp-dictionary-form" onSubmit={handleDictionaryLookup}>
                       <label className="webapp-field">
                         <span>{tr('Слово или фраза', 'Wort oder Phrase')}</span>
@@ -24140,12 +27854,23 @@ function AppInner() {
                         >
                           {dictionaryLoading && dictionaryLookupMode === 'quick'
                             ? tr('Быстро...', 'Schnell...')
-                            : tr('Быстрый перевод', 'Schnell')}
+                            : tr('⚡ Перевод', '⚡ Übersetzen')}
                         </button>
                         <button className="secondary-button dictionary-button" type="submit" disabled={dictionaryLoading}>
                           {dictionaryLoading && dictionaryLookupMode === 'gpt'
                             ? tr('GPT...', 'GPT...')
-                            : tr('GPT-разбор', 'Mit GPT')}
+                            : tr('🤖 GPT-разбор', '🤖 GPT')}
+                        </button>
+                        <button
+                          className="secondary-button dictionary-base-button"
+                          type="button"
+                          onClick={handleDictionaryBaseLookup}
+                          disabled={dictionaryLoading}
+                          title={tr('Словарный перевод — работает онлайн и офлайн', 'Wörterbuch — funktioniert online und offline')}
+                        >
+                          {dictionaryLoading && dictionaryLookupMode === 'base'
+                            ? tr('Словарь...', 'Wörterbuch...')
+                            : tr('📖 Словарь', '📖 Wörterbuch')}
                         </button>
                         {lastLookupScrollY !== null && (
                           <button
@@ -24328,11 +28053,17 @@ function AppInner() {
                           <span className="dictionary-direction">
                             {getLookupDirectionLabel()}
                           </span>
-                          {!!String(dictionaryResult?.provider || '').trim() && (
+                          {dictionaryResult?.is_base_dict ? (
+                            <span className="dictionary-source-badge is-dict">
+                              {dictionaryResult.provider === 'base_dict_offline'
+                                ? tr('📖 Словарь (офлайн)', '📖 Wörterbuch (offline)')
+                                : tr('📖 Словарь', '📖 Wörterbuch')}
+                            </span>
+                          ) : !!String(dictionaryResult?.provider || '').trim() ? (
                             <span className="dictionary-direction">
                               {String(dictionaryResult.provider).toUpperCase()}
                             </span>
-                          )}
+                          ) : null}
                         </div>
                         <div className="dictionary-row">
                           <strong>{tr('Часть речи:', 'Wortart:')}</strong> {dictionaryResult.part_of_speech || '—'}
@@ -24395,6 +28126,27 @@ function AppInner() {
                             {getDictionaryNoteRows(dictionaryResult).map((row) => (
                               <div key={row.label}><strong>{row.label}:</strong> {row.value}</div>
                             ))}
+                          </div>
+                        )}
+
+                        {dictionaryResult.is_base_dict && Array.isArray(dictionaryResult.dictionary_senses) && dictionaryResult.dictionary_senses.filter((s) => s && (String(s.translation_ru || '').trim() || String(s.value || '').trim())).length > 0 && (
+                          <div className="dictionary-examples">
+                            <strong>{tr('Значения:', 'Bedeutungen:')}</strong>
+                            <ul>
+                              {dictionaryResult.dictionary_senses
+                                .filter((s) => s && (String(s.translation_ru || '').trim() || String(s.value || '').trim()))
+                                .map((sense, idx) => {
+                                  const ru = String(sense.translation_ru || '').trim();
+                                  const en = String(sense.value || '').trim();
+                                  return (
+                                    <li key={`sense-${idx}`}>
+                                      {ru && <span>{ru}</span>}
+                                      {ru && en && <span className="dict-sense-sep"> — </span>}
+                                      {en && <span className="dict-sense-en">{en}</span>}
+                                    </li>
+                                  );
+                                })}
+                            </ul>
                           </div>
                         )}
 
@@ -24559,6 +28311,279 @@ function AppInner() {
                         </div>
                       </div>
                     )}
+                    </>)}
+                    {/* End of search tab */}
+
+                    {/* Edit modal */}
+                    {vocabEditItem && (
+                      <div className="vocab-modal-overlay" onClick={(e) => { if (e.target.classList.contains('vocab-modal-overlay')) setVocabEditItem(null); }}>
+                        <div className="vocab-modal-sheet">
+                          <div className="vocab-modal-handle" />
+                          <div className="vocab-modal-title">✏️ {tr('Редактировать слово', 'Wort bearbeiten')}</div>
+                          <div className="vocab-modal-field">
+                            <label className="vocab-modal-label">{tr('Слово / фраза', 'Wort / Phrase')}</label>
+                            <input
+                              className="vocab-modal-input"
+                              type="text"
+                              value={vocabEditWord}
+                              onChange={(e) => setVocabEditWord(e.target.value)}
+                            />
+                          </div>
+                          {canEditSavedEntryMeanings(vocabEditItem) ? (
+                            <>
+                              <div className="vocab-modal-field">
+                                <label className="vocab-modal-label">{tr('Основное значение', 'Hauptbedeutung')}</label>
+                                <input
+                                  className="vocab-modal-input"
+                                  type="text"
+                                  value={vocabEditTrans}
+                                  onChange={(e) => setVocabEditTrans(e.target.value)}
+                                />
+                              </div>
+                              <div className="vocab-modal-field">
+                                <label className="vocab-modal-label">{tr('2. значение', '2. Bedeutung')}</label>
+                                <input
+                                  className="vocab-modal-input"
+                                  type="text"
+                                  value={vocabEditTransSecondary}
+                                  onChange={(e) => setVocabEditTransSecondary(e.target.value)}
+                                />
+                              </div>
+                              <div className="vocab-modal-field">
+                                <label className="vocab-modal-label">{tr('3. значение', '3. Bedeutung')}</label>
+                                <input
+                                  className="vocab-modal-input"
+                                  type="text"
+                                  value={vocabEditTransTertiary}
+                                  onChange={(e) => setVocabEditTransTertiary(e.target.value)}
+                                />
+                              </div>
+                            </>
+                          ) : (
+                            <div className="vocab-modal-field">
+                              <label className="vocab-modal-label">{tr('Перевод', 'Übersetzung')}</label>
+                              <input
+                                className="vocab-modal-input"
+                                type="text"
+                                value={vocabEditTrans}
+                                onChange={(e) => setVocabEditTrans(e.target.value)}
+                              />
+                            </div>
+                          )}
+                          <div className="vocab-modal-field">
+                            <label className="vocab-modal-label">{tr('Папка', 'Ordner')}</label>
+                            <select
+                              className="vocab-modal-input"
+                              value={vocabEditFolder}
+                              onChange={(e) => setVocabEditFolder(e.target.value)}
+                            >
+                              <option value="none">{tr('Без папки', 'Ohne Ordner')}</option>
+                              {(vocabFoldersMeta?.folders || folders).map((f) => (
+                                <option key={f.id} value={String(f.id)}>
+                                  {resolveFolderIconLabel(f.icon)} {f.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          {vocabEditError && <div className="webapp-error" style={{ marginBottom: 10 }}>{vocabEditError}</div>}
+                          <div className="vocab-modal-actions">
+                            <button type="button" className="vocab-modal-cancel" onClick={() => setVocabEditItem(null)}>
+                              {tr('Отмена', 'Abbrechen')}
+                            </button>
+                            <button
+                              type="button"
+                              className="vocab-modal-save"
+                              disabled={vocabEditLoading}
+                              onClick={() => void saveVocabEdit()}
+                            >
+                              {vocabEditLoading ? '…' : tr('Сохранить', 'Speichern')}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Delete confirm */}
+                    {vocabDeleteItem && (
+                      <div className="vocab-delete-overlay" onClick={(e) => { if (e.target.classList.contains('vocab-delete-overlay')) setVocabDeleteItem(null); }}>
+                        <div className="vocab-delete-card">
+                          <div className="vocab-delete-icon">🗑️</div>
+                          <div className="vocab-delete-title">{tr('Удалить слово?', 'Wort löschen?')}</div>
+                          <div className="vocab-delete-word">
+                            {vocabDeleteItem.display_word || vocabDeleteItem.word_de || vocabDeleteItem.word_ru}
+                          </div>
+                          <div className="vocab-delete-sub">
+                            {tr('Слово будет удалено из словаря и из очереди SRS. Это действие нельзя отменить.', 'Das Wort wird aus dem Wörterbuch und der SRS-Warteschlange gelöscht. Dies kann nicht rückgängig gemacht werden.')}
+                          </div>
+                          <div className="vocab-delete-actions">
+                            <button type="button" className="vocab-del-cancel" onClick={() => setVocabDeleteItem(null)}>
+                              {tr('Отмена', 'Abbrechen')}
+                            </button>
+                            <button
+                              type="button"
+                              className="vocab-del-confirm"
+                              disabled={vocabDeleteLoading}
+                              onClick={() => void deleteVocabEntry()}
+                            >
+                              {vocabDeleteLoading ? '…' : tr('Удалить', 'Löschen')}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ── Folder context menu ── */}
+                    {folderContextMenu && (
+                      <div className="vocab-modal-overlay" onClick={() => setFolderContextMenu(null)}>
+                        <div className="vocab-modal-sheet" onClick={(e) => e.stopPropagation()}>
+                          <div className="vocab-modal-handle" />
+                          <div className="vfcm-folder-name">
+                            {resolveFolderIconLabel(folderContextMenu.folder.icon)} {folderContextMenu.folder.name}
+                          </div>
+                          <div className="vfcm-actions">
+                            <button type="button" className="vfcm-btn" onClick={() => {
+                              setFolderRenameItem(folderContextMenu.folder);
+                              setFolderRenameName(folderContextMenu.folder.name);
+                              setFolderRenameIcon(folderContextMenu.folder.icon || 'book');
+                              setFolderRenameColor(folderContextMenu.folder.color || '#5ddcff');
+                              setFolderRenameError('');
+                              setFolderContextMenu(null);
+                            }}>
+                              <span className="vfcm-btn-icon">✏️</span>
+                              <span>{tr('Переименовать', 'Umbenennen')}</span>
+                            </button>
+                            <button type="button" className="vfcm-btn" onClick={() => {
+                              if (openSection) openSection('flashcards', null);
+                              setFolderContextMenu(null);
+                            }}>
+                              <span className="vfcm-btn-icon">🃏</span>
+                              <span>{tr('Карточки по папке', 'Karten dieser Ordner')}</span>
+                            </button>
+                            <button type="button" className="vfcm-btn" onClick={() => void cacheVocabFolderOffline(folderContextMenu.folder)}>
+                              <span className="vfcm-btn-icon">📥</span>
+                              <span>{tr('Загрузить слова для офлайн', 'Für Offline laden')}</span>
+                            </button>
+                            <button type="button" className="vfcm-btn vfcm-btn-danger" onClick={() => {
+                              setFolderDeleteItem(folderContextMenu.folder);
+                              setFolderDeleteMode(null);
+                              setFolderContextMenu(null);
+                            }}>
+                              <span className="vfcm-btn-icon">🗑</span>
+                              <span>{tr('Удалить папку', 'Ordner löschen')}</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ── Rename folder modal ── */}
+                    {folderRenameItem && (
+                      <div className="vocab-modal-overlay" onClick={() => setFolderRenameItem(null)}>
+                        <div className="vocab-modal-sheet" onClick={(e) => e.stopPropagation()}>
+                          <div className="vocab-modal-handle" />
+                          <div className="vocab-modal-title">✏️ {tr('Переименовать папку', 'Ordner umbenennen')}</div>
+                          <div className="vocab-modal-field">
+                            <label className="vocab-modal-label">{tr('Название', 'Name')}</label>
+                            <input
+                              className="vocab-modal-input"
+                              type="text"
+                              value={folderRenameName}
+                              onChange={(e) => setFolderRenameName(e.target.value)}
+                              autoFocus
+                            />
+                          </div>
+                          <div className="vocab-modal-field">
+                            <label className="vocab-modal-label">{tr('Иконка', 'Symbol')}</label>
+                            <div className="folder-icon-options" style={{ marginTop: 4 }}>
+                              {['book','bolt','star','target','flag','check'].map((icon) => (
+                                <button
+                                  key={icon}
+                                  type="button"
+                                  className={`icon-dot ${folderRenameIcon === icon ? 'is-active' : ''}`}
+                                  onClick={() => setFolderRenameIcon(icon)}
+                                >
+                                  {renderFolderIcon(icon, folderRenameColor)}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="vocab-modal-field">
+                            <label className="vocab-modal-label">{tr('Цвет', 'Farbe')}</label>
+                            <div className="folder-color-options" style={{ marginTop: 4 }}>
+                              {['#5ddcff','#7c5cff','#ff6b6b','#ffd166','#06d6a0','#f78c6b'].map((color) => (
+                                <button
+                                  key={color}
+                                  type="button"
+                                  className={`color-dot ${folderRenameColor === color ? 'is-active' : ''}`}
+                                  style={{ background: color }}
+                                  onClick={() => setFolderRenameColor(color)}
+                                />
+                              ))}
+                            </div>
+                          </div>
+                          {folderRenameError && <div className="webapp-error" style={{ marginBottom: 8 }}>{folderRenameError}</div>}
+                          <div className="vocab-modal-actions">
+                            <button type="button" className="vocab-modal-cancel" onClick={() => setFolderRenameItem(null)}>
+                              {tr('Отмена', 'Abbrechen')}
+                            </button>
+                            <button
+                              type="button"
+                              className="vocab-modal-save"
+                              disabled={folderRenameLoading || !folderRenameName.trim()}
+                              onClick={() => void renameFolderSubmit()}
+                            >
+                              {folderRenameLoading ? '…' : tr('Сохранить', 'Speichern')}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ── Delete folder confirm ── */}
+                    {folderDeleteItem && (
+                      <div className="vocab-delete-overlay" onClick={() => { if (!folderDeleteMode) { setFolderDeleteItem(null); } }}>
+                        <div className="vocab-delete-card" onClick={(e) => e.stopPropagation()}>
+                          <div className="vocab-delete-icon">🗑️</div>
+                          <div className="vocab-delete-title">{tr('Удалить папку?', 'Ordner löschen?')}</div>
+                          <div className="vocab-delete-word">
+                            {resolveFolderIconLabel(folderDeleteItem.icon)} {folderDeleteItem.name}
+                          </div>
+                          <div className="vocab-delete-sub" style={{ marginBottom: 14 }}>
+                            {tr('Что сделать со словами в этой папке?', 'Was soll mit den Wörtern in diesem Ordner passieren?')}
+                          </div>
+                          <div className="vfd-options">
+                            <button
+                              type="button"
+                              className={`vfd-option-btn ${folderDeleteMode === 'keep' ? 'is-selected' : ''}`}
+                              onClick={() => setFolderDeleteMode('keep')}
+                            >
+                              📂 {tr('Оставить слова (убрать из папки)', 'Wörter behalten (aus Ordner entfernen)')}
+                            </button>
+                            <button
+                              type="button"
+                              className={`vfd-option-btn vfd-option-danger ${folderDeleteMode === 'delete' ? 'is-selected' : ''}`}
+                              onClick={() => setFolderDeleteMode('delete')}
+                            >
+                              🗑 {tr('Удалить слова вместе с папкой', 'Wörter zusammen mit Ordner löschen')}
+                            </button>
+                          </div>
+                          <div className="vocab-delete-actions" style={{ marginTop: 14 }}>
+                            <button type="button" className="vocab-del-cancel" onClick={() => { setFolderDeleteItem(null); setFolderDeleteMode(null); }}>
+                              {tr('Отмена', 'Abbrechen')}
+                            </button>
+                            <button
+                              type="button"
+                              className="vocab-del-confirm"
+                              disabled={!folderDeleteMode || folderDeleteLoading}
+                              onClick={() => void deleteFolderConfirm(folderDeleteMode === 'delete')}
+                            >
+                              {folderDeleteLoading ? '…' : tr('Удалить', 'Löschen')}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
                     </section>
                   </PerfProfiler>
                 )}
@@ -24582,133 +28607,148 @@ function AppInner() {
                   if (showLibraryMode) {
                     return (
                       <div className="reader-library-mode">
-                        <div className="reader-topbar">
-                          <div className="reader-topbar-left">
-                            {isFocusedSection('reader') && (
-                              <button type="button" className="section-home-back" onClick={goHomeScreen}>
-                                {tr('← Назад', '← Zurueck')}
-                              </button>
-                            )}
-                          </div>
-                          <div className="reader-topbar-center">
-                            <div className="reader-topbar-title">{tr('Библиотека', 'Bibliothek')}</div>
-                            <div className="webapp-muted reader-topbar-meta">
-                              {tr('Книги и тексты для чтения', 'Buecher und Texte zum Lesen')}
-                            </div>
-                          </div>
-                          <div className="reader-topbar-right">
-                            <button type="button" className="secondary-button" onClick={() => loadReaderLibrary()}>
-                              {readerLibraryLoading ? tr('Обновляем...', 'Aktualisieren...') : tr('Обновить', 'Aktualisieren')}
+
+                        {/* ── Library header ───────────────────────────────── */}
+                        <div className="reader-lib-header">
+                          <h2 className="reader-lib-header-title">
+                            {readerArchiveOpen ? tr('Архив', 'Archiv') : tr('Моя библиотека', 'Meine Bibliothek')}
+                          </h2>
+                          <div className="reader-lib-header-actions">
+                            <button
+                              type="button"
+                              className="reader-lib-icon-btn"
+                              onClick={() => loadReaderLibrary()}
+                              title={tr('Обновить', 'Aktualisieren')}
+                            >
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className={readerLibraryLoading ? 'is-spinning' : ''}>
+                                <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" />
+                                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+                              </svg>
+                            </button>
+                            <button
+                              type="button"
+                              className={`reader-lib-add-btn${readerAddOpen ? ' is-open' : ''}`}
+                              onClick={() => setReaderAddOpen((prev) => !prev)}
+                            >
+                              {readerAddOpen ? tr('✕ Скрыть', '✕ Schließen') : tr('+ Добавить', '+ Hinzufügen')}
                             </button>
                           </div>
                         </div>
 
-                        <form className="webapp-reader-form" onSubmit={handleReaderIngest}>
-                          <label className="webapp-field">
-                            <span>{tr('URL или текст', 'URL oder Text')}</span>
-                            <textarea
-                              rows={4}
-                              value={readerInput}
-                              onChange={(event) => setReaderInput(event.target.value)}
-                              placeholder={tr(
-                                'Вставьте URL статьи/книги (включая PDF) или сам текст.',
-                                'Fuege URL eines Artikels/Buchs (auch PDF) oder den Text selbst ein.'
-                              )}
-                            />
-                          </label>
-                          <label className="webapp-field">
-                            <span>{tr('Файл с телефона', 'Datei vom Telefon')}</span>
-                            <input
-                              type="file"
-                              accept=".txt,.md,.pdf,text/plain,application/pdf"
-                              onChange={handleReaderFileSelect}
-                            />
-                            {readerSelectedFile && (
-                              <small className="webapp-muted">
-                                {tr('Выбран файл', 'Datei gewaehlt')}: {readerSelectedFile.name}
-                              </small>
-                            )}
-                          </label>
-                          <div className="webapp-actions">
-                            <button type="submit" className="primary-button" disabled={readerLoading}>
-                              {readerLoading ? tr('Загружаем...', 'Laden...') : tr('Открыть в читалке', 'Im Leser oeffnen')}
-                            </button>
-                          </div>
-                        </form>
-
-                        {readerError && (
-                          <div className="webapp-error">
-                            <span>{readerError}</span>
-                            {readerErrorCode === 'LIMIT_FREE_PLAN_1_BOOK' && (
-                              <div>
-                                <button
-                                  type="button"
-                                  className="secondary-button"
-                                  onClick={handleBillingUpgrade}
-                                  disabled={billingActionLoading}
-                                >
-                                  {billingActionLoading ? tr('Открываем...', 'Oeffnen...') : tr('Upgrade', 'Upgrade')}
+                        {/* ── Collapsible upload form ───────────────────────── */}
+                        {readerAddOpen && (
+                          <div className="reader-add-form-wrap">
+                            <form className="webapp-reader-form" onSubmit={handleReaderIngest}>
+                              <label className="webapp-field">
+                                <span>{tr('URL или текст', 'URL oder Text')}</span>
+                                <textarea
+                                  rows={2}
+                                  value={readerInput}
+                                  onChange={(event) => setReaderInput(event.target.value)}
+                                  placeholder={tr(
+                                    'Вставьте URL статьи/книги (включая PDF) или сам текст.',
+                                    'Füge URL eines Artikels/Buchs (auch PDF) oder den Text selbst ein.'
+                                  )}
+                                />
+                              </label>
+                              <label className="webapp-field">
+                                <span>{tr('Файл с телефона', 'Datei vom Telefon')}</span>
+                                <input
+                                  type="file"
+                                  accept=".txt,.md,.pdf,.epub,text/plain,application/pdf,application/epub+zip"
+                                  onChange={handleReaderFileSelect}
+                                />
+                                {readerSelectedFile && (
+                                  <small className="webapp-muted">
+                                    {tr('Выбран файл', 'Datei gewaehlt')}: {readerSelectedFile.name}
+                                  </small>
+                                )}
+                              </label>
+                              <div className="webapp-actions">
+                                <button type="submit" className="primary-button" disabled={readerLoading}>
+                                  {readerLoading ? tr('Загружаем...', 'Laden...') : tr('Открыть в читалке', 'Im Leser oeffnen')}
                                 </button>
+                              </div>
+                            </form>
+                            {readerError && (
+                              <div className="webapp-error">
+                                <span>{readerError}</span>
+                                {readerErrorCode === 'LIMIT_FREE_PLAN_1_BOOK' && (
+                                  <div>
+                                    <button
+                                      type="button"
+                                      className="secondary-button"
+                                      onClick={handleBillingUpgrade}
+                                      disabled={billingActionLoading}
+                                    >
+                                      {billingActionLoading ? tr('Открываем...', 'Oeffnen...') : tr('Upgrade', 'Upgrade')}
+                                    </button>
+                                  </div>
+                                )}
                               </div>
                             )}
                           </div>
                         )}
 
+                        {/* ── Library section ──────────────────────────────── */}
                         <section className="reader-library">
-                          <div className="reader-library-head">
-                            <h4>{readerArchiveOpen ? tr('Архив', 'Archiv') : tr('Моя библиотека', 'Meine Bibliothek')}</h4>
-                            <div className="reader-library-head-actions">
-                              <label className="menu-toggle-row">
-                                <input
-                                  type="checkbox"
-                                  checked={readerIncludeArchived}
-                                  onChange={(event) => setReaderIncludeArchived(event.target.checked)}
-                                />
-                                <span>{tr('Показывать архив', 'Archiv zeigen')}</span>
-                              </label>
-                            </div>
-                          </div>
-                          <label className="webapp-field">
-                            <span>{tr('Поиск по библиотеке', 'Suche in Bibliothek')}</span>
+                          <div className="reader-lib-controls">
                             <input
                               type="text"
+                              className="reader-lib-search"
                               value={readerLibrarySearch}
                               onChange={(event) => setReaderLibrarySearch(event.target.value)}
-                              placeholder={tr('Название книги...', 'Buchtitel...')}
+                              placeholder={tr('Поиск по библиотеке…', 'Suche in Bibliothek…')}
                             />
-                          </label>
+                            <label className="reader-lib-archive-toggle">
+                              <input
+                                type="checkbox"
+                                checked={readerIncludeArchived}
+                                onChange={(event) => setReaderIncludeArchived(event.target.checked)}
+                              />
+                              <span>{tr('Архив', 'Archiv')}</span>
+                            </label>
+                          </div>
+
                           {readerLibraryError && <div className="webapp-error">{readerLibraryError}</div>}
                           {!readerLibraryError && visibleLibraryItems.length === 0 && (
                             <div className="webapp-muted">{tr('Библиотека пока пуста.', 'Bibliothek ist noch leer.')}</div>
                           )}
+
                           {visibleLibraryItems.length > 0 && (
                             <div className="reader-library-grid">
                               {visibleLibraryItems.map((item) => {
                                 const progress = Math.max(0, Math.min(100, Number(item?.progress_percent || 0)));
                                 const coverUrl = getReaderCoverUrl(item);
                                 const initials = getReaderCoverInitials(item?.title);
+                                const gradient = getReaderCoverGradient(item);
                                 const meta = buildReaderArchiveMeta(item);
                                 return (
-                                  <button
-                                    type="button"
+                                  <div
                                     key={`reader-doc-${item.id}`}
-                                    className={`reader-library-card ${Number(readerDocumentId) === Number(item.id) ? 'is-active' : ''}`}
+                                    className={`reader-library-card${Number(readerDocumentId) === Number(item.id) ? ' is-active' : ''}`}
                                     onClick={() => openReaderDocument(item.id)}
+                                    role="button"
+                                    tabIndex={0}
+                                    onKeyDown={(e) => e.key === 'Enter' && openReaderDocument(item.id)}
                                   >
                                     <div
                                       className="reader-library-cover"
-                                      style={coverUrl ? undefined : { background: '#111827' }}
+                                      style={{ background: `linear-gradient(150deg, ${gradient[0]} 0%, ${gradient[1]} 100%)` }}
                                     >
                                       {coverUrl ? (
                                         <img src={coverUrl} alt="" loading="lazy" className="reader-archive-cover-img" />
                                       ) : (
                                         <span className="reader-archive-cover-fallback">{initials}</span>
                                       )}
+                                      <div className="reader-library-cover-progress" style={{ width: `${progress}%` }} />
                                     </div>
-                                    <div className="reader-library-title">{item.title || tr('Без названия', 'Ohne Titel')}</div>
-                                    <div className="reader-library-meta">
-                                      <span>{tr('Прогресс', 'Fortschritt')}: {Math.round(progress)}%</span>
-                                      {meta && <span>{meta}</span>}
+                                    <div className="reader-library-card-body">
+                                      <div className="reader-library-title">{item.title || tr('Без названия', 'Ohne Titel')}</div>
+                                      <div className="reader-library-meta">
+                                        <span>{Math.round(progress)}%</span>
+                                        {meta && <span>{meta}</span>}
+                                      </div>
                                     </div>
                                     <div className="reader-library-actions" onClick={(event) => event.stopPropagation()}>
                                       <button
@@ -24736,7 +28776,7 @@ function AppInner() {
                                         ×
                                       </button>
                                     </div>
-                                  </button>
+                                  </div>
                                 );
                               })}
                             </div>
@@ -25148,16 +29188,6 @@ function AppInner() {
             {isSectionVisible('flashcards') && (
               <PerfProfiler id="section.flashcards">
                 <section className="webapp-flashcards" ref={flashcardsRef}>
-                {flashcardActiveMode && !flashcardsOnly && (isFocusedSection('flashcards') || Boolean(getTodayTaskForSection('flashcards'))) && (
-                  <div className="section-inline-actions section-inline-actions-task">
-                    {isFocusedSection('flashcards') && (
-                      <button type="button" className="section-home-back" onClick={goHomeScreen}>
-                        {tr('На главную', 'Startseite')}
-                      </button>
-                    )}
-                    {renderTodaySectionTaskHud('flashcards')}
-                  </div>
-                )}
                 {!flashcardsVisible && (
                   <div className="webapp-muted">
                     {t('flashcards_start_hint')}
@@ -25168,37 +29198,91 @@ function AppInner() {
                     {!flashcardsOnly && !flashcardActiveMode && (
                       <div className="flashcard-mode-menu">
                         <div className="flashcard-mode-title-wrap">
-                          <h3>{tr('Choose Training Mode', 'Choose Training Mode')}</h3>
-                          <p>{tr('Select how you want to train', 'Select how you want to train')}</p>
+                          <h3>{tr('Режим тренировки', 'Trainingsmodus')}</h3>
+                          <p>{tr('Выбери способ тренировки', 'Wähle deinen Trainingsmodus')}</p>
+                        </div>
+                        <div className="flashcard-queue-source-card">
+                          <div className="setup-label">{tr('Источник слов', 'Wortquelle')}</div>
+                          <div className="setup-options flashcard-queue-source-options">
+                            <button
+                              type="button"
+                              className={`option-pill flashcard-settings-pill ${flashcardQueueSource === 'system' ? 'is-active' : ''}`}
+                              onClick={() => {
+                                setFlashcardQueueSource('system');
+                                setFlashcardsError('');
+                              }}
+                            >
+                              {tr('Очередь системы', 'System-Warteschlange')}
+                            </button>
+                            <button
+                              type="button"
+                              className={`option-pill flashcard-settings-pill ${flashcardQueueSource === 'manual' ? 'is-active' : ''}`}
+                              onClick={() => {
+                                setFlashcardQueueSource('manual');
+                                setFlashcardsError('');
+                              }}
+                            >
+                              {tr('Текущая выборка', 'Aktuelle Auswahl')}
+                            </button>
+                          </div>
+                          {flashcardQueueSource === 'manual' && (
+                            <div className="flashcard-queue-source-meta">
+                              <span>
+                                {tr('Выбрано сейчас', 'Jetzt gewählt')}: <strong>{manualTrainingSelectionCount}</strong>
+                              </span>
+                              <button
+                                type="button"
+                                className="flashcard-queue-source-link"
+                                onClick={() => openDictionaryForManualSelection()}
+                                disabled={manualTrainingSelectionLoading || manualTrainingSelectionSaving}
+                              >
+                                {tr('Выбрать слова', 'Wörter wählen')}
+                              </button>
+                            </div>
+                          )}
+                          {flashcardQueueSource === 'manual' && manualTrainingSelectionCount <= 0 && !manualTrainingSelectionLoading && (
+                            <div className="flashcard-queue-source-note">
+                              {tr(
+                                'Сначала отметьте слова в словаре чекбоксами и нажмите «Учить». Завтра можно собрать уже другую текущую выборку.',
+                                'Markiere zuerst Wörter im Wörterbuch per Checkbox und tippe dann auf „Lernen“. Morgen kannst du bereits eine andere aktuelle Auswahl zusammenstellen.'
+                              )}
+                            </div>
+                          )}
                         </div>
                         <div className="flashcard-mode-list">
                           {[
-                            { mode: 'fsrs', title: 'FSRS', subtitle: 'Smart spaced repetition' },
-                            { mode: 'quiz', title: 'Quiz', subtitle: 'Quiz - test +4 options' },
-                            { mode: 'blocks', title: 'Blocks', subtitle: 'Blocks - assemble the word' },
-                            { mode: 'sentence', title: 'Sentence', subtitle: 'Sentence - supplemental context practice' },
-                          ].map((entry) => (
-                            <div className="flashcard-mode-item" key={`mode-${entry.mode}`}>
-                              <button
-                                type="button"
-                                className="flashcard-mode-button"
-                                onClick={() => {
-                                  void startFlashcardsMode(entry.mode);
-                                }}
-                              >
-                                <span className="flashcard-mode-button-title">{entry.title}</span>
-                                <span className="flashcard-mode-button-subtitle">{entry.subtitle}</span>
-                              </button>
-                              <button
-                                type="button"
-                                className="flashcard-mode-settings"
-                                aria-label={tr('Настройки режима', 'Modus-Einstellungen')}
-                                onClick={() => setFlashcardSettingsModalMode(entry.mode)}
-                              >
-                                ⚙
-                              </button>
-                            </div>
-                          ))}
+                            { mode: 'fsrs', title: tr('Карточки SRS', 'Karteikarten SRS'), subtitle: tr('Интервальное повторение', 'Intelligentes Spaced Repetition') },
+                            { mode: 'quiz', title: tr('Квиз', 'Quiz'), subtitle: tr('Тест с 4 вариантами ответа', '4 Antwortmöglichkeiten') },
+                            { mode: 'blocks', title: tr('Блоки', 'Blöcke'), subtitle: tr('Собери слово из блоков', 'Wort aus Blöcken zusammensetzen') },
+                            { mode: 'sentence', title: tr('Предложения', 'Sätze'), subtitle: tr('Практика в контексте', 'Übung im Kontext') },
+                          ].map((entry) => {
+                            const requiresManualSelection = flashcardQueueSource === 'manual'
+                              && entry.mode !== 'sentence'
+                              && manualTrainingSelectionCount <= 0;
+                            return (
+                              <div className="flashcard-mode-item" key={`mode-${entry.mode}`}>
+                                <button
+                                  type="button"
+                                  className="flashcard-mode-button"
+                                  disabled={requiresManualSelection}
+                                  onClick={() => {
+                                    void startFlashcardsMode(entry.mode);
+                                  }}
+                                >
+                                  <span className="flashcard-mode-button-title">{entry.title}</span>
+                                  <span className="flashcard-mode-button-subtitle">{entry.subtitle}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  className="flashcard-mode-settings"
+                                  aria-label={tr('Настройки режима', 'Modus-Einstellungen')}
+                                  onClick={() => setFlashcardSettingsModalMode(entry.mode)}
+                                >
+                                  ⚙
+                                </button>
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
                     )}
@@ -25206,25 +29290,42 @@ function AppInner() {
                     {flashcardsOnly && flashcardActiveMode === 'fsrs' && (
                       <PerfProfiler id="subsection.fsrs">
                         <div className="flashcard-mode-screen">
-                        <div className="flashcard-mode-topbar">
-                          <button type="button" className="secondary-button" onClick={() => void exitFlashcardsTraining()}>
-                            {tr('Назад', 'Zurueck')}
-                          </button>
-                          {renderTodaySectionTaskHud('flashcards')}
-                        </div>
                         <div className="fsrs-study-screen">
                           <div className="fsrs-study-header">
-                            <div className="fsrs-study-title">FSRS Study</div>
+                            <div className="fsrs-study-title">Space Repetition</div>
                             <div className="fsrs-study-queue">
-                              {t('due')}: {srsQueueInfo?.due_count ?? 0} · {t('new_today')}: {srsQueueInfo?.new_remaining_today ?? 0}
+                              {tr('Сегодня', 'Heute')}: {srsQueueInfo?.due_reviewed_today ?? 0}/{srsQueueInfo?.due_limit_today ?? 30} · {tr('Очередь', 'Warteschlange')}: {srsQueueInfo?.due_count_total ?? srsQueueInfo?.due_count ?? 0}
                             </div>
+                            {(!isOnline || srsOfflinePendingCount > 0) && (
+                              <div className={`srs-offline-badge ${!isOnline ? 'is-offline' : 'is-syncing'}`}>
+                                {!isOnline
+                                  ? `📵 ${tr('Офлайн', 'Offline')}`
+                                  : `↑ ${tr('синхр.', 'sync')} ${srsOfflinePendingCount}`}
+                              </div>
+                            )}
                           </div>
 
-                          {!srsLoading && !srsCard && !srsError && (srsQueueInfo?.due_count ?? 0) === 0 && (srsQueueInfo?.new_remaining_today ?? 0) === 0 && (
-                            <div className="fsrs-empty-note">
-                              {tr('Сегодня по FSRS всё повторено. Можно отдыхать.', 'Heute ist alles in FSRS wiederholt. Du kannst entspannen.')}
-                            </div>
-                          )}
+                          {!srsLoading && !srsCard && !srsError && (srsQueueInfo?.due_count ?? 0) === 0 && (srsQueueInfo?.new_remaining_today ?? 0) === 0 && (() => {
+                            const emptyReason = flashcardQueueSource === 'manual'
+                              ? (manualTrainingSelectionCount <= 0 ? 'manual_selection_empty' : 'shared_queue_completed_today')
+                              : 'shared_queue_completed_today';
+                            const emptyState = buildFlashcardsEmptyState(
+                              emptyReason,
+                              { queue_source: flashcardQueueSource === 'manual' ? 'manual' : 'system' },
+                              'fsrs'
+                            );
+                            return emptyState ? (
+                              <div className="flashcards-empty-state">
+                                <div className="flashcards-empty-state-badge">{emptyState.badge || 'Space Repetition'}</div>
+                                <h4>{emptyState.title}</h4>
+                                <p>{emptyState.body}</p>
+                              </div>
+                            ) : (
+                              <div className="fsrs-empty-note">
+                                {tr('Сегодня по Space Repetition всё повторено. Можно отдыхать.', 'Heute ist alles in Space Repetition wiederholt. Du kannst entspannen.')}
+                              </div>
+                            );
+                          })()}
                           {!srsLoading && !srsCard && srsError && (
                             <div className="fsrs-study-card fsrs-error-state" role="alert" aria-live="polite">
                               <div className="fsrs-error-badge">
@@ -25264,7 +29365,7 @@ function AppInner() {
                               <div className="fsrs-hourglass">⌛</div>
                               <div className="fsrs-loading-title">Preparing next card…</div>
                               <div className="fsrs-divider" />
-                              <div className="fsrs-loading-subtitle">Optimizing repetition interval (FSRS)</div>
+                              <div className="fsrs-loading-subtitle">Optimizing repetition interval (Space Repetition)</div>
                             </div>
                           )}
 
@@ -25273,9 +29374,10 @@ function AppInner() {
                             const cardTexts = getDictionarySourceTarget(srsCard, direction);
                             const sourceText = cardTexts?.sourceText || '—';
                             const targetText = cardTexts?.targetText || '—';
+                            const supplementalMeaningRows = getSavedEntrySupplementalMeaningRows(srsCard, targetText, 2);
                             const srsReplayTtsKey = `srs-replay-${srsCard?.id || srsCard?.entry_id || 'current'}`;
                             const srsReplayTtsLoading = isTtsPending(srsReplayTtsKey);
-                            const srsReplayLang = getTtsLocaleForLang(detectTtsLangFromText(targetText));
+                            const srsReplayTtsTarget = resolveDictionaryTargetTts(srsCard, direction);
                             const srsFeelEntryId = resolveFlashcardFeelEntryId(srsCard);
                             const srsFeelQueued = srsFeelEntryId ? !!flashcardFeelQueuedMap[srsFeelEntryId] : false;
                             const srsFeelStatus = srsFeelEntryId ? String(flashcardFeelStatusMap[srsFeelEntryId] || '').trim() : '';
@@ -25285,7 +29387,19 @@ function AppInner() {
                                   <div className="fsrs-card-source is-muted-top">{sourceText}</div>
                                   <div className="fsrs-divider" />
                                   {srsRevealAnswer && (
-                                    <div className="fsrs-card-target">{targetText}</div>
+                                    <>
+                                      <div className="fsrs-card-target">{targetText}</div>
+                                      {supplementalMeaningRows.length > 0 && (
+                                        <div className="flashcard-meaning-list">
+                                          {supplementalMeaningRows.map((row) => (
+                                            <div key={`srs-meaning-${srsCard?.id || 'current'}-${row.rank}-${row.text}`} className="flashcard-meaning-item">
+                                              <span className="flashcard-meaning-rank">{row.rank}.</span>
+                                              <span className="flashcard-meaning-text">{row.text}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </>
                                   )}
                                   {!srsRevealAnswer && (
                                     <div className="fsrs-card-meta">
@@ -25315,7 +29429,7 @@ function AppInner() {
                                         type="button"
                                         className={`flashcard-audio-replay ${srsReplayTtsLoading ? 'is-loading' : ''}`}
                                         onClick={() => {
-                                          void playTtsWithUi(srsReplayTtsKey, targetText, srsReplayLang);
+                                          void playTtsWithUi(srsReplayTtsKey, srsReplayTtsTarget.text || sourceText, srsReplayTtsTarget.locale || getLearningTtsLocale());
                                         }}
                                         aria-label={tr('Повторить аудио', 'Audio wiederholen')}
                                         title={tr('Повторить аудио', 'Audio wiederholen')}
@@ -25386,12 +29500,6 @@ function AppInner() {
 
                     {flashcardsOnly && (flashcardActiveMode === 'quiz' || flashcardActiveMode === 'blocks' || flashcardActiveMode === 'sentence') && (
                       <>
-                        <div className="flashcard-mode-topbar">
-                          <button type="button" className="secondary-button" onClick={() => void exitFlashcardsTraining()}>
-                            {tr('Назад', 'Zurueck')}
-                          </button>
-                          {renderTodaySectionTaskHud('flashcards')}
-                        </div>
                         {flashcardsLoading && <div className="webapp-muted">{t('loading_cards')}</div>}
                         {flashcardsError && <div className="webapp-error">{flashcardsError}</div>}
                         {!flashcardsLoading && !flashcardsError && flashcards.length === 0 && flashcardsEmptyState && (
@@ -25415,6 +29523,7 @@ function AppInner() {
                               const sentencePreviewRuHint = previewQuizType === 'sentence_gap_context'
                                 ? String(entry?.response_json?.translation_ru || entry?.translation_ru || '').trim()
                                 : '';
+                              const previewSupplementalMeaningRows = getSavedEntrySupplementalMeaningRows(entry, previewNativeText, 2);
                               const learningCode = String(languageProfile?.learning_language || 'de').toUpperCase();
                               const nativeCode = String(languageProfile?.native_language || 'ru').toUpperCase();
                               const previewModeLabel = flashcardActiveMode === 'blocks'
@@ -25444,6 +29553,16 @@ function AppInner() {
                                     <div className="flashcard-preview-divider" />
                                     <div className="flashcard-preview-native-box">
                                       <div className="flashcard-native-translation">{previewNativeText}</div>
+                                      {previewSupplementalMeaningRows.length > 0 && (
+                                        <div className="flashcard-meaning-list">
+                                          {previewSupplementalMeaningRows.map((row) => (
+                                            <div key={`preview-meaning-${entry.id || 'current'}-${row.rank}-${row.text}`} className="flashcard-meaning-item">
+                                              <span className="flashcard-meaning-rank">{row.rank}.</span>
+                                              <span className="flashcard-meaning-text">{row.text}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
                                     </div>
                                     {sentencePreviewRuHint && (
                                       <div className="flashcard-preview-ru-hint">{sentencePreviewRuHint}</div>
@@ -25613,6 +29732,11 @@ function AppInner() {
                                 const blocksAnswer = resolveBlocksAnswer(entry);
                                 const blocksPrompt = resolveBlocksPrompt(entry);
                                 const blocksType = resolveBlocksType(entry, blocksAnswer);
+                                const supplementalMeaningRows = getSavedEntrySupplementalMeaningRows(
+                                  entry,
+                                  isSentenceTrainingMode || isSentenceGapQuiz ? sentenceTranslation : correct,
+                                  2,
+                                );
 
                                 if (flashcardTrainingMode === 'blocks') {
                                   return (
@@ -25644,11 +29768,11 @@ function AppInner() {
                                           correctAnswer: t('blocks_correct_answer'),
                                           hintsUsed: t('blocks_hints_used'),
                                         }}
-                                        onRoundResult={({ isCorrect, timeSpentMs, hintsUsed, status }) => {
+                                        onRoundResult={async ({ isCorrect, timeSpentMs, hintsUsed, status }) => {
                                           setFlashcardTimedOut(status === 'timeout');
                                           setFlashcardOutcome(isCorrect ? 'correct' : (status === 'timeout' ? 'timeout' : 'wrong'));
                                           unlockAudio();
-                                          playFeedbackSound(status === 'timeout' ? 'timeout' : (isCorrect ? 'positive' : 'negative'));
+                                          await playFeedbackSound(status === 'timeout' ? 'timeout' : (isCorrect ? 'positive' : 'negative'));
                                           setFlashcardStats((prev) => ({
                                             ...prev,
                                             correct: prev.correct + (isCorrect ? 1 : 0),
@@ -25726,10 +29850,22 @@ function AppInner() {
                                       </div>
 
                                       {isAnswered && (
-                                        <div className={`quiz-result ${isCorrectAnswer ? 'is-correct' : 'is-wrong'}`}>
-                                          <div className="quiz-result-title">{isCorrectAnswer ? 'Correct!' : 'Incorrect'}</div>
-                                          <div className="quiz-result-subtitle">{isCorrectAnswer ? 'Great job - keep going' : 'Review and try again'}</div>
-                                        </div>
+                                        <>
+                                          <div className={`quiz-result ${isCorrectAnswer ? 'is-correct' : 'is-wrong'}`}>
+                                            <div className="quiz-result-title">{isCorrectAnswer ? 'Correct!' : 'Incorrect'}</div>
+                                            <div className="quiz-result-subtitle">{isCorrectAnswer ? 'Great job - keep going' : 'Review and try again'}</div>
+                                          </div>
+                                          {supplementalMeaningRows.length > 0 && (
+                                            <div className="flashcard-meaning-list">
+                                              {supplementalMeaningRows.map((row) => (
+                                                <div key={`quiz-meaning-${entry.id || flashcardIndex}-${row.rank}-${row.text}`} className="flashcard-meaning-item">
+                                                  <span className="flashcard-meaning-rank">{row.rank}.</span>
+                                                  <span className="flashcard-meaning-text">{row.text}</span>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          )}
+                                        </>
                                       )}
 
                                       <div className="flashcard-options quiz-options">
@@ -25755,7 +29891,7 @@ function AppInner() {
                                                   setFlashcardTimedOut(false);
                                                   setFlashcardOutcome(option === correct ? 'correct' : 'wrong');
                                                   unlockAudio();
-                                                  playFeedbackSound(option === correct ? 'positive' : 'negative');
+                                                  await playFeedbackSound(option === correct ? 'positive' : 'negative');
                                                   const timeSpentMs = Math.max(0, Date.now() - flashcardRoundStartRef.current);
                                                   recordFlashcardAnswer(entry.id, option === correct, {
                                                     mode: flashcardTrainingMode,
@@ -25840,7 +29976,7 @@ function AppInner() {
                             </button>
                             <h4>
                               {flashcardSettingsModalMode === 'fsrs'
-                                ? 'FSRS Settings'
+                                ? 'Space Repetition Settings'
                                 : flashcardSettingsModalMode === 'quiz'
                                   ? 'Quiz 4 Options Settings'
                                   : flashcardSettingsModalMode === 'blocks'
@@ -25859,18 +29995,97 @@ function AppInner() {
                                   </div>
                                 </div>
                                 <div className="setup-group">
+                                  <div className="setup-label">{tr('Источник слов', 'Wortquelle')}</div>
+                                  <div className="setup-options">
+                                    <button
+                                      type="button"
+                                      className={`option-pill flashcard-settings-pill ${flashcardQueueSource === 'system' ? 'is-active' : ''}`}
+                                      onClick={() => setFlashcardQueueSource('system')}
+                                    >
+                                      {tr('Очередь системы', 'System-Warteschlange')}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={`option-pill flashcard-settings-pill ${flashcardQueueSource === 'manual' ? 'is-active' : ''}`}
+                                      onClick={() => setFlashcardQueueSource('manual')}
+                                    >
+                                      {tr('Текущая выборка', 'Aktuelle Auswahl')}
+                                    </button>
+                                  </div>
+                                  {flashcardQueueSource === 'manual' && (
+                                    <div className="flashcard-settings-manual-note">
+                                      <span>
+                                        {tr('Выбрано сейчас', 'Jetzt gewählt')}: <strong>{manualTrainingSelectionCount}</strong>
+                                      </span>
+                                      <button
+                                        type="button"
+                                        className="flashcard-queue-source-link"
+                                        onClick={() => openDictionaryForManualSelection()}
+                                      >
+                                        {tr('Выбрать слова', 'Wörter wählen')}
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="setup-group">
                                   <div className="setup-label">{tr('Card Queue', 'Card Queue')}</div>
                                   <div className="flashcard-settings-queue">
-                                    <span>{tr('Due', 'Due')}: {srsQueueInfo?.due_count ?? 0}</span>
-                                    <span>{tr('New Today', 'New Today')}: {srsQueueInfo?.new_remaining_today ?? 0}</span>
+                                    <span>{tr('Сегодня', 'Heute')}: {srsQueueInfo?.due_reviewed_today ?? 0}/{srsQueueInfo?.due_limit_today ?? 30}</span>
+                                    <span>{tr('Очередь', 'Warteschlange')}: {srsQueueInfo?.due_count_total ?? srsQueueInfo?.due_count ?? 0}</span>
+                                    <span>{tr('Новые', 'Neu')}: {srsQueueInfo?.new_remaining_today ?? 0}</span>
                                   </div>
                                   <button type="button" className="flashcard-settings-update-btn" onClick={() => void loadSrsNextCard()}>
-                                    {tr('Update Queue', 'Update Queue')}
+                                    {tr('Обновить', 'Aktualisieren')}
                                   </button>
+                                  {(srsQueueInfo?.due_count_total ?? 0) > (srsQueueInfo?.due_limit_today ?? 30) * 2 && (
+                                    <button
+                                      type="button"
+                                      className="flashcard-settings-update-btn flashcard-settings-reschedule-btn"
+                                      disabled={srsRescheduling}
+                                      onClick={() => void rescheduleBacklog()}
+                                    >
+                                      {srsRescheduling ? '…' : tr('Сбросить расписание', 'Zeitplan zurücksetzen')}
+                                    </button>
+                                  )}
                                 </div>
                               </>
                             ) : (
                               <>
+                                {flashcardSettingsModalMode !== 'sentence' && (
+                                  <div className="setup-group">
+                                    <div className="setup-label">{tr('Источник слов', 'Wortquelle')}</div>
+                                    <div className="setup-options">
+                                      <button
+                                        type="button"
+                                        className={`option-pill flashcard-settings-pill ${flashcardQueueSource === 'system' ? 'is-active' : ''}`}
+                                        onClick={() => setFlashcardQueueSource('system')}
+                                      >
+                                        {tr('Очередь системы', 'System-Warteschlange')}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className={`option-pill flashcard-settings-pill ${flashcardQueueSource === 'manual' ? 'is-active' : ''}`}
+                                        onClick={() => setFlashcardQueueSource('manual')}
+                                      >
+                                        {tr('Текущая выборка', 'Aktuelle Auswahl')}
+                                      </button>
+                                    </div>
+                                    {flashcardQueueSource === 'manual' && (
+                                      <div className="flashcard-settings-manual-note">
+                                        <span>
+                                          {tr('Выбрано сейчас', 'Jetzt gewählt')}: <strong>{manualTrainingSelectionCount}</strong>
+                                        </span>
+                                        <button
+                                          type="button"
+                                          className="flashcard-queue-source-link"
+                                          onClick={() => openDictionaryForManualSelection()}
+                                        >
+                                          {tr('Выбрать слова', 'Wörter wählen')}
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
                                 <div className="setup-group">
                                   <div className="setup-label">{tr('Set Size', 'Set Size')}</div>
                                   <div className="setup-options">
@@ -25886,36 +30101,38 @@ function AppInner() {
                                     ))}
                                   </div>
                                 </div>
-                                <div className="setup-group">
-                                  <div className="setup-label">{tr('Folder', 'Folder')}</div>
-                                  <label className="webapp-field">
-                                    <select
-                                      className="flashcard-settings-select"
-                                      value={flashcardFolderMode === 'folder' ? flashcardFolderId : flashcardFolderMode}
-                                      onChange={(event) => {
-                                        const value = event.target.value;
-                                        if (value === 'all') {
-                                          setFlashcardFolderMode('all');
-                                          setFlashcardFolderId('');
-                                        } else if (value === 'none') {
-                                          setFlashcardFolderMode('none');
-                                          setFlashcardFolderId('');
-                                        } else {
-                                          setFlashcardFolderMode('folder');
-                                          setFlashcardFolderId(value);
-                                        }
-                                      }}
-                                    >
-                                      <option value="all">{tr('All Folders', 'All Folders')}</option>
-                                      <option value="none">{t('setup_without_folder')}</option>
-                                      {folders.map((folder) => (
-                                        <option key={folder.id} value={folder.id}>
-                                          {resolveFolderIconLabel(folder.icon)} • {folder.name}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  </label>
-                                </div>
+                                {(flashcardQueueSource === 'system' || flashcardSettingsModalMode === 'sentence') && (
+                                  <div className="setup-group">
+                                    <div className="setup-label">{tr('Folder', 'Folder')}</div>
+                                    <label className="webapp-field">
+                                      <select
+                                        className="flashcard-settings-select"
+                                        value={flashcardFolderMode === 'folder' ? flashcardFolderId : flashcardFolderMode}
+                                        onChange={(event) => {
+                                          const value = event.target.value;
+                                          if (value === 'all') {
+                                            setFlashcardFolderMode('all');
+                                            setFlashcardFolderId('');
+                                          } else if (value === 'none') {
+                                            setFlashcardFolderMode('none');
+                                            setFlashcardFolderId('');
+                                          } else {
+                                            setFlashcardFolderMode('folder');
+                                            setFlashcardFolderId(value);
+                                          }
+                                        }}
+                                      >
+                                        <option value="all">{tr('All Folders', 'All Folders')}</option>
+                                        <option value="none">{t('setup_without_folder')}</option>
+                                        {folders.map((folder) => (
+                                          <option key={folder.id} value={folder.id}>
+                                            {resolveFolderIconLabel(folder.icon)} • {folder.name}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </label>
+                                  </div>
+                                )}
                                 <div className="setup-group">
                                   <div className="setup-label">{tr('Speed', 'Speed')}</div>
                                   <div className="setup-options">
@@ -26072,7 +30289,6 @@ function AppInner() {
                         video={false}
                         onConnected={() => {
                           setAssistantError('');
-                          startAssistantSessionTracking();
                         }}
                         onDisconnected={() => {
                           const sid = assistantSessionId;
@@ -26110,6 +30326,99 @@ function AppInner() {
                       </LazyLiveKitRuntime>
                     </Suspense>
                   </div>
+                )}
+
+                {!assistantToken && assistantSessionReviewRequested && (
+                  assistantSessionAssessment ? (
+                    <div className="voice-assistant-review">
+                      <div className="voice-assistant-review-head">
+                        <span className="pill">{tr('После сессии', 'Nach der Session')}</span>
+                        <h3>💬 {tr('Разбор сессии', 'Session-Analyse')}</h3>
+                      </div>
+                      {assistantSessionAssessment.is_short_transcript ? (
+                        <div className="voice-assistant-review-short-notice">
+                          <span className="voice-assistant-review-short-notice-icon">⏱️</span>
+                          <span>{String(assistantSessionAssessment?.summary || tr('Сессия была слишком короткой для полного разбора. Попробуй поговорить подольше!', 'Die Sitzung war zu kurz für eine vollständige Analyse. Versuche länger zu sprechen!'))}</span>
+                        </div>
+                      ) : (
+                        <p className="voice-assistant-review-summary">
+                          {String(assistantSessionAssessment?.summary || '')}
+                        </p>
+                      )}
+                      {String(assistantSessionAssessment?.strict_feedback || '').trim() && (
+                        <div className="voice-assistant-review-block var-feedback">
+                          <strong>🔴 {tr('Строгий фидбек', 'Strenges Feedback')}</strong>
+                          <p>{String(assistantSessionAssessment?.strict_feedback || '')}</p>
+                        </div>
+                      )}
+                      {String(assistantSessionAssessment?.recommended_next_focus || '').trim() && (
+                        <div className="voice-assistant-review-block var-focus">
+                          <strong>🎯 {tr('Следующий фокус', 'Nächster Fokus')}</strong>
+                          <p>{String(assistantSessionAssessment?.recommended_next_focus || '')}</p>
+                        </div>
+                      )}
+                      {!assistantSessionAssessment.is_short_transcript && (
+                        <details className="voice-assistant-review-details">
+                          <summary>📋 {tr('Подробный разбор', 'Detaillierte Analyse')}</summary>
+                          <div className="voice-assistant-review-detail-list">
+                            {String(assistantSessionAssessment?.lexical_range_note || '').trim() && (
+                              <div className="voice-assistant-review-block">
+                                <strong>📖 {tr('Лексика', 'Wortschatz')}</strong>
+                                <p>{String(assistantSessionAssessment?.lexical_range_note || '')}</p>
+                              </div>
+                            )}
+                            {String(assistantSessionAssessment?.grammar_control_note || '').trim() && (
+                              <div className="voice-assistant-review-block">
+                                <strong>✏️ {tr('Грамматика', 'Grammatik')}</strong>
+                                <p>{String(assistantSessionAssessment?.grammar_control_note || '')}</p>
+                              </div>
+                            )}
+                            {String(assistantSessionAssessment?.fluency_note || '').trim() && (
+                              <div className="voice-assistant-review-block">
+                                <strong>💨 {tr('Беглость', 'Sprachfluss')}</strong>
+                                <p>{String(assistantSessionAssessment?.fluency_note || '')}</p>
+                              </div>
+                            )}
+                            {String(assistantSessionAssessment?.coherence_relevance_note || '').trim() && (
+                              <div className="voice-assistant-review-block">
+                                <strong>🔗 {tr('Связность', 'Kohärenz')}</strong>
+                                <p>{String(assistantSessionAssessment?.coherence_relevance_note || '')}</p>
+                              </div>
+                            )}
+                            {String(assistantSessionAssessment?.self_correction_note || '').trim() && (
+                              <div className="voice-assistant-review-block">
+                                <strong>🔄 {tr('Самокоррекция', 'Selbstkorrektur')}</strong>
+                                <p>{String(assistantSessionAssessment?.self_correction_note || '')}</p>
+                              </div>
+                            )}
+                          </div>
+                        </details>
+                      )}
+                      {(Array.isArray(assistantSessionAssessment?.target_vocab_used) && assistantSessionAssessment.target_vocab_used.length > 0) || (Array.isArray(assistantSessionAssessment?.target_vocab_missed) && assistantSessionAssessment.target_vocab_missed.length > 0) ? (
+                        <details className="voice-assistant-review-details">
+                          <summary>📚 {tr('Целевая лексика', 'Ziel-Vokabular')}</summary>
+                          <div className="voice-assistant-review-detail-list">
+                            {Array.isArray(assistantSessionAssessment?.target_vocab_used) && assistantSessionAssessment.target_vocab_used.length > 0 && (
+                              <div className="voice-assistant-review-block var-vocab-used">
+                                <strong>✅ {tr('Использовано', 'Verwendet')}</strong>
+                                <p>{assistantSessionAssessment.target_vocab_used.join(' · ')}</p>
+                              </div>
+                            )}
+                            {Array.isArray(assistantSessionAssessment?.target_vocab_missed) && assistantSessionAssessment.target_vocab_missed.length > 0 && (
+                              <div className="voice-assistant-review-block var-vocab-missed">
+                                <strong>⬜ {tr('Пока не прозвучало', 'Noch nicht verwendet')}</strong>
+                                <p>{assistantSessionAssessment.target_vocab_missed.join(' · ')}</p>
+                              </div>
+                            )}
+                          </div>
+                        </details>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div className="webapp-muted voice-assistant-review-empty">
+                      {tr('Краткий post-session review пока не готов.', 'Das kurze Post-Session-Review ist noch nicht bereit.')}
+                    </div>
+                  )
                 )}
               </section>
             )}
@@ -26386,7 +30695,7 @@ function AppInner() {
                   <button
                     type="button"
                     className="secondary-button"
-                    onClick={() => loadAnalytics(undefined, analyticsScopeKey)}
+                    onClick={() => reloadVisibleAnalytics(undefined, analyticsScopeKey)}
                     disabled={analyticsLoading || analyticsScopeLoading || analyticsScopeSaving || (analyticsPeriod === 'calendar' && !analyticsCalendarRangeValid)}
                   >
                     {analyticsLoading ? tr('Считаем...', 'Berechnen...') : tr('Обновить', 'Aktualisieren')}
@@ -26654,6 +30963,12 @@ function AppInner() {
                         'Billing-Ledger = internes Journal aller erfassten Kosten-Eintraege. Ein echter Nutzungsvorgang kann mehrere Billing-Events erzeugen: z. B. Modell, TTS, R2 und Voice getrennt.'
                       )}
                     </div>
+                    <div className="webapp-muted analytics-scope-hint">
+                      {tr(
+                        'Блоки реальной себестоимости ниже показывают номинальную цену ресурсов без вычета бесплатных лимитов. Это сделано специально, чтобы видеть настоящую стоимость продукта на пользователя.',
+                        'Die echten Kosten unten zeigen den nominalen Ressourcenpreis ohne Abzug von Freikontingenten. So sieht man bewusst die reale Produktkosten pro Nutzer.',
+                      )}
+                    </div>
 
                     {economicsLedgerIsEmpty && (
                       <div className="webapp-muted analytics-scope-hint is-warning">
@@ -26664,12 +30979,359 @@ function AppInner() {
                       </div>
                     )}
 
-                    {economicsBudgetRows.length > 0 && (
-                      <>
-                        <div className="webapp-muted analytics-scope-hint">
+                    {economicsPerUserResourceRows.length > 0 && (
+                      <div className="economics-breakdown-card economics-breakdown-card-spotlight">
+                        <h4>{tr('Реальная себестоимость на 1 активного пользователя по ресурсам', 'Echte Kosten pro 1 aktiven Nutzer nach Ressource')}</h4>
+                        <div className="webapp-muted" style={{ marginBottom: 10, fontSize: 12 }}>
                           {tr(
-                            'Ниже показано текущее quota/free-tier окно провайдера, а не суммарный usage за выбранный период.',
-                            'Unten steht das aktuelle Quota/Freikontingent-Fenster je Provider, nicht der gesamte Usage fuer den gewaehlten Zeitraum.',
+                            'Это средняя цена одного активного пользователя по каждому провайдеру. Здесь free tier не вычитается.',
+                            'Das ist der Durchschnittspreis eines aktiven Nutzers je Provider. Das Freikontingent wird hier nicht abgezogen.',
+                          )}
+                        </div>
+                        {economicsPerUserResourceRows.map((item) => {
+                          const avgUnitsRows = Array.isArray(item?.avg_units_by_type_per_active_user) ? item.avg_units_by_type_per_active_user : [];
+                          const avgUnitsLabel = avgUnitsRows
+                            .slice(0, 2)
+                            .map((unitRow) => `${formatEconomicsCompactNumber(unitRow?.avg_units_per_active_user || 0)} ${formatEconomicsUnitsLabel(unitRow?.units_type, uiLang)}`)
+                            .join(' • ');
+                          return (
+                            <div className="economics-breakdown-row economics-breakdown-row-rich" key={`provider-per-user-${item.provider}`}>
+                              <div className="economics-breakdown-copy">
+                                <span>{formatEconomicsProviderLabel(item.provider || 'n/a')}</span>
+                                <small>
+                                  {tr('активных', 'aktive')}: {Number(item.active_users || 0)}
+                                  {avgUnitsLabel ? ` • ${tr('ср. usage', 'Ø Usage')}: ${avgUnitsLabel}` : ''}
+                                  {Number(item.avg_events_per_active_user || 0) > 0
+                                    ? ` • ${tr('events/user', 'Events/Nutzer')}: ${Number(item.avg_events_per_active_user || 0).toFixed(1)}`
+                                    : ''}
+                                </small>
+                              </div>
+                              <div className="economics-breakdown-value">
+                                <strong>{Number(item.avg_total_cost_per_active_user || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                                <small>
+                                  {tr('переменные', 'variabel')}: {Number(item.avg_variable_cost_per_active_user || 0).toFixed(3)}
+                                  {' • '}
+                                  {tr('fixed', 'fix')}: {Number(item.avg_fixed_cost_per_active_user || 0).toFixed(3)}
+                                </small>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    <div className="economics-breakdown-card economics-breakdown-card-spotlight economics-forecast-block">
+                      <div className="economics-forecast-head">
+                        <h4>{tr('Прогноз затрат при выбранном количестве пользователей', 'Kostenprognose fuer eine gewaehlte Nutzerzahl')}</h4>
+                        <label className="webapp-field economics-forecast-field">
+                          <span>{tr('Сколько пользователей', 'Wie viele Nutzer')}</span>
+                          <input
+                            type="number"
+                            min="1"
+                            step="1"
+                            inputMode="numeric"
+                            value={economicsForecastUsersDraft}
+                            onChange={(event) => setEconomicsForecastUsersDraft(event.target.value)}
+                            placeholder="100"
+                          />
+                        </label>
+                      </div>
+                      <div className="webapp-muted" style={{ marginBottom: 10, fontSize: 12 }}>
+                        {tr(
+                          'Это линейный прогноз по текущему среднему usage на 1 активного пользователя. Railway сюда сознательно пока не включён, потому что для него нужна отдельная ступенчатая infra-модель.',
+                          'Das ist eine lineare Prognose auf Basis des aktuellen durchschnittlichen Usage pro aktivem Nutzer. Railway ist hier bewusst noch nicht enthalten, weil dafuer ein separates stufenweises Infra-Modell noetig ist.',
+                        )}
+                      </div>
+                      {economicsForecastUsers > 0 ? (
+                        <>
+                          <div className="analytics-cards economics-cards">
+                            <div className="analytics-card">
+                              <span>{tr('Прогноз: переменные', 'Prognose: variabel')}</span>
+                              <strong>{Number(economicsForecastTotals.forecastVariableCost || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                            </div>
+                            <div className="analytics-card">
+                              <span>{tr('Прогноз: fixed', 'Prognose: fix')}</span>
+                              <strong>{Number(economicsForecastTotals.forecastFixedCost || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                            </div>
+                            <div className="analytics-card">
+                              <span>{tr('Прогноз: итого', 'Prognose: gesamt')}</span>
+                              <strong>{Number(economicsForecastTotals.forecastTotalCost || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                            </div>
+                            <div className="analytics-card">
+                              <span>{tr('Free-tier bottleneck', 'Free-Tier-Bottleneck')}</span>
+                              <strong>
+                                {economicsForecastTotals.freeTierBottleneckProvider
+                                  ? `${formatEconomicsProviderLabel(economicsForecastTotals.freeTierBottleneckProvider)} · ${Number(economicsForecastTotals.freeTierBottleneckUsers || 0)}`
+                                  : '—'}
+                              </strong>
+                            </div>
+                          </div>
+                          <div className="economics-breakdown-grid economics-breakdown-grid-tight">
+                            {economicsForecastResourceRows.slice(0, 10).map((item) => {
+                              const unitsLabel = item.forecastUnitsByType
+                                .slice(0, 2)
+                                .map((unitRow) => `${formatEconomicsCompactNumber(unitRow.forecastUnits || 0)} ${formatEconomicsUnitsLabel(unitRow.unitsType, uiLang)}`)
+                                .join(' • ');
+                              return (
+                                <div className="economics-breakdown-card economics-breakdown-card-mini" key={`forecast-provider-${item.provider}`}>
+                                  <h4>{formatEconomicsProviderLabel(item.provider || 'n/a')}</h4>
+                                  <div className="economics-breakdown-row economics-breakdown-row-rich">
+                                    <div className="economics-breakdown-copy">
+                                      <span>{tr('Прогноз стоимости', 'Kostenprognose')}</span>
+                                      <small>{tr('для', 'fuer')} {economicsForecastUsers} {tr('польз.', 'Nutzer')}</small>
+                                    </div>
+                                    <div className="economics-breakdown-value">
+                                      <strong>{Number(item.forecastTotalCost || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                                      <small>
+                                        {tr('переменные', 'variabel')}: {Number(item.forecastVariableCost || 0).toFixed(3)}
+                                        {' • '}
+                                        {tr('fixed', 'fix')}: {Number(item.forecastFixedCost || 0).toFixed(3)}
+                                      </small>
+                                    </div>
+                                  </div>
+                                  <div className="economics-breakdown-row economics-breakdown-row-rich">
+                                    <div className="economics-breakdown-copy">
+                                      <span>{tr('Прогноз usage', 'Usage-Prognose')}</span>
+                                      <small>
+                                        {unitsLabel || '—'}
+                                        {Number(item.forecastEvents || 0) > 0
+                                          ? ` • ${tr('events', 'Events')}: ${Number(item.forecastEvents || 0).toFixed(0)}`
+                                          : ''}
+                                      </small>
+                                    </div>
+                                    <div className="economics-breakdown-value">
+                                      <strong>
+                                        {item.freeTierTotalUsersCapacity > 0
+                                          ? `${Math.max(0, economicsForecastUsers - item.freeTierTotalUsersCapacity)}`
+                                          : '—'}
+                                      </strong>
+                                      <small>
+                                        {item.freeTierTotalUsersCapacity > 0
+                                          ? tr('сверх free tier', 'ueber Free Tier')
+                                          : tr('нет free-tier data', 'keine Free-Tier-Daten')}
+                                      </small>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="webapp-muted">{tr('Введите количество пользователей больше нуля.', 'Bitte gib eine Nutzerzahl groesser als null ein.')}</div>
+                      )}
+                    </div>
+
+                    {economicsRailwayInfra && (
+                      <div className="economics-breakdown-card economics-breakdown-card-spotlight economics-railway-block">
+                        <div className="economics-forecast-head">
+                          <h4>{tr('Railway infra audit + forecast', 'Railway Infra Audit + Prognose')}</h4>
+                        </div>
+                        <div className="webapp-muted" style={{ marginBottom: 10, fontSize: 12 }}>
+                          {tr(
+                            'Здесь Railway считается отдельно и честно: live audit показывает только то, что backend реально видит сейчас, а ниже вы задаёте серверную модель слоями App / Postgres / Redis / Network.',
+                            'Railway wird hier separat und ehrlich gerechnet: Das Live-Audit zeigt nur, was das Backend jetzt wirklich sieht, und unten gibst du das Servermodell in den Schichten App / Postgres / Redis / Network an.',
+                          )}
+                        </div>
+                        <div className="analytics-cards economics-cards">
+                          <div className="analytics-card">
+                            <span>{tr('Tracked infra baseline', 'Tracked-Infra-Basis')}</span>
+                            <strong>{economicsRailwayTrackedBaselineUsd.toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                          </div>
+                          <div className="analytics-card">
+                            <span>{tr('Postgres size now', 'Postgres-Groesse jetzt')}</span>
+                            <strong>
+                              {economicsRailwayLivePostgres?.available
+                                ? `${Number(economicsRailwayLivePostgres?.db_size_mb || 0).toFixed(1)} MB`
+                                : '—'}
+                            </strong>
+                          </div>
+                          <div className="analytics-card">
+                            <span>{tr('Redis memory now', 'Redis-Speicher jetzt')}</span>
+                            <strong>
+                              {economicsRailwayLiveRedis?.available
+                                ? `${Number(economicsRailwayLiveRedis?.memory_used_mb || 0).toFixed(1)} MB`
+                                : '—'}
+                            </strong>
+                          </div>
+                          <div className="analytics-card">
+                            <span>{tr('Redis peak / keys', 'Redis Peak / Keys')}</span>
+                            <strong>
+                              {economicsRailwayLiveRedis?.available
+                                ? `${Number(economicsRailwayLiveRedis?.memory_peak_mb || 0).toFixed(1)} MB`
+                                : '—'}
+                            </strong>
+                            <small className="webapp-muted">
+                              {economicsRailwayLiveRedis?.available
+                                ? `${tr('keys', 'Keys')}: ${Number(economicsRailwayLiveRedis?.keys || 0)}`
+                                : ''}
+                            </small>
+                          </div>
+                        </div>
+                        {economicsRailwayFixedComponents.length > 0 && (
+                          <div className="economics-breakdown-grid economics-breakdown-grid-tight" style={{ marginTop: 10 }}>
+                            {economicsRailwayFixedComponents.map((item) => (
+                              <div className="economics-breakdown-card economics-breakdown-card-mini" key={`railway-fixed-${item.provider}`}>
+                                <h4>{formatEconomicsProviderLabel(item.provider || 'n/a')}</h4>
+                                <div className="economics-breakdown-row economics-breakdown-row-rich">
+                                  <div className="economics-breakdown-copy">
+                                    <span>{tr('Fixed / month', 'Fix / Monat')}</span>
+                                    <small>{tr('из tracked infra baseline', 'aus der getrackten Infra-Basis')}</small>
+                                  </div>
+                                  <div className="economics-breakdown-value">
+                                    <strong>{Number(item.fixed_cost_month_usd || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <div className="economics-breakdown-grid economics-breakdown-grid-tight">
+                          <div className="economics-breakdown-card economics-breakdown-card-mini">
+                            <h4>{tr('App layer', 'App-Schicht')}</h4>
+                            <div className="economics-railway-inputs">
+                              <label className="webapp-field economics-forecast-field">
+                                <span>{tr('App RAM GB / month', 'App-RAM GB / Monat')}</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.1"
+                                  inputMode="decimal"
+                                  value={economicsRailwayAppRamDraft}
+                                  onChange={(event) => setEconomicsRailwayAppRamDraft(event.target.value)}
+                                  placeholder="0"
+                                />
+                              </label>
+                              <label className="webapp-field economics-forecast-field">
+                                <span>{tr('App vCPU / month', 'App-vCPU / Monat')}</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.1"
+                                  inputMode="decimal"
+                                  value={economicsRailwayAppCpuDraft}
+                                  onChange={(event) => setEconomicsRailwayAppCpuDraft(event.target.value)}
+                                  placeholder="0"
+                                />
+                              </label>
+                            </div>
+                          </div>
+                          <div className="economics-breakdown-card economics-breakdown-card-mini">
+                            <h4>{tr('Postgres layer', 'Postgres-Schicht')}</h4>
+                            <div className="economics-railway-inputs">
+                              <label className="webapp-field economics-forecast-field">
+                                <span>{tr('Postgres RAM GB / month', 'Postgres-RAM GB / Monat')}</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.1"
+                                  inputMode="decimal"
+                                  value={economicsRailwayPostgresRamDraft}
+                                  onChange={(event) => setEconomicsRailwayPostgresRamDraft(event.target.value)}
+                                  placeholder="0"
+                                />
+                              </label>
+                              <label className="webapp-field economics-forecast-field">
+                                <span>{tr('Postgres volume GB / month', 'Postgres-Volume GB / Monat')}</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.1"
+                                  inputMode="decimal"
+                                  value={economicsRailwayPostgresVolumeDraft}
+                                  onChange={(event) => setEconomicsRailwayPostgresVolumeDraft(event.target.value)}
+                                  placeholder="0"
+                                />
+                              </label>
+                            </div>
+                          </div>
+                          <div className="economics-breakdown-card economics-breakdown-card-mini">
+                            <h4>{tr('Redis layer', 'Redis-Schicht')}</h4>
+                            <div className="economics-railway-inputs">
+                              <label className="webapp-field economics-forecast-field">
+                                <span>{tr('Redis RAM GB / month', 'Redis-RAM GB / Monat')}</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.1"
+                                  inputMode="decimal"
+                                  value={economicsRailwayRedisRamDraft}
+                                  onChange={(event) => setEconomicsRailwayRedisRamDraft(event.target.value)}
+                                  placeholder="0"
+                                />
+                              </label>
+                            </div>
+                          </div>
+                          <div className="economics-breakdown-card economics-breakdown-card-mini">
+                            <h4>{tr('Network layer', 'Netzwerk-Schicht')}</h4>
+                            <div className="economics-railway-inputs">
+                              <label className="webapp-field economics-forecast-field">
+                                <span>{tr('Egress GB', 'Egress GB')}</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.1"
+                                  inputMode="decimal"
+                                  value={economicsRailwayEgressDraft}
+                                  onChange={(event) => setEconomicsRailwayEgressDraft(event.target.value)}
+                                  placeholder="0"
+                                />
+                              </label>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="webapp-muted" style={{ marginTop: 10, marginBottom: 10, fontSize: 12 }}>
+                          {tr(
+                            'Ставки Railway сейчас считаются так: RAM $10 / GB-month, CPU $20 / vCPU-month, volume $0.15 / GB-month, egress $0.05 / GB. Postgres volume и Redis RAM могут подхватываться из live audit, а app RAM / app vCPU / Postgres RAM вы задаёте вручную.',
+                            'Railway wird aktuell so gerechnet: RAM $10 / GB-Monat, CPU $20 / vCPU-Monat, Volume $0.15 / GB-Monat, Egress $0.05 / GB. Postgres-Volume und Redis-RAM koennen aus dem Live-Audit kommen, waehrend App-RAM / App-vCPU / Postgres-RAM manuell gesetzt werden.',
+                          )}
+                        </div>
+                        <div className="analytics-cards economics-cards">
+                          <div className="analytics-card">
+                            <span>{tr('App compute', 'App-Compute')}</span>
+                            <strong>{(Number(economicsRailwayForecast.appRamCost || 0) + Number(economicsRailwayForecast.appCpuCost || 0)).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                            <small className="webapp-muted">
+                              {tr('RAM', 'RAM')}: {Number(economicsRailwayForecast.appRamCost || 0).toFixed(3)}
+                              {' • '}
+                              {tr('CPU', 'CPU')}: {Number(economicsRailwayForecast.appCpuCost || 0).toFixed(3)}
+                            </small>
+                          </div>
+                          <div className="analytics-card">
+                            <span>{tr('Postgres layer', 'Postgres-Schicht')}</span>
+                            <strong>{(Number(economicsRailwayForecast.postgresRamCost || 0) + Number(economicsRailwayForecast.postgresVolumeCost || 0)).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                            <small className="webapp-muted">
+                              {tr('RAM', 'RAM')}: {Number(economicsRailwayForecast.postgresRamCost || 0).toFixed(3)}
+                              {' • '}
+                              {tr('volume', 'Volume')}: {Number(economicsRailwayForecast.postgresVolumeCost || 0).toFixed(3)}
+                            </small>
+                          </div>
+                          <div className="analytics-card">
+                            <span>{tr('Redis + network', 'Redis + Netzwerk')}</span>
+                            <strong>{(Number(economicsRailwayForecast.redisRamCost || 0) + Number(economicsRailwayForecast.egressCost || 0)).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                            <small className="webapp-muted">
+                              {tr('Redis RAM', 'Redis-RAM')}: {Number(economicsRailwayForecast.redisRamCost || 0).toFixed(3)}
+                              {' • '}
+                              {tr('egress', 'Egress')}: {Number(economicsRailwayForecast.egressCost || 0).toFixed(3)}
+                            </small>
+                          </div>
+                          <div className="analytics-card">
+                            <span>{tr('Railway total with baseline', 'Railway gesamt mit Basis')}</span>
+                            <strong>{Number(economicsRailwayForecast.totalCost || 0).toFixed(3)} {economicsSummary?.currency || 'USD'}</strong>
+                            <small className="webapp-muted">
+                              {tr('sum RAM', 'RAM gesamt')}: {Number(economicsRailwayForecast.totalRamGb || 0).toFixed(2)} GB
+                            </small>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {economicsBudgetRows.length > 0 && (
+                      <div className="economics-breakdown-card economics-breakdown-card-spotlight economics-budget-monitor">
+                        <h4>{tr('Монитор free tier / quota по провайдерам', 'Free-Tier / Quota Monitor nach Providern')}</h4>
+                        <div className="webapp-muted" style={{ marginBottom: 10, fontSize: 12 }}>
+                          {tr(
+                            'Это отдельный operational monitor. Он показывает текущее бесплатное окно или quota провайдера и не равен реальной себестоимости продукта.',
+                            'Das ist ein separater operationaler Monitor. Er zeigt das aktuelle Freikontingent oder Quota-Fenster des Providers und ist nicht gleich den realen Produktkosten.',
                           )}
                         </div>
                         <div className="analytics-cards economics-voice-cards">
@@ -26722,7 +31384,62 @@ function AppInner() {
                           );
                         })}
                         </div>
-                      </>
+                      </div>
+                    )}
+
+                    {economicsFreeTierCapacityRows.length > 0 && (
+                      <div className="economics-breakdown-card economics-breakdown-card-spotlight economics-budget-capacity">
+                        <h4>{tr('Сколько пользователей помещается в free tier', 'Wie viele Nutzer in den Free Tier passen')}</h4>
+                        <div className="webapp-muted" style={{ marginBottom: 10, fontSize: 12 }}>
+                          {tr(
+                            'Расчёт идёт от среднего usage на 1 активного пользователя. Самый маленький показатель ниже — это bottleneck текущего бесплатного набора провайдеров.',
+                            'Die Rechnung basiert auf dem durchschnittlichen Usage pro aktivem Nutzer. Der kleinste Wert unten ist der aktuelle Bottleneck des kostenlosen Provider-Sets.',
+                          )}
+                        </div>
+                        {economicsFreeTierBottleneck && (
+                          <div className="economics-capacity-bottleneck">
+                            <span>{tr('Бутылочное горлышко сейчас', 'Aktueller Bottleneck')}</span>
+                            <strong>
+                              {formatEconomicsProviderLabel(economicsFreeTierBottleneck.provider || 'n/a')}: {Number(economicsFreeTierBottleneck.totalUsersCapacity || 0)} {tr('польз.', 'Nutzer')}
+                            </strong>
+                            <small className="webapp-muted">
+                              {tr('ещё осталось по текущему окну', 'noch frei im aktuellen Fenster')}: {Number(economicsFreeTierBottleneck.remainingUsersCapacity || 0)} {tr('польз.', 'Nutzer')}
+                            </small>
+                          </div>
+                        )}
+                        <div className="economics-breakdown-grid economics-breakdown-grid-tight">
+                          {economicsFreeTierCapacityRows.map((row) => (
+                            <div className="economics-breakdown-card economics-breakdown-card-mini" key={`free-tier-capacity-${row.provider}`}>
+                              <h4>{formatEconomicsProviderLabel(row.provider || 'n/a')}</h4>
+                              <div className="economics-breakdown-row economics-breakdown-row-rich">
+                                <div className="economics-breakdown-copy">
+                                  <span>{tr('Всего покрывает', 'Deckt insgesamt')}</span>
+                                  <small>
+                                    {row.budgetKind === 'daily_quota' ? tr('окно: день', 'Fenster: Tag') : tr('окно: месяц', 'Fenster: Monat')}
+                                    {row.budgetLabel ? ` ${row.budgetLabel}` : ''}
+                                  </small>
+                                </div>
+                                <div className="economics-breakdown-value">
+                                  <strong>{Number(row.totalUsersCapacity || 0)}</strong>
+                                  <small>{tr('пользователей', 'Nutzer')}</small>
+                                </div>
+                              </div>
+                              <div className="economics-breakdown-row economics-breakdown-row-rich">
+                                <div className="economics-breakdown-copy">
+                                  <span>{tr('Осталось сейчас', 'Noch frei jetzt')}</span>
+                                  <small>
+                                    {tr('ср. usage/user', 'Ø Usage/Nutzer')}: {formatEconomicsCompactNumber(row.avgUnitsPerActiveUser)} {formatEconomicsUnitsLabel(row.unitsType, uiLang)}
+                                  </small>
+                                </div>
+                                <div className="economics-breakdown-value">
+                                  <strong>{Number(row.remainingUsersCapacity || 0)}</strong>
+                                  <small>{tr('пользователей', 'Nutzer')}</small>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
                     )}
 
                     <div className="economics-breakdown-grid">
@@ -27107,52 +31824,52 @@ function AppInner() {
                 <section
                   style={{
                     width: 'min(100%, 760px)',
-                    maxHeight: '82vh',
+                    maxHeight: '85vh',
                     overflow: 'auto',
                     background: isLightTheme ? 'rgba(253, 247, 236, 0.98)' : 'rgba(10, 18, 36, 0.98)',
-                    borderTopLeftRadius: 16,
-                    borderTopRightRadius: 16,
+                    borderTopLeftRadius: 20,
+                    borderTopRightRadius: 20,
                     border: isLightTheme
                       ? '1px solid rgba(171, 139, 98, 0.34)'
                       : '1px solid rgba(148, 163, 184, 0.35)',
                     boxShadow: isLightTheme
                       ? '0 -12px 34px rgba(105, 78, 47, 0.28)'
                       : '0 -12px 34px rgba(2, 6, 23, 0.58)',
-                    padding: '14px 14px 18px',
+                    padding: '18px 16px 24px',
                     display: 'grid',
-                    gap: 10,
+                    gap: 12,
                   }}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                    <strong style={{ fontSize: 14 }}>{tr('GPT Объяснение', 'GPT-Erklaerung')}</strong>
+                    <strong style={{ fontSize: 17 }}>{tr('GPT Объяснение', 'GPT-Erklaerung')}</strong>
                     <button type="button" className="secondary-button" onClick={closeSelectionGptSheet}>
                       {tr('Закрыть', 'Schliessen')}
                     </button>
                   </div>
-                  <div className="webapp-muted" style={{ fontSize: 12 }}>
+                  <div className="webapp-muted" style={{ fontSize: 13, fontStyle: 'italic' }}>
                     {selectionText}
                   </div>
-                  {selectionGptLoading && <div className="webapp-muted">{tr('Готовим объяснение...', 'Erklaerung wird vorbereitet...')}</div>}
+                  {selectionGptLoading && <div className="webapp-muted" style={{ fontSize: 14 }}>{tr('Готовим объяснение...', 'Erklaerung wird vorbereitet...')}</div>}
                   {selectionGptError && <div className="webapp-error">{selectionGptError}</div>}
                   {!selectionGptLoading && !selectionGptError && (
                     <>
                       <div className="webapp-selection-translation">
-                        <div style={{ fontWeight: 700, marginBottom: 4 }}>{tr('Перевод', 'Uebersetzung')}</div>
-                        <div>{selectionGptData.translation || '—'}</div>
+                        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6, opacity: 0.7, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{tr('Перевод', 'Übersetzung')}</div>
+                        <div style={{ fontSize: 16, fontWeight: 600 }}>{selectionGptData.translation || '—'}</div>
                       </div>
-                  <div className="webapp-selection-translation">
-                    <div style={{ fontWeight: 700, marginBottom: 4 }}>{tr('Смысл / заметки', 'Bedeutung / Hinweise')}</div>
-                    <div
-                      style={{ whiteSpace: 'pre-wrap' }}
-                      dangerouslySetInnerHTML={{ __html: renderRichText(selectionGptData.notes || '—') }}
-                    />
-                  </div>
                       <div className="webapp-selection-translation">
-                        <div style={{ fontWeight: 700, marginBottom: 4 }}>{tr('Примеры', 'Beispiele')}</div>
+                        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6, opacity: 0.7, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{tr('Смысл / заметки', 'Bedeutung / Hinweise')}</div>
+                        <div
+                          style={{ whiteSpace: 'pre-wrap', fontSize: 14, lineHeight: 1.6 }}
+                          dangerouslySetInnerHTML={{ __html: renderRichText(selectionGptData.notes || '—') }}
+                        />
+                      </div>
+                      <div className="webapp-selection-translation">
+                        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, opacity: 0.7, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{tr('Примеры', 'Beispiele')}</div>
                         {Array.isArray(selectionGptData.examples) && selectionGptData.examples.length > 0 ? (
-                          <div style={{ display: 'grid', gap: 6 }}>
+                          <div style={{ display: 'grid', gap: 8 }}>
                             {selectionGptData.examples.map((item, index) => (
-                              <label key={`gpt-example-${index}`} className="webapp-gpt-save-option">
+                              <label key={`gpt-example-${index}`} className="webapp-gpt-save-option" style={{ fontSize: 14, lineHeight: 1.5 }}>
                                 <input
                                   type="checkbox"
                                   checked={Boolean(selectionGptSaveExamplesChecked[index])}
@@ -27171,11 +31888,11 @@ function AppInner() {
                             ))}
                           </div>
                         ) : (
-                          <div>—</div>
+                          <div style={{ opacity: 0.5 }}>—</div>
                         )}
                       </div>
                       <div className="webapp-selection-translation webapp-gpt-save-block">
-                        <div style={{ fontWeight: 700, marginBottom: 6 }}>{tr('Сохранить в словарь', 'Im Woerterbuch speichern')}</div>
+                        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, opacity: 0.7, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{tr('Сохранить в словарь', 'Im Wörterbuch speichern')}</div>
                         <label className="webapp-gpt-save-option">
                           <input
                             type="checkbox"

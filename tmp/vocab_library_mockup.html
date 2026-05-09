@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Словарь — Макет Библиотеки</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+  body {
+    background: #070D1A;
+    color: #F8FAFC;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .phone-frame {
+    width: 100%;
+    max-width: 390px;
+    min-height: 100vh;
+    background: #0B1220;
+    position: relative;
+    overflow-x: hidden;
+  }
+
+  /* Section header */
+  .section-head {
+    padding: 18px 16px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+  .section-title {
+    font-size: 20px;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    color: #F8FAFC;
+  }
+  .section-emoji {
+    font-size: 22px;
+  }
+
+  /* Tabs */
+  .tabs {
+    display: flex;
+    margin: 12px 16px 0;
+    background: rgba(255,255,255,0.05);
+    border-radius: 14px;
+    padding: 3px;
+    gap: 2px;
+  }
+  .tab {
+    flex: 1;
+    height: 36px;
+    border: none;
+    border-radius: 11px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.18s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    background: transparent;
+    color: #64748B;
+  }
+  .tab.active {
+    background: #1E293B;
+    color: #F8FAFC;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+  }
+  .tab-icon { font-size: 14px; }
+
+  /* ── SEARCH TAB ── */
+  .search-tab-content {
+    padding: 14px 16px;
+    display: none;
+  }
+  .search-tab-content.visible { display: block; }
+
+  .field-label {
+    font-size: 12px;
+    color: #94A3B8;
+    font-weight: 600;
+    margin-bottom: 6px;
+    display: block;
+  }
+  .search-input-wrap {
+    position: relative;
+    margin-bottom: 10px;
+  }
+  .search-input {
+    width: 100%;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 12px;
+    padding: 11px 14px;
+    color: #F8FAFC;
+    font-size: 15px;
+    outline: none;
+  }
+  .search-input::placeholder { color: #475569; }
+  .search-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .btn {
+    border: none;
+    border-radius: 12px;
+    padding: 10px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.12s, transform 0.12s;
+  }
+  .btn:active { opacity: 0.7; transform: scale(0.96); }
+  .btn-secondary {
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.1);
+    color: #CBD5E1;
+  }
+  .btn-primary {
+    background: linear-gradient(135deg, #2563EB, #4F46E5);
+    color: #fff;
+    box-shadow: 0 4px 12px rgba(37,99,235,0.35);
+  }
+
+  /* ── LIBRARY TAB ── */
+  .library-content {
+    padding: 14px 0 80px;
+    display: none;
+  }
+  .library-content.visible { display: block; }
+
+  /* Stats bar */
+  .stats-bar {
+    margin: 0 16px 14px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .stats-total {
+    font-size: 12px;
+    color: #64748B;
+    font-weight: 600;
+  }
+  .stats-total strong {
+    color: #94A3B8;
+    font-size: 14px;
+  }
+  .stats-spacer { flex: 1; }
+  .sort-btn {
+    font-size: 11px;
+    font-weight: 600;
+    color: #64748B;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 8px;
+    padding: 4px 9px;
+    cursor: pointer;
+  }
+
+  /* Folder chips row */
+  .folders-scroll {
+    overflow-x: auto;
+    padding: 0 16px 10px;
+    scrollbar-width: none;
+    display: flex;
+    gap: 8px;
+  }
+  .folders-scroll::-webkit-scrollbar { display: none; }
+
+  .folder-chip {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 12px;
+    border-radius: 12px;
+    border: 1.5px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.04);
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+  .folder-chip.active {
+    border-color: rgba(99,102,241,0.6);
+    background: rgba(99,102,241,0.15);
+  }
+  .folder-chip-icon { font-size: 16px; }
+  .folder-chip-name {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: #CBD5E1;
+  }
+  .folder-chip.active .folder-chip-name { color: #A5B4FC; }
+  .folder-chip-count {
+    font-size: 11px;
+    color: #64748B;
+    background: rgba(255,255,255,0.07);
+    border-radius: 6px;
+    padding: 1px 5px;
+    font-weight: 700;
+  }
+  .folder-chip.active .folder-chip-count {
+    background: rgba(99,102,241,0.25);
+    color: #A5B4FC;
+  }
+
+  /* Search inside library */
+  .lib-search-wrap {
+    margin: 0 16px 12px;
+    position: relative;
+  }
+  .lib-search {
+    width: 100%;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 11px;
+    padding: 9px 36px 9px 12px;
+    color: #F8FAFC;
+    font-size: 14px;
+    outline: none;
+  }
+  .lib-search::placeholder { color: #475569; }
+  .lib-search-icon {
+    position: absolute;
+    right: 11px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 15px;
+    color: #475569;
+    pointer-events: none;
+  }
+
+  /* Word list */
+  .word-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    margin: 0 16px;
+  }
+
+  .word-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 14px;
+    padding: 10px 12px;
+    transition: background 0.12s;
+    margin-bottom: 5px;
+  }
+  .word-item:active { background: rgba(255,255,255,0.06); }
+
+  .word-srs-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .dot-due    { background: #F59E0B; }
+  .dot-ok     { background: #10B981; }
+  .dot-new    { background: #6366F1; }
+  .dot-none   { background: #334155; }
+
+  .word-body { flex: 1; min-width: 0; }
+  .word-main {
+    font-size: 14.5px;
+    font-weight: 700;
+    color: #F1F5F9;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .word-sub {
+    font-size: 12px;
+    color: #64748B;
+    margin-top: 1px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .word-sub em {
+    font-style: normal;
+    color: #94A3B8;
+  }
+
+  .word-meta {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 3px;
+    flex-shrink: 0;
+  }
+  .word-folder-tag {
+    font-size: 10px;
+    color: #475569;
+    background: rgba(255,255,255,0.05);
+    border-radius: 5px;
+    padding: 1px 5px;
+  }
+  .word-date {
+    font-size: 10px;
+    color: #334155;
+  }
+
+  .word-actions {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  .word-action-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 9px;
+    border: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    cursor: pointer;
+    transition: opacity 0.12s, transform 0.12s;
+  }
+  .word-action-btn:active { opacity: 0.7; transform: scale(0.9); }
+  .btn-edit {
+    background: rgba(99,102,241,0.15);
+    color: #818CF8;
+    border: 1px solid rgba(99,102,241,0.25);
+  }
+  .btn-delete {
+    background: rgba(239,68,68,0.1);
+    color: #F87171;
+    border: 1px solid rgba(239,68,68,0.2);
+  }
+
+  .divider-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #334155;
+    padding: 8px 0 5px;
+    margin: 0 16px;
+  }
+
+  /* ── EDIT MODAL ── */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.65);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    z-index: 100;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
+  }
+  .modal-overlay.open {
+    opacity: 1;
+    pointer-events: all;
+  }
+  .modal-sheet {
+    width: 100%;
+    max-width: 390px;
+    background: #111827;
+    border-radius: 22px 22px 0 0;
+    padding: 20px 20px 36px;
+    border-top: 1px solid rgba(255,255,255,0.08);
+    transform: translateY(100%);
+    transition: transform 0.28s cubic-bezier(.32,1.12,.64,1);
+  }
+  .modal-overlay.open .modal-sheet {
+    transform: translateY(0);
+  }
+  .modal-handle {
+    width: 40px;
+    height: 4px;
+    background: rgba(255,255,255,0.15);
+    border-radius: 2px;
+    margin: 0 auto 18px;
+  }
+  .modal-title {
+    font-size: 16px;
+    font-weight: 800;
+    color: #F1F5F9;
+    margin-bottom: 16px;
+    letter-spacing: -0.02em;
+  }
+  .modal-field { margin-bottom: 12px; }
+  .modal-field label {
+    font-size: 11px;
+    font-weight: 700;
+    color: #64748B;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    display: block;
+    margin-bottom: 5px;
+  }
+  .modal-input {
+    width: 100%;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 11px;
+    padding: 10px 13px;
+    color: #F8FAFC;
+    font-size: 15px;
+    outline: none;
+  }
+  .modal-input:focus {
+    border-color: rgba(99,102,241,0.5);
+    background: rgba(99,102,241,0.05);
+  }
+  .modal-note {
+    font-size: 11.5px;
+    color: #475569;
+    line-height: 1.5;
+    margin-bottom: 16px;
+    background: rgba(245,158,11,0.07);
+    border: 1px solid rgba(245,158,11,0.15);
+    border-radius: 9px;
+    padding: 8px 11px;
+  }
+  .modal-note strong { color: #F59E0B; }
+  .modal-actions {
+    display: flex;
+    gap: 8px;
+  }
+  .btn-modal-cancel {
+    flex: 1;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.1);
+    color: #94A3B8;
+    border-radius: 12px;
+    padding: 13px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .btn-modal-save {
+    flex: 2;
+    background: linear-gradient(135deg, #4F46E5, #2563EB);
+    border: none;
+    color: #fff;
+    border-radius: 12px;
+    padding: 13px;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    box-shadow: 0 4px 14px rgba(79,70,229,0.4);
+  }
+
+  /* ── DELETE CONFIRM ── */
+  .delete-confirm {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.65);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s;
+    padding: 20px;
+  }
+  .delete-confirm.open { opacity: 1; pointer-events: all; }
+  .delete-card {
+    background: #1E293B;
+    border-radius: 20px;
+    padding: 22px 20px;
+    width: 100%;
+    max-width: 320px;
+    border: 1px solid rgba(239,68,68,0.2);
+    box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+    text-align: center;
+  }
+  .delete-icon { font-size: 36px; margin-bottom: 10px; }
+  .delete-title {
+    font-size: 16px;
+    font-weight: 800;
+    color: #F1F5F9;
+    margin-bottom: 6px;
+  }
+  .delete-word {
+    font-size: 18px;
+    font-weight: 800;
+    color: #F87171;
+    margin-bottom: 4px;
+  }
+  .delete-sub {
+    font-size: 12px;
+    color: #64748B;
+    margin-bottom: 18px;
+    line-height: 1.4;
+  }
+  .delete-actions { display: flex; gap: 8px; }
+  .btn-del-cancel {
+    flex: 1;
+    background: rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.1);
+    color: #94A3B8;
+    border-radius: 12px;
+    padding: 12px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .btn-del-confirm {
+    flex: 1;
+    background: linear-gradient(135deg, #DC2626, #B91C1C);
+    border: none;
+    color: #fff;
+    border-radius: 12px;
+    padding: 12px;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    box-shadow: 0 4px 14px rgba(220,38,38,0.35);
+  }
+
+  /* Empty state */
+  .empty-state {
+    text-align: center;
+    padding: 40px 20px;
+    color: #334155;
+  }
+  .empty-state .emoji { font-size: 40px; margin-bottom: 10px; }
+  .empty-state p { font-size: 14px; }
+
+  /* Floating note */
+  .design-note {
+    position: fixed;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(79,70,229,0.9);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 5px 12px;
+    border-radius: 999px;
+    white-space: nowrap;
+    z-index: 999;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+
+<div class="design-note">📐 Макет — не рабочий код</div>
+
+<div class="phone-frame">
+
+  <!-- Section header -->
+  <div class="section-head">
+    <span class="section-title">Словарь</span>
+    <span class="section-emoji">📚</span>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <button class="tab" id="tab-search" onclick="switchTab('search')">
+      <span class="tab-icon">🔍</span> Поиск
+    </button>
+    <button class="tab active" id="tab-library" onclick="switchTab('library')">
+      <span class="tab-icon">📚</span> Библиотека
+    </button>
+  </div>
+
+  <!-- ══════════ SEARCH TAB ══════════ -->
+  <div class="search-tab-content" id="content-search">
+    <span class="field-label">Слово или фраза</span>
+    <div class="search-input-wrap">
+      <input class="search-input" type="text" placeholder="Например: слово, фраза или выражение">
+    </div>
+    <div class="search-actions">
+      <button class="btn btn-secondary">⚡ Быстрый перевод</button>
+      <button class="btn btn-primary">✨ GPT-разбор</button>
+    </div>
+    <br>
+    <div style="text-align:center;color:#334155;font-size:13px;">← Остальной контент поиска как сейчас</div>
+  </div>
+
+  <!-- ══════════ LIBRARY TAB ══════════ -->
+  <div class="library-content visible" id="content-library">
+
+    <!-- Stats bar -->
+    <div class="stats-bar">
+      <div class="stats-total">Всего: <strong>237</strong> слов</div>
+      <div class="stats-spacer"></div>
+      <button class="sort-btn" onclick="toggleSort(this)">↓ Дата добавления</button>
+    </div>
+
+    <!-- Folder chips -->
+    <div class="folders-scroll" id="folder-row">
+      <div class="folder-chip active" onclick="filterFolder(this, 'all')">
+        <span class="folder-chip-icon">📂</span>
+        <span class="folder-chip-name">Все</span>
+        <span class="folder-chip-count">237</span>
+      </div>
+      <div class="folder-chip" onclick="filterFolder(this, 'travel')">
+        <span class="folder-chip-icon">✈️</span>
+        <span class="folder-chip-name">Путешествия</span>
+        <span class="folder-chip-count">43</span>
+      </div>
+      <div class="folder-chip" onclick="filterFolder(this, 'basic')">
+        <span class="folder-chip-icon">📖</span>
+        <span class="folder-chip-name">Базовый</span>
+        <span class="folder-chip-count">89</span>
+      </div>
+      <div class="folder-chip" onclick="filterFolder(this, 'work')">
+        <span class="folder-chip-icon">💼</span>
+        <span class="folder-chip-name">Работа</span>
+        <span class="folder-chip-count">31</span>
+      </div>
+      <div class="folder-chip" onclick="filterFolder(this, 'none')">
+        <span class="folder-chip-icon">🗂</span>
+        <span class="folder-chip-name">Без папки</span>
+        <span class="folder-chip-count">74</span>
+      </div>
+    </div>
+
+    <!-- Search inside library -->
+    <div class="lib-search-wrap">
+      <input class="lib-search" type="text" placeholder="Поиск по словам...">
+      <span class="lib-search-icon">🔍</span>
+    </div>
+
+    <!-- Word list -->
+    <div class="word-list" id="word-list">
+
+      <div class="divider-label">Сегодня</div>
+
+      <div class="word-item">
+        <div class="word-srs-dot dot-new"></div>
+        <div class="word-body">
+          <div class="word-main">die Unterkunft</div>
+          <div class="word-sub">жильё, проживание · <em>сущ.</em></div>
+        </div>
+        <div class="word-meta">
+          <span class="word-folder-tag">✈️ Путешествия</span>
+          <span class="word-date">сегодня</span>
+        </div>
+        <div class="word-actions">
+          <button class="word-action-btn btn-edit" onclick="openEdit('die Unterkunft', 'жильё, проживание')">✏️</button>
+          <button class="word-action-btn btn-delete" onclick="openDelete('die Unterkunft')">🗑</button>
+        </div>
+      </div>
+
+      <div class="word-item">
+        <div class="word-srs-dot dot-new"></div>
+        <div class="word-body">
+          <div class="word-main">verlieren</div>
+          <div class="word-sub">терять, проигрывать · <em>глаг.</em></div>
+        </div>
+        <div class="word-meta">
+          <span class="word-folder-tag">📖 Базовый</span>
+          <span class="word-date">сегодня</span>
+        </div>
+        <div class="word-actions">
+          <button class="word-action-btn btn-edit" onclick="openEdit('verlieren', 'терять, проигрывать')">✏️</button>
+          <button class="word-action-btn btn-delete" onclick="openDelete('verlieren')">🗑</button>
+        </div>
+      </div>
+
+      <div class="divider-label">Вчера</div>
+
+      <div class="word-item">
+        <div class="word-srs-dot dot-due"></div>
+        <div class="word-body">
+          <div class="word-main">der Bahnhof</div>
+          <div class="word-sub">вокзал · <em>сущ.</em></div>
+        </div>
+        <div class="word-meta">
+          <span class="word-folder-tag">✈️ Путешествия</span>
+          <span class="word-date">вчера</span>
+        </div>
+        <div class="word-actions">
+          <button class="word-action-btn btn-edit" onclick="openEdit('der Bahnhof', 'вокзал')">✏️</button>
+          <button class="word-action-btn btn-delete" onclick="openDelete('der Bahnhof')">🗑</button>
+        </div>
+      </div>
+
+      <div class="word-item">
+        <div class="word-srs-dot dot-due"></div>
+        <div class="word-body">
+          <div class="word-main">die Schachtel, -n</div>
+          <div class="word-sub">коробка · <em>сущ.</em></div>
+        </div>
+        <div class="word-meta">
+          <span class="word-folder-tag">📖 Базовый</span>
+          <span class="word-date">вчера</span>
+        </div>
+        <div class="word-actions">
+          <button class="word-action-btn btn-edit" onclick="openEdit('die Schachtel', 'коробка')">✏️</button>
+          <button class="word-action-btn btn-delete" onclick="openDelete('die Schachtel')">🗑</button>
+        </div>
+      </div>
+
+      <div class="word-item">
+        <div class="word-srs-dot dot-ok"></div>
+        <div class="word-body">
+          <div class="word-main">gründlich</div>
+          <div class="word-sub">тщательный, основательный · <em>прил.</em></div>
+        </div>
+        <div class="word-meta">
+          <span class="word-folder-tag">💼 Работа</span>
+          <span class="word-date">вчера</span>
+        </div>
+        <div class="word-actions">
+          <button class="word-action-btn btn-edit" onclick="openEdit('gründlich', 'тщательный, основательный')">✏️</button>
+          <button class="word-action-btn btn-delete" onclick="openDelete('gründlich')">🗑</button>
+        </div>
+      </div>
+
+      <div class="divider-label">На этой неделе</div>
+
+      <div class="word-item">
+        <div class="word-srs-dot dot-ok"></div>
+        <div class="word-body">
+          <div class="word-main">der Aufenthalt</div>
+          <div class="word-sub">пребывание, остановка · <em>сущ.</em></div>
+        </div>
+        <div class="word-meta">
+          <span class="word-folder-tag">✈️ Путешествия</span>
+          <span class="word-date">5 мая</span>
+        </div>
+        <div class="word-actions">
+          <button class="word-action-btn btn-edit" onclick="openEdit('der Aufenthalt', 'пребывание, остановка')">✏️</button>
+          <button class="word-action-btn btn-delete" onclick="openDelete('der Aufenthalt')">🗑</button>
+        </div>
+      </div>
+
+      <div class="word-item">
+        <div class="word-srs-dot dot-ok"></div>
+        <div class="word-body">
+          <div class="word-main">unverzüglich</div>
+          <div class="word-sub">незамедлительно, срочно · <em>нареч.</em></div>
+        </div>
+        <div class="word-meta">
+          <span class="word-folder-tag">📖 Базовый</span>
+          <span class="word-date">4 мая</span>
+        </div>
+        <div class="word-actions">
+          <button class="word-action-btn btn-edit" onclick="openEdit('unverzüglich', 'незамедлительно, срочно')">✏️</button>
+          <button class="word-action-btn btn-delete" onclick="openDelete('unverzüglich')">🗑</button>
+        </div>
+      </div>
+
+      <div class="word-item">
+        <div class="word-srs-dot dot-none"></div>
+        <div class="word-body">
+          <div class="word-main">das Gespräch, -e</div>
+          <div class="word-sub">разговор, беседа · <em>сущ.</em></div>
+        </div>
+        <div class="word-meta">
+          <span class="word-folder-tag">🗂 —</span>
+          <span class="word-date">3 мая</span>
+        </div>
+        <div class="word-actions">
+          <button class="word-action-btn btn-edit" onclick="openEdit('das Gespräch', 'разговор, беседа')">✏️</button>
+          <button class="word-action-btn btn-delete" onclick="openDelete('das Gespräch')">🗑</button>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Legend -->
+    <div style="margin: 18px 16px 0; display: flex; gap: 14px; flex-wrap: wrap;">
+      <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:#475569;">
+        <div style="width:8px;height:8px;border-radius:50%;background:#6366F1;flex-shrink:0;"></div> Новое
+      </div>
+      <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:#475569;">
+        <div style="width:8px;height:8px;border-radius:50%;background:#F59E0B;flex-shrink:0;"></div> Требует повторения
+      </div>
+      <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:#475569;">
+        <div style="width:8px;height:8px;border-radius:50%;background:#10B981;flex-shrink:0;"></div> Хорошо усвоено
+      </div>
+      <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:#475569;">
+        <div style="width:8px;height:8px;border-radius:50%;background:#334155;flex-shrink:0;"></div> Без SRS
+      </div>
+    </div>
+
+  </div><!-- /library-content -->
+
+</div><!-- /phone-frame -->
+
+<!-- ══════════ EDIT MODAL ══════════ -->
+<div class="modal-overlay" id="edit-modal" onclick="closeModal(event)">
+  <div class="modal-sheet">
+    <div class="modal-handle"></div>
+    <div class="modal-title">✏️ Редактировать слово</div>
+    <div class="modal-field">
+      <label>Слово / фраза (DE)</label>
+      <input class="modal-input" id="edit-word-input" type="text">
+    </div>
+    <div class="modal-field">
+      <label>Перевод (RU)</label>
+      <input class="modal-input" id="edit-trans-input" type="text">
+    </div>
+    <div class="modal-note">
+      <strong>⚠️ Важно:</strong> при изменении слова перевод, артикль и формы будут пересчитаны автоматически через GPT. Прогресс SRS сохранится.
+    </div>
+    <div class="modal-actions">
+      <button class="btn-modal-cancel" onclick="closeEditModal()">Отмена</button>
+      <button class="btn-modal-save" onclick="closeEditModal()">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ DELETE CONFIRM ══════════ -->
+<div class="delete-confirm" id="delete-modal">
+  <div class="delete-card">
+    <div class="delete-icon">🗑️</div>
+    <div class="delete-title">Удалить слово?</div>
+    <div class="delete-word" id="delete-word-label">die Unterkunft</div>
+    <div class="delete-sub">Слово будет удалено из словаря и из очереди повторений (SRS). Это действие нельзя отменить.</div>
+    <div class="delete-actions">
+      <button class="btn-del-cancel" onclick="closeDeleteModal()">Отмена</button>
+      <button class="btn-del-confirm" onclick="closeDeleteModal()">Удалить</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  function switchTab(tab) {
+    document.getElementById('content-search').classList.toggle('visible', tab === 'search');
+    document.getElementById('content-library').classList.toggle('visible', tab === 'library');
+    document.getElementById('tab-search').classList.toggle('active', tab === 'search');
+    document.getElementById('tab-library').classList.toggle('active', tab === 'library');
+  }
+
+  function filterFolder(el, key) {
+    document.querySelectorAll('.folder-chip').forEach(c => c.classList.remove('active'));
+    el.classList.add('active');
+  }
+
+  function toggleSort(btn) {
+    const opts = ['↓ Дата добавления', '↑ Дата добавления', 'А → Я', 'SRS статус'];
+    const cur = opts.indexOf(btn.textContent);
+    btn.textContent = opts[(cur + 1) % opts.length];
+  }
+
+  function openEdit(word, trans) {
+    document.getElementById('edit-word-input').value = word;
+    document.getElementById('edit-trans-input').value = trans;
+    document.getElementById('edit-modal').classList.add('open');
+  }
+  function closeEditModal() {
+    document.getElementById('edit-modal').classList.remove('open');
+  }
+  function closeModal(e) {
+    if (e.target === document.getElementById('edit-modal')) closeEditModal();
+  }
+
+  function openDelete(word) {
+    document.getElementById('delete-word-label').textContent = word;
+    document.getElementById('delete-modal').classList.add('open');
+  }
+  function closeDeleteModal() {
+    document.getElementById('delete-modal').classList.remove('open');
+  }
+</script>
+</body>
+</html>
