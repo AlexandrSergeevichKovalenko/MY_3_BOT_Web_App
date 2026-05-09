@@ -5801,6 +5801,16 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_base_dictionary_updated
                 ON bt_base_dictionary (updated_at DESC);
             """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_base_dictionary_seed_state (
+                    source_lang TEXT PRIMARY KEY,
+                    seed_complete BOOLEAN NOT NULL DEFAULT FALSE,
+                    entry_count INT NOT NULL DEFAULT 0,
+                    source_url TEXT,
+                    completed_at TIMESTAMPTZ,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
             cursor.close()
             _run_dictionary_canonical_schema_migration(conn)
         missing_phase1_objects = get_missing_phase1_shadow_schema_objects()
@@ -24762,6 +24772,100 @@ def count_base_dictionary_entries(source_lang: str = "de") -> int:
             )
             row = cursor.fetchone()
     return int(row[0] or 0) if row else 0
+
+
+def get_base_dictionary_seed_state(source_lang: str = "de") -> dict:
+    source_lang_value = str(source_lang or "de").strip() or "de"
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT source_lang, seed_complete, entry_count, source_url, completed_at, updated_at
+                FROM bt_base_dictionary_seed_state
+                WHERE source_lang = %s
+                LIMIT 1;
+                """,
+                (source_lang_value,),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return {
+            "source_lang": source_lang_value,
+            "seed_complete": False,
+            "entry_count": 0,
+            "source_url": None,
+            "completed_at": None,
+            "updated_at": None,
+        }
+    return {
+        "source_lang": str(row[0] or source_lang_value),
+        "seed_complete": bool(row[1]),
+        "entry_count": max(0, int(row[2] or 0)),
+        "source_url": str(row[3] or "").strip() or None,
+        "completed_at": row[4].isoformat() if row[4] else None,
+        "updated_at": row[5].isoformat() if row[5] else None,
+    }
+
+
+def upsert_base_dictionary_seed_state(
+    *,
+    source_lang: str = "de",
+    seed_complete: bool,
+    entry_count: int | None = None,
+    source_url: str | None = None,
+) -> dict:
+    source_lang_value = str(source_lang or "de").strip() or "de"
+    safe_entry_count = max(0, int(entry_count or 0))
+    source_url_value = str(source_url or "").strip() or None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_base_dictionary_seed_state (
+                    source_lang,
+                    seed_complete,
+                    entry_count,
+                    source_url,
+                    completed_at,
+                    updated_at
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    CASE WHEN %s THEN NOW() ELSE NULL END,
+                    NOW()
+                )
+                ON CONFLICT (source_lang) DO UPDATE
+                SET
+                    seed_complete = EXCLUDED.seed_complete,
+                    entry_count = EXCLUDED.entry_count,
+                    source_url = COALESCE(EXCLUDED.source_url, bt_base_dictionary_seed_state.source_url),
+                    completed_at = CASE
+                        WHEN EXCLUDED.seed_complete THEN NOW()
+                        ELSE NULL
+                    END,
+                    updated_at = NOW()
+                RETURNING source_lang, seed_complete, entry_count, source_url, completed_at, updated_at;
+                """,
+                (
+                    source_lang_value,
+                    bool(seed_complete),
+                    safe_entry_count,
+                    source_url_value,
+                    bool(seed_complete),
+                ),
+            )
+            row = cursor.fetchone()
+    return {
+        "source_lang": str(row[0] or source_lang_value),
+        "seed_complete": bool(row[1]),
+        "entry_count": max(0, int(row[2] or 0)),
+        "source_url": str(row[3] or "").strip() or None,
+        "completed_at": row[4].isoformat() if row[4] else None,
+        "updated_at": row[5].isoformat() if row[5] else None,
+    }
 
 
 def upsert_base_dictionary_entry(entry: dict) -> dict:

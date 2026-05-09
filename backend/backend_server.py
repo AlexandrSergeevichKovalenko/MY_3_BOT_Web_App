@@ -461,6 +461,8 @@ from backend.database import (
     get_weekly_plan_progress,
     get_plan_progress,
     count_base_dictionary_entries,
+    get_base_dictionary_seed_state,
+    upsert_base_dictionary_seed_state,
     start_agent_voice_session,
     get_agent_voice_session,
     get_voice_scenario,
@@ -9753,33 +9755,54 @@ def _ensure_min_allowed_skill_resource_domains(
 
 def _load_freedict_if_empty() -> None:
     try:
-        from backend.database import get_db_connection_context
-        with get_db_connection_context() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM bt_base_dictionary WHERE source_lang = 'de'")
-                count = cur.fetchone()[0]
-        # A partially-filled table is worse than an empty one here: base lookup
-        # starts returning hard "not found" for common words and the old logic
-        # would never re-seed because count was merely > 0.
-        ready_min_count = 22000
-        if count >= ready_min_count:
+        source_lang = "de"
+        seed_state = get_base_dictionary_seed_state(source_lang)
+        count = count_base_dictionary_entries(source_lang)
+        if bool(seed_state.get("seed_complete")) and count > 0:
             logging.info(
-                "FreeDict autoseed: bt_base_dictionary already has %s entries (ready threshold %s), skipping",
+                "FreeDict autoseed: source_lang=%s already marked complete with %s entries, skipping",
+                source_lang,
                 count,
-                ready_min_count,
             )
             return
         logging.info(
-            "FreeDict autoseed: bt_base_dictionary has only %s entries (ready threshold %s), starting backfill...",
+            "FreeDict autoseed: source_lang=%s seed_complete=%s current_entries=%s, starting backfill...",
+            source_lang,
+            bool(seed_state.get("seed_complete")),
             count,
-            ready_min_count,
         )
         from backend.load_freedict import _download, _parse, _bulk_insert, FREEDICT_URL
+        upsert_base_dictionary_seed_state(
+            source_lang=source_lang,
+            seed_complete=False,
+            entry_count=count,
+            source_url=FREEDICT_URL,
+        )
         data = _download(FREEDICT_URL)
         entries = _parse(data)
         inserted = _bulk_insert(entries)
-        logging.info("FreeDict autoseed: loaded %s entries into bt_base_dictionary", inserted)
+        final_count = count_base_dictionary_entries(source_lang)
+        upsert_base_dictionary_seed_state(
+            source_lang=source_lang,
+            seed_complete=True,
+            entry_count=final_count,
+            source_url=FREEDICT_URL,
+        )
+        logging.info(
+            "FreeDict autoseed: source_lang=%s loaded=%s final_entries=%s seed_complete=true",
+            source_lang,
+            inserted,
+            final_count,
+        )
     except Exception as exc:
+        try:
+            upsert_base_dictionary_seed_state(
+                source_lang="de",
+                seed_complete=False,
+                entry_count=count_base_dictionary_entries("de"),
+            )
+        except Exception:
+            logging.debug("Failed to persist incomplete FreeDict seed state", exc_info=True)
         logging.warning("FreeDict autoseed failed (non-fatal): %s", exc)
 
 
@@ -25797,10 +25820,16 @@ def base_dictionary_lookup():
         })
 
     try:
-        ready_min_count = 22000
-        if count_base_dictionary_entries("de") < ready_min_count:
+        seed_state = get_base_dictionary_seed_state("de")
+        if not bool(seed_state.get("seed_complete")):
             _start_freedict_autoseed_if_needed()
-            return jsonify({"not_found": True, "warming_up": True, "query_lang": query_lang}), 202
+            return jsonify({
+                "not_found": True,
+                "warming_up": True,
+                "query_lang": query_lang,
+                "seed_complete": False,
+                "seed_entry_count": int(seed_state.get("entry_count") or 0),
+            }), 202
     except Exception:
         pass
 
