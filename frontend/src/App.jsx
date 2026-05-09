@@ -20736,9 +20736,7 @@ function AppInner() {
       const translationLength = currentTranslation.length;
       const chunkCount = current.indices.length;
       const targetEndsHard = hardStopPattern.test(targetText);
-      const translationEndsHard = hardStopPattern.test(translationText);
       const targetEndsSoft = softStopPattern.test(targetText);
-      const translationEndsSoft = softStopPattern.test(translationText);
       const nextItem = items[index + 1] || null;
       const nextStart = Number(nextItem?.start ?? Number.POSITIVE_INFINITY);
       const currentStart = Number(item?.start ?? 0);
@@ -20754,13 +20752,12 @@ function AppInner() {
       const nextGapLarge = nextGapSeconds > 0.9;
 
       const shouldFlush = targetEndsHard
-        || translationEndsHard
         || targetLength >= 150
         || translationLength >= 180
         || (
           !nextStartsContinuation
           && chunkCount >= 2
-          && (targetEndsSoft || translationEndsSoft)
+          && targetEndsSoft
           && (targetLength >= 88 || translationLength >= 104)
         )
         || (

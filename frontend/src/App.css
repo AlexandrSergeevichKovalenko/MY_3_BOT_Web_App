@@ -14165,7 +14165,7 @@ body {
 }
 
 .webapp-video.youtube-player-first .youtube-subtitles-panel-content.is-dual .youtube-subtitles-block-de .webapp-subtitles-list {
-  font-size: clamp(16.5px, 1.35vw, 21px);
+  font-size: clamp(15.5px, 1.25vw, 19px);
 }
 
 .webapp-video.youtube-player-first .youtube-subtitles-block-ru .webapp-subtitles-list {
@@ -14195,6 +14195,15 @@ body {
   color: var(--yt-text-translation);
   font-weight: 600;
   line-height: 1.32;
+}
+
+.webapp-video.youtube-player-first .youtube-subtitles-panel-content.is-dual .youtube-subtitles-block-ru .webapp-subtitles-list {
+  font-size: clamp(15.5px, 1.25vw, 19px);
+}
+
+.webapp-video.youtube-player-first .youtube-subtitles-panel-content.is-dual .youtube-subtitles-block-ru .webapp-subtitles-list p {
+  line-height: 1.24;
+  margin-bottom: 8px;
 }
 
 .youtube-subtitles-block .webapp-subtitles-list p.is-active {
@@ -14505,7 +14514,7 @@ body {
   }
 
   .webapp-video.youtube-player-first .youtube-subtitles-panel-content.is-dual .youtube-subtitles-block-de .webapp-subtitles-list {
-    font-size: clamp(13.5px, 3.75vw, 18px);
+    font-size: clamp(14.5px, 3.95vw, 17.5px);
     max-height: min(30vh, 300px);
     padding: 10px 12px;
   }
@@ -14515,6 +14524,7 @@ body {
   }
 
   .webapp-video.youtube-player-first .youtube-subtitles-panel-content.is-dual .youtube-subtitles-block-ru .webapp-subtitles-list {
+    font-size: clamp(14.5px, 3.95vw, 17.5px);
     max-height: min(28vh, 280px);
   }
 
