@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import BlocksTrainer from './components/BlocksTrainer';
 import HomeDashboardTiles from './components/HomeDashboardTiles';
@@ -44,6 +44,8 @@ const SINGLE_INSTANCE_HEARTBEAT_MS = 1000;
 const SINGLE_INSTANCE_STALE_MS = 5000;
 const TTS_CACHE_MAX_ENTRIES = 60;
 const READER_IDLE_TIMEOUT_MS = 60000;
+const READER_DEFAULT_FONT_SIZE = 18;
+const READER_DEFAULT_FONT_WEIGHT = 500;
 const WEEKLY_SUMMARY_VISITS_ENABLED = false;
 const ALLOW_MANUAL_INITDATA_FALLBACK = Boolean(import.meta.env.DEV);
 const ANDROID_TRANSLATION_DRAFT_DEBUG_QUERY_KEY = 'translation_draft_debug';
@@ -60,6 +62,114 @@ const ECONOMICS_RAILWAY_POSTGRES_VOLUME_STORAGE_KEY = 'dds_economics_railway_pos
 const ECONOMICS_RAILWAY_REDIS_RAM_STORAGE_KEY = 'dds_economics_railway_redis_ram_v1';
 const ECONOMICS_RAILWAY_EGRESS_STORAGE_KEY = 'dds_economics_railway_egress_v1';
 const ECONOMICS_PERIOD_OPTIONS = new Set(['day', 'week', 'month', 'quarter', 'half-year', 'year', 'all']);
+
+function normalizeReaderPaginationText(rawText) {
+  return String(rawText || '')
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.replace(/\s*\n\s*/g, ' ').replace(/ {2,}/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+function readerPageTextFits(measureNode, text) {
+  if (!measureNode) return false;
+  measureNode.textContent = String(text || '');
+  return measureNode.scrollHeight <= measureNode.clientHeight + 1;
+}
+
+function paginateReaderText(text, measureNode) {
+  const normalizedText = normalizeReaderPaginationText(text);
+  if (!normalizedText || !measureNode) return [];
+  if (measureNode.clientWidth <= 0 || measureNode.clientHeight <= 0) return [];
+
+  const paragraphs = normalizedText.split(/\n\n+/).map((item) => item.trim()).filter(Boolean);
+  const pages = [];
+  let buffer = '';
+
+  for (const paragraph of paragraphs) {
+    let words = paragraph.split(/\s+/).filter(Boolean);
+    while (words.length > 0) {
+      const paragraphText = words.join(' ');
+      const candidate = buffer ? `${buffer}\n\n${paragraphText}` : paragraphText;
+      if (readerPageTextFits(measureNode, candidate)) {
+        buffer = candidate;
+        break;
+      }
+
+      if (buffer) {
+        pages.push(buffer);
+        buffer = '';
+        continue;
+      }
+
+      let low = 1;
+      let high = words.length;
+      let bestWordCount = 0;
+      while (low <= high) {
+        const mid = Math.floor((low + high) / 2);
+        const midText = words.slice(0, mid).join(' ');
+        if (readerPageTextFits(measureNode, midText)) {
+          bestWordCount = mid;
+          low = mid + 1;
+        } else {
+          high = mid - 1;
+        }
+      }
+
+      if (bestWordCount > 0) {
+        pages.push(words.slice(0, bestWordCount).join(' '));
+        words = words.slice(bestWordCount);
+        continue;
+      }
+
+      const firstWord = String(words[0] || '');
+      if (!firstWord) {
+        words.shift();
+        continue;
+      }
+
+      let charLow = 1;
+      let charHigh = firstWord.length;
+      let bestCharCount = 1;
+      while (charLow <= charHigh) {
+        const mid = Math.floor((charLow + charHigh) / 2);
+        const midText = firstWord.slice(0, mid);
+        if (readerPageTextFits(measureNode, midText)) {
+          bestCharCount = mid;
+          charLow = mid + 1;
+        } else {
+          charHigh = mid - 1;
+        }
+      }
+
+      pages.push(firstWord.slice(0, bestCharCount));
+      words[0] = firstWord.slice(bestCharCount);
+      if (!words[0]) {
+        words.shift();
+      }
+    }
+  }
+
+  if (buffer) {
+    pages.push(buffer);
+  }
+
+  measureNode.textContent = '';
+  return pages;
+}
+
+function areReaderPagesEqual(prevPages, nextPages) {
+  if (prevPages === nextPages) return true;
+  if (!Array.isArray(prevPages) || !Array.isArray(nextPages)) return false;
+  if (prevPages.length !== nextPages.length) return false;
+  for (let index = 0; index < prevPages.length; index += 1) {
+    const prevItem = prevPages[index];
+    const nextItem = nextPages[index];
+    if (Number(prevItem?.page_number || 0) !== Number(nextItem?.page_number || 0)) return false;
+    if (String(prevItem?.text || '') !== String(nextItem?.text || '')) return false;
+  }
+  return true;
+}
 
 function readStoredEconomicsPeriod() {
   if (typeof window === 'undefined') return 'month';
@@ -4439,6 +4549,7 @@ function AppInner() {
   const [readerLibraryError, setReaderLibraryError] = useState('');
   const [readerIncludeArchived, setReaderIncludeArchived] = useState(false);
   const [readerPages, setReaderPages] = useState([]);
+  const [readerDynamicPages, setReaderDynamicPages] = useState([]);
   const [readerCurrentPage, setReaderCurrentPage] = useState(1);
   const [readerAudioFromPage, setReaderAudioFromPage] = useState('');
   const [readerAudioToPage, setReaderAudioToPage] = useState('');
@@ -4458,10 +4569,12 @@ function AppInner() {
   const [readerArchiveOpen, setReaderArchiveOpen] = useState(false);
   const [readerSettingsOpen, setReaderSettingsOpen] = useState(false);
   const [readerTopbarCollapsed, setReaderTopbarCollapsed] = useState(false);
+  const [readerPaginationLayoutTick, setReaderPaginationLayoutTick] = useState(0);
   const [readerLibrarySearch, setReaderLibrarySearch] = useState('');
   const [readerAddOpen, setReaderAddOpen] = useState(false);
-  const [readerFontSize, setReaderFontSize] = useState(18);
-  const [readerFontWeight, setReaderFontWeight] = useState(500);
+  const [readerFontSize, setReaderFontSize] = useState(READER_DEFAULT_FONT_SIZE);
+  const [readerFontWeight, setReaderFontWeight] = useState(READER_DEFAULT_FONT_WEIGHT);
+  const [readerLayoutMode, setReaderLayoutMode] = useState('custom');
   const [readerDragSelectionMeta, setReaderDragSelectionMeta] = useState(null);
   const [youtubeDragSelectionMeta, setYoutubeDragSelectionMeta] = useState(null);
   const [selectionText, setSelectionText] = useState('');
@@ -5022,6 +5135,7 @@ function AppInner() {
   const homeMoreRef = useRef(null);
   const readerRef = useRef(null);
   const readerArticleRef = useRef(null);
+  const readerMeasureInnerRef = useRef(null);
   const flashcardsRef = useRef(null);
   const translationsRef = useRef(null);
   const youtubeRef = useRef(null);
@@ -5179,6 +5293,8 @@ function AppInner() {
   });
   const readerSuppressStructuredClickRef = useRef(0);
   const readerStatusPollTokenRef = useRef(0);
+  const readerPaginationResizeFrameRef = useRef(0);
+  const readerPaginationRunRef = useRef(0);
   const todayTimerCompletionLockRef = useRef(new Set());
   const globalTimerAutoPauseInFlightRef = useRef(false);
   const globalTimerAutoResumeInFlightRef = useRef(false);
@@ -11768,41 +11884,31 @@ function AppInner() {
   const isInlineSelectionMenu = isYoutubeSelectionMenu || isTranslationResultSelectionMenu;
   const isLightTheme = themeMode === 'light';
   const readerHasContent = Boolean(String(readerContent || '').trim());
+  const readerCanonicalText = useMemo(
+    () => normalizeReaderPaginationText(readerContent),
+    [readerContent]
+  );
+  const readerCanUseOriginalLayout = Array.isArray(readerPages) && readerPages.length > 0;
+  const readerUsesCustomLayout = !readerCanUseOriginalLayout || readerLayoutMode === 'custom';
   const readerDisplayPages = useMemo(() => {
-    if (Array.isArray(readerPages) && readerPages.length > 0) {
-      return readerPages
+    if (readerUsesCustomLayout && Array.isArray(readerDynamicPages) && readerDynamicPages.length > 0) {
+      return readerDynamicPages
         .map((item, index) => ({
           page_number: Number(item?.page_number || index + 1),
           text: String(item?.text || '').trim(),
         }));
     }
-    const raw = String(readerContent || '').trim();
-    if (!raw) return [];
-    const paragraphs = raw.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean);
-    const pages = [];
-    let buffer = '';
-    const limit = 1650;
-    for (const paragraph of paragraphs) {
-      const candidate = buffer ? `${buffer}\n\n${paragraph}` : paragraph;
-      if (candidate.length <= limit) {
-        buffer = candidate;
-      } else {
-        if (buffer) pages.push(buffer);
-        if (paragraph.length <= limit) {
-          buffer = paragraph;
-        } else {
-          let rest = paragraph;
-          while (rest.length > limit) {
-            pages.push(rest.slice(0, limit));
-            rest = rest.slice(limit);
-          }
-          buffer = rest;
-        }
-      }
+    if (Array.isArray(readerPages) && readerPages.length > 0) {
+      return readerPages
+        .map((item, index) => ({
+          page_number: Number(item?.page_number || index + 1),
+          text: String(item?.text || '').trim(),
+        }))
+        .filter((item) => item.text);
     }
-    if (buffer) pages.push(buffer);
-    return pages.map((text, index) => ({ page_number: index + 1, text }));
-  }, [readerPages, readerContent]);
+    if (!readerCanonicalText) return [];
+    return [{ page_number: 1, text: readerCanonicalText }];
+  }, [readerCanonicalText, readerDynamicPages, readerPages, readerUsesCustomLayout]);
   const readerPageCount = readerDisplayPages.length;
   const supportTimelineItems = useMemo(() => {
     const remote = Array.isArray(supportMessages) ? supportMessages : [];
@@ -15091,6 +15197,9 @@ function AppInner() {
 
   useEffect(() => {
     if (readerHasContent) return;
+    setReaderDynamicPages([]);
+    setReaderPaginationLayoutTick(0);
+    setReaderLayoutMode('custom');
     setReaderImmersive(false);
     setReaderTimerPaused(false);
     setReaderAccumulatedSeconds(0);
@@ -15099,6 +15208,84 @@ function AppInner() {
     readerAutoPausedByIdleRef.current = false;
     readerLastInteractionAtRef.current = 0;
   }, [readerHasContent]);
+
+  useLayoutEffect(() => {
+    if (!readerUsesCustomLayout) return undefined;
+    if (!readerHasContent) return undefined;
+    const scheduleRepagination = () => {
+      if (readerPaginationResizeFrameRef.current) {
+        window.cancelAnimationFrame(readerPaginationResizeFrameRef.current);
+      }
+      readerPaginationResizeFrameRef.current = window.requestAnimationFrame(() => {
+        readerPaginationResizeFrameRef.current = 0;
+        setReaderPaginationLayoutTick((prev) => prev + 1);
+      });
+    };
+
+    scheduleRepagination();
+    let resizeObserver;
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => {
+        scheduleRepagination();
+      });
+      if (readerArticleRef.current) {
+        resizeObserver.observe(readerArticleRef.current);
+      }
+      if (readerMeasureInnerRef.current) {
+        resizeObserver.observe(readerMeasureInnerRef.current);
+      }
+    }
+
+    window.addEventListener('orientationchange', scheduleRepagination);
+    return () => {
+      window.removeEventListener('orientationchange', scheduleRepagination);
+      resizeObserver?.disconnect();
+      if (readerPaginationResizeFrameRef.current) {
+        window.cancelAnimationFrame(readerPaginationResizeFrameRef.current);
+        readerPaginationResizeFrameRef.current = 0;
+      }
+    };
+  }, [readerHasContent, readerImmersive, readerTopbarCollapsed, readerReadingMode, readerUsesCustomLayout]);
+
+  useLayoutEffect(() => {
+    if (!readerUsesCustomLayout) {
+      setReaderDynamicPages([]);
+      return;
+    }
+    if (!readerCanonicalText) {
+      setReaderDynamicPages([]);
+      return;
+    }
+    const measureNode = readerMeasureInnerRef.current;
+    if (!measureNode || measureNode.clientWidth <= 0 || measureNode.clientHeight <= 0) {
+      return;
+    }
+
+    const runId = readerPaginationRunRef.current + 1;
+    readerPaginationRunRef.current = runId;
+    const nextTextPages = paginateReaderText(readerCanonicalText, measureNode);
+    if (readerPaginationRunRef.current !== runId) {
+      return;
+    }
+    const nextPages = nextTextPages.map((text, index) => ({
+      page_number: index + 1,
+      text,
+    }));
+    setReaderDynamicPages((prev) => (areReaderPagesEqual(prev, nextPages) ? prev : nextPages));
+
+    if (nextPages.length > 0) {
+      const safePercent = Math.max(0, Math.min(100, Number(readerProgressPercent) || 0));
+      const resolvedPage = Math.max(1, Math.min(nextPages.length, Math.round((safePercent / 100) * nextPages.length) || 1));
+      setReaderCurrentPage(resolvedPage);
+    }
+  }, [
+    readerCanonicalText,
+    readerFontSize,
+    readerFontWeight,
+    readerPaginationLayoutTick,
+    readerProgressPercent,
+    readerUsesCustomLayout,
+  ]);
 
   useEffect(() => {
     const node = readerArticleRef.current;
@@ -15141,11 +15328,11 @@ function AppInner() {
   }, [readerPageCount]);
 
   useEffect(() => {
-    if (!readerDocumentId || !readerContent) return;
+    if (!readerDocumentId || !readerContent || readerPageCount <= 0) return;
     const targetPercent = readerBookmarkPercent > 0 ? readerBookmarkPercent : readerProgressPercent;
     const timer = setTimeout(() => applyReaderProgressPercent(targetPercent), 90);
     return () => clearTimeout(timer);
-  }, [readerReadingMode, readerDocumentId, readerContent]);
+  }, [readerReadingMode, readerDocumentId, readerContent, readerLayoutMode, readerPageCount, readerBookmarkPercent, readerProgressPercent]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -19238,10 +19425,14 @@ function AppInner() {
       const progress = Number(doc?.progress_percent || 0);
       const bookmark = Number(doc?.bookmark_percent || 0);
       const pages = Array.isArray(doc?.content_pages) ? doc.content_pages : [];
+      setReaderFontSize(READER_DEFAULT_FONT_SIZE);
+      setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
       setReaderDocumentId(Number(doc?.id || documentId));
       setReaderTitle(String(data?.title || doc?.title || ''));
       setReaderContent(String(data?.text || doc?.content_text || '').trim());
       setReaderPages(pages);
+      setReaderDynamicPages([]);
+      setReaderLayoutMode(pages.length > 0 ? 'original' : 'custom');
       setReaderSourceType(String(data?.source_type || doc?.source_type || 'text'));
       setReaderSourceUrl(String(data?.source_url || doc?.source_url || ''));
       setReaderDetectedLanguage(normalizeLangCode(data?.detected_language || ''));
@@ -19325,6 +19516,8 @@ function AppInner() {
         setReaderDocumentId(null);
         setReaderContent('');
         setReaderPages([]);
+        setReaderDynamicPages([]);
+        setReaderLayoutMode('custom');
       }
     } catch (error) {
       setReaderLibraryError(normalizeNetworkErrorMessage(error, 'Не удалось архивировать книгу.', 'Dokument konnte nicht archiviert werden.'));
@@ -19349,6 +19542,8 @@ function AppInner() {
         setReaderDocumentId(null);
         setReaderContent('');
         setReaderPages([]);
+        setReaderDynamicPages([]);
+        setReaderLayoutMode('custom');
       }
     } catch (error) {
       setReaderLibraryError(normalizeNetworkErrorMessage(error, 'Не удалось удалить книгу.', 'Dokument konnte nicht geloescht werden.'));
@@ -19529,11 +19724,15 @@ function AppInner() {
           }
           usedDirectUpload = true;
           setReaderDocumentId(directDocId);
+          setReaderFontSize(READER_DEFAULT_FONT_SIZE);
+          setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
           setReaderTitle(String(initDataPayload?.title || directDoc?.title || readerSelectedFile.name || rawInput.slice(0, 80)));
           setReaderSourceType(String(initDataPayload?.source_type || directDoc?.source_type || 'file'));
           setReaderSourceUrl('');
           setReaderContent('');
           setReaderPages([]);
+          setReaderDynamicPages([]);
+          setReaderLayoutMode('custom');
           setReaderCurrentPage(1);
           setReaderAddOpen(false);
           setReaderSelectedFile(null);
@@ -19619,11 +19818,15 @@ function AppInner() {
       const processingStatus = String(data?.status || doc?.processing_status || 'ready').trim().toLowerCase() || 'ready';
       if (processingStatus !== 'ready') {
         setReaderDocumentId(docId);
+        setReaderFontSize(READER_DEFAULT_FONT_SIZE);
+        setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
         setReaderTitle(String(data?.title || doc?.title || rawInput.slice(0, 80)));
         setReaderSourceType(String(data?.source_type || doc?.source_type || 'text'));
         setReaderSourceUrl(String(data?.source_url || doc?.source_url || rawInput));
         setReaderContent('');
         setReaderPages([]);
+        setReaderDynamicPages([]);
+        setReaderLayoutMode('custom');
         setReaderCurrentPage(1);
         setReaderAudioFromPage('');
         setReaderAudioToPage('');
@@ -19650,9 +19853,13 @@ function AppInner() {
         return;
       }
       const pages = Array.isArray(doc?.content_pages) ? doc.content_pages : [];
+      setReaderFontSize(READER_DEFAULT_FONT_SIZE);
+      setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
       setReaderContent(String(data?.text || '').trim());
       setReaderTitle(String(data?.title || doc?.title || rawInput.slice(0, 80)));
       setReaderPages(pages);
+      setReaderDynamicPages([]);
+      setReaderLayoutMode(pages.length > 0 ? 'original' : 'custom');
       setReaderSourceType(String(data?.source_type || 'text'));
       setReaderSourceUrl(String(data?.source_url || rawInput));
       setReaderDetectedLanguage(normalizeLangCode(data?.detected_language || ''));
@@ -29385,6 +29592,17 @@ function AppInner() {
                                   {tr('Стр.', 'S.')}{' '}{readerCurrentPage}{readerPageCount > 0 ? ` / ${readerPageCount}` : ''}
                                 </div>
                               </div>
+                              <div
+                                className="reader-page-sheet reader-page-sheet-measure"
+                                aria-hidden="true"
+                                style={{
+                                  '--reader-font-size': `${readerFontSize}px`,
+                                  '--reader-font-weight': readerFontWeight,
+                                }}
+                              >
+                                <div ref={readerMeasureInnerRef} className="reader-page-sheet-inner" />
+                                <div className="reader-page-num">{tr('Стр.', 'S.')} 999 / 999</div>
+                              </div>
                             </div>
                           ) : (
                             renderReaderStructuredText()
@@ -29403,14 +29621,42 @@ function AppInner() {
                           <div className="reader-settings-sheet">
                             <div className="reader-settings-sheet-head">
                               <strong>{tr('Настройки чтения', 'Leseeinstellungen')}</strong>
-                              <button
-                                type="button"
-                                className="secondary-button"
-                                onClick={() => setReaderSettingsOpen(false)}
-                              >
-                                ×
-                              </button>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                {readerCanUseOriginalLayout && (
+                                  <button
+                                    type="button"
+                                    className="secondary-button"
+                                    onClick={() => {
+                                      setReaderFontSize(READER_DEFAULT_FONT_SIZE);
+                                      setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
+                                      setReaderLayoutMode('original');
+                                    }}
+                                  >
+                                    {tr('Оригинал', 'Original')}
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  className="secondary-button"
+                                  onClick={() => setReaderSettingsOpen(false)}
+                                >
+                                  ×
+                                </button>
+                              </div>
                             </div>
+                            {readerCanUseOriginalLayout && (
+                              <div className="webapp-muted" style={{ fontSize: 12 }}>
+                                {readerLayoutMode === 'original'
+                                  ? tr(
+                                    'Сейчас открыт оригинальный режим: исходная разбивка страниц книги. Любое изменение шрифта переключит книгу в адаптивный режим.',
+                                    'Aktuell ist der Originalmodus aktiv: die urspruengliche Seitenteilung des Buches. Jede Schriftanpassung schaltet in den adaptiven Modus um.'
+                                  )
+                                  : tr(
+                                    'Сейчас открыт адаптивный режим: страницы пересчитаны под ваш шрифт и экран. Кнопка "Оригинал" вернёт исходную разбивку.',
+                                    'Aktuell ist der adaptive Modus aktiv: die Seiten wurden fuer deine Schrift und deinen Bildschirm neu berechnet. Mit "Original" kehrst du zur urspruenglichen Seitenteilung zurueck.'
+                                  )}
+                              </div>
+                            )}
                             <label className="webapp-field">
                               <span>{tr('Размер шрифта', 'Schriftgroesse')}</span>
                               <input
@@ -29419,7 +29665,10 @@ function AppInner() {
                                 max="28"
                                 step="1"
                                 value={readerFontSize}
-                                onChange={(event) => setReaderFontSize(Number(event.target.value))}
+                                onChange={(event) => {
+                                  setReaderLayoutMode('custom');
+                                  setReaderFontSize(Number(event.target.value));
+                                }}
                               />
                               <small className="webapp-muted">{readerFontSize}px</small>
                             </label>
@@ -29431,7 +29680,10 @@ function AppInner() {
                                 max="700"
                                 step="50"
                                 value={readerFontWeight}
-                                onChange={(event) => setReaderFontWeight(Number(event.target.value))}
+                                onChange={(event) => {
+                                  setReaderLayoutMode('custom');
+                                  setReaderFontWeight(Number(event.target.value));
+                                }}
                               />
                               <small className="webapp-muted">{readerFontWeight}</small>
                             </label>
