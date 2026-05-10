@@ -21,6 +21,9 @@ const STORE_BD      = 'base_dict';
 const STORE_BD_META = 'base_dict_meta';
 const PACK_VERSION_KEY = 'pack_version';
 const PACK_MAX_AGE_MS  = 7 * 24 * 60 * 60 * 1000; // re-download after 7 days
+// localStorage key mirrors the IndexedDB timestamp so pack freshness survives
+// sessions even when the browser clears IndexedDB between app launches (iOS).
+const LS_PACK_TS_KEY = 'bd_pack_ts';
 
 let _bdDbPromise = null;
 
@@ -209,31 +212,46 @@ export async function lookupOfflineBaseDictEntry(word) {
   }
 }
 
-async function _getPackVersion() {
-  try {
-    const db = await _openBD();
-    const tx = db.transaction(STORE_BD_META, 'readonly');
-    const rec = await _pr(tx.objectStore(STORE_BD_META).get(PACK_VERSION_KEY));
-    return rec ? rec.value : null;
-  } catch {
-    return null;
-  }
+function _lsGetPackTs() {
+  try { return localStorage.getItem(LS_PACK_TS_KEY) || null; } catch { return null; }
+}
+
+function _lsSetPackTs(isoTs) {
+  try { localStorage.setItem(LS_PACK_TS_KEY, isoTs); } catch { /* non-fatal */ }
 }
 
 async function _setPackVersion(isoTs) {
+  // Write to localStorage first — it survives session clearing on iOS WebView.
+  _lsSetPackTs(isoTs);
   try {
     const db = await _openBD();
     const tx = db.transaction(STORE_BD_META, 'readwrite');
     await _pr(tx.objectStore(STORE_BD_META).put({ key: PACK_VERSION_KEY, value: isoTs }));
   } catch {
-    // non-fatal
+    // non-fatal — localStorage copy is the reliable one
   }
 }
 
+function _isTs_fresh(isoTs) {
+  if (!isoTs) return false;
+  try { return (Date.now() - new Date(isoTs).getTime()) < PACK_MAX_AGE_MS; } catch { return false; }
+}
+
 export async function isOfflinePackFresh() {
-  const ts = await _getPackVersion();
-  if (!ts) return false;
-  return (Date.now() - new Date(ts).getTime()) < PACK_MAX_AGE_MS;
+  // Check localStorage first — survives even when IndexedDB is cleared by the OS.
+  if (_isTs_fresh(_lsGetPackTs())) return true;
+  // Fallback: read from IndexedDB (covers migrated sessions without localStorage entry).
+  try {
+    const db = await _openBD();
+    const tx = db.transaction(STORE_BD_META, 'readonly');
+    const rec = await _pr(tx.objectStore(STORE_BD_META).get(PACK_VERSION_KEY));
+    const ts = rec ? rec.value : null;
+    if (_isTs_fresh(ts)) {
+      _lsSetPackTs(ts); // backfill localStorage so next check is instant
+      return true;
+    }
+  } catch { /* ignore */ }
+  return false;
 }
 
 export async function downloadOfflinePack(lang = 'de', limit = 10000) {
