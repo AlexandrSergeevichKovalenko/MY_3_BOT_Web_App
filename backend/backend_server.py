@@ -2340,6 +2340,44 @@ def _ensure_backend_schema_before_request():
 
 # === Путь к собранному фронту (frontend/dist) ===
 FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
+_WEBAPP_ENTRY_CACHE_CONTROL = "no-store, no-cache, must-revalidate, max-age=0"
+_HASHED_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"
+_webapp_frontend_version_cache: dict[str, str] | None = None
+
+
+def _load_webapp_frontend_version() -> dict[str, str]:
+    global _webapp_frontend_version_cache
+    if _webapp_frontend_version_cache is not None:
+        return dict(_webapp_frontend_version_cache)
+    index_path = FRONTEND_DIST / "index.html"
+    try:
+        html_text = index_path.read_text(encoding="utf-8")
+    except Exception:
+        html_text = ""
+    script_match = re.search(r'<script[^>]+src="([^"]+)"', html_text, flags=re.IGNORECASE)
+    style_match = re.search(r'<link[^>]+href="([^"]+\.css)"', html_text, flags=re.IGNORECASE)
+    script_src = str(script_match.group(1) if script_match else "").strip()
+    style_href = str(style_match.group(1) if style_match else "").strip()
+    build_id_source = f"{script_src}|{style_href}".strip("|") or str(index_path.stat().st_mtime_ns if index_path.exists() else "")
+    build_id = hashlib.sha1(build_id_source.encode("utf-8")).hexdigest()[:12] if build_id_source else "unknown"
+    _webapp_frontend_version_cache = {
+        "build_id": build_id,
+        "script_src": script_src,
+        "style_href": style_href,
+    }
+    return dict(_webapp_frontend_version_cache)
+
+
+def _apply_webapp_entry_cache_headers(response):
+    response.headers["Cache-Control"] = _WEBAPP_ENTRY_CACHE_CONTROL
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+
+def _apply_hashed_asset_cache_headers(response):
+    response.headers["Cache-Control"] = _HASHED_ASSET_CACHE_CONTROL
+    return response
 
 _ACCESS_PUBLIC_WEBAPP_PATHS = {"/api/webapp/topics"}
 _ACCESS_PROTECTED_EXACT_PATHS = {"/api/message"}
@@ -2708,7 +2746,8 @@ def enforce_billing_guards():
 @app.route("/webapp")
 @app.route("/webapp/")
 def serve_webapp_entry():
-    return send_from_directory(FRONTEND_DIST, "index.html")
+    response = send_from_directory(FRONTEND_DIST, "index.html")
+    return _apply_webapp_entry_cache_headers(response)
 
 
 @app.route("/", defaults={"path": ""})
@@ -2717,10 +2756,30 @@ def serve_frontend(path):
     # если запросили конкретный файл (например assets/...), отдаём его
     file_path = FRONTEND_DIST / path
     if path != "" and file_path.exists():
-        return send_from_directory(FRONTEND_DIST, path)
+        response = send_from_directory(FRONTEND_DIST, path)
+        normalized_path = str(path or "").lstrip("/")
+        if normalized_path.startswith("assets/"):
+            return _apply_hashed_asset_cache_headers(response)
+        if normalized_path == "index.html":
+            return _apply_webapp_entry_cache_headers(response)
+        return response
 
     # иначе отдаём index.html (SPA-логика)
-    return send_from_directory(FRONTEND_DIST, "index.html")
+    response = send_from_directory(FRONTEND_DIST, "index.html")
+    return _apply_webapp_entry_cache_headers(response)
+
+
+@app.route("/api/webapp/version", methods=["GET"])
+def webapp_frontend_version():
+    payload = _load_webapp_frontend_version()
+    response = jsonify(
+        {
+            "ok": True,
+            **payload,
+            "cache_bust": str(os.getenv("CACHE_BUST") or "").strip(),
+        }
+    )
+    return _apply_webapp_entry_cache_headers(response)
 
 
 # === API для токена (как ждёт фронт: /api/token) ===

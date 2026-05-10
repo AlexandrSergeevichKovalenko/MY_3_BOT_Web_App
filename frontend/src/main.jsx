@@ -12,6 +12,68 @@ const isWebappPath = typeof window !== 'undefined'
 const hasTelegramUrlHints = params.has('tgWebAppData') || params.get('mode') === 'webapp' || isWebappPath;
 const shouldTreatAsTelegram = appMode === 'telegram' || hasTelegramUrlHints;
 
+function getCurrentWebappAssetPath() {
+  if (typeof document === 'undefined') return '';
+  const moduleScript = document.querySelector('script[type="module"][src]');
+  if (!moduleScript) return '';
+  const src = String(moduleScript.getAttribute('src') || moduleScript.src || '').trim();
+  if (!src) return '';
+  try {
+    return new URL(src, window.location.origin).pathname;
+  } catch (_error) {
+    return src;
+  }
+}
+
+function buildTelegramReloadUrl(buildId = '') {
+  const url = new URL(window.location.href);
+  if (buildId) {
+    url.searchParams.set('_wb', buildId);
+  } else {
+    url.searchParams.set('_wb', String(Date.now()));
+  }
+  return url.toString();
+}
+
+async function ensureFreshTelegramBundle() {
+  if (!shouldTreatAsTelegram || typeof window === 'undefined' || typeof fetch !== 'function') {
+    return true;
+  }
+  try {
+    const response = await fetch('/api/webapp/version', {
+      method: 'GET',
+      cache: 'no-store',
+      headers: { 'Cache-Control': 'no-cache' },
+    });
+    if (!response.ok) return true;
+    const data = await response.json();
+    const serverScriptSrc = String(data?.script_src || '').trim();
+    const serverBuildId = String(data?.build_id || '').trim();
+    const currentAssetPath = getCurrentWebappAssetPath();
+    const serverAssetPath = serverScriptSrc
+      ? new URL(serverScriptSrc, window.location.origin).pathname
+      : '';
+    if (!currentAssetPath || !serverAssetPath || currentAssetPath === serverAssetPath) {
+      return true;
+    }
+    const reloadMarkerKey = serverBuildId ? `telegram-webapp-reload:${serverBuildId}` : '';
+    if (reloadMarkerKey) {
+      try {
+        if (window.sessionStorage.getItem(reloadMarkerKey) === '1') {
+          return true;
+        }
+        window.sessionStorage.setItem(reloadMarkerKey, '1');
+      } catch (_storageError) {
+        // ignore storage failures
+      }
+    }
+    window.location.replace(buildTelegramReloadUrl(serverBuildId));
+    return false;
+  } catch (_error) {
+    return true;
+  }
+}
+
 if (shouldTreatAsTelegram) {
   if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
     navigator.serviceWorker.getRegistrations()
@@ -30,16 +92,17 @@ if (shouldTreatAsTelegram) {
     });
 }
 
-// Полная последовательность команд: 
-// "Эй, браузер, дай мне твой document. 
-// В этом document найди элемент с id 'root'. 
-// Теперь, ReactDOM, возьми этот элемент и сделай его своим 'корнем'. 
-// А теперь, 'корень', нарисуй внутри себя компонент App"
-ReactDOM.createRoot(document.getElementById('root')).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-)
+async function bootstrapApp() {
+  const canRender = await ensureFreshTelegramBundle();
+  if (!canRender) return;
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>,
+  );
+}
+
+void bootstrapApp();
 
 // 2. Детально о "глобальном объекте document"
 // Теория: Когда ваш браузер получает от сервера текст файла index.html, 
