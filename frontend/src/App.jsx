@@ -19226,6 +19226,22 @@ function AppInner() {
     }
   }, [initData, normalizeNetworkErrorMessage, readApiError, readerIncludeArchived]);
 
+  const upsertReaderLibraryDocument = useCallback((nextDoc) => {
+    if (!nextDoc || typeof nextDoc !== 'object') return;
+    const nextId = Number(nextDoc?.id || 0);
+    if (!nextId) return;
+    setReaderDocuments((prev) => {
+      const items = Array.isArray(prev) ? prev : [];
+      const existingIndex = items.findIndex((item) => Number(item?.id || 0) === nextId);
+      if (existingIndex >= 0) {
+        const updated = [...items];
+        updated[existingIndex] = { ...updated[existingIndex], ...nextDoc };
+        return updated;
+      }
+      return [{ ...nextDoc }, ...items];
+    });
+  }, []);
+
   async function pollReaderDocumentStatus(documentId, { openWhenReady = false } = {}) {
     if (!initData || !documentId) return null;
     const pollToken = readerStatusPollTokenRef.current + 1;
@@ -19417,8 +19433,8 @@ function AppInner() {
           ? String(data?.error || doc?.processing_error || '').trim() || tr('Не удалось обработать книгу.', 'Dokument konnte nicht verarbeitet werden.')
           : tr('Книга ещё обрабатывается. Откроем автоматически, когда всё будет готово.', 'Das Dokument wird noch verarbeitet. Es wird automatisch geoeffnet, sobald es fertig ist.');
         setReaderLibraryError(pendingMessage);
-        if (processingStatus !== 'failed') {
-          await pollReaderDocumentStatus(Number(doc?.id || documentId), { openWhenReady: true });
+      if (processingStatus !== 'failed') {
+          void pollReaderDocumentStatus(Number(doc?.id || documentId), { openWhenReady: true });
         }
         return;
       }
@@ -19723,6 +19739,14 @@ function AppInner() {
             throw new Error(tr('Сервер не вернул параметры прямой загрузки.', 'Der Server hat keine Direct-Upload-Parameter zurückgegeben.'));
           }
           usedDirectUpload = true;
+          upsertReaderLibraryDocument({
+            ...directDoc,
+            id: directDocId,
+            title: String(initDataPayload?.title || directDoc?.title || readerSelectedFile.name || rawInput.slice(0, 80)),
+            source_type: String(initDataPayload?.source_type || directDoc?.source_type || 'file'),
+            processing_status: String(directDoc?.processing_status || initDataPayload?.status || 'pending'),
+            is_archived: Boolean(directDoc?.is_archived),
+          });
           setReaderDocumentId(directDocId);
           setReaderFontSize(READER_DEFAULT_FONT_SIZE);
           setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
@@ -19765,6 +19789,7 @@ function AppInner() {
             throw await buildReaderApiError(completeResponse, 'Ошибка постановки книги в обработку', 'Fehler beim Start der Dokumentverarbeitung');
           }
           data = await completeResponse.json();
+          upsertReaderLibraryDocument(data?.document || {});
         } catch (directUploadError) {
           if (usedDirectUpload) {
             if (directDocId) {
@@ -19817,6 +19842,7 @@ function AppInner() {
       const docId = Number(doc?.id || 0) || null;
       const processingStatus = String(data?.status || doc?.processing_status || 'ready').trim().toLowerCase() || 'ready';
       if (processingStatus !== 'ready') {
+        upsertReaderLibraryDocument(doc);
         setReaderDocumentId(docId);
         setReaderFontSize(READER_DEFAULT_FONT_SIZE);
         setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
@@ -19848,7 +19874,7 @@ function AppInner() {
         ));
         await loadReaderLibrary(true);
         if (docId) {
-          await pollReaderDocumentStatus(docId, { openWhenReady: true });
+          void pollReaderDocumentStatus(docId, { openWhenReady: true });
         }
         return;
       }
