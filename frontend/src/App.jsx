@@ -19754,19 +19754,104 @@ function AppInner() {
       let data;
       if (readerSelectedFile) {
         const selectedFile = readerSelectedFile;
-        const formData = new FormData();
-        formData.append('initData', initData);
-        formData.append('url', '');
-        formData.append('text', '');
-        formData.append('file', selectedFile, selectedFile.name || 'reader-upload');
-        const uploadResponse = await fetch('/api/webapp/reader/ingest', {
-          method: 'POST',
-          body: formData,
-        });
-        if (!uploadResponse.ok) {
-          throw await buildReaderApiError(uploadResponse, 'Ошибка загрузки читалки', 'Fehler beim Laden des Leser-Modus');
+        let directDocId = null;
+        const cleanupDirectUploadPlaceholder = async () => {
+          if (!directDocId) return;
+          try {
+            await fetch('/api/webapp/reader/library/delete', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                initData,
+                document_id: directDocId,
+              }),
+            });
+          } catch (_cleanupError) {
+            // ignore best-effort cleanup
+          }
+          setReaderDocuments((prev) => prev.filter((item) => Number(item?.id || 0) !== Number(directDocId)));
+        };
+
+        try {
+          const initResponse = await fetch('/api/webapp/reader/upload-init', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              initData,
+              file_name: selectedFile.name,
+              file_mime: selectedFile.type,
+            }),
+          });
+          if (!initResponse.ok) {
+            throw await buildReaderApiError(initResponse, 'Ошибка подготовки загрузки', 'Fehler bei der Upload-Vorbereitung');
+          }
+          const initDataPayload = await initResponse.json();
+          const upload = initDataPayload?.upload || {};
+          const directDoc = initDataPayload?.document || {};
+          directDocId = Number(directDoc?.id || 0) || null;
+          if (!upload?.url || !directDocId || !upload?.object_key) {
+            throw new Error(tr('Сервер не вернул параметры прямой загрузки.', 'Der Server hat keine Direct-Upload-Parameter zurückgegeben.'));
+          }
+          upsertReaderLibraryDocument({
+            ...directDoc,
+            id: directDocId,
+            title: String(initDataPayload?.title || directDoc?.title || selectedFile.name || rawInput.slice(0, 80)),
+            source_type: String(initDataPayload?.source_type || directDoc?.source_type || 'file'),
+            processing_status: String(directDoc?.processing_status || initDataPayload?.status || 'pending'),
+            is_archived: Boolean(directDoc?.is_archived),
+          });
+          setReaderDocumentId(directDocId);
+          setReaderFontSize(READER_DEFAULT_FONT_SIZE);
+          setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
+          setReaderTitle(String(initDataPayload?.title || directDoc?.title || selectedFile.name || rawInput.slice(0, 80)));
+          setReaderSourceType(String(initDataPayload?.source_type || directDoc?.source_type || 'file'));
+          setReaderSourceUrl('');
+          setReaderContent('');
+          setReaderPages([]);
+          setReaderDynamicPages([]);
+          setReaderLayoutMode('custom');
+          setReaderCurrentPage(1);
+          setReaderAddOpen(false);
+          setReaderSelectedFile(null);
+          setReaderLibraryError('');
+          await loadReaderLibrary(true, { resetError: false, showError: false });
+
+          const directUploadResponse = await fetch(String(upload.url), {
+            method: String(upload.method || 'PUT').toUpperCase(),
+            headers: upload.headers && typeof upload.headers === 'object' ? upload.headers : undefined,
+            body: selectedFile,
+          });
+          if (!directUploadResponse.ok) {
+            throw new Error(tr('Прямая загрузка файла в storage не удалась.', 'Direkter Upload in den Storage ist fehlgeschlagen.'));
+          }
+
+          let completeResponse = null;
+          for (let attempt = 0; attempt < 5; attempt += 1) {
+            completeResponse = await fetch('/api/webapp/reader/ingest/complete', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                initData,
+                document_id: directDocId,
+                object_key: String(upload.object_key || ''),
+                file_name: selectedFile.name,
+                file_mime: selectedFile.type,
+              }),
+            });
+            if (completeResponse.ok || completeResponse.status !== 409) {
+              break;
+            }
+            await new Promise((resolve) => window.setTimeout(resolve, 700));
+          }
+          if (!completeResponse.ok) {
+            throw await buildReaderApiError(completeResponse, 'Ошибка постановки книги в обработку', 'Fehler beim Start der Dokumentverarbeitung');
+          }
+          data = await completeResponse.json();
+          upsertReaderLibraryDocument(data?.document || {});
+        } catch (error) {
+          await cleanupDirectUploadPlaceholder();
+          throw error;
         }
-        data = await uploadResponse.json();
       } else {
         const response = await fetch('/api/webapp/reader/ingest', {
           method: 'POST',
