@@ -36633,7 +36633,13 @@ def complete_reader_content_ingest():
         return jsonify({"error": "Книга не найдена"}), 404
 
     try:
-        if not r2_exists(object_key):
+        object_available = False
+        for _attempt in range(8):
+            if r2_exists(object_key):
+                object_available = True
+                break
+            time.sleep(0.4)
+        if not object_available:
             return jsonify({"error": "Загруженный файл ещё недоступен"}), 409
         _enqueue_reader_library_ingest_job(
             user_id=int(user_id),
