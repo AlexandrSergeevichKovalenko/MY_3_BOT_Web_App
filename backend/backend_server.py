@@ -116,6 +116,7 @@ from backend.job_queue import (
     clear_translation_session_card,
     enqueue_projection_materialization_job,
     enqueue_finish_daily_summary_job,
+    enqueue_reader_library_ingest_job,
     enqueue_tts_generation_job,
     enqueue_translation_check_completion_job,
     enqueue_translation_check_job,
@@ -482,7 +483,10 @@ from backend.database import (
     create_reader_library_document_placeholder,
     list_reader_library_documents,
     get_reader_library_document,
+    get_reader_library_document_ingest_state,
     set_reader_library_document_processing_status,
+    set_reader_library_document_ingest_payload,
+    claim_reader_library_document_processing,
     finalize_reader_library_document_processing,
     update_reader_library_state,
     rename_reader_library_document,
@@ -672,6 +676,14 @@ _READER_INGEST_MAX_WORKERS = max(
 _READER_INGEST_POLL_DELAY_MS = max(
     1000,
     int((os.getenv("READER_INGEST_POLL_DELAY_MS") or "2200").strip() or "2200"),
+)
+_READER_INGEST_PENDING_STALE_SEC = max(
+    30,
+    int((os.getenv("READER_INGEST_PENDING_STALE_SEC") or "180").strip() or "180"),
+)
+_READER_INGEST_PROCESSING_STALE_SEC = max(
+    60,
+    int((os.getenv("READER_INGEST_PROCESSING_STALE_SEC") or "900").strip() or "900"),
 )
 _READER_INGEST_EXECUTOR = ThreadPoolExecutor(
     max_workers=_READER_INGEST_MAX_WORKERS,
@@ -12860,6 +12872,206 @@ def _reader_upload_object_key_is_valid_for_user(*, object_key: str, user_id: int
     return normalized_key.startswith(expected_prefix) and owned_fragment in normalized_key
 
 
+def _normalize_reader_ingest_job_payload(**payload) -> dict[str, Any]:
+    return {
+        "user_id": int(payload.get("user_id") or 0),
+        "document_id": int(payload.get("document_id") or 0),
+        "source_lang": str(payload.get("source_lang") or "ru").strip().lower() or "ru",
+        "target_lang": str(payload.get("target_lang") or "de").strip().lower() or "de",
+        "input_text": str(payload.get("input_text") or ""),
+        "input_url": str(payload.get("input_url") or "").strip(),
+        "file_name": str(payload.get("file_name") or "").strip(),
+        "file_mime": str(payload.get("file_mime") or "").strip().lower(),
+        "file_content_b64": str(payload.get("file_content_b64") or ""),
+        "upload_tmp_path": str(payload.get("upload_tmp_path") or "").strip(),
+        "upload_r2_object_key": str(payload.get("upload_r2_object_key") or "").strip(),
+    }
+
+
+def _build_reader_ingest_payload_record(job_payload: dict | None) -> dict[str, Any]:
+    safe_payload = _normalize_reader_ingest_job_payload(**(job_payload or {}))
+    return {
+        "input_text": safe_payload["input_text"],
+        "input_url": safe_payload["input_url"],
+        "file_name": safe_payload["file_name"],
+        "file_mime": safe_payload["file_mime"],
+        "upload_r2_object_key": safe_payload["upload_r2_object_key"],
+    }
+
+
+def _store_reader_upload_bytes(
+    *,
+    user_id: int,
+    document_id: int,
+    file_name: str,
+    file_mime: str,
+    raw_bytes: bytes,
+) -> str:
+    payload = bytes(raw_bytes or b"")
+    if not payload:
+        raise ValueError("Загруженный файл пустой")
+    object_key = _build_reader_upload_object_key(
+        user_id=int(user_id),
+        document_id=int(document_id),
+        file_name=file_name,
+    )
+    r2_put_bytes(
+        object_key,
+        payload,
+        content_type=str(file_mime or "application/octet-stream").strip() or "application/octet-stream",
+        cache_control="private, max-age=86400",
+    )
+    return object_key
+
+
+def _parse_reader_iso_datetime(value: str | None) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _reader_processing_is_stale(document: dict | None) -> bool:
+    safe_document = dict(document or {})
+    status = str(safe_document.get("processing_status") or "ready").strip().lower() or "ready"
+    if status not in {"pending", "processing"}:
+        return False
+    now_utc = datetime.now(timezone.utc)
+    if status == "pending":
+        reference_dt = (
+            _parse_reader_iso_datetime(safe_document.get("updated_at"))
+            or _parse_reader_iso_datetime(safe_document.get("created_at"))
+        )
+        threshold_sec = _READER_INGEST_PENDING_STALE_SEC
+    else:
+        reference_dt = (
+            _parse_reader_iso_datetime(safe_document.get("processing_started_at"))
+            or _parse_reader_iso_datetime(safe_document.get("updated_at"))
+            or _parse_reader_iso_datetime(safe_document.get("created_at"))
+        )
+        threshold_sec = _READER_INGEST_PROCESSING_STALE_SEC
+    if not reference_dt:
+        return False
+    if reference_dt.tzinfo is None:
+        reference_dt = reference_dt.replace(tzinfo=timezone.utc)
+    age_seconds = max(0.0, (now_utc - reference_dt.astimezone(timezone.utc)).total_seconds())
+    return age_seconds >= float(threshold_sec)
+
+
+def _build_reader_recovery_job_payload(
+    *,
+    user_id: int,
+    document_id: int,
+    source_lang: str,
+    target_lang: str,
+    document: dict | None,
+    ingest_state: dict | None,
+) -> dict[str, Any] | None:
+    safe_state = dict(ingest_state or {})
+    payload = safe_state.get("ingest_payload")
+    if isinstance(payload, dict):
+        payload = dict(payload)
+    else:
+        payload = {}
+    if not payload:
+        source_url = str((safe_state.get("source_url") or (document or {}).get("source_url") or "")).strip()
+        source_type = str((safe_state.get("source_type") or (document or {}).get("source_type") or "")).strip().lower()
+        if source_type == "url" and source_url:
+            payload = {
+                "input_text": "",
+                "input_url": source_url,
+                "file_name": "",
+                "file_mime": "",
+                "upload_r2_object_key": "",
+            }
+    normalized_payload = _normalize_reader_ingest_job_payload(
+        user_id=int(user_id),
+        document_id=int(document_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        input_text=payload.get("input_text") or "",
+        input_url=payload.get("input_url") or "",
+        file_name=payload.get("file_name") or safe_state.get("title") or "",
+        file_mime=payload.get("file_mime") or "",
+        upload_r2_object_key=payload.get("upload_r2_object_key") or "",
+    )
+    has_source = bool(
+        normalized_payload.get("input_text")
+        or normalized_payload.get("input_url")
+        or normalized_payload.get("upload_r2_object_key")
+    )
+    return normalized_payload if has_source else None
+
+
+def _resume_reader_library_document_processing_if_stale(
+    *,
+    user_id: int,
+    document_id: int,
+    source_lang: str,
+    target_lang: str,
+    document: dict | None,
+) -> dict | None:
+    if not _reader_processing_is_stale(document):
+        return document
+    ingest_state = get_reader_library_document_ingest_state(
+        user_id=int(user_id),
+        document_id=int(document_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    payload = _build_reader_recovery_job_payload(
+        user_id=int(user_id),
+        document_id=int(document_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        document=document,
+        ingest_state=ingest_state,
+    )
+    if not payload:
+        set_reader_library_document_processing_status(
+            user_id=int(user_id),
+            document_id=int(document_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            status="failed",
+            error="processing_stalled_missing_payload",
+        )
+        return get_reader_library_document(
+            user_id=int(user_id),
+            document_id=int(document_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            include_content=False,
+        )
+    set_reader_library_document_ingest_payload(
+        user_id=int(user_id),
+        document_id=int(document_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        ingest_payload=_build_reader_ingest_payload_record(payload),
+    )
+    set_reader_library_document_processing_status(
+        user_id=int(user_id),
+        document_id=int(document_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        status="pending",
+    )
+    enqueue_result = _enqueue_reader_library_ingest_job(**payload)
+    if not enqueue_result.get("queued"):
+        raise RuntimeError(str(enqueue_result.get("reason") or "reader_requeue_failed"))
+    return get_reader_library_document(
+        user_id=int(user_id),
+        document_id=int(document_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        include_content=False,
+    )
+
+
 def _resolve_reader_ingest_content(
     *,
     input_text: str,
@@ -12949,13 +13161,28 @@ def _process_reader_library_ingest_job(
     upload_tmp_path: str = "",
     upload_r2_object_key: str = "",
 ) -> None:
-    set_reader_library_document_processing_status(
+    claimed = claim_reader_library_document_processing(
         user_id=int(user_id),
         document_id=int(document_id),
         source_lang=source_lang,
         target_lang=target_lang,
-        status="processing",
+        stale_after_seconds=_READER_INGEST_PROCESSING_STALE_SEC,
+        include_failed=True,
     )
+    if not claimed:
+        logging.info(
+            "reader ingest skipped claim_miss document_id=%s user_id=%s source_lang=%s target_lang=%s",
+            document_id,
+            user_id,
+            source_lang,
+            target_lang,
+        )
+        if upload_tmp_path:
+            try:
+                os.remove(upload_tmp_path)
+            except Exception:
+                pass
+        return
     try:
         normalized_text, content_pages, source_type, resolved_url = _resolve_reader_ingest_content(
             input_text=input_text,
@@ -12986,6 +13213,16 @@ def _process_reader_library_ingest_job(
         )
         if not finalized:
             raise RuntimeError("Не удалось сохранить обработанный документ")
+        if upload_r2_object_key:
+            try:
+                r2_delete_object(upload_r2_object_key)
+            except Exception:
+                logging.warning(
+                    "reader ingest cleanup failed object_key=%s document_id=%s",
+                    upload_r2_object_key,
+                    document_id,
+                    exc_info=True,
+                )
     except Exception as exc:
         logging.exception("reader ingest background processing failed document_id=%s user_id=%s", document_id, user_id)
         set_reader_library_document_processing_status(
@@ -13002,15 +13239,16 @@ def _process_reader_library_ingest_job(
                 os.remove(upload_tmp_path)
             except Exception:
                 pass
-        if upload_r2_object_key:
-            try:
-                r2_delete_object(upload_r2_object_key)
-            except Exception:
-                pass
 
 
-def _enqueue_reader_library_ingest_job(**payload) -> None:
-    _READER_INGEST_EXECUTOR.submit(_process_reader_library_ingest_job, **payload)
+def _enqueue_reader_library_ingest_job(**payload) -> dict[str, Any]:
+    normalized_payload = _normalize_reader_ingest_job_payload(**payload)
+    if can_enqueue_background_jobs():
+        enqueue_result = enqueue_reader_library_ingest_job(normalized_payload)
+        if enqueue_result.get("queued"):
+            return enqueue_result
+    _READER_INGEST_EXECUTOR.submit(_process_reader_library_ingest_job, **normalized_payload)
+    return {"queued": True, "reason": "inline_executor"}
 
 
 def _resolve_offline_espeak_voice(lang_hint: str | None, text: str) -> str:
@@ -28970,7 +29208,9 @@ def start_today_translation_item(item_id: int):
         return jsonify({"error": error}), status
 
     payload = request.get_json(silent=True) or {}
-    requested_level = str(payload.get("level") or "").strip().lower()
+    requested_level_raw = str(payload.get("level") or "").strip().lower()
+    valid_translation_levels = {"a1", "a2", "b1", "b2", "c1", "c2"}
+    requested_level = requested_level_raw if requested_level_raw in valid_translation_levels else ""
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     item = get_daily_plan_item(user_id=int(user_id), item_id=int(item_id))
     if not item:
@@ -28979,18 +29219,12 @@ def start_today_translation_item(item_id: int):
         return jsonify({"error": "Эта задача не является переводом"}), 400
 
     task_payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
-    level = requested_level or str(task_payload.get("level") or "c1").strip().lower() or "c1"
     skill_id = str(task_payload.get("skill_id") or "").strip()
     skill_title = str(task_payload.get("skill_title") or "").strip()
     sub_category = str(task_payload.get("sub_category") or "").strip()
     main_category = str(task_payload.get("main_category") or "").strip()
     recommended_topic_label = str(task_payload.get("recommended_topic_label") or "").strip()
     recommended_custom_focus = str(task_payload.get("recommended_custom_focus") or "").strip()
-    task_examples = []
-    for key in ("recommended_reason_examples", "examples"):
-        raw_items = task_payload.get(key)
-        if isinstance(raw_items, list):
-            task_examples.extend(str(item or "").strip() for item in raw_items if str(item or "").strip())
     topic_label = sub_category or skill_title or main_category or "Weak skill practice"
     if skill_title and sub_category:
         topic_label = f"{skill_title}: {sub_category}"
@@ -29000,45 +29234,20 @@ def start_today_translation_item(item_id: int):
         recommended_topic_label or topic_label,
         recommended_custom_focus,
     )
-    level_rank = {"a2": 1, "b1": 2, "b2": 3, "c1": 4, "c2": 5}
-
-    def _max_today_level(*levels: object) -> str:
-        normalized_levels = [
-            _normalize_translation_level(str(level or "").strip().lower())
-            for level in levels
-            if str(level or "").strip()
-        ]
-        if not normalized_levels:
-            return "b1"
-        return max(normalized_levels, key=lambda item: level_rank.get(item, 0))
-
-    def _infer_today_level_floor(examples: list[str]) -> str | None:
-        observed_levels: list[str] = []
-        seen_sentences: set[str] = set()
-        for raw_sentence in list(examples or []):
-            sentence = " ".join(str(raw_sentence or "").strip().split())
-            if not sentence:
-                continue
-            sentence_key = sentence.lower()
-            if sentence_key in seen_sentences:
-                continue
-            seen_sentences.add(sentence_key)
-            matched_level = None
-            for level_key in ("c2", "c1", "b2", "b1", "a2"):
-                if _translation_sentence_fits_level(sentence, level_key):
-                    matched_level = level_key
-                    break
-            if matched_level:
-                observed_levels.append(matched_level)
-        if not observed_levels:
+    def _normalize_optional_today_level(raw_level: object) -> str | None:
+        normalized = str(raw_level or "").strip().lower()
+        if not normalized:
             return None
-        return max(observed_levels, key=lambda item: level_rank.get(item, 0))
+        if normalized not in valid_translation_levels:
+            return None
+        return normalized
 
-    level = _max_today_level(
-        requested_level or None,
-        task_payload.get("recommended_level"),
-        task_payload.get("level"),
-        _infer_today_level_floor(task_examples),
+    # Explicit user choice must win over inferred/recommended difficulty.
+    # Recommendations remain only as the default when the user did not pick a level.
+    level = requested_level or (
+        _normalize_optional_today_level(task_payload.get("recommended_level"))
+        or _normalize_optional_today_level(task_payload.get("level"))
+        or "b1"
     )
     tested_skill_profile_seed = (
         {
@@ -36362,16 +36571,8 @@ def ingest_reader_content():
 
     if is_async_candidate:
         document = None
+        upload_object_key = ""
         try:
-            if uploaded_file is not None:
-                file_suffix = Path(file_name).suffix if file_name else ""
-                with tempfile.NamedTemporaryFile(
-                    suffix=file_suffix or "",
-                    prefix="reader-upload-",
-                    delete=False,
-                ) as tmp:
-                    uploaded_file.save(tmp)
-                    upload_tmp_path = tmp.name
             document = create_reader_library_document_placeholder(
                 user_id=int(user_id),
                 source_lang=source_lang,
@@ -36380,7 +36581,27 @@ def ingest_reader_content():
                 source_type=guessed_source_type,
                 source_url=input_url or None,
             )
-            _enqueue_reader_library_ingest_job(
+            if uploaded_file is not None:
+                upload_object_key = _store_reader_upload_bytes(
+                    user_id=int(user_id),
+                    document_id=int(document["id"]),
+                    file_name=file_name,
+                    file_mime=file_mime,
+                    raw_bytes=uploaded_file.read(),
+                )
+            elif file_content_b64:
+                try:
+                    decoded_bytes = base64.b64decode(file_content_b64, validate=True)
+                except Exception as exc:
+                    raise ValueError(f"Некорректный файл: {exc}") from exc
+                upload_object_key = _store_reader_upload_bytes(
+                    user_id=int(user_id),
+                    document_id=int(document["id"]),
+                    file_name=file_name or "reader-upload.bin",
+                    file_mime=file_mime,
+                    raw_bytes=decoded_bytes,
+                )
+            ingest_job_payload = _normalize_reader_ingest_job_payload(
                 user_id=int(user_id),
                 document_id=int(document["id"]),
                 source_lang=source_lang,
@@ -36389,9 +36610,18 @@ def ingest_reader_content():
                 input_url=input_url,
                 file_name=file_name,
                 file_mime=file_mime,
-                file_content_b64=file_content_b64,
-                upload_tmp_path=upload_tmp_path,
+                upload_r2_object_key=upload_object_key,
             )
+            set_reader_library_document_ingest_payload(
+                user_id=int(user_id),
+                document_id=int(document["id"]),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                ingest_payload=_build_reader_ingest_payload_record(ingest_job_payload),
+            )
+            enqueue_result = _enqueue_reader_library_ingest_job(**ingest_job_payload)
+            if not enqueue_result.get("queued"):
+                raise RuntimeError(str(enqueue_result.get("reason") or "reader_enqueue_failed"))
         except Exception as exc:
             logging.exception("reader ingest enqueue failed user_id=%s", user_id)
             if isinstance(document, dict) and document.get("id"):
@@ -36406,9 +36636,9 @@ def ingest_reader_content():
                     )
                 except Exception:
                     pass
-            if upload_tmp_path:
+            if upload_object_key:
                 try:
-                    os.remove(upload_tmp_path)
+                    r2_delete_object(upload_object_key)
                 except Exception:
                     pass
             return jsonify({"error": f"Не удалось поставить книгу в обработку: {exc}"}), 500
@@ -36641,7 +36871,7 @@ def complete_reader_content_ingest():
             time.sleep(0.4)
         if not object_available:
             return jsonify({"error": "Загруженный файл ещё недоступен"}), 409
-        _enqueue_reader_library_ingest_job(
+        ingest_job_payload = _normalize_reader_ingest_job_payload(
             user_id=int(user_id),
             document_id=int(document_id),
             source_lang=source_lang,
@@ -36650,9 +36880,25 @@ def complete_reader_content_ingest():
             input_url="",
             file_name=file_name or str(document.get("title") or ""),
             file_mime=file_mime,
-            file_content_b64="",
             upload_r2_object_key=object_key,
         )
+        set_reader_library_document_ingest_payload(
+            user_id=int(user_id),
+            document_id=int(document_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            ingest_payload=_build_reader_ingest_payload_record(ingest_job_payload),
+        )
+        set_reader_library_document_processing_status(
+            user_id=int(user_id),
+            document_id=int(document_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            status="pending",
+        )
+        enqueue_result = _enqueue_reader_library_ingest_job(**ingest_job_payload)
+        if not enqueue_result.get("queued"):
+            raise RuntimeError(str(enqueue_result.get("reason") or "reader_enqueue_failed"))
     except Exception as exc:
         logging.exception("reader ingest complete enqueue failed user_id=%s document_id=%s", user_id, document_id)
         try:
@@ -36868,6 +37114,20 @@ def reader_library_status():
         return jsonify({"error": f"Ошибка проверки статуса книги: {exc}"}), 500
     if not document:
         return jsonify({"error": "Книга не найдена"}), 404
+    try:
+        document = _resume_reader_library_document_processing_if_stale(
+            user_id=int(user_id),
+            document_id=int(document_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            document=document,
+        ) or document
+    except Exception:
+        logging.exception(
+            "reader status stale recovery failed user_id=%s document_id=%s",
+            user_id,
+            document_id,
+        )
     response_payload = _build_reader_processing_payload(document)
     response_payload["language_pair"] = _build_language_pair_payload(source_lang, target_lang)
     return jsonify(response_payload)
@@ -36986,6 +37246,20 @@ def reader_library_open():
                 **summarize_db_acquire_events(db_acquire_events),
             )
             return jsonify({"error": "Книга не найдена"}), 404
+        try:
+            doc = _resume_reader_library_document_processing_if_stale(
+                user_id=int(user_id),
+                document_id=int(document_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                document=doc,
+            ) or doc
+        except Exception:
+            logging.exception(
+                "reader open stale recovery failed user_id=%s document_id=%s",
+                user_id,
+                document_id,
+            )
         processing_status = str(doc.get("processing_status") or "ready").strip().lower() or "ready"
         if processing_status != "ready":
             response_payload = _build_reader_processing_payload(doc)
@@ -37030,12 +37304,16 @@ def reader_library_open():
                     }
                 ), 403
         detect_started_perf = time.perf_counter()
-        detected_lang = _detect_reader_language(str(doc.get("content_text") or ""), fallback=target_lang)
+        content_text = str(doc.get("content_text") or "")
+        content_pages = doc.get("content_pages") if isinstance(doc.get("content_pages"), list) else []
+        detected_lang = _detect_reader_language(content_text, fallback=target_lang)
         detect_duration_ms = _elapsed_ms_since(detect_started_perf)
+        document_payload = dict(doc)
+        document_payload.pop("content_text", None)
         response_payload = {
             "ok": True,
-            "document": doc,
-            "text": str(doc.get("content_text") or ""),
+            "document": document_payload,
+            "text": "" if content_pages else content_text,
             "title": str(doc.get("title") or "Untitled"),
             "source_type": str(doc.get("source_type") or "text"),
             "source_url": doc.get("source_url"),
@@ -37051,7 +37329,7 @@ def reader_library_open():
             user_id=int(user_id),
             document_id=int(document_id),
             effective_mode=effective_mode,
-            content_chars=len(str(doc.get("content_text") or "")),
+            content_chars=len(content_text),
             language_pair_lookup_duration_ms=language_pair_duration_ms,
             document_lookup_duration_ms=doc_duration_ms,
             entitlement_duration_ms=entitlement_duration_ms,
@@ -37199,6 +37477,16 @@ def reader_library_delete():
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    ingest_state = None
+    try:
+        ingest_state = get_reader_library_document_ingest_state(
+            user_id=int(user_id),
+            document_id=int(document_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+    except Exception:
+        ingest_state = None
     try:
         deleted = delete_reader_library_document(
             user_id=int(user_id),
@@ -37210,6 +37498,18 @@ def reader_library_delete():
         return jsonify({"error": f"Ошибка удаления книги: {exc}"}), 500
     if not deleted:
         return jsonify({"error": "Книга не найдена"}), 404
+    object_key = str(((ingest_state or {}).get("ingest_payload") or {}).get("upload_r2_object_key") or "").strip()
+    if object_key:
+        try:
+            r2_delete_object(object_key)
+        except Exception:
+            logging.warning(
+                "reader delete cleanup failed object_key=%s document_id=%s user_id=%s",
+                object_key,
+                document_id,
+                user_id,
+                exc_info=True,
+            )
     return jsonify({"ok": True, "deleted": True})
 
 

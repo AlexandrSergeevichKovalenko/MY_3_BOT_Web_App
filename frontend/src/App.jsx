@@ -29,8 +29,7 @@ import {
 import {
   lookupOfflineBaseDictEntry,
   saveBaseDictEntryFromServerResult,
-  isOfflinePackFresh,
-  downloadOfflinePack,
+  ensureOfflinePack,
 } from './offline/baseDictCache';
 
 import './styles/topbar-redesign.css';
@@ -5135,6 +5134,7 @@ function AppInner() {
   const homeMoreRef = useRef(null);
   const readerRef = useRef(null);
   const readerArticleRef = useRef(null);
+  const readerPageInnerRef = useRef(null);
   const readerMeasureInnerRef = useRef(null);
   const flashcardsRef = useRef(null);
   const translationsRef = useRef(null);
@@ -14984,12 +14984,8 @@ function AppInner() {
 
   useEffect(() => {
     if (!isWebAppMode || !initData || !startupPhase3Ready) return;
-    // Download base dictionary offline pack in the background when stale
-    isOfflinePackFresh().then((fresh) => {
-      if (!fresh) {
-        void downloadOfflinePack('de', 10000);
-      }
-    });
+    // Warm the offline dictionary in the background, but do not start duplicate downloads.
+    void ensureOfflinePack('de', 30000);
   }, [isWebAppMode, initData, startupPhase3Ready]);
 
   useEffect(() => {
@@ -15285,6 +15281,24 @@ function AppInner() {
     readerPaginationLayoutTick,
     readerProgressPercent,
     readerUsesCustomLayout,
+  ]);
+
+  useLayoutEffect(() => {
+    if (readerLayoutMode !== 'original' || !readerCanUseOriginalLayout) return;
+    const visibleNode = readerPageInnerRef.current;
+    if (!visibleNode) return;
+    if (visibleNode.scrollHeight <= visibleNode.clientHeight + 1) return;
+    // Source PDF/EPUB chunks are not guaranteed to fit the screen sheet as-is.
+    // Fall back to adaptive pagination instead of clipping and losing text.
+    setReaderLayoutMode('custom');
+  }, [
+    readerLayoutMode,
+    readerCanUseOriginalLayout,
+    readerCurrentPage,
+    readerFontSize,
+    readerFontWeight,
+    readerImmersive,
+    readerTopbarCollapsed,
   ]);
 
   useEffect(() => {
@@ -19204,11 +19218,31 @@ function AppInner() {
     return bits.join(' • ');
   };
 
-  const loadReaderLibrary = useCallback(async (includeArchivedOverride = readerIncludeArchived) => {
+  const buildReaderTextFromPages = useCallback((pages) => {
+    if (!Array.isArray(pages) || pages.length === 0) return '';
+    return pages
+      .map((page) => {
+        if (typeof page === 'string') return page;
+        if (page && typeof page === 'object') {
+          return String(page.text || page.content || '').trim();
+        }
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n\n')
+      .trim();
+  }, []);
+
+  const loadReaderLibrary = useCallback(async (
+    includeArchivedOverride = readerIncludeArchived,
+    { resetError = true, showError = true } = {},
+  ) => {
     if (!initData) return;
     try {
       setReaderLibraryLoading(true);
-      setReaderLibraryError('');
+      if (resetError) {
+        setReaderLibraryError('');
+      }
       const response = await fetch('/api/webapp/reader/library', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -19220,11 +19254,13 @@ function AppInner() {
       const data = await response.json();
       setReaderDocuments(Array.isArray(data?.items) ? data.items : []);
     } catch (error) {
-      setReaderLibraryError(normalizeNetworkErrorMessage(error, 'Не удалось загрузить библиотеку.', 'Bibliothek konnte nicht geladen werden.'));
+      if (showError && (!Array.isArray(readerDocuments) || readerDocuments.length === 0)) {
+        setReaderLibraryError(normalizeNetworkErrorMessage(error, 'Не удалось загрузить библиотеку.', 'Bibliothek konnte nicht geladen werden.'));
+      }
     } finally {
       setReaderLibraryLoading(false);
     }
-  }, [initData, normalizeNetworkErrorMessage, readApiError, readerIncludeArchived]);
+  }, [initData, normalizeNetworkErrorMessage, readApiError, readerDocuments, readerIncludeArchived]);
 
   const upsertReaderLibraryDocument = useCallback((nextDoc) => {
     if (!nextDoc || typeof nextDoc !== 'object') return;
@@ -19279,7 +19315,7 @@ function AppInner() {
       )));
       const status = String(data?.status || doc?.processing_status || 'pending').trim().toLowerCase() || 'pending';
       if (status === 'ready') {
-        await loadReaderLibrary();
+        await loadReaderLibrary(readerIncludeArchived, { resetError: false, showError: false });
         if (openWhenReady) {
           await openReaderDocument(Number(doc?.id || documentId));
         }
@@ -19289,7 +19325,7 @@ function AppInner() {
         const message = String(data?.error || doc?.processing_error || '').trim()
           || tr('Не удалось обработать документ.', 'Dokument konnte nicht verarbeitet werden.');
         setReaderLibraryError(message);
-        await loadReaderLibrary();
+        await loadReaderLibrary(readerIncludeArchived, { resetError: false, showError: false });
         return data;
       }
     }
@@ -19441,11 +19477,12 @@ function AppInner() {
       const progress = Number(doc?.progress_percent || 0);
       const bookmark = Number(doc?.bookmark_percent || 0);
       const pages = Array.isArray(doc?.content_pages) ? doc.content_pages : [];
+      const resolvedText = String(data?.text || '').trim() || buildReaderTextFromPages(pages);
       setReaderFontSize(READER_DEFAULT_FONT_SIZE);
       setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
       setReaderDocumentId(Number(doc?.id || documentId));
       setReaderTitle(String(data?.title || doc?.title || ''));
-      setReaderContent(String(data?.text || doc?.content_text || '').trim());
+      setReaderContent(resolvedText);
       setReaderPages(pages);
       setReaderDynamicPages([]);
       setReaderLayoutMode(pages.length > 0 ? 'original' : 'custom');
@@ -19475,7 +19512,7 @@ function AppInner() {
         const target = bookmark > 0 ? bookmark : progress;
         applyReaderProgressPercent(target);
       }, 100);
-      loadReaderLibrary();
+      loadReaderLibrary(readerIncludeArchived, { showError: false });
     } catch (error) {
       setReaderError(normalizeNetworkErrorMessage(error, 'Не удалось открыть книгу.', 'Dokument konnte nicht geoeffnet werden.'));
     } finally {
@@ -19765,7 +19802,7 @@ function AppInner() {
             'Файл загружается напрямую в object storage. Как только upload завершится, сразу запустим обработку.',
             'Die Datei wird direkt in den Object Storage geladen. Sobald der Upload fertig ist, startet sofort die Verarbeitung.'
           ));
-          await loadReaderLibrary(true);
+          await loadReaderLibrary(true, { resetError: false, showError: false });
 
           const uploadResponse = await fetch(String(upload.url), {
             method: String(upload.method || 'PUT').toUpperCase(),
@@ -19880,16 +19917,17 @@ function AppInner() {
           'Книга загружена в очередь. Обработка идёт в фоне, откроем автоматически, когда всё будет готово.',
           'Das Dokument wurde zur Verarbeitung eingereiht und wird automatisch geoeffnet, sobald es fertig ist.'
         ));
-        await loadReaderLibrary(true);
+        await loadReaderLibrary(true, { resetError: false, showError: false });
         if (docId) {
           void pollReaderDocumentStatus(docId, { openWhenReady: true });
         }
         return;
       }
       const pages = Array.isArray(doc?.content_pages) ? doc.content_pages : [];
+      const resolvedText = String(data?.text || '').trim() || buildReaderTextFromPages(pages);
       setReaderFontSize(READER_DEFAULT_FONT_SIZE);
       setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
-      setReaderContent(String(data?.text || '').trim());
+      setReaderContent(resolvedText);
       setReaderTitle(String(data?.title || doc?.title || rawInput.slice(0, 80)));
       setReaderPages(pages);
       setReaderDynamicPages([]);
@@ -19921,7 +19959,7 @@ function AppInner() {
         const target = Number(doc?.bookmark_percent || doc?.progress_percent || 0);
         applyReaderProgressPercent(target);
       }, 80);
-      loadReaderLibrary();
+      loadReaderLibrary(readerIncludeArchived, { showError: false });
       setReaderSelectedFile(null);
       setReaderErrorCode('');
     } catch (error) {
@@ -22847,6 +22885,7 @@ function AppInner() {
     setLastLookupScrollY(null);
 
     try {
+      void ensureOfflinePack('de', 30000);
       // 1. Check offline IndexedDB first
       const offlineResult = await lookupOfflineBaseDictEntry(sourceWord);
       if (offlineResult) {
@@ -29338,7 +29377,26 @@ function AppInner() {
                                         onClick={() => renameReaderDocument(item.id, item.title)}
                                         title={tr('Переименовать', 'Umbenennen')}
                                       >
-                                        ✎
+                                        <span className="reader-lib-action-icon" aria-hidden="true">
+                                          <svg viewBox="0 0 18 18" fill="none">
+                                            <path
+                                              d="M12.9 3.6a1.5 1.5 0 0 1 2.12 2.12L7.2 13.5 4.5 14.1l.6-2.7 7.8-7.8Z"
+                                              stroke="currentColor"
+                                              strokeWidth="1.5"
+                                              strokeLinecap="round"
+                                              strokeLinejoin="round"
+                                            />
+                                            <path
+                                              d="M11.4 5.1 13.5 7.2"
+                                              stroke="currentColor"
+                                              strokeWidth="1.5"
+                                              strokeLinecap="round"
+                                            />
+                                          </svg>
+                                        </span>
+                                        <span className="reader-lib-action-label">
+                                          {tr('Название', 'Titel')}
+                                        </span>
                                       </button>
                                       <button
                                         type="button"
@@ -29346,7 +29404,57 @@ function AppInner() {
                                         onClick={() => archiveReaderDocument(item.id, !Boolean(item?.is_archived))}
                                         title={Boolean(item?.is_archived) ? tr('Разархивировать', 'Wiederherstellen') : tr('В архив', 'Archivieren')}
                                       >
-                                        {Boolean(item?.is_archived) ? '↺' : '⤓'}
+                                        <span className="reader-lib-action-icon" aria-hidden="true">
+                                          {Boolean(item?.is_archived) ? (
+                                            <svg viewBox="0 0 18 18" fill="none">
+                                              <path
+                                                d="M14.25 6.75V3.75h-3"
+                                                stroke="currentColor"
+                                                strokeWidth="1.5"
+                                                strokeLinecap="round"
+                                                strokeLinejoin="round"
+                                              />
+                                              <path
+                                                d="M13.9 8.25a5.25 5.25 0 1 1-1.1-3"
+                                                stroke="currentColor"
+                                                strokeWidth="1.5"
+                                                strokeLinecap="round"
+                                                strokeLinejoin="round"
+                                              />
+                                            </svg>
+                                          ) : (
+                                            <svg viewBox="0 0 18 18" fill="none">
+                                              <path
+                                                d="M3.75 5.25h10.5"
+                                                stroke="currentColor"
+                                                strokeWidth="1.5"
+                                                strokeLinecap="round"
+                                              />
+                                              <path
+                                                d="M5.25 5.25 6 13.5h6l.75-8.25"
+                                                stroke="currentColor"
+                                                strokeWidth="1.5"
+                                                strokeLinecap="round"
+                                                strokeLinejoin="round"
+                                              />
+                                              <path
+                                                d="M7.5 8.25h3"
+                                                stroke="currentColor"
+                                                strokeWidth="1.5"
+                                                strokeLinecap="round"
+                                              />
+                                              <path
+                                                d="M9 3.75v4.5"
+                                                stroke="currentColor"
+                                                strokeWidth="1.5"
+                                                strokeLinecap="round"
+                                              />
+                                            </svg>
+                                          )}
+                                        </span>
+                                        <span className="reader-lib-action-label">
+                                          {Boolean(item?.is_archived) ? tr('Вернуть', 'Zurueck') : tr('Скрыть', 'Ausblenden')}
+                                        </span>
                                       </button>
                                       <button
                                         type="button"
@@ -29354,7 +29462,25 @@ function AppInner() {
                                         onClick={() => deleteReaderDocument(item.id)}
                                         title={tr('Удалить', 'Loeschen')}
                                       >
-                                        ×
+                                        <span className="reader-lib-action-icon" aria-hidden="true">
+                                          <svg viewBox="0 0 18 18" fill="none">
+                                            <path
+                                              d="M5.25 5.25 12.75 12.75"
+                                              stroke="currentColor"
+                                              strokeWidth="1.5"
+                                              strokeLinecap="round"
+                                            />
+                                            <path
+                                              d="M12.75 5.25 5.25 12.75"
+                                              stroke="currentColor"
+                                              strokeWidth="1.5"
+                                              strokeLinecap="round"
+                                            />
+                                          </svg>
+                                        </span>
+                                        <span className="reader-lib-action-label">
+                                          {tr('Удалить', 'Loeschen')}
+                                        </span>
                                       </button>
                                     </div>
                                   </div>
@@ -29619,7 +29745,7 @@ function AppInner() {
                                 {isCurrentReaderPageBookmarked && (
                                   <span className="reader-page-bookmark-indicator" aria-hidden="true" />
                                 )}
-                                <div className="reader-page-sheet-inner">
+                                <div ref={readerPageInnerRef} className="reader-page-sheet-inner">
                                   {renderReaderStructuredText()}
                                 </div>
                                 <div className="reader-page-num">

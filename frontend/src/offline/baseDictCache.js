@@ -20,12 +20,18 @@ const BD_DB_VERSION = 2;
 const STORE_BD      = 'base_dict';
 const STORE_BD_META = 'base_dict_meta';
 const PACK_VERSION_KEY = 'pack_version';
+const PACK_ENTRY_COUNT_KEY = 'pack_entry_count';
 const PACK_MAX_AGE_MS  = 7 * 24 * 60 * 60 * 1000; // re-download after 7 days
 // localStorage key mirrors the IndexedDB timestamp so pack freshness survives
 // sessions even when the browser clears IndexedDB between app launches (iOS).
 const LS_PACK_TS_KEY = 'bd_pack_ts';
+const LS_PACK_COUNT_KEY = 'bd_pack_count';
+const PACK_WRITE_BATCH = 100;
 
 let _bdDbPromise = null;
+let _packEntryCountCache = null;
+let _packDownloadPromise = null;
+let _storagePersistRequested = false;
 
 function _openBD() {
   if (_bdDbPromise) return _bdDbPromise;
@@ -220,15 +226,56 @@ function _lsSetPackTs(isoTs) {
   try { localStorage.setItem(LS_PACK_TS_KEY, isoTs); } catch { /* non-fatal */ }
 }
 
-async function _setPackVersion(isoTs) {
+function _lsGetPackCount() {
+  try {
+    const raw = localStorage.getItem(LS_PACK_COUNT_KEY);
+    const parsed = Number.parseInt(String(raw || '').trim(), 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function _lsSetPackCount(count) {
+  try { localStorage.setItem(LS_PACK_COUNT_KEY, String(Math.max(0, Number.parseInt(String(count || 0), 10) || 0))); } catch { /* non-fatal */ }
+}
+
+function _lsClearPackMeta() {
+  try {
+    localStorage.removeItem(LS_PACK_TS_KEY);
+    localStorage.removeItem(LS_PACK_COUNT_KEY);
+  } catch {
+    // non-fatal
+  }
+}
+
+async function _setPackMeta({ isoTs, entryCount }) {
   // Write to localStorage first — it survives session clearing on iOS WebView.
   _lsSetPackTs(isoTs);
+  _lsSetPackCount(entryCount);
+  _packEntryCountCache = Math.max(0, Number.parseInt(String(entryCount || 0), 10) || 0);
   try {
     const db = await _openBD();
     const tx = db.transaction(STORE_BD_META, 'readwrite');
-    await _pr(tx.objectStore(STORE_BD_META).put({ key: PACK_VERSION_KEY, value: isoTs }));
+    const metaStore = tx.objectStore(STORE_BD_META);
+    await _pr(metaStore.put({ key: PACK_VERSION_KEY, value: isoTs }));
+    await _pr(metaStore.put({ key: PACK_ENTRY_COUNT_KEY, value: _packEntryCountCache }));
   } catch {
     // non-fatal — localStorage copy is the reliable one
+  }
+}
+
+async function _invalidatePackMeta() {
+  _packEntryCountCache = 0;
+  _lsClearPackMeta();
+  try {
+    const db = await _openBD();
+    const tx = db.transaction(STORE_BD_META, 'readwrite');
+    const metaStore = tx.objectStore(STORE_BD_META);
+    await _pr(metaStore.delete(PACK_VERSION_KEY));
+    await _pr(metaStore.delete(PACK_ENTRY_COUNT_KEY));
+  } catch {
+    // non-fatal
   }
 }
 
@@ -237,8 +284,63 @@ function _isTs_fresh(isoTs) {
   try { return (Date.now() - new Date(isoTs).getTime()) < PACK_MAX_AGE_MS; } catch { return false; }
 }
 
+async function _getIndexedDbPackEntryCount() {
+  if (_packEntryCountCache !== null) return _packEntryCountCache;
+  try {
+    const db = await _openBD();
+    const tx = db.transaction([STORE_BD, STORE_BD_META], 'readonly');
+    const metaStore = tx.objectStore(STORE_BD_META);
+    const countStore = tx.objectStore(STORE_BD);
+    const metaRec = await _pr(metaStore.get(PACK_ENTRY_COUNT_KEY));
+    const metaCount = Number.parseInt(String(metaRec?.value ?? ''), 10);
+    if (Number.isFinite(metaCount) && metaCount > 0) {
+      _packEntryCountCache = metaCount;
+      _lsSetPackCount(metaCount);
+      return metaCount;
+    }
+    const liveCount = await _pr(countStore.count());
+    const normalizedCount = Math.max(0, Number.parseInt(String(liveCount || 0), 10) || 0);
+    _packEntryCountCache = normalizedCount;
+    if (normalizedCount > 0) {
+      _lsSetPackCount(normalizedCount);
+      try {
+        const writeTx = db.transaction(STORE_BD_META, 'readwrite');
+        await _pr(writeTx.objectStore(STORE_BD_META).put({ key: PACK_ENTRY_COUNT_KEY, value: normalizedCount }));
+      } catch {
+        // non-fatal
+      }
+    }
+    return normalizedCount;
+  } catch {
+    return 0;
+  }
+}
+
+async function _hasUsableOfflinePack() {
+  const lsCount = _lsGetPackCount();
+  if (lsCount > 0) {
+    const liveCount = await _getIndexedDbPackEntryCount();
+    if (liveCount > 0) return true;
+  }
+  return (await _getIndexedDbPackEntryCount()) > 0;
+}
+
+async function _requestPersistentStorage() {
+  if (_storagePersistRequested) return;
+  _storagePersistRequested = true;
+  try {
+    if (navigator?.storage?.persist) {
+      await navigator.storage.persist();
+    }
+  } catch {
+    // non-fatal
+  }
+}
+
 export async function isOfflinePackFresh() {
-  // Check localStorage first — survives even when IndexedDB is cleared by the OS.
+  const hasEntries = await _hasUsableOfflinePack();
+  if (!hasEntries) return false;
+  // Check localStorage first for freshness, but only after confirming IndexedDB still has data.
   if (_isTs_fresh(_lsGetPackTs())) return true;
   // Fallback: read from IndexedDB (covers migrated sessions without localStorage entry).
   try {
@@ -255,36 +357,61 @@ export async function isOfflinePackFresh() {
 }
 
 export async function downloadOfflinePack(lang = 'de', limit = 10000) {
-  try {
-    const resp = await fetch(`/api/webapp/dictionary/offline-pack?lang=${lang}&limit=${limit}`);
-    if (!resp.ok) return false;
-    const data = await resp.json();
-    const entries = Array.isArray(data.entries) ? data.entries : [];
-    if (entries.length === 0) return false;
+  if (_packDownloadPromise) return _packDownloadPromise;
+  _packDownloadPromise = (async () => {
+    try {
+      await _requestPersistentStorage();
+      const resp = await fetch(`/api/webapp/dictionary/offline-pack?lang=${lang}&limit=${limit}`);
+      if (!resp.ok) return false;
+      const data = await resp.json();
+      const entries = Array.isArray(data.entries) ? data.entries : [];
+      if (entries.length === 0) return false;
 
-    const db = await _openBD();
-    // Write in small batches so readonly transactions (lookups) can run between batches.
-    // A single readwrite transaction for 10 000 entries blocks all reads for 30–60 s on mobile.
-    const BATCH = 500;
-    for (let i = 0; i < entries.length; i += BATCH) {
-      const batch = entries.slice(i, i + BATCH);
-      const tx = db.transaction(STORE_BD, 'readwrite');
-      const store = tx.objectStore(STORE_BD);
-      for (const e of batch) {
-        if (Array.isArray(e.ru) && !e.ru_lc) {
-          e.ru_lc = e.ru.map((r) => String(r || '').trim().toLowerCase()).filter(Boolean);
-        }
-        store.put(e);
-      }
+      const db = await _openBD();
+      await _invalidatePackMeta();
+      const clearTx = db.transaction([STORE_BD, STORE_BD_META], 'readwrite');
+      clearTx.objectStore(STORE_BD).clear();
+      clearTx.objectStore(STORE_BD_META).delete(PACK_ENTRY_COUNT_KEY);
       await new Promise((res, rej) => {
-        tx.oncomplete = res;
-        tx.onerror = (ev) => rej(ev.target.error);
+        clearTx.oncomplete = res;
+        clearTx.onerror = (ev) => rej(ev.target.error);
       });
-      // Yield the event loop so pending readonly transactions can start between batches.
-      await new Promise((res) => setTimeout(res, 0));
+
+      // Write in small batches so lookups stay responsive on mobile WebViews.
+      let writtenCount = 0;
+      for (let i = 0; i < entries.length; i += PACK_WRITE_BATCH) {
+        const batch = entries.slice(i, i + PACK_WRITE_BATCH);
+        const tx = db.transaction(STORE_BD, 'readwrite');
+        const store = tx.objectStore(STORE_BD);
+        for (const e of batch) {
+          if (Array.isArray(e.ru) && !e.ru_lc) {
+            e.ru_lc = e.ru.map((r) => String(r || '').trim().toLowerCase()).filter(Boolean);
+          }
+          store.put(e);
+        }
+        await new Promise((res, rej) => {
+          tx.oncomplete = res;
+          tx.onerror = (ev) => rej(ev.target.error);
+        });
+        writtenCount += batch.length;
+        _packEntryCountCache = writtenCount;
+        await new Promise((res) => setTimeout(res, 0));
+      }
+      await _setPackMeta({ isoTs: new Date().toISOString(), entryCount: entries.length });
+      return true;
+    } catch {
+      return false;
+    } finally {
+      _packDownloadPromise = null;
     }
-    await _setPackVersion(new Date().toISOString());
-    return true;
+  })();
+  return _packDownloadPromise;
+}
+
+export async function ensureOfflinePack(lang = 'de', limit = 10000) {
+  try {
+    if (await isOfflinePackFresh()) return true;
+    return await downloadOfflinePack(lang, limit);
   } catch {
     return false;
   }

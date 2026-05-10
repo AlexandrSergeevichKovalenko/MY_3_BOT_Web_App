@@ -4654,6 +4654,8 @@ def ensure_webapp_tables() -> None:
                     processing_error TEXT,
                     processing_started_at TIMESTAMPTZ,
                     processing_finished_at TIMESTAMPTZ,
+                    ingest_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    processing_attempts INTEGER NOT NULL DEFAULT 0,
                     is_archived BOOLEAN NOT NULL DEFAULT FALSE,
                     archived_at TIMESTAMPTZ,
                     last_opened_at TIMESTAMPTZ,
@@ -4689,6 +4691,14 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 ALTER TABLE bt_3_reader_library
                 ADD COLUMN IF NOT EXISTS processing_finished_at TIMESTAMPTZ;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_reader_library
+                ADD COLUMN IF NOT EXISTS ingest_payload JSONB NOT NULL DEFAULT '{}'::jsonb;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_reader_library
+                ADD COLUMN IF NOT EXISTS processing_attempts INTEGER NOT NULL DEFAULT 0;
             """)
             cursor.execute("""
                 UPDATE bt_3_reader_library
@@ -17581,9 +17591,10 @@ def upsert_reader_library_document(
                     processing_status,
                     processing_error,
                     processing_started_at,
-                    processing_finished_at
+                    processing_finished_at,
+                    ingest_payload
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, NOW(), NOW(), 'ready', NULL, NOW(), NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, NOW(), NOW(), 'ready', NULL, NOW(), NOW(), '{}'::jsonb)
                 ON CONFLICT (user_id, source_lang, target_lang, text_hash) DO UPDATE
                 SET
                     title = EXCLUDED.title,
@@ -17598,6 +17609,7 @@ def upsert_reader_library_document(
                     processing_error = NULL,
                     processing_started_at = COALESCE(bt_3_reader_library.processing_started_at, NOW()),
                     processing_finished_at = NOW(),
+                    ingest_payload = '{}'::jsonb,
                     last_opened_at = NOW(),
                     updated_at = NOW()
                 RETURNING
@@ -17741,6 +17753,162 @@ def set_reader_library_document_processing_status(
     return _reader_library_row_to_dict(row, include_content=False)
 
 
+def set_reader_library_document_ingest_payload(
+    *,
+    user_id: int,
+    document_id: int,
+    source_lang: str,
+    target_lang: str,
+    ingest_payload: dict | None,
+) -> dict | None:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    resolved_payload = ingest_payload if isinstance(ingest_payload, dict) else {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_reader_library
+                SET
+                    ingest_payload = %s::jsonb,
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND user_id = %s
+                  AND source_lang = %s
+                  AND target_lang = %s
+                RETURNING
+                    id, user_id, source_lang, target_lang, title, source_type, source_url,
+                    text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
+                    processing_status, processing_error, processing_started_at, processing_finished_at,
+                    is_archived, archived_at, last_opened_at, created_at, updated_at;
+                """,
+                (
+                    json.dumps(resolved_payload, ensure_ascii=False),
+                    int(document_id),
+                    int(user_id),
+                    normalized_source,
+                    normalized_target,
+                ),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return _reader_library_row_to_dict(row, include_content=False)
+
+
+def get_reader_library_document_ingest_state(
+    *,
+    user_id: int,
+    document_id: int,
+    source_lang: str,
+    target_lang: str,
+) -> dict | None:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    title,
+                    source_type,
+                    source_url,
+                    processing_status,
+                    processing_error,
+                    processing_started_at,
+                    processing_finished_at,
+                    updated_at,
+                    created_at,
+                    ingest_payload,
+                    processing_attempts
+                FROM bt_3_reader_library
+                WHERE id = %s
+                  AND user_id = %s
+                  AND source_lang = %s
+                  AND target_lang = %s
+                LIMIT 1;
+                """,
+                (int(document_id), int(user_id), normalized_source, normalized_target),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "title": str(row[1] or "Untitled"),
+        "source_type": str(row[2] or "text"),
+        "source_url": row[3] if row[3] else None,
+        "processing_status": _normalize_reader_processing_status(row[4] or "ready"),
+        "processing_error": str(row[5] or "").strip() or None,
+        "processing_started_at": row[6].isoformat() if row[6] else None,
+        "processing_finished_at": row[7].isoformat() if row[7] else None,
+        "updated_at": row[8].isoformat() if row[8] else None,
+        "created_at": row[9].isoformat() if row[9] else None,
+        "ingest_payload": row[10] if isinstance(row[10], dict) else {},
+        "processing_attempts": max(0, int(row[11] or 0)),
+    }
+
+
+def claim_reader_library_document_processing(
+    *,
+    user_id: int,
+    document_id: int,
+    source_lang: str,
+    target_lang: str,
+    stale_after_seconds: int = 0,
+    include_failed: bool = False,
+) -> dict | None:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    normalized_stale_after = max(0, int(stale_after_seconds or 0))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_reader_library
+                SET
+                    processing_status = 'processing',
+                    processing_error = NULL,
+                    processing_started_at = NOW(),
+                    processing_finished_at = NULL,
+                    processing_attempts = COALESCE(processing_attempts, 0) + 1,
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND user_id = %s
+                  AND source_lang = %s
+                  AND target_lang = %s
+                  AND (
+                    processing_status = 'pending'
+                    OR (%s AND processing_status = 'failed')
+                    OR (
+                        processing_status = 'processing'
+                        AND %s > 0
+                        AND COALESCE(processing_started_at, updated_at, created_at) <= NOW() - (%s * INTERVAL '1 second')
+                    )
+                  )
+                RETURNING
+                    id, user_id, source_lang, target_lang, title, source_type, source_url,
+                    text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
+                    processing_status, processing_error, processing_started_at, processing_finished_at,
+                    is_archived, archived_at, last_opened_at, created_at, updated_at;
+                """,
+                (
+                    int(document_id),
+                    int(user_id),
+                    normalized_source,
+                    normalized_target,
+                    bool(include_failed),
+                    normalized_stale_after,
+                    normalized_stale_after,
+                ),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return _reader_library_row_to_dict(row, include_content=False)
+
+
 def finalize_reader_library_document_processing(
     *,
     user_id: int,
@@ -17828,6 +17996,7 @@ def finalize_reader_library_document_processing(
                     processing_error = NULL,
                     processing_started_at = COALESCE(processing_started_at, NOW()),
                     processing_finished_at = NOW(),
+                    ingest_payload = '{}'::jsonb,
                     is_archived = FALSE,
                     archived_at = NULL,
                     last_opened_at = NOW(),

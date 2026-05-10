@@ -194,6 +194,9 @@ _PROJECTION_MATERIALIZATION_LIVE_QUEUE_NAME = str(
 _PROJECTION_MATERIALIZATION_BACKFILL_QUEUE_NAME = str(
     os.getenv("PROJECTION_MATERIALIZATION_BACKFILL_QUEUE_NAME") or "projection_materialization_backfill"
 ).strip() or "projection_materialization_backfill"
+_READER_INGEST_QUEUE_NAME = str(
+    os.getenv("READER_INGEST_QUEUE_NAME") or "reader_ingest"
+).strip() or "reader_ingest"
 
 
 def _env_flag_enabled(name: str, default: bool = False) -> bool:
@@ -302,6 +305,34 @@ def enqueue_tts_generation_job(payload: dict) -> dict:
     except Exception:
         release_tts_generation_in_flight(cache_key)
         logging.exception("enqueue_tts_generation_job failed cache_key=%s", cache_key)
+        return {"queued": False, "reason": "broker_error"}
+
+
+def enqueue_reader_library_ingest_job(payload: dict) -> dict:
+    if not can_enqueue_background_jobs():
+        return {"queued": False, "reason": "background_jobs_unavailable"}
+    safe_payload = dict(payload or {})
+    safe_document_id = int(safe_payload.get("document_id") or 0)
+    safe_user_id = int(safe_payload.get("user_id") or 0)
+    if safe_document_id <= 0 or safe_user_id <= 0:
+        return {"queued": False, "reason": "missing_document_identity"}
+    try:
+        get_dramatiq_broker()
+        from backend.background_jobs import run_reader_library_ingest_job
+
+        message = run_reader_library_ingest_job.send(**safe_payload)
+        return {
+            "queued": True,
+            "reason": "queued",
+            "message_id": str(getattr(message, "message_id", None) or "").strip() or None,
+            "queue_name": _READER_INGEST_QUEUE_NAME,
+        }
+    except Exception:
+        logging.exception(
+            "enqueue_reader_library_ingest_job failed document_id=%s user_id=%s",
+            safe_document_id,
+            safe_user_id,
+        )
         return {"queued": False, "reason": "broker_error"}
 
 

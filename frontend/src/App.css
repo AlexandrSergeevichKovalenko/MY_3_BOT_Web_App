@@ -4709,17 +4709,40 @@ body {
 
 .reader-lib-action {
   flex: 1;
-  height: 34px;
+  min-height: 42px;
   border-radius: 0;
   border: none;
   border-right: 1px solid rgba(30, 58, 95, 0.6);
   background: rgba(10, 20, 40, 0.3);
   color: #94a3b8;
-  font-size: 15px;
-  display: grid;
-  place-items: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
   transition: background 0.12s ease, color 0.12s ease;
   -webkit-tap-highlight-color: transparent;
+}
+
+.reader-lib-action-icon {
+  width: 15px;
+  height: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.reader-lib-action-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.reader-lib-action-label {
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .reader-lib-action:last-child {
@@ -4864,6 +4887,9 @@ body {
   font-size: var(--reader-font-size, 18px);
   font-weight: var(--reader-font-weight, 500);
   overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 .reader-page-num {
@@ -15402,17 +15428,40 @@ body {
 
 .reader-lib-action {
   flex: 1;
-  height: 34px;
+  min-height: 42px;
   border-radius: 0;
   border: none;
   border-right: 1px solid rgba(30, 58, 95, 0.6);
   background: rgba(10, 20, 40, 0.3);
   color: #94a3b8;
-  font-size: 15px;
-  display: grid;
-  place-items: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
   transition: background 0.12s ease, color 0.12s ease;
   -webkit-tap-highlight-color: transparent;
+}
+
+.reader-lib-action-icon {
+  width: 15px;
+  height: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.reader-lib-action-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.reader-lib-action-label {
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .reader-lib-action:last-child {
@@ -15746,6 +15795,9 @@ body {
   width: 100%;
   max-width: 36em;
   margin: 0 auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 .reader-page-bookmark-indicator {
@@ -16154,9 +16206,17 @@ body {
   }
 
   .reader-lib-action {
-    height: 36px;
+    min-height: 38px;
     border-radius: 0;
-    font-size: 16px;
+    gap: 6px;
+    padding: 0 8px;
+    font-size: 11px;
+  }
+
+  .reader-lib-action-icon,
+  .reader-lib-action-icon svg {
+    width: 14px;
+    height: 14px;
   }
 
   .reader-archive-cover-fallback {

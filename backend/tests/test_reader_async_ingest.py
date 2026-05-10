@@ -25,12 +25,15 @@ class ReaderAsyncIngestTests(unittest.TestCase):
 
         with patch.object(server, "_telegram_hash_is_valid", return_value=True), \
              patch.object(server, "_parse_telegram_init_data", return_value={"user": {"id": 55}}), \
+             patch.object(server, "_resolve_webapp_user_allowed", return_value=(True, "test")), \
              patch.object(server, "get_or_create_user_subscription"), \
              patch.object(server, "_get_user_language_pair", return_value=("ru", "de", {})), \
              patch.object(server, "_resolve_user_entitlement", return_value=({"effective_mode": "pro"}, None)), \
              patch.object(server, "list_reader_library_documents", return_value=[]), \
              patch.object(server, "create_reader_library_document_placeholder", return_value=placeholder_doc), \
-             patch.object(server, "_enqueue_reader_library_ingest_job") as enqueue_mock:
+             patch.object(server, "r2_put_bytes"), \
+             patch.object(server, "set_reader_library_document_ingest_payload"), \
+             patch.object(server, "_enqueue_reader_library_ingest_job", return_value={"queued": True}) as enqueue_mock:
             response = self.client.post(
                 "/api/webapp/reader/ingest",
                 json={
@@ -62,6 +65,7 @@ class ReaderAsyncIngestTests(unittest.TestCase):
         with patch.object(server, "db_acquire_scope", self._fake_db_scope), \
              patch.object(server, "_telegram_hash_is_valid", return_value=True), \
              patch.object(server, "_parse_telegram_init_data", return_value={"user": {"id": 55}}), \
+             patch.object(server, "_resolve_webapp_user_allowed", return_value=(True, "test")), \
              patch.object(server, "_get_user_language_pair", return_value=("ru", "de", {})), \
              patch.object(server, "get_reader_library_document", return_value=pending_doc):
             response = self.client.post(

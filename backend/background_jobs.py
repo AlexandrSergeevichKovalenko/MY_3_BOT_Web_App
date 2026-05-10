@@ -33,6 +33,9 @@ _PROJECTION_MATERIALIZATION_LIVE_QUEUE_NAME = str(
 _PROJECTION_MATERIALIZATION_BACKFILL_QUEUE_NAME = str(
     os.getenv("PROJECTION_MATERIALIZATION_BACKFILL_QUEUE_NAME") or "projection_materialization_backfill"
 ).strip() or "projection_materialization_backfill"
+_READER_INGEST_QUEUE_NAME = str(
+    os.getenv("READER_INGEST_QUEUE_NAME") or "reader_ingest"
+).strip() or "reader_ingest"
 _IMAGE_QUIZ_PREP_QUEUE_NAME = "image_quiz_prepare"
 _IMAGE_QUIZ_RENDER_QUEUE_NAME = "image_quiz_render"
 _IMAGE_QUIZ_R2_PREFIX = str(
@@ -1151,6 +1154,22 @@ def run_translation_focus_pool_refill_job(
             request_id,
             correlation_id,
             normalized_tz_name,
+        )
+        raise
+
+
+@dramatiq.actor(max_retries=0, queue_name=_READER_INGEST_QUEUE_NAME)
+def run_reader_library_ingest_job(**payload) -> None:
+    safe_payload = dict(payload or {})
+    try:
+        from backend.backend_server import _process_reader_library_ingest_job
+
+        _process_reader_library_ingest_job(**safe_payload)
+    except Exception:
+        logging.exception(
+            "reader_library_ingest_job crashed document_id=%s user_id=%s",
+            safe_payload.get("document_id"),
+            safe_payload.get("user_id"),
         )
         raise
 

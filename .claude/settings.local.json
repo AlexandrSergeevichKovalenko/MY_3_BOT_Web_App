@@ -93,7 +93,17 @@
       "Bash(grep -n \"^            conn.commit\\\\|conn.commit\\\\\\(\\\\\\)$\\\\|^        conn.commit\\\\\\(\\\\\\)\" /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/backend/database.py)",
       "Bash(grep -n \"useEffect.*\\\\[\\\\]$\\\\|useEffect.*\\\\[initData\\\\]\\\\|downloadOfflineSrsQueue\\\\|prefetch.*srs\\\\|offline.*init\\\\|syncPending\" /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/frontend/src/App.jsx)",
       "Bash(npx --prefix frontend vite build --mode development)",
-      "Bash(npx vite *)"
+      "Bash(npx vite *)",
+      "Bash(grep \"{\\\\s*$\")",
+      "Bash(npx react-scripts *)",
+      "Bash(npx eslint *)",
+      "Bash(railway open *)",
+      "WebFetch(domain:backendwebbackendserverpy-production.up.railway.app)",
+      "WebFetch(domain:kaikki.fi)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(DATABASE_URL=\"postgresql://postgres:XyakpIaJMJeDLpxACWzHIgEQaXDumMqa@centerbeam.proxy.rlwy.net:26757/railway\" python3 *)",
+      "Bash(DATABASE_URL=\"postgresql://postgres:XyakpIaJMJeDLpxACWzHIgEQaXDumMqa@centerbeam.proxy.rlwy.net:26757/railway\" PYTHONUNBUFFERED=1 python3 *)"
     ]
   }
 }
