@@ -15329,10 +15329,10 @@ function AppInner() {
 
   useEffect(() => {
     if (!readerDocumentId || !readerContent || readerPageCount <= 0) return;
-    const targetPercent = readerBookmarkPercent > 0 ? readerBookmarkPercent : readerProgressPercent;
+    const targetPercent = readerProgressPercent;
     const timer = setTimeout(() => applyReaderProgressPercent(targetPercent), 90);
     return () => clearTimeout(timer);
-  }, [readerReadingMode, readerDocumentId, readerContent, readerLayoutMode, readerPageCount, readerBookmarkPercent, readerProgressPercent]);
+  }, [readerReadingMode, readerDocumentId, readerContent, readerLayoutMode, readerPageCount, readerProgressPercent]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
