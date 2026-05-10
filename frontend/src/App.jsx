@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import BlocksTrainer from './components/BlocksTrainer';
 import HomeDashboardTiles from './components/HomeDashboardTiles';
@@ -44,6 +44,8 @@ const SINGLE_INSTANCE_HEARTBEAT_MS = 1000;
 const SINGLE_INSTANCE_STALE_MS = 5000;
 const TTS_CACHE_MAX_ENTRIES = 60;
 const READER_IDLE_TIMEOUT_MS = 60000;
+const READER_DEFAULT_FONT_SIZE = 18;
+const READER_DEFAULT_FONT_WEIGHT = 500;
 const WEEKLY_SUMMARY_VISITS_ENABLED = false;
 const ALLOW_MANUAL_INITDATA_FALLBACK = Boolean(import.meta.env.DEV);
 const ANDROID_TRANSLATION_DRAFT_DEBUG_QUERY_KEY = 'translation_draft_debug';
@@ -60,6 +62,114 @@ const ECONOMICS_RAILWAY_POSTGRES_VOLUME_STORAGE_KEY = 'dds_economics_railway_pos
 const ECONOMICS_RAILWAY_REDIS_RAM_STORAGE_KEY = 'dds_economics_railway_redis_ram_v1';
 const ECONOMICS_RAILWAY_EGRESS_STORAGE_KEY = 'dds_economics_railway_egress_v1';
 const ECONOMICS_PERIOD_OPTIONS = new Set(['day', 'week', 'month', 'quarter', 'half-year', 'year', 'all']);
+
+function normalizeReaderPaginationText(rawText) {
+  return String(rawText || '')
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.replace(/\s*\n\s*/g, ' ').replace(/ {2,}/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+function readerPageTextFits(measureNode, text) {
+  if (!measureNode) return false;
+  measureNode.textContent = String(text || '');
+  return measureNode.scrollHeight <= measureNode.clientHeight + 1;
+}
+
+function paginateReaderText(text, measureNode) {
+  const normalizedText = normalizeReaderPaginationText(text);
+  if (!normalizedText || !measureNode) return [];
+  if (measureNode.clientWidth <= 0 || measureNode.clientHeight <= 0) return [];
+
+  const paragraphs = normalizedText.split(/\n\n+/).map((item) => item.trim()).filter(Boolean);
+  const pages = [];
+  let buffer = '';
+
+  for (const paragraph of paragraphs) {
+    let words = paragraph.split(/\s+/).filter(Boolean);
+    while (words.length > 0) {
+      const paragraphText = words.join(' ');
+      const candidate = buffer ? `${buffer}\n\n${paragraphText}` : paragraphText;
+      if (readerPageTextFits(measureNode, candidate)) {
+        buffer = candidate;
+        break;
+      }
+
+      if (buffer) {
+        pages.push(buffer);
+        buffer = '';
+        continue;
+      }
+
+      let low = 1;
+      let high = words.length;
+      let bestWordCount = 0;
+      while (low <= high) {
+        const mid = Math.floor((low + high) / 2);
+        const midText = words.slice(0, mid).join(' ');
+        if (readerPageTextFits(measureNode, midText)) {
+          bestWordCount = mid;
+          low = mid + 1;
+        } else {
+          high = mid - 1;
+        }
+      }
+
+      if (bestWordCount > 0) {
+        pages.push(words.slice(0, bestWordCount).join(' '));
+        words = words.slice(bestWordCount);
+        continue;
+      }
+
+      const firstWord = String(words[0] || '');
+      if (!firstWord) {
+        words.shift();
+        continue;
+      }
+
+      let charLow = 1;
+      let charHigh = firstWord.length;
+      let bestCharCount = 1;
+      while (charLow <= charHigh) {
+        const mid = Math.floor((charLow + charHigh) / 2);
+        const midText = firstWord.slice(0, mid);
+        if (readerPageTextFits(measureNode, midText)) {
+          bestCharCount = mid;
+          charLow = mid + 1;
+        } else {
+          charHigh = mid - 1;
+        }
+      }
+
+      pages.push(firstWord.slice(0, bestCharCount));
+      words[0] = firstWord.slice(bestCharCount);
+      if (!words[0]) {
+        words.shift();
+      }
+    }
+  }
+
+  if (buffer) {
+    pages.push(buffer);
+  }
+
+  measureNode.textContent = '';
+  return pages;
+}
+
+function areReaderPagesEqual(prevPages, nextPages) {
+  if (prevPages === nextPages) return true;
+  if (!Array.isArray(prevPages) || !Array.isArray(nextPages)) return false;
+  if (prevPages.length !== nextPages.length) return false;
+  for (let index = 0; index < prevPages.length; index += 1) {
+    const prevItem = prevPages[index];
+    const nextItem = nextPages[index];
+    if (Number(prevItem?.page_number || 0) !== Number(nextItem?.page_number || 0)) return false;
+    if (String(prevItem?.text || '') !== String(nextItem?.text || '')) return false;
+  }
+  return true;
+}
 
 function readStoredEconomicsPeriod() {
   if (typeof window === 'undefined') return 'month';
@@ -4439,6 +4549,7 @@ function AppInner() {
   const [readerLibraryError, setReaderLibraryError] = useState('');
   const [readerIncludeArchived, setReaderIncludeArchived] = useState(false);
   const [readerPages, setReaderPages] = useState([]);
+  const [readerDynamicPages, setReaderDynamicPages] = useState([]);
   const [readerCurrentPage, setReaderCurrentPage] = useState(1);
   const [readerAudioFromPage, setReaderAudioFromPage] = useState('');
   const [readerAudioToPage, setReaderAudioToPage] = useState('');
@@ -4458,10 +4569,12 @@ function AppInner() {
   const [readerArchiveOpen, setReaderArchiveOpen] = useState(false);
   const [readerSettingsOpen, setReaderSettingsOpen] = useState(false);
   const [readerTopbarCollapsed, setReaderTopbarCollapsed] = useState(false);
+  const [readerPaginationLayoutTick, setReaderPaginationLayoutTick] = useState(0);
   const [readerLibrarySearch, setReaderLibrarySearch] = useState('');
   const [readerAddOpen, setReaderAddOpen] = useState(false);
-  const [readerFontSize, setReaderFontSize] = useState(18);
-  const [readerFontWeight, setReaderFontWeight] = useState(500);
+  const [readerFontSize, setReaderFontSize] = useState(READER_DEFAULT_FONT_SIZE);
+  const [readerFontWeight, setReaderFontWeight] = useState(READER_DEFAULT_FONT_WEIGHT);
+  const [readerLayoutMode, setReaderLayoutMode] = useState('custom');
   const [readerDragSelectionMeta, setReaderDragSelectionMeta] = useState(null);
   const [youtubeDragSelectionMeta, setYoutubeDragSelectionMeta] = useState(null);
   const [selectionText, setSelectionText] = useState('');
@@ -5022,6 +5135,7 @@ function AppInner() {
   const homeMoreRef = useRef(null);
   const readerRef = useRef(null);
   const readerArticleRef = useRef(null);
+  const readerMeasureInnerRef = useRef(null);
   const flashcardsRef = useRef(null);
   const translationsRef = useRef(null);
   const youtubeRef = useRef(null);
@@ -5178,6 +5292,9 @@ function AppInner() {
     startY: 0,
   });
   const readerSuppressStructuredClickRef = useRef(0);
+  const readerStatusPollTokenRef = useRef(0);
+  const readerPaginationResizeFrameRef = useRef(0);
+  const readerPaginationRunRef = useRef(0);
   const todayTimerCompletionLockRef = useRef(new Set());
   const globalTimerAutoPauseInFlightRef = useRef(false);
   const globalTimerAutoResumeInFlightRef = useRef(false);
@@ -11767,41 +11884,31 @@ function AppInner() {
   const isInlineSelectionMenu = isYoutubeSelectionMenu || isTranslationResultSelectionMenu;
   const isLightTheme = themeMode === 'light';
   const readerHasContent = Boolean(String(readerContent || '').trim());
+  const readerCanonicalText = useMemo(
+    () => normalizeReaderPaginationText(readerContent),
+    [readerContent]
+  );
+  const readerCanUseOriginalLayout = Array.isArray(readerPages) && readerPages.length > 0;
+  const readerUsesCustomLayout = !readerCanUseOriginalLayout || readerLayoutMode === 'custom';
   const readerDisplayPages = useMemo(() => {
-    if (Array.isArray(readerPages) && readerPages.length > 0) {
-      return readerPages
+    if (readerUsesCustomLayout && Array.isArray(readerDynamicPages) && readerDynamicPages.length > 0) {
+      return readerDynamicPages
         .map((item, index) => ({
           page_number: Number(item?.page_number || index + 1),
           text: String(item?.text || '').trim(),
         }));
     }
-    const raw = String(readerContent || '').trim();
-    if (!raw) return [];
-    const paragraphs = raw.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean);
-    const pages = [];
-    let buffer = '';
-    const limit = 1650;
-    for (const paragraph of paragraphs) {
-      const candidate = buffer ? `${buffer}\n\n${paragraph}` : paragraph;
-      if (candidate.length <= limit) {
-        buffer = candidate;
-      } else {
-        if (buffer) pages.push(buffer);
-        if (paragraph.length <= limit) {
-          buffer = paragraph;
-        } else {
-          let rest = paragraph;
-          while (rest.length > limit) {
-            pages.push(rest.slice(0, limit));
-            rest = rest.slice(limit);
-          }
-          buffer = rest;
-        }
-      }
+    if (Array.isArray(readerPages) && readerPages.length > 0) {
+      return readerPages
+        .map((item, index) => ({
+          page_number: Number(item?.page_number || index + 1),
+          text: String(item?.text || '').trim(),
+        }))
+        .filter((item) => item.text);
     }
-    if (buffer) pages.push(buffer);
-    return pages.map((text, index) => ({ page_number: index + 1, text }));
-  }, [readerPages, readerContent]);
+    if (!readerCanonicalText) return [];
+    return [{ page_number: 1, text: readerCanonicalText }];
+  }, [readerCanonicalText, readerDynamicPages, readerPages, readerUsesCustomLayout]);
   const readerPageCount = readerDisplayPages.length;
   const supportTimelineItems = useMemo(() => {
     const remote = Array.isArray(supportMessages) ? supportMessages : [];
@@ -15090,6 +15197,9 @@ function AppInner() {
 
   useEffect(() => {
     if (readerHasContent) return;
+    setReaderDynamicPages([]);
+    setReaderPaginationLayoutTick(0);
+    setReaderLayoutMode('custom');
     setReaderImmersive(false);
     setReaderTimerPaused(false);
     setReaderAccumulatedSeconds(0);
@@ -15098,6 +15208,84 @@ function AppInner() {
     readerAutoPausedByIdleRef.current = false;
     readerLastInteractionAtRef.current = 0;
   }, [readerHasContent]);
+
+  useLayoutEffect(() => {
+    if (!readerUsesCustomLayout) return undefined;
+    if (!readerHasContent) return undefined;
+    const scheduleRepagination = () => {
+      if (readerPaginationResizeFrameRef.current) {
+        window.cancelAnimationFrame(readerPaginationResizeFrameRef.current);
+      }
+      readerPaginationResizeFrameRef.current = window.requestAnimationFrame(() => {
+        readerPaginationResizeFrameRef.current = 0;
+        setReaderPaginationLayoutTick((prev) => prev + 1);
+      });
+    };
+
+    scheduleRepagination();
+    let resizeObserver;
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => {
+        scheduleRepagination();
+      });
+      if (readerArticleRef.current) {
+        resizeObserver.observe(readerArticleRef.current);
+      }
+      if (readerMeasureInnerRef.current) {
+        resizeObserver.observe(readerMeasureInnerRef.current);
+      }
+    }
+
+    window.addEventListener('orientationchange', scheduleRepagination);
+    return () => {
+      window.removeEventListener('orientationchange', scheduleRepagination);
+      resizeObserver?.disconnect();
+      if (readerPaginationResizeFrameRef.current) {
+        window.cancelAnimationFrame(readerPaginationResizeFrameRef.current);
+        readerPaginationResizeFrameRef.current = 0;
+      }
+    };
+  }, [readerHasContent, readerImmersive, readerTopbarCollapsed, readerReadingMode, readerUsesCustomLayout]);
+
+  useLayoutEffect(() => {
+    if (!readerUsesCustomLayout) {
+      setReaderDynamicPages([]);
+      return;
+    }
+    if (!readerCanonicalText) {
+      setReaderDynamicPages([]);
+      return;
+    }
+    const measureNode = readerMeasureInnerRef.current;
+    if (!measureNode || measureNode.clientWidth <= 0 || measureNode.clientHeight <= 0) {
+      return;
+    }
+
+    const runId = readerPaginationRunRef.current + 1;
+    readerPaginationRunRef.current = runId;
+    const nextTextPages = paginateReaderText(readerCanonicalText, measureNode);
+    if (readerPaginationRunRef.current !== runId) {
+      return;
+    }
+    const nextPages = nextTextPages.map((text, index) => ({
+      page_number: index + 1,
+      text,
+    }));
+    setReaderDynamicPages((prev) => (areReaderPagesEqual(prev, nextPages) ? prev : nextPages));
+
+    if (nextPages.length > 0) {
+      const safePercent = Math.max(0, Math.min(100, Number(readerProgressPercent) || 0));
+      const resolvedPage = Math.max(1, Math.min(nextPages.length, Math.round((safePercent / 100) * nextPages.length) || 1));
+      setReaderCurrentPage(resolvedPage);
+    }
+  }, [
+    readerCanonicalText,
+    readerFontSize,
+    readerFontWeight,
+    readerPaginationLayoutTick,
+    readerProgressPercent,
+    readerUsesCustomLayout,
+  ]);
 
   useEffect(() => {
     const node = readerArticleRef.current;
@@ -15140,11 +15328,11 @@ function AppInner() {
   }, [readerPageCount]);
 
   useEffect(() => {
-    if (!readerDocumentId || !readerContent) return;
-    const targetPercent = readerBookmarkPercent > 0 ? readerBookmarkPercent : readerProgressPercent;
+    if (!readerDocumentId || !readerContent || readerPageCount <= 0) return;
+    const targetPercent = readerProgressPercent;
     const timer = setTimeout(() => applyReaderProgressPercent(targetPercent), 90);
     return () => clearTimeout(timer);
-  }, [readerReadingMode, readerDocumentId, readerContent]);
+  }, [readerReadingMode, readerDocumentId, readerContent, readerLayoutMode, readerPageCount, readerProgressPercent]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -19003,9 +19191,15 @@ function AppInner() {
     const bits = [];
     const lang = String(item?.target_lang || '').toUpperCase();
     const sourceType = String(item?.source_type || '').toUpperCase();
+    const processingStatus = String(item?.processing_status || 'ready').trim().toLowerCase();
     const dateLabel = formatReaderArchiveDate(item?.updated_at || item?.last_opened_at || item?.created_at);
     if (lang) bits.push(lang);
     if (sourceType) bits.push(sourceType);
+    if (processingStatus === 'pending' || processingStatus === 'processing') {
+      bits.push(tr('Обработка…', 'Wird verarbeitet…'));
+    } else if (processingStatus === 'failed') {
+      bits.push(tr('Ошибка', 'Fehler'));
+    }
     if (dateLabel) bits.push(dateLabel);
     return bits.join(' • ');
   };
@@ -19018,7 +19212,7 @@ function AppInner() {
       const response = await fetch('/api/webapp/reader/library', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, limit: 120, include_archived: includeArchivedOverride }),
+        body: JSON.stringify({ initData, limit: 20, include_archived: includeArchivedOverride }),
       });
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка загрузки библиотеки', 'Fehler beim Laden der Bibliothek'));
@@ -19031,6 +19225,76 @@ function AppInner() {
       setReaderLibraryLoading(false);
     }
   }, [initData, normalizeNetworkErrorMessage, readApiError, readerIncludeArchived]);
+
+  const upsertReaderLibraryDocument = useCallback((nextDoc) => {
+    if (!nextDoc || typeof nextDoc !== 'object') return;
+    const nextId = Number(nextDoc?.id || 0);
+    if (!nextId) return;
+    setReaderDocuments((prev) => {
+      const items = Array.isArray(prev) ? prev : [];
+      const existingIndex = items.findIndex((item) => Number(item?.id || 0) === nextId);
+      if (existingIndex >= 0) {
+        const updated = [...items];
+        updated[existingIndex] = { ...updated[existingIndex], ...nextDoc };
+        return updated;
+      }
+      return [{ ...nextDoc }, ...items];
+    });
+  }, []);
+
+  async function pollReaderDocumentStatus(documentId, { openWhenReady = false } = {}) {
+    if (!initData || !documentId) return null;
+    const pollToken = readerStatusPollTokenRef.current + 1;
+    readerStatusPollTokenRef.current = pollToken;
+    let attempt = 0;
+    let suggestedDelayMs = 0;
+    while (readerStatusPollTokenRef.current === pollToken) {
+      if (attempt > 0) {
+        const waitMs = Math.max(900, Number.isFinite(Number(suggestedDelayMs)) ? Number(suggestedDelayMs) : 0);
+        // Let the UI update immediately after the first enqueue response.
+        await new Promise((resolve) => window.setTimeout(resolve, waitMs));
+      }
+      attempt += 1;
+      let response;
+      try {
+        response = await fetch('/api/webapp/reader/library/status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData, document_id: documentId }),
+        });
+      } catch (error) {
+        if (attempt >= 4) throw error;
+        continue;
+      }
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка статуса книги', 'Fehler beim Dokumentstatus'));
+      }
+      const data = await response.json();
+      const doc = data?.document || {};
+      suggestedDelayMs = Number(data?.polling?.suggested_delay_ms || 0);
+      setReaderDocuments((prev) => prev.map((item) => (
+        Number(item?.id) === Number(doc?.id || documentId)
+          ? { ...item, ...doc }
+          : item
+      )));
+      const status = String(data?.status || doc?.processing_status || 'pending').trim().toLowerCase() || 'pending';
+      if (status === 'ready') {
+        await loadReaderLibrary();
+        if (openWhenReady) {
+          await openReaderDocument(Number(doc?.id || documentId));
+        }
+        return data;
+      }
+      if (status === 'failed') {
+        const message = String(data?.error || doc?.processing_error || '').trim()
+          || tr('Не удалось обработать документ.', 'Dokument konnte nicht verarbeitet werden.');
+        setReaderLibraryError(message);
+        await loadReaderLibrary();
+        return data;
+      }
+    }
+    return null;
+  }
 
   const openReaderArchive = async () => {
     setReaderArchiveOpen(true);
@@ -19152,6 +19416,7 @@ function AppInner() {
     try {
       setReaderLoading(true);
       setReaderError('');
+      setReaderLibraryError('');
       const response = await fetch('/api/webapp/reader/library/open', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -19162,13 +19427,28 @@ function AppInner() {
       }
       const data = await response.json();
       const doc = data?.document || {};
+      const processingStatus = String(data?.status || doc?.processing_status || 'ready').trim().toLowerCase() || 'ready';
+      if (processingStatus !== 'ready') {
+        const pendingMessage = processingStatus === 'failed'
+          ? String(data?.error || doc?.processing_error || '').trim() || tr('Не удалось обработать книгу.', 'Dokument konnte nicht verarbeitet werden.')
+          : tr('Книга ещё обрабатывается. Откроем автоматически, когда всё будет готово.', 'Das Dokument wird noch verarbeitet. Es wird automatisch geoeffnet, sobald es fertig ist.');
+        setReaderLibraryError(pendingMessage);
+      if (processingStatus !== 'failed') {
+          void pollReaderDocumentStatus(Number(doc?.id || documentId), { openWhenReady: true });
+        }
+        return;
+      }
       const progress = Number(doc?.progress_percent || 0);
       const bookmark = Number(doc?.bookmark_percent || 0);
       const pages = Array.isArray(doc?.content_pages) ? doc.content_pages : [];
+      setReaderFontSize(READER_DEFAULT_FONT_SIZE);
+      setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
       setReaderDocumentId(Number(doc?.id || documentId));
       setReaderTitle(String(data?.title || doc?.title || ''));
       setReaderContent(String(data?.text || doc?.content_text || '').trim());
       setReaderPages(pages);
+      setReaderDynamicPages([]);
+      setReaderLayoutMode(pages.length > 0 ? 'original' : 'custom');
       setReaderSourceType(String(data?.source_type || doc?.source_type || 'text'));
       setReaderSourceUrl(String(data?.source_url || doc?.source_url || ''));
       setReaderDetectedLanguage(normalizeLangCode(data?.detected_language || ''));
@@ -19252,6 +19532,8 @@ function AppInner() {
         setReaderDocumentId(null);
         setReaderContent('');
         setReaderPages([]);
+        setReaderDynamicPages([]);
+        setReaderLayoutMode('custom');
       }
     } catch (error) {
       setReaderLibraryError(normalizeNetworkErrorMessage(error, 'Не удалось архивировать книгу.', 'Dokument konnte nicht archiviert werden.'));
@@ -19276,6 +19558,8 @@ function AppInner() {
         setReaderDocumentId(null);
         setReaderContent('');
         setReaderPages([]);
+        setReaderDynamicPages([]);
+        setReaderLayoutMode('custom');
       }
     } catch (error) {
       setReaderLibraryError(normalizeNetworkErrorMessage(error, 'Не удалось удалить книгу.', 'Dokument konnte nicht geloescht werden.'));
@@ -19373,6 +19657,10 @@ function AppInner() {
     }
   }, [readerAudioPreviewUrl]);
 
+  useEffect(() => () => {
+    readerStatusPollTokenRef.current += 1;
+  }, []);
+
   async function handleReaderIngest(event) {
     event?.preventDefault?.();
     const rawInput = String(readerInput || '').trim();
@@ -19388,28 +19676,8 @@ function AppInner() {
     setReaderError('');
     setReaderErrorCode('');
     try {
-      const looksLikeUrl = /^https?:\/\//i.test(rawInput) || /^[a-z0-9.-]+\.[a-z]{2,}(\/.*)?$/i.test(rawInput);
-      let filePayload = {};
-      if (readerSelectedFile) {
-        const fileBase64 = await readFileAsBase64(readerSelectedFile);
-        filePayload = {
-          file_name: readerSelectedFile.name,
-          file_mime: readerSelectedFile.type,
-          file_content_base64: fileBase64,
-        };
-      }
-      const response = await fetch('/api/webapp/reader/ingest', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData,
-          url: readerSelectedFile ? '' : (looksLikeUrl ? rawInput : ''),
-          text: readerSelectedFile ? '' : (looksLikeUrl ? '' : rawInput),
-          ...filePayload,
-        }),
-      });
-      if (!response.ok) {
-        const fallback = tr('Ошибка загрузки читалки', 'Fehler beim Laden des Leser-Modus');
+      const buildReaderApiError = async (response, fallbackRu, fallbackDe) => {
+        const fallback = tr(fallbackRu, fallbackDe);
         let message = fallback;
         let errorCode = '';
         try {
@@ -19430,15 +19698,194 @@ function AppInner() {
         }
         const apiError = new Error(message);
         apiError.code = errorCode;
-        throw apiError;
+        return apiError;
+      };
+      const looksLikeUrl = /^https?:\/\//i.test(rawInput) || /^[a-z0-9.-]+\.[a-z]{2,}(\/.*)?$/i.test(rawInput);
+      const shouldUseAsyncReaderFlow = Boolean(readerSelectedFile || looksLikeUrl);
+      if (shouldUseAsyncReaderFlow) {
+        setReaderArchiveOpen(true);
+        setReaderImmersive(false);
+        setReaderSettingsOpen(false);
+        setReaderAddOpen(false);
+        setSelectedSections(new Set(['reader']));
+        ensureSectionVisible('reader');
+        setReaderLibraryError(tr(
+          'Файл отправляется на сервер. Как только документ встанет в очередь, покажем его в библиотеке.',
+          'Die Datei wird an den Server gesendet. Sobald das Dokument in der Warteschlange ist, erscheint es in der Bibliothek.'
+        ));
       }
-      const data = await response.json();
+      let data;
+      if (readerSelectedFile) {
+        let usedDirectUpload = false;
+        let directDocId = null;
+        try {
+          const initResponse = await fetch('/api/webapp/reader/upload-init', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              initData,
+              file_name: readerSelectedFile.name,
+              file_mime: readerSelectedFile.type,
+            }),
+          });
+          if (!initResponse.ok) {
+            throw await buildReaderApiError(initResponse, 'Ошибка подготовки загрузки', 'Fehler bei der Upload-Vorbereitung');
+          }
+          const initDataPayload = await initResponse.json();
+          const upload = initDataPayload?.upload || {};
+          const directDoc = initDataPayload?.document || {};
+          directDocId = Number(directDoc?.id || 0) || null;
+          if (!upload?.url || !directDocId || !upload?.object_key) {
+            throw new Error(tr('Сервер не вернул параметры прямой загрузки.', 'Der Server hat keine Direct-Upload-Parameter zurückgegeben.'));
+          }
+          usedDirectUpload = true;
+          upsertReaderLibraryDocument({
+            ...directDoc,
+            id: directDocId,
+            title: String(initDataPayload?.title || directDoc?.title || readerSelectedFile.name || rawInput.slice(0, 80)),
+            source_type: String(initDataPayload?.source_type || directDoc?.source_type || 'file'),
+            processing_status: String(directDoc?.processing_status || initDataPayload?.status || 'pending'),
+            is_archived: Boolean(directDoc?.is_archived),
+          });
+          setReaderDocumentId(directDocId);
+          setReaderFontSize(READER_DEFAULT_FONT_SIZE);
+          setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
+          setReaderTitle(String(initDataPayload?.title || directDoc?.title || readerSelectedFile.name || rawInput.slice(0, 80)));
+          setReaderSourceType(String(initDataPayload?.source_type || directDoc?.source_type || 'file'));
+          setReaderSourceUrl('');
+          setReaderContent('');
+          setReaderPages([]);
+          setReaderDynamicPages([]);
+          setReaderLayoutMode('custom');
+          setReaderCurrentPage(1);
+          setReaderAddOpen(false);
+          setReaderSelectedFile(null);
+          setReaderLibraryError(tr(
+            'Файл загружается напрямую в object storage. Как только upload завершится, сразу запустим обработку.',
+            'Die Datei wird direkt in den Object Storage geladen. Sobald der Upload fertig ist, startet sofort die Verarbeitung.'
+          ));
+          await loadReaderLibrary(true);
+
+          const uploadResponse = await fetch(String(upload.url), {
+            method: String(upload.method || 'PUT').toUpperCase(),
+            headers: upload.headers && typeof upload.headers === 'object' ? upload.headers : undefined,
+            body: readerSelectedFile,
+          });
+          if (!uploadResponse.ok) {
+            throw new Error(tr('Прямая загрузка файла в storage не удалась.', 'Direkter Upload in den Storage ist fehlgeschlagen.'));
+          }
+          const completeResponse = await fetch('/api/webapp/reader/ingest/complete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              initData,
+              document_id: directDocId,
+              object_key: String(upload.object_key || ''),
+              file_name: readerSelectedFile.name,
+              file_mime: readerSelectedFile.type,
+            }),
+          });
+          if (!completeResponse.ok) {
+            throw await buildReaderApiError(completeResponse, 'Ошибка постановки книги в обработку', 'Fehler beim Start der Dokumentverarbeitung');
+          }
+          data = await completeResponse.json();
+          upsertReaderLibraryDocument(data?.document || {});
+        } catch (directUploadError) {
+          if (usedDirectUpload) {
+            if (directDocId) {
+              try {
+                await fetch('/api/webapp/reader/ingest/abort', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    initData,
+                    document_id: directDocId,
+                    error: String(directUploadError?.message || 'direct_upload_failed'),
+                  }),
+                });
+              } catch (_abortError) {
+                // ignore best-effort status update
+              }
+            }
+            throw directUploadError;
+          }
+          const formData = new FormData();
+          formData.append('initData', initData);
+          formData.append('url', '');
+          formData.append('text', '');
+          formData.append('file', readerSelectedFile, readerSelectedFile.name || 'reader-upload');
+          const fallbackResponse = await fetch('/api/webapp/reader/ingest', {
+            method: 'POST',
+            body: formData,
+          });
+          if (!fallbackResponse.ok) {
+            throw await buildReaderApiError(fallbackResponse, 'Ошибка загрузки читалки', 'Fehler beim Laden des Leser-Modus');
+          }
+          data = await fallbackResponse.json();
+        }
+      } else {
+        const response = await fetch('/api/webapp/reader/ingest', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            initData,
+            url: looksLikeUrl ? rawInput : '',
+            text: looksLikeUrl ? '' : rawInput,
+          }),
+        });
+        if (!response.ok) {
+          throw await buildReaderApiError(response, 'Ошибка загрузки читалки', 'Fehler beim Laden des Leser-Modus');
+        }
+        data = await response.json();
+      }
       const doc = data?.document || {};
       const docId = Number(doc?.id || 0) || null;
+      const processingStatus = String(data?.status || doc?.processing_status || 'ready').trim().toLowerCase() || 'ready';
+      if (processingStatus !== 'ready') {
+        upsertReaderLibraryDocument(doc);
+        setReaderDocumentId(docId);
+        setReaderFontSize(READER_DEFAULT_FONT_SIZE);
+        setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
+        setReaderTitle(String(data?.title || doc?.title || rawInput.slice(0, 80)));
+        setReaderSourceType(String(data?.source_type || doc?.source_type || 'text'));
+        setReaderSourceUrl(String(data?.source_url || doc?.source_url || rawInput));
+        setReaderContent('');
+        setReaderPages([]);
+        setReaderDynamicPages([]);
+        setReaderLayoutMode('custom');
+        setReaderCurrentPage(1);
+        setReaderAudioFromPage('');
+        setReaderAudioToPage('');
+        setReaderAudioError('');
+        setReaderLiveSeconds(0);
+        setReaderTimerPaused(false);
+        setReaderImmersive(false);
+        setReaderTopbarCollapsed(false);
+        setReaderArchiveOpen(true);
+        setReaderSettingsOpen(false);
+        setReaderAddOpen(false);
+        setSelectedSections(new Set(['reader']));
+        ensureSectionVisible('reader');
+        setReaderSelectedFile(null);
+        setReaderErrorCode('');
+        setReaderLibraryError(tr(
+          'Книга загружена в очередь. Обработка идёт в фоне, откроем автоматически, когда всё будет готово.',
+          'Das Dokument wurde zur Verarbeitung eingereiht und wird automatisch geoeffnet, sobald es fertig ist.'
+        ));
+        await loadReaderLibrary(true);
+        if (docId) {
+          void pollReaderDocumentStatus(docId, { openWhenReady: true });
+        }
+        return;
+      }
       const pages = Array.isArray(doc?.content_pages) ? doc.content_pages : [];
+      setReaderFontSize(READER_DEFAULT_FONT_SIZE);
+      setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
       setReaderContent(String(data?.text || '').trim());
       setReaderTitle(String(data?.title || doc?.title || rawInput.slice(0, 80)));
       setReaderPages(pages);
+      setReaderDynamicPages([]);
+      setReaderLayoutMode(pages.length > 0 ? 'original' : 'custom');
       setReaderSourceType(String(data?.source_type || 'text'));
       setReaderSourceUrl(String(data?.source_url || rawInput));
       setReaderDetectedLanguage(normalizeLangCode(data?.detected_language || ''));
@@ -22380,6 +22827,8 @@ function AppInner() {
       setDictionaryError(tr('Введите слово для поиска.', 'Bitte gib ein Wort ein.'));
       return;
     }
+    const queryLang = /[А-Яа-яЁё]/.test(sourceWord) ? 'ru' : 'de';
+    const resolvedDirection = queryLang === 'ru' ? 'ru-de' : 'de-ru';
     setDictionaryLoading(true);
     setDictionaryLookupMode('base');
     dictionaryLookupPollTokenRef.current += 1;
@@ -22394,8 +22843,11 @@ function AppInner() {
       const offlineResult = await lookupOfflineBaseDictEntry(sourceWord);
       if (offlineResult) {
         setDictionaryResult(offlineResult);
-        setDictionaryDirection('de-ru');
-        setDictionaryLanguagePair(resolveLanguagePairForUI({ source_lang: 'de', target_lang: 'ru' }));
+        setDictionaryDirection(resolvedDirection);
+        setDictionaryLanguagePair(resolveLanguagePairForUI({
+          source_lang: queryLang,
+          target_lang: queryLang === 'ru' ? 'de' : 'ru',
+        }));
         return;
       }
 
@@ -22407,13 +22859,21 @@ function AppInner() {
       const response = await fetch('/api/webapp/dictionary/base-lookup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, word: sourceWord, source_lang: 'de' }),
+        body: JSON.stringify({ initData, word: sourceWord, source_lang: queryLang }),
       });
-      if (!response.ok) {
+      if (!response.ok && response.status !== 202) {
         setDictionaryError(tr('Ошибка соединения со словарём.', 'Verbindungsfehler zum Wörterbuch.'));
         return;
       }
       const data = await response.json();
+
+      if (data.warming_up) {
+        setDictionaryError(tr(
+          'Базовый словарь ещё загружается на сервер. Попробуйте снова чуть позже или используйте ⚡ Перевод.',
+          'Das Basiswörterbuch wird auf dem Server noch geladen. Versuche es gleich noch einmal oder nutze ⚡ Übersetzen.'
+        ));
+        return;
+      }
 
       if (data.not_found || !data.item) {
         setDictionaryError(tr('Слово не найдено в словаре. Попробуйте ⚡ Перевод.', 'Wort nicht gefunden. Versuche ⚡ Übersetzen.'));
@@ -22421,16 +22881,22 @@ function AppInner() {
       }
 
       setDictionaryResult(data.item);
-      setDictionaryDirection('de-ru');
-      setDictionaryLanguagePair(resolveLanguagePairForUI({ source_lang: 'de', target_lang: 'ru' }));
+      setDictionaryDirection(String(data.direction || resolvedDirection).trim().toLowerCase() || resolvedDirection);
+      setDictionaryLanguagePair(resolveLanguagePairForUI({
+        source_lang: queryLang,
+        target_lang: queryLang === 'ru' ? 'de' : 'ru',
+      }));
       void saveBaseDictEntryFromServerResult(sourceWord, data.item);
     } catch {
       // Network failure — try offline cache only
       const offlineFallback = await lookupOfflineBaseDictEntry(sourceWord);
       if (offlineFallback) {
         setDictionaryResult(offlineFallback);
-        setDictionaryDirection('de-ru');
-        setDictionaryLanguagePair(resolveLanguagePairForUI({ source_lang: 'de', target_lang: 'ru' }));
+        setDictionaryDirection(resolvedDirection);
+        setDictionaryLanguagePair(resolveLanguagePairForUI({
+          source_lang: queryLang,
+          target_lang: queryLang === 'ru' ? 'de' : 'ru',
+        }));
       } else {
         setDictionaryError(tr('Нет соединения и слово не найдено офлайн.', 'Kein Netz und Wort nicht offline gefunden.'));
       }
@@ -27960,24 +28426,24 @@ function AppInner() {
                           disabled={dictionaryLoading}
                         >
                           {dictionaryLoading && dictionaryLookupMode === 'quick'
-                            ? tr('Быстро...', 'Schnell...')
+                            ? tr('Перевод...', 'Übersetzen...')
                             : tr('⚡ Перевод', '⚡ Übersetzen')}
                         </button>
                         <button className="secondary-button dictionary-button" type="submit" disabled={dictionaryLoading}>
                           {dictionaryLoading && dictionaryLookupMode === 'gpt'
-                            ? tr('GPT...', 'GPT...')
-                            : tr('🤖 GPT-разбор', '🤖 GPT')}
+                            ? tr('Разбор AI...', 'KI-Analyse...')
+                            : tr('🤖 Разбор AI', '🤖 KI-Analyse')}
                         </button>
                         <button
                           className="secondary-button dictionary-base-button"
                           type="button"
                           onClick={handleDictionaryBaseLookup}
                           disabled={dictionaryLoading}
-                          title={tr('Словарный перевод — работает онлайн и офлайн', 'Wörterbuch — funktioniert online und offline')}
+                          title={tr('Базовый словарь — работает онлайн и офлайн', 'Basiswörterbuch — funktioniert online und offline')}
                         >
                           {dictionaryLoading && dictionaryLookupMode === 'base'
-                            ? tr('Словарь...', 'Wörterbuch...')
-                            : tr('📖 Словарь', '📖 Wörterbuch')}
+                            ? tr('Офлайн...', 'Offline...')
+                            : tr('📖 Офлайн', '📖 Offline')}
                         </button>
                         {lastLookupScrollY !== null && (
                           <button
@@ -29152,6 +29618,17 @@ function AppInner() {
                                   {tr('Стр.', 'S.')}{' '}{readerCurrentPage}{readerPageCount > 0 ? ` / ${readerPageCount}` : ''}
                                 </div>
                               </div>
+                              <div
+                                className="reader-page-sheet reader-page-sheet-measure"
+                                aria-hidden="true"
+                                style={{
+                                  '--reader-font-size': `${readerFontSize}px`,
+                                  '--reader-font-weight': readerFontWeight,
+                                }}
+                              >
+                                <div ref={readerMeasureInnerRef} className="reader-page-sheet-inner" />
+                                <div className="reader-page-num">{tr('Стр.', 'S.')} 999 / 999</div>
+                              </div>
                             </div>
                           ) : (
                             renderReaderStructuredText()
@@ -29170,14 +29647,42 @@ function AppInner() {
                           <div className="reader-settings-sheet">
                             <div className="reader-settings-sheet-head">
                               <strong>{tr('Настройки чтения', 'Leseeinstellungen')}</strong>
-                              <button
-                                type="button"
-                                className="secondary-button"
-                                onClick={() => setReaderSettingsOpen(false)}
-                              >
-                                ×
-                              </button>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                {readerCanUseOriginalLayout && (
+                                  <button
+                                    type="button"
+                                    className="secondary-button"
+                                    onClick={() => {
+                                      setReaderFontSize(READER_DEFAULT_FONT_SIZE);
+                                      setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
+                                      setReaderLayoutMode('original');
+                                    }}
+                                  >
+                                    {tr('Оригинал', 'Original')}
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  className="secondary-button"
+                                  onClick={() => setReaderSettingsOpen(false)}
+                                >
+                                  ×
+                                </button>
+                              </div>
                             </div>
+                            {readerCanUseOriginalLayout && (
+                              <div className="webapp-muted" style={{ fontSize: 12 }}>
+                                {readerLayoutMode === 'original'
+                                  ? tr(
+                                    'Сейчас открыт оригинальный режим: исходная разбивка страниц книги. Любое изменение шрифта переключит книгу в адаптивный режим.',
+                                    'Aktuell ist der Originalmodus aktiv: die urspruengliche Seitenteilung des Buches. Jede Schriftanpassung schaltet in den adaptiven Modus um.'
+                                  )
+                                  : tr(
+                                    'Сейчас открыт адаптивный режим: страницы пересчитаны под ваш шрифт и экран. Кнопка "Оригинал" вернёт исходную разбивку.',
+                                    'Aktuell ist der adaptive Modus aktiv: die Seiten wurden fuer deine Schrift und deinen Bildschirm neu berechnet. Mit "Original" kehrst du zur urspruenglichen Seitenteilung zurueck.'
+                                  )}
+                              </div>
+                            )}
                             <label className="webapp-field">
                               <span>{tr('Размер шрифта', 'Schriftgroesse')}</span>
                               <input
@@ -29186,7 +29691,10 @@ function AppInner() {
                                 max="28"
                                 step="1"
                                 value={readerFontSize}
-                                onChange={(event) => setReaderFontSize(Number(event.target.value))}
+                                onChange={(event) => {
+                                  setReaderLayoutMode('custom');
+                                  setReaderFontSize(Number(event.target.value));
+                                }}
                               />
                               <small className="webapp-muted">{readerFontSize}px</small>
                             </label>
@@ -29198,7 +29706,10 @@ function AppInner() {
                                 max="700"
                                 step="50"
                                 value={readerFontWeight}
-                                onChange={(event) => setReaderFontWeight(Number(event.target.value))}
+                                onChange={(event) => {
+                                  setReaderLayoutMode('custom');
+                                  setReaderFontWeight(Number(event.target.value));
+                                }}
                               />
                               <small className="webapp-muted">{readerFontWeight}</small>
                             </label>

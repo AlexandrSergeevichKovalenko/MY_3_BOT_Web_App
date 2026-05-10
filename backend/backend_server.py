@@ -460,6 +460,16 @@ from backend.database import (
     upsert_weekly_goals,
     get_weekly_plan_progress,
     get_plan_progress,
+    count_base_dictionary_entries,
+    get_base_dictionary_seed_state,
+    upsert_base_dictionary_seed_state,
+    get_wiktionary_seed_state,
+    upsert_wiktionary_seed_state,
+    count_wiktionary_entries,
+    lookup_wiktionary_entry,
+    lookup_wiktionary_entry_by_translation,
+    bulk_insert_wiktionary_entries,
+    list_combined_dictionary_for_offline_pack,
     start_agent_voice_session,
     get_agent_voice_session,
     get_voice_scenario,
@@ -469,8 +479,11 @@ from backend.database import (
     finish_reader_session,
     touch_reader_session,
     upsert_reader_library_document,
+    create_reader_library_document_placeholder,
     list_reader_library_documents,
     get_reader_library_document,
+    set_reader_library_document_processing_status,
+    finalize_reader_library_document_processing,
     update_reader_library_state,
     rename_reader_library_document,
     archive_reader_library_document,
@@ -491,6 +504,8 @@ from backend.database import (
     begin_translation_check_completion_side_effects,
     finalize_translation_check_completion_side_effects,
     finalize_translation_check_items_batch,
+    lookup_base_dictionary_entry,
+    lookup_base_dictionary_entry_by_translation,
     close_stale_open_translation_sessions_for_user,
     mark_translation_sentences_shown,
     FLASHCARD_RECENT_SEEN_HOURS,
@@ -510,7 +525,15 @@ from backend.database import (
     vote_story,
     vote_translation,
 )
-from backend.r2_storage import r2_exists, r2_put_bytes, r2_public_url, r2_delete_object, r2_bucket_usage_summary
+from backend.r2_storage import (
+    r2_exists,
+    r2_put_bytes,
+    r2_public_url,
+    r2_delete_object,
+    r2_bucket_usage_summary,
+    r2_get_bytes,
+    r2_generate_presigned_put_url,
+)
 from backend.srs import schedule_review, MATURE_INTERVAL_DAYS
 from backend.grammar_focuses import (
     GRAMMAR_FOCUS_PRESETS,
@@ -638,6 +661,22 @@ _YT_OEMBED_CACHE: dict[str, dict] = {}
 _YOUTUBE_MANUAL_SEARCH_CACHE: dict[str, dict] = {}
 _YOUTUBE_MANUAL_SEARCH_CACHE_LOCK = threading.Lock()
 _YOUTUBE_MANUAL_SEARCH_CACHE_TTL_SEC = max(60, int((os.getenv("YOUTUBE_MANUAL_SEARCH_CACHE_TTL_SEC") or "600").strip()))
+_BASE_DICTIONARY_AUTOSEED_LOCK = threading.Lock()
+_BASE_DICTIONARY_AUTOSEED_STARTED = False
+_WIKTIONARY_AUTOSEED_LOCK = threading.Lock()
+_WIKTIONARY_AUTOSEED_STARTED = False
+_READER_INGEST_MAX_WORKERS = max(
+    1,
+    min(4, int((os.getenv("READER_INGEST_MAX_WORKERS") or "2").strip() or "2")),
+)
+_READER_INGEST_POLL_DELAY_MS = max(
+    1000,
+    int((os.getenv("READER_INGEST_POLL_DELAY_MS") or "2200").strip() or "2200"),
+)
+_READER_INGEST_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_READER_INGEST_MAX_WORKERS,
+    thread_name_prefix="reader-ingest",
+)
 _TRANSLATION_CHECK_RUNNERS: set[int] = set()
 _TRANSLATION_CHECK_RUNNERS_LOCK = threading.Lock()
 _TRANSLATION_SESSION_FILL_RUNNERS: set[int] = set()
@@ -9725,22 +9764,157 @@ def _ensure_min_allowed_skill_resource_domains(
 
 def _load_freedict_if_empty() -> None:
     try:
-        from backend.database import get_db_connection_context
-        with get_db_connection_context() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM bt_base_dictionary WHERE source_lang = 'de'")
-                count = cur.fetchone()[0]
-        if count > 0:
-            logging.info("FreeDict autoseed: bt_base_dictionary already has %s entries, skipping", count)
+        source_lang = "de"
+        seed_state = get_base_dictionary_seed_state(source_lang)
+        count = count_base_dictionary_entries(source_lang)
+        ready_min_count = 22000
+        if count >= ready_min_count:
+            if not bool(seed_state.get("seed_complete")):
+                upsert_base_dictionary_seed_state(
+                    source_lang=source_lang,
+                    seed_complete=True,
+                    entry_count=count,
+                )
+            logging.info(
+                "FreeDict autoseed: source_lang=%s already has %s entries (threshold %s), marking complete and skipping download",
+                source_lang,
+                count,
+                ready_min_count,
+            )
             return
-        logging.info("FreeDict autoseed: table empty, starting download...")
-        from backend.load_freedict import _download, _parse, _bulk_insert, FREEDICT_URL
-        data = _download(FREEDICT_URL)
-        entries = _parse(data)
+        if bool(seed_state.get("seed_complete")) and count > 0:
+            logging.info(
+                "FreeDict autoseed: source_lang=%s already marked complete with %s entries, skipping",
+                source_lang,
+                count,
+            )
+            return
+        logging.info(
+            "FreeDict autoseed: source_lang=%s seed_complete=%s current_entries=%s, starting backfill...",
+            source_lang,
+            bool(seed_state.get("seed_complete")),
+            count,
+        )
+        from backend.load_freedict import (
+            _download,
+            _parse,
+            _bulk_insert,
+            _extract_tei_from_src_archive,
+            resolve_freedict_source_url_with_fallback,
+        )
+        source_url = resolve_freedict_source_url_with_fallback()
+        upsert_base_dictionary_seed_state(
+            source_lang=source_lang,
+            seed_complete=False,
+            entry_count=count,
+            source_url=source_url,
+        )
+        archive_data = _download(source_url)
+        tei_data = _extract_tei_from_src_archive(archive_data)
+        entries = _parse(tei_data)
         inserted = _bulk_insert(entries)
-        logging.info("FreeDict autoseed: loaded %s entries into bt_base_dictionary", inserted)
+        final_count = count_base_dictionary_entries(source_lang)
+        upsert_base_dictionary_seed_state(
+            source_lang=source_lang,
+            seed_complete=True,
+            entry_count=final_count,
+            source_url=source_url,
+        )
+        logging.info(
+            "FreeDict autoseed: source_lang=%s source_url=%s loaded=%s final_entries=%s seed_complete=true",
+            source_lang,
+            source_url,
+            inserted,
+            final_count,
+        )
     except Exception as exc:
+        try:
+            upsert_base_dictionary_seed_state(
+                source_lang="de",
+                seed_complete=False,
+                entry_count=count_base_dictionary_entries("de"),
+            )
+        except Exception:
+            logging.debug("Failed to persist incomplete FreeDict seed state", exc_info=True)
         logging.warning("FreeDict autoseed failed (non-fatal): %s", exc)
+
+
+def _start_freedict_autoseed_if_needed() -> None:
+    global _BASE_DICTIONARY_AUTOSEED_STARTED
+    with _BASE_DICTIONARY_AUTOSEED_LOCK:
+        if _BASE_DICTIONARY_AUTOSEED_STARTED:
+            return
+        _BASE_DICTIONARY_AUTOSEED_STARTED = True
+
+    def _worker() -> None:
+        global _BASE_DICTIONARY_AUTOSEED_STARTED
+        try:
+            _load_freedict_if_empty()
+        finally:
+            with _BASE_DICTIONARY_AUTOSEED_LOCK:
+                _BASE_DICTIONARY_AUTOSEED_STARTED = False
+
+    threading.Thread(
+        target=_worker,
+        daemon=True,
+        name="freedict-autoseed-on-demand",
+    ).start()
+
+
+def _load_wikdict_if_needed() -> None:
+    try:
+        source_lang = "de"
+        seed_state = get_wiktionary_seed_state(source_lang)
+        if bool(seed_state.get("seed_complete")):
+            logging.info(
+                "WikDict autoseed: source_lang=%s already complete with %s entries, skipping",
+                source_lang,
+                seed_state.get("entry_count"),
+            )
+            return
+        count = count_wiktionary_entries(source_lang)
+        logging.info(
+            "WikDict autoseed: source_lang=%s seed_complete=False current_entries=%s, starting download...",
+            source_lang,
+            count,
+        )
+        from backend.load_wiktionary import _download, _parse, WIKDICT_URL
+        upsert_wiktionary_seed_state(source_lang=source_lang, seed_complete=False,
+                                      entry_count=count, source_url=WIKDICT_URL)
+        data = _download(WIKDICT_URL)
+        entries = _parse(data)
+        inserted = bulk_insert_wiktionary_entries(entries, source_lang=source_lang)
+        final_count = count_wiktionary_entries(source_lang)
+        upsert_wiktionary_seed_state(source_lang=source_lang, seed_complete=True,
+                                      entry_count=final_count, source_url=WIKDICT_URL)
+        logging.info(
+            "WikDict autoseed: source_lang=%s loaded=%s final_entries=%s seed_complete=true",
+            source_lang, inserted, final_count,
+        )
+    except Exception as exc:
+        logging.warning("WikDict autoseed failed (non-fatal): %s", exc)
+
+
+def _start_wikdict_autoseed_if_needed() -> None:
+    global _WIKTIONARY_AUTOSEED_STARTED
+    with _WIKTIONARY_AUTOSEED_LOCK:
+        if _WIKTIONARY_AUTOSEED_STARTED:
+            return
+        _WIKTIONARY_AUTOSEED_STARTED = True
+
+    def _worker() -> None:
+        global _WIKTIONARY_AUTOSEED_STARTED
+        try:
+            _load_wikdict_if_needed()
+        finally:
+            with _WIKTIONARY_AUTOSEED_LOCK:
+                _WIKTIONARY_AUTOSEED_STARTED = False
+
+    threading.Thread(
+        target=_worker,
+        daemon=True,
+        name="wikdict-autoseed",
+    ).start()
 
 
 def _start_skill_resource_domain_autoseed() -> None:
@@ -12654,6 +12828,189 @@ def _fetch_reader_text_from_url(raw_url: str) -> tuple[str, str, list[dict]]:
         text, pages = _extract_pdf_content_from_bytes(response.content)
         return text, "pdf", pages
     return _extract_text_from_html(response.text), "html", []
+
+
+def _guess_reader_source_type(*, input_url: str = "", file_name: str = "", file_mime: str = "") -> str:
+    lower_name = str(file_name or "").strip().lower()
+    mime = str(file_mime or "").strip().lower()
+    raw_url = str(input_url or "").strip().lower()
+    if mime == "application/pdf" or lower_name.endswith(".pdf") or raw_url.endswith(".pdf"):
+        return "pdf"
+    if mime in {"application/epub+zip", "application/epub"} or lower_name.endswith(".epub"):
+        return "epub"
+    if raw_url:
+        return "url"
+    if lower_name:
+        return "file"
+    return "text"
+
+
+def _build_reader_upload_object_key(*, user_id: int, document_id: int, file_name: str) -> str:
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(file_name or "").strip())[:120].strip("._")
+    suffix = Path(safe_name).suffix if safe_name else ""
+    object_name = f"upload{suffix}" if suffix else "upload.bin"
+    month_prefix = datetime.now(timezone.utc).strftime("%Y/%m")
+    return f"reader_uploads/{month_prefix}/{int(user_id)}/{int(document_id)}/{object_name}"
+
+
+def _reader_upload_object_key_is_valid_for_user(*, object_key: str, user_id: int, document_id: int) -> bool:
+    normalized_key = str(object_key or "").strip().lstrip("/")
+    expected_prefix = f"reader_uploads/"
+    owned_fragment = f"/{int(user_id)}/{int(document_id)}/"
+    return normalized_key.startswith(expected_prefix) and owned_fragment in normalized_key
+
+
+def _resolve_reader_ingest_content(
+    *,
+    input_text: str,
+    input_url: str,
+    file_name: str,
+    file_mime: str,
+    file_content_b64: str,
+    upload_tmp_path: str = "",
+    upload_r2_object_key: str = "",
+) -> tuple[str, list[dict], str, str | None]:
+    normalized_text = ""
+    content_pages: list[dict] = []
+    source_type = "text"
+    resolved_url = None
+
+    if upload_r2_object_key or upload_tmp_path or file_content_b64:
+        raw_bytes = b""
+        if upload_r2_object_key:
+            raw_bytes = r2_get_bytes(upload_r2_object_key) or b""
+            if not raw_bytes:
+                raise ValueError("Не удалось получить загруженный файл из object storage")
+        elif upload_tmp_path:
+            try:
+                with open(upload_tmp_path, "rb") as fh:
+                    raw_bytes = fh.read()
+            except Exception as exc:
+                raise ValueError(f"Не удалось прочитать загруженный файл: {exc}") from exc
+        else:
+            try:
+                raw_bytes = base64.b64decode(file_content_b64, validate=True)
+            except Exception as exc:
+                raise ValueError(f"Некорректный файл: {exc}") from exc
+        lower_name = file_name.lower()
+        is_pdf = file_mime == "application/pdf" or lower_name.endswith(".pdf")
+        is_epub = file_mime in ("application/epub+zip", "application/epub") or lower_name.endswith(".epub")
+        if is_pdf:
+            normalized_text, content_pages = _extract_pdf_content_from_bytes(raw_bytes)
+            source_type = "pdf"
+        elif is_epub:
+            normalized_text, content_pages = _extract_epub_content_from_bytes(raw_bytes)
+            source_type = "epub"
+        else:
+            decoded_text = raw_bytes.decode("utf-8", errors="ignore")
+            normalized_text = _normalize_reader_text(decoded_text)
+            source_type = "file"
+    elif input_text:
+        normalized_text = _normalize_reader_text(input_text)
+        source_type = "text"
+    else:
+        normalized_text, source_type, content_pages = _fetch_reader_text_from_url(input_url)
+        resolved_url = input_url
+
+    return normalized_text, content_pages, source_type, resolved_url
+
+
+def _build_reader_processing_payload(document: dict | None, *, polling_delay_ms: int | None = None) -> dict[str, Any]:
+    safe_document = dict(document or {})
+    status = str(safe_document.get("processing_status") or "pending").strip().lower() or "pending"
+    payload: dict[str, Any] = {
+        "ok": True,
+        "document": safe_document,
+        "status": status,
+        "polling": {
+            "suggested_delay_ms": int(
+                polling_delay_ms
+                if polling_delay_ms is not None
+                else (_READER_INGEST_POLL_DELAY_MS if status in {"pending", "processing"} else 0)
+            ),
+        },
+    }
+    if status == "failed":
+        payload["error"] = str(safe_document.get("processing_error") or "Не удалось обработать документ").strip()
+    return payload
+
+
+def _process_reader_library_ingest_job(
+    *,
+    user_id: int,
+    document_id: int,
+    source_lang: str,
+    target_lang: str,
+    input_text: str,
+    input_url: str,
+    file_name: str,
+    file_mime: str,
+    file_content_b64: str,
+    upload_tmp_path: str = "",
+    upload_r2_object_key: str = "",
+) -> None:
+    set_reader_library_document_processing_status(
+        user_id=int(user_id),
+        document_id=int(document_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        status="processing",
+    )
+    try:
+        normalized_text, content_pages, source_type, resolved_url = _resolve_reader_ingest_content(
+            input_text=input_text,
+            input_url=input_url,
+            file_name=file_name,
+            file_mime=file_mime,
+            file_content_b64=file_content_b64,
+            upload_tmp_path=upload_tmp_path,
+            upload_r2_object_key=upload_r2_object_key,
+        )
+        if not normalized_text:
+            raise ValueError("Не удалось извлечь текст")
+        title = _infer_reader_title(
+            input_text=normalized_text,
+            input_url=resolved_url or input_url or file_name,
+            source_type=source_type,
+        )
+        finalized = finalize_reader_library_document_processing(
+            user_id=int(user_id),
+            document_id=int(document_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            title=title,
+            source_type=source_type,
+            source_url=resolved_url or input_url or None,
+            content_text=normalized_text,
+            content_pages=content_pages,
+        )
+        if not finalized:
+            raise RuntimeError("Не удалось сохранить обработанный документ")
+    except Exception as exc:
+        logging.exception("reader ingest background processing failed document_id=%s user_id=%s", document_id, user_id)
+        set_reader_library_document_processing_status(
+            user_id=int(user_id),
+            document_id=int(document_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            status="failed",
+            error=str(exc),
+        )
+    finally:
+        if upload_tmp_path:
+            try:
+                os.remove(upload_tmp_path)
+            except Exception:
+                pass
+        if upload_r2_object_key:
+            try:
+                r2_delete_object(upload_r2_object_key)
+            except Exception:
+                pass
+
+
+def _enqueue_reader_library_ingest_job(**payload) -> None:
+    _READER_INGEST_EXECUTOR.submit(_process_reader_library_ingest_job, **payload)
 
 
 def _resolve_offline_espeak_voice(lang_hint: str | None, text: str) -> str:
@@ -21077,31 +21434,19 @@ def _start_translation_check_runner(
     accepted_at_ms: int | None = None,
     force_dispatch: bool = False,
 ) -> dict[str, Any] | None:
-    if is_translation_check_async_enabled() and not dispatch_job_id:
-        return enqueue_translation_check_job(
+    if not is_translation_check_async_enabled():
+        logging.error(
+            "Translation check local fallback disabled in BACKEND_WEB: session=%s reason=translation_check_async_disabled",
             int(session_id),
-            correlation_id=correlation_id,
-            request_id=request_id,
-            accepted_at_ms=accepted_at_ms,
-            force_dispatch=force_dispatch,
         )
-        
-    with _TRANSLATION_CHECK_RUNNERS_LOCK:
-        if int(session_id) in _TRANSLATION_CHECK_RUNNERS:
-            return None
-        _TRANSLATION_CHECK_RUNNERS.add(int(session_id))
-    threading.Thread(
-        target=_run_translation_check_session,
-        kwargs={
-            "session_id": int(session_id),
-            "dispatch_job_id": str(dispatch_job_id or "").strip() or None,
-            "correlation_id": correlation_id,
-            "request_id": request_id,
-            "accepted_at_ms": accepted_at_ms,
-        },
-        daemon=True,
-    ).start()
-    return None
+        return None
+    return enqueue_translation_check_job(
+        int(session_id),
+        correlation_id=correlation_id,
+        request_id=request_id,
+        accepted_at_ms=accepted_at_ms,
+        force_dispatch=force_dispatch,
+    )
 
 
 def _dispatch_translation_check_runner_async(
@@ -21126,6 +21471,8 @@ def _maybe_start_inline_translation_check_runner(
     correlation_id: str | None = None,
 ) -> bool:
     if not _TRANSLATION_CHECK_INLINE_FALLBACK_ENABLED:
+        return False
+    if not is_translation_check_async_enabled():
         return False
     session_id = session.get("id")
     if not session_id:
@@ -21182,16 +21529,11 @@ def _maybe_start_inline_translation_check_runner(
     if not dispatch_job_id:
         return False
     logging.warning(
-        "Translation check inline fallback activated: session=%s runtime_status=%s dispatched_age_ms=%s heartbeat_age_ms=%s",
+        "Translation check stale dispatch refresh requested: session=%s runtime_status=%s dispatched_age_ms=%s heartbeat_age_ms=%s",
         int(session_id),
         runtime_status,
         dispatched_age_ms,
         heartbeat_age_ms,
-    )
-    _start_translation_check_runner(
-        int(session_id),
-        dispatch_job_id=dispatch_job_id,
-        correlation_id=resolved_correlation_id,
     )
     return True
 
@@ -25484,7 +25826,7 @@ def _fetch_wiktionary_entry(word: str) -> dict | None:
     }
 
 
-def _build_base_dict_result_from_entry(db_entry: dict) -> dict:
+def _build_base_dict_result_from_entry(db_entry: dict, *, query_lang: str = "de", query_word: str = "") -> dict:
     """Convert a bt_base_dictionary row to the dictionaryResult format the frontend expects."""
     translations_ru = list(db_entry.get("translations_ru") or [])
     senses_json = db_entry.get("senses_json") or []
@@ -25494,15 +25836,26 @@ def _build_base_dict_result_from_entry(db_entry: dict) -> dict:
     pos = str(db_entry.get("pos") or "").strip()
     translation_ru = ", ".join(t for t in translations_ru[:5] if t)
     display_word = f"{article} {lemma}".strip() if article else lemma
+    normalized_query_lang = str(query_lang or "de").strip().lower() or "de"
+    source_text = display_word
+    target_text = translation_ru
+    source_lang = str(db_entry.get("source_lang") or "de").strip().lower() or "de"
+    target_lang = "ru"
+    if normalized_query_lang == "ru":
+        ru_query_fallback = translations_ru[0] if translations_ru else ""
+        source_text = str(query_word or ru_query_fallback or "").strip() or translation_ru
+        target_text = display_word
+        source_lang = "ru"
+        target_lang = "de"
     return {
         "word_de": display_word,
         "word_ru": translation_ru,
         "translation_de": lemma,
         "translation_ru": translation_ru,
-        "source_text": display_word,
-        "target_text": translation_ru,
-        "source_lang": db_entry.get("source_lang") or "de",
-        "target_lang": "ru",
+        "source_text": source_text,
+        "target_text": target_text,
+        "source_lang": source_lang,
+        "target_lang": target_lang,
         "part_of_speech": pos,
         "article": article,
         "forms": forms_json,
@@ -25539,18 +25892,54 @@ def base_dictionary_lookup():
     if not _telegram_hash_is_valid(init_data):
         return jsonify({"error": "initData не прошёл проверку"}), 401
 
-    source_lang = str(payload.get("source_lang") or "de").strip() or "de"
+    requested_source_lang = str(payload.get("source_lang") or "").strip().lower()
+    query_lang = requested_source_lang or ("ru" if re.search(r"[А-Яа-яЁё]", word) else "de")
 
-    # 1. Check existing cache
-    db_entry = lookup_base_dictionary_entry(word, source_lang)
+    # 1. Check FreeDict base table first
+    if query_lang == "ru":
+        db_entry = lookup_base_dictionary_entry_by_translation(word, "de")
+    else:
+        db_entry = lookup_base_dictionary_entry(word, "de")
     if db_entry and db_entry.get("translations_ru"):
         return jsonify({
-            "item": _build_base_dict_result_from_entry(db_entry),
-            "source": "cache",
+            "item": _build_base_dict_result_from_entry(db_entry, query_lang=query_lang, query_word=word),
+            "source": "freedict",
+            "query_lang": query_lang,
+            "direction": "ru-de" if query_lang == "ru" else "de-ru",
         })
 
-    # Word not found in the pre-loaded dictionary
-    return jsonify({"not_found": True})
+    # 2. Fall back to WikDict extended table
+    try:
+        if query_lang == "ru":
+            wikt_entry = lookup_wiktionary_entry_by_translation(word, "de")
+        else:
+            wikt_entry = lookup_wiktionary_entry(word, "de")
+        if wikt_entry and wikt_entry.get("translations_ru"):
+            return jsonify({
+                "item": _build_base_dict_result_from_entry(wikt_entry, query_lang=query_lang, query_word=word),
+                "source": "wikdict",
+                "query_lang": query_lang,
+                "direction": "ru-de" if query_lang == "ru" else "de-ru",
+            })
+    except Exception:
+        pass
+
+    try:
+        seed_state = get_base_dictionary_seed_state("de")
+        if not bool(seed_state.get("seed_complete")):
+            _start_freedict_autoseed_if_needed()
+            return jsonify({
+                "not_found": True,
+                "warming_up": True,
+                "query_lang": query_lang,
+                "seed_complete": False,
+                "seed_entry_count": int(seed_state.get("entry_count") or 0),
+            }), 202
+    except Exception:
+        pass
+
+    # Word not found in either dictionary
+    return jsonify({"not_found": True, "query_lang": query_lang})
 
 
 @app.route("/api/webapp/dictionary/offline-pack", methods=["GET"])
@@ -25559,7 +25948,7 @@ def dictionary_offline_pack():
     import json as _json
     source_lang = str(request.args.get("lang") or "de").strip() or "de"
     limit = min(int(request.args.get("limit") or 10000), 30000)
-    rows = list_base_dictionary_for_offline_pack(source_lang=source_lang, limit=limit)
+    rows = list_combined_dictionary_for_offline_pack(source_lang=source_lang, limit=limit)
     pack = [
         {
             "w": r["lemma"],
@@ -35896,16 +36285,29 @@ def translate_youtube_subtitles():
 @app.route("/api/webapp/reader/ingest", methods=["POST"])
 def ingest_reader_content():
     payload = request.get_json(silent=True) or {}
-    init_data = payload.get("initData")
-    input_text = str(payload.get("text") or "").strip()
-    input_url = str(payload.get("url") or "").strip()
-    file_name = str(payload.get("file_name") or "").strip()
-    file_mime = str(payload.get("file_mime") or "").strip().lower()
+    form_payload = request.form if request.form else {}
+    uploaded_file = request.files.get("file") if request.files else None
+    init_data = form_payload.get("initData") or payload.get("initData")
+    input_text = str(form_payload.get("text") or payload.get("text") or "").strip()
+    input_url = str(form_payload.get("url") or payload.get("url") or "").strip()
+    file_name = str(
+        (getattr(uploaded_file, "filename", None) if uploaded_file is not None else None)
+        or form_payload.get("file_name")
+        or payload.get("file_name")
+        or ""
+    ).strip()
+    file_mime = str(
+        (getattr(uploaded_file, "mimetype", None) if uploaded_file is not None else None)
+        or form_payload.get("file_mime")
+        or payload.get("file_mime")
+        or ""
+    ).strip().lower()
     file_content_b64 = str(payload.get("file_content_base64") or "").strip()
+    upload_tmp_path = ""
 
     if not init_data:
         return jsonify({"error": "initData обязателен"}), 400
-    if not input_text and not input_url and not file_content_b64:
+    if not input_text and not input_url and not file_content_b64 and uploaded_file is None:
         return jsonify({"error": "Нужно передать text, url или файл"}), 400
 
     if not _telegram_hash_is_valid(init_data):
@@ -35923,42 +36325,112 @@ def ingest_reader_content():
         pass
 
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
-    normalized_text = ""
-    content_pages: list[dict] = []
-    source_type = "text"
-    resolved_url = None
+    is_async_candidate = bool(uploaded_file is not None or file_content_b64 or input_url)
+    guessed_source_type = _guess_reader_source_type(
+        input_url=input_url,
+        file_name=file_name,
+        file_mime=file_mime,
+    )
+    placeholder_title = _infer_reader_title(
+        input_text=input_text,
+        input_url=input_url or file_name,
+        source_type=guessed_source_type,
+    )
 
     try:
-        if file_content_b64:
-            try:
-                raw_bytes = base64.b64decode(file_content_b64, validate=True)
-            except Exception as exc:
-                raise ValueError(f"Некорректный файл: {exc}") from exc
-            lower_name = file_name.lower()
-            is_pdf = (
-                file_mime == "application/pdf"
-                or lower_name.endswith(".pdf")
+        entitlement, _subscription = _resolve_user_entitlement(user_id=int(user_id))
+        effective_mode = str(entitlement.get("effective_mode") or "free").lower()
+        existing_docs = list_reader_library_documents(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            limit=300,
+            include_archived=True,
+        )
+        if effective_mode == "free" and is_async_candidate and len(existing_docs) >= 1:
+            return jsonify(
+                {
+                    "error": (
+                        f"Лимит Free: можно хранить только 1 книгу/документ "
+                        f"до {FREE_READER_STORAGE_DAYS} дней. Чтобы добавить новую, удалите старую."
+                    ),
+                    "error_code": "LIMIT_FREE_PLAN_1_BOOK",
+                }
+            ), 403
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка проверки лимита плана: {exc}"}), 500
+
+    if is_async_candidate:
+        document = None
+        try:
+            if uploaded_file is not None:
+                file_suffix = Path(file_name).suffix if file_name else ""
+                with tempfile.NamedTemporaryFile(
+                    suffix=file_suffix or "",
+                    prefix="reader-upload-",
+                    delete=False,
+                ) as tmp:
+                    uploaded_file.save(tmp)
+                    upload_tmp_path = tmp.name
+            document = create_reader_library_document_placeholder(
+                user_id=int(user_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                title=placeholder_title,
+                source_type=guessed_source_type,
+                source_url=input_url or None,
             )
-            is_epub = (
-                file_mime in ("application/epub+zip", "application/epub")
-                or lower_name.endswith(".epub")
+            _enqueue_reader_library_ingest_job(
+                user_id=int(user_id),
+                document_id=int(document["id"]),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                input_text=input_text,
+                input_url=input_url,
+                file_name=file_name,
+                file_mime=file_mime,
+                file_content_b64=file_content_b64,
+                upload_tmp_path=upload_tmp_path,
             )
-            if is_pdf:
-                normalized_text, content_pages = _extract_pdf_content_from_bytes(raw_bytes)
-                source_type = "pdf"
-            elif is_epub:
-                normalized_text, content_pages = _extract_epub_content_from_bytes(raw_bytes)
-                source_type = "epub"
-            else:
-                decoded_text = raw_bytes.decode("utf-8", errors="ignore")
-                normalized_text = _normalize_reader_text(decoded_text)
-                source_type = "file"
-        elif input_text:
-            normalized_text = _normalize_reader_text(input_text)
-            source_type = "text"
-        else:
-            normalized_text, source_type, content_pages = _fetch_reader_text_from_url(input_url)
-            resolved_url = input_url
+        except Exception as exc:
+            logging.exception("reader ingest enqueue failed user_id=%s", user_id)
+            if isinstance(document, dict) and document.get("id"):
+                try:
+                    set_reader_library_document_processing_status(
+                        user_id=int(user_id),
+                        document_id=int(document["id"]),
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        status="failed",
+                        error=f"enqueue_failed: {exc}",
+                    )
+                except Exception:
+                    pass
+            if upload_tmp_path:
+                try:
+                    os.remove(upload_tmp_path)
+                except Exception:
+                    pass
+            return jsonify({"error": f"Не удалось поставить книгу в обработку: {exc}"}), 500
+
+        response_payload = _build_reader_processing_payload(document)
+        response_payload["queued"] = True
+        response_payload["async"] = True
+        response_payload["title"] = placeholder_title
+        response_payload["source_type"] = guessed_source_type
+        response_payload["source_url"] = input_url or None
+        response_payload["language_pair"] = _build_language_pair_payload(source_lang, target_lang)
+        return jsonify(response_payload), 202
+
+    try:
+        normalized_text, content_pages, source_type, resolved_url = _resolve_reader_ingest_content(
+            input_text=input_text,
+            input_url=input_url,
+            file_name=file_name,
+            file_mime=file_mime,
+            file_content_b64=file_content_b64,
+            upload_tmp_path=upload_tmp_path,
+        )
     except requests.RequestException as exc:
         return jsonify({"error": f"Не удалось загрузить ссылку: {exc}"}), 400
     except ValueError as exc:
@@ -35970,16 +36442,8 @@ def ingest_reader_content():
         return jsonify({"error": "Не удалось извлечь текст"}), 422
 
     try:
-        entitlement, _subscription = _resolve_user_entitlement(user_id=int(user_id))
-        if str(entitlement.get("effective_mode") or "free").lower() == "free":
+        if effective_mode == "free":
             text_hash = hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
-            existing_docs = list_reader_library_documents(
-                user_id=int(user_id),
-                source_lang=source_lang,
-                target_lang=target_lang,
-                limit=300,
-                include_archived=True,
-            )
             has_same_document = any(str(item.get("text_hash") or "") == text_hash for item in existing_docs)
             if not has_same_document and len(existing_docs) >= 1:
                 return jsonify(
@@ -36017,6 +36481,7 @@ def ingest_reader_content():
     return jsonify(
         {
             "ok": True,
+            "async": False,
             "text": normalized_text,
             "source_type": source_type,
             "source_url": resolved_url,
@@ -36027,6 +36492,220 @@ def ingest_reader_content():
             "document": document,
         }
     )
+
+
+@app.route("/api/webapp/reader/upload-init", methods=["POST"])
+def reader_upload_init():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    file_name = str(payload.get("file_name") or "").strip()
+    file_mime = str(payload.get("file_mime") or "").strip().lower()
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not file_name:
+        return jsonify({"error": "file_name обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    try:
+        get_or_create_user_subscription(user_id=int(user_id), now_ts=datetime.now(timezone.utc))
+    except Exception:
+        pass
+
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    guessed_source_type = _guess_reader_source_type(
+        input_url="",
+        file_name=file_name,
+        file_mime=file_mime,
+    )
+    placeholder_title = _infer_reader_title(
+        input_text="",
+        input_url=file_name,
+        source_type=guessed_source_type,
+    )
+
+    try:
+        entitlement, _subscription = _resolve_user_entitlement(user_id=int(user_id))
+        effective_mode = str(entitlement.get("effective_mode") or "free").lower()
+        existing_docs = list_reader_library_documents(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            limit=300,
+            include_archived=True,
+        )
+        if effective_mode == "free" and len(existing_docs) >= 1:
+            return jsonify(
+                {
+                    "error": (
+                        f"Лимит Free: можно хранить только 1 книгу/документ "
+                        f"до {FREE_READER_STORAGE_DAYS} дней. Чтобы добавить новую, удалите старую."
+                    ),
+                    "error_code": "LIMIT_FREE_PLAN_1_BOOK",
+                }
+            ), 403
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка проверки лимита плана: {exc}"}), 500
+
+    try:
+        document = create_reader_library_document_placeholder(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            title=placeholder_title,
+            source_type=guessed_source_type,
+            source_url=None,
+        )
+        object_key = _build_reader_upload_object_key(
+            user_id=int(user_id),
+            document_id=int(document["id"]),
+            file_name=file_name,
+        )
+        upload = r2_generate_presigned_put_url(
+            object_key,
+            content_type=file_mime or "application/octet-stream",
+            expires_in_sec=900,
+        )
+    except Exception as exc:
+        logging.exception("reader upload init failed user_id=%s file_name=%s", user_id, file_name)
+        return jsonify({"error": f"Не удалось подготовить upload: {exc}"}), 500
+
+    response_payload = _build_reader_processing_payload(document)
+    response_payload["upload"] = upload
+    response_payload["queued"] = False
+    response_payload["async"] = True
+    response_payload["title"] = placeholder_title
+    response_payload["source_type"] = guessed_source_type
+    response_payload["language_pair"] = _build_language_pair_payload(source_lang, target_lang)
+    return jsonify(response_payload), 200
+
+
+@app.route("/api/webapp/reader/ingest/complete", methods=["POST"])
+def complete_reader_content_ingest():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    document_id = payload.get("document_id")
+    object_key = str(payload.get("object_key") or "").strip()
+    file_name = str(payload.get("file_name") or "").strip()
+    file_mime = str(payload.get("file_mime") or "").strip().lower()
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if document_id is None:
+        return jsonify({"error": "document_id обязателен"}), 400
+    if not object_key:
+        return jsonify({"error": "object_key обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    if not _reader_upload_object_key_is_valid_for_user(
+        object_key=object_key,
+        user_id=int(user_id),
+        document_id=int(document_id),
+    ):
+        return jsonify({"error": "object_key не принадлежит документу"}), 403
+
+    try:
+        document = get_reader_library_document(
+            user_id=int(user_id),
+            document_id=int(document_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            include_content=False,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка проверки документа: {exc}"}), 500
+    if not document:
+        return jsonify({"error": "Книга не найдена"}), 404
+
+    try:
+        if not r2_exists(object_key):
+            return jsonify({"error": "Загруженный файл ещё недоступен"}), 409
+        _enqueue_reader_library_ingest_job(
+            user_id=int(user_id),
+            document_id=int(document_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            input_text="",
+            input_url="",
+            file_name=file_name or str(document.get("title") or ""),
+            file_mime=file_mime,
+            file_content_b64="",
+            upload_r2_object_key=object_key,
+        )
+    except Exception as exc:
+        logging.exception("reader ingest complete enqueue failed user_id=%s document_id=%s", user_id, document_id)
+        try:
+            set_reader_library_document_processing_status(
+                user_id=int(user_id),
+                document_id=int(document_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                status="failed",
+                error=f"enqueue_failed: {exc}",
+            )
+        except Exception:
+            pass
+        return jsonify({"error": f"Не удалось запустить обработку: {exc}"}), 500
+
+    response_payload = _build_reader_processing_payload(document)
+    response_payload["queued"] = True
+    response_payload["async"] = True
+    response_payload["title"] = str(document.get("title") or "")
+    response_payload["source_type"] = str(document.get("source_type") or "")
+    response_payload["language_pair"] = _build_language_pair_payload(source_lang, target_lang)
+    return jsonify(response_payload), 202
+
+
+@app.route("/api/webapp/reader/ingest/abort", methods=["POST"])
+def abort_reader_content_ingest():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    document_id = payload.get("document_id")
+    error_text = str(payload.get("error") or "").strip() or "upload_aborted"
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if document_id is None:
+        return jsonify({"error": "document_id обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        document = set_reader_library_document_processing_status(
+            user_id=int(user_id),
+            document_id=int(document_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            status="failed",
+            error=error_text[:300],
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Не удалось обновить статус загрузки: {exc}"}), 500
+    if not document:
+        return jsonify({"error": "Книга не найдена"}), 404
+    return jsonify({"ok": True, "document": document})
 
 
 @app.route("/api/webapp/reader/library", methods=["POST"])
@@ -36151,6 +36830,43 @@ def reader_library_list():
         return jsonify(response_payload)
 
 
+@app.route("/api/webapp/reader/library/status", methods=["POST"])
+def reader_library_status():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    document_id = payload.get("document_id")
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if document_id is None:
+        return jsonify({"error": "document_id обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        document = get_reader_library_document(
+            user_id=int(user_id),
+            document_id=int(document_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            include_content=False,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка проверки статуса книги: {exc}"}), 500
+    if not document:
+        return jsonify({"error": "Книга не найдена"}), 404
+    response_payload = _build_reader_processing_payload(document)
+    response_payload["language_pair"] = _build_language_pair_payload(source_lang, target_lang)
+    return jsonify(response_payload)
+
+
 @app.route("/api/webapp/reader/library/open", methods=["POST"])
 def reader_library_open():
     started_perf = time.perf_counter()
@@ -36228,6 +36944,7 @@ def reader_library_open():
                 document_id=int(document_id),
                 source_lang=source_lang,
                 target_lang=target_lang,
+                include_content=True,
             )
         except Exception as exc:
             _log_flow_observation(
@@ -36263,6 +36980,14 @@ def reader_library_open():
                 **summarize_db_acquire_events(db_acquire_events),
             )
             return jsonify({"error": "Книга не найдена"}), 404
+        processing_status = str(doc.get("processing_status") or "ready").strip().lower() or "ready"
+        if processing_status != "ready":
+            response_payload = _build_reader_processing_payload(doc)
+            response_payload["title"] = str(doc.get("title") or "Untitled")
+            response_payload["source_type"] = str(doc.get("source_type") or "text")
+            response_payload["source_url"] = doc.get("source_url")
+            response_payload["language_pair"] = _build_language_pair_payload(source_lang, target_lang)
+            return jsonify(response_payload), 202
         entitlement_started_perf = time.perf_counter()
         entitlement, _subscription = _resolve_user_entitlement(user_id=int(user_id))
         entitlement_duration_ms = _elapsed_ms_since(entitlement_started_perf)
@@ -36994,8 +37719,8 @@ def get_webapp_sentences():
         generation_status = raw_generation_status
     elif raw_generation_status == "failed":
         generation_status = "failed"
-    elif requested_session_id and not is_translation_sentence_fill_async_enabled() and _translation_session_fill_runner_is_active(int(requested_session_id)):
-        generation_status = "running"
+    elif requested_session_id and ready_count < expected_total and not is_translation_sentence_fill_async_enabled():
+        generation_status = "failed"
     else:
         generation_status = "idle"
     generation_in_progress = generation_status in {"pending", "running"} and ready_count < expected_total
@@ -37006,7 +37731,14 @@ def get_webapp_sentences():
         "expected_total": expected_total,
         "generation_in_progress": generation_in_progress,
         "generation_status": generation_status,
-        "generation_error": str((generation_status_payload or {}).get("error") or "").strip() or None,
+        "generation_error": (
+            str((generation_status_payload or {}).get("error") or "").strip()
+            or (
+                "translation_sentence_fill_async_disabled"
+                if requested_session_id and ready_count < expected_total and not is_translation_sentence_fill_async_enabled()
+                else None
+            )
+        ),
         "language_pair": _build_language_pair_payload(source_lang, target_lang),
     }
     source_session_id = str(deduped[0].get("source_session_id") or "").strip() if deduped else requested_session_id
@@ -37294,8 +38026,10 @@ def _build_translation_session_start_payload(
         generation_status = raw_generation_status
     elif raw_generation_status == "failed":
         generation_status = "failed"
+    elif generation_started and is_translation_sentence_fill_async_enabled():
+        generation_status = "pending"
     elif generation_started:
-        generation_status = "pending" if is_translation_sentence_fill_async_enabled() else "running"
+        generation_status = "failed"
     else:
         generation_status = "idle"
     generation_in_progress = generation_status in {"pending", "running"} and ready_count < expected_total
@@ -37308,7 +38042,14 @@ def _build_translation_session_start_payload(
         "remaining_count": remaining_count,
         "generation_in_progress": generation_in_progress,
         "generation_status": generation_status,
-        "generation_error": str((generation_status_payload or {}).get("error") or "").strip() or None,
+        "generation_error": (
+            str((generation_status_payload or {}).get("error") or "").strip()
+            or (
+                "translation_sentence_fill_async_disabled"
+                if generation_started and not is_translation_sentence_fill_async_enabled()
+                else None
+            )
+        ),
     }
     return response_payload
 
@@ -37550,26 +38291,10 @@ def _start_translation_session_fill_runner(
             tested_skill_profile_seed=tested_skill_profile_seed,
         )
         return
-    with _TRANSLATION_SESSION_FILL_RUNNERS_LOCK:
-        if int(session_id) in _TRANSLATION_SESSION_FILL_RUNNERS:
-            return
-        _TRANSLATION_SESSION_FILL_RUNNERS.add(int(session_id))
-    _remember_translation_session_fill_launched_at(int(session_id), int(time.time() * 1000))
-    threading.Thread(
-        target=_run_translation_session_fill,
-        kwargs={
-            "user_id": int(user_id),
-            "username": username,
-            "session_id": int(session_id),
-            "topic": topic,
-            "level": level,
-            "source_lang": source_lang,
-            "target_lang": target_lang,
-            "grammar_focus": grammar_focus,
-            "tested_skill_profile_seed": tested_skill_profile_seed,
-        },
-        daemon=True,
-    ).start()
+    logging.error(
+        "Translation session fill local fallback disabled in BACKEND_WEB: session_id=%s reason=translation_sentence_fill_async_disabled",
+        int(session_id),
+    )
 
 
 @app.route("/api/webapp/topics", methods=["GET"])
@@ -43263,14 +43988,55 @@ def admin_load_freedict():
     if token != required:
         return jsonify({"error": "Unauthorized"}), 401
     try:
-        from backend.load_freedict import _download, _parse, _bulk_insert, FREEDICT_URL
-        data = _download(FREEDICT_URL)
-        entries = _parse(data)
+        from backend.load_freedict import _download, _parse, _bulk_insert, resolve_freedict_source_url_with_fallback
+        source_url = resolve_freedict_source_url_with_fallback()
+        from backend.load_freedict import _extract_tei_from_src_archive
+        archive_data = _download(source_url)
+        tei_data = _extract_tei_from_src_archive(archive_data)
+        entries = _parse(tei_data)
         inserted = _bulk_insert(entries)
-        return jsonify({"ok": True, "downloaded_bytes": len(data), "parsed": len(entries), "inserted": inserted})
+        return jsonify({"ok": True, "downloaded_bytes": len(archive_data), "parsed": len(entries), "inserted": inserted})
     except Exception as exc:
         logging.exception("load_freedict admin endpoint failed")
         return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/admin/wiktionary-status", methods=["GET"])
+def admin_wiktionary_status():
+    token = (request.args.get("token") or request.headers.get("X-Admin-Token") or "").strip()
+    required = (os.getenv("ADMIN_TOKEN") or os.getenv("AUDIO_DISPATCH_TOKEN") or "").strip()
+    if not required:
+        return jsonify({"error": "ADMIN_TOKEN not set"}), 500
+    if token != required:
+        return jsonify({"error": "Unauthorized"}), 401
+    seed_state = get_wiktionary_seed_state("de")
+    wikt_count = count_wiktionary_entries("de")
+    free_count = count_base_dictionary_entries("de")
+    return jsonify({
+        "seed_state": seed_state,
+        "wiktionary_entries": wikt_count,
+        "freedict_entries": free_count,
+    })
+
+
+@app.route("/api/admin/load-wikdict", methods=["POST"])
+def admin_load_wikdict():
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or (request.headers.get("X-Admin-Token") or "").strip()
+    required = (os.getenv("ADMIN_TOKEN") or os.getenv("AUDIO_DISPATCH_TOKEN") or "").strip()
+    if not required:
+        return jsonify({"error": "ADMIN_TOKEN not set"}), 500
+    if token != required:
+        return jsonify({"error": "Unauthorized"}), 401
+    # Check current state before triggering
+    seed_state = get_wiktionary_seed_state("de")
+    if seed_state.get("seed_complete"):
+        return jsonify({"ok": True, "message": "already_complete",
+                        "entry_count": seed_state.get("entry_count", 0)})
+    # Start seeding in background so the HTTP request returns immediately
+    _start_wikdict_autoseed_if_needed()
+    return jsonify({"ok": True, "message": "seeding_started",
+                    "seed_state": seed_state})
 
 
 def _format_selection_dictionary_explanation(result: dict, source_lang: str, target_lang: str) -> str:
@@ -44207,10 +44973,19 @@ try:
         )
         _run_startup_phase(
             "load_freedict_if_empty",
-            _load_freedict_if_empty,
+            _start_freedict_autoseed_if_needed,
             enabled=True,
             category="housekeeping",
             required_before_first_request=False,
+            async_phase=True,
+        )
+        _run_startup_phase(
+            "load_wikdict_if_needed",
+            _start_wikdict_autoseed_if_needed,
+            enabled=_startup_enabled_from_env("WIKDICT_AUTOSEED_ON_STARTUP", "0"),
+            category="housekeeping",
+            required_before_first_request=False,
+            async_phase=True,
         )
     else:
         logging.info(

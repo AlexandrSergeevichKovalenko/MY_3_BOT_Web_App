@@ -121,6 +121,38 @@ def r2_put_bytes(
     )
 
 
+def r2_generate_presigned_put_url(
+    object_key: str,
+    *,
+    content_type: str = "application/octet-stream",
+    expires_in_sec: int = 900,
+) -> dict[str, Any]:
+    cfg = load_r2_config_from_env()
+    key = _normalize_object_key(object_key)
+    client = _r2_client()
+    safe_content_type = str(content_type or "application/octet-stream").strip() or "application/octet-stream"
+    safe_expires = max(60, min(3600, int(expires_in_sec or 900)))
+    url = client.generate_presigned_url(
+        "put_object",
+        Params={
+            "Bucket": cfg.bucket_name,
+            "Key": key,
+            "ContentType": safe_content_type,
+        },
+        ExpiresIn=safe_expires,
+        HttpMethod="PUT",
+    )
+    return {
+        "url": str(url or "").strip(),
+        "method": "PUT",
+        "headers": {
+            "Content-Type": safe_content_type,
+        },
+        "object_key": key,
+        "expires_in_sec": safe_expires,
+    }
+
+
 def r2_delete_object(object_key: str) -> bool:
     cfg = load_r2_config_from_env()
     key = _normalize_object_key(object_key)

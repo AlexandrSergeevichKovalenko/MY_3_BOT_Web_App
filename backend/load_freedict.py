@@ -4,17 +4,21 @@ Load FreeDict deu-rus dictionary into bt_base_dictionary.
 Run once after deploy:
     python3 -m backend.load_freedict
 
-Source: https://github.com/freedict/fd-dictionaries (deu-rus, CC-BY-SA)
+Source: https://freedict.org/freedict-database.json (deu-rus, CC-BY-SA)
 ~22 000 German→Russian entries.
 """
+import io
 import json
 import sys
+import tarfile
 import urllib.request
 import xml.etree.ElementTree as ET
 
-FREEDICT_URL = (
-    "https://raw.githubusercontent.com/freedict/fd-dictionaries"
-    "/master/deu-rus/deu-rus.tei"
+FREEDICT_CATALOG_URL = "https://freedict.org/freedict-database.json"
+FREEDICT_DICT_NAME = "deu-rus"
+FREEDICT_FALLBACK_SRC_URL = (
+    "https://download.freedict.org/dictionaries/deu-rus/2025.11.23/"
+    "freedict-deu-rus-2025.11.23.src.tar.xz"
 )
 TEI_NS = "http://www.tei-c.org/ns/1.0"
 
@@ -58,6 +62,50 @@ def _download(url: str) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": "DeutschFlow/1.0"})
     with urllib.request.urlopen(req, timeout=60) as resp:
         return resp.read()
+
+
+def _resolve_freedict_source_url() -> str:
+    catalog_data = _download(FREEDICT_CATALOG_URL)
+    payload = json.loads(catalog_data.decode("utf-8"))
+    if not isinstance(payload, list):
+        raise ValueError("FreeDict catalog payload must be a list")
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("name") or "").strip().lower() != FREEDICT_DICT_NAME:
+            continue
+        for release in item.get("releases") or []:
+            if not isinstance(release, dict):
+                continue
+            if str(release.get("platform") or "").strip().lower() != "src":
+                continue
+            url = str(release.get("URL") or "").strip()
+            if url:
+                return url
+        break
+    raise ValueError(f"FreeDict source URL for {FREEDICT_DICT_NAME} not found in catalog")
+
+
+def resolve_freedict_source_url_with_fallback() -> str:
+    try:
+        return _resolve_freedict_source_url()
+    except Exception:
+        return FREEDICT_FALLBACK_SRC_URL
+
+
+def _extract_tei_from_src_archive(data: bytes) -> bytes:
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:xz") as archive:
+        members = [
+            member for member in archive.getmembers()
+            if member.isfile() and str(member.name or "").lower().endswith(".tei")
+        ]
+        if not members:
+            raise ValueError("No .tei file found inside FreeDict source archive")
+        members.sort(key=lambda member: ("/" in member.name, len(member.name)))
+        with archive.extractfile(members[0]) as extracted:
+            if extracted is None:
+                raise ValueError(f"Failed to extract TEI member {members[0].name}")
+            return extracted.read()
 
 
 def _parse(data: bytes) -> list[dict]:
@@ -169,15 +217,24 @@ def _bulk_insert(entries: list[dict]) -> int:
 
 
 def main() -> None:
-    print(f"Downloading FreeDict deu-rus from GitHub…")
+    print("Resolving FreeDict deu-rus source URL…")
     try:
-        data = _download(FREEDICT_URL)
+        source_url = resolve_freedict_source_url_with_fallback()
+        archive_data = _download(source_url)
     except Exception as exc:
         print(f"Download failed: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Downloaded {len(data):,} bytes. Parsing…")
-    entries = _parse(data)
+    print(f"Downloading FreeDict deu-rus source archive from {source_url}…")
+    print(f"Downloaded {len(archive_data):,} bytes. Extracting TEI…")
+    try:
+        tei_data = _extract_tei_from_src_archive(archive_data)
+    except Exception as exc:
+        print(f"TEI extraction failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Extracted {len(tei_data):,} bytes of TEI. Parsing…")
+    entries = _parse(tei_data)
     print(f"Parsed {len(entries):,} entries. Inserting into PostgreSQL…")
 
     inserted = _bulk_insert(entries)
