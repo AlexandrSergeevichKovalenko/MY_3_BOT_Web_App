@@ -19465,11 +19465,14 @@ function AppInner() {
       const doc = data?.document || {};
       const processingStatus = String(data?.status || doc?.processing_status || 'ready').trim().toLowerCase() || 'ready';
       if (processingStatus !== 'ready') {
-        const pendingMessage = processingStatus === 'failed'
-          ? String(data?.error || doc?.processing_error || '').trim() || tr('Не удалось обработать книгу.', 'Dokument konnte nicht verarbeitet werden.')
-          : tr('Книга ещё обрабатывается. Откроем автоматически, когда всё будет готово.', 'Das Dokument wird noch verarbeitet. Es wird automatisch geoeffnet, sobald es fertig ist.');
-        setReaderLibraryError(pendingMessage);
-      if (processingStatus !== 'failed') {
+        if (processingStatus === 'failed') {
+          const failedMessage = String(data?.error || doc?.processing_error || '').trim()
+            || tr('Не удалось обработать книгу.', 'Dokument konnte nicht verarbeitet werden.');
+          setReaderLibraryError(failedMessage);
+        } else {
+          setReaderLibraryError('');
+        }
+        if (processingStatus !== 'failed') {
           void pollReaderDocumentStatus(Number(doc?.id || documentId), { openWhenReady: true });
         }
         return;
@@ -19746,10 +19749,7 @@ function AppInner() {
         setReaderAddOpen(false);
         setSelectedSections(new Set(['reader']));
         ensureSectionVisible('reader');
-        setReaderLibraryError(tr(
-          'Файл отправляется на сервер. Как только документ встанет в очередь, покажем его в библиотеке.',
-          'Die Datei wird an den Server gesendet. Sobald das Dokument in der Warteschlange ist, erscheint es in der Bibliothek.'
-        ));
+        setReaderLibraryError('');
       }
       let data;
       if (readerSelectedFile) {
@@ -19798,10 +19798,7 @@ function AppInner() {
           setReaderCurrentPage(1);
           setReaderAddOpen(false);
           setReaderSelectedFile(null);
-          setReaderLibraryError(tr(
-            'Файл загружается напрямую в object storage. Как только upload завершится, сразу запустим обработку.',
-            'Die Datei wird direkt in den Object Storage geladen. Sobald der Upload fertig ist, startet sofort die Verarbeitung.'
-          ));
+          setReaderLibraryError('');
           await loadReaderLibrary(true, { resetError: false, showError: false });
 
           const uploadResponse = await fetch(String(upload.url), {
@@ -19913,10 +19910,7 @@ function AppInner() {
         ensureSectionVisible('reader');
         setReaderSelectedFile(null);
         setReaderErrorCode('');
-        setReaderLibraryError(tr(
-          'Книга загружена в очередь. Обработка идёт в фоне, откроем автоматически, когда всё будет готово.',
-          'Das Dokument wurde zur Verarbeitung eingereiht und wird automatisch geoeffnet, sobald es fertig ist.'
-        ));
+        setReaderLibraryError('');
         await loadReaderLibrary(true, { resetError: false, showError: false });
         if (docId) {
           void pollReaderDocumentStatus(docId, { openWhenReady: true });
