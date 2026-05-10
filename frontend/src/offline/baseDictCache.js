@@ -245,19 +245,26 @@ export async function downloadOfflinePack(lang = 'de', limit = 10000) {
     if (entries.length === 0) return false;
 
     const db = await _openBD();
-    const tx = db.transaction(STORE_BD, 'readwrite');
-    const store = tx.objectStore(STORE_BD);
-    for (const e of entries) {
-      // Ensure ru_lc is present so the by_ru_lc index is populated
-      if (Array.isArray(e.ru) && !e.ru_lc) {
-        e.ru_lc = e.ru.map((r) => String(r || '').trim().toLowerCase()).filter(Boolean);
+    // Write in small batches so readonly transactions (lookups) can run between batches.
+    // A single readwrite transaction for 10 000 entries blocks all reads for 30–60 s on mobile.
+    const BATCH = 500;
+    for (let i = 0; i < entries.length; i += BATCH) {
+      const batch = entries.slice(i, i + BATCH);
+      const tx = db.transaction(STORE_BD, 'readwrite');
+      const store = tx.objectStore(STORE_BD);
+      for (const e of batch) {
+        if (Array.isArray(e.ru) && !e.ru_lc) {
+          e.ru_lc = e.ru.map((r) => String(r || '').trim().toLowerCase()).filter(Boolean);
+        }
+        store.put(e);
       }
-      store.put(e);
+      await new Promise((res, rej) => {
+        tx.oncomplete = res;
+        tx.onerror = (ev) => rej(ev.target.error);
+      });
+      // Yield the event loop so pending readonly transactions can start between batches.
+      await new Promise((res) => setTimeout(res, 0));
     }
-    await new Promise((res, rej) => {
-      tx.oncomplete = res;
-      tx.onerror = (ev) => rej(ev.target.error);
-    });
     await _setPackVersion(new Date().toISOString());
     return true;
   } catch {
