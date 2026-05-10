@@ -16389,6 +16389,23 @@ body {
     justify-content: center;
   }
 
+  .webapp-page.is-dictionary-layout.is-topbar-back-mode .webapp-topbar.is-back-mode {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    grid-template-columns: none;
+    padding: 4px 0 0;
+    gap: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .webapp-page.is-dictionary-layout.is-topbar-back-mode .webapp-topbar.is-back-mode .topbar-home-row {
+    min-height: 0;
+  }
+
   .topbar-left,
   .topbar-right {
     display: contents;
