@@ -13345,6 +13345,39 @@ def _resume_reader_library_document_processing_if_stale(
     )
 
 
+def _resume_stale_reader_library_documents(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    documents: list[dict] | None,
+) -> list[dict]:
+    refreshed_items: list[dict] = []
+    for raw_item in list(documents or []):
+        item = dict(raw_item or {})
+        document_id = int(item.get("id") or 0)
+        if not document_id:
+            refreshed_items.append(item)
+            continue
+        try:
+            resumed = _resume_reader_library_document_processing_if_stale(
+                user_id=int(user_id),
+                document_id=document_id,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                document=item,
+            )
+        except Exception:
+            logging.exception(
+                "reader library stale recovery failed user_id=%s document_id=%s",
+                user_id,
+                document_id,
+            )
+            resumed = item
+        refreshed_items.append(dict(resumed or item))
+    return refreshed_items
+
+
 def _resolve_reader_ingest_content(
     *,
     input_text: str,
@@ -37399,6 +37432,12 @@ def reader_library_list():
                 target_lang=target_lang,
                 limit=limit,
                 include_archived=include_archived,
+            )
+            items = _resume_stale_reader_library_documents(
+                user_id=int(user_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                documents=items,
             )
         except Exception as exc:
             _log_flow_observation(
