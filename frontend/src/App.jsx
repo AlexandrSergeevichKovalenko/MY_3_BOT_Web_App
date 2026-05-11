@@ -10939,11 +10939,6 @@ function AppInner() {
     return HOME_SUBSECTION_KEYS.has(key) ? key : '';
   }, [flashcardsOnly, selectedSections]);
   const isHomeRouteActive = isHomeScreen || Boolean(activeHomeSubsectionKey);
-  const showReaderTopbarPeekInAppTopbar = readerSectionVisible
-    && readerHasContent
-    && readerImmersive
-    && readerTopbarCollapsed
-    && !readerArchiveOpen;
   const isGuideScreen = !flashcardsOnly && selectedSections.size === 1 && selectedSections.has('guide');
   const showHomeGuideQuickCard = isHomeScreen && !guideQuickCardDismissed;
   /* Legacy guide/onboarding copy removed from runtime path.
@@ -12023,6 +12018,11 @@ function AppInner() {
       'Formel fuer den Gesamtscore: Durchschnittsbewertung - durchschnittliche Zeit pro Uebersetzung × 0.5 - Tage ohne Praxis × 0.5. Der Wert ist weder nach unten noch nach oben begrenzt: Er kann negativ sein oder ueber 100 liegen.'
     );
   }, [analyticsSummary, tr]);
+  const showReaderTopbarPeekInAppTopbar = readerSectionVisible
+    && readerHasContent
+    && readerImmersive
+    && readerTopbarCollapsed
+    && !readerArchiveOpen;
   const readerVisibleText = useMemo(() => {
     const raw = readerPageCount > 0
       ? String(readerDisplayPages[Math.max(0, Number(readerCurrentPage || 1) - 1)]?.text || '')
