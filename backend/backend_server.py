@@ -2379,7 +2379,10 @@ def _apply_hashed_asset_cache_headers(response):
     response.headers["Cache-Control"] = _HASHED_ASSET_CACHE_CONTROL
     return response
 
-_ACCESS_PUBLIC_WEBAPP_PATHS = {"/api/webapp/topics"}
+_ACCESS_PUBLIC_WEBAPP_PATHS = {
+    "/api/webapp/topics",
+    "/api/webapp/version",
+}
 _ACCESS_PROTECTED_EXACT_PATHS = {"/api/message"}
 _LEGACY_API_PREFIXES = (
     "/webapp/",
