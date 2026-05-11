@@ -13061,19 +13061,36 @@ def _extract_pdf_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
     return _normalize_reader_text("\n\n".join(chunks)), pages
 
 
+def _load_ebooklib_runtime() -> tuple[Any, Any]:
+    global _ebooklib_epub, _EPUB_ITEM_DOCUMENT
+    if _ebooklib_epub is not None and _EPUB_ITEM_DOCUMENT is not None:
+        return _ebooklib_epub, _EPUB_ITEM_DOCUMENT
+    try:
+        import ebooklib as _ebooklib_root
+        from ebooklib import epub as _ebooklib_epub_runtime
+    except Exception as exc:  # pragma: no cover - optional dependency
+        logging.exception("ebooklib runtime import failed")
+        raise RuntimeError(f"EPUB extraction is unavailable: {exc}") from exc
+    item_document = getattr(_ebooklib_root, "ITEM_DOCUMENT", None)
+    if item_document is None:  # pragma: no cover - defensive
+        raise RuntimeError("EPUB extraction is unavailable: ITEM_DOCUMENT is missing in ebooklib")
+    _ebooklib_epub = _ebooklib_epub_runtime
+    _EPUB_ITEM_DOCUMENT = item_document
+    return _ebooklib_epub, _EPUB_ITEM_DOCUMENT
+
+
 def _extract_epub_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
     if not data:
         return "", []
-    if _ebooklib_epub is None:
-        raise RuntimeError("EPUB extraction is unavailable: install EbookLib")
+    ebooklib_epub, epub_item_document = _load_ebooklib_runtime()
     try:
-        book = _ebooklib_epub.read_epub(BytesIO(data), options={"ignore_ncx": True})
+        book = ebooklib_epub.read_epub(BytesIO(data), options={"ignore_ncx": True})
     except Exception as exc:
         raise ValueError(f"Не удалось прочитать EPUB файл: {exc}") from exc
     chunks: list[str] = []
     pages: list[dict] = []
     chapter_num = 0
-    for item in book.get_items_of_type(_EPUB_ITEM_DOCUMENT):
+    for item in book.get_items_of_type(epub_item_document):
         chapter_num += 1
         if chapter_num > 200:
             break
