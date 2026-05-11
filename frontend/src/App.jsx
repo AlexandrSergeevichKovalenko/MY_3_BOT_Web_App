@@ -10939,6 +10939,11 @@ function AppInner() {
     return HOME_SUBSECTION_KEYS.has(key) ? key : '';
   }, [flashcardsOnly, selectedSections]);
   const isHomeRouteActive = isHomeScreen || Boolean(activeHomeSubsectionKey);
+  const showReaderTopbarPeekInAppTopbar = readerSectionVisible
+    && readerHasContent
+    && readerImmersive
+    && readerTopbarCollapsed
+    && !readerArchiveOpen;
   const isGuideScreen = !flashcardsOnly && selectedSections.size === 1 && selectedSections.has('guide');
   const showHomeGuideQuickCard = isHomeScreen && !guideQuickCardDismissed;
   /* Legacy guide/onboarding copy removed from runtime path.
@@ -25624,6 +25629,29 @@ function AppInner() {
                     <span>{Boolean(flashcardActiveMode) ? tr('Назад', 'Zurück') : tr('На главную', 'Startseite')}</span>
                   </button>
                   {Boolean(flashcardActiveMode) && renderTodaySectionTaskHud('flashcards', { ignoreProgress: true, inline: true })}
+                  {showReaderTopbarPeekInAppTopbar && (
+                    <button
+                      type="button"
+                      className="secondary-button topbar-reader-peek-btn reader-topbar-toggle-chip reader-toolbar-btn"
+                      onClick={() => setReaderTopbarCollapsed(false)}
+                      title={tr('Показать панель чтения', 'Leseleiste anzeigen')}
+                    >
+                      <span className="reader-toolbar-btn-icon" aria-hidden="true">
+                        <svg viewBox="0 0 18 18" fill="none">
+                          <path
+                            d="M4.5 6.75 9 11.25l4.5-4.5"
+                            stroke="currentColor"
+                            strokeWidth="1.7"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      </span>
+                      <span className="reader-toolbar-btn-label">
+                        {tr('Развернуть', 'Aufklappen')}
+                      </span>
+                    </button>
+                  )}
                 </div>
               ) : (
                 <>
@@ -29628,32 +29656,6 @@ function AppInner() {
                           </button>
                         </div>
                       </div>
-                      )}
-
-                      {readerTopbarCollapsed && (
-                        <div className="reader-topbar-peek">
-                          <button
-                            type="button"
-                            className="secondary-button reader-topbar-peek-btn reader-topbar-toggle-chip reader-toolbar-btn"
-                            onClick={() => setReaderTopbarCollapsed(false)}
-                            title={tr('Показать панель чтения', 'Leseleiste anzeigen')}
-                          >
-                            <span className="reader-toolbar-btn-icon" aria-hidden="true">
-                              <svg viewBox="0 0 18 18" fill="none">
-                                <path
-                                  d="M4.5 6.75 9 11.25l4.5-4.5"
-                                  stroke="currentColor"
-                                  strokeWidth="1.7"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                />
-                              </svg>
-                            </span>
-                            <span className="reader-toolbar-btn-label">
-                              {tr('Развернуть', 'Aufklappen')}
-                            </span>
-                          </button>
-                        </div>
                       )}
 
                       {readerContent && (

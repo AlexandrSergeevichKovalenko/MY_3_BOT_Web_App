@@ -12812,6 +12812,182 @@ def _normalize_reader_text(raw_text: str, max_chars: int = 150000) -> str:
     return text.strip()[:max_chars]
 
 
+def _compact_reader_dot_leaders(text: str) -> str:
+    raw = str(text or "")
+    return re.sub(
+        r"(?:\.\s*){4,}",
+        lambda match: "." * len(re.findall(r"\.", match.group(0))),
+        raw,
+    )
+
+
+def _normalize_pdf_line(raw_line: str) -> str:
+    line = str(raw_line or "").replace("\u00a0", " ")
+    line = re.sub(r"[ \t]+", " ", line).strip()
+    line = _compact_reader_dot_leaders(line)
+    line = re.sub(r"\s+([,.;:!?])", r"\1", line)
+    return line.strip()
+
+
+def _reader_line_has_dot_leaders(line: str) -> bool:
+    return bool(re.search(r"\.{4,}", str(line or "")))
+
+
+def _is_reader_dot_leader_fragment(line: str) -> bool:
+    compact = re.sub(r"\s+", "", str(line or ""))
+    return bool(compact) and bool(re.fullmatch(r"[.\-–—_·•]{4,}", compact))
+
+
+def _is_reader_page_number_fragment(line: str) -> bool:
+    compact = str(line or "").strip()
+    if not compact:
+        return False
+    return bool(re.fullmatch(r"(?:\d+(?:\.\d+)*|[IVXLCM]+)(?:\s+(?:\d+(?:\.\d+)*|[IVXLCM]+))*", compact, flags=re.IGNORECASE))
+
+
+def _is_reader_toc_continuation_fragment(line: str) -> bool:
+    compact = str(line or "").strip()
+    if not compact:
+        return False
+    return bool(
+        re.fullmatch(
+            r"[.\-–—_·•]{4,}(?:\s*(?:\d+(?:\.\d+)*|[IVXLCM]+)(?:\s+(?:\d+(?:\.\d+)*|[IVXLCM]+))*)?",
+            compact,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _looks_like_pdf_toc_page(lines: list[str]) -> bool:
+    non_empty = [_normalize_pdf_line(line) for line in lines if _normalize_pdf_line(line)]
+    if not non_empty:
+        return False
+    leader_count = sum(1 for line in non_empty if _reader_line_has_dot_leaders(line) or _is_reader_dot_leader_fragment(line))
+    page_count = sum(1 for line in non_empty if _is_reader_page_number_fragment(line))
+    return leader_count >= 3 or (leader_count >= 2 and page_count >= 1)
+
+
+def _finalize_pdf_toc_entry(entry: str) -> str:
+    text = _normalize_pdf_line(entry)
+    text = re.sub(r"\s{2,}", " ", text)
+    text = re.sub(
+        r"(\.{4,})(?=(?:\d+(?:\.\d+)*|[IVXLCM]+)(?:\s+(?:\d+(?:\.\d+)*|[IVXLCM]+))*$)",
+        r"\1 ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"(\.{4,})\s+((?:\d+(?:\.\d+)*|[IVXLCM]+)(?:\s+(?:\d+(?:\.\d+)*|[IVXLCM]+))*)$", r"\1 \2", text, flags=re.IGNORECASE)
+    return text.strip()
+
+
+def _rebuild_pdf_toc_lines(lines: list[str]) -> str:
+    entries: list[str] = []
+    current = ""
+    for raw_line in lines:
+        line = _normalize_pdf_line(raw_line)
+        if not line:
+            if current:
+                entries.append(_finalize_pdf_toc_entry(current))
+                current = ""
+            continue
+        if _is_reader_page_number_fragment(line):
+            if current:
+                current = f"{current} {line}".strip()
+                entries.append(_finalize_pdf_toc_entry(current))
+                current = ""
+            else:
+                entries.append(_finalize_pdf_toc_entry(line))
+            continue
+        if _is_reader_toc_continuation_fragment(line):
+            if current:
+                current = f"{current} {line}".strip()
+                trailing_page = re.search(
+                    r"(?:\d+(?:\.\d+)*|[IVXLCM]+)(?:\s+(?:\d+(?:\.\d+)*|[IVXLCM]+))*$",
+                    line,
+                    flags=re.IGNORECASE,
+                )
+                if trailing_page:
+                    entries.append(_finalize_pdf_toc_entry(current))
+                    current = ""
+            else:
+                current = line
+            continue
+        if _is_reader_dot_leader_fragment(line):
+            if current:
+                current = f"{current} {line}".strip()
+            continue
+        if current:
+            if _reader_line_has_dot_leaders(current):
+                entries.append(_finalize_pdf_toc_entry(current))
+                current = line
+            else:
+                current = f"{current} {line}".strip()
+        else:
+            current = line
+    if current:
+        entries.append(_finalize_pdf_toc_entry(current))
+    return "\n".join(entry for entry in entries if entry)
+
+
+def _merge_pdf_body_lines(current: str, next_line: str) -> str:
+    if current.endswith(("-", "\u00ad")):
+        return f"{current[:-1]}{next_line.lstrip()}".strip()
+    return f"{current} {next_line}".strip()
+
+
+def _should_join_pdf_body_lines(current: str, next_line: str) -> bool:
+    if not current or not next_line:
+        return False
+    if _reader_line_has_dot_leaders(current) or _reader_line_has_dot_leaders(next_line):
+        return False
+    if _is_reader_dot_leader_fragment(current) or _is_reader_dot_leader_fragment(next_line):
+        return False
+    if _is_reader_page_number_fragment(next_line) and len(next_line) <= 8:
+        return False
+    if current.endswith(("-", "\u00ad")):
+        return True
+    if re.search(r"[.!?:;…][\"'»”)]?$", current):
+        return False
+    return len(current) >= 45 or bool(re.match(r"^[a-zäöüß,;:)\]»“\"'`-]", next_line))
+
+
+def _reflow_pdf_body_lines(lines: list[str]) -> str:
+    paragraphs: list[str] = []
+    current = ""
+    for raw_line in lines:
+        line = _normalize_pdf_line(raw_line)
+        if not line:
+            if current:
+                paragraphs.append(current.strip())
+                current = ""
+            continue
+        if _is_reader_page_number_fragment(line) and len(line) <= 8:
+            if current:
+                paragraphs.append(current.strip())
+                current = ""
+            continue
+        if not current:
+            current = line
+            continue
+        if _should_join_pdf_body_lines(current, line):
+            current = _merge_pdf_body_lines(current, line)
+        else:
+            paragraphs.append(current.strip())
+            current = line
+    if current:
+        paragraphs.append(current.strip())
+    return "\n\n".join(paragraph for paragraph in paragraphs if paragraph)
+
+
+def _normalize_pdf_extracted_page_text(raw_text: str, max_chars: int = 50000) -> str:
+    text = str(raw_text or "").replace("\r\n", "\n").replace("\r", "\n")
+    raw_lines = text.split("\n")
+    if not raw_lines:
+        return ""
+    rebuilt = _rebuild_pdf_toc_lines(raw_lines) if _looks_like_pdf_toc_page(raw_lines) else _reflow_pdf_body_lines(raw_lines)
+    return _normalize_reader_text(rebuilt, max_chars=max_chars)
+
+
 def _extract_text_from_html(html_content: str) -> str:
     content = str(html_content or "")
     content = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", content)
@@ -12842,7 +13018,7 @@ def _extract_pdf_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
             page_text = page.extract_text() or ""
         except Exception:
             page_text = ""
-        normalized = _normalize_reader_text(page_text, max_chars=50000)
+        normalized = _normalize_pdf_extracted_page_text(page_text, max_chars=50000)
         if not normalized:
             continue
         chunks.append(normalized)
@@ -16950,6 +17126,103 @@ def _list_translation_focus_pool_prewarm_candidates(
     return candidates
 
 
+def _list_translation_focus_pool_refill_candidates() -> list[dict[str, Any]]:
+    pool_payloads = _all_translation_focus_pool_payloads()
+    if not pool_payloads:
+        return []
+
+    focus_payloads = [dict(payload or {}) for payload in pool_payloads.values() if isinstance(payload, dict)]
+    low_watermark_by_bucket, target_ready_by_bucket = _build_translation_focus_pool_bucket_targets(
+        focus_payloads,
+        levels=TRANSLATION_FOCUS_POOL_PREWARM_LEVELS,
+    )
+    current_rows = get_translation_focus_pool_bucket_counts(
+        source_lang="ru",
+        target_lang="de",
+    )
+    current_ready_by_bucket = {
+        (
+            str(row.get("focus_key") or "").strip(),
+            str(row.get("level") or "").strip().lower(),
+        ): int(row.get("ready_count") or 0)
+        for row in list(current_rows or [])
+        if str(row.get("focus_key") or "").strip() and str(row.get("level") or "").strip()
+    }
+
+    demand_scores: Counter[str] = Counter()
+    try:
+        readiness_rows = get_translation_readiness_bucket_rollup(
+            source_lang="ru",
+            target_lang="de",
+            lookback_days=max(3, int(TRANSLATION_FOCUS_POOL_PREWARM_LOOKBACK_DAYS or 1)),
+        )
+        for row in list(readiness_rows or []):
+            focus_key = str(row.get("focus_key") or "").strip()
+            if focus_key not in pool_payloads:
+                continue
+            sessions_started = max(0, int(row.get("sessions_started") or 0))
+            ready_zero_starts = max(0, int(row.get("ready_zero_starts") or 0))
+            background_fill_required = max(0, int(row.get("background_fill_required_count") or 0))
+            fill_underfilled = max(0, int(row.get("fill_underfilled_count") or 0))
+            fill_failed = max(0, int(row.get("fill_failed_count") or 0))
+            demand_scores[focus_key] += (
+                sessions_started
+                + (ready_zero_starts * 5)
+                + (background_fill_required * 4)
+                + (fill_underfilled * 2)
+                + (fill_failed * 3)
+            )
+    except Exception:
+        logging.exception("Failed to load translation readiness rollup for refill candidates")
+
+    deficit_by_focus: Counter[str] = Counter()
+    max_bucket_deficit_by_focus: Counter[str] = Counter()
+    underfilled_focus_keys: set[str] = set()
+    for bucket_key, target_ready in target_ready_by_bucket.items():
+        focus_key, _level = bucket_key
+        if focus_key not in pool_payloads:
+            continue
+        safe_target = int(target_ready or 0)
+        safe_low_watermark = int(low_watermark_by_bucket.get(bucket_key) or 0)
+        if safe_target <= 0 and safe_low_watermark <= 0:
+            continue
+        current_ready = int(current_ready_by_bucket.get(bucket_key) or 0)
+        bucket_threshold = max(safe_target, safe_low_watermark)
+        bucket_deficit = max(0, bucket_threshold - current_ready)
+        if bucket_deficit <= 0:
+            continue
+        underfilled_focus_keys.add(focus_key)
+        deficit_by_focus[focus_key] += bucket_deficit
+        max_bucket_deficit_by_focus[focus_key] = max(max_bucket_deficit_by_focus.get(focus_key, 0), bucket_deficit)
+
+    if not underfilled_focus_keys:
+        return _list_translation_focus_pool_prewarm_candidates(
+            limit=TRANSLATION_FOCUS_POOL_PREWARM_PRESET_LIMIT,
+            lookback_days=TRANSLATION_FOCUS_POOL_PREWARM_LOOKBACK_DAYS,
+        )
+
+    ordered_focus_keys = sorted(
+        list(underfilled_focus_keys),
+        key=lambda key: (
+            -int(max_bucket_deficit_by_focus.get(key) or 0),
+            -int(deficit_by_focus.get(key) or 0),
+            -int(demand_scores.get(key) or 0),
+            str((pool_payloads.get(key) or {}).get("label") or key).casefold(),
+        ),
+    )
+    max_score = max((int(demand_scores.get(key) or 0) for key in ordered_focus_keys), default=0)
+    return [
+        {
+            **dict(pool_payloads[key] or {}),
+            "_demand_score": int(demand_scores.get(key) or 0),
+            "_max_demand_score": int(max_score or 0),
+            "_deficit_score": int(deficit_by_focus.get(key) or 0),
+        }
+        for key in ordered_focus_keys
+        if key in pool_payloads
+    ]
+
+
 def _load_translation_focus_pool_history_by_bucket(
     *,
     focus_keys: list[str],
@@ -17463,10 +17736,7 @@ def _dispatch_translation_focus_pool_refill(*, force: bool = False, tz_name: str
         _persist_daily_snapshot()
         return {"ok": True, "skipped": True, "reason": "outside_offpeak_window", "generated": 0, "upserted": 0, "focuses": 0}
     try:
-        focus_candidates = _list_translation_focus_pool_prewarm_candidates(
-            limit=TRANSLATION_FOCUS_POOL_PREWARM_PRESET_LIMIT,
-            lookback_days=TRANSLATION_FOCUS_POOL_PREWARM_LOOKBACK_DAYS,
-        )
+        focus_candidates = _list_translation_focus_pool_refill_candidates()
         if not focus_candidates:
             _persist_daily_snapshot()
             return {
@@ -18281,6 +18551,12 @@ def _send_translation_focus_pool_admin_report(*, force: bool = False) -> dict[st
 
 def _run_translation_focus_pool_admin_report_scheduler_job() -> None:
     try:
+        if TRANSLATION_FOCUS_POOL_PREWARM_ENABLED:
+            refill_result = _dispatch_translation_focus_pool_refill(
+                force=False,
+                tz_name=TRANSLATION_FOCUS_POOL_REFILL_TZ,
+            )
+            logging.info("Translation focus pool refill before admin report: %s", refill_result)
         result = _send_translation_focus_pool_admin_report(force=False)
         logging.info("✅ Translation focus pool admin report finished: %s", result)
     except Exception:
@@ -40570,7 +40846,7 @@ def _weekly_badges_payload(rows: list[dict]) -> dict:
     streak_monsters = [item for item in rows if int(item.get("full_days_3plus") or 0) >= 5]
     growth_note = None
     if len(rows) >= 3:
-        growth_note = "🌱 Зона роста недели: кому-то немного не хватило темпа. Поддержим друг друга без шейминга."
+        growth_note = "🌱 Зона роста недели: кому-то немного не хватило темпа."
     return {
         "leaderboard": rows[:10],
         "champion": champion,

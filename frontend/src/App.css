@@ -906,6 +906,8 @@ body {
 .topbar-home-row {
   display: flex;
   align-items: center;
+  gap: 10px;
+  width: 100%;
 }
 
 .topbar-home-button {
@@ -937,6 +939,23 @@ body {
   font-size: 15px;
   line-height: 1;
   margin-top: -1px;
+}
+
+.topbar-reader-peek-btn {
+  margin-left: auto;
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 16px;
+  border: 1px solid #334155;
+  background: transparent;
+  color: #cbd5e1;
+  box-shadow: none;
+}
+
+.topbar-reader-peek-btn:hover {
+  background: #1f2937;
+  border-color: #334155;
 }
 
 .menu-toggle span {
@@ -15725,10 +15744,11 @@ body {
 }
 
 .webapp-reader.is-immersive.is-topbar-collapsed .reader-article {
-  max-height: calc(100dvh - 88px);
-  min-height: calc(100dvh - 88px);
-  max-height: calc(var(--app-height, 100dvh) - 88px);
-  min-height: calc(var(--app-height, 100dvh) - 88px);
+  max-height: calc(100dvh - 52px);
+  min-height: calc(100dvh - 52px);
+  max-height: calc(var(--app-height, 100dvh) - 52px);
+  min-height: calc(var(--app-height, 100dvh) - 52px);
+  padding-top: 2px;
 }
 
 .reader-page-sheet {
@@ -15849,10 +15869,10 @@ body {
 }
 
 .webapp-page.is-telegram-tablet .webapp-reader.is-immersive.is-topbar-collapsed .reader-article {
-  max-height: calc(100dvh - 104px);
-  min-height: calc(100dvh - 104px);
-  max-height: calc(var(--app-height, 100dvh) - 104px);
-  min-height: calc(var(--app-height, 100dvh) - 104px);
+  max-height: calc(100dvh - 68px);
+  min-height: calc(100dvh - 68px);
+  max-height: calc(var(--app-height, 100dvh) - 68px);
+  min-height: calc(var(--app-height, 100dvh) - 68px);
 }
 
 .webapp-page.is-telegram-tablet .webapp-reader.is-immersive .reader-topbar {
@@ -22151,6 +22171,17 @@ body {
 .webapp-page.is-theme-light .webapp-reader .secondary-button:hover,
 .webapp-page.is-theme-light .webapp-reader .reader-topbar-peek-btn:hover,
 .webapp-page.is-theme-light .webapp-reader .reader-topbar-collapse-btn:hover {
+  background: rgba(234, 215, 187, 0.92);
+  border-color: rgba(130, 101, 67, 0.36);
+}
+
+.webapp-page.is-theme-light .topbar-reader-peek-btn {
+  border-color: rgba(130, 101, 67, 0.34);
+  background: rgba(246, 236, 220, 0.9);
+  color: #1f1a14;
+}
+
+.webapp-page.is-theme-light .topbar-reader-peek-btn:hover {
   background: rgba(234, 215, 187, 0.92);
   border-color: rgba(130, 101, 67, 0.36);
 }
