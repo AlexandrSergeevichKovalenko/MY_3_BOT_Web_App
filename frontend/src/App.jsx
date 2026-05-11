@@ -19438,6 +19438,17 @@ function AppInner() {
     reader.readAsDataURL(file);
   });
 
+  const clearReaderSelectedFile = useCallback(() => {
+    setReaderSelectedFile(null);
+    if (readerFileInputRef.current) {
+      try {
+        readerFileInputRef.current.value = '';
+      } catch (_error) {
+        // ignore browser restrictions
+      }
+    }
+  }, []);
+
   async function syncReaderState(patch = {}) {
     if (!initData || !readerDocumentId) return;
     try {
@@ -19739,7 +19750,7 @@ function AppInner() {
       return;
     }
     if (!selectedFile && readerSelectedFile) {
-      setReaderSelectedFile(null);
+      clearReaderSelectedFile();
       setReaderError(tr(
         'Файл сбросился в браузере. Выберите EPUB/PDF заново и повторите.',
         'Die Datei wurde im Browser zurueckgesetzt. Bitte waehle die EPUB/PDF erneut aus.'
@@ -19791,12 +19802,16 @@ function AppInner() {
       }
       let data;
       if (selectedFile) {
-        const formData = new FormData();
-        formData.append('initData', initData);
-        formData.append('file', selectedFile, selectedFile.name || 'reader-upload.bin');
+        const fileContentBase64 = await readFileAsBase64(selectedFile);
         const response = await fetch('/api/webapp/reader/ingest', {
           method: 'POST',
-          body: formData,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            initData,
+            file_name: selectedFile.name || 'reader-upload.bin',
+            file_mime: selectedFile.type || '',
+            file_content_base64: fileContentBase64,
+          }),
         });
         if (!response.ok) {
           throw await buildReaderApiError(response, 'Ошибка загрузки читалки', 'Fehler beim Laden des Leser-Modus');
@@ -19845,7 +19860,7 @@ function AppInner() {
         setReaderAddOpen(false);
         setSelectedSections(new Set(['reader']));
         ensureSectionVisible('reader');
-        setReaderSelectedFile(null);
+        clearReaderSelectedFile();
         setReaderErrorCode('');
         setReaderLibraryError('');
         await loadReaderLibrary(true, { resetError: false, showError: false });
@@ -19893,11 +19908,11 @@ function AppInner() {
         applyReaderProgressPercent(target);
       }, 80);
       loadReaderLibrary(readerIncludeArchived, { showError: false });
-      setReaderSelectedFile(null);
+      clearReaderSelectedFile();
       setReaderErrorCode('');
     } catch (error) {
       if (readerFileInputRef.current && !readerFileInputRef.current.files?.length) {
-        setReaderSelectedFile(null);
+        clearReaderSelectedFile();
       }
       const code = String(error?.code || '').trim();
       setReaderErrorCode(code);
