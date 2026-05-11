@@ -5136,6 +5136,7 @@ function AppInner() {
   const readerArticleRef = useRef(null);
   const readerPageInnerRef = useRef(null);
   const readerMeasureInnerRef = useRef(null);
+  const readerFileInputRef = useRef(null);
   const flashcardsRef = useRef(null);
   const translationsRef = useRef(null);
   const youtubeRef = useRef(null);
@@ -5295,6 +5296,7 @@ function AppInner() {
   const readerStatusPollTokenRef = useRef(0);
   const readerPaginationResizeFrameRef = useRef(0);
   const readerPaginationRunRef = useRef(0);
+  const readerOpenInFlightRef = useRef(0);
   const todayTimerCompletionLockRef = useRef(new Set());
   const globalTimerAutoPauseInFlightRef = useRef(false);
   const globalTimerAutoResumeInFlightRef = useRef(false);
@@ -19348,6 +19350,12 @@ function AppInner() {
   const handleReaderFileSelect = (event) => {
     const file = event?.target?.files?.[0] || null;
     setReaderSelectedFile(file);
+    setReaderError('');
+    setReaderErrorCode('');
+    if (file) {
+      setReaderInput('');
+      return;
+    }
     if (!file) {
       const currentInput = String(readerInput || '').trim();
       if (/^[^:/\\\n]+?\.(epub|pdf|txt|md)$/i.test(currentInput)) {
@@ -19457,6 +19465,10 @@ function AppInner() {
 
   async function openReaderDocument(documentId) {
     if (!initData || !documentId) return;
+    const safeDocumentId = Number(documentId || 0);
+    if (!safeDocumentId) return;
+    if (readerOpenInFlightRef.current === safeDocumentId) return;
+    readerOpenInFlightRef.current = safeDocumentId;
     try {
       setReaderLoading(true);
       setReaderError('');
@@ -19464,7 +19476,7 @@ function AppInner() {
       const response = await fetch('/api/webapp/reader/library/open', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, document_id: documentId }),
+        body: JSON.stringify({ initData, document_id: safeDocumentId }),
       });
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка открытия книги', 'Fehler beim Oeffnen des Dokuments'));
@@ -19481,7 +19493,7 @@ function AppInner() {
           setReaderLibraryError('');
         }
         if (processingStatus !== 'failed') {
-          void pollReaderDocumentStatus(Number(doc?.id || documentId), { openWhenReady: true });
+          void pollReaderDocumentStatus(Number(doc?.id || safeDocumentId), { openWhenReady: true });
         }
         return;
       }
@@ -19491,7 +19503,7 @@ function AppInner() {
       const resolvedText = String(data?.text || '').trim() || buildReaderTextFromPages(pages);
       setReaderFontSize(READER_DEFAULT_FONT_SIZE);
       setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
-      setReaderDocumentId(Number(doc?.id || documentId));
+      setReaderDocumentId(Number(doc?.id || safeDocumentId));
       setReaderTitle(String(data?.title || doc?.title || ''));
       setReaderContent(resolvedText);
       setReaderPages(pages);
@@ -19527,6 +19539,7 @@ function AppInner() {
     } catch (error) {
       setReaderError(normalizeNetworkErrorMessage(error, 'Не удалось открыть книгу.', 'Dokument konnte nicht geoeffnet werden.'));
     } finally {
+      readerOpenInFlightRef.current = 0;
       setReaderLoading(false);
     }
   }
@@ -19712,15 +19725,25 @@ function AppInner() {
   async function handleReaderIngest(event) {
     event?.preventDefault?.();
     const rawInput = String(readerInput || '').trim();
+    const liveSelectedFile = readerFileInputRef.current?.files?.[0] || null;
+    const selectedFile = liveSelectedFile || null;
     const looksLikeLocalReaderFileName = /^[^:/\\\n]+?\.(epub|pdf|txt|md)$/i.test(rawInput);
-    if (!rawInput && !readerSelectedFile) {
+    if (!rawInput && !selectedFile) {
       setReaderError(tr('Вставьте ссылку или текст.', 'Fuege einen Link oder Text ein.'));
       return;
     }
-    if (!readerSelectedFile && looksLikeLocalReaderFileName) {
+    if (!selectedFile && looksLikeLocalReaderFileName) {
       setReaderError(tr(
         'Файл не выбран. Выберите EPUB/PDF через поле загрузки файла.',
         'Keine Datei ausgewaehlt. Bitte waehle die EPUB/PDF-Datei ueber das Datei-Feld aus.'
+      ));
+      return;
+    }
+    if (!selectedFile && readerSelectedFile) {
+      setReaderSelectedFile(null);
+      setReaderError(tr(
+        'Файл сбросился в браузере. Выберите EPUB/PDF заново и повторите.',
+        'Die Datei wurde im Browser zurueckgesetzt. Bitte waehle die EPUB/PDF erneut aus.'
       ));
       return;
     }
@@ -19757,7 +19780,7 @@ function AppInner() {
         return apiError;
       };
       const looksLikeUrl = /^https?:\/\//i.test(rawInput) || /^[a-z0-9.-]+\.[a-z]{2,}(\/.*)?$/i.test(rawInput);
-      const shouldUseAsyncReaderFlow = Boolean(readerSelectedFile || looksLikeUrl);
+      const shouldUseAsyncReaderFlow = Boolean(selectedFile || looksLikeUrl);
       if (shouldUseAsyncReaderFlow) {
         setReaderArchiveOpen(true);
         setReaderImmersive(false);
@@ -19768,8 +19791,7 @@ function AppInner() {
         setReaderLibraryError('');
       }
       let data;
-      if (readerSelectedFile) {
-        const selectedFile = readerSelectedFile;
+      if (selectedFile) {
         const formData = new FormData();
         formData.append('initData', initData);
         formData.append('file', selectedFile, selectedFile.name || 'reader-upload.bin');
@@ -19873,6 +19895,9 @@ function AppInner() {
       setReaderSelectedFile(null);
       setReaderErrorCode('');
     } catch (error) {
+      if (readerFileInputRef.current && !readerFileInputRef.current.files?.length) {
+        setReaderSelectedFile(null);
+      }
       const code = String(error?.code || '').trim();
       setReaderErrorCode(code);
       if (code === 'LIMIT_FREE_PLAN_1_BOOK') {
@@ -29237,6 +29262,7 @@ function AppInner() {
                               <label className="webapp-field">
                                 <span>{tr('Файл с телефона', 'Datei vom Telefon')}</span>
                                 <input
+                                  ref={readerFileInputRef}
                                   type="file"
                                   accept=".txt,.md,.pdf,.epub,text/plain,application/pdf,application/epub+zip"
                                   onChange={handleReaderFileSelect}
