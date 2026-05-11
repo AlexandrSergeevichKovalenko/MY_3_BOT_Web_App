@@ -15277,8 +15277,7 @@ function AppInner() {
     setReaderDynamicPages((prev) => (areReaderPagesEqual(prev, nextPages) ? prev : nextPages));
 
     if (nextPages.length > 0) {
-      const safePercent = Math.max(0, Math.min(100, Number(readerProgressPercent) || 0));
-      const resolvedPage = Math.max(1, Math.min(nextPages.length, Math.round((safePercent / 100) * nextPages.length) || 1));
+      const resolvedPage = resolveReaderPageFromPercent(readerProgressPercent, nextPages.length);
       setReaderCurrentPage(resolvedPage);
     }
   }, [
@@ -15347,13 +15346,6 @@ function AppInner() {
     }
     setReaderCurrentPage((prev) => Math.max(1, Math.min(readerPageCount, Number(prev || 1))));
   }, [readerPageCount]);
-
-  useEffect(() => {
-    if (!readerDocumentId || !readerContent || readerPageCount <= 0) return;
-    const targetPercent = readerProgressPercent;
-    const timer = setTimeout(() => applyReaderProgressPercent(targetPercent), 90);
-    return () => clearTimeout(timer);
-  }, [readerReadingMode, readerDocumentId, readerContent, readerLayoutMode, readerPageCount, readerProgressPercent]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -18742,6 +18734,13 @@ function AppInner() {
     return `${pad(minutes)}:${pad(secs)}`;
   }
 
+  function resolveReaderPageFromPercent(percent, totalPages) {
+    const pageCount = Math.max(1, Number(totalPages || 0));
+    const safe = Math.max(0, Math.min(100, Number(percent || 0)));
+    if (safe <= 0) return 1;
+    return Math.max(1, Math.min(pageCount, Math.ceil((safe / 100) * pageCount)));
+  }
+
   function getReaderTrackedDurationSeconds(options = {}) {
     const baseSeconds = Math.max(0, Math.floor(Number(
       options?.baseSeconds ?? readerAccumulatedSeconds ?? 0
@@ -18774,9 +18773,7 @@ function AppInner() {
 
   function applyReaderProgressPercent(percent) {
     if (readerPageCount > 0) {
-      const safe = Math.max(0, Math.min(100, Number(percent || 0)));
-      const resolved = Math.max(1, Math.min(readerPageCount, Math.round((safe / 100) * readerPageCount) || 1));
-      setReaderCurrentPage(resolved);
+      setReaderCurrentPage(resolveReaderPageFromPercent(percent, readerPageCount));
       return;
     }
     const node = readerArticleRef.current;
@@ -19516,7 +19513,7 @@ function AppInner() {
       setReaderProgressPercent(progress);
       setReaderBookmarkPercent(bookmark);
       const pageFromProgress = pages.length > 0
-        ? Math.max(1, Math.min(pages.length, Math.round(((bookmark > 0 ? bookmark : progress) / 100) * pages.length) || 1))
+        ? resolveReaderPageFromPercent(bookmark > 0 ? bookmark : progress, pages.length)
         : 1;
       setReaderCurrentPage(pageFromProgress);
       setReaderAudioFromPage(pages.length > 0 ? '1' : '');
@@ -19872,7 +19869,7 @@ function AppInner() {
       setReaderProgressPercent(Number(doc?.progress_percent || 0));
       setReaderBookmarkPercent(Number(doc?.bookmark_percent || 0));
       const pageFromProgress = pages.length > 0
-        ? Math.max(1, Math.min(pages.length, Math.round((Number(doc?.bookmark_percent || doc?.progress_percent || 0) / 100) * pages.length) || 1))
+        ? resolveReaderPageFromPercent(Number(doc?.bookmark_percent || doc?.progress_percent || 0), pages.length)
         : 1;
       setReaderCurrentPage(pageFromProgress);
       setReaderAudioFromPage(pages.length > 0 ? '1' : '');

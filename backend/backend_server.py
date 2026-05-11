@@ -12988,6 +12988,41 @@ def _normalize_pdf_extracted_page_text(raw_text: str, max_chars: int = 50000) ->
     return _normalize_reader_text(rebuilt, max_chars=max_chars)
 
 
+def _normalize_reader_pages_for_response(source_type: str | None, pages: list[dict] | None) -> list[dict]:
+    normalized_source_type = str(source_type or "").strip().lower()
+    normalized_pages: list[dict] = []
+    for index, item in enumerate(list(pages or [])):
+        if isinstance(item, dict):
+            page_number = int(item.get("page_number") or index + 1)
+            raw_text = str(item.get("text") or "")
+            normalized_text = (
+                _normalize_pdf_extracted_page_text(raw_text, max_chars=50000)
+                if normalized_source_type == "pdf"
+                else _normalize_reader_text(raw_text, max_chars=50000)
+            )
+            normalized_pages.append(
+                {
+                    **item,
+                    "page_number": page_number,
+                    "text": normalized_text,
+                }
+            )
+        else:
+            raw_text = str(item or "")
+            normalized_text = (
+                _normalize_pdf_extracted_page_text(raw_text, max_chars=50000)
+                if normalized_source_type == "pdf"
+                else _normalize_reader_text(raw_text, max_chars=50000)
+            )
+            normalized_pages.append(
+                {
+                    "page_number": index + 1,
+                    "text": normalized_text,
+                }
+            )
+    return [item for item in normalized_pages if str(item.get("text") or "").strip()]
+
+
 def _extract_text_from_html(html_content: str) -> str:
     content = str(html_content or "")
     content = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", content)
@@ -37643,11 +37678,15 @@ def reader_library_open():
                 ), 403
         detect_started_perf = time.perf_counter()
         content_text = str(doc.get("content_text") or "")
-        content_pages = doc.get("content_pages") if isinstance(doc.get("content_pages"), list) else []
+        content_pages = _normalize_reader_pages_for_response(
+            str(doc.get("source_type") or "text"),
+            doc.get("content_pages") if isinstance(doc.get("content_pages"), list) else [],
+        )
         detected_lang = _detect_reader_language(content_text, fallback=target_lang)
         detect_duration_ms = _elapsed_ms_since(detect_started_perf)
         document_payload = dict(doc)
         document_payload.pop("content_text", None)
+        document_payload["content_pages"] = content_pages
         response_payload = {
             "ok": True,
             "document": document_payload,
