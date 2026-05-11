@@ -19496,7 +19496,9 @@ function AppInner() {
       }
       const progress = Number(doc?.progress_percent || 0);
       const bookmark = Number(doc?.bookmark_percent || 0);
-      const pages = Array.isArray(doc?.content_pages) ? doc.content_pages : [];
+      const pages = Array.isArray(data?.content_pages)
+        ? data.content_pages
+        : (Array.isArray(doc?.content_pages) ? doc.content_pages : []);
       const resolvedText = String(data?.text || '').trim() || buildReaderTextFromPages(pages);
       setReaderFontSize(READER_DEFAULT_FONT_SIZE);
       setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
@@ -19852,7 +19854,9 @@ function AppInner() {
         }
         return;
       }
-      const pages = Array.isArray(doc?.content_pages) ? doc.content_pages : [];
+      const pages = Array.isArray(data?.content_pages)
+        ? data.content_pages
+        : (Array.isArray(doc?.content_pages) ? doc.content_pages : []);
       const resolvedText = String(data?.text || '').trim() || buildReaderTextFromPages(pages);
       setReaderFontSize(READER_DEFAULT_FONT_SIZE);
       setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);

@@ -37686,10 +37686,11 @@ def reader_library_open():
         detect_duration_ms = _elapsed_ms_since(detect_started_perf)
         document_payload = dict(doc)
         document_payload.pop("content_text", None)
-        document_payload["content_pages"] = content_pages
+        document_payload.pop("content_pages", None)
         response_payload = {
             "ok": True,
             "document": document_payload,
+            "content_pages": content_pages,
             "text": "" if content_pages else content_text,
             "title": str(doc.get("title") or "Untitled"),
             "source_type": str(doc.get("source_type") or "text"),
