@@ -19343,8 +19343,11 @@ function AppInner() {
   const handleReaderFileSelect = (event) => {
     const file = event?.target?.files?.[0] || null;
     setReaderSelectedFile(file);
-    if (file?.name && !readerInput.trim()) {
-      setReaderInput(file.name);
+    if (!file) {
+      const currentInput = String(readerInput || '').trim();
+      if (/^[^:/\\\n]+?\.(epub|pdf|txt|md)$/i.test(currentInput)) {
+        setReaderInput('');
+      }
     }
   };
 
@@ -19704,8 +19707,16 @@ function AppInner() {
   async function handleReaderIngest(event) {
     event?.preventDefault?.();
     const rawInput = String(readerInput || '').trim();
+    const looksLikeLocalReaderFileName = /^[^:/\\\n]+?\.(epub|pdf|txt|md)$/i.test(rawInput);
     if (!rawInput && !readerSelectedFile) {
       setReaderError(tr('Вставьте ссылку или текст.', 'Fuege einen Link oder Text ein.'));
+      return;
+    }
+    if (!readerSelectedFile && looksLikeLocalReaderFileName) {
+      setReaderError(tr(
+        'Файл не выбран. Выберите EPUB/PDF через поле загрузки файла.',
+        'Keine Datei ausgewaehlt. Bitte waehle die EPUB/PDF-Datei ueber das Datei-Feld aus.'
+      ));
       return;
     }
     if (!initData) {
@@ -19754,104 +19765,17 @@ function AppInner() {
       let data;
       if (readerSelectedFile) {
         const selectedFile = readerSelectedFile;
-        let directDocId = null;
-        const cleanupDirectUploadPlaceholder = async () => {
-          if (!directDocId) return;
-          try {
-            await fetch('/api/webapp/reader/library/delete', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                initData,
-                document_id: directDocId,
-              }),
-            });
-          } catch (_cleanupError) {
-            // ignore best-effort cleanup
-          }
-          setReaderDocuments((prev) => prev.filter((item) => Number(item?.id || 0) !== Number(directDocId)));
-        };
-
-        try {
-          const initResponse = await fetch('/api/webapp/reader/upload-init', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              initData,
-              file_name: selectedFile.name,
-              file_mime: selectedFile.type,
-            }),
-          });
-          if (!initResponse.ok) {
-            throw await buildReaderApiError(initResponse, 'Ошибка подготовки загрузки', 'Fehler bei der Upload-Vorbereitung');
-          }
-          const initDataPayload = await initResponse.json();
-          const upload = initDataPayload?.upload || {};
-          const directDoc = initDataPayload?.document || {};
-          directDocId = Number(directDoc?.id || 0) || null;
-          if (!upload?.url || !directDocId || !upload?.object_key) {
-            throw new Error(tr('Сервер не вернул параметры прямой загрузки.', 'Der Server hat keine Direct-Upload-Parameter zurückgegeben.'));
-          }
-          upsertReaderLibraryDocument({
-            ...directDoc,
-            id: directDocId,
-            title: String(initDataPayload?.title || directDoc?.title || selectedFile.name || rawInput.slice(0, 80)),
-            source_type: String(initDataPayload?.source_type || directDoc?.source_type || 'file'),
-            processing_status: String(directDoc?.processing_status || initDataPayload?.status || 'pending'),
-            is_archived: Boolean(directDoc?.is_archived),
-          });
-          setReaderDocumentId(directDocId);
-          setReaderFontSize(READER_DEFAULT_FONT_SIZE);
-          setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
-          setReaderTitle(String(initDataPayload?.title || directDoc?.title || selectedFile.name || rawInput.slice(0, 80)));
-          setReaderSourceType(String(initDataPayload?.source_type || directDoc?.source_type || 'file'));
-          setReaderSourceUrl('');
-          setReaderContent('');
-          setReaderPages([]);
-          setReaderDynamicPages([]);
-          setReaderLayoutMode('custom');
-          setReaderCurrentPage(1);
-          setReaderAddOpen(false);
-          setReaderSelectedFile(null);
-          setReaderLibraryError('');
-          await loadReaderLibrary(true, { resetError: false, showError: false });
-
-          const directUploadResponse = await fetch(String(upload.url), {
-            method: String(upload.method || 'PUT').toUpperCase(),
-            headers: upload.headers && typeof upload.headers === 'object' ? upload.headers : undefined,
-            body: selectedFile,
-          });
-          if (!directUploadResponse.ok) {
-            throw new Error(tr('Прямая загрузка файла в storage не удалась.', 'Direkter Upload in den Storage ist fehlgeschlagen.'));
-          }
-
-          let completeResponse = null;
-          for (let attempt = 0; attempt < 5; attempt += 1) {
-            completeResponse = await fetch('/api/webapp/reader/ingest/complete', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                initData,
-                document_id: directDocId,
-                object_key: String(upload.object_key || ''),
-                file_name: selectedFile.name,
-                file_mime: selectedFile.type,
-              }),
-            });
-            if (completeResponse.ok || completeResponse.status !== 409) {
-              break;
-            }
-            await new Promise((resolve) => window.setTimeout(resolve, 700));
-          }
-          if (!completeResponse.ok) {
-            throw await buildReaderApiError(completeResponse, 'Ошибка постановки книги в обработку', 'Fehler beim Start der Dokumentverarbeitung');
-          }
-          data = await completeResponse.json();
-          upsertReaderLibraryDocument(data?.document || {});
-        } catch (error) {
-          await cleanupDirectUploadPlaceholder();
-          throw error;
+        const formData = new FormData();
+        formData.append('initData', initData);
+        formData.append('file', selectedFile, selectedFile.name || 'reader-upload.bin');
+        const response = await fetch('/api/webapp/reader/ingest', {
+          method: 'POST',
+          body: formData,
+        });
+        if (!response.ok) {
+          throw await buildReaderApiError(response, 'Ошибка загрузки читалки', 'Fehler beim Laden des Leser-Modus');
         }
+        data = await response.json();
       } else {
         const response = await fetch('/api/webapp/reader/ingest', {
           method: 'POST',
