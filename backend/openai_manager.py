@@ -2604,12 +2604,22 @@ Input JSON:
   "target_language": "...",
   "source_text": "...",
   "target_text": "...",
-  "source_sentence": "..."
+  "source_sentence": "...",
+  "visual_style_key": "...",
+  "visual_style_label": "...",
+  "visual_style_guidance": "...",
+  "available_visual_styles": [
+    {"key": "...", "label": "...", "guidance": "..."}
+  ]
 }
 
 Task:
 - Use source_sentence as the scene to be illustrated.
-- Produce a short image prompt describing one concrete scene.
+- Use the provided visual style. Do not invent a surreal, abstract, symbolic, or confusing style.
+- Produce a highly detailed image plan for one single concrete scene that is immediately understandable.
+- The final image must make target_text the single best and most natural label for the scene.
+- Produce one detailed image prompt describing the exact visible scene, composition, lighting, subjects, relevant objects, and action.
+- Favor educational clarity over artistic experimentation.
 - Produce exactly 4 answer options in answer_language.
 - One option must be the exact target_text answer for the shown scene. Do not replace it with a paraphrase, synonym, hypernym, or a more concrete alternative.
 - The other 3 must be plausible near-synonyms or semantically adjacent concepts — close enough to be tempting, but clearly wrong for this exact scene.
@@ -2628,6 +2638,11 @@ Return STRICT JSON:
 {
   "source_sentence": "...",
   "image_prompt": "...",
+  "scene_core": "...",
+  "must_show": ["...", "..."],
+  "must_not_show": ["...", "..."],
+  "camera_framing": "...",
+  "key_disambiguator": "...",
   "question_de": "...",
   "answer_options": ["...", "...", "...", "..."],
   "correct_option_index": <integer 0–3, chosen randomly — NOT always 0>,
@@ -2641,6 +2656,12 @@ Rules:
 - Every answer option must be written only in answer_language.
 - If answer_language is "de", never use Russian or Cyrillic in answer_options.
 - question_de must be in German and specific to the depicted scene and the word being practised.
+- image_prompt must describe a single, highly detailed, visually explicit real-world scene.
+- scene_core must be a short summary of the one exact situation shown.
+- must_show should list the decisive visible details that make the answer unambiguous.
+- must_not_show should list distracting or misleading details to avoid.
+- camera_framing should tell the renderer how to frame the scene for clarity.
+- key_disambiguator should explicitly say what visible cue makes the correct answer right and the distractors wrong.
 - explanation must briefly say why the correct answer is right and why the three distractors are wrong or less precise.
 - Output ONLY JSON.
 """,

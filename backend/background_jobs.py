@@ -45,6 +45,50 @@ _IMAGE_QUIZ_RENDERING_STALE_MINUTES = max(
     5,
     int((os.getenv("IMAGE_QUIZ_RENDERING_STALE_MINUTES") or "45").strip() or "45"),
 )
+_IMAGE_QUIZ_VISUAL_STYLES = (
+    {
+        "key": "clean_editorial",
+        "label": "clean editorial illustration",
+        "weight": 35,
+        "guidance": "clean editorial illustration, crisp shapes, natural colors, modern educational art direction, highly legible objects and actions",
+    },
+    {
+        "key": "realistic_cinematic",
+        "label": "realistic cinematic scene",
+        "weight": 25,
+        "guidance": "realistic cinematic scene, believable lighting, natural proportions, detailed environment, emotionally neutral clarity",
+    },
+    {
+        "key": "storybook",
+        "label": "detailed storybook illustration",
+        "weight": 15,
+        "guidance": "detailed storybook illustration, warm but clear composition, expressive yet realistic body language, learner-friendly visual storytelling",
+    },
+    {
+        "key": "naturalist_textbook",
+        "label": "naturalist textbook illustration",
+        "weight": 10,
+        "guidance": "naturalist textbook illustration, accurate objects, clear educational composition, minimal ambiguity, reference-like precision",
+    },
+    {
+        "key": "watercolor_detail",
+        "label": "detailed watercolor illustration",
+        "weight": 5,
+        "guidance": "detailed watercolor illustration, controlled edges, readable silhouettes, soft paint texture without losing clarity",
+    },
+    {
+        "key": "colored_pencil",
+        "label": "colored pencil illustration",
+        "weight": 5,
+        "guidance": "colored pencil illustration, visible linework, clean contours, detailed but readable textures, classroom-friendly clarity",
+    },
+    {
+        "key": "ink_and_wash",
+        "label": "ink and wash illustration",
+        "weight": 5,
+        "guidance": "ink and wash illustration, precise contours, selective tonal wash, strong figure-ground separation, unambiguous action",
+    },
+)
 
 
 def _normalize_space(value: str | None) -> str:
@@ -176,6 +220,100 @@ def _build_image_quiz_object_key(*, user_id: int, template_id: int, mime_type: s
     return f"{_IMAGE_QUIZ_R2_PREFIX}/{date_prefix}/{int(user_id)}/{int(template_id)}{extension}"
 
 
+def _normalize_string_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        items = value
+    elif isinstance(value, tuple):
+        items = list(value)
+    elif isinstance(value, str):
+        items = re.split(r"[;\n]+", value)
+    else:
+        return []
+    normalized: list[str] = []
+    for item in items:
+        text = _normalize_space(item)
+        if text:
+            normalized.append(text)
+    return normalized
+
+
+def _select_image_quiz_visual_style(
+    *,
+    template_id: int,
+    correct_answer: str,
+    source_sentence: str,
+) -> dict:
+    safe_styles = [dict(item) for item in _IMAGE_QUIZ_VISUAL_STYLES if int(item.get("weight") or 0) > 0]
+    if not safe_styles:
+        raise RuntimeError("image_quiz_visual_styles_missing")
+    seed = f"{int(template_id)}|{_normalize_space(correct_answer)}|{_normalize_space(source_sentence)}"
+    digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()
+    bucket = int(digest[:8], 16) % sum(int(item["weight"]) for item in safe_styles)
+    cumulative = 0
+    for item in safe_styles:
+        cumulative += int(item["weight"])
+        if bucket < cumulative:
+            return item
+    return safe_styles[0]
+
+
+def _build_image_quiz_style_catalog() -> list[dict]:
+    return [
+        {
+            "key": str(item.get("key") or "").strip(),
+            "label": str(item.get("label") or "").strip(),
+            "guidance": str(item.get("guidance") or "").strip(),
+        }
+        for item in _IMAGE_QUIZ_VISUAL_STYLES
+    ]
+
+
+def _compose_image_quiz_render_prompt(
+    *,
+    source_sentence: str,
+    correct_answer: str,
+    answer_language: str,
+    visual_style: dict,
+    blueprint: dict,
+) -> str:
+    image_prompt = _normalize_space(blueprint.get("image_prompt"))
+    scene_core = _normalize_space(blueprint.get("scene_core"))
+    camera_framing = _normalize_space(blueprint.get("camera_framing")) or (
+        "medium shot or wide shot, main action centered, important object unobstructed"
+    )
+    key_disambiguator = _normalize_space(blueprint.get("key_disambiguator"))
+    must_show = _normalize_string_list(blueprint.get("must_show"))
+    must_not_show = _normalize_string_list(blueprint.get("must_not_show"))
+
+    prompt_lines = [
+        f"Create one highly detailed, visually unambiguous image for a Telegram language-learning quiz in {answer_language}.",
+        f"Target answer: {correct_answer}.",
+        f"Sentence to depict: {source_sentence}.",
+        f"Visual style: {str(visual_style.get('label') or '').strip()}.",
+        f"Style guidance: {str(visual_style.get('guidance') or '').strip()}.",
+        "Show exactly one real-world scene with one clear central action.",
+        "The intended answer must be the single best label for the scene at first glance.",
+        "No symbolism, no surrealism, no metaphorical interpretation, no split-screen, no collage, no text overlay, no multiple competing actions.",
+        "Use clear lighting, readable composition, realistic spatial relationships, and strong separation between the main subject and background.",
+        "The main subject, action, and decisive object must be fully visible and easy to identify.",
+        f"Camera framing: {camera_framing}.",
+    ]
+    if scene_core:
+        prompt_lines.append(f"Scene core: {scene_core}.")
+    if image_prompt:
+        prompt_lines.append(f"Scene details to include: {image_prompt}.")
+    if must_show:
+        prompt_lines.append(f"Must show: {'; '.join(must_show)}.")
+    if must_not_show:
+        prompt_lines.append(f"Must not show: {'; '.join(must_not_show)}.")
+    if key_disambiguator:
+        prompt_lines.append(f"Key disambiguator: {key_disambiguator}.")
+    prompt_lines.append(
+        "Prefer concrete, learner-friendly detail that reinforces the intended meaning without introducing irrelevant props or secondary stories."
+    )
+    return "\n".join(line for line in prompt_lines if _normalize_space(line))
+
+
 def _sanitize_image_quiz_blueprint(
     payload: dict,
     *,
@@ -186,6 +324,11 @@ def _sanitize_image_quiz_blueprint(
     image_prompt = _normalize_space(payload.get("image_prompt"))
     question_de = _normalize_space(payload.get("question_de")) or "Was zeigt das Bild?"
     explanation = _normalize_space(payload.get("explanation"))
+    scene_core = _normalize_space(payload.get("scene_core"))
+    camera_framing = _normalize_space(payload.get("camera_framing"))
+    key_disambiguator = _normalize_space(payload.get("key_disambiguator"))
+    must_show = _normalize_string_list(payload.get("must_show"))
+    must_not_show = _normalize_string_list(payload.get("must_not_show"))
     raw_options = payload.get("answer_options")
     if not source_sentence:
         raise ValueError("blueprint_missing_source_sentence")
@@ -225,6 +368,11 @@ def _sanitize_image_quiz_blueprint(
         "answer_options": options,
         "correct_option_index": correct_index,
         "explanation": explanation,
+        "scene_core": scene_core,
+        "camera_framing": camera_framing,
+        "key_disambiguator": key_disambiguator,
+        "must_show": must_show,
+        "must_not_show": must_not_show,
     }
 
 
@@ -363,6 +511,11 @@ async def _prepare_single_image_quiz_template_async(
         },
         last_error="",
     )
+    visual_style = _select_image_quiz_visual_style(
+        template_id=template_id,
+        correct_answer=correct_answer,
+        source_sentence=selected_sentence,
+    )
 
     blueprint_payload = await run_image_quiz_blueprint(
         {
@@ -372,6 +525,10 @@ async def _prepare_single_image_quiz_template_async(
             "source_text": str(candidate.get("source_text") or ""),
             "target_text": str(candidate.get("target_text") or ""),
             "source_sentence": selected_sentence,
+            "visual_style_key": str(visual_style.get("key") or ""),
+            "visual_style_label": str(visual_style.get("label") or ""),
+            "visual_style_guidance": str(visual_style.get("guidance") or ""),
+            "available_visual_styles": _build_image_quiz_style_catalog(),
         }
     )
     try:
@@ -399,10 +556,17 @@ async def _prepare_single_image_quiz_template_async(
             "reason": str(exc),
         }
 
+    final_render_prompt = _compose_image_quiz_render_prompt(
+        source_sentence=sanitized_blueprint["source_sentence"],
+        correct_answer=correct_answer,
+        answer_language=answer_language,
+        visual_style=visual_style,
+        blueprint=sanitized_blueprint,
+    )
     store_image_quiz_template_blueprint(
         template_id,
         source_sentence=sanitized_blueprint["source_sentence"],
-        image_prompt=sanitized_blueprint["image_prompt"],
+        image_prompt=final_render_prompt,
         question_de=sanitized_blueprint["question_de"],
         answer_options=sanitized_blueprint["answer_options"],
         correct_option_index=int(sanitized_blueprint["correct_option_index"]),
@@ -411,6 +575,14 @@ async def _prepare_single_image_quiz_template_async(
         provider_meta={
             "candidate_entry_id": entry_id,
             "sentence_source": sentence_source,
+            "visual_style": visual_style,
+            "scene_blueprint": {
+                "scene_core": sanitized_blueprint.get("scene_core") or "",
+                "camera_framing": sanitized_blueprint.get("camera_framing") or "",
+                "key_disambiguator": sanitized_blueprint.get("key_disambiguator") or "",
+                "must_show": sanitized_blueprint.get("must_show") or [],
+                "must_not_show": sanitized_blueprint.get("must_not_show") or [],
+            },
             "blueprint": blueprint_payload if isinstance(blueprint_payload, dict) else {},
         },
     )
