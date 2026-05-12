@@ -13350,7 +13350,14 @@ def _resume_reader_library_document_processing_if_stale(
         target_lang=target_lang,
         status="pending",
     )
-    enqueue_result = _enqueue_reader_library_ingest_job(**payload)
+    # A stale document already spent time in the async pipeline. If it is still
+    # pending/processing past the timeout, bypass Redis-backed queueing and run
+    # it in the local executor so the user is not stuck behind a silent queue
+    # subscription/drain failure.
+    enqueue_result = _enqueue_reader_library_ingest_job(
+        prefer_background_queue=False,
+        **payload,
+    )
     if not enqueue_result.get("queued"):
         raise RuntimeError(str(enqueue_result.get("reason") or "reader_requeue_failed"))
     return get_reader_library_document(
@@ -13564,9 +13571,13 @@ def _process_reader_library_ingest_job(
                 pass
 
 
-def _enqueue_reader_library_ingest_job(**payload) -> dict[str, Any]:
+def _enqueue_reader_library_ingest_job(
+    *,
+    prefer_background_queue: bool = True,
+    **payload,
+) -> dict[str, Any]:
     normalized_payload = _normalize_reader_ingest_job_payload(**payload)
-    if can_enqueue_background_jobs():
+    if prefer_background_queue and can_enqueue_background_jobs():
         enqueue_result = enqueue_reader_library_ingest_job(normalized_payload)
         if enqueue_result.get("queued"):
             return enqueue_result
