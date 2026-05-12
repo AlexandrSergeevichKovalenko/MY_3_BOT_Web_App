@@ -5405,6 +5405,19 @@ def _build_dictionary_feel_private_message(
     return "\n".join(lines)
 
 
+def _build_dictionary_feel_reply_markup(token: str) -> InlineKeyboardMarkup:
+    feedback_token = str(token or "").strip()
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("👍 Like", callback_data=f"feelfb:{feedback_token}:like"),
+            InlineKeyboardButton("👎 Dislike", callback_data=f"feelfb:{feedback_token}:dislike"),
+        ],
+        [
+            InlineKeyboardButton("❓ Задать вопрос", callback_data="langgpt:continue"),
+        ],
+    ])
+
+
 def _render_dictionary_card_png(
     source_lang: str,
     target_lang: str,
@@ -6405,10 +6418,7 @@ async def handle_dictionary_feel_callback(update: Update, context: CallbackConte
             entry_id=0,
             feel_explanation=feel_text,
         )
-        reply_markup = InlineKeyboardMarkup([[
-            InlineKeyboardButton("👍 Like", callback_data=f"feelfb:{token}:like"),
-            InlineKeyboardButton("👎 Dislike", callback_data=f"feelfb:{token}:dislike"),
-        ]])
+        reply_markup = _build_dictionary_feel_reply_markup(token)
         text = _build_dictionary_feel_private_message(
             source_text=source_text,
             target_text=target_text or "—",
@@ -6565,10 +6575,7 @@ async def handle_quiz_feel_callback(update: Update, context: CallbackContext) ->
             entry_id=0,
             feel_explanation=feel_text,
         )
-        reply_markup = InlineKeyboardMarkup([[
-            InlineKeyboardButton("👍 Like", callback_data=f"feelfb:{token}:like"),
-            InlineKeyboardButton("👎 Dislike", callback_data=f"feelfb:{token}:dislike"),
-        ]])
+        reply_markup = _build_dictionary_feel_reply_markup(token)
         text = _build_dictionary_feel_private_message(
             source_text=source_text,
             target_text=target_text or "—",

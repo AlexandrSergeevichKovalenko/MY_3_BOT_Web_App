@@ -7206,7 +7206,9 @@ def _compute_srs_queue_info(
         source_lang=source_lang,
         target_lang=target_lang,
         allowed_card_ids=allowed_card_ids,
-        bypass_due_at=bool(allowed_card_ids),
+        # Manual selection narrows the candidate set, but it must still respect
+        # each card's next due timestamp after the user rates it.
+        bypass_due_at=False,
         cursor=cursor,
     )
     introduced_today = count_new_cards_introduced_today(
@@ -7232,13 +7234,15 @@ def _compute_srs_queue_info(
         allowed_card_ids=allowed_card_ids,
         cursor=cursor,
     )
-    # Daily cap: show at most SRS_DUE_PER_DAY cards per day
-    due_limit_today = SRS_DUE_PER_DAY
+    # Daily cap: show at most SRS_DUE_PER_DAY cards per day.
+    # In manual mode the UI should reflect the selected subset size, not the
+    # global system cap of 30 cards.
+    is_manual = bool(allowed_card_ids)
+    due_limit_today = len(allowed_card_ids) if is_manual else SRS_DUE_PER_DAY
     due_remaining_today = max(0, due_limit_today - due_reviewed_today)
     due_count = min(due_count_total, due_remaining_today)
     # In manual-selection mode use the selection size as the cap; also skip the
     # backlog-blocking condition so freshly selected words are always learnable.
-    is_manual = bool(allowed_card_ids)
     effective_new_cap = len(allowed_card_ids) if is_manual else NEW_PER_DAY
     new_remaining_today = max(effective_new_cap - introduced_today, 0)
     if not is_manual and due_count_total > SRS_DUE_PER_DAY * 2:
@@ -7346,9 +7350,8 @@ def _list_srs_queue_cards(
             " )"
         )
         recent_seen_params = [int(user_id), recent_seen_cutoff]
-        bypass_due_at = bool(normalized_allowed_ids)
-        due_filter_sql = "" if bypass_due_at else "AND s.due_at <= %s"
-        due_params: list[object] = [] if bypass_due_at else [now_utc]
+        due_filter_sql = "AND s.due_at <= %s"
+        due_params: list[object] = [now_utc]
         due_count = 0
         due_rows: list[tuple] = []
         due_selected_ids: set[int] = set()
@@ -7637,7 +7640,10 @@ def _build_next_srs_payload(
         source_lang=source_lang,
         target_lang=target_lang,
         allowed_card_ids=allowed_card_ids,
-        bypass_due_at=bool(allowed_card_ids),
+        # In manual mode we still honor due_at for cards that have already been
+        # reviewed; otherwise a short custom list loops immediately regardless
+        # of the chosen rating.
+        bypass_due_at=False,
         cursor=cursor,
     )
     card_payload = None
@@ -33923,7 +33929,7 @@ def get_next_srs_card():
     def mark(stage_name: str) -> None:
         stage_marks[stage_name] = time.perf_counter()
 
-    def log_profile(user_id_value: int | None, error_text: str | None = None) -> None:
+    def log_profile(user_id_value: int | None, queue_source_value: str, error_text: str | None = None) -> None:
         if not FSRS_PROFILING_ENABLED:
             return
         try:
@@ -33940,8 +33946,9 @@ def get_next_srs_card():
                 prev = ts
             total_ms = int((end_ts - started_at) * 1000)
             logging.info(
-                "FSRS next profile: user_id=%s total=%sms %s%s",
+                "FSRS next profile: user_id=%s queue_source=%s total=%sms %s%s",
                 user_id_value,
+                queue_source_value,
                 total_ms,
                 " ".join(parts),
                 f" error={error_text}" if error_text else "",
@@ -34002,7 +34009,7 @@ def get_next_srs_card():
         )
     except Exception as exc:
         had_error = True
-        log_profile(int(user_id) if user_id else None, error_text=str(exc))
+        log_profile(int(user_id) if user_id else None, queue_source, error_text=str(exc))
         raise
     finally:
         if not had_error:
@@ -34017,7 +34024,7 @@ def get_next_srs_card():
                     )
             except Exception:
                 pass
-            log_profile(int(user_id) if user_id else None, error_text=None)
+            log_profile(int(user_id) if user_id else None, queue_source, error_text=None)
 
 
 @app.route("/api/cards/prefetch", methods=["GET"])
@@ -34114,7 +34121,12 @@ def review_srs_card():
     def mark(stage_name: str) -> None:
         stage_marks[stage_name] = time.perf_counter()
 
-    def log_profile(user_id_value: int | None, card_id_value: int | None, error_text: str | None = None) -> None:
+    def log_profile(
+        user_id_value: int | None,
+        card_id_value: int | None,
+        queue_source_value: str,
+        error_text: str | None = None,
+    ) -> None:
         if not FSRS_PROFILING_ENABLED:
             return
         try:
@@ -34131,9 +34143,10 @@ def review_srs_card():
                 prev = ts
             total_ms = int((end_ts - started_at) * 1000)
             logging.info(
-                "FSRS review profile: user_id=%s card_id=%s total=%sms %s%s",
+                "FSRS review profile: user_id=%s card_id=%s queue_source=%s total=%sms %s%s",
                 user_id_value,
                 card_id_value,
+                queue_source_value,
                 total_ms,
                 " ".join(parts),
                 f" error={error_text}" if error_text else "",
@@ -34248,15 +34261,15 @@ def review_srs_card():
                 )
                 mark("build_next")
     except ValueError as exc:
-        log_profile(int(user_id) if user_id else None, int(card_id) if card_id else None, error_text=str(exc))
+        log_profile(int(user_id) if user_id else None, int(card_id) if card_id else None, queue_source, error_text=str(exc))
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
-        log_profile(int(user_id) if user_id else None, int(card_id) if card_id else None, error_text=str(exc))
+        log_profile(int(user_id) if user_id else None, int(card_id) if card_id else None, queue_source, error_text=str(exc))
         return jsonify({"error": f"Ошибка review: {exc}"}), 500
 
     interval_days = int(persisted.get("interval_days") or 0)
     due_at = persisted.get("due_at")
-    log_profile(int(user_id), int(card_id), error_text=None)
+    log_profile(int(user_id), int(card_id), queue_source, error_text=None)
     return jsonify(
         {
             "ok": True,
@@ -34536,6 +34549,21 @@ def _build_flashcard_feel_private_message(
     return "\n".join(lines)
 
 
+def _build_flashcard_feel_reply_markup(feedback_token: str) -> dict:
+    token = str(feedback_token or "").strip()
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "👍 Like", "callback_data": f"feelfb:{token}:like"},
+                {"text": "👎 Dislike", "callback_data": f"feelfb:{token}:dislike"},
+            ],
+            [
+                {"text": "❓ Задать вопрос", "callback_data": "langgpt:continue"},
+            ],
+        ]
+    }
+
+
 def _dispatch_flashcard_feel_messages(
     *,
     user_id: int,
@@ -34606,12 +34634,7 @@ def _dispatch_flashcard_feel_messages(
                 )
                 continue
 
-            reply_markup = {
-                "inline_keyboard": [[
-                    {"text": "👍 Like", "callback_data": f"feelfb:{token}:like"},
-                    {"text": "👎 Dislike", "callback_data": f"feelfb:{token}:dislike"},
-                ]]
-            }
+            reply_markup = _build_flashcard_feel_reply_markup(token)
             text = _build_flashcard_feel_private_message(
                 source_text=source_text,
                 target_text=target_text,

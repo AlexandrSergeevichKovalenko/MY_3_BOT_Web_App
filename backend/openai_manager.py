@@ -823,6 +823,11 @@ Help the learner deeply understand and “feel” the word, phrase, or sentence 
 
 Instructions:
 - Write 4–8 short sentences in Russian.
+- First validate the German input before explaining it.
+- If the German word, phrase, or sentence contains an error, start the answer with the corrected German variant in the first line.
+- Explicitly say that the original input contains an error and name the error type precisely: for example wrong article, wrong case, wrong gender, wrong adjective ending, wrong verb form, wrong word order, unnatural collocation, spelling mistake, or malformed phrase.
+- Then explain the corrected variant, not the incorrect one.
+- If the input is already correct, do not invent mistakes and proceed directly to the explanation.
 - If the input is a single word:
   • Break it into meaningful parts (prefix, root, suffix, compound elements).
   • For each part: explain its meaning, translate it into Russian, and explain its function.
@@ -885,6 +890,10 @@ Input JSON:
 }
 
 Task:
+- Validate target-language wording before explaining it.
+- If the studied word, phrase, or sentence contains an error in the language being studied, begin with the corrected variant.
+- Explicitly state that the original input contains an error and name the concrete error type.
+- Then explain the corrected variant. If the input is already correct, say nothing about errors.
 - Explain the internal logic of source_text and its relation to target_text.
 - Write 4-8 short sentences in source_language (learner native language).
 - Keep explanation practical and compact.
@@ -2551,6 +2560,8 @@ Input JSON:
 Task:
 - Produce one short natural sentence in answer_language that clearly and concretely uses the saved word/phrase meaning.
 - The sentence must describe a visualizable real-world scene.
+- The exact saved meaning must be directly visible in the scene, not merely inferred from warmth, mood, weather, consequences, or surrounding context.
+- Reject hidden systems, invisible causes, room atmosphere, and cases where a viewer would more naturally name another visible object instead of the target word.
 - Avoid abstract, metaphorical, idiomatic, ambiguous, or multi-scene situations.
 - Prefer one clause and 5-12 words.
 - If no good visual sentence can be produced safely, reject it.
@@ -2582,6 +2593,9 @@ Input JSON:
 Task:
 - Decide whether the sentence can be shown as one clear, concrete, unambiguous image AND whether the exact answer_text would still be the best and most natural label for that image.
 - Reject cases that are abstract, idiomatic, metaphorical, multi-step, internally ambiguous, visually weak, or where the image would naturally point to a different concrete label than answer_text.
+- Reject hidden infrastructure or invisible-cause concepts when the image would only show indirect evidence.
+- Reject scenes where the viewer would more naturally answer with a different visible noun such as a room, family, window, radiator, coat, table, or weather detail instead of answer_text.
+- Example: if answer_text is something like a heating system, and the scene only shows a cozy family in a warm room, reject it.
 - Be conservative: reject borderline cases.
 
 Return STRICT JSON:
@@ -2618,6 +2632,7 @@ Task:
 - Use the provided visual style. Do not invent a surreal, abstract, symbolic, or confusing style.
 - Produce a highly detailed image plan for one single concrete scene that is immediately understandable.
 - The final image must make target_text the single best and most natural label for the scene.
+- If target_text would not be the first natural label at a glance, the scene is invalid. Do not drift toward indirect hints or atmospheric cues.
 - Produce one detailed image prompt describing the exact visible scene, composition, lighting, subjects, relevant objects, and action.
 - Favor educational clarity over artistic experimentation.
 - Produce exactly 4 answer options in answer_language.
@@ -2663,6 +2678,7 @@ Rules:
 - camera_framing should tell the renderer how to frame the scene for clarity.
 - key_disambiguator should explicitly say what visible cue makes the correct answer right and the distractors wrong.
 - explanation must briefly say why the correct answer is right and why the three distractors are wrong or less precise.
+- Never fall back to a generic question like "Was zeigt das Bild?".
 - Output ONLY JSON.
 """,
 "check_translation_multilang": """

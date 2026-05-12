@@ -52,6 +52,56 @@ class ImageQuizPromptingTests(unittest.TestCase):
         self.assertIn("operating room", payload["must_not_show"])
         self.assertEqual(payload["camera_framing"], "medium shot focused on the arm and doctor")
 
+    def test_sanitize_blueprint_rejects_generic_question(self):
+        with self.assertRaisesRegex(ValueError, "blueprint_question_invalid"):
+            _sanitize_image_quiz_blueprint(
+                {
+                    "source_sentence": "Der Mann wischt den Tisch sauber.",
+                    "image_prompt": "A man wipes a kitchen table with a cloth.",
+                    "scene_core": "Cleaning a table",
+                    "must_show": ["cloth touching table", "wiping motion"],
+                    "must_not_show": ["vacuum cleaner"],
+                    "camera_framing": "medium shot",
+                    "key_disambiguator": "The cloth is wiping the table surface.",
+                    "question_de": "Was zeigt das Bild?",
+                    "answer_options": [
+                        "abwischen",
+                        "einschenken",
+                        "abholen",
+                        "zumachen",
+                    ],
+                    "correct_option_index": 0,
+                    "explanation": "Only wiping matches the visible action.",
+                },
+                expected_correct_answer="abwischen",
+                answer_language="de",
+            )
+
+    def test_sanitize_blueprint_requires_disambiguation_fields(self):
+        with self.assertRaisesRegex(ValueError, "blueprint_must_show_missing|blueprint_key_disambiguator_missing"):
+            _sanitize_image_quiz_blueprint(
+                {
+                    "source_sentence": "Die Familie sitzt im warmen Wohnzimmer.",
+                    "image_prompt": "A cozy family sits together in a warm living room in winter.",
+                    "scene_core": "Family indoors in winter",
+                    "must_show": [],
+                    "must_not_show": ["snowstorm indoors"],
+                    "camera_framing": "wide shot",
+                    "key_disambiguator": "",
+                    "question_de": "Wodurch wird das Zimmer hier warm gehalten?",
+                    "answer_options": [
+                        "die Zentralheizung",
+                        "die Klimaanlage",
+                        "der Kamin",
+                        "das Fenster",
+                    ],
+                    "correct_option_index": 0,
+                    "explanation": "The room is warm, but the decisive heating source is not directly shown.",
+                },
+                expected_correct_answer="die Zentralheizung",
+                answer_language="de",
+            )
+
     def test_render_prompt_includes_style_and_disambiguation_constraints(self):
         prompt = _compose_image_quiz_render_prompt(
             source_sentence="Ein Mann wischt den Küchentisch mit einem gelben Tuch ab.",

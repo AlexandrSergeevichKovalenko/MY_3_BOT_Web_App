@@ -237,6 +237,21 @@ def _normalize_string_list(value: object) -> list[str]:
     return normalized
 
 
+def _is_generic_image_quiz_question(value: str | None) -> bool:
+    normalized = re.sub(r"[?!.,:;]+", "", _normalize_space(value)).casefold()
+    if not normalized:
+        return True
+    generic_patterns = {
+        "was zeigt das bild",
+        "was sieht man auf dem bild",
+        "was ist auf dem bild zu sehen",
+        "was passt zum bild",
+        "welches wort passt zum bild",
+        "welcher begriff passt zum bild",
+    }
+    return normalized in generic_patterns
+
+
 def _select_image_quiz_visual_style(
     *,
     template_id: int,
@@ -322,7 +337,7 @@ def _sanitize_image_quiz_blueprint(
 ) -> dict:
     source_sentence = _normalize_space(payload.get("source_sentence"))
     image_prompt = _normalize_space(payload.get("image_prompt"))
-    question_de = _normalize_space(payload.get("question_de")) or "Was zeigt das Bild?"
+    question_de = _normalize_space(payload.get("question_de"))
     explanation = _normalize_space(payload.get("explanation"))
     scene_core = _normalize_space(payload.get("scene_core"))
     camera_framing = _normalize_space(payload.get("camera_framing"))
@@ -359,8 +374,12 @@ def _sanitize_image_quiz_blueprint(
         raise ValueError("blueprint_source_sentence_language_invalid")
     if any(not _text_matches_expected_language(option, answer_language) for option in options):
         raise ValueError("blueprint_options_language_invalid")
-    if not _text_matches_expected_language(question_de, "de"):
-        question_de = "Was zeigt das Bild?"
+    if not _text_matches_expected_language(question_de, "de") or _is_generic_image_quiz_question(question_de):
+        raise ValueError("blueprint_question_invalid")
+    if not must_show:
+        raise ValueError("blueprint_must_show_missing")
+    if not key_disambiguator:
+        raise ValueError("blueprint_key_disambiguator_missing")
     return {
         "source_sentence": source_sentence,
         "image_prompt": image_prompt,
