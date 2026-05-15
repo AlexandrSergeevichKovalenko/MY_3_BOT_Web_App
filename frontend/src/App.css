@@ -15858,6 +15858,16 @@ body {
   gap: 12px;
 }
 
+.reader-topbar-peek {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--tg-bg, #1a1a2e);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+}
+
 .reader-immersive-topbar {
   display: grid;
   gap: 8px;
