@@ -503,11 +503,18 @@ body {
 
 .webapp-page.is-reader-immersive.is-reader-peek .webapp-topbar {
   display: flex;
+  flex-shrink: 0;
+}
+
+.webapp-page.is-reader-immersive {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .webapp-page.is-reader-immersive .webapp-main {
-  min-height: 100vh;
-  min-height: var(--app-height, 100dvh);
+  flex: 1;
+  min-height: 0;
   padding: 0;
   gap: 0;
 }
@@ -4328,7 +4335,6 @@ body {
   border-radius: 0;
   box-shadow: none;
   background: rgba(5, 12, 25, 0.98);
-  min-height: calc(100vh - 72px);
 }
 
 .webapp-reader.is-immersive .webapp-section-title {
@@ -15038,9 +15044,9 @@ body {
 .webapp-reader.is-immersive {
   display: flex;
   flex-direction: column;
-  height: 100dvh;
-  height: var(--app-height, 100dvh);
-  min-height: unset;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
   background: transparent;
   position: relative;
   overflow: hidden;
@@ -15667,6 +15673,26 @@ body {
   flex-shrink: 0;
   min-width: 34px;
   text-align: right;
+}
+
+.reader-scrubber-bookmark-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 28px;
+  flex-shrink: 0;
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  color: #93c5fd;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.reader-scrubber-bookmark-btn:hover,
+.reader-scrubber-bookmark-btn:active {
+  background: rgba(147, 197, 253, 0.12);
+  border-color: rgba(147, 197, 253, 0.4);
 }
 
 /* ── Page jump dialog ────────────────────────────────── */
@@ -16615,13 +16641,14 @@ body {
   }
 
   .webapp-reader.is-immersive .reader-article {
-    max-height: calc(100dvh - 154px);
-    min-height: calc(100dvh - 154px);
+    flex: 1;
+    min-height: 0;
+    max-height: none;
   }
 
   .webapp-reader.is-immersive.is-topbar-collapsed .reader-article {
-    max-height: calc(100dvh - 92px);
-    min-height: calc(100dvh - 92px);
+    max-height: none;
+    min-height: 0;
   }
 
   .reader-page-sheet,
@@ -16705,8 +16732,9 @@ body {
   }
 
   .webapp-reader.is-immersive .reader-article {
-    max-height: calc(100dvh - 150px);
-    min-height: calc(100dvh - 150px);
+    flex: 1;
+    min-height: 0;
+    max-height: none;
   }
 
   .reader-page-sheet,

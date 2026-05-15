@@ -29995,7 +29995,20 @@ function AppInner() {
                               }}
                             />
                           </div>
-                          <div className="reader-scrubber-pct webapp-muted">{Math.round(readerProgressPercent)}%</div>
+                          {readerBookmarkPercent > 0 && !isCurrentReaderPageBookmarked ? (
+                            <button
+                              type="button"
+                              className="reader-scrubber-bookmark-btn"
+                              onClick={() => setReaderCurrentPage(readerBookmarkPage)}
+                              title={tr('Перейти к закладке', 'Zur Lesezeiche springen')}
+                            >
+                              <svg viewBox="0 0 18 18" fill="none" width="16" height="16">
+                                <path d="M5.25 3.75h7.5a.75.75 0 0 1 .75.75v9.75L9 11.55l-4.5 2.7V4.5a.75.75 0 0 1 .75-.75Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+                              </svg>
+                            </button>
+                          ) : (
+                            <div className="reader-scrubber-pct webapp-muted">{Math.round(readerProgressPercent)}%</div>
+                          )}
                         </div>
                       )}
 
