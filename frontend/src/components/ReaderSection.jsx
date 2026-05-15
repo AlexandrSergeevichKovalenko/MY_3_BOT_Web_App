@@ -587,37 +587,6 @@ export default function ReaderSection(props) {
                 <div className="reader-topbar-peek-spacer" />
                 <button
                   type="button"
-                  className={`secondary-button reader-toolbar-btn reader-toolbar-btn-icon-only${readerAudioPlayActive ? ' is-active' : ''}`}
-                  onClick={() => {
-                    if (readerAudioPlayActive) {
-                      stopReaderAudioPlay();
-                    } else {
-                      playReaderAudioPage(readerCurrentPage);
-                    }
-                  }}
-                  disabled={!readerContent || readerAudioPlayLoading}
-                  title={readerAudioPlayActive ? tr('Остановить аудио', 'Audio stoppen') : tr('Слушать страницу', 'Seite vorlesen')}
-                  aria-label={readerAudioPlayActive ? tr('Остановить аудио', 'Audio stoppen') : tr('Слушать страницу', 'Seite vorlesen')}
-                >
-                  <span className="reader-toolbar-btn-icon" aria-hidden="true">
-                    {readerAudioPlayLoading ? (
-                      <svg className="reader-lib-spinner" viewBox="0 0 24 24" fill="none">
-                        <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeDasharray="42 14" />
-                      </svg>
-                    ) : readerAudioPlayActive ? (
-                      <svg viewBox="0 0 18 18" fill="none">
-                        <rect x="4" y="4" width="3.5" height="10" rx="1" fill="currentColor" />
-                        <rect x="10.5" y="4" width="3.5" height="10" rx="1" fill="currentColor" />
-                      </svg>
-                    ) : (
-                      <svg viewBox="0 0 18 18" fill="none">
-                        <path d="M4 3.5a1 1 0 0 1 1.5-.87l9 5.18a1 1 0 0 1 0 1.74l-9 5.18A1 1 0 0 1 4 13.82V3.5Z" fill="currentColor" />
-                      </svg>
-                    )}
-                  </span>
-                </button>
-                <button
-                  type="button"
                   className="secondary-button reader-topbar-toggle-chip reader-toolbar-btn"
                   onClick={() => setReaderTopbarCollapsed(false)}
                   title={tr('Развернуть панель', 'Leiste aufklappen')}
@@ -830,10 +799,10 @@ export default function ReaderSection(props) {
             )}
 
             {/* ── Audio hint — always rendered (fixed height) to prevent layout shift ── */}
-            <div className={`reader-audio-hint${(readerAudioPlayActive || readerAudioStartWid) ? ' is-active' : ''}`}>
-              {readerAudioStartWid
-                ? tr('▶ начнёт со слова, которое ты выбрал', '▶ startet beim gewählten Wort')
-                : tr('тапни слово в тексте — ▶ заиграет с него', 'tippe ein Wort an — ▶ startet von dort')}
+            <div className={`reader-audio-hint${readerAudioPlayActive ? ' is-active' : ''}`}>
+              {readerAudioPlayActive
+                ? tr('3× тап по слову = перейти к нему', '3× tippen = zum Wort springen')
+                : tr('3× тап по слову = читать вслух с него', '3× tippen = vorlesen ab diesem Wort')}
             </div>
 
             {/* ── Scrubber bar ────────────────────────────────────── */}

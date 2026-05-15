@@ -5328,7 +5328,9 @@ function AppInner() {
     startY: 0,
   });
   const readerSuppressStructuredClickRef = useRef(0);
-  const readerLastTapRef = useRef({ time: 0, sid: null });
+  const readerLastTapRef = useRef({ time: 0, sid: null, count: 0 });
+  const readerAudioPagesPlayedRef = useRef(0);
+  const readerAudioPageLimitRef = useRef(0); // 0 = no limit active
   const readerStatusPollTokenRef = useRef(0);
   const readerPaginationResizeFrameRef = useRef(0);
   const readerPaginationRunRef = useRef(0);
@@ -19012,17 +19014,36 @@ function AppInner() {
       const metaWord = readerWordMap.get(wid);
       if (!metaWord || !sid) return;
 
-      // Double-tap on any word in the same sentence → sentence translation
+      // Track tap count — same sentence within 320ms increments the counter
       const now = Date.now();
       const lastTap = readerLastTapRef.current;
-      const isDoubleTap = now - lastTap.time < 320 && lastTap.sid === sid;
-      readerLastTapRef.current = { time: now, sid };
+      const isFast = now - lastTap.time < 320 && lastTap.sid === sid;
+      const tapCount = isFast ? lastTap.count + 1 : 1;
+      readerLastTapRef.current = { time: now, sid, count: tapCount };
 
-      if (isDoubleTap) {
+      // ── Triple tap → start audio from this word ──────────────────
+      if (tapCount >= 3) {
+        readerLastTapRef.current = { time: 0, sid: null, count: 0 };
+        setReaderAudioStartWid(wid);
+        // Estimate page char budget for the 10 000-char limit
+        const pageText = readerSentencesModel.reduce((acc, s) => acc + String(s.text || '').length, 0);
+        const safePageLen = Math.max(100, pageText);
+        readerAudioPagesPlayedRef.current = 0;
+        readerAudioPageLimitRef.current = Math.max(1, Math.ceil(10000 / safePageLen));
+        if (readerAudioPlayActive) stopReaderAudioPlay();
+        // Small delay so stopReaderAudioPlay state settles before play
+        setTimeout(() => playReaderAudioPage(readerCurrentPage), 50);
+        return;
+      }
+
+      // ── Double tap → sentence translation ────────────────────────
+      if (tapCount === 2) {
         const sentence = readerSentenceMap.get(sid);
         if (!sentence) return;
-        setReaderAudioStartWid(wid);
-        if (readerAudioPlayActive && readerAudioPlayData) seekReaderAudioToWid(wid);
+        if (readerAudioPlayActive && readerAudioPlayData) {
+          setReaderAudioStartWid(wid);
+          seekReaderAudioToWid(wid);
+        }
         handleSelection(event, String(sentence.text || ''), {
           compact: true,
           inlineLookup: true,
@@ -19037,6 +19058,7 @@ function AppInner() {
         return;
       }
 
+      // ── Single tap → word translation ────────────────────────────
       setReaderAudioStartWid(wid);
       if (readerAudioPlayActive && readerAudioPlayData) seekReaderAudioToWid(wid);
       handleSelection(event, metaWord.value, {
@@ -19059,7 +19081,7 @@ function AppInner() {
       const sid = String(sentenceEl.getAttribute('data-sid') || '').trim();
       const sentence = readerSentenceMap.get(sid);
       if (!sentence) return;
-      readerLastTapRef.current = { time: 0, sid: null };
+      readerLastTapRef.current = { time: 0, sid: null, count: 0 };
       handleSelection(event, String(sentence.text || ''), {
         compact: true,
         inlineLookup: true,
@@ -20007,6 +20029,8 @@ function AppInner() {
     }
     cancelAnimationFrame(audioRafRef.current);
     readerAudioPlayingForPageRef.current = null;
+    readerAudioPagesPlayedRef.current = 0;
+    readerAudioPageLimitRef.current = 0;
     setReaderAudioPlayActive(false);
     setReaderAudioPlayData(null);
     setReaderAudioPlayPosition(0);
@@ -20044,14 +20068,21 @@ function AppInner() {
     if (!audio || !readerAudioPlayActive) return undefined;
     const onEnded = () => {
       const playedPage = readerAudioPlayingForPageRef.current;
-      if (playedPage !== null && playedPage < readerPageCount) {
-        const nextPage = playedPage + 1;
-        readerAudioPlayingForPageRef.current = nextPage;
-        setReaderCurrentPage(nextPage);
-        playReaderAudioPage(nextPage);
-      } else {
+      if (playedPage === null || playedPage >= readerPageCount) {
         stopReaderAudioPlay();
+        return;
       }
+      // Check 10 000-char page budget
+      readerAudioPagesPlayedRef.current += 1;
+      const limit = readerAudioPageLimitRef.current;
+      if (limit > 0 && readerAudioPagesPlayedRef.current >= limit) {
+        stopReaderAudioPlay();
+        return;
+      }
+      const nextPage = playedPage + 1;
+      readerAudioPlayingForPageRef.current = nextPage;
+      setReaderCurrentPage(nextPage);
+      playReaderAudioPage(nextPage);
     };
     audio.addEventListener('ended', onEnded);
     return () => audio.removeEventListener('ended', onEnded);
