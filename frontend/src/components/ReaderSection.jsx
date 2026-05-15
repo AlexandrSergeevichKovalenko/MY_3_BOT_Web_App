@@ -804,8 +804,8 @@ export default function ReaderSection(props) {
                 {/* Hint floats ABOVE scrubber via position:absolute — zero flex height impact */}
                 <div className={`reader-audio-hint${readerAudioPlayActive ? ' is-active' : ''}`}>
                   {readerAudioPlayActive
-                    ? tr('3× тап по слову = перейти к нему', '3× tippen = zum Wort springen')
-                    : tr('3× тап по слову = читать вслух с него', '3× tippen = vorlesen ab diesem Wort')}
+                    ? tr('удержи слово → перейти к нему', 'Wort gedrückt halten → dorthin springen')
+                    : tr('удержи слово → читать вслух с него', 'Wort gedrückt halten → vorlesen ab hier')}
                 </div>
                 <button
                   type="button"
