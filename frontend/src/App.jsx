@@ -29902,23 +29902,6 @@ function AppInner() {
                           </button>
                           <button
                             type="button"
-                            className={`secondary-button reader-toolbar-btn reader-toolbar-btn-icon-only ${readerShowToc ? 'is-active' : ''}`}
-                            onClick={() => {
-                              if (!readerShowToc && readerTocItems.length === 0) void loadReaderToc();
-                              setReaderShowToc((v) => !v);
-                            }}
-                            disabled={!readerContent}
-                            title={tr('Оглавление', 'Inhaltsverzeichnis')}
-                            aria-label={tr('Оглавление', 'Inhaltsverzeichnis')}
-                          >
-                            <span className="reader-toolbar-btn-icon" aria-hidden="true">
-                              <svg viewBox="0 0 18 18" fill="none">
-                                <path d="M4 5h10M4 9h10M4 13h6.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-                              </svg>
-                            </span>
-                          </button>
-                          <button
-                            type="button"
                             className="secondary-button reader-topbar-collapse-btn reader-topbar-toggle-chip reader-toolbar-btn"
                             onClick={() => {
                               const next = !readerTopbarCollapsed;
