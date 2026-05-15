@@ -1,5 +1,6 @@
 import React, { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
+import './components/reader-redesign.css';
 import BlocksTrainer from './components/BlocksTrainer';
 import HomeDashboardTiles from './components/HomeDashboardTiles';
 import HomeMoreTiles from './components/HomeMoreTiles';
