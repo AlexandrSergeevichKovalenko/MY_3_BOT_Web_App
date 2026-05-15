@@ -25605,7 +25605,7 @@ function AppInner() {
       );
     }
     return (
-      <div className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isAndroidTelegramClient ? 'is-android-client' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''} ${canTopbarGoBack ? 'is-topbar-back-mode' : ''}`}>
+      <div className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${showReaderTopbarPeekInAppTopbar ? 'is-reader-peek' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isAndroidTelegramClient ? 'is-android-client' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''} ${canTopbarGoBack ? 'is-topbar-back-mode' : ''}`}>
         <pre id="app-perf-report" style={{ display: 'none' }} />
         <div className="webapp-shell">
           <aside className="webapp-sidebar">
@@ -25812,6 +25812,23 @@ function AppInner() {
                   {Boolean(flashcardActiveMode) && renderTodaySectionTaskHud('flashcards', { ignoreProgress: true, inline: true })}
                   {showReaderTopbarPeekInAppTopbar && (
                     <>
+                      <button
+                        type="button"
+                        className={`secondary-button reader-toolbar-btn reader-toolbar-btn-icon-only topbar-reader-peek-btn ${readerShowToc ? 'is-active' : ''}`}
+                        onClick={() => {
+                          if (!readerShowToc && readerTocItems.length === 0) void loadReaderToc();
+                          setReaderShowToc((v) => !v);
+                        }}
+                        disabled={!readerContent}
+                        title={tr('Оглавление', 'Inhaltsverzeichnis')}
+                        aria-label={tr('Оглавление', 'Inhaltsverzeichnis')}
+                      >
+                        <span className="reader-toolbar-btn-icon" aria-hidden="true">
+                          <svg viewBox="0 0 18 18" fill="none">
+                            <path d="M4 5h10M4 9h10M4 13h6.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                          </svg>
+                        </span>
+                      </button>
                       <button
                         type="button"
                         className={`reader-bookmark-btn reader-toolbar-btn reader-toolbar-btn-icon-only topbar-reader-peek-btn ${isCurrentReaderPageBookmarked ? 'is-active' : ''}`}

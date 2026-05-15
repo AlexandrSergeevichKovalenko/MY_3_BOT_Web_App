@@ -501,6 +501,10 @@ body {
   display: none;
 }
 
+.webapp-page.is-reader-immersive.is-reader-peek .webapp-topbar {
+  display: flex;
+}
+
 .webapp-page.is-reader-immersive .webapp-main {
   min-height: 100vh;
   min-height: var(--app-height, 100dvh);
