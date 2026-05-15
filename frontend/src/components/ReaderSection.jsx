@@ -941,10 +941,12 @@ export default function ReaderSection(props) {
                     <path d="M4.5 4.5 13.5 13.5M13.5 4.5 4.5 13.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
                   </svg>
                 </button>
-                {readerAudioPlayError && (
-                  <div className="reader-audio-mini-error webapp-muted">{readerAudioPlayError}</div>
-                )}
               </div>
+            )}
+
+            {/* ── Audio error (shown even when player not yet active) ── */}
+            {readerAudioPlayError && !readerAudioPlayActive && (
+              <div className="reader-audio-error-bar">{readerAudioPlayError}</div>
             )}
 
             {/* ── Page jump dialog ────────────────────────────────── */}

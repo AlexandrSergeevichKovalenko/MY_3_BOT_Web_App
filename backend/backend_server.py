@@ -13143,6 +13143,39 @@ def _build_toc_from_pages(pages: list, source_type: str) -> list[dict]:
     return toc
 
 
+_EPUB_PAGE_SPLIT_CHARS = 3000  # soft max chars per reader page
+
+
+def _split_chapter_into_pages(text: str, chapter_title: str, page_offset: int) -> list[dict]:
+    """Split a long chapter into ~_EPUB_PAGE_SPLIT_CHARS-char pages at paragraph boundaries."""
+    if len(text) <= _EPUB_PAGE_SPLIT_CHARS:
+        return [{"page_number": page_offset + 1, "text": text, "chapter_title": chapter_title}]
+    paragraphs = [p.strip() for p in re.split(r'\n{2,}', text) if p.strip()]
+    if not paragraphs:
+        return [{"page_number": page_offset + 1, "text": text, "chapter_title": chapter_title}]
+    result: list[dict] = []
+    current_parts: list[str] = []
+    current_len = 0
+    for para in paragraphs:
+        if current_len > 0 and current_len + len(para) + 2 > _EPUB_PAGE_SPLIT_CHARS:
+            result.append({
+                "page_number": page_offset + len(result) + 1,
+                "text": "\n\n".join(current_parts),
+                "chapter_title": chapter_title,
+            })
+            current_parts = []
+            current_len = 0
+        current_parts.append(para)
+        current_len += len(para) + 2
+    if current_parts:
+        result.append({
+            "page_number": page_offset + len(result) + 1,
+            "text": "\n\n".join(current_parts),
+            "chapter_title": chapter_title,
+        })
+    return result
+
+
 def _extract_epub_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
     if not data:
         return "", []
@@ -13169,7 +13202,11 @@ def _extract_epub_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
             continue
         chapter_title = _extract_html_heading_title(raw_html, chapter_num)
         chunks.append(normalized)
-        pages.append({"page_number": chapter_num, "text": normalized, "chapter_title": chapter_title})
+        sub_pages = _split_chapter_into_pages(normalized, chapter_title, len(pages))
+        pages.extend(sub_pages)
+    # Re-number pages sequentially after all chapters are processed
+    for i, p in enumerate(pages):
+        p["page_number"] = i + 1
     return _normalize_reader_text("\n\n".join(chunks)), pages
 
 

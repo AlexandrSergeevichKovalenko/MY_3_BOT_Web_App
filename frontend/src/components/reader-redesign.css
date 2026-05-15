@@ -2357,3 +2357,20 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.reader-audio-error-bar {
+  margin: 6px 16px 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: rgb(239, 68, 68);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.webapp-reader[data-reader-theme="sepia"] .reader-audio-error-bar,
+.webapp-reader[data-reader-theme="cream"] .reader-audio-error-bar {
+  background: rgba(180, 30, 30, 0.08);
+  border-color: rgba(180, 30, 30, 0.25);
+  color: rgb(180, 30, 30);
+}
