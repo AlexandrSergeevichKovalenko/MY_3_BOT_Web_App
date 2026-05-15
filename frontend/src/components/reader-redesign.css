@@ -891,7 +891,7 @@
   margin: 0;
   box-shadow: none;
   font-family: var(--rd-font-serif);
-  color: var(--rd-text);
+  color: var(--rd-text) !important;
   line-height: 1.68;
   letter-spacing: 0;
   font-weight: 400;
@@ -919,6 +919,7 @@
   border: 1px solid var(--rd-border);
   position: relative;
   box-shadow: var(--rd-shadow-card);
+  color: var(--rd-text) !important;
 }
 
 .webapp-reader.is-immersive .reader-page-sheet {
@@ -934,7 +935,7 @@
   font-weight: var(--reader-font-weight, 400);
   font-family: var(--rd-font-serif);
   line-height: 1.7;
-  color: var(--rd-text);
+  color: var(--rd-text) !important;
   text-wrap: pretty;
 }
 
