@@ -15879,10 +15879,21 @@ def _build_practice_text(sentences: list[str]) -> str:
     return ". ".join(part.strip().rstrip(".") for part in parts if part).strip()
 
 
-_TTS_CACHE: dict[str, AudioSegment] = {}
-_CHAIN_CACHE: dict[str, AudioSegment] = {}
-_SILENCE_CACHE: dict[int, AudioSegment] = {}
-_AUDIO_GRAMMAR_EXPL_CACHE: dict[str, str] = {}
+_TTS_CACHE: OrderedDict = OrderedDict()
+_TTS_CACHE_MAX = 300          # ~100-500 KB each decoded → max ~150 MB per worker
+_CHAIN_CACHE: OrderedDict = OrderedDict()
+_CHAIN_CACHE_MAX = 80         # chained clips are larger; 80 × ~500 KB ≈ 40 MB
+_SILENCE_CACHE: dict[int, AudioSegment] = {}   # tiny — fixed set of durations, no limit needed
+_AUDIO_GRAMMAR_EXPL_CACHE: OrderedDict = OrderedDict()
+_AUDIO_GRAMMAR_EXPL_CACHE_MAX = 500            # plain strings, trivial memory
+
+
+def _audio_lru_put(cache: OrderedDict, key, value, max_size: int) -> None:
+    """Insert/update key with LRU eviction; O(1) via OrderedDict."""
+    cache.pop(key, None)
+    cache[key] = value
+    while len(cache) > max_size:
+        cache.popitem(last=False)
 
 # _TTS_VOICES and _TTS_LANG_CODES live in backend.tts_generation (imported above)
 
@@ -15941,7 +15952,7 @@ def _generate_audio_grammar_explanation(
         return ""
     cleaned = _normalize_utterance_text(content)
     if cleaned:
-        _AUDIO_GRAMMAR_EXPL_CACHE[key] = cleaned
+        _audio_lru_put(_AUDIO_GRAMMAR_EXPL_CACHE, key, cleaned, _AUDIO_GRAMMAR_EXPL_CACHE_MAX)
     return cleaned
 
 
@@ -16242,6 +16253,7 @@ def get_or_create_tts_clip(lang: str, text: str, speed: float = _TTS_SPEED_DEFAU
     language_code = _TTS_LANG_CODES.get(lang, "en-US")
     key = _tts_cache_key(lang, voice, speed, text)
     if key in _TTS_CACHE:
+        _TTS_CACHE.move_to_end(key)
         logging.info(
             "🔊 TTS clip selected: lang=%s language_code=%s voice=%s cache=memory chars=%s",
             lang,
@@ -16254,7 +16266,7 @@ def get_or_create_tts_clip(lang: str, text: str, speed: float = _TTS_SPEED_DEFAU
     cached_db = get_tts_audio_cache(key)
     if cached_db:
         audio = AudioSegment.from_file(io.BytesIO(cached_db), format="mp3")
-        _TTS_CACHE[key] = audio
+        _audio_lru_put(_TTS_CACHE, key, audio, _TTS_CACHE_MAX)
         logging.info(
             "🔊 TTS clip selected: lang=%s language_code=%s voice=%s cache=db chars=%s",
             lang,
@@ -16269,7 +16281,7 @@ def get_or_create_tts_clip(lang: str, text: str, speed: float = _TTS_SPEED_DEFAU
     cache_path = os.path.join(cache_dir, f"{key}.mp3")
     if os.path.exists(cache_path):
         audio = AudioSegment.from_file(cache_path, format="mp3")
-        _TTS_CACHE[key] = audio
+        _audio_lru_put(_TTS_CACHE, key, audio, _TTS_CACHE_MAX)
         try:
             with open(cache_path, "rb") as cached_file:
                 upsert_tts_audio_cache(
@@ -18897,13 +18909,14 @@ def _chain_cache_key(chunks: list[str], lang: str, speed: float) -> str:
 def get_or_create_chain_clip(chunks: list[str], lang: str, speed: float = _TTS_SPEED_DEFAULT) -> AudioSegment:
     key = _chain_cache_key(chunks, lang, speed)
     if key in _CHAIN_CACHE:
+        _CHAIN_CACHE.move_to_end(key)
         return _CHAIN_CACHE[key]
     clip = AudioSegment.silent(duration=0)
     for idx, chunk in enumerate(chunks):
         clip += get_or_create_tts_clip(lang, chunk, speed)
         if idx < len(chunks) - 1:
             clip += _get_silence(_CHAIN_INTER_CHUNK_MS)
-    _CHAIN_CACHE[key] = clip
+    _audio_lru_put(_CHAIN_CACHE, key, clip, _CHAIN_CACHE_MAX)
     return clip
 
 
@@ -43808,9 +43821,19 @@ def _run_yt_memory_cache_cleanup_job() -> None:
     expired_oembed = [k for k, v in list(_YT_OEMBED_CACHE.items()) if now - v.get("ts", 0) >= 7 * 24 * 60 * 60]
     for k in expired_oembed:
         _YT_OEMBED_CACHE.pop(k, None)
+    # Trim audio caches to their hard caps (LRU write-time eviction handles steady state;
+    # this catches any edge cases from concurrent inserts or limit changes after restart).
+    while len(_TTS_CACHE) > _TTS_CACHE_MAX:
+        _TTS_CACHE.popitem(last=False)
+    while len(_CHAIN_CACHE) > _CHAIN_CACHE_MAX:
+        _CHAIN_CACHE.popitem(last=False)
+    while len(_AUDIO_GRAMMAR_EXPL_CACHE) > _AUDIO_GRAMMAR_EXPL_CACHE_MAX:
+        _AUDIO_GRAMMAR_EXPL_CACHE.popitem(last=False)
     logging.info(
-        "yt_memory_cache_cleanup done: transcript=%d errors=%d oembed=%d",
+        "yt_memory_cache_cleanup done: transcript=%d errors=%d oembed=%d | "
+        "tts=%d chain=%d grammar=%d",
         len(_yt_transcript_cache), len(_yt_transcript_errors), len(_YT_OEMBED_CACHE),
+        len(_TTS_CACHE), len(_CHAIN_CACHE), len(_AUDIO_GRAMMAR_EXPL_CACHE),
     )
 
 
