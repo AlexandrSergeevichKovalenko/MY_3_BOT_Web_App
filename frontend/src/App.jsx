@@ -4583,6 +4583,19 @@ function AppInner() {
   const [readerAddOpen, setReaderAddOpen] = useState(false);
   const [readerFontSize, setReaderFontSize] = useState(READER_DEFAULT_FONT_SIZE);
   const [readerFontWeight, setReaderFontWeight] = useState(READER_DEFAULT_FONT_WEIGHT);
+
+  // ── Reader audio-sync state (Patch 2.4) ────────────────────────────────
+  const [readerAudioPlayActive, setReaderAudioPlayActive] = useState(false);
+  const [readerAudioPlayLoading, setReaderAudioPlayLoading] = useState(false);
+  const [readerAudioPlayError, setReaderAudioPlayError] = useState('');
+  const [readerAudioPlayData, setReaderAudioPlayData] = useState(null);
+  const [readerAudioPlayPosition, setReaderAudioPlayPosition] = useState(0);
+  const [readerAudioVoice, setReaderAudioVoice] = useState('');
+  const [readerAudioRate, setReaderAudioRate] = useState(1.0);
+  const [readerAudioPaused, setReaderAudioPaused] = useState(false);
+  const audioElementRef = useRef(null);
+  const audioRafRef = useRef(0);
+
   const [readerColorTheme, setReaderColorTheme] = useState(() => {
     try {
       const v = localStorage.getItem('reader_color_theme');
@@ -12129,6 +12142,48 @@ function AppInner() {
     ? Math.max(1, Math.min(readerPageCount, Math.round((Math.max(0, Math.min(100, Number(readerBookmarkPercent || 0))) / 100) * readerPageCount) || 1))
     : 0;
   const isCurrentReaderPageBookmarked = readerPageCount > 0 && readerBookmarkPage === Math.max(1, Math.min(readerPageCount, Number(readerCurrentPage || 1)));
+
+  // ── Audio-sync: positional-index ↔ frontend wid maps ───────────────────
+  const readerAudioWidMap = useMemo(() => {
+    const map = new Map();
+    let idx = 0;
+    for (const sentence of readerSentencesModel) {
+      for (const token of sentence.tokens) {
+        if (token.kind === 'word') { map.set(String(idx), token.wid); idx++; }
+      }
+    }
+    return map;
+  }, [readerSentencesModel]);
+
+  const readerAudioWidReverseMap = useMemo(() => {
+    const map = new Map();
+    let idx = 0;
+    for (const sentence of readerSentencesModel) {
+      for (const token of sentence.tokens) {
+        if (token.kind === 'word') { map.set(token.wid, String(idx)); idx++; }
+      }
+    }
+    return map;
+  }, [readerSentencesModel]);
+
+  const readerAudioPlayingWid = useMemo(() => {
+    if (!readerAudioPlayData || !readerAudioPlayActive) return null;
+    const t = readerAudioPlayPosition;
+    const timing = readerAudioPlayData.word_timings.find((w) => t >= w.start_ms && t < w.end_ms);
+    if (!timing) return null;
+    return readerAudioWidMap.get(String(timing.wid)) || null;
+  }, [readerAudioPlayData, readerAudioPlayPosition, readerAudioWidMap, readerAudioPlayActive]);
+
+  const readerAudioPlayingSid = useMemo(() => {
+    if (!readerAudioPlayingWid) return null;
+    for (const sentence of readerSentencesModel) {
+      for (const token of sentence.tokens) {
+        if (token.wid === readerAudioPlayingWid) return sentence.sid;
+      }
+    }
+    return null;
+  }, [readerAudioPlayingWid, readerSentencesModel]);
+
   const readerElapsedTotalSeconds = Math.max(0, Number(readerAccumulatedSeconds || 0) + Number(readerLiveSeconds || 0));
   const readerSwipeThreshold = readerSwipeSensitivity === 'high' ? 24 : readerSwipeSensitivity === 'low' ? 52 : 36;
   const readerSwipeLockMs = readerSwipeSensitivity === 'high' ? 180 : readerSwipeSensitivity === 'low' ? 340 : 260;
@@ -19208,7 +19263,7 @@ function AppInner() {
       {readerSentencesModel.map((sentence) => (
         <span
           key={sentence.sid}
-          className={`reader-sentence ${selectedSentenceIds.has(sentence.sid) ? 'is-selected' : ''}`}
+          className={`reader-sentence ${selectedSentenceIds.has(sentence.sid) ? 'is-selected' : ''}${readerAudioPlayingSid === sentence.sid ? ' is-playing-sentence' : ''}`}
           data-sid={sentence.sid}
           data-start={sentence.start}
           data-end={sentence.end}
@@ -19216,15 +19271,17 @@ function AppInner() {
           {sentence.tokens.map((token, tokenIndex) => {
             if (token.kind === 'word') {
               const wordId = String(token.wid || '');
+              const isPlayingWord = readerAudioPlayingWid === wordId;
               return (
                 <span
                   key={wordId || `${sentence.sid}-word-${tokenIndex}`}
-                  className={`reader-word ${selectedWordIds.has(wordId) ? 'is-selected' : ''}`}
+                  className={`reader-word ${selectedWordIds.has(wordId) ? 'is-selected' : ''}${isPlayingWord ? ' is-playing-word' : ''}`}
                   data-wid={wordId}
                   data-sid={sentence.sid}
                   data-start={token.start}
                   data-end={token.end}
                   onTouchStart={handleReaderWordTouchStart}
+                  onClick={readerAudioPlayActive && !isPlayingWord ? () => seekReaderAudioToWid(wordId) : undefined}
                 >
                   {token.value}
                 </span>
@@ -19850,6 +19907,107 @@ function AppInner() {
   useEffect(() => () => {
     readerStatusPollTokenRef.current += 1;
   }, []);
+
+  // ── Audio-sync callbacks (Patch 2.4) ────────────────────────────────────
+  const playReaderAudioPage = useCallback(async (page) => {
+    setReaderAudioPlayLoading(true);
+    setReaderAudioPlayError('');
+    try {
+      const voice = readerAudioVoice || '';
+      const url = `/api/webapp/reader/audio/page?document_id=${readerDocumentId}&page=${page}&voice=${encodeURIComponent(voice)}&rate=${readerAudioRate}`;
+      const resp = await fetch(url, {
+        headers: initData ? { Authorization: `Bearer ${initData}` } : {},
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${resp.status}`);
+      }
+      const data = await resp.json();
+      setReaderAudioPlayData(data);
+      setReaderAudioPlayPosition(0);
+      setReaderAudioPaused(false);
+      setReaderAudioPlayActive(true);
+      if (audioElementRef.current) {
+        audioElementRef.current.src = data.audio_url;
+        audioElementRef.current.playbackRate = readerAudioRate;
+        await audioElementRef.current.play().catch(() => {});
+      }
+    } catch (e) {
+      setReaderAudioPlayError(String(e?.message || e));
+    } finally {
+      setReaderAudioPlayLoading(false);
+    }
+  }, [readerDocumentId, readerAudioVoice, readerAudioRate, initData]);
+
+  const pauseReaderAudioPlay = useCallback(() => {
+    audioElementRef.current?.pause();
+    setReaderAudioPaused(true);
+  }, []);
+
+  const resumeReaderAudioPlay = useCallback(() => {
+    audioElementRef.current?.play().catch(() => {});
+    setReaderAudioPaused(false);
+  }, []);
+
+  const stopReaderAudioPlay = useCallback(() => {
+    if (audioElementRef.current) {
+      audioElementRef.current.pause();
+      audioElementRef.current.src = '';
+    }
+    cancelAnimationFrame(audioRafRef.current);
+    setReaderAudioPlayActive(false);
+    setReaderAudioPlayData(null);
+    setReaderAudioPlayPosition(0);
+    setReaderAudioPaused(false);
+    setReaderAudioPlayError('');
+  }, []);
+
+  const seekReaderAudioToWid = useCallback((wid) => {
+    if (!readerAudioPlayData || !audioElementRef.current) return;
+    const posIdx = readerAudioWidReverseMap.get(wid);
+    if (posIdx === undefined) return;
+    const timing = readerAudioPlayData.word_timings.find((w) => String(w.wid) === posIdx);
+    if (!timing) return;
+    audioElementRef.current.currentTime = timing.start_ms / 1000;
+    setReaderAudioPlayPosition(timing.start_ms);
+  }, [readerAudioPlayData, readerAudioWidReverseMap]);
+
+  // RAF position sync
+  useEffect(() => {
+    if (!readerAudioPlayActive) return undefined;
+    const tick = () => {
+      const audio = audioElementRef.current;
+      if (audio && !audio.paused) {
+        setReaderAudioPlayPosition(audio.currentTime * 1000);
+      }
+      audioRafRef.current = requestAnimationFrame(tick);
+    };
+    audioRafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(audioRafRef.current);
+  }, [readerAudioPlayActive]);
+
+  // Auto-next-page
+  useEffect(() => {
+    const audio = audioElementRef.current;
+    if (!audio || !readerAudioPlayActive) return undefined;
+    const onEnded = () => {
+      if (readerCurrentPage < readerPageCount) {
+        const nextPage = readerCurrentPage + 1;
+        setReaderCurrentPage(nextPage);
+        playReaderAudioPage(nextPage);
+      } else {
+        stopReaderAudioPlay();
+      }
+    };
+    audio.addEventListener('ended', onEnded);
+    return () => audio.removeEventListener('ended', onEnded);
+  }, [readerAudioPlayActive, readerCurrentPage, readerPageCount, playReaderAudioPage, stopReaderAudioPlay]);
+
+  // Stop audio when leaving reader or changing document
+  useEffect(() => {
+    stopReaderAudioPlay();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readerDocumentId]);
 
   async function handleReaderIngest(event) {
     event?.preventDefault?.();
@@ -29468,6 +29626,20 @@ function AppInner() {
 
                   readerColorTheme={readerColorTheme}
                   applyReaderColorTheme={applyReaderColorTheme}
+
+                  audioElementRef={audioElementRef}
+                  readerAudioPlayActive={readerAudioPlayActive}
+                  readerAudioPlayLoading={readerAudioPlayLoading}
+                  readerAudioPlayError={readerAudioPlayError}
+                  readerAudioPlayData={readerAudioPlayData}
+                  readerAudioPlayPosition={readerAudioPlayPosition}
+                  readerAudioPaused={readerAudioPaused}
+                  readerAudioVoice={readerAudioVoice}           setReaderAudioVoice={setReaderAudioVoice}
+                  readerAudioRate={readerAudioRate}             setReaderAudioRate={setReaderAudioRate}
+                  playReaderAudioPage={playReaderAudioPage}
+                  pauseReaderAudioPlay={pauseReaderAudioPlay}
+                  resumeReaderAudioPlay={resumeReaderAudioPlay}
+                  stopReaderAudioPlay={stopReaderAudioPlay}
                 />
               </PerfProfiler>
             )}

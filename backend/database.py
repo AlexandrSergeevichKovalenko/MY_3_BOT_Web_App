@@ -4710,6 +4710,33 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_reader_library (user_id, source_lang, target_lang, updated_at DESC);
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_reader_audio_pages (
+                    id              BIGSERIAL PRIMARY KEY,
+                    user_id         BIGINT NOT NULL,
+                    document_id     BIGINT NOT NULL REFERENCES bt_3_reader_library(id) ON DELETE CASCADE,
+                    page_number     INTEGER NOT NULL,
+                    voice_name      TEXT NOT NULL,
+                    speaking_rate   NUMERIC(4,2) NOT NULL DEFAULT 1.00,
+                    text_hash       TEXT NOT NULL,
+                    audio_url       TEXT NOT NULL,
+                    audio_mime      TEXT NOT NULL DEFAULT 'audio/mpeg',
+                    audio_bytes_len INTEGER,
+                    duration_ms     INTEGER NOT NULL,
+                    word_timings    JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    last_played_at  TIMESTAMPTZ,
+                    UNIQUE (document_id, page_number, voice_name, speaking_rate, text_hash)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_reader_audio_pages_user
+                ON bt_3_reader_audio_pages (user_id);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_reader_audio_pages_doc_page
+                ON bt_3_reader_audio_pages (document_id, page_number);
+            """)
+            cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_agent_voice_sessions_user_active
                 ON bt_3_agent_voice_sessions (user_id, source_lang, target_lang, started_at DESC)
                 WHERE ended_at IS NULL;
@@ -22186,6 +22213,102 @@ def enforce_reader_audio_pro_monthly_limit(
             ),
         }
     return None
+
+
+def get_cached_reader_audio_page(
+    *,
+    document_id: int,
+    page_number: int,
+    voice_name: str,
+    speaking_rate: float,
+    text_hash: str,
+) -> dict | None:
+    """Return cached audio page row if exists, else None."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, audio_url, audio_mime, duration_ms, word_timings
+                    FROM bt_3_reader_audio_pages
+                    WHERE document_id = %s
+                      AND page_number = %s
+                      AND voice_name  = %s
+                      AND speaking_rate = %s
+                      AND text_hash   = %s
+                    LIMIT 1;
+                    """,
+                    (int(document_id), int(page_number), str(voice_name),
+                     float(speaking_rate), str(text_hash)),
+                )
+                row = cursor.fetchone()
+        if not row:
+            return None
+        row_id, audio_url, audio_mime, duration_ms, word_timings = row
+        # Update last_played_at lazily
+        try:
+            with get_db_connection_context() as conn2:
+                with conn2.cursor() as c2:
+                    c2.execute(
+                        "UPDATE bt_3_reader_audio_pages SET last_played_at = NOW() WHERE id = %s",
+                        (int(row_id),),
+                    )
+        except Exception:
+            pass
+        return {
+            "audio_url": str(audio_url or ""),
+            "mime": str(audio_mime or "audio/mpeg"),
+            "duration_ms": int(duration_ms or 0),
+            "word_timings": list(word_timings or []),
+        }
+    except Exception:
+        return None
+
+
+def save_reader_audio_page_cache(
+    *,
+    user_id: int,
+    document_id: int,
+    page_number: int,
+    voice_name: str,
+    speaking_rate: float,
+    text_hash: str,
+    audio_url: str,
+    audio_mime: str,
+    audio_bytes_len: int,
+    duration_ms: int,
+    word_timings: list,
+) -> None:
+    """Insert or update cached audio page record."""
+    import json as _json
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_reader_audio_pages
+                        (user_id, document_id, page_number, voice_name, speaking_rate,
+                         text_hash, audio_url, audio_mime, audio_bytes_len,
+                         duration_ms, word_timings, last_played_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, NOW())
+                    ON CONFLICT (document_id, page_number, voice_name, speaking_rate, text_hash)
+                    DO UPDATE SET
+                        audio_url      = EXCLUDED.audio_url,
+                        audio_bytes_len = EXCLUDED.audio_bytes_len,
+                        duration_ms    = EXCLUDED.duration_ms,
+                        word_timings   = EXCLUDED.word_timings,
+                        last_played_at = NOW();
+                    """,
+                    (
+                        int(user_id), int(document_id), int(page_number),
+                        str(voice_name), float(speaking_rate),
+                        str(text_hash), str(audio_url), str(audio_mime),
+                        int(audio_bytes_len), int(duration_ms),
+                        _json.dumps(list(word_timings or [])),
+                    ),
+                )
+    except Exception:
+        pass  # cache write failure is non-fatal
 
 
 def get_today_reminder_settings(user_id: int) -> dict:

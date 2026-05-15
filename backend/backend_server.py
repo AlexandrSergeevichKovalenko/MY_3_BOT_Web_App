@@ -431,6 +431,8 @@ from backend.database import (
     mark_admin_scheduler_run,
     claim_scheduler_run_guard,
     finish_scheduler_run_guard,
+    get_cached_reader_audio_page,
+    save_reader_audio_page_cache,
     get_today_reminder_settings,
     upsert_today_reminder_settings,
     list_today_reminder_users,
@@ -589,6 +591,7 @@ from backend.telegram_notify import (
 from backend.tts_generation import (
     _TTS_VOICES,
     _TTS_LANG_CODES,
+    synthesize_page_with_timings,
     TTS_OBJECT_PREFIX,
     TTS_WEBAPP_DEFAULT_SPEED,
     _normalize_short_lang_code,
@@ -38445,6 +38448,190 @@ def reader_audio_export():
                     )
                 }
             ), 500
+
+
+@app.route("/api/webapp/reader/audio/page", methods=["GET"])
+def reader_audio_page():
+    """
+    GET /api/webapp/reader/audio/page?document_id=&page=&voice=&rate=
+    Returns JSON: {audio_url, mime, duration_ms, word_timings, voice, rate, cached}
+    """
+    init_data = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    if not init_data:
+        init_data = request.args.get("initData", "").strip()
+    document_id_raw = request.args.get("document_id", "")
+    page_raw = request.args.get("page", "1")
+    voice_raw = request.args.get("voice", "").strip()
+    rate_raw = request.args.get("rate", "1.0")
+
+    if not init_data:
+        return jsonify({"error": "Authorization обязателен"}), 400
+    if not document_id_raw:
+        return jsonify({"error": "document_id обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+    user_id_int = int(user_id)
+
+    try:
+        document_id_int = int(document_id_raw)
+        page_int = max(1, int(page_raw))
+    except (ValueError, TypeError):
+        return jsonify({"error": "document_id и page должны быть числами"}), 400
+
+    try:
+        rate_float = float(rate_raw)
+        rate_float = max(0.5, min(2.0, rate_float))
+        rate_float = round(rate_float * 4) / 4  # snap to 0.25 steps
+    except (ValueError, TypeError):
+        rate_float = 1.0
+
+    now_utc = datetime.now(timezone.utc)
+    source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
+    entitlement, _subscription = _resolve_user_entitlement(
+        user_id=user_id_int, now_ts_utc=now_utc, tz="Europe/Vienna"
+    )
+    effective_mode = str(entitlement.get("effective_mode") or "free").lower()
+    if effective_mode not in {"pro", "trial"}:
+        return jsonify({
+            "error": "Аудио-чтение с подсветкой доступно только на премиум подписке.",
+            "error_code": "reader_audio_premium_required",
+            "upgrade": {"available": True, "plan_code": "pro"},
+        }), 403
+
+    document = get_reader_library_document(
+        user_id=user_id_int,
+        document_id=document_id_int,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    if not document:
+        return jsonify({"error": "Книга не найдена"}), 404
+
+    pages = document.get("content_pages") if isinstance(document.get("content_pages"), list) else []
+    if not pages or page_int > len(pages):
+        return jsonify({"error": "page_not_found", "page": page_int, "page_count": len(pages)}), 404
+
+    page_obj = next((p for p in pages if int(p.get("page_number") or 0) == page_int), None)
+    if page_obj is None:
+        page_obj = pages[page_int - 1] if page_int <= len(pages) else None
+    if not page_obj:
+        return jsonify({"error": "page_not_found", "page": page_int, "page_count": len(pages)}), 404
+
+    page_text = str(page_obj.get("text") or "").strip()
+    if not page_text:
+        return jsonify({"error": "Страница пустая"}), 422
+
+    language_for_tts = _normalize_short_lang_code(
+        _detect_reader_language(page_text, fallback=target_lang),
+        fallback=_normalize_short_lang_code(target_lang, fallback="de"),
+    )
+    google_lang_code = _TTS_LANG_CODES.get(language_for_tts, "de-DE")
+    default_voice = _TTS_VOICES.get(language_for_tts, _TTS_VOICES["de"])
+    voice_name = voice_raw if voice_raw else default_voice
+
+    text_hash = hashlib.sha256(page_text.encode("utf-8")).hexdigest()[:24]
+
+    cached = get_cached_reader_audio_page(
+        document_id=document_id_int,
+        page_number=page_int,
+        voice_name=voice_name,
+        speaking_rate=rate_float,
+        text_hash=text_hash,
+    )
+    if cached:
+        return jsonify({
+            "audio_url": cached["audio_url"],
+            "mime": cached["mime"],
+            "duration_ms": cached["duration_ms"],
+            "word_timings": cached["word_timings"],
+            "voice": voice_name,
+            "rate": rate_float,
+            "cached": True,
+        })
+
+    reader_audio_limit_error = enforce_reader_audio_pro_monthly_limit(
+        user_id=user_id_int,
+        requested_units=float(len(page_text)),
+        now_ts_utc=now_utc,
+        tz="Europe/Vienna",
+    )
+    if reader_audio_limit_error:
+        return jsonify(reader_audio_limit_error), 429
+
+    try:
+        result = synthesize_page_with_timings(
+            page_text=page_text,
+            lang_code=google_lang_code,
+            voice_name=voice_name,
+            speaking_rate=rate_float,
+        )
+    except GoogleTTSBudgetBlockedError as exc:
+        return jsonify({"error": str(exc), "error_code": "google_tts_budget_blocked"}), 429
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка синтеза: {exc}"}), 500
+
+    safe_title = re.sub(r"[^A-Za-z0-9._-]+", "_", str(document.get("title") or "reader"))[:40]
+    r2_rate = str(rate_float).replace(".", "_")
+    object_key = f"reader-audio-pages/{user_id_int}/{document_id_int}/p{page_int}/{voice_name}/{r2_rate}/{text_hash}.mp3"
+    try:
+        r2_put_bytes(
+            object_key,
+            result["audio_bytes"],
+            content_type="audio/mpeg",
+            cache_control="public, max-age=2592000",
+        )
+        audio_url = r2_public_url(object_key)
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка сохранения аудио: {exc}"}), 500
+
+    save_reader_audio_page_cache(
+        user_id=user_id_int,
+        document_id=document_id_int,
+        page_number=page_int,
+        voice_name=voice_name,
+        speaking_rate=rate_float,
+        text_hash=text_hash,
+        audio_url=audio_url,
+        audio_mime="audio/mpeg",
+        audio_bytes_len=len(result["audio_bytes"]),
+        duration_ms=result["duration_ms"],
+        word_timings=result["word_timings"],
+    )
+
+    _billing_log_event_safe(
+        user_id=user_id_int,
+        action_type="reader_audio_tts",
+        provider="google_tts",
+        units_type="chars",
+        units_value=float(len(page_text)),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        idempotency_seed=f"reader_audio_page:{user_id_int}:{document_id_int}:p{page_int}:{text_hash}:{time.time_ns()}",
+        status="estimated",
+        metadata={
+            "document_id": document_id_int,
+            "page": page_int,
+            "voice": voice_name,
+            "rate": rate_float,
+            "language": language_for_tts,
+        },
+    )
+
+    return jsonify({
+        "audio_url": audio_url,
+        "mime": "audio/mpeg",
+        "duration_ms": result["duration_ms"],
+        "word_timings": result["word_timings"],
+        "voice": voice_name,
+        "rate": rate_float,
+        "cached": False,
+    })
 
 
 @app.route("/api/webapp/normalize/de", methods=["POST"])

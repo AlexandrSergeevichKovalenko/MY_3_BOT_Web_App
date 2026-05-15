@@ -110,9 +110,26 @@ export default function ReaderSection(props) {
     READER_DEFAULT_FONT_SIZE,
     READER_DEFAULT_FONT_WEIGHT,
 
-    // ── Phase 2.2: theme switcher (опционально; defaults — dark) ──
+    // ── Phase 2.2: theme switcher ─────────────────────────────────
     readerColorTheme = 'dark',
     applyReaderColorTheme = () => {},
+
+    // ── Phase 2.4: audio-sync player ──────────────────────────────
+    audioElementRef,
+    readerAudioPlayActive = false,
+    readerAudioPlayLoading = false,
+    readerAudioPlayError = '',
+    readerAudioPlayData = null,
+    readerAudioPlayPosition = 0,
+    readerAudioPaused = false,
+    readerAudioVoice = '',
+    setReaderAudioVoice = () => {},
+    readerAudioRate = 1.0,
+    setReaderAudioRate = () => {},
+    playReaderAudioPage = () => {},
+    pauseReaderAudioPlay = () => {},
+    resumeReaderAudioPlay = () => {},
+    stopReaderAudioPlay = () => {},
   } = props;
 
   const sectionClass = [
@@ -673,6 +690,37 @@ export default function ReaderSection(props) {
                   </button>
                   <button
                     type="button"
+                    className={`secondary-button reader-toolbar-btn reader-toolbar-btn-icon-only${readerAudioPlayActive ? ' is-active' : ''}`}
+                    onClick={() => {
+                      if (readerAudioPlayActive) {
+                        stopReaderAudioPlay();
+                      } else {
+                        playReaderAudioPage(readerCurrentPage);
+                      }
+                    }}
+                    disabled={!readerContent || readerAudioPlayLoading}
+                    title={readerAudioPlayActive ? tr('Остановить аудио', 'Audio stoppen') : tr('Слушать страницу', 'Seite vorlesen')}
+                    aria-label={readerAudioPlayActive ? tr('Остановить аудио', 'Audio stoppen') : tr('Слушать страницу', 'Seite vorlesen')}
+                  >
+                    <span className="reader-toolbar-btn-icon" aria-hidden="true">
+                      {readerAudioPlayLoading ? (
+                        <svg className="reader-lib-spinner" viewBox="0 0 24 24" fill="none">
+                          <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeDasharray="42 14" />
+                        </svg>
+                      ) : readerAudioPlayActive ? (
+                        <svg viewBox="0 0 18 18" fill="none">
+                          <rect x="4" y="4" width="3.5" height="10" rx="1" fill="currentColor" />
+                          <rect x="10.5" y="4" width="3.5" height="10" rx="1" fill="currentColor" />
+                        </svg>
+                      ) : (
+                        <svg viewBox="0 0 18 18" fill="none">
+                          <path d="M4 3.5a1 1 0 0 1 1.5-.87l9 5.18a1 1 0 0 1 0 1.74l-9 5.18A1 1 0 0 1 4 13.82V3.5Z" fill="currentColor" />
+                        </svg>
+                      )}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
                     className="secondary-button reader-toolbar-btn reader-toolbar-btn-icon-only"
                     onClick={() => setReaderSettingsOpen(true)}
                     title={tr('Настройки чтения', 'Leseeinstellungen')}
@@ -820,6 +868,81 @@ export default function ReaderSection(props) {
                   </button>
                 ) : (
                   <div className="reader-scrubber-pct webapp-muted">{Math.round(readerProgressPercent)}%</div>
+                )}
+              </div>
+            )}
+
+            {/* ── Hidden audio element ────────────────────────────── */}
+            <audio ref={audioElementRef} preload="metadata" style={{ display: 'none' }} />
+
+            {/* ── Audio mini-player bar ────────────────────────────── */}
+            {readerAudioPlayActive && (
+              <div className="reader-audio-mini-player">
+                <button
+                  type="button"
+                  className="reader-audio-mini-btn"
+                  onClick={readerAudioPaused ? resumeReaderAudioPlay : pauseReaderAudioPlay}
+                  aria-label={readerAudioPaused ? tr('Продолжить', 'Fortsetzen') : tr('Пауза', 'Pause')}
+                >
+                  {readerAudioPaused ? (
+                    <svg viewBox="0 0 18 18" fill="none" width="18" height="18">
+                      <path d="M4 3.5a1 1 0 0 1 1.5-.87l9 5.18a1 1 0 0 1 0 1.74l-9 5.18A1 1 0 0 1 4 13.82V3.5Z" fill="currentColor" />
+                    </svg>
+                  ) : (
+                    <svg viewBox="0 0 18 18" fill="none" width="18" height="18">
+                      <rect x="4" y="4" width="3.5" height="10" rx="1" fill="currentColor" />
+                      <rect x="10.5" y="4" width="3.5" height="10" rx="1" fill="currentColor" />
+                    </svg>
+                  )}
+                </button>
+                <div className="reader-audio-mini-progress">
+                  <div
+                    className="reader-audio-mini-fill"
+                    style={{
+                      width: readerAudioPlayData?.duration_ms
+                        ? `${Math.min(100, (readerAudioPlayPosition / readerAudioPlayData.duration_ms) * 100)}%`
+                        : '0%',
+                    }}
+                  />
+                </div>
+                <div className="reader-audio-mini-time webapp-muted">
+                  {(() => {
+                    const fmt = (ms) => {
+                      const s = Math.floor(ms / 1000);
+                      return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+                    };
+                    return `${fmt(readerAudioPlayPosition)} / ${fmt(readerAudioPlayData?.duration_ms || 0)}`;
+                  })()}
+                </div>
+                <select
+                  className="reader-audio-mini-rate"
+                  value={readerAudioRate}
+                  onChange={(e) => {
+                    const newRate = parseFloat(e.target.value);
+                    setReaderAudioRate(newRate);
+                    if (audioElementRef?.current) {
+                      audioElementRef.current.playbackRate = newRate;
+                    }
+                  }}
+                  aria-label={tr('Скорость', 'Geschwindigkeit')}
+                >
+                  <option value="0.75">0.75×</option>
+                  <option value="1">1×</option>
+                  <option value="1.25">1.25×</option>
+                  <option value="1.5">1.5×</option>
+                </select>
+                <button
+                  type="button"
+                  className="reader-audio-mini-btn reader-audio-mini-close"
+                  onClick={stopReaderAudioPlay}
+                  aria-label={tr('Закрыть плеер', 'Player schließen')}
+                >
+                  <svg viewBox="0 0 18 18" fill="none" width="16" height="16">
+                    <path d="M4.5 4.5 13.5 13.5M13.5 4.5 4.5 13.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+                  </svg>
+                </button>
+                {readerAudioPlayError && (
+                  <div className="reader-audio-mini-error webapp-muted">{readerAudioPlayError}</div>
                 )}
               </div>
             )}

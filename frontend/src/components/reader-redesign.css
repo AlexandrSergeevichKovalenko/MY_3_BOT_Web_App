@@ -2222,3 +2222,137 @@
   background: transparent !important;
   color: var(--rd-paper-text) !important;
 }
+
+
+/* ╔═══════════════════════════════════════════════════════════════════════╗
+   ║  PATCH 2.4 — Audio-sync player + word/sentence highlighting            ║
+   ╚═══════════════════════════════════════════════════════════════════════╝ */
+
+/* ── Word and sentence highlighting ──────────────────────────────────────── */
+.webapp-reader .reader-word.is-playing-word {
+  background: rgba(16, 185, 129, 0.30);
+  border-radius: 3px;
+  padding: 1px 2px;
+  margin: 0 -2px;
+  transition: background 0.08s linear;
+}
+.webapp-reader[data-reader-theme="sepia"] .reader-word.is-playing-word,
+.webapp-reader[data-reader-theme="cream"] .reader-word.is-playing-word {
+  background: rgba(178, 93, 44, 0.28);
+}
+
+.webapp-reader .reader-sentence.is-playing-sentence {
+  background: rgba(16, 185, 129, 0.08);
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+.webapp-reader[data-reader-theme="sepia"] .reader-sentence.is-playing-sentence,
+.webapp-reader[data-reader-theme="cream"] .reader-sentence.is-playing-sentence {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+/* ── Audio mini-player bar ───────────────────────────────────────────────── */
+.reader-audio-mini-player {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px 10px;
+  background: rgba(15, 23, 42, 0.92);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+}
+.webapp-reader[data-reader-theme="sepia"] .reader-audio-mini-player,
+.webapp-reader[data-reader-theme="cream"] .reader-audio-mini-player {
+  background: rgba(245, 235, 220, 0.97);
+  border-top: 1px solid rgba(160, 120, 80, 0.18);
+}
+
+.reader-audio-mini-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: rgba(16, 185, 129, 0.18);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  color: rgb(16, 185, 129);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.reader-audio-mini-btn:hover {
+  background: rgba(16, 185, 129, 0.30);
+}
+.reader-audio-mini-close {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.5);
+  width: 28px;
+  height: 28px;
+}
+.reader-audio-mini-close:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+.webapp-reader[data-reader-theme="sepia"] .reader-audio-mini-close,
+.webapp-reader[data-reader-theme="cream"] .reader-audio-mini-close {
+  background: rgba(0, 0, 0, 0.06);
+  border-color: rgba(0, 0, 0, 0.12);
+  color: rgba(0, 0, 0, 0.4);
+}
+
+.reader-audio-mini-progress {
+  flex: 1;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 2px;
+  overflow: hidden;
+  min-width: 40px;
+}
+.webapp-reader[data-reader-theme="sepia"] .reader-audio-mini-progress,
+.webapp-reader[data-reader-theme="cream"] .reader-audio-mini-progress {
+  background: rgba(0, 0, 0, 0.1);
+}
+.reader-audio-mini-fill {
+  height: 100%;
+  background: rgb(16, 185, 129);
+  border-radius: 2px;
+  transition: width 0.1s linear;
+}
+
+.reader-audio-mini-time {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.reader-audio-mini-rate {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.7);
+  padding: 3px 6px;
+  cursor: pointer;
+}
+.webapp-reader[data-reader-theme="sepia"] .reader-audio-mini-rate,
+.webapp-reader[data-reader-theme="cream"] .reader-audio-mini-rate {
+  background: rgba(0, 0, 0, 0.06);
+  border-color: rgba(0, 0, 0, 0.12);
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.reader-audio-mini-error {
+  font-size: 11px;
+  color: rgba(239, 68, 68, 0.8);
+  flex-shrink: 0;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
