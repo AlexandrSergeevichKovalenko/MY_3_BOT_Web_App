@@ -959,6 +959,11 @@
   margin: 8px auto 20px;
   padding: 18px 20px 16px;
 }
+/* When topbar is collapsed (peek bar shown), first line needs extra clearance
+   to avoid the peek bar gradient overlay */
+.webapp-reader.is-immersive.is-topbar-collapsed .reader-page-sheet {
+  padding-top: 52px;
+}
 
 .webapp-reader .reader-page-sheet-inner {
   font-size: var(--reader-font-size, 18px);

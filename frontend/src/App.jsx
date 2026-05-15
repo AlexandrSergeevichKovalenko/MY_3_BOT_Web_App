@@ -5331,6 +5331,8 @@ function AppInner() {
   const readerLastTapRef = useRef({ time: 0, sid: null, count: 0 });
   const readerAudioPagesPlayedRef = useRef(0);
   const readerAudioPageLimitRef = useRef(0); // 0 = no limit active
+  const readerWordLongPressTimerRef = useRef(null);
+  const readerCurrentPageRef = useRef(1);
   const readerStatusPollTokenRef = useRef(0);
   const readerPaginationResizeFrameRef = useRef(0);
   const readerPaginationRunRef = useRef(0);
@@ -15490,6 +15492,7 @@ function AppInner() {
   }, [readerCurrentPage, readerDocumentId, readerPageCount]);
 
   useEffect(() => {
+    readerCurrentPageRef.current = readerCurrentPage;
     setReaderAudioStartWid(null);
   }, [readerCurrentPage, readerDocumentId]);
 
@@ -19021,23 +19024,8 @@ function AppInner() {
       const tapCount = isFast ? lastTap.count + 1 : 1;
       readerLastTapRef.current = { time: now, sid, count: tapCount };
 
-      // ── Triple tap → start audio from this word ──────────────────
-      if (tapCount >= 3) {
-        readerLastTapRef.current = { time: 0, sid: null, count: 0 };
-        setReaderAudioStartWid(wid);
-        // Estimate page char budget for the 10 000-char limit
-        const pageText = readerSentencesModel.reduce((acc, s) => acc + String(s.text || '').length, 0);
-        const safePageLen = Math.max(100, pageText);
-        readerAudioPagesPlayedRef.current = 0;
-        readerAudioPageLimitRef.current = Math.max(1, Math.ceil(10000 / safePageLen));
-        if (readerAudioPlayActive) stopReaderAudioPlay();
-        // Small delay so stopReaderAudioPlay state settles before play
-        setTimeout(() => playReaderAudioPage(readerCurrentPage), 50);
-        return;
-      }
-
       // ── Double tap → sentence translation ────────────────────────
-      if (tapCount === 2) {
+      if (tapCount >= 2) {
         const sentence = readerSentenceMap.get(sid);
         if (!sentence) return;
         if (readerAudioPlayActive && readerAudioPlayData) {
@@ -19250,6 +19238,28 @@ function AppInner() {
     };
     readerDragSelectionMetaRef.current = null;
     setReaderDragSelectionMeta(null);
+
+    // Long-press (≥650ms without movement) = start audio from this word
+    if (readerWordLongPressTimerRef.current) clearTimeout(readerWordLongPressTimerRef.current);
+    const longPressWid = wid;
+    readerWordLongPressTimerRef.current = setTimeout(() => {
+      readerWordLongPressTimerRef.current = null;
+      const pageText = readerSentencesModel.reduce((acc, s) => acc + String(s.text || '').length, 0);
+      const safePageLen = Math.max(100, pageText);
+      const pageLimit = Math.max(1, Math.ceil(10000 / safePageLen));
+      readerAudioPagesPlayedRef.current = 0;
+      readerAudioPageLimitRef.current = pageLimit;
+      setReaderAudioStartWid(longPressWid);
+      readerSuppressStructuredClickRef.current = Date.now(); // suppress next click
+      const currentPage = readerCurrentPageRef.current;
+      if (readerAudioPlayActive) {
+        stopReaderAudioPlay();
+        setTimeout(() => playReaderAudioPage(currentPage, longPressWid), 60);
+      } else {
+        playReaderAudioPage(currentPage, longPressWid);
+      }
+      console.log('[ReaderAudio] long-press audio start: wid=', longPressWid, 'page=', currentPage);
+    }, 650);
   };
 
   const handleReaderArticleTouchMove = (event) => {
@@ -19259,6 +19269,11 @@ function AppInner() {
     if (!touch) return;
     const dx = touch.clientX - Number(gesture.startX || 0);
     const dy = touch.clientY - Number(gesture.startY || 0);
+    // Cancel long press if finger moves more than 8px
+    if ((Math.abs(dx) > 8 || Math.abs(dy) > 8) && readerWordLongPressTimerRef.current) {
+      clearTimeout(readerWordLongPressTimerRef.current);
+      readerWordLongPressTimerRef.current = null;
+    }
     if (Math.abs(dx) < 10 || Math.abs(dx) <= Math.abs(dy)) return;
     const wordEl = getReaderWordElementByPoint(touch.clientX, touch.clientY);
     if (!wordEl) return;
@@ -19283,6 +19298,10 @@ function AppInner() {
   };
 
   const handleReaderArticleTouchEnd = (event) => {
+    if (readerWordLongPressTimerRef.current) {
+      clearTimeout(readerWordLongPressTimerRef.current);
+      readerWordLongPressTimerRef.current = null;
+    }
     markReaderInteraction();
     const gesture = readerPhraseGestureRef.current;
     const previewMeta = readerDragSelectionMetaRef.current;
@@ -19314,6 +19333,10 @@ function AppInner() {
   };
 
   const handleReaderArticleTouchCancel = () => {
+    if (readerWordLongPressTimerRef.current) {
+      clearTimeout(readerWordLongPressTimerRef.current);
+      readerWordLongPressTimerRef.current = null;
+    }
     resetReaderPhraseGesture();
   };
 
@@ -19970,8 +19993,9 @@ function AppInner() {
   }, []);
 
   // ── Audio-sync callbacks (Patch 2.4) ────────────────────────────────────
-  const playReaderAudioPage = useCallback(async (page) => {
-    const startWid = readerAudioStartWid || null;
+  const playReaderAudioPage = useCallback(async (page, startWidOverride) => {
+    const startWid = startWidOverride !== undefined ? startWidOverride : (readerAudioStartWid || null);
+    console.log('[ReaderAudio] playReaderAudioPage called: page=', page, 'startWid=', startWid, 'startWidOverride=', startWidOverride);
     readerAudioPlayingForPageRef.current = page;
     setReaderAudioPlayLoading(true);
     setReaderAudioPlayError('');
@@ -19995,11 +20019,14 @@ function AppInner() {
         let startMs = 0;
         if (startWid) {
           const posIdx = readerAudioWidReverseMap.get(startWid);
+          console.log('[ReaderAudio] seeking to wid=', startWid, 'posIdx=', posIdx, 'reverseMapSize=', readerAudioWidReverseMap.size);
           if (posIdx !== undefined) {
             const timing = data.word_timings?.find((w) => String(w.wid) === posIdx);
+            console.log('[ReaderAudio] timing found=', timing, 'startMs=', timing?.start_ms);
             if (timing) startMs = timing.start_ms;
           }
         }
+        console.log('[ReaderAudio] audio starting at startMs=', startMs);
         setReaderAudioPlayPosition(startMs);
         if (startMs > 0) audioElementRef.current.currentTime = startMs / 1000;
         await audioElementRef.current.play().catch(() => {});
