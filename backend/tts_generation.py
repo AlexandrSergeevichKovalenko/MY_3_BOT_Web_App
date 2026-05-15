@@ -469,7 +469,7 @@ def synthesize_page_with_timings(
     )
 
     try:
-        from google.cloud import texttospeech
+        from google.cloud import texttospeech_v1beta1 as texttospeech
     except Exception as exc:
         raise RuntimeError(f"Google TTS не установлен: {exc}") from exc
 
