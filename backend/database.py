@@ -18113,6 +18113,41 @@ def get_reader_library_document(
     return _reader_library_row_to_dict(row, include_content=include_content)
 
 
+def get_reader_library_document_pages_only(
+    *,
+    user_id: int,
+    document_id: int,
+    source_lang: str,
+    target_lang: str,
+) -> dict | None:
+    """Fetch content_pages (without content_text) for lazy page loading."""
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id, user_id, source_lang, target_lang, title, source_type, source_url,
+                    text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
+                    processing_status, processing_error, processing_started_at, processing_finished_at,
+                    is_archived, archived_at, last_opened_at, created_at, updated_at,
+                    '' AS content_text, content_pages
+                FROM bt_3_reader_library
+                WHERE id = %s
+                  AND user_id = %s
+                  AND source_lang = %s
+                  AND target_lang = %s
+                LIMIT 1;
+                """,
+                (int(document_id), int(user_id), normalized_source, normalized_target),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+    return _reader_library_row_to_dict(row, include_content=True)
+
+
 def update_reader_library_state(
     *,
     user_id: int,

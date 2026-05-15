@@ -103,7 +103,10 @@
       "Bash(echo \"EXIT:$?\")",
       "Bash(echo \"EXIT: $?\")",
       "Bash(DATABASE_URL=\"postgresql://postgres:XyakpIaJMJeDLpxACWzHIgEQaXDumMqa@centerbeam.proxy.rlwy.net:26757/railway\" python3 *)",
-      "Bash(DATABASE_URL=\"postgresql://postgres:XyakpIaJMJeDLpxACWzHIgEQaXDumMqa@centerbeam.proxy.rlwy.net:26757/railway\" PYTHONUNBUFFERED=1 python3 *)"
+      "Bash(DATABASE_URL=\"postgresql://postgres:XyakpIaJMJeDLpxACWzHIgEQaXDumMqa@centerbeam.proxy.rlwy.net:26757/railway\" PYTHONUNBUFFERED=1 python3 *)",
+      "WebSearch",
+      "Bash(grep -n \"reader-immersive-body\\\\|is-immersive.*{$\\\\|is-immersive .reader-article\" /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/frontend/src/App.css)",
+      "Bash(grep \"[0-9]\\\\{4,5\\\\}:\")"
     ]
   }
 }

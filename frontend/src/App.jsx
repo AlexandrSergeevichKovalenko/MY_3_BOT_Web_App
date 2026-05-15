@@ -4531,10 +4531,14 @@ function AppInner() {
   const [youtubeDictLoading, setYoutubeDictLoading] = useState(false);
   const [youtubeDictError, setYoutubeDictError] = useState('');
   const [youtubeDictSaved, setYoutubeDictSaved] = useState(false);
+  const [youtubeDictSavedEntryId, setYoutubeDictSavedEntryId] = useState(0);
+  const [youtubeDictFeelLoading, setYoutubeDictFeelLoading] = useState(false);
+  const [youtubeDictFeelStatus, setYoutubeDictFeelStatus] = useState('');
   const [manualTranscript, setManualTranscript] = useState('');
   const [readerInput, setReaderInput] = useState('');
   const [readerSelectedFile, setReaderSelectedFile] = useState(null);
   const [readerLoading, setReaderLoading] = useState(false);
+  const [readerOpeningDocumentId, setReaderOpeningDocumentId] = useState(0);
   const [readerError, setReaderError] = useState('');
   const [readerErrorCode, setReaderErrorCode] = useState('');
   const [readerContent, setReaderContent] = useState('');
@@ -4550,6 +4554,10 @@ function AppInner() {
   const [readerPages, setReaderPages] = useState([]);
   const [readerDynamicPages, setReaderDynamicPages] = useState([]);
   const [readerCurrentPage, setReaderCurrentPage] = useState(1);
+  const [readerShowToc, setReaderShowToc] = useState(false);
+  const [readerTocItems, setReaderTocItems] = useState([]);
+  const [readerShowPageJump, setReaderShowPageJump] = useState(false);
+  const [readerPageJumpInput, setReaderPageJumpInput] = useState('');
   const [readerAudioFromPage, setReaderAudioFromPage] = useState('');
   const [readerAudioToPage, setReaderAudioToPage] = useState('');
   const [readerAudioLoading, setReaderAudioLoading] = useState(false);
@@ -5297,6 +5305,7 @@ function AppInner() {
   const readerPaginationResizeFrameRef = useRef(0);
   const readerPaginationRunRef = useRef(0);
   const readerOpenInFlightRef = useRef(0);
+  const readerPageLoadInFlightRef = useRef(new Set());
   const todayTimerCompletionLockRef = useRef(new Set());
   const globalTimerAutoPauseInFlightRef = useRef(false);
   const globalTimerAutoResumeInFlightRef = useRef(false);
@@ -7795,7 +7804,13 @@ function AppInner() {
     if (quizType === 'separable_prefix_verb_gap') {
       return String(responseJson?.correct_full_sentence || '').trim() || resolveFlashcardTexts(entry).targetText;
     }
-    return resolveFlashcardTexts(entry).targetText;
+    const texts = resolveFlashcardTexts(entry);
+    const entrySourceLang = String(entry?.source_lang || responseJson?.source_lang || 'ru').trim().toLowerCase();
+    // For reversed cards (source_lang=de), source_text holds German, target_text holds Russian
+    if (entrySourceLang === 'de') {
+      return texts.sourceText || texts.targetText;
+    }
+    return texts.targetText || texts.sourceText;
   };
 
   const resolveFlashcardFeelEntryId = useCallback((entry) => {
@@ -10552,10 +10567,10 @@ function AppInner() {
     const key = String(srsCard?.id || srsCard?.entry_id || '');
     if (!key) return;
     if (srsAutoTtsPlayedRef.current === key) return;
-    const answerText = getDictionarySourceTarget(
-      srsCard,
-      (srsCard?.source_lang || 'ru') === 'de' ? 'de-ru' : 'ru-de'
-    ).targetText || '';
+    const _srsCardDir = (srsCard?.source_lang || 'ru') === 'de' ? 'de-ru' : 'ru-de';
+    const _srsCardTexts = getDictionarySourceTarget(srsCard, _srsCardDir);
+    const _srsCardReversed = (srsCard?.source_lang || 'ru') === 'de';
+    const answerText = (_srsCardReversed ? _srsCardTexts?.sourceText : _srsCardTexts?.targetText) || '';
     const langCode = detectTtsLangFromText(answerText);
     const locale = getTtsLocaleForLang(langCode);
     srsAutoTtsPlayedRef.current = key;
@@ -11901,12 +11916,10 @@ function AppInner() {
         }));
     }
     if (Array.isArray(readerPages) && readerPages.length > 0) {
-      return readerPages
-        .map((item, index) => ({
-          page_number: Number(item?.page_number || index + 1),
-          text: String(item?.text || '').trim(),
-        }))
-        .filter((item) => item.text);
+      return readerPages.map((item, index) => ({
+        page_number: Number(item?.page_number || index + 1),
+        text: item ? String(item?.text || '').trim() : '',
+      }));
     }
     if (!readerCanonicalText) return [];
     return [{ page_number: 1, text: readerCanonicalText }];
@@ -15285,7 +15298,6 @@ function AppInner() {
     readerFontSize,
     readerFontWeight,
     readerPaginationLayoutTick,
-    readerProgressPercent,
     readerUsesCustomLayout,
   ]);
 
@@ -15296,6 +15308,8 @@ function AppInner() {
     if (visibleNode.scrollHeight <= visibleNode.clientHeight + 1) return;
     // Source PDF/EPUB chunks are not guaranteed to fit the screen sheet as-is.
     // Fall back to adaptive pagination instead of clipping and losing text.
+    // Sync progress before switching so custom layout can restore the correct page.
+    setReaderProgressPercent(computeReaderProgressPercent());
     setReaderLayoutMode('custom');
   }, [
     readerLayoutMode,
@@ -15319,7 +15333,9 @@ function AppInner() {
         clearTimeout(readerStateSaveTimeoutRef.current);
       }
       readerStateSaveTimeoutRef.current = setTimeout(() => {
-        syncReaderState({ progress_percent: Number(nextPercent.toFixed(2)) });
+        const pct = Number(nextPercent.toFixed(2));
+        setReaderBookmarkPercent(nextPercent);
+        syncReaderState({ progress_percent: pct, bookmark_percent: pct });
       }, 900);
     };
     node.addEventListener('scroll', handleScroll, { passive: true });
@@ -15334,9 +15350,31 @@ function AppInner() {
 
   useEffect(() => {
     if (!readerDocumentId || readerPageCount === 0) return;
+    // Load current page if it's a null placeholder (lazy-loaded doc)
+    const curIdx = readerCurrentPage - 1;
+    if (Array.isArray(readerPages) && readerPages[curIdx] === null) {
+      void loadReaderPageRange(readerCurrentPage);
+      return;
+    }
+    // Pre-fetch the next window ahead
+    if (Array.isArray(readerPages)) {
+      for (let p = readerCurrentPage + 1; p <= Math.min(readerCurrentPage + 30, readerPageCount); p++) {
+        if (readerPages[p - 1] === null) { void loadReaderPageRange(p); break; }
+      }
+      // Pre-fetch behind
+      for (let p = readerCurrentPage - 1; p >= Math.max(1, readerCurrentPage - 10); p--) {
+        if (readerPages[p - 1] === null) { void loadReaderPageRange(p); break; }
+      }
+    }
+  }, [readerCurrentPage, readerDocumentId, readerPageCount, loadReaderPageRange]);
+
+  useEffect(() => {
+    if (!readerDocumentId || readerPageCount === 0) return;
     const nextPercent = computeReaderProgressPercent();
+    const pct = Number(nextPercent.toFixed(2));
     setReaderProgressPercent(nextPercent);
-    syncReaderState({ progress_percent: Number(nextPercent.toFixed(2)) });
+    setReaderBookmarkPercent(nextPercent);
+    syncReaderState({ progress_percent: pct, bookmark_percent: pct });
   }, [readerCurrentPage, readerDocumentId, readerPageCount]);
 
   useEffect(() => {
@@ -15528,8 +15566,9 @@ function AppInner() {
     cardsToWarm.forEach((card) => {
       if (!card) return;
       const direction = (card?.source_lang || 'ru') === 'de' ? 'de-ru' : 'ru-de';
-      const { targetText } = getDictionarySourceTarget(card, direction);
-      const text = String(targetText || '').trim();
+      const _cardTexts = getDictionarySourceTarget(card, direction);
+      const _cardReversed = (card?.source_lang || 'ru') === 'de';
+      const text = String((_cardReversed ? _cardTexts?.sourceText : _cardTexts?.targetText) || '').trim();
       if (!text) return;
       const locale = getTtsLocaleForLang(detectTtsLangFromText(text));
       preloadTts(text, locale);
@@ -19449,6 +19488,61 @@ function AppInner() {
     }
   }, []);
 
+  const loadReaderPageRange = useCallback(async (targetPage) => {
+    if (!initData || !readerDocumentId) return;
+    const pageCount = readerPages.length;
+    if (pageCount === 0) return;
+    const windowSize = 50;
+    const start = Math.max(1, targetPage - 5);
+    const end = Math.min(pageCount, start + windowSize - 1);
+    const adjustedStart = Math.max(1, end - windowSize + 1);
+    const key = `${readerDocumentId}:${adjustedStart}:${end}`;
+    if (readerPageLoadInFlightRef.current.has(key)) return;
+    readerPageLoadInFlightRef.current.add(key);
+    try {
+      const response = await fetch('/api/webapp/reader/library/pages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          document_id: readerDocumentId,
+          start_page: adjustedStart,
+          end_page: end,
+        }),
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      const newPages = Array.isArray(data?.pages) ? data.pages : [];
+      if (newPages.length === 0) return;
+      setReaderPages((prev) => {
+        const next = [...prev];
+        newPages.forEach((page) => {
+          const idx = (page.page_number || 0) - 1;
+          if (idx >= 0 && idx < next.length) next[idx] = page;
+        });
+        return next;
+      });
+    } catch (_error) {
+      // ignore transient errors
+    } finally {
+      readerPageLoadInFlightRef.current.delete(key);
+    }
+  }, [initData, readerDocumentId, readerPages.length]);
+
+  const loadReaderToc = useCallback(async () => {
+    if (!initData || !readerDocumentId) return;
+    try {
+      const response = await fetch('/api/webapp/reader/library/toc', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, document_id: readerDocumentId }),
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      setReaderTocItems(Array.isArray(data?.toc) ? data.toc : []);
+    } catch (_e) {}
+  }, [initData, readerDocumentId]);
+
   async function syncReaderState(patch = {}) {
     if (!initData || !readerDocumentId) return;
     try {
@@ -19477,6 +19571,7 @@ function AppInner() {
     if (!safeDocumentId) return;
     if (readerOpenInFlightRef.current === safeDocumentId) return;
     readerOpenInFlightRef.current = safeDocumentId;
+    setReaderOpeningDocumentId(safeDocumentId);
     try {
       setReaderLoading(true);
       setReaderError('');
@@ -19516,9 +19611,21 @@ function AppInner() {
       setReaderDocumentId(Number(doc?.id || safeDocumentId));
       setReaderTitle(String(data?.title || doc?.title || ''));
       setReaderContent(resolvedText);
-      setReaderPages(pages);
+      const totalPages = Number(data?.total_pages || pages.length || 0);
+      let sparsePages;
+      if (totalPages > pages.length && pages.length > 0) {
+        sparsePages = new Array(totalPages).fill(null);
+        pages.forEach((page) => {
+          const idx = (page.page_number || 1) - 1;
+          if (idx >= 0 && idx < totalPages) sparsePages[idx] = page;
+        });
+      } else {
+        sparsePages = pages;
+      }
+      setReaderPages(sparsePages);
       setReaderDynamicPages([]);
-      setReaderLayoutMode(pages.length > 0 ? 'original' : 'custom');
+      readerPageLoadInFlightRef.current.clear();
+      setReaderLayoutMode(sparsePages.length > 0 ? 'original' : 'custom');
       setReaderSourceType(String(data?.source_type || doc?.source_type || 'text'));
       setReaderSourceUrl(String(data?.source_url || doc?.source_url || ''));
       setReaderDetectedLanguage(normalizeLangCode(data?.detected_language || ''));
@@ -19550,6 +19657,7 @@ function AppInner() {
       setReaderError(normalizeNetworkErrorMessage(error, 'Не удалось открыть книгу.', 'Dokument konnte nicht geoeffnet werden.'));
     } finally {
       readerOpenInFlightRef.current = 0;
+      setReaderOpeningDocumentId(0);
       setReaderLoading(false);
     }
   }
@@ -20879,6 +20987,8 @@ function AppInner() {
     setYoutubeDictError('');
     setYoutubeDictResult(null);
     setYoutubeDictSaved(false);
+    setYoutubeDictSavedEntryId(0);
+    setYoutubeDictFeelStatus('');
     try {
       const response = await fetch('/api/webapp/dictionary', {
         method: 'POST',
@@ -20945,10 +21055,41 @@ function AppInner() {
         }),
       });
       if (saveResponse.ok) {
+        const saveData = await saveResponse.json();
         setYoutubeDictSaved(true);
+        const entryId = Number(saveData?.entry_id || 0);
+        if (entryId > 0) setYoutubeDictSavedEntryId(entryId);
+        return entryId;
       }
     } catch (_err) {
       // ignore save errors silently
+    }
+    return 0;
+  };
+
+  const handleYoutubeDictFeel = async () => {
+    if (youtubeDictFeelLoading || !youtubeDictResult) return;
+    setYoutubeDictFeelLoading(true);
+    setYoutubeDictFeelStatus(tr('Обрабатываем...', 'Verarbeitung...'));
+    try {
+      let entryId = youtubeDictSavedEntryId;
+      if (!entryId) {
+        entryId = await saveYoutubeDictWord() || 0;
+      }
+      if (!entryId) {
+        setYoutubeDictFeelStatus(tr('Не удалось сохранить слово', 'Wort konnte nicht gespeichert werden'));
+        return;
+      }
+      queueFlashcardFeel({ id: entryId, entry_id: entryId });
+      await dispatchQueuedFlashcardFeel('youtube_dict');
+      setYoutubeDictFeelStatus(tr(
+        '✓ Объяснение отправлено в Telegram',
+        '✓ Erklärung wurde an Telegram gesendet'
+      ));
+    } catch (_e) {
+      setYoutubeDictFeelStatus(tr('Ошибка. Попробуйте ещё раз.', 'Fehler. Bitte erneut versuchen.'));
+    } finally {
+      setYoutubeDictFeelLoading(false);
     }
   };
 
@@ -25671,27 +25812,54 @@ function AppInner() {
                   </button>
                   {Boolean(flashcardActiveMode) && renderTodaySectionTaskHud('flashcards', { ignoreProgress: true, inline: true })}
                   {showReaderTopbarPeekInAppTopbar && (
-                    <button
-                      type="button"
-                      className="secondary-button topbar-reader-peek-btn reader-topbar-toggle-chip reader-toolbar-btn"
-                      onClick={() => setReaderTopbarCollapsed(false)}
-                      title={tr('Показать панель чтения', 'Leseleiste anzeigen')}
-                    >
-                      <span className="reader-toolbar-btn-icon" aria-hidden="true">
-                        <svg viewBox="0 0 18 18" fill="none">
-                          <path
-                            d="M4.5 6.75 9 11.25l4.5-4.5"
-                            stroke="currentColor"
-                            strokeWidth="1.7"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          />
-                        </svg>
-                      </span>
-                      <span className="reader-toolbar-btn-label">
-                        {tr('Развернуть', 'Aufklappen')}
-                      </span>
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        className={`reader-bookmark-btn reader-toolbar-btn reader-toolbar-btn-icon-only topbar-reader-peek-btn ${isCurrentReaderPageBookmarked ? 'is-active' : ''}`}
+                        onClick={() => {
+                          const mark = computeReaderProgressPercent();
+                          setReaderBookmarkPercent(mark);
+                          if (readerDocumentId) {
+                            syncReaderState({ bookmark_percent: Number(mark.toFixed(2)), progress_percent: Number(mark.toFixed(2)) });
+                          }
+                        }}
+                        disabled={!readerContent || !readerDocumentId}
+                        aria-label={tr('Поставить закладку', 'Lesezeichen setzen')}
+                        title={tr('Поставить закладку', 'Lesezeichen setzen')}
+                      >
+                        <span className="reader-toolbar-btn-icon" aria-hidden="true">
+                          <svg viewBox="0 0 18 18" fill="none">
+                            <path
+                              d="M5.25 3.75h7.5a.75.75 0 0 1 .75.75v9.75L9 11.55l-4.5 2.7V4.5a.75.75 0 0 1 .75-.75Z"
+                              stroke="currentColor"
+                              strokeWidth="1.6"
+                              strokeLinejoin="round"
+                            />
+                          </svg>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-button topbar-reader-peek-btn reader-topbar-toggle-chip reader-toolbar-btn"
+                        onClick={() => setReaderTopbarCollapsed(false)}
+                        title={tr('Показать панель чтения', 'Leseleiste anzeigen')}
+                      >
+                        <span className="reader-toolbar-btn-icon" aria-hidden="true">
+                          <svg viewBox="0 0 18 18" fill="none">
+                            <path
+                              d="M4.5 6.75 9 11.25l4.5-4.5"
+                              stroke="currentColor"
+                              strokeWidth="1.7"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          </svg>
+                        </span>
+                        <span className="reader-toolbar-btn-label">
+                          {tr('Развернуть', 'Aufklappen')}
+                        </span>
+                      </button>
+                    </>
                   )}
                 </div>
               ) : (
@@ -27929,6 +28097,19 @@ function AppInner() {
                               >
                                 {youtubeDictSaved ? `✓ ${tr('Сохранено', 'Gespeichert')}` : `+ ${tr('В словарь', 'Speichern')}`}
                               </button>
+                              <button
+                                type="button"
+                                className="yt-dict-feel-btn"
+                                onClick={handleYoutubeDictFeel}
+                                disabled={youtubeDictFeelLoading}
+                              >
+                                {youtubeDictFeelLoading
+                                  ? tr('Обрабатываем...', 'Verarbeitung...')
+                                  : tr('Почувствовать слово', 'Feel the Word')}
+                              </button>
+                              {youtubeDictFeelStatus && (
+                                <div className="yt-dict-feel-status">{youtubeDictFeelStatus}</div>
+                              )}
                             </div>
                           </div>
                         )}
@@ -29348,18 +29529,19 @@ function AppInner() {
                                 const initials = getReaderCoverInitials(item?.title);
                                 const gradient = getReaderCoverGradient(item);
                                 const meta = buildReaderArchiveMeta(item);
+                                const isOpening = Number(readerOpeningDocumentId) === Number(item.id);
                                 return (
                                   <div
                                     key={`reader-doc-${item.id}`}
-                                    className={`reader-library-card${Number(readerDocumentId) === Number(item.id) ? ' is-active' : ''}`}
-                                    onClick={() => openReaderDocument(item.id)}
-                                    role="button"
-                                    tabIndex={0}
-                                    onKeyDown={(e) => e.key === 'Enter' && openReaderDocument(item.id)}
+                                    className={`reader-library-card${Number(readerDocumentId) === Number(item.id) ? ' is-active' : ''}${isOpening ? ' is-opening' : ''}`}
                                   >
                                     <div
                                       className="reader-library-cover"
                                       style={{ background: `linear-gradient(150deg, ${gradient[0]} 0%, ${gradient[1]} 100%)` }}
+                                      onClick={() => openReaderDocument(item.id)}
+                                      role="button"
+                                      tabIndex={0}
+                                      onKeyDown={(e) => e.key === 'Enter' && openReaderDocument(item.id)}
                                     >
                                       {coverUrl ? (
                                         <img src={coverUrl} alt="" loading="lazy" className="reader-archive-cover-img" />
@@ -29367,19 +29549,54 @@ function AppInner() {
                                         <span className="reader-archive-cover-fallback">{initials}</span>
                                       )}
                                       <div className="reader-library-cover-progress" style={{ width: `${progress}%` }} />
+                                      {isOpening && (
+                                        <div className="reader-library-cover-loading">
+                                          <svg className="reader-lib-spinner" viewBox="0 0 24 24" fill="none">
+                                            <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeDasharray="42 14" />
+                                          </svg>
+                                        </div>
+                                      )}
                                     </div>
-                                    <div className="reader-library-card-body">
+                                    <div
+                                      className="reader-library-card-body"
+                                      onClick={() => openReaderDocument(item.id)}
+                                      role="button"
+                                      tabIndex={-1}
+                                      style={{ cursor: 'pointer' }}
+                                    >
                                       <div className="reader-library-title">{item.title || tr('Без названия', 'Ohne Titel')}</div>
                                       <div className="reader-library-meta">
                                         <span>{Math.round(progress)}%</span>
                                         {meta && <span>{meta}</span>}
                                       </div>
                                     </div>
-                                    <div className="reader-library-actions" onClick={(event) => event.stopPropagation()}>
+                                    <div className="reader-library-actions">
+                                      <button
+                                        type="button"
+                                        className="reader-lib-action reader-lib-action-open"
+                                        onClick={() => openReaderDocument(item.id)}
+                                        disabled={isOpening}
+                                        title={tr('Открыть книгу', 'Buch oeffnen')}
+                                      >
+                                        {isOpening ? (
+                                          <svg className="reader-lib-spinner reader-lib-action-icon" viewBox="0 0 24 24" fill="none">
+                                            <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeDasharray="42 14" />
+                                          </svg>
+                                        ) : (
+                                          <span className="reader-lib-action-icon" aria-hidden="true">
+                                            <svg viewBox="0 0 18 18" fill="none">
+                                              <path d="M7.5 4.5 12 9l-4.5 4.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                                            </svg>
+                                          </span>
+                                        )}
+                                        <span className="reader-lib-action-label">
+                                          {isOpening ? tr('Загрузка…', 'Laden…') : tr('Открыть', 'Lesen')}
+                                        </span>
+                                      </button>
                                       <button
                                         type="button"
                                         className="reader-lib-action"
-                                        onClick={() => renameReaderDocument(item.id, item.title)}
+                                        onClick={(e) => { e.stopPropagation(); renameReaderDocument(item.id, item.title); }}
                                         title={tr('Переименовать', 'Umbenennen')}
                                       >
                                         <span className="reader-lib-action-icon" aria-hidden="true">
@@ -29669,6 +29886,23 @@ function AppInner() {
                           </button>
                           <button
                             type="button"
+                            className={`secondary-button reader-toolbar-btn reader-toolbar-btn-icon-only ${readerShowToc ? 'is-active' : ''}`}
+                            onClick={() => {
+                              if (!readerShowToc && readerTocItems.length === 0) void loadReaderToc();
+                              setReaderShowToc((v) => !v);
+                            }}
+                            disabled={!readerContent}
+                            title={tr('Оглавление', 'Inhaltsverzeichnis')}
+                            aria-label={tr('Оглавление', 'Inhaltsverzeichnis')}
+                          >
+                            <span className="reader-toolbar-btn-icon" aria-hidden="true">
+                              <svg viewBox="0 0 18 18" fill="none">
+                                <path d="M4 5h10M4 9h10M4 13h6.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                              </svg>
+                            </span>
+                          </button>
+                          <button
+                            type="button"
                             className="secondary-button reader-topbar-collapse-btn reader-topbar-toggle-chip reader-toolbar-btn"
                             onClick={() => {
                               const next = !readerTopbarCollapsed;
@@ -29725,7 +29959,16 @@ function AppInner() {
                                   <span className="reader-page-bookmark-indicator" aria-hidden="true" />
                                 )}
                                 <div ref={readerPageInnerRef} className="reader-page-sheet-inner">
-                                  {renderReaderStructuredText()}
+                                  {Array.isArray(readerPages) && readerPages[readerCurrentPage - 1] === null
+                                    ? (
+                                      <div className="reader-page-loading">
+                                        <svg className="reader-lib-spinner" viewBox="0 0 24 24" fill="none" style={{ width: 36, height: 36, color: 'rgba(148,163,184,0.6)' }}>
+                                          <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeDasharray="42 14" />
+                                        </svg>
+                                      </div>
+                                    )
+                                    : renderReaderStructuredText()
+                                  }
                                 </div>
                                 <div className="reader-page-num">
                                   {tr('Стр.', 'S.')}{' '}{readerCurrentPage}{readerPageCount > 0 ? ` / ${readerPageCount}` : ''}
@@ -29747,6 +29990,132 @@ function AppInner() {
                             renderReaderStructuredText()
                           )}
                         </article>
+                      )}
+
+                      {readerPageCount > 0 && (
+                        <div className="reader-scrubber-bar">
+                          <button
+                            type="button"
+                            className="reader-scrubber-page-btn"
+                            onClick={() => {
+                              setReaderPageJumpInput(String(readerCurrentPage));
+                              setReaderShowPageJump(true);
+                            }}
+                            title={tr('Перейти к странице', 'Zur Seite springen')}
+                          >
+                            {readerCurrentPage} / {readerPageCount}
+                          </button>
+                          <div className="reader-scrubber-track-wrap">
+                            <input
+                              type="range"
+                              className="reader-scrubber-input"
+                              min={1}
+                              max={readerPageCount}
+                              value={readerCurrentPage}
+                              onChange={(e) => {
+                                const page = Math.max(1, Math.min(readerPageCount, Number(e.target.value)));
+                                setReaderCurrentPage(page);
+                              }}
+                            />
+                          </div>
+                          <div className="reader-scrubber-pct webapp-muted">{Math.round(readerProgressPercent)}%</div>
+                        </div>
+                      )}
+
+                      {readerShowPageJump && (
+                        <div
+                          className="reader-page-jump-overlay"
+                          role="dialog"
+                          aria-modal="true"
+                          onClick={() => setReaderShowPageJump(false)}
+                        >
+                          <div className="reader-page-jump-dialog" onClick={(e) => e.stopPropagation()}>
+                            <div className="reader-page-jump-title">
+                              {tr('Перейти к странице', 'Zur Seite springen')}
+                            </div>
+                            <div className="reader-page-jump-body">
+                              <input
+                                type="number"
+                                inputMode="numeric"
+                                className="reader-page-jump-input"
+                                value={readerPageJumpInput}
+                                min={1}
+                                max={readerPageCount}
+                                onChange={(e) => setReaderPageJumpInput(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    const page = Math.max(1, Math.min(readerPageCount, Number(readerPageJumpInput)));
+                                    if (!Number.isNaN(page)) setReaderCurrentPage(page);
+                                    setReaderShowPageJump(false);
+                                  }
+                                }}
+                                autoFocus
+                              />
+                              <span className="reader-page-jump-total webapp-muted"> / {readerPageCount}</span>
+                            </div>
+                            <div className="reader-page-jump-actions">
+                              <button
+                                type="button"
+                                className="secondary-button"
+                                onClick={() => setReaderShowPageJump(false)}
+                              >
+                                {tr('Отмена', 'Abbrechen')}
+                              </button>
+                              <button
+                                type="button"
+                                className="primary-button"
+                                onClick={() => {
+                                  const page = Math.max(1, Math.min(readerPageCount, Number(readerPageJumpInput)));
+                                  if (!Number.isNaN(page)) setReaderCurrentPage(page);
+                                  setReaderShowPageJump(false);
+                                }}
+                              >
+                                {tr('Перейти', 'Springen')} →
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {readerShowToc && (
+                        <div
+                          className="reader-toc-overlay"
+                          onClick={() => setReaderShowToc(false)}
+                        >
+                          <div className="reader-toc-drawer" onClick={(e) => e.stopPropagation()}>
+                            <div className="reader-toc-head">
+                              <strong>{tr('Оглавление', 'Inhaltsverzeichnis')}</strong>
+                              <button
+                                type="button"
+                                className="secondary-button reader-toc-close-btn"
+                                onClick={() => setReaderShowToc(false)}
+                                aria-label={tr('Закрыть', 'Schliessen')}
+                              >×</button>
+                            </div>
+                            <div className="reader-toc-list">
+                              {readerTocItems.length === 0 ? (
+                                <div className="reader-toc-empty webapp-muted">
+                                  {tr('Оглавление недоступно', 'Keine Gliederung verfügbar')}
+                                </div>
+                              ) : (
+                                readerTocItems.map((item, idx) => (
+                                  <button
+                                    key={idx}
+                                    type="button"
+                                    className={`reader-toc-item ${item.page_number === readerCurrentPage ? 'is-active' : ''}`}
+                                    onClick={() => {
+                                      setReaderCurrentPage(item.page_number);
+                                      setReaderShowToc(false);
+                                    }}
+                                  >
+                                    <span className="reader-toc-item-title">{item.title}</span>
+                                    <span className="reader-toc-item-page webapp-muted">{item.page_number}</span>
+                                  </button>
+                                ))
+                              )}
+                            </div>
+                          </div>
+                        </div>
                       )}
 
                       {readerSettingsOpen && (
@@ -30103,8 +30472,9 @@ function AppInner() {
                           {!srsLoading && srsCard && (() => {
                             const direction = (srsCard?.source_lang || 'ru') === 'de' ? 'de-ru' : 'ru-de';
                             const cardTexts = getDictionarySourceTarget(srsCard, direction);
-                            const sourceText = cardTexts?.sourceText || '—';
-                            const targetText = cardTexts?.targetText || '—';
+                            const isCardReversed = (srsCard?.source_lang || 'ru') === 'de';
+                            const sourceText = isCardReversed ? (cardTexts?.targetText || '—') : (cardTexts?.sourceText || '—');
+                            const targetText = isCardReversed ? (cardTexts?.sourceText || '—') : (cardTexts?.targetText || '—');
                             const supplementalMeaningRows = getSavedEntrySupplementalMeaningRows(srsCard, targetText, 2);
                             const srsReplayTtsKey = `srs-replay-${srsCard?.id || srsCard?.entry_id || 'current'}`;
                             const srsReplayTtsLoading = isTtsPending(srsReplayTtsKey);
@@ -30248,8 +30618,9 @@ function AppInner() {
                             {(() => {
                               const entry = flashcards[flashcardPreviewIndex] || {};
                               const cardTexts = resolveFlashcardTexts(entry);
-                              const previewLearningText = cardTexts.targetText || cardTexts.sourceText || '—';
-                              const previewNativeText = cardTexts.sourceText || cardTexts.targetText || '—';
+                              const _previewReversed = String(entry?.source_lang || entry?.response_json?.source_lang || 'ru').trim().toLowerCase() === 'de';
+                              const previewLearningText = _previewReversed ? (cardTexts.sourceText || '—') : (cardTexts.targetText || cardTexts.sourceText || '—');
+                              const previewNativeText = _previewReversed ? (cardTexts.targetText || '—') : (cardTexts.sourceText || cardTexts.targetText || '—');
                               const previewQuizType = String(entry?.response_json?.quiz_type || '').trim();
                               const sentencePreviewRuHint = previewQuizType === 'sentence_gap_context'
                                 ? String(entry?.response_json?.translation_ru || entry?.translation_ru || '').trim()
@@ -32492,11 +32863,15 @@ function AppInner() {
                   <button
                     type="button"
                     className="secondary-button"
-                    onClick={() => handleQuickLookupDictionary(selectionText)}
-                    disabled={selectionLookupLoading || selectionInlineLookup.loading}
+                    onClick={() => {
+                      const { sourceLangHint } = resolveQuickTranslateParams(selectionText);
+                      void playTts(selectionText, sourceLangHint || 'de');
+                    }}
                     style={{ minHeight: 32, padding: '6px 8px', fontSize: 12 }}
+                    aria-label={tr('Воспроизвести', 'Abspielen')}
+                    title={tr('Воспроизвести', 'Abspielen')}
                   >
-                    {selectionLookupLoading || selectionInlineLookup.loading ? tr('Quick...', 'Quick...') : 'Quick'}
+                    <span aria-hidden="true" style={{ fontSize: 14 }}>▶</span>
                   </button>
                   )}
                   <button

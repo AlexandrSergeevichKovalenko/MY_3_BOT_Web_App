@@ -483,6 +483,7 @@ from backend.database import (
     create_reader_library_document_placeholder,
     list_reader_library_documents,
     get_reader_library_document,
+    get_reader_library_document_pages_only,
     get_reader_library_document_ingest_state,
     set_reader_library_document_processing_status,
     set_reader_library_document_ingest_payload,
@@ -12995,38 +12996,21 @@ def _normalize_pdf_extracted_page_text(raw_text: str, max_chars: int = 50000) ->
 
 
 def _normalize_reader_pages_for_response(source_type: str | None, pages: list[dict] | None) -> list[dict]:
-    normalized_source_type = str(source_type or "").strip().lower()
-    normalized_pages: list[dict] = []
+    # Pages are already normalized at ingest time — just filter empties and ensure page_number.
+    result: list[dict] = []
     for index, item in enumerate(list(pages or [])):
         if isinstance(item, dict):
+            text = str(item.get("text") or "")
+            if not text.strip():
+                continue
             page_number = int(item.get("page_number") or index + 1)
-            raw_text = str(item.get("text") or "")
-            normalized_text = (
-                _normalize_pdf_extracted_page_text(raw_text, max_chars=50000)
-                if normalized_source_type == "pdf"
-                else _normalize_reader_text(raw_text, max_chars=50000)
-            )
-            normalized_pages.append(
-                {
-                    **item,
-                    "page_number": page_number,
-                    "text": normalized_text,
-                }
-            )
+            result.append({**item, "page_number": page_number, "text": text})
         else:
-            raw_text = str(item or "")
-            normalized_text = (
-                _normalize_pdf_extracted_page_text(raw_text, max_chars=50000)
-                if normalized_source_type == "pdf"
-                else _normalize_reader_text(raw_text, max_chars=50000)
-            )
-            normalized_pages.append(
-                {
-                    "page_number": index + 1,
-                    "text": normalized_text,
-                }
-            )
-    return [item for item in normalized_pages if str(item.get("text") or "").strip()]
+            text = str(item or "")
+            if not text.strip():
+                continue
+            result.append({"page_number": index + 1, "text": text})
+    return result
 
 
 def _extract_text_from_html(html_content: str) -> str:
@@ -13085,6 +13069,64 @@ def _load_ebooklib_runtime() -> tuple[Any, Any]:
     return _ebooklib_epub, _EPUB_ITEM_DOCUMENT
 
 
+def _extract_html_heading_title(raw_html: str, fallback_num: int) -> str:
+    for pattern in (
+        r'(?i)<title[^>]*>(.*?)</title>',
+        r'(?i)<h1[^>]*>(.*?)</h1>',
+        r'(?i)<h2[^>]*>(.*?)</h2>',
+        r'(?i)<h3[^>]*>(.*?)</h3>',
+    ):
+        m = re.search(pattern, raw_html, re.DOTALL)
+        if m:
+            t = re.sub(r'<[^>]+>', '', m.group(1)).strip()
+            t = html.unescape(t)
+            if t and 2 <= len(t) <= 200:
+                return t
+    return f"Kapitel {fallback_num}"
+
+
+def _looks_like_chapter_heading(line: str) -> bool:
+    if not line or len(line) > 100:
+        return False
+    line = line.strip()
+    patterns = [
+        r'^(?:Kapitel|Chapter|Teil|Part|Section|Abschnitt|Глава|Часть|Раздел)\s+\S',
+        r'^\d+[\.\)]\s+\S',
+        r'^[IVXLCDM]+[\.:]?\s+\S',
+    ]
+    for pat in patterns:
+        if re.match(pat, line, re.IGNORECASE):
+            return True
+    if 4 <= len(line) <= 80 and line == line.upper() and any(c.isalpha() for c in line):
+        return True
+    return False
+
+
+def _build_toc_from_pages(pages: list, source_type: str) -> list[dict]:
+    toc: list[dict] = []
+    is_epub = source_type in ("epub",)
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        page_number = int(page.get("page_number") or 0)
+        if page_number <= 0:
+            continue
+        title = str(page.get("chapter_title") or "").strip()
+        if not title:
+            text = str(page.get("text") or "").strip()
+            if not text:
+                continue
+            first_line = text.split("\n")[0].strip()
+            if is_epub:
+                title = first_line[:200] if first_line else f"Kapitel {page_number}"
+            elif _looks_like_chapter_heading(first_line):
+                title = first_line[:200]
+            else:
+                continue
+        toc.append({"page_number": page_number, "title": title})
+    return toc
+
+
 def _extract_epub_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
     if not data:
         return "", []
@@ -13109,8 +13151,9 @@ def _extract_epub_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
         normalized = _normalize_reader_text(chapter_text, max_chars=50000)
         if not normalized:
             continue
+        chapter_title = _extract_html_heading_title(raw_html, chapter_num)
         chunks.append(normalized)
-        pages.append({"page_number": chapter_num, "text": normalized})
+        pages.append({"page_number": chapter_num, "text": normalized, "chapter_title": chapter_title})
     return _normalize_reader_text("\n\n".join(chunks)), pages
 
 
@@ -18770,24 +18813,21 @@ def _run_sentence_prewarm_scheduler_job() -> None:
 
 
 def _run_translation_focus_pool_refill_scheduler_job() -> None:
+    # Always run inline from the cron scheduler — the queue path requires a separate
+    # Dramatiq worker process that may not be running; the cron already controls timing
+    # so force=True skips the redundant offpeak-window re-check inside the dispatcher.
     try:
-        if can_enqueue_background_jobs():
-            enqueue_translation_focus_pool_refill_job(
-                force=False,
-                tz_name=TRANSLATION_FOCUS_POOL_REFILL_TZ,
-            )
-            logging.info(
-                "✅ Translation focus pool refill enqueued: %02d:%02d %s",
-                int(TRANSLATION_FOCUS_POOL_REFILL_HOUR),
-                int(TRANSLATION_FOCUS_POOL_REFILL_MINUTE),
-                TRANSLATION_FOCUS_POOL_REFILL_TZ,
-            )
-        else:
-            result = _dispatch_translation_focus_pool_refill(
-                force=False,
-                tz_name=TRANSLATION_FOCUS_POOL_REFILL_TZ,
-            )
-            logging.info("✅ Translation focus pool refill executed inline: %s", result)
+        result = _dispatch_translation_focus_pool_refill(
+            force=True,
+            tz_name=TRANSLATION_FOCUS_POOL_REFILL_TZ,
+        )
+        logging.info(
+            "✅ Translation focus pool refill executed: %02d:%02d %s result=%s",
+            int(TRANSLATION_FOCUS_POOL_REFILL_HOUR),
+            int(TRANSLATION_FOCUS_POOL_REFILL_MINUTE),
+            TRANSLATION_FOCUS_POOL_REFILL_TZ,
+            result,
+        )
     except Exception:
         logging.exception("❌ Translation focus pool refill scheduler failed")
 
@@ -32887,6 +32927,7 @@ def save_webapp_dictionary_entry():
     return jsonify(
         {
             "ok": True,
+            "entry_id": int(entry_id or 0),
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
@@ -37768,12 +37809,31 @@ def reader_library_open():
                 ), 403
         detect_started_perf = time.perf_counter()
         content_text = str(doc.get("content_text") or "")
-        content_pages = _normalize_reader_pages_for_response(
+        all_content_pages = _normalize_reader_pages_for_response(
             str(doc.get("source_type") or "text"),
             doc.get("content_pages") if isinstance(doc.get("content_pages"), list) else [],
         )
         detected_lang = _detect_reader_language(content_text, fallback=target_lang)
         detect_duration_ms = _elapsed_ms_since(detect_started_perf)
+        total_pages = len(all_content_pages)
+        # Compute window of 50 pages around bookmark/progress
+        if total_pages > 0:
+            bookmark_pct = float(doc.get("bookmark_percent") or doc.get("progress_percent") or 0)
+            if bookmark_pct > 0:
+                raw_target = max(0, round(bookmark_pct / 100.0 * total_pages) - 1)
+            else:
+                raw_target = 0
+            window_size = 50
+            pages_start_idx = max(0, raw_target - 5)
+            pages_end_idx = min(total_pages, pages_start_idx + window_size)
+            pages_start_idx = max(0, pages_end_idx - window_size)
+            content_pages = all_content_pages[pages_start_idx:pages_end_idx]
+            pages_start = pages_start_idx + 1
+            pages_end = pages_end_idx
+        else:
+            content_pages = all_content_pages
+            pages_start = 1
+            pages_end = total_pages
         document_payload = dict(doc)
         document_payload.pop("content_text", None)
         document_payload.pop("content_pages", None)
@@ -37781,7 +37841,10 @@ def reader_library_open():
             "ok": True,
             "document": document_payload,
             "content_pages": content_pages,
-            "text": "" if content_pages else content_text,
+            "total_pages": total_pages,
+            "pages_start": pages_start,
+            "pages_end": pages_end,
+            "text": "" if all_content_pages else content_text,
             "title": str(doc.get("title") or "Untitled"),
             "source_type": str(doc.get("source_type") or "text"),
             "source_url": doc.get("source_url"),
@@ -37809,6 +37872,83 @@ def reader_library_open():
             **summarize_db_acquire_events(db_acquire_events),
         )
         return jsonify(response_payload)
+
+
+@app.route("/api/webapp/reader/library/pages", methods=["POST"])
+def reader_library_pages():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    document_id = payload.get("document_id")
+    start_page = int(payload.get("start_page") or 1)
+    end_page = int(payload.get("end_page") or 50)
+    if not init_data or document_id is None:
+        return jsonify({"error": "initData and document_id are required"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        doc = get_reader_library_document_pages_only(
+            user_id=int(user_id),
+            document_id=int(document_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка загрузки страниц: {exc}"}), 500
+    if not doc:
+        return jsonify({"error": "Книга не найдена"}), 404
+    all_pages = _normalize_reader_pages_for_response(
+        str(doc.get("source_type") or "text"),
+        doc.get("content_pages") if isinstance(doc.get("content_pages"), list) else [],
+    )
+    total_pages = len(all_pages)
+    safe_start = max(1, min(start_page, total_pages))
+    safe_end = max(safe_start, min(end_page, total_pages))
+    pages_slice = all_pages[safe_start - 1:safe_end]
+    return jsonify({
+        "ok": True,
+        "pages": pages_slice,
+        "pages_start": safe_start,
+        "pages_end": safe_end,
+        "total_pages": total_pages,
+    })
+
+
+@app.route("/api/webapp/reader/library/toc", methods=["POST"])
+def reader_library_toc():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    document_id = payload.get("document_id")
+    if not init_data or document_id is None:
+        return jsonify({"error": "initData and document_id are required"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует"}), 400
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        doc = get_reader_library_document_pages_only(
+            user_id=int(user_id),
+            document_id=int(document_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка загрузки: {exc}"}), 500
+    if not doc:
+        return jsonify({"error": "Книга не найдена"}), 404
+    pages = doc.get("content_pages") if isinstance(doc.get("content_pages"), list) else []
+    source_type = str(doc.get("source_type") or "text").strip().lower()
+    toc = _build_toc_from_pages(pages, source_type)
+    return jsonify({"ok": True, "toc": toc})
 
 
 @app.route("/api/webapp/reader/library/state", methods=["POST"])
