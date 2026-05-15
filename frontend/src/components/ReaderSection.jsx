@@ -798,16 +798,15 @@ export default function ReaderSection(props) {
               </article>
             )}
 
-            {/* ── Audio hint — always rendered (fixed height) to prevent layout shift ── */}
-            <div className={`reader-audio-hint${readerAudioPlayActive ? ' is-active' : ''}`}>
-              {readerAudioPlayActive
-                ? tr('3× тап по слову = перейти к нему', '3× tippen = zum Wort springen')
-                : tr('3× тап по слову = читать вслух с него', '3× tippen = vorlesen ab diesem Wort')}
-            </div>
-
             {/* ── Scrubber bar ────────────────────────────────────── */}
             {readerPageCount > 0 && (
               <div className="reader-scrubber-bar">
+                {/* Hint floats ABOVE scrubber via position:absolute — zero flex height impact */}
+                <div className={`reader-audio-hint${readerAudioPlayActive ? ' is-active' : ''}`}>
+                  {readerAudioPlayActive
+                    ? tr('3× тап по слову = перейти к нему', '3× tippen = zum Wort springen')
+                    : tr('3× тап по слову = читать вслух с него', '3× tippen = vorlesen ab diesem Wort')}
+                </div>
                 <button
                   type="button"
                   className="reader-scrubber-page-btn"

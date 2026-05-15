@@ -2548,30 +2548,34 @@
   box-shadow: 0 0 0 2px rgba(178, 93, 44, 0.55);
 }
 
-/* ── Audio hint banner (between article and scrubber) ───────────────────── */
+/* ── Audio hint — floats above scrubber, zero flex-height impact ─────────── */
+/* Positioned absolute inside .reader-scrubber-bar (position:relative).      */
+/* Article height is NEVER affected — hint lives outside the flex flow.      */
 .reader-audio-hint {
-  flex-shrink: 0;
-  height: 36px;              /* fixed — prevents layout shift when appearing */
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin: 0 14px;
+  position: absolute;
+  bottom: 100%;
+  left: 10px;
+  right: 10px;
+  margin-bottom: 6px;
+  padding: 7px 12px;
   border-radius: 12px;
   background: rgb(16, 185, 129);
   color: #fff;
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 700;
   text-align: center;
   letter-spacing: -0.01em;
   box-shadow: 0 6px 18px rgba(16, 185, 129, 0.45);
-  /* hidden by default — no layout shift, just invisible */
+  white-space: nowrap;
+  z-index: 20;
+  /* hidden by default */
   opacity: 0;
   pointer-events: none;
-  transform: scaleY(0.6);
+  transform: translateY(4px);
   transition: opacity 0.15s, transform 0.15s;
 }
 .reader-audio-hint.is-active {
   opacity: 1;
   pointer-events: auto;
-  transform: scaleY(1);
+  transform: translateY(0);
 }
