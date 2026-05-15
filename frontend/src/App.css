@@ -490,9 +490,12 @@ body {
 }
 
 .webapp-page.is-reader-immersive .webapp-shell {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
   width: 100%;
   max-width: none;
-  grid-template-columns: 1fr;
   gap: 0;
 }
 
@@ -537,9 +540,12 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  height: 100dvh;
 }
 
 .webapp-page.is-reader-immersive .webapp-main {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
   padding: 0;

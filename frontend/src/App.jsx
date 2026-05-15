@@ -19910,6 +19910,7 @@ function AppInner() {
 
   // ── Audio-sync callbacks (Patch 2.4) ────────────────────────────────────
   const playReaderAudioPage = useCallback(async (page) => {
+    const startWid = selectedMeta?.wids?.[0] || null;
     setReaderAudioPlayLoading(true);
     setReaderAudioPlayError('');
     try {
@@ -19924,12 +19925,21 @@ function AppInner() {
       }
       const data = await resp.json();
       setReaderAudioPlayData(data);
-      setReaderAudioPlayPosition(0);
       setReaderAudioPaused(false);
       setReaderAudioPlayActive(true);
       if (audioElementRef.current) {
         audioElementRef.current.src = data.audio_url;
         audioElementRef.current.playbackRate = readerAudioRate;
+        let startMs = 0;
+        if (startWid) {
+          const posIdx = readerAudioWidReverseMap.get(startWid);
+          if (posIdx !== undefined) {
+            const timing = data.word_timings?.find((w) => String(w.wid) === posIdx);
+            if (timing) startMs = timing.start_ms;
+          }
+        }
+        setReaderAudioPlayPosition(startMs);
+        if (startMs > 0) audioElementRef.current.currentTime = startMs / 1000;
         await audioElementRef.current.play().catch(() => {});
       }
     } catch (e) {
@@ -19937,7 +19947,7 @@ function AppInner() {
     } finally {
       setReaderAudioPlayLoading(false);
     }
-  }, [readerDocumentId, readerAudioVoice, readerAudioRate, initData]);
+  }, [readerDocumentId, readerAudioVoice, readerAudioRate, initData, selectedMeta, readerAudioWidReverseMap]);
 
   const pauseReaderAudioPlay = useCallback(() => {
     audioElementRef.current?.pause();

@@ -678,7 +678,8 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -1040,8 +1041,8 @@
    │  SCRUBBER BAR — нижняя плашка с страницей + прогрессом                  │
    ╰───────────────────────────────────────────────────────────────────────╯ */
 .webapp-reader .reader-scrubber-bar {
-  position: sticky;
-  bottom: 0;
+  position: relative;
+  flex-shrink: 0;
   z-index: 14;
   display: flex;
   align-items: center;
@@ -2054,9 +2055,8 @@
 
 /* ── (3) Scrubber bar: подняться над safe-area, увеличить touch-зону ── */
 .webapp-reader .reader-scrubber-bar {
-  bottom: 0;
-  padding: 14px 16px calc(20px + env(safe-area-inset-bottom, 0px)) !important;
-  min-height: 60px;
+  padding: 16px 16px calc(28px + env(safe-area-inset-bottom, 0px)) !important;
+  min-height: 68px;
 }
 
 .webapp-reader .reader-scrubber-track-wrap {
