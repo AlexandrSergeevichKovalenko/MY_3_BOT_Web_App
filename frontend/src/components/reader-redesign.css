@@ -2002,3 +2002,223 @@
   border-color: rgba(26,24,20,0.12);
 }
 
+
+
+
+/* ╔═══════════════════════════════════════════════════════════════════════╗
+   ║  HOTFIX 1 — Визуальные исправления по обратной связи (15.05.2026)      ║
+   ║  Перекрывают существующие правила. Используем !important там, где      ║
+   ║  старый App.css сопротивляется.                                        ║
+   ╚═══════════════════════════════════════════════════════════════════════╝ */
+
+
+/* ── (1) Sepia/Cream: фон READER на всю секцию, не только immersive ─── */
+.webapp-reader[data-reader-theme="sepia"] {
+  background: var(--rd-paper-bg) !important;
+}
+.webapp-reader[data-reader-theme="cream"] {
+  background: var(--rd-paper-bg) !important;
+}
+
+/* Peek-bar (когда панель свёрнута) — светлый стеклянный, не тёмный navy */
+.webapp-reader[data-reader-theme="sepia"] .reader-topbar-peek,
+.webapp-reader[data-reader-theme="cream"] .reader-topbar-peek {
+  background: linear-gradient(180deg, var(--rd-paper-glass) 60%, transparent) !important;
+  border-bottom: 1px solid var(--rd-paper-border) !important;
+}
+
+/* Кнопки в peek-bar — paper colors */
+.webapp-reader[data-reader-theme="sepia"] .reader-topbar-peek button,
+.webapp-reader[data-reader-theme="cream"] .reader-topbar-peek button {
+  background: var(--rd-paper-soft) !important;
+  border: 1px solid var(--rd-paper-border) !important;
+  color: var(--rd-paper-text) !important;
+}
+
+
+/* ── (2) Page-num pill: убрать тёмный фон в paper-темах ────────────── */
+.webapp-reader[data-reader-theme="sepia"] .reader-page-num,
+.webapp-reader[data-reader-theme="cream"] .reader-page-num {
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  color: var(--rd-paper-muted) !important;
+  font-weight: 500;
+}
+
+
+/* ── (3) Scrubber bar: подняться над safe-area, увеличить touch-зону ── */
+.webapp-reader .reader-scrubber-bar {
+  bottom: 0;
+  padding: 14px 16px calc(20px + env(safe-area-inset-bottom, 0px)) !important;
+  min-height: 60px;
+}
+
+.webapp-reader .reader-scrubber-track-wrap {
+  height: 32px; /* увеличенная hit-зона */
+}
+
+.webapp-reader .reader-scrubber-input {
+  height: 6px; /* визуально тоньше — но трек выше */
+}
+
+.webapp-reader .reader-scrubber-input::-webkit-slider-thumb {
+  width: 22px;
+  height: 22px; /* крупнее палец */
+}
+
+.webapp-reader .reader-scrubber-input::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+}
+
+
+/* ── (4a) Library grid: уехала вправо → центрировать и убрать чужой padding ─ */
+.webapp-reader.webapp-section {
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+.webapp-reader .reader-library-mode {
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  padding: 6px 0 18px !important;
+  box-sizing: border-box;
+}
+
+.webapp-reader .reader-library-grid {
+  width: 100%;
+  max-width: 100%;
+  padding: 4px 16px 18px !important; /* сами кладём отступы по краям */
+  margin: 0 !important;
+  box-sizing: border-box;
+}
+
+.webapp-reader .reader-library {
+  margin: 0 !important;
+  padding: 0 16px !important;
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.webapp-reader .reader-lib-header,
+.webapp-reader .reader-add-form-wrap,
+.webapp-reader .reader-audio-panel,
+.webapp-reader .reader-hero-card {
+  margin-left: 16px !important;
+  margin-right: 16px !important;
+}
+
+
+/* ── (4b) Library card action buttons: не вылазить, сжиматься ──────── */
+.webapp-reader .reader-library-actions {
+  flex-wrap: nowrap;
+  gap: 3px;
+  overflow: hidden;
+}
+
+.webapp-reader .reader-lib-action {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0 2px !important;
+  font-size: 9.5px;
+  min-height: 26px;
+  gap: 3px;
+  overflow: hidden;
+}
+
+.webapp-reader .reader-lib-action-label {
+  font-size: 9.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.webapp-reader .reader-lib-action-icon {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+}
+
+.webapp-reader .reader-lib-action-icon svg {
+  width: 11px;
+  height: 11px;
+}
+
+/* Узкие экраны — оставить только иконки, скрыть текст */
+@media (max-width: 480px) {
+  .webapp-reader .reader-lib-action-label { display: none !important; }
+  .webapp-reader .reader-lib-action { min-height: 32px; }
+}
+
+
+/* ── (Bonus) Topbar (не peek) — paper-тема ────────────────────────── */
+.webapp-reader[data-reader-theme="sepia"] .reader-topbar,
+.webapp-reader[data-reader-theme="cream"] .reader-topbar {
+  background: var(--rd-paper-glass) !important;
+  border-bottom-color: var(--rd-paper-border) !important;
+}
+
+.webapp-reader[data-reader-theme="sepia"] .reader-topbar .reader-topbar-title,
+.webapp-reader[data-reader-theme="cream"] .reader-topbar .reader-topbar-title {
+  color: var(--rd-paper-text) !important;
+}
+
+.webapp-reader[data-reader-theme="sepia"] .reader-topbar .webapp-muted,
+.webapp-reader[data-reader-theme="cream"] .reader-topbar .webapp-muted {
+  color: var(--rd-paper-muted) !important;
+}
+
+/* Все кнопки topbar в paper-темах */
+.webapp-reader[data-reader-theme="sepia"] .reader-topbar button,
+.webapp-reader[data-reader-theme="cream"] .reader-topbar button,
+.webapp-reader[data-reader-theme="sepia"] .reader-immersive-dock button,
+.webapp-reader[data-reader-theme="cream"] .reader-immersive-dock button {
+  background: var(--rd-paper-soft) !important;
+  border-color: var(--rd-paper-border) !important;
+  color: var(--rd-paper-text) !important;
+}
+
+.webapp-reader[data-reader-theme="sepia"] .reader-topbar button:hover,
+.webapp-reader[data-reader-theme="cream"] .reader-topbar button:hover {
+  background: rgba(0,0,0,0.08) !important;
+}
+
+/* Scrubber в paper-темах */
+.webapp-reader[data-reader-theme="sepia"] .reader-scrubber-bar,
+.webapp-reader[data-reader-theme="cream"] .reader-scrubber-bar {
+  background: var(--rd-paper-glass) !important;
+  border-top-color: var(--rd-paper-border) !important;
+}
+
+.webapp-reader[data-reader-theme="sepia"] .reader-scrubber-page-btn,
+.webapp-reader[data-reader-theme="cream"] .reader-scrubber-page-btn {
+  background: var(--rd-paper-soft) !important;
+  border-color: var(--rd-paper-border) !important;
+  color: var(--rd-paper-text) !important;
+}
+
+.webapp-reader[data-reader-theme="sepia"] .reader-scrubber-pct,
+.webapp-reader[data-reader-theme="cream"] .reader-scrubber-pct {
+  color: var(--rd-paper-muted) !important;
+}
+
+.webapp-reader[data-reader-theme="sepia"] .reader-page-sheet,
+.webapp-reader[data-reader-theme="cream"] .reader-page-sheet {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+.webapp-reader[data-reader-theme="sepia"] .reader-page-sheet-inner,
+.webapp-reader[data-reader-theme="cream"] .reader-page-sheet-inner {
+  color: var(--rd-paper-text) !important;
+}
+
+.webapp-reader[data-reader-theme="sepia"] .reader-article,
+.webapp-reader[data-reader-theme="cream"] .reader-article {
+  background: transparent !important;
+  color: var(--rd-paper-text) !important;
+}
