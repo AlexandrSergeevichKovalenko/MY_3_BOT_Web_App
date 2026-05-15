@@ -829,6 +829,13 @@ export default function ReaderSection(props) {
               </article>
             )}
 
+            {/* ── Audio hint — always rendered (fixed height) to prevent layout shift ── */}
+            <div className={`reader-audio-hint${(readerAudioPlayActive || readerAudioStartWid) ? ' is-active' : ''}`}>
+              {readerAudioStartWid
+                ? tr('▶ начнёт со слова, которое ты выбрал', '▶ startet beim gewählten Wort')
+                : tr('тапни слово в тексте — ▶ заиграет с него', 'tippe ein Wort an — ▶ startet von dort')}
+            </div>
+
             {/* ── Scrubber bar ────────────────────────────────────── */}
             {readerPageCount > 0 && (
               <div className="reader-scrubber-bar">
@@ -875,15 +882,6 @@ export default function ReaderSection(props) {
 
             {/* ── Hidden audio element ────────────────────────────── */}
             <audio ref={audioElementRef} preload="metadata" style={{ display: 'none' }} />
-
-            {/* ── Audio hint (above mini-player) ───────────────────── */}
-            {(readerAudioPlayActive || readerAudioStartWid) && (
-              <div className="reader-audio-hint">
-                {readerAudioStartWid
-                  ? tr('▶ начнёт со слова, которое ты выбрал', '▶ startet beim gewählten Wort')
-                  : tr('тапни слово в тексте — ▶ заиграет с него', 'tippe ein Wort an — ▶ startet von dort')}
-              </div>
-            )}
 
             {/* ── Audio mini-player bar ────────────────────────────── */}
             {readerAudioPlayActive && (

@@ -2534,30 +2534,28 @@
   color: rgba(248,113,113,0.8);
 }
 
-/* ── Start-word highlight (tap-to-seek) ──────────────────────────────────── */
+/* ── Start-word highlight (tap-to-seek) ─────────────────────────────────── */
+/* No padding/font-weight — those cause text reflow and make the page jump.  */
+/* box-shadow and background only — purely visual, zero layout impact.       */
 .webapp-reader [data-wid][data-reader-start-word="true"] {
-  background: rgba(16, 185, 129, 0.85);
-  color: #fff;
-  border-radius: 4px;
-  padding: 0 3px;
-  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.45),
-              0 6px 14px rgba(16, 185, 129, 0.35);
-  font-weight: 600;
+  background: rgba(16, 185, 129, 0.25);
+  border-radius: 3px;
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.65);
 }
 .webapp-reader[data-reader-theme="sepia"] [data-wid][data-reader-start-word="true"],
 .webapp-reader[data-reader-theme="cream"] [data-wid][data-reader-start-word="true"] {
-  background: rgb(178, 93, 44);
-  color: #fff;
-  box-shadow: 0 0 0 2px rgba(178, 93, 44, 0.35),
-              0 6px 14px rgba(178, 93, 44, 0.35);
+  background: rgba(178, 93, 44, 0.2);
+  box-shadow: 0 0 0 2px rgba(178, 93, 44, 0.55);
 }
 
-/* ── Audio hint banner (above mini-player) ───────────────────────────────── */
+/* ── Audio hint banner (between article and scrubber) ───────────────────── */
 .reader-audio-hint {
-  position: sticky;
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 88px);
-  margin: 0 14px 6px;
-  padding: 8px 12px;
+  flex-shrink: 0;
+  height: 36px;              /* fixed — prevents layout shift when appearing */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 14px;
   border-radius: 12px;
   background: rgb(16, 185, 129);
   color: #fff;
@@ -2565,6 +2563,15 @@
   font-weight: 700;
   text-align: center;
   letter-spacing: -0.01em;
-  box-shadow: 0 10px 24px rgba(16, 185, 129, 0.5);
-  z-index: 29;
+  box-shadow: 0 6px 18px rgba(16, 185, 129, 0.45);
+  /* hidden by default — no layout shift, just invisible */
+  opacity: 0;
+  pointer-events: none;
+  transform: scaleY(0.6);
+  transition: opacity 0.15s, transform 0.15s;
+}
+.reader-audio-hint.is-active {
+  opacity: 1;
+  pointer-events: auto;
+  transform: scaleY(1);
 }
