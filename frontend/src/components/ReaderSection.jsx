@@ -126,6 +126,7 @@ export default function ReaderSection(props) {
     setReaderAudioVoice = () => {},
     readerAudioRate = 1.0,
     setReaderAudioRate = () => {},
+    readerAudioStartWid = null,
     playReaderAudioPage = () => {},
     pauseReaderAudioPlay = () => {},
     resumeReaderAudioPlay = () => {},
@@ -875,12 +876,21 @@ export default function ReaderSection(props) {
             {/* ── Hidden audio element ────────────────────────────── */}
             <audio ref={audioElementRef} preload="metadata" style={{ display: 'none' }} />
 
+            {/* ── Audio hint (above mini-player) ───────────────────── */}
+            {(readerAudioPlayActive || readerAudioStartWid) && (
+              <div className="reader-audio-hint">
+                {readerAudioStartWid
+                  ? tr('▶ начнёт со слова, которое ты выбрал', '▶ startet beim gewählten Wort')
+                  : tr('тапни слово в тексте — ▶ заиграет с него', 'tippe ein Wort an — ▶ startet von dort')}
+              </div>
+            )}
+
             {/* ── Audio mini-player bar ────────────────────────────── */}
             {readerAudioPlayActive && (
               <div className="reader-audio-mini-player">
                 <button
                   type="button"
-                  className="reader-audio-mini-btn"
+                  className="reader-audio-mini-btn is-primary"
                   onClick={readerAudioPaused ? resumeReaderAudioPlay : pauseReaderAudioPlay}
                   aria-label={readerAudioPaused ? tr('Продолжить', 'Fortsetzen') : tr('Пауза', 'Pause')}
                 >

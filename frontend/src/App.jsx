@@ -19022,6 +19022,7 @@ function AppInner() {
         const sentence = readerSentenceMap.get(sid);
         if (!sentence) return;
         setReaderAudioStartWid(wid);
+        if (readerAudioPlayActive && readerAudioPlayData) seekReaderAudioToWid(wid);
         handleSelection(event, String(sentence.text || ''), {
           compact: true,
           inlineLookup: true,
@@ -19037,6 +19038,7 @@ function AppInner() {
       }
 
       setReaderAudioStartWid(wid);
+      if (readerAudioPlayActive && readerAudioPlayData) seekReaderAudioToWid(wid);
       handleSelection(event, metaWord.value, {
         compact: true,
         inlineLookup: true,
@@ -19315,6 +19317,7 @@ function AppInner() {
                   data-sid={sentence.sid}
                   data-start={token.start}
                   data-end={token.end}
+                  data-reader-start-word={wordId === readerAudioStartWid ? 'true' : undefined}
                   onTouchStart={handleReaderWordTouchStart}
                   onClick={readerAudioPlayActive && !isPlayingWord ? () => seekReaderAudioToWid(wordId) : undefined}
                 >
@@ -29709,6 +29712,7 @@ function AppInner() {
                   readerAudioPaused={readerAudioPaused}
                   readerAudioVoice={readerAudioVoice}           setReaderAudioVoice={setReaderAudioVoice}
                   readerAudioRate={readerAudioRate}             setReaderAudioRate={setReaderAudioRate}
+                  readerAudioStartWid={readerAudioStartWid}
                   playReaderAudioPage={playReaderAudioPage}
                   pauseReaderAudioPlay={pauseReaderAudioPlay}
                   resumeReaderAudioPlay={resumeReaderAudioPlay}
