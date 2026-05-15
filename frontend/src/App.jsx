@@ -15348,6 +15348,47 @@ function AppInner() {
     };
   }, [readerDocumentId, readerReadingMode, readerContent, readerPageCount, markReaderInteraction]);
 
+  const loadReaderPageRange = useCallback(async (targetPage) => {
+    if (!initData || !readerDocumentId) return;
+    const pageCount = readerPages.length;
+    if (pageCount === 0) return;
+    const windowSize = 50;
+    const start = Math.max(1, targetPage - 5);
+    const end = Math.min(pageCount, start + windowSize - 1);
+    const adjustedStart = Math.max(1, end - windowSize + 1);
+    const key = `${readerDocumentId}:${adjustedStart}:${end}`;
+    if (readerPageLoadInFlightRef.current.has(key)) return;
+    readerPageLoadInFlightRef.current.add(key);
+    try {
+      const response = await fetch('/api/webapp/reader/library/pages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          document_id: readerDocumentId,
+          start_page: adjustedStart,
+          end_page: end,
+        }),
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      const newPages = Array.isArray(data?.pages) ? data.pages : [];
+      if (newPages.length === 0) return;
+      setReaderPages((prev) => {
+        const next = [...prev];
+        newPages.forEach((page) => {
+          const idx = (page.page_number || 0) - 1;
+          if (idx >= 0 && idx < next.length) next[idx] = page;
+        });
+        return next;
+      });
+    } catch (_error) {
+      // ignore transient errors
+    } finally {
+      readerPageLoadInFlightRef.current.delete(key);
+    }
+  }, [initData, readerDocumentId, readerPages.length]);
+
   useEffect(() => {
     if (!readerDocumentId || readerPageCount === 0) return;
     // Load current page if it's a null placeholder (lazy-loaded doc)
@@ -19487,47 +19528,6 @@ function AppInner() {
       }
     }
   }, []);
-
-  const loadReaderPageRange = useCallback(async (targetPage) => {
-    if (!initData || !readerDocumentId) return;
-    const pageCount = readerPages.length;
-    if (pageCount === 0) return;
-    const windowSize = 50;
-    const start = Math.max(1, targetPage - 5);
-    const end = Math.min(pageCount, start + windowSize - 1);
-    const adjustedStart = Math.max(1, end - windowSize + 1);
-    const key = `${readerDocumentId}:${adjustedStart}:${end}`;
-    if (readerPageLoadInFlightRef.current.has(key)) return;
-    readerPageLoadInFlightRef.current.add(key);
-    try {
-      const response = await fetch('/api/webapp/reader/library/pages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData,
-          document_id: readerDocumentId,
-          start_page: adjustedStart,
-          end_page: end,
-        }),
-      });
-      if (!response.ok) return;
-      const data = await response.json();
-      const newPages = Array.isArray(data?.pages) ? data.pages : [];
-      if (newPages.length === 0) return;
-      setReaderPages((prev) => {
-        const next = [...prev];
-        newPages.forEach((page) => {
-          const idx = (page.page_number || 0) - 1;
-          if (idx >= 0 && idx < next.length) next[idx] = page;
-        });
-        return next;
-      });
-    } catch (_error) {
-      // ignore transient errors
-    } finally {
-      readerPageLoadInFlightRef.current.delete(key);
-    }
-  }, [initData, readerDocumentId, readerPages.length]);
 
   const loadReaderToc = useCallback(async () => {
     if (!initData || !readerDocumentId) return;
