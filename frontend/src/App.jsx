@@ -8061,7 +8061,7 @@ function AppInner() {
           ? Math.max(0, Math.trunc(Number(incomingQueue.due_count_total)))
           : Math.max(0, Math.trunc(Number(prev?.due_count_total || 0))),
         due_reviewed_today: Number.isFinite(Number(incomingQueue?.due_reviewed_today))
-          ? Math.max(0, Math.trunc(Number(incomingQueue.due_reviewed_today)))
+          ? Math.max(Math.max(0, Math.trunc(Number(incomingQueue.due_reviewed_today))), Math.max(0, Math.trunc(Number(prev?.due_reviewed_today || 0))))
           : Math.max(0, Math.trunc(Number(prev?.due_reviewed_today || 0))),
         due_limit_today: Number.isFinite(Number(incomingQueue?.due_limit_today))
           ? Math.max(1, Math.trunc(Number(incomingQueue.due_limit_today)))
@@ -8097,11 +8097,12 @@ function AppInner() {
           due_count: dueCount,
           new_remaining_today: newRemaining - 1,
           due_count_total: dueCountTotal,
-          due_reviewed_today: dueReviewedToday,
+          due_reviewed_today: dueReviewedToday + 1,
           due_limit_today: dueLimitToday,
         };
       }
-      return { due_count: dueCount, new_remaining_today: newRemaining, due_count_total: dueCountTotal, due_reviewed_today: dueReviewedToday, due_limit_today: dueLimitToday };
+      // Fallback: still increment so the counter never stalls
+      return { due_count: dueCount, new_remaining_today: newRemaining, due_count_total: dueCountTotal, due_reviewed_today: dueReviewedToday + 1, due_limit_today: dueLimitToday };
     });
   };
 
@@ -8192,7 +8193,7 @@ function AppInner() {
               setSrsCard(null);
               setSrsState(null);
               setSrsPreview(null);
-              setSrsQueueInfo({ due_count: 0, new_remaining_today: 0 });
+              setSrsQueueInfo((prev) => ({ ...prev, due_count: 0, new_remaining_today: 0 }));
               setSrsError('');
               return;
             }
@@ -8256,7 +8257,7 @@ function AppInner() {
               ? Math.max(0, Math.trunc(Number(queueInfo.due_count_total)))
               : Math.max(0, Math.trunc(Number(prev?.due_count_total || 0))),
             due_reviewed_today: Number.isFinite(Number(queueInfo?.due_reviewed_today))
-              ? Math.max(0, Math.trunc(Number(queueInfo.due_reviewed_today)))
+              ? Math.max(Math.max(0, Math.trunc(Number(queueInfo.due_reviewed_today))), Math.max(0, Math.trunc(Number(prev?.due_reviewed_today || 0))))
               : Math.max(0, Math.trunc(Number(prev?.due_reviewed_today || 0))),
             due_limit_today: Number.isFinite(Number(queueInfo?.due_limit_today))
               ? Math.max(1, Math.trunc(Number(queueInfo.due_limit_today)))
@@ -8366,13 +8367,13 @@ function AppInner() {
       const data = await response.json();
       const queueInfo = data?.queue_info && typeof data.queue_info === 'object' ? data.queue_info : null;
       if (queueInfo) {
-        setSrsQueueInfo({
+        setSrsQueueInfo((prev) => ({
           due_count: Math.max(0, Math.trunc(Number(queueInfo.due_count || 0))),
           new_remaining_today: Math.max(0, Math.trunc(Number(queueInfo.new_remaining_today || 0))),
           due_count_total: Math.max(0, Math.trunc(Number(queueInfo.due_count_total || 0))),
-          due_reviewed_today: Math.max(0, Math.trunc(Number(queueInfo.due_reviewed_today || 0))),
+          due_reviewed_today: Math.max(Math.max(0, Math.trunc(Number(queueInfo.due_reviewed_today || 0))), Math.max(0, Math.trunc(Number(prev?.due_reviewed_today || 0)))),
           due_limit_today: Math.max(1, Math.trunc(Number(queueInfo.due_limit_today || 30))),
-        });
+        }));
       }
     } catch (error) {
       console.warn('Reschedule backlog failed', error);
@@ -15334,7 +15335,6 @@ function AppInner() {
       }
       readerStateSaveTimeoutRef.current = setTimeout(() => {
         const pct = Number(nextPercent.toFixed(2));
-        setReaderBookmarkPercent(nextPercent);
         syncReaderState({ progress_percent: pct, bookmark_percent: pct });
       }, 900);
     };
@@ -15414,7 +15414,6 @@ function AppInner() {
     const nextPercent = computeReaderProgressPercent();
     const pct = Number(nextPercent.toFixed(2));
     setReaderProgressPercent(nextPercent);
-    setReaderBookmarkPercent(nextPercent);
     syncReaderState({ progress_percent: pct, bookmark_percent: pct });
   }, [readerCurrentPage, readerDocumentId, readerPageCount]);
 
@@ -29800,6 +29799,23 @@ function AppInner() {
                             </span>
                             <span className="reader-toolbar-btn-label">
                               {tr('Архив', 'Archiv')}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            className={`secondary-button reader-toolbar-btn reader-toolbar-btn-icon-only ${readerShowToc ? 'is-active' : ''}`}
+                            onClick={() => {
+                              if (!readerShowToc && readerTocItems.length === 0) void loadReaderToc();
+                              setReaderShowToc((v) => !v);
+                            }}
+                            disabled={!readerContent}
+                            title={tr('Оглавление', 'Inhaltsverzeichnis')}
+                            aria-label={tr('Оглавление', 'Inhaltsverzeichnis')}
+                          >
+                            <span className="reader-toolbar-btn-icon" aria-hidden="true">
+                              <svg viewBox="0 0 18 18" fill="none">
+                                <path d="M4 5h10M4 9h10M4 13h6.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                              </svg>
                             </span>
                           </button>
                           <button

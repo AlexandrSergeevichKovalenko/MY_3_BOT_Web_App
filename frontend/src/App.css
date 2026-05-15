@@ -22897,6 +22897,63 @@ body {
   border-color: rgba(171, 126, 72, 0.32);
 }
 
+.webapp-page.is-theme-light .flashcard-meaning-item {
+  background: rgba(171, 126, 72, 0.07);
+  border-color: rgba(171, 126, 72, 0.22);
+  color: #3d2e1e;
+}
+
+.webapp-page.is-theme-light .flashcard-meaning-rank {
+  color: #7a5928;
+}
+
+/* ── Reader ToC drawer — light theme ───────────────────────────────────── */
+.webapp-page.is-theme-light .reader-toc-overlay {
+  background: rgba(50, 28, 8, 0.32);
+}
+
+.webapp-page.is-theme-light .reader-toc-drawer {
+  background: #fdf8f0;
+  border-right-color: rgba(171, 126, 72, 0.22);
+}
+
+.webapp-page.is-theme-light .reader-toc-head {
+  border-bottom-color: rgba(171, 126, 72, 0.18);
+}
+
+.webapp-page.is-theme-light .reader-toc-head strong {
+  color: #1f1209;
+}
+
+.webapp-page.is-theme-light .reader-toc-close-btn {
+  color: #8a6a45 !important;
+}
+
+.webapp-page.is-theme-light .reader-toc-item:hover,
+.webapp-page.is-theme-light .reader-toc-item:active {
+  background: rgba(171, 126, 72, 0.07);
+}
+
+.webapp-page.is-theme-light .reader-toc-item.is-active {
+  background: rgba(171, 126, 72, 0.12);
+}
+
+.webapp-page.is-theme-light .reader-toc-item.is-active .reader-toc-item-title {
+  color: #7a5118;
+}
+
+.webapp-page.is-theme-light .reader-toc-item-title {
+  color: #2c1f0f;
+}
+
+.webapp-page.is-theme-light .reader-toc-item-page {
+  color: #9a7c5c;
+}
+
+.webapp-page.is-theme-light .reader-toc-empty {
+  color: #9a7c5c;
+}
+
 .webapp-page.is-theme-light .analytics-rank {
   background: rgba(207, 157, 99, 0.24);
   color: #6f4f2e;

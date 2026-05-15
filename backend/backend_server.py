@@ -66,7 +66,7 @@ import hashlib
 import io
 import queue
 from dataclasses import asdict
-from collections import Counter, deque
+from collections import Counter, OrderedDict, deque
 from urllib.parse import urlparse
 from youtube_transcript_api import YouTubeTranscriptApi
 import os
@@ -652,17 +652,30 @@ else:
 os.environ.setdefault("NO_PROXY", "api.telegram.org,telegram.org")
 
 # YouTube transcript cache/throttle (in-memory)
-_yt_transcript_cache = {}
-_yt_transcript_errors = {}
+_yt_transcript_cache: OrderedDict = OrderedDict()
+_yt_transcript_errors: OrderedDict = OrderedDict()
 _YT_CACHE_TTL = 24 * 60 * 60  # 24 hours
 _YT_ERROR_TTL = 10 * 60  # 10 minutes
+_YT_TRANSCRIPT_CACHE_MAX = 100   # max entries before LRU eviction (~10 MB at 100 KB/entry)
+_YT_ERROR_CACHE_MAX = 50
+_YT_OEMBED_CACHE_MAX = 100
 _YT_MAX_RETRIES_PER_VIDEO = 5
 _YT_MAX_PROXY_ATTEMPTS = 5
 _YT_RETRY_SLEEP_MIN = 2.0
 _YT_RETRY_SLEEP_MAX = 3.0
 _YT_REQUEST_JITTER_MIN = 1.9
 _YT_REQUEST_JITTER_MAX = 1.9
-_YT_OEMBED_CACHE: dict[str, dict] = {}
+_YT_OEMBED_CACHE: OrderedDict = OrderedDict()
+
+
+def _yt_cache_put(cache: OrderedDict, key: str, value: dict, max_size: int) -> None:
+    """Insert/update key and evict oldest (LRU) entries when over max_size."""
+    cache[key] = value
+    while len(cache) > max_size:
+        try:
+            cache.popitem(last=False)
+        except KeyError:
+            break
 _YOUTUBE_MANUAL_SEARCH_CACHE: dict[str, dict] = {}
 _YOUTUBE_MANUAL_SEARCH_CACHE_LOCK = threading.Lock()
 _YOUTUBE_MANUAL_SEARCH_CACHE_TTL_SEC = max(60, int((os.getenv("YOUTUBE_MANUAL_SEARCH_CACHE_TTL_SEC") or "600").strip()))
@@ -35639,7 +35652,7 @@ def _load_cached_youtube_transcript_data(video_id: str) -> tuple[dict | None, st
             "translations": cached_db.get("translations") or {},
             "source": cached_db.get("source"),
         }
-        _yt_transcript_cache[video_id] = {"ts": now, "data": data}
+        _yt_cache_put(_yt_transcript_cache, video_id, {"ts": now, "data": data}, _YT_TRANSCRIPT_CACHE_MAX)
         return data, "db_cache", cached_db_duration_ms
     return None, None, cached_db_duration_ms
 
@@ -35904,7 +35917,7 @@ def get_youtube_transcript():
             data = _fetch_youtube_transcript(video_id, lang=lang, allow_proxy=proxy_allowed)
         except Exception as exc:
             logging.warning("YouTube transcript error for %s: %s", video_id, exc)
-            _yt_transcript_errors[video_id] = {"ts": now, "error": str(exc)}
+            _yt_cache_put(_yt_transcript_errors, video_id, {"ts": now, "error": str(exc)}, _YT_ERROR_CACHE_MAX)
             error_message = _format_youtube_transcript_user_error(exc)
             _log_flow_observation(
                 "youtube_transcript",
@@ -35962,7 +35975,7 @@ def get_youtube_transcript():
         except Exception:
             pass
         persist_duration_ms = _elapsed_ms_since(persist_started_perf)
-        _yt_transcript_cache[video_id] = {"ts": now, "data": data}
+        _yt_cache_put(_yt_transcript_cache, video_id, {"ts": now, "data": data}, _YT_TRANSCRIPT_CACHE_MAX)
         response_payload = {
             "ok": True,
             "items": data.get("items", []),
@@ -36709,13 +36722,13 @@ def save_manual_youtube_transcript():
     except Exception as exc:
         return jsonify({"error": f"Ошибка сохранения: {exc}"}), 500
 
-    _yt_transcript_cache[video_id] = {"ts": time.time(), "data": {
+    _yt_cache_put(_yt_transcript_cache, video_id, {"ts": time.time(), "data": {
         "items": normalized,
         "language": language,
         "is_generated": False,
         "translations": {},
         "source": "manual",
-    }}
+    }}, _YT_TRANSCRIPT_CACHE_MAX)
 
     return jsonify({"ok": True})
 
@@ -43552,8 +43565,26 @@ def _get_youtube_oembed(video_id: str) -> dict:
             data = resp.json() or {}
     except Exception:
         data = {}
-    _YT_OEMBED_CACHE[video_id] = {"ts": now, "data": data}
+    _yt_cache_put(_YT_OEMBED_CACHE, video_id, {"ts": now, "data": data}, _YT_OEMBED_CACHE_MAX)
     return data
+
+
+def _run_yt_memory_cache_cleanup_job() -> None:
+    """Evict expired entries from in-memory YouTube caches (runs every 30 min via scheduler)."""
+    now = time.time()
+    expired = [k for k, v in list(_yt_transcript_cache.items()) if now - v.get("ts", 0) >= _YT_CACHE_TTL]
+    for k in expired:
+        _yt_transcript_cache.pop(k, None)
+    expired_errors = [k for k, v in list(_yt_transcript_errors.items()) if now - v.get("ts", 0) >= _YT_ERROR_TTL]
+    for k in expired_errors:
+        _yt_transcript_errors.pop(k, None)
+    expired_oembed = [k for k, v in list(_YT_OEMBED_CACHE.items()) if now - v.get("ts", 0) >= 7 * 24 * 60 * 60]
+    for k in expired_oembed:
+        _YT_OEMBED_CACHE.pop(k, None)
+    logging.info(
+        "yt_memory_cache_cleanup done: transcript=%d errors=%d oembed=%d",
+        len(_yt_transcript_cache), len(_yt_transcript_errors), len(_YT_OEMBED_CACHE),
+    )
 
 
 def _format_binary_size(num_bytes: int) -> str:
@@ -44130,6 +44161,14 @@ def _start_audio_scheduler() -> None:
             coalesce=True,
             misfire_grace_time=max(10, int(SKILL_STATE_V2_AGGREGATION_INTERVAL_SECONDS)),
         )
+    _audio_scheduler.add_job(
+        _run_yt_memory_cache_cleanup_job,
+        "interval",
+        hours=12,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
     _audio_scheduler.start()
     logging.info("✅ Audio scheduler started: %02d:%02d %s", hour, minute, tz_name)
 
