@@ -5328,6 +5328,7 @@ function AppInner() {
     startY: 0,
   });
   const readerSuppressStructuredClickRef = useRef(0);
+  const readerLastTapRef = useRef({ time: 0, sid: null });
   const readerStatusPollTokenRef = useRef(0);
   const readerPaginationResizeFrameRef = useRef(0);
   const readerPaginationRunRef = useRef(0);
@@ -19010,6 +19011,31 @@ function AppInner() {
       const sid = String(wordEl.getAttribute('data-sid') || '').trim();
       const metaWord = readerWordMap.get(wid);
       if (!metaWord || !sid) return;
+
+      // Double-tap on any word in the same sentence → sentence translation
+      const now = Date.now();
+      const lastTap = readerLastTapRef.current;
+      const isDoubleTap = now - lastTap.time < 320 && lastTap.sid === sid;
+      readerLastTapRef.current = { time: now, sid };
+
+      if (isDoubleTap) {
+        const sentence = readerSentenceMap.get(sid);
+        if (!sentence) return;
+        setReaderAudioStartWid(wid);
+        handleSelection(event, String(sentence.text || ''), {
+          compact: true,
+          inlineLookup: true,
+          lookupLang: getNormalizeLookupLang(),
+          selectionType: 'sentence',
+          selectedMeta: {
+            sids: [sid],
+            start: Number(sentence.start || 0),
+            end: Number(sentence.end || 0),
+          },
+        });
+        return;
+      }
+
       setReaderAudioStartWid(wid);
       handleSelection(event, metaWord.value, {
         compact: true,
@@ -19031,6 +19057,7 @@ function AppInner() {
       const sid = String(sentenceEl.getAttribute('data-sid') || '').trim();
       const sentence = readerSentenceMap.get(sid);
       if (!sentence) return;
+      readerLastTapRef.current = { time: 0, sid: null };
       handleSelection(event, String(sentence.text || ''), {
         compact: true,
         inlineLookup: true,
@@ -22126,6 +22153,7 @@ function AppInner() {
       startY: 0,
     });
     const suppressStructuredClickRef = useRef(0);
+    const lastTapRef = useRef({ time: 0, sid: null });
     const [dragSelectionMeta, setDragSelectionMeta] = useState(null);
 
     const structuredSentencesModel = useMemo(
@@ -22248,6 +22276,23 @@ function AppInner() {
         const sid = String(wordEl.getAttribute('data-sid') || '').trim();
         const metaWord = structuredWordMap.get(wid);
         if (!metaWord || !sid) return;
+
+        const now = Date.now();
+        const lastTap = lastTapRef.current;
+        const isDoubleTap = now - lastTap.time < 320 && lastTap.sid === sid;
+        lastTapRef.current = { time: now, sid };
+
+        if (isDoubleTap) {
+          const sentence = structuredSentenceMap.get(sid);
+          if (!sentence) return;
+          openStructuredSelection(event, String(sentence.text || ''), 'translation_result_sentence', {
+            sids: [sid],
+            start: Number(sentence.start || 0),
+            end: Number(sentence.end || 0),
+          });
+          return;
+        }
+
         openStructuredSelection(event, metaWord.value, 'translation_result_word', {
           sids: [sid],
           wids: [wid],
@@ -22262,6 +22307,7 @@ function AppInner() {
         const sid = String(sentenceEl.getAttribute('data-sid') || '').trim();
         const sentence = structuredSentenceMap.get(sid);
         if (!sentence) return;
+        lastTapRef.current = { time: 0, sid: null };
         openStructuredSelection(event, String(sentence.text || ''), 'translation_result_sentence', {
           sids: [sid],
           start: Number(sentence.start || 0),
