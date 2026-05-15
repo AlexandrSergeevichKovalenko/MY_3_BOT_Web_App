@@ -4607,16 +4607,11 @@ body {
   border-radius: 0;
   border: 0;
   background: transparent;
-  max-height: calc(100vh - 124px);
-  min-height: calc(100vh - 124px);
+  max-height: none;
+  min-height: 0;
   padding: 8px;
   display: grid;
   justify-items: center;
-}
-
-.webapp-reader.is-immersive.is-topbar-collapsed .reader-article {
-  max-height: calc(100vh - 24px);
-  min-height: calc(100vh - 24px);
 }
 
 @media (max-width: 900px) {
@@ -15041,11 +15036,14 @@ body {
 }
 
 .webapp-reader.is-immersive {
-  min-height: calc(100vh - 72px);
-  min-height: calc(100dvh - 72px);
-  min-height: calc(var(--app-height, 100dvh) - 72px);
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  height: var(--app-height, 100dvh);
+  min-height: unset;
   background: transparent;
   position: relative;
+  overflow: hidden;
 }
 
 .webapp-reader.is-immersive .reader-topbar {
@@ -16089,18 +16087,15 @@ body {
 }
 
 .webapp-reader.is-immersive .reader-article {
-  max-height: calc(100dvh - 146px);
-  min-height: calc(100dvh - 146px);
-  max-height: calc(var(--app-height, 100dvh) - 146px);
-  min-height: calc(var(--app-height, 100dvh) - 146px);
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  overflow: hidden;
+  align-content: center;
   padding: 8px 0 16px;
 }
 
 .webapp-reader.is-immersive.is-topbar-collapsed .reader-article {
-  max-height: calc(100dvh - 96px);
-  min-height: calc(100dvh - 96px);
-  max-height: calc(var(--app-height, 100dvh) - 96px);
-  min-height: calc(var(--app-height, 100dvh) - 96px);
   padding-top: 2px;
 }
 
