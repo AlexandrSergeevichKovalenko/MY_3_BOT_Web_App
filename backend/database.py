@@ -1250,6 +1250,17 @@ CLOUDFLARE_R2_STORAGE_MONTHLY_BASE_LIMIT_GB = max(0, _env_int("CLOUDFLARE_R2_STO
 STRIPE_MONTHLY_BASE_LIMIT_PAYMENTS = max(0, _env_int("STRIPE_MONTHLY_BASE_LIMIT_PAYMENTS", 0))
 READER_AUDIO_PRO_MONTHLY_LIMIT_CHARS = max(1, _env_int("READER_AUDIO_PRO_MONTHLY_LIMIT_CHARS", 10_000))
 
+def _reader_audio_unlimited_user_ids() -> frozenset[int]:
+    raw = os.getenv("READER_AUDIO_UNLIMITED_USER_IDS", "")
+    result = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if part.isdigit():
+            result.add(int(part))
+    return frozenset(result)
+
+READER_AUDIO_UNLIMITED_USER_IDS: frozenset[int] = _reader_audio_unlimited_user_ids()
+
 
 def convert_cost_to_eur(amount, currency: str | None) -> float:
     try:
@@ -22182,6 +22193,8 @@ def enforce_reader_audio_pro_monthly_limit(
     now_ts_utc: datetime | None = None,
     tz: str = TRIAL_POLICY_TZ,
 ) -> dict | None:
+    if int(user_id) in READER_AUDIO_UNLIMITED_USER_IDS:
+        return None
     used_units = float(
         get_user_action_month_usage(
             int(user_id),

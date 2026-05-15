@@ -419,6 +419,7 @@ from backend.database import (
     enforce_daily_cost_cap,
     enforce_feature_limit,
     enforce_reader_audio_pro_monthly_limit,
+    READER_AUDIO_UNLIMITED_USER_IDS,
     get_today_cost_eur,
     get_today_cost_eur_fast,
     get_google_translate_monthly_budget_status,
@@ -38293,7 +38294,7 @@ def reader_audio_export():
         )
         db_lookup_duration_ms += _elapsed_ms_since(pages_usage_lookup_started_perf)
         limit_pages_7d = float(READER_AUDIO_PAGES_7D_LIMIT)
-        if selected_page_count > 0 and (used_pages_7d + float(selected_page_count)) > limit_pages_7d:
+        if user_id_int not in READER_AUDIO_UNLIMITED_USER_IDS and selected_page_count > 0 and (used_pages_7d + float(selected_page_count)) > limit_pages_7d:
             return jsonify(
                 {
                     "error": (
