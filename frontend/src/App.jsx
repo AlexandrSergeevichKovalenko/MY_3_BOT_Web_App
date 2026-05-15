@@ -25810,6 +25810,21 @@ function AppInner() {
                     <span>{Boolean(flashcardActiveMode) ? tr('Назад', 'Zurück') : tr('На главную', 'Startseite')}</span>
                   </button>
                   {Boolean(flashcardActiveMode) && renderTodaySectionTaskHud('flashcards', { ignoreProgress: true, inline: true })}
+                  {showReaderTopbarPeekInAppTopbar && (
+                    <button
+                      type="button"
+                      className="topbar-home-button topbar-home-button-archiv"
+                      onClick={() => {
+                        setReaderArchiveOpen(true);
+                        setReaderImmersive(false);
+                        setReaderTopbarCollapsed(false);
+                        setReaderSettingsOpen(false);
+                      }}
+                    >
+                      <span className="topbar-home-arrow" aria-hidden="true">◀</span>
+                      <span>{tr('Архив', 'Archiv')}</span>
+                    </button>
+                  )}
                 </div>
               ) : (
                 <>
@@ -29706,23 +29721,6 @@ function AppInner() {
                         <div className="reader-topbar-peek">
                           <button
                             type="button"
-                            className="secondary-button reader-toolbar-btn reader-toolbar-btn-back"
-                            onClick={() => {
-                              setReaderArchiveOpen(true);
-                              setReaderImmersive(false);
-                              setReaderTopbarCollapsed(false);
-                              setReaderSettingsOpen(false);
-                            }}
-                          >
-                            <span className="reader-toolbar-btn-icon" aria-hidden="true">
-                              <svg viewBox="0 0 18 18" fill="none">
-                                <path d="M10.75 4.25 6 9l4.75 4.75M6.6 9h6.15" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
-                              </svg>
-                            </span>
-                            <span className="reader-toolbar-btn-label">{tr('Архив', 'Archiv')}</span>
-                          </button>
-                          <button
-                            type="button"
                             className={`secondary-button reader-toolbar-btn reader-toolbar-btn-icon-only ${readerShowToc ? 'is-active' : ''}`}
                             onClick={() => {
                               if (!readerShowToc && readerTocItems.length === 0) void loadReaderToc();
@@ -29758,6 +29756,7 @@ function AppInner() {
                               </svg>
                             </span>
                           </button>
+                          <div className="reader-topbar-peek-spacer" />
                           <button
                             type="button"
                             className="secondary-button reader-topbar-toggle-chip reader-toolbar-btn"
@@ -29820,48 +29819,6 @@ function AppInner() {
                             </span>
                             <span className="reader-toolbar-btn-label">
                               {tr('Архив', 'Archiv')}
-                            </span>
-                          </button>
-                          <button
-                            type="button"
-                            className={`secondary-button reader-toolbar-btn reader-toolbar-btn-icon-only ${readerShowToc ? 'is-active' : ''}`}
-                            onClick={() => {
-                              if (!readerShowToc && readerTocItems.length === 0) void loadReaderToc();
-                              setReaderShowToc((v) => !v);
-                            }}
-                            disabled={!readerContent}
-                            title={tr('Оглавление', 'Inhaltsverzeichnis')}
-                            aria-label={tr('Оглавление', 'Inhaltsverzeichnis')}
-                          >
-                            <span className="reader-toolbar-btn-icon" aria-hidden="true">
-                              <svg viewBox="0 0 18 18" fill="none">
-                                <path d="M4 5h10M4 9h10M4 13h6.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-                              </svg>
-                            </span>
-                          </button>
-                          <button
-                            type="button"
-                            className={`reader-bookmark-btn reader-toolbar-btn reader-toolbar-btn-icon-only ${isCurrentReaderPageBookmarked ? 'is-active' : ''}`}
-                            onClick={() => {
-                              const mark = computeReaderProgressPercent();
-                              setReaderBookmarkPercent(mark);
-                              if (readerDocumentId) {
-                                syncReaderState({ bookmark_percent: Number(mark.toFixed(2)), progress_percent: Number(mark.toFixed(2)) });
-                              }
-                            }}
-                            disabled={!readerContent || !readerDocumentId}
-                            aria-label={tr('Поставить закладку', 'Lesezeichen setzen')}
-                            title={tr('Поставить закладку', 'Lesezeichen setzen')}
-                          >
-                            <span className="reader-toolbar-btn-icon" aria-hidden="true">
-                              <svg viewBox="0 0 18 18" fill="none">
-                                <path
-                                  d="M5.25 3.75h7.5a.75.75 0 0 1 .75.75v9.75L9 11.55l-4.5 2.7V4.5a.75.75 0 0 1 .75-.75Z"
-                                  stroke="currentColor"
-                                  strokeWidth="1.6"
-                                  strokeLinejoin="round"
-                                />
-                              </svg>
                             </span>
                           </button>
                           <button

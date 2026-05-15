@@ -939,6 +939,16 @@ body {
   outline: none;
 }
 
+.topbar-home-button-archiv {
+  background: linear-gradient(135deg, #334155 0%, #1e293b 100%);
+  box-shadow: 0 2px 12px rgba(51, 65, 85, 0.45), 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.topbar-home-button-archiv:hover,
+.topbar-home-button-archiv:focus-visible {
+  box-shadow: 0 4px 18px rgba(51, 65, 85, 0.6), 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+
 .topbar-home-arrow {
   font-size: 15px;
   line-height: 1;
@@ -15863,9 +15873,11 @@ body {
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
-  background: var(--tg-bg, #1a1a2e);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   flex-shrink: 0;
+}
+
+.reader-topbar-peek-spacer {
+  flex: 1;
 }
 
 .reader-immersive-topbar {
@@ -16085,10 +16097,10 @@ body {
 }
 
 .webapp-reader.is-immersive.is-topbar-collapsed .reader-article {
-  max-height: calc(100dvh - 52px);
-  min-height: calc(100dvh - 52px);
-  max-height: calc(var(--app-height, 100dvh) - 52px);
-  min-height: calc(var(--app-height, 100dvh) - 52px);
+  max-height: calc(100dvh - 96px);
+  min-height: calc(100dvh - 96px);
+  max-height: calc(var(--app-height, 100dvh) - 96px);
+  min-height: calc(var(--app-height, 100dvh) - 96px);
   padding-top: 2px;
 }
 
