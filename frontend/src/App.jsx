@@ -4595,6 +4595,7 @@ function AppInner() {
   const [readerAudioPaused, setReaderAudioPaused] = useState(false);
   const audioElementRef = useRef(null);
   const audioRafRef = useRef(0);
+  const readerAudioPlayingForPageRef = useRef(null);
 
   const [readerColorTheme, setReaderColorTheme] = useState(() => {
     try {
@@ -4613,6 +4614,7 @@ function AppInner() {
   const [selectionPos, setSelectionPos] = useState(null);
   const [selectionType, setSelectionType] = useState('');
   const [selectedMeta, setSelectedMeta] = useState(null);
+  const [readerAudioStartWid, setReaderAudioStartWid] = useState(null);
   const [selectionCompact, setSelectionCompact] = useState(false);
   const [selectionLookupLang, setSelectionLookupLang] = useState('');
   const [selectionInlineMode, setSelectionInlineMode] = useState(false);
@@ -15485,6 +15487,10 @@ function AppInner() {
   }, [readerCurrentPage, readerDocumentId, readerPageCount]);
 
   useEffect(() => {
+    setReaderAudioStartWid(null);
+  }, [readerCurrentPage, readerDocumentId]);
+
+  useEffect(() => {
     if (readerPageCount <= 0) {
       setReaderCurrentPage(1);
       return;
@@ -18884,7 +18890,7 @@ function AppInner() {
     const pageCount = Math.max(1, Number(totalPages || 0));
     const safe = Math.max(0, Math.min(100, Number(percent || 0)));
     if (safe <= 0) return 1;
-    return Math.max(1, Math.min(pageCount, Math.ceil((safe / 100) * pageCount)));
+    return Math.max(1, Math.min(pageCount, Math.round((safe / 100) * pageCount)));
   }
 
   function getReaderTrackedDurationSeconds(options = {}) {
@@ -19004,6 +19010,7 @@ function AppInner() {
       const sid = String(wordEl.getAttribute('data-sid') || '').trim();
       const metaWord = readerWordMap.get(wid);
       if (!metaWord || !sid) return;
+      setReaderAudioStartWid(wid);
       handleSelection(event, metaWord.value, {
         compact: true,
         inlineLookup: true,
@@ -19233,6 +19240,7 @@ function AppInner() {
       const selectionEvent = touch
         ? { clientX: touch.clientX, clientY: touch.clientY }
         : event;
+      if (Array.isArray(previewMeta.wids) && previewMeta.wids[0]) setReaderAudioStartWid(previewMeta.wids[0]);
       handleSelection(selectionEvent, previewMeta.text, {
         compact: true,
         inlineLookup: true,
@@ -19512,6 +19520,7 @@ function AppInner() {
   const goReaderPage = (delta) => {
     if (readerPageCount === 0) return;
     const step = delta > 0 ? 1 : -1;
+    if (readerAudioPlayActive) stopReaderAudioPlay();
     setReaderCurrentPage((prev) => {
       const next = prev + step;
       return Math.max(1, Math.min(readerPageCount, next));
@@ -19910,7 +19919,8 @@ function AppInner() {
 
   // ── Audio-sync callbacks (Patch 2.4) ────────────────────────────────────
   const playReaderAudioPage = useCallback(async (page) => {
-    const startWid = selectedMeta?.wids?.[0] || null;
+    const startWid = readerAudioStartWid || null;
+    readerAudioPlayingForPageRef.current = page;
     setReaderAudioPlayLoading(true);
     setReaderAudioPlayError('');
     try {
@@ -19943,11 +19953,12 @@ function AppInner() {
         await audioElementRef.current.play().catch(() => {});
       }
     } catch (e) {
+      readerAudioPlayingForPageRef.current = null;
       setReaderAudioPlayError(String(e?.message || e));
     } finally {
       setReaderAudioPlayLoading(false);
     }
-  }, [readerDocumentId, readerAudioVoice, readerAudioRate, initData, selectedMeta, readerAudioWidReverseMap]);
+  }, [readerDocumentId, readerAudioVoice, readerAudioRate, initData, readerAudioStartWid, readerAudioWidReverseMap]);
 
   const pauseReaderAudioPlay = useCallback(() => {
     audioElementRef.current?.pause();
@@ -19965,6 +19976,7 @@ function AppInner() {
       audioElementRef.current.src = '';
     }
     cancelAnimationFrame(audioRafRef.current);
+    readerAudioPlayingForPageRef.current = null;
     setReaderAudioPlayActive(false);
     setReaderAudioPlayData(null);
     setReaderAudioPlayPosition(0);
@@ -19996,13 +20008,15 @@ function AppInner() {
     return () => cancelAnimationFrame(audioRafRef.current);
   }, [readerAudioPlayActive]);
 
-  // Auto-next-page
+  // Auto-next-page: advance from the page that was actually playing (not the display page)
   useEffect(() => {
     const audio = audioElementRef.current;
     if (!audio || !readerAudioPlayActive) return undefined;
     const onEnded = () => {
-      if (readerCurrentPage < readerPageCount) {
-        const nextPage = readerCurrentPage + 1;
+      const playedPage = readerAudioPlayingForPageRef.current;
+      if (playedPage !== null && playedPage < readerPageCount) {
+        const nextPage = playedPage + 1;
+        readerAudioPlayingForPageRef.current = nextPage;
         setReaderCurrentPage(nextPage);
         playReaderAudioPage(nextPage);
       } else {
@@ -20011,7 +20025,7 @@ function AppInner() {
     };
     audio.addEventListener('ended', onEnded);
     return () => audio.removeEventListener('ended', onEnded);
-  }, [readerAudioPlayActive, readerCurrentPage, readerPageCount, playReaderAudioPage, stopReaderAudioPlay]);
+  }, [readerAudioPlayActive, readerPageCount, playReaderAudioPage, stopReaderAudioPlay]);
 
   // Stop audio when leaving reader or changing document
   useEffect(() => {
