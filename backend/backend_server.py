@@ -3371,9 +3371,12 @@ def _extract_webapp_user_from_init_data(init_data: str) -> tuple[int | None, str
 
 def _extract_request_init_data(payload: dict | None = None) -> str:
     body = payload if isinstance(payload, dict) else (request.get_json(silent=True) or {})
+    auth_header = str(request.headers.get("Authorization") or "").strip()
+    bearer = auth_header.removeprefix("Bearer ").strip() if auth_header.startswith("Bearer ") else ""
     return str(
         request.headers.get("X-Telegram-InitData")
         or request.headers.get("X-Telegram-Init-Data")
+        or bearer
         or body.get("initData")
         or request.args.get("initData")
         or ""
