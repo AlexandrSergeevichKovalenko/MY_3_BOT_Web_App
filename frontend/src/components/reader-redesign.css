@@ -1816,11 +1816,13 @@
   color: var(--rd-paper-muted);
 }
 
-/* Topbar — light frosted glass */
+/* Topbar — paper-themed, no blur (blur blends with dark Telegram bg → grey) */
 .webapp-reader.is-immersive[data-reader-theme="sepia"] .reader-topbar,
 .webapp-reader.is-immersive[data-reader-theme="cream"] .reader-topbar {
-  background: var(--rd-paper-glass);
+  background: var(--rd-paper-bg);
   border-bottom-color: var(--rd-paper-border);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .webapp-reader[data-reader-theme="sepia"] .reader-topbar-title,
@@ -2194,8 +2196,10 @@
 /* ── (Bonus) Topbar (не peek) — paper-тема ────────────────────────── */
 .webapp-reader[data-reader-theme="sepia"] .reader-topbar,
 .webapp-reader[data-reader-theme="cream"] .reader-topbar {
-  background: var(--rd-paper-glass) !important;
+  background: var(--rd-paper-bg) !important;
   border-bottom-color: var(--rd-paper-border) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }
 
 .webapp-reader[data-reader-theme="sepia"] .reader-topbar .reader-topbar-title,

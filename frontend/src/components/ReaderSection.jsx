@@ -922,7 +922,12 @@ export default function ReaderSection(props) {
 
             {/* ── Audio error (shown even when player not yet active) ── */}
             {readerAudioPlayError && !readerAudioPlayActive && (
-              <div className="reader-audio-error-bar">{readerAudioPlayError}</div>
+              <div className="reader-audio-error-bar">
+                {readerAudioPlayError === 'reader_audio_monthly_limit_exceeded'
+                  ? tr('Лимит аудио на этот месяц исчерпан. Попробуй в следующем месяце или улучши план.',
+                       'Monatliches Audio-Limit erreicht. Nächsten Monat oder Plan upgraden.')
+                  : readerAudioPlayError}
+              </div>
             )}
 
             {/* ── Page jump dialog ────────────────────────────────── */}
