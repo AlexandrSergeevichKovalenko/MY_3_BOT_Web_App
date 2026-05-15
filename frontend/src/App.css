@@ -504,6 +504,33 @@ body {
 .webapp-page.is-reader-immersive.is-reader-peek .webapp-topbar {
   display: flex;
   flex-shrink: 0;
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
+  border-top: none;
+  background: rgba(8,12,26,0.97);
+  border-bottom-color: rgba(255,255,255,0.07);
+  box-shadow: none;
+}
+
+.webapp-page[data-reader-theme="sepia"].is-reader-immersive.is-reader-peek .webapp-topbar {
+  background: rgba(244,236,216,0.97);
+  border-bottom-color: rgba(58,47,34,0.12);
+  box-shadow: 0 1px 0 rgba(58,47,34,0.08);
+}
+
+.webapp-page[data-reader-theme="cream"].is-reader-immersive.is-reader-peek .webapp-topbar {
+  background: rgba(251,248,241,0.97);
+  border-bottom-color: rgba(26,24,20,0.08);
+  box-shadow: 0 1px 0 rgba(26,24,20,0.05);
+}
+
+.webapp-page[data-reader-theme="sepia"].is-reader-immersive .webapp-topbar .topbar-home-button {
+  color: rgba(58,47,34,0.75);
+}
+
+.webapp-page[data-reader-theme="cream"].is-reader-immersive .webapp-topbar .topbar-home-button {
+  color: rgba(26,24,20,0.75);
 }
 
 .webapp-page.is-reader-immersive {

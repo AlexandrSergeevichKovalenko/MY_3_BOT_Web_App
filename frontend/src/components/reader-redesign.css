@@ -676,6 +676,10 @@
 .webapp-reader.is-immersive {
   background: var(--rd-bg);
   position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
 }
 
 .webapp-reader.is-immersive .webapp-section-title {
@@ -2373,4 +2377,107 @@
   background: rgba(180, 30, 30, 0.08);
   border-color: rgba(180, 30, 30, 0.25);
   color: rgb(180, 30, 30);
+}
+
+
+/* ╔═══════════════════════════════════════════════════════════════════════╗
+   ║  PATCH 3.0 — Library mode contrast for paper themes                    ║
+   ║  In sepia/cream, the entire reader section gets a light bg, but text   ║
+   ║  defaults to dark-theme vars (white). Override for visibility.          ║
+   ╚═══════════════════════════════════════════════════════════════════════╝ */
+
+/* Header title gradient */
+.webapp-reader[data-reader-theme="sepia"] .reader-lib-header-title,
+.webapp-reader[data-reader-theme="cream"] .reader-lib-header-title {
+  background: linear-gradient(135deg, var(--rd-paper-text) 0%, var(--rd-paper-muted) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Library card titles and meta */
+.webapp-reader[data-reader-theme="sepia"] .reader-library-title,
+.webapp-reader[data-reader-theme="cream"] .reader-library-title {
+  color: var(--rd-paper-text) !important;
+}
+.webapp-reader[data-reader-theme="sepia"] .reader-library-meta,
+.webapp-reader[data-reader-theme="cream"] .reader-library-meta {
+  color: var(--rd-paper-faint) !important;
+}
+.webapp-reader[data-reader-theme="sepia"] .reader-library-meta span:first-child,
+.webapp-reader[data-reader-theme="cream"] .reader-library-meta span:first-child {
+  color: var(--rd-paper-accent) !important;
+}
+
+/* Action buttons */
+.webapp-reader[data-reader-theme="sepia"] .reader-lib-action,
+.webapp-reader[data-reader-theme="cream"] .reader-lib-action {
+  background: var(--rd-paper-soft) !important;
+  border-color: var(--rd-paper-border) !important;
+  color: var(--rd-paper-muted) !important;
+}
+.webapp-reader[data-reader-theme="sepia"] .reader-lib-action:hover,
+.webapp-reader[data-reader-theme="cream"] .reader-lib-action:hover {
+  background: rgba(0,0,0,0.06) !important;
+  color: var(--rd-paper-text) !important;
+}
+.webapp-reader[data-reader-theme="sepia"] .reader-lib-action.is-danger,
+.webapp-reader[data-reader-theme="cream"] .reader-lib-action.is-danger {
+  color: rgba(180,30,30,0.65) !important;
+}
+.webapp-reader[data-reader-theme="sepia"] .reader-lib-action-open,
+.webapp-reader[data-reader-theme="cream"] .reader-lib-action-open {
+  background: rgba(0,0,0,0.05) !important;
+  border-color: rgba(0,0,0,0.1) !important;
+  color: var(--rd-paper-accent) !important;
+}
+
+/* Audio panel heading */
+.webapp-reader[data-reader-theme="sepia"] .reader-audio-head,
+.webapp-reader[data-reader-theme="cream"] .reader-audio-head {
+  color: var(--rd-paper-muted) !important;
+}
+
+/* Generic muted text */
+.webapp-reader[data-reader-theme="sepia"] .webapp-muted,
+.webapp-reader[data-reader-theme="cream"] .webapp-muted {
+  color: var(--rd-paper-muted) !important;
+}
+
+/* Search input */
+.webapp-reader[data-reader-theme="sepia"] .reader-lib-search,
+.webapp-reader[data-reader-theme="cream"] .reader-lib-search {
+  background: var(--rd-paper-soft) !important;
+  border-color: var(--rd-paper-border) !important;
+  color: var(--rd-paper-text) !important;
+}
+.webapp-reader[data-reader-theme="sepia"] .reader-lib-search::placeholder,
+.webapp-reader[data-reader-theme="cream"] .reader-lib-search::placeholder {
+  color: var(--rd-paper-faint) !important;
+}
+
+/* Archive toggle */
+.webapp-reader[data-reader-theme="sepia"] .reader-lib-archive-toggle,
+.webapp-reader[data-reader-theme="cream"] .reader-lib-archive-toggle {
+  color: var(--rd-paper-muted) !important;
+}
+
+/* Hero card text */
+.webapp-reader[data-reader-theme="sepia"] .reader-hero-kicker,
+.webapp-reader[data-reader-theme="cream"] .reader-hero-kicker,
+.webapp-reader[data-reader-theme="sepia"] .reader-hero-title,
+.webapp-reader[data-reader-theme="cream"] .reader-hero-title,
+.webapp-reader[data-reader-theme="sepia"] .reader-hero-meta,
+.webapp-reader[data-reader-theme="cream"] .reader-hero-meta {
+  color: var(--rd-paper-text) !important;
+}
+
+/* Dark theme: slightly boost action button visibility */
+.webapp-reader[data-reader-theme="dark"] .reader-lib-action {
+  background: rgba(255,255,255,0.06);
+  border-color: rgba(255,255,255,0.12);
+  color: rgba(255,255,255,0.7);
+}
+.webapp-reader[data-reader-theme="dark"] .reader-lib-action.is-danger {
+  color: rgba(248,113,113,0.8);
 }

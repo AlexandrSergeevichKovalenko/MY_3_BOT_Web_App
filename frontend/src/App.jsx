@@ -25775,7 +25775,10 @@ function AppInner() {
       );
     }
     return (
-      <div className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${showReaderTopbarPeekInAppTopbar ? 'is-reader-peek' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isAndroidTelegramClient ? 'is-android-client' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''} ${canTopbarGoBack ? 'is-topbar-back-mode' : ''}`}>
+      <div
+        className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${showReaderTopbarPeekInAppTopbar ? 'is-reader-peek' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isAndroidTelegramClient ? 'is-android-client' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''} ${canTopbarGoBack ? 'is-topbar-back-mode' : ''}`}
+        data-reader-theme={readerHasContent && readerImmersive ? readerColorTheme : undefined}
+      >
         <pre id="app-perf-report" style={{ display: 'none' }} />
         <div className="webapp-shell">
           <aside className="webapp-sidebar">

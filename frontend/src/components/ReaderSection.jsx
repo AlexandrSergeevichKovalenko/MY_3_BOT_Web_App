@@ -253,7 +253,7 @@ export default function ReaderSection(props) {
               )}
 
               {/* ── Phase 2.1: Hero-карточка «Продолжаешь читать» ──── */}
-              {!readerArchiveOpen && (() => {
+              {(() => {
                 let candidate = null;
                 if (readerDocumentId) {
                   candidate = readerDocuments.find(
