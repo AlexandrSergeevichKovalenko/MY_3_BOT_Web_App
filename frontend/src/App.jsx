@@ -5338,6 +5338,7 @@ function AppInner() {
   const readerStatusPollTokenRef = useRef(0);
   const readerPaginationResizeFrameRef = useRef(0);
   const readerPaginationRunRef = useRef(0);
+  const readerPendingPagePercentRef = useRef(null);
   const readerOpenInFlightRef = useRef(0);
   const readerPageLoadInFlightRef = useRef(new Set());
   const todayTimerCompletionLockRef = useRef(new Set());
@@ -15324,6 +15325,7 @@ function AppInner() {
     setReaderDynamicPages([]);
     setReaderPaginationLayoutTick(0);
     setReaderLayoutMode('custom');
+    readerPendingPagePercentRef.current = null;
     setReaderImmersive(false);
     setReaderTimerPaused(false);
     setReaderAccumulatedSeconds(0);
@@ -15405,6 +15407,13 @@ function AppInner() {
 
     if (nextPages.length > 0) {
       setReaderCurrentPage((prev) => {
+        const pendingPercent = readerPendingPagePercentRef.current;
+        if (pendingPercent !== null && pendingPercent !== undefined) {
+          readerPendingPagePercentRef.current = null;
+          const remappedPage = resolveReaderPageFromPercent(pendingPercent, nextPages.length);
+          console.log('[PAGINATE] remapping page by percent=', pendingPercent, '->', remappedPage, 'of', nextPages.length);
+          return remappedPage;
+        }
         const current = Math.max(1, Number(prev || 1));
         // Don't reset to progress-based page if current page is still valid.
         // Prevents ResizeObserver loop: audio player height change → repaginate → page jump.
@@ -15433,7 +15442,9 @@ function AppInner() {
     // Source PDF/EPUB chunks are not guaranteed to fit the screen sheet as-is.
     // Fall back to adaptive pagination instead of clipping and losing text.
     // Sync progress before switching so custom layout can restore the correct page.
-    setReaderProgressPercent(computeReaderProgressPercent());
+    const stablePercent = computeReaderProgressPercent();
+    readerPendingPagePercentRef.current = stablePercent;
+    setReaderProgressPercent(stablePercent);
     setReaderLayoutMode('custom');
   }, [
     readerLayoutMode,
@@ -19828,6 +19839,7 @@ function AppInner() {
       const resolvedText = String(data?.text || '').trim() || buildReaderTextFromPages(pages);
       setReaderFontSize(READER_DEFAULT_FONT_SIZE);
       setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
+      readerPendingPagePercentRef.current = null;
       setReaderDocumentId(Number(doc?.id || safeDocumentId));
       setReaderTitle(String(data?.title || doc?.title || ''));
       setReaderContent(resolvedText);
@@ -19852,8 +19864,9 @@ function AppInner() {
       setReaderReadingMode(String(doc?.reading_mode || 'vertical'));
       setReaderProgressPercent(progress);
       setReaderBookmarkPercent(bookmark);
-      const pageFromProgress = pages.length > 0
-        ? resolveReaderPageFromPercent(bookmark > 0 ? bookmark : progress, pages.length)
+      const resolvedTotalPages = sparsePages.length;
+      const pageFromProgress = resolvedTotalPages > 0
+        ? resolveReaderPageFromPercent(bookmark > 0 ? bookmark : progress, resolvedTotalPages)
         : 1;
       setReaderCurrentPage(pageFromProgress);
       setReaderAudioFromPage(pages.length > 0 ? '1' : '');
@@ -19869,8 +19882,10 @@ function AppInner() {
       ensureSectionVisible('reader');
       setTimeout(() => {
         scrollToRef(readerRef, { block: 'start' });
-        const target = bookmark > 0 ? bookmark : progress;
-        applyReaderProgressPercent(target);
+        if (sparsePages.length === 0) {
+          const target = bookmark > 0 ? bookmark : progress;
+          applyReaderProgressPercent(target);
+        }
       }, 100);
       loadReaderLibrary(readerIncludeArchived, { showError: false });
     } catch (error) {
@@ -20069,9 +20084,19 @@ function AppInner() {
     setReaderAudioPlayError('');
     try {
       const voice = readerAudioVoice || '';
-      const url = `/api/webapp/reader/audio/page?document_id=${readerDocumentId}&page=${page}&voice=${encodeURIComponent(voice)}&rate=${readerAudioRate}`;
-      const resp = await fetch(url, {
-        headers: initData ? { Authorization: `Bearer ${initData}` } : {},
+      const pageIndex = Math.max(0, Number(page || 1) - 1);
+      const visiblePageText = String(readerDisplayPages[pageIndex]?.text || '').trim();
+      const resp = await fetch('/api/webapp/reader/audio/page', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          document_id: readerDocumentId,
+          page,
+          voice,
+          rate: readerAudioRate,
+          page_text: visiblePageText,
+        }),
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
@@ -20137,7 +20162,7 @@ function AppInner() {
     } finally {
       setReaderAudioPlayLoading(false);
     }
-  }, [readerDocumentId, readerAudioVoice, readerAudioRate, initData, readerAudioStartWid, readerAudioWidReverseMap, readerAudioWidToCharStart]);
+  }, [readerDocumentId, readerAudioVoice, readerAudioRate, initData, readerAudioStartWid, readerAudioWidReverseMap, readerAudioWidToCharStart, readerDisplayPages]);
 
   const pauseReaderAudioPlay = useCallback(() => {
     audioElementRef.current?.pause();
@@ -20392,6 +20417,7 @@ function AppInner() {
       const resolvedText = String(data?.text || '').trim() || buildReaderTextFromPages(pages);
       setReaderFontSize(READER_DEFAULT_FONT_SIZE);
       setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
+      readerPendingPagePercentRef.current = null;
       setReaderContent(resolvedText);
       setReaderTitle(String(data?.title || doc?.title || rawInput.slice(0, 80)));
       setReaderPages(pages);
@@ -20404,8 +20430,9 @@ function AppInner() {
       setReaderReadingMode(String(doc?.reading_mode || 'vertical'));
       setReaderProgressPercent(Number(doc?.progress_percent || 0));
       setReaderBookmarkPercent(Number(doc?.bookmark_percent || 0));
-      const pageFromProgress = pages.length > 0
-        ? resolveReaderPageFromPercent(Number(doc?.bookmark_percent || doc?.progress_percent || 0), pages.length)
+      const resolvedTotalPages = pages.length;
+      const pageFromProgress = resolvedTotalPages > 0
+        ? resolveReaderPageFromPercent(Number(doc?.bookmark_percent || doc?.progress_percent || 0), resolvedTotalPages)
         : 1;
       setReaderCurrentPage(pageFromProgress);
       setReaderAudioFromPage(pages.length > 0 ? '1' : '');
@@ -20421,8 +20448,10 @@ function AppInner() {
       ensureSectionVisible('reader');
       setTimeout(() => {
         scrollToRef(readerRef, { block: 'start' });
-        const target = Number(doc?.bookmark_percent || doc?.progress_percent || 0);
-        applyReaderProgressPercent(target);
+        if (pages.length === 0) {
+          const target = Number(doc?.bookmark_percent || doc?.progress_percent || 0);
+          applyReaderProgressPercent(target);
+        }
       }, 80);
       loadReaderLibrary(readerIncludeArchived, { showError: false });
       clearReaderSelectedFile();

@@ -38504,19 +38504,31 @@ def reader_audio_export():
             ), 500
 
 
-@app.route("/api/webapp/reader/audio/page", methods=["GET"])
+@app.route("/api/webapp/reader/audio/page", methods=["GET", "POST"])
 def reader_audio_page():
     """
-    GET /api/webapp/reader/audio/page?document_id=&page=&voice=&rate=
+    GET/POST /api/webapp/reader/audio/page
     Returns JSON: {audio_url, mime, duration_ms, word_timings, voice, rate, cached}
     """
+    payload = request.get_json(silent=True) or {}
     init_data = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
     if not init_data:
+        init_data = str(payload.get("initData") or "").strip()
+    if not init_data:
         init_data = request.args.get("initData", "").strip()
-    document_id_raw = request.args.get("document_id", "")
-    page_raw = request.args.get("page", "1")
-    voice_raw = request.args.get("voice", "").strip()
-    rate_raw = request.args.get("rate", "1.0")
+    document_id_raw = payload.get("document_id")
+    if document_id_raw in (None, ""):
+        document_id_raw = request.args.get("document_id", "")
+    page_raw = payload.get("page")
+    if page_raw in (None, ""):
+        page_raw = request.args.get("page", "1")
+    voice_raw = str(payload.get("voice") or "").strip()
+    if not voice_raw:
+        voice_raw = request.args.get("voice", "").strip()
+    rate_raw = payload.get("rate")
+    if rate_raw in (None, ""):
+        rate_raw = request.args.get("rate", "1.0")
+    page_text_override_raw = str(payload.get("page_text") or "").strip()
 
     if not init_data:
         return jsonify({"error": "Authorization обязателен"}), 400
@@ -38568,16 +38580,19 @@ def reader_audio_page():
         return jsonify({"error": "Книга не найдена"}), 404
 
     pages = document.get("content_pages") if isinstance(document.get("content_pages"), list) else []
-    if not pages or page_int > len(pages):
-        return jsonify({"error": "page_not_found", "page": page_int, "page_count": len(pages)}), 404
+    raw_text = page_text_override_raw
+    page_source = "override" if raw_text else "document_page"
+    if not raw_text:
+        if not pages or page_int > len(pages):
+            return jsonify({"error": "page_not_found", "page": page_int, "page_count": len(pages)}), 404
 
-    page_obj = next((p for p in pages if int(p.get("page_number") or 0) == page_int), None)
-    if page_obj is None:
-        page_obj = pages[page_int - 1] if page_int <= len(pages) else None
-    if not page_obj:
-        return jsonify({"error": "page_not_found", "page": page_int, "page_count": len(pages)}), 404
+        page_obj = next((p for p in pages if int(p.get("page_number") or 0) == page_int), None)
+        if page_obj is None:
+            page_obj = pages[page_int - 1] if page_int <= len(pages) else None
+        if not page_obj:
+            return jsonify({"error": "page_not_found", "page": page_int, "page_count": len(pages)}), 404
 
-    raw_text = str(page_obj.get("text") or "").strip()
+        raw_text = str(page_obj.get("text") or "").strip()
     if not raw_text:
         return jsonify({"error": "Страница пустая"}), 422
 
@@ -38599,13 +38614,13 @@ def reader_audio_page():
     default_voice = _TTS_VOICES.get(language_for_tts, _TTS_VOICES["de"])
     voice_name = voice_raw if voice_raw else default_voice
 
-    # v5: reader audio now uses sparse SSML marks with interpolated word timings.
-    # Keep a version suffix so old robotic cache entries are not reused.
-    text_hash = hashlib.sha256(page_text.encode("utf-8")).hexdigest()[:24] + "-v5"
+    # v6: frontend may send the visible reader page text directly so tapped-word
+    # audio always aligns with the page the user currently sees.
+    text_hash = hashlib.sha256(page_text.encode("utf-8")).hexdigest()[:24] + "-v6"
 
     logging.info(
-        "[READER_AUDIO] user=%s doc=%s page=%s voice=%s rate=%s raw_len=%s norm_len=%s hash=%s",
-        user_id_int, document_id_int, page_int, voice_name, rate_float, len(raw_text), len(page_text), text_hash,
+        "[READER_AUDIO] user=%s doc=%s page=%s source=%s voice=%s rate=%s raw_len=%s norm_len=%s hash=%s",
+        user_id_int, document_id_int, page_int, page_source, voice_name, rate_float, len(raw_text), len(page_text), text_hash,
     )
 
     cached = get_cached_reader_audio_page(
@@ -38643,8 +38658,8 @@ def reader_audio_page():
         return jsonify(reader_audio_limit_error), 429
 
     logging.info(
-        "[READER_AUDIO] SYNTHESIZING user=%s doc=%s page=%s voice=%s lang=%s text_preview=%r",
-        user_id_int, document_id_int, page_int, voice_name, google_lang_code, page_text[:80],
+        "[READER_AUDIO] SYNTHESIZING user=%s doc=%s page=%s source=%s voice=%s lang=%s text_preview=%r",
+        user_id_int, document_id_int, page_int, page_source, voice_name, google_lang_code, page_text[:80],
     )
     try:
         result = synthesize_page_with_timings(
@@ -38707,6 +38722,7 @@ def reader_audio_page():
         metadata={
             "document_id": document_id_int,
             "page": page_int,
+            "page_source": page_source,
             "voice": voice_name,
             "rate": rate_float,
             "language": language_for_tts,
