@@ -987,6 +987,15 @@
 }
 
 .webapp-reader .reader-page-sheet-inner {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: 36em;
+  margin: 0 auto;
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
   font-size: var(--reader-font-size, 18px);
   font-weight: var(--reader-font-weight, 400);
   font-family: var(--rd-font-serif);
@@ -1011,6 +1020,10 @@
   width: min(680px, 92%);
   height: 100%;
   margin: 0;
+}
+
+.webapp-reader .reader-page-sheet-measure .reader-page-sheet-inner {
+  max-width: 36em;
 }
 
 .webapp-reader .reader-page-num {
