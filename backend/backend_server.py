@@ -13194,6 +13194,8 @@ def _build_toc_from_pages(pages: list, source_type: str) -> list[dict]:
 
 
 _EPUB_PAGE_SPLIT_CHARS = 3000  # soft max chars per reader page
+_EPUB_MAX_TOTAL_TEXT_CHARS = 3_000_000
+_EPUB_LEGACY_TRUNCATED_TOTAL_CHARS = 150_000
 
 
 def _split_chapter_into_pages(text: str, chapter_title: str, page_offset: int) -> list[dict]:
@@ -13237,6 +13239,7 @@ def _extract_epub_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
     chunks: list[str] = []
     pages: list[dict] = []
     chapter_num = 0
+    total_chars = 0
     ordered_items: list[Any] = []
     seen_keys: set[str] = set()
 
@@ -13284,7 +13287,7 @@ def _extract_epub_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
 
     for item in ordered_items:
         chapter_num += 1
-        if chapter_num > 200:
+        if total_chars >= _EPUB_MAX_TOTAL_TEXT_CHARS:
             break
         try:
             html_bytes = item.get_body_content()
@@ -13297,14 +13300,101 @@ def _extract_epub_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
         normalized = _normalize_reader_text(chapter_text, max_chars=50000)
         if not normalized:
             continue
+        remaining_chars = max(0, _EPUB_MAX_TOTAL_TEXT_CHARS - total_chars)
+        if remaining_chars <= 0:
+            break
+        if len(normalized) > remaining_chars:
+            normalized = _normalize_reader_text(normalized, max_chars=remaining_chars)
+            if not normalized:
+                break
         chapter_title = _extract_html_heading_title(raw_html, chapter_num)
         chunks.append(normalized)
+        total_chars += len(normalized) + 2
         sub_pages = _split_chapter_into_pages(normalized, chapter_title, len(pages))
         pages.extend(sub_pages)
     # Re-number pages sequentially after all chapters are processed
     for i, p in enumerate(pages):
         p["page_number"] = i + 1
-    return _normalize_reader_text("\n\n".join(chunks)), pages
+    return _normalize_reader_text("\n\n".join(chunks), max_chars=_EPUB_MAX_TOTAL_TEXT_CHARS), pages
+
+
+def _reader_epub_looks_legacy_truncated(document: dict | None) -> bool:
+    safe_document = document if isinstance(document, dict) else {}
+    if str(safe_document.get("source_type") or "").strip().lower() != "epub":
+        return False
+    content_text = str(safe_document.get("content_text") or "")
+    if len(content_text) != _EPUB_LEGACY_TRUNCATED_TOTAL_CHARS:
+        return False
+    tail = content_text[-200:].strip()
+    if not tail:
+        return True
+    return not bool(re.search(r"[.!?…»”'\")\]]\s*$", tail))
+
+
+def _maybe_repair_legacy_truncated_reader_epub(
+    *,
+    user_id: int,
+    document_id: int,
+    source_lang: str,
+    target_lang: str,
+    document: dict | None,
+) -> dict | None:
+    safe_document = document if isinstance(document, dict) else {}
+    if not _reader_epub_looks_legacy_truncated(safe_document):
+        return document
+    ingest_state = get_reader_library_document_ingest_state(
+        user_id=int(user_id),
+        document_id=int(document_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    raw_bytes, object_key = _resolve_reader_original_source_bytes(
+        user_id=int(user_id),
+        document_id=int(document_id),
+        source_type="epub",
+        ingest_state=ingest_state,
+        document=safe_document,
+    )
+    if not raw_bytes:
+        logging.warning(
+            "reader epub auto-repair skipped: source bytes missing user_id=%s document_id=%s",
+            user_id,
+            document_id,
+        )
+        return document
+    try:
+        normalized_text, content_pages = _extract_epub_content_from_bytes(raw_bytes)
+    except Exception:
+        logging.exception(
+            "reader epub auto-repair failed during extraction user_id=%s document_id=%s object_key=%s",
+            user_id,
+            document_id,
+            object_key,
+        )
+        return document
+    if not normalized_text or len(normalized_text) <= len(str(safe_document.get("content_text") or "")):
+        return document
+    repaired = finalize_reader_library_document_processing(
+        user_id=int(user_id),
+        document_id=int(document_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        title=str(safe_document.get("title") or "Untitled"),
+        source_type="epub",
+        source_url=safe_document.get("source_url"),
+        content_text=normalized_text,
+        content_pages=content_pages,
+    )
+    if repaired:
+        logging.info(
+            "reader epub auto-repair completed user_id=%s document_id=%s old_chars=%s new_chars=%s",
+            user_id,
+            document_id,
+            len(str(safe_document.get("content_text") or "")),
+            len(str(repaired.get("content_text") or "")),
+        )
+        return repaired
+    return document
 
 
 def _fetch_reader_text_from_url(raw_url: str) -> tuple[str, str, list[dict]]:
@@ -38018,6 +38108,20 @@ def reader_library_open():
             response_payload["source_url"] = doc.get("source_url")
             response_payload["language_pair"] = _build_language_pair_payload(source_lang, target_lang)
             return jsonify(response_payload), 202
+        try:
+            doc = _maybe_repair_legacy_truncated_reader_epub(
+                user_id=int(user_id),
+                document_id=int(document_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                document=doc,
+            ) or doc
+        except Exception:
+            logging.exception(
+                "reader open epub auto-repair failed user_id=%s document_id=%s",
+                user_id,
+                document_id,
+            )
         entitlement_started_perf = time.perf_counter()
         entitlement, _subscription = _resolve_user_entitlement(user_id=int(user_id))
         entitlement_duration_ms = _elapsed_ms_since(entitlement_started_perf)
