@@ -3,9 +3,14 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import backend.tts_ssml as tts_ssml
+from backend.tts_generation import _estimate_reader_page_tts_budget_chars
 
 
 class ReaderTtsSsmlTests(unittest.TestCase):
+    def test_reader_page_tts_budget_counts_full_normalized_text(self):
+        text = "Hallo, Welt!\n\nNoch ein Satz."
+        self.assertEqual(len(text), _estimate_reader_page_tts_budget_chars(text))
+
     def test_chunk_text_preserves_trailing_punctuation(self):
         text = "Eins zwei drei vier. Fuenf sechs sieben acht."
         words = tts_ssml.segment_page_words(text)

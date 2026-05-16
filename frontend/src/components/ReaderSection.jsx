@@ -116,6 +116,7 @@ export default function ReaderSection(props) {
 
     // ── Phase 2.4: audio-sync player ──────────────────────────────
     audioElementRef,
+    readerAudioPreloadElementRef,
     readerAudioPlayActive = false,
     readerAudioPlayLoading = false,
     readerAudioPlayError = '',
@@ -888,6 +889,7 @@ export default function ReaderSection(props) {
 
             {/* ── Hidden audio element ────────────────────────────── */}
             <audio ref={audioElementRef} preload="metadata" style={{ display: 'none' }} />
+            <audio ref={readerAudioPreloadElementRef} preload="none" style={{ display: 'none' }} />
 
             {/* ── Audio mini-player bar ────────────────────────────── */}
             {readerAudioPlayActive && (

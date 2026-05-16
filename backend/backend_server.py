@@ -117,6 +117,7 @@ from backend.job_queue import (
     enqueue_projection_materialization_job,
     enqueue_finish_daily_summary_job,
     enqueue_reader_library_ingest_job,
+    enqueue_reader_audio_page_job,
     enqueue_tts_generation_job,
     enqueue_translation_check_completion_job,
     enqueue_translation_check_job,
@@ -136,17 +137,20 @@ from backend.job_queue import (
     get_translation_check_dispatch_state,
     get_translation_fill_job_status,
     get_redis_client,
+    get_reader_audio_page_job_status,
     get_session_presence_card,
     get_skills_card,
     get_today_card,
     get_translation_session_card,
     get_translation_session_state,
     is_tts_generation_async_enabled,
+    is_reader_audio_page_async_enabled,
     is_translation_fill_job_status_fast_path_eligible,
     is_translation_check_job_status_fast_path_eligible,
     is_translation_check_async_enabled,
     is_translation_sentence_fill_async_enabled,
     release_shared_idempotency,
+    set_reader_audio_page_job_status,
     set_translation_check_job_status,
     set_translation_check_status_card,
     set_translation_check_terminal_summary,
@@ -167,6 +171,10 @@ from backend.job_queue import (
     is_youtube_transcript_async_enabled,
 )
 from backend.translation_workflow import _extract_correct_translation
+from backend.reader_audio_singleflight import (
+    acquire_reader_audio_singleflight_slot,
+    release_reader_audio_singleflight_slot,
+)
 from backend.voice_preparation_service import (
     create_voice_prep_pack as create_voice_prep_pack_service,
     get_voice_prep_pack as get_voice_prep_pack_service,
@@ -758,6 +766,8 @@ _TTS_GENERATION_QUEUE_LOCK = threading.RLock()
 _TTS_GENERATION_QUEUE = None
 _TTS_GENERATION_WORKER_THREADS: list[threading.Thread] = []
 _SKILL_STATE_V2_METRICS_LOCK = threading.Lock()
+_READER_AUDIO_PAGE_PENDING_RETRY_MS = 1000
+_READER_AUDIO_SINGLEFLIGHT_WAIT_SEC = 20.0
 _SKILL_STATE_V2_METRICS = {
     "runs_total": 0,
     "keys_processed_total": 0,
@@ -38514,6 +38524,196 @@ def reader_audio_export():
                 }
             ), 500
 
+def _build_reader_audio_page_ready_response(
+    *,
+    audio_url: str,
+    mime: str,
+    duration_ms: int,
+    word_timings: list,
+    voice_name: str,
+    rate_float: float,
+    cached: bool,
+    deduped: bool = False,
+) -> dict:
+    payload = {
+        "audio_url": str(audio_url or ""),
+        "mime": str(mime or "audio/mpeg"),
+        "duration_ms": int(duration_ms or 0),
+        "word_timings": list(word_timings or []),
+        "voice": voice_name,
+        "rate": rate_float,
+        "cached": bool(cached),
+    }
+    if deduped:
+        payload["deduped"] = True
+    return payload
+
+
+def _generate_and_cache_reader_audio_page(
+    *,
+    user_id_int: int,
+    document_id_int: int,
+    page_int: int,
+    page_source: str,
+    page_text: str,
+    text_hash: str,
+    voice_name: str,
+    rate_float: float,
+    google_lang_code: str,
+    language_for_tts: str,
+    source_lang: str,
+    target_lang: str,
+    document_title: str,
+) -> dict:
+    logging.info(
+        "[READER_AUDIO] SYNTHESIZING user=%s doc=%s page=%s source=%s voice=%s lang=%s text_preview=%r",
+        user_id_int, document_id_int, page_int, page_source, voice_name, google_lang_code, page_text[:80],
+    )
+    result = synthesize_page_with_timings(
+        page_text=page_text,
+        lang_code=google_lang_code,
+        voice_name=voice_name,
+        speaking_rate=rate_float,
+    )
+
+    timing_sample = result["word_timings"][:5] if result.get("word_timings") else []
+    logging.info(
+        "[READER_AUDIO] SYNTHESIZED user=%s doc=%s page=%s words=%s duration_ms=%s sample=%s",
+        user_id_int, document_id_int, page_int,
+        len(result.get("word_timings") or []), result.get("duration_ms"), timing_sample,
+    )
+
+    safe_title = re.sub(r"[^A-Za-z0-9._-]+", "_", str(document_title or "reader"))[:40]
+    r2_rate = str(rate_float).replace(".", "_")
+    object_key = f"reader-audio-pages/{user_id_int}/{document_id_int}/p{page_int}/{voice_name}/{r2_rate}/{text_hash}.mp3"
+    r2_put_bytes(
+        object_key,
+        result["audio_bytes"],
+        content_type="audio/mpeg",
+        cache_control="public, max-age=2592000",
+    )
+    audio_url = r2_public_url(object_key)
+
+    save_reader_audio_page_cache(
+        user_id=user_id_int,
+        document_id=document_id_int,
+        page_number=page_int,
+        voice_name=voice_name,
+        speaking_rate=rate_float,
+        text_hash=text_hash,
+        audio_url=audio_url,
+        audio_mime="audio/mpeg",
+        audio_bytes_len=len(result["audio_bytes"]),
+        duration_ms=result["duration_ms"],
+        word_timings=result["word_timings"],
+    )
+
+    _billing_log_event_safe(
+        user_id=user_id_int,
+        action_type="reader_audio_tts",
+        provider="google_tts",
+        units_type="chars",
+        units_value=float(len(page_text)),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        idempotency_seed=f"reader_audio_page:{user_id_int}:{document_id_int}:p{page_int}:{text_hash}:{time.time_ns()}",
+        status="estimated",
+        metadata={
+            "document_id": document_id_int,
+            "page": page_int,
+            "page_source": page_source,
+            "voice": voice_name,
+            "rate": rate_float,
+            "language": language_for_tts,
+            "title": safe_title,
+        },
+    )
+
+    return _build_reader_audio_page_ready_response(
+        audio_url=audio_url,
+        mime="audio/mpeg",
+        duration_ms=result["duration_ms"],
+        word_timings=result["word_timings"],
+        voice_name=voice_name,
+        rate_float=rate_float,
+        cached=False,
+    )
+
+
+def _run_reader_audio_page_generation_job(
+    *,
+    job_key: str,
+    user_id: int,
+    document_id: int,
+    page: int,
+    page_source: str,
+    page_text: str,
+    text_hash: str,
+    voice_name: str,
+    rate: float,
+    google_lang_code: str,
+    language_for_tts: str,
+    source_lang: str,
+    target_lang: str,
+) -> None:
+    set_reader_audio_page_job_status(job_key, status="running", source="worker")
+    cached = get_cached_reader_audio_page(
+        document_id=int(document_id),
+        page_number=int(page),
+        voice_name=str(voice_name),
+        speaking_rate=float(rate),
+        text_hash=str(text_hash),
+    )
+    if cached:
+        set_reader_audio_page_job_status(
+            job_key,
+            status="ready",
+            audio_url=str(cached.get("audio_url") or ""),
+            duration_ms=int(cached.get("duration_ms") or 0),
+            source="cache",
+        )
+        return
+
+    try:
+        ready_payload = _generate_and_cache_reader_audio_page(
+            user_id_int=int(user_id),
+            document_id_int=int(document_id),
+            page_int=int(page),
+            page_source=str(page_source or "async"),
+            page_text=str(page_text or ""),
+            text_hash=str(text_hash or ""),
+            voice_name=str(voice_name or ""),
+            rate_float=float(rate),
+            google_lang_code=str(google_lang_code or "de-DE"),
+            language_for_tts=str(language_for_tts or "de"),
+            source_lang=str(source_lang or ""),
+            target_lang=str(target_lang or ""),
+            document_title="reader",
+        )
+        set_reader_audio_page_job_status(
+            job_key,
+            status="ready",
+            audio_url=str(ready_payload.get("audio_url") or ""),
+            duration_ms=int(ready_payload.get("duration_ms") or 0),
+            source="worker",
+        )
+    except GoogleTTSBudgetBlockedError as exc:
+        set_reader_audio_page_job_status(
+            job_key,
+            status="failed",
+            error=str(exc),
+            source="worker",
+        )
+        raise
+    except Exception as exc:
+        set_reader_audio_page_job_status(
+            job_key,
+            status="failed",
+            error=str(exc),
+            source="worker",
+        )
+        raise
+
 
 @app.route("/api/webapp/reader/audio/page", methods=["GET", "POST"])
 def reader_audio_page():
@@ -38540,6 +38740,10 @@ def reader_audio_page():
     if rate_raw in (None, ""):
         rate_raw = request.args.get("rate", "1.0")
     page_text_override_raw = str(payload.get("page_text") or "").strip()
+    prefetch_only_raw = payload.get("prefetch_only")
+    if prefetch_only_raw in (None, ""):
+        prefetch_only_raw = request.args.get("prefetch_only", "")
+    prefetch_only = str(prefetch_only_raw or "").strip().lower() in {"1", "true", "yes", "on"}
 
     if not init_data:
         return jsonify({"error": "Authorization обязателен"}), 400
@@ -38649,15 +38853,130 @@ def reader_audio_page():
             user_id_int, document_id_int, page_int,
             len(cached.get("word_timings") or []), has_char_start, timing_sample,
         )
-        return jsonify({
-            "audio_url": cached["audio_url"],
-            "mime": cached["mime"],
-            "duration_ms": cached["duration_ms"],
-            "word_timings": cached["word_timings"],
-            "voice": voice_name,
-            "rate": rate_float,
-            "cached": True,
-        })
+        return jsonify(_build_reader_audio_page_ready_response(
+            audio_url=cached["audio_url"],
+            mime=cached["mime"],
+            duration_ms=cached["duration_ms"],
+            word_timings=cached["word_timings"],
+            voice_name=voice_name,
+            rate_float=rate_float,
+            cached=True,
+        ))
+
+    reader_audio_singleflight_key = (
+        f"{document_id_int}:{page_int}:{voice_name}:{rate_float}:{text_hash}"
+    )
+    if is_reader_audio_page_async_enabled() and can_enqueue_background_jobs():
+        job_status = get_reader_audio_page_job_status(reader_audio_singleflight_key) or {}
+        normalized_job_status = str(job_status.get("status") or "").strip().lower()
+        if normalized_job_status in {"pending", "running"}:
+            return jsonify({
+                "status": "pending",
+                "job_key": reader_audio_singleflight_key,
+                "retry_after_ms": int(_READER_AUDIO_PAGE_PENDING_RETRY_MS),
+            }), 202
+        if normalized_job_status == "failed":
+            return jsonify({
+                "status": "failed",
+                "job_key": reader_audio_singleflight_key,
+                "error": str(job_status.get("error") or "reader_audio_page_generation_failed"),
+            }), 200
+
+        reader_audio_limit_error = enforce_reader_audio_pro_monthly_limit(
+            user_id=user_id_int,
+            requested_units=float(len(page_text)),
+            now_ts_utc=now_utc,
+            tz="Europe/Vienna",
+        )
+        if reader_audio_limit_error:
+            return jsonify(reader_audio_limit_error), 429
+
+        enqueue_result = enqueue_reader_audio_page_job(
+            {
+                "job_key": reader_audio_singleflight_key,
+                "user_id": user_id_int,
+                "document_id": document_id_int,
+                "page": page_int,
+                "page_source": page_source,
+                "page_text": page_text,
+                "text_hash": text_hash,
+                "voice_name": voice_name,
+                "rate": rate_float,
+                "google_lang_code": google_lang_code,
+                "language_for_tts": language_for_tts,
+                "source_lang": source_lang,
+                "target_lang": target_lang,
+            }
+        )
+        enqueue_reason = str(enqueue_result.get("reason") or "").strip().lower()
+        if bool(enqueue_result.get("queued")) or enqueue_reason in {"already_pending", "duplicate_in_flight"}:
+            return jsonify({
+                "status": "pending",
+                "job_key": reader_audio_singleflight_key,
+                "retry_after_ms": int(_READER_AUDIO_PAGE_PENDING_RETRY_MS),
+            }), 202
+        if prefetch_only:
+            return jsonify({
+                "status": "skipped",
+                "job_key": reader_audio_singleflight_key,
+                "reason": enqueue_reason or "async_unavailable",
+            }), 202
+        logging.warning(
+            "[READER_AUDIO] ASYNC_FALLBACK_SYNC user=%s doc=%s page=%s reason=%s",
+            user_id_int,
+            document_id_int,
+            page_int,
+            enqueue_reason or "unknown",
+        )
+
+    owns_singleflight_slot, singleflight_event = acquire_reader_audio_singleflight_slot(
+        reader_audio_singleflight_key
+    )
+    if not owns_singleflight_slot and singleflight_event is not None:
+        logging.info(
+            "[READER_AUDIO] WAITING_FOR_INFLIGHT user=%s doc=%s page=%s wait_sec=%s",
+            user_id_int,
+            document_id_int,
+            page_int,
+            _READER_AUDIO_SINGLEFLIGHT_WAIT_SEC,
+        )
+        singleflight_event.wait(timeout=_READER_AUDIO_SINGLEFLIGHT_WAIT_SEC)
+        cached = get_cached_reader_audio_page(
+            document_id=document_id_int,
+            page_number=page_int,
+            voice_name=voice_name,
+            speaking_rate=rate_float,
+            text_hash=text_hash,
+        )
+        if cached:
+            logging.info(
+                "[READER_AUDIO] DEDUPED_CACHE_HIT user=%s doc=%s page=%s",
+                user_id_int,
+                document_id_int,
+                page_int,
+            )
+            return jsonify(_build_reader_audio_page_ready_response(
+                audio_url=cached["audio_url"],
+                mime=cached["mime"],
+                duration_ms=cached["duration_ms"],
+                word_timings=cached["word_timings"],
+                voice_name=voice_name,
+                rate_float=rate_float,
+                cached=True,
+                deduped=True,
+            ))
+        logging.warning(
+            "[READER_AUDIO] INFLIGHT_WAIT_FALLBACK user=%s doc=%s page=%s",
+            user_id_int,
+            document_id_int,
+            page_int,
+        )
+        if prefetch_only:
+            return jsonify({
+                "status": "pending",
+                "job_key": reader_audio_singleflight_key,
+                "retry_after_ms": int(_READER_AUDIO_PAGE_PENDING_RETRY_MS),
+            }), 202
 
     reader_audio_limit_error = enforce_reader_audio_pro_monthly_limit(
         user_id=user_id_int,
@@ -38667,88 +38986,42 @@ def reader_audio_page():
     )
     if reader_audio_limit_error:
         return jsonify(reader_audio_limit_error), 429
+    if prefetch_only:
+        return jsonify({
+            "status": "skipped",
+            "job_key": reader_audio_singleflight_key,
+            "reason": "sync_prefetch_disabled",
+        }), 202
 
-    logging.info(
-        "[READER_AUDIO] SYNTHESIZING user=%s doc=%s page=%s source=%s voice=%s lang=%s text_preview=%r",
-        user_id_int, document_id_int, page_int, page_source, voice_name, google_lang_code, page_text[:80],
-    )
     try:
-        result = synthesize_page_with_timings(
-            page_text=page_text,
-            lang_code=google_lang_code,
-            voice_name=voice_name,
-            speaking_rate=rate_float,
-        )
-    except GoogleTTSBudgetBlockedError as exc:
-        return jsonify({"error": str(exc), "error_code": "google_tts_budget_blocked"}), 429
-    except Exception as exc:
-        logging.exception("[READER_AUDIO] SYNTHESIS ERROR user=%s doc=%s page=%s: %s", user_id_int, document_id_int, page_int, exc)
-        return jsonify({"error": f"Ошибка синтеза: {exc}"}), 500
-
-    timing_sample = result["word_timings"][:5] if result.get("word_timings") else []
-    logging.info(
-        "[READER_AUDIO] SYNTHESIZED user=%s doc=%s page=%s words=%s duration_ms=%s sample=%s",
-        user_id_int, document_id_int, page_int,
-        len(result.get("word_timings") or []), result.get("duration_ms"), timing_sample,
-    )
-
-    safe_title = re.sub(r"[^A-Za-z0-9._-]+", "_", str(document.get("title") or "reader"))[:40]
-    r2_rate = str(rate_float).replace(".", "_")
-    object_key = f"reader-audio-pages/{user_id_int}/{document_id_int}/p{page_int}/{voice_name}/{r2_rate}/{text_hash}.mp3"
-    try:
-        r2_put_bytes(
-            object_key,
-            result["audio_bytes"],
-            content_type="audio/mpeg",
-            cache_control="public, max-age=2592000",
-        )
-        audio_url = r2_public_url(object_key)
-    except Exception as exc:
-        return jsonify({"error": f"Ошибка сохранения аудио: {exc}"}), 500
-
-    save_reader_audio_page_cache(
-        user_id=user_id_int,
-        document_id=document_id_int,
-        page_number=page_int,
-        voice_name=voice_name,
-        speaking_rate=rate_float,
-        text_hash=text_hash,
-        audio_url=audio_url,
-        audio_mime="audio/mpeg",
-        audio_bytes_len=len(result["audio_bytes"]),
-        duration_ms=result["duration_ms"],
-        word_timings=result["word_timings"],
-    )
-
-    _billing_log_event_safe(
-        user_id=user_id_int,
-        action_type="reader_audio_tts",
-        provider="google_tts",
-        units_type="chars",
-        units_value=float(len(page_text)),
-        source_lang=source_lang,
-        target_lang=target_lang,
-        idempotency_seed=f"reader_audio_page:{user_id_int}:{document_id_int}:p{page_int}:{text_hash}:{time.time_ns()}",
-        status="estimated",
-        metadata={
-            "document_id": document_id_int,
-            "page": page_int,
-            "page_source": page_source,
-            "voice": voice_name,
-            "rate": rate_float,
-            "language": language_for_tts,
-        },
-    )
-
-    return jsonify({
-        "audio_url": audio_url,
-        "mime": "audio/mpeg",
-        "duration_ms": result["duration_ms"],
-        "word_timings": result["word_timings"],
-        "voice": voice_name,
-        "rate": rate_float,
-        "cached": False,
-    })
+        try:
+            ready_payload = _generate_and_cache_reader_audio_page(
+                user_id_int=user_id_int,
+                document_id_int=document_id_int,
+                page_int=page_int,
+                page_source=page_source,
+                page_text=page_text,
+                text_hash=text_hash,
+                voice_name=voice_name,
+                rate_float=rate_float,
+                google_lang_code=google_lang_code,
+                language_for_tts=language_for_tts,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                document_title=str(document.get("title") or "reader"),
+            )
+        except GoogleTTSBudgetBlockedError as exc:
+            return jsonify({"error": str(exc), "error_code": "google_tts_budget_blocked"}), 429
+        except Exception as exc:
+            logging.exception("[READER_AUDIO] SYNTHESIS ERROR user=%s doc=%s page=%s: %s", user_id_int, document_id_int, page_int, exc)
+            return jsonify({"error": f"Ошибка синтеза: {exc}"}), 500
+        return jsonify(ready_payload)
+    finally:
+        if owns_singleflight_slot:
+            release_reader_audio_singleflight_slot(
+                reader_audio_singleflight_key,
+                singleflight_event,
+            )
 
 
 @app.route("/api/webapp/normalize/de", methods=["POST"])

@@ -1828,3 +1828,43 @@ def run_tts_generation_actor(
         )
     finally:
         release_tts_generation_in_flight(cache_key)
+
+
+@dramatiq.actor(max_retries=0, queue_name="tts_generation")
+def run_reader_audio_page_generation_actor(
+    *,
+    job_key: str,
+    user_id: int,
+    document_id: int,
+    page: int,
+    page_source: str,
+    page_text: str,
+    text_hash: str,
+    voice_name: str,
+    rate: float,
+    google_lang_code: str,
+    language_for_tts: str,
+    source_lang: str,
+    target_lang: str,
+) -> None:
+    from backend.job_queue import release_reader_audio_page_in_flight
+    from backend.backend_server import _run_reader_audio_page_generation_job
+
+    try:
+        _run_reader_audio_page_generation_job(
+            job_key=job_key,
+            user_id=user_id,
+            document_id=document_id,
+            page=page,
+            page_source=page_source,
+            page_text=page_text,
+            text_hash=text_hash,
+            voice_name=voice_name,
+            rate=rate,
+            google_lang_code=google_lang_code,
+            language_for_tts=language_for_tts,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+    finally:
+        release_reader_audio_page_in_flight(job_key)

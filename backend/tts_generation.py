@@ -124,6 +124,14 @@ def _normalize_tts_voice_name(voice: str | None, short_lang: str) -> str:
     return str(_TTS_VOICES.get(short_lang, _TTS_VOICES["de"])).strip()
 
 
+def _estimate_reader_page_tts_budget_chars(page_text: str) -> int:
+    """
+    Count billable chars for reader page synthesis using the exact normalized
+    page text that is sent into the TTS pipeline.
+    """
+    return max(0, len(str(page_text or "")))
+
+
 def _tts_object_key(short_lang: str, voice: str, cache_key: str) -> str:
     safe_lang = _sanitize_object_segment(short_lang, "de")
     safe_voice = _sanitize_object_segment(voice, "voice")
@@ -485,7 +493,7 @@ def synthesize_page_with_timings(
     if not words:
         raise RuntimeError("Страница не содержит слов")
 
-    _enforce_google_tts_monthly_budget(sum(len(w["value"]) for w in words))
+    _enforce_google_tts_monthly_budget(_estimate_reader_page_tts_budget_chars(page_text))
 
     key_path = prepare_google_creds_for_tts()
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path

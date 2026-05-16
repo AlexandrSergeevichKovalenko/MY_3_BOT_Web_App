@@ -4690,8 +4690,13 @@ function AppInner() {
   const [readerAudioRate, setReaderAudioRate] = useState(1.0);
   const [readerAudioPaused, setReaderAudioPaused] = useState(false);
   const audioElementRef = useRef(null);
+  const readerAudioPreloadElementRef = useRef(null);
   const audioRafRef = useRef(0);
   const readerAudioPlayingForPageRef = useRef(null);
+  const readerAudioRequestTokenRef = useRef(0);
+  const readerAudioPrefetchTimeoutRef = useRef(null);
+  const readerAudioPageCacheRef = useRef(new Map());
+  const readerAudioPageRequestsRef = useRef(new Map());
 
   const [readerColorTheme, setReaderColorTheme] = useState(() => {
     try {
@@ -20212,6 +20217,12 @@ function AppInner() {
   // ── Audio-sync callbacks (Patch 2.4) ────────────────────────────────────
   const playReaderAudioPage = useCallback(async (page, startWidOverride, charStartOverride) => {
     const startWid = startWidOverride !== undefined ? startWidOverride : (readerAudioStartWid || null);
+    const requestToken = readerAudioRequestTokenRef.current + 1;
+    readerAudioRequestTokenRef.current = requestToken;
+    if (readerAudioPrefetchTimeoutRef.current) {
+      window.clearTimeout(readerAudioPrefetchTimeoutRef.current);
+      readerAudioPrefetchTimeoutRef.current = null;
+    }
     console.log('[ReaderAudio] playReaderAudioPage called: page=', page, 'startWid=', startWid, 'charStartOverride=', charStartOverride);
     readerAudioPlayingForPageRef.current = page;
     setReaderAudioPlayLoading(true);
@@ -20219,29 +20230,144 @@ function AppInner() {
     try {
       const voice = readerAudioVoice || '';
       const visiblePageText = getReaderDisplayPageText(page);
-      const resp = await fetch('/api/webapp/reader/audio/page', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData,
-          document_id: readerDocumentId,
-          page,
-          voice,
-          rate: readerAudioRate,
-          page_text: visiblePageText,
-        }),
+      const buildPageAudioRequestKey = (targetPage, targetVoice, targetRate, targetText) => {
+        const raw = `${String(readerDocumentId || '')}|${String(targetPage || '')}|${String(targetVoice || '')}|${String(targetRate || '')}|${String(targetText || '')}`;
+        let hash = 0;
+        for (let index = 0; index < raw.length; index += 1) {
+          hash = ((hash << 5) - hash + raw.charCodeAt(index)) | 0;
+        }
+        return `${String(readerDocumentId || 'doc')}:${String(targetPage || '')}:${String(targetVoice || '')}:${String(targetRate || '')}:${raw.length}:${hash}`;
+      };
+      const preloadReaderAudioUrl = (requestKey, audioUrl) => {
+        if (!requestKey || !audioUrl) return;
+        const preloadEl = readerAudioPreloadElementRef.current;
+        if (!preloadEl) return;
+        const currentKey = String(preloadEl.dataset.readerAudioKey || '');
+        const currentUrl = String(preloadEl.currentSrc || preloadEl.src || '');
+        if (currentKey === requestKey && currentUrl === audioUrl && preloadEl.readyState >= 1) {
+          return;
+        }
+        preloadEl.dataset.readerAudioKey = requestKey;
+        if (currentUrl !== audioUrl) {
+          preloadEl.src = audioUrl;
+        }
+        preloadEl.preload = 'auto';
+        preloadEl.load();
+      };
+      const loadReaderAudioPageData = async ({
+        targetPage,
+        targetVoice,
+        targetRate,
+        targetText,
+        token,
+        prefetchOnly = false,
+      }) => {
+        const requestKey = buildPageAudioRequestKey(targetPage, targetVoice, targetRate, targetText);
+        const cachedPayload = readerAudioPageCacheRef.current.get(requestKey);
+        if (cachedPayload?.audio_url) {
+          if (prefetchOnly) {
+            preloadReaderAudioUrl(requestKey, String(cachedPayload.audio_url || ''));
+          }
+          return cachedPayload;
+        }
+        const existingRequest = readerAudioPageRequestsRef.current.get(requestKey);
+        if (existingRequest) {
+          try {
+            return await existingRequest;
+          } catch (error) {
+            if (prefetchOnly) return null;
+            throw error;
+          }
+        }
+        const requestPromise = (async () => {
+          const requestBody = {
+            initData,
+            document_id: readerDocumentId,
+            page: targetPage,
+            voice: targetVoice,
+            rate: targetRate,
+            page_text: targetText,
+            prefetch_only: prefetchOnly,
+          };
+          const maxAttempts = prefetchOnly ? 12 : 30;
+          for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+            const resp = await fetch('/api/webapp/reader/audio/page', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(requestBody),
+            });
+            const payload = await resp.json().catch(() => ({}));
+            if (!resp.ok && resp.status !== 202) {
+              throw new Error(payload.error || `HTTP ${resp.status}`);
+            }
+            if (token != null && readerAudioRequestTokenRef.current !== token) {
+              return null;
+            }
+            const normalizedStatus = String(payload?.status || '').trim().toLowerCase();
+            if (normalizedStatus === 'failed') {
+              throw new Error(payload.error || payload.message || 'Reader audio generation failed');
+            }
+            if (normalizedStatus === 'skipped') {
+              return null;
+            }
+            if (normalizedStatus === 'pending') {
+              const retryAfterMs = Math.max(250, Number(payload?.retry_after_ms || 1000));
+              await new Promise((resolve) => window.setTimeout(resolve, retryAfterMs));
+              continue;
+            }
+            if (payload?.audio_url) {
+              readerAudioPageCacheRef.current.set(requestKey, payload);
+              if (prefetchOnly) {
+                preloadReaderAudioUrl(requestKey, String(payload.audio_url || ''));
+              }
+              return payload;
+            }
+            if (prefetchOnly) {
+              return null;
+            }
+          }
+          if (prefetchOnly) {
+            return null;
+          }
+          throw new Error('Reader audio generation timed out');
+        })();
+        readerAudioPageRequestsRef.current.set(requestKey, requestPromise);
+        try {
+          return await requestPromise;
+        } finally {
+          const currentRequest = readerAudioPageRequestsRef.current.get(requestKey);
+          if (currentRequest === requestPromise) {
+            readerAudioPageRequestsRef.current.delete(requestKey);
+          }
+        }
+      };
+      const data = await loadReaderAudioPageData({
+        targetPage: page,
+        targetVoice: voice,
+        targetRate: readerAudioRate,
+        targetText: visiblePageText,
+        token: requestToken,
+        prefetchOnly: false,
       });
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({}));
-        throw new Error(err.error || `HTTP ${resp.status}`);
+      if (readerAudioRequestTokenRef.current !== requestToken) {
+        return;
       }
-      const data = await resp.json();
+      if (!data?.audio_url) {
+        return;
+      }
       setReaderAudioPlayData(data);
       setReaderAudioPaused(false);
       setReaderAudioPlayActive(true);
       if (audioElementRef.current) {
         const el = audioElementRef.current;
+        const currentRequestKey = buildPageAudioRequestKey(page, voice, readerAudioRate, visiblePageText);
+        const preloadEl = readerAudioPreloadElementRef.current;
+        const preloadedKey = String(preloadEl?.dataset?.readerAudioKey || '');
+        const preloadedUrl = String(preloadEl?.currentSrc || preloadEl?.src || '');
         el.src = data.audio_url;
+        if (preloadedKey === currentRequestKey && preloadedUrl === data.audio_url) {
+          el.preload = 'auto';
+        }
         el.playbackRate = readerAudioRate;
         let startMs = 0;
         if (startWid) {
@@ -20289,13 +20415,37 @@ function AppInner() {
           console.warn('[ReaderAudio] play() failed:', err?.message || err);
         });
       }
+      if (page < readerPageCount) {
+        const nextPage = page + 1;
+        const nextPageText = getReaderDisplayPageText(nextPage);
+        if (nextPageText) {
+          const durationMs = Math.max(0, Number(data?.duration_ms || 0));
+          const prefetchDelayMs = durationMs > 0
+            ? Math.min(Math.max(1200, Math.round(durationMs * 0.65)), Math.max(1500, durationMs - 2500))
+            : 2500;
+          readerAudioPrefetchTimeoutRef.current = window.setTimeout(() => {
+            if (readerAudioRequestTokenRef.current !== requestToken) return;
+            loadReaderAudioPageData({
+              targetPage: nextPage,
+              targetVoice: voice,
+              targetRate: readerAudioRate,
+              targetText: nextPageText,
+              token: null,
+              prefetchOnly: true,
+            }).catch(() => {});
+          }, prefetchDelayMs);
+        }
+      }
     } catch (e) {
+      if (String(e?.message || '') === 'cancelled') {
+        return;
+      }
       readerAudioPlayingForPageRef.current = null;
       setReaderAudioPlayError(String(e?.message || e));
     } finally {
       setReaderAudioPlayLoading(false);
     }
-  }, [readerDocumentId, readerAudioVoice, readerAudioRate, initData, readerAudioStartWid, readerAudioWidReverseMap, readerAudioWidToCharStart, getReaderDisplayPageText]);
+  }, [readerDocumentId, readerAudioVoice, readerAudioRate, initData, readerAudioStartWid, readerAudioWidReverseMap, readerAudioWidToCharStart, getReaderDisplayPageText, readerPageCount]);
 
   const pauseReaderAudioPlay = useCallback(() => {
     audioElementRef.current?.pause();
@@ -20320,9 +20470,20 @@ function AppInner() {
   }, [readerAudioPlayActive, readerAudioPaused, resumeReaderAudioPlay, pauseReaderAudioPlay]);
 
   const stopReaderAudioPlay = useCallback(() => {
+    readerAudioRequestTokenRef.current += 1;
+    if (readerAudioPrefetchTimeoutRef.current) {
+      window.clearTimeout(readerAudioPrefetchTimeoutRef.current);
+      readerAudioPrefetchTimeoutRef.current = null;
+    }
     if (audioElementRef.current) {
       audioElementRef.current.pause();
       audioElementRef.current.src = '';
+    }
+    if (readerAudioPreloadElementRef.current) {
+      readerAudioPreloadElementRef.current.pause?.();
+      readerAudioPreloadElementRef.current.removeAttribute('src');
+      readerAudioPreloadElementRef.current.load?.();
+      delete readerAudioPreloadElementRef.current.dataset.readerAudioKey;
     }
     cancelAnimationFrame(audioRafRef.current);
     readerAudioPlayingForPageRef.current = null;
@@ -30070,6 +30231,7 @@ function AppInner() {
                   applyReaderColorTheme={applyReaderColorTheme}
 
                   audioElementRef={audioElementRef}
+                  readerAudioPreloadElementRef={readerAudioPreloadElementRef}
                   readerAudioPlayActive={readerAudioPlayActive}
                   readerAudioPlayLoading={readerAudioPlayLoading}
                   readerAudioPlayError={readerAudioPlayError}
