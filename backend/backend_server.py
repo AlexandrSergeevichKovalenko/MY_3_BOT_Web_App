@@ -13115,6 +13115,31 @@ def _extract_html_heading_title(raw_html: str, fallback_num: int) -> str:
     return f"Kapitel {fallback_num}"
 
 
+def _is_epub_navigation_document(item: Any, raw_html: str) -> bool:
+    file_name = str(
+        getattr(item, "file_name", "")
+        or getattr(item, "get_name", lambda: "")()
+        or ""
+    ).strip().lower()
+    html_probe = str(raw_html or "")
+    text_probe = re.sub(r"(?s)<[^>]+>", " ", html_probe)
+    text_probe = re.sub(r"\s+", " ", text_probe).strip().lower()
+
+    nav_markup = (
+        re.search(r'(?i)<nav\b', html_probe)
+        or re.search(r'(?i)\bepub:type\s*=\s*["\'](?:toc|landmarks|page-list)["\']', html_probe)
+        or re.search(r'(?i)\brole\s*=\s*["\']doc-toc["\']', html_probe)
+    )
+    nav_name = bool(re.search(r'(^|/)(nav|toc|contents?|index)\b', file_name))
+    nav_text = (
+        ("table of contents" in text_probe)
+        or ("inhaltsverzeichnis" in text_probe)
+        or ("inhalt" in text_probe and len(text_probe) < 400)
+        or ("contents" in text_probe and len(text_probe) < 400)
+    )
+    return bool(nav_markup or nav_name or nav_text)
+
+
 def _looks_like_chapter_heading(line: str) -> bool:
     if not line or len(line) > 100:
         return False
@@ -13220,6 +13245,8 @@ def _extract_epub_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
             html_bytes = item.get_body_content()
             raw_html = html_bytes.decode("utf-8", errors="ignore") if isinstance(html_bytes, bytes) else str(html_bytes or "")
         except Exception:
+            continue
+        if _is_epub_navigation_document(item, raw_html):
             continue
         chapter_text = _extract_text_from_html(raw_html)
         normalized = _normalize_reader_text(chapter_text, max_chars=50000)

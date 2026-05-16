@@ -20394,35 +20394,28 @@ function AppInner() {
     if (!primeSrc) {
       return;
     }
-    const previousSrcAttr = audio.getAttribute('src');
-    const previousMuted = audio.muted;
-    const previousVolume = audio.volume;
-    const hadSource = Boolean(String(previousSrcAttr || '').trim() || String(audio.currentSrc || audio.src || '').trim());
+    const primeAudio = new Audio(primeSrc);
+    primeAudio.preload = 'auto';
+    primeAudio.playsInline = true;
+    primeAudio.setAttribute('playsinline', '');
+    primeAudio.setAttribute('webkit-playsinline', 'true');
+    primeAudio.muted = true;
+    primeAudio.volume = 0;
     try {
-      audio.muted = true;
-      audio.volume = 0;
-      if (!hadSource) {
-        audio.src = primeSrc;
-        audio.load();
-      }
-      const playPromise = audio.play();
+      const playPromise = primeAudio.play();
       if (playPromise && typeof playPromise.then === 'function') {
         await playPromise.catch(() => {});
       }
-      audio.pause();
+      primeAudio.pause();
       try {
-        audio.currentTime = 0;
+        primeAudio.currentTime = 0;
       } catch (_seekError) {
         // ignore seek reset errors on priming
       }
       readerAudioPrimedRef.current = true;
     } finally {
-      audio.muted = previousMuted;
-      audio.volume = previousVolume;
-      if (!hadSource) {
-        audio.removeAttribute('src');
-        audio.load();
-      }
+      primeAudio.removeAttribute('src');
+      primeAudio.load();
     }
   }, []);
 

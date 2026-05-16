@@ -996,10 +996,6 @@
   line-height: 1.7;
   color: var(--rd-text) !important;
   text-wrap: pretty;
-  text-align: justify;
-  text-justify: inter-word;
-  -webkit-hyphens: auto;
-  hyphens: auto;
   /* Consistent font rendering across dark/light themes — prevents text reflow on theme switch */
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -2586,6 +2582,135 @@
 }
 
 /* Dark theme: slightly boost action button visibility */
+.webapp-reader[data-reader-theme="dark"].webapp-section {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+.webapp-reader[data-reader-theme="dark"] .reader-library-mode,
+.webapp-reader[data-reader-theme="dark"] .reader-library,
+.webapp-reader[data-reader-theme="dark"] .reader-add-form-wrap {
+  background: transparent !important;
+}
+
+.webapp-reader[data-reader-theme="dark"] .reader-lib-header-title {
+  background: linear-gradient(135deg, #fff 0%, #a4b3d6 100%) !important;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.webapp-reader[data-reader-theme="dark"] .reader-topbar,
+.webapp-reader[data-reader-theme="dark"] .webapp-reader-form,
+.webapp-reader[data-reader-theme="dark"] .reader-audio-panel,
+.webapp-reader[data-reader-theme="dark"] .reader-settings-sheet {
+  border-color: var(--rd-border) !important;
+  background: var(--rd-surface) !important;
+  box-shadow: none !important;
+}
+
+.webapp-reader[data-reader-theme="dark"] .webapp-reader-form .webapp-field,
+.webapp-reader[data-reader-theme="dark"] .reader-library > .webapp-field,
+.webapp-reader[data-reader-theme="dark"] .reader-audio-preview,
+.webapp-reader[data-reader-theme="dark"] .reader-settings-sheet .webapp-field {
+  border-color: var(--rd-border) !important;
+  background: rgba(0,0,0,0.18) !important;
+  box-shadow: none !important;
+}
+
+.webapp-reader[data-reader-theme="dark"] .webapp-reader-form textarea,
+.webapp-reader[data-reader-theme="dark"] .webapp-reader-form input[type="text"],
+.webapp-reader[data-reader-theme="dark"] .reader-library input[type="text"] {
+  color: var(--rd-text) !important;
+}
+
+.webapp-reader[data-reader-theme="dark"] .webapp-reader-form textarea::placeholder,
+.webapp-reader[data-reader-theme="dark"] .webapp-reader-form input[type="text"]::placeholder,
+.webapp-reader[data-reader-theme="dark"] .reader-library input[type="text"]::placeholder {
+  color: var(--rd-text-faint) !important;
+}
+
+.webapp-reader[data-reader-theme="dark"] .webapp-reader-form input[type="file"] {
+  border-color: var(--rd-border-hi) !important;
+  background: rgba(0,0,0,0.12) !important;
+  color: var(--rd-text-muted) !important;
+}
+
+.webapp-reader[data-reader-theme="dark"] .webapp-reader-form input[type="file"]::file-selector-button {
+  border-color: var(--rd-border) !important;
+  background: var(--rd-bg-elev) !important;
+  color: var(--rd-text) !important;
+}
+
+.webapp-reader[data-reader-theme="dark"] .primary-button {
+  background: linear-gradient(135deg, var(--rd-accent), var(--rd-accent-2)) !important;
+  color: #fff !important;
+  box-shadow: var(--rd-shadow-glow) !important;
+}
+
+.webapp-reader[data-reader-theme="dark"] .reader-lib-icon-btn,
+.webapp-reader[data-reader-theme="dark"] .reader-lib-add-btn,
+.webapp-reader[data-reader-theme="dark"] .reader-lib-search,
+.webapp-reader[data-reader-theme="dark"] .reader-lib-archive-toggle {
+  border-color: var(--rd-border) !important;
+}
+
+.webapp-reader[data-reader-theme="dark"] .reader-lib-icon-btn {
+  background: var(--rd-bg-elev) !important;
+  color: var(--rd-text-muted) !important;
+}
+
+.webapp-reader[data-reader-theme="dark"] .reader-lib-add-btn {
+  background: linear-gradient(135deg, var(--rd-accent), var(--rd-accent-2)) !important;
+  color: #fff !important;
+  box-shadow: var(--rd-shadow-glow) !important;
+}
+
+.webapp-reader[data-reader-theme="dark"] .reader-lib-add-btn.is-open {
+  background: var(--rd-bg-elev) !important;
+  color: var(--rd-text-muted) !important;
+  border-color: var(--rd-border-hi) !important;
+  box-shadow: none !important;
+}
+
+.webapp-reader[data-reader-theme="dark"] .reader-lib-search,
+.webapp-reader[data-reader-theme="dark"] .reader-lib-archive-toggle {
+  background: var(--rd-surface) !important;
+  color: var(--rd-text-muted) !important;
+}
+
+.webapp-reader[data-reader-theme="dark"] .reader-lib-search::placeholder {
+  color: var(--rd-text-faint) !important;
+}
+
+.webapp-reader[data-reader-theme="dark"] .reader-library-title,
+.webapp-reader[data-reader-theme="dark"] .reader-hero-kicker,
+.webapp-reader[data-reader-theme="dark"] .reader-hero-title,
+.webapp-reader[data-reader-theme="dark"] .reader-hero-meta,
+.webapp-reader[data-reader-theme="dark"] .reader-topbar-title,
+.webapp-reader[data-reader-theme="dark"] .reader-library-head h4,
+.webapp-reader[data-reader-theme="dark"] .reader-audio-head strong,
+.webapp-reader[data-reader-theme="dark"] .reader-settings-sheet-head strong {
+  color: var(--rd-text) !important;
+}
+
+.webapp-reader[data-reader-theme="dark"] .reader-library-meta,
+.webapp-reader[data-reader-theme="dark"] .reader-topbar-meta,
+.webapp-reader[data-reader-theme="dark"] .webapp-reader-form .webapp-field > span,
+.webapp-reader[data-reader-theme="dark"] .reader-library > .webapp-field > span,
+.webapp-reader[data-reader-theme="dark"] .reader-library .menu-toggle-row,
+.webapp-reader[data-reader-theme="dark"] .reader-immersive-indicator,
+.webapp-reader[data-reader-theme="dark"] .reader-timer-pill,
+.webapp-reader[data-reader-theme="dark"] .reader-lib-archive-toggle,
+.webapp-reader[data-reader-theme="dark"] .webapp-muted {
+  color: var(--rd-text-muted) !important;
+}
+
+.webapp-reader[data-reader-theme="dark"] .reader-library-meta span:first-child {
+  color: var(--rd-accent) !important;
+}
+
 .webapp-reader[data-reader-theme="dark"] .reader-lib-action {
   background: rgba(255,255,255,0.06);
   border-color: rgba(255,255,255,0.12);
