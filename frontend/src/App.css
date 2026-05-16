@@ -23373,3 +23373,84 @@ body {
     font-size: 12px;
   }
 }
+
+/* Reader Variant D: unified top stack + top page pill */
+.webapp-page.is-reader-immersive.is-reader-peek .webapp-main {
+  background: #0a0d18;
+}
+
+.webapp-page.is-reader-immersive.is-reader-peek .webapp-topbar.is-back-mode {
+  background: #0a0d18;
+  border-bottom: 0;
+  box-shadow: none;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.webapp-page.is-reader-immersive.is-reader-peek .topbar-home-row {
+  background: transparent;
+  gap: 6px;
+}
+
+.webapp-page.is-reader-immersive.is-reader-peek .topbar-home-button,
+.webapp-page.is-reader-immersive.is-reader-peek .topbar-home-button-archiv {
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid rgba(255,255,255,0.08);
+}
+
+.topbar-reader-page-pill {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 11px;
+  border-radius: 9px;
+  background: rgba(16, 185, 129, 0.13);
+  border: 1px solid rgba(16, 185, 129, 0.28);
+  color: #a4e9d3;
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.topbar-reader-page-pill-sep {
+  opacity: 0.45;
+  font-weight: 400;
+  padding: 0 1px;
+}
+
+.webapp-page[data-reader-theme="sepia"].is-reader-immersive.is-reader-peek .webapp-main,
+.webapp-page[data-reader-theme="sepia"].is-reader-immersive.is-reader-peek .webapp-topbar.is-back-mode {
+  background: #f4ecd8;
+}
+
+.webapp-page[data-reader-theme="cream"].is-reader-immersive.is-reader-peek .webapp-main,
+.webapp-page[data-reader-theme="cream"].is-reader-immersive.is-reader-peek .webapp-topbar.is-back-mode {
+  background: #fbf8f1;
+}
+
+.webapp-page[data-reader-theme="sepia"].is-reader-immersive.is-reader-peek .topbar-home-button,
+.webapp-page[data-reader-theme="sepia"].is-reader-immersive.is-reader-peek .topbar-home-button-archiv {
+  border-color: rgba(58,47,34,0.14);
+}
+
+.webapp-page[data-reader-theme="cream"].is-reader-immersive.is-reader-peek .topbar-home-button,
+.webapp-page[data-reader-theme="cream"].is-reader-immersive.is-reader-peek .topbar-home-button-archiv {
+  border-color: rgba(26,24,20,0.12);
+}
+
+.webapp-page[data-reader-theme="sepia"].is-reader-immersive.is-reader-peek .topbar-reader-page-pill {
+  background: rgba(178,93,44,0.10);
+  border-color: rgba(178,93,44,0.22);
+  color: #7f4524;
+}
+
+.webapp-page[data-reader-theme="cream"].is-reader-immersive.is-reader-peek .topbar-reader-page-pill {
+  background: rgba(13,148,136,0.10);
+  border-color: rgba(13,148,136,0.20);
+  color: #0f766e;
+}

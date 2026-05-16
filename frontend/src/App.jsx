@@ -26286,6 +26286,13 @@ function AppInner() {
                       <span>{tr('Архив', 'Archiv')}</span>
                     </button>
                   )}
+                  {showReaderTopbarPeekInAppTopbar && readerPageCount > 0 && (
+                    <span className="topbar-reader-page-pill" aria-live="polite">
+                      {tr('стр.', 'S.')} {readerCurrentPage}
+                      <span className="topbar-reader-page-pill-sep">/</span>
+                      {readerPageCount}
+                    </span>
+                  )}
                 </div>
               ) : (
                 <>
