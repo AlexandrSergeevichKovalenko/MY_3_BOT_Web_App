@@ -48,6 +48,7 @@ const READER_IDLE_TIMEOUT_MS = 60000;
 const READER_DEFAULT_FONT_SIZE = 18;
 const READER_DEFAULT_FONT_WEIGHT = 500;
 const READER_PAGINATION_FIT_RESERVE_PX = 12;
+const READER_LOCAL_BOOKMARKS_STORAGE_KEY = 'dds_reader_exact_bookmarks_v1';
 const WEEKLY_SUMMARY_VISITS_ENABLED = false;
 const ALLOW_MANUAL_INITDATA_FALLBACK = Boolean(import.meta.env.DEV);
 const ANDROID_TRANSLATION_DRAFT_DEBUG_QUERY_KEY = 'translation_draft_debug';
@@ -79,6 +80,51 @@ function normalizeReaderVisiblePageText(rawText) {
     .map((para) => para.replace(/\n/g, ' ').replace(/ {2,}/g, ' ').trim())
     .filter(Boolean)
     .join('\n\n');
+}
+
+function readStoredReaderExactBookmarks() {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = String(window.localStorage.getItem(READER_LOCAL_BOOKMARKS_STORAGE_KEY) || '').trim();
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function readStoredReaderExactBookmark(documentId) {
+  const safeId = String(documentId || '').trim();
+  if (!safeId) return null;
+  const all = readStoredReaderExactBookmarks();
+  const item = all[safeId];
+  if (!item || typeof item !== 'object') return null;
+  const page = Number(item.page || 0);
+  if (!Number.isFinite(page) || page <= 0) return null;
+  return {
+    page,
+    pageCount: Number(item.pageCount || 0),
+    layoutMode: String(item.layoutMode || '').trim().toLowerCase() || '',
+  };
+}
+
+function writeStoredReaderExactBookmark(documentId, payload) {
+  if (typeof window === 'undefined') return;
+  const safeId = String(documentId || '').trim();
+  if (!safeId) return;
+  try {
+    const all = readStoredReaderExactBookmarks();
+    all[safeId] = {
+      page: Math.max(1, Number(payload?.page || 1)),
+      pageCount: Math.max(0, Number(payload?.pageCount || 0)),
+      layoutMode: String(payload?.layoutMode || '').trim().toLowerCase() || '',
+      updatedAt: new Date().toISOString(),
+    };
+    window.localStorage.setItem(READER_LOCAL_BOOKMARKS_STORAGE_KEY, JSON.stringify(all));
+  } catch {
+    // ignore storage errors
+  }
 }
 
 function getReaderMeasureDimension(measureNode, axis = 'height') {
@@ -12015,6 +12061,15 @@ function AppInner() {
     return normalizeReaderVisiblePageText(String(readerDisplayPages[pageIndex]?.text || ''));
   }, [readerDisplayPages]);
   const readerPageCount = readerDisplayPages.length;
+  const persistReaderExactBookmark = useCallback((page) => {
+    if (!readerDocumentId || readerPageCount <= 0) return;
+    const safePage = Math.max(1, Math.min(readerPageCount, Number(page || 1)));
+    writeStoredReaderExactBookmark(readerDocumentId, {
+      page: safePage,
+      pageCount: readerPageCount,
+      layoutMode: readerLayoutMode,
+    });
+  }, [readerDocumentId, readerLayoutMode, readerPageCount]);
   const supportTimelineItems = useMemo(() => {
     const remote = Array.isArray(supportMessages) ? supportMessages : [];
     const failed = Array.isArray(supportFailedMessages) ? supportFailedMessages : [];
@@ -15533,7 +15588,7 @@ function AppInner() {
       }
       readerStateSaveTimeoutRef.current = setTimeout(() => {
         const pct = Number(nextPercent.toFixed(2));
-        syncReaderState({ progress_percent: pct, bookmark_percent: pct });
+        syncReaderState({ progress_percent: pct });
       }, 900);
     };
     node.addEventListener('scroll', handleScroll, { passive: true });
@@ -15613,8 +15668,13 @@ function AppInner() {
     const nextPercent = computeReaderProgressPercent();
     const pct = Number(nextPercent.toFixed(2));
     setReaderProgressPercent(nextPercent);
-    syncReaderState({ progress_percent: pct, bookmark_percent: pct });
+    syncReaderState({ progress_percent: pct });
   }, [readerCurrentPage, readerDocumentId, readerPageCount]);
+
+  useEffect(() => {
+    if (!readerDocumentId || readerPageCount <= 0 || readerBookmarkPercent <= 0) return;
+    persistReaderExactBookmark(readerBookmarkPage);
+  }, [persistReaderExactBookmark, readerBookmarkPage, readerBookmarkPercent, readerDocumentId, readerPageCount]);
 
   useEffect(() => {
     readerCurrentPageRef.current = readerCurrentPage;
@@ -19928,12 +19988,21 @@ function AppInner() {
       setReaderDetectedLanguage(normalizeLangCode(data?.detected_language || ''));
       setReaderReadingMode(String(doc?.reading_mode || 'vertical'));
       setReaderProgressPercent(progress);
-      setReaderBookmarkPercent(bookmark);
+      const storedBookmark = readStoredReaderExactBookmark(safeDocumentId);
       const resolvedTotalPages = sparsePages.length;
       const pageFromProgress = resolvedTotalPages > 0
         ? resolveReaderPageFromPercent(bookmark > 0 ? bookmark : progress, resolvedTotalPages)
         : 1;
-      setReaderCurrentPage(pageFromProgress);
+      const exactBookmarkPage = storedBookmark && resolvedTotalPages > 0
+        ? Math.max(1, Math.min(resolvedTotalPages, Number(storedBookmark.page || 1)))
+        : 0;
+      const initialPage = exactBookmarkPage || pageFromProgress;
+      setReaderCurrentPage(initialPage);
+      setReaderBookmarkPercent(
+        resolvedTotalPages > 0
+          ? Number(((initialPage / resolvedTotalPages) * 100).toFixed(2))
+          : bookmark
+      );
       setReaderAudioFromPage(pages.length > 0 ? '1' : '');
       setReaderAudioToPage(pages.length > 0 ? String(pages.length) : '');
       setReaderAudioError('');
@@ -20492,13 +20561,24 @@ function AppInner() {
       setReaderDetectedLanguage(normalizeLangCode(data?.detected_language || ''));
       setReaderDocumentId(docId);
       setReaderReadingMode(String(doc?.reading_mode || 'vertical'));
-      setReaderProgressPercent(Number(doc?.progress_percent || 0));
-      setReaderBookmarkPercent(Number(doc?.bookmark_percent || 0));
+      const progress = Number(doc?.progress_percent || 0);
+      const bookmark = Number(doc?.bookmark_percent || 0);
+      setReaderProgressPercent(progress);
+      const storedBookmark = readStoredReaderExactBookmark(docId);
       const resolvedTotalPages = pages.length;
       const pageFromProgress = resolvedTotalPages > 0
-        ? resolveReaderPageFromPercent(Number(doc?.bookmark_percent || doc?.progress_percent || 0), resolvedTotalPages)
+        ? resolveReaderPageFromPercent(bookmark || progress, resolvedTotalPages)
         : 1;
-      setReaderCurrentPage(pageFromProgress);
+      const exactBookmarkPage = storedBookmark && resolvedTotalPages > 0
+        ? Math.max(1, Math.min(resolvedTotalPages, Number(storedBookmark.page || 1)))
+        : 0;
+      const initialPage = exactBookmarkPage || pageFromProgress;
+      setReaderCurrentPage(initialPage);
+      setReaderBookmarkPercent(
+        resolvedTotalPages > 0
+          ? Number(((initialPage / resolvedTotalPages) * 100).toFixed(2))
+          : bookmark
+      );
       setReaderAudioFromPage(pages.length > 0 ? '1' : '');
       setReaderAudioToPage(pages.length > 0 ? String(pages.length) : '');
       setReaderAudioError('');

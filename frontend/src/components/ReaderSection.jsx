@@ -577,7 +577,7 @@ export default function ReaderSection(props) {
                     const mark = computeReaderProgressPercent();
                     setReaderBookmarkPercent(mark);
                     if (readerDocumentId) {
-                      syncReaderState({ bookmark_percent: Number(mark.toFixed(2)), progress_percent: Number(mark.toFixed(2)) });
+                      syncReaderState({ bookmark_percent: Number(mark.toFixed(2)) });
                     }
                   }}
                   disabled={!readerContent || !readerDocumentId}

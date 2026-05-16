@@ -13125,6 +13125,7 @@ def _looks_like_chapter_heading(line: str) -> bool:
 def _build_toc_from_pages(pages: list, source_type: str) -> list[dict]:
     toc: list[dict] = []
     is_epub = source_type in ("epub",)
+    last_title_key = ""
     for page in pages:
         if not isinstance(page, dict):
             continue
@@ -13132,8 +13133,8 @@ def _build_toc_from_pages(pages: list, source_type: str) -> list[dict]:
         if page_number <= 0:
             continue
         title = str(page.get("chapter_title") or "").strip()
+        text = str(page.get("text") or "").strip()
         if not title:
-            text = str(page.get("text") or "").strip()
             if not text:
                 continue
             first_line = text.split("\n")[0].strip()
@@ -13143,7 +13144,17 @@ def _build_toc_from_pages(pages: list, source_type: str) -> list[dict]:
                 title = first_line[:200]
             else:
                 continue
-        toc.append({"page_number": page_number, "title": title})
+        display_title = title
+        if re.fullmatch(r"Kapitel\s+\d+", title, flags=re.IGNORECASE) and text:
+            snippet = text.split("\n")[0].strip()
+            snippet = re.sub(r"\s+", " ", snippet).strip(" .-–—")
+            if snippet and snippet.casefold() != title.casefold():
+                display_title = f"{title} — {snippet[:90]}"
+        title_key = re.sub(r"\s+", " ", display_title).strip().casefold()
+        if title_key and title_key == last_title_key:
+            continue
+        last_title_key = title_key
+        toc.append({"page_number": page_number, "title": display_title})
     return toc
 
 
