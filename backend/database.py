@@ -22861,6 +22861,7 @@ def count_prepared_telegram_quizzes(
                     FROM bt_3_prepared_telegram_quizzes
                     WHERE source_lang = %s
                       AND target_lang = %s
+                      AND COALESCE(use_count, 0) = 0
                       AND quiz_type = %s;
                     """,
                     (
@@ -22875,7 +22876,8 @@ def count_prepared_telegram_quizzes(
                     SELECT COUNT(*)
                     FROM bt_3_prepared_telegram_quizzes
                     WHERE source_lang = %s
-                      AND target_lang = %s;
+                      AND target_lang = %s
+                      AND COALESCE(use_count, 0) = 0
                     """,
                     (
                         str(source_lang or "ru").strip().lower() or "ru",
@@ -22906,6 +22908,7 @@ def claim_prepared_telegram_quiz(
                     FROM bt_3_prepared_telegram_quizzes
                     WHERE source_lang = %s
                       AND target_lang = %s
+                      AND COALESCE(use_count, 0) = 0
                     ORDER BY
                         COALESCE(array_position(%s::text[], quiz_type), 2147483647),
                         COALESCE(last_used_at, to_timestamp(0)) ASC,
@@ -22913,10 +22916,7 @@ def claim_prepared_telegram_quiz(
                     LIMIT 1
                     FOR UPDATE SKIP LOCKED
                 )
-                UPDATE bt_3_prepared_telegram_quizzes q
-                SET
-                    last_used_at = NOW(),
-                    use_count = q.use_count + 1
+                DELETE FROM bt_3_prepared_telegram_quizzes q
                 FROM selected
                 WHERE q.id = selected.id
                 RETURNING q.id, q.quiz_type, q.word_ru, q.payload, q.source_lang, q.target_lang, q.prepared_at, q.last_used_at, q.use_count;
