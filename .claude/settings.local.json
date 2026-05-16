@@ -107,7 +107,11 @@
       "WebSearch",
       "Bash(grep -n \"reader-immersive-body\\\\|is-immersive.*{$\\\\|is-immersive .reader-article\" /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/frontend/src/App.css)",
       "Bash(grep \"[0-9]\\\\{4,5\\\\}:\")",
-      "Bash(xargs cat)"
+      "Bash(xargs cat)",
+      "Bash(unzip -o \"My Bot German \\(2\\).zip\" -d \"my_bot_german_extracted\")",
+      "Bash(railway login *)",
+      "Bash(RAILWAY_TOKEN=\"rw_Fe26.2**ea54350c20430a6b891685eb6cd6b03d6faa1836b3c95b5782b4e025dea3767e*uLD0cGD7WqsGIBRKXKzwLg*qppe8gqQKepmfoDORtu6-D9KLtkj9QrM_fE-m6zMzxgH6nhoPMjvxotCgR-dvRXTTrr_XcF0H5u6pP5Tqsc2-w*1778792078294*87fb4b3140559c02698a439c122a5b994c2e9c242ab3bf599954430a97a91234*FrYscx7XxSHmwy-X7ZrfalSVNrwHgLssek74d-elwsU\" railway logs)",
+      "Bash(grep -n \"def reader_library_list\\\\|reader/library$\\\\|reader/library/list\\\\|reader/library \\\\b\" /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/backend/backend_server.py)"
     ]
   }
 }

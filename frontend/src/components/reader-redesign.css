@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600;6..72,700&display=swap');
+
 /* ──────────────────────────────────────────────────────────────────────────
    READER REDESIGN — CSS Skin (drop-in)
    ──────────────────────────────────────────────────────────────────────────
@@ -54,10 +56,6 @@
   --rd-r-xl:         22px;
   --rd-font-serif:   'Newsreader','Source Serif Pro',Georgia,serif;
 }
-
-/* Подключить serif для книжного текста (Newsreader — характерный читательский) */
-@import url('https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600;6..72,700&display=swap');
-
 
 /* ╭───────────────────────────────────────────────────────────────────────╮
    │  ROOT СЕКЦИЯ + LIBRARY MODE LAYOUT                                     │
@@ -2631,4 +2629,3 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
   background: rgba(178, 93, 44, 0.2);
   box-shadow: 0 0 0 2px rgba(178, 93, 44, 0.55);
 }
-

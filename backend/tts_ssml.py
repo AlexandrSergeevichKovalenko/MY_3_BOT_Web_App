@@ -1,19 +1,14 @@
 """
-SSML builder and timepoint parser for per-page TTS with word-level sync.
+SSML builder and timepoint parser for per-page TTS with reader sync.
 
-Key design: the SSML contains the FULL original text (punctuation, commas,
-whitespace preserved) so Google TTS can apply natural prosody. <mark> tags are
-injected directly before each word in the text; they are transparent to speech.
-Chunks are split at sentence/paragraph boundaries, never mid-sentence.
+Reader audio should sound natural first. To avoid robotic delivery, the SSML
+now keeps marks sparse: one mark per natural timing span (usually a sentence,
+sometimes a chunk fragment when a sentence is too long for the provider limit).
+Word-level timings for highlighting/seeking are then interpolated inside each
+span from the returned mark timepoints.
 
-Usage:
-    result = synthesize_page_with_timings(
-        page_text=page_text, lang_code="de-DE", voice_name="de-DE-Neural2-C"
-    )
-    # result: {audio_bytes, mime, duration_ms, word_timings}
-    # word_timings: [{wid: "0", word: "Als", start_ms: 50, end_ms: 280,
-    #                 char_start: 0, char_end: 3}, ...]
-    # wid is positional index (0-based string), mapped to frontend token by position
+The SSML still preserves the FULL original text (punctuation, commas,
+whitespace preserved) so Google TTS can apply natural prosody.
 """
 
 import io
@@ -31,6 +26,8 @@ _SSML_CHUNK_MAX_CHARS = 4500
 
 # Per-word SSML mark overhead estimate: <mark name="wNNNNN"/>  (~22 chars)
 _MARK_OVERHEAD = 22
+_PERIOD_SENTENCE_BREAK_RE = re.compile(r'\.(?:["\'»”’)\]]*)\s*$')
+_READER_CHUNK_SAFETY_OVERHEAD = 1000
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +95,9 @@ def chunk_text_with_words(page_text: str, words: list[dict]) -> list[tuple[str, 
     Split (page_text, words) into SSML-sized chunks at natural boundaries.
     Returns [(chunk_text_slice, chunk_words), ...].
     Each chunk_text_slice is the *original* substring of page_text so that
-    punctuation and whitespace are preserved in the SSML.
+    punctuation and whitespace are preserved in the SSML. Trailing punctuation
+    and spacing stay attached to the chunk that produced them instead of being
+    pushed to the next chunk start.
     """
     if not words:
         return [(page_text, [])]
@@ -108,17 +107,17 @@ def chunk_text_with_words(page_text: str, words: list[dict]) -> list[tuple[str, 
     char_start = 0        # char position in page_text
 
     while word_start < len(words):
-        # Find how many words can fit in one SSML chunk (linear scan is fine
-        # for typical page sizes of a few hundred words).
+        # Find how much raw text can fit in one SSML chunk. Reader audio now
+        # uses sparse marks at timing spans, so keep a fixed safety budget for
+        # SSML overhead instead of charging every single word as a hard split
+        # cost. This allows longer, more natural synthesis chunks.
         word_end = word_start
-        ssml_len = len("<speak></speak>")
 
         for wi in range(word_start, len(words)):
             w = words[wi]
             # Text length from char_start to end of this word (full text slice)
             slice_len = w["char_end"] - char_start
-            # Add mark overhead for every word in the chunk
-            needed = slice_len + (wi - word_start + 1) * _MARK_OVERHEAD
+            needed = slice_len + _READER_CHUNK_SAFETY_OVERHEAD
             if needed > _SSML_CHUNK_MAX_CHARS and wi > word_start:
                 break
             word_end = wi + 1
@@ -140,14 +139,14 @@ def chunk_text_with_words(page_text: str, words: list[dict]) -> list[tuple[str, 
                            words[new_end]["char_start"] < ci + 1):
                         extra_w = words[new_end]
                         extra_slice = extra_w["char_end"] - char_start
-                        extra_needed = extra_slice + (new_end - word_start + 1) * _MARK_OVERHEAD
+                        extra_needed = extra_slice + _READER_CHUNK_SAFETY_OVERHEAD
                         if extra_needed > _SSML_CHUNK_MAX_CHARS:
                             break
                         new_end += 1
                     word_end = new_end
                     break
 
-            chunk_char_end = words[word_end - 1]["char_end"]
+            chunk_char_end = words[word_end]["char_start"] if word_end < len(words) else len(page_text)
         else:
             chunk_char_end = len(page_text)
 
@@ -159,6 +158,72 @@ def chunk_text_with_words(page_text: str, words: list[dict]) -> list[tuple[str, 
         word_start = word_end
 
     return chunks
+
+
+def _gap_indicates_sentence_break(gap_text: str, next_word_value: str | None) -> bool:
+    gap = str(gap_text or "")
+    if not gap:
+        return not next_word_value
+    if "\n\n" in gap:
+        return True
+
+    stripped = gap.rstrip()
+    if not stripped:
+        return False
+    if any(ch in stripped for ch in ("!", "?", "…")):
+        return True
+    if _PERIOD_SENTENCE_BREAK_RE.search(gap):
+        next_word = str(next_word_value or "").strip()
+        if not next_word:
+            return True
+        first_char = next_word[:1]
+        return not first_char.isalpha() or first_char.isupper()
+    return False
+
+
+def segment_timing_spans(
+    chunk_text: str,
+    chunk_words: list[dict],
+    text_char_offset: int,
+) -> list[dict]:
+    """
+    Split a chunk into natural timing spans for SSML marks.
+
+    In the common case a span is a full sentence. If the main chunker had to
+    cut a very long sentence for provider limits, the span simply becomes that
+    chunk fragment.
+    """
+    if not chunk_words:
+        return []
+
+    spans: list[dict] = []
+    span_word_start = 0
+    span_char_start = text_char_offset
+    chunk_end_char = text_char_offset + len(chunk_text)
+
+    for idx, word in enumerate(chunk_words):
+        next_word = chunk_words[idx + 1] if idx + 1 < len(chunk_words) else None
+        next_char_start = next_word["char_start"] if next_word else chunk_end_char
+        gap_start = max(0, word["char_end"] - text_char_offset)
+        gap_end = max(gap_start, next_char_start - text_char_offset)
+        gap_text = chunk_text[gap_start:gap_end]
+
+        if next_word is not None and not _gap_indicates_sentence_break(gap_text, next_word.get("value")):
+            continue
+
+        span_char_end = next_char_start
+        rel_start = max(0, span_char_start - text_char_offset)
+        rel_end = max(rel_start, span_char_end - text_char_offset)
+        spans.append({
+            "char_start": span_char_start,
+            "char_end": span_char_end,
+            "text": chunk_text[rel_start:rel_end],
+            "words": chunk_words[span_word_start:idx + 1],
+        })
+        span_word_start = idx + 1
+        span_char_start = span_char_end
+
+    return [span for span in spans if span.get("words")]
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +279,54 @@ def _build_ssml_from_chunk(
     return "".join(parts), mark_index
 
 
+def _build_ssml_from_spans(
+    chunk_text: str,
+    timing_spans: list[dict],
+    text_char_offset: int,
+    mark_offset: int,
+) -> tuple[str, list[dict]]:
+    """
+    Build a single <speak> block with sparse marks at natural timing spans.
+
+    We keep the original text untouched and insert one mark before the first
+    word of each span. This gives Google TTS room for natural prosody while we
+    later reconstruct word timings inside each span.
+    """
+    parts = ["<speak>"]
+    mark_index: list[dict] = []
+    prev_rel = 0
+
+    for span_idx, span in enumerate(timing_spans):
+        span_words = list(span.get("words") or [])
+        if not span_words:
+            continue
+        rel_mark_start = max(0, span_words[0]["char_start"] - text_char_offset)
+        rel_span_end = max(rel_mark_start, span["char_end"] - text_char_offset)
+
+        gap = chunk_text[prev_rel:rel_mark_start]
+        if gap:
+            parts.append(xml.sax.saxutils.escape(gap))
+
+        mark_name = f"s{mark_offset + span_idx + 1}"
+        parts.append(f'<mark name="{mark_name}"/>')
+        parts.append(xml.sax.saxutils.escape(chunk_text[rel_mark_start:rel_span_end]))
+        prev_rel = rel_span_end
+
+        mark_index.append({
+            "mark_name": mark_name,
+            "char_start": span["char_start"],
+            "char_end": span["char_end"],
+            "words": span_words,
+        })
+
+    tail = chunk_text[prev_rel:]
+    if tail:
+        parts.append(xml.sax.saxutils.escape(tail))
+
+    parts.append("</speak>")
+    return "".join(parts), mark_index
+
+
 # ---------------------------------------------------------------------------
 # Timepoint parsing
 # ---------------------------------------------------------------------------
@@ -251,6 +364,83 @@ def parse_timepoints_for_chunk(
             "char_start": m.get("char_start", 0),
             "char_end": m.get("char_end", 0),
         })
+    return result
+
+
+def parse_timepoints_for_spans(
+    timepoints,
+    mark_index: list[dict],
+    chunk_duration_ms: int,
+    time_offset_ms: int = 0,
+) -> list[dict]:
+    """
+    Convert sparse mark timepoints into per-word timings.
+
+    Each mark anchors a natural timing span. Word timings inside that span are
+    distributed proportionally using original text distances, which keeps
+    punctuation and whitespace influencing the pacing without forcing the TTS
+    provider to process a mark before every word.
+    """
+    if not mark_index:
+        return []
+
+    starts: dict[str, int] = {
+        tp.mark_name: int(tp.time_seconds * 1000)
+        for tp in timepoints
+    }
+    chunk_end_ms = time_offset_ms + int(chunk_duration_ms or 0)
+    result: list[dict] = []
+    previous_span_end_ms = time_offset_ms
+
+    for idx, span in enumerate(mark_index):
+        raw_start = starts.get(span["mark_name"], previous_span_end_ms - time_offset_ms)
+        span_start_ms = max(time_offset_ms, time_offset_ms + raw_start)
+        if idx + 1 < len(mark_index):
+            raw_next = starts.get(mark_index[idx + 1]["mark_name"], raw_start)
+            span_end_ms = max(span_start_ms, time_offset_ms + raw_next)
+        else:
+            span_end_ms = max(span_start_ms, chunk_end_ms)
+        previous_span_end_ms = span_end_ms
+
+        words = list(span.get("words") or [])
+        if not words:
+            continue
+
+        weights: list[int] = []
+        for word_index, word in enumerate(words):
+            if word_index + 1 < len(words):
+                next_char = int(words[word_index + 1]["char_start"])
+            else:
+                next_char = int(span.get("char_end") or word.get("char_end") or word["char_start"])
+            weight = max(1, next_char - int(word["char_start"]))
+            weights.append(weight)
+
+        total_weight = sum(weights) or len(words)
+        span_duration_ms = max(0, span_end_ms - span_start_ms)
+        accumulated_weight = 0
+        current_start_ms = span_start_ms
+
+        for word_index, word in enumerate(words):
+            accumulated_weight += weights[word_index]
+            if word_index == len(words) - 1:
+                current_end_ms = span_end_ms
+            else:
+                current_end_ms = span_start_ms + int(round((accumulated_weight / total_weight) * span_duration_ms))
+                if current_end_ms <= current_start_ms:
+                    current_end_ms = current_start_ms + 1
+                if current_end_ms > span_end_ms:
+                    current_end_ms = span_end_ms
+
+            result.append({
+                "wid": str(word["idx"]),
+                "word": word["value"],
+                "start_ms": current_start_ms,
+                "end_ms": max(current_end_ms, current_start_ms + 1),
+                "char_start": word.get("char_start", 0),
+                "char_end": word.get("char_end", 0),
+            })
+            current_start_ms = min(current_end_ms, span_end_ms)
+
     return result
 
 

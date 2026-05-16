@@ -5329,6 +5329,7 @@ function AppInner() {
     startY: 0,
   });
   const readerSuppressStructuredClickRef = useRef(0);
+  const readerAudioAwaitingWordTapRef = useRef(false);
   const readerLastTapRef = useRef({ time: 0, sid: null, count: 0 });
   const readerAudioPagesPlayedRef = useRef(0);
   const readerAudioPageLimitRef = useRef(0); // 0 = no limit active
@@ -19061,11 +19062,13 @@ function AppInner() {
     const wordEl = target.closest('[data-wid]');
 
     // ── Audio awaiting word tap: next tap starts audio from this word ──
-    if (readerAudioAwaitingWordTap) {
+    if (readerAudioAwaitingWordTapRef.current || readerAudioAwaitingWordTap) {
+      readerAudioAwaitingWordTapRef.current = false;
       setReaderAudioAwaitingWordTap(false);
       if (wordEl && root.contains(wordEl)) {
         const wid = String(wordEl.getAttribute('data-wid') || '').trim();
         const charStart = parseInt(wordEl.getAttribute('data-start') || '', 10);
+        console.log('[ReaderAudio] awaiting tap: wid=', wid, 'charStart=', charStart, 'isFinite=', Number.isFinite(charStart));
         if (wid) {
           const currentPage = readerCurrentPageRef.current;
           playReaderAudioPage(currentPage, wid, Number.isFinite(charStart) && charStart >= 0 ? charStart : undefined);
@@ -19372,6 +19375,27 @@ function AppInner() {
       return;
     }
     resetReaderPhraseGesture();
+
+    // ── Audio awaiting word tap — handle in touchend (more reliable than click on iOS) ──
+    if (readerAudioAwaitingWordTapRef.current && touch) {
+      const root = readerArticleRef.current;
+      const wordEl = getReaderWordElementByPoint(touch.clientX, touch.clientY);
+      console.log('[ReaderAudio] touchend awaiting: wordEl=', wordEl?.getAttribute('data-wid'), 'x=', touch.clientX, 'y=', touch.clientY);
+      readerAudioAwaitingWordTapRef.current = false;
+      setReaderAudioAwaitingWordTap(false);
+      readerSuppressStructuredClickRef.current = Date.now(); // suppress the follow-up click
+      if (wordEl && root && root.contains(wordEl)) {
+        const wid = String(wordEl.getAttribute('data-wid') || '').trim();
+        const charStart = parseInt(wordEl.getAttribute('data-start') || '', 10);
+        console.log('[ReaderAudio] touchend tap word: wid=', wid, 'charStart=', charStart);
+        if (wid) {
+          playReaderAudioPage(readerCurrentPageRef.current, wid, Number.isFinite(charStart) && charStart >= 0 ? charStart : undefined);
+          return;
+        }
+      }
+      return; // tapped outside a word — cancel awaiting, no audio
+    }
+
     handleReaderPageTouchEnd(event);
     handleReaderStructuredSelectionEnd(event);
   };
@@ -20058,8 +20082,9 @@ function AppInner() {
       setReaderAudioPaused(false);
       setReaderAudioPlayActive(true);
       if (audioElementRef.current) {
-        audioElementRef.current.src = data.audio_url;
-        audioElementRef.current.playbackRate = readerAudioRate;
+        const el = audioElementRef.current;
+        el.src = data.audio_url;
+        el.playbackRate = readerAudioRate;
         let startMs = 0;
         if (startWid) {
           // Use DOM-captured charStart first, fall back to map lookup.
@@ -20068,8 +20093,11 @@ function AppInner() {
             : readerAudioWidToCharStart.get(startWid);
           const timings = data.word_timings || [];
           let timing = null;
+          console.log('[ReaderAudio] seek: charStart=', charStart, 'timings=', timings.length, 'first_char_start=', timings[0]?.char_start);
           if (charStart != null && timings.length > 0 && timings[0].char_start != null) {
-            timing = timings.find((w) => Number(w.char_start) >= charStart)
+            // Containment first: find the word spanning charStart
+            timing = timings.find((w) => charStart >= Number(w.char_start) && charStart <= Number(w.char_end))
+              || timings.find((w) => Number(w.char_start) >= charStart)
               || timings.find((w) => charStart <= Number(w.char_end));
           }
           if (!timing) {
@@ -20084,18 +20112,24 @@ function AppInner() {
         }
         console.log('[ReaderAudio] audio starting at startMs=', startMs);
         setReaderAudioPlayPosition(startMs);
+        // Explicit load() so iOS fires loadedmetadata after src change.
+        el.load();
         if (startMs > 0) {
           // iOS Safari ignores currentTime set before loadedmetadata fires.
           // Wait for metadata, then seek, then play.
           await new Promise((resolve) => {
-            const el = audioElementRef.current;
-            if (!el) { resolve(); return; }
-            const doSeek = () => { el.currentTime = startMs / 1000; resolve(); };
-            if (el.readyState >= 1) { doSeek(); }
-            else { el.addEventListener('loadedmetadata', doSeek, { once: true }); }
+            if (!audioElementRef.current) { resolve(); return; }
+            const doSeek = () => {
+              if (audioElementRef.current) audioElementRef.current.currentTime = startMs / 1000;
+              resolve();
+            };
+            if (audioElementRef.current.readyState >= 1) { doSeek(); }
+            else { audioElementRef.current.addEventListener('loadedmetadata', doSeek, { once: true }); }
           });
         }
-        await audioElementRef.current?.play().catch(() => {});
+        await audioElementRef.current?.play().catch((err) => {
+          console.warn('[ReaderAudio] play() failed:', err?.message || err);
+        });
       }
     } catch (e) {
       readerAudioPlayingForPageRef.current = null;
@@ -20122,7 +20156,9 @@ function AppInner() {
       else pauseReaderAudioPlay();
       return;
     }
-    setReaderAudioAwaitingWordTap((prev) => !prev);
+    const next = !readerAudioAwaitingWordTapRef.current;
+    readerAudioAwaitingWordTapRef.current = next;
+    setReaderAudioAwaitingWordTap(next);
   }, [readerAudioPlayActive, readerAudioPaused, resumeReaderAudioPlay, pauseReaderAudioPlay]);
 
   const stopReaderAudioPlay = useCallback(() => {
@@ -20139,6 +20175,7 @@ function AppInner() {
     setReaderAudioPlayPosition(0);
     setReaderAudioPaused(false);
     setReaderAudioPlayError('');
+    readerAudioAwaitingWordTapRef.current = false;
     setReaderAudioAwaitingWordTap(false);
   }, []);
 
@@ -20150,7 +20187,8 @@ function AppInner() {
     const charStart = readerAudioWidToCharStart.get(wid);
     console.log('[AUDIO_SEEK] wid=', wid, 'charStart=', charStart, 'timings=', timings.length, 'first_timing_char_start=', timings[0]?.char_start);
     if (charStart != null && timings.length > 0 && timings[0].char_start != null) {
-      timing = timings.find((w) => Number(w.char_start) >= charStart)
+      timing = timings.find((w) => charStart >= Number(w.char_start) && charStart <= Number(w.char_end))
+        || timings.find((w) => Number(w.char_start) >= charStart)
         || timings.find((w) => charStart <= Number(w.char_end));
     }
     if (!timing) {
@@ -25777,7 +25815,7 @@ function AppInner() {
     };
 
     (async () => {
-      const echartsModule = await import('echarts');
+      const { echarts: echartsModule } = await import('./utils/echartsRuntime');
       if (disposed || !analyticsTrendRef.current) {
         return;
       }
@@ -25910,7 +25948,7 @@ function AppInner() {
     });
 
     (async () => {
-      const echartsModule = await import('echarts');
+      const { echarts: echartsModule } = await import('./utils/echartsRuntime');
       if (disposed) return;
       const chartConfigs = [
         {

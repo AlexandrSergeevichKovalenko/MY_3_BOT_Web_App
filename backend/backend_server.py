@@ -38599,8 +38599,9 @@ def reader_audio_page():
     default_voice = _TTS_VOICES.get(language_for_tts, _TTS_VOICES["de"])
     voice_name = voice_raw if voice_raw else default_voice
 
-    # v4 suffix: text normalized same as frontend → char_start values now align exactly.
-    text_hash = hashlib.sha256(page_text.encode("utf-8")).hexdigest()[:24] + "-v4"
+    # v5: reader audio now uses sparse SSML marks with interpolated word timings.
+    # Keep a version suffix so old robotic cache entries are not reused.
+    text_hash = hashlib.sha256(page_text.encode("utf-8")).hexdigest()[:24] + "-v5"
 
     logging.info(
         "[READER_AUDIO] user=%s doc=%s page=%s voice=%s rate=%s raw_len=%s norm_len=%s hash=%s",

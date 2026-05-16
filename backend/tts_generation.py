@@ -450,12 +450,12 @@ def synthesize_page_with_timings(
     speaking_rate: float = 1.0,
 ) -> dict:
     """
-    Synthesize one reader page with per-word timepoints via SSML marks.
+    Synthesize one reader page with natural prosody plus word-level timings.
 
-    The SSML preserves the full original text (punctuation, commas, whitespace)
-    so Google TTS applies natural prosody. <mark> tags are injected before each
-    word in the original text — they are transparent to speech.
-    Chunks are split at sentence/paragraph boundaries, not word boundaries.
+    The SSML preserves the full original text and uses sparse marks at natural
+    timing spans instead of injecting a mark before every word. Word timings are
+    then interpolated inside each span so the frontend keeps highlighting and
+    seek-by-word without forcing robotic delivery.
 
     Returns:
         {
@@ -471,8 +471,9 @@ def synthesize_page_with_timings(
     from backend.tts_ssml import (
         segment_page_words,
         chunk_text_with_words,
-        _build_ssml_from_chunk,
-        parse_timepoints_for_chunk,
+        segment_timing_spans,
+        _build_ssml_from_spans,
+        parse_timepoints_for_spans,
     )
 
     try:
@@ -495,7 +496,7 @@ def synthesize_page_with_timings(
         speaking_rate=float(speaking_rate),
     )
 
-    # Split at natural boundaries (sentence/paragraph) while keeping SSML under limit.
+    # Split at natural boundaries while keeping SSML under the provider limit.
     text_chunks = chunk_text_with_words(page_text, words)
 
     combined = AudioSegment.silent(duration=0)
@@ -508,8 +509,18 @@ def synthesize_page_with_timings(
             char_offset += len(chunk_text)
             continue
 
-        ssml_text, mark_index = _build_ssml_from_chunk(
-            chunk_text, chunk_words,
+        timing_spans = segment_timing_spans(
+            chunk_text,
+            chunk_words,
+            text_char_offset=char_offset,
+        )
+        if not timing_spans:
+            char_offset += len(chunk_text)
+            continue
+
+        ssml_text, mark_index = _build_ssml_from_spans(
+            chunk_text,
+            timing_spans,
             text_char_offset=char_offset,
             mark_offset=mark_offset,
         )
@@ -529,7 +540,7 @@ def synthesize_page_with_timings(
         segment = AudioSegment.from_file(io.BytesIO(response.audio_content), format="mp3")
         chunk_duration_ms = len(segment)
         time_offset_ms = len(combined)
-        chunk_timings = parse_timepoints_for_chunk(
+        chunk_timings = parse_timepoints_for_spans(
             list(response.timepoints),
             mark_index,
             chunk_duration_ms=chunk_duration_ms,
@@ -537,7 +548,7 @@ def synthesize_page_with_timings(
         )
         all_timings.extend(chunk_timings)
         combined += segment
-        mark_offset += len(chunk_words)
+        mark_offset += len(mark_index)
         char_offset += len(chunk_text)
 
     if len(combined) == 0:
