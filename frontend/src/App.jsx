@@ -21147,21 +21147,16 @@ function AppInner() {
         const nextPage = page + 1;
         const nextPageText = getReaderDisplayPageText(nextPage);
         if (nextPageText) {
-          const durationMs = Math.max(0, Number(data?.duration_ms || 0));
-          const prefetchDelayMs = durationMs > 0
-            ? Math.min(Math.max(1200, Math.round(durationMs * 0.65)), Math.max(1500, durationMs - 2500))
-            : 2500;
-          readerAudioPrefetchTimeoutRef.current = window.setTimeout(() => {
-            if (readerAudioRequestTokenRef.current !== requestToken) return;
-            loadReaderAudioPageData({
-              targetPage: nextPage,
-              targetVoice: voice,
-              targetRate: readerAudioRate,
-              targetText: nextPageText,
-              token: null,
-              prefetchOnly: true,
-            }).catch(() => {});
-          }, prefetchDelayMs);
+          // Start next-page generation immediately so the auto-advance after
+          // `ended` is not blocked on a late TTS roundtrip.
+          loadReaderAudioPageData({
+            targetPage: nextPage,
+            targetVoice: voice,
+            targetRate: readerAudioRate,
+            targetText: nextPageText,
+            token: null,
+            prefetchOnly: true,
+          }).catch(() => {});
         }
       }
     } catch (e) {
