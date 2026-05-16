@@ -102,6 +102,31 @@ class ImageQuizPromptingTests(unittest.TestCase):
                 answer_language="de",
             )
 
+    def test_sanitize_blueprint_rejects_abstract_person_trait_answer(self):
+        with self.assertRaisesRegex(ValueError, "blueprint_abstract_person_label_unsupported"):
+            _sanitize_image_quiz_blueprint(
+                {
+                    "source_sentence": "Der Mann wartet bei Rot an der Ampel.",
+                    "image_prompt": "A man stands still at a pedestrian crossing while the traffic light is red.",
+                    "scene_core": "Waiting at a red traffic light",
+                    "must_show": ["red pedestrian light", "man standing still at curb", "crosswalk"],
+                    "must_not_show": ["green light", "running motion"],
+                    "camera_framing": "medium-wide street shot",
+                    "key_disambiguator": "The visible scene only shows waiting at the light, not an abstract personality trait.",
+                    "question_de": "Welche Handlung sieht man in dieser Szene?",
+                    "answer_options": [
+                        "der gesetzestreue Mann",
+                        "der Fußgänger",
+                        "das Warten",
+                        "das Überqueren",
+                    ],
+                    "correct_option_index": 0,
+                    "explanation": "The image shows a concrete traffic-light situation, not a moral character label.",
+                },
+                expected_correct_answer="der gesetzestreue Mann",
+                answer_language="de",
+            )
+
     def test_render_prompt_includes_style_and_disambiguation_constraints(self):
         prompt = _compose_image_quiz_render_prompt(
             source_sentence="Ein Mann wischt den Küchentisch mit einem gelben Tuch ab.",

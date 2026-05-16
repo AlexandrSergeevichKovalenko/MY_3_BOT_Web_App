@@ -329,6 +329,79 @@ def _compose_image_quiz_render_prompt(
     return "\n".join(line for line in prompt_lines if _normalize_space(line))
 
 
+_IMAGE_QUIZ_PERSON_NOUNS = {
+    "mann",
+    "frau",
+    "kind",
+    "person",
+    "mensch",
+    "junge",
+    "mädchen",
+    "maedchen",
+    "fahrer",
+    "fahrerin",
+    "schüler",
+    "schueler",
+    "schülerin",
+    "schuelerin",
+}
+
+_IMAGE_QUIZ_ABSTRACT_TRAIT_WORDS = {
+    "gesetzestreu",
+    "gesetzeswidrig",
+    "gehorsam",
+    "ungehorsam",
+    "höflich",
+    "hoeflich",
+    "unhöflich",
+    "unhoeflich",
+    "mutig",
+    "feige",
+    "ehrlich",
+    "unehrlich",
+    "fleißig",
+    "fleissig",
+    "faul",
+    "geduldig",
+    "ungeduldig",
+    "vorsichtig",
+    "rücksichtsvoll",
+    "ruecksichtsvoll",
+    "verantwortungsvoll",
+    "verantwortungslos",
+    "freundlich",
+    "unfreundlich",
+    "hilfsbereit",
+    "zuverlässig",
+    "zuverlaessig",
+    "egoistisch",
+    "tolerant",
+    "intolerant",
+    "diszipliniert",
+    "ordentlich",
+    "tapfer",
+    "loyal",
+    "pünktlich",
+    "puenktlich",
+}
+
+
+def _is_likely_abstract_person_label(value: str | None) -> bool:
+    normalized = _normalize_space(value).casefold()
+    if not normalized:
+        return False
+    tokens = [token for token in re.split(r"[^a-zA-Zäöüß]+", normalized) if token]
+    if not tokens:
+        return False
+    has_person_noun = any(token in _IMAGE_QUIZ_PERSON_NOUNS for token in tokens)
+    has_trait_word = any(
+        token == trait or token.startswith(f"{trait}e") or token.startswith(f"{trait}en")
+        for token in tokens
+        for trait in _IMAGE_QUIZ_ABSTRACT_TRAIT_WORDS
+    )
+    return has_person_noun and has_trait_word
+
+
 def _sanitize_image_quiz_blueprint(
     payload: dict,
     *,
@@ -367,6 +440,8 @@ def _sanitize_image_quiz_blueprint(
     normalized_expected = _normalize_space(expected_correct_answer)
     if not normalized_expected:
         raise ValueError("expected_correct_answer_missing")
+    if _is_likely_abstract_person_label(normalized_expected):
+        raise ValueError("blueprint_abstract_person_label_unsupported")
     options[correct_index] = normalized_expected
     if len(set(options)) != 4:
         raise ValueError("blueprint_options_conflict_with_correct_answer")
