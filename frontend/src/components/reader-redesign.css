@@ -2834,3 +2834,26 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
 .webapp-reader[data-reader-theme="cream"] .reader-audio-mini-player {
   background: rgba(251,248,241,0.94) !important;
 }
+
+/* Reader follow-up: remove duplicate in-page pager, restore bookmark visibility */
+.webapp-reader.is-immersive .reader-page-sheet > .reader-page-num {
+  display: none;
+}
+
+.webapp-reader.is-immersive .reader-page-sheet {
+  padding-bottom: 10px;
+}
+
+.webapp-reader .reader-page-bookmark-indicator {
+  top: 8px;
+  right: 20px;
+  width: 16px;
+  height: 28px;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.webapp-reader[data-reader-theme="sepia"] .reader-page-bookmark-indicator,
+.webapp-reader[data-reader-theme="cream"] .reader-page-bookmark-indicator {
+  filter: drop-shadow(0 3px 6px rgba(0,0,0,0.16));
+}
