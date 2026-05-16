@@ -138,6 +138,7 @@ export default function ReaderSection(props) {
     'webapp-reader',
     readerHasContent && readerImmersive && !readerArchiveOpen ? 'is-immersive' : '',
     readerHasContent && readerImmersive && !readerArchiveOpen && readerTopbarCollapsed ? 'is-topbar-collapsed' : '',
+    readerHasContent && readerImmersive && !readerArchiveOpen && readerAudioPlayActive ? 'has-audio-player' : '',
   ].filter(Boolean).join(' ');
 
   return (
@@ -801,12 +802,6 @@ export default function ReaderSection(props) {
             {/* ── Scrubber bar ────────────────────────────────────── */}
             {readerPageCount > 0 && (
               <div className="reader-scrubber-bar">
-                {/* Hint floats ABOVE scrubber via position:absolute — zero flex height impact */}
-                <div className={`reader-audio-hint${readerAudioPlayActive ? ' is-active' : ''}`}>
-                  {readerAudioPlayActive
-                    ? tr('удержи слово → перейти к нему', 'Wort gedrückt halten → dorthin springen')
-                    : tr('удержи слово → читать вслух с него', 'Wort gedrückt halten → vorlesen ab hier')}
-                </div>
                 <button
                   type="button"
                   className="reader-scrubber-page-btn"

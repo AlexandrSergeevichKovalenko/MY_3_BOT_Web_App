@@ -2227,6 +2227,11 @@
   background: rgba(0,0,0,0.08) !important;
 }
 
+/* When audio player is fixed at bottom, scrubber needs space above it */
+.webapp-reader.is-immersive.has-audio-player .reader-scrubber-bar {
+  margin-bottom: calc(env(safe-area-inset-bottom, 0px) + 90px);
+}
+
 /* Scrubber в paper-темах */
 .webapp-reader[data-reader-theme="sepia"] .reader-scrubber-bar,
 .webapp-reader[data-reader-theme="cream"] .reader-scrubber-bar {
@@ -2295,12 +2300,12 @@
 
 /* ── Audio mini-player bar ─ raised floating card ─────────────────────────── */
 .reader-audio-mini-player {
-  position: sticky;
+  position: fixed;
   bottom: calc(env(safe-area-inset-bottom, 0px) + 14px);
   left: 10px;
   right: 10px;
-  margin: 10px;
-  z-index: 30;
+  margin: 0;
+  z-index: 60;
 
   display: flex;
   align-items: center;
@@ -2312,7 +2317,6 @@
   -webkit-backdrop-filter: blur(24px);
   border: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow: 0 16px 44px rgba(0, 0, 0, 0.55);
-  flex-shrink: 0;
 }
 .webapp-reader[data-reader-theme="sepia"] .reader-audio-mini-player,
 .webapp-reader[data-reader-theme="cream"] .reader-audio-mini-player {
@@ -2557,34 +2561,3 @@
   box-shadow: 0 0 0 2px rgba(178, 93, 44, 0.55);
 }
 
-/* ── Audio hint — floats above scrubber, zero flex-height impact ─────────── */
-/* Positioned absolute inside .reader-scrubber-bar (position:relative).      */
-/* Article height is NEVER affected — hint lives outside the flex flow.      */
-.reader-audio-hint {
-  position: absolute;
-  bottom: 100%;
-  left: 10px;
-  right: 10px;
-  margin-bottom: 6px;
-  padding: 7px 12px;
-  border-radius: 12px;
-  background: rgb(16, 185, 129);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 700;
-  text-align: center;
-  letter-spacing: -0.01em;
-  box-shadow: 0 6px 18px rgba(16, 185, 129, 0.45);
-  white-space: nowrap;
-  z-index: 20;
-  /* hidden by default */
-  opacity: 0;
-  pointer-events: none;
-  transform: translateY(4px);
-  transition: opacity 0.15s, transform 0.15s;
-}
-.reader-audio-hint.is-active {
-  opacity: 1;
-  pointer-events: auto;
-  transform: translateY(0);
-}

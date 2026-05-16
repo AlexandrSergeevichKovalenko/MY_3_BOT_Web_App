@@ -12156,7 +12156,7 @@ function AppInner() {
     let idx = 0;
     for (const sentence of readerSentencesModel) {
       for (const token of sentence.tokens) {
-        if (token.kind === 'word') { map.set(String(idx), token.wid); idx++; }
+        if (token.kind === 'word') { map.set(String(idx), String(token.wid ?? '')); idx++; }
       }
     }
     return map;
@@ -12167,7 +12167,7 @@ function AppInner() {
     let idx = 0;
     for (const sentence of readerSentencesModel) {
       for (const token of sentence.tokens) {
-        if (token.kind === 'word') { map.set(token.wid, String(idx)); idx++; }
+        if (token.kind === 'word') { map.set(String(token.wid ?? ''), String(idx)); idx++; }
       }
     }
     return map;
