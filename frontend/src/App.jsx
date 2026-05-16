@@ -407,6 +407,13 @@ function areReaderPagesEqual(prevPages, nextPages) {
   return true;
 }
 
+function getReaderPreferredLayoutMode(sourceType, pages) {
+  const normalizedSourceType = String(sourceType || '').trim().toLowerCase();
+  const hasPages = Array.isArray(pages) && pages.length > 0;
+  if (!hasPages) return 'custom';
+  return normalizedSourceType === 'pdf' ? 'original' : 'custom';
+}
+
 function readStoredEconomicsPeriod() {
   if (typeof window === 'undefined') return 'month';
   try {
@@ -12183,7 +12190,7 @@ function AppInner() {
     () => normalizeReaderPaginationText(readerContent),
     [readerContent]
   );
-  const readerCanUseOriginalLayout = Array.isArray(readerPages) && readerPages.length > 0;
+  const readerCanUseOriginalLayout = readerSourceType === 'pdf' && Array.isArray(readerPages) && readerPages.length > 0;
   const readerUsesCustomLayout = !readerCanUseOriginalLayout || readerLayoutMode === 'custom';
   const readerDisplayPages = useMemo(() => {
     if (readerUsesCustomLayout && Array.isArray(readerDynamicPages) && readerDynamicPages.length > 0) {
@@ -20117,10 +20124,14 @@ function AppInner() {
       const pages = Array.isArray(data?.content_pages)
         ? data.content_pages
         : (Array.isArray(doc?.content_pages) ? doc.content_pages : []);
+      const sourceType = String(data?.source_type || doc?.source_type || 'text');
       const resolvedText = String(data?.text || '').trim() || buildReaderTextFromPages(pages);
+      const preferredLayoutMode = getReaderPreferredLayoutMode(sourceType, pages);
       setReaderFontSize(READER_DEFAULT_FONT_SIZE);
       setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
-      readerPendingPagePercentRef.current = null;
+      readerPendingPagePercentRef.current = preferredLayoutMode === 'custom'
+        ? (bookmark > 0 ? bookmark : progress)
+        : null;
       setReaderDocumentId(Number(doc?.id || safeDocumentId));
       setReaderTitle(String(data?.title || doc?.title || ''));
       setReaderContent(resolvedText);
@@ -20138,8 +20149,8 @@ function AppInner() {
       setReaderPages(sparsePages);
       setReaderDynamicPages([]);
       readerPageLoadInFlightRef.current.clear();
-      setReaderLayoutMode(sparsePages.length > 0 ? 'original' : 'custom');
-      setReaderSourceType(String(data?.source_type || doc?.source_type || 'text'));
+      setReaderLayoutMode(preferredLayoutMode);
+      setReaderSourceType(sourceType);
       setReaderSourceUrl(String(data?.source_url || doc?.source_url || ''));
       setReaderDetectedLanguage(normalizeLangCode(data?.detected_language || ''));
       setReaderReadingMode(String(doc?.reading_mode || 'vertical'));
@@ -20151,13 +20162,17 @@ function AppInner() {
         : 1;
       const exactBookmarkPage = resolveStoredReaderExactBookmarkPage(storedBookmark, {
         pageCount: resolvedTotalPages,
-        layoutMode: sparsePages.length > 0 ? 'original' : 'custom',
+        layoutMode: preferredLayoutMode,
       });
-      const initialPage = exactBookmarkPage || pageFromProgress;
+      const initialPage = preferredLayoutMode === 'custom'
+        ? 1
+        : (exactBookmarkPage || pageFromProgress);
       setReaderCurrentPage(initialPage);
       setReaderBookmarkPercent(
         resolvedTotalPages > 0
-          ? Number(((initialPage / resolvedTotalPages) * 100).toFixed(2))
+          ? Number((preferredLayoutMode === 'custom'
+            ? (bookmark > 0 ? bookmark : progress)
+            : ((initialPage / resolvedTotalPages) * 100)).toFixed(2))
           : bookmark
       );
       setReaderAudioFromPage(pages.length > 0 ? '1' : '');
@@ -20920,22 +20935,26 @@ function AppInner() {
       const pages = Array.isArray(data?.content_pages)
         ? data.content_pages
         : (Array.isArray(doc?.content_pages) ? doc.content_pages : []);
+      const sourceType = String(data?.source_type || doc?.source_type || 'text');
       const resolvedText = String(data?.text || '').trim() || buildReaderTextFromPages(pages);
+      const preferredLayoutMode = getReaderPreferredLayoutMode(sourceType, pages);
+      const progress = Number(doc?.progress_percent || 0);
+      const bookmark = Number(doc?.bookmark_percent || 0);
       setReaderFontSize(READER_DEFAULT_FONT_SIZE);
       setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
-      readerPendingPagePercentRef.current = null;
+      readerPendingPagePercentRef.current = preferredLayoutMode === 'custom'
+        ? (bookmark || progress || 0)
+        : null;
       setReaderContent(resolvedText);
       setReaderTitle(String(data?.title || doc?.title || rawInput.slice(0, 80)));
       setReaderPages(pages);
       setReaderDynamicPages([]);
-      setReaderLayoutMode(pages.length > 0 ? 'original' : 'custom');
-      setReaderSourceType(String(data?.source_type || 'text'));
+      setReaderLayoutMode(preferredLayoutMode);
+      setReaderSourceType(sourceType);
       setReaderSourceUrl(String(data?.source_url || rawInput));
       setReaderDetectedLanguage(normalizeLangCode(data?.detected_language || ''));
       setReaderDocumentId(docId);
       setReaderReadingMode(String(doc?.reading_mode || 'vertical'));
-      const progress = Number(doc?.progress_percent || 0);
-      const bookmark = Number(doc?.bookmark_percent || 0);
       setReaderProgressPercent(progress);
       const storedBookmark = readStoredReaderExactBookmark(docId);
       const resolvedTotalPages = pages.length;
@@ -20944,13 +20963,17 @@ function AppInner() {
         : 1;
       const exactBookmarkPage = resolveStoredReaderExactBookmarkPage(storedBookmark, {
         pageCount: resolvedTotalPages,
-        layoutMode: pages.length > 0 ? 'original' : 'custom',
+        layoutMode: preferredLayoutMode,
       });
-      const initialPage = exactBookmarkPage || pageFromProgress;
+      const initialPage = preferredLayoutMode === 'custom'
+        ? 1
+        : (exactBookmarkPage || pageFromProgress);
       setReaderCurrentPage(initialPage);
       setReaderBookmarkPercent(
         resolvedTotalPages > 0
-          ? Number(((initialPage / resolvedTotalPages) * 100).toFixed(2))
+          ? Number((preferredLayoutMode === 'custom'
+            ? (bookmark || progress || 0)
+            : ((initialPage / resolvedTotalPages) * 100)).toFixed(2))
           : bookmark
       );
       setReaderAudioFromPage(pages.length > 0 ? '1' : '');

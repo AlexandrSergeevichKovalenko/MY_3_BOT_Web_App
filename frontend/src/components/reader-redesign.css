@@ -996,6 +996,10 @@
   line-height: 1.7;
   color: var(--rd-text) !important;
   text-wrap: pretty;
+  text-align: justify;
+  text-justify: inter-word;
+  -webkit-hyphens: auto;
+  hyphens: auto;
   /* Consistent font rendering across dark/light themes — prevents text reflow on theme switch */
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
