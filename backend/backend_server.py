@@ -13237,7 +13237,52 @@ def _extract_epub_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
     chunks: list[str] = []
     pages: list[dict] = []
     chapter_num = 0
+    ordered_items: list[Any] = []
+    seen_keys: set[str] = set()
+
+    for spine_entry in list(getattr(book, "spine", []) or []):
+        item_id = ""
+        if isinstance(spine_entry, (list, tuple)):
+            item_id = str(spine_entry[0] or "").strip()
+        else:
+            item_id = str(spine_entry or "").strip()
+        if not item_id:
+            continue
+        try:
+            item = book.get_item_with_id(item_id)
+        except Exception:
+            item = None
+        if item is None:
+            continue
+        file_name = str(
+            getattr(item, "file_name", "")
+            or getattr(item, "get_name", lambda: "")()
+            or ""
+        ).strip()
+        key = item_id or file_name
+        if not key or key in seen_keys:
+            continue
+        seen_keys.add(key)
+        ordered_items.append(item)
+
     for item in book.get_items_of_type(epub_item_document):
+        item_id = str(
+            getattr(item, "id", "")
+            or getattr(item, "get_id", lambda: "")()
+            or ""
+        ).strip()
+        file_name = str(
+            getattr(item, "file_name", "")
+            or getattr(item, "get_name", lambda: "")()
+            or ""
+        ).strip()
+        key = item_id or file_name or str(id(item))
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        ordered_items.append(item)
+
+    for item in ordered_items:
         chapter_num += 1
         if chapter_num > 200:
             break

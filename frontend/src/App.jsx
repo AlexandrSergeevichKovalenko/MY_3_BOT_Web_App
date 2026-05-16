@@ -317,6 +317,26 @@ function paginateReaderText(text, measureNode) {
       }
 
       if (buffer) {
+        const bestWordCountWithBuffer = findReaderBestFittingWordCount(
+          measureNode,
+          words,
+          (slice) => {
+            const sliceText = stickyHeadingText
+              ? `${stickyHeadingText}\n\n${slice.join(' ')}`
+              : slice.join(' ');
+            return `${buffer}\n\n${sliceText}`;
+          }
+        );
+        if (bestWordCountWithBuffer > 0) {
+          const sliceText = stickyHeadingText
+            ? `${stickyHeadingText}\n\n${words.slice(0, bestWordCountWithBuffer).join(' ')}`
+            : words.slice(0, bestWordCountWithBuffer).join(' ');
+          pages.push(`${buffer}\n\n${sliceText}`);
+          buffer = '';
+          words = words.slice(bestWordCountWithBuffer);
+          stickyHeadingText = '';
+          continue;
+        }
         const trailingHeadingBlock = splitReaderTrailingHeadingBlock(buffer);
         if (trailingHeadingBlock) {
           pages.push(trailingHeadingBlock.leading);
@@ -15619,6 +15639,21 @@ function AppInner() {
 
     readerPaginationObservedWidthRef.current = 0;
     scheduleWidthDrivenRepagination('init');
+    const settleTimeoutIds = [
+      window.setTimeout(() => scheduleRepagination('settle:180ms'), 180),
+      window.setTimeout(() => scheduleRepagination('settle:900ms'), 900),
+    ];
+    let fontsCancelled = false;
+    const fontSet = typeof document !== 'undefined' ? document.fonts : null;
+    if (fontSet?.ready && typeof fontSet.ready.then === 'function') {
+      fontSet.ready
+        .then(() => {
+          if (!fontsCancelled) {
+            scheduleRepagination('fonts-ready');
+          }
+        })
+        .catch(() => {});
+    }
     let resizeObserver;
     if (typeof ResizeObserver !== 'undefined') {
       resizeObserver = new ResizeObserver((entries) => {
@@ -15638,6 +15673,8 @@ function AppInner() {
 
     window.addEventListener('orientationchange', scheduleRepagination);
     return () => {
+      fontsCancelled = true;
+      settleTimeoutIds.forEach((timeoutId) => window.clearTimeout(timeoutId));
       window.removeEventListener('orientationchange', scheduleRepagination);
       resizeObserver?.disconnect();
       if (readerPaginationResizeFrameRef.current) {
@@ -20394,28 +20431,52 @@ function AppInner() {
     if (!primeSrc) {
       return;
     }
-    const primeAudio = new Audio(primeSrc);
-    primeAudio.preload = 'auto';
-    primeAudio.playsInline = true;
-    primeAudio.setAttribute('playsinline', '');
-    primeAudio.setAttribute('webkit-playsinline', 'true');
-    primeAudio.muted = true;
-    primeAudio.volume = 0;
+    const primeToken = `reader-prime-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const previousMuted = Boolean(audio.muted);
+    const previousVolume = Number.isFinite(audio.volume) ? audio.volume : 1;
+    audio.dataset.readerPrimeToken = primeToken;
+    audio.dataset.readerPrimeSrc = primeSrc;
+    audio.preload = 'auto';
+    audio.muted = true;
+    audio.volume = 0;
+    audio.src = primeSrc;
+    audio.load();
+    let primedSuccessfully = false;
     try {
-      const playPromise = primeAudio.play();
+      const playPromise = audio.play();
       if (playPromise && typeof playPromise.then === 'function') {
-        await playPromise.catch(() => {});
+        await playPromise
+          .then(() => {
+            primedSuccessfully = true;
+          })
+          .catch(() => {});
+      } else {
+        primedSuccessfully = true;
       }
-      primeAudio.pause();
-      try {
-        primeAudio.currentTime = 0;
-      } catch (_seekError) {
-        // ignore seek reset errors on priming
-      }
-      readerAudioPrimedRef.current = true;
     } finally {
-      primeAudio.removeAttribute('src');
-      primeAudio.load();
+      const isStillPrimeSession = String(audio.dataset.readerPrimeToken || '') === primeToken;
+      const currentSrcAttr = String(audio.getAttribute('src') || '').trim();
+      const currentSrc = String(audio.currentSrc || '').trim();
+      const isStillPrimeSource = currentSrcAttr === primeSrc || currentSrc === primeSrc;
+      if (isStillPrimeSession && isStillPrimeSource) {
+        audio.pause();
+        try {
+          audio.currentTime = 0;
+        } catch (_seekError) {
+          // ignore seek reset errors on priming
+        }
+        audio.removeAttribute('src');
+        audio.load();
+      }
+      if (isStillPrimeSession) {
+        delete audio.dataset.readerPrimeToken;
+        delete audio.dataset.readerPrimeSrc;
+      }
+      audio.muted = previousMuted;
+      audio.volume = previousVolume;
+      if (primedSuccessfully) {
+        readerAudioPrimedRef.current = true;
+      }
     }
   }, []);
 
@@ -20573,6 +20634,10 @@ function AppInner() {
         const preloadEl = readerAudioPreloadElementRef.current;
         const preloadedKey = String(preloadEl?.dataset?.readerAudioKey || '');
         const preloadedUrl = String(preloadEl?.currentSrc || preloadEl?.src || '');
+        delete el.dataset.readerPrimeToken;
+        delete el.dataset.readerPrimeSrc;
+        el.muted = false;
+        if (!Number.isFinite(el.volume) || el.volume <= 0) el.volume = 1;
         el.src = data.audio_url;
         if (preloadedKey === currentRequestKey && preloadedUrl === data.audio_url) {
           el.preload = 'auto';
