@@ -38577,7 +38577,17 @@ def reader_audio_page():
     if not page_obj:
         return jsonify({"error": "page_not_found", "page": page_int, "page_count": len(pages)}), 404
 
-    page_text = str(page_obj.get("text") or "").strip()
+    raw_text = str(page_obj.get("text") or "").strip()
+    if not raw_text:
+        return jsonify({"error": "Страница пустая"}), 422
+
+    # Normalize exactly like the frontend does for readerVisibleText so that
+    # char_start values in word_timings align with token.start on the frontend.
+    # JS: raw.split(/\n\n+/).map(p => p.replace(/\n/g,' ').replace(/ {2,}/g,' ').trim()).filter(Boolean).join('\n\n')
+    _paras = re.split(r'\n\n+', raw_text)
+    _paras = [re.sub(r'  +', ' ', p.replace('\n', ' ')).strip() for p in _paras]
+    page_text = '\n\n'.join(p for p in _paras if p)
+
     if not page_text:
         return jsonify({"error": "Страница пустая"}), 422
 
@@ -38589,12 +38599,12 @@ def reader_audio_page():
     default_voice = _TTS_VOICES.get(language_for_tts, _TTS_VOICES["de"])
     voice_name = voice_raw if voice_raw else default_voice
 
-    # v3 suffix: full-text SSML (preserves punctuation → natural prosody).
-    text_hash = hashlib.sha256(page_text.encode("utf-8")).hexdigest()[:24] + "-v3"
+    # v4 suffix: text normalized same as frontend → char_start values now align exactly.
+    text_hash = hashlib.sha256(page_text.encode("utf-8")).hexdigest()[:24] + "-v4"
 
     logging.info(
-        "[READER_AUDIO] user=%s doc=%s page=%s voice=%s rate=%s text_len=%s hash=%s",
-        user_id_int, document_id_int, page_int, voice_name, rate_float, len(page_text), text_hash,
+        "[READER_AUDIO] user=%s doc=%s page=%s voice=%s rate=%s raw_len=%s norm_len=%s hash=%s",
+        user_id_int, document_id_int, page_int, voice_name, rate_float, len(raw_text), len(page_text), text_hash,
     )
 
     cached = get_cached_reader_audio_page(
