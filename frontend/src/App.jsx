@@ -73,17 +73,57 @@ function normalizeReaderPaginationText(rawText) {
     .join('\n\n');
 }
 
+function getReaderMeasureDimension(measureNode, axis = 'height') {
+  if (!measureNode) return 0;
+  const isWidth = axis === 'width';
+  const ownSize = Number(isWidth ? measureNode.clientWidth : measureNode.clientHeight) || 0;
+  const parent = measureNode.parentElement;
+  const parentSize = Number(parent ? (isWidth ? parent.clientWidth : parent.clientHeight) : 0) || 0;
+  return Math.max(ownSize, parentSize);
+}
+
 function readerPageTextFits(measureNode, text) {
   if (!measureNode) return false;
   measureNode.textContent = String(text || '');
-  const availableHeight = Math.max(1, measureNode.clientHeight - READER_PAGINATION_FIT_RESERVE_PX);
+  const availableHeight = Math.max(1, getReaderMeasureDimension(measureNode, 'height') - READER_PAGINATION_FIT_RESERVE_PX);
   return measureNode.scrollHeight <= availableHeight + 1;
+}
+
+function isReaderPaginationSane(sourceText, pages, measureNode) {
+  const normalizedText = normalizeReaderPaginationText(sourceText);
+  if (!normalizedText) return true;
+  if (!Array.isArray(pages) || pages.length === 0) return false;
+
+  const layoutWidth = getReaderMeasureDimension(measureNode, 'width');
+  const layoutHeight = getReaderMeasureDimension(measureNode, 'height');
+  if (layoutWidth <= 120 || layoutHeight <= 120) {
+    return false;
+  }
+
+  const lengths = pages.map((item) => String(item || '').trim().length);
+  const totalChars = lengths.reduce((sum, value) => sum + value, 0);
+  const avgCharsPerPage = totalChars / Math.max(1, lengths.length);
+  const tinyPages = lengths.filter((value) => value <= 3).length;
+
+  if (normalizedText.length >= 80 && avgCharsPerPage < 12) {
+    return false;
+  }
+  if (normalizedText.length >= 160 && avgCharsPerPage < 24) {
+    return false;
+  }
+  if (pages.length > Math.ceil(normalizedText.length / 6)) {
+    return false;
+  }
+  if (pages.length >= 12 && tinyPages >= Math.ceil(pages.length * 0.5)) {
+    return false;
+  }
+  return true;
 }
 
 function paginateReaderText(text, measureNode) {
   const normalizedText = normalizeReaderPaginationText(text);
   if (!normalizedText || !measureNode) return [];
-  if (measureNode.clientWidth <= 0 || measureNode.clientHeight <= 0) return [];
+  if (getReaderMeasureDimension(measureNode, 'width') <= 0 || getReaderMeasureDimension(measureNode, 'height') <= 0) return [];
 
   const paragraphs = normalizedText.split(/\n\n+/).map((item) => item.trim()).filter(Boolean);
   const pages = [];
@@ -15396,6 +15436,20 @@ function AppInner() {
     readerPaginationRunRef.current = runId;
     console.log('[PAGINATE] run start tick=', readerPaginationLayoutTick, 'textLen=', readerCanonicalText?.length);
     const nextTextPages = paginateReaderText(readerCanonicalText, measureNode);
+    if (!isReaderPaginationSane(readerCanonicalText, nextTextPages, measureNode)) {
+      console.warn('[PAGINATE] rejected implausible pagination result', {
+        textLength: readerCanonicalText?.length || 0,
+        pages: nextTextPages.length,
+        width: getReaderMeasureDimension(measureNode, 'width'),
+        height: getReaderMeasureDimension(measureNode, 'height'),
+        sample: nextTextPages.slice(0, 5),
+      });
+      setReaderDynamicPages([]);
+      if (readerCanUseOriginalLayout) {
+        setReaderLayoutMode('original');
+      }
+      return;
+    }
     if (readerPaginationRunRef.current !== runId) {
       console.log('[PAGINATE] run superseded, discarding');
       return;
@@ -15433,6 +15487,7 @@ function AppInner() {
     readerFontSize,
     readerFontWeight,
     readerPaginationLayoutTick,
+    readerCanUseOriginalLayout,
     readerUsesCustomLayout,
   ]);
 
