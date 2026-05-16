@@ -39096,7 +39096,7 @@ def reader_audio_page():
     reader_audio_singleflight_key = (
         f"{document_id_int}:{page_int}:{voice_name}:{rate_float}:{text_hash}"
     )
-    if is_reader_audio_page_async_enabled() and can_enqueue_background_jobs():
+    if prefetch_only and is_reader_audio_page_async_enabled() and can_enqueue_background_jobs():
         job_status = get_reader_audio_page_job_status(reader_audio_singleflight_key) or {}
         normalized_job_status = str(job_status.get("status") or "").strip().lower()
         if normalized_job_status in {"pending", "running"}:

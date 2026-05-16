@@ -4923,6 +4923,8 @@ function AppInner() {
   const [readerOriginalEpubError, setReaderOriginalEpubError] = useState('');
   const [readerOriginalTocHref, setReaderOriginalTocHref] = useState('');
   const [readerOriginalTocTitle, setReaderOriginalTocTitle] = useState('');
+  const [readerOriginalCoverUrl, setReaderOriginalCoverUrl] = useState('');
+  const [readerOriginalCoverVisible, setReaderOriginalCoverVisible] = useState(false);
   const [readerShowToc, setReaderShowToc] = useState(false);
   const [readerTocItems, setReaderTocItems] = useState([]);
   const [readerShowPageJump, setReaderShowPageJump] = useState(false);
@@ -5003,6 +5005,15 @@ function AppInner() {
       viewport.innerHTML = '';
     }
   }, []);
+  useEffect(() => () => {
+    if (readerOriginalCoverUrl && readerOriginalCoverUrl.startsWith('blob:')) {
+      try {
+        URL.revokeObjectURL(readerOriginalCoverUrl);
+      } catch (_error) {
+        // ignore cleanup failures for cover blobs
+      }
+    }
+  }, [readerOriginalCoverUrl]);
   const applyReaderColorTheme = (next) => {
     setReaderColorTheme(next);
     try { localStorage.setItem('reader_color_theme', next); } catch {}
@@ -15754,6 +15765,7 @@ function AppInner() {
       const stablePercent = computeReaderProgressPercent();
       readerPendingPagePercentRef.current = stablePercent;
       setReaderProgressPercent(stablePercent);
+      setReaderOriginalCoverVisible(false);
       if (resetTypography) {
         setReaderFontSize(READER_DEFAULT_FONT_SIZE);
         setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
@@ -15765,6 +15777,7 @@ function AppInner() {
       setReaderFontSize(READER_DEFAULT_FONT_SIZE);
       setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
     }
+    setReaderOriginalCoverVisible(false);
     setReaderLayoutMode('original');
   }, [
     computeReaderProgressPercent,
@@ -15781,6 +15794,8 @@ function AppInner() {
     setReaderOriginalEpubError('');
     setReaderOriginalTocHref('');
     setReaderOriginalTocTitle('');
+    setReaderOriginalCoverUrl('');
+    setReaderOriginalCoverVisible(false);
     readerPendingPagePercentRef.current = null;
     setReaderImmersive(false);
     setReaderTimerPaused(false);
@@ -15797,6 +15812,7 @@ function AppInner() {
       setReaderOriginalEpubError('');
       setReaderOriginalTocHref('');
       setReaderOriginalTocTitle('');
+      setReaderOriginalCoverVisible(false);
       destroyReaderOriginalEpub();
       return undefined;
     }
@@ -15920,15 +15936,49 @@ function AppInner() {
         } catch (_error) {
           // continue with best effort rendering
         }
+
+        const storedOriginalLocation = readStoredReaderOriginalLocation(readerDocumentId);
+        const bookmarkPercent = Math.max(0, Number(readerBookmarkPercent || 0));
+        const progressPercent = Math.max(0, Number(readerProgressPercent || 0));
+        const shouldOfferCover = !String(storedOriginalLocation?.cfi || '').trim();
+        try {
+          const nextCoverUrl = typeof book.coverUrl === 'function'
+            ? String((await book.coverUrl()) || '').trim()
+            : '';
+          if (!cancelled && readerEpubLoadTokenRef.current === loadToken) {
+            setReaderOriginalCoverUrl((prev) => {
+              if (prev && prev !== nextCoverUrl && prev.startsWith('blob:')) {
+                try {
+                  URL.revokeObjectURL(prev);
+                } catch (_error) {
+                  // ignore stale blob cleanup failures
+                }
+              }
+              return nextCoverUrl;
+            });
+            setReaderOriginalCoverVisible(Boolean(nextCoverUrl) && shouldOfferCover);
+          }
+        } catch (_error) {
+          if (!cancelled && readerEpubLoadTokenRef.current === loadToken) {
+            setReaderOriginalCoverUrl((prev) => {
+              if (prev && prev.startsWith('blob:')) {
+                try {
+                  URL.revokeObjectURL(prev);
+                } catch (_cleanupError) {
+                  // ignore stale blob cleanup failures
+                }
+              }
+              return '';
+            });
+            setReaderOriginalCoverVisible(false);
+          }
+        }
         try {
           await book.locations.generate(1600);
         } catch (_error) {
           // percentage mapping is optional
         }
 
-        const storedOriginalLocation = readStoredReaderOriginalLocation(readerDocumentId);
-        const bookmarkPercent = Math.max(0, Number(readerBookmarkPercent || 0));
-        const progressPercent = Math.max(0, Number(readerProgressPercent || 0));
         const initialTarget = (
           bookmarkPercent > 0 && book.locations && typeof book.locations.cfiFromPercentage === 'function'
             ? String(book.locations.cfiFromPercentage(bookmarkPercent / 100) || '').trim()
@@ -19684,6 +19734,7 @@ function AppInner() {
       if (!rendition || !book?.locations || typeof book.locations.cfiFromPercentage !== 'function') return;
       const safe = Math.max(0, Math.min(100, Number(percent || 0)));
       const targetCfi = safe <= 0 ? '' : String(book.locations.cfiFromPercentage(safe / 100) || '').trim();
+      setReaderOriginalCoverVisible(false);
       const displayPromise = targetCfi ? rendition.display(targetCfi) : rendition.display();
       Promise.resolve(displayPromise).catch(() => {});
       return;
@@ -19708,6 +19759,7 @@ function AppInner() {
     if (readerUsesOriginalEpubLayout) {
       const href = String(item?.href || item?.cfi || '').trim();
       if (!href || !readerEpubRenditionRef.current) return;
+      setReaderOriginalCoverVisible(false);
       setReaderOriginalTocHref(normalizeReaderEpubHref(href));
       setReaderOriginalTocTitle(String(item?.title || '').trim());
       Promise.resolve(readerEpubRenditionRef.current.display(href)).catch(() => {});
@@ -30886,6 +30938,9 @@ function AppInner() {
                   readerUsesOriginalEpubLayout={readerUsesOriginalEpubLayout}
                   readerOriginalTocHref={readerOriginalTocHref}
                   readerResolvedOriginalTocTitle={readerResolvedOriginalTocTitle}
+                  readerOriginalCoverUrl={readerOriginalCoverUrl}
+                  readerOriginalCoverVisible={readerOriginalCoverVisible}
+                  dismissReaderOriginalCover={() => setReaderOriginalCoverVisible(false)}
                   readerLayoutMode={readerLayoutMode}                 setReaderLayoutMode={setReaderLayoutMode}
                   readerReadingMode={readerReadingMode}               setReaderReadingMode={setReaderReadingMode}
                   readerFontSize={readerFontSize}                     setReaderFontSize={setReaderFontSize}

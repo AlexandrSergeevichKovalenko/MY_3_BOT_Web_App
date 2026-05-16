@@ -61,6 +61,9 @@ export default function ReaderSection(props) {
     readerUsesOriginalEpubLayout = false,
     readerOriginalTocHref = '',
     readerResolvedOriginalTocTitle = '',
+    readerOriginalCoverUrl = '',
+    readerOriginalCoverVisible = false,
+    dismissReaderOriginalCover = () => {},
     readerLayoutMode,
     readerReadingMode, setReaderReadingMode,
     readerFontSize, setReaderFontSize,
@@ -837,6 +840,26 @@ export default function ReaderSection(props) {
                       <div className="reader-epub-original-error">
                         {readerOriginalEpubError}
                       </div>
+                    )}
+                    {readerOriginalCoverVisible && readerOriginalCoverUrl && (
+                      <button
+                        type="button"
+                        className="reader-epub-original-cover"
+                        onClick={dismissReaderOriginalCover}
+                        title={tr(
+                          'Показана настоящая обложка EPUB. Нажми, чтобы перейти к содержимому книги.',
+                          'Hier siehst du das echte EPUB-Cover. Tippe, um zum Buchinhalt zu wechseln.'
+                        )}
+                      >
+                        <img
+                          src={readerOriginalCoverUrl}
+                          alt={tr('Обложка книги', 'Buchcover')}
+                          className="reader-epub-original-cover-image"
+                        />
+                        <span className="reader-epub-original-cover-caption">
+                          {tr('Это оригинальная обложка EPUB. Нажми, чтобы открыть текст книги.', 'Das ist das originale EPUB-Cover. Tippe, um den Buchtext zu oeffnen.')}
+                        </span>
+                      </button>
                     )}
                     <div ref={readerEpubViewportRef} className="reader-epub-original-viewport" />
                   </div>
