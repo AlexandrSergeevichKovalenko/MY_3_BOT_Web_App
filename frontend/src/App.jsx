@@ -27347,7 +27347,7 @@ function AppInner() {
                       <span>{tr('Архив', 'Archiv')}</span>
                     </button>
                   )}
-                  {showReaderTopbarPeekInAppTopbar && readerPageCount > 0 && (
+                  {showReaderTopbarPeekInAppTopbar && readerPageCount > 0 && !readerUsesOriginalEpubLayout && (
                     <span className="topbar-reader-page-pill" aria-live="polite">
                       {tr('стр.', 'S.')} {readerCurrentPage}
                       <span className="topbar-reader-page-pill-sep">/</span>
@@ -30930,6 +30930,7 @@ function AppInner() {
                   readerPageCount={readerPageCount}
                   readerCurrentPage={readerCurrentPage}               setReaderCurrentPage={setReaderCurrentPage}
                   readerProgressPercent={readerProgressPercent}
+                  applyReaderProgressPercent={applyReaderProgressPercent}
                   readerBookmarkPercent={readerBookmarkPercent}       setReaderBookmarkPercent={setReaderBookmarkPercent}
                   readerBookmarkPage={readerBookmarkPage}
                   persistReaderExactBookmark={persistReaderExactBookmark}

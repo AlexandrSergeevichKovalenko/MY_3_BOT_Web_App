@@ -54,6 +54,7 @@ export default function ReaderSection(props) {
     readerPages, readerDisplayPages, readerPageCount,
     readerCurrentPage, setReaderCurrentPage,
     readerProgressPercent,
+    applyReaderProgressPercent = () => {},
     readerBookmarkPercent, setReaderBookmarkPercent, readerBookmarkPage,
     persistReaderExactBookmark = () => {},
     isCurrentReaderPageBookmarked,
@@ -659,7 +660,7 @@ export default function ReaderSection(props) {
                     </div>
                     <div className="webapp-muted reader-topbar-meta">
                       {tr('Прогресс', 'Fortschritt')}: {Math.round(readerProgressPercent)}%
-                      {readerPageCount > 0 ? ` • ${tr('Страница', 'Seite')} ${readerCurrentPage}/${readerPageCount}` : ''}
+                      {!readerUsesOriginalEpubLayout && readerPageCount > 0 ? ` • ${tr('Страница', 'Seite')} ${readerCurrentPage}/${readerPageCount}` : ''}
                       {readerUsesOriginalEpubLayout ? ` • EPUB Original` : ''}
                     </div>
                     {readerUsesOriginalEpubLayout && readerResolvedOriginalTocTitle && (
@@ -911,27 +912,36 @@ export default function ReaderSection(props) {
             )}
 
             {/* ── Scrubber bar — hidden while audio player is active ── */}
-            {readerPageCount > 0 && !readerAudioPlayActive && (
+            {(readerUsesOriginalEpubLayout || readerPageCount > 0) && !readerAudioPlayActive && (
               <div className="reader-scrubber-bar">
                 <button
                   type="button"
                   className="reader-scrubber-page-btn"
                   onClick={() => {
+                    if (readerUsesOriginalEpubLayout) return;
                     setReaderPageJumpInput(String(readerCurrentPage));
                     setReaderShowPageJump(true);
                   }}
-                  title={tr('Перейти к странице', 'Zur Seite springen')}
+                  title={readerUsesOriginalEpubLayout
+                    ? tr('В оригинальном EPUB число страниц не фиксировано и зависит от движка рендера.', 'Im originalen EPUB ist die Seitenzahl nicht fest und haengt vom Rendering ab.')
+                    : tr('Перейти к странице', 'Zur Seite springen')}
                 >
-                  {readerCurrentPage} / {readerPageCount}
+                  {readerUsesOriginalEpubLayout
+                    ? `${Math.round(readerProgressPercent)}%`
+                    : `${readerCurrentPage} / ${readerPageCount}`}
                 </button>
                 <div className="reader-scrubber-track-wrap">
                   <input
                     type="range"
                     className="reader-scrubber-input"
-                    min={1}
-                    max={readerPageCount}
-                    value={readerCurrentPage}
+                    min={readerUsesOriginalEpubLayout ? 0 : 1}
+                    max={readerUsesOriginalEpubLayout ? 100 : readerPageCount}
+                    value={readerUsesOriginalEpubLayout ? Math.round(readerProgressPercent) : readerCurrentPage}
                     onChange={(e) => {
+                      if (readerUsesOriginalEpubLayout) {
+                        applyReaderProgressPercent(Number(e.target.value));
+                        return;
+                      }
                       const page = Math.max(1, Math.min(readerPageCount, Number(e.target.value)));
                       setReaderCurrentPage(page);
                     }}
@@ -941,8 +951,16 @@ export default function ReaderSection(props) {
                   <button
                     type="button"
                     className="reader-scrubber-bookmark-btn"
-                    onClick={() => setReaderCurrentPage(readerBookmarkPage)}
-                    title={tr('Перейти к закладке', 'Zur Lesezeiche springen')}
+                    onClick={() => {
+                      if (readerUsesOriginalEpubLayout) {
+                        applyReaderProgressPercent(readerBookmarkPercent);
+                        return;
+                      }
+                      setReaderCurrentPage(readerBookmarkPage);
+                    }}
+                    title={readerUsesOriginalEpubLayout
+                      ? tr('Перейти к сохранённому прогрессу', 'Zum gespeicherten Fortschritt springen')
+                      : tr('Перейти к закладке', 'Zur Lesezeiche springen')}
                   >
                     <svg viewBox="0 0 18 18" fill="none" width="16" height="16">
                       <path d="M5.25 3.75h7.5a.75.75 0 0 1 .75.75v9.75L9 11.55l-4.5 2.7V4.5a.75.75 0 0 1 .75-.75Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
