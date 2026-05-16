@@ -17647,7 +17647,11 @@ def upsert_reader_library_document(
                     processing_error = NULL,
                     processing_started_at = COALESCE(bt_3_reader_library.processing_started_at, NOW()),
                     processing_finished_at = NOW(),
-                    ingest_payload = '{}'::jsonb,
+                    ingest_payload = CASE
+                        WHEN COALESCE(bt_3_reader_library.ingest_payload->>'upload_r2_object_key', '') <> ''
+                            THEN bt_3_reader_library.ingest_payload
+                        ELSE '{}'::jsonb
+                    END,
                     last_opened_at = NOW(),
                     updated_at = NOW()
                 RETURNING

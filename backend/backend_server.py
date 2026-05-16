@@ -13676,6 +13676,89 @@ def _build_reader_processing_payload(document: dict | None, *, polling_delay_ms:
     return payload
 
 
+def _iter_reader_upload_object_key_candidates(
+    *,
+    user_id: int,
+    document_id: int,
+    source_type: str,
+    ingest_state: dict | None,
+    document: dict | None,
+) -> list[str]:
+    normalized_source_type = str(source_type or "").strip().lower()
+    payload = ((ingest_state or {}).get("ingest_payload") or {}) if isinstance((ingest_state or {}).get("ingest_payload"), dict) else {}
+    direct_key = str(payload.get("upload_r2_object_key") or "").strip()
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add_candidate(key: str) -> None:
+        normalized_key = str(key or "").strip()
+        if not normalized_key or normalized_key in seen:
+            return
+        seen.add(normalized_key)
+        candidates.append(normalized_key)
+
+    if direct_key:
+        add_candidate(direct_key)
+
+    suffix = ""
+    if normalized_source_type == "epub":
+        suffix = ".epub"
+    elif normalized_source_type == "pdf":
+        suffix = ".pdf"
+    elif normalized_source_type in {"file", "text"}:
+        suffix = ".bin"
+
+    if not suffix:
+        return candidates
+
+    safe_name = f"upload{suffix}"
+    timestamp_candidates = [
+        _parse_reader_iso_datetime((document or {}).get("created_at")),
+        _parse_reader_iso_datetime((document or {}).get("updated_at")),
+        _parse_reader_iso_datetime((ingest_state or {}).get("created_at")),
+        _parse_reader_iso_datetime((ingest_state or {}).get("updated_at")),
+        datetime.now(timezone.utc),
+    ]
+    for dt_value in timestamp_candidates:
+        if not dt_value:
+            continue
+        if dt_value.tzinfo is None:
+            dt_value = dt_value.replace(tzinfo=timezone.utc)
+        month_prefix = dt_value.astimezone(timezone.utc).strftime("%Y/%m")
+        add_candidate(f"reader_uploads/{month_prefix}/{int(user_id)}/{int(document_id)}/{safe_name}")
+    return candidates
+
+
+def _resolve_reader_original_source_bytes(
+    *,
+    user_id: int,
+    document_id: int,
+    source_type: str,
+    ingest_state: dict | None,
+    document: dict | None,
+) -> tuple[bytes, str | None]:
+    for object_key in _iter_reader_upload_object_key_candidates(
+        user_id=int(user_id),
+        document_id=int(document_id),
+        source_type=source_type,
+        ingest_state=ingest_state,
+        document=document,
+    ):
+        try:
+            raw_bytes = r2_get_bytes(object_key) or b""
+        except Exception:
+            logging.exception(
+                "reader original source fetch failed user_id=%s document_id=%s object_key=%s",
+                user_id,
+                document_id,
+                object_key,
+            )
+            continue
+        if raw_bytes:
+            return raw_bytes, object_key
+    return b"", None
+
+
 def _process_reader_library_ingest_job(
     *,
     user_id: int,
@@ -38039,6 +38122,77 @@ def reader_library_open():
             **summarize_db_acquire_events(db_acquire_events),
         )
         return jsonify(response_payload)
+
+
+@app.route("/api/webapp/reader/library/source", methods=["POST"])
+def reader_library_source():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    document_id = payload.get("document_id")
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if document_id is None:
+        return jsonify({"error": "document_id обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    try:
+        document = get_reader_library_document(
+            user_id=int(user_id),
+            document_id=int(document_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            include_content=False,
+        )
+        ingest_state = get_reader_library_document_ingest_state(
+            user_id=int(user_id),
+            document_id=int(document_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка получения исходного файла: {exc}"}), 500
+
+    if not document:
+        return jsonify({"error": "Книга не найдена"}), 404
+    if str(document.get("processing_status") or "ready").strip().lower() != "ready":
+        return jsonify({"error": "Книга ещё обрабатывается"}), 409
+
+    source_type = str(document.get("source_type") or "").strip().lower()
+    if source_type != "epub":
+        return jsonify({"error": "Исходный файл доступен только для EPUB"}), 400
+
+    raw_bytes, _object_key = _resolve_reader_original_source_bytes(
+        user_id=int(user_id),
+        document_id=int(document_id),
+        source_type=source_type,
+        ingest_state=ingest_state,
+        document=document,
+    )
+    if not raw_bytes:
+        return jsonify({"error": "Не удалось найти исходный EPUB файл"}), 404
+
+    safe_title = re.sub(r"[^A-Za-z0-9._-]+", "_", str(document.get("title") or "reader-book").strip()).strip("._")
+    download_name = f"{safe_title or 'reader-book'}.epub"
+    response = send_file(
+        BytesIO(raw_bytes),
+        mimetype="application/epub+zip",
+        as_attachment=False,
+        download_name=download_name,
+        conditional=False,
+        etag=False,
+        max_age=0,
+    )
+    response.headers["Cache-Control"] = "private, no-store, max-age=0"
+    return response
 
 
 @app.route("/api/webapp/reader/library/pages", methods=["POST"])

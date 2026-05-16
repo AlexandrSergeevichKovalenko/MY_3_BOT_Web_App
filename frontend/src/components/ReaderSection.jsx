@@ -58,7 +58,10 @@ export default function ReaderSection(props) {
     persistReaderExactBookmark = () => {},
     isCurrentReaderPageBookmarked,
     readerCanUseOriginalLayout,
-    readerLayoutMode, setReaderLayoutMode,
+    readerUsesOriginalEpubLayout = false,
+    readerOriginalTocHref = '',
+    readerResolvedOriginalTocTitle = '',
+    readerLayoutMode,
     readerReadingMode, setReaderReadingMode,
     readerFontSize, setReaderFontSize,
     readerFontWeight, setReaderFontWeight,
@@ -68,6 +71,8 @@ export default function ReaderSection(props) {
     readerSettingsOpen, setReaderSettingsOpen,
     readerArchiveOpen, setReaderArchiveOpen,
     readerHasContent,
+    readerOriginalEpubLoading = false,
+    readerOriginalEpubError = '',
 
     // ── reading event handlers ───────────────────────────────────
     handleReaderStructuredClick,
@@ -118,6 +123,7 @@ export default function ReaderSection(props) {
     // ── Phase 2.4: audio-sync player ──────────────────────────────
     audioElementRef,
     readerAudioPreloadElementRef,
+    readerEpubViewportRef,
     readerAudioPlayActive = false,
     readerAudioPlayLoading = false,
     readerAudioPlayError = '',
@@ -135,6 +141,8 @@ export default function ReaderSection(props) {
     pauseReaderAudioPlay = () => {},
     resumeReaderAudioPlay = () => {},
     stopReaderAudioPlay = () => {},
+    jumpReaderTocItem = () => {},
+    switchReaderLayoutMode = () => {},
   } = props;
 
   const sectionClass = [
@@ -649,7 +657,13 @@ export default function ReaderSection(props) {
                     <div className="webapp-muted reader-topbar-meta">
                       {tr('Прогресс', 'Fortschritt')}: {Math.round(readerProgressPercent)}%
                       {readerPageCount > 0 ? ` • ${tr('Страница', 'Seite')} ${readerCurrentPage}/${readerPageCount}` : ''}
+                      {readerUsesOriginalEpubLayout ? ` • EPUB Original` : ''}
                     </div>
+                    {readerUsesOriginalEpubLayout && readerResolvedOriginalTocTitle && (
+                      <div className="webapp-muted reader-topbar-meta reader-topbar-meta-chapter">
+                        {readerResolvedOriginalTocTitle}
+                      </div>
+                    )}
                   </div>
                   <button
                     type="button"
@@ -745,6 +759,22 @@ export default function ReaderSection(props) {
                       </svg>
                     </span>
                   </button>
+                  {readerCanUseOriginalLayout && (
+                    <button
+                      type="button"
+                      className={`secondary-button reader-toolbar-btn ${readerLayoutMode === 'original' ? 'is-active' : ''}`}
+                      onClick={() => switchReaderLayoutMode(readerLayoutMode === 'original' ? 'custom' : 'original', { resetTypography: readerLayoutMode !== 'original' })}
+                      title={readerLayoutMode === 'original'
+                        ? tr('Переключить в текстовый режим', 'In Textmodus wechseln')
+                        : tr('Переключить в оригинальную вёрстку', 'Zum Originallayout wechseln')}
+                    >
+                      <span className="reader-toolbar-btn-label">
+                        {readerLayoutMode === 'original'
+                          ? tr('Textmodus', 'Textmodus')
+                          : tr('Original', 'Original')}
+                      </span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="secondary-button reader-topbar-collapse-btn reader-topbar-toggle-chip reader-toolbar-btn"
@@ -777,7 +807,7 @@ export default function ReaderSection(props) {
             )}
 
             {/* ── Audio awaiting-word hint ─────────────────────────── */}
-            {readerAudioAwaitingWordTap && (
+            {readerAudioAwaitingWordTap && !readerUsesOriginalEpubLayout && (
               <div className="reader-audio-word-hint">
                 {tr('Нажми на слово — аудио начнётся с него', 'Tippe ein Wort an — Audio startet dort')}
               </div>
@@ -787,16 +817,30 @@ export default function ReaderSection(props) {
             {readerContent && (
               <article
                 ref={readerArticleRef}
-                className={`reader-article ${readerReadingMode === 'horizontal' ? 'is-horizontal' : 'is-vertical'} ${readerPageCount > 0 ? 'has-pages' : ''}`}
-                onClick={handleReaderStructuredClick}
-                onMouseUp={handleReaderArticleMouseUp}
-                onWheel={handleReaderPageWheel}
-                onTouchStart={handleReaderPageTouchStart}
-                onTouchMove={handleReaderArticleTouchMove}
-                onTouchEnd={handleReaderArticleTouchEnd}
-                onTouchCancel={handleReaderArticleTouchCancel}
+                className={`reader-article ${readerReadingMode === 'horizontal' ? 'is-horizontal' : 'is-vertical'} ${readerPageCount > 0 ? 'has-pages' : ''}${readerUsesOriginalEpubLayout ? ' is-epub-original' : ''}`}
+                onClick={readerUsesOriginalEpubLayout ? undefined : handleReaderStructuredClick}
+                onMouseUp={readerUsesOriginalEpubLayout ? undefined : handleReaderArticleMouseUp}
+                onWheel={readerUsesOriginalEpubLayout ? undefined : handleReaderPageWheel}
+                onTouchStart={readerUsesOriginalEpubLayout ? undefined : handleReaderPageTouchStart}
+                onTouchMove={readerUsesOriginalEpubLayout ? undefined : handleReaderArticleTouchMove}
+                onTouchEnd={readerUsesOriginalEpubLayout ? undefined : handleReaderArticleTouchEnd}
+                onTouchCancel={readerUsesOriginalEpubLayout ? undefined : handleReaderArticleTouchCancel}
               >
-                {readerPageCount > 0 ? (
+                {readerUsesOriginalEpubLayout ? (
+                  <div className="reader-epub-original-shell">
+                    {readerOriginalEpubLoading && (
+                      <div className="reader-epub-original-status webapp-muted">
+                        {tr('Загружаем оригинальный EPUB…', 'Original-EPUB wird geladen…')}
+                      </div>
+                    )}
+                    {readerOriginalEpubError && (
+                      <div className="reader-epub-original-error">
+                        {readerOriginalEpubError}
+                      </div>
+                    )}
+                    <div ref={readerEpubViewportRef} className="reader-epub-original-viewport" />
+                  </div>
+                ) : readerPageCount > 0 ? (
                   <div className="reader-pages-layout">
                   <div
                       key={`reader-page-${readerLayoutMode}-${readerCurrentPage}`}
@@ -1052,14 +1096,20 @@ export default function ReaderSection(props) {
                         <button
                           key={idx}
                           type="button"
-                          className={`reader-toc-item ${item.page_number === readerCurrentPage ? 'is-active' : ''}`}
+                          className={`reader-toc-item ${(
+                            readerUsesOriginalEpubLayout
+                              ? (String(item?.href_normalized || '').trim() !== '' && String(item?.href_normalized || '').trim() === String(readerOriginalTocHref || '').trim())
+                              : item.page_number === readerCurrentPage
+                          ) ? 'is-active' : ''}`}
                           onClick={() => {
-                            setReaderCurrentPage(item.page_number);
+                            jumpReaderTocItem(item);
                             setReaderShowToc(false);
                           }}
                         >
                           <span className="reader-toc-item-title">{item.title}</span>
-                          <span className="reader-toc-item-page webapp-muted">{item.page_number}</span>
+                          {!readerUsesOriginalEpubLayout && (
+                            <span className="reader-toc-item-page webapp-muted">{item.page_number}</span>
+                          )}
                         </button>
                       ))
                     )}
@@ -1085,13 +1135,11 @@ export default function ReaderSection(props) {
                         <button
                           type="button"
                           className="secondary-button"
-                          onClick={() => {
-                            setReaderFontSize(READER_DEFAULT_FONT_SIZE);
-                            setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
-                            setReaderLayoutMode('original');
-                          }}
+                          onClick={() => switchReaderLayoutMode(readerLayoutMode === 'original' ? 'custom' : 'original', { resetTypography: readerLayoutMode !== 'original' })}
                         >
-                          {tr('Оригинал', 'Original')}
+                          {readerLayoutMode === 'original'
+                            ? tr('Текстовый режим', 'Textmodus')
+                            : tr('Оригинал', 'Original')}
                         </button>
                       )}
                       <button
@@ -1107,14 +1155,43 @@ export default function ReaderSection(props) {
                     <div className="webapp-muted" style={{ fontSize: 12 }}>
                       {readerLayoutMode === 'original'
                         ? tr(
-                          'Сейчас открыт оригинальный режим: исходная разбивка страниц книги. Любое изменение шрифта переключит книгу в адаптивный режим.',
-                          'Aktuell ist der Originalmodus aktiv: die urspruengliche Seitenteilung des Buches. Jede Schriftanpassung schaltet in den adaptiven Modus um.'
+                          'Сейчас открыт оригинальный режим: читалка показывает исходную EPUB/PDF-вёрстку книги. Любое изменение шрифта переключит книгу в адаптивный текстовый режим.',
+                          'Aktuell ist der Originalmodus aktiv: Der Reader zeigt das urspruengliche EPUB/PDF-Layout des Buches. Jede Schriftanpassung schaltet in den adaptiven Textmodus um.'
                         )
                         : tr(
-                          'Сейчас открыт адаптивный режим: страницы пересчитаны под ваш шрифт и экран. Кнопка "Оригинал" вернёт исходную разбивку.',
-                          'Aktuell ist der adaptive Modus aktiv: die Seiten wurden fuer deine Schrift und deinen Bildschirm neu berechnet. Mit "Original" kehrst du zur urspruenglichen Seitenteilung zurueck.'
+                          'Сейчас открыт адаптивный режим: текст пересчитан под ваш шрифт и экран. Кнопка "Оригинал" вернёт исходную вёрстку книги.',
+                          'Aktuell ist der adaptive Modus aktiv: Der Text wurde fuer deine Schrift und deinen Bildschirm neu berechnet. Mit "Original" kehrst du zum urspruenglichen Buchlayout zurueck.'
                         )}
                     </div>
+                  )}
+                  {readerCanUseOriginalLayout && (
+                    <label className="webapp-field">
+                      <span>{tr('Режим отображения', 'Anzeigemodus')}</span>
+                      <div className="reader-theme-seg reader-layout-seg">
+                        {[
+                          {
+                            key: 'original',
+                            label: tr('Original', 'Original'),
+                            hint: tr('Исходная EPUB/PDF-вёрстка', 'Urspruengliches EPUB/PDF-Layout'),
+                          },
+                          {
+                            key: 'custom',
+                            label: tr('Textmodus', 'Textmodus'),
+                            hint: tr('Нужен для word-tap и аудио', 'Fuer Wort-Tap und Audio'),
+                          },
+                        ].map((option) => (
+                          <button
+                            key={option.key}
+                            type="button"
+                            className={`reader-theme-seg-btn ${readerLayoutMode === option.key ? 'is-active' : ''}`}
+                            onClick={() => switchReaderLayoutMode(option.key, { resetTypography: option.key === 'original' })}
+                          >
+                            <span className="reader-layout-seg-label">{option.label}</span>
+                            <span className="reader-layout-seg-hint">{option.hint}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </label>
                   )}
 
                   {/* Phase 2.2: Theme switcher */}
@@ -1148,7 +1225,7 @@ export default function ReaderSection(props) {
                       step="1"
                       value={readerFontSize}
                       onChange={(event) => {
-                        setReaderLayoutMode('custom');
+                        switchReaderLayoutMode('custom');
                         setReaderFontSize(Number(event.target.value));
                       }}
                     />
@@ -1163,7 +1240,7 @@ export default function ReaderSection(props) {
                       step="50"
                       value={readerFontWeight}
                       onChange={(event) => {
-                        setReaderLayoutMode('custom');
+                        switchReaderLayoutMode('custom');
                         setReaderFontWeight(Number(event.target.value));
                       }}
                     />

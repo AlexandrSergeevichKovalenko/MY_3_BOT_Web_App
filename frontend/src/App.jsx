@@ -49,6 +49,7 @@ const READER_DEFAULT_FONT_SIZE = 18;
 const READER_DEFAULT_FONT_WEIGHT = 500;
 const READER_PAGINATION_FIT_RESERVE_PX = 12;
 const READER_LOCAL_BOOKMARKS_STORAGE_KEY = 'dds_reader_exact_bookmarks_v1';
+const READER_LOCAL_ORIGINAL_LOCATIONS_STORAGE_KEY = 'dds_reader_original_locations_v1';
 const WEEKLY_SUMMARY_VISITS_ENABLED = false;
 const ALLOW_MANUAL_INITDATA_FALLBACK = Boolean(import.meta.env.DEV);
 const ANDROID_TRANSLATION_DRAFT_DEBUG_QUERY_KEY = 'translation_draft_debug';
@@ -65,6 +66,11 @@ const ECONOMICS_RAILWAY_POSTGRES_VOLUME_STORAGE_KEY = 'dds_economics_railway_pos
 const ECONOMICS_RAILWAY_REDIS_RAM_STORAGE_KEY = 'dds_economics_railway_redis_ram_v1';
 const ECONOMICS_RAILWAY_EGRESS_STORAGE_KEY = 'dds_economics_railway_egress_v1';
 const ECONOMICS_PERIOD_OPTIONS = new Set(['day', 'week', 'month', 'quarter', 'half-year', 'year', 'all']);
+const EPUB_RUNTIME_CDN_URLS = [
+  'https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js',
+  'https://unpkg.com/epubjs/dist/epub.min.js',
+];
+let readerEpubRuntimePromise = null;
 
 function normalizeReaderPaginationText(rawText) {
   return String(rawText || '')
@@ -80,6 +86,15 @@ function normalizeReaderVisiblePageText(rawText) {
     .map((para) => para.replace(/\n/g, ' ').replace(/ {2,}/g, ' ').trim())
     .filter(Boolean)
     .join('\n\n');
+}
+
+function normalizeReaderEpubHref(rawHref) {
+  return String(rawHref || '')
+    .trim()
+    .replace(/^https?:\/\/[^/]+/i, '')
+    .replace(/^[./]+/, '')
+    .split('#', 1)[0]
+    .toLowerCase();
 }
 
 function readStoredReaderExactBookmarks() {
@@ -125,6 +140,92 @@ function writeStoredReaderExactBookmark(documentId, payload) {
   } catch {
     // ignore storage errors
   }
+}
+
+function readStoredReaderOriginalLocations() {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = String(window.localStorage.getItem(READER_LOCAL_ORIGINAL_LOCATIONS_STORAGE_KEY) || '').trim();
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function readStoredReaderOriginalLocation(documentId) {
+  const safeId = String(documentId || '').trim();
+  if (!safeId) return null;
+  const all = readStoredReaderOriginalLocations();
+  const item = all[safeId];
+  if (!item || typeof item !== 'object') return null;
+  const cfi = String(item.cfi || '').trim();
+  const progressPercent = Number(item.progressPercent || 0);
+  return {
+    cfi: cfi || '',
+    progressPercent: Number.isFinite(progressPercent) ? Math.max(0, Math.min(100, progressPercent)) : 0,
+  };
+}
+
+function writeStoredReaderOriginalLocation(documentId, payload) {
+  if (typeof window === 'undefined') return;
+  const safeId = String(documentId || '').trim();
+  if (!safeId) return;
+  try {
+    const all = readStoredReaderOriginalLocations();
+    all[safeId] = {
+      cfi: String(payload?.cfi || '').trim(),
+      progressPercent: Math.max(0, Math.min(100, Number(payload?.progressPercent || 0))),
+      updatedAt: new Date().toISOString(),
+    };
+    window.localStorage.setItem(READER_LOCAL_ORIGINAL_LOCATIONS_STORAGE_KEY, JSON.stringify(all));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function loadReaderEpubRuntime() {
+  if (typeof window === 'undefined') {
+    return Promise.reject(new Error('EPUB runtime is unavailable outside the browser'));
+  }
+  if (typeof window.ePub === 'function') {
+    return Promise.resolve(window.ePub);
+  }
+  if (readerEpubRuntimePromise) {
+    return readerEpubRuntimePromise;
+  }
+  readerEpubRuntimePromise = (async () => {
+    for (const url of EPUB_RUNTIME_CDN_URLS) {
+      try {
+        await new Promise((resolve, reject) => {
+          const existing = document.querySelector(`script[data-reader-epub-runtime="${url}"]`);
+          if (existing) {
+            existing.addEventListener('load', resolve, { once: true });
+            existing.addEventListener('error', reject, { once: true });
+            if (typeof window.ePub === 'function') {
+              resolve();
+            }
+            return;
+          }
+          const script = document.createElement('script');
+          script.async = true;
+          script.src = url;
+          script.dataset.readerEpubRuntime = url;
+          script.onload = () => resolve();
+          script.onerror = () => reject(new Error(`Failed to load ${url}`));
+          document.body.appendChild(script);
+        });
+        if (typeof window.ePub === 'function') {
+          return window.ePub;
+        }
+      } catch (_error) {
+        // try the next CDN
+      }
+    }
+    throw new Error('EPUB runtime failed to load');
+  })();
+  return readerEpubRuntimePromise;
 }
 
 function resolveStoredReaderExactBookmarkPage(storedBookmark, {
@@ -431,7 +532,7 @@ function getReaderPreferredLayoutMode(sourceType, pages) {
   const normalizedSourceType = String(sourceType || '').trim().toLowerCase();
   const hasPages = Array.isArray(pages) && pages.length > 0;
   if (!hasPages) return 'custom';
-  return normalizedSourceType === 'pdf' ? 'original' : 'custom';
+  return normalizedSourceType === 'pdf' || normalizedSourceType === 'epub' ? 'original' : 'custom';
 }
 
 function readStoredEconomicsPeriod() {
@@ -4818,6 +4919,10 @@ function AppInner() {
   const [readerPages, setReaderPages] = useState([]);
   const [readerDynamicPages, setReaderDynamicPages] = useState([]);
   const [readerCurrentPage, setReaderCurrentPage] = useState(1);
+  const [readerOriginalEpubLoading, setReaderOriginalEpubLoading] = useState(false);
+  const [readerOriginalEpubError, setReaderOriginalEpubError] = useState('');
+  const [readerOriginalTocHref, setReaderOriginalTocHref] = useState('');
+  const [readerOriginalTocTitle, setReaderOriginalTocTitle] = useState('');
   const [readerShowToc, setReaderShowToc] = useState(false);
   const [readerTocItems, setReaderTocItems] = useState([]);
   const [readerShowPageJump, setReaderShowPageJump] = useState(false);
@@ -4857,6 +4962,11 @@ function AppInner() {
   const [readerAudioPaused, setReaderAudioPaused] = useState(false);
   const audioElementRef = useRef(null);
   const readerAudioPreloadElementRef = useRef(null);
+  const readerEpubViewportRef = useRef(null);
+  const readerEpubBookRef = useRef(null);
+  const readerEpubRenditionRef = useRef(null);
+  const readerEpubRelocationSaveTimeoutRef = useRef(null);
+  const readerEpubLoadTokenRef = useRef(0);
   const audioRafRef = useRef(0);
   const readerAudioPlayingForPageRef = useRef(null);
   const readerAudioRequestTokenRef = useRef(0);
@@ -4871,6 +4981,28 @@ function AppInner() {
       return (v === 'sepia' || v === 'cream') ? v : 'dark';
     } catch { return 'dark'; }
   });
+  const destroyReaderOriginalEpub = useCallback(() => {
+    if (readerEpubRelocationSaveTimeoutRef.current) {
+      window.clearTimeout(readerEpubRelocationSaveTimeoutRef.current);
+      readerEpubRelocationSaveTimeoutRef.current = null;
+    }
+    try {
+      readerEpubRenditionRef.current?.destroy?.();
+    } catch (_error) {
+      // ignore renderer teardown failures
+    }
+    try {
+      readerEpubBookRef.current?.destroy?.();
+    } catch (_error) {
+      // ignore book teardown failures
+    }
+    readerEpubRenditionRef.current = null;
+    readerEpubBookRef.current = null;
+    const viewport = readerEpubViewportRef.current;
+    if (viewport) {
+      viewport.innerHTML = '';
+    }
+  }, []);
   const applyReaderColorTheme = (next) => {
     setReaderColorTheme(next);
     try { localStorage.setItem('reader_color_theme', next); } catch {}
@@ -12210,9 +12342,14 @@ function AppInner() {
     () => normalizeReaderPaginationText(readerContent),
     [readerContent]
   );
-  const readerCanUseOriginalLayout = readerSourceType === 'pdf' && Array.isArray(readerPages) && readerPages.length > 0;
+  const readerUsesOriginalEpubLayout = readerSourceType === 'epub' && readerLayoutMode === 'original';
+  const readerCanUseOriginalLayout = readerSourceType === 'epub'
+    || (readerSourceType === 'pdf' && Array.isArray(readerPages) && readerPages.length > 0);
   const readerUsesCustomLayout = !readerCanUseOriginalLayout || readerLayoutMode === 'custom';
   const readerDisplayPages = useMemo(() => {
+    if (readerUsesOriginalEpubLayout) {
+      return [];
+    }
     if (readerUsesCustomLayout && Array.isArray(readerDynamicPages) && readerDynamicPages.length > 0) {
       return readerDynamicPages
         .map((item, index) => ({
@@ -12228,7 +12365,7 @@ function AppInner() {
     }
     if (!readerCanonicalText) return [];
     return [{ page_number: 1, text: readerCanonicalText }];
-  }, [readerCanonicalText, readerDynamicPages, readerPages, readerUsesCustomLayout]);
+  }, [readerCanonicalText, readerDynamicPages, readerPages, readerUsesCustomLayout, readerUsesOriginalEpubLayout]);
   const getReaderDisplayPageText = useCallback((page) => {
     const pageIndex = Math.max(0, Number(page || 1) - 1);
     return normalizeReaderVisiblePageText(String(readerDisplayPages[pageIndex]?.text || ''));
@@ -12357,11 +12494,22 @@ function AppInner() {
     && readerTopbarCollapsed
     && !readerArchiveOpen;
   const readerVisibleText = useMemo(() => {
+    if (readerUsesOriginalEpubLayout) {
+      return '';
+    }
     if (readerPageCount > 0) {
       return getReaderDisplayPageText(readerCurrentPage);
     }
     return normalizeReaderVisiblePageText(String(readerContent || ''));
-  }, [getReaderDisplayPageText, readerPageCount, readerCurrentPage, readerContent]);
+  }, [getReaderDisplayPageText, readerPageCount, readerCurrentPage, readerContent, readerUsesOriginalEpubLayout]);
+  const readerResolvedOriginalTocTitle = useMemo(() => {
+    const currentHref = normalizeReaderEpubHref(readerOriginalTocHref);
+    if (!currentHref) return String(readerOriginalTocTitle || '').trim();
+    const matched = (Array.isArray(readerTocItems) ? readerTocItems : []).find((item) => (
+      normalizeReaderEpubHref(item?.href || item?.cfi || '') === currentHref
+    ));
+    return String(matched?.title || readerOriginalTocTitle || '').trim();
+  }, [readerOriginalTocHref, readerOriginalTocTitle, readerTocItems]);
   const readerSegmentationHash = useMemo(() => {
     const value = String(readerVisibleText || '');
     let hash = 0;
@@ -15599,9 +15747,14 @@ function AppInner() {
 
   useEffect(() => {
     if (readerHasContent) return;
+    destroyReaderOriginalEpub();
     setReaderDynamicPages([]);
     setReaderPaginationLayoutTick(0);
     setReaderLayoutMode('custom');
+    setReaderOriginalEpubLoading(false);
+    setReaderOriginalEpubError('');
+    setReaderOriginalTocHref('');
+    setReaderOriginalTocTitle('');
     readerPendingPagePercentRef.current = null;
     setReaderImmersive(false);
     setReaderTimerPaused(false);
@@ -15610,7 +15763,188 @@ function AppInner() {
     setReaderSessionStartedAt('');
     readerAutoPausedByIdleRef.current = false;
     readerLastInteractionAtRef.current = 0;
-  }, [readerHasContent]);
+  }, [destroyReaderOriginalEpub, readerHasContent]);
+
+  useEffect(() => {
+    if (!readerUsesOriginalEpubLayout || !readerHasContent || !initData || !readerDocumentId) {
+      setReaderOriginalEpubLoading(false);
+      setReaderOriginalEpubError('');
+      setReaderOriginalTocHref('');
+      setReaderOriginalTocTitle('');
+      destroyReaderOriginalEpub();
+      return undefined;
+    }
+
+    const loadToken = readerEpubLoadTokenRef.current + 1;
+    readerEpubLoadTokenRef.current = loadToken;
+    let cancelled = false;
+
+    const flattenNavigationItems = (items, acc = []) => {
+      (Array.isArray(items) ? items : []).forEach((item) => {
+        const title = String(item?.label || item?.title || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        const href = String(item?.href || '').trim();
+        if (title && href) {
+          acc.push({ title, href, href_normalized: normalizeReaderEpubHref(href) });
+        }
+        if (Array.isArray(item?.subitems) && item.subitems.length > 0) {
+          flattenNavigationItems(item.subitems, acc);
+        }
+      });
+      return acc;
+    };
+
+    const resolveActiveNavigationItem = (items, href) => {
+      const normalizedHref = normalizeReaderEpubHref(href);
+      if (!normalizedHref || !Array.isArray(items) || items.length === 0) return null;
+      return items.find((item) => item?.href_normalized === normalizedHref)
+        || items.find((item) => normalizedHref.startsWith(String(item?.href_normalized || '')))
+        || null;
+    };
+
+    const readReaderSourceError = async (response) => {
+      try {
+        const raw = await response.text();
+        if (!raw) {
+          return `HTTP ${response.status}`;
+        }
+        try {
+          const parsed = JSON.parse(raw);
+          return String(parsed?.error || parsed?.message || '').trim() || `HTTP ${response.status}`;
+        } catch (_error) {
+          return raw.replace(/\s+/g, ' ').trim() || `HTTP ${response.status}`;
+        }
+      } catch (_error) {
+        return `HTTP ${response.status}`;
+      }
+    };
+
+    const bootOriginalEpub = async () => {
+      try {
+        setReaderOriginalEpubLoading(true);
+        setReaderOriginalEpubError('');
+        setReaderTocItems([]);
+        destroyReaderOriginalEpub();
+
+        const response = await fetch('/api/webapp/reader/library/source', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData, document_id: readerDocumentId }),
+        });
+        if (!response.ok) {
+          throw new Error(await readReaderSourceError(response));
+        }
+
+        const epubBuffer = await response.arrayBuffer();
+        const ePubFactory = await loadReaderEpubRuntime();
+        if (cancelled || readerEpubLoadTokenRef.current !== loadToken) return;
+
+        const viewport = readerEpubViewportRef.current;
+        if (!viewport) {
+          throw new Error('EPUB viewport is unavailable');
+        }
+
+        const book = ePubFactory(epubBuffer);
+        const rendition = book.renderTo(viewport, {
+          width: '100%',
+          height: '100%',
+          spread: 'none',
+          flow: readerReadingMode === 'horizontal' ? 'paginated' : 'scrolled-doc',
+          manager: readerReadingMode === 'horizontal' ? 'default' : 'continuous',
+        });
+
+        readerEpubBookRef.current = book;
+        readerEpubRenditionRef.current = rendition;
+
+        let flattenedNavigationItems = [];
+
+        rendition.on('relocated', (location) => {
+          if (cancelled || readerEpubLoadTokenRef.current !== loadToken) return;
+          const start = location?.start || {};
+          const pct = Math.max(0, Math.min(100, Number((Number(start.percentage || 0) * 100).toFixed(2))));
+          const cfi = String(start.cfi || '').trim();
+          const href = String(start.href || '').trim();
+          const activeNavItem = resolveActiveNavigationItem(flattenedNavigationItems, href);
+          setReaderProgressPercent(pct);
+          setReaderOriginalTocHref(normalizeReaderEpubHref(href));
+          setReaderOriginalTocTitle(String(activeNavItem?.title || ''));
+          if (cfi) {
+            writeStoredReaderOriginalLocation(readerDocumentId, { cfi, progressPercent: pct });
+          }
+          if (readerEpubRelocationSaveTimeoutRef.current) {
+            window.clearTimeout(readerEpubRelocationSaveTimeoutRef.current);
+          }
+          readerEpubRelocationSaveTimeoutRef.current = window.setTimeout(() => {
+            syncReaderState({ progress_percent: pct });
+          }, 500);
+        });
+
+        try {
+          const navigation = await book.loaded.navigation;
+          if (!cancelled && readerEpubLoadTokenRef.current === loadToken) {
+            flattenedNavigationItems = flattenNavigationItems(navigation?.toc);
+            setReaderTocItems(flattenedNavigationItems);
+          }
+        } catch (_error) {
+          flattenedNavigationItems = [];
+          setReaderTocItems([]);
+        }
+
+        try {
+          await book.ready;
+        } catch (_error) {
+          // continue with best effort rendering
+        }
+        try {
+          await book.locations.generate(1600);
+        } catch (_error) {
+          // percentage mapping is optional
+        }
+
+        const storedOriginalLocation = readStoredReaderOriginalLocation(readerDocumentId);
+        const bookmarkPercent = Math.max(0, Number(readerBookmarkPercent || 0));
+        const progressPercent = Math.max(0, Number(readerProgressPercent || 0));
+        const initialTarget = (
+          bookmarkPercent > 0 && book.locations && typeof book.locations.cfiFromPercentage === 'function'
+            ? String(book.locations.cfiFromPercentage(bookmarkPercent / 100) || '').trim()
+            : ''
+        ) || storedOriginalLocation?.cfi
+          || (progressPercent > 0 && book.locations && typeof book.locations.cfiFromPercentage === 'function'
+            ? String(book.locations.cfiFromPercentage(progressPercent / 100) || '').trim()
+            : '');
+
+        await rendition.display(initialTarget || undefined);
+        if (!cancelled && readerEpubLoadTokenRef.current === loadToken) {
+          setReaderOriginalEpubLoading(false);
+          setReaderOriginalEpubError('');
+        }
+      } catch (error) {
+        if (cancelled || readerEpubLoadTokenRef.current !== loadToken) return;
+        destroyReaderOriginalEpub();
+        setReaderOriginalEpubLoading(false);
+        setReaderOriginalEpubError(normalizeNetworkErrorMessage(
+          error,
+          'Не удалось открыть оригинальный EPUB. Переключаемся на адаптивный текстовый режим.',
+          'Original-EPUB konnte nicht geladen werden. Wir wechseln in den adaptiven Textmodus.'
+        ));
+        setReaderLayoutMode('custom');
+      }
+    };
+
+    void bootOriginalEpub();
+
+    return () => {
+      cancelled = true;
+      destroyReaderOriginalEpub();
+    };
+  }, [
+    destroyReaderOriginalEpub,
+    initData,
+    normalizeNetworkErrorMessage,
+    readerDocumentId,
+    readerHasContent,
+    readerReadingMode,
+    readerUsesOriginalEpubLayout,
+  ]);
 
   useLayoutEffect(() => {
     if (!readerUsesCustomLayout) return undefined;
@@ -15768,7 +16102,7 @@ function AppInner() {
     const stablePercent = computeReaderProgressPercent();
     readerPendingPagePercentRef.current = stablePercent;
     setReaderProgressPercent(stablePercent);
-    setReaderLayoutMode('custom');
+    switchReaderLayoutMode('custom');
   }, [
     readerLayoutMode,
     readerCanUseOriginalLayout,
@@ -15776,11 +16110,13 @@ function AppInner() {
     readerFontSize,
     readerFontWeight,
     readerImmersive,
+    switchReaderLayoutMode,
   ]);
 
   useEffect(() => {
     const node = readerArticleRef.current;
     if (!node || !readerDocumentId || !readerContent) return undefined;
+    if (readerUsesOriginalEpubLayout) return undefined;
     if (readerPageCount > 0) return undefined;
     const handleScroll = () => {
       markReaderInteraction();
@@ -15802,7 +16138,7 @@ function AppInner() {
         readerStateSaveTimeoutRef.current = null;
       }
     };
-  }, [readerDocumentId, readerReadingMode, readerContent, readerPageCount, markReaderInteraction]);
+  }, [markReaderInteraction, readerContent, readerDocumentId, readerPageCount, readerReadingMode, readerUsesOriginalEpubLayout]);
 
   const loadReaderPageRange = useCallback(async (targetPage) => {
     if (!initData || !readerDocumentId) return;
@@ -19298,6 +19634,9 @@ function AppInner() {
   }
 
   function computeReaderProgressPercent() {
+    if (readerUsesOriginalEpubLayout) {
+      return Math.max(0, Math.min(100, Number(readerProgressPercent || 0)));
+    }
     if (readerPageCount > 0) {
       const page = Math.max(1, Math.min(readerPageCount, Number(readerCurrentPage || 1)));
       return Math.max(0, Math.min(100, (page / readerPageCount) * 100));
@@ -19313,6 +19652,16 @@ function AppInner() {
   }
 
   function applyReaderProgressPercent(percent) {
+    if (readerUsesOriginalEpubLayout) {
+      const rendition = readerEpubRenditionRef.current;
+      const book = readerEpubBookRef.current;
+      if (!rendition || !book?.locations || typeof book.locations.cfiFromPercentage !== 'function') return;
+      const safe = Math.max(0, Math.min(100, Number(percent || 0)));
+      const targetCfi = safe <= 0 ? '' : String(book.locations.cfiFromPercentage(safe / 100) || '').trim();
+      const displayPromise = targetCfi ? rendition.display(targetCfi) : rendition.display();
+      Promise.resolve(displayPromise).catch(() => {});
+      return;
+    }
     if (readerPageCount > 0) {
       setReaderCurrentPage(resolveReaderPageFromPercent(percent, readerPageCount));
       return;
@@ -19328,6 +19677,45 @@ function AppInner() {
     const max = Math.max(1, node.scrollHeight - node.clientHeight);
     node.scrollTop = (safe / 100) * max;
   }
+
+  const switchReaderLayoutMode = useCallback((nextMode, options = {}) => {
+    const normalizedNextMode = String(nextMode || '').trim().toLowerCase();
+    if (normalizedNextMode !== 'original' && normalizedNextMode !== 'custom') return;
+    if (normalizedNextMode === readerLayoutMode) return;
+    const resetTypography = Boolean(options?.resetTypography);
+    if (normalizedNextMode === 'custom') {
+      const stablePercent = computeReaderProgressPercent();
+      readerPendingPagePercentRef.current = stablePercent;
+      setReaderProgressPercent(stablePercent);
+      if (resetTypography) {
+        setReaderFontSize(READER_DEFAULT_FONT_SIZE);
+        setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
+      }
+      setReaderLayoutMode('custom');
+      return;
+    }
+    if (resetTypography) {
+      setReaderFontSize(READER_DEFAULT_FONT_SIZE);
+      setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
+    }
+    setReaderLayoutMode('original');
+  }, [
+    computeReaderProgressPercent,
+    readerLayoutMode,
+  ]);
+
+  const jumpReaderTocItem = useCallback((item) => {
+    if (readerUsesOriginalEpubLayout) {
+      const href = String(item?.href || item?.cfi || '').trim();
+      if (!href || !readerEpubRenditionRef.current) return;
+      setReaderOriginalTocHref(normalizeReaderEpubHref(href));
+      setReaderOriginalTocTitle(String(item?.title || '').trim());
+      Promise.resolve(readerEpubRenditionRef.current.display(href)).catch(() => {});
+      return;
+    }
+    const pageNumber = Math.max(1, Number(item?.page_number || 1));
+    setReaderCurrentPage(pageNumber);
+  }, [readerUsesOriginalEpubLayout]);
 
   const resetReaderPhraseGesture = () => {
     readerPhraseGestureRef.current = {
@@ -20086,6 +20474,7 @@ function AppInner() {
   }, []);
 
   const loadReaderToc = useCallback(async () => {
+    if (readerUsesOriginalEpubLayout) return;
     if (!initData || !readerDocumentId) return;
     try {
       const response = await fetch('/api/webapp/reader/library/toc', {
@@ -20097,7 +20486,7 @@ function AppInner() {
       const data = await response.json();
       setReaderTocItems(Array.isArray(data?.toc) ? data.toc : []);
     } catch (_e) {}
-  }, [initData, readerDocumentId]);
+  }, [initData, readerDocumentId, readerUsesOriginalEpubLayout]);
 
   async function syncReaderState(patch = {}) {
     if (!initData || !readerDocumentId) return;
@@ -20132,6 +20521,10 @@ function AppInner() {
       setReaderLoading(true);
       setReaderError('');
       setReaderLibraryError('');
+      setReaderOriginalEpubError('');
+      setReaderOriginalTocHref('');
+      setReaderOriginalTocTitle('');
+      setReaderTocItems([]);
       const response = await fetch('/api/webapp/reader/library/open', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -20194,6 +20587,7 @@ function AppInner() {
       setReaderProgressPercent(progress);
       const storedBookmark = readStoredReaderExactBookmark(safeDocumentId);
       const resolvedTotalPages = sparsePages.length;
+      const usesOriginalEpub = String(sourceType || '').trim().toLowerCase() === 'epub' && preferredLayoutMode === 'original';
       const pageFromProgress = resolvedTotalPages > 0
         ? resolveReaderPageFromPercent(bookmark > 0 ? bookmark : progress, resolvedTotalPages)
         : 1;
@@ -20201,12 +20595,14 @@ function AppInner() {
         pageCount: resolvedTotalPages,
         layoutMode: preferredLayoutMode,
       });
-      const initialPage = preferredLayoutMode === 'custom'
+      const initialPage = preferredLayoutMode === 'custom' || usesOriginalEpub
         ? 1
         : (exactBookmarkPage || pageFromProgress);
       setReaderCurrentPage(initialPage);
       setReaderBookmarkPercent(
-        resolvedTotalPages > 0
+        usesOriginalEpub
+          ? Number((bookmark > 0 ? bookmark : progress).toFixed(2))
+          : resolvedTotalPages > 0
           ? Number((preferredLayoutMode === 'custom'
             ? (bookmark > 0 ? bookmark : progress)
             : ((initialPage / resolvedTotalPages) * 100)).toFixed(2))
@@ -20743,6 +21139,13 @@ function AppInner() {
 
   // Toolbar play button: pause/resume if playing, else toggle word-select mode
   const handleReaderAudioPlayBtn = useCallback(() => {
+    if (readerUsesOriginalEpubLayout) {
+      setReaderAudioPlayError(tr(
+        'Аудио с выбором слова доступно в адаптивном текстовом режиме. Переключись из Original в Settings.',
+        'Audio mit Wortauswahl ist im adaptiven Textmodus verfuegbar. Wechsle in den Einstellungen aus Original heraus.'
+      ));
+      return;
+    }
     if (readerAudioPlayActive) {
       if (readerAudioPaused) resumeReaderAudioPlay();
       else pauseReaderAudioPlay();
@@ -20752,7 +21155,7 @@ function AppInner() {
     const next = !readerAudioAwaitingWordTapRef.current;
     readerAudioAwaitingWordTapRef.current = next;
     setReaderAudioAwaitingWordTap(next);
-  }, [readerAudioPlayActive, readerAudioPaused, resumeReaderAudioPlay, pauseReaderAudioPlay, primeReaderAudioPlayback]);
+  }, [pauseReaderAudioPlay, primeReaderAudioPlayback, readerAudioPaused, readerAudioPlayActive, readerUsesOriginalEpubLayout, resumeReaderAudioPlay, tr]);
 
   const stopReaderAudioPlay = useCallback(() => {
     readerAudioRequestTokenRef.current += 1;
@@ -20885,6 +21288,10 @@ function AppInner() {
     setReaderLoading(true);
     setReaderError('');
     setReaderErrorCode('');
+    setReaderOriginalEpubError('');
+    setReaderOriginalTocHref('');
+    setReaderOriginalTocTitle('');
+    setReaderTocItems([]);
     try {
       const buildReaderApiError = async (response, fallbackRu, fallbackDe) => {
         const fallback = tr(fallbackRu, fallbackDe);
@@ -21016,6 +21423,7 @@ function AppInner() {
       setReaderProgressPercent(progress);
       const storedBookmark = readStoredReaderExactBookmark(docId);
       const resolvedTotalPages = pages.length;
+      const usesOriginalEpub = String(sourceType || '').trim().toLowerCase() === 'epub' && preferredLayoutMode === 'original';
       const pageFromProgress = resolvedTotalPages > 0
         ? resolveReaderPageFromPercent(bookmark || progress, resolvedTotalPages)
         : 1;
@@ -21023,12 +21431,14 @@ function AppInner() {
         pageCount: resolvedTotalPages,
         layoutMode: preferredLayoutMode,
       });
-      const initialPage = preferredLayoutMode === 'custom'
+      const initialPage = preferredLayoutMode === 'custom' || usesOriginalEpub
         ? 1
         : (exactBookmarkPage || pageFromProgress);
       setReaderCurrentPage(initialPage);
       setReaderBookmarkPercent(
-        resolvedTotalPages > 0
+        usesOriginalEpub
+          ? Number((bookmark || progress || 0).toFixed(2))
+          : resolvedTotalPages > 0
           ? Number((preferredLayoutMode === 'custom'
             ? (bookmark || progress || 0)
             : ((initialPage / resolvedTotalPages) * 100)).toFixed(2))
@@ -30473,6 +30883,9 @@ function AppInner() {
                   persistReaderExactBookmark={persistReaderExactBookmark}
                   isCurrentReaderPageBookmarked={isCurrentReaderPageBookmarked}
                   readerCanUseOriginalLayout={readerCanUseOriginalLayout}
+                  readerUsesOriginalEpubLayout={readerUsesOriginalEpubLayout}
+                  readerOriginalTocHref={readerOriginalTocHref}
+                  readerResolvedOriginalTocTitle={readerResolvedOriginalTocTitle}
                   readerLayoutMode={readerLayoutMode}                 setReaderLayoutMode={setReaderLayoutMode}
                   readerReadingMode={readerReadingMode}               setReaderReadingMode={setReaderReadingMode}
                   readerFontSize={readerFontSize}                     setReaderFontSize={setReaderFontSize}
@@ -30483,6 +30896,8 @@ function AppInner() {
                   readerSettingsOpen={readerSettingsOpen}             setReaderSettingsOpen={setReaderSettingsOpen}
                   readerArchiveOpen={readerArchiveOpen}               setReaderArchiveOpen={setReaderArchiveOpen}
                   readerHasContent={readerHasContent}
+                  readerOriginalEpubLoading={readerOriginalEpubLoading}
+                  readerOriginalEpubError={readerOriginalEpubError}
 
                   handleReaderStructuredClick={handleReaderStructuredClick}
                   handleReaderArticleMouseUp={handleReaderArticleMouseUp}
@@ -30527,6 +30942,7 @@ function AppInner() {
 
                   audioElementRef={audioElementRef}
                   readerAudioPreloadElementRef={readerAudioPreloadElementRef}
+                  readerEpubViewportRef={readerEpubViewportRef}
                   readerAudioPlayActive={readerAudioPlayActive}
                   readerAudioPlayLoading={readerAudioPlayLoading}
                   readerAudioPlayError={readerAudioPlayError}
@@ -30542,6 +30958,8 @@ function AppInner() {
                   pauseReaderAudioPlay={pauseReaderAudioPlay}
                   resumeReaderAudioPlay={resumeReaderAudioPlay}
                   stopReaderAudioPlay={stopReaderAudioPlay}
+                  jumpReaderTocItem={jumpReaderTocItem}
+                  switchReaderLayoutMode={switchReaderLayoutMode}
                 />
               </PerfProfiler>
             )}
