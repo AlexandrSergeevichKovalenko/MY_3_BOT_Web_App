@@ -141,6 +141,10 @@ export default function ReaderSection(props) {
     readerHasContent && readerImmersive && !readerArchiveOpen ? 'is-immersive' : '',
     readerHasContent && readerImmersive && !readerArchiveOpen && readerTopbarCollapsed ? 'is-topbar-collapsed' : '',
   ].filter(Boolean).join(' ');
+  const readerUsesCustomLayout = !readerCanUseOriginalLayout || readerLayoutMode === 'custom';
+  const readerShowsLazyOriginalPage = !readerUsesCustomLayout
+    && Array.isArray(readerPages)
+    && readerPages[readerCurrentPage - 1] === null;
 
   return (
     <section
@@ -804,7 +808,7 @@ export default function ReaderSection(props) {
                         <span className="reader-page-bookmark-indicator" aria-hidden="true" />
                       )}
                       <div ref={readerPageInnerRef} className="reader-page-sheet-inner">
-                        {Array.isArray(readerPages) && readerPages[readerCurrentPage - 1] === null
+                        {readerShowsLazyOriginalPage
                           ? (
                             <div className="reader-page-loading">
                               <svg className="reader-lib-spinner" viewBox="0 0 24 24" fill="none" style={{ width: 36, height: 36, color: 'rgba(148,163,184,0.6)' }}>

@@ -47,6 +47,7 @@ const TTS_CACHE_MAX_ENTRIES = 60;
 const READER_IDLE_TIMEOUT_MS = 60000;
 const READER_DEFAULT_FONT_SIZE = 18;
 const READER_DEFAULT_FONT_WEIGHT = 500;
+const READER_PAGINATION_FIT_RESERVE_PX = 12;
 const WEEKLY_SUMMARY_VISITS_ENABLED = false;
 const ALLOW_MANUAL_INITDATA_FALLBACK = Boolean(import.meta.env.DEV);
 const ANDROID_TRANSLATION_DRAFT_DEBUG_QUERY_KEY = 'translation_draft_debug';
@@ -75,7 +76,8 @@ function normalizeReaderPaginationText(rawText) {
 function readerPageTextFits(measureNode, text) {
   if (!measureNode) return false;
   measureNode.textContent = String(text || '');
-  return measureNode.scrollHeight <= measureNode.clientHeight + 1;
+  const availableHeight = Math.max(1, measureNode.clientHeight - READER_PAGINATION_FIT_RESERVE_PX);
+  return measureNode.scrollHeight <= availableHeight + 1;
 }
 
 function paginateReaderText(text, measureNode) {
@@ -15524,6 +15526,7 @@ function AppInner() {
   }, [initData, readerDocumentId, readerPages.length]);
 
   useEffect(() => {
+    if (readerUsesCustomLayout) return;
     if (!readerDocumentId || readerPageCount === 0) return;
     // Load current page if it's a null placeholder (lazy-loaded doc)
     const curIdx = readerCurrentPage - 1;
@@ -15541,7 +15544,7 @@ function AppInner() {
         if (readerPages[p - 1] === null) { void loadReaderPageRange(p); break; }
       }
     }
-  }, [readerCurrentPage, readerDocumentId, readerPageCount, loadReaderPageRange]);
+  }, [readerCurrentPage, readerDocumentId, readerPageCount, loadReaderPageRange, readerPages, readerUsesCustomLayout]);
 
   useEffect(() => {
     if (!readerDocumentId || readerPageCount === 0) return;
