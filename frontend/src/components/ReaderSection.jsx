@@ -143,6 +143,8 @@ export default function ReaderSection(props) {
     readerHasContent && readerImmersive && !readerArchiveOpen ? 'is-immersive' : '',
     readerHasContent && readerImmersive && !readerArchiveOpen && readerTopbarCollapsed ? 'is-topbar-collapsed' : '',
   ].filter(Boolean).join(' ');
+  const showLibraryMode = !readerHasContent || readerArchiveOpen || !readerImmersive;
+  const effectiveReaderTheme = showLibraryMode ? 'dark' : readerColorTheme;
   const readerUsesCustomLayout = !readerCanUseOriginalLayout || readerLayoutMode === 'custom';
   const readerShowsLazyOriginalPage = !readerUsesCustomLayout
     && Array.isArray(readerPages)
@@ -151,11 +153,10 @@ export default function ReaderSection(props) {
   return (
     <section
       className={sectionClass}
-      data-reader-theme={readerColorTheme}
+      data-reader-theme={effectiveReaderTheme}
       ref={readerRef}
     >
       {(() => {
-        const showLibraryMode = !readerHasContent || readerArchiveOpen || !readerImmersive;
         const searchRaw = String(readerLibrarySearch || '').trim().toLowerCase();
         const visibleLibraryItems = readerDocuments.filter((item) => {
           const isArchived = Boolean(item?.is_archived);
@@ -372,14 +373,14 @@ export default function ReaderSection(props) {
                         <div
                           key={`reader-doc-${item.id}`}
                           className={`reader-library-card${Number(readerDocumentId) === Number(item.id) ? ' is-active' : ''}${isOpening ? ' is-opening' : ''}`}
+                          onClick={() => openReaderDocument(item.id)}
+                          role="button"
+                          tabIndex={0}
+                          onKeyDown={(e) => e.key === 'Enter' && openReaderDocument(item.id)}
                         >
                           <div
                             className="reader-library-cover"
                             style={{ background: `linear-gradient(150deg, ${gradient[0]} 0%, ${gradient[1]} 100%)` }}
-                            onClick={() => openReaderDocument(item.id)}
-                            role="button"
-                            tabIndex={0}
-                            onKeyDown={(e) => e.key === 'Enter' && openReaderDocument(item.id)}
                           >
                             {coverUrl ? (
                               <img src={coverUrl} alt="" loading="lazy" className="reader-archive-cover-img" />
@@ -397,9 +398,6 @@ export default function ReaderSection(props) {
                           </div>
                           <div
                             className="reader-library-card-body"
-                            onClick={() => openReaderDocument(item.id)}
-                            role="button"
-                            tabIndex={-1}
                             style={{ cursor: 'pointer' }}
                           >
                             <div className="reader-library-title">{item.title || tr('Без названия', 'Ohne Titel')}</div>
@@ -412,7 +410,7 @@ export default function ReaderSection(props) {
                             <button
                               type="button"
                               className="reader-lib-action reader-lib-action-open"
-                              onClick={() => openReaderDocument(item.id)}
+                              onClick={(e) => { e.stopPropagation(); openReaderDocument(item.id); }}
                               disabled={isOpening}
                               title={tr('Открыть книгу', 'Buch oeffnen')}
                             >
@@ -461,7 +459,7 @@ export default function ReaderSection(props) {
                             <button
                               type="button"
                               className="reader-lib-action"
-                              onClick={() => archiveReaderDocument(item.id, !Boolean(item?.is_archived))}
+                              onClick={(e) => { e.stopPropagation(); archiveReaderDocument(item.id, !Boolean(item?.is_archived)); }}
                               title={Boolean(item?.is_archived) ? tr('Разархивировать', 'Wiederherstellen') : tr('В архив', 'Archivieren')}
                             >
                               <span className="reader-lib-action-icon" aria-hidden="true">
@@ -486,7 +484,7 @@ export default function ReaderSection(props) {
                             <button
                               type="button"
                               className="reader-lib-action is-danger"
-                              onClick={() => deleteReaderDocument(item.id)}
+                              onClick={(e) => { e.stopPropagation(); deleteReaderDocument(item.id); }}
                               title={tr('Удалить', 'Loeschen')}
                             >
                               <span className="reader-lib-action-icon" aria-hidden="true">
