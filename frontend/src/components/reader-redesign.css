@@ -2556,6 +2556,32 @@
   color: rgba(248,113,113,0.8);
 }
 
+/* Dark theme: force readable text colors even if older App.css rules load later */
+.webapp-reader[data-reader-theme="dark"] .reader-article,
+.webapp-reader[data-reader-theme="dark"] .reader-page-sheet,
+.webapp-reader[data-reader-theme="dark"] .reader-page-sheet-inner,
+.webapp-reader[data-reader-theme="dark"] .reader-container,
+.webapp-reader[data-reader-theme="dark"] .reader-sentence,
+.webapp-reader[data-reader-theme="dark"] .reader-word,
+.webapp-reader[data-reader-theme="dark"] .reader-clickable-word,
+.webapp-reader[data-reader-theme="dark"] .reader-token {
+  color: var(--rd-text) !important;
+}
+
+.webapp-reader[data-reader-theme="dark"] .reader-page-sheet {
+  background: rgba(255,255,255,0.025) !important;
+  border-color: var(--rd-border) !important;
+}
+
+.webapp-reader.is-immersive[data-reader-theme="dark"] .reader-article {
+  background: var(--rd-bg) !important;
+}
+
+.webapp-reader[data-reader-theme="dark"] .reader-page-num,
+.webapp-reader[data-reader-theme="dark"] .webapp-muted {
+  color: var(--rd-text-muted) !important;
+}
+
 /* ── Outer background for paper themes (Telegram WebApp chrome is dark) ─── */
 /* :has() — Safari 16+ / Chrome 105+. Telegram WebView on modern iOS/Android
    satisfies this. Paints the document background cream/sepia so there's no
