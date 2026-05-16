@@ -15745,6 +15745,32 @@ function AppInner() {
     safeStorageSet('reader_swipe_sensitivity', readerSwipeSensitivity);
   }, [isWebAppMode, readerSwipeSensitivity]);
 
+  const switchReaderLayoutMode = useCallback((nextMode, options = {}) => {
+    const normalizedNextMode = String(nextMode || '').trim().toLowerCase();
+    if (normalizedNextMode !== 'original' && normalizedNextMode !== 'custom') return;
+    if (normalizedNextMode === readerLayoutMode) return;
+    const resetTypography = Boolean(options?.resetTypography);
+    if (normalizedNextMode === 'custom') {
+      const stablePercent = computeReaderProgressPercent();
+      readerPendingPagePercentRef.current = stablePercent;
+      setReaderProgressPercent(stablePercent);
+      if (resetTypography) {
+        setReaderFontSize(READER_DEFAULT_FONT_SIZE);
+        setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
+      }
+      setReaderLayoutMode('custom');
+      return;
+    }
+    if (resetTypography) {
+      setReaderFontSize(READER_DEFAULT_FONT_SIZE);
+      setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
+    }
+    setReaderLayoutMode('original');
+  }, [
+    computeReaderProgressPercent,
+    readerLayoutMode,
+  ]);
+
   useEffect(() => {
     if (readerHasContent) return;
     destroyReaderOriginalEpub();
@@ -19677,32 +19703,6 @@ function AppInner() {
     const max = Math.max(1, node.scrollHeight - node.clientHeight);
     node.scrollTop = (safe / 100) * max;
   }
-
-  const switchReaderLayoutMode = useCallback((nextMode, options = {}) => {
-    const normalizedNextMode = String(nextMode || '').trim().toLowerCase();
-    if (normalizedNextMode !== 'original' && normalizedNextMode !== 'custom') return;
-    if (normalizedNextMode === readerLayoutMode) return;
-    const resetTypography = Boolean(options?.resetTypography);
-    if (normalizedNextMode === 'custom') {
-      const stablePercent = computeReaderProgressPercent();
-      readerPendingPagePercentRef.current = stablePercent;
-      setReaderProgressPercent(stablePercent);
-      if (resetTypography) {
-        setReaderFontSize(READER_DEFAULT_FONT_SIZE);
-        setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
-      }
-      setReaderLayoutMode('custom');
-      return;
-    }
-    if (resetTypography) {
-      setReaderFontSize(READER_DEFAULT_FONT_SIZE);
-      setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
-    }
-    setReaderLayoutMode('original');
-  }, [
-    computeReaderProgressPercent,
-    readerLayoutMode,
-  ]);
 
   const jumpReaderTocItem = useCallback((item) => {
     if (readerUsesOriginalEpubLayout) {
