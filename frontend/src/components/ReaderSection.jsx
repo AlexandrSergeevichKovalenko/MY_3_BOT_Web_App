@@ -797,7 +797,8 @@ export default function ReaderSection(props) {
               >
                 {readerPageCount > 0 ? (
                   <div className="reader-pages-layout">
-                    <div
+                  <div
+                      key={`reader-page-${readerLayoutMode}-${readerCurrentPage}`}
                       className="reader-page-sheet"
                       style={{
                         '--reader-font-size': `${readerFontSize}px`,

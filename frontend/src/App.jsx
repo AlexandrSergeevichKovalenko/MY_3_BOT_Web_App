@@ -73,6 +73,14 @@ function normalizeReaderPaginationText(rawText) {
     .join('\n\n');
 }
 
+function normalizeReaderVisiblePageText(rawText) {
+  return String(rawText || '')
+    .split(/\n\n+/)
+    .map((para) => para.replace(/\n/g, ' ').replace(/ {2,}/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n\n');
+}
+
 function getReaderMeasureDimension(measureNode, axis = 'height') {
   if (!measureNode) return 0;
   const isWidth = axis === 'width';
@@ -12002,6 +12010,10 @@ function AppInner() {
     if (!readerCanonicalText) return [];
     return [{ page_number: 1, text: readerCanonicalText }];
   }, [readerCanonicalText, readerDynamicPages, readerPages, readerUsesCustomLayout]);
+  const getReaderDisplayPageText = useCallback((page) => {
+    const pageIndex = Math.max(0, Number(page || 1) - 1);
+    return normalizeReaderVisiblePageText(String(readerDisplayPages[pageIndex]?.text || ''));
+  }, [readerDisplayPages]);
   const readerPageCount = readerDisplayPages.length;
   const supportTimelineItems = useMemo(() => {
     const remote = Array.isArray(supportMessages) ? supportMessages : [];
@@ -12117,16 +12129,11 @@ function AppInner() {
     && readerTopbarCollapsed
     && !readerArchiveOpen;
   const readerVisibleText = useMemo(() => {
-    const raw = readerPageCount > 0
-      ? String(readerDisplayPages[Math.max(0, Number(readerCurrentPage || 1) - 1)]?.text || '')
-      : String(readerContent || '');
-    // Normalize PDF line-breaks: single \n within paragraphs → space; keep \n\n as paragraph break
-    return raw
-      .split(/\n\n+/)
-      .map((para) => para.replace(/\n/g, ' ').replace(/ {2,}/g, ' ').trim())
-      .filter(Boolean)
-      .join('\n\n');
-  }, [readerPageCount, readerDisplayPages, readerCurrentPage, readerContent]);
+    if (readerPageCount > 0) {
+      return getReaderDisplayPageText(readerCurrentPage);
+    }
+    return normalizeReaderVisiblePageText(String(readerContent || ''));
+  }, [getReaderDisplayPageText, readerPageCount, readerCurrentPage, readerContent]);
   const readerSegmentationHash = useMemo(() => {
     const value = String(readerVisibleText || '');
     let hash = 0;
@@ -20142,8 +20149,7 @@ function AppInner() {
     setReaderAudioPlayError('');
     try {
       const voice = readerAudioVoice || '';
-      const pageIndex = Math.max(0, Number(page || 1) - 1);
-      const visiblePageText = String(readerDisplayPages[pageIndex]?.text || '').trim();
+      const visiblePageText = getReaderDisplayPageText(page);
       const resp = await fetch('/api/webapp/reader/audio/page', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -20220,7 +20226,7 @@ function AppInner() {
     } finally {
       setReaderAudioPlayLoading(false);
     }
-  }, [readerDocumentId, readerAudioVoice, readerAudioRate, initData, readerAudioStartWid, readerAudioWidReverseMap, readerAudioWidToCharStart, readerDisplayPages]);
+  }, [readerDocumentId, readerAudioVoice, readerAudioRate, initData, readerAudioStartWid, readerAudioWidReverseMap, readerAudioWidToCharStart, getReaderDisplayPageText]);
 
   const pauseReaderAudioPlay = useCallback(() => {
     audioElementRef.current?.pause();
