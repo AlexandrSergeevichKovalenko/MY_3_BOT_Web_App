@@ -37979,6 +37979,7 @@ def reader_library_open():
         detected_lang = _detect_reader_language(content_text, fallback=target_lang)
         detect_duration_ms = _elapsed_ms_since(detect_started_perf)
         total_pages = len(all_content_pages)
+        source_type = str(doc.get("source_type") or "text").strip().lower()
         # Compute window of 50 pages around bookmark/progress
         if total_pages > 0:
             bookmark_pct = float(doc.get("bookmark_percent") or doc.get("progress_percent") or 0)
@@ -38007,7 +38008,10 @@ def reader_library_open():
             "total_pages": total_pages,
             "pages_start": pages_start,
             "pages_end": pages_end,
-            "text": "" if all_content_pages else content_text,
+            # Custom-layout sources (epub/html/text) need the full normalized text.
+            # Returning only a 50-page content_pages window makes the frontend think
+            # the book starts from that slice, which breaks pagination/bookmarks.
+            "text": content_text if source_type != "pdf" else ("" if all_content_pages else content_text),
             "title": str(doc.get("title") or "Untitled"),
             "source_type": str(doc.get("source_type") or "text"),
             "source_url": doc.get("source_url"),
