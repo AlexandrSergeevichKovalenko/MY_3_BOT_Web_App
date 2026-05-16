@@ -38589,7 +38589,8 @@ def reader_audio_page():
     default_voice = _TTS_VOICES.get(language_for_tts, _TTS_VOICES["de"])
     voice_name = voice_raw if voice_raw else default_voice
 
-    text_hash = hashlib.sha256(page_text.encode("utf-8")).hexdigest()[:24]
+    # v2 suffix forces cache miss so all entries gain char_start/char_end in word_timings.
+    text_hash = hashlib.sha256(page_text.encode("utf-8")).hexdigest()[:24] + "-v2"
 
     cached = get_cached_reader_audio_page(
         document_id=document_id_int,

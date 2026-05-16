@@ -2230,9 +2230,11 @@
   background: rgba(0,0,0,0.08) !important;
 }
 
-/* When audio player is fixed at bottom, scrubber needs space above it */
-.webapp-reader.is-immersive.has-audio-player .reader-scrubber-bar {
-  margin-bottom: calc(env(safe-area-inset-bottom, 0px) + 90px);
+/* Audio mini-player is fixed above the scrubber — give page-sheet bottom
+   padding so text doesn't hide behind it. Padding is on the content sheet
+   (not the article element) so ResizeObserver/pagination are not triggered. */
+.webapp-reader.is-immersive.has-audio-player .reader-page-sheet:not(.reader-page-sheet-measure) {
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 94px) !important;
 }
 
 /* Scrubber в paper-темах */
@@ -2305,7 +2307,7 @@
 /* ── Audio mini-player bar ─ raised floating card ─────────────────────────── */
 .reader-audio-mini-player {
   position: fixed;
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 14px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 88px);
   left: 10px;
   right: 10px;
   margin: 0;
@@ -2549,6 +2551,17 @@
 }
 .webapp-reader[data-reader-theme="dark"] .reader-lib-action.is-danger {
   color: rgba(248,113,113,0.8);
+}
+
+/* ── Outer background for paper themes (Telegram WebApp chrome is dark) ─── */
+/* :has() — Safari 16+ / Chrome 105+. Telegram WebView on modern iOS/Android
+   satisfies this. Paints the document background cream/sepia so there's no
+   dark bleed around the reader panel in immersive mode.                      */
+body:has(.webapp-reader.is-immersive[data-reader-theme="cream"]) {
+  background: #fbf8f1 !important;
+}
+body:has(.webapp-reader.is-immersive[data-reader-theme="sepia"]) {
+  background: #f4ecd8 !important;
 }
 
 /* ── Start-word highlight (tap-to-seek) ─────────────────────────────────── */

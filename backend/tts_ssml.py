@@ -59,6 +59,8 @@ def _build_ssml_chunk(words: list[dict], mark_offset: int = 0) -> tuple[str, lis
             "mark_name": mark_name,
             "idx": w["idx"],
             "value": w["value"],
+            "char_start": w.get("char_start", 0),
+            "char_end": w.get("char_end", 0),
         })
         escaped = xml.sax.saxutils.escape(str(w["value"]))
         parts.append(f'<mark name="{mark_name}"/>{escaped} ')
@@ -117,5 +119,7 @@ def parse_timepoints_for_chunk(
             "word": m["value"],
             "start_ms": start_ms,
             "end_ms": max(end_ms, start_ms + 50),
+            "char_start": m.get("char_start", 0),
+            "char_end": m.get("char_end", 0),
         })
     return result

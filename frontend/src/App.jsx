@@ -12173,19 +12173,50 @@ function AppInner() {
     return map;
   }, [readerSentencesModel]);
 
+  // Maps char_start (character offset in page text) → local wid string.
+  // Used for karaoke + seek when backend returns char_start in word_timings.
+  const readerAudioCharStartMap = useMemo(() => {
+    const map = new Map();
+    for (const sentence of readerSentencesModel) {
+      for (const token of sentence.tokens) {
+        if (token.kind === 'word' && token.start != null) {
+          map.set(String(token.start), String(token.wid ?? ''));
+        }
+      }
+    }
+    return map;
+  }, [readerSentencesModel]);
+
+  // Maps local wid → char_start, for reverse lookup during seek.
+  const readerAudioWidToCharStart = useMemo(() => {
+    const map = new Map();
+    for (const sentence of readerSentencesModel) {
+      for (const token of sentence.tokens) {
+        if (token.kind === 'word' && token.start != null) {
+          map.set(String(token.wid ?? ''), token.start);
+        }
+      }
+    }
+    return map;
+  }, [readerSentencesModel]);
+
   const readerAudioPlayingWid = useMemo(() => {
     if (!readerAudioPlayData || !readerAudioPlayActive) return null;
     const t = readerAudioPlayPosition;
     const timing = readerAudioPlayData.word_timings.find((w) => t >= w.start_ms && t < w.end_ms);
     if (!timing) return null;
+    // Prefer char_start matching (robust against frontend/backend word-count differences).
+    if (timing.char_start != null) {
+      return readerAudioCharStartMap.get(String(timing.char_start)) || null;
+    }
     return readerAudioWidMap.get(String(timing.wid)) || null;
-  }, [readerAudioPlayData, readerAudioPlayPosition, readerAudioWidMap, readerAudioPlayActive]);
+  }, [readerAudioPlayData, readerAudioPlayPosition, readerAudioWidMap, readerAudioCharStartMap, readerAudioPlayActive]);
 
   const readerAudioPlayingSid = useMemo(() => {
     if (!readerAudioPlayingWid) return null;
     for (const sentence of readerSentencesModel) {
       for (const token of sentence.tokens) {
-        if (token.wid === readerAudioPlayingWid) return sentence.sid;
+        if (String(token.wid ?? '') === readerAudioPlayingWid) return sentence.sid;
       }
     }
     return null;
@@ -20018,13 +20049,23 @@ function AppInner() {
         audioElementRef.current.playbackRate = readerAudioRate;
         let startMs = 0;
         if (startWid) {
-          const posIdx = readerAudioWidReverseMap.get(startWid);
-          console.log('[ReaderAudio] seeking to wid=', startWid, 'posIdx=', posIdx, 'reverseMapSize=', readerAudioWidReverseMap.size);
-          if (posIdx !== undefined) {
-            const timing = data.word_timings?.find((w) => String(w.wid) === posIdx);
-            console.log('[ReaderAudio] timing found=', timing, 'startMs=', timing?.start_ms);
-            if (timing) startMs = timing.start_ms;
+          // Prefer char_start-based seek (robust against frontend/backend tokenisation differences).
+          const charStart = readerAudioWidToCharStart.get(startWid);
+          const timings = data.word_timings || [];
+          let timing = null;
+          if (charStart != null && timings.length > 0 && timings[0].char_start != null) {
+            timing = timings.find((w) => Number(w.char_start) >= charStart)
+              || timings.find((w) => charStart <= Number(w.char_end));
           }
+          if (!timing) {
+            const posIdx = readerAudioWidReverseMap.get(startWid);
+            console.log('[ReaderAudio] seeking to wid=', startWid, 'posIdx=', posIdx, 'reverseMapSize=', readerAudioWidReverseMap.size);
+            if (posIdx !== undefined) {
+              timing = timings.find((w) => String(w.wid) === posIdx);
+            }
+          }
+          console.log('[ReaderAudio] timing found=', timing, 'startMs=', timing?.start_ms);
+          if (timing) startMs = timing.start_ms;
         }
         console.log('[ReaderAudio] audio starting at startMs=', startMs);
         setReaderAudioPlayPosition(startMs);
@@ -20037,7 +20078,7 @@ function AppInner() {
     } finally {
       setReaderAudioPlayLoading(false);
     }
-  }, [readerDocumentId, readerAudioVoice, readerAudioRate, initData, readerAudioStartWid, readerAudioWidReverseMap]);
+  }, [readerDocumentId, readerAudioVoice, readerAudioRate, initData, readerAudioStartWid, readerAudioWidReverseMap, readerAudioWidToCharStart]);
 
   const pauseReaderAudioPlay = useCallback(() => {
     audioElementRef.current?.pause();
@@ -20067,13 +20108,23 @@ function AppInner() {
 
   const seekReaderAudioToWid = useCallback((wid) => {
     if (!readerAudioPlayData || !audioElementRef.current) return;
-    const posIdx = readerAudioWidReverseMap.get(wid);
-    if (posIdx === undefined) return;
-    const timing = readerAudioPlayData.word_timings.find((w) => String(w.wid) === posIdx);
+    const timings = readerAudioPlayData.word_timings || [];
+    let timing = null;
+    // Prefer char_start matching.
+    const charStart = readerAudioWidToCharStart.get(wid);
+    if (charStart != null && timings.length > 0 && timings[0].char_start != null) {
+      timing = timings.find((w) => Number(w.char_start) >= charStart)
+        || timings.find((w) => charStart <= Number(w.char_end));
+    }
+    if (!timing) {
+      const posIdx = readerAudioWidReverseMap.get(wid);
+      if (posIdx === undefined) return;
+      timing = timings.find((w) => String(w.wid) === posIdx);
+    }
     if (!timing) return;
     audioElementRef.current.currentTime = timing.start_ms / 1000;
     setReaderAudioPlayPosition(timing.start_ms);
-  }, [readerAudioPlayData, readerAudioWidReverseMap]);
+  }, [readerAudioPlayData, readerAudioWidReverseMap, readerAudioWidToCharStart]);
 
   // RAF position sync
   useEffect(() => {
