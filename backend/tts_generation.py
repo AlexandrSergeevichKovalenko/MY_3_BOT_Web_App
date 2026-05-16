@@ -452,19 +452,26 @@ def synthesize_page_with_timings(
     """
     Synthesize one reader page with per-word timepoints via SSML marks.
 
+    The SSML preserves the full original text (punctuation, commas, whitespace)
+    so Google TTS applies natural prosody. <mark> tags are injected before each
+    word in the original text — they are transparent to speech.
+    Chunks are split at sentence/paragraph boundaries, not word boundaries.
+
     Returns:
         {
-            "audio_bytes": bytes,       # MP3
+            "audio_bytes": bytes,
             "mime": "audio/mpeg",
             "duration_ms": int,
-            "word_timings": [{"wid": "0", "word": "Als", "start_ms": 50, "end_ms": 280}, ...]
+            "word_timings": [{"wid": "0", "word": "Als", "start_ms": 50,
+                               "end_ms": 280, "char_start": 0, "char_end": 3}, ...]
         }
-    wid values are 0-based positional indices — the frontend maps them to token.wid by position.
+    wid values are 0-based positional indices — the frontend maps them to
+    token.wid by position. char_start/char_end are byte offsets in page_text.
     """
     from backend.tts_ssml import (
         segment_page_words,
-        chunk_words_for_ssml,
-        _build_ssml_chunk,
+        chunk_text_with_words,
+        _build_ssml_from_chunk,
         parse_timepoints_for_chunk,
     )
 
@@ -488,14 +495,25 @@ def synthesize_page_with_timings(
         speaking_rate=float(speaking_rate),
     )
 
-    chunks = chunk_words_for_ssml(words)
+    # Split at natural boundaries (sentence/paragraph) while keeping SSML under limit.
+    text_chunks = chunk_text_with_words(page_text, words)
+
     combined = AudioSegment.silent(duration=0)
     all_timings: list[dict] = []
     mark_offset = 0
+    char_offset = 0  # char position of this chunk's start in page_text
 
-    for chunk_words in chunks:
-        ssml_text, mark_index = _build_ssml_chunk(chunk_words, mark_offset=mark_offset)
-        request = texttospeech.SynthesizeSpeechRequest(
+    for chunk_text, chunk_words in text_chunks:
+        if not chunk_words:
+            char_offset += len(chunk_text)
+            continue
+
+        ssml_text, mark_index = _build_ssml_from_chunk(
+            chunk_text, chunk_words,
+            text_char_offset=char_offset,
+            mark_offset=mark_offset,
+        )
+        tts_request = texttospeech.SynthesizeSpeechRequest(
             input=texttospeech.SynthesisInput(ssml=ssml_text),
             voice=voice_params,
             audio_config=audio_config,
@@ -503,9 +521,11 @@ def synthesize_page_with_timings(
                 texttospeech.SynthesizeSpeechRequest.TimepointType.SSML_MARK
             ],
         )
-        response = tts_client.synthesize_speech(request=request)
+        response = tts_client.synthesize_speech(request=tts_request)
         if not response.audio_content:
+            char_offset += len(chunk_text)
             continue
+
         segment = AudioSegment.from_file(io.BytesIO(response.audio_content), format="mp3")
         chunk_duration_ms = len(segment)
         time_offset_ms = len(combined)
@@ -518,6 +538,7 @@ def synthesize_page_with_timings(
         all_timings.extend(chunk_timings)
         combined += segment
         mark_offset += len(chunk_words)
+        char_offset += len(chunk_text)
 
     if len(combined) == 0:
         raise RuntimeError("Google TTS вернул пустой аудиопоток")
