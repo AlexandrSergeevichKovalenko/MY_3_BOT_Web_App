@@ -11466,6 +11466,48 @@ def record_telegram_quiz_attempt(
             )
 
 
+def is_telegram_quiz_word_mastered(
+    chat_id: int,
+    word_ru: str,
+    *,
+    accuracy_threshold: float = 0.5,
+) -> bool:
+    normalized_word = str(word_ru or "").strip()
+    if not normalized_word:
+        return False
+    safe_threshold = min(1.0, max(0.0, float(accuracy_threshold)))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH per_user_word AS (
+                    SELECT
+                        user_id,
+                        BOOL_OR(is_correct) AS user_has_correct
+                    FROM bt_3_telegram_quiz_attempts
+                    WHERE chat_id = %s
+                      AND word_ru = %s
+                    GROUP BY user_id
+                )
+                SELECT
+                    CASE
+                        WHEN COUNT(*) = 0 THEN FALSE
+                        ELSE (
+                            SUM(CASE WHEN user_has_correct THEN 1 ELSE 0 END)::float / COUNT(*)
+                        ) >= %s
+                    END AS mastered
+                FROM per_user_word;
+                """,
+                (
+                    int(chat_id),
+                    normalized_word,
+                    safe_threshold,
+                ),
+            )
+            row = cursor.fetchone()
+    return bool(row and row[0])
+
+
 def get_telegram_quiz_next_mode(chat_id: int) -> str:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:

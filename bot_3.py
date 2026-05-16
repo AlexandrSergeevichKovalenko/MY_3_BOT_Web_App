@@ -97,6 +97,7 @@ from backend.database import (
     record_quiz_word,
     record_telegram_quiz_delivery,
     record_telegram_quiz_attempt,
+    is_telegram_quiz_word_mastered,
     get_admin_telegram_ids,
     is_telegram_user_allowed,
     allow_telegram_user,
@@ -12364,33 +12365,61 @@ async def _select_new_scheduled_quiz(
 
 
 async def _select_prepared_scheduled_quiz(
+    target_chat_id: int,
     ordered_generators: list[tuple[str, Callable[..., Any]]],
 ) -> dict | None:
     preferred_types = [quiz_type for quiz_type, _ in ordered_generators]
-    try:
-        prepared = await asyncio.to_thread(
-            claim_prepared_telegram_quiz,
-            preferred_types,
-            source_lang="ru",
-            target_lang="de",
-        )
-    except Exception:
-        logging.warning("⚠️ Не удалось получить prepared scheduled quiz", exc_info=True)
-        return None
-    if not prepared:
-        return None
-    quiz = dict(prepared.get("payload") or {})
-    resolved_quiz_type = str(prepared.get("quiz_type") or quiz.get("quiz_type") or "generated")
-    if not quiz.get("quiz_type"):
-        quiz["quiz_type"] = resolved_quiz_type
-    if not quiz.get("word_ru") and prepared.get("word_ru"):
-        quiz["word_ru"] = prepared.get("word_ru")
-    return {
-        "entry": {"word_ru": quiz.get("word_ru") or prepared.get("word_ru")},
-        "quiz": quiz,
-        "resolved_quiz_type": resolved_quiz_type,
-        "used_mode": "new_prepared",
-    }
+    max_claim_attempts = max(6, len(preferred_types) * 3)
+    for _ in range(max_claim_attempts):
+        try:
+            prepared = await asyncio.to_thread(
+                claim_prepared_telegram_quiz,
+                preferred_types,
+                source_lang="ru",
+                target_lang="de",
+            )
+        except Exception:
+            logging.warning("⚠️ Не удалось получить prepared scheduled quiz", exc_info=True)
+            return None
+        if not prepared:
+            return None
+        quiz = dict(prepared.get("payload") or {})
+        resolved_quiz_type = str(prepared.get("quiz_type") or quiz.get("quiz_type") or "generated")
+        if not quiz.get("quiz_type"):
+            quiz["quiz_type"] = resolved_quiz_type
+        if not quiz.get("word_ru") and prepared.get("word_ru"):
+            quiz["word_ru"] = prepared.get("word_ru")
+        prepared_word = str(quiz.get("word_ru") or prepared.get("word_ru") or "").strip()
+        if prepared_word:
+            try:
+                mastered = await asyncio.to_thread(
+                    is_telegram_quiz_word_mastered,
+                    int(target_chat_id),
+                    prepared_word,
+                    accuracy_threshold=QUIZ_REPEAT_ACCURACY_THRESHOLD,
+                )
+            except Exception:
+                logging.warning(
+                    "⚠️ Не удалось проверить mastery для prepared quiz chat_id=%s word=%s",
+                    int(target_chat_id),
+                    prepared_word,
+                    exc_info=True,
+                )
+                mastered = False
+            if mastered:
+                logging.info(
+                    "ℹ️ Prepared quiz skipped as mastered for chat_id=%s word=%s",
+                    int(target_chat_id),
+                    prepared_word,
+                )
+                continue
+        return {
+            "entry": {"word_ru": prepared_word},
+            "quiz": quiz,
+            "resolved_quiz_type": resolved_quiz_type,
+            "used_mode": "new_prepared",
+        }
+    return None
 
 
 async def _select_repeat_scheduled_quiz(
@@ -12438,11 +12467,11 @@ async def _select_scheduled_quiz_for_target(
     if desired_mode == "repeat":
         selection = await _select_repeat_scheduled_quiz(int(target_chat_id), ordered_generators)
         if not selection:
-            selection = await _select_prepared_scheduled_quiz(ordered_generators)
+            selection = await _select_prepared_scheduled_quiz(int(target_chat_id), ordered_generators)
         if not selection:
             selection = await _select_new_scheduled_quiz(ordered_generators, chat_id=int(target_chat_id))
     else:
-        selection = await _select_prepared_scheduled_quiz(ordered_generators)
+        selection = await _select_prepared_scheduled_quiz(int(target_chat_id), ordered_generators)
         if not selection:
             selection = await _select_new_scheduled_quiz(ordered_generators, chat_id=int(target_chat_id))
         if not selection:
