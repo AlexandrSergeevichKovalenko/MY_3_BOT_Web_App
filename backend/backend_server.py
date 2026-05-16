@@ -38592,6 +38592,11 @@ def reader_audio_page():
     # v3 suffix: full-text SSML (preserves punctuation → natural prosody).
     text_hash = hashlib.sha256(page_text.encode("utf-8")).hexdigest()[:24] + "-v3"
 
+    logging.info(
+        "[READER_AUDIO] user=%s doc=%s page=%s voice=%s rate=%s text_len=%s hash=%s",
+        user_id_int, document_id_int, page_int, voice_name, rate_float, len(page_text), text_hash,
+    )
+
     cached = get_cached_reader_audio_page(
         document_id=document_id_int,
         page_number=page_int,
@@ -38600,6 +38605,13 @@ def reader_audio_page():
         text_hash=text_hash,
     )
     if cached:
+        timing_sample = cached["word_timings"][:3] if cached.get("word_timings") else []
+        has_char_start = bool(cached.get("word_timings") and cached["word_timings"][0].get("char_start") is not None)
+        logging.info(
+            "[READER_AUDIO] CACHE HIT user=%s doc=%s page=%s words=%s has_char_start=%s sample=%s",
+            user_id_int, document_id_int, page_int,
+            len(cached.get("word_timings") or []), has_char_start, timing_sample,
+        )
         return jsonify({
             "audio_url": cached["audio_url"],
             "mime": cached["mime"],
@@ -38619,6 +38631,10 @@ def reader_audio_page():
     if reader_audio_limit_error:
         return jsonify(reader_audio_limit_error), 429
 
+    logging.info(
+        "[READER_AUDIO] SYNTHESIZING user=%s doc=%s page=%s voice=%s lang=%s text_preview=%r",
+        user_id_int, document_id_int, page_int, voice_name, google_lang_code, page_text[:80],
+    )
     try:
         result = synthesize_page_with_timings(
             page_text=page_text,
@@ -38629,7 +38645,15 @@ def reader_audio_page():
     except GoogleTTSBudgetBlockedError as exc:
         return jsonify({"error": str(exc), "error_code": "google_tts_budget_blocked"}), 429
     except Exception as exc:
+        logging.exception("[READER_AUDIO] SYNTHESIS ERROR user=%s doc=%s page=%s: %s", user_id_int, document_id_int, page_int, exc)
         return jsonify({"error": f"Ошибка синтеза: {exc}"}), 500
+
+    timing_sample = result["word_timings"][:5] if result.get("word_timings") else []
+    logging.info(
+        "[READER_AUDIO] SYNTHESIZED user=%s doc=%s page=%s words=%s duration_ms=%s sample=%s",
+        user_id_int, document_id_int, page_int,
+        len(result.get("word_timings") or []), result.get("duration_ms"), timing_sample,
+    )
 
     safe_title = re.sub(r"[^A-Za-z0-9._-]+", "_", str(document.get("title") or "reader"))[:40]
     r2_rate = str(rate_float).replace(".", "_")

@@ -15334,21 +15334,24 @@ function AppInner() {
   useLayoutEffect(() => {
     if (!readerUsesCustomLayout) return undefined;
     if (!readerHasContent) return undefined;
-    const scheduleRepagination = () => {
+    const scheduleRepagination = (reason) => {
       if (readerPaginationResizeFrameRef.current) {
         window.cancelAnimationFrame(readerPaginationResizeFrameRef.current);
       }
       readerPaginationResizeFrameRef.current = window.requestAnimationFrame(() => {
         readerPaginationResizeFrameRef.current = 0;
+        console.log('[PAGINATE] tick scheduled reason=', reason);
         setReaderPaginationLayoutTick((prev) => prev + 1);
       });
     };
 
-    scheduleRepagination();
+    scheduleRepagination('init');
     let resizeObserver;
     if (typeof ResizeObserver !== 'undefined') {
-      resizeObserver = new ResizeObserver(() => {
-        scheduleRepagination();
+      resizeObserver = new ResizeObserver((entries) => {
+        const info = entries.map((e) => `${e.target.className?.slice(0,30)}:${Math.round(e.contentRect.height)}px`).join(', ');
+        console.log('[PAGINATE] ResizeObserver fired:', info);
+        scheduleRepagination('resize:' + info);
       });
       if (readerArticleRef.current) {
         resizeObserver.observe(readerArticleRef.current);
@@ -15385,19 +15388,32 @@ function AppInner() {
 
     const runId = readerPaginationRunRef.current + 1;
     readerPaginationRunRef.current = runId;
+    console.log('[PAGINATE] run start tick=', readerPaginationLayoutTick, 'textLen=', readerCanonicalText?.length);
     const nextTextPages = paginateReaderText(readerCanonicalText, measureNode);
     if (readerPaginationRunRef.current !== runId) {
+      console.log('[PAGINATE] run superseded, discarding');
       return;
     }
     const nextPages = nextTextPages.map((text, index) => ({
       page_number: index + 1,
       text,
     }));
+    console.log('[PAGINATE] computed pages=', nextPages.length);
     setReaderDynamicPages((prev) => (areReaderPagesEqual(prev, nextPages) ? prev : nextPages));
 
     if (nextPages.length > 0) {
-      const resolvedPage = resolveReaderPageFromPercent(readerProgressPercent, nextPages.length);
-      setReaderCurrentPage(resolvedPage);
+      setReaderCurrentPage((prev) => {
+        const current = Math.max(1, Number(prev || 1));
+        // Don't reset to progress-based page if current page is still valid.
+        // Prevents ResizeObserver loop: audio player height change → repaginate → page jump.
+        if (current <= nextPages.length) {
+          console.log('[PAGINATE] keeping current page=', current, 'of', nextPages.length);
+          return current;
+        }
+        // Out of bounds after re-layout — clamp to last page.
+        console.log('[PAGINATE] clamping page', current, '->', nextPages.length);
+        return nextPages.length;
+      });
     }
   }, [
     readerCanonicalText,
@@ -19273,6 +19289,8 @@ function AppInner() {
     // Long-press (≥650ms without movement) = start audio from this word
     if (readerWordLongPressTimerRef.current) clearTimeout(readerWordLongPressTimerRef.current);
     const longPressWid = wid;
+    // Capture char position directly from DOM — avoids stale map lookup later
+    const longPressCharStart = parseInt(wordEl.getAttribute('data-start') || '', 10);
     readerWordLongPressTimerRef.current = setTimeout(() => {
       readerWordLongPressTimerRef.current = null;
       const pageText = readerSentencesModel.reduce((acc, s) => acc + String(s.text || '').length, 0);
@@ -19285,11 +19303,11 @@ function AppInner() {
       const currentPage = readerCurrentPageRef.current;
       if (readerAudioPlayActive) {
         stopReaderAudioPlay();
-        setTimeout(() => playReaderAudioPage(currentPage, longPressWid), 60);
+        setTimeout(() => playReaderAudioPage(currentPage, longPressWid, longPressCharStart), 60);
       } else {
-        playReaderAudioPage(currentPage, longPressWid);
+        playReaderAudioPage(currentPage, longPressWid, longPressCharStart);
       }
-      console.log('[ReaderAudio] long-press audio start: wid=', longPressWid, 'page=', currentPage);
+      console.log('[ReaderAudio] long-press audio start: wid=', longPressWid, 'charStart=', longPressCharStart, 'page=', currentPage);
     }, 650);
   };
 
@@ -20024,9 +20042,9 @@ function AppInner() {
   }, []);
 
   // ── Audio-sync callbacks (Patch 2.4) ────────────────────────────────────
-  const playReaderAudioPage = useCallback(async (page, startWidOverride) => {
+  const playReaderAudioPage = useCallback(async (page, startWidOverride, charStartOverride) => {
     const startWid = startWidOverride !== undefined ? startWidOverride : (readerAudioStartWid || null);
-    console.log('[ReaderAudio] playReaderAudioPage called: page=', page, 'startWid=', startWid, 'startWidOverride=', startWidOverride);
+    console.log('[ReaderAudio] playReaderAudioPage called: page=', page, 'startWid=', startWid, 'charStartOverride=', charStartOverride);
     readerAudioPlayingForPageRef.current = page;
     setReaderAudioPlayLoading(true);
     setReaderAudioPlayError('');
@@ -20049,8 +20067,10 @@ function AppInner() {
         audioElementRef.current.playbackRate = readerAudioRate;
         let startMs = 0;
         if (startWid) {
-          // Prefer char_start-based seek (robust against frontend/backend tokenisation differences).
-          const charStart = readerAudioWidToCharStart.get(startWid);
+          // Use DOM-captured charStart first, fall back to map lookup.
+          const charStart = (Number.isFinite(charStartOverride) && charStartOverride >= 0)
+            ? charStartOverride
+            : readerAudioWidToCharStart.get(startWid);
           const timings = data.word_timings || [];
           let timing = null;
           if (charStart != null && timings.length > 0 && timings[0].char_start != null) {
@@ -20059,7 +20079,7 @@ function AppInner() {
           }
           if (!timing) {
             const posIdx = readerAudioWidReverseMap.get(startWid);
-            console.log('[ReaderAudio] seeking to wid=', startWid, 'posIdx=', posIdx, 'reverseMapSize=', readerAudioWidReverseMap.size);
+            console.log('[ReaderAudio] char seek missed, trying posIdx=', posIdx, 'charStart=', charStart);
             if (posIdx !== undefined) {
               timing = timings.find((w) => String(w.wid) === posIdx);
             }
@@ -20069,8 +20089,18 @@ function AppInner() {
         }
         console.log('[ReaderAudio] audio starting at startMs=', startMs);
         setReaderAudioPlayPosition(startMs);
-        if (startMs > 0) audioElementRef.current.currentTime = startMs / 1000;
-        await audioElementRef.current.play().catch(() => {});
+        if (startMs > 0) {
+          // iOS Safari ignores currentTime set before loadedmetadata fires.
+          // Wait for metadata, then seek, then play.
+          await new Promise((resolve) => {
+            const el = audioElementRef.current;
+            if (!el) { resolve(); return; }
+            const doSeek = () => { el.currentTime = startMs / 1000; resolve(); };
+            if (el.readyState >= 1) { doSeek(); }
+            else { el.addEventListener('loadedmetadata', doSeek, { once: true }); }
+          });
+        }
+        await audioElementRef.current?.play().catch(() => {});
       }
     } catch (e) {
       readerAudioPlayingForPageRef.current = null;
@@ -20112,15 +20142,18 @@ function AppInner() {
     let timing = null;
     // Prefer char_start matching.
     const charStart = readerAudioWidToCharStart.get(wid);
+    console.log('[AUDIO_SEEK] wid=', wid, 'charStart=', charStart, 'timings=', timings.length, 'first_timing_char_start=', timings[0]?.char_start);
     if (charStart != null && timings.length > 0 && timings[0].char_start != null) {
       timing = timings.find((w) => Number(w.char_start) >= charStart)
         || timings.find((w) => charStart <= Number(w.char_end));
     }
     if (!timing) {
       const posIdx = readerAudioWidReverseMap.get(wid);
+      console.log('[AUDIO_SEEK] char miss, trying posIdx=', posIdx);
       if (posIdx === undefined) return;
       timing = timings.find((w) => String(w.wid) === posIdx);
     }
+    console.log('[AUDIO_SEEK] result timing=', timing, '→ seekTo', timing?.start_ms, 'ms');
     if (!timing) return;
     audioElementRef.current.currentTime = timing.start_ms / 1000;
     setReaderAudioPlayPosition(timing.start_ms);
