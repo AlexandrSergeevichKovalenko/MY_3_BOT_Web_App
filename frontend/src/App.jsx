@@ -160,17 +160,53 @@ function readerPageTextFits(measureNode, text) {
   return measureNode.scrollHeight <= availableHeight + 1;
 }
 
+const READER_HEADING_MINOR_WORDS = new Set([
+  'a', 'an', 'and', 'as', 'at', 'by', 'for', 'from', 'in', 'into', 'of', 'on', 'or', 'the', 'to', 'und', 'oder',
+  'der', 'die', 'das', 'dem', 'den', 'des', 'ein', 'eine', 'einer', 'einem', 'einen', 'im', 'am', 'vom', 'zum',
+  'zur', 'von', 'mit', 'ohne', 'ueber', 'unter', 'vor', 'nach', 'bei', 'aus', 'als', 'ist', 'war', 'wie', 'zu',
+  'и', 'в', 'во', 'на', 'с', 'со', 'к', 'ко', 'о', 'об', 'от', 'по', 'под', 'над', 'для', 'без', 'при', 'или',
+  'а', 'но', 'что', 'как', 'из', 'у', 'за',
+]);
+
+function normalizeReaderHeadingWord(rawWord) {
+  return String(rawWord || '')
+    .replace(/^[^0-9A-Za-zА-Яа-яÄÖÜäöüẞßIVXLCDM]+|[^0-9A-Za-zА-Яа-яÄÖÜäöüẞßIVXLCDM]+$/g, '')
+    .trim();
+}
+
+function isReaderTitleCaseWord(word) {
+  const normalized = normalizeReaderHeadingWord(word);
+  if (!normalized) return false;
+  if (/^\d+(?:[.)]\d+)*(?:[.)])?$/.test(normalized)) return true;
+  if (/^[IVXLCDM]+$/i.test(normalized) && normalized.length <= 8) return true;
+  return /^[A-ZА-ЯÄÖÜẞ]/.test(normalized);
+}
+
 function isReaderHeadingParagraph(paragraph) {
   const text = String(paragraph || '').replace(/\s+/g, ' ').trim();
   if (!text) return false;
   if (text.length > 120) return false;
-  const wordCount = text.split(/\s+/).filter(Boolean).length;
+  const words = text.split(/\s+/).filter(Boolean);
+  const wordCount = words.length;
   if (wordCount > 14) return false;
   if (/^(kapitel|chapter|teil|abschnitt|section|prolog|epilog)\b/i.test(text)) return true;
+  if (/^(?:\d+(?:\.\d+)*|[IVXLCDM]+)[.)]?\s+[A-ZА-ЯÄÖÜẞ]/.test(text)) return true;
   if (/^[A-ZА-Я0-9ÄÖÜẞIVXLCDM .,:;'"“”«»()\-–—]+$/.test(text) && wordCount <= 12) return true;
-  if (/[.!?…]$/.test(text)) return false;
-  if (wordCount <= 8) return true;
-  return /^[A-ZА-ЯÄÖÜẞ]/.test(text) && wordCount <= 12;
+  if (/[!?…]$/.test(text)) return false;
+  if (/[.;]/.test(text) && !/:$/.test(text)) return false;
+
+  const normalizedWords = words.map(normalizeReaderHeadingWord).filter(Boolean);
+  const significantWords = normalizedWords.filter((word) => !READER_HEADING_MINOR_WORDS.has(word.toLowerCase()));
+  const titleCaseWords = significantWords.filter(isReaderTitleCaseWord);
+  const significantCount = significantWords.length;
+  const titleCaseRatio = significantCount > 0 ? titleCaseWords.length / significantCount : 0;
+  const hasSentenceLikePunctuation = /[,]/.test(text) || /[.!?…]$/.test(text);
+
+  if (!hasSentenceLikePunctuation && wordCount <= 4 && titleCaseRatio >= 0.34) return true;
+  if (!hasSentenceLikePunctuation && wordCount <= 8 && titleCaseRatio >= 0.6) return true;
+  if (!hasSentenceLikePunctuation && wordCount <= 12 && titleCaseRatio >= 0.8) return true;
+  if (/:$/.test(text) && wordCount <= 10) return true;
+  return false;
 }
 
 function splitReaderTrailingHeadingBlock(text) {
@@ -186,6 +222,26 @@ function splitReaderTrailingHeadingBlock(text) {
   const trailing = paragraphs.slice(splitIndex).join('\n\n').trim();
   if (!leading || !trailing) return null;
   return { leading, trailing };
+}
+
+function findReaderBestFittingWordCount(measureNode, words, buildText) {
+  if (!measureNode || !Array.isArray(words) || words.length === 0 || typeof buildText !== 'function') {
+    return 0;
+  }
+  let low = 1;
+  let high = words.length;
+  let bestWordCount = 0;
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const midText = buildText(words.slice(0, mid));
+    if (readerPageTextFits(measureNode, midText)) {
+      bestWordCount = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return bestWordCount;
 }
 
 function isReaderPaginationSane(sourceText, pages, measureNode) {
@@ -228,10 +284,32 @@ function paginateReaderText(text, measureNode) {
   const pages = [];
   let buffer = '';
 
-  for (const paragraph of paragraphs) {
+  for (let paragraphIndex = 0; paragraphIndex < paragraphs.length; paragraphIndex += 1) {
+    let paragraph = paragraphs[paragraphIndex];
+    let stickyHeadingText = '';
+
+    if (isReaderHeadingParagraph(paragraph)) {
+      const headingParts = [paragraph];
+      let nextIndex = paragraphIndex + 1;
+      while (nextIndex < paragraphs.length && isReaderHeadingParagraph(paragraphs[nextIndex])) {
+        headingParts.push(paragraphs[nextIndex]);
+        nextIndex += 1;
+      }
+      if (nextIndex < paragraphs.length) {
+        stickyHeadingText = headingParts.join('\n\n');
+        paragraph = paragraphs[nextIndex];
+        paragraphIndex = nextIndex;
+      } else {
+        paragraph = headingParts.join('\n\n');
+        paragraphIndex = nextIndex - 1;
+      }
+    }
+
     let words = paragraph.split(/\s+/).filter(Boolean);
     while (words.length > 0) {
-      const paragraphText = words.join(' ');
+      const paragraphText = stickyHeadingText
+        ? `${stickyHeadingText}\n\n${words.join(' ')}`
+        : words.join(' ');
       const candidate = buffer ? `${buffer}\n\n${paragraphText}` : paragraphText;
       if (readerPageTextFits(measureNode, candidate)) {
         buffer = candidate;
@@ -250,20 +328,30 @@ function paginateReaderText(text, measureNode) {
         continue;
       }
 
-      let low = 1;
-      let high = words.length;
-      let bestWordCount = 0;
-      while (low <= high) {
-        const mid = Math.floor((low + high) / 2);
-        const midText = words.slice(0, mid).join(' ');
-        if (readerPageTextFits(measureNode, midText)) {
-          bestWordCount = mid;
-          low = mid + 1;
-        } else {
-          high = mid - 1;
+      if (stickyHeadingText) {
+        const bestWordCount = findReaderBestFittingWordCount(
+          measureNode,
+          words,
+          (slice) => `${stickyHeadingText}\n\n${slice.join(' ')}`
+        );
+        if (bestWordCount > 0) {
+          pages.push(`${stickyHeadingText}\n\n${words.slice(0, bestWordCount).join(' ')}`);
+          words = words.slice(bestWordCount);
+          stickyHeadingText = '';
+          continue;
+        }
+        if (readerPageTextFits(measureNode, stickyHeadingText)) {
+          pages.push(stickyHeadingText);
+          stickyHeadingText = '';
+          continue;
         }
       }
 
+      const bestWordCount = findReaderBestFittingWordCount(
+        measureNode,
+        words,
+        (slice) => slice.join(' ')
+      );
       if (bestWordCount > 0) {
         pages.push(words.slice(0, bestWordCount).join(' '));
         words = words.slice(bestWordCount);
@@ -4748,6 +4836,7 @@ function AppInner() {
   const readerAudioPrefetchTimeoutRef = useRef(null);
   const readerAudioPageCacheRef = useRef(new Map());
   const readerAudioPageRequestsRef = useRef(new Map());
+  const readerAudioPrimedRef = useRef(false);
 
   const [readerColorTheme, setReaderColorTheme] = useState(() => {
     try {
@@ -5489,6 +5578,7 @@ function AppInner() {
   const readerCurrentPageRef = useRef(1);
   const readerStatusPollTokenRef = useRef(0);
   const readerPaginationResizeFrameRef = useRef(0);
+  const readerPaginationObservedWidthRef = useRef(0);
   const readerPaginationRunRef = useRef(0);
   const readerPendingPagePercentRef = useRef(null);
   const readerOpenInFlightRef = useRef(0);
@@ -15508,14 +15598,28 @@ function AppInner() {
         setReaderPaginationLayoutTick((prev) => prev + 1);
       });
     };
+    const scheduleWidthDrivenRepagination = (reason) => {
+      const measureNode = readerMeasureInnerRef.current;
+      const width = Math.round(getReaderMeasureDimension(measureNode, 'width'));
+      if (width <= 0) return;
+      const prevWidth = readerPaginationObservedWidthRef.current;
+      if (prevWidth > 0 && Math.abs(prevWidth - width) <= 1) {
+        return;
+      }
+      readerPaginationObservedWidthRef.current = width;
+      scheduleRepagination(`${reason}:w=${width}`);
+    };
 
-    scheduleRepagination('init');
+    readerPaginationObservedWidthRef.current = 0;
+    scheduleWidthDrivenRepagination('init');
     let resizeObserver;
     if (typeof ResizeObserver !== 'undefined') {
       resizeObserver = new ResizeObserver((entries) => {
-        const info = entries.map((e) => `${e.target.className?.slice(0,30)}:${Math.round(e.contentRect.height)}px`).join(', ');
+        const info = entries
+          .map((entry) => `${entry.target.className?.slice(0, 30)}:${Math.round(entry.contentRect.width)}x${Math.round(entry.contentRect.height)}px`)
+          .join(', ');
         console.log('[PAGINATE] ResizeObserver fired:', info);
-        scheduleRepagination('resize:' + info);
+        scheduleWidthDrivenRepagination(`resize:${info}`);
       });
       if (readerArticleRef.current) {
         resizeObserver.observe(readerArticleRef.current);
@@ -15534,7 +15638,7 @@ function AppInner() {
         readerPaginationResizeFrameRef.current = 0;
       }
     };
-  }, [readerHasContent, readerImmersive, readerTopbarCollapsed, readerReadingMode, readerUsesCustomLayout]);
+  }, [readerHasContent, readerImmersive, readerReadingMode, readerUsesCustomLayout]);
 
   useLayoutEffect(() => {
     if (!readerUsesCustomLayout) {
@@ -15628,7 +15732,6 @@ function AppInner() {
     readerFontSize,
     readerFontWeight,
     readerImmersive,
-    readerTopbarCollapsed,
   ]);
 
   useEffect(() => {
@@ -19258,6 +19361,7 @@ function AppInner() {
         console.log('[ReaderAudio] awaiting tap: wid=', wid, 'charStart=', charStart, 'isFinite=', Number.isFinite(charStart));
         if (wid) {
           const currentPage = readerCurrentPageRef.current;
+          void primeReaderAudioPlayback();
           playReaderAudioPage(currentPage, wid, Number.isFinite(charStart) && charStart >= 0 ? charStart : undefined);
         }
       }
@@ -19576,6 +19680,7 @@ function AppInner() {
         const charStart = parseInt(wordEl.getAttribute('data-start') || '', 10);
         console.log('[ReaderAudio] touchend tap word: wid=', wid, 'charStart=', charStart);
         if (wid) {
+          void primeReaderAudioPlayback();
           playReaderAudioPage(readerCurrentPageRef.current, wid, Number.isFinite(charStart) && charStart >= 0 ? charStart : undefined);
           return;
         }
@@ -20262,6 +20367,50 @@ function AppInner() {
   }, []);
 
   // ── Audio-sync callbacks (Patch 2.4) ────────────────────────────────────
+  const primeReaderAudioPlayback = useCallback(async () => {
+    unlockAudio();
+    const audio = audioElementRef.current;
+    if (!audio) return;
+    audio.playsInline = true;
+    audio.setAttribute('playsinline', '');
+    audio.setAttribute('webkit-playsinline', 'true');
+    if (readerAudioPrimedRef.current) return;
+    const primeSrc = String(positiveAudioRef.current?.currentSrc || positiveAudioRef.current?.src || '').trim();
+    if (!primeSrc) {
+      return;
+    }
+    const previousSrcAttr = audio.getAttribute('src');
+    const previousMuted = audio.muted;
+    const previousVolume = audio.volume;
+    const hadSource = Boolean(String(previousSrcAttr || '').trim() || String(audio.currentSrc || audio.src || '').trim());
+    try {
+      audio.muted = true;
+      audio.volume = 0;
+      if (!hadSource) {
+        audio.src = primeSrc;
+        audio.load();
+      }
+      const playPromise = audio.play();
+      if (playPromise && typeof playPromise.then === 'function') {
+        await playPromise.catch(() => {});
+      }
+      audio.pause();
+      try {
+        audio.currentTime = 0;
+      } catch (_seekError) {
+        // ignore seek reset errors on priming
+      }
+      readerAudioPrimedRef.current = true;
+    } finally {
+      audio.muted = previousMuted;
+      audio.volume = previousVolume;
+      if (!hadSource) {
+        audio.removeAttribute('src');
+        audio.load();
+      }
+    }
+  }, []);
+
   const playReaderAudioPage = useCallback(async (page, startWidOverride, charStartOverride) => {
     const startWid = startWidOverride !== undefined ? startWidOverride : (readerAudioStartWid || null);
     const requestToken = readerAudioRequestTokenRef.current + 1;
@@ -20463,9 +20612,15 @@ function AppInner() {
             else { audioElementRef.current.addEventListener('loadedmetadata', doSeek, { once: true }); }
           });
         }
-        await audioElementRef.current?.play().catch((err) => {
+        try {
+          await audioElementRef.current?.play();
+        } catch (err) {
           console.warn('[ReaderAudio] play() failed:', err?.message || err);
-        });
+          throw new Error(
+            String(err?.message || '').trim()
+              || 'Reader audio playback failed to start'
+          );
+        }
       }
       if (page < readerPageCount) {
         const nextPage = page + 1;
@@ -20493,6 +20648,10 @@ function AppInner() {
         return;
       }
       readerAudioPlayingForPageRef.current = null;
+      setReaderAudioPlayActive(false);
+      setReaderAudioPlayData(null);
+      setReaderAudioPlayPosition(0);
+      setReaderAudioPaused(false);
       setReaderAudioPlayError(String(e?.message || e));
     } finally {
       setReaderAudioPlayLoading(false);
@@ -20516,10 +20675,11 @@ function AppInner() {
       else pauseReaderAudioPlay();
       return;
     }
+    void primeReaderAudioPlayback();
     const next = !readerAudioAwaitingWordTapRef.current;
     readerAudioAwaitingWordTapRef.current = next;
     setReaderAudioAwaitingWordTap(next);
-  }, [readerAudioPlayActive, readerAudioPaused, resumeReaderAudioPlay, pauseReaderAudioPlay]);
+  }, [readerAudioPlayActive, readerAudioPaused, resumeReaderAudioPlay, pauseReaderAudioPlay, primeReaderAudioPlayback]);
 
   const stopReaderAudioPlay = useCallback(() => {
     readerAudioRequestTokenRef.current += 1;

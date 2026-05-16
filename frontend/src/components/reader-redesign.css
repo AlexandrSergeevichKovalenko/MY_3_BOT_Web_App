@@ -980,12 +980,6 @@
   flex-direction: column;
   box-sizing: border-box;
 }
-/* When topbar is collapsed (peek bar shown), first line needs extra clearance
-   to avoid the peek bar gradient overlay */
-.webapp-reader.is-immersive.is-topbar-collapsed .reader-page-sheet {
-  padding-top: 52px;
-}
-
 .webapp-reader .reader-page-sheet-inner {
   flex: 1;
   min-height: 0;
