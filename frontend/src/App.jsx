@@ -127,6 +127,23 @@ function writeStoredReaderExactBookmark(documentId, payload) {
   }
 }
 
+function resolveStoredReaderExactBookmarkPage(storedBookmark, {
+  pageCount = 0,
+  layoutMode = '',
+} = {}) {
+  if (!storedBookmark || typeof storedBookmark !== 'object') return 0;
+  const safePageCount = Math.max(0, Number(pageCount || 0));
+  if (safePageCount <= 0) return 0;
+  const storedPage = Math.max(0, Number(storedBookmark.page || 0));
+  if (!Number.isFinite(storedPage) || storedPage <= 0) return 0;
+  const storedPageCount = Math.max(0, Number(storedBookmark.pageCount || 0));
+  const storedLayoutMode = String(storedBookmark.layoutMode || '').trim().toLowerCase();
+  const safeLayoutMode = String(layoutMode || '').trim().toLowerCase();
+  if (storedPageCount > 0 && storedPageCount !== safePageCount) return 0;
+  if (safeLayoutMode && storedLayoutMode && safeLayoutMode !== storedLayoutMode) return 0;
+  return Math.max(1, Math.min(safePageCount, storedPage));
+}
+
 function getReaderMeasureDimension(measureNode, axis = 'height') {
   if (!measureNode) return 0;
   const isWidth = axis === 'width';
@@ -141,6 +158,34 @@ function readerPageTextFits(measureNode, text) {
   measureNode.textContent = String(text || '');
   const availableHeight = Math.max(1, getReaderMeasureDimension(measureNode, 'height') - READER_PAGINATION_FIT_RESERVE_PX);
   return measureNode.scrollHeight <= availableHeight + 1;
+}
+
+function isReaderHeadingParagraph(paragraph) {
+  const text = String(paragraph || '').replace(/\s+/g, ' ').trim();
+  if (!text) return false;
+  if (text.length > 120) return false;
+  const wordCount = text.split(/\s+/).filter(Boolean).length;
+  if (wordCount > 14) return false;
+  if (/^(kapitel|chapter|teil|abschnitt|section|prolog|epilog)\b/i.test(text)) return true;
+  if (/^[A-ZА-Я0-9ÄÖÜẞIVXLCDM .,:;'"“”«»()\-–—]+$/.test(text) && wordCount <= 12) return true;
+  if (/[.!?…]$/.test(text)) return false;
+  if (wordCount <= 8) return true;
+  return /^[A-ZА-ЯÄÖÜẞ]/.test(text) && wordCount <= 12;
+}
+
+function splitReaderTrailingHeadingBlock(text) {
+  const paragraphs = String(text || '').split(/\n\n+/).map((item) => item.trim()).filter(Boolean);
+  if (paragraphs.length < 2) return null;
+  let splitIndex = paragraphs.length;
+  while (splitIndex > 1 && isReaderHeadingParagraph(paragraphs[splitIndex - 1])) {
+    splitIndex -= 1;
+  }
+  const headingCount = paragraphs.length - splitIndex;
+  if (headingCount <= 0 || headingCount > 3) return null;
+  const leading = paragraphs.slice(0, splitIndex).join('\n\n').trim();
+  const trailing = paragraphs.slice(splitIndex).join('\n\n').trim();
+  if (!leading || !trailing) return null;
+  return { leading, trailing };
 }
 
 function isReaderPaginationSane(sourceText, pages, measureNode) {
@@ -194,6 +239,12 @@ function paginateReaderText(text, measureNode) {
       }
 
       if (buffer) {
+        const trailingHeadingBlock = splitReaderTrailingHeadingBlock(buffer);
+        if (trailingHeadingBlock) {
+          pages.push(trailingHeadingBlock.leading);
+          buffer = trailingHeadingBlock.trailing;
+          continue;
+        }
         pages.push(buffer);
         buffer = '';
         continue;
@@ -15677,11 +15728,6 @@ function AppInner() {
   }, [readerCurrentPage, readerDocumentId, readerPageCount]);
 
   useEffect(() => {
-    if (!readerDocumentId || readerPageCount <= 0 || readerBookmarkPercent <= 0) return;
-    persistReaderExactBookmark(readerBookmarkPage);
-  }, [persistReaderExactBookmark, readerBookmarkPage, readerBookmarkPercent, readerDocumentId, readerPageCount]);
-
-  useEffect(() => {
     readerCurrentPageRef.current = readerCurrentPage;
     setReaderAudioStartWid(null);
   }, [readerCurrentPage, readerDocumentId]);
@@ -19998,9 +20044,10 @@ function AppInner() {
       const pageFromProgress = resolvedTotalPages > 0
         ? resolveReaderPageFromPercent(bookmark > 0 ? bookmark : progress, resolvedTotalPages)
         : 1;
-      const exactBookmarkPage = storedBookmark && resolvedTotalPages > 0
-        ? Math.max(1, Math.min(resolvedTotalPages, Number(storedBookmark.page || 1)))
-        : 0;
+      const exactBookmarkPage = resolveStoredReaderExactBookmarkPage(storedBookmark, {
+        pageCount: resolvedTotalPages,
+        layoutMode: sparsePages.length > 0 ? 'original' : 'custom',
+      });
       const initialPage = exactBookmarkPage || pageFromProgress;
       setReaderCurrentPage(initialPage);
       setReaderBookmarkPercent(
@@ -20270,8 +20317,10 @@ function AppInner() {
           }
           return cachedPayload;
         }
-        const existingRequest = readerAudioPageRequestsRef.current.get(requestKey);
-        if (existingRequest) {
+        const existingRequestEntry = readerAudioPageRequestsRef.current.get(requestKey);
+        const existingRequest = existingRequestEntry?.promise || existingRequestEntry || null;
+        const existingPrefetchOnly = Boolean(existingRequestEntry?.prefetchOnly);
+        if (existingRequest && (prefetchOnly || !existingPrefetchOnly)) {
           try {
             return await existingRequest;
           } catch (error) {
@@ -20331,12 +20380,15 @@ function AppInner() {
           }
           throw new Error('Reader audio generation timed out');
         })();
-        readerAudioPageRequestsRef.current.set(requestKey, requestPromise);
+        readerAudioPageRequestsRef.current.set(requestKey, {
+          promise: requestPromise,
+          prefetchOnly: Boolean(prefetchOnly),
+        });
         try {
           return await requestPromise;
         } finally {
-          const currentRequest = readerAudioPageRequestsRef.current.get(requestKey);
-          if (currentRequest === requestPromise) {
+          const currentRequestEntry = readerAudioPageRequestsRef.current.get(requestKey);
+          if (currentRequestEntry?.promise === requestPromise) {
             readerAudioPageRequestsRef.current.delete(requestKey);
           }
         }
@@ -20730,9 +20782,10 @@ function AppInner() {
       const pageFromProgress = resolvedTotalPages > 0
         ? resolveReaderPageFromPercent(bookmark || progress, resolvedTotalPages)
         : 1;
-      const exactBookmarkPage = storedBookmark && resolvedTotalPages > 0
-        ? Math.max(1, Math.min(resolvedTotalPages, Number(storedBookmark.page || 1)))
-        : 0;
+      const exactBookmarkPage = resolveStoredReaderExactBookmarkPage(storedBookmark, {
+        pageCount: resolvedTotalPages,
+        layoutMode: pages.length > 0 ? 'original' : 'custom',
+      });
       const initialPage = exactBookmarkPage || pageFromProgress;
       setReaderCurrentPage(initialPage);
       setReaderBookmarkPercent(
@@ -30176,6 +30229,7 @@ function AppInner() {
                   readerProgressPercent={readerProgressPercent}
                   readerBookmarkPercent={readerBookmarkPercent}       setReaderBookmarkPercent={setReaderBookmarkPercent}
                   readerBookmarkPage={readerBookmarkPage}
+                  persistReaderExactBookmark={persistReaderExactBookmark}
                   isCurrentReaderPageBookmarked={isCurrentReaderPageBookmarked}
                   readerCanUseOriginalLayout={readerCanUseOriginalLayout}
                   readerLayoutMode={readerLayoutMode}                 setReaderLayoutMode={setReaderLayoutMode}

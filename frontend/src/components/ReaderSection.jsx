@@ -55,6 +55,7 @@ export default function ReaderSection(props) {
     readerCurrentPage, setReaderCurrentPage,
     readerProgressPercent,
     readerBookmarkPercent, setReaderBookmarkPercent, readerBookmarkPage,
+    persistReaderExactBookmark = () => {},
     isCurrentReaderPageBookmarked,
     readerCanUseOriginalLayout,
     readerLayoutMode, setReaderLayoutMode,
@@ -577,6 +578,7 @@ export default function ReaderSection(props) {
                   onClick={() => {
                     const mark = computeReaderProgressPercent();
                     setReaderBookmarkPercent(mark);
+                    persistReaderExactBookmark(readerCurrentPage);
                     if (readerDocumentId) {
                       syncReaderState({ bookmark_percent: Number(mark.toFixed(2)) });
                     }

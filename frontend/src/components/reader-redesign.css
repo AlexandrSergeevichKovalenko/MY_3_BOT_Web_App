@@ -2820,9 +2820,11 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
 }
 
 .reader-audio-mini-player {
-  position: sticky;
+  position: fixed;
+  left: 14px;
+  right: 14px;
   bottom: calc(env(safe-area-inset-bottom, 0px) + 14px);
-  margin: 10px 10px 0;
+  margin: 0;
   z-index: 30;
   display: flex;
   align-items: center;
