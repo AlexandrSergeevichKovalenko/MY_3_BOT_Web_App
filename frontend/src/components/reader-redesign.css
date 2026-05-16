@@ -972,6 +972,9 @@
   line-height: 1.7;
   color: var(--rd-text) !important;
   text-wrap: pretty;
+  /* Consistent font rendering across dark/light themes — prevents text reflow on theme switch */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 .webapp-reader .reader-page-sheet-measure {
@@ -2266,7 +2269,8 @@
 
 .webapp-reader[data-reader-theme="sepia"] .reader-article,
 .webapp-reader[data-reader-theme="cream"] .reader-article {
-  background: transparent !important;
+  /* Explicit background — iOS scroll containers with transparent can show white default */
+  background: var(--rd-paper-bg) !important;
   color: var(--rd-paper-text) !important;
 }
 
