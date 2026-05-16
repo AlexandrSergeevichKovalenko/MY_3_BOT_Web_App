@@ -138,7 +138,6 @@ export default function ReaderSection(props) {
     'webapp-reader',
     readerHasContent && readerImmersive && !readerArchiveOpen ? 'is-immersive' : '',
     readerHasContent && readerImmersive && !readerArchiveOpen && readerTopbarCollapsed ? 'is-topbar-collapsed' : '',
-    readerHasContent && readerImmersive && !readerArchiveOpen && readerAudioPlayActive ? 'has-audio-player' : '',
   ].filter(Boolean).join(' ');
 
   return (
@@ -799,8 +798,8 @@ export default function ReaderSection(props) {
               </article>
             )}
 
-            {/* ── Scrubber bar ────────────────────────────────────── */}
-            {readerPageCount > 0 && (
+            {/* ── Scrubber bar — hidden while audio player is active ── */}
+            {readerPageCount > 0 && !readerAudioPlayActive && (
               <div className="reader-scrubber-bar">
                 <button
                   type="button"
