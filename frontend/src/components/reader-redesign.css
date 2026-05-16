@@ -2572,6 +2572,52 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
   background: #080c1a !important;
 }
 
+/* ── Toolbar audio play button ──────────────────────────────────────────── */
+.webapp-reader .reader-audio-play-btn.is-playing {
+  color: var(--rd-accent);
+  border-color: var(--rd-accent-soft);
+  background: var(--rd-accent-soft);
+}
+.webapp-reader .reader-audio-play-btn.is-awaiting {
+  color: var(--rd-accent);
+  border-color: var(--rd-accent-soft);
+  background: var(--rd-accent-soft);
+  animation: rd-audio-btn-pulse 1.2s ease-in-out infinite;
+}
+@keyframes rd-audio-btn-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16,185,129,0); }
+  50% { box-shadow: 0 0 0 5px rgba(16,185,129,0.25); }
+}
+
+/* Paper themes */
+.webapp-reader[data-reader-theme="sepia"] .reader-audio-play-btn.is-playing,
+.webapp-reader[data-reader-theme="sepia"] .reader-audio-play-btn.is-awaiting,
+.webapp-reader[data-reader-theme="cream"] .reader-audio-play-btn.is-playing,
+.webapp-reader[data-reader-theme="cream"] .reader-audio-play-btn.is-awaiting {
+  color: var(--rd-paper-accent);
+  border-color: rgba(0,0,0,0.12);
+  background: rgba(0,0,0,0.06);
+}
+
+/* ── Awaiting word tap hint bar ─────────────────────────────────────────── */
+.webapp-reader .reader-audio-word-hint {
+  flex-shrink: 0;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-family: var(--rd-font-serif);
+  color: var(--rd-accent);
+  background: var(--rd-accent-soft);
+  text-align: center;
+  letter-spacing: 0.01em;
+  border-bottom: 1px solid var(--rd-accent-glow);
+}
+.webapp-reader[data-reader-theme="sepia"] .reader-audio-word-hint,
+.webapp-reader[data-reader-theme="cream"] .reader-audio-word-hint {
+  color: var(--rd-paper-accent);
+  background: rgba(0,0,0,0.05);
+  border-bottom-color: rgba(0,0,0,0.08);
+}
+
 /* ── Start-word highlight (tap-to-seek) ─────────────────────────────────── */
 /* No padding/font-weight — those cause text reflow and make the page jump.  */
 /* box-shadow and background only — purely visual, zero layout impact.       */

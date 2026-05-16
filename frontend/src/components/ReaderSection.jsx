@@ -127,6 +127,8 @@ export default function ReaderSection(props) {
     readerAudioRate = 1.0,
     setReaderAudioRate = () => {},
     readerAudioStartWid = null,
+    readerAudioAwaitingWordTap = false,
+    onReaderAudioPlayBtn = () => {},
     playReaderAudioPage = () => {},
     pauseReaderAudioPlay = () => {},
     resumeReaderAudioPlay = () => {},
@@ -689,6 +691,36 @@ export default function ReaderSection(props) {
                       )}
                     </span>
                   </button>
+                  {/* ── Audio play button ── */}
+                  <button
+                    type="button"
+                    className={`secondary-button reader-toolbar-btn reader-toolbar-btn-icon-only reader-audio-play-btn${readerAudioPlayActive ? ' is-playing' : ''}${readerAudioAwaitingWordTap ? ' is-awaiting' : ''}`}
+                    onClick={onReaderAudioPlayBtn}
+                    disabled={!readerHasContent || readerAudioPlayLoading}
+                    title={readerAudioPlayActive
+                      ? (readerAudioPaused ? tr('Продолжить', 'Fortsetzen') : tr('Пауза', 'Pause'))
+                      : (readerAudioAwaitingWordTap ? tr('Нажми слово…', 'Wort antippen…') : tr('Аудио', 'Audio'))}
+                    aria-label={tr('Аудиовоспроизведение', 'Audio')}
+                  >
+                    <span className="reader-toolbar-btn-icon" aria-hidden="true">
+                      {readerAudioPlayLoading ? (
+                        <svg viewBox="0 0 18 18" fill="none">
+                          <circle cx="9" cy="9" r="6" stroke="currentColor" strokeWidth="1.6" strokeDasharray="28" strokeDashoffset="10" strokeLinecap="round">
+                            <animateTransform attributeName="transform" type="rotate" from="0 9 9" to="360 9 9" dur="0.9s" repeatCount="indefinite"/>
+                          </circle>
+                        </svg>
+                      ) : readerAudioPlayActive && !readerAudioPaused ? (
+                        <svg viewBox="0 0 18 18" fill="none">
+                          <rect x="5" y="4.5" width="2.8" height="9" rx="1" fill="currentColor"/>
+                          <rect x="10.2" y="4.5" width="2.8" height="9" rx="1" fill="currentColor"/>
+                        </svg>
+                      ) : (
+                        <svg viewBox="0 0 18 18" fill="none">
+                          <path d="M6 4.5l8 4.5-8 4.5V4.5z" fill="currentColor"/>
+                        </svg>
+                      )}
+                    </span>
+                  </button>
                   <button
                     type="button"
                     className="secondary-button reader-toolbar-btn reader-toolbar-btn-icon-only"
@@ -736,6 +768,13 @@ export default function ReaderSection(props) {
                     </span>
                   </button>
                 </div>
+              </div>
+            )}
+
+            {/* ── Audio awaiting-word hint ─────────────────────────── */}
+            {readerAudioAwaitingWordTap && (
+              <div className="reader-audio-word-hint">
+                {tr('Нажми на слово — аудио начнётся с него', 'Tippe ein Wort an — Audio startet dort')}
               </div>
             )}
 

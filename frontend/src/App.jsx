@@ -4615,6 +4615,7 @@ function AppInner() {
   const [selectionType, setSelectionType] = useState('');
   const [selectedMeta, setSelectedMeta] = useState(null);
   const [readerAudioStartWid, setReaderAudioStartWid] = useState(null);
+  const [readerAudioAwaitingWordTap, setReaderAudioAwaitingWordTap] = useState(false);
   const [selectionCompact, setSelectionCompact] = useState(false);
   const [selectionLookupLang, setSelectionLookupLang] = useState('');
   const [selectionInlineMode, setSelectionInlineMode] = useState(false);
@@ -19058,6 +19059,21 @@ function AppInner() {
     if (!(target instanceof Element)) return;
 
     const wordEl = target.closest('[data-wid]');
+
+    // ── Audio awaiting word tap: next tap starts audio from this word ──
+    if (readerAudioAwaitingWordTap) {
+      setReaderAudioAwaitingWordTap(false);
+      if (wordEl && root.contains(wordEl)) {
+        const wid = String(wordEl.getAttribute('data-wid') || '').trim();
+        const charStart = parseInt(wordEl.getAttribute('data-start') || '', 10);
+        if (wid) {
+          const currentPage = readerCurrentPageRef.current;
+          playReaderAudioPage(currentPage, wid, Number.isFinite(charStart) && charStart >= 0 ? charStart : undefined);
+        }
+      }
+      return; // don't show translation when starting audio
+    }
+
     if (wordEl && root.contains(wordEl)) {
       const wid = String(wordEl.getAttribute('data-wid') || '').trim();
       const sid = String(wordEl.getAttribute('data-sid') || '').trim();
@@ -19286,29 +19302,8 @@ function AppInner() {
     readerDragSelectionMetaRef.current = null;
     setReaderDragSelectionMeta(null);
 
-    // Long-press (≥650ms without movement) = start audio from this word
+    // Long press is now only used for phrase drag-selection, not audio start.
     if (readerWordLongPressTimerRef.current) clearTimeout(readerWordLongPressTimerRef.current);
-    const longPressWid = wid;
-    // Capture char position directly from DOM — avoids stale map lookup later
-    const longPressCharStart = parseInt(wordEl.getAttribute('data-start') || '', 10);
-    readerWordLongPressTimerRef.current = setTimeout(() => {
-      readerWordLongPressTimerRef.current = null;
-      const pageText = readerSentencesModel.reduce((acc, s) => acc + String(s.text || '').length, 0);
-      const safePageLen = Math.max(100, pageText);
-      const pageLimit = Math.max(1, Math.ceil(10000 / safePageLen));
-      readerAudioPagesPlayedRef.current = 0;
-      readerAudioPageLimitRef.current = pageLimit;
-      setReaderAudioStartWid(longPressWid);
-      readerSuppressStructuredClickRef.current = Date.now(); // suppress next click
-      const currentPage = readerCurrentPageRef.current;
-      if (readerAudioPlayActive) {
-        stopReaderAudioPlay();
-        setTimeout(() => playReaderAudioPage(currentPage, longPressWid, longPressCharStart), 60);
-      } else {
-        playReaderAudioPage(currentPage, longPressWid, longPressCharStart);
-      }
-      console.log('[ReaderAudio] long-press audio start: wid=', longPressWid, 'charStart=', longPressCharStart, 'page=', currentPage);
-    }, 650);
   };
 
   const handleReaderArticleTouchMove = (event) => {
@@ -20120,6 +20115,16 @@ function AppInner() {
     setReaderAudioPaused(false);
   }, []);
 
+  // Toolbar play button: pause/resume if playing, else toggle word-select mode
+  const handleReaderAudioPlayBtn = useCallback(() => {
+    if (readerAudioPlayActive) {
+      if (readerAudioPaused) resumeReaderAudioPlay();
+      else pauseReaderAudioPlay();
+      return;
+    }
+    setReaderAudioAwaitingWordTap((prev) => !prev);
+  }, [readerAudioPlayActive, readerAudioPaused, resumeReaderAudioPlay, pauseReaderAudioPlay]);
+
   const stopReaderAudioPlay = useCallback(() => {
     if (audioElementRef.current) {
       audioElementRef.current.pause();
@@ -20134,6 +20139,7 @@ function AppInner() {
     setReaderAudioPlayPosition(0);
     setReaderAudioPaused(false);
     setReaderAudioPlayError('');
+    setReaderAudioAwaitingWordTap(false);
   }, []);
 
   const seekReaderAudioToWid = useCallback((wid) => {
@@ -29855,6 +29861,8 @@ function AppInner() {
                   readerAudioVoice={readerAudioVoice}           setReaderAudioVoice={setReaderAudioVoice}
                   readerAudioRate={readerAudioRate}             setReaderAudioRate={setReaderAudioRate}
                   readerAudioStartWid={readerAudioStartWid}
+                  readerAudioAwaitingWordTap={readerAudioAwaitingWordTap}
+                  onReaderAudioPlayBtn={handleReaderAudioPlayBtn}
                   playReaderAudioPage={playReaderAudioPage}
                   pauseReaderAudioPlay={pauseReaderAudioPlay}
                   resumeReaderAudioPlay={resumeReaderAudioPlay}
