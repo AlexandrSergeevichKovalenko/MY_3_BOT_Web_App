@@ -2864,12 +2864,8 @@ body:has(.webapp-reader.is-immersive:not([data-reader-theme="cream"]):not([data-
 }
 
 /* Reader follow-up: remove duplicate in-page pager, restore bookmark visibility */
-.webapp-reader.is-immersive .reader-page-sheet > .reader-page-num {
+.webapp-reader.is-immersive .reader-page-sheet:not(.reader-page-sheet-measure) > .reader-page-num {
   display: none;
-}
-
-.webapp-reader.is-immersive .reader-page-sheet {
-  padding-bottom: 10px;
 }
 
 .webapp-reader .reader-page-bookmark-indicator {
