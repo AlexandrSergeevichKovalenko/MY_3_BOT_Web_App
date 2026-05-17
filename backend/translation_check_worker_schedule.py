@@ -179,6 +179,7 @@ def _railway_headers() -> dict[str, str]:
     project_token = str(os.getenv("TRANSLATION_CHECK_WORKER_RAILWAY_PROJECT_TOKEN") or "").strip()
     workspace_token = str(
         os.getenv("TRANSLATION_CHECK_WORKER_RAILWAY_API_TOKEN")
+        or os.getenv("AGENT_WORKER_RAILWAY_API_TOKEN")
         or os.getenv("RAILWAY_API_TOKEN")
         or ""
     ).strip()
