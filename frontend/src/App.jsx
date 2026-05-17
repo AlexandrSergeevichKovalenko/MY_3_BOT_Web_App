@@ -4960,6 +4960,7 @@ function AppInner() {
   const [readerAudioVoice, setReaderAudioVoice] = useState('');
   const [readerAudioRate, setReaderAudioRate] = useState(1.0);
   const [readerAudioPaused, setReaderAudioPaused] = useState(false);
+  const [readerAudioCurrentPageCharOffset, setReaderAudioCurrentPageCharOffset] = useState(0);
   const audioElementRef = useRef(null);
   const readerAudioPreloadElementRef = useRef(null);
   const readerEpubViewportRef = useRef(null);
@@ -4974,6 +4975,8 @@ function AppInner() {
   const readerAudioPageCacheRef = useRef(new Map());
   const readerAudioPageRequestsRef = useRef(new Map());
   const readerAudioPrimedRef = useRef(false);
+  const readerAudioCurrentPageCharOffsetRef = useRef(0);
+  const readerAudioWindowMetaRef = useRef(null);
 
   const [readerColorTheme, setReaderColorTheme] = useState(() => {
     try {
@@ -8506,7 +8509,7 @@ function AppInner() {
           ? Math.max(0, Math.trunc(Number(incomingQueue.due_count_total)))
           : Math.max(0, Math.trunc(Number(prev?.due_count_total || 0))),
         due_reviewed_today: Number.isFinite(Number(incomingQueue?.due_reviewed_today))
-          ? Math.max(Math.max(0, Math.trunc(Number(incomingQueue.due_reviewed_today))), Math.max(0, Math.trunc(Number(prev?.due_reviewed_today || 0))))
+          ? Math.max(0, Math.trunc(Number(incomingQueue.due_reviewed_today)))
           : Math.max(0, Math.trunc(Number(prev?.due_reviewed_today || 0))),
         due_limit_today: Number.isFinite(Number(incomingQueue?.due_limit_today))
           ? Math.max(1, Math.trunc(Number(incomingQueue.due_limit_today)))
@@ -8533,7 +8536,7 @@ function AppInner() {
           due_count: dueCount - 1,
           new_remaining_today: newRemaining,
           due_count_total: Math.max(0, dueCountTotal - 1),
-          due_reviewed_today: dueReviewedToday + 1,
+          due_reviewed_today: dueReviewedToday,
           due_limit_today: dueLimitToday,
         };
       }
@@ -8542,12 +8545,11 @@ function AppInner() {
           due_count: dueCount,
           new_remaining_today: newRemaining - 1,
           due_count_total: dueCountTotal,
-          due_reviewed_today: dueReviewedToday + 1,
+          due_reviewed_today: dueReviewedToday,
           due_limit_today: dueLimitToday,
         };
       }
-      // Fallback: still increment so the counter never stalls
-      return { due_count: dueCount, new_remaining_today: newRemaining, due_count_total: dueCountTotal, due_reviewed_today: dueReviewedToday + 1, due_limit_today: dueLimitToday };
+      return { due_count: dueCount, new_remaining_today: newRemaining, due_count_total: dueCountTotal, due_reviewed_today: dueReviewedToday, due_limit_today: dueLimitToday };
     });
   };
 
@@ -8702,7 +8704,7 @@ function AppInner() {
               ? Math.max(0, Math.trunc(Number(queueInfo.due_count_total)))
               : Math.max(0, Math.trunc(Number(prev?.due_count_total || 0))),
             due_reviewed_today: Number.isFinite(Number(queueInfo?.due_reviewed_today))
-              ? Math.max(Math.max(0, Math.trunc(Number(queueInfo.due_reviewed_today))), Math.max(0, Math.trunc(Number(prev?.due_reviewed_today || 0))))
+              ? Math.max(0, Math.trunc(Number(queueInfo.due_reviewed_today)))
               : Math.max(0, Math.trunc(Number(prev?.due_reviewed_today || 0))),
             due_limit_today: Number.isFinite(Number(queueInfo?.due_limit_today))
               ? Math.max(1, Math.trunc(Number(queueInfo.due_limit_today)))
@@ -8816,7 +8818,7 @@ function AppInner() {
           due_count: Math.max(0, Math.trunc(Number(queueInfo.due_count || 0))),
           new_remaining_today: Math.max(0, Math.trunc(Number(queueInfo.new_remaining_today || 0))),
           due_count_total: Math.max(0, Math.trunc(Number(queueInfo.due_count_total || 0))),
-          due_reviewed_today: Math.max(Math.max(0, Math.trunc(Number(queueInfo.due_reviewed_today || 0))), Math.max(0, Math.trunc(Number(prev?.due_reviewed_today || 0)))),
+          due_reviewed_today: Math.max(0, Math.trunc(Number(queueInfo.due_reviewed_today || 0))),
           due_limit_today: Math.max(1, Math.trunc(Number(queueInfo.due_limit_today || 30))),
         }));
       }
@@ -12380,6 +12382,31 @@ function AppInner() {
     return normalizeReaderVisiblePageText(String(readerDisplayPages[pageIndex]?.text || ''));
   }, [readerDisplayPages]);
   const readerPageCount = readerDisplayPages.length;
+  const buildReaderAudioWindow = useCallback((startPage, maxPages = 3) => {
+    const safeStartPage = Math.max(1, Math.min(readerPageCount || 1, Number(startPage || 1) || 1));
+    const segments = [];
+    let combinedText = '';
+    for (let page = safeStartPage; page <= readerPageCount && segments.length < maxPages; page += 1) {
+      const pageText = getReaderDisplayPageText(page);
+      if (!pageText) continue;
+      const separator = segments.length > 0 ? '\n\n' : '';
+      const charStart = combinedText.length + separator.length;
+      combinedText += `${separator}${pageText}`;
+      segments.push({
+        page,
+        charStart,
+        charEnd: combinedText.length,
+        text: pageText,
+      });
+    }
+    if (!segments.length || !combinedText) return null;
+    return {
+      startPage: segments[0].page,
+      endPage: segments[segments.length - 1].page,
+      combinedText,
+      segments,
+    };
+  }, [getReaderDisplayPageText, readerPageCount]);
   const persistReaderExactBookmark = useCallback((page) => {
     if (!readerDocumentId || readerPageCount <= 0) return;
     const safePage = Math.max(1, Math.min(readerPageCount, Number(page || 1)));
@@ -12644,10 +12671,11 @@ function AppInner() {
     if (!timing) return null;
     // Prefer char_start matching (robust against frontend/backend word-count differences).
     if (timing.char_start != null) {
-      return readerAudioCharStartMap.get(String(timing.char_start)) || null;
+      const localCharStart = Number(timing.char_start) - Number(readerAudioCurrentPageCharOffset || 0);
+      return readerAudioCharStartMap.get(String(localCharStart)) || null;
     }
     return readerAudioWidMap.get(String(timing.wid)) || null;
-  }, [readerAudioPlayData, readerAudioPlayPosition, readerAudioWidMap, readerAudioCharStartMap, readerAudioPlayActive]);
+  }, [readerAudioPlayData, readerAudioPlayPosition, readerAudioWidMap, readerAudioCharStartMap, readerAudioPlayActive, readerAudioCurrentPageCharOffset]);
 
   const readerAudioPlayingSid = useMemo(() => {
     if (!readerAudioPlayingWid) return null;
@@ -20945,7 +20973,12 @@ function AppInner() {
     setReaderAudioPlayError('');
     try {
       const voice = readerAudioVoice || '';
-      const visiblePageText = getReaderDisplayPageText(page);
+      const playbackWindow = buildReaderAudioWindow(page, 3);
+      if (!playbackWindow?.combinedText) {
+        throw new Error('Reader audio page text is empty');
+      }
+      const currentSegment = playbackWindow.segments.find((segment) => segment.page === page) || playbackWindow.segments[0];
+      const visiblePageText = playbackWindow.combinedText;
       const buildPageAudioRequestKey = (targetPage, targetVoice, targetRate, targetText) => {
         const raw = `${String(readerDocumentId || '')}|${String(targetPage || '')}|${String(targetVoice || '')}|${String(targetRate || '')}|${String(targetText || '')}`;
         let hash = 0;
@@ -21063,26 +21096,32 @@ function AppInner() {
           }
         }
       };
-      for (let offset = 1; offset <= 2; offset += 1) {
-        const nextPage = page + offset;
-        if (nextPage > readerPageCount) break;
-        const nextPageText = getReaderDisplayPageText(nextPage);
-        if (nextPageText) {
-          // Keep one extra page warmed ahead because mobile reader pages are
-          // short enough that page N+1 may still be generating when N ends.
+      const nextWindow = buildReaderAudioWindow((playbackWindow.endPage || page) + 1, 3);
+      if (nextWindow?.combinedText) {
+        loadReaderAudioPageData({
+          targetPage: nextWindow.startPage,
+          targetVoice: voice,
+          targetRate: readerAudioRate,
+          targetText: nextWindow.combinedText,
+          token: null,
+          prefetchOnly: true,
+          browserPreload: true,
+        }).catch(() => {});
+        const trailingWindow = buildReaderAudioWindow(nextWindow.endPage + 1, 3);
+        if (trailingWindow?.combinedText) {
           loadReaderAudioPageData({
-            targetPage: nextPage,
+            targetPage: trailingWindow.startPage,
             targetVoice: voice,
             targetRate: readerAudioRate,
-            targetText: nextPageText,
+            targetText: trailingWindow.combinedText,
             token: null,
             prefetchOnly: true,
-            browserPreload: offset === 1,
+            browserPreload: false,
           }).catch(() => {});
         }
       }
       const data = await loadReaderAudioPageData({
-        targetPage: page,
+        targetPage: playbackWindow.startPage,
         targetVoice: voice,
         targetRate: readerAudioRate,
         targetText: visiblePageText,
@@ -21096,12 +21135,32 @@ function AppInner() {
       if (!data?.audio_url) {
         return;
       }
+      const windowSegments = playbackWindow.segments.map((segment) => {
+        const matchingWords = (data.word_timings || []).filter((word) => {
+          if (word?.char_start == null) return false;
+          const charStart = Number(word.char_start);
+          return charStart >= segment.charStart && charStart < segment.charEnd;
+        });
+        return {
+          ...segment,
+          startMs: matchingWords[0]?.start_ms ?? null,
+          endMs: matchingWords[matchingWords.length - 1]?.end_ms ?? null,
+        };
+      });
+      const normalizedWindow = {
+        ...playbackWindow,
+        segments: windowSegments,
+      };
+      readerAudioWindowMetaRef.current = normalizedWindow;
+      const initialCharOffset = Number(currentSegment?.charStart || 0);
+      readerAudioCurrentPageCharOffsetRef.current = initialCharOffset;
+      setReaderAudioCurrentPageCharOffset(initialCharOffset);
       setReaderAudioPlayData(data);
       setReaderAudioPaused(false);
       setReaderAudioPlayActive(true);
       if (audioElementRef.current) {
         const el = audioElementRef.current;
-        const currentRequestKey = buildPageAudioRequestKey(page, voice, readerAudioRate, visiblePageText);
+        const currentRequestKey = buildPageAudioRequestKey(playbackWindow.startPage, voice, readerAudioRate, visiblePageText);
         const preloadEl = readerAudioPreloadElementRef.current;
         const preloadedKey = String(preloadEl?.dataset?.readerAudioKey || '');
         const preloadedUrl = String(preloadEl?.currentSrc || preloadEl?.src || '');
@@ -21117,9 +21176,10 @@ function AppInner() {
         let startMs = 0;
         if (startWid) {
           // Use DOM-captured charStart first, fall back to map lookup.
-          const charStart = (Number.isFinite(charStartOverride) && charStartOverride >= 0)
+          const localCharStart = (Number.isFinite(charStartOverride) && charStartOverride >= 0)
             ? charStartOverride
             : readerAudioWidToCharStart.get(startWid);
+          const charStart = localCharStart == null ? null : Number(localCharStart) + initialCharOffset;
           const timings = data.word_timings || [];
           let timing = null;
           console.log('[ReaderAudio] seek: charStart=', charStart, 'timings=', timings.length, 'first_char_start=', timings[0]?.char_start);
@@ -21171,6 +21231,9 @@ function AppInner() {
         return;
       }
       readerAudioPlayingForPageRef.current = null;
+      readerAudioWindowMetaRef.current = null;
+      readerAudioCurrentPageCharOffsetRef.current = 0;
+      setReaderAudioCurrentPageCharOffset(0);
       setReaderAudioPlayActive(false);
       setReaderAudioPlayData(null);
       setReaderAudioPlayPosition(0);
@@ -21179,7 +21242,7 @@ function AppInner() {
     } finally {
       setReaderAudioPlayLoading(false);
     }
-  }, [readerDocumentId, readerAudioVoice, readerAudioRate, initData, readerAudioStartWid, readerAudioWidReverseMap, readerAudioWidToCharStart, getReaderDisplayPageText, readerPageCount]);
+  }, [readerDocumentId, readerAudioVoice, readerAudioRate, initData, readerAudioStartWid, readerAudioWidReverseMap, readerAudioWidToCharStart, buildReaderAudioWindow]);
 
   const pauseReaderAudioPlay = useCallback(() => {
     audioElementRef.current?.pause();
@@ -21229,11 +21292,14 @@ function AppInner() {
     }
     cancelAnimationFrame(audioRafRef.current);
     readerAudioPlayingForPageRef.current = null;
+    readerAudioWindowMetaRef.current = null;
     readerAudioPagesPlayedRef.current = 0;
     readerAudioPageLimitRef.current = 0;
+    readerAudioCurrentPageCharOffsetRef.current = 0;
     setReaderAudioPlayActive(false);
     setReaderAudioPlayData(null);
     setReaderAudioPlayPosition(0);
+    setReaderAudioCurrentPageCharOffset(0);
     setReaderAudioPaused(false);
     setReaderAudioPlayError('');
     readerAudioAwaitingWordTapRef.current = false;
@@ -21246,11 +21312,14 @@ function AppInner() {
     let timing = null;
     // Prefer char_start matching.
     const charStart = readerAudioWidToCharStart.get(wid);
-    console.log('[AUDIO_SEEK] wid=', wid, 'charStart=', charStart, 'timings=', timings.length, 'first_timing_char_start=', timings[0]?.char_start);
-    if (charStart != null && timings.length > 0 && timings[0].char_start != null) {
-      timing = timings.find((w) => charStart >= Number(w.char_start) && charStart <= Number(w.char_end))
-        || timings.find((w) => Number(w.char_start) >= charStart)
-        || timings.find((w) => charStart <= Number(w.char_end));
+    const absoluteCharStart = charStart == null
+      ? null
+      : Number(charStart) + Number(readerAudioCurrentPageCharOffsetRef.current || 0);
+    console.log('[AUDIO_SEEK] wid=', wid, 'charStart=', charStart, 'absoluteCharStart=', absoluteCharStart, 'timings=', timings.length, 'first_timing_char_start=', timings[0]?.char_start);
+    if (absoluteCharStart != null && timings.length > 0 && timings[0].char_start != null) {
+      timing = timings.find((w) => absoluteCharStart >= Number(w.char_start) && absoluteCharStart <= Number(w.char_end))
+        || timings.find((w) => Number(w.char_start) >= absoluteCharStart)
+        || timings.find((w) => absoluteCharStart <= Number(w.char_end));
     }
     if (!timing) {
       const posIdx = readerAudioWidReverseMap.get(wid);
@@ -21278,24 +21347,58 @@ function AppInner() {
     return () => cancelAnimationFrame(audioRafRef.current);
   }, [readerAudioPlayActive]);
 
+  // Windowed audio page sync: keep the visible page aligned with the page
+  // segment currently speaking inside a multi-page clip.
+  useEffect(() => {
+    const audio = audioElementRef.current;
+    if (!audio || !readerAudioPlayActive) return undefined;
+    const syncVisiblePageFromAudio = () => {
+      const windowMeta = readerAudioWindowMetaRef.current;
+      if (!windowMeta?.segments?.length) return;
+      const positionMs = Math.max(0, Number(audio.currentTime || 0) * 1000);
+      const activeSegment = windowMeta.segments.find((segment) => (
+        Number.isFinite(segment?.startMs)
+        && Number.isFinite(segment?.endMs)
+        && positionMs >= Number(segment.startMs)
+        && positionMs < Number(segment.endMs)
+      )) || windowMeta.segments.find((segment) => Number.isFinite(segment?.startMs) && positionMs < Number(segment.startMs))
+        || windowMeta.segments[0];
+      if (!activeSegment) return;
+      const nextPage = Number(activeSegment.page || 0);
+      const nextOffset = Number(activeSegment.charStart || 0);
+      if (nextPage > 0 && readerCurrentPageRef.current !== nextPage) {
+        readerCurrentPageRef.current = nextPage;
+        readerAudioPlayingForPageRef.current = nextPage;
+        setReaderCurrentPage(nextPage);
+      }
+      if (readerAudioCurrentPageCharOffsetRef.current !== nextOffset) {
+        readerAudioCurrentPageCharOffsetRef.current = nextOffset;
+        setReaderAudioCurrentPageCharOffset(nextOffset);
+      }
+    };
+    audio.addEventListener('timeupdate', syncVisiblePageFromAudio);
+    return () => audio.removeEventListener('timeupdate', syncVisiblePageFromAudio);
+  }, [readerAudioPlayActive]);
+
   // Auto-next-page: advance from the page that was actually playing (not the display page)
   useEffect(() => {
     const audio = audioElementRef.current;
     if (!audio || !readerAudioPlayActive) return undefined;
     const onEnded = () => {
-      const playedPage = readerAudioPlayingForPageRef.current;
-      if (playedPage === null || playedPage >= readerPageCount) {
+      const windowMeta = readerAudioWindowMetaRef.current;
+      const lastPageInWindow = Number(windowMeta?.endPage || 0);
+      if (!lastPageInWindow || lastPageInWindow >= readerPageCount) {
         stopReaderAudioPlay();
         return;
       }
       // Check 10 000-char page budget
-      readerAudioPagesPlayedRef.current += 1;
+      readerAudioPagesPlayedRef.current += Number(windowMeta?.segments?.length || 1);
       const limit = readerAudioPageLimitRef.current;
       if (limit > 0 && readerAudioPagesPlayedRef.current >= limit) {
         stopReaderAudioPlay();
         return;
       }
-      const nextPage = playedPage + 1;
+      const nextPage = lastPageInWindow + 1;
       readerAudioPlayingForPageRef.current = nextPage;
       setReaderCurrentPage(nextPage);
       setReaderAudioStartWid(null);
