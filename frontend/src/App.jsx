@@ -21064,12 +21064,13 @@ function AppInner() {
           }
         }
       };
-      if (page < readerPageCount) {
-        const nextPage = page + 1;
+      for (let offset = 1; offset <= 2; offset += 1) {
+        const nextPage = page + offset;
+        if (nextPage > readerPageCount) break;
         const nextPageText = getReaderDisplayPageText(nextPage);
         if (nextPageText) {
-          // Warm the next page in parallel with the current-page fetch so
-          // short mobile pages do not stall at the page boundary.
+          // Keep one extra page warmed ahead because mobile reader pages are
+          // short enough that page N+1 may still be generating when N ends.
           loadReaderAudioPageData({
             targetPage: nextPage,
             targetVoice: voice,
@@ -21296,7 +21297,8 @@ function AppInner() {
       const nextPage = playedPage + 1;
       readerAudioPlayingForPageRef.current = nextPage;
       setReaderCurrentPage(nextPage);
-      playReaderAudioPage(nextPage);
+      setReaderAudioStartWid(null);
+      playReaderAudioPage(nextPage, null, undefined);
     };
     audio.addEventListener('ended', onEnded);
     return () => audio.removeEventListener('ended', onEnded);
