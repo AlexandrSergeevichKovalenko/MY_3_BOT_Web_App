@@ -20979,11 +20979,12 @@ function AppInner() {
         targetText,
         token,
         prefetchOnly = false,
+        browserPreload = false,
       }) => {
         const requestKey = buildPageAudioRequestKey(targetPage, targetVoice, targetRate, targetText);
         const cachedPayload = readerAudioPageCacheRef.current.get(requestKey);
         if (cachedPayload?.audio_url) {
-          if (prefetchOnly) {
+          if (browserPreload) {
             preloadReaderAudioUrl(requestKey, String(cachedPayload.audio_url || ''));
           }
           return cachedPayload;
@@ -21037,7 +21038,7 @@ function AppInner() {
             }
             if (payload?.audio_url) {
               readerAudioPageCacheRef.current.set(requestKey, payload);
-              if (prefetchOnly) {
+              if (browserPreload) {
                 preloadReaderAudioUrl(requestKey, String(payload.audio_url || ''));
               }
               return payload;
@@ -21078,6 +21079,7 @@ function AppInner() {
             targetText: nextPageText,
             token: null,
             prefetchOnly: true,
+            browserPreload: offset === 1,
           }).catch(() => {});
         }
       }
@@ -21088,6 +21090,7 @@ function AppInner() {
         targetText: visiblePageText,
         token: requestToken,
         prefetchOnly: false,
+        browserPreload: false,
       });
       if (readerAudioRequestTokenRef.current !== requestToken) {
         return;
