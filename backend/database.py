@@ -36,6 +36,31 @@ except Exception:
     )
 
 try:
+    from backend.voice_mistake_taxonomy import (
+        VALID_ERROR_CATEGORIES as VALID_VOICE_ERROR_CATEGORIES,
+        VALID_ERROR_SUBTYPES as VALID_VOICE_ERROR_SUBTYPES,
+        VALID_SUBTYPES_BY_CATEGORY as VALID_VOICE_SUBTYPES_BY_CATEGORY,
+        VALID_SEVERITIES as VALID_VOICE_SEVERITIES,
+        validate_category as validate_voice_category,
+        validate_subtype as validate_voice_subtype,
+        validate_severity as validate_voice_severity,
+        validate_confidence as validate_voice_confidence,
+        validate_alternatives as validate_voice_alternatives,
+    )
+except Exception:
+    from voice_mistake_taxonomy import (
+        VALID_ERROR_CATEGORIES as VALID_VOICE_ERROR_CATEGORIES,
+        VALID_ERROR_SUBTYPES as VALID_VOICE_ERROR_SUBTYPES,
+        VALID_SUBTYPES_BY_CATEGORY as VALID_VOICE_SUBTYPES_BY_CATEGORY,
+        VALID_SEVERITIES as VALID_VOICE_SEVERITIES,
+        validate_category as validate_voice_category,
+        validate_subtype as validate_voice_subtype,
+        validate_severity as validate_voice_severity,
+        validate_confidence as validate_voice_confidence,
+        validate_alternatives as validate_voice_alternatives,
+    )
+
+try:
     from backend.hotpath_cache import HotPathCacheManager as _HotPathCacheManager
 except Exception:
     from hotpath_cache import HotPathCacheManager as _HotPathCacheManager
@@ -5887,6 +5912,45 @@ def ensure_webapp_tables() -> None:
                     completed_at TIMESTAMPTZ,
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_voice_session_mistakes (
+                    id BIGSERIAL PRIMARY KEY,
+                    session_id BIGINT NOT NULL REFERENCES bt_3_agent_voice_sessions(id) ON DELETE CASCADE,
+                    error_category TEXT NOT NULL,
+                    error_subtype TEXT NOT NULL,
+                    severity TEXT NOT NULL DEFAULT 'medium',
+                    user_quote TEXT NOT NULL,
+                    corrected_form TEXT NOT NULL,
+                    rule_explanation TEXT NOT NULL,
+                    alternatives JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    segment_id BIGINT,
+                    char_start INT,
+                    char_end INT,
+                    transcript_confidence REAL,
+                    grammar_confidence REAL,
+                    is_recurring BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (error_category IN (
+                        'ADJECTIVE_ENDINGS', 'ARTICLES', 'CASES', 'CONJUNCTIONS',
+                        'INFINITIVE_CLAUSES', 'KONJUNKTIV', 'LEXIS', 'MODAL_VERBS',
+                        'NEGATION', 'NOUN_GENDER', 'PASSIVE', 'PLURAL_FORM',
+                        'PREPOSITIONS', 'PRONUNCIATION_STT', 'REFLEXIVE_VERBS',
+                        'RELATIVE_CLAUSES', 'SEPARABLE_VERBS', 'TENSES',
+                        'VERB_FORM', 'WORD_ORDER'
+                    )),
+                    CHECK (severity IN ('low', 'medium', 'high')),
+                    CHECK (transcript_confidence IS NULL OR (transcript_confidence >= 0 AND transcript_confidence <= 1)),
+                    CHECK (grammar_confidence IS NULL OR (grammar_confidence >= 0 AND grammar_confidence <= 1))
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_voice_session_mistakes_session
+                ON bt_3_voice_session_mistakes (session_id, created_at ASC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_voice_session_mistakes_category
+                ON bt_3_voice_session_mistakes (error_category, session_id);
             """)
             cursor.close()
             _run_dictionary_canonical_schema_migration(conn)
@@ -17318,6 +17382,189 @@ def set_voice_session_assessment_skill_bridge_status(
                 ),
             )
             return _voice_session_assessment_row_to_dict(cursor.fetchone())
+
+
+# ── Voice session mistakes ────────────────────────────────────────────────────
+
+
+def _voice_session_mistake_row_to_dict(row: tuple | None) -> dict | None:
+    if row is None:
+        return None
+    (
+        id_,
+        session_id,
+        error_category,
+        error_subtype,
+        severity,
+        user_quote,
+        corrected_form,
+        rule_explanation,
+        alternatives,
+        segment_id,
+        char_start,
+        char_end,
+        transcript_confidence,
+        grammar_confidence,
+        is_recurring,
+        created_at,
+    ) = row
+    return {
+        "id": id_,
+        "session_id": session_id,
+        "error_category": error_category,
+        "error_subtype": error_subtype,
+        "severity": severity,
+        "user_quote": user_quote,
+        "corrected_form": corrected_form,
+        "rule_explanation": rule_explanation,
+        "alternatives": alternatives if isinstance(alternatives, list) else [],
+        "segment_id": segment_id,
+        "char_start": char_start,
+        "char_end": char_end,
+        "transcript_confidence": float(transcript_confidence) if transcript_confidence is not None else None,
+        "grammar_confidence": float(grammar_confidence) if grammar_confidence is not None else None,
+        "is_recurring": is_recurring,
+        "created_at": created_at.isoformat() if created_at else None,
+    }
+
+
+def insert_voice_session_mistake(
+    *,
+    session_id: int,
+    error_category: str,
+    error_subtype: str,
+    severity: str,
+    user_quote: str,
+    corrected_form: str,
+    rule_explanation: str,
+    alternatives: list[str] | None = None,
+    segment_id: int | None = None,
+    char_start: int | None = None,
+    char_end: int | None = None,
+    transcript_confidence: float | None = None,
+    grammar_confidence: float | None = None,
+    is_recurring: bool = False,
+) -> dict:
+    """Insert one structured grammar mistake for a voice session.
+
+    All taxonomy fields are validated against voice_mistake_taxonomy before the
+    DB round-trip. Raises ValueError on any violation — never silently coerces.
+    Returns the inserted row as a dict.
+    """
+    validated_category = validate_voice_category(error_category)
+    validated_subtype = validate_voice_subtype(error_subtype, category=validated_category)
+    validated_severity = validate_voice_severity(severity)
+    validated_alternatives = validate_voice_alternatives(alternatives)
+
+    if transcript_confidence is not None:
+        transcript_confidence = validate_voice_confidence(
+            transcript_confidence, field_name="transcript_confidence"
+        )
+    if grammar_confidence is not None:
+        grammar_confidence = validate_voice_confidence(
+            grammar_confidence, field_name="grammar_confidence"
+        )
+
+    user_quote_s = str(user_quote or "").strip()
+    corrected_form_s = str(corrected_form or "").strip()
+    rule_explanation_s = str(rule_explanation or "").strip()
+    if not user_quote_s:
+        raise ValueError("insert_voice_session_mistake: user_quote must not be empty")
+    if not corrected_form_s:
+        raise ValueError("insert_voice_session_mistake: corrected_form must not be empty")
+    if not rule_explanation_s:
+        raise ValueError("insert_voice_session_mistake: rule_explanation must not be empty")
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_voice_session_mistakes (
+                    session_id,
+                    error_category,
+                    error_subtype,
+                    severity,
+                    user_quote,
+                    corrected_form,
+                    rule_explanation,
+                    alternatives,
+                    segment_id,
+                    char_start,
+                    char_end,
+                    transcript_confidence,
+                    grammar_confidence,
+                    is_recurring
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING
+                    id,
+                    session_id,
+                    error_category,
+                    error_subtype,
+                    severity,
+                    user_quote,
+                    corrected_form,
+                    rule_explanation,
+                    alternatives,
+                    segment_id,
+                    char_start,
+                    char_end,
+                    transcript_confidence,
+                    grammar_confidence,
+                    is_recurring,
+                    created_at;
+                """,
+                (
+                    int(session_id),
+                    validated_category,
+                    validated_subtype,
+                    validated_severity,
+                    user_quote_s,
+                    corrected_form_s,
+                    rule_explanation_s,
+                    Json(validated_alternatives),
+                    int(segment_id) if segment_id is not None else None,
+                    int(char_start) if char_start is not None else None,
+                    int(char_end) if char_end is not None else None,
+                    float(transcript_confidence) if transcript_confidence is not None else None,
+                    float(grammar_confidence) if grammar_confidence is not None else None,
+                    bool(is_recurring),
+                ),
+            )
+            return _voice_session_mistake_row_to_dict(cursor.fetchone())
+
+
+def fetch_voice_session_mistakes(*, session_id: int) -> list[dict]:
+    """Return all structured grammar mistakes for a voice session, ordered by insertion time."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    session_id,
+                    error_category,
+                    error_subtype,
+                    severity,
+                    user_quote,
+                    corrected_form,
+                    rule_explanation,
+                    alternatives,
+                    segment_id,
+                    char_start,
+                    char_end,
+                    transcript_confidence,
+                    grammar_confidence,
+                    is_recurring,
+                    created_at
+                FROM bt_3_voice_session_mistakes
+                WHERE session_id = %s
+                ORDER BY created_at ASC;
+                """,
+                (int(session_id),),
+            )
+            rows = cursor.fetchall()
+            return [_voice_session_mistake_row_to_dict(r) for r in rows]
 
 
 def finish_agent_voice_session(

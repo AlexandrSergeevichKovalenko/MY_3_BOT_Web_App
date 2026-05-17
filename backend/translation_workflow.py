@@ -2642,7 +2642,7 @@ async def prewarm_shared_translation_sentence_pool(
     candidate_focuses = [
         focus
         for focus in (focuses or [])
-        if isinstance(focus, dict) and str(focus.get("kind") or "").strip().lower() == "preset"
+        if isinstance(focus, dict) and str(focus.get("kind") or "").strip().lower() in {"preset", "legacy", "legacy_pool"}
     ]
     normalized_levels = [
         _normalize_level(level)
@@ -2764,7 +2764,7 @@ async def prewarm_shared_translation_sentence_pool(
                     conn.commit()
                     generated_for_bucket += int(len(filtered_entries))
                     upserted_for_bucket += int(upserted)
-                    remaining_budget = max(0, int(remaining_budget) - int(len(filtered_entries)))
+                    remaining_budget = max(0, int(remaining_budget) - int(upserted))
                     existing_sentence_keys.update(
                         _normalize_sentence_text_key(str((entry or {}).get("sentence") or "").strip())
                         for entry in filtered_entries

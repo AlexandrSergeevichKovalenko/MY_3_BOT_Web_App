@@ -3862,6 +3862,217 @@ body {
   color: #64748b;
 }
 
+/* ── Voice mistake cards ─────────────────────────────────────────────────── */
+
+.vm-section {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.vm-section-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+  padding-left: 2px;
+}
+
+.vm-card {
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.vm-card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.vm-severity-badge {
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.vm-severity-badge.sev-high {
+  background: rgba(239, 68, 68, 0.18);
+  color: #fca5a5;
+}
+
+.vm-severity-badge.sev-medium {
+  background: rgba(234, 179, 8, 0.15);
+  color: #fde68a;
+}
+
+.vm-severity-badge.sev-low {
+  background: rgba(99, 102, 241, 0.15);
+  color: #c7d2fe;
+}
+
+.vm-category-tag {
+  font-size: 0.68rem;
+  color: rgba(255, 255, 255, 0.4);
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.vm-quote {
+  font-style: italic;
+  font-size: 0.84rem;
+  color: rgba(255, 255, 255, 0.6);
+  padding: 5px 8px;
+  border-left: 2px solid rgba(255, 255, 255, 0.15);
+  background: rgba(0, 0, 0, 0.12);
+  border-radius: 0 5px 5px 0;
+  line-height: 1.45;
+}
+
+.vm-correction {
+  font-size: 0.86rem;
+  color: rgba(52, 211, 153, 0.9);
+  font-weight: 600;
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+}
+
+.vm-correction-arrow {
+  opacity: 0.6;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.vm-rule {
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.5);
+  line-height: 1.5;
+}
+
+.vm-alternatives {
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.38);
+}
+
+.vm-alternatives span {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.vm-low-conf {
+  font-size: 0.72rem;
+  color: rgba(234, 179, 8, 0.65);
+  padding-top: 2px;
+}
+
+.vm-stt-warning {
+  font-size: 0.8rem;
+  color: rgba(234, 179, 8, 0.7);
+  padding: 7px 10px;
+  border-radius: 7px;
+  background: rgba(234, 179, 8, 0.07);
+  border: 1px solid rgba(234, 179, 8, 0.18);
+}
+
+.vm-hidden-toggle {
+  background: none;
+  border: none;
+  padding: 6px 0;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.35);
+  cursor: pointer;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  width: 100%;
+}
+
+.vm-hidden-toggle:hover {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+/* Light theme overrides */
+
+.webapp-page.is-theme-light .vm-section-label {
+  color: rgba(0, 0, 0, 0.4);
+}
+
+.webapp-page.is-theme-light .vm-card {
+  background: rgba(0, 0, 0, 0.03);
+  border-color: rgba(0, 0, 0, 0.1);
+}
+
+.webapp-page.is-theme-light .vm-severity-badge.sev-high {
+  background: rgba(220, 38, 38, 0.1);
+  color: #b91c1c;
+}
+
+.webapp-page.is-theme-light .vm-severity-badge.sev-medium {
+  background: rgba(180, 83, 9, 0.1);
+  color: #92400e;
+}
+
+.webapp-page.is-theme-light .vm-severity-badge.sev-low {
+  background: rgba(79, 70, 229, 0.1);
+  color: #4338ca;
+}
+
+.webapp-page.is-theme-light .vm-category-tag {
+  color: rgba(0, 0, 0, 0.4);
+  border-color: rgba(0, 0, 0, 0.15);
+}
+
+.webapp-page.is-theme-light .vm-quote {
+  color: rgba(0, 0, 0, 0.5);
+  border-left-color: rgba(0, 0, 0, 0.15);
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.webapp-page.is-theme-light .vm-correction {
+  color: #065f46;
+}
+
+.webapp-page.is-theme-light .vm-rule {
+  color: rgba(0, 0, 0, 0.5);
+}
+
+.webapp-page.is-theme-light .vm-alternatives {
+  color: rgba(0, 0, 0, 0.35);
+}
+
+.webapp-page.is-theme-light .vm-alternatives span {
+  color: rgba(0, 0, 0, 0.55);
+}
+
+.webapp-page.is-theme-light .vm-low-conf {
+  color: #92400e;
+}
+
+.webapp-page.is-theme-light .vm-stt-warning {
+  color: #92400e;
+  background: rgba(180, 83, 9, 0.06);
+  border-color: rgba(180, 83, 9, 0.2);
+}
+
+.webapp-page.is-theme-light .vm-hidden-toggle {
+  color: rgba(0, 0, 0, 0.3);
+}
+
+.webapp-page.is-theme-light .vm-hidden-toggle:hover {
+  color: rgba(0, 0, 0, 0.55);
+}
+
 @media (min-width: 901px) {
   .webapp-section.voice-assistant-section {
     padding: 16px 18px;

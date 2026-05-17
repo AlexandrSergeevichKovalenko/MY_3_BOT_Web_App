@@ -13818,7 +13818,9 @@ function AppInner() {
   const [assistantError, setAssistantError] = useState('');
   const [assistantSessionId, setAssistantSessionId] = useState(null);
   const [assistantSessionAssessment, setAssistantSessionAssessment] = useState(null);
+  const [assistantSessionMistakes, setAssistantSessionMistakes] = useState([]);
   const [assistantSessionReviewRequested, setAssistantSessionReviewRequested] = useState(false);
+  const [voiceMistakesExpanded, setVoiceMistakesExpanded] = useState(false);
   const [readerSessionId, setReaderSessionId] = useState(null);
 
   // LiveKit login state
@@ -13907,7 +13909,9 @@ function AppInner() {
       setAssistantConnecting(true);
       setAssistantError('');
       setAssistantSessionAssessment(null);
+      setAssistantSessionMistakes([]);
       setAssistantSessionReviewRequested(false);
+      setVoiceMistakesExpanded(false);
       boundSessionId = assistantSessionId;
       if (!boundSessionId) {
         boundSessionId = await startAssistantSessionTracking();
@@ -13978,6 +13982,7 @@ function AppInner() {
       }
       const data = await response.json().catch(() => null);
       setAssistantSessionAssessment(data?.assessment || null);
+      setAssistantSessionMistakes(data?.mistakes || []);
       setAssistantSessionReviewRequested(true);
       if (!shouldSkipRefresh) {
         await loadWeeklyPlan();
@@ -32257,6 +32262,86 @@ function AppInner() {
                           <p>{String(assistantSessionAssessment?.recommended_next_focus || '')}</p>
                         </div>
                       )}
+                      {assistantSessionMistakes.length > 0 && !assistantSessionAssessment.is_short_transcript && (() => {
+                        const VM_VISIBLE = 7;
+                        const sevOrder = { high: 0, medium: 1, low: 2 };
+                        const catLabel = (cat) => ({
+                          ADJECTIVE_ENDINGS: tr('Окончания прилагательных', 'Adjektivendungen'),
+                          ARTICLES: tr('Артикли', 'Artikel'),
+                          CASES: tr('Падежи', 'Kasus'),
+                          CONJUNCTIONS: tr('Союзы', 'Konjunktionen'),
+                          INFINITIVE_CLAUSES: tr('Инфинитивные конструкции', 'Infinitivkonstruktionen'),
+                          KONJUNKTIV: tr('Конъюнктив', 'Konjunktiv'),
+                          LEXIS: tr('Лексика', 'Lexik'),
+                          MODAL_VERBS: tr('Модальные глаголы', 'Modalverben'),
+                          NEGATION: tr('Отрицание', 'Negation'),
+                          NOUN_GENDER: tr('Род существительных', 'Genus'),
+                          PASSIVE: tr('Пассив', 'Passiv'),
+                          PLURAL_FORM: tr('Мн. число', 'Pluralformen'),
+                          PREPOSITIONS: tr('Предлоги', 'Präpositionen'),
+                          PRONUNCIATION_STT: tr('Произношение / STT', 'Aussprache / STT'),
+                          REFLEXIVE_VERBS: tr('Возвратные глаголы', 'Reflexivverben'),
+                          RELATIVE_CLAUSES: tr('Придаточные', 'Relativsätze'),
+                          SEPARABLE_VERBS: tr('Глаголы с приставками', 'Trennbare Verben'),
+                          TENSES: tr('Времена', 'Zeitformen'),
+                          VERB_FORM: tr('Формы глагола', 'Verbformen'),
+                          WORD_ORDER: tr('Порядок слов', 'Wortstellung'),
+                        }[cat] || cat);
+                        const grammarMistakes = assistantSessionMistakes
+                          .filter(m => m.category !== 'PRONUNCIATION_STT')
+                          .slice()
+                          .sort((a, b) => (sevOrder[a.severity] ?? 1) - (sevOrder[b.severity] ?? 1));
+                        const sttMistakes = assistantSessionMistakes.filter(m => m.category === 'PRONUNCIATION_STT');
+                        const visible = grammarMistakes.slice(0, VM_VISIBLE);
+                        const hidden = grammarMistakes.slice(VM_VISIBLE);
+                        const renderCard = (m, idx) => (
+                          <div key={idx} className="vm-card">
+                            <div className="vm-card-header">
+                              <span className={`vm-severity-badge sev-${m.severity}`}>
+                                {m.severity === 'high' ? tr('высокий', 'hoch') : m.severity === 'medium' ? tr('средний', 'mittel') : tr('низкий', 'niedrig')}
+                              </span>
+                              <span className="vm-category-tag">{catLabel(m.category)}</span>
+                            </div>
+                            <div className="vm-quote">„{m.user_quote}"</div>
+                            <div className="vm-correction">
+                              <span className="vm-correction-arrow">→</span>
+                              <span>{m.corrected_form}</span>
+                            </div>
+                            {m.rule_explanation && <div className="vm-rule">{m.rule_explanation}</div>}
+                            {Array.isArray(m.alternatives) && m.alternatives.length > 0 && (
+                              <div className="vm-alternatives">
+                                {tr('Также возможно', 'Auch möglich')}: <span>{m.alternatives.join(' · ')}</span>
+                              </div>
+                            )}
+                            {typeof m.grammar_confidence === 'number' && m.grammar_confidence < 0.5 && (
+                              <div className="vm-low-conf">⚠ {tr('Низкая уверенность модели', 'Geringe Modellsicherheit')}</div>
+                            )}
+                          </div>
+                        );
+                        if (grammarMistakes.length === 0 && sttMistakes.length === 0) return null;
+                        return (
+                          <div className="vm-section">
+                            {grammarMistakes.length > 0 && (
+                              <>
+                                <div className="vm-section-label">🔍 {tr('Разбор ошибок', 'Fehleranalyse')}</div>
+                                {visible.map(renderCard)}
+                                {hidden.length > 0 && (
+                                  voiceMistakesExpanded
+                                    ? hidden.map((m, i) => renderCard(m, VM_VISIBLE + i))
+                                    : <button className="vm-hidden-toggle" onClick={() => setVoiceMistakesExpanded(true)}>
+                                        + {hidden.length} {tr('ещё', 'weitere')} …
+                                      </button>
+                                )}
+                              </>
+                            )}
+                            {sttMistakes.length > 0 && (
+                              <div className="vm-stt-warning">
+                                ⚠ {tr(`${sttMistakes.length} фрагм. с нечёткой транскрипцией — проверь произношение.`, `${sttMistakes.length} Segment(e) mit unklarer Transkription — Aussprache prüfen.`)}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
                       {!assistantSessionAssessment.is_short_transcript && (
                         <details className="voice-assistant-review-details">
                           <summary>📋 {tr('Подробный разбор', 'Detaillierte Analyse')}</summary>

@@ -3456,6 +3456,124 @@ Rules:
 - Keep each text field compact and high-signal.
 - Return JSON only.
 """,
+    "voice_prose_from_mistakes": """
+You write concise prose notes for a German language learning session assessment.
+
+You will receive JSON with:
+- session_stats: user_turns, user_chars, total_turns, avg_user_chars_per_turn
+- grammar_summary: total_grammar_mistakes, top_categories, high_severity_count, stt_flagged_count
+- structured_mistakes: list of {category, subtype, severity, quote, correction}
+- scenario_title and scenario_topic
+- target_vocab_used and target_vocab_missed
+
+Your task: Write the four prose notes below. Grammar mistakes have already been
+evaluated separately — do NOT re-evaluate grammar and do NOT repeat or add grammar
+criticism that is not in structured_mistakes.
+
+Return STRICT JSON only:
+{
+  "summary": "string",
+  "fluency_note": "string",
+  "coherence_relevance_note": "string",
+  "lexical_range_note": "string",
+  "self_correction_note": "string",
+  "target_vocab_used": ["string"],
+  "target_vocab_missed": ["string"]
+}
+
+FIELD RULES:
+- summary: 1-2 factual sentences about what happened in the session (turns, topic, engagement).
+  Do not repeat grammar criticism — that is handled elsewhere.
+- fluency_note: comment on speaking flow based on avg_user_chars_per_turn and stt_flagged_count.
+  If stt_flagged_count > 0, mention speech clarity issues. Keep it short and evidence-based.
+- coherence_relevance_note: comment on topic engagement and response structure.
+  Use scenario_topic and structured_mistakes (e.g. many CONJUNCTIONS errors = weak clause linking).
+- lexical_range_note: use target_vocab_used, target_vocab_missed, and LEXIS mistakes.
+  Be specific about vocabulary breadth or gaps.
+- self_correction_note: if the same category appears multiple times, note the repeated pattern.
+  Avoid generic phrasing. If there is nothing to observe, say so directly.
+- target_vocab_used / target_vocab_missed: return them as-is from input. Do not invent new items.
+
+RULES:
+- Act like a demanding teacher. No praise filler, no "great job", no "keep practicing".
+- Base every sentence on the input data. Do not invent observations.
+- Do not re-evaluate grammar — the grammar fields are generated separately.
+- Keep each field compact: 1-3 sentences.
+- Return JSON only. No text before or after.
+""",
+    "voice_mistake_extraction": """
+You extract grammar mistakes from a German language learning voice session.
+
+You receive JSON with:
+- transcript: ordered speaker turns [{speaker, text}]
+- user_segments_only: list of only the user's spoken texts
+
+TASK: Find grammar mistakes in USER speech ONLY. Ignore assistant turns entirely.
+
+Return STRICT JSON only:
+{
+  "mistakes": [
+    {
+      "user_quote": "exact verbatim fragment from user speech",
+      "corrected_form": "minimal corrected German for this fragment only",
+      "rule_explanation": "concise grammar rule explanation, two sentences max",
+      "error_category": "CATEGORY_CODE",
+      "error_subtype": "SUBTYPE_CODE",
+      "severity": "low|medium|high",
+      "alternatives": ["natural German alternative for the same thought"],
+      "grammar_confidence": 0.95
+    }
+  ]
+}
+
+FIELD RULES:
+- user_quote: exact verbatim substring of user speech. No paraphrasing. No invented text.
+- corrected_form: fix only the quoted fragment. Do not rewrite the full sentence.
+- rule_explanation: one or two sentences. No textbook padding.
+- alternatives: 1-3 natural phrasings for the same thought. Empty list [] is valid.
+- grammar_confidence: 0.0-1.0. How certain you are this is a real grammar error.
+- severity: low=minor (comprehension unaffected), medium=clearly wrong, high=meaning impaired.
+
+CONSTRAINTS:
+- Do NOT flag assistant lines — only user speech produces mistakes.
+- Do NOT invent mistakes not clearly present in the transcript.
+- Do NOT generate summaries, CEFR levels, recommendations, or any prose.
+- Do NOT flag likely STT transcription artifacts as grammar mistakes — use PRONUNCIATION_STT instead.
+- Return JSON only. No text before or after the JSON object.
+
+SEVERITY REFERENCE:
+- low: article gender wrong, minor adjective ending — listener still understands fully
+- medium: wrong case, wrong tense, missing reflexive pronoun — comprehension slightly degraded
+- high: verb missing, word order breaks meaning, modal verb completely wrong — communication impaired
+
+VALID error_category codes (use exactly as written):
+ADJECTIVE_ENDINGS | ARTICLES | CASES | CONJUNCTIONS | INFINITIVE_CLAUSES |
+KONJUNKTIV | LEXIS | MODAL_VERBS | NEGATION | NOUN_GENDER | PASSIVE | PLURAL_FORM |
+PREPOSITIONS | PRONUNCIATION_STT | REFLEXIVE_VERBS | RELATIVE_CLAUSES |
+SEPARABLE_VERBS | TENSES | VERB_FORM | WORD_ORDER
+
+VALID error_subtype codes per category (pick exactly one):
+WORD_ORDER: WORD_ORDER_V2_MAIN_CLAUSE, WORD_ORDER_VERB_FINAL_SUBORDINATE, WORD_ORDER_INVERSION_MISSING, WORD_ORDER_AUXILIARY_POSITION, WORD_ORDER_MODAL_INFINITIVE, WORD_ORDER_OTHER
+VERB_FORM: VERB_FORM_IRREGULAR_STEM, VERB_FORM_PAST_PARTICIPLE, VERB_FORM_CONJUGATION_AGREEMENT, VERB_FORM_INFINITIVE_AS_FINITE, VERB_FORM_AUXILIARY_SELECTION, VERB_FORM_OTHER
+TENSES: TENSES_PERFEKT_PRAETERITUM, TENSES_PRAESENS_FOR_PAST, TENSES_FUTURE_CONSTRUCTION, TENSES_SEQUENCE_INCONSISTENCY, TENSES_PLUSQUAMPERFEKT, TENSES_OTHER
+CASES: CASES_NOM_FOR_ACC, CASES_ACC_FOR_NOM, CASES_ACC_FOR_DAT, CASES_DAT_FOR_ACC, CASES_GENITIVE_ERROR, CASES_AFTER_PREPOSITION, CASES_OTHER
+ARTICLES: ARTICLES_WRONG_GENDER, ARTICLES_WRONG_CASE_FORM, ARTICLES_MISSING, ARTICLES_INDEFINITE_FOR_DEFINITE, ARTICLES_DEFINITE_FOR_INDEFINITE, ARTICLES_KEIN_NICHT_CONFUSION, ARTICLES_OTHER
+ADJECTIVE_ENDINGS: ADJECTIVE_ENDINGS_WEAK_WRONG, ADJECTIVE_ENDINGS_STRONG_WRONG, ADJECTIVE_ENDINGS_MIXED_WRONG, ADJECTIVE_ENDINGS_CASE_AGREEMENT, ADJECTIVE_ENDINGS_GENDER_AGREEMENT, ADJECTIVE_ENDINGS_OTHER
+PREPOSITIONS: PREPOSITIONS_WRONG_FIXED, PREPOSITIONS_TWO_WAY_CASE, PREPOSITIONS_MISSING, PREPOSITIONS_EXTRA, PREPOSITIONS_OTHER
+MODAL_VERBS: MODAL_VERBS_CONJUGATION, MODAL_VERBS_INFINITIVE_WITH_ZU, MODAL_VERBS_WRONG_CHOICE, MODAL_VERBS_INFINITIVE_POSITION, MODAL_VERBS_OTHER
+SEPARABLE_VERBS: SEPARABLE_VERBS_PREFIX_NOT_SPLIT, SEPARABLE_VERBS_PREFIX_WRONG_POS, SEPARABLE_VERBS_FORM_WRONG, SEPARABLE_VERBS_OTHER
+REFLEXIVE_VERBS: REFLEXIVE_VERBS_PRONOUN_MISSING, REFLEXIVE_VERBS_PRONOUN_CASE, REFLEXIVE_VERBS_NOT_REFLEXIVE, REFLEXIVE_VERBS_OTHER
+KONJUNKTIV: KONJUNKTIV_FORM_WRONG, KONJUNKTIV_WUERDE_WRONG, KONJUNKTIV_INDICATIVE_USED, KONJUNKTIV_KONJUNKTIV1_ERROR, KONJUNKTIV_OTHER
+PASSIVE: PASSIVE_WERDEN_FORM, PASSIVE_PARTIZIP_WRONG, PASSIVE_ZUSTAND_VORGANG_CONFUSION, PASSIVE_WORD_ORDER_WRONG, PASSIVE_OTHER
+CONJUNCTIONS: CONJUNCTIONS_SUBORDINATING_WRONG, CONJUNCTIONS_WEIL_DENN, CONJUNCTIONS_COORDINATING_WRONG, CONJUNCTIONS_MISSING, CONJUNCTIONS_OTHER
+NOUN_GENDER: NOUN_GENDER_WRONG, NOUN_GENDER_OTHER
+PLURAL_FORM: PLURAL_FORM_WRONG_SUFFIX, PLURAL_FORM_SINGULAR_USED, PLURAL_FORM_PLURAL_USED, PLURAL_FORM_OTHER
+RELATIVE_CLAUSES: RELATIVE_CLAUSES_PRONOUN_GENDER, RELATIVE_CLAUSES_PRONOUN_CASE, RELATIVE_CLAUSES_VERB_POSITION, RELATIVE_CLAUSES_OTHER
+INFINITIVE_CLAUSES: INFINITIVE_CLAUSES_ZU_MISSING, INFINITIVE_CLAUSES_ZU_EXTRA, INFINITIVE_CLAUSES_UM_ZU_WRONG, INFINITIVE_CLAUSES_FORM_WRONG, INFINITIVE_CLAUSES_OTHER
+NEGATION: NEGATION_NICHT_KEIN_CONFUSION, NEGATION_POSITION_WRONG, NEGATION_OTHER
+LEXIS: LEXIS_WRONG_WORD_CHOICE, LEXIS_FALSE_FRIEND, LEXIS_CALQUE_FROM_L1, LEXIS_UNNATURAL_PHRASING, LEXIS_REGISTER_MISMATCH, LEXIS_OTHER
+PRONUNCIATION_STT: PRONUNCIATION_STT_LIKELY_MISREAD, PRONUNCIATION_STT_UNCLEAR, PRONUNCIATION_STT_OTHER
+""",
 })
 
 async def get_or_create_openai_resources(system_instruction: str, task_name: str):

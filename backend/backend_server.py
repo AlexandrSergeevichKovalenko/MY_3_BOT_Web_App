@@ -183,6 +183,7 @@ from backend.voice_assessment_service import (
     build_and_store_voice_assessment,
     load_voice_assessment,
 )
+from backend.voice_mistake_extraction_service import extract_and_store_voice_mistakes
 from backend.voice_skill_bridge_service import apply_voice_skill_bridge
 from backend.voice_scenario_service import (
     create_voice_scenario as create_voice_scenario_service,
@@ -487,6 +488,7 @@ from backend.database import (
     get_voice_scenario,
     get_voice_prep_pack,
     finish_agent_voice_session,
+    fetch_voice_session_mistakes,
     start_reader_session,
     finish_reader_session,
     touch_reader_session,
@@ -865,12 +867,16 @@ TRANSLATION_FOCUS_POOL_PREWARM_FORECAST_TARGET_CAP = max(
     int(TRANSLATION_FOCUS_POOL_PREWARM_BASE_TARGET_PER_BUCKET),
     min(160, int((os.getenv("TRANSLATION_FOCUS_POOL_PREWARM_FORECAST_TARGET_CAP") or "96").strip())),
 )
-TRANSLATION_FOCUS_POOL_PREWARM_MAX_GENERATE_PER_BUCKET = max(1, min(16, int((os.getenv("TRANSLATION_FOCUS_POOL_PREWARM_MAX_GENERATE_PER_BUCKET") or "8").strip())))
+TRANSLATION_FOCUS_POOL_PREWARM_MAX_GENERATE_PER_BUCKET = max(1, min(16, int((os.getenv("TRANSLATION_FOCUS_POOL_PREWARM_MAX_GENERATE_PER_BUCKET") or "12").strip())))
 TRANSLATION_FOCUS_POOL_PREWARM_LEVELS = [
     str(item or "").strip().lower()
     for item in str(os.getenv("TRANSLATION_FOCUS_POOL_PREWARM_LEVELS") or "b1,b2,c1").split(",")
     if str(item or "").strip()
 ]
+TRANSLATION_FOCUS_POOL_PREWARM_HOT_LEVEL_LIMIT = max(
+    1,
+    min(3, int((os.getenv("TRANSLATION_FOCUS_POOL_PREWARM_HOT_LEVEL_LIMIT") or "1").strip() or "1")),
+)
 TRANSLATION_FOCUS_POOL_HOT_BUCKET_OVERRIDES: dict[tuple[str, str], dict[str, int]] = {
     ("legacy_general_b1", "b1"): {
         "min_ready": 16,
@@ -17630,6 +17636,7 @@ def _list_translation_focus_pool_refill_candidates() -> list[dict[str, Any]]:
     }
 
     demand_scores: Counter[str] = Counter()
+    bucket_demand_scores: Counter[tuple[str, str]] = Counter()
     try:
         readiness_rows = get_translation_readiness_bucket_rollup(
             source_lang="ru",
@@ -17640,26 +17647,31 @@ def _list_translation_focus_pool_refill_candidates() -> list[dict[str, Any]]:
             focus_key = str(row.get("focus_key") or "").strip()
             if focus_key not in pool_payloads:
                 continue
+            level = str(row.get("level") or "").strip().lower()
             sessions_started = max(0, int(row.get("sessions_started") or 0))
             ready_zero_starts = max(0, int(row.get("ready_zero_starts") or 0))
             background_fill_required = max(0, int(row.get("background_fill_required_count") or 0))
             fill_underfilled = max(0, int(row.get("fill_underfilled_count") or 0))
             fill_failed = max(0, int(row.get("fill_failed_count") or 0))
-            demand_scores[focus_key] += (
+            demand_score = (
                 sessions_started
                 + (ready_zero_starts * 5)
                 + (background_fill_required * 4)
                 + (fill_underfilled * 2)
                 + (fill_failed * 3)
             )
+            demand_scores[focus_key] += demand_score
+            if level:
+                bucket_demand_scores[(focus_key, level)] += demand_score
     except Exception:
         logging.exception("Failed to load translation readiness rollup for refill candidates")
 
     deficit_by_focus: Counter[str] = Counter()
     max_bucket_deficit_by_focus: Counter[str] = Counter()
+    underfilled_levels_by_focus: dict[str, list[tuple[str, int, int]]] = {}
     underfilled_focus_keys: set[str] = set()
     for bucket_key, target_ready in target_ready_by_bucket.items():
-        focus_key, _level = bucket_key
+        focus_key, level = bucket_key
         if focus_key not in pool_payloads:
             continue
         safe_target = int(target_ready or 0)
@@ -17674,6 +17686,13 @@ def _list_translation_focus_pool_refill_candidates() -> list[dict[str, Any]]:
         underfilled_focus_keys.add(focus_key)
         deficit_by_focus[focus_key] += bucket_deficit
         max_bucket_deficit_by_focus[focus_key] = max(max_bucket_deficit_by_focus.get(focus_key, 0), bucket_deficit)
+        underfilled_levels_by_focus.setdefault(focus_key, []).append(
+            (
+                str(level or "").strip().lower(),
+                int(bucket_deficit),
+                int(bucket_demand_scores.get(bucket_key) or 0),
+            )
+        )
 
     if not underfilled_focus_keys:
         return _list_translation_focus_pool_prewarm_candidates(
@@ -17691,16 +17710,38 @@ def _list_translation_focus_pool_refill_candidates() -> list[dict[str, Any]]:
         ),
     )
     max_score = max((int(demand_scores.get(key) or 0) for key in ordered_focus_keys), default=0)
-    return [
-        {
+    level_rank = {
+        str(level or "").strip().lower(): index
+        for index, level in enumerate(list(TRANSLATION_FOCUS_POOL_PREWARM_LEVELS or []))
+        if str(level or "").strip()
+    }
+    candidates: list[dict[str, Any]] = []
+    for key in ordered_focus_keys:
+        if key not in pool_payloads:
+            continue
+        payload = {
             **dict(pool_payloads[key] or {}),
             "_demand_score": int(demand_scores.get(key) or 0),
             "_max_demand_score": int(max_score or 0),
             "_deficit_score": int(deficit_by_focus.get(key) or 0),
         }
-        for key in ordered_focus_keys
-        if key in pool_payloads
-    ]
+        ranked_levels = sorted(
+            list(underfilled_levels_by_focus.get(key) or []),
+            key=lambda item: (
+                -int(item[1] or 0),
+                -int(item[2] or 0),
+                int(level_rank.get(str(item[0] or "").strip().lower(), 999)),
+                str(item[0] or "").strip().lower(),
+            ),
+        )
+        if ranked_levels:
+            payload["_pool_levels"] = [
+                str(level_value or "").strip().lower()
+                for level_value, _deficit, _demand in ranked_levels[: max(1, int(TRANSLATION_FOCUS_POOL_PREWARM_HOT_LEVEL_LIMIT or 1))]
+                if str(level_value or "").strip()
+            ]
+        candidates.append(payload)
+    return candidates
 
 
 def _load_translation_focus_pool_history_by_bucket(
@@ -17923,7 +17964,7 @@ def _maybe_trigger_translation_focus_pool_deficit_refill(
 ) -> dict[str, Any]:
     normalized_focus_key = str(focus_key or "").strip()
     normalized_level = str(level or "").strip().lower()
-    if not background_fill_required or not normalized_focus_key or not normalized_level:
+    if not normalized_focus_key or not normalized_level:
         return {"ok": True, "triggered": False, "reason": "not_applicable"}
     focus_payload = _get_translation_focus_pool_payload_by_key(normalized_focus_key)
     if not focus_payload:
@@ -17935,11 +17976,19 @@ def _maybe_trigger_translation_focus_pool_deficit_refill(
     bucket_key = (normalized_focus_key, normalized_level)
     low_watermark = int(low_watermark_by_bucket.get(bucket_key) or TRANSLATION_FOCUS_POOL_PREWARM_TARGET_PER_BUCKET)
     diagnostics = dict(readiness_diagnostics or {})
+    has_inventory_signal = "pool_ready_before" in diagnostics
     try:
         pool_ready_before = int(diagnostics.get("pool_ready_before") or 0)
     except Exception:
         pool_ready_before = 0
-    if pool_ready_before >= low_watermark:
+    if not background_fill_required and not has_inventory_signal:
+        return {
+            "ok": True,
+            "triggered": False,
+            "reason": "inventory_signal_missing",
+            "low_watermark": low_watermark,
+        }
+    if int(pool_ready_before) >= int(low_watermark):
         return {
             "ok": True,
             "triggered": False,
@@ -17989,6 +18038,7 @@ def _maybe_trigger_translation_focus_pool_deficit_refill(
             "level": normalized_level,
             "pool_ready_before": pool_ready_before,
             "low_watermark": low_watermark,
+            "trigger_reason": "background_fill_required" if background_fill_required else "inventory_deficit",
         }
     except Exception:
         logging.exception("Failed to enqueue translation focus pool deficit refill focus_key=%s level=%s", normalized_focus_key, normalized_level)
@@ -31344,6 +31394,22 @@ def get_assistant_voice_prep_pack():
     return jsonify({"ok": True, "prep_pack": asdict(prep_pack)})
 
 
+def _mistake_row_to_api(m: dict) -> dict:
+    """Map a bt_3_voice_session_mistakes row to the public API shape."""
+    return {
+        "category": m.get("error_category"),
+        "subcategory": m.get("error_subtype"),
+        "severity": m.get("severity"),
+        "user_quote": m.get("user_quote"),
+        "corrected_form": m.get("corrected_form"),
+        "rule_explanation": m.get("rule_explanation"),
+        "alternatives": m.get("alternatives") or [],
+        "grammar_confidence": m.get("grammar_confidence"),
+        "transcript_confidence": m.get("transcript_confidence"),
+        "is_recurring": bool(m.get("is_recurring") or False),
+    }
+
+
 @app.route("/api/assistant/session/complete", methods=["POST"])
 def complete_assistant_session():
     user_id, _username, error = _get_authenticated_user_from_request_init_data()
@@ -31369,11 +31435,23 @@ def complete_assistant_session():
     except Exception as exc:
         return jsonify({"error": f"Ошибка завершения голосовой сессии: {exc}"}), 500
     assessment_payload = None
+    mistakes_payload = []
     if isinstance(session, dict):
         duration_seconds = max(0, int(session.get("duration_seconds") or 0))
         session_minutes = duration_seconds / 60.0
         resolved_session_id = int(session.get("session_id") or (session_id or 0))
         if resolved_session_id > 0:
+            # Extraction runs first so assessment can aggregate from mistakes table.
+            try:
+                asyncio.run(
+                    extract_and_store_voice_mistakes(session_id=resolved_session_id)
+                )
+            except Exception as exc:
+                logging.warning(
+                    "Voice mistake extraction failed for session_id=%s: %s",
+                    resolved_session_id,
+                    exc,
+                )
             try:
                 assessment = asyncio.run(
                     build_and_store_voice_assessment(session_id=resolved_session_id)
@@ -31410,6 +31488,34 @@ def complete_assistant_session():
             except Exception as exc:
                 logging.warning(
                     "Voice session assessment readback failed for session_id=%s: %s",
+                    resolved_session_id,
+                    exc,
+                )
+            mistakes_payload = []
+            try:
+                raw_mistakes = fetch_voice_session_mistakes(session_id=resolved_session_id)
+                mistakes_payload = [_mistake_row_to_api(m) for m in raw_mistakes]
+                stt_flagged = sum(
+                    1 for m in raw_mistakes if m.get("error_category") == "PRONUNCIATION_STT"
+                )
+                grammar_count = len(raw_mistakes) - stt_flagged
+                if mistakes_payload:
+                    logging.info(
+                        "assessment_feedback_rendered session_id=%s mistake_count=%d grammar=%d",
+                        resolved_session_id, len(mistakes_payload), grammar_count,
+                    )
+                else:
+                    logging.info(
+                        "assessment_feedback_empty session_id=%s", resolved_session_id
+                    )
+                if stt_flagged > 0:
+                    logging.info(
+                        "assessment_feedback_low_confidence_warning session_id=%s stt_count=%d",
+                        resolved_session_id, stt_flagged,
+                    )
+            except Exception as exc:
+                logging.warning(
+                    "Voice mistakes readback failed for session_id=%s: %s",
                     resolved_session_id,
                     exc,
                 )
@@ -31497,7 +31603,7 @@ def complete_assistant_session():
                 )
             except Exception:
                 pass
-    return jsonify({"ok": True, "session": session, "assessment": assessment_payload})
+    return jsonify({"ok": True, "session": session, "assessment": assessment_payload, "mistakes": mistakes_payload})
 
 
 @app.route("/api/assistant/session/assessment/get", methods=["POST"])
@@ -31528,7 +31634,16 @@ def get_assistant_session_assessment():
     if not assessment:
         return jsonify({"error": "Assessment для этой сессии ещё не найден"}), 404
 
-    return jsonify({"ok": True, "assessment": asdict(assessment)})
+    mistakes_payload = []
+    try:
+        raw_mistakes = fetch_voice_session_mistakes(session_id=session_id)
+        mistakes_payload = [_mistake_row_to_api(m) for m in raw_mistakes]
+    except Exception as exc:
+        logging.warning(
+            "Voice mistakes readback failed for session_id=%s: %s", session_id, exc
+        )
+
+    return jsonify({"ok": True, "assessment": asdict(assessment), "mistakes": mistakes_payload})
 
 
 @app.route("/api/reader/session/start", methods=["POST"])
