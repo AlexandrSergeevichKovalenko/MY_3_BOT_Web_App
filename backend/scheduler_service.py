@@ -39,6 +39,7 @@ Timing env vars (all optional, defaults match original _start_audio_scheduler):
   TRANSLATION_FOCUS_POOL_REFILL_ENABLED, TRANSLATION_FOCUS_POOL_REFILL_HOUR/MINUTE/TZ
   TRANSLATION_FOCUS_POOL_ADMIN_REPORT_ENABLED, ...HOUR/MINUTE/TZ
   SKILL_STATE_V2_AGGREGATION_ENABLED, SKILL_STATE_V2_AGGREGATION_INTERVAL_SECONDS
+  TRANSLATION_CHECK_WORKER_SCHEDULE_ENABLED, ...START_TIMES/STOP_TIMES/TIMEZONE/IDLE_STOP_GRACE_MINUTES
 """
 
 import logging
@@ -87,6 +88,7 @@ from backend.background_jobs import (  # noqa: E402
     run_semantic_audit_actor,
     run_skill_state_v2_aggregation_actor,
     run_agent_worker_schedule_control_actor,
+    run_translation_check_worker_schedule_control_actor,
 )
 
 # ---------------------------------------------------------------------------
@@ -140,6 +142,14 @@ def _agent_worker_schedule_timezone_name() -> str:
 
 def _agent_worker_idle_stop_grace_minutes() -> int:
     return max(1, _int_env("AGENT_WORKER_IDLE_STOP_GRACE_MINUTES", 10))
+
+
+def _translation_check_worker_schedule_timezone_name() -> str:
+    return (os.getenv("TRANSLATION_CHECK_WORKER_TIMEZONE") or "Europe/Vienna").strip() or "Europe/Vienna"
+
+
+def _translation_check_worker_idle_stop_grace_minutes() -> int:
+    return max(1, _int_env("TRANSLATION_CHECK_WORKER_IDLE_STOP_GRACE_MINUTES", 10))
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +259,18 @@ def _dispatch_agent_worker_schedule_stop() -> None:
 
 def _dispatch_agent_worker_schedule_reconcile_stop() -> None:
     run_agent_worker_schedule_control_actor.send(action="reconcile_stop")
+
+
+def _dispatch_translation_check_worker_schedule_start() -> None:
+    run_translation_check_worker_schedule_control_actor.send(action="start")
+
+
+def _dispatch_translation_check_worker_schedule_stop() -> None:
+    run_translation_check_worker_schedule_control_actor.send(action="stop")
+
+
+def _dispatch_translation_check_worker_schedule_reconcile_stop() -> None:
+    run_translation_check_worker_schedule_control_actor.send(action="reconcile_stop")
 
 
 # ---------------------------------------------------------------------------
@@ -608,6 +630,66 @@ def _build_scheduler():
             )
         else:
             logging.warning("scheduler_service: AGENT_WORKER schedule enabled but no valid windows were configured")
+
+    # -- TRANSLATION_CHECK_WORKER scheduled uptime --
+    if _enabled("TRANSLATION_CHECK_WORKER_SCHEDULE_ENABLED", "0"):
+        try:
+            start_times = _parse_hhmm_list(os.getenv("TRANSLATION_CHECK_WORKER_START_TIMES") or "06:30")
+            stop_times = _parse_hhmm_list(os.getenv("TRANSLATION_CHECK_WORKER_STOP_TIMES") or "00:30")
+            if len(start_times) != len(stop_times):
+                raise ValueError(
+                    f"TRANSLATION_CHECK_WORKER_START_TIMES count {len(start_times)} does not match "
+                    f"TRANSLATION_CHECK_WORKER_STOP_TIMES count {len(stop_times)}"
+                )
+            schedule_windows = list(zip(start_times, stop_times))
+        except Exception:
+            logging.exception("scheduler_service: failed to parse TRANSLATION_CHECK_WORKER schedule")
+            schedule_windows = []
+        if schedule_windows:
+            translation_check_worker_tz_name = _translation_check_worker_schedule_timezone_name()
+            translation_check_worker_tz = _tz(translation_check_worker_tz_name, default_tz_name)
+            for index, (start_time, stop_time) in enumerate(schedule_windows):
+                scheduler.add_job(
+                    _dispatch_translation_check_worker_schedule_start,
+                    "cron",
+                    hour=start_time.hour,
+                    minute=start_time.minute,
+                    timezone=translation_check_worker_tz,
+                    id=f"translation_check_worker_start_{index}",
+                    max_instances=1,
+                    coalesce=True,
+                    misfire_grace_time=300,
+                )
+                scheduler.add_job(
+                    _dispatch_translation_check_worker_schedule_stop,
+                    "cron",
+                    hour=stop_time.hour,
+                    minute=stop_time.minute,
+                    timezone=translation_check_worker_tz,
+                    id=f"translation_check_worker_stop_{index}",
+                    max_instances=1,
+                    coalesce=True,
+                    misfire_grace_time=300,
+                )
+            scheduler.add_job(
+                _dispatch_translation_check_worker_schedule_reconcile_stop,
+                "interval",
+                minutes=_translation_check_worker_idle_stop_grace_minutes(),
+                id="translation_check_worker_reconcile_stop",
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=180,
+            )
+            logging.info(
+                "scheduler_service: TRANSLATION_CHECK_WORKER schedule enabled tz=%s windows=%s reconcile_minutes=%s",
+                translation_check_worker_tz_name,
+                [f"{start.strftime('%H:%M')}-{stop.strftime('%H:%M')}" for start, stop in schedule_windows],
+                _translation_check_worker_idle_stop_grace_minutes(),
+            )
+        else:
+            logging.warning(
+                "scheduler_service: TRANSLATION_CHECK_WORKER schedule enabled but no valid windows were configured"
+            )
 
     return scheduler
 

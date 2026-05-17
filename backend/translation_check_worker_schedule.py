@@ -1,0 +1,665 @@
+from __future__ import annotations
+
+import logging
+import os
+from dataclasses import dataclass
+from datetime import datetime, time as dt_time
+from typing import Any
+from zoneinfo import ZoneInfo
+
+import requests
+
+
+RAILWAY_GRAPHQL_URL = "https://backboard.railway.com/graphql/v2"
+DEFAULT_TRANSLATION_CHECK_WORKER_TIMEZONE = "Europe/Vienna"
+TRANSLATION_CHECK_WORKER_TRANSITION_LOCK_KEY = "translation_check_worker_schedule:transition"
+TRANSLATION_CHECK_WORKER_TRANSITION_LOCK_TTL_SEC = 15 * 60
+DEPLOYMENT_RUNNING_STATUSES = {"SUCCESS"}
+DEPLOYMENT_STARTING_STATUSES = {"INITIALIZING", "BUILDING", "DEPLOYING", "QUEUED", "WAITING", "REMOVING"}
+DEPLOYMENT_STOPPED_STATUSES = {"REMOVED"}
+DEPLOYMENT_FAILED_STATUSES = {"FAILED", "CRASHED", "CANCELED", "CANCELLED"}
+
+
+@dataclass(frozen=True)
+class TranslationCheckWorkerWindow:
+    start: dt_time
+    stop: dt_time
+
+    def contains(self, value: dt_time) -> bool:
+        if self.start <= self.stop:
+            return self.start <= value < self.stop
+        return value >= self.start or value < self.stop
+
+    def label(self) -> str:
+        return f"{self.start.strftime('%H:%M')}-{self.stop.strftime('%H:%M')}"
+
+
+def _enabled(key: str, default: str = "1") -> bool:
+    return str(os.getenv(key) or default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _int_env(key: str, default: int) -> int:
+    try:
+        return int((os.getenv(key) or str(default)).strip())
+    except Exception:
+        return default
+
+
+def get_translation_check_worker_schedule_timezone_name() -> str:
+    return (
+        os.getenv("TRANSLATION_CHECK_WORKER_TIMEZONE") or DEFAULT_TRANSLATION_CHECK_WORKER_TIMEZONE
+    ).strip() or DEFAULT_TRANSLATION_CHECK_WORKER_TIMEZONE
+
+
+def get_translation_check_worker_schedule_timezone() -> ZoneInfo:
+    tz_name = get_translation_check_worker_schedule_timezone_name()
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:
+        logging.warning(
+            "translation_check_worker_schedule: invalid timezone %r, falling back to %s",
+            tz_name,
+            DEFAULT_TRANSLATION_CHECK_WORKER_TIMEZONE,
+        )
+        return ZoneInfo(DEFAULT_TRANSLATION_CHECK_WORKER_TIMEZONE)
+
+
+def get_translation_check_worker_idle_stop_grace_minutes() -> int:
+    return max(1, _int_env("TRANSLATION_CHECK_WORKER_IDLE_STOP_GRACE_MINUTES", 10))
+
+
+def is_translation_check_worker_schedule_enabled() -> bool:
+    return _enabled("TRANSLATION_CHECK_WORKER_SCHEDULE_ENABLED", "0")
+
+
+def is_translation_check_worker_schedule_dry_run() -> bool:
+    return _enabled("TRANSLATION_CHECK_WORKER_SCHEDULE_DRY_RUN", "1")
+
+
+def _parse_hhmm(value: str) -> dt_time:
+    parts = value.split(":", 1)
+    if len(parts) != 2:
+        raise ValueError(f"invalid time {value!r}")
+    hour = int(parts[0])
+    minute = int(parts[1])
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        raise ValueError(f"invalid time {value!r}")
+    return dt_time(hour=hour, minute=minute)
+
+
+def parse_translation_check_worker_schedule_times(raw: str | None) -> list[dt_time]:
+    values: list[dt_time] = []
+    for item in str(raw or "").split(","):
+        candidate = item.strip()
+        if not candidate:
+            continue
+        values.append(_parse_hhmm(candidate))
+    return values
+
+
+def get_translation_check_worker_schedule_windows() -> list[TranslationCheckWorkerWindow]:
+    start_times = parse_translation_check_worker_schedule_times(
+        os.getenv("TRANSLATION_CHECK_WORKER_START_TIMES") or "06:30"
+    )
+    stop_times = parse_translation_check_worker_schedule_times(
+        os.getenv("TRANSLATION_CHECK_WORKER_STOP_TIMES") or "00:30"
+    )
+    if len(start_times) != len(stop_times):
+        raise ValueError(
+            f"TRANSLATION_CHECK_WORKER_START_TIMES count {len(start_times)} does not match "
+            f"TRANSLATION_CHECK_WORKER_STOP_TIMES count {len(stop_times)}"
+        )
+    return [
+        TranslationCheckWorkerWindow(start=start_time, stop=stop_time)
+        for start_time, stop_time in zip(start_times, stop_times)
+    ]
+
+
+def get_translation_check_worker_schedule_state(now: datetime | None = None) -> dict:
+    tzinfo = get_translation_check_worker_schedule_timezone()
+    current = now.astimezone(tzinfo) if now is not None else datetime.now(tzinfo)
+    windows = get_translation_check_worker_schedule_windows()
+    local_time = current.timetz().replace(tzinfo=None)
+    active_window = next((window for window in windows if window.contains(local_time)), None)
+    return {
+        "timezone": getattr(tzinfo, "key", str(tzinfo)),
+        "now_local": current.isoformat(),
+        "local_clock": local_time.strftime("%H:%M"),
+        "windows": [window.label() for window in windows],
+        "inside_window": active_window is not None,
+        "active_window": active_window.label() if active_window else None,
+    }
+
+
+def count_active_translation_check_sessions() -> dict:
+    from backend.database import get_db_connection_context
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE status = 'queued' AND finished_at IS NULL)::INT AS queued_sessions,
+                    COUNT(*) FILTER (WHERE status = 'running' AND finished_at IS NULL)::INT AS running_sessions,
+                    MIN(COALESCE(started_at, dispatched_at, created_at)) AS oldest_activity_at,
+                    MAX(COALESCE(started_at, dispatched_at, created_at)) AS newest_activity_at
+                FROM bt_3_translation_check_sessions
+                WHERE finished_at IS NULL
+                  AND status IN ('queued', 'running');
+                """
+            )
+            row = cursor.fetchone() or (0, 0, None, None)
+    queued_sessions = int(row[0] or 0)
+    running_sessions = int(row[1] or 0)
+    return {
+        "queued_sessions": queued_sessions,
+        "running_sessions": running_sessions,
+        "pending_sessions": queued_sessions + running_sessions,
+        "oldest_activity_at": row[2].isoformat() if row[2] else None,
+        "newest_activity_at": row[3].isoformat() if row[3] else None,
+    }
+
+
+def _claim_transition_lock() -> str | None:
+    from backend.job_queue import claim_shared_idempotency
+
+    return claim_shared_idempotency(
+        TRANSLATION_CHECK_WORKER_TRANSITION_LOCK_KEY,
+        ttl_sec=TRANSLATION_CHECK_WORKER_TRANSITION_LOCK_TTL_SEC,
+    )
+
+
+def _release_transition_lock(token: str | None) -> None:
+    from backend.job_queue import release_shared_idempotency
+
+    release_shared_idempotency(TRANSLATION_CHECK_WORKER_TRANSITION_LOCK_KEY, token)
+
+
+def _railway_headers() -> dict[str, str]:
+    project_token = str(os.getenv("TRANSLATION_CHECK_WORKER_RAILWAY_PROJECT_TOKEN") or "").strip()
+    workspace_token = str(
+        os.getenv("TRANSLATION_CHECK_WORKER_RAILWAY_API_TOKEN")
+        or os.getenv("RAILWAY_API_TOKEN")
+        or ""
+    ).strip()
+    headers = {"Content-Type": "application/json"}
+    if project_token:
+        headers["Project-Access-Token"] = project_token
+        return headers
+    if workspace_token:
+        headers["Authorization"] = f"Bearer {workspace_token}"
+        return headers
+    raise RuntimeError("Missing Railway API token for TRANSLATION_CHECK_WORKER schedule control")
+
+
+def _railway_graphql(query: str, variables: dict) -> dict:
+    response = requests.post(
+        os.getenv("TRANSLATION_CHECK_WORKER_RAILWAY_GRAPHQL_URL") or RAILWAY_GRAPHQL_URL,
+        headers=_railway_headers(),
+        json={"query": query, "variables": variables},
+        timeout=25,
+    )
+    response.raise_for_status()
+    payload = response.json() if response.content else {}
+    if payload.get("errors"):
+        raise RuntimeError(str(payload["errors"]))
+    return payload.get("data") or {}
+
+
+def fetch_translation_check_worker_service_instance_state() -> dict:
+    environment_id = str(os.getenv("TRANSLATION_CHECK_WORKER_RAILWAY_ENVIRONMENT_ID") or "").strip()
+    service_id = str(os.getenv("TRANSLATION_CHECK_WORKER_RAILWAY_SERVICE_ID") or "").strip()
+    if not environment_id or not service_id:
+        raise RuntimeError(
+            "Missing TRANSLATION_CHECK_WORKER_RAILWAY_ENVIRONMENT_ID or TRANSLATION_CHECK_WORKER_RAILWAY_SERVICE_ID"
+        )
+    data = _railway_graphql(
+        """
+        query TranslationCheckWorkerServiceInstance($environmentId: String!, $serviceId: String!) {
+          serviceInstance(environmentId: $environmentId, serviceId: $serviceId) {
+            id
+            serviceId
+            serviceName
+            environmentId
+            sleepApplication
+            latestDeployment {
+              id
+              status
+              createdAt
+              deploymentStopped
+              canRedeploy
+            }
+            activeDeployments {
+              id
+              status
+              createdAt
+              deploymentStopped
+              canRedeploy
+            }
+          }
+        }
+        """,
+        {"environmentId": environment_id, "serviceId": service_id},
+    )
+    service_instance = dict((data.get("serviceInstance") or {}))
+    active_deployments = list(service_instance.get("activeDeployments") or [])
+    latest_deployment = service_instance.get("latestDeployment") or None
+    return {
+        "environment_id": service_instance.get("environmentId") or environment_id,
+        "service_id": service_instance.get("serviceId") or service_id,
+        "service_name": service_instance.get("serviceName") or "TRANSLATION_CHECK_WORKER",
+        "sleep_application": bool(service_instance.get("sleepApplication")),
+        "active_deployments": [
+            _normalize_deployment(item)
+            for item in active_deployments
+            if str(item.get("id") or "").strip()
+        ],
+        "latest_deployment": (
+            _normalize_deployment(latest_deployment)
+            if isinstance(latest_deployment, dict) and str(latest_deployment.get("id") or "").strip()
+            else None
+        ),
+    }
+
+
+def _normalize_deployment(item: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict(item or {})
+    return {
+        "id": str(payload.get("id") or "").strip(),
+        "status": str(payload.get("status") or "").strip().upper(),
+        "created_at": payload.get("createdAt"),
+        "deployment_stopped": bool(payload.get("deploymentStopped")),
+        "can_redeploy": bool(payload.get("canRedeploy")),
+    }
+
+
+def _deployment_lifecycle_state(deployment: dict[str, Any]) -> str:
+    if bool(deployment.get("deployment_stopped")):
+        return "stopped"
+    status = str(deployment.get("status") or "").upper()
+    if status in DEPLOYMENT_STOPPED_STATUSES:
+        return "stopped"
+    if status in DEPLOYMENT_RUNNING_STATUSES:
+        return "running"
+    if status in DEPLOYMENT_STARTING_STATUSES:
+        return "starting"
+    if status in DEPLOYMENT_FAILED_STATUSES:
+        return "failed"
+    if not status:
+        return "unknown"
+    return "unknown"
+
+
+def _is_deployment_stoppable(deployment: dict[str, Any]) -> bool:
+    return _deployment_lifecycle_state(deployment) not in {"stopped", "failed"}
+
+
+def _classify_deployments(deployments: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    buckets: dict[str, list[dict[str, Any]]] = {
+        "running": [],
+        "starting": [],
+        "stopped": [],
+        "failed": [],
+        "unknown": [],
+    }
+    for deployment in deployments:
+        buckets[_deployment_lifecycle_state(deployment)].append(deployment)
+    return buckets
+
+
+def _derive_actual_state(classified: dict[str, list[dict[str, Any]]]) -> str:
+    if classified["running"]:
+        return "running"
+    if classified["starting"]:
+        return "starting"
+    if classified["unknown"]:
+        return "unknown"
+    if classified["failed"]:
+        return "failed"
+    return "stopped"
+
+
+def _select_start_method(
+    service_state: dict[str, Any],
+    running_deployments: list[dict[str, Any]],
+    starting_deployments: list[dict[str, Any]],
+) -> tuple[str, str | None]:
+    latest_deployment = service_state.get("latest_deployment") or {}
+    if running_deployments:
+        return "already_running", None
+    if starting_deployments:
+        return "start_in_progress", None
+    if latest_deployment.get("id"):
+        return "serviceInstanceRedeploy", str(latest_deployment.get("id") or "").strip()
+    return "serviceInstanceDeployV2", None
+
+
+def _apply_start(
+    *,
+    service_state: dict[str, Any],
+    classified: dict[str, list[dict[str, Any]]],
+    dry_run: bool,
+    source: str,
+    requested_action: str,
+    selected_action: str,
+    schedule_state: dict[str, Any],
+) -> dict[str, Any]:
+    running_deployments = classified["running"]
+    starting_deployments = classified["starting"]
+    method, target_deployment_id = _select_start_method(
+        service_state,
+        running_deployments,
+        starting_deployments,
+    )
+    logging.info(
+        "translation_check_worker_schedule_start_requested source=%s requested_action=%s dry_run=%s now_local=%s windows=%s running_deployments=%s starting_deployments=%s latest_deployment_id=%s start_method=%s selected_action=%s target_deployment_id=%s",
+        source,
+        requested_action,
+        dry_run,
+        schedule_state.get("now_local"),
+        schedule_state.get("windows"),
+        [item.get("id") for item in running_deployments],
+        [item.get("id") for item in starting_deployments],
+        (service_state.get("latest_deployment") or {}).get("id"),
+        method,
+        selected_action,
+        target_deployment_id,
+    )
+    if method == "already_running":
+        return {
+            "ok": True,
+            "action": requested_action,
+            "desired_state": "running",
+            "actual_state": "running",
+            "reason": "already_running",
+            "running_deployment_ids": [item.get("id") for item in running_deployments],
+        }
+    if method == "start_in_progress":
+        return {
+            "ok": True,
+            "action": requested_action,
+            "desired_state": "running",
+            "actual_state": "starting",
+            "reason": "start_in_progress",
+            "starting_deployment_ids": [item.get("id") for item in starting_deployments],
+        }
+    if dry_run:
+        return {
+            "ok": True,
+            "action": requested_action,
+            "dry_run": True,
+            "method": method,
+            "desired_state": "running",
+        }
+    if method == "serviceInstanceRedeploy":
+        ok = _railway_service_instance_redeploy(
+            environment_id=str(service_state.get("environment_id") or ""),
+            service_id=str(service_state.get("service_id") or ""),
+        )
+        return {
+            "ok": ok,
+            "action": requested_action,
+            "method": method,
+            "requested_deployment_id": target_deployment_id,
+            "desired_state": "running",
+        }
+    deployment_id = _railway_service_instance_deploy_v2(
+        environment_id=str(service_state.get("environment_id") or ""),
+        service_id=str(service_state.get("service_id") or ""),
+    )
+    return {
+        "ok": bool(deployment_id),
+        "action": requested_action,
+        "method": method,
+        "deployment_id": deployment_id,
+        "desired_state": "running",
+    }
+
+
+def _apply_stop(
+    *,
+    active_deployments: list[dict[str, Any]],
+    classified: dict[str, list[dict[str, Any]]],
+    dry_run: bool,
+    source: str,
+    requested_action: str,
+    selected_action: str,
+    schedule_state: dict[str, Any],
+    active_sessions: dict[str, Any],
+) -> dict[str, Any]:
+    logging.info(
+        "translation_check_worker_schedule_stop_requested source=%s action=%s dry_run=%s now_local=%s inside_window=%s pending_sessions=%s queued_sessions=%s running_sessions=%s active_deployments=%s selected_action=%s",
+        source,
+        requested_action,
+        dry_run,
+        schedule_state.get("now_local"),
+        schedule_state.get("inside_window"),
+        active_sessions.get("pending_sessions"),
+        active_sessions.get("queued_sessions"),
+        active_sessions.get("running_sessions"),
+        [item.get("id") for item in active_deployments],
+        selected_action,
+    )
+    if int(active_sessions.get("pending_sessions") or 0) > 0:
+        logging.info(
+            "translation_check_worker_stop_skipped_pending_sessions source=%s action=%s pending_sessions=%s queued_sessions=%s running_sessions=%s oldest_activity_at=%s newest_activity_at=%s",
+            source,
+            requested_action,
+            active_sessions.get("pending_sessions"),
+            active_sessions.get("queued_sessions"),
+            active_sessions.get("running_sessions"),
+            active_sessions.get("oldest_activity_at"),
+            active_sessions.get("newest_activity_at"),
+        )
+        return {
+            "ok": False,
+            "reason": "pending_translation_checks",
+            "action": requested_action,
+            "desired_state": "running",
+        }
+    stoppable_deployments = [item for item in active_deployments if _is_deployment_stoppable(item)]
+    if not stoppable_deployments:
+        return {
+            "ok": True,
+            "action": requested_action,
+            "reason": "already_stopped",
+            "desired_state": "stopped",
+            "actual_state": "stopped",
+            "skipped_deployment_ids": [item.get("id") for item in active_deployments],
+        }
+    if dry_run:
+        return {
+            "ok": True,
+            "action": requested_action,
+            "dry_run": True,
+            "desired_state": "stopped",
+            "candidate_deployment_ids": [item.get("id") for item in stoppable_deployments],
+        }
+    stopped_ids: list[str] = []
+    skipped_non_stoppable_ids: list[str] = []
+    stop_errors: list[dict[str, str]] = []
+    for item in active_deployments:
+        deployment_id = str(item.get("id") or "").strip()
+        if not deployment_id:
+            continue
+        if not _is_deployment_stoppable(item):
+            skipped_non_stoppable_ids.append(deployment_id)
+            continue
+        try:
+            if _railway_deployment_stop(deployment_id=deployment_id):
+                stopped_ids.append(deployment_id)
+        except Exception as exc:
+            message = str(exc)
+            if "Deployment is not stoppable" in message:
+                skipped_non_stoppable_ids.append(deployment_id)
+                continue
+            stop_errors.append({"deployment_id": deployment_id, "message": message})
+            logging.exception(
+                "translation_check_worker_schedule_api_error action=%s source=%s stage=stop_mutation deployment_id=%s",
+                requested_action,
+                source,
+                deployment_id,
+            )
+    return {
+        "ok": not stop_errors,
+        "action": requested_action,
+        "desired_state": "stopped",
+        "stopped_deployment_ids": stopped_ids,
+        "skipped_non_stoppable_ids": skipped_non_stoppable_ids,
+        "stop_errors": stop_errors,
+    }
+
+
+def _log_schedule_result(
+    *,
+    source: str,
+    requested_action: str,
+    selected_action: str,
+    result: dict[str, Any],
+    service_state: dict[str, Any] | None,
+) -> None:
+    active_deployments = list((service_state or {}).get("active_deployments") or [])
+    classified = _classify_deployments(active_deployments)
+    actual_state = _derive_actual_state(classified)
+    logging.info(
+        "translation_check_worker_schedule_result source=%s requested_action=%s ok=%s selected_action=%s desired_state=%s actual_state=%s running_deployments=%s starting_deployments=%s stopped_deployments=%s failed_deployments=%s active_deployments=%s method=%s reason=%s stopped_deployment_ids=%s skipped_non_stoppable_ids=%s stop_errors=%s",
+        source,
+        requested_action,
+        result.get("ok"),
+        selected_action,
+        result.get("desired_state"),
+        actual_state,
+        [item.get("id") for item in classified["running"]],
+        [item.get("id") for item in classified["starting"]],
+        [item.get("id") for item in classified["stopped"]],
+        [item.get("id") for item in classified["failed"]],
+        [item.get("id") for item in active_deployments],
+        result.get("method"),
+        result.get("reason"),
+        result.get("stopped_deployment_ids"),
+        result.get("skipped_non_stoppable_ids"),
+        result.get("stop_errors"),
+    )
+
+
+def _railway_service_instance_redeploy(*, environment_id: str, service_id: str) -> bool:
+    data = _railway_graphql(
+        """
+        mutation RedeployTranslationCheckWorker($environmentId: String!, $serviceId: String!) {
+          serviceInstanceRedeploy(environmentId: $environmentId, serviceId: $serviceId)
+        }
+        """,
+        {"environmentId": environment_id, "serviceId": service_id},
+    )
+    return bool(data.get("serviceInstanceRedeploy"))
+
+
+def _railway_service_instance_deploy_v2(*, environment_id: str, service_id: str) -> str:
+    data = _railway_graphql(
+        """
+        mutation DeployTranslationCheckWorker($environmentId: String!, $serviceId: String!) {
+          serviceInstanceDeployV2(environmentId: $environmentId, serviceId: $serviceId)
+        }
+        """,
+        {"environmentId": environment_id, "serviceId": service_id},
+    )
+    return str(data.get("serviceInstanceDeployV2") or "").strip()
+
+
+def _railway_deployment_stop(*, deployment_id: str) -> bool:
+    data = _railway_graphql(
+        """
+        mutation StopTranslationCheckWorkerDeployment($id: String!) {
+          deploymentStop(id: $id)
+        }
+        """,
+        {"id": deployment_id},
+    )
+    return bool(data.get("deploymentStop"))
+
+
+def run_translation_check_worker_schedule_control(action: str, *, source: str = "scheduler") -> dict:
+    normalized_action = str(action or "").strip().lower()
+    if normalized_action not in {"start", "stop", "reconcile_stop"}:
+        raise ValueError(f"Unsupported action {action!r}")
+    if not is_translation_check_worker_schedule_enabled():
+        logging.info(
+            "translation_check_worker_schedule disabled: action=%s source=%s",
+            normalized_action,
+            source,
+        )
+        return {"ok": False, "reason": "disabled", "action": normalized_action}
+
+    lock_token = _claim_transition_lock()
+    if lock_token is None:
+        logging.info(
+            "translation_check_worker_schedule_lock_busy action=%s source=%s lock_key=%s",
+            normalized_action,
+            source,
+            TRANSLATION_CHECK_WORKER_TRANSITION_LOCK_KEY,
+        )
+        return {"ok": True, "reason": "lock_busy", "action": normalized_action}
+
+    try:
+        dry_run = is_translation_check_worker_schedule_dry_run()
+        schedule_state = get_translation_check_worker_schedule_state()
+        active_sessions = count_active_translation_check_sessions()
+
+        try:
+            service_state = fetch_translation_check_worker_service_instance_state()
+        except Exception:
+            logging.exception(
+                "translation_check_worker_schedule_api_error action=%s source=%s stage=fetch_service_instance",
+                normalized_action,
+                source,
+            )
+            return {"ok": False, "reason": "service_state_error", "action": normalized_action}
+
+        active_deployments = list(service_state.get("active_deployments") or [])
+        classified = _classify_deployments(active_deployments)
+        requested_action = normalized_action
+        if normalized_action == "reconcile_stop":
+            requested_action = "start" if bool(schedule_state.get("inside_window")) else "stop"
+
+        if requested_action == "start":
+            result = _apply_start(
+                service_state=service_state,
+                classified=classified,
+                dry_run=dry_run,
+                source=source,
+                requested_action=normalized_action,
+                selected_action=requested_action,
+                schedule_state=schedule_state,
+            )
+        else:
+            result = _apply_stop(
+                active_deployments=active_deployments,
+                classified=classified,
+                dry_run=dry_run,
+                source=source,
+                requested_action=normalized_action,
+                selected_action=requested_action,
+                schedule_state=schedule_state,
+                active_sessions=active_sessions,
+            )
+
+        refreshed_service_state = service_state
+        if not dry_run:
+            try:
+                refreshed_service_state = fetch_translation_check_worker_service_instance_state()
+            except Exception:
+                logging.exception(
+                    "translation_check_worker_schedule_api_error action=%s source=%s stage=refresh_service_instance",
+                    normalized_action,
+                    source,
+                )
+        _log_schedule_result(
+            source=source,
+            requested_action=normalized_action,
+            selected_action=requested_action,
+            result=result,
+            service_state=refreshed_service_state,
+        )
+        return result
+    finally:
+        _release_transition_lock(lock_token)

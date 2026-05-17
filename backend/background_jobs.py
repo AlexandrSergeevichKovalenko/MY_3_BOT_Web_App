@@ -1792,6 +1792,12 @@ def run_agent_worker_schedule_control_actor(action: str = "reconcile_stop") -> N
     run_agent_worker_schedule_control(action=action, source="scheduler_jobs_actor")
 
 
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_translation_check_worker_schedule_control_actor(action: str = "reconcile_stop") -> None:
+    from backend.translation_check_worker_schedule import run_translation_check_worker_schedule_control
+    run_translation_check_worker_schedule_control(action=action, source="scheduler_jobs_actor")
+
+
 @dramatiq.actor(max_retries=0, queue_name="tts_generation")
 def run_tts_generation_actor(
     *,
