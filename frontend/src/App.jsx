@@ -3163,9 +3163,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
           <div className="translations-title-main">
             <h2>{tr('Ваши переводы', 'Ihre Uebersetzungen')}</h2>
           </div>
-          <div className="translations-title-side">
-            <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo translations-corner-logo" />
-          </div>
+          <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo translations-corner-logo" />
         </div>
         {showTranslationStartConfigurator && todayTranslationRecommendation && (
           <div className="today-translation-recommendation-card">
@@ -3452,7 +3450,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
                 </p>
               )}
               {sentences.length === 0 ? (
-                <div className="tr-empty-card">
+                <div className={`tr-empty-card ${showPreparingTranslationEmptyState ? 'is-preparing' : ''}`}>
                   <div className="tr-empty-icon">
                     {showPreparingTranslationEmptyState ? '⏳' : '📭'}
                   </div>

@@ -18736,18 +18736,16 @@ body {
 }
 
 .webapp-section.webapp-section-translations .translations-title-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 16px;
-  padding-right: 0;
-  min-height: auto;
+  display: block;
+  padding-right: 68px;
+  min-height: 56px;
   margin: 0;
 }
 
 .webapp-section.webapp-section-translations .translations-title-main {
   display: grid;
   gap: 12px;
+  min-width: 0;
 }
 
 .webapp-section.webapp-section-translations .translations-title-main h2 {
@@ -18773,22 +18771,6 @@ body {
 .webapp-section.webapp-section-translations .translations-title-main .section-home-back:hover {
   background: rgba(99, 102, 241, 0.16);
   border-color: rgba(99, 102, 241, 0.62);
-}
-
-.webapp-section.webapp-section-translations .translations-title-side {
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 12px;
-}
-
-.webapp-section.webapp-section-translations .translations-title-side .today-section-task-hud {
-  position: static;
-  top: auto;
-  right: auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
 }
 
 .webapp-section.webapp-section-translations .today-section-timer-pill {
@@ -19300,11 +19282,8 @@ body {
   }
 
   .webapp-section.webapp-section-translations .translations-title-row {
-    grid-template-columns: 1fr;
-  }
-
-  .webapp-section.webapp-section-translations .translations-title-side {
-    justify-content: flex-start;
+    padding-right: 60px;
+    min-height: 50px;
   }
 
   .webapp-section.webapp-section-translations .webapp-translation-start,
@@ -19340,7 +19319,8 @@ body {
   }
 
   .webapp-section.webapp-section-translations .translations-title-row {
-    gap: 12px;
+    padding-right: 52px;
+    min-height: 44px;
   }
 
   .webapp-section.webapp-section-translations .translations-title-main {
@@ -19358,31 +19338,11 @@ body {
     font-size: 13px;
   }
 
-  .webapp-section.webapp-section-translations .translations-title-side {
-    justify-content: space-between;
-    width: 100%;
-    gap: 10px;
-  }
-
-  .webapp-section.webapp-section-translations .translations-title-side .today-section-task-hud {
-    flex: 1 1 auto;
-    justify-content: flex-start;
-  }
-
-  .webapp-section.webapp-section-translations .today-section-timer-pill {
-    min-height: 34px;
-    padding: 0 10px;
-    font-size: 12px;
-  }
-
-  .webapp-section.webapp-section-translations .today-section-task-done {
-    width: 34px;
-    height: 34px;
-  }
-
   .webapp-section.webapp-section-translations .translations-corner-logo {
-    width: 44px;
-    height: 44px;
+    top: -2px;
+    right: 0;
+    width: 40px;
+    height: 40px;
   }
 
   .webapp-section.webapp-section-translations .webapp-translation-start,
@@ -19797,6 +19757,11 @@ body {
   border-radius: 16px;
   border: 1px solid var(--tr-border-subtle);
   background: rgba(255, 255, 255, 0.025);
+}
+
+.tr-empty-card.is-preparing {
+  align-items: center;
+  min-height: 86px;
 }
 
 .tr-empty-icon {
