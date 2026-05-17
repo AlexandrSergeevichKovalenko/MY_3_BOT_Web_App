@@ -21059,6 +21059,22 @@ function AppInner() {
           }
         }
       };
+      if (page < readerPageCount) {
+        const nextPage = page + 1;
+        const nextPageText = getReaderDisplayPageText(nextPage);
+        if (nextPageText) {
+          // Warm the next page in parallel with the current-page fetch so
+          // short mobile pages do not stall at the page boundary.
+          loadReaderAudioPageData({
+            targetPage: nextPage,
+            targetVoice: voice,
+            targetRate: readerAudioRate,
+            targetText: nextPageText,
+            token: null,
+            prefetchOnly: true,
+          }).catch(() => {});
+        }
+      }
       const data = await loadReaderAudioPageData({
         targetPage: page,
         targetVoice: voice,
@@ -21141,22 +21157,6 @@ function AppInner() {
             String(err?.message || '').trim()
               || 'Reader audio playback failed to start'
           );
-        }
-      }
-      if (page < readerPageCount) {
-        const nextPage = page + 1;
-        const nextPageText = getReaderDisplayPageText(nextPage);
-        if (nextPageText) {
-          // Start next-page generation immediately so the auto-advance after
-          // `ended` is not blocked on a late TTS roundtrip.
-          loadReaderAudioPageData({
-            targetPage: nextPage,
-            targetVoice: voice,
-            targetRate: readerAudioRate,
-            targetText: nextPageText,
-            token: null,
-            prefetchOnly: true,
-          }).catch(() => {});
         }
       }
     } catch (e) {

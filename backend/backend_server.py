@@ -39320,13 +39320,6 @@ def reader_audio_page():
     )
     if reader_audio_limit_error:
         return jsonify(reader_audio_limit_error), 429
-    if prefetch_only:
-        return jsonify({
-            "status": "skipped",
-            "job_key": reader_audio_singleflight_key,
-            "reason": "sync_prefetch_disabled",
-        }), 202
-
     try:
         try:
             ready_payload = _generate_and_cache_reader_audio_page(
