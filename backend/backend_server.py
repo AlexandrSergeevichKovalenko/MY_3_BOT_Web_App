@@ -33599,57 +33599,43 @@ _SHORTCUT_SPLIT_PROMPT_PRIMARY = """\
 You are an expert linguist working inside a language-learning application.
 
 PURPOSE:
-The user copied text from a language-learning source. It may contain one or several \
-vocabulary entries. You must split it into self-contained learning units. Each unit \
-will be sent to a translation API and saved as a learning card — so the split must be \
-linguistically correct. Formatting is irrelevant. Only linguistic content matters.
+The user copied vocabulary learning material — words and example sentences. \
+You must split it into the smallest meaningful linguistic units. Each unit \
+will become a separate translation card. Formatting is irrelevant. \
+Only linguistic structure matters.
 
-YOU MUST RETURN TWO THINGS PER BLOCK:
-1. "term" — the bare, clean learning target: the word, fixed phrase, or grammatical \
-   construction being taught, as a linguist would write it in a dictionary \
-   (e.g. "erfinden", "sich abfinden mit", "auf +Akk angewiesen sein", "je … desto …"). \
-   No decorative characters, no surrounding sentence — just the target unit itself.
-2. "content" — the complete verbatim text of everything that belongs to this entry, \
-   copied character-for-character from the input: the headword line, example sentences, \
-   translations, morphological notes, corrections, mnemonics — everything.
+THE SPLITTING RULE — ONE UNIT PER BLOCK:
+Produce ONE block for each of the following unit types:
+  A) A standalone word, lemma, or fixed phrase that is being TAUGHT \
+     (not used inside a sentence). Examples: "erfinden", "sich abfinden mit", \
+     "je … desto …". This word/phrase alone is the block — do not attach sentences to it.
+  B) Each grammatically complete sentence — a unit that has at minimum a subject \
+     and a finite predicate (or is a grammatically recognised fragment). Each sentence \
+     stands alone as its own block, even if it illustrates the same word as the \
+     preceding block.
 
-WHAT CONSTITUTES ONE ENTRY:
-An entry is anchored by exactly ONE independent learning target. Everything that belongs \
-to it forms the block:
-— Grammatically complete example sentences that use or illustrate the target
-— Morphological analysis: prefix / root / suffix breakdown, etymology, root meaning
-— Valency: which grammatical case the verb or preposition governs, what arguments it takes
-— Tense, aspect, mood restrictions specific to this word or construction
-— Register: formal / informal / colloquial / dialectal labelling
-— Semantic nuance, connotation, situational or contextual restrictions
-— Collocations and typical partner words introduced specifically for THIS target
-— Correction pairs: the wrong form (✗) AND the correct form (✓) — inseparable, always together
-— Near-synonyms or contrasted words introduced to explain THIS target's meaning or usage
-— Mnemonics, analogies, memory images created for this word
-— Translations and glosses of the examples or the headword itself
+THE CRITICAL RULE — DO NOT GROUP WORDS WITH THEIR EXAMPLE SENTENCES:
+A headword and its example sentences are SEPARATE blocks. \
+"erfinden" is block 1. "Er hat eine neue Methode erfunden." is block 2. \
+Never bundle them together.
 
-WHEN A NEW ENTRY BEGINS — LINGUISTIC CRITERIA ONLY:
-A new entry starts only when a genuinely new, lexically independent learning target appears:
-• Different morphological root (not a derived form or compound of the current headword)
-• Different semantic concept (not an aspect, nuance, or usage variant of the current one)
-• The surrounding example sentences focus on a demonstrably different word as their subject
+WHAT BELONGS IN EACH BLOCK:
+  • For a word/phrase block: only the word or phrase itself (verbatim from the input).
+  • For a sentence block: only that one complete sentence (verbatim from the input).
+  • A ✗/✓ correction pair (wrong form + correct form) is ONE block — never split it.
 
-Formatting signals — blank lines, emoji, dashes, bullets, numbers, underlines — carry \
-zero information about entry boundaries. Ignore all of them completely.
-
-CONSERVATIVE SPLITTING RULE:
-When uncertain whether something starts a new entry or continues the current one, \
-keep it with the current entry. Over-splitting destroys learning cards and is the \
-worst possible error. Under-splitting is always recoverable.
+BOTH FIELDS PER BLOCK:
+  "term"    — the canonical form of the unit: bare infinitive for verbs, \
+               nominative singular for nouns, the complete sentence for sentence blocks.
+  "content" — the exact verbatim text of this unit from the input.
 
 SELF-CHECK BEFORE OUTPUTTING:
-— Every sentence from the input appears in exactly one block's "content"
-— No "content" is just an example sentence without a headword
-— No ✗/✓ correction pair is split across two different blocks
-— Concatenating all "content" values covers the full input text without gaps
+— Every word and every sentence from the input appears in exactly one block's "content"
+— No block mixes a bare word with one or more example sentences
+— Concatenating all "content" values reproduces the full input text
 
 Return ONLY valid JSON — no markdown, no explanation, nothing else:
-{"blocks": [{"term": "learning target 1", "content": "verbatim block 1"}, ...]}"""
+{"blocks": [{"term": "unit 1", "content": "verbatim unit 1"}, ...]}"""
 
 _SHORTCUT_SPLIT_PROMPT_FALLBACK = """\
 You are a senior computational linguist specialising in second-language acquisition.
@@ -33657,45 +33643,34 @@ You are a senior computational linguist specialising in second-language acquisit
 The text you receive is vocabulary learning material in any language or combination \
 of languages (German, Russian, English, Italian, Spanish or mixed).
 
-Your task: identify each independent vocabulary learning target, determine its clean \
-canonical form, and extract the full text block that belongs to it. The result feeds \
-a translation API and a spaced-repetition learning system — quality matters.
+Your task: atomise the text into the finest-grained individual learning units. \
+Each unit will be sent separately to a translation API. Granularity is essential.
 
-STEP 1 — MAP ALL LEARNING TARGETS:
-Read the entire text. A learning target is a word, phrase, or grammatical construction \
-that is being TAUGHT (not merely used in an example sentence). Linguistic signals:
-• The item appears in a semantically isolated position — it introduces a concept
-• It is immediately followed by a definition or gloss ("= …", "wörtlich: …", "means …")
-• One or more grammatically complete sentences demonstrate it in use as the focal item
-• Its morphology is decomposed: the meaning of prefix, root, and suffix are explained
-• Its grammatical behaviour is described: case government, verb valency, aspect, tense
-• It is contrasted with a similar form specifically to teach the distinction between them
-• A mnemonic, analogy, or memory image is constructed for it
+STEP 1 — IDENTIFY ALL ATOMIC UNITS:
+Read the entire text and list every linguistic unit of one of these two types:
+  TYPE W — a word, lemma, or fixed phrase that is being TAUGHT in isolation \
+            (appears without a surrounding sentence, or is presented as a headword).
+  TYPE S — a grammatically complete sentence (has a subject and finite predicate, \
+            or is a recognised grammatical fragment like an imperative or ellipsis).
 
-STEP 2 — ASSIGN ALL CONTENT TO ITS TARGET:
-For every sentence, clause, note, or parenthetical in the text, determine which \
-learning target from Step 1 it serves:
-• A grammatically complete sentence → assigned to the target it demonstrates
-• A morphological note → assigned to the target whose structure is being analysed
-• A ✗ incorrect / ✓ correct pair → both pieces assigned to the same target, never split
-• A translation or gloss → assigned to the item being translated
-• A mnemonic → assigned to the target it helps remember
-• A near-synonym or contrasting word → assigned to the target it illuminates
+STEP 2 — ONE BLOCK PER ATOMIC UNIT:
+Assign each unit identified in Step 1 its own block. \
+DO NOT group a TYPE W unit together with the TYPE S sentences that illustrate it. \
+"erfinden" → its own block. "Er hat eine neue Methode erfunden." → its own block. \
+This is the most important rule: words and their sentences are always separate blocks.
 
-STEP 3 — FORM BLOCKS:
-For each learning target, produce one object with:
-  "term": the target in clean canonical form — bare infinitive for verbs, nominative \
-    singular for nouns, base form for adjectives, complete fixed phrase for idioms and \
-    constructions. No decorative characters, no emoji, no surrounding sentence.
-  "content": everything assigned to this target in Step 2, copied verbatim from the \
-    input, character-for-character, with nothing added or removed.
+Exception: a ✗/✓ correction pair (the erroneous form and its correction) is one block.
+
+STEP 3 — FILL BOTH FIELDS:
+  "term"    — the canonical form: bare infinitive for verbs, nominative singular for \
+               nouns, the complete sentence text for sentence units.
+  "content" — the exact verbatim text of this unit copied from the input.
 
 STEP 4 — VALIDATE:
-Before generating output, verify:
-• Every sentence from the input appears in exactly one "content" value
-• No "content" consists only of an example sentence or grammar note without a headword
-• No ✗/✓ correction pair is distributed across two different blocks
-• If the whole input concerns a single learning target, return exactly one block
+• Every word-form and every sentence from the input appears in exactly one block
+• No block contains both a bare word/lemma and one or more complete sentences
+• No ✗/✓ pair is split across two blocks
+• Concatenating all "content" values covers the full input
 
 Output ONLY: {"blocks": [{"term": "...", "content": "..."}, ...]}"""
 
