@@ -33555,6 +33555,79 @@ def save_mobile_dictionary_entry():
     )
 
 
+@app.route("/api/shortcut/lookup", methods=["POST"])
+def shortcut_dictionary_lookup():
+    """
+    iPhone Shortcuts endpoint — receives a word/phrase, sends a Telegram keyboard
+    to the owner so they can pick a language pair and translation mode, exactly
+    as if they had typed the text directly in the private chat.
+
+    Auth: Authorization: Bearer <SHORTCUT_SECRET>
+    Body: {"text": "das Wort", "user_id": 117649764}
+    """
+    shortcut_secret = (os.getenv("SHORTCUT_SECRET") or "").strip()
+    if not shortcut_secret:
+        return jsonify({"error": "Shortcut endpoint не настроен (SHORTCUT_SECRET не задан)"}), 503
+
+    auth_header = (request.headers.get("Authorization") or "").strip()
+    if not auth_header.lower().startswith("bearer "):
+        return jsonify({"error": "Требуется Authorization: Bearer <SHORTCUT_SECRET>"}), 401
+    provided_secret = auth_header[7:].strip()
+    if not hmac.compare_digest(provided_secret, shortcut_secret):
+        return jsonify({"error": "Неверный секрет"}), 401
+
+    body = request.get_json(silent=True) or {}
+    text = (body.get("text") or "").strip()
+    raw_user_id = body.get("user_id")
+
+    if not text:
+        return jsonify({"error": "text обязателен"}), 400
+    if raw_user_id is None:
+        return jsonify({"error": "user_id обязателен"}), 400
+    try:
+        user_id = int(raw_user_id)
+    except (ValueError, TypeError):
+        return jsonify({"error": "user_id должен быть числом"}), 400
+
+    if not is_telegram_user_allowed(user_id):
+        return jsonify({"error": "Пользователь не имеет доступа"}), 403
+
+    request_key = hashlib.sha1(
+        f"{user_id}:{text}:{time.time()}".encode("utf-8")
+    ).hexdigest()[:20]
+
+    flag_by_lang = {"ru": "🇷🇺", "de": "🇩🇪", "en": "🇬🇧", "it": "🇮🇹", "es": "🇪🇸"}
+    language_pairs = [
+        ("ru", "en"), ("en", "ru"),
+        ("ru", "de"), ("de", "ru"),
+        ("ru", "es"), ("es", "ru"),
+        ("ru", "it"), ("it", "ru"),
+    ]
+    rows: list[list[dict]] = []
+    row: list[dict] = []
+    for src, tgt in language_pairs:
+        label = f"{flag_by_lang.get(src, '🏳️')} {src.upper()} -> {flag_by_lang.get(tgt, '🏳️')} {tgt.upper()}"
+        row.append({"text": label, "callback_data": f"dictpair:{request_key}:{src}-{tgt}"})
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+
+    message_text = f"Запрос: {text}\n\nВыберите языковую пару для перевода:"
+    try:
+        _send_private_message(
+            user_id,
+            message_text,
+            reply_markup={"inline_keyboard": rows},
+        )
+    except Exception as exc:
+        logging.warning("shortcut_lookup send failed user_id=%s: %s", user_id, exc)
+        return jsonify({"error": f"Ошибка отправки Telegram сообщения: {exc}"}), 500
+
+    return jsonify({"ok": True})
+
+
 @app.route("/api/internal/bot-private/dictionary/save", methods=["POST"])
 def save_bot_private_dictionary_entry():
     payload = request.get_json(silent=True) or {}
