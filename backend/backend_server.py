@@ -33555,15 +33555,56 @@ def save_mobile_dictionary_entry():
     )
 
 
+_SHORTCUT_FLAG_BY_LANG = {"ru": "🇷🇺", "de": "🇩🇪", "en": "🇬🇧", "it": "🇮🇹", "es": "🇪🇸"}
+_SHORTCUT_LANGUAGE_PAIRS = [
+    ("ru", "en"), ("en", "ru"),
+    ("ru", "de"), ("de", "ru"),
+    ("ru", "es"), ("es", "ru"),
+    ("ru", "it"), ("it", "ru"),
+]
+
+
+def _shortcut_split_blocks(text: str) -> list[str]:
+    """Split text into logical blocks separated by blank lines."""
+    blocks = re.split(r"\n[ \t]*\n", text.strip())
+    return [b.strip() for b in blocks if b.strip()]
+
+
+def _shortcut_block_term(block: str) -> str:
+    """First non-empty line of a block — the main word/phrase to look up."""
+    for line in block.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return block.strip()
+
+
+def _shortcut_build_pair_keyboard_rows(request_key: str) -> list[list[dict]]:
+    rows: list[list[dict]] = []
+    row: list[dict] = []
+    for src, tgt in _SHORTCUT_LANGUAGE_PAIRS:
+        label = f"{_SHORTCUT_FLAG_BY_LANG.get(src, '🏳️')} {src.upper()} -> {_SHORTCUT_FLAG_BY_LANG.get(tgt, '🏳️')} {tgt.upper()}"
+        row.append({"text": label, "callback_data": f"dictpair:{request_key}:{src}-{tgt}"})
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return rows
+
+
 @app.route("/api/shortcut/lookup", methods=["POST"])
 def shortcut_dictionary_lookup():
     """
-    iPhone Shortcuts endpoint — receives a word/phrase, sends a Telegram keyboard
-    to the owner so they can pick a language pair and translation mode, exactly
-    as if they had typed the text directly in the private chat.
+    iPhone Shortcuts endpoint — receives text (single word or multi-block),
+    splits it into logical blocks, and sends each block as a separate Telegram
+    message with a language pair keyboard, exactly as if typed in private chat.
+
+    Multi-block text is split on blank lines. The first line of each block
+    becomes the lookup term; remaining lines are shown as context.
 
     Auth: Authorization: Bearer <SHORTCUT_SECRET>
-    Body: {"text": "das Wort", "user_id": 117649764}
+    Body: {"text": "...", "user_id": 117649764}
     """
     shortcut_secret = (os.getenv("SHORTCUT_SECRET") or "").strip()
     if not shortcut_secret:
@@ -33592,40 +33633,45 @@ def shortcut_dictionary_lookup():
     if not is_telegram_user_allowed(user_id):
         return jsonify({"error": "Пользователь не имеет доступа"}), 403
 
-    request_key = hashlib.sha1(
-        f"{user_id}:{text}:{time.time()}".encode("utf-8")
-    ).hexdigest()[:20]
+    blocks = _shortcut_split_blocks(text)
+    if not blocks:
+        return jsonify({"error": "text не содержит текста"}), 400
 
-    flag_by_lang = {"ru": "🇷🇺", "de": "🇩🇪", "en": "🇬🇧", "it": "🇮🇹", "es": "🇪🇸"}
-    language_pairs = [
-        ("ru", "en"), ("en", "ru"),
-        ("ru", "de"), ("de", "ru"),
-        ("ru", "es"), ("es", "ru"),
-        ("ru", "it"), ("it", "ru"),
-    ]
-    rows: list[list[dict]] = []
-    row: list[dict] = []
-    for src, tgt in language_pairs:
-        label = f"{flag_by_lang.get(src, '🏳️')} {src.upper()} -> {flag_by_lang.get(tgt, '🏳️')} {tgt.upper()}"
-        row.append({"text": label, "callback_data": f"dictpair:{request_key}:{src}-{tgt}"})
-        if len(row) == 2:
-            rows.append(row)
-            row = []
-    if row:
-        rows.append(row)
+    _SHORTCUT_MAX_BLOCKS = 10
+    if len(blocks) > _SHORTCUT_MAX_BLOCKS:
+        blocks = blocks[:_SHORTCUT_MAX_BLOCKS]
 
-    message_text = f"Запрос: {text}\n\nВыберите языковую пару для перевода:"
-    try:
-        _send_private_message(
-            user_id,
-            message_text,
-            reply_markup={"inline_keyboard": rows},
-        )
-    except Exception as exc:
-        logging.warning("shortcut_lookup send failed user_id=%s: %s", user_id, exc)
-        return jsonify({"error": f"Ошибка отправки Telegram сообщения: {exc}"}), 500
+    sent = 0
+    for block in blocks:
+        term = _shortcut_block_term(block)
+        request_key = hashlib.sha1(
+            f"{user_id}:{term}:{time.time()}:{sent}".encode("utf-8")
+        ).hexdigest()[:20]
 
-    return jsonify({"ok": True})
+        block_lines = block.splitlines()
+        if len(block_lines) > 1:
+            context = "\n".join(block_lines[1:]).strip()
+            message_text = f"Запрос: {term}\n{context}\n\nВыберите языковую пару для перевода:"
+        else:
+            message_text = f"Запрос: {term}\n\nВыберите языковую пару для перевода:"
+
+        try:
+            _send_private_message(
+                user_id,
+                message_text,
+                reply_markup={"inline_keyboard": _shortcut_build_pair_keyboard_rows(request_key)},
+            )
+            sent += 1
+        except Exception as exc:
+            logging.warning("shortcut_lookup send failed user_id=%s block=%s: %s", user_id, sent, exc)
+
+        if sent < len(blocks):
+            time.sleep(0.35)
+
+    if sent == 0:
+        return jsonify({"error": "Не удалось отправить ни одного сообщения"}), 500
+
+    return jsonify({"ok": True, "blocks_sent": sent})
 
 
 @app.route("/api/internal/bot-private/dictionary/save", methods=["POST"])
