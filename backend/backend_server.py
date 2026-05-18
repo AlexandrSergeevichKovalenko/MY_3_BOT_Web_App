@@ -33860,7 +33860,8 @@ def shortcut_dictionary_lookup():
             f"{user_id}:{term}:{time.time()}:{sent}".encode("utf-8")
         ).hexdigest()[:20]
 
-        message_text = f"Запрос: {term}\n{content}\n\nВыберите языковую пару для перевода:"
+        body = f"\n{content}" if content.strip() != term.strip() else ""
+        message_text = f"Запрос: {term}{body}\n\nВыберите языковую пару для перевода:"
 
         try:
             _send_private_message(
