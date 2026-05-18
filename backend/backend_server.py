@@ -16229,51 +16229,70 @@ def _generate_audio_grammar_explanation(
     return cleaned
 
 
+def _strip_grammar_language_tags(text: str) -> str:
+    raw = str(text or "")
+    if not raw:
+        return ""
+    return re.sub(r"\[/?(?:SOURCE|TARGET)\]", "", raw, flags=re.IGNORECASE)
+
+
+def _normalize_grammar_explanation_line(line: str) -> str:
+    cleaned = _strip_grammar_language_tags(line)
+    cleaned = re.sub(r"</?[^>\n]+>", "", cleaned)
+    cleaned = cleaned.replace("\u200b", "")
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    return cleaned.strip()
+
+
 def _prettify_grammar_explanation_text(text: str) -> str:
-    lines = [str(line or "").strip() for line in str(text or "").splitlines()]
+    cleaned_text = _strip_grammar_language_tags(text)
+    lines = [str(line or "").strip() for line in cleaned_text.splitlines()]
     rendered: list[str] = []
     for line in lines:
-        line = re.sub(r"</?[^>\n]+>", "", line).strip()
+        line = _normalize_grammar_explanation_line(line)
         if not line:
             if rendered and rendered[-1] != "":
                 rendered.append("")
             continue
-        if re.match(r"^part\s+\d+:", line, flags=re.IGNORECASE):
+        if re.match(r"^(part|часть)\s+\d+:", line, flags=re.IGNORECASE):
             if rendered and rendered[-1] != "":
                 rendered.append("")
             rendered.append(f"🔹 {line}")
             continue
-        if re.match(r"^original sentence:", line, flags=re.IGNORECASE):
+        if re.match(r"^(original sentence|оригинальное предложение):", line, flags=re.IGNORECASE):
             rendered.append(f"📌 {line}")
             continue
-        if re.match(r"^structure name:", line, flags=re.IGNORECASE):
+        if re.match(r"^(structure name|название структуры):", line, flags=re.IGNORECASE):
             rendered.append(f"• {line}")
             continue
-        if re.match(r"^why used:", line, flags=re.IGNORECASE):
+        if re.match(r"^(why used|почему используется):", line, flags=re.IGNORECASE):
             rendered.append(f"• {line}")
             continue
-        if re.match(r"^construction in ", line, flags=re.IGNORECASE):
+        if re.match(r"^(construction in |построение на немецком:)", line, flags=re.IGNORECASE):
             rendered.append(f"• {line}")
             continue
-        if re.match(r"^breakdown:", line, flags=re.IGNORECASE):
+        if re.match(r"^(breakdown|подробный разбор):", line, flags=re.IGNORECASE):
             rendered.append(f"• {line}")
             continue
-        if re.match(r"^final\s+", line, flags=re.IGNORECASE):
+        if re.match(r"^(final\s+|итоговое\s+)", line, flags=re.IGNORECASE):
             if rendered and rendered[-1] != "":
                 rendered.append("")
             rendered.append(f"✅ {line}")
+            continue
+        if re.match(r"^-\s+", line):
+            rendered.append(f"• {line[2:].strip()}")
             continue
         rendered.append(line)
     return "\n".join(rendered).strip()
 
 
 def _fallback_grammar_explanation_text(text: str) -> str:
-    raw = str(text or "").strip()
+    raw = _strip_grammar_language_tags(text).strip()
     if not raw:
         return ""
     cleaned = re.sub(r"```[a-zA-Z]*", "", raw).replace("```", "")
     cleaned = re.sub(r"</?[^>\n]+>", "", cleaned)
-    lines = [re.sub(r"\s+", " ", str(line or "")).strip() for line in cleaned.splitlines()]
+    lines = [_normalize_grammar_explanation_line(line) for line in cleaned.splitlines()]
     rendered: list[str] = []
     for line in lines:
         if not line:
@@ -33565,129 +33584,138 @@ _SHORTCUT_LANGUAGE_PAIRS = [
 
 
 # ---------------------------------------------------------------------------
-# Shortcut text splitting — fully LLM-driven, no mechanical fallbacks
+# Shortcut text splitting — fully LLM-driven, zero mechanical logic
+# ---------------------------------------------------------------------------
+#
+# The LLM returns both the clean lookup term AND the full verbatim block for
+# each entry in one shot. No post-processing, no regex, no heuristics.
+# Format: {"blocks": [{"term": "...", "content": "..."}, ...]}
+#   term    — the bare learning target (word / phrase / construction) as the
+#             LLM understands it linguistically, ready for the translation API
+#   content — the full verbatim block: examples, notes, corrections, all of it
 # ---------------------------------------------------------------------------
 
-# Primary prompt: gpt-4.1 — full linguistic analysis with purpose context
 _SHORTCUT_SPLIT_PROMPT_PRIMARY = """\
 You are an expert linguist working inside a language-learning application.
 
-PURPOSE OF THIS TASK:
-Each block you output will be sent independently to a translation API and saved as a \
-separate learning item by the user. The quality of the split directly determines the \
-quality of what the user learns and saves. Wrong splits mean broken learning cards.
+PURPOSE:
+The user copied text from a language-learning source. It may contain one or several \
+vocabulary entries. You must split it into self-contained learning units. Each unit \
+will be sent to a translation API and saved as a learning card — so the split must be \
+linguistically correct. Formatting is irrelevant. Only linguistic content matters.
 
-THE INPUT:
-Raw text copied from a language-learning context (lessons, chats, notes). \
-It may be in German, Russian, English, Italian, Spanish, or any combination. \
-It may contain one or many vocabulary entries. Formatting (blank lines, emoji, \
-dashes, numbers, underlines) is purely decorative — ignore it entirely.
+YOU MUST RETURN TWO THINGS PER BLOCK:
+1. "term" — the bare, clean learning target: the word, fixed phrase, or grammatical \
+   construction being taught, as a linguist would write it in a dictionary \
+   (e.g. "erfinden", "sich abfinden mit", "auf +Akk angewiesen sein", "je … desto …"). \
+   No decorative characters, no surrounding sentence — just the target unit itself.
+2. "content" — the complete verbatim text of everything that belongs to this entry, \
+   copied character-for-character from the input: the headword line, example sentences, \
+   translations, morphological notes, corrections, mnemonics — everything.
 
-WHAT EXACTLY IS ONE VOCABULARY BLOCK:
-A block is anchored by exactly ONE learning target plus ALL content that belongs to it.
+WHAT CONSTITUTES ONE ENTRY:
+An entry is anchored by exactly ONE independent learning target. Everything that belongs \
+to it forms the block:
+— Grammatically complete example sentences that use or illustrate the target
+— Morphological analysis: prefix / root / suffix breakdown, etymology, root meaning
+— Valency: which grammatical case the verb or preposition governs, what arguments it takes
+— Tense, aspect, mood restrictions specific to this word or construction
+— Register: formal / informal / colloquial / dialectal labelling
+— Semantic nuance, connotation, situational or contextual restrictions
+— Collocations and typical partner words introduced specifically for THIS target
+— Correction pairs: the wrong form (✗) AND the correct form (✓) — inseparable, always together
+— Near-synonyms or contrasted words introduced to explain THIS target's meaning or usage
+— Mnemonics, analogies, memory images created for this word
+— Translations and glosses of the examples or the headword itself
 
-Learning targets can be:
-— A single word: verb (infinitive or any conjugated form), noun, adjective, adverb, particle
-— A fixed multi-word expression: idiom, collocation, set phrase
-— A grammatical construction with valency slots: "sich mit etw. abfinden", "je … desto …", \
-  "auf +Akk angewiesen sein"
-— A conversational pattern or discourse marker used as a fixed unit
+WHEN A NEW ENTRY BEGINS — LINGUISTIC CRITERIA ONLY:
+A new entry starts only when a genuinely new, lexically independent learning target appears:
+• Different morphological root (not a derived form or compound of the current headword)
+• Different semantic concept (not an aspect, nuance, or usage variant of the current one)
+• The surrounding example sentences focus on a demonstrably different word as their subject
 
-Content that BELONGS to the same block as its learning target:
-— Grammatically complete example sentences that contain or illustrate the target
-— Morphological breakdown: prefix + root + suffix analysis, etymology, root meaning
-— Valency and case government: which grammatical case the verb or preposition requires
-— Tense, aspect, mood, or aspect restrictions specific to this word
-— Semantic nuance: connotation, register (formal / informal / colloquial / vulgar)
-— Collocations and typical partner words introduced for THIS target
-— Contrast/correction pairs — the wrong form (✗) AND the right form (✓) together
-— Near-synonyms or related words introduced specifically to contrast with THIS target
-— Mnemonics, memory hooks, analogies, or imagery tied to this target
-— Translations, glosses, or parenthetical clarifications of any of the above
-— Any transitional commentary that bridges material within the same entry
+Formatting signals — blank lines, emoji, dashes, bullets, numbers, underlines — carry \
+zero information about entry boundaries. Ignore all of them completely.
 
-HOW TO DETECT THAT A NEW BLOCK BEGINS:
-A new block starts ONLY when ALL of the following are true simultaneously:
-1. A new, lexically independent headword appears (different root, different semantic field)
-2. The example sentences in the new section use a different primary lexical item as focus
-3. The new material cannot logically be a derived form, near-synonym, or valency variant \
-   of the current headword
-4. The new material does not contrast with or comment on the current headword
-
-WHEN IN DOUBT: always keep material in the current block. \
-Over-splitting destroys learning cards. Under-splitting is recoverable.
+CONSERVATIVE SPLITTING RULE:
+When uncertain whether something starts a new entry or continues the current one, \
+keep it with the current entry. Over-splitting destroys learning cards and is the \
+worst possible error. Under-splitting is always recoverable.
 
 SELF-CHECK BEFORE OUTPUTTING:
-— Every sentence from the input appears in exactly one block
-— No example sentence stands as its own block
-— No grammar note stands as its own block
-— No ✗/✓ correction pair is split across blocks
-— The concatenation of all blocks (ignoring whitespace) covers the full input
+— Every sentence from the input appears in exactly one block's "content"
+— No "content" is just an example sentence without a headword
+— No ✗/✓ correction pair is split across two different blocks
+— Concatenating all "content" values covers the full input text without gaps
 
-Return ONLY a JSON object — nothing else, no markdown, no explanation:
-{"blocks": ["verbatim block 1", "verbatim block 2", ...]}\
-"""
+Return ONLY valid JSON — no markdown, no explanation, nothing else:
+{"blocks": [{"term": "learning target 1", "content": "verbatim block 1"}, ...]}"""
 
-# Fallback prompt: gpt-4o — step-by-step headword-first analysis
 _SHORTCUT_SPLIT_PROMPT_FALLBACK = """\
-You are a senior computational linguist specialising in second-language acquisition. \
-The text you receive is educational vocabulary content, possibly multilingual \
-(German, Russian, English, Italian, Spanish or mixed).
+You are a senior computational linguist specialising in second-language acquisition.
 
-Your task: extract each distinct vocabulary learning target as a self-contained block \
-ready for independent translation and study. Use only linguistic reasoning — \
-never formatting cues.
+The text you receive is vocabulary learning material in any language or combination \
+of languages (German, Russian, English, Italian, Spanish or mixed).
 
-PHASE 1 — MAP ALL LEARNING TARGETS:
-Read the entire text. Identify every word, phrase, or grammatical construction \
-that is being TAUGHT (not merely used). Indicators that something is a learning target:
-• Appears in isolation without a predicate (bare infinitive, lone noun, lone phrase)
-• Is immediately defined ("= …", "wörtlich: …", "means …")
-• Is demonstrated by one or more example sentences that contain it as focus
-• Has its morphological structure decomposed (prefix / root / suffix)
-• Is labelled by case requirement, valency, register, or semantic field
-• Is compared to or contrasted with another form for the purpose of teaching it
+Your task: identify each independent vocabulary learning target, determine its clean \
+canonical form, and extract the full text block that belongs to it. The result feeds \
+a translation API and a spaced-repetition learning system — quality matters.
 
-PHASE 2 — ASSIGN EVERY PIECE OF CONTENT TO ITS TARGET:
-For each sentence, note, correction, or parenthetical in the text, decide: \
-which learning target from Phase 1 does this serve?
-• A grammatically complete sentence → belongs to the target it demonstrates
-• A morphological note → belongs to the target being decomposed
-• A ✗ error + ✓ correction → both belong to the target causing confusion
-• A translation or gloss → belongs to the item being translated
-• A mnemonic → belongs to the target it helps remember
-• A near-synonym or contrast word → belongs to the target it is contrasted with
+STEP 1 — MAP ALL LEARNING TARGETS:
+Read the entire text. A learning target is a word, phrase, or grammatical construction \
+that is being TAUGHT (not merely used in an example sentence). Linguistic signals:
+• The item appears in a semantically isolated position — it introduces a concept
+• It is immediately followed by a definition or gloss ("= …", "wörtlich: …", "means …")
+• One or more grammatically complete sentences demonstrate it in use as the focal item
+• Its morphology is decomposed: the meaning of prefix, root, and suffix are explained
+• Its grammatical behaviour is described: case government, verb valency, aspect, tense
+• It is contrasted with a similar form specifically to teach the distinction between them
+• A mnemonic, analogy, or memory image is constructed for it
 
-PHASE 3 — BUILD BLOCKS:
-For each learning target, form one block: the target text + everything assigned to it. \
-Preserve original order. Copy every character verbatim — zero modifications.
+STEP 2 — ASSIGN ALL CONTENT TO ITS TARGET:
+For every sentence, clause, note, or parenthetical in the text, determine which \
+learning target from Step 1 it serves:
+• A grammatically complete sentence → assigned to the target it demonstrates
+• A morphological note → assigned to the target whose structure is being analysed
+• A ✗ incorrect / ✓ correct pair → both pieces assigned to the same target, never split
+• A translation or gloss → assigned to the item being translated
+• A mnemonic → assigned to the target it helps remember
+• A near-synonym or contrasting word → assigned to the target it illuminates
 
-PHASE 4 — VALIDATE:
-Before outputting, confirm:
-• Every word of the original input appears in exactly one block
-• No block is just a stand-alone example sentence or grammar note without a headword
-• ✗/✓ correction pairs are never split
+STEP 3 — FORM BLOCKS:
+For each learning target, produce one object with:
+  "term": the target in clean canonical form — bare infinitive for verbs, nominative \
+    singular for nouns, base form for adjectives, complete fixed phrase for idioms and \
+    constructions. No decorative characters, no emoji, no surrounding sentence.
+  "content": everything assigned to this target in Step 2, copied verbatim from the \
+    input, character-for-character, with nothing added or removed.
 
-If the entire input concerns one learning target → return exactly one block.
+STEP 4 — VALIDATE:
+Before generating output, verify:
+• Every sentence from the input appears in exactly one "content" value
+• No "content" consists only of an example sentence or grammar note without a headword
+• No ✗/✓ correction pair is distributed across two different blocks
+• If the whole input concerns a single learning target, return exactly one block
 
-Output ONLY: {"blocks": ["verbatim block 1", "verbatim block 2", ...]}\
-"""
+Output ONLY: {"blocks": [{"term": "...", "content": "..."}, ...]}"""
 
 
-def _shortcut_validate_blocks(blocks: list[str], original: str) -> bool:
-    """
-    Check that blocks together cover the original text without obvious content loss.
-    Compares normalised (whitespace-collapsed) character sets.
-    """
+def _shortcut_validate_coverage(blocks: list[tuple[str, str]], original: str) -> bool:
+    """Verify that blocks together cover >= 90% of the original text (whitespace-normalised)."""
     if not blocks:
         return False
-    joined = " ".join(blocks)
-    def _norm(s: str) -> str:
-        return re.sub(r"\s+", "", s.strip())
-    return len(_norm(joined)) >= len(_norm(original)) * 0.90
+    joined = " ".join(content for _, content in blocks)
+    norm = lambda s: re.sub(r"\s+", "", s.strip())  # noqa: E731
+    return len(norm(joined)) >= len(norm(original)) * 0.90
 
 
-def _shortcut_extract_blocks_from_json(raw: str, original: str) -> list[str] | None:
+def _shortcut_extract_blocks_from_json(
+    raw: str, original: str
+) -> list[tuple[str, str]] | None:
+    """
+    Parse {"blocks": [{"term": "...", "content": "..."}, ...]} from LLM output.
+    Returns list of (term, content) tuples, or None if invalid or coverage insufficient.
+    """
     try:
         parsed = json.loads(raw)
     except Exception:
@@ -33697,25 +33725,30 @@ def _shortcut_extract_blocks_from_json(raw: str, original: str) -> list[str] | N
     raw_blocks = parsed.get("blocks")
     if not isinstance(raw_blocks, list) or not raw_blocks:
         return None
-    clean = [str(b).strip() for b in raw_blocks if str(b).strip()]
-    if not clean:
+    result: list[tuple[str, str]] = []
+    for item in raw_blocks:
+        if not isinstance(item, dict):
+            continue
+        term = str(item.get("term") or "").strip()
+        content = str(item.get("content") or "").strip()
+        if term and content:
+            result.append((term, content))
+    if not result:
         return None
-    if not _shortcut_validate_blocks(clean, original):
-        logging.warning("shortcut split: coverage check failed — blocks cover < 90%% of input")
+    if not _shortcut_validate_coverage(result, original):
+        logging.warning("shortcut split: coverage < 90%%, discarding LLM result")
         return None
-    return clean
+    return result
 
 
-def _shortcut_split_blocks(text: str) -> list[str]:
+def _shortcut_split_blocks(text: str) -> list[tuple[str, str]]:
     """
-    Split text into vocabulary learning blocks using LLM linguistic reasoning.
+    Split text into vocabulary learning units using LLM linguistic reasoning.
+    Returns list of (term, content) tuples — both determined by the LLM, no mechanics.
 
-    Attempt 1 — gpt-4.1 (primary, large context, deep reasoning) with the full
-                linguistic-purpose prompt. Validates output covers the input.
-    Attempt 2 — gpt-4o (different architecture) with a structured phase-by-phase
-                prompt. Also validated.
-    Last resort — the whole text as a single block. Nothing is ever lost or
-                  mechanically mangled.
+    Attempt 1 — gpt-4.1: purpose-aware prompt, 1M context, handles any language mix.
+    Attempt 2 — gpt-4o: 4-step structured analysis with different framing.
+    Last resort  — whole text as one block. Content is never lost or mangled.
     """
     from backend.openai_manager import client as _openai_async_client
 
@@ -33732,58 +33765,31 @@ def _shortcut_split_blocks(text: str) -> list[str]:
         )
         return response.choices[0].message.content or "{}"
 
-    # Attempt 1: gpt-4.1 — strongest model, handles large multilingual texts
+    # Attempt 1: gpt-4.1 — primary model
     try:
         raw = asyncio.run(_call("gpt-4.1-2025-04-14", _SHORTCUT_SPLIT_PROMPT_PRIMARY, timeout=40))
         blocks = _shortcut_extract_blocks_from_json(raw, text)
         if blocks:
-            logging.info("shortcut split: attempt 1 (gpt-4.1) succeeded, %d blocks", len(blocks))
+            logging.info("shortcut split: gpt-4.1 succeeded, %d blocks", len(blocks))
             return blocks
-        logging.warning("shortcut split: attempt 1 produced no valid blocks, trying fallback")
+        logging.warning("shortcut split: gpt-4.1 returned no valid blocks, trying gpt-4o")
     except Exception as exc:
-        logging.warning("shortcut split: attempt 1 failed (%s), trying fallback", exc)
+        logging.warning("shortcut split: gpt-4.1 failed (%s), trying gpt-4o", exc)
 
-    # Attempt 2: gpt-4o — different model, phase-by-phase structured reasoning
+    # Attempt 2: gpt-4o — different architecture, 4-step structured reasoning
     try:
         raw = asyncio.run(_call("gpt-4o", _SHORTCUT_SPLIT_PROMPT_FALLBACK, timeout=45))
         blocks = _shortcut_extract_blocks_from_json(raw, text)
         if blocks:
-            logging.info("shortcut split: attempt 2 (gpt-4o) succeeded, %d blocks", len(blocks))
+            logging.info("shortcut split: gpt-4o succeeded, %d blocks", len(blocks))
             return blocks
-        logging.warning("shortcut split: attempt 2 produced no valid blocks, using single-block fallback")
+        logging.warning("shortcut split: gpt-4o returned no valid blocks, using single-block")
     except Exception as exc:
-        logging.warning("shortcut split: attempt 2 failed (%s), using single-block fallback", exc)
+        logging.warning("shortcut split: gpt-4o failed (%s), using single-block", exc)
 
-    # Last resort: the whole text as one block — content is preserved, nothing mangled
-    logging.warning("shortcut split: both LLM attempts failed, returning whole text as one block")
-    return [text.strip()]
-
-
-def _shortcut_block_term(block: str) -> str:
-    """
-    Extract the clean lookup term from the first meaningful line of a block.
-    Strips leading emoji, punctuation markers, and formatting noise so the
-    'Запрос:' header contains the bare word or phrase.
-    """
-    for line in block.splitlines():
-        candidate = line.strip()
-        if not candidate:
-            continue
-        # Strip leading emoji, symbols, dashes, bullets, underscores used as decoration
-        candidate = re.sub(
-            r"^[\U00010000-\U0010ffff -⁯←-⇿"
-            r"☀-⛿✀-➿︀-️"
-            r"\U0001f000-\U0001f9ff\s\-–—•◦▪▸►*_=/\\|]+",
-            "",
-            candidate,
-        ).strip()
-        # Also strip trailing punctuation that isn't part of the term
-        candidate = re.sub(r"[\s\-–—:;,]+$", "", candidate).strip()
-        if candidate:
-            return candidate
-    return block.strip()
-
-
+    # Last resort: whole text as one block — nothing is lost
+    logging.warning("shortcut split: both models failed, returning whole text as one block")
+    return [(text.strip(), text.strip())]
 def _shortcut_build_pair_keyboard_rows(request_key: str) -> list[list[dict]]:
     rows: list[list[dict]] = []
     row: list[dict] = []
@@ -33847,18 +33853,12 @@ def shortcut_dictionary_lookup():
         blocks = blocks[:_SHORTCUT_MAX_BLOCKS]
 
     sent = 0
-    for block in blocks:
-        term = _shortcut_block_term(block)
+    for term, content in blocks:
         request_key = hashlib.sha1(
             f"{user_id}:{term}:{time.time()}:{sent}".encode("utf-8")
         ).hexdigest()[:20]
 
-        block_lines = block.splitlines()
-        if len(block_lines) > 1:
-            context = "\n".join(block_lines[1:]).strip()
-            message_text = f"Запрос: {term}\n{context}\n\nВыберите языковую пару для перевода:"
-        else:
-            message_text = f"Запрос: {term}\n\nВыберите языковую пару для перевода:"
+        message_text = f"Запрос: {term}\n{content}\n\nВыберите языковую пару для перевода:"
 
         try:
             _send_private_message(
