@@ -33564,101 +33564,158 @@ _SHORTCUT_LANGUAGE_PAIRS = [
 ]
 
 
-_SHORTCUT_SPLIT_PROMPT_FAST = (
-    "You are a linguist specialising in language-learning material. "
-    "Your task: read the input text and split it into self-contained vocabulary entries. "
-    "Ignore all formatting — blank lines, emoji, dashes, numbering are irrelevant. "
-    "Decide boundaries using ONLY linguistic logic:\n\n"
+# ---------------------------------------------------------------------------
+# Shortcut text splitting — fully LLM-driven, no mechanical fallbacks
+# ---------------------------------------------------------------------------
 
-    "WHAT DEFINES ONE ENTRY:\n"
-    "• A headword — an isolated word, inflected form, or multi-word unit that is the learning target.\n"
-    "• A fixed grammatical construction or pattern (e.g. 'sich etwas leisten', 'es geht um +Akk').\n"
-    "• A set phrase, idiom, or collocation treated as a single lexical unit.\n"
-    "• Everything that semantically belongs to that headword: example sentences demonstrating "
-    "its usage, translations, morphological notes (prefixes, suffixes, root meaning), "
-    "grammatical case/tense/valency notes, register notes, mnemonic hints, "
-    "contrast with similar words — ALL of this is part of the SAME entry.\n\n"
+# Primary prompt: gpt-4.1 — full linguistic analysis with purpose context
+_SHORTCUT_SPLIT_PROMPT_PRIMARY = """\
+You are an expert linguist working inside a language-learning application.
 
-    "HOW TO DETECT A NEW ENTRY:\n"
-    "• A new headword appears that is grammatically and semantically independent of the previous one.\n"
-    "• The text shifts to a different lexical root or a different idiomatic construction.\n"
-    "• Example sentences in the new section use a different subject word and cannot be "
-    "illustrating the same headword.\n\n"
+PURPOSE OF THIS TASK:
+Each block you output will be sent independently to a translation API and saved as a \
+separate learning item by the user. The quality of the split directly determines the \
+quality of what the user learns and saves. Wrong splits mean broken learning cards.
 
-    "WHAT IS NOT A NEW ENTRY:\n"
-    "• An example sentence for the current headword — even if it is on its own line.\n"
-    "• A grammatical explanation or mnemonic for the current headword.\n"
-    "• A negative example (✗ / incorrect usage) contrasted with the correct form — "
-    "both belong to the same entry.\n"
-    "• A synonym or near-synonym introduced to compare with the headword — keep together.\n\n"
+THE INPUT:
+Raw text copied from a language-learning context (lessons, chats, notes). \
+It may be in German, Russian, English, Italian, Spanish, or any combination. \
+It may contain one or many vocabulary entries. Formatting (blank lines, emoji, \
+dashes, numbers, underlines) is purely decorative — ignore it entirely.
 
-    "Return ONLY a JSON object: {\"blocks\": [\"...\", \"...\"]}. "
-    "Each string is the complete verbatim text of one entry. Do not modify a single character."
-)
+WHAT EXACTLY IS ONE VOCABULARY BLOCK:
+A block is anchored by exactly ONE learning target plus ALL content that belongs to it.
 
-_SHORTCUT_SPLIT_PROMPT_STRONG = (
-    "You are a senior computational linguist. "
-    "You receive raw text from a language-learning lesson. "
-    "Task: identify every independent vocabulary entry and return each as a separate verbatim block.\n\n"
+Learning targets can be:
+— A single word: verb (infinitive or any conjugated form), noun, adjective, adverb, particle
+— A fixed multi-word expression: idiom, collocation, set phrase
+— A grammatical construction with valency slots: "sich mit etw. abfinden", "je … desto …", \
+  "auf +Akk angewiesen sein"
+— A conversational pattern or discourse marker used as a fixed unit
 
-    "Use exclusively linguistic criteria — never formatting:\n\n"
+Content that BELONGS to the same block as its learning target:
+— Grammatically complete example sentences that contain or illustrate the target
+— Morphological breakdown: prefix + root + suffix analysis, etymology, root meaning
+— Valency and case government: which grammatical case the verb or preposition requires
+— Tense, aspect, mood, or aspect restrictions specific to this word
+— Semantic nuance: connotation, register (formal / informal / colloquial / vulgar)
+— Collocations and typical partner words introduced for THIS target
+— Contrast/correction pairs — the wrong form (✗) AND the right form (✓) together
+— Near-synonyms or related words introduced specifically to contrast with THIS target
+— Mnemonics, memory hooks, analogies, or imagery tied to this target
+— Translations, glosses, or parenthetical clarifications of any of the above
+— Any transitional commentary that bridges material within the same entry
 
-    "1. HEADWORD DETECTION\n"
-    "   An entry begins when a new lexical unit appears as the learning target: "
-    "a bare infinitive, a noun, an adjective, a fixed multi-word expression, "
-    "a grammatical construction with a slot (e.g. 'auf +Akk warten'), "
-    "or a phrasal/prepositional verb. "
-    "Clues: the word appears isolated on a line, is underlined/bold/emoji-marked, "
-    "or is immediately followed by a definition or example in the target or native language.\n\n"
+HOW TO DETECT THAT A NEW BLOCK BEGINS:
+A new block starts ONLY when ALL of the following are true simultaneously:
+1. A new, lexically independent headword appears (different root, different semantic field)
+2. The example sentences in the new section use a different primary lexical item as focus
+3. The new material cannot logically be a derived form, near-synonym, or valency variant \
+   of the current headword
+4. The new material does not contrast with or comment on the current headword
 
-    "2. ENTRY BOUNDARIES\n"
-    "   Everything following a headword that semantically relates to it belongs to the SAME entry:\n"
-    "   • Example sentences (grammatically complete sentences using the headword).\n"
-    "   • Morphological analysis: prefix/suffix breakdown, etymology, root meaning.\n"
-    "   • Valency and case government: which case the verb/preposition requires.\n"
-    "   • Tense, aspect, or mood restrictions specific to that word.\n"
-    "   • Collocations and common partner words.\n"
-    "   • Register: formal/informal/colloquial labelling.\n"
-    "   • Contrast examples — both the incorrect (✗) and correct (✓) forms.\n"
-    "   • Mnemonics, memory hooks, or analogies for that word.\n"
-    "   • Translations or glosses of examples.\n"
-    "   The entry ends when a NEW, grammatically independent headword begins.\n\n"
+WHEN IN DOUBT: always keep material in the current block. \
+Over-splitting destroys learning cards. Under-splitting is recoverable.
 
-    "3. AMBIGUOUS CASES\n"
-    "   If you are unsure whether something starts a new entry or continues the current one, "
-    "   default to KEEPING IT IN THE CURRENT ENTRY. Splitting too aggressively is a worse error "
-    "   than keeping related material together.\n\n"
+SELF-CHECK BEFORE OUTPUTTING:
+— Every sentence from the input appears in exactly one block
+— No example sentence stands as its own block
+— No grammar note stands as its own block
+— No ✗/✓ correction pair is split across blocks
+— The concatenation of all blocks (ignoring whitespace) covers the full input
 
-    "4. SINGLE-ENTRY INPUT\n"
-    "   If the entire text is about one word or construction, return exactly one block.\n\n"
+Return ONLY a JSON object — nothing else, no markdown, no explanation:
+{"blocks": ["verbatim block 1", "verbatim block 2", ...]}\
+"""
 
-    "Output ONLY: {\"blocks\": [\"verbatim block 1\", \"verbatim block 2\", ...]}. "
-    "No other text. No modifications to the content."
-)
+# Fallback prompt: gpt-4o — step-by-step headword-first analysis
+_SHORTCUT_SPLIT_PROMPT_FALLBACK = """\
+You are a senior computational linguist specialising in second-language acquisition. \
+The text you receive is educational vocabulary content, possibly multilingual \
+(German, Russian, English, Italian, Spanish or mixed).
+
+Your task: extract each distinct vocabulary learning target as a self-contained block \
+ready for independent translation and study. Use only linguistic reasoning — \
+never formatting cues.
+
+PHASE 1 — MAP ALL LEARNING TARGETS:
+Read the entire text. Identify every word, phrase, or grammatical construction \
+that is being TAUGHT (not merely used). Indicators that something is a learning target:
+• Appears in isolation without a predicate (bare infinitive, lone noun, lone phrase)
+• Is immediately defined ("= …", "wörtlich: …", "means …")
+• Is demonstrated by one or more example sentences that contain it as focus
+• Has its morphological structure decomposed (prefix / root / suffix)
+• Is labelled by case requirement, valency, register, or semantic field
+• Is compared to or contrasted with another form for the purpose of teaching it
+
+PHASE 2 — ASSIGN EVERY PIECE OF CONTENT TO ITS TARGET:
+For each sentence, note, correction, or parenthetical in the text, decide: \
+which learning target from Phase 1 does this serve?
+• A grammatically complete sentence → belongs to the target it demonstrates
+• A morphological note → belongs to the target being decomposed
+• A ✗ error + ✓ correction → both belong to the target causing confusion
+• A translation or gloss → belongs to the item being translated
+• A mnemonic → belongs to the target it helps remember
+• A near-synonym or contrast word → belongs to the target it is contrasted with
+
+PHASE 3 — BUILD BLOCKS:
+For each learning target, form one block: the target text + everything assigned to it. \
+Preserve original order. Copy every character verbatim — zero modifications.
+
+PHASE 4 — VALIDATE:
+Before outputting, confirm:
+• Every word of the original input appears in exactly one block
+• No block is just a stand-alone example sentence or grammar note without a headword
+• ✗/✓ correction pairs are never split
+
+If the entire input concerns one learning target → return exactly one block.
+
+Output ONLY: {"blocks": ["verbatim block 1", "verbatim block 2", ...]}\
+"""
 
 
-def _shortcut_extract_blocks_from_json(raw: str) -> list[str] | None:
+def _shortcut_validate_blocks(blocks: list[str], original: str) -> bool:
+    """
+    Check that blocks together cover the original text without obvious content loss.
+    Compares normalised (whitespace-collapsed) character sets.
+    """
+    if not blocks:
+        return False
+    joined = " ".join(blocks)
+    def _norm(s: str) -> str:
+        return re.sub(r"\s+", "", s.strip())
+    return len(_norm(joined)) >= len(_norm(original)) * 0.90
+
+
+def _shortcut_extract_blocks_from_json(raw: str, original: str) -> list[str] | None:
     try:
         parsed = json.loads(raw)
     except Exception:
         return None
     if not isinstance(parsed, dict):
         return None
-    blocks = parsed.get("blocks")
-    if not isinstance(blocks, list) or not blocks:
+    raw_blocks = parsed.get("blocks")
+    if not isinstance(raw_blocks, list) or not raw_blocks:
         return None
-    clean = [str(b).strip() for b in blocks if str(b).strip()]
-    return clean if clean else None
+    clean = [str(b).strip() for b in raw_blocks if str(b).strip()]
+    if not clean:
+        return None
+    if not _shortcut_validate_blocks(clean, original):
+        logging.warning("shortcut split: coverage check failed — blocks cover < 90%% of input")
+        return None
+    return clean
 
 
 def _shortcut_split_blocks(text: str) -> list[str]:
     """
-    Split text into logical vocabulary blocks using LLM reasoning.
+    Split text into vocabulary learning blocks using LLM linguistic reasoning.
 
-    Attempt 1 — gpt-4o-mini, fast and cheap.
-    Attempt 2 — gpt-4.1, stronger model with a more detailed prompt.
-    Last resort — return the whole text as one block so nothing is lost.
-    No mechanical splitting at any stage.
+    Attempt 1 — gpt-4.1 (primary, large context, deep reasoning) with the full
+                linguistic-purpose prompt. Validates output covers the input.
+    Attempt 2 — gpt-4o (different architecture) with a structured phase-by-phase
+                prompt. Also validated.
+    Last resort — the whole text as a single block. Nothing is ever lost or
+                  mechanically mangled.
     """
     from backend.openai_manager import client as _openai_async_client
 
@@ -33675,36 +33732,55 @@ def _shortcut_split_blocks(text: str) -> list[str]:
         )
         return response.choices[0].message.content or "{}"
 
-    # Attempt 1: fast model
+    # Attempt 1: gpt-4.1 — strongest model, handles large multilingual texts
     try:
-        raw = asyncio.run(_call("gpt-4o-mini", _SHORTCUT_SPLIT_PROMPT_FAST, timeout=20))
-        blocks = _shortcut_extract_blocks_from_json(raw)
+        raw = asyncio.run(_call("gpt-4.1-2025-04-14", _SHORTCUT_SPLIT_PROMPT_PRIMARY, timeout=40))
+        blocks = _shortcut_extract_blocks_from_json(raw, text)
         if blocks:
+            logging.info("shortcut split: attempt 1 (gpt-4.1) succeeded, %d blocks", len(blocks))
             return blocks
-        logging.warning("shortcut split attempt 1: valid response but no blocks extracted, trying strong model")
+        logging.warning("shortcut split: attempt 1 produced no valid blocks, trying fallback")
     except Exception as exc:
-        logging.warning("shortcut split attempt 1 failed (%s), trying strong model", exc)
+        logging.warning("shortcut split: attempt 1 failed (%s), trying fallback", exc)
 
-    # Attempt 2: stronger model with more detailed prompt
+    # Attempt 2: gpt-4o — different model, phase-by-phase structured reasoning
     try:
-        raw = asyncio.run(_call("gpt-4.1-2025-04-14", _SHORTCUT_SPLIT_PROMPT_STRONG, timeout=30))
-        blocks = _shortcut_extract_blocks_from_json(raw)
+        raw = asyncio.run(_call("gpt-4o", _SHORTCUT_SPLIT_PROMPT_FALLBACK, timeout=45))
+        blocks = _shortcut_extract_blocks_from_json(raw, text)
         if blocks:
+            logging.info("shortcut split: attempt 2 (gpt-4o) succeeded, %d blocks", len(blocks))
             return blocks
-        logging.warning("shortcut split attempt 2: valid response but no blocks extracted, returning whole text as one block")
+        logging.warning("shortcut split: attempt 2 produced no valid blocks, using single-block fallback")
     except Exception as exc:
-        logging.warning("shortcut split attempt 2 failed (%s), returning whole text as one block", exc)
+        logging.warning("shortcut split: attempt 2 failed (%s), using single-block fallback", exc)
 
-    # Last resort: treat the whole text as a single block — never lose content
+    # Last resort: the whole text as one block — content is preserved, nothing mangled
+    logging.warning("shortcut split: both LLM attempts failed, returning whole text as one block")
     return [text.strip()]
 
 
 def _shortcut_block_term(block: str) -> str:
-    """First non-empty line of a block — the main word/phrase to look up."""
+    """
+    Extract the clean lookup term from the first meaningful line of a block.
+    Strips leading emoji, punctuation markers, and formatting noise so the
+    'Запрос:' header contains the bare word or phrase.
+    """
     for line in block.splitlines():
-        stripped = line.strip()
-        if stripped:
-            return stripped
+        candidate = line.strip()
+        if not candidate:
+            continue
+        # Strip leading emoji, symbols, dashes, bullets, underscores used as decoration
+        candidate = re.sub(
+            r"^[\U00010000-\U0010ffff -⁯←-⇿"
+            r"☀-⛿✀-➿︀-️"
+            r"\U0001f000-\U0001f9ff\s\-–—•◦▪▸►*_=/\\|]+",
+            "",
+            candidate,
+        ).strip()
+        # Also strip trailing punctuation that isn't part of the term
+        candidate = re.sub(r"[\s\-–—:;,]+$", "", candidate).strip()
+        if candidate:
+            return candidate
     return block.strip()
 
 
