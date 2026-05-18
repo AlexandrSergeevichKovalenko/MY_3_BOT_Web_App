@@ -33675,6 +33675,25 @@ STEP 4 — VALIDATE:
 Output ONLY: {"blocks": [{"term": "...", "content": "..."}, ...]}"""
 
 
+# (user_id:text_hash) -> processed_at timestamp — prevents double-fire from Shortcut retries
+_SHORTCUT_DEDUP_CACHE: dict[str, float] = {}
+_SHORTCUT_DEDUP_TTL = 60.0  # seconds
+
+
+def _shortcut_dedup_check(user_id: int, text: str) -> bool:
+    """Return True if this (user_id, text) was already processed within TTL — caller should skip."""
+    now = time.time()
+    key = hashlib.sha1(f"{user_id}:{text}".encode()).hexdigest()
+    # Evict stale entries
+    stale = [k for k, ts in _SHORTCUT_DEDUP_CACHE.items() if now - ts > _SHORTCUT_DEDUP_TTL]
+    for k in stale:
+        _SHORTCUT_DEDUP_CACHE.pop(k, None)
+    if key in _SHORTCUT_DEDUP_CACHE:
+        return True
+    _SHORTCUT_DEDUP_CACHE[key] = now
+    return False
+
+
 def _shortcut_validate_coverage(blocks: list[tuple[str, str]], original: str) -> bool:
     """Verify that blocks together cover >= 90% of the original text (whitespace-normalised)."""
     if not blocks:
@@ -33701,13 +33720,17 @@ def _shortcut_extract_blocks_from_json(
     if not isinstance(raw_blocks, list) or not raw_blocks:
         return None
     result: list[tuple[str, str]] = []
+    seen_contents: set[str] = set()
     for item in raw_blocks:
         if not isinstance(item, dict):
             continue
         term = str(item.get("term") or "").strip()
         content = str(item.get("content") or "").strip()
         if term and content:
-            result.append((term, content))
+            norm_content = re.sub(r"\s+", " ", content.lower())
+            if norm_content not in seen_contents:
+                seen_contents.add(norm_content)
+                result.append((term, content))
     if not result:
         return None
     if not _shortcut_validate_coverage(result, original):
@@ -33818,6 +33841,10 @@ def shortcut_dictionary_lookup():
 
     if not is_telegram_user_allowed(user_id):
         return jsonify({"error": "Пользователь не имеет доступа"}), 403
+
+    if _shortcut_dedup_check(user_id, text):
+        logging.info("shortcut_lookup: duplicate request suppressed user_id=%s", user_id)
+        return jsonify({"ok": True, "blocks_sent": 0, "duplicate": True}), 200
 
     blocks = _shortcut_split_blocks(text)
     if not blocks:
