@@ -33564,55 +33564,99 @@ _SHORTCUT_LANGUAGE_PAIRS = [
 ]
 
 
-def _shortcut_split_blocks_fallback(text: str) -> list[str]:
-    """Mechanical fallback: split by blank lines."""
-    blocks = re.split(r"\n[ \t]*\n", text.strip())
-    return [b.strip() for b in blocks if b.strip()]
+_SHORTCUT_SPLIT_PROMPT_FAST = (
+    "You are a vocabulary-entry splitter. "
+    "The input is a piece of text copied from a language-learning context. "
+    "It may contain one or more vocabulary entries. Each entry is a self-contained unit: "
+    "a word, verb form, phrase, or idiom — optionally followed by example sentences, "
+    "translations, usage notes, or explanations in any language. "
+    "Your job: identify every distinct vocabulary entry and return them as separate blocks. "
+    "Rules:\n"
+    "1. One block = one vocabulary headword/phrase with ALL its associated content.\n"
+    "2. Copy each block EXACTLY as it appears in the original — zero modifications.\n"
+    "3. The number of blocks equals the number of distinct vocabulary entries, not the number of lines.\n"
+    "4. If the text is a single entry, return exactly one block.\n"
+    "5. Return ONLY a JSON object: {\"blocks\": [\"...\", \"...\"]}"
+)
+
+_SHORTCUT_SPLIT_PROMPT_STRONG = (
+    "You are an expert vocabulary-entry extractor. "
+    "The user pastes raw text from a language-learning lesson or chat. "
+    "The text may use any formatting: blank lines, emoji markers, dashes, numbering, "
+    "or no separators at all — structure varies unpredictably. "
+    "Your task is to identify every independent vocabulary item (word, phrase, verb form, idiom) "
+    "together with all material that belongs to it (examples, translations, grammar notes, mnemonics). "
+    "Return the result as a JSON object with a single key 'blocks' whose value is an array of strings. "
+    "Each string is one complete entry copied verbatim from the input. "
+    "Critical constraints:\n"
+    "— Do NOT merge entries that belong to different headwords.\n"
+    "— Do NOT split one entry across multiple blocks.\n"
+    "— Do NOT alter, translate, or summarise any text.\n"
+    "— If the entire input is a single vocabulary entry, return one block.\n"
+    "— Output nothing except the JSON object."
+)
+
+
+def _shortcut_extract_blocks_from_json(raw: str) -> list[str] | None:
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    blocks = parsed.get("blocks")
+    if not isinstance(blocks, list) or not blocks:
+        return None
+    clean = [str(b).strip() for b in blocks if str(b).strip()]
+    return clean if clean else None
 
 
 def _shortcut_split_blocks(text: str) -> list[str]:
     """
-    Use LLM to split text into logical vocabulary blocks (one per word/phrase entry).
-    Falls back to blank-line split if LLM call fails.
+    Split text into logical vocabulary blocks using LLM reasoning.
+
+    Attempt 1 — gpt-4o-mini, fast and cheap.
+    Attempt 2 — gpt-4.1, stronger model with a more detailed prompt.
+    Last resort — return the whole text as one block so nothing is lost.
+    No mechanical splitting at any stage.
     """
     from backend.openai_manager import client as _openai_async_client
 
-    system_prompt = (
-        "You receive a text that may contain one or several vocabulary entries "
-        "(words, verb forms, phrases, idioms) — each possibly followed by example sentences, "
-        "translations, or explanations in any language. "
-        "Split the text into separate logical blocks, one per vocabulary entry. "
-        "Return ONLY a JSON object in the form {\"blocks\": [\"block1\", \"block2\", ...]}. "
-        "Each block must be the complete original text for that entry, copied exactly as written — "
-        "do not translate, modify, summarise, or reorder anything. "
-        "If the text contains only one entry, return an array with exactly one element."
-    )
-
-    async def _call() -> str:
+    async def _call(model: str, system_prompt: str, timeout: float) -> str:
         response = await _openai_async_client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text},
             ],
             temperature=0,
             response_format={"type": "json_object"},
-            timeout=20,
+            timeout=timeout,
         )
         return response.choices[0].message.content or "{}"
 
+    # Attempt 1: fast model
     try:
-        raw = asyncio.run(_call())
-        parsed = json.loads(raw)
-        blocks = parsed.get("blocks") or []
-        if isinstance(blocks, list) and blocks:
-            clean = [str(b).strip() for b in blocks if str(b).strip()]
-            if clean:
-                return clean
+        raw = asyncio.run(_call("gpt-4o-mini", _SHORTCUT_SPLIT_PROMPT_FAST, timeout=20))
+        blocks = _shortcut_extract_blocks_from_json(raw)
+        if blocks:
+            return blocks
+        logging.warning("shortcut split attempt 1: valid response but no blocks extracted, trying strong model")
     except Exception as exc:
-        logging.warning("shortcut LLM split failed, using blank-line fallback: %s", exc)
+        logging.warning("shortcut split attempt 1 failed (%s), trying strong model", exc)
 
-    return _shortcut_split_blocks_fallback(text)
+    # Attempt 2: stronger model with more detailed prompt
+    try:
+        raw = asyncio.run(_call("gpt-4.1-2025-04-14", _SHORTCUT_SPLIT_PROMPT_STRONG, timeout=30))
+        blocks = _shortcut_extract_blocks_from_json(raw)
+        if blocks:
+            return blocks
+        logging.warning("shortcut split attempt 2: valid response but no blocks extracted, returning whole text as one block")
+    except Exception as exc:
+        logging.warning("shortcut split attempt 2 failed (%s), returning whole text as one block", exc)
+
+    # Last resort: treat the whole text as a single block — never lose content
+    return [text.strip()]
 
 
 def _shortcut_block_term(block: str) -> str:
