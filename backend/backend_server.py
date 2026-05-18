@@ -33564,10 +33564,55 @@ _SHORTCUT_LANGUAGE_PAIRS = [
 ]
 
 
-def _shortcut_split_blocks(text: str) -> list[str]:
-    """Split text into logical blocks separated by blank lines."""
+def _shortcut_split_blocks_fallback(text: str) -> list[str]:
+    """Mechanical fallback: split by blank lines."""
     blocks = re.split(r"\n[ \t]*\n", text.strip())
     return [b.strip() for b in blocks if b.strip()]
+
+
+def _shortcut_split_blocks(text: str) -> list[str]:
+    """
+    Use LLM to split text into logical vocabulary blocks (one per word/phrase entry).
+    Falls back to blank-line split if LLM call fails.
+    """
+    from backend.openai_manager import client as _openai_async_client
+
+    system_prompt = (
+        "You receive a text that may contain one or several vocabulary entries "
+        "(words, verb forms, phrases, idioms) — each possibly followed by example sentences, "
+        "translations, or explanations in any language. "
+        "Split the text into separate logical blocks, one per vocabulary entry. "
+        "Return ONLY a JSON object in the form {\"blocks\": [\"block1\", \"block2\", ...]}. "
+        "Each block must be the complete original text for that entry, copied exactly as written — "
+        "do not translate, modify, summarise, or reorder anything. "
+        "If the text contains only one entry, return an array with exactly one element."
+    )
+
+    async def _call() -> str:
+        response = await _openai_async_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": text},
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+            timeout=20,
+        )
+        return response.choices[0].message.content or "{}"
+
+    try:
+        raw = asyncio.run(_call())
+        parsed = json.loads(raw)
+        blocks = parsed.get("blocks") or []
+        if isinstance(blocks, list) and blocks:
+            clean = [str(b).strip() for b in blocks if str(b).strip()]
+            if clean:
+                return clean
+    except Exception as exc:
+        logging.warning("shortcut LLM split failed, using blank-line fallback: %s", exc)
+
+    return _shortcut_split_blocks_fallback(text)
 
 
 def _shortcut_block_term(block: str) -> str:
