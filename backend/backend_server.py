@@ -33682,23 +33682,18 @@ STEP 4 — VALIDATE:
 Output ONLY: {"blocks": [{"term": "...", "content": "..."}, ...]}"""
 
 
-# (user_id:text_hash) -> processed_at timestamp — prevents double-fire from Shortcut retries
-_SHORTCUT_DEDUP_CACHE: dict[str, float] = {}
-_SHORTCUT_DEDUP_TTL = 60.0  # seconds
-
-
 def _shortcut_dedup_check(user_id: int, text: str) -> bool:
-    """Return True if this (user_id, text) was already processed within TTL — caller should skip."""
-    now = time.time()
-    key = hashlib.sha1(f"{user_id}:{text}".encode()).hexdigest()
-    # Evict stale entries
-    stale = [k for k, ts in _SHORTCUT_DEDUP_CACHE.items() if now - ts > _SHORTCUT_DEDUP_TTL]
-    for k in stale:
-        _SHORTCUT_DEDUP_CACHE.pop(k, None)
-    if key in _SHORTCUT_DEDUP_CACHE:
-        return True
-    _SHORTCUT_DEDUP_CACHE[key] = now
-    return False
+    """Return True if this (user_id, text) was already processed within 90 s — caller should skip.
+    Uses Redis SET NX so it works across all Railway worker processes."""
+    redis_key = "shortcut_dedup:" + hashlib.sha1(f"{user_id}:{text}".encode()).hexdigest()
+    try:
+        client = get_redis_client()
+        # SET NX EX: set only if key absent, expire after 90 s — atomic cross-process lock
+        acquired = client.set(redis_key, "1", nx=True, ex=90)
+        return acquired is None  # None → key already existed → duplicate
+    except Exception as exc:
+        logging.warning("shortcut_dedup: Redis unavailable, skipping dedup: %s", exc)
+        return False  # fail open — better a duplicate than a lost request
 
 
 def _shortcut_validate_coverage(blocks: list[tuple[str, str]], original: str) -> bool:
