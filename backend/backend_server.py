@@ -33565,35 +33565,75 @@ _SHORTCUT_LANGUAGE_PAIRS = [
 
 
 _SHORTCUT_SPLIT_PROMPT_FAST = (
-    "You are a vocabulary-entry splitter. "
-    "The input is a piece of text copied from a language-learning context. "
-    "It may contain one or more vocabulary entries. Each entry is a self-contained unit: "
-    "a word, verb form, phrase, or idiom — optionally followed by example sentences, "
-    "translations, usage notes, or explanations in any language. "
-    "Your job: identify every distinct vocabulary entry and return them as separate blocks. "
-    "Rules:\n"
-    "1. One block = one vocabulary headword/phrase with ALL its associated content.\n"
-    "2. Copy each block EXACTLY as it appears in the original — zero modifications.\n"
-    "3. The number of blocks equals the number of distinct vocabulary entries, not the number of lines.\n"
-    "4. If the text is a single entry, return exactly one block.\n"
-    "5. Return ONLY a JSON object: {\"blocks\": [\"...\", \"...\"]}"
+    "You are a linguist specialising in language-learning material. "
+    "Your task: read the input text and split it into self-contained vocabulary entries. "
+    "Ignore all formatting — blank lines, emoji, dashes, numbering are irrelevant. "
+    "Decide boundaries using ONLY linguistic logic:\n\n"
+
+    "WHAT DEFINES ONE ENTRY:\n"
+    "• A headword — an isolated word, inflected form, or multi-word unit that is the learning target.\n"
+    "• A fixed grammatical construction or pattern (e.g. 'sich etwas leisten', 'es geht um +Akk').\n"
+    "• A set phrase, idiom, or collocation treated as a single lexical unit.\n"
+    "• Everything that semantically belongs to that headword: example sentences demonstrating "
+    "its usage, translations, morphological notes (prefixes, suffixes, root meaning), "
+    "grammatical case/tense/valency notes, register notes, mnemonic hints, "
+    "contrast with similar words — ALL of this is part of the SAME entry.\n\n"
+
+    "HOW TO DETECT A NEW ENTRY:\n"
+    "• A new headword appears that is grammatically and semantically independent of the previous one.\n"
+    "• The text shifts to a different lexical root or a different idiomatic construction.\n"
+    "• Example sentences in the new section use a different subject word and cannot be "
+    "illustrating the same headword.\n\n"
+
+    "WHAT IS NOT A NEW ENTRY:\n"
+    "• An example sentence for the current headword — even if it is on its own line.\n"
+    "• A grammatical explanation or mnemonic for the current headword.\n"
+    "• A negative example (✗ / incorrect usage) contrasted with the correct form — "
+    "both belong to the same entry.\n"
+    "• A synonym or near-synonym introduced to compare with the headword — keep together.\n\n"
+
+    "Return ONLY a JSON object: {\"blocks\": [\"...\", \"...\"]}. "
+    "Each string is the complete verbatim text of one entry. Do not modify a single character."
 )
 
 _SHORTCUT_SPLIT_PROMPT_STRONG = (
-    "You are an expert vocabulary-entry extractor. "
-    "The user pastes raw text from a language-learning lesson or chat. "
-    "The text may use any formatting: blank lines, emoji markers, dashes, numbering, "
-    "or no separators at all — structure varies unpredictably. "
-    "Your task is to identify every independent vocabulary item (word, phrase, verb form, idiom) "
-    "together with all material that belongs to it (examples, translations, grammar notes, mnemonics). "
-    "Return the result as a JSON object with a single key 'blocks' whose value is an array of strings. "
-    "Each string is one complete entry copied verbatim from the input. "
-    "Critical constraints:\n"
-    "— Do NOT merge entries that belong to different headwords.\n"
-    "— Do NOT split one entry across multiple blocks.\n"
-    "— Do NOT alter, translate, or summarise any text.\n"
-    "— If the entire input is a single vocabulary entry, return one block.\n"
-    "— Output nothing except the JSON object."
+    "You are a senior computational linguist. "
+    "You receive raw text from a language-learning lesson. "
+    "Task: identify every independent vocabulary entry and return each as a separate verbatim block.\n\n"
+
+    "Use exclusively linguistic criteria — never formatting:\n\n"
+
+    "1. HEADWORD DETECTION\n"
+    "   An entry begins when a new lexical unit appears as the learning target: "
+    "a bare infinitive, a noun, an adjective, a fixed multi-word expression, "
+    "a grammatical construction with a slot (e.g. 'auf +Akk warten'), "
+    "or a phrasal/prepositional verb. "
+    "Clues: the word appears isolated on a line, is underlined/bold/emoji-marked, "
+    "or is immediately followed by a definition or example in the target or native language.\n\n"
+
+    "2. ENTRY BOUNDARIES\n"
+    "   Everything following a headword that semantically relates to it belongs to the SAME entry:\n"
+    "   • Example sentences (grammatically complete sentences using the headword).\n"
+    "   • Morphological analysis: prefix/suffix breakdown, etymology, root meaning.\n"
+    "   • Valency and case government: which case the verb/preposition requires.\n"
+    "   • Tense, aspect, or mood restrictions specific to that word.\n"
+    "   • Collocations and common partner words.\n"
+    "   • Register: formal/informal/colloquial labelling.\n"
+    "   • Contrast examples — both the incorrect (✗) and correct (✓) forms.\n"
+    "   • Mnemonics, memory hooks, or analogies for that word.\n"
+    "   • Translations or glosses of examples.\n"
+    "   The entry ends when a NEW, grammatically independent headword begins.\n\n"
+
+    "3. AMBIGUOUS CASES\n"
+    "   If you are unsure whether something starts a new entry or continues the current one, "
+    "   default to KEEPING IT IN THE CURRENT ENTRY. Splitting too aggressively is a worse error "
+    "   than keeping related material together.\n\n"
+
+    "4. SINGLE-ENTRY INPUT\n"
+    "   If the entire text is about one word or construction, return exactly one block.\n\n"
+
+    "Output ONLY: {\"blocks\": [\"verbatim block 1\", \"verbatim block 2\", ...]}. "
+    "No other text. No modifications to the content."
 )
 
 
