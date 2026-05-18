@@ -33599,78 +33599,85 @@ _SHORTCUT_SPLIT_PROMPT_PRIMARY = """\
 You are an expert linguist working inside a language-learning application.
 
 PURPOSE:
-The user copied vocabulary learning material — words and example sentences. \
-You must split it into the smallest meaningful linguistic units. Each unit \
-will become a separate translation card. Formatting is irrelevant. \
-Only linguistic structure matters.
+The user copied vocabulary learning material and wants to save useful items \
+to their personal dictionary. You must extract only the units that have \
+real learning value — words, phrases, and complete natural sentences. \
+Each extracted unit will be translated and saved as a vocabulary card.
 
-THE SPLITTING RULE — ONE UNIT PER BLOCK:
-Produce ONE block for each of the following unit types:
-  A) A standalone word, lemma, or fixed phrase that is being TAUGHT \
-     (not used inside a sentence). Examples: "erfinden", "sich abfinden mit", \
-     "je … desto …". This word/phrase alone is the block — do not attach sentences to it.
-  B) Each grammatically complete sentence — a unit that has at minimum a subject \
-     and a finite predicate (or is a grammatically recognised fragment). Each sentence \
-     stands alone as its own block, even if it illustrates the same word as the \
-     preceding block.
+THE CORE QUESTION FOR EVERY PIECE OF TEXT:
+"Would a language learner want to translate this and save it to their dictionary?"
+If YES → it becomes a block. If NO → silently discard it.
 
-THE CRITICAL RULE — DO NOT GROUP WORDS WITH THEIR EXAMPLE SENTENCES:
-A headword and its example sentences are SEPARATE blocks. \
-"erfinden" is block 1. "Er hat eine neue Methode erfunden." is block 2. \
-Never bundle them together.
+WHAT TO EXTRACT — LEARNABLE UNITS ONLY:
+  A) A standalone word or lemma being taught: "erfinden", "herausfinden", \
+     "sich abfinden mit", "je … desto …". One block per word/phrase. \
+     Do NOT attach example sentences to the word — they are separate blocks.
+  B) A complete natural sentence that demonstrates a word in real use: \
+     "Er hat eine neue Methode erfunden." — one block per sentence.
+  C) A ✗/✓ correction pair — both the wrong and correct form together as ONE block.
 
-WHAT BELONGS IN EACH BLOCK:
-  • For a word/phrase block: only the word or phrase itself (verbatim from the input).
-  • For a sentence block: only that one complete sentence (verbatim from the input).
-  • A ✗/✓ correction pair (wrong form + correct form) is ONE block — never split it.
+WHAT TO DISCARD — NOT LEARNABLE UNITS:
+  • Morphological breakdowns in parentheses: "(er- fügt den Aspekt hinzu: …)", \
+    "(aus = out + drücken = press → to express)". These explain word structure but \
+    are NOT independently translatable or storable as vocabulary.
+  • Etymological or prefix/suffix analyses: notes about what a root means in Latin, \
+    what a prefix historically meant.
+  • Metalinguistic commentary: notes ABOUT the language rather than IN the language, \
+    valency tables, case government descriptions written as annotations.
+  • Parenthetical glosses that are incomplete fragments: "(meaning: …)", \
+    "(literally: …)" without a full sentence structure.
+  • Any fragment that, translated in isolation, would produce a meaningless result \
+    with no dictionary value.
 
 BOTH FIELDS PER BLOCK:
-  "term"    — the canonical form of the unit: bare infinitive for verbs, \
-               nominative singular for nouns, the complete sentence for sentence blocks.
+  "term"    — canonical form: bare infinitive for verbs, nominative singular for \
+               nouns, the full sentence for sentence blocks.
   "content" — the exact verbatim text of this unit from the input.
 
 SELF-CHECK BEFORE OUTPUTTING:
-— Every word and every sentence from the input appears in exactly one block's "content"
-— No block mixes a bare word with one or more example sentences
-— Concatenating all "content" values reproduces the full input text
+— Every extracted block passes the "would I save this to a dictionary?" test
+— No block is a morphological annotation or parenthetical comment about word structure
+— No block mixes a bare word with its example sentences
+— All genuinely learnable words and sentences from the input are represented
 
-Return ONLY valid JSON — no markdown, no explanation, nothing else:
+Return ONLY valid JSON — no markdown, no explanation:
 {"blocks": [{"term": "unit 1", "content": "verbatim unit 1"}, ...]}"""
 
 _SHORTCUT_SPLIT_PROMPT_FALLBACK = """\
 You are a senior computational linguist specialising in second-language acquisition.
 
-The text you receive is vocabulary learning material in any language or combination \
-of languages (German, Russian, English, Italian, Spanish or mixed).
+The text contains vocabulary learning material. Your task: extract only the units \
+that a learner would want to translate into another language and save to their \
+personal vocabulary dictionary. Each result block becomes a dictionary card.
 
-Your task: atomise the text into the finest-grained individual learning units. \
-Each unit will be sent separately to a translation API. Granularity is essential.
+STEP 1 — APPLY THE LEARNER VALUE TEST:
+For every piece of text in the input ask: \
+"Is this something a language learner would want to translate and save?" \
+  KEEP — standalone vocabulary words and lemmas being taught
+  KEEP — fixed phrases and grammatical constructions worth memorising
+  KEEP — complete natural sentences demonstrating real word usage
+  DISCARD — morphological/etymological notes in parentheses, e.g. \
+    "(er- fügt den Bedeutungsaspekt hinzu: etwas schaffen, das es vorher nicht gab.)" \
+    These are metalinguistic explanations about word structure, not learnable items.
+  DISCARD — prefix / root / suffix analyses, valency descriptions, register labels \
+    written as annotations rather than as natural sentences.
+  DISCARD — any fragment that would yield no meaningful dictionary entry if translated.
 
-STEP 1 — IDENTIFY ALL ATOMIC UNITS:
-Read the entire text and list every linguistic unit of one of these two types:
-  TYPE W — a word, lemma, or fixed phrase that is being TAUGHT in isolation \
-            (appears without a surrounding sentence, or is presented as a headword).
-  TYPE S — a grammatically complete sentence (has a subject and finite predicate, \
-            or is a recognised grammatical fragment like an imperative or ellipsis).
-
-STEP 2 — ONE BLOCK PER ATOMIC UNIT:
-Assign each unit identified in Step 1 its own block. \
-DO NOT group a TYPE W unit together with the TYPE S sentences that illustrate it. \
-"erfinden" → its own block. "Er hat eine neue Methode erfunden." → its own block. \
-This is the most important rule: words and their sentences are always separate blocks.
-
-Exception: a ✗/✓ correction pair (the erroneous form and its correction) is one block.
+STEP 2 — ONE BLOCK PER ATOMIC UNIT (from what survived Step 1):
+  TYPE W — a word or fixed phrase taught in isolation → one block, just that item.
+  TYPE S — one complete natural sentence → one block, just that sentence.
+  Never bundle a TYPE W together with its TYPE S examples — they are always separate.
+  Exception: a ✗/✓ correction pair stays together as one block.
 
 STEP 3 — FILL BOTH FIELDS:
-  "term"    — the canonical form: bare infinitive for verbs, nominative singular for \
-               nouns, the complete sentence text for sentence units.
-  "content" — the exact verbatim text of this unit copied from the input.
+  "term"    — canonical form: bare infinitive / nominative / full sentence as appropriate.
+  "content" — exact verbatim text of this unit from the input.
 
 STEP 4 — VALIDATE:
-• Every word-form and every sentence from the input appears in exactly one block
-• No block contains both a bare word/lemma and one or more complete sentences
-• No ✗/✓ pair is split across two blocks
-• Concatenating all "content" values covers the full input
+• Every block has genuine dictionary value — a learner would save it
+• No block is a morphological note or parenthetical metalinguistic comment
+• No block mixes a bare word with complete sentences
+• No ✗/✓ pair is split
 
 Output ONLY: {"blocks": [{"term": "...", "content": "..."}, ...]}"""
 
@@ -33695,12 +33702,13 @@ def _shortcut_dedup_check(user_id: int, text: str) -> bool:
 
 
 def _shortcut_validate_coverage(blocks: list[tuple[str, str]], original: str) -> bool:
-    """Verify that blocks together cover >= 90% of the original text (whitespace-normalised)."""
+    """Verify blocks are non-empty and contain at least some real content from the original.
+    Threshold is intentionally low (30%) because metalinguistic annotations are discarded."""
     if not blocks:
         return False
     joined = " ".join(content for _, content in blocks)
     norm = lambda s: re.sub(r"\s+", "", s.strip())  # noqa: E731
-    return len(norm(joined)) >= len(norm(original)) * 0.90
+    return len(norm(joined)) >= len(norm(original)) * 0.30
 
 
 def _shortcut_extract_blocks_from_json(
