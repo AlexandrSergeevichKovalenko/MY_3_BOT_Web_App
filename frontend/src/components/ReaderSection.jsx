@@ -283,14 +283,17 @@ export default function ReaderSection(props) {
                   );
                 }
                 if (!candidate) {
-                  const inProgress = readerDocuments
+                  const notFinished = readerDocuments
                     .filter((d) =>
                       !d?.is_archived &&
-                      Number(d?.progress_percent || 0) > 0 &&
                       Number(d?.progress_percent || 0) < 100
                     )
-                    .sort((a, b) => Number(b?.progress_percent || 0) - Number(a?.progress_percent || 0));
-                  candidate = inProgress[0] || null;
+                    .sort((a, b) => {
+                      const ta = new Date(a?.last_opened_at || a?.updated_at || a?.created_at || 0).getTime();
+                      const tb = new Date(b?.last_opened_at || b?.updated_at || b?.created_at || 0).getTime();
+                      return tb - ta; // descending: most recently opened first
+                    });
+                  candidate = notFinished[0] || null;
                 }
                 if (!candidate) return null;
 
