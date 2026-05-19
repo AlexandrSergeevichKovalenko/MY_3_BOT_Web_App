@@ -3221,6 +3221,11 @@ const TranslationsSection = React.memo(function TranslationsSection({
                     </button>
                   ))}
                 </div>
+                {!hasSelectedTranslationLevel && (
+                  <div className="webapp-muted">
+                    {tr('Сначала выберите уровень.', 'Bitte zuerst ein Niveau waehlen.')}
+                  </div>
+                )}
               </div>
             )}
 
@@ -3335,6 +3340,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
                 webappLoading
                 || topicsLoading
                 || showPreparingTranslationEmptyState
+                || (!selectedTopicIsStoryTopic && !hasSelectedTranslationLevel)
                 || (selectedTopicIsCustomTopic && !customTopicInput.trim())
               }
             >
@@ -5173,7 +5179,7 @@ function AppInner() {
   const [topicsError, setTopicsError] = useState('');
   const [selectedTopic, setSelectedTopic] = useState('🧱 V2 в главном предложении');
   const [customTopicInput, setCustomTopicInput] = useState('');
-  const [selectedLevel, setSelectedLevel] = useState('b1');
+  const [selectedLevel, setSelectedLevel] = useState('');
   const [uiLang, setUiLang] = useState('ru');
   const [themeMode, setThemeMode] = useState(() => resolveExternalThemeMode(window.Telegram?.WebApp));
   const [themeModeOverride, setThemeModeOverride] = useState(null);
@@ -5566,6 +5572,7 @@ function AppInner() {
   const showTranslationStartConfigurator = !(hasActiveTranslationSentences || hasActiveRegularTranslationSession);
   const selectedTopicIsStoryTopic = isStoryTopic(selectedTopic);
   const selectedTopicIsCustomTopic = isCustomTopic(selectedTopic);
+  const hasSelectedTranslationLevel = ['a1', 'a2', 'b1', 'b2', 'c1', 'c2'].includes(String(selectedLevel || '').trim().toLowerCase());
   const FLASHCARDS_LOAD_DEDUP_WINDOW_MS = 900;
   const SRS_NEXT_DEDUP_WINDOW_MS = 900;
   const SRS_EASY_LOCK_AFTER_SEC = 5;
@@ -5582,6 +5589,15 @@ function AppInner() {
   const homeSkillsRef = useRef(null);
   const homeMoreRef = useRef(null);
   const readerRef = useRef(null);
+  const translationConfiguratorWasVisibleRef = useRef(false);
+
+  useEffect(() => {
+    const wasVisible = Boolean(translationConfiguratorWasVisibleRef.current);
+    if (showTranslationStartConfigurator && !wasVisible) {
+      setSelectedLevel('');
+    }
+    translationConfiguratorWasVisibleRef.current = Boolean(showTranslationStartConfigurator);
+  }, [showTranslationStartConfigurator]);
   const readerArticleRef = useRef(null);
   const readerPageInnerRef = useRef(null);
   const readerMeasureInnerRef = useRef(null);
@@ -13242,6 +13258,23 @@ function AppInner() {
     }, 80);
   };
 
+  const billingEffectiveMode = String(billingStatus?.effective_mode || '').trim().toLowerCase();
+  const readerAudioPremiumKnown = Boolean(billingStatus && typeof billingStatus === 'object');
+  const readerAudioPremiumEnabled = ['pro', 'trial'].includes(billingEffectiveMode);
+
+  const openReaderAudioPremiumPaywall = useCallback(() => {
+    const message = tr(
+      'Аудио в книге доступно только по премиум подписке.',
+      'Audio im Reader ist nur mit Premium verfuegbar.'
+    );
+    setReaderAudioError(message);
+    setReaderAudioPlayError(message);
+    if (readerAudioPlayActive) {
+      stopReaderAudioPlay();
+    }
+    openSingleSectionAndScroll('subscription', billingRef);
+  }, [openSingleSectionAndScroll, readerAudioPlayActive, stopReaderAudioPlay, tr]);
+
   const goHomeScreen = () => {
     setFlashcardsOnly(false);
     setFlashcardSessionActive(false);
@@ -17715,6 +17748,10 @@ function AppInner() {
       setWebappError(initDataMissingMsg);
       return;
     }
+    if (!hasSelectedTranslationLevel) {
+      setWebappError(tr('Выберите уровень перед началом перевода.', 'Waehle vor dem Start der Uebersetzung ein Niveau.'));
+      return;
+    }
     if (isCustomTopic(selectedTopic) && !customTopicInput.trim()) {
       setWebappError(tr('Введите свой грамматический фокус.', 'Gib deinen eigenen Grammatikfokus ein.'));
       return;
@@ -17742,7 +17779,7 @@ function AppInner() {
           initData,
           topic: selectedTopic,
           custom_focus: isCustomTopic(selectedTopic) ? customTopicInput.trim() : '',
-          level: selectedLevel,
+          level: String(selectedLevel || '').trim().toLowerCase(),
           language_pair: getWebappLanguagePairHint() || undefined,
         }),
       });
@@ -20872,6 +20909,10 @@ function AppInner() {
 
   const downloadReaderAudio = async (fullDocument = false) => {
     if (!initData || !readerDocumentId) return;
+    if (readerAudioPremiumKnown && !readerAudioPremiumEnabled) {
+      openReaderAudioPremiumPaywall();
+      return;
+    }
     try {
       setReaderAudioLoading(true);
       setReaderAudioError('');
@@ -20894,6 +20935,17 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
+        if (response.status === 403) {
+          try {
+            const errorPayload = await response.clone().json();
+            if (String(errorPayload?.error_code || '').trim() === 'reader_audio_premium_required') {
+              openReaderAudioPremiumPaywall();
+              return;
+            }
+          } catch (_error) {
+            // ignore non-JSON premium gate payload parsing errors
+          }
+        }
         throw new Error(await readApiError(response, 'Ошибка аудио-конвертации', 'Fehler bei Audio-Konvertierung'));
       }
       const blob = await response.blob();
@@ -21028,6 +21080,10 @@ function AppInner() {
   }, []);
 
   const playReaderAudioPage = useCallback(async (page, startWidOverride, charStartOverride) => {
+    if (readerAudioPremiumKnown && !readerAudioPremiumEnabled) {
+      openReaderAudioPremiumPaywall();
+      return;
+    }
     const startWid = startWidOverride !== undefined ? startWidOverride : (readerAudioStartWid || null);
     const requestToken = readerAudioRequestTokenRef.current + 1;
     readerAudioRequestTokenRef.current = requestToken;
@@ -21118,6 +21174,10 @@ function AppInner() {
             });
             const payload = await resp.json().catch(() => ({}));
             if (!resp.ok && resp.status !== 202) {
+              if (String(payload?.error_code || '').trim() === 'reader_audio_premium_required') {
+                openReaderAudioPremiumPaywall();
+                return null;
+              }
               throw new Error(payload.error || `HTTP ${resp.status}`);
             }
             if (token != null && readerAudioRequestTokenRef.current !== token) {
@@ -21310,7 +21370,19 @@ function AppInner() {
     } finally {
       setReaderAudioPlayLoading(false);
     }
-  }, [readerDocumentId, readerAudioVoice, readerAudioRate, initData, readerAudioStartWid, readerAudioWidReverseMap, readerAudioWidToCharStart, buildReaderAudioWindow]);
+  }, [
+    buildReaderAudioWindow,
+    initData,
+    openReaderAudioPremiumPaywall,
+    readerAudioPremiumEnabled,
+    readerAudioPremiumKnown,
+    readerAudioRate,
+    readerAudioStartWid,
+    readerAudioVoice,
+    readerAudioWidReverseMap,
+    readerAudioWidToCharStart,
+    readerDocumentId,
+  ]);
 
   const pauseReaderAudioPlay = useCallback(() => {
     audioElementRef.current?.pause();
@@ -21324,6 +21396,10 @@ function AppInner() {
 
   // Toolbar play button: pause/resume if playing, else toggle word-select mode
   const handleReaderAudioPlayBtn = useCallback(() => {
+    if (readerAudioPremiumKnown && !readerAudioPremiumEnabled) {
+      openReaderAudioPremiumPaywall();
+      return;
+    }
     if (readerUsesOriginalEpubLayout) {
       setReaderAudioPlayError(tr(
         'Аудио с выбором слова доступно в адаптивном текстовом режиме. Переключись из Original в Settings.',
@@ -21340,7 +21416,18 @@ function AppInner() {
     const next = !readerAudioAwaitingWordTapRef.current;
     readerAudioAwaitingWordTapRef.current = next;
     setReaderAudioAwaitingWordTap(next);
-  }, [pauseReaderAudioPlay, primeReaderAudioPlayback, readerAudioPaused, readerAudioPlayActive, readerUsesOriginalEpubLayout, resumeReaderAudioPlay, tr]);
+  }, [
+    openReaderAudioPremiumPaywall,
+    pauseReaderAudioPlay,
+    primeReaderAudioPlayback,
+    readerAudioPaused,
+    readerAudioPlayActive,
+    readerAudioPremiumEnabled,
+    readerAudioPremiumKnown,
+    readerUsesOriginalEpubLayout,
+    resumeReaderAudioPlay,
+    tr,
+  ]);
 
   const stopReaderAudioPlay = useCallback(() => {
     readerAudioRequestTokenRef.current += 1;
@@ -26915,8 +27002,12 @@ function AppInner() {
     if (!isWebAppMode || !initData) {
       return;
     }
-    if (!flashcardsOnly && isSectionVisible('subscription')) {
+    const subscriptionSectionVisible = !flashcardsOnly && isSectionVisible('subscription');
+    const readerSectionVisible = !flashcardsOnly && isSectionVisible('reader');
+    if (subscriptionSectionVisible || readerSectionVisible) {
       loadBillingStatus();
+    }
+    if (subscriptionSectionVisible) {
       loadBillingPlans();
     }
   }, [initData, isWebAppMode, selectedSections, flashcardsOnly, billingReturnContext.kind, billingReturnContext.shouldHandle]);
@@ -31255,6 +31346,9 @@ function AppInner() {
                   readerAudioPreviewName={readerAudioPreviewName}
                   downloadReaderAudio={downloadReaderAudio}
                   closeReaderAudioPreview={closeReaderAudioPreview}
+                  readerAudioPremiumEnabled={readerAudioPremiumEnabled}
+                  readerAudioPremiumKnown={readerAudioPremiumKnown}
+                  onReaderAudioUpgrade={openReaderAudioPremiumPaywall}
 
                   getReaderCoverUrl={getReaderCoverUrl}
                   getReaderCoverInitials={getReaderCoverInitials}

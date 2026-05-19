@@ -54,6 +54,75 @@ def is_valid_german_image_quiz_option(option_text: str | None) -> bool:
     return contains_latin_text(normalized) and not contains_cyrillic_text(normalized)
 
 
+def _is_generic_image_quiz_question(value: str | None) -> bool:
+    normalized = re.sub(r"[?!.,:;]+", "", _normalize_space(value)).casefold()
+    if not normalized:
+        return True
+    generic_patterns = {
+        "was zeigt das bild",
+        "was sieht man auf dem bild",
+        "was ist auf dem bild zu sehen",
+        "was passt zum bild",
+        "welches wort passt zum bild",
+        "welcher begriff passt zum bild",
+    }
+    return normalized in generic_patterns
+
+
+_NON_VISUAL_RELATION_PATTERNS = (
+    "anstelle von",
+    "an statt",
+    "anstatt",
+    "statt",
+    "stattdessen",
+    "im gegensatz zu",
+    "anders als",
+    "im unterschied zu",
+)
+
+
+def _is_likely_non_visual_relation_answer(value: str | None) -> bool:
+    normalized = _normalize_space(value).casefold()
+    if not normalized:
+        return False
+    return any(
+        normalized == pattern or normalized.startswith(f"{pattern} ")
+        for pattern in _NON_VISUAL_RELATION_PATTERNS
+    )
+
+
+def _looks_like_sentence(value: str | None) -> bool:
+    text = _normalize_space(value)
+    if not text:
+        return False
+    tokens = [part for part in re.split(r"\s+", text) if part]
+    return len(tokens) >= 4 or bool(re.search(r"[.!?]", text))
+
+
+def validate_ready_image_quiz_template(template: Mapping[str, Any] | None) -> str | None:
+    payload = build_image_quiz_feedback_payload(template)
+    if not payload:
+        return "invalid_feedback_payload"
+    correct_text = normalize_image_quiz_option_text(payload.get("correct_text"))
+    if _is_likely_non_visual_relation_answer(correct_text):
+        return "non_visual_relation_answer"
+    options = [normalize_image_quiz_option_text(item) for item in (payload.get("options") or [])]
+    if len(options) != 4:
+        return "invalid_options"
+    sentence_flags = [_looks_like_sentence(option) for option in options]
+    if len(set(sentence_flags)) > 1:
+        return "mixed_answer_shapes"
+    correct_option_id = int(payload.get("correct_option_id") or 0)
+    if correct_option_id < 0 or correct_option_id >= len(sentence_flags):
+        return "invalid_correct_option_id"
+    if sentence_flags[correct_option_id] != _looks_like_sentence(correct_text):
+        return "correct_answer_shape_mismatch"
+    question_de = _normalize_space(payload.get("question_de"))
+    if _is_generic_image_quiz_question(question_de):
+        return "generic_question"
+    return None
+
+
 def build_image_quiz_feedback_payload(template: Mapping[str, Any] | None) -> dict | None:
     if not isinstance(template, Mapping):
         return None

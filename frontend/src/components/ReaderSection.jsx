@@ -109,6 +109,9 @@ export default function ReaderSection(props) {
     readerAudioLoading, readerAudioError,
     readerAudioPreviewUrl, readerAudioPreviewName,
     downloadReaderAudio, closeReaderAudioPreview,
+    readerAudioPremiumEnabled = true,
+    readerAudioPremiumKnown = false,
+    onReaderAudioUpgrade = () => {},
 
     // ── cover/meta helpers ───────────────────────────────────────
     getReaderCoverUrl,
@@ -161,6 +164,11 @@ export default function ReaderSection(props) {
   const readerShowsLazyOriginalPage = !readerUsesCustomLayout
     && Array.isArray(readerPages)
     && readerPages[readerCurrentPage - 1] === null;
+  const readerAudioPremiumLocked = readerAudioPremiumKnown && !readerAudioPremiumEnabled;
+  const readerAudioPremiumHint = tr(
+    'Аудио в книге доступно только по премиум подписке.',
+    'Audio im Reader ist nur mit Premium verfuegbar.'
+  );
 
   return (
     <section
@@ -526,14 +534,19 @@ export default function ReaderSection(props) {
                   <div className="reader-audio-head">
                     <strong>{tr('Оффлайн-аудио документа', 'Offline-Audio des Dokuments')}</strong>
                   </div>
+                  {readerAudioPremiumLocked && (
+                    <div className="webapp-muted">{readerAudioPremiumHint}</div>
+                  )}
                   <div className="reader-audio-actions">
                     <button
                       type="button"
                       className="secondary-button"
-                      onClick={() => downloadReaderAudio(true)}
-                      disabled={readerAudioLoading}
+                      onClick={() => (readerAudioPremiumLocked ? onReaderAudioUpgrade() : downloadReaderAudio(true))}
+                      disabled={readerAudioLoading || billingActionLoading}
                     >
-                      {readerAudioLoading ? tr('Готовим...', 'Erstellen...') : tr('Скачать весь документ', 'Ganzes Dokument herunterladen')}
+                      {readerAudioPremiumLocked
+                        ? tr('Открыть Premium', 'Premium öffnen')
+                        : (readerAudioLoading ? tr('Готовим...', 'Erstellen...') : tr('Скачать весь документ', 'Ganzes Dokument herunterladen'))}
                     </button>
                   </div>
                   {readerAudioError && <div className="webapp-error">{readerAudioError}</div>}
@@ -610,11 +623,13 @@ export default function ReaderSection(props) {
                 <button
                   type="button"
                   className={`secondary-button reader-toolbar-btn reader-toolbar-btn-icon-only reader-audio-play-btn${readerAudioPlayActive ? ' is-playing' : ''}${readerAudioAwaitingWordTap ? ' is-awaiting' : ''}`}
-                  onClick={onReaderAudioPlayBtn}
-                  disabled={!readerHasContent || readerAudioPlayLoading}
-                  title={readerAudioPlayActive
-                    ? (readerAudioPaused ? tr('Продолжить', 'Fortsetzen') : tr('Пауза', 'Pause'))
-                    : (readerAudioAwaitingWordTap ? tr('Нажми слово…', 'Wort antippen…') : tr('Аудио', 'Audio'))}
+                  onClick={readerAudioPremiumLocked ? onReaderAudioUpgrade : onReaderAudioPlayBtn}
+                  disabled={!readerHasContent || readerAudioPlayLoading || billingActionLoading}
+                  title={readerAudioPremiumLocked
+                    ? readerAudioPremiumHint
+                    : (readerAudioPlayActive
+                      ? (readerAudioPaused ? tr('Продолжить', 'Fortsetzen') : tr('Пауза', 'Pause'))
+                      : (readerAudioAwaitingWordTap ? tr('Нажми слово…', 'Wort antippen…') : tr('Аудио', 'Audio')))}
                   aria-label={tr('Аудиовоспроизведение', 'Audio')}
                 >
                   <span className="reader-toolbar-btn-icon" aria-hidden="true">

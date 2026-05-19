@@ -127,6 +127,56 @@ class ImageQuizPromptingTests(unittest.TestCase):
                 answer_language="de",
             )
 
+    def test_sanitize_blueprint_rejects_non_visual_relation_answer(self):
+        with self.assertRaisesRegex(ValueError, "blueprint_non_visual_relation_answer"):
+            _sanitize_image_quiz_blueprint(
+                {
+                    "source_sentence": "Anna steht anstelle von Heinz am Tisch.",
+                    "image_prompt": "Anna stands alone behind a table and smiles at the camera.",
+                    "scene_core": "A woman standing alone at a table",
+                    "must_show": ["one woman", "table", "indoor portrait setting"],
+                    "must_not_show": ["Heinz", "second person", "name tags"],
+                    "camera_framing": "medium shot centered on Anna and the table",
+                    "key_disambiguator": "The image only shows Anna at a table and does not visually prove any substitution relation.",
+                    "question_de": "Welche Situation ist hier dargestellt?",
+                    "answer_options": [
+                        "Anna sitzt am Tisch.",
+                        "Heinz steht am Tisch.",
+                        "Anna und Heinz stehen zusammen am Tisch.",
+                        "Anstelle von Heinz",
+                    ],
+                    "correct_option_index": 3,
+                    "explanation": "The phrase requires an absent comparison person and is not visually verifiable.",
+                },
+                expected_correct_answer="Anstelle von Heinz",
+                answer_language="de",
+            )
+
+    def test_sanitize_blueprint_rejects_mixed_sentence_and_phrase_options(self):
+        with self.assertRaisesRegex(ValueError, "blueprint_options_mixed_answer_shapes"):
+            _sanitize_image_quiz_blueprint(
+                {
+                    "source_sentence": "Anna steht am Tisch.",
+                    "image_prompt": "Anna stands behind a wooden table in a studio portrait.",
+                    "scene_core": "Anna standing at a table",
+                    "must_show": ["Anna", "table", "standing posture"],
+                    "must_not_show": ["second person", "chair"],
+                    "camera_framing": "medium shot",
+                    "key_disambiguator": "The scene is a simple standing-at-table scene.",
+                    "question_de": "Welche Situation ist hier dargestellt?",
+                    "answer_options": [
+                        "Anna steht am Tisch.",
+                        "Heinz sitzt am Tisch.",
+                        "Zusammen mit Heinz",
+                        "Anna und Heinz lachen.",
+                    ],
+                    "correct_option_index": 0,
+                    "explanation": "All options should share the same answer shape.",
+                },
+                expected_correct_answer="Anna steht am Tisch.",
+                answer_language="de",
+            )
+
     def test_render_prompt_includes_style_and_disambiguation_constraints(self):
         prompt = _compose_image_quiz_render_prompt(
             source_sentence="Ein Mann wischt den Küchentisch mit einem gelben Tuch ab.",

@@ -152,6 +152,52 @@ def _get_active_translation_session_pointer(
     }
 
 
+def _resolve_translation_session_signature_with_cursor(
+    cursor,
+    *,
+    user_id: int,
+    session_id: str | int,
+    source_lang: str,
+    target_lang: str,
+    pointer: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    pointer_payload = pointer if isinstance(pointer, dict) else {}
+    focus_key = str(pointer_payload.get("focus_key") or "").strip()
+    level = str(pointer_payload.get("level") or "").strip().lower()
+    if focus_key and level:
+        return {
+            "focus_key": focus_key,
+            "level": _normalize_level(level),
+        }
+    cursor.execute(
+        """
+        SELECT
+            COALESCE(NULLIF(ds.focus_key, ''), ''),
+            COALESCE(NULLIF(ds.level, ''), '')
+        FROM bt_3_user_progress up
+        LEFT JOIN bt_3_daily_sentences ds
+          ON ds.user_id = up.user_id
+         AND ds.session_id = up.session_id
+         AND COALESCE(ds.source_lang, 'ru') = %s
+         AND COALESCE(ds.target_lang, 'de') = %s
+        WHERE up.user_id = %s
+          AND up.session_id = %s
+        ORDER BY ds.unique_id ASC, ds.id ASC
+        LIMIT 1;
+        """,
+        (source_lang, target_lang, int(user_id), int(session_id)),
+    )
+    row = cursor.fetchone() or ("", "")
+    if not focus_key:
+        focus_key = str(row[0] or "").strip()
+    if not level:
+        level = str(row[1] or "").strip().lower()
+    return {
+        "focus_key": focus_key,
+        "level": _normalize_level(level) if level else "",
+    }
+
+
 def _build_translation_session_state_payload(
     *,
     user_id: int,
@@ -4454,6 +4500,16 @@ async def start_translation_session_webapp(
     with db_acquire_scope("translation_session_start"):
         conn = get_db_connection()
     cursor = conn.cursor()
+    level_key = _normalize_level(level)
+    resolved_focus = grammar_focus if isinstance(grammar_focus, dict) else resolve_webapp_focus(topic)
+    requested_focus_kind = "legacy"
+    requested_focus_key = ""
+    requested_focus_label = ""
+    if _is_legacy_ru_de_pair(source_lang, target_lang):
+        requested_focus_kind, requested_focus_key, requested_focus_label = _resolve_translation_readiness_focus_identity(
+            focus=resolved_focus,
+            level=level_key,
+        )
     phase_metrics: dict[str, int] = {
         "close_stale_open_ms": 0,
         "active_lookup_ms": 0,
@@ -4493,6 +4549,14 @@ async def start_translation_session_webapp(
             )
         phase_metrics["active_lookup_ms"] = int((time.perf_counter() - active_lookup_started_at) * 1000)
         if active_session_id:
+            active_signature = _resolve_translation_session_signature_with_cursor(
+                cursor,
+                user_id=int(user_id),
+                session_id=active_session_id,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                pointer=active_pointer if isinstance(active_pointer, dict) else None,
+            )
             session_state_started_at = time.perf_counter()
             session_state = _get_translation_session_state_with_cursor(
                 cursor,
@@ -4508,12 +4572,28 @@ async def start_translation_session_webapp(
                     session_state["pending_count"] == 0
                     and session_state["translated_count"] > 0
                 )
+                active_focus_key = str(active_signature.get("focus_key") or "").strip()
+                active_level = str(active_signature.get("level") or "").strip().lower() or level_key
+                active_focus_kind = str(
+                    (active_pointer or {}).get("focus_kind") if isinstance(active_pointer, dict) else ""
+                ).strip().lower()
+                if not active_focus_kind:
+                    if active_focus_key == "custom":
+                        active_focus_kind = "custom"
+                    elif get_legacy_shared_pool_focus_by_key(active_focus_key):
+                        active_focus_kind = "legacy_pool"
+                    elif active_focus_key:
+                        active_focus_kind = "preset"
+                    else:
+                        active_focus_kind = "legacy"
                 _remember_active_translation_session_pointer(
                     user_id=int(user_id),
                     session_id=active_session_id,
                     source_lang=source_lang,
                     target_lang=target_lang,
-                    level=level,
+                    focus_kind=active_focus_kind,
+                    focus_key=active_focus_key or None,
+                    level=active_level,
                     state="ready",
                     ready_count=int(session_state["stored_count"]),
                     generation_status="ready",
@@ -4525,9 +4605,9 @@ async def start_translation_session_webapp(
                         session_id=active_session_id,
                         source_lang=source_lang,
                         target_lang=target_lang,
-                        focus_kind="legacy",
-                        focus_key=None,
-                        level=level,
+                        focus_kind=active_focus_kind,
+                        focus_key=active_focus_key or None,
+                        level=active_level,
                         state="ready",
                         ready_count=int(session_state["stored_count"]),
                         expected_total=7,
@@ -4542,9 +4622,9 @@ async def start_translation_session_webapp(
                         session_id=active_session_id,
                         source_lang=source_lang,
                         target_lang=target_lang,
-                        focus_kind="legacy",
-                        focus_key=None,
-                        level=level,
+                        focus_kind=active_focus_kind,
+                        focus_key=active_focus_key or None,
+                        level=active_level,
                         state="ready",
                         ready_count=int(session_state["stored_count"]),
                         expected_total=7,
@@ -4621,18 +4701,12 @@ async def start_translation_session_webapp(
         immediate_entries: list[dict[str, Any]] = []
         # Even with async background fill enabled, return all ready cached/pool items immediately.
         sync_seed_target_count = 7
-        focus_key = ""
-        focus_kind = "legacy"
-        focus_label = ""
+        focus_key = requested_focus_key
+        focus_kind = requested_focus_kind
+        focus_label = requested_focus_label
         seed_started_at = time.perf_counter()
         seed_diagnostics: dict[str, Any] = {}
         if _is_legacy_ru_de_pair(source_lang, target_lang):
-            level_key = _normalize_level(level)
-            resolved_focus = grammar_focus if isinstance(grammar_focus, dict) else resolve_webapp_focus(topic)
-            focus_kind, focus_key, focus_label = _resolve_translation_readiness_focus_identity(
-                focus=resolved_focus,
-                level=level_key,
-            )
             recent_keys_started_at = time.perf_counter()
             recent_sentence_keys = _get_recently_served_sentence_keys_with_cursor(
                 cursor,

@@ -402,6 +402,28 @@ def _is_likely_abstract_person_label(value: str | None) -> bool:
     return has_person_noun and has_trait_word
 
 
+_IMAGE_QUIZ_NON_VISUAL_RELATION_PATTERNS = (
+    "anstelle von",
+    "an statt",
+    "anstatt",
+    "statt",
+    "stattdessen",
+    "im gegensatz zu",
+    "anders als",
+    "im unterschied zu",
+)
+
+
+def _is_likely_non_visual_relation_answer(value: str | None) -> bool:
+    normalized = _normalize_space(value).casefold()
+    if not normalized:
+        return False
+    return any(
+        normalized == pattern or normalized.startswith(f"{pattern} ")
+        for pattern in _IMAGE_QUIZ_NON_VISUAL_RELATION_PATTERNS
+    )
+
+
 def _sanitize_image_quiz_blueprint(
     payload: dict,
     *,
@@ -442,9 +464,16 @@ def _sanitize_image_quiz_blueprint(
         raise ValueError("expected_correct_answer_missing")
     if _is_likely_abstract_person_label(normalized_expected):
         raise ValueError("blueprint_abstract_person_label_unsupported")
+    if _is_likely_non_visual_relation_answer(normalized_expected):
+        raise ValueError("blueprint_non_visual_relation_answer")
     options[correct_index] = normalized_expected
     if len(set(options)) != 4:
         raise ValueError("blueprint_options_conflict_with_correct_answer")
+    option_sentence_flags = [_looks_like_sentence(option) for option in options]
+    if len(set(option_sentence_flags)) > 1:
+        raise ValueError("blueprint_options_mixed_answer_shapes")
+    if option_sentence_flags[correct_index] != _looks_like_sentence(normalized_expected):
+        raise ValueError("blueprint_correct_answer_shape_mismatch")
     if not _text_matches_expected_language(source_sentence, answer_language):
         raise ValueError("blueprint_source_sentence_language_invalid")
     if any(not _text_matches_expected_language(option, answer_language) for option in options):

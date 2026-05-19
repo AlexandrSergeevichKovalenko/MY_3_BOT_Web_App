@@ -737,7 +737,8 @@ def _create_or_attach_user_dictionary_entry_with_cursor(
                 source_lang = COALESCE(NULLIF(bt_3_webapp_dictionary_queries.source_lang, ''), EXCLUDED.source_lang),
                 target_lang = COALESCE(NULLIF(bt_3_webapp_dictionary_queries.target_lang, ''), EXCLUDED.target_lang),
                 canonical_entry_id = COALESCE(bt_3_webapp_dictionary_queries.canonical_entry_id, EXCLUDED.canonical_entry_id),
-                is_learned = COALESCE(bt_3_webapp_dictionary_queries.is_learned, FALSE) OR COALESCE(EXCLUDED.is_learned, FALSE)
+                is_learned = COALESCE(bt_3_webapp_dictionary_queries.is_learned, FALSE) OR COALESCE(EXCLUDED.is_learned, FALSE),
+                updated_at = NOW()
             RETURNING id, (xmax = 0) AS inserted;
             """,
             (
@@ -2914,7 +2915,8 @@ def ensure_webapp_tables() -> None:
                     origin_process TEXT NOT NULL DEFAULT 'unknown',
                     origin_meta JSONB,
                     response_json JSONB,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
             """)
             cursor.execute("""
@@ -2971,6 +2973,23 @@ def ensure_webapp_tables() -> None:
                 ADD COLUMN IF NOT EXISTS canonical_entry_id BIGINT;
             """)
             cursor.execute("""
+                ALTER TABLE bt_3_webapp_dictionary_queries
+                ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;
+            """)
+            cursor.execute("""
+                UPDATE bt_3_webapp_dictionary_queries
+                SET updated_at = COALESCE(updated_at, created_at::timestamptz, NOW())
+                WHERE updated_at IS NULL;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_webapp_dictionary_queries
+                ALTER COLUMN updated_at SET DEFAULT NOW();
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_webapp_dictionary_queries
+                ALTER COLUMN updated_at SET NOT NULL;
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_dictionary_entries (
                     id BIGSERIAL PRIMARY KEY,
                     source_lang TEXT NOT NULL,
@@ -3025,6 +3044,10 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_user_origin_created
                 ON bt_3_webapp_dictionary_queries (user_id, origin_process, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_user_updated
+                ON bt_3_webapp_dictionary_queries (user_id, updated_at DESC);
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_manual_training_selection (
@@ -14282,7 +14305,12 @@ def delete_dictionary_folder(user_id: int, folder_id: int, delete_words: bool = 
                 )
             else:
                 cursor.execute(
-                    "UPDATE bt_3_webapp_dictionary_queries SET folder_id = NULL WHERE user_id = %s AND folder_id = %s",
+                    """
+                    UPDATE bt_3_webapp_dictionary_queries
+                    SET folder_id = NULL,
+                        updated_at = NOW()
+                    WHERE user_id = %s AND folder_id = %s
+                    """,
                     (int(user_id), int(folder_id)),
                 )
 
@@ -14300,6 +14328,7 @@ def list_user_vocabulary(
     sort: str = "date_desc",
     limit: int = 50,
     offset: int = 0,
+    updated_since=None,
 ) -> dict:
     """Return paginated vocabulary entries with SRS state for the library view."""
     conditions = ["q.user_id = %s"]
@@ -14318,6 +14347,9 @@ def list_user_vocabulary(
             " OR LOWER(q.translation_ru) LIKE %s OR LOWER(q.translation_de) LIKE %s)"
         )
         params.extend([needle, needle, needle, needle])
+    if updated_since is not None:
+        conditions.append("q.updated_at > %s")
+        params.append(updated_since)
 
     where_clause = " AND ".join(conditions)
 
@@ -14327,6 +14359,8 @@ def list_user_vocabulary(
         "alpha_asc": "COALESCE(NULLIF(q.word_de,''), q.word_ru) ASC",
         "alpha_desc": "COALESCE(NULLIF(q.word_de,''), q.word_ru) DESC",
         "srs_status": "COALESCE(s.due_at, 'epoch'::timestamptz) ASC",
+        "updated_desc": "q.updated_at DESC, q.id DESC",
+        "updated_asc": "q.updated_at ASC, q.id ASC",
     }
     order_clause = order_map.get(sort, "q.created_at DESC")
 
@@ -14350,6 +14384,7 @@ def list_user_vocabulary(
                     q.target_lang,
                     q.folder_id,
                     q.created_at,
+                    q.updated_at,
                     q.is_learned,
                     s.status        AS srs_status,
                     s.due_at        AS srs_due_at,
@@ -14384,7 +14419,7 @@ def list_user_vocabulary(
 
     items = []
     for row in rows:
-        response_json = _coerce_json_object(row[19])
+        response_json = _coerce_json_object(row[20])
         entry_source_lang = str(row[5] or "").strip().lower()
         entry_target_lang = str(row[6] or "").strip().lower()
         response_source_text = str(response_json.get("source_text") or "").strip()
@@ -14394,7 +14429,7 @@ def list_user_vocabulary(
             or row[3]
             or (response_source_text if entry_source_lang == "de" else "")
             or (response_target_text if entry_target_lang == "de" else "")
-            or row[20]
+            or row[21]
             or ""
         ).strip()
         dictionary_senses = response_json.get("dictionary_senses") if isinstance(response_json.get("dictionary_senses"), list) else []
@@ -14412,11 +14447,11 @@ def list_user_vocabulary(
             or row[4]
             or (response_source_text if entry_source_lang == "ru" else "")
             or (response_target_text if entry_target_lang == "ru" else "")
-            or row[21]
+            or row[22]
             or ""
         ).strip()
-        srs_due_at = row[11]
-        srs_status = row[10]
+        srs_due_at = row[12]
+        srs_status = row[11]
         now_utc = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
         if srs_status is None:
             srs_label = "none"
@@ -14437,19 +14472,20 @@ def list_user_vocabulary(
             "target_lang": row[6] or "",
             "folder_id": row[7],
             "created_at": row[8].isoformat() if row[8] else None,
-            "is_learned": bool(row[9]),
+            "updated_at": row[9].isoformat() if row[9] else None,
+            "is_learned": bool(row[10]),
             "srs_status": srs_status,
             "srs_label": srs_label,
-            "srs_reps": int(row[12]) if row[12] is not None else 0,
-            "srs_lapses": int(row[13]) if row[13] is not None else 0,
-            "srs_stability": float(row[14]) if row[14] is not None else 0.0,
-            "last_review_at": row[15].isoformat() if row[15] else None,
-            "folder_name": row[16] or None,
-            "folder_icon": row[17] or None,
-            "folder_color": row[18] or None,
+            "srs_reps": int(row[13]) if row[13] is not None else 0,
+            "srs_lapses": int(row[14]) if row[14] is not None else 0,
+            "srs_stability": float(row[15]) if row[15] is not None else 0.0,
+            "last_review_at": row[16].isoformat() if row[16] else None,
+            "folder_name": row[17] or None,
+            "folder_icon": row[18] or None,
+            "folder_color": row[19] or None,
             "response_json": response_json,
-            "display_word": german_display or row[20] or "",
-            "display_translation": native_display or row[21] or "",
+            "display_word": german_display or row[21] or "",
+            "display_translation": native_display or row[22] or "",
         })
 
     return {"items": items, "total": total, "limit": limit, "offset": offset}
@@ -14691,12 +14727,13 @@ def edit_vocabulary_entry(
                 cursor.execute(
                     """
                     SELECT id, word_ru, translation_de, word_de, translation_ru,
-                           source_lang, target_lang, folder_id, created_at, is_learned, response_json
+                           source_lang, target_lang, folder_id, created_at, updated_at, is_learned, response_json
                     FROM bt_3_webapp_dictionary_queries WHERE id = %s
                     """,
                     (int(entry_id),),
                 )
             else:
+                set_parts.append("updated_at = NOW()")
                 params.append(int(entry_id))
                 params.append(int(user_id))
                 cursor.execute(
@@ -14705,7 +14742,7 @@ def edit_vocabulary_entry(
                     SET {', '.join(set_parts)}
                     WHERE id = %s AND user_id = %s
                     RETURNING id, word_ru, translation_de, word_de, translation_ru,
-                              source_lang, target_lang, folder_id, created_at, is_learned, response_json
+                              source_lang, target_lang, folder_id, created_at, updated_at, is_learned, response_json
                     """,
                     params,
                 )
@@ -14722,8 +14759,9 @@ def edit_vocabulary_entry(
                 "target_lang": row[6] or "",
                 "folder_id": row[7],
                 "created_at": row[8].isoformat() if row[8] else None,
-                "is_learned": bool(row[9]),
-                "response_json": _coerce_json_object(row[10]),
+                "updated_at": row[9].isoformat() if row[9] else None,
+                "is_learned": bool(row[10]),
+                "response_json": _coerce_json_object(row[11]),
             }
 
 
@@ -14744,7 +14782,8 @@ def bulk_assign_vocabulary_folder(
                 cursor.execute(
                     f"""
                     UPDATE bt_3_webapp_dictionary_queries
-                    SET folder_id = NULL
+                    SET folder_id = NULL,
+                        updated_at = NOW()
                     WHERE user_id = %s AND id IN ({placeholders})
                     """,
                     params,
@@ -14754,7 +14793,8 @@ def bulk_assign_vocabulary_folder(
                 cursor.execute(
                     f"""
                     UPDATE bt_3_webapp_dictionary_queries
-                    SET folder_id = %s
+                    SET folder_id = %s,
+                        updated_at = NOW()
                     WHERE user_id = %s AND id IN ({placeholders})
                     """,
                     params,
@@ -23865,11 +23905,34 @@ def claim_next_ready_image_quiz_template(
     source_lang: str,
     target_lang: str,
 ) -> dict | None:
-    return claim_next_ready_template(
-        int(user_id),
-        str(source_lang or "").strip().lower() or "ru",
-        str(target_lang or "").strip().lower() or "de",
-    )
+    from backend.image_quiz_utils import validate_ready_image_quiz_template
+
+    normalized_user_id = int(user_id)
+    normalized_source_lang = str(source_lang or "").strip().lower() or "ru"
+    normalized_target_lang = str(target_lang or "").strip().lower() or "de"
+
+    for _ in range(8):
+        template = claim_next_ready_template(
+            normalized_user_id,
+            normalized_source_lang,
+            normalized_target_lang,
+        )
+        if not template:
+            return None
+        validation_error = validate_ready_image_quiz_template(template)
+        if not validation_error:
+            return template
+        mark_image_quiz_template_failed(
+            int(template.get("id") or 0),
+            last_error=f"ready_template_invalid:{validation_error}",
+            visual_status="rejected",
+            provider_name="image_quiz_runtime_guard",
+            provider_meta={
+                "stage": "ready_claim_validation",
+                "validation_error": validation_error,
+            },
+        )
+    return None
 
 
 def claim_next_blueprint_ready_template(

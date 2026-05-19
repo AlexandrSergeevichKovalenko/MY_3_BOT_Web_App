@@ -2636,6 +2636,7 @@ Task:
 - The final image must make target_text the single best and most natural label for the scene.
 - If target_text would not be the first natural label at a glance, the scene is invalid. Do not drift toward indirect hints or atmospheric cues.
 - Do not turn a concrete visible action into an abstract moral or personality label. If the viewer could naturally describe the same image with a simpler visible action, event, or object, then target_text is not valid for this image quiz.
+- Reject relation-only or comparison-only answers that depend on an absent reference person or hidden comparison, for example phrases like "anstelle von Heinz", "statt Heinz", "im Gegensatz zu ...", "anders als ...". If the viewer cannot verify the relation directly from one image, the target is invalid.
 - Avoid answers like "der gesetzestreue Mann", "die höfliche Frau", or similar person-trait labels unless the target itself is visually explicit and no simpler concrete action label would fit.
 - Produce one detailed image prompt describing the exact visible scene, composition, lighting, subjects, relevant objects, and action.
 - Favor educational clarity over artistic experimentation.
@@ -2644,6 +2645,7 @@ Task:
 - The other 3 must be plausible near-synonyms or semantically adjacent concepts — close enough to be tempting, but clearly wrong for this exact scene.
 - Wrong options must be genuinely wrong for the depicted scene, not merely less precise or based on a second plausible interpretation.
 - Keep options short: usually 1–5 words.
+- Keep all 4 options in the same answer format. Do not mix full sentences with short noun/prepositional phrases in one quiz.
 - Place the correct option at a RANDOM position: pick correct_option_index from 0, 1, 2, or 3 with roughly equal probability. NEVER default to 0 — vary the position each time.
 - Write question_de as a specific, scene-relevant question that tests the exact word/concept. Do NOT use the generic "Was zeigt das Bild?" — instead craft something like:
     * "Welche Situation ist hier dargestellt?"

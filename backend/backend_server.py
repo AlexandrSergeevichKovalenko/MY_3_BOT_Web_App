@@ -12261,6 +12261,7 @@ def _count_words(value: str | None) -> int:
 
 
 _CYRILLIC_RE = re.compile(r"[А-Яа-яЁё]")
+_LATIN_RE = re.compile(r"[A-Za-zÄÖÜäöüßÀ-ÿ]")
 _GERMAN_OPTION_RE = re.compile(
     r"^[A-Za-zÄÖÜäöüß]+(?:-[A-Za-zÄÖÜäöüß]+)?(?: [A-Za-zÄÖÜäöüß]+(?:-[A-Za-zÄÖÜäöüß]+)?){0,3}$"
 )
@@ -12281,6 +12282,70 @@ _AUX_SEIN_FORMS = {
     "gewesen", "seiend",
 }
 _BLOCKED_AUX_VERB_FORMS = _AUX_HABEN_FORMS | _AUX_SEIN_FORMS
+
+
+def _normalize_comparable_dictionary_text(value: str | None) -> str:
+    normalized = _normalize_space(value).lower()
+    normalized = re.sub(r"[“”„«»\"'`]+", "", normalized)
+    normalized = re.sub(r"[–—−]", "-", normalized)
+    normalized = re.sub(r"[^0-9A-Za-zÀ-ÿА-Яа-яЁёÄÖÜäöüß\s-]+", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _dictionary_text_looks_compatible_with_lang(value: str | None, lang: str | None) -> bool:
+    text = _normalize_space(value)
+    normalized_lang = _normalize_short_lang_code(lang, fallback="")
+    if not text or not normalized_lang:
+        return False
+    if normalized_lang in {"ru", "uk", "be", "bg", "sr", "mk"}:
+        return _CYRILLIC_RE.search(text) is not None
+    return _LATIN_RE.search(text) is not None and _CYRILLIC_RE.search(text) is None
+
+
+def _looks_like_embedded_dictionary_source(candidate_text: str | None, source_text: str | None) -> bool:
+    candidate = _normalize_comparable_dictionary_text(candidate_text)
+    source = _normalize_comparable_dictionary_text(source_text)
+    if not candidate or not source:
+        return False
+    if candidate == source or source.startswith(candidate) or candidate.startswith(source):
+        return True
+    candidate_tokens = [token for token in candidate.split(" ") if token]
+    if len(candidate_tokens) < 3:
+        return False
+    source_tokens = {token for token in source.split(" ") if token}
+    overlap = sum(1 for token in candidate_tokens if token in source_tokens)
+    return overlap >= max(2, math.ceil(len(candidate_tokens) * 0.7))
+
+
+def _sanitize_bilingual_dictionary_target(
+    source_text: str | None,
+    target_text: str | None,
+    target_lang: str | None,
+) -> str:
+    source = _normalize_space(source_text)
+    target = _normalize_space(target_text)
+    normalized_target_lang = _normalize_short_lang_code(target_lang, fallback="")
+    if not source or not target or not normalized_target_lang:
+        return target
+    for separator in (" → ", " — ", " – ", " - "):
+        split_index = target.find(separator)
+        if split_index <= 0:
+            continue
+        left = _normalize_space(target[:split_index])
+        right = _normalize_space(target[split_index + len(separator):])
+        if not left or not right:
+            continue
+        if (
+            _looks_like_embedded_dictionary_source(left, source)
+            and _dictionary_text_looks_compatible_with_lang(right, normalized_target_lang)
+        ):
+            return right
+        if (
+            _looks_like_embedded_dictionary_source(right, source)
+            and _dictionary_text_looks_compatible_with_lang(left, normalized_target_lang)
+        ):
+            return left
+    return target
 
 
 def _looks_like_german_sentence(value: str | None) -> bool:
@@ -33312,6 +33377,15 @@ def save_webapp_dictionary_entry():
         translation_de=translation_de,
         translation_ru=translation_ru,
     )
+    sanitized_target_text = _sanitize_bilingual_dictionary_target(source_text, target_text, target_lang)
+    if sanitized_target_text:
+        target_text = sanitized_target_text
+        if source_lang == "de" and target_lang == "ru":
+            translation_ru = _sanitize_bilingual_dictionary_target(source_text, translation_ru or target_text, target_lang) or target_text
+            word_ru = _sanitize_bilingual_dictionary_target(source_text, word_ru or target_text, target_lang) or target_text
+        elif source_lang == "ru" and target_lang == "de":
+            translation_de = _sanitize_bilingual_dictionary_target(source_text, translation_de or target_text, target_lang) or target_text
+            word_de = _sanitize_bilingual_dictionary_target(source_text, word_de or target_text, target_lang) or target_text
 
     if folder_id is None:
         try:
@@ -33482,6 +33556,15 @@ def save_mobile_dictionary_entry():
         translation_de=translation_de,
         translation_ru=translation_ru,
     )
+    sanitized_target_text = _sanitize_bilingual_dictionary_target(source_text, target_text, target_lang)
+    if sanitized_target_text:
+        target_text = sanitized_target_text
+        if source_lang == "de" and target_lang == "ru":
+            translation_ru = _sanitize_bilingual_dictionary_target(source_text, translation_ru or target_text, target_lang) or target_text
+            word_ru = _sanitize_bilingual_dictionary_target(source_text, word_ru or target_text, target_lang) or target_text
+        elif source_lang == "ru" and target_lang == "de":
+            translation_de = _sanitize_bilingual_dictionary_target(source_text, translation_de or target_text, target_lang) or target_text
+            word_de = _sanitize_bilingual_dictionary_target(source_text, word_de or target_text, target_lang) or target_text
 
     if folder_id is None:
         try:
@@ -34231,6 +34314,7 @@ def webapp_vocabulary_list():
     sort = str(payload.get("sort") or "date_desc").strip()
     limit = max(1, min(100, int(payload.get("limit") or 50)))
     offset = max(0, int(payload.get("offset") or 0))
+    updated_since = _parse_iso_datetime(payload.get("updated_since"))
 
     try:
         result = list_user_vocabulary(
@@ -34240,6 +34324,7 @@ def webapp_vocabulary_list():
             sort=sort,
             limit=limit,
             offset=offset,
+            updated_since=updated_since,
         )
         folders_data = get_vocabulary_folders_with_counts(user_id=user_id)
     except Exception as exc:
@@ -40588,7 +40673,12 @@ def start_webapp_translation():
     init_data = payload.get("initData")
     topic = (payload.get("topic") or "Random sentences").strip()
     custom_focus = str(payload.get("custom_focus") or "").strip()
-    level = str(payload.get("level") or "c1").strip().lower() or "c1"
+    valid_translation_levels = {"a1", "a2", "b1", "b2", "c1", "c2"}
+    level = str(payload.get("level") or "").strip().lower()
+    if not level:
+        return jsonify({"error": "level обязателен"}), 400
+    if level not in valid_translation_levels:
+        return jsonify({"error": "Некорректный level"}), 400
     force_new_session = bool(payload.get("force_new_session"))
     auth_resolution_started_perf = time.perf_counter()
 
