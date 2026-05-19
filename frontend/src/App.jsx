@@ -5173,7 +5173,7 @@ function AppInner() {
   const [topicsError, setTopicsError] = useState('');
   const [selectedTopic, setSelectedTopic] = useState('🧱 V2 в главном предложении');
   const [customTopicInput, setCustomTopicInput] = useState('');
-  const [selectedLevel, setSelectedLevel] = useState('c1');
+  const [selectedLevel, setSelectedLevel] = useState('b1');
   const [uiLang, setUiLang] = useState('ru');
   const [themeMode, setThemeMode] = useState(() => resolveExternalThemeMode(window.Telegram?.WebApp));
   const [themeModeOverride, setThemeModeOverride] = useState(null);
@@ -5286,10 +5286,10 @@ function AppInner() {
     return observed.reduce((best, current) => (rank[current] > rank[best] ? current : best), observed[0]);
   }, []);
   const maxTranslationRecommendationLevel = useCallback((...levels) => {
-    const rank = { a2: 1, b1: 2, b2: 3, c1: 4, c2: 5 };
+    const rank = { a1: 1, a2: 2, b1: 3, b2: 4, c1: 5, c2: 6 };
     const normalized = levels
       .map((value) => String(value || '').trim().toLowerCase())
-      .filter((value) => ['a2', 'b1', 'b2', 'c1', 'c2'].includes(value));
+      .filter((value) => ['a1', 'a2', 'b1', 'b2', 'c1', 'c2'].includes(value));
     if (!normalized.length) return 'b1';
     return normalized.reduce((best, current) => (rank[current] > rank[best] ? current : best), normalized[0]);
   }, []);
@@ -5313,7 +5313,6 @@ function AppInner() {
       payload?.recommended_level,
       payload?.level,
       inferTranslationRecommendationLevelFloor(reasonExamples),
-      selectedLevel || 'b1',
     );
     const skillTitle = String(payload?.skill_title || '').trim();
     const subCategory = String(payload?.sub_category || '').trim();
@@ -5346,7 +5345,7 @@ function AppInner() {
         .slice(0, 2),
       createdAt: Date.now(),
     };
-  }, [inferTranslationRecommendationLevelFloor, maxTranslationRecommendationLevel, selectedLevel, tr, uiLang]);
+  }, [inferTranslationRecommendationLevelFloor, maxTranslationRecommendationLevel, tr, uiLang]);
   const applyTodayTranslationRecommendation = useCallback(() => {
     if (!todayTranslationRecommendation) return;
     const recommendedLevel = String(todayTranslationRecommendation?.level || '').trim().toLowerCase();
@@ -18627,6 +18626,8 @@ function AppInner() {
   }, [movies, moviesLanguageFilter]);
   function getDictionarySourceTarget(item, direction = dictionaryDirection) {
     if (!item) return { sourceText: '', targetText: '' };
+    const directionParts = String(direction || '').trim().toLowerCase().split('-', 2);
+    const targetLang = directionParts.length === 2 ? directionParts[1] : '';
     const sourceTextRaw = String(
       item.source_text
       || (direction === 'de-ru'
@@ -18641,7 +18642,8 @@ function AppInner() {
         : (item.translation_de || item.word_de || ''))
       || ''
     ).trim();
-    return applyArticleForDirection(sourceTextRaw, targetTextRaw, direction, item);
+    const targetText = sanitizeBilingualTargetText(sourceTextRaw, targetTextRaw, targetLang);
+    return applyArticleForDirection(sourceTextRaw, targetText, direction, item);
   }
   function getDictionaryDisplayedTranslation(item, direction = dictionaryDirection) {
     const { sourceText, targetText } = getDictionarySourceTarget(item, direction);
@@ -18743,7 +18745,18 @@ function AppInner() {
   };
   const getSavedEntrySenseValues = (item) => {
     const meanings = getSavedEntryRankedMeanings(item);
-    const primaryFallback = String(item?.translation_ru || item?.translation_de || item?.display_translation || '').trim();
+    const responseJson = item?.response_json && typeof item.response_json === 'object' ? item.response_json : {};
+    const sourceText = String(
+      responseJson.source_text
+      || item?.word_ru
+      || responseJson.word_ru
+      || item?.word_de
+      || responseJson.word_de
+      || ''
+    ).trim();
+    const targetLang = item?.target_lang || responseJson.target_lang || '';
+    const primaryFallbackRaw = String(item?.translation_ru || item?.translation_de || item?.display_translation || '').trim();
+    const primaryFallback = sanitizeBilingualTargetText(sourceText, primaryFallbackRaw, targetLang);
     return [
       String(meanings[0]?.value || primaryFallback).trim(),
       String(meanings[1]?.value || '').trim(),
@@ -18921,6 +18934,57 @@ function AppInner() {
   const hasLatin = (value) => /[A-Za-zÄÖÜäöüßÀ-ÿ]/.test(value || '');
   const cyrillicLangs = new Set(['ru', 'uk', 'be', 'bg', 'sr', 'mk']);
   const isCyrillicLang = (lang) => cyrillicLangs.has(String(lang || '').toLowerCase());
+  const normalizeComparableTranslationText = (value) => normalizeSelectionText(value)
+    .toLocaleLowerCase()
+    .replace(/[“”„«»"'`]/g, '')
+    .replace(/[–—−]/g, '-')
+    .replace(/[^0-9A-Za-zÀ-ÿА-Яа-яЁёÄÖÜäöüß\s-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const getComparableTranslationTokens = (value) => normalizeComparableTranslationText(value)
+    .split(' ')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const looksLikeEmbeddedSourceText = (candidateText, sourceText) => {
+    const candidate = normalizeComparableTranslationText(candidateText);
+    const source = normalizeComparableTranslationText(sourceText);
+    if (!candidate || !source) return false;
+    if (candidate === source || source.startsWith(candidate) || candidate.startsWith(source)) {
+      return true;
+    }
+    const candidateTokens = getComparableTranslationTokens(candidate);
+    if (candidateTokens.length < 3) return false;
+    const sourceTokens = new Set(getComparableTranslationTokens(source));
+    const overlap = candidateTokens.filter((token) => sourceTokens.has(token)).length;
+    return overlap >= Math.max(2, Math.ceil(candidateTokens.length * 0.7));
+  };
+  const textLooksCompatibleWithTargetLang = (value, lang) => {
+    const text = normalizeSelectionText(value);
+    if (!text) return false;
+    if (isCyrillicLang(lang)) return hasCyrillic(text);
+    return hasLatin(text) && !hasCyrillic(text);
+  };
+  const sanitizeBilingualTargetText = (sourceText, rawTargetText, targetLang) => {
+    const source = normalizeSelectionText(sourceText);
+    const target = normalizeSelectionText(rawTargetText);
+    const normalizedTargetLang = normalizeLangCode(targetLang || '');
+    if (!source || !target || !normalizedTargetLang) return target;
+    const separators = [' → ', ' — ', ' – ', ' - '];
+    for (const separator of separators) {
+      const splitIndex = target.indexOf(separator);
+      if (splitIndex <= 0) continue;
+      const left = normalizeSelectionText(target.slice(0, splitIndex));
+      const right = normalizeSelectionText(target.slice(splitIndex + separator.length));
+      if (!left || !right) continue;
+      if (looksLikeEmbeddedSourceText(left, source) && textLooksCompatibleWithTargetLang(right, normalizedTargetLang)) {
+        return right;
+      }
+      if (looksLikeEmbeddedSourceText(right, source) && textLooksCompatibleWithTargetLang(left, normalizedTargetLang)) {
+        return left;
+      }
+    }
+    return target;
+  };
 
   const handleSelection = (event, overrideText = '', options = {}) => {
     const text = overrideText || normalizeSelectionText(window.getSelection()?.toString() || '');
@@ -19072,9 +19136,10 @@ function AppInner() {
         throw new Error(await readApiError(response, 'Ошибка быстрого перевода', 'Fehler bei Schnelluebersetzung'));
       }
       const data = await response.json();
+      const rawTranslation = String(data?.translation || '').trim();
       const payload = {
         cleaned,
-        translation: String(data?.translation || '').trim(),
+        translation: sanitizeBilingualTargetText(cleaned, rawTranslation, targetLang),
         provider: String(data?.provider || '').trim(),
         sourceLangHint,
         targetLang,
@@ -19440,6 +19505,7 @@ function AppInner() {
     const resolvedSourceLang = normalizeLangCode(sourceLang || pair.source_lang) || pair.source_lang;
     const resolvedTargetLang = normalizeLangCode(targetLang || pair.target_lang) || pair.target_lang;
     const resolvedDirection = String(direction || `${resolvedSourceLang}-${resolvedTargetLang}`).trim().toLowerCase();
+    const sanitizedTarget = sanitizeBilingualTargetText(source, target, resolvedTargetLang);
     const isLegacyPair = pair.source_lang === 'ru' && pair.target_lang === 'de' && isLegacyRuDeDirection(resolvedDirection);
     const response = await fetch('/api/webapp/dictionary/save', {
       method: 'POST',
@@ -19448,14 +19514,14 @@ function AppInner() {
         initData,
         word_ru: isLegacyPair && resolvedDirection === 'ru-de' ? source : '',
         word_de: isLegacyPair && resolvedDirection === 'de-ru' ? source : '',
-        translation_de: isLegacyPair && resolvedDirection === 'ru-de' ? target : '',
-        translation_ru: isLegacyPair && resolvedDirection === 'de-ru' ? target : '',
+        translation_de: isLegacyPair && resolvedDirection === 'ru-de' ? sanitizedTarget : '',
+        translation_ru: isLegacyPair && resolvedDirection === 'de-ru' ? sanitizedTarget : '',
         source_text: source,
-        target_text: target,
+        target_text: sanitizedTarget,
         response_json: {
           ...(responseJson && typeof responseJson === 'object' ? responseJson : {}),
           source_text: source,
-          target_text: target,
+          target_text: sanitizedTarget,
           source_lang: resolvedSourceLang,
           target_lang: resolvedTargetLang,
           direction: resolvedDirection,
@@ -30179,7 +30245,11 @@ function AppInner() {
                                   const dotColor = srsColors[item.srs_label] || srsColors.none;
                                   const folder = (vocabFoldersMeta?.folders || []).find((f) => f.id === item.folder_id);
                                   const displayWord = item.display_word || item.word_de || item.word_ru || '—';
-                                  const displayTrans = item.display_translation || item.translation_ru || item.translation_de || '';
+                                  const displayTrans = sanitizeBilingualTargetText(
+                                    displayWord,
+                                    item.display_translation || item.translation_ru || item.translation_de || '',
+                                    item.target_lang || '',
+                                  );
                                   const savedMeanings = getSavedEntryRankedMeanings(item);
                                   const partOfSpeech = item.srs_label !== 'none'
                                     ? `${srsLabels[item.srs_label]} · ${tr('повт.', 'Wdh.')} ${item.srs_reps}`
@@ -33943,21 +34013,29 @@ function AppInner() {
                   {selectionText}
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: isInlineSelectionMenu ? '1fr' : '1fr 1fr', gap: 6 }}>
-                  {!isInlineSelectionMenu && (
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={() => {
-                      const { sourceLangHint } = resolveQuickTranslateParams(selectionText);
-                      void playTts(selectionText, sourceLangHint || 'de');
-                    }}
-                    style={{ minHeight: 32, padding: '6px 8px', fontSize: 12 }}
-                    aria-label={tr('Воспроизвести', 'Abspielen')}
-                    title={tr('Воспроизвести', 'Abspielen')}
-                  >
-                    <span aria-hidden="true" style={{ fontSize: 14 }}>▶</span>
-                  </button>
-                  )}
+                  {!isInlineSelectionMenu && (() => {
+                    const selTtsKey = 'selection-menu-play';
+                    const selTtsLoading = isTtsPending(selTtsKey);
+                    return (
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => {
+                        const { sourceLangHint } = resolveQuickTranslateParams(selectionText);
+                        void playTtsWithUi(selTtsKey, selectionText, sourceLangHint || 'de');
+                      }}
+                      disabled={selTtsLoading}
+                      style={{ minHeight: 32, padding: '6px 8px', fontSize: 12 }}
+                      aria-label={tr('Воспроизвести', 'Abspielen')}
+                      title={tr('Воспроизвести', 'Abspielen')}
+                    >
+                      {selTtsLoading
+                        ? <span className="tts-mini-spinner" aria-hidden="true" />
+                        : <span aria-hidden="true" style={{ fontSize: 14 }}>▶</span>
+                      }
+                    </button>
+                    );
+                  })()}
                   <button
                     type="button"
                     className="secondary-button"
