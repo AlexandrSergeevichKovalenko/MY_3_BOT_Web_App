@@ -15,6 +15,8 @@ import {
   getCachedVocab,
   getVocabCacheMeta,
   getCachedFolderStats,
+  getCachedVocabSyncStats,
+  reconcileCachedFolderEntries,
   deleteCachedVocabEntry,
   updateCachedVocabEntry,
   saveSrsQueue,
@@ -8536,7 +8538,7 @@ function AppInner() {
           due_count: dueCount - 1,
           new_remaining_today: newRemaining,
           due_count_total: Math.max(0, dueCountTotal - 1),
-          due_reviewed_today: dueReviewedToday,
+          due_reviewed_today: Math.min(dueReviewedToday + 1, dueLimitToday),
           due_limit_today: dueLimitToday,
         };
       }
@@ -8545,7 +8547,7 @@ function AppInner() {
           due_count: dueCount,
           new_remaining_today: newRemaining - 1,
           due_count_total: dueCountTotal,
-          due_reviewed_today: dueReviewedToday,
+          due_reviewed_today: Math.min(dueReviewedToday + 1, dueLimitToday),
           due_limit_today: dueLimitToday,
         };
       }
@@ -22013,41 +22015,134 @@ function AppInner() {
     setFolderContextMenu(null);
     setFolderTtsJob({ folderId, folderName: folder.name, total: 0, done: 0, status: 'loading', cancelRef });
     try {
-      let offset = 0;
-      let folderTotal = Infinity;
-      while (offset < folderTotal) {
-        if (cancelRef.cancelled) return;
+      const fetchVocabPage = async ({ folderId: requestFolderId = null, offset = 0, updatedSince = null, sort = 'updated_asc' }) => {
         const resp = await fetchWithTimeout('/api/webapp/vocabulary/list', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ initData, folder_id: folderId, search: null, sort: 'date_desc', limit: 100, offset }),
+          body: JSON.stringify({
+            initData,
+            folder_id: requestFolderId,
+            search: null,
+            sort,
+            limit: 100,
+            offset,
+            updated_since: updatedSince || null,
+          }),
         }, 15000);
         if (!resp.ok) {
-          throw new Error(await readApiError(resp,
+          throw new Error(await readApiError(
+            resp,
             'Не удалось загрузить слова папки.',
             'Die Wörter des Ordners konnten nicht geladen werden.'
           ));
         }
-        const data = await resp.json();
-        const page = Array.isArray(data?.items) ? data.items : [];
-        folderTotal = Math.max(0, Number(data?.total || 0));
-        if (offset === 0) setFolderTtsJob((prev) => prev ? { ...prev, total: folderTotal } : null);
-        if (page.length > 0) {
-          // Pass true total (all folders) so meta isn't corrupted
-          const trueTotalForMeta = Number(vocabFoldersMeta?.total_count || folderTotal);
-          await saveVocabBatch(userId, page, trueTotalForMeta);
+        return resp.json();
+      };
+
+      const syncChangedVocabularySince = async (updatedSince) => {
+        if (!updatedSince) return 0;
+        let offset = 0;
+        let changedTotal = Infinity;
+        let changedLoaded = 0;
+        while (offset < changedTotal) {
+          if (cancelRef.cancelled) return changedLoaded;
+          const data = await fetchVocabPage({ offset, updatedSince, sort: 'updated_asc' });
+          const page = Array.isArray(data?.items) ? data.items : [];
+          changedTotal = Math.max(0, Number(data?.total || 0));
+          if (page.length > 0) {
+            const trueTotalForMeta = Number(vocabFoldersMeta?.total_count || data?.folders_meta?.total_count || 0);
+            await saveVocabBatch(userId, page, trueTotalForMeta);
+          }
+          offset += page.length;
+          changedLoaded += page.length;
+          if (page.length === 0) break;
+          if (offset < changedTotal) await new Promise((r) => setTimeout(r, 60));
         }
-        offset += page.length;
-        setFolderTtsJob((prev) => prev ? { ...prev, done: Math.min(folderTotal, offset) } : null);
-        if (page.length === 0) break;
-        if (offset < folderTotal) await new Promise((r) => setTimeout(r, 100));
+        return changedLoaded;
+      };
+
+      const fullSyncFolder = async (folderTotalHint = 0) => {
+        let offset = 0;
+        let folderTotal = Math.max(0, Number(folderTotalHint || 0));
+        const keepIds = [];
+        setFolderTtsJob((prev) => prev ? { ...prev, total: folderTotal, done: 0 } : null);
+        while (offset < Math.max(folderTotal, 1)) {
+          if (cancelRef.cancelled) return { folderTotal, keepIds };
+          const data = await fetchVocabPage({ folderId, offset, sort: 'updated_asc' });
+          const page = Array.isArray(data?.items) ? data.items : [];
+          folderTotal = Math.max(0, Number(data?.total || 0));
+          if (page.length > 0) {
+            const trueTotalForMeta = Number(vocabFoldersMeta?.total_count || data?.folders_meta?.total_count || folderTotal);
+            await saveVocabBatch(userId, page, trueTotalForMeta);
+            keepIds.push(...page.map((item) => Number(item?.id)).filter((id) => Number.isFinite(id) && id > 0));
+          }
+          offset += page.length;
+          setFolderTtsJob((prev) => prev ? { ...prev, total: folderTotal, done: Math.min(folderTotal, offset) } : null);
+          if (page.length === 0) break;
+          if (offset < folderTotal) await new Promise((r) => setTimeout(r, 100));
+        }
+        await reconcileCachedFolderEntries(userId, folderId, keepIds);
+        return { folderTotal, keepIds };
+      };
+
+      const localStatsBefore = await getCachedVocabSyncStats(userId, folderId);
+      const metaPage = await fetchVocabPage({ folderId, offset: 0, sort: 'updated_desc' });
+      const remoteFolderTotal = Math.max(0, Number(metaPage?.total || 0));
+      setFolderTtsJob((prev) => prev ? {
+        ...prev,
+        total: remoteFolderTotal,
+        done: Math.min(remoteFolderTotal, Number(localStatsBefore?.folderCount || 0)),
+      } : null);
+
+      const shouldFullSyncImmediately = (
+        Number(localStatsBefore?.totalCount || 0) <= 0
+        || Number(localStatsBefore?.folderCount || 0) <= 0
+        || !String(localStatsBefore?.latestUpdatedAt || '').trim()
+        || Number(localStatsBefore?.folderCount || 0) > remoteFolderTotal
+      );
+
+      if (shouldFullSyncImmediately) {
+        const fullResult = await fullSyncFolder(remoteFolderTotal);
+        setFolderTtsJob((prev) => prev ? {
+          ...prev,
+          total: fullResult.folderTotal,
+          done: fullResult.folderTotal,
+          status: 'done',
+        } : null);
+        setTimeout(() => setFolderTtsJob(null), 4000);
+        return;
       }
-      setFolderTtsJob((prev) => prev ? { ...prev, status: 'done' } : null);
+
+      await syncChangedVocabularySince(localStatsBefore.latestUpdatedAt);
+      const localStatsAfter = await getCachedVocabSyncStats(userId, folderId);
+
+      if (Number(localStatsAfter?.folderCount || 0) !== remoteFolderTotal) {
+        const fullResult = await fullSyncFolder(remoteFolderTotal);
+        setFolderTtsJob((prev) => prev ? {
+          ...prev,
+          total: fullResult.folderTotal,
+          done: fullResult.folderTotal,
+          status: 'done',
+        } : null);
+      } else {
+        setFolderTtsJob((prev) => prev ? {
+          ...prev,
+          total: remoteFolderTotal,
+          done: remoteFolderTotal,
+          status: 'done',
+        } : null);
+      }
       setTimeout(() => setFolderTtsJob(null), 4000);
     } catch (err) {
       setFolderTtsJob((prev) => prev ? { ...prev, status: 'error', error: String(err?.message || err) } : null);
     }
-  }, [initData, fetchWithTimeout, readApiError, webappUser?.id, vocabFoldersMeta?.total_count]);
+  }, [
+    initData,
+    fetchWithTimeout,
+    readApiError,
+    webappUser?.id,
+    vocabFoldersMeta?.total_count,
+  ]);
 
   const persistManualTrainingSelection = useCallback(async () => {
     if (manualTrainingSelectionCount <= 0) {
