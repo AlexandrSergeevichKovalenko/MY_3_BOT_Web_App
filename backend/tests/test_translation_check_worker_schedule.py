@@ -1,6 +1,7 @@
 import os
 import unittest
 from datetime import datetime
+from unittest.mock import Mock
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -60,6 +61,14 @@ class TranslationCheckWorkerScheduleTests(unittest.TestCase):
             "can_redeploy": can_redeploy,
         }
 
+    def _response(self, *, payload: dict, status_code: int = 200) -> Mock:
+        response = Mock()
+        response.content = b"1"
+        response.json.return_value = payload
+        response.raise_for_status.side_effect = None
+        response.status_code = status_code
+        return response
+
     def test_schedule_windows_and_vienna_state(self) -> None:
         windows = get_translation_check_worker_schedule_windows()
         self.assertEqual([window.label() for window in windows], ["06:30-00:30"])
@@ -105,6 +114,37 @@ class TranslationCheckWorkerScheduleTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertTrue(result["dry_run"])
         self.assertEqual(result["method"], "serviceInstanceRedeploy")
+
+    def test_graphql_retries_with_project_token_header_when_bearer_is_not_authorized(self) -> None:
+        unauthorized = self._response(
+            payload={"errors": [{"message": "Not Authorized"}]},
+        )
+        authorized = self._response(
+            payload={"data": {"serviceInstance": {"id": "svc"}}},
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "TRANSLATION_CHECK_WORKER_RAILWAY_PROJECT_TOKEN": "",
+                "TRANSLATION_CHECK_WORKER_RAILWAY_API_TOKEN": "shared-token",
+                "AGENT_WORKER_RAILWAY_API_TOKEN": "",
+                "RAILWAY_API_TOKEN": "",
+            },
+            clear=False,
+        ), patch("backend.translation_check_worker_schedule.requests.post", side_effect=[unauthorized, authorized]) as post_mock:
+            payload = __import__(
+                "backend.translation_check_worker_schedule",
+                fromlist=["_railway_graphql"],
+            )._railway_graphql(
+                "query Test { serviceInstance { id } }",
+                {},
+            )
+        self.assertEqual(payload, {"serviceInstance": {"id": "svc"}})
+        self.assertEqual(post_mock.call_count, 2)
+        first_headers = post_mock.call_args_list[0].kwargs["headers"]
+        second_headers = post_mock.call_args_list[1].kwargs["headers"]
+        self.assertIn("Authorization", first_headers)
+        self.assertEqual(second_headers.get("Project-Access-Token"), "shared-token")
 
     def test_reconcile_inside_window_ensures_start(self) -> None:
         now = datetime(2026, 5, 7, 7, 0, tzinfo=ZoneInfo("Europe/Vienna"))
