@@ -33667,15 +33667,13 @@ _SHORTCUT_LANGUAGE_PAIRS = [
 
 
 # ---------------------------------------------------------------------------
-# Shortcut text splitting — fully LLM-driven, zero mechanical logic
+# Shortcut text splitting — clean learnable units only
 # ---------------------------------------------------------------------------
 #
-# The LLM returns both the clean lookup term AND the full verbatim block for
-# each entry in one shot. No post-processing, no regex, no heuristics.
+# The LLM returns one clean learning unit per block.
 # Format: {"blocks": [{"term": "...", "content": "..."}, ...]}
-#   term    — the bare learning target (word / phrase / construction) as the
-#             LLM understands it linguistically, ready for the translation API
-#   content — the full verbatim block: examples, notes, corrections, all of it
+#   term    — canonical lookup unit for translation and save actions
+#   content — clean display form of the same unit, without commentary or glosses
 # ---------------------------------------------------------------------------
 
 _SHORTCUT_SPLIT_PROMPT_PRIMARY = """\
@@ -33683,9 +33681,9 @@ You are an expert linguist working inside a language-learning application.
 
 PURPOSE:
 The user copied vocabulary learning material and wants to save useful items \
-to their personal dictionary. You must extract only the units that have \
-real learning value — words, phrases, and complete natural sentences. \
-Each extracted unit will be translated and saved as a vocabulary card.
+to their personal dictionary. You must extract only clean learnable units: \
+single words, fixed phrases, grammatical constructions, and complete natural \
+sentences. Each extracted unit will be translated and saved as a vocabulary card.
 
 THE CORE QUESTION FOR EVERY PIECE OF TEXT:
 "Would a language learner want to translate this and save it to their dictionary?"
@@ -33700,6 +33698,10 @@ WHAT TO EXTRACT — LEARNABLE UNITS ONLY:
   C) A ✗/✓ correction pair — both the wrong and correct form together as ONE block.
 
 WHAT TO DISCARD — NOT LEARNABLE UNITS:
+  • Section titles and topic headers.
+  • Explanations ABOUT the unit instead of the unit itself.
+  • Translation glosses in another language, e.g. "(Мне уже пора)".
+  • Dialogue commentary around the unit if the unit itself can stand alone.
   • Morphological breakdowns in parentheses: "(er- fügt den Aspekt hinzu: …)", \
     "(aus = out + drücken = press → to express)". These explain word structure but \
     are NOT independently translatable or storable as vocabulary.
@@ -33707,31 +33709,37 @@ WHAT TO DISCARD — NOT LEARNABLE UNITS:
     what a prefix historically meant.
   • Metalinguistic commentary: notes ABOUT the language rather than IN the language, \
     valency tables, case government descriptions written as annotations.
-  • Parenthetical glosses that are incomplete fragments: "(meaning: …)", \
-    "(literally: …)" without a full sentence structure.
+  • Parenthetical glosses and quoted explanations.
   • Any fragment that, translated in isolation, would produce a meaningless result \
     with no dictionary value.
 
 BOTH FIELDS PER BLOCK:
   "term"    — canonical form: bare infinitive for verbs, nominative singular for \
                nouns, the full sentence for sentence blocks.
-  "content" — the exact verbatim text of this unit from the input.
+  "content" — the clean display text of the SAME unit only.
+
+STRICT CLEANUP RULES:
+— Remove surrounding quotes, bullets, numbering, slashes, and dangling dashes.
+— Remove translations, glosses, explanations, and commentary.
+— Keep only the actual learnable unit.
+— In normal cases, "term" and "content" should be identical or nearly identical.
 
 SELF-CHECK BEFORE OUTPUTTING:
 — Every extracted block passes the "would I save this to a dictionary?" test
 — No block is a morphological annotation or parenthetical comment about word structure
 — No block mixes a bare word with its example sentences
-— All genuinely learnable words and sentences from the input are represented
+— No block contains translations, glosses, or explanatory prose
+— All genuinely learnable words, phrases, and sentences from the input are represented
 
 Return ONLY valid JSON — no markdown, no explanation:
-{"blocks": [{"term": "unit 1", "content": "verbatim unit 1"}, ...]}"""
+{"blocks": [{"term": "unit 1", "content": "clean unit 1"}, ...]}"""
 
 _SHORTCUT_SPLIT_PROMPT_FALLBACK = """\
 You are a senior computational linguist specialising in second-language acquisition.
 
-The text contains vocabulary learning material. Your task: extract only the units \
-that a learner would want to translate into another language and save to their \
-personal vocabulary dictionary. Each result block becomes a dictionary card.
+The text contains vocabulary learning material. Your task: extract only the clean \
+units that a learner would want to translate and save to their personal dictionary. \
+Each result block becomes one dictionary card.
 
 STEP 1 — APPLY THE LEARNER VALUE TEST:
 For every piece of text in the input ask: \
@@ -33744,6 +33752,8 @@ For every piece of text in the input ask: \
     These are metalinguistic explanations about word structure, not learnable items.
   DISCARD — prefix / root / suffix analyses, valency descriptions, register labels \
     written as annotations rather than as natural sentences.
+  DISCARD — translations and glosses in another language
+  DISCARD — topic headings and explanatory prose
   DISCARD — any fragment that would yield no meaningful dictionary entry if translated.
 
 STEP 2 — ONE BLOCK PER ATOMIC UNIT (from what survived Step 1):
@@ -33754,15 +33764,34 @@ STEP 2 — ONE BLOCK PER ATOMIC UNIT (from what survived Step 1):
 
 STEP 3 — FILL BOTH FIELDS:
   "term"    — canonical form: bare infinitive / nominative / full sentence as appropriate.
-  "content" — exact verbatim text of this unit from the input.
+  "content" — clean visible text of the same unit only.
+
+STEP 3A — CLEAN THE UNIT:
+• remove surrounding quotes and bullets
+• remove parenthetical translations and glosses
+• remove explanatory commentary before/after the unit
+• do not include examples together with the main word/phrase
 
 STEP 4 — VALIDATE:
 • Every block has genuine dictionary value — a learner would save it
 • No block is a morphological note or parenthetical metalinguistic comment
 • No block mixes a bare word with complete sentences
 • No ✗/✓ pair is split
+• No block contains commentary, glosses, or translations
 
 Output ONLY: {"blocks": [{"term": "...", "content": "..."}, ...]}"""
+
+
+def _shortcut_normalize_unit_text(text: str) -> str:
+    cleaned = str(text or "").replace("\u00a0", " ").strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = re.sub(r"^[•▪◦●■▸▹▶►*]+\s*", "", cleaned)
+    cleaned = re.sub(r"^\d+[\.)]\s*", "", cleaned)
+    for left, right in (('"', '"'), ("'", "'"), ("«", "»"), ("“", "”"), ("„", "“")):
+        if cleaned.startswith(left) and cleaned.endswith(right) and len(cleaned) > 2:
+            cleaned = cleaned[len(left):-len(right)].strip()
+    cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+    return cleaned.strip()
 
 
 def _shortcut_dedup_check(user_id: int, text: str) -> bool:
@@ -33780,13 +33809,16 @@ def _shortcut_dedup_check(user_id: int, text: str) -> bool:
 
 
 def _shortcut_validate_coverage(blocks: list[tuple[str, str]], original: str) -> bool:
-    """Verify blocks are non-empty and contain at least some real content from the original.
-    Threshold is intentionally low (30%) because metalinguistic annotations are discarded."""
+    """Verify extraction is not trivially empty after dropping commentary-heavy material."""
     if not blocks:
         return False
-    joined = " ".join(content for _, content in blocks)
+    joined = " ".join(content or term for term, content in blocks)
     norm = lambda s: re.sub(r"\s+", "", s.strip())  # noqa: E731
-    return len(norm(joined)) >= len(norm(original)) * 0.30
+    extracted_len = len(norm(joined))
+    original_len = len(norm(original))
+    if extracted_len <= 0 or original_len <= 0:
+        return False
+    return extracted_len >= min(4, original_len)
 
 
 def _shortcut_extract_blocks_from_json(
@@ -33794,7 +33826,7 @@ def _shortcut_extract_blocks_from_json(
 ) -> list[tuple[str, str]] | None:
     """
     Parse {"blocks": [{"term": "...", "content": "..."}, ...]} from LLM output.
-    Returns list of (term, content) tuples, or None if invalid or coverage insufficient.
+    Returns list of (term, content) tuples, or None if invalid or extraction looks empty.
     """
     try:
         parsed = json.loads(raw)
@@ -33810,8 +33842,12 @@ def _shortcut_extract_blocks_from_json(
     for item in raw_blocks:
         if not isinstance(item, dict):
             continue
-        term = str(item.get("term") or "").strip()
-        content = str(item.get("content") or "").strip()
+        term = _shortcut_normalize_unit_text(item.get("term") or "")
+        content = _shortcut_normalize_unit_text(item.get("content") or "")
+        if not term and content:
+            term = content
+        if not content and term:
+            content = term
         if term and content:
             norm_content = re.sub(r"\s+", " ", content.lower())
             if norm_content not in seen_contents:
@@ -33820,7 +33856,7 @@ def _shortcut_extract_blocks_from_json(
     if not result:
         return None
     if not _shortcut_validate_coverage(result, original):
-        logging.warning("shortcut split: coverage < 90%%, discarding LLM result")
+        logging.warning("shortcut split: extracted content too small after cleanup, discarding LLM result")
         return None
     return result
 
@@ -33891,12 +33927,9 @@ def _shortcut_build_pair_keyboard_rows(request_key: str) -> list[list[dict]]:
 @app.route("/api/shortcut/lookup", methods=["POST"])
 def shortcut_dictionary_lookup():
     """
-    iPhone Shortcuts endpoint — receives text (single word or multi-block),
-    splits it into logical blocks, and sends each block as a separate Telegram
-    message with a language pair keyboard, exactly as if typed in private chat.
-
-    Multi-block text is split on blank lines. The first line of each block
-    becomes the lookup term; remaining lines are shown as context.
+    iPhone Shortcuts endpoint — receives text, splits it into clean learnable
+    units, and sends each unit as a separate Telegram private message with the
+    language pair keyboard under it.
 
     Auth: Authorization: Bearer <SHORTCUT_SECRET>
     Body: {"text": "...", "user_id": 117649764}
@@ -33942,12 +33975,13 @@ def shortcut_dictionary_lookup():
 
     sent = 0
     for term, content in blocks:
+        lookup_text = str(term or content or "").strip()
+        if not lookup_text:
+            continue
         request_key = hashlib.sha1(
-            f"{user_id}:{term}:{time.time()}:{sent}".encode("utf-8")
+            f"{user_id}:{lookup_text}:{time.time()}:{sent}".encode("utf-8")
         ).hexdigest()[:20]
-
-        body = f"\n{content}" if content.strip() != term.strip() else ""
-        message_text = f"Запрос: {term}{body}\n\nВыберите языковую пару для перевода:"
+        message_text = f"Запрос: {lookup_text}\n\nВыберите языковую пару для перевода:"
 
         try:
             _send_private_message(
@@ -40293,6 +40327,17 @@ def _build_translation_session_start_payload(
     expected_total = int(result.get("expected_total") or 7) if isinstance(result, dict) else 7
     preloaded_items = list((result or {}).get("items") or []) if isinstance(result, dict) else []
     preloaded_ready_count = int(result.get("ready_count") or len(preloaded_items) or 0) if isinstance(result, dict) else len(preloaded_items)
+    normalized_preloaded_items = _dedupe_sentences([
+        {
+            "id_for_mistake_table": int(item.get("id_for_mistake_table") or 0),
+            "sentence": str(item.get("sentence") or "").strip(),
+            "unique_id": int(item.get("unique_id") or 0),
+            "source_session_id": str(item.get("source_session_id") or session_id),
+        }
+        for item in preloaded_items
+        if int(item.get("id_for_mistake_table") or 0) > 0
+        and str(item.get("sentence") or "").strip()
+    ])
     if (
         session_id is not None
         and is_translation_sentence_fill_async_enabled()
@@ -40321,38 +40366,31 @@ def _build_translation_session_start_payload(
                 "type": "regular",
             },
         )
-    if session_id is not None and preloaded_items and preloaded_ready_count >= expected_total:
+    if session_id is not None and normalized_preloaded_items and len(normalized_preloaded_items) >= expected_total:
         return {
             **(result or {}),
             "type": "regular",
-            "items": [
-                {
-                    "id_for_mistake_table": int(item.get("id_for_mistake_table") or 0),
-                    "sentence": str(item.get("sentence") or "").strip(),
-                    "unique_id": int(item.get("unique_id") or 0),
-                    "source_session_id": str(item.get("source_session_id") or session_id),
-                }
-                for item in preloaded_items
-                if int(item.get("id_for_mistake_table") or 0) > 0
-                and str(item.get("sentence") or "").strip()
-            ],
-            "ready_count": preloaded_ready_count,
+            "items": normalized_preloaded_items,
+            "ready_count": len(normalized_preloaded_items),
             "expected_total": expected_total,
-            "remaining_count": max(0, expected_total - preloaded_ready_count),
+            "remaining_count": max(0, expected_total - len(normalized_preloaded_items)),
             "generation_in_progress": False,
             "generation_status": "ready",
             "generation_error": None,
         }
-    ready_items = get_pending_daily_sentences(
-        user_id=user_id,
-        limit=7,
-        source_lang=source_lang,
-        target_lang=target_lang,
-        close_stale_sessions=False,
-        session_id=session_id,
-    )
-    deduped_items = _dedupe_sentences(ready_items)
-    if deduped_items:
+    if session_id is not None and normalized_preloaded_items:
+        deduped_items = normalized_preloaded_items
+    else:
+        ready_items = get_pending_daily_sentences(
+            user_id=user_id,
+            limit=7,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            close_stale_sessions=False,
+            session_id=session_id,
+        )
+        deduped_items = _dedupe_sentences(ready_items)
+    if deduped_items and len(deduped_items) < expected_total:
         _mark_translation_sentences_delivered(
             user_id=int(user_id),
             source_lang=source_lang,
@@ -40640,6 +40678,9 @@ def _start_translation_session_fill_runner(
     tested_skill_profile_seed: dict[str, Any] | None = None,
 ) -> None:
     if is_translation_sentence_fill_async_enabled():
+        current_status = str((get_translation_fill_job_status(int(session_id)) or {}).get("status") or "").strip().lower()
+        if current_status not in {"pending", "running"}:
+            _remember_translation_session_fill_launched_at(int(session_id), int(time.time() * 1000))
         enqueue_translation_fill_job(
             user_id=int(user_id),
             username=username,

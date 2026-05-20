@@ -3158,6 +3158,30 @@ const TranslationsSection = React.memo(function TranslationsSection({
     setFocusSheetOpen(false);
   };
 
+  const buildHistoryFeedback = (item) => {
+    const sentenceNumber = item?.sentence_number ?? '—';
+    const score = item?.score ?? '—';
+    const originalText = String(item?.original_text || '').trim();
+    const userTranslation = String(item?.user_translation || '').trim();
+    const correctTranslation = String(item?.correct_translation || '').trim();
+    const lines = [
+      `🟢 Sentence number: ${sentenceNumber}`,
+      `✅ Score: ${score}/100`,
+    ];
+
+    if (originalText) {
+      lines.push(`🔵 Original Sentence: ${originalText}`);
+    }
+    if (userTranslation) {
+      lines.push(`🟡 User Translation: ${userTranslation}`);
+    }
+    if (correctTranslation) {
+      lines.push(`🟣 Correct Translation: ${correctTranslation}`);
+    }
+
+    return lines.join('\n');
+  };
+
   return (
     <PerfProfiler id="section.translations">
       <section className="webapp-section webapp-section-translations" ref={translationsRef}>
@@ -3862,13 +3886,13 @@ const TranslationsSection = React.memo(function TranslationsSection({
               <div className="webapp-result-list">
                 {historyItems.map((item, index) => (
                   <div key={item.id ?? index} className="webapp-result-card">
-                    <pre className="webapp-result-text">
-                      {`Sentence number: ${item.sentence_number ?? '—'}\nScore: ${
-                        item.score ?? '—'
-                      }/100\nOriginal: ${item.original_text ?? '—'}\nTranslation: ${
-                        item.user_translation ?? '—'
-                      }\nCorrect: ${item.correct_translation ?? '—'}`}
-                    </pre>
+                    <div
+                      className="webapp-result-text tr-history-result-text"
+                      onMouseUp={handleSelection}
+                      onTouchEnd={handleSelection}
+                    >
+                      {renderFeedback(buildHistoryFeedback(item))}
+                    </div>
                   </div>
                 ))}
               </div>

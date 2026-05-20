@@ -6858,7 +6858,7 @@ body {
 }
 .vocab-word-item.is-expanded .vocab-word-row {
   align-items: flex-start;
-  padding: 13px 12px 11px;
+  padding: 13px 8px 11px;
 }
 .vocab-word-item.is-expanded .vocab-word-body {
   gap: 5px;
@@ -6916,12 +6916,12 @@ body {
 .vocab-word-row {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 7px;
   width: 100%;
   min-width: 0;
   background: none;
   border: none;
-  padding: 10px 12px;
+  padding: 10px 8px;
   cursor: pointer;
   text-align: left;
   -webkit-tap-highlight-color: transparent;
@@ -19224,6 +19224,10 @@ body {
 .webapp-section.webapp-section-translations .webapp-result-text strong .clickable-word,
 .webapp-section.webapp-section-translations .webapp-explanation strong .clickable-word {
   font-weight: 800;
+}
+
+.webapp-section.webapp-section-translations .tr-history-result-text .webapp-feedback-line:last-child {
+  margin-bottom: 0;
 }
 
 .webapp-section.webapp-section-translations .story-result {

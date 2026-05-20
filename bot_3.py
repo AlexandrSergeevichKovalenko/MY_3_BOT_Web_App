@@ -1897,12 +1897,14 @@ async def handle_language_tutor_detail_callback(update: Update, context: Callbac
         if not answer:
             answer = _language_tutor_default_refusal() if not is_language_question else "Не удалось подготовить ответ. Попробуйте переформулировать вопрос."
         save_key = None
-        if normalized["save_source_text"] and normalized["save_target_text"]:
+        save_variants = normalized.get("save_variants") or []
+        if save_variants:
+            primary = save_variants[0]
             save_key = _store_pending_quiz_question_save_request(
                 user_id=user_id,
                 request_key=f"langgpt_detail:{user_id}",
-                source_text=normalized["save_source_text"],
-                target_text=normalized["save_target_text"],
+                source_text=str(primary.get("source_text") or "").strip(),
+                target_text=str(primary.get("target_text") or "").strip(),
                 source_lang=normalized["source_lang"],
                 target_lang=normalized["target_lang"],
                 continue_callback_data="langgpt:continue",
@@ -1912,7 +1914,7 @@ async def handle_language_tutor_detail_callback(update: Update, context: Callbac
             _truncate_telegram_reply_text(answer, max_chars=3000),
             parse_mode="Markdown",
             disable_web_page_preview=True,
-            reply_markup=_build_language_tutor_answer_keyboard(save_key=save_key, show_detail=False),
+            reply_markup=_build_language_tutor_answer_keyboard(save_key=save_key),
         )
     except Exception:
         logging.exception("❌ Ошибка language tutor detail user_id=%s", user_id)
@@ -4143,7 +4145,7 @@ async def handle_user_message(update: Update, context: CallbackContext):
                         "previous_question": prev_question,
                         "previous_answer": prev_answer,
                     }
-            llm_response = await run_language_learning_private_question(llm_payload)
+            llm_response = await run_language_learning_private_question_detailed(llm_payload)
             normalized_tutor = _normalize_language_tutor_llm_response(
                 llm_response,
                 source_lang=source_lang,
@@ -4194,16 +4196,9 @@ async def handle_user_message(update: Update, context: CallbackContext):
                     feel_key=feel_key,
                     speak_key=feel_key,
                 )
-            answer_message = _build_quiz_question_reply_message(
-                {
-                    "reply_text": answer,
-                    "save_variants": save_variants,
-                    "source_lang": normalized_tutor["source_lang"],
-                    "target_lang": normalized_tutor["target_lang"],
-                }
-            )
             await update.message.reply_text(
-                _truncate_telegram_reply_text(answer_message, max_chars=3000),
+                _truncate_telegram_reply_text(answer, max_chars=3000),
+                parse_mode="Markdown",
                 disable_web_page_preview=True,
                 reply_markup=_build_language_tutor_answer_keyboard(
                     save_key=save_key,

@@ -146,6 +146,26 @@ class TranslationCheckWorkerScheduleTests(unittest.TestCase):
         self.assertIn("Authorization", first_headers)
         self.assertEqual(second_headers.get("Project-Access-Token"), "shared-token")
 
+    def test_headers_accept_generic_railway_token_as_project_token(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "TRANSLATION_CHECK_WORKER_RAILWAY_PROJECT_TOKEN": "",
+                "TRANSLATION_CHECK_WORKER_RAILWAY_TOKEN": "",
+                "RAILWAY_TOKEN": "project-token",
+                "TRANSLATION_CHECK_WORKER_RAILWAY_API_TOKEN": "",
+                "AGENT_WORKER_RAILWAY_API_TOKEN": "",
+                "RAILWAY_API_TOKEN": "",
+            },
+            clear=False,
+        ):
+            headers = __import__(
+                "backend.translation_check_worker_schedule",
+                fromlist=["_railway_headers"],
+            )._railway_headers()
+        self.assertEqual(headers.get("Project-Access-Token"), "project-token")
+        self.assertNotIn("Authorization", headers)
+
     def test_reconcile_inside_window_ensures_start(self) -> None:
         now = datetime(2026, 5, 7, 7, 0, tzinfo=ZoneInfo("Europe/Vienna"))
         service_state = self._service_state(
