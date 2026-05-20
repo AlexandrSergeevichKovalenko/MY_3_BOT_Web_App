@@ -3057,6 +3057,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
   setCustomTopicInput,
   selectedLevel,
   setSelectedLevel,
+  hasSelectedTranslationLevel,
   storyMode,
   setStoryMode,
   selectedStoryId,
@@ -29145,6 +29146,7 @@ function AppInner() {
                 setCustomTopicInput={setCustomTopicInput}
                 selectedLevel={selectedLevel}
                 setSelectedLevel={setSelectedLevel}
+                hasSelectedTranslationLevel={hasSelectedTranslationLevel}
                 storyMode={storyMode}
                 setStoryMode={setStoryMode}
                 selectedStoryId={selectedStoryId}
