@@ -1,4 +1,4 @@
-import{r as h,j as e}from"./react-vendor-DdVOUHgq.js";const K=[{key:"tr",labelRu:`Переводы
+import{r as h,j as e}from"./react-vendor-CoXxJTzn.js";const K=[{key:"tr",labelRu:`Переводы
 предложений`,labelDe:`Satz-
 Uebersetzungen`,emoji:"🔤",cls:"hdt-blue",sectionKey:"translations",refKey:"translationsRef"},{key:"ca",labelRu:`Карточки
 Space Rep`,labelDe:`Karten
