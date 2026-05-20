@@ -122,7 +122,6 @@ if (shouldTreatAsTelegram) {
 
 installTelegramRuntimeRecovery();
 
-
 async function loadAppComponent() {
   try {
     const module = await import('./App.jsx');
