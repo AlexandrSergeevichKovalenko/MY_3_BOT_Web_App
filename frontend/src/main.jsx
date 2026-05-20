@@ -2,7 +2,6 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { detectAppMode } from './utils/appMode.js'
 // ./ в начале пути означает, что файл App.jsx находится в той же папке, что и текущий файл main.jsx
-import App from './App.jsx'
 import './theme.css'
 
 const appMode = detectAppMode();
@@ -123,9 +122,33 @@ if (shouldTreatAsTelegram) {
 
 installTelegramRuntimeRecovery();
 
+async function loadAppComponent() {
+  try {
+    const module = await import('./App.jsx');
+    return module?.default || null;
+  } catch (error) {
+    if (shouldTreatAsTelegram && shouldForceTelegramRecover(error)) {
+      try {
+        const markerKey = 'telegram-webapp-runtime-recover-v1';
+        if (window.sessionStorage.getItem(markerKey) !== '1') {
+          window.sessionStorage.setItem(markerKey, '1');
+          window.location.replace(buildTelegramReloadUrl());
+          return null;
+        }
+      } catch (_storageError) {
+        window.location.replace(buildTelegramReloadUrl());
+        return null;
+      }
+    }
+    throw error;
+  }
+}
+
 async function bootstrapApp() {
   const canRender = await ensureFreshTelegramBundle();
   if (!canRender) return;
+  const App = await loadAppComponent();
+  if (!App) return;
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
       <App />
