@@ -2,7 +2,6 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { detectAppMode } from './utils/appMode.js'
 // ./ в начале пути означает, что файл App.jsx находится в той же папке, что и текущий файл main.jsx
-import App from './App.jsx'
 import './theme.css'
 
 const appMode = detectAppMode();
@@ -74,6 +73,35 @@ async function ensureFreshTelegramBundle() {
   }
 }
 
+
+function shouldForceTelegramRecover(errorLike) {
+  const message = String(errorLike?.message || errorLike || '').toLowerCase();
+  return message.includes('before initialization') || message.includes('cannot access');
+}
+
+function installTelegramRuntimeRecovery() {
+  if (!shouldTreatAsTelegram || typeof window === 'undefined') return;
+  const markerKey = 'telegram-webapp-runtime-recover-v1';
+  const triggerRecover = () => {
+    try {
+      if (window.sessionStorage.getItem(markerKey) === '1') return;
+      window.sessionStorage.setItem(markerKey, '1');
+    } catch (_storageError) {
+      // ignore storage failures
+    }
+    window.location.replace(buildTelegramReloadUrl());
+  };
+
+  window.addEventListener('error', (event) => {
+    if (!shouldForceTelegramRecover(event?.error || event?.message)) return;
+    triggerRecover();
+  });
+
+  window.addEventListener('unhandledrejection', (event) => {
+    if (!shouldForceTelegramRecover(event?.reason)) return;
+    triggerRecover();
+  });
+}
 if (shouldTreatAsTelegram) {
   if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
     navigator.serviceWorker.getRegistrations()
@@ -92,9 +120,35 @@ if (shouldTreatAsTelegram) {
     });
 }
 
+installTelegramRuntimeRecovery();
+
+async function loadAppComponent() {
+  try {
+    const module = await import('./App.jsx');
+    return module?.default || null;
+  } catch (error) {
+    if (shouldTreatAsTelegram && shouldForceTelegramRecover(error)) {
+      try {
+        const markerKey = 'telegram-webapp-runtime-recover-v1';
+        if (window.sessionStorage.getItem(markerKey) !== '1') {
+          window.sessionStorage.setItem(markerKey, '1');
+          window.location.replace(buildTelegramReloadUrl());
+          return null;
+        }
+      } catch (_storageError) {
+        window.location.replace(buildTelegramReloadUrl());
+        return null;
+      }
+    }
+    throw error;
+  }
+}
+
 async function bootstrapApp() {
   const canRender = await ensureFreshTelegramBundle();
   if (!canRender) return;
+  const App = await loadAppComponent();
+  if (!App) return;
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
       <App />
