@@ -3057,6 +3057,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
   setCustomTopicInput,
   selectedLevel,
   setSelectedLevel,
+  hasSelectedTranslationLevel,
   storyMode,
   setStoryMode,
   selectedStoryId,
@@ -13262,7 +13263,7 @@ function AppInner() {
   const readerAudioPremiumKnown = Boolean(billingStatus && typeof billingStatus === 'object');
   const readerAudioPremiumEnabled = ['pro', 'trial'].includes(billingEffectiveMode);
 
-  const openReaderAudioPremiumPaywall = useCallback(() => {
+  function openReaderAudioPremiumPaywall() {
     const message = tr(
       'Аудио в книге доступно только по премиум подписке.',
       'Audio im Reader ist nur mit Premium verfuegbar.'
@@ -13273,7 +13274,7 @@ function AppInner() {
       stopReaderAudioPlay();
     }
     openSingleSectionAndScroll('subscription', billingRef);
-  }, [openSingleSectionAndScroll, readerAudioPlayActive, stopReaderAudioPlay, tr]);
+  }
 
   const goHomeScreen = () => {
     setFlashcardsOnly(false);
@@ -29145,6 +29146,7 @@ function AppInner() {
                 setCustomTopicInput={setCustomTopicInput}
                 selectedLevel={selectedLevel}
                 setSelectedLevel={setSelectedLevel}
+                hasSelectedTranslationLevel={hasSelectedTranslationLevel}
                 storyMode={storyMode}
                 setStoryMode={setStoryMode}
                 selectedStoryId={selectedStoryId}
