@@ -74,6 +74,35 @@ async function ensureFreshTelegramBundle() {
   }
 }
 
+
+function shouldForceTelegramRecover(errorLike) {
+  const message = String(errorLike?.message || errorLike || '').toLowerCase();
+  return message.includes('before initialization') || message.includes('cannot access');
+}
+
+function installTelegramRuntimeRecovery() {
+  if (!shouldTreatAsTelegram || typeof window === 'undefined') return;
+  const markerKey = 'telegram-webapp-runtime-recover-v1';
+  const triggerRecover = () => {
+    try {
+      if (window.sessionStorage.getItem(markerKey) === '1') return;
+      window.sessionStorage.setItem(markerKey, '1');
+    } catch (_storageError) {
+      // ignore storage failures
+    }
+    window.location.replace(buildTelegramReloadUrl());
+  };
+
+  window.addEventListener('error', (event) => {
+    if (!shouldForceTelegramRecover(event?.error || event?.message)) return;
+    triggerRecover();
+  });
+
+  window.addEventListener('unhandledrejection', (event) => {
+    if (!shouldForceTelegramRecover(event?.reason)) return;
+    triggerRecover();
+  });
+}
 if (shouldTreatAsTelegram) {
   if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
     navigator.serviceWorker.getRegistrations()
@@ -91,6 +120,8 @@ if (shouldTreatAsTelegram) {
       // ignore SW registration errors in non-PWA environments
     });
 }
+
+installTelegramRuntimeRecovery();
 
 async function bootstrapApp() {
   const canRender = await ensureFreshTelegramBundle();
