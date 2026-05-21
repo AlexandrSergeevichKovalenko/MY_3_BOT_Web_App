@@ -3178,6 +3178,8 @@ const TranslationsSection = React.memo(function TranslationsSection({
   handleSaveExplanationFollowupAnswer,
   renderExplanationContent,
   getResultCardIdentityKey,
+  parseExplanationFollowupAnswerPayload,
+  handleToggleResultAudioGrammar,
   handleFinishTranslation,
   finishStatus,
   handleLoadDailyHistory,
@@ -29826,6 +29828,8 @@ function AppInner() {
                 handleSaveExplanationFollowupAnswer={handleSaveExplanationFollowupAnswerStable}
                 renderExplanationContent={renderExplanationContentStable}
                 getResultCardIdentityKey={getResultCardIdentityKey}
+                parseExplanationFollowupAnswerPayload={parseExplanationFollowupAnswerPayload}
+                handleToggleResultAudioGrammar={handleToggleResultAudioGrammar}
                 handleFinishTranslation={handleFinishTranslationStable}
                 finishStatus={finishStatus}
                 handleLoadDailyHistory={handleLoadDailyHistoryStable}
