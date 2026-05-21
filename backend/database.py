@@ -99,6 +99,13 @@ _DB_POOL: ThreadedConnectionPool | None = None
 _DB_ACQUIRE_LOCAL = threading.local()
 _BILLING_PLAN_CACHE_LOCK = threading.Lock()
 _BILLING_PLAN_CACHE: dict[str, tuple[float, dict | None]] = {}
+_STRICT_POOLED_DB_SERVICE_NAMES = {
+    "MY_3_BOT",
+    "BACKGROUND_JOBS",
+    "TRANSLATION_CHECK_WORKER",
+    "SCHEDULER_SERVICE",
+    "AGENT_WORKER",
+}
 PHASE1_SHADOW_SCHEMA_MIGRATION_KEY = "2026_03_12_skill_shadow_phase1_schema"
 PHASE2_SHADOW_SCHEMA_MIGRATION_KEY = "2026_03_12_skill_shadow_phase2_schema"
 SKILL_MASTERY_GROUPS_SCHEMA_MIGRATION_KEY = "2026_03_12_skill_mastery_groups_schema"
@@ -2048,6 +2055,46 @@ if not DATABASE_URL:
 else:
     # Для безопасности печатаем только хост, скрывая пароль
     print(f"✅ database.py успешно загрузил URL (хост: {DATABASE_URL.split('@')[-1].split(':')[0]})")
+
+
+def _db_policy_runtime_service_name() -> str:
+    return str(os.getenv("RAILWAY_SERVICE_NAME") or os.getenv("SERVICE_NAME") or "").strip()
+
+
+def _is_strict_pooled_db_runtime(service_name: str) -> bool:
+    normalized = str(service_name or "").strip()
+    if not normalized:
+        return False
+    return normalized.startswith("BACKEND_WEB") or normalized in _STRICT_POOLED_DB_SERVICE_NAMES
+
+
+def _enforce_db_runtime_policy() -> None:
+    service_name = _db_policy_runtime_service_name()
+    production_service = _is_strict_pooled_db_runtime(service_name)
+    failure_reason = None
+    if production_service:
+        if not DB_POOL_ENABLED:
+            failure_reason = "DB_POOL_ENABLED=0 is not allowed for strict pooled production services"
+        elif DB_POOL_ALLOW_DIRECT_FALLBACK:
+            failure_reason = "DB_POOL_ALLOW_DIRECT_FALLBACK=1 is not allowed for strict pooled production services"
+    _log_flow_observation(
+        "startup",
+        "db_policy_check",
+        event="db_policy_check",
+        service=service_name or "-",
+        db_pool_enabled=bool(DB_POOL_ENABLED),
+        db_pool_allow_direct_fallback=bool(DB_POOL_ALLOW_DIRECT_FALLBACK),
+        production_service=bool(production_service),
+        success=failure_reason is None,
+        failure_reason=failure_reason,
+    )
+    if failure_reason is not None:
+        raise RuntimeError(
+            f"Unsafe DB runtime policy for service={service_name or '-'}: {failure_reason}"
+        )
+
+
+_enforce_db_runtime_policy()
 
 @contextmanager
 def get_db_connection_context(): #
