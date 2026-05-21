@@ -4688,57 +4688,49 @@ async def start_translation_session_webapp(
 ) -> dict[str, Any]:
     provider_wait_ms_total = 0
     with db_acquire_scope("translation_session_start") as db_acquire_events:
-        conn = get_db_connection()
-    cursor = conn.cursor()
-    level_key = _normalize_level(level)
-    resolved_focus = grammar_focus if isinstance(grammar_focus, dict) else resolve_webapp_focus(topic)
-    requested_focus_kind = "legacy"
-    requested_focus_key = ""
-    requested_focus_label = ""
-    if _is_legacy_ru_de_pair(source_lang, target_lang):
-        requested_focus_kind, requested_focus_key, requested_focus_label = _resolve_translation_readiness_focus_identity(
-            focus=resolved_focus,
-            level=level_key,
-        )
-    phase_metrics: dict[str, int] = {
-        "close_stale_open_ms": 0,
-        "active_lookup_ms": 0,
-        "session_state_ms": 0,
-        "close_empty_active_ms": 0,
-        "feature_limit_ms": 0,
-        "session_insert_ms": 0,
-        "recent_keys_ms": 0,
-        "seed_collect_ms": 0,
-        "seed_topup_ms": 0,
-        "seed_insert_ms": 0,
-        "commit_ms": 0,
-    }
-
-    try:
-        close_stale_started_at = time.perf_counter()
-        _close_stale_open_translation_sessions_for_user_with_cursor(
-            cursor,
-            user_id=int(user_id),
-            source_lang=source_lang,
-            target_lang=target_lang,
-        )
-        phase_metrics["close_stale_open_ms"] = int((time.perf_counter() - close_stale_started_at) * 1000)
-        active_lookup_started_at = time.perf_counter()
-        active_pointer = _get_active_translation_session_pointer(
-            user_id=int(user_id),
-            source_lang=source_lang,
-            target_lang=target_lang,
-        )
-        active_session_id = str(active_pointer.get("session_id") or "").strip() if isinstance(active_pointer, dict) else ""
-        if not active_session_id:
-            active_session_id = _get_active_session_id(
-                cursor,
-                user_id,
-                source_lang=source_lang,
-                target_lang=target_lang,
+        level_key = _normalize_level(level)
+        resolved_focus = grammar_focus if isinstance(grammar_focus, dict) else resolve_webapp_focus(topic)
+        requested_focus_kind = "legacy"
+        requested_focus_key = ""
+        requested_focus_label = ""
+        if _is_legacy_ru_de_pair(source_lang, target_lang):
+            requested_focus_kind, requested_focus_key, requested_focus_label = _resolve_translation_readiness_focus_identity(
+                focus=resolved_focus,
+                level=level_key,
             )
-        phase_metrics["active_lookup_ms"] = int((time.perf_counter() - active_lookup_started_at) * 1000)
-        if active_session_id:
+        phase_metrics: dict[str, int] = {
+            "close_stale_open_ms": 0,
+            "active_lookup_ms": 0,
+            "session_state_ms": 0,
+            "close_empty_active_ms": 0,
+            "feature_limit_ms": 0,
+            "session_insert_ms": 0,
+            "recent_keys_ms": 0,
+            "seed_collect_ms": 0,
+            "seed_topup_ms": 0,
+            "seed_insert_ms": 0,
+            "commit_ms": 0,
+        }
+
+        focus_key = requested_focus_key
+        focus_kind = requested_focus_kind
+        focus_label = requested_focus_label
+        sync_seed_target_count = 7
+        seed_started_at = time.perf_counter()
+        seed_diagnostics: dict[str, Any] = {}
+        immediate_entries: list[dict[str, Any]] = []
+        topup_entries_for_pool: list[dict[str, Any]] = []
+        session_id: int | None = None
+        inserted_items: list[dict[str, Any]] = []
+        ready_count = 0
+
+        def _build_existing_active_session_response(
+            *,
+            cursor,
+            active_pointer: dict[str, Any] | None,
+            active_session_id: str,
+            session_state: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
             active_signature = _resolve_translation_session_signature_with_cursor(
                 cursor,
                 user_id=int(user_id),
@@ -4747,36 +4739,45 @@ async def start_translation_session_webapp(
                 target_lang=target_lang,
                 pointer=active_pointer if isinstance(active_pointer, dict) else None,
             )
-            session_state_started_at = time.perf_counter()
-            session_state = _get_translation_session_state_with_cursor(
-                cursor,
+            if session_state is None:
+                session_state_started_at = time.perf_counter()
+                session_state = _get_translation_session_state_with_cursor(
+                    cursor,
+                    user_id=int(user_id),
+                    session_id=active_session_id,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                )
+                phase_metrics["session_state_ms"] += int((time.perf_counter() - session_state_started_at) * 1000)
+            active_focus_key = str(active_signature.get("focus_key") or "").strip()
+            active_level = str(active_signature.get("level") or "").strip().lower() or level_key
+            active_focus_kind = str(
+                (active_pointer or {}).get("focus_kind") if isinstance(active_pointer, dict) else ""
+            ).strip().lower()
+            if not active_focus_kind:
+                if active_focus_key == "custom":
+                    active_focus_kind = "custom"
+                elif get_legacy_shared_pool_focus_by_key(active_focus_key):
+                    active_focus_kind = "legacy_pool"
+                elif active_focus_key:
+                    active_focus_kind = "preset"
+                else:
+                    active_focus_kind = "legacy"
+            _remember_active_translation_session_pointer(
                 user_id=int(user_id),
                 session_id=active_session_id,
                 source_lang=source_lang,
                 target_lang=target_lang,
+                focus_kind=active_focus_kind,
+                focus_key=active_focus_key or None,
+                level=active_level,
+                state="ready",
+                ready_count=int(session_state["stored_count"]),
+                generation_status="ready",
             )
-            phase_metrics["session_state_ms"] = int((time.perf_counter() - session_state_started_at) * 1000)
-            has_stored_sentences = session_state["stored_count"] > 0
-            if has_stored_sentences:
-                completion_required = (
-                    session_state["pending_count"] == 0
-                    and session_state["translated_count"] > 0
-                )
-                active_focus_key = str(active_signature.get("focus_key") or "").strip()
-                active_level = str(active_signature.get("level") or "").strip().lower() or level_key
-                active_focus_kind = str(
-                    (active_pointer or {}).get("focus_kind") if isinstance(active_pointer, dict) else ""
-                ).strip().lower()
-                if not active_focus_kind:
-                    if active_focus_key == "custom":
-                        active_focus_kind = "custom"
-                    elif get_legacy_shared_pool_focus_by_key(active_focus_key):
-                        active_focus_kind = "legacy_pool"
-                    elif active_focus_key:
-                        active_focus_kind = "preset"
-                    else:
-                        active_focus_kind = "legacy"
-                _remember_active_translation_session_pointer(
+            set_translation_session_state(
+                active_session_id,
+                _build_translation_session_state_payload(
                     user_id=int(user_id),
                     session_id=active_session_id,
                     source_lang=source_lang,
@@ -4786,343 +4787,515 @@ async def start_translation_session_webapp(
                     level=active_level,
                     state="ready",
                     ready_count=int(session_state["stored_count"]),
+                    expected_total=7,
                     generation_status="ready",
-                )
-                set_translation_session_state(
-                    active_session_id,
-                    _build_translation_session_state_payload(
-                        user_id=int(user_id),
-                        session_id=active_session_id,
-                        source_lang=source_lang,
-                        target_lang=target_lang,
-                        focus_kind=active_focus_kind,
-                        focus_key=active_focus_key or None,
-                        level=active_level,
-                        state="ready",
-                        ready_count=int(session_state["stored_count"]),
-                        expected_total=7,
-                        generation_status="ready",
-                        background_fill_required=bool(int(session_state["stored_count"]) < 7),
-                    ),
-                )
-                set_translation_session_card(
-                    int(user_id),
-                    _build_translation_session_card_payload(
-                        user_id=int(user_id),
-                        session_id=active_session_id,
-                        source_lang=source_lang,
-                        target_lang=target_lang,
-                        focus_kind=active_focus_kind,
-                        focus_key=active_focus_key or None,
-                        level=active_level,
-                        state="ready",
-                        ready_count=int(session_state["stored_count"]),
-                        expected_total=7,
-                        generation_status="ready",
-                        background_fill_required=bool(int(session_state["stored_count"]) < 7),
-                    ),
-                )
-                return {
-                    "session_id": active_session_id,
-                    "created": False,
-                    "blocked": True,
-                    "completion_required": completion_required,
-                    "pending_count": int(session_state["pending_count"]),
-                    "translated_count": int(session_state["translated_count"]),
-                    "shown_count": int(session_state["shown_count"]),
-                    "phase_metrics": dict(phase_metrics),
-                }
-            if force_new_session:
-                logging.info(
-                    "Ignoring force_new_session for empty active translation session: user_id=%s session_id=%s",
-                    int(user_id),
-                    active_session_id,
-                )
-            # Auto-close stale empty session and allow creating a fresh one.
-            if not has_stored_sentences:
-                close_empty_started_at = time.perf_counter()
-                _close_user_progress_session(
-                    cursor,
+                    background_fill_required=bool(int(session_state["stored_count"]) < 7),
+                ),
+            )
+            set_translation_session_card(
+                int(user_id),
+                _build_translation_session_card_payload(
                     user_id=int(user_id),
                     session_id=active_session_id,
-                )
-                phase_metrics["close_empty_active_ms"] = int((time.perf_counter() - close_empty_started_at) * 1000)
-                commit_started_at = time.perf_counter()
-                conn.commit()
-                phase_metrics["commit_ms"] += int((time.perf_counter() - commit_started_at) * 1000)
-                _clear_active_translation_session_pointer(
-                    user_id=int(user_id),
-                    session_id=active_session_id,
-                )
-                clear_translation_session_state(active_session_id)
-                clear_translation_session_card(int(user_id))
-
-        feature_limit_started_at = time.perf_counter()
-        translation_limit_error = enforce_feature_limit(
-            user_id=int(user_id),
-            feature_code="translation_daily_sets",
-            requested_units=1.0,
-            tz="Europe/Vienna",
-        )
-        phase_metrics["feature_limit_ms"] = int((time.perf_counter() - feature_limit_started_at) * 1000)
-        if translation_limit_error:
-            translation_limit_error["phase_metrics"] = dict(phase_metrics)
-            return translation_limit_error
-
-        session_id = int(hashlib.md5(f"{user_id}{datetime.now()}".encode()).hexdigest(), 16) % (10**12)
-        session_insert_started_at = time.perf_counter()
-        cursor.execute(
-            """
-            INSERT INTO bt_3_user_progress (
-                session_id,
-                user_id,
-                username,
-                start_time,
-                active_seconds,
-                active_running,
-                completed
-            )
-            VALUES (%s, %s, %s, NOW(), 0, FALSE, FALSE);
-            """,
-            (session_id, user_id, username),
-        )
-        phase_metrics["session_insert_ms"] = int((time.perf_counter() - session_insert_started_at) * 1000)
-
-        immediate_entries: list[dict[str, Any]] = []
-        # Even with async background fill enabled, return all ready cached/pool items immediately.
-        sync_seed_target_count = 7
-        focus_key = requested_focus_key
-        focus_kind = requested_focus_kind
-        focus_label = requested_focus_label
-        seed_started_at = time.perf_counter()
-        seed_diagnostics: dict[str, Any] = {}
-        if _is_legacy_ru_de_pair(source_lang, target_lang):
-            recent_keys_started_at = time.perf_counter()
-            recent_sentence_keys = _get_recently_served_sentence_keys_with_cursor(
-                cursor,
-                user_id=int(user_id),
-                source_lang=source_lang,
-                target_lang=target_lang,
-            )
-            phase_metrics["recent_keys_ms"] = int((time.perf_counter() - recent_keys_started_at) * 1000)
-            seed_collect_started_at = time.perf_counter()
-            immediate_entries = _collect_seed_sentence_entries_with_cursor(
-                cursor,
-                user_id=int(user_id),
-                level_key=level_key,
-                source_lang=source_lang,
-                target_lang=target_lang,
-                resolved_focus=resolved_focus,
-                recent_sentence_keys=recent_sentence_keys,
-                target_count=sync_seed_target_count,
-                diagnostics=seed_diagnostics,
-            )
-            phase_metrics["seed_collect_ms"] = int((time.perf_counter() - seed_collect_started_at) * 1000)
-            if _translation_sentence_fill_async_enabled():
-                seed_diagnostics.update(
-                    {
-                        "quick_topup_ms": 0,
-                        "quick_topup_requested": 0,
-                        "quick_topup_generated": 0,
-                        "quick_topup_added": 0,
-                        "quick_topup_skipped_async": 1,
-                    }
-                )
-            else:
-                seed_topup_started_at = time.perf_counter()
-                provider_started_at = time.perf_counter()
-                immediate_entries, topup_diagnostics = await _top_up_immediate_sentence_entries_with_cursor(
-                    cursor,
-                    topic=str(resolved_focus.get("prompt_topic") or topic or "Random sentences").strip(),
-                    level=level,
                     source_lang=source_lang,
                     target_lang=target_lang,
-                    resolved_focus=resolved_focus,
-                    target_min_ready=2,
-                    existing_entries=immediate_entries,
-                    recent_sentence_keys=recent_sentence_keys,
-                    tested_skill_profile_seed=tested_skill_profile_seed,
+                    focus_kind=active_focus_kind,
+                    focus_key=active_focus_key or None,
+                    level=active_level,
+                    state="ready",
+                    ready_count=int(session_state["stored_count"]),
+                    expected_total=7,
+                    generation_status="ready",
+                    background_fill_required=bool(int(session_state["stored_count"]) < 7),
+                ),
+            )
+            completion_required = (
+                session_state["pending_count"] == 0
+                and session_state["translated_count"] > 0
+            )
+            return {
+                "session_id": active_session_id,
+                "created": False,
+                "blocked": True,
+                "completion_required": completion_required,
+                "pending_count": int(session_state["pending_count"]),
+                "translated_count": int(session_state["translated_count"]),
+                "shown_count": int(session_state["shown_count"]),
+                "phase_metrics": dict(phase_metrics),
+            }
+
+        def _prepare_immediate_topup_inputs(
+            *,
+            cursor,
+            existing_entries: list[dict[str, Any]],
+            recent_sentence_keys: set[str] | None,
+        ) -> dict[str, Any]:
+            normalized_entries = _normalize_sentence_entries(list(existing_entries or []))
+            focus_kind_local = str(resolved_focus.get("kind") or "").strip().lower()
+            minimum_ready = max(1, int(2))
+            if len(normalized_entries) >= minimum_ready or focus_kind_local not in {"preset", "custom"}:
+                return {
+                    "enabled": False,
+                    "normalized_entries": normalized_entries,
+                    "requested_count": 0,
+                    "skill_catalog": [],
+                    "excluded_sentence_keys": set(),
+                    "shared_pool_supported": False,
+                }
+            skill_catalog = _load_skill_catalog_with_cursor(
+                cursor,
+                target_lang=target_lang,
+                authored_mastery_leaves_only=(str(target_lang or "").strip().lower() == "de"),
+            )
+            excluded_sentence_keys = set(recent_sentence_keys or set())
+            excluded_sentence_keys.update(
+                _normalize_sentence_text_key(str(item.get("sentence") or ""))
+                for item in normalized_entries
+                if str(item.get("sentence") or "").strip()
+            )
+            requested_count = max(2, minimum_ready - len(normalized_entries))
+            return {
+                "enabled": True,
+                "normalized_entries": normalized_entries,
+                "requested_count": int(requested_count),
+                "skill_catalog": skill_catalog,
+                "excluded_sentence_keys": excluded_sentence_keys,
+                "shared_pool_supported": bool(_resolve_shared_pool_focus_payload(resolved_focus, level=level) is not None),
+            }
+
+        try:
+            topup_inputs: dict[str, Any] | None = None
+            with get_db_connection_context() as conn:
+                cursor = conn.cursor()
+                try:
+                    close_stale_started_at = time.perf_counter()
+                    _close_stale_open_translation_sessions_for_user_with_cursor(
+                        cursor,
+                        user_id=int(user_id),
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                    )
+                    phase_metrics["close_stale_open_ms"] = int((time.perf_counter() - close_stale_started_at) * 1000)
+
+                    active_lookup_started_at = time.perf_counter()
+                    active_pointer = _get_active_translation_session_pointer(
+                        user_id=int(user_id),
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                    )
+                    active_session_id = str(active_pointer.get("session_id") or "").strip() if isinstance(active_pointer, dict) else ""
+                    if not active_session_id:
+                        active_session_id = _get_active_session_id(
+                            cursor,
+                            user_id,
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                        )
+                    phase_metrics["active_lookup_ms"] = int((time.perf_counter() - active_lookup_started_at) * 1000)
+
+                    if active_session_id:
+                        session_state_started_at = time.perf_counter()
+                        session_state = _get_translation_session_state_with_cursor(
+                            cursor,
+                            user_id=int(user_id),
+                            session_id=active_session_id,
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                        )
+                        phase_metrics["session_state_ms"] += int((time.perf_counter() - session_state_started_at) * 1000)
+                        has_stored_sentences = session_state["stored_count"] > 0
+                        if has_stored_sentences:
+                            return _build_existing_active_session_response(
+                                cursor=cursor,
+                                active_pointer=active_pointer if isinstance(active_pointer, dict) else None,
+                                active_session_id=active_session_id,
+                                session_state=session_state,
+                            )
+                        if force_new_session:
+                            logging.info(
+                                "Ignoring force_new_session for empty active translation session: user_id=%s session_id=%s",
+                                int(user_id),
+                                active_session_id,
+                            )
+                        close_empty_started_at = time.perf_counter()
+                        _close_user_progress_session(
+                            cursor,
+                            user_id=int(user_id),
+                            session_id=active_session_id,
+                        )
+                        phase_metrics["close_empty_active_ms"] = int((time.perf_counter() - close_empty_started_at) * 1000)
+                        commit_started_at = time.perf_counter()
+                        conn.commit()
+                        phase_metrics["commit_ms"] += int((time.perf_counter() - commit_started_at) * 1000)
+                        _clear_active_translation_session_pointer(
+                            user_id=int(user_id),
+                            session_id=active_session_id,
+                        )
+                        clear_translation_session_state(active_session_id)
+                        clear_translation_session_card(int(user_id))
+
+                    feature_limit_started_at = time.perf_counter()
+                    translation_limit_error = enforce_feature_limit(
+                        user_id=int(user_id),
+                        feature_code="translation_daily_sets",
+                        requested_units=1.0,
+                        tz="Europe/Vienna",
+                    )
+                    phase_metrics["feature_limit_ms"] = int((time.perf_counter() - feature_limit_started_at) * 1000)
+                    if translation_limit_error:
+                        translation_limit_error["phase_metrics"] = dict(phase_metrics)
+                        return translation_limit_error
+
+                    if _is_legacy_ru_de_pair(source_lang, target_lang):
+                        recent_keys_started_at = time.perf_counter()
+                        recent_sentence_keys = _get_recently_served_sentence_keys_with_cursor(
+                            cursor,
+                            user_id=int(user_id),
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                        )
+                        phase_metrics["recent_keys_ms"] = int((time.perf_counter() - recent_keys_started_at) * 1000)
+                        seed_collect_started_at = time.perf_counter()
+                        immediate_entries = _collect_seed_sentence_entries_with_cursor(
+                            cursor,
+                            user_id=int(user_id),
+                            level_key=level_key,
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                            resolved_focus=resolved_focus,
+                            recent_sentence_keys=recent_sentence_keys,
+                            target_count=sync_seed_target_count,
+                            diagnostics=seed_diagnostics,
+                        )
+                        phase_metrics["seed_collect_ms"] = int((time.perf_counter() - seed_collect_started_at) * 1000)
+                        if _translation_sentence_fill_async_enabled():
+                            seed_diagnostics.update(
+                                {
+                                    "quick_topup_ms": 0,
+                                    "quick_topup_requested": 0,
+                                    "quick_topup_generated": 0,
+                                    "quick_topup_added": 0,
+                                    "quick_topup_skipped_async": 1,
+                                }
+                            )
+                        else:
+                            topup_inputs = _prepare_immediate_topup_inputs(
+                                cursor=cursor,
+                                existing_entries=immediate_entries,
+                                recent_sentence_keys=recent_sentence_keys,
+                            )
+                            if not bool((topup_inputs or {}).get("enabled")):
+                                seed_diagnostics.update(
+                                    {
+                                        "quick_topup_ms": 0,
+                                        "quick_topup_requested": 0,
+                                        "quick_topup_generated": 0,
+                                        "quick_topup_added": 0,
+                                    }
+                                )
+                    else:
+                        seed_diagnostics.update(
+                            {
+                                "quick_topup_ms": 0,
+                                "quick_topup_requested": 0,
+                                "quick_topup_generated": 0,
+                                "quick_topup_added": 0,
+                            }
+                        )
+                finally:
+                    cursor.close()
+
+            if topup_inputs and bool(topup_inputs.get("enabled")):
+                seed_topup_started_at = time.perf_counter()
+                provider_started_at = time.perf_counter()
+                generated_entries = await _generate_legacy_sentence_entries_with_profiles(
+                    topic=str(resolved_focus.get("prompt_topic") or topic or "Random sentences").strip(),
+                    level=level,
+                    target_count=int(topup_inputs.get("requested_count") or 0),
+                    skill_catalog=list(topup_inputs.get("skill_catalog") or []),
+                    focus_hint=tested_skill_profile_seed if isinstance(tested_skill_profile_seed, dict) else None,
                 )
                 provider_wait_ms = max(0, int((time.perf_counter() - provider_started_at) * 1000))
                 provider_wait_ms_total += provider_wait_ms
                 note_db_provider_wait(provider_wait_ms, provider_label="translation_session_start_topup")
+                topup_entries_for_pool = _filter_sentence_entries_for_session(
+                    generated_entries,
+                    level=level_key,
+                    excluded_sentence_keys=set(topup_inputs.get("excluded_sentence_keys") or set()),
+                )
+                immediate_entries = _normalize_sentence_entries(
+                    list(topup_inputs.get("normalized_entries") or []) + topup_entries_for_pool
+                )
                 phase_metrics["seed_topup_ms"] = int((time.perf_counter() - seed_topup_started_at) * 1000)
-                seed_diagnostics.update(topup_diagnostics)
+                seed_diagnostics.update(
+                    {
+                        "quick_topup_ms": int((time.perf_counter() - seed_topup_started_at) * 1000),
+                        "quick_topup_requested": int(topup_inputs.get("requested_count") or 0),
+                        "quick_topup_generated": int(len(generated_entries)),
+                        "quick_topup_added": max(
+                            0,
+                            int(len(immediate_entries) - len(list(topup_inputs.get("normalized_entries") or []))),
+                        ),
+                    }
+                )
 
-        seed_insert_started_at = time.perf_counter()
-        inserted_items = _insert_sentence_entries_into_session_with_cursor(
-            cursor,
-            user_id=int(user_id),
-            session_id=int(session_id),
-            source_lang=source_lang,
-            target_lang=target_lang,
-            focus_key=focus_key,
-            level=level,
-            sentence_entries=immediate_entries,
-            limit=sync_seed_target_count,
-        )
-        if focus_key:
-            _record_translation_bucket_demand_with_cursor(
-                cursor,
-                source_lang=source_lang,
-                target_lang=target_lang,
-                focus_key=focus_key,
-                level=level,
-                sessions_started_delta=1,
-            )
-        phase_metrics["seed_insert_ms"] = int((time.perf_counter() - seed_insert_started_at) * 1000)
-        commit_started_at = time.perf_counter()
-        conn.commit()
-        phase_metrics["commit_ms"] += int((time.perf_counter() - commit_started_at) * 1000)
-        ready_count = len(inserted_items)
-        if ready_count >= 7:
-            _mark_translation_session_items_shown_with_cursor(
-                cursor,
+            with get_db_connection_context() as conn:
+                cursor = conn.cursor()
+                try:
+                    active_lookup_started_at = time.perf_counter()
+                    active_pointer = _get_active_translation_session_pointer(
+                        user_id=int(user_id),
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                    )
+                    active_session_id = str(active_pointer.get("session_id") or "").strip() if isinstance(active_pointer, dict) else ""
+                    if not active_session_id:
+                        active_session_id = _get_active_session_id(
+                            cursor,
+                            user_id,
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                        )
+                    phase_metrics["active_lookup_ms"] += int((time.perf_counter() - active_lookup_started_at) * 1000)
+                    if active_session_id:
+                        session_state_started_at = time.perf_counter()
+                        session_state = _get_translation_session_state_with_cursor(
+                            cursor,
+                            user_id=int(user_id),
+                            session_id=active_session_id,
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                        )
+                        phase_metrics["session_state_ms"] += int((time.perf_counter() - session_state_started_at) * 1000)
+                        if session_state["stored_count"] > 0:
+                            return _build_existing_active_session_response(
+                                cursor=cursor,
+                                active_pointer=active_pointer if isinstance(active_pointer, dict) else None,
+                                active_session_id=active_session_id,
+                                session_state=session_state,
+                            )
+                        close_empty_started_at = time.perf_counter()
+                        _close_user_progress_session(
+                            cursor,
+                            user_id=int(user_id),
+                            session_id=active_session_id,
+                        )
+                        phase_metrics["close_empty_active_ms"] += int((time.perf_counter() - close_empty_started_at) * 1000)
+                        commit_started_at = time.perf_counter()
+                        conn.commit()
+                        phase_metrics["commit_ms"] += int((time.perf_counter() - commit_started_at) * 1000)
+                        _clear_active_translation_session_pointer(
+                            user_id=int(user_id),
+                            session_id=active_session_id,
+                        )
+                        clear_translation_session_state(active_session_id)
+                        clear_translation_session_card(int(user_id))
+
+                    session_id = int(hashlib.md5(f"{user_id}{datetime.now()}".encode()).hexdigest(), 16) % (10**12)
+                    session_insert_started_at = time.perf_counter()
+                    cursor.execute(
+                        """
+                        INSERT INTO bt_3_user_progress (
+                            session_id,
+                            user_id,
+                            username,
+                            start_time,
+                            active_seconds,
+                            active_running,
+                            completed
+                        )
+                        VALUES (%s, %s, %s, NOW(), 0, FALSE, FALSE);
+                        """,
+                        (session_id, user_id, username),
+                    )
+                    phase_metrics["session_insert_ms"] = int((time.perf_counter() - session_insert_started_at) * 1000)
+
+                    if topup_entries_for_pool and _resolve_shared_pool_focus_payload(resolved_focus, level=level) is not None:
+                        _upsert_shared_sentence_pool_entries_with_cursor(
+                            cursor,
+                            focus=resolved_focus,
+                            level=level,
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                            entries=topup_entries_for_pool,
+                        )
+
+                    seed_insert_started_at = time.perf_counter()
+                    inserted_items = _insert_sentence_entries_into_session_with_cursor(
+                        cursor,
+                        user_id=int(user_id),
+                        session_id=int(session_id),
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        focus_key=focus_key,
+                        level=level,
+                        sentence_entries=immediate_entries,
+                        limit=sync_seed_target_count,
+                    )
+                    if focus_key:
+                        _record_translation_bucket_demand_with_cursor(
+                            cursor,
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                            focus_key=focus_key,
+                            level=level,
+                            sessions_started_delta=1,
+                        )
+                    phase_metrics["seed_insert_ms"] = int((time.perf_counter() - seed_insert_started_at) * 1000)
+
+                    commit_started_at = time.perf_counter()
+                    conn.commit()
+                    phase_metrics["commit_ms"] += int((time.perf_counter() - commit_started_at) * 1000)
+                    ready_count = len(inserted_items)
+                    if ready_count >= 7:
+                        _mark_translation_session_items_shown_with_cursor(
+                            cursor,
+                            user_id=int(user_id),
+                            session_id=int(session_id),
+                            row_ids=[item.get("_row_id") for item in inserted_items],
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                        )
+                    immediate_batch_summary = _summarize_sentence_entry_batch(
+                        immediate_entries,
+                        existing_sentence_keys=set(),
+                        limit=7,
+                    )
+                    logging.info(
+                        "translation session seeded: user_id=%s session_id=%s seed_raw=%s seed_normalized=%s seed_dropped_norm=%s "
+                        "seed_insertable=%s inserted=%s expected_total=%s seed_ms=%s personal_ms=%s pool_ms=%s "
+                        "personal_rows_scanned=%s personal_added=%s pool_added=%s quick_topup_ms=%s quick_topup_requested=%s "
+                        "quick_topup_generated=%s quick_topup_added=%s",
+                        int(user_id),
+                        int(session_id),
+                        int(immediate_batch_summary["raw_count"]),
+                        int(immediate_batch_summary["normalized_count"]),
+                        int(immediate_batch_summary["dropped_during_normalization"]),
+                        int(immediate_batch_summary["insertable"]),
+                        int(ready_count),
+                        7,
+                        int((time.perf_counter() - seed_started_at) * 1000),
+                        int(seed_diagnostics.get("personal_ms") or 0),
+                        int(seed_diagnostics.get("pool_ms") or 0),
+                        int(seed_diagnostics.get("personal_rows_scanned") or 0),
+                        int(seed_diagnostics.get("personal_added") or 0),
+                        int(seed_diagnostics.get("pool_added") or 0),
+                        int(seed_diagnostics.get("quick_topup_ms") or 0),
+                        int(seed_diagnostics.get("quick_topup_requested") or 0),
+                        int(seed_diagnostics.get("quick_topup_generated") or 0),
+                        int(seed_diagnostics.get("quick_topup_added") or 0),
+                    )
+                    if ready_count < 7:
+                        logging.warning(
+                            "translation session requires background fill: user_id=%s session_id=%s seeded_ready_count=%s expected_total=%s",
+                            int(user_id),
+                            int(session_id),
+                            int(ready_count),
+                            7,
+                        )
+                    _record_translation_readiness_start_with_cursor(
+                        cursor,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        focus_kind=focus_kind,
+                        focus_key=focus_key,
+                        focus_label=focus_label or focus_key,
+                        level=level,
+                        ready_count=int(ready_count),
+                        personal_added=int(seed_diagnostics.get("personal_added") or 0),
+                        pool_added=int(seed_diagnostics.get("pool_added") or 0),
+                        generic_added=int(seed_diagnostics.get("generic_added") or 0),
+                        llm_added_on_start=int(seed_diagnostics.get("quick_topup_added") or 0),
+                        background_fill_required=bool(ready_count < 7),
+                    )
+                    conn.commit()
+                finally:
+                    cursor.close()
+
+            _remember_active_translation_session_pointer(
                 user_id=int(user_id),
                 session_id=int(session_id),
-                row_ids=[item.get("_row_id") for item in inserted_items],
                 source_lang=source_lang,
                 target_lang=target_lang,
+                focus_kind=focus_kind,
+                focus_key=focus_key,
+                level=level,
+                state="ready" if ready_count >= 7 else "created",
+                ready_count=int(ready_count),
+                generation_status="ready" if ready_count >= 7 else "pending",
             )
-        immediate_batch_summary = _summarize_sentence_entry_batch(
-            immediate_entries,
-            existing_sentence_keys=set(),
-            limit=7,
-        )
-        logging.info(
-            "translation session seeded: user_id=%s session_id=%s seed_raw=%s seed_normalized=%s seed_dropped_norm=%s "
-            "seed_insertable=%s inserted=%s expected_total=%s seed_ms=%s personal_ms=%s pool_ms=%s "
-            "personal_rows_scanned=%s personal_added=%s pool_added=%s quick_topup_ms=%s quick_topup_requested=%s "
-            "quick_topup_generated=%s quick_topup_added=%s",
-            int(user_id),
-            int(session_id),
-            int(immediate_batch_summary["raw_count"]),
-            int(immediate_batch_summary["normalized_count"]),
-            int(immediate_batch_summary["dropped_during_normalization"]),
-            int(immediate_batch_summary["insertable"]),
-            int(ready_count),
-            7,
-            int((time.perf_counter() - seed_started_at) * 1000),
-            int(seed_diagnostics.get("personal_ms") or 0),
-            int(seed_diagnostics.get("pool_ms") or 0),
-            int(seed_diagnostics.get("personal_rows_scanned") or 0),
-            int(seed_diagnostics.get("personal_added") or 0),
-            int(seed_diagnostics.get("pool_added") or 0),
-            int(seed_diagnostics.get("quick_topup_ms") or 0),
-            int(seed_diagnostics.get("quick_topup_requested") or 0),
-            int(seed_diagnostics.get("quick_topup_generated") or 0),
-            int(seed_diagnostics.get("quick_topup_added") or 0),
-        )
-        if ready_count < 7:
-            logging.warning(
-                "translation session requires background fill: user_id=%s session_id=%s seeded_ready_count=%s expected_total=%s",
-                int(user_id),
+            set_translation_session_state(
                 int(session_id),
-                int(ready_count),
-                7,
+                _build_translation_session_state_payload(
+                    user_id=int(user_id),
+                    session_id=int(session_id),
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    focus_kind=focus_kind,
+                    focus_key=focus_key,
+                    level=level,
+                    state="ready" if ready_count >= 7 else "created",
+                    ready_count=int(ready_count),
+                    expected_total=7,
+                    generation_status="ready" if ready_count >= 7 else "pending",
+                    background_fill_required=bool(ready_count < 7),
+                ),
             )
-        _record_translation_readiness_start_with_cursor(
-            cursor,
-            source_lang=source_lang,
-            target_lang=target_lang,
-            focus_kind=focus_kind,
-            focus_key=focus_key,
-            focus_label=focus_label or focus_key,
-            level=level,
-            ready_count=int(ready_count),
-            personal_added=int(seed_diagnostics.get("personal_added") or 0),
-            pool_added=int(seed_diagnostics.get("pool_added") or 0),
-            generic_added=int(seed_diagnostics.get("generic_added") or 0),
-            llm_added_on_start=int(seed_diagnostics.get("quick_topup_added") or 0),
-            background_fill_required=bool(ready_count < 7),
-        )
-        conn.commit()
-        _remember_active_translation_session_pointer(
-            user_id=int(user_id),
-            session_id=int(session_id),
-            source_lang=source_lang,
-            target_lang=target_lang,
-            focus_kind=focus_kind,
-            focus_key=focus_key,
-            level=level,
-            state="ready" if ready_count >= 7 else "created",
-            ready_count=int(ready_count),
-            generation_status="ready" if ready_count >= 7 else "pending",
-        )
-        set_translation_session_state(
-            int(session_id),
-            _build_translation_session_state_payload(
+            set_translation_session_card(
+                int(user_id),
+                _build_translation_session_card_payload(
+                    user_id=int(user_id),
+                    session_id=int(session_id),
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    focus_kind=focus_kind,
+                    focus_key=focus_key,
+                    level=level,
+                    state="ready" if ready_count >= 7 else "created",
+                    ready_count=int(ready_count),
+                    expected_total=7,
+                    generation_status="ready" if ready_count >= 7 else "pending",
+                    background_fill_required=bool(ready_count < 7),
+                ),
+            )
+            return {
+                "session_id": int(session_id),
+                "created": True,
+                "count": int(ready_count),
+                "items": [
+                    {
+                        "id_for_mistake_table": int(item.get("id_for_mistake_table") or 0),
+                        "sentence": str(item.get("sentence") or "").strip(),
+                        "unique_id": int(item.get("unique_id") or 0),
+                        "source_session_id": str(item.get("source_session_id") or session_id),
+                    }
+                    for item in inserted_items
+                    if int(item.get("id_for_mistake_table") or 0) > 0
+                    and str(item.get("sentence") or "").strip()
+                ],
+                "ready_count": int(ready_count),
+                "expected_total": 7,
+                "remaining_count": max(0, 7 - int(ready_count)),
+                "focus_kind": focus_kind,
+                "focus_key": focus_key,
+                "focus_label": focus_label or focus_key,
+                "background_fill_required": bool(ready_count < 7),
+                "readiness_diagnostics": dict(seed_diagnostics),
+                "phase_metrics": dict(phase_metrics),
+            }
+        finally:
+            db_summary = summarize_db_acquire_events(db_acquire_events)
+            _log_flow_observation(
+                "db_scope",
+                "translation_session_start",
                 user_id=int(user_id),
-                session_id=int(session_id),
                 source_lang=source_lang,
                 target_lang=target_lang,
-                focus_kind=focus_kind,
-                focus_key=focus_key,
-                level=level,
-                state="ready" if ready_count >= 7 else "created",
-                ready_count=int(ready_count),
-                expected_total=7,
-                generation_status="ready" if ready_count >= 7 else "pending",
-                background_fill_required=bool(ready_count < 7),
-            ),
-        )
-        set_translation_session_card(
-            int(user_id),
-            _build_translation_session_card_payload(
-                user_id=int(user_id),
-                session_id=int(session_id),
-                source_lang=source_lang,
-                target_lang=target_lang,
-                focus_kind=focus_kind,
-                focus_key=focus_key,
-                level=level,
-                state="ready" if ready_count >= 7 else "created",
-                ready_count=int(ready_count),
-                expected_total=7,
-                generation_status="ready" if ready_count >= 7 else "pending",
-                background_fill_required=bool(ready_count < 7),
-            ),
-        )
-        return {
-            "session_id": int(session_id),
-            "created": True,
-            "count": int(ready_count),
-            "items": [
-                {
-                    "id_for_mistake_table": int(item.get("id_for_mistake_table") or 0),
-                    "sentence": str(item.get("sentence") or "").strip(),
-                    "unique_id": int(item.get("unique_id") or 0),
-                    "source_session_id": str(item.get("source_session_id") or session_id),
-                }
-                for item in inserted_items
-                if int(item.get("id_for_mistake_table") or 0) > 0
-                and str(item.get("sentence") or "").strip()
-            ],
-            "ready_count": int(ready_count),
-            "expected_total": 7,
-            "remaining_count": max(0, 7 - int(ready_count)),
-            "focus_kind": focus_kind,
-            "focus_key": focus_key,
-            "focus_label": focus_label or focus_key,
-            "background_fill_required": bool(ready_count < 7),
-            "readiness_diagnostics": dict(seed_diagnostics),
-            "phase_metrics": dict(phase_metrics),
-        }
-    finally:
-        cursor.close()
-        conn.close()
-        db_summary = summarize_db_acquire_events(db_acquire_events)
-        _log_flow_observation(
-            "db_scope",
-            "translation_session_start",
-            user_id=int(user_id),
-            source_lang=source_lang,
-            target_lang=target_lang,
-            provider_wait_ms=provider_wait_ms_total,
-            db_wait_ms=int(db_summary.get("db_pool_acquire_wait_ms_total") or 0),
-            db_hold_ms=int(db_summary.get("db_pool_checkout_hold_ms_total") or 0),
-            **db_summary,
-        )
+                provider_wait_ms=provider_wait_ms_total,
+                db_wait_ms=int(db_summary.get("db_pool_acquire_wait_ms_total") or 0),
+                db_hold_ms=int(db_summary.get("db_pool_checkout_hold_ms_total") or 0),
+                **db_summary,
+            )
 
 
 def _parse_translation_feedback_payload(
