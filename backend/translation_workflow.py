@@ -1432,254 +1432,317 @@ async def submit_story_translation_webapp(
 
     provider_wait_ms_total = 0
     with db_acquire_scope("story_translation_submit") as db_acquire_events:
-        conn = get_db_connection()
-    cursor = conn.cursor()
+        try:
+            with get_db_connection_context() as conn:
+                cursor = conn.cursor()
+                try:
+                    cursor.execute(
+                        """
+                        SELECT session_id
+                        FROM bt_3_user_progress
+                        WHERE user_id = %s AND completed = FALSE
+                        ORDER BY start_time DESC
+                        LIMIT 1;
+                        """,
+                        (user_id,),
+                    )
+                    row = cursor.fetchone()
+                    if not row:
+                        return {"error": "Активная сессия не найдена."}
+                    session_id = row[0]
 
-    try:
-        cursor.execute(
-            """
-            SELECT session_id
-            FROM bt_3_user_progress
-            WHERE user_id = %s AND completed = FALSE
-            ORDER BY start_time DESC
-            LIMIT 1;
-            """,
-            (user_id,),
-        )
-        row = cursor.fetchone()
-        if not row:
-            return {"error": "Активная сессия не найдена."}
-        session_id = row[0]
+                    cursor.execute(
+                        """
+                        SELECT s.story_id, b.answer, b.answer_aliases, b.extra_de
+                        FROM bt_3_story_sessions s
+                        JOIN bt_3_story_bank b ON b.id = s.story_id
+                        WHERE s.user_id = %s AND s.session_id = %s
+                        ORDER BY s.created_at DESC
+                        LIMIT 1;
+                        """,
+                        (user_id, str(session_id)),
+                    )
+                    story_row = cursor.fetchone()
+                    if not story_row:
+                        return {"error": "История для этой сессии не найдена."}
 
-        cursor.execute(
-            """
-            SELECT s.story_id, b.answer, b.answer_aliases, b.extra_de
-            FROM bt_3_story_sessions s
-            JOIN bt_3_story_bank b ON b.id = s.story_id
-            WHERE s.user_id = %s AND s.session_id = %s
-            ORDER BY s.created_at DESC
-            LIMIT 1;
-            """,
-            (user_id, str(session_id)),
-        )
-        story_row = cursor.fetchone()
-        if not story_row:
-            return {"error": "История для этой сессии не найдена."}
+                    story_id, answer, aliases_json, extra_de = story_row
+                    if isinstance(aliases_json, str):
+                        try:
+                            aliases = json.loads(aliases_json)
+                        except json.JSONDecodeError:
+                            aliases = []
+                    else:
+                        aliases = aliases_json or []
 
-        story_id, answer, aliases_json, extra_de = story_row
-        if isinstance(aliases_json, str):
+                    cursor.execute(
+                        """
+                        SELECT id, id_for_mistake_table, sentence, unique_id
+                        FROM bt_3_daily_sentences
+                        WHERE user_id = %s AND session_id = %s
+                        ORDER BY unique_id ASC;
+                        """,
+                        (user_id, session_id),
+                    )
+                    daily_rows = cursor.fetchall()
+                    if not daily_rows:
+                        return {"error": "Предложения истории не найдены."}
+                finally:
+                    cursor.close()
+
+            if len(daily_rows) != 7:
+                logging.warning("Story session has %s sentences, expected 7", len(daily_rows))
+
+            translations_by_id = {
+                int(item.get("id_for_mistake_table")): (item.get("translation") or "").strip()
+                for item in translations
+                if item.get("id_for_mistake_table")
+            }
+
+            original_sentences = [row[2] for row in daily_rows]
+            user_sentences = [translations_by_id.get(row[1], "") for row in daily_rows]
+
+            if any(not text for text in user_sentences):
+                return {"error": "Нужно заполнить все 7 предложений истории."}
+
+            original_text = "\n".join(original_sentences)
+            user_text = "\n".join(user_sentences)
             try:
-                aliases = json.loads(aliases_json)
-            except json.JSONDecodeError:
-                aliases = []
-        else:
-            aliases = aliases_json or []
-
-        cursor.execute(
-            """
-            SELECT id, id_for_mistake_table, sentence, unique_id
-            FROM bt_3_daily_sentences
-            WHERE user_id = %s AND session_id = %s
-            ORDER BY unique_id ASC;
-            """,
-            (user_id, session_id),
-        )
-        daily_rows = cursor.fetchall()
-        if not daily_rows:
-            return {"error": "Предложения истории не найдены."}
-
-        if len(daily_rows) != 7:
-            logging.warning("Story session has %s sentences, expected 7", len(daily_rows))
-
-        translations_by_id = {
-            int(item.get("id_for_mistake_table")): (item.get("translation") or "").strip()
-            for item in translations
-            if item.get("id_for_mistake_table")
-        }
-
-        original_sentences = [row[2] for row in daily_rows]
-        user_sentences = [translations_by_id.get(row[1], "") for row in daily_rows]
-
-        if any(not text for text in user_sentences):
-            return {"error": "Нужно заполнить все 7 предложений истории."}
-
-        cursor.execute(
-            """
-            SELECT COUNT(*) FROM bt_3_translations
-            WHERE user_id = %s AND session_id = %s;
-            """,
-            (user_id, session_id),
-        )
-        if (cursor.fetchone()[0] or 0) > 0:
-            return {"error": "История уже была отправлена."}
-
-        original_text = "\n".join(original_sentences)
-        user_text = "\n".join(user_sentences)
-        try:
-            provider_started_at = time.perf_counter()
-            raw_feedback, raw_arena = await asyncio.gather(
-                run_check_translation_story(original_text, user_text),
-                run_check_translation_story_arena(original_text, user_text),
-                return_exceptions=True,
-            )
-            provider_wait_ms = max(0, int((time.perf_counter() - provider_started_at) * 1000))
-            provider_wait_ms_total += provider_wait_ms
-            note_db_provider_wait(provider_wait_ms, provider_label="story_translation_check")
-            if isinstance(raw_feedback, BaseException):
-                raise raw_feedback
-        except Exception as exc:
-            detailed_message = _extract_nested_error_message(exc)
-            logging.warning(
-                "Story translation check failed for user_id=%s session_id=%s: %s",
-                user_id,
-                session_id,
-                detailed_message or exc,
-                exc_info=True,
-            )
-            if detailed_message:
-                return {"error": f"Не удалось проверить историю. {detailed_message}"}
-            return {"error": "Не удалось проверить историю. Попробуйте ещё раз."}
-
-        arena_scores = _parse_arena_feedback(raw_arena) if isinstance(raw_arena, str) else {"grammar": 0, "accuracy": 0, "style": 0, "completeness": 0, "total": 0}
-
-        if not isinstance(raw_feedback, str):
-            detailed_message = _extract_nested_error_message(raw_feedback)
-            logging.warning(
-                "Story translation check returned non-string payload for user_id=%s session_id=%s: %r",
-                user_id,
-                session_id,
-                raw_feedback,
-            )
-            if detailed_message:
-                return {"error": f"Не удалось проверить историю. {detailed_message}"}
-            return {"error": "Не удалось проверить историю. Попробуйте ещё раз."}
-
-        stripped_feedback = raw_feedback.strip()
-        if stripped_feedback.startswith("{") and stripped_feedback.endswith("}"):
-            detailed_message = _extract_nested_error_message(stripped_feedback)
-            if detailed_message and detailed_message != stripped_feedback:
-                logging.warning(
-                    "Story translation check returned error payload for user_id=%s session_id=%s: %s",
-                    user_id,
-                    session_id,
-                    detailed_message,
+                provider_started_at = time.perf_counter()
+                raw_feedback, raw_arena = await asyncio.gather(
+                    run_check_translation_story(original_text, user_text),
+                    run_check_translation_story_arena(original_text, user_text),
+                    return_exceptions=True,
                 )
-                return {"error": f"Не удалось проверить историю. {detailed_message}"}
-
-        parsed = _parse_story_feedback(raw_feedback)
-        score_value = parsed["score"]
-        feedback = parsed["feedback"] or raw_feedback
-
-        for row, user_sentence in zip(daily_rows, user_sentences):
-            sentence_pk_id = row[0]
-            sentence_id_for_mistake = row[1]
-            cursor.execute(
-                """
-                INSERT INTO bt_3_translations (user_id, id_for_mistake_table, session_id, username, sentence_id,
-                user_translation, score, feedback, source_lang, target_lang)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (user_id, sentence_id, session_id) WHERE session_id IS NOT NULL DO NOTHING
-                RETURNING id;
-                """,
-                (
+                provider_wait_ms = max(0, int((time.perf_counter() - provider_started_at) * 1000))
+                provider_wait_ms_total += provider_wait_ms
+                note_db_provider_wait(provider_wait_ms, provider_label="story_translation_check")
+                if isinstance(raw_feedback, BaseException):
+                    raise raw_feedback
+            except Exception as exc:
+                detailed_message = _extract_nested_error_message(exc)
+                logging.warning(
+                    "Story translation check failed for user_id=%s session_id=%s: %s",
                     user_id,
-                    sentence_id_for_mistake,
                     session_id,
-                    username,
-                    sentence_pk_id,
-                    user_sentence,
-                    score_value,
-                    feedback,
-                    (source_lang or "ru"),
-                    (target_lang or "de"),
-                ),
+                    detailed_message or exc,
+                    exc_info=True,
+                )
+                if detailed_message:
+                    return {"error": f"Не удалось проверить историю. {detailed_message}"}
+                return {"error": "Не удалось проверить историю. Попробуйте ещё раз."}
+
+            arena_scores = _parse_arena_feedback(raw_arena) if isinstance(raw_arena, str) else {"grammar": 0, "accuracy": 0, "style": 0, "completeness": 0, "total": 0}
+
+            if not isinstance(raw_feedback, str):
+                detailed_message = _extract_nested_error_message(raw_feedback)
+                logging.warning(
+                    "Story translation check returned non-string payload for user_id=%s session_id=%s: %r",
+                    user_id,
+                    session_id,
+                    raw_feedback,
+                )
+                if detailed_message:
+                    return {"error": f"Не удалось проверить историю. {detailed_message}"}
+                return {"error": "Не удалось проверить историю. Попробуйте ещё раз."}
+
+            stripped_feedback = raw_feedback.strip()
+            if stripped_feedback.startswith("{") and stripped_feedback.endswith("}"):
+                detailed_message = _extract_nested_error_message(stripped_feedback)
+                if detailed_message and detailed_message != stripped_feedback:
+                    logging.warning(
+                        "Story translation check returned error payload for user_id=%s session_id=%s: %s",
+                        user_id,
+                        session_id,
+                        detailed_message,
+                    )
+                    return {"error": f"Не удалось проверить историю. {detailed_message}"}
+
+            parsed = _parse_story_feedback(raw_feedback)
+            score_value = parsed["score"]
+            feedback = parsed["feedback"] or raw_feedback
+
+            normalized_guess = _normalize_guess(guess)
+            normalized_answer = _normalize_guess(answer or "")
+            alias_matches = {_normalize_guess(item) for item in aliases if item}
+            heuristic_match = bool(
+                normalized_guess and (
+                    normalized_guess == normalized_answer
+                    or normalized_guess in alias_matches
+                    or normalized_answer in normalized_guess
+                    or any(alias and alias in normalized_guess for alias in alias_matches)
+                )
             )
 
-        normalized_guess = _normalize_guess(guess)
-        normalized_answer = _normalize_guess(answer or "")
-        alias_matches = {_normalize_guess(item) for item in aliases if item}
-        heuristic_match = bool(
-            normalized_guess and (
-                normalized_guess == normalized_answer
-                or normalized_guess in alias_matches
-                or normalized_answer in normalized_guess
-                or any(alias and alias in normalized_guess for alias in alias_matches)
+            semantic_result = {"is_correct": False, "reason": ""}
+            try:
+                provider_started_at = time.perf_counter()
+                semantic_result = await run_check_story_guess_semantic(
+                    canonical_answer=answer or "",
+                    aliases=[item for item in aliases if item],
+                    user_guess=guess,
+                )
+                provider_wait_ms = max(0, int((time.perf_counter() - provider_started_at) * 1000))
+                provider_wait_ms_total += provider_wait_ms
+                note_db_provider_wait(provider_wait_ms, provider_label="story_guess_semantic")
+            except Exception as exc:
+                logging.warning("Semantic guess check failed: %s", exc)
+
+            is_correct = bool(heuristic_match or semantic_result.get("is_correct"))
+            guess_reason = (semantic_result.get("reason") or "").strip()
+            source_links = _build_story_source_links(answer or "")
+
+            with get_db_connection_context() as conn:
+                cursor = conn.cursor()
+                try:
+                    cursor.execute(
+                        """
+                        SELECT session_id
+                        FROM bt_3_user_progress
+                        WHERE user_id = %s AND completed = FALSE
+                        ORDER BY start_time DESC
+                        LIMIT 1;
+                        """,
+                        (user_id,),
+                    )
+                    active_row = cursor.fetchone()
+                    if not active_row:
+                        return {"error": "Активная сессия не найдена."}
+                    if str(active_row[0]) != str(session_id):
+                        return {"error": "Состояние истории изменилось. Попробуйте отправить заново."}
+
+                    cursor.execute(
+                        """
+                        SELECT COUNT(*) FROM bt_3_translations
+                        WHERE user_id = %s AND session_id = %s;
+                        """,
+                        (user_id, session_id),
+                    )
+                    if (cursor.fetchone()[0] or 0) > 0:
+                        return {"error": "История уже была отправлена."}
+
+                    cursor.execute(
+                        """
+                        SELECT s.story_id, b.answer, b.answer_aliases, b.extra_de
+                        FROM bt_3_story_sessions s
+                        JOIN bt_3_story_bank b ON b.id = s.story_id
+                        WHERE s.user_id = %s AND s.session_id = %s
+                        ORDER BY s.created_at DESC
+                        LIMIT 1;
+                        """,
+                        (user_id, str(session_id)),
+                    )
+                    current_story_row = cursor.fetchone()
+                    if not current_story_row:
+                        return {"error": "История для этой сессии не найдена."}
+
+                    current_story_id, current_answer, current_aliases_json, current_extra_de = current_story_row
+                    if int(current_story_id) != int(story_id):
+                        return {"error": "Состояние истории изменилось. Попробуйте отправить заново."}
+                    if str(current_answer or "") != str(answer or "") or str(current_extra_de or "") != str(extra_de or ""):
+                        return {"error": "Состояние истории изменилось. Попробуйте отправить заново."}
+
+                    cursor.execute(
+                        """
+                        SELECT id, id_for_mistake_table, sentence, unique_id
+                        FROM bt_3_daily_sentences
+                        WHERE user_id = %s AND session_id = %s
+                        ORDER BY unique_id ASC;
+                        """,
+                        (user_id, session_id),
+                    )
+                    current_daily_rows = cursor.fetchall()
+                    if not current_daily_rows:
+                        return {"error": "Предложения истории не найдены."}
+                    if len(current_daily_rows) != len(daily_rows):
+                        return {"error": "Состояние истории изменилось. Попробуйте отправить заново."}
+                    if [row[1] for row in current_daily_rows] != [row[1] for row in daily_rows]:
+                        return {"error": "Состояние истории изменилось. Попробуйте отправить заново."}
+                    if [row[2] for row in current_daily_rows] != [row[2] for row in daily_rows]:
+                        return {"error": "Состояние истории изменилось. Попробуйте отправить заново."}
+
+                    for row, user_sentence in zip(current_daily_rows, user_sentences):
+                        sentence_pk_id = row[0]
+                        sentence_id_for_mistake = row[1]
+                        cursor.execute(
+                            """
+                            INSERT INTO bt_3_translations (user_id, id_for_mistake_table, session_id, username, sentence_id,
+                            user_translation, score, feedback, source_lang, target_lang)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (user_id, sentence_id, session_id) WHERE session_id IS NOT NULL DO NOTHING
+                            RETURNING id;
+                            """,
+                            (
+                                user_id,
+                                sentence_id_for_mistake,
+                                session_id,
+                                username,
+                                sentence_pk_id,
+                                user_sentence,
+                                score_value,
+                                feedback,
+                                (source_lang or "ru"),
+                                (target_lang or "de"),
+                            ),
+                        )
+
+                    cursor.execute(
+                        """
+                        UPDATE bt_3_story_sessions
+                        SET completed_at = NOW(), guess = %s, guess_correct = %s, score = %s, feedback = %s
+                        WHERE user_id = %s AND session_id = %s AND story_id = %s;
+                        """,
+                        (guess, is_correct, score_value, feedback, user_id, str(session_id), story_id),
+                    )
+
+                    conn.commit()
+                    answer = current_answer
+                    extra_de = current_extra_de
+                finally:
+                    cursor.close()
+
+            # Save 4-criteria scores for arena leaderboard (non-fatal)
+            try:
+                save_story_arena_score(
+                    story_id=story_id,
+                    user_id=user_id,
+                    username=username,
+                    session_id=int(session_id),
+                    total_score=arena_scores["total"],
+                    score_grammar=arena_scores["grammar"],
+                    score_accuracy=arena_scores["accuracy"],
+                    score_style=arena_scores["style"],
+                    score_completeness=arena_scores["completeness"],
+                    full_translation=user_text,
+                )
+            except Exception as exc:
+                logging.warning("Failed to save arena score for user_id=%s: %s", user_id, exc)
+
+            return {
+                "ok": True,
+                "score": score_value,
+                "feedback": feedback,
+                "guess_correct": is_correct,
+                "guess_reason": guess_reason,
+                "answer": answer,
+                "extra_de": extra_de,
+                "source_links": source_links,
+                "arena_scores": arena_scores,
+                "story_id": story_id,
+            }
+        finally:
+            db_summary = summarize_db_acquire_events(db_acquire_events)
+            _log_flow_observation(
+                "db_scope",
+                "story_translation_submit",
+                user_id=int(user_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                provider_wait_ms=provider_wait_ms_total,
+                db_wait_ms=int(db_summary.get("db_pool_acquire_wait_ms_total") or 0),
+                db_hold_ms=int(db_summary.get("db_pool_checkout_hold_ms_total") or 0),
+                **db_summary,
             )
-        )
-
-        semantic_result = {"is_correct": False, "reason": ""}
-        try:
-            provider_started_at = time.perf_counter()
-            semantic_result = await run_check_story_guess_semantic(
-                canonical_answer=answer or "",
-                aliases=[item for item in aliases if item],
-                user_guess=guess,
-            )
-            provider_wait_ms = max(0, int((time.perf_counter() - provider_started_at) * 1000))
-            provider_wait_ms_total += provider_wait_ms
-            note_db_provider_wait(provider_wait_ms, provider_label="story_guess_semantic")
-        except Exception as exc:
-            logging.warning("Semantic guess check failed: %s", exc)
-
-        is_correct = bool(heuristic_match or semantic_result.get("is_correct"))
-        guess_reason = (semantic_result.get("reason") or "").strip()
-        source_links = _build_story_source_links(answer or "")
-
-        cursor.execute(
-            """
-            UPDATE bt_3_story_sessions
-            SET completed_at = NOW(), guess = %s, guess_correct = %s, score = %s, feedback = %s
-            WHERE user_id = %s AND session_id = %s AND story_id = %s;
-            """,
-            (guess, is_correct, score_value, feedback, user_id, str(session_id), story_id),
-        )
-
-        conn.commit()
-
-        # Save 4-criteria scores for arena leaderboard (non-fatal)
-        try:
-            save_story_arena_score(
-                story_id=story_id,
-                user_id=user_id,
-                username=username,
-                session_id=int(session_id),
-                total_score=arena_scores["total"],
-                score_grammar=arena_scores["grammar"],
-                score_accuracy=arena_scores["accuracy"],
-                score_style=arena_scores["style"],
-                score_completeness=arena_scores["completeness"],
-                full_translation=user_text,
-            )
-        except Exception as exc:
-            logging.warning("Failed to save arena score for user_id=%s: %s", user_id, exc)
-
-        return {
-            "ok": True,
-            "score": score_value,
-            "feedback": feedback,
-            "guess_correct": is_correct,
-            "guess_reason": guess_reason,
-            "answer": answer,
-            "extra_de": extra_de,
-            "source_links": source_links,
-            "arena_scores": arena_scores,
-            "story_id": story_id,
-        }
-    finally:
-        cursor.close()
-        conn.close()
-        db_summary = summarize_db_acquire_events(db_acquire_events)
-        _log_flow_observation(
-            "db_scope",
-            "story_translation_submit",
-            user_id=int(user_id),
-            source_lang=source_lang,
-            target_lang=target_lang,
-            provider_wait_ms=provider_wait_ms_total,
-            db_wait_ms=int(db_summary.get("db_pool_acquire_wait_ms_total") or 0),
-            db_hold_ms=int(db_summary.get("db_pool_checkout_hold_ms_total") or 0),
-            **db_summary,
-        )
 
 
 async def generate_sentences_webapp(
