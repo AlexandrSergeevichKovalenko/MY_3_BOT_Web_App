@@ -4020,6 +4020,49 @@ def ensure_webapp_tables() -> None:
                 );
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_telegram_quiz_followup_requests (
+                    request_key TEXT PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    source_text TEXT NOT NULL DEFAULT '',
+                    target_text TEXT NOT NULL DEFAULT '',
+                    source_lang TEXT NOT NULL DEFAULT '',
+                    target_lang TEXT NOT NULL DEFAULT '',
+                    awaiting_input BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    input_started_at TIMESTAMPTZ,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_tg_quiz_followup_requests_user_active
+                ON bt_3_telegram_quiz_followup_requests (
+                    user_id,
+                    awaiting_input,
+                    input_started_at DESC,
+                    created_at DESC
+                );
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_telegram_pending_input_states (
+                    state_key TEXT PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    state_type TEXT NOT NULL,
+                    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    expires_at TIMESTAMPTZ
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_tg_pending_input_states_user_active
+                ON bt_3_telegram_pending_input_states (
+                    user_id,
+                    state_type,
+                    expires_at,
+                    updated_at DESC
+                );
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_prepared_telegram_quizzes (
                     id BIGSERIAL PRIMARY KEY,
                     quiz_type TEXT NOT NULL,
@@ -11961,6 +12004,365 @@ def upsert_dictionary_lookup_cache(
                     Json(response_json),
                 ),
             )
+
+
+def upsert_pending_telegram_quiz_followup_request(
+    *,
+    request_key: str,
+    user_id: int,
+    source_text: str,
+    target_text: str,
+    source_lang: str,
+    target_lang: str,
+) -> None:
+    request_key_value = str(request_key or "").strip()
+    if not request_key_value:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_telegram_quiz_followup_requests (
+                    request_key,
+                    user_id,
+                    source_text,
+                    target_text,
+                    source_lang,
+                    target_lang,
+                    awaiting_input,
+                    created_at,
+                    input_started_at,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, FALSE, NOW(), NULL, NOW())
+                ON CONFLICT (request_key) DO UPDATE
+                SET user_id = EXCLUDED.user_id,
+                    source_text = EXCLUDED.source_text,
+                    target_text = EXCLUDED.target_text,
+                    source_lang = EXCLUDED.source_lang,
+                    target_lang = EXCLUDED.target_lang,
+                    updated_at = NOW();
+                """,
+                (
+                    request_key_value,
+                    int(user_id),
+                    str(source_text or "").strip(),
+                    str(target_text or "").strip(),
+                    str(source_lang or "").strip().lower(),
+                    str(target_lang or "").strip().lower(),
+                ),
+            )
+
+
+def mark_pending_telegram_quiz_followup_input_started(
+    *,
+    request_key: str,
+    user_id: int,
+) -> None:
+    request_key_value = str(request_key or "").strip()
+    if not request_key_value:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_telegram_quiz_followup_requests
+                SET awaiting_input = TRUE,
+                    input_started_at = NOW(),
+                    updated_at = NOW()
+                WHERE request_key = %s
+                  AND user_id = %s;
+                """,
+                (request_key_value, int(user_id)),
+            )
+
+
+def clear_pending_telegram_quiz_followup_input(
+    *,
+    request_key: str,
+    user_id: int,
+) -> None:
+    request_key_value = str(request_key or "").strip()
+    if not request_key_value:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_telegram_quiz_followup_requests
+                SET awaiting_input = FALSE,
+                    updated_at = NOW()
+                WHERE request_key = %s
+                  AND user_id = %s;
+                """,
+                (request_key_value, int(user_id)),
+            )
+
+
+def _normalize_pending_telegram_quiz_followup_row(row) -> dict | None:
+    if not row:
+        return None
+    created_at = row[7]
+    input_started_at = row[8]
+    return {
+        "request_key": str(row[0] or "").strip(),
+        "user_id": int(row[1] or 0),
+        "source_text": str(row[2] or "").strip(),
+        "target_text": str(row[3] or "").strip(),
+        "source_lang": str(row[4] or "").strip().lower(),
+        "target_lang": str(row[5] or "").strip().lower(),
+        "awaiting_input": bool(row[6]),
+        "created_at": created_at,
+        "input_started_at": input_started_at,
+        "updated_at": row[9],
+        "started_at": (
+            input_started_at.timestamp()
+            if input_started_at is not None
+            else (created_at.timestamp() if created_at is not None else 0.0)
+        ),
+    }
+
+
+def get_pending_telegram_quiz_followup_request(request_key: str) -> dict | None:
+    request_key_value = str(request_key or "").strip()
+    if not request_key_value:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    request_key,
+                    user_id,
+                    source_text,
+                    target_text,
+                    source_lang,
+                    target_lang,
+                    awaiting_input,
+                    created_at,
+                    input_started_at,
+                    updated_at
+                FROM bt_3_telegram_quiz_followup_requests
+                WHERE request_key = %s
+                LIMIT 1;
+                """,
+                (request_key_value,),
+            )
+            row = cursor.fetchone()
+    return _normalize_pending_telegram_quiz_followup_row(row)
+
+
+def get_active_pending_telegram_quiz_followup_for_user(user_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    request_key,
+                    user_id,
+                    source_text,
+                    target_text,
+                    source_lang,
+                    target_lang,
+                    awaiting_input,
+                    created_at,
+                    input_started_at,
+                    updated_at
+                FROM bt_3_telegram_quiz_followup_requests
+                WHERE user_id = %s
+                  AND awaiting_input = TRUE
+                ORDER BY input_started_at DESC NULLS LAST, created_at DESC
+                LIMIT 1;
+                """,
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+    return _normalize_pending_telegram_quiz_followup_row(row)
+
+
+def purge_old_pending_telegram_quiz_followup_requests(*, older_than_seconds: int) -> int:
+    ttl_seconds = max(60, int(older_than_seconds or 0))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM bt_3_telegram_quiz_followup_requests
+                WHERE COALESCE(input_started_at, created_at) < NOW() - (%s * INTERVAL '1 second');
+                """,
+                (ttl_seconds,),
+            )
+            return int(cursor.rowcount or 0)
+
+
+def upsert_pending_telegram_input_state(
+    *,
+    state_key: str,
+    user_id: int,
+    state_type: str,
+    payload: dict | None = None,
+    ttl_seconds: int | None = None,
+) -> None:
+    state_key_value = str(state_key or "").strip()
+    state_type_value = str(state_type or "").strip().lower()
+    if not state_key_value or not state_type_value:
+        return
+    expires_at_clause = (
+        "NOW() + (%s * INTERVAL '1 second')"
+        if ttl_seconds is not None and int(ttl_seconds or 0) > 0
+        else "NULL"
+    )
+    params: list[Any] = [
+        state_key_value,
+        int(user_id),
+        state_type_value,
+        Json(payload if isinstance(payload, dict) else {}),
+    ]
+    if ttl_seconds is not None and int(ttl_seconds or 0) > 0:
+        params.append(max(1, int(ttl_seconds)))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                INSERT INTO bt_3_telegram_pending_input_states (
+                    state_key,
+                    user_id,
+                    state_type,
+                    payload,
+                    created_at,
+                    updated_at,
+                    expires_at
+                )
+                VALUES (%s, %s, %s, %s, NOW(), NOW(), {expires_at_clause})
+                ON CONFLICT (state_key) DO UPDATE
+                SET user_id = EXCLUDED.user_id,
+                    state_type = EXCLUDED.state_type,
+                    payload = EXCLUDED.payload,
+                    updated_at = NOW(),
+                    expires_at = EXCLUDED.expires_at;
+                """,
+                tuple(params),
+            )
+
+
+def delete_pending_telegram_input_state(
+    *,
+    state_key: str,
+    user_id: int | None = None,
+) -> None:
+    state_key_value = str(state_key or "").strip()
+    if not state_key_value:
+        return
+    query = """
+        DELETE FROM bt_3_telegram_pending_input_states
+        WHERE state_key = %s
+    """
+    params: list[Any] = [state_key_value]
+    if user_id is not None:
+        query += " AND user_id = %s"
+        params.append(int(user_id))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(query + ";", tuple(params))
+
+
+def _normalize_pending_telegram_input_state_row(row) -> dict | None:
+    if not row:
+        return None
+    payload = row[3]
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    created_at = row[4]
+    updated_at = row[5]
+    expires_at = row[6]
+    normalized = {
+        "state_key": str(row[0] or "").strip(),
+        "user_id": int(row[1] or 0),
+        "state_type": str(row[2] or "").strip().lower(),
+        "payload": payload,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "expires_at": expires_at,
+    }
+    normalized.update(payload)
+    normalized.setdefault(
+        "started_at",
+        created_at.timestamp() if created_at is not None else 0.0,
+    )
+    return normalized
+
+
+def get_pending_telegram_input_state(state_key: str) -> dict | None:
+    state_key_value = str(state_key or "").strip()
+    if not state_key_value:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    state_key,
+                    user_id,
+                    state_type,
+                    payload,
+                    created_at,
+                    updated_at,
+                    expires_at
+                FROM bt_3_telegram_pending_input_states
+                WHERE state_key = %s
+                  AND (expires_at IS NULL OR expires_at > NOW())
+                LIMIT 1;
+                """,
+                (state_key_value,),
+            )
+            row = cursor.fetchone()
+    return _normalize_pending_telegram_input_state_row(row)
+
+
+def get_active_pending_telegram_input_state_for_user(user_id: int, state_type: str) -> dict | None:
+    state_type_value = str(state_type or "").strip().lower()
+    if not state_type_value:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    state_key,
+                    user_id,
+                    state_type,
+                    payload,
+                    created_at,
+                    updated_at,
+                    expires_at
+                FROM bt_3_telegram_pending_input_states
+                WHERE user_id = %s
+                  AND state_type = %s
+                  AND (expires_at IS NULL OR expires_at > NOW())
+                ORDER BY updated_at DESC, created_at DESC
+                LIMIT 1;
+                """,
+                (int(user_id), state_type_value),
+            )
+            row = cursor.fetchone()
+    return _normalize_pending_telegram_input_state_row(row)
+
+
+def purge_expired_pending_telegram_input_states() -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM bt_3_telegram_pending_input_states
+                WHERE expires_at IS NOT NULL
+                  AND expires_at < NOW();
+                """
+            )
+            return int(cursor.rowcount or 0)
 
 
 def get_youtube_transcript_cache(video_id: str) -> dict | None:

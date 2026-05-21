@@ -58,6 +58,52 @@
 }
 
 /* ╭───────────────────────────────────────────────────────────────────────╮
+   │  LIGHT TELEGRAM THEME TOKEN OVERRIDES                                  │
+   │  Redefine --rd-* so all dark-mode !important rules resolve correctly   │
+   ╰───────────────────────────────────────────────────────────────────────╯ */
+.webapp-page.is-theme-light .webapp-reader {
+  --rd-bg:           #f0e8d6;
+  --rd-bg-elev:      rgba(139, 109, 71, 0.07);
+  --rd-bg-elev-2:    rgba(139, 109, 71, 0.13);
+  --rd-surface:      rgba(255, 255, 255, 0.72);
+  --rd-surface-hi:   rgba(255, 255, 255, 0.9);
+  --rd-border:       rgba(139, 109, 71, 0.18);
+  --rd-border-hi:    rgba(139, 109, 71, 0.30);
+  --rd-text:         #1a1208;
+  --rd-text-2:       #2c1d0e;
+  --rd-text-muted:   rgba(26, 18, 8, 0.65);
+  --rd-text-faint:   rgba(26, 18, 8, 0.42);
+  --rd-shadow-card:  0 4px 16px rgba(105, 78, 47, 0.14);
+  --rd-shadow-glow:  0 6px 18px rgba(16, 185, 129, 0.28);
+}
+
+/* Fix gradient text title — background-clip:text uses hardcoded colors */
+.webapp-page.is-theme-light .webapp-reader .reader-lib-header-title {
+  background: none;
+  -webkit-background-clip: unset;
+  background-clip: unset;
+  -webkit-text-fill-color: #1a1208;
+  color: #1a1208;
+}
+
+/* Fix hardcoded rgba(0,0,0,...) dark overlays in the add form */
+.webapp-page.is-theme-light .webapp-reader .webapp-reader-form .webapp-field,
+.webapp-page.is-theme-light .webapp-reader .reader-library > .webapp-field {
+  background: rgba(139, 109, 71, 0.06);
+}
+
+.webapp-page.is-theme-light .webapp-reader .webapp-reader-form input[type="file"] {
+  background: rgba(139, 109, 71, 0.06);
+  color: #3a2c1e;
+}
+
+.webapp-page.is-theme-light .webapp-reader .webapp-reader-form input[type="file"]::file-selector-button {
+  background: rgba(139, 109, 71, 0.1);
+  color: #2c1d0e;
+  border-color: rgba(139, 109, 71, 0.22);
+}
+
+/* ╭───────────────────────────────────────────────────────────────────────╮
    │  ROOT СЕКЦИЯ + LIBRARY MODE LAYOUT                                     │
    ╰───────────────────────────────────────────────────────────────────────╯ */
 .webapp-reader {

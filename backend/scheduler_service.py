@@ -536,7 +536,7 @@ def _build_scheduler():
         )
 
     # -- Translation focus pool refill --
-    if _enabled("TRANSLATION_FOCUS_POOL_REFILL_ENABLED", "0"):
+    if _enabled("TRANSLATION_FOCUS_POOL_REFILL_ENABLED", "1"):
         scheduler.add_job(
             _dispatch_translation_focus_pool_refill,
             "cron",

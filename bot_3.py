@@ -146,6 +146,17 @@ from backend.database import (
     upsert_active_quiz,
     get_active_quiz,
     delete_active_quiz,
+    upsert_pending_telegram_quiz_followup_request,
+    mark_pending_telegram_quiz_followup_input_started,
+    clear_pending_telegram_quiz_followup_input,
+    get_pending_telegram_quiz_followup_request,
+    get_active_pending_telegram_quiz_followup_for_user,
+    purge_old_pending_telegram_quiz_followup_requests,
+    upsert_pending_telegram_input_state,
+    delete_pending_telegram_input_state,
+    get_pending_telegram_input_state,
+    get_active_pending_telegram_input_state_for_user,
+    purge_expired_pending_telegram_input_states,
     store_prepared_telegram_quiz,
     count_prepared_telegram_quizzes,
     count_available_image_quiz_templates,
@@ -185,6 +196,13 @@ QUIZ_FREEFORM_OPTION = "keine korrekte Antworten"
 QUIZ_HIDE_CORRECT_PROBABILITY = 0.3
 QUIZ_QUESTION_TTL_SECONDS = 60 * 30
 QUIZ_QUESTION_REPLY_MAX_CHARS = 3200
+QUIZ_FOLLOWUP_REQUEST_RETENTION_SECONDS = max(
+    QUIZ_QUESTION_TTL_SECONDS,
+    int((os.getenv("QUIZ_FOLLOWUP_REQUEST_RETENTION_SECONDS") or str(60 * 60 * 48)).strip() or str(60 * 60 * 48)),
+)
+QUIZ_FOLLOWUP_CLEANUP_HOUR = max(0, min(23, int((os.getenv("QUIZ_FOLLOWUP_CLEANUP_HOUR") or "4").strip() or "4")))
+QUIZ_FOLLOWUP_CLEANUP_MINUTE = max(0, min(59, int((os.getenv("QUIZ_FOLLOWUP_CLEANUP_MINUTE") or "40").strip() or "40")))
+QUIZ_FOLLOWUP_CLEANUP_TZ = (os.getenv("QUIZ_FOLLOWUP_CLEANUP_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
 QUIZ_REPEAT_ACCURACY_THRESHOLD = min(
     1.0,
     max(0.0, float(os.getenv("QUIZ_REPEAT_ACCURACY_THRESHOLD", "0.5"))),
@@ -332,6 +350,14 @@ pending_language_tutor_input = {}
 pending_tts_budget_custom = {}
 TTS_BUDGET_CUSTOM_TTL_SECONDS = 60 * 5
 LANGUAGE_TUTOR_INPUT_TTL_SECONDS = 60 * 20
+QUIZ_FREEFORM_INPUT_TTL_SECONDS = 60 * 60 * 48
+PENDING_INPUT_STATE_QUIZ_FREEFORM = "quiz_freeform"
+PENDING_INPUT_STATE_LANGUAGE_TUTOR = "language_tutor_input"
+PENDING_INPUT_STATE_TTS_BUDGET_CUSTOM = "tts_budget_custom"
+PENDING_INPUT_STATE_CLEANUP_INTERVAL_MINUTES = max(
+    5,
+    int((os.getenv("PENDING_INPUT_STATE_CLEANUP_INTERVAL_MINUTES") or "15").strip() or "15"),
+)
 LANGUAGE_TUTOR_BUTTON_TEXT = "💬 Спросить у GPT"
 TTS_PREWARM_QUOTA_MIN = max(50, min(10000, int((os.getenv("TTS_PREWARM_PER_USER_CHAR_LIMIT_MIN") or "200").strip() or "200")))
 TTS_PREWARM_QUOTA_MAX = max(
@@ -1664,11 +1690,28 @@ async def _open_language_tutor_prompt(
     *,
     user_id: int,
     continue_from_last: bool = False,
+    conversation_context: dict | None = None,
 ) -> None:
-    pending_language_tutor_input[int(user_id)] = {
+    pending_payload = {
         "started_at": pytime.time(),
         "continue_from_last": bool(continue_from_last),
     }
+    if isinstance(conversation_context, dict):
+        prev_question = str(conversation_context.get("question") or conversation_context.get("previous_question") or "").strip()
+        prev_answer = str(conversation_context.get("answer") or conversation_context.get("previous_answer") or "").strip()
+        if prev_question and prev_answer:
+            pending_payload["conversation_context"] = {
+                "previous_question": prev_question,
+                "previous_answer": prev_answer,
+            }
+    pending_language_tutor_input[int(user_id)] = pending_payload
+    _store_pending_input_state(
+        state_key=f"langgpt:{int(user_id)}",
+        user_id=int(user_id),
+        state_type=PENDING_INPUT_STATE_LANGUAGE_TUTOR,
+        payload=pending_payload,
+        ttl_seconds=LANGUAGE_TUTOR_INPUT_TTL_SECONDS,
+    )
     prompt_suffix = (
         "\n\nЯ учту контекст прошлого ответа."
         if continue_from_last
@@ -1842,6 +1885,7 @@ async def handle_language_tutor_callback(update: Update, context: CallbackContex
         query.message,
         user_id=int(query.from_user.id),
         continue_from_last=continue_from_last,
+        conversation_context=context.user_data.get("language_tutor_last_exchange") if continue_from_last else None,
     )
 
 
@@ -3317,6 +3361,10 @@ async def tts_budget_command(update: Update, context: CallbackContext):
         return
 
     pending_tts_budget_custom.pop(int(sender.id), None)
+    _clear_active_pending_input_state_for_user(
+        user_id=int(sender.id),
+        state_type=PENDING_INPUT_STATE_TTS_BUDGET_CUSTOM,
+    )
     args = context.args or []
     subcommand = str(args[0] if args else "status").strip().lower()
     if subcommand == "sendnow":
@@ -3352,6 +3400,10 @@ async def handle_tts_budget_callback(update: Update, context: CallbackContext):
         return
 
     pending_tts_budget_custom.pop(int(admin.id), None)
+    _clear_active_pending_input_state_for_user(
+        user_id=int(admin.id),
+        state_type=PENDING_INPUT_STATE_TTS_BUDGET_CUSTOM,
+    )
     match = re.match(r"^ttsbudget:(status|refresh|block|unblock|add|addcustom|translateblock|translateunblock|translateadd|translateaddcustom)(?::(\d+))?$", query.data or "")
     if not match:
         await query.answer("Некорректная кнопка.", show_alert=True)
@@ -3367,10 +3419,18 @@ async def handle_tts_budget_callback(update: Update, context: CallbackContext):
     if action == "translateadd":
         action = "translate_add"
     if action == "addcustom":
-        pending_tts_budget_custom[int(admin.id)] = {
+        pending_payload = {
             "provider": "google_tts",
             "started_at": pytime.time(),
         }
+        pending_tts_budget_custom[int(admin.id)] = pending_payload
+        _store_pending_input_state(
+            state_key=f"ttsbudget:{int(admin.id)}",
+            user_id=int(admin.id),
+            state_type=PENDING_INPUT_STATE_TTS_BUDGET_CUSTOM,
+            payload=pending_payload,
+            ttl_seconds=TTS_BUDGET_CUSTOM_TTL_SECONDS,
+        )
         await query.answer("Жду число в сообщении", show_alert=False)
         if query.message:
             await query.message.reply_text(
@@ -3381,10 +3441,18 @@ async def handle_tts_budget_callback(update: Update, context: CallbackContext):
             )
         return
     if action == "translateaddcustom":
-        pending_tts_budget_custom[int(admin.id)] = {
+        pending_payload = {
             "provider": "google_translate",
             "started_at": pytime.time(),
         }
+        pending_tts_budget_custom[int(admin.id)] = pending_payload
+        _store_pending_input_state(
+            state_key=f"ttsbudget:{int(admin.id)}",
+            user_id=int(admin.id),
+            state_type=PENDING_INPUT_STATE_TTS_BUDGET_CUSTOM,
+            payload=pending_payload,
+            ttl_seconds=TTS_BUDGET_CUSTOM_TTL_SECONDS,
+        )
         await query.answer("Жду число в сообщении", show_alert=False)
         if query.message:
             await query.message.reply_text(
@@ -3915,11 +3983,25 @@ async def handle_user_message(update: Update, context: CallbackContext):
         if await _try_handle_admin_support_reply(update, context, text):
             return
         pending_budget = pending_tts_budget_custom.get(int(user_id))
+        if not pending_budget:
+            restored_pending_budget = _restore_active_pending_input_state(
+                int(user_id),
+                PENDING_INPUT_STATE_TTS_BUDGET_CUSTOM,
+            )
+            if restored_pending_budget:
+                pending_budget = {
+                    "provider": str((restored_pending_budget or {}).get("provider") or "google_tts").strip().lower(),
+                    "started_at": float((restored_pending_budget or {}).get("started_at") or 0.0),
+                    "state_key": str((restored_pending_budget or {}).get("state_key") or "").strip(),
+                }
+                pending_tts_budget_custom[int(user_id)] = pending_budget
         if pending_budget and update.effective_chat and update.effective_chat.type == "private":
             started_at = float((pending_budget or {}).get("started_at") or 0.0)
             provider = str((pending_budget or {}).get("provider") or "google_tts").strip().lower()
+            state_key = str((pending_budget or {}).get("state_key") or f"ttsbudget:{int(user_id)}").strip()
             if started_at > 0 and (pytime.time() - started_at) > TTS_BUDGET_CUSTOM_TTL_SECONDS:
                 pending_tts_budget_custom.pop(int(user_id), None)
+                _clear_pending_input_state(state_key=state_key, user_id=int(user_id))
                 await update.message.reply_text(
                     "Ожидание custom лимита истекло. Нажмите `➕ Add custom` ещё раз.",
                     parse_mode="Markdown",
@@ -3929,6 +4011,7 @@ async def handle_user_message(update: Update, context: CallbackContext):
             lowered = str(text or "").strip().lower()
             if lowered in {"cancel", "/cancel", "отмена"}:
                 pending_tts_budget_custom.pop(int(user_id), None)
+                _clear_pending_input_state(state_key=state_key, user_id=int(user_id))
                 await update.message.reply_text(
                     "Операция добавления custom limit отменена.",
                     reply_markup=_build_tts_budget_keyboard(),
@@ -3943,6 +4026,7 @@ async def handle_user_message(update: Update, context: CallbackContext):
                 )
                 return
             pending_tts_budget_custom.pop(int(user_id), None)
+            _clear_pending_input_state(state_key=state_key, user_id=int(user_id))
             response_text = await _execute_tts_budget_action(
                 action="translate_add" if provider == "google_translate" else "add",
                 admin_user_id=int(user_id),
@@ -3952,6 +4036,20 @@ async def handle_user_message(update: Update, context: CallbackContext):
             return
 
     pending = pending_quiz_freeform.get(user_id)
+    if not pending:
+        restored_freeform = _restore_active_pending_input_state(
+            int(user_id),
+            PENDING_INPUT_STATE_QUIZ_FREEFORM,
+        )
+        if restored_freeform:
+            pending = {
+                "poll_id": str(restored_freeform.get("poll_id") or "").strip(),
+                "correct_text": str(restored_freeform.get("correct_text") or "").strip(),
+                "quiz_data": dict(restored_freeform.get("quiz_data") or {}),
+                "started_at": float(restored_freeform.get("started_at") or 0.0),
+                "state_key": str(restored_freeform.get("state_key") or "").strip(),
+            }
+            pending_quiz_freeform[user_id] = pending
     if pending:
         if update.effective_chat and update.effective_chat.type != "private":
             await update.message.reply_text("Ответ на этот квиз отправьте в личку с ботом.")
@@ -3985,26 +4083,48 @@ async def handle_user_message(update: Update, context: CallbackContext):
             is_correct=is_correct,
             selected_text=text,
         )
-        pending_quiz_freeform.pop(user_id, None)
+        pending_payload = pending_quiz_freeform.pop(user_id, None) or pending
+        _clear_pending_input_state(
+            state_key=str(
+                (pending_payload or {}).get("state_key")
+                or f"quizfreeform:{int(user_id)}:{str((pending_payload or {}).get('poll_id') or '').strip()}"
+            ).strip(),
+            user_id=int(user_id),
+        )
         return
 
-    pending_question = pending_quiz_question_input.get(user_id)
+    pending_question = _restore_active_pending_quiz_question_input(user_id)
     if pending_question:
         if update.effective_chat and update.effective_chat.type != "private":
             await update.message.reply_text("Вопрос по квизу отправьте в личку с ботом.")
             return
 
         request_key = str((pending_question or {}).get("request_key") or "").strip()
-        request_payload = pending_quiz_question_requests.get(request_key)
+        request_payload = _restore_pending_quiz_question_request(request_key)
         if not request_key or not request_payload or _is_quiz_question_payload_expired(request_payload):
             pending_quiz_question_input.pop(user_id, None)
             pending_quiz_question_requests.pop(request_key, None)
+            if request_key:
+                try:
+                    clear_pending_telegram_quiz_followup_input(
+                        request_key=request_key,
+                        user_id=int(user_id),
+                    )
+                except Exception:
+                    logging.warning("⚠️ Не удалось очистить устаревший quiz follow-up input key=%s", request_key, exc_info=True)
             await update.message.reply_text("Этот контекст вопроса уже устарел. Нажмите кнопку под результатом квиза ещё раз.")
             return
 
         lowered = str(text or "").strip().lower()
         if lowered in {"cancel", "/cancel", "отмена"}:
             pending_quiz_question_input.pop(user_id, None)
+            try:
+                clear_pending_telegram_quiz_followup_input(
+                    request_key=request_key,
+                    user_id=int(user_id),
+                )
+            except Exception:
+                logging.warning("⚠️ Не удалось очистить quiz follow-up input по cancel key=%s", request_key, exc_info=True)
             await update.message.reply_text("Ок, отменил вопрос.")
             return
 
@@ -4089,17 +4209,43 @@ async def handle_user_message(update: Update, context: CallbackContext):
             await update.message.reply_text("Не удалось подготовить ответ. Попробуйте чуть позже.")
         finally:
             pending_quiz_question_input.pop(user_id, None)
+            try:
+                clear_pending_telegram_quiz_followup_input(
+                    request_key=request_key,
+                    user_id=int(user_id),
+                )
+            except Exception:
+                logging.warning("⚠️ Не удалось очистить quiz follow-up input после ответа key=%s", request_key, exc_info=True)
         return
 
     pending_language_question = pending_language_tutor_input.get(user_id)
+    if not pending_language_question:
+        restored_language_question = _restore_active_pending_input_state(
+            int(user_id),
+            PENDING_INPUT_STATE_LANGUAGE_TUTOR,
+        )
+        if restored_language_question:
+            pending_language_question = {
+                "started_at": float((restored_language_question or {}).get("started_at") or 0.0),
+                "continue_from_last": bool((restored_language_question or {}).get("continue_from_last")),
+                "conversation_context": (
+                    (restored_language_question or {}).get("conversation_context")
+                    if isinstance((restored_language_question or {}).get("conversation_context"), dict)
+                    else None
+                ),
+                "state_key": str((restored_language_question or {}).get("state_key") or "").strip(),
+            }
+            pending_language_tutor_input[user_id] = pending_language_question
     if pending_language_question:
         if update.effective_chat and update.effective_chat.type != "private":
             await update.message.reply_text("Вопрос для GPT отправьте в личку с ботом.")
             return
 
         started_at = float((pending_language_question or {}).get("started_at") or 0.0)
+        state_key = str((pending_language_question or {}).get("state_key") or f"langgpt:{int(user_id)}").strip()
         if started_at > 0 and (pytime.time() - started_at) > LANGUAGE_TUTOR_INPUT_TTL_SECONDS:
             pending_language_tutor_input.pop(user_id, None)
+            _clear_pending_input_state(state_key=state_key, user_id=int(user_id))
             await update.message.reply_text(
                 "Окно для вопроса истекло. Нажмите кнопку `Спросить у GPT` ещё раз.",
                 parse_mode="Markdown",
@@ -4112,12 +4258,18 @@ async def handle_user_message(update: Update, context: CallbackContext):
                 update.message,
                 user_id=int(user_id),
                 continue_from_last=bool((pending_language_question or {}).get("continue_from_last")),
+                conversation_context=(
+                    (pending_language_question or {}).get("conversation_context")
+                    if isinstance((pending_language_question or {}).get("conversation_context"), dict)
+                    else context.user_data.get("language_tutor_last_exchange")
+                ),
             )
             return
 
         lowered = str(text or "").strip().lower()
         if lowered in {"cancel", "/cancel", "отмена"}:
             pending_language_tutor_input.pop(user_id, None)
+            _clear_pending_input_state(state_key=state_key, user_id=int(user_id))
             await update.message.reply_text(
                 "Ок, отменил вопрос.",
                 reply_markup=_build_private_language_tutor_reply_keyboard(),
@@ -4137,9 +4289,11 @@ async def handle_user_message(update: Update, context: CallbackContext):
             }
             continue_from_last = bool((pending_language_question or {}).get("continue_from_last"))
             last_exchange = context.user_data.get("language_tutor_last_exchange")
+            if not isinstance(last_exchange, dict):
+                last_exchange = (pending_language_question or {}).get("conversation_context")
             if continue_from_last and isinstance(last_exchange, dict):
-                prev_question = str(last_exchange.get("question") or "").strip()
-                prev_answer = str(last_exchange.get("answer") or "").strip()
+                prev_question = str(last_exchange.get("question") or last_exchange.get("previous_question") or "").strip()
+                prev_answer = str(last_exchange.get("answer") or last_exchange.get("previous_answer") or "").strip()
                 if prev_question and prev_answer:
                     llm_payload["conversation_context"] = {
                         "previous_question": prev_question,
@@ -4215,6 +4369,7 @@ async def handle_user_message(update: Update, context: CallbackContext):
             )
         finally:
             pending_language_tutor_input.pop(user_id, None)
+            _clear_pending_input_state(state_key=state_key, user_id=int(user_id))
         return
 
     # Проверяем, является ли сообщение переводом (поддержка многострочных сообщений)
@@ -6743,7 +6898,7 @@ async def handle_quiz_ask_callback(update: Update, context: CallbackContext) -> 
         return
 
     request_key = parts[1].strip()
-    payload = pending_quiz_question_requests.get(request_key)
+    payload = _restore_pending_quiz_question_request(request_key)
     if not payload or _is_quiz_question_payload_expired(payload):
         pending_quiz_question_requests.pop(request_key, None)
         await query.answer("Кнопка устарела. Пройдите квиз ещё раз.", show_alert=True)
@@ -6758,6 +6913,13 @@ async def handle_quiz_ask_callback(update: Update, context: CallbackContext) -> 
         "request_key": request_key,
         "started_at": pytime.time(),
     }
+    try:
+        mark_pending_telegram_quiz_followup_input_started(
+            request_key=request_key,
+            user_id=int(user.id),
+        )
+    except Exception:
+        logging.warning("⚠️ Не удалось отметить quiz follow-up input_started key=%s", request_key, exc_info=True)
     try:
         await query.answer("Жду ваш вопрос")
     except Exception:
@@ -6784,12 +6946,21 @@ async def handle_quiz_question_cancel_callback(update: Update, context: Callback
         await query.answer("Не удалось определить пользователя.", show_alert=True)
         return
 
-    pending_question = pending_quiz_question_input.get(int(user.id))
+    pending_question = _restore_active_pending_quiz_question_input(int(user.id))
     if not pending_question:
         await query.answer("Активного вопроса уже нет.", show_alert=False)
         return
 
     pending_quiz_question_input.pop(int(user.id), None)
+    request_key = str((pending_question or {}).get("request_key") or "").strip()
+    if request_key:
+        try:
+            clear_pending_telegram_quiz_followup_input(
+                request_key=request_key,
+                user_id=int(user.id),
+            )
+        except Exception:
+            logging.warning("⚠️ Не удалось очистить quiz follow-up input key=%s", request_key, exc_info=True)
     try:
         await query.answer("Вопрос отменён")
     except Exception:
@@ -10742,10 +10913,142 @@ def _store_pending_quiz_question_request(
         "target_lang": str(target_lang or "").strip().lower(),
         "started_at": pytime.time(),
     }
+    try:
+        upsert_pending_telegram_quiz_followup_request(
+            request_key=key,
+            user_id=int(user_id),
+            source_text=str(source_text or "").strip(),
+            target_text=str(target_text or "").strip(),
+            source_lang=str(source_lang or "").strip().lower(),
+            target_lang=str(target_lang or "").strip().lower(),
+        )
+    except Exception:
+        logging.warning("⚠️ Не удалось сохранить quiz follow-up request в БД key=%s", key, exc_info=True)
     if len(pending_quiz_question_requests) > 500:
         oldest_key = next(iter(pending_quiz_question_requests))
         pending_quiz_question_requests.pop(oldest_key, None)
     return key
+
+
+def _store_pending_input_state(
+    *,
+    state_key: str,
+    user_id: int,
+    state_type: str,
+    payload: dict,
+    ttl_seconds: int,
+) -> None:
+    try:
+        upsert_pending_telegram_input_state(
+            state_key=str(state_key or "").strip(),
+            user_id=int(user_id),
+            state_type=str(state_type or "").strip().lower(),
+            payload=payload if isinstance(payload, dict) else {},
+            ttl_seconds=max(60, int(ttl_seconds or 0)),
+        )
+    except Exception:
+        logging.warning(
+            "⚠️ Не удалось сохранить pending input state type=%s key=%s",
+            str(state_type or "").strip().lower(),
+            str(state_key or "").strip(),
+            exc_info=True,
+        )
+
+
+def _restore_pending_input_state(state_key: str) -> dict | None:
+    key = str(state_key or "").strip()
+    if not key:
+        return None
+    try:
+        return get_pending_telegram_input_state(key)
+    except Exception:
+        logging.warning("⚠️ Не удалось восстановить pending input state key=%s", key, exc_info=True)
+        return None
+
+
+def _restore_active_pending_input_state(user_id: int, state_type: str) -> dict | None:
+    try:
+        return get_active_pending_telegram_input_state_for_user(int(user_id), str(state_type or "").strip().lower())
+    except Exception:
+        logging.warning(
+            "⚠️ Не удалось восстановить активный pending input state user_id=%s type=%s",
+            int(user_id),
+            str(state_type or "").strip().lower(),
+            exc_info=True,
+        )
+        return None
+
+
+def _clear_pending_input_state(*, state_key: str, user_id: int) -> None:
+    key = str(state_key or "").strip()
+    if not key:
+        return
+    try:
+        delete_pending_telegram_input_state(
+            state_key=key,
+            user_id=int(user_id),
+        )
+    except Exception:
+        logging.warning("⚠️ Не удалось очистить pending input state key=%s", key, exc_info=True)
+
+
+def _clear_active_pending_input_state_for_user(*, user_id: int, state_type: str) -> None:
+    active_state = _restore_active_pending_input_state(int(user_id), state_type)
+    state_key = str((active_state or {}).get("state_key") or "").strip()
+    if not state_key:
+        return
+    _clear_pending_input_state(state_key=state_key, user_id=int(user_id))
+
+
+def _restore_pending_quiz_question_request(request_key: str) -> dict | None:
+    key = str(request_key or "").strip()
+    if not key:
+        return None
+    payload = pending_quiz_question_requests.get(key)
+    if payload:
+        return payload
+    try:
+        persisted = get_pending_telegram_quiz_followup_request(key)
+    except Exception:
+        logging.warning("⚠️ Не удалось восстановить quiz follow-up request key=%s", key, exc_info=True)
+        return None
+    if not persisted:
+        return None
+    restored = {
+        "user_id": int(persisted.get("user_id") or 0),
+        "source_text": str(persisted.get("source_text") or "").strip(),
+        "target_text": str(persisted.get("target_text") or "").strip(),
+        "source_lang": str(persisted.get("source_lang") or "").strip().lower(),
+        "target_lang": str(persisted.get("target_lang") or "").strip().lower(),
+        "started_at": float(persisted.get("started_at") or 0.0),
+    }
+    pending_quiz_question_requests[key] = restored
+    return restored
+
+
+def _restore_active_pending_quiz_question_input(user_id: int) -> dict | None:
+    active_payload = pending_quiz_question_input.get(int(user_id))
+    if active_payload:
+        return active_payload
+    try:
+        persisted = get_active_pending_telegram_quiz_followup_for_user(int(user_id))
+    except Exception:
+        logging.warning("⚠️ Не удалось восстановить активный quiz follow-up input user_id=%s", int(user_id), exc_info=True)
+        return None
+    if not persisted:
+        return None
+    request_key = str(persisted.get("request_key") or "").strip()
+    if not request_key:
+        return None
+    restored_request = _restore_pending_quiz_question_request(request_key)
+    if not restored_request:
+        return None
+    restored_input = {
+        "request_key": request_key,
+        "started_at": float(persisted.get("started_at") or 0.0),
+    }
+    pending_quiz_question_input[int(user_id)] = restored_input
+    return restored_input
 
 
 def _store_pending_quiz_phrase_request(
@@ -12251,6 +12554,91 @@ async def cleanup_quiz_cache(context: CallbackContext) -> None:
         logging.debug("Failed to delete active quiz from DB", exc_info=True)
 
 
+async def cleanup_quiz_followup_requests(context: CallbackContext) -> None:
+    deleted_db_rows = 0
+    pruned_requests = 0
+    pruned_inputs = 0
+    threshold_ts = pytime.time() - QUIZ_FOLLOWUP_REQUEST_RETENTION_SECONDS
+    try:
+        deleted_db_rows = int(
+            await asyncio.to_thread(
+                purge_old_pending_telegram_quiz_followup_requests,
+                older_than_seconds=int(QUIZ_FOLLOWUP_REQUEST_RETENTION_SECONDS),
+            )
+        )
+    except Exception:
+        logging.warning("⚠️ Не удалось очистить quiz follow-up requests в БД", exc_info=True)
+
+    expired_request_keys: list[str] = []
+    for request_key, payload in list(pending_quiz_question_requests.items()):
+        started_at = float((payload or {}).get("started_at") or 0.0)
+        if started_at > 0 and started_at < threshold_ts:
+            expired_request_keys.append(str(request_key))
+    for request_key in expired_request_keys:
+        pending_quiz_question_requests.pop(request_key, None)
+    pruned_requests = len(expired_request_keys)
+
+    expired_input_users: list[int] = []
+    for user_id, payload in list(pending_quiz_question_input.items()):
+        started_at = float((payload or {}).get("started_at") or 0.0)
+        if started_at > 0 and started_at < threshold_ts:
+            expired_input_users.append(int(user_id))
+    for user_id in expired_input_users:
+        pending_quiz_question_input.pop(user_id, None)
+    pruned_inputs = len(expired_input_users)
+
+    if deleted_db_rows or pruned_requests or pruned_inputs:
+        logging.info(
+            "🧹 quiz follow-up cleanup completed: db_deleted=%s memory_requests=%s memory_inputs=%s retention_sec=%s",
+            deleted_db_rows,
+            pruned_requests,
+            pruned_inputs,
+            QUIZ_FOLLOWUP_REQUEST_RETENTION_SECONDS,
+        )
+
+
+async def cleanup_pending_input_states(context: CallbackContext) -> None:
+    deleted_db_rows = 0
+    pruned_freeform = 0
+    pruned_language = 0
+    pruned_tts = 0
+    now_ts = pytime.time()
+    try:
+        deleted_db_rows = int(await asyncio.to_thread(purge_expired_pending_telegram_input_states))
+    except Exception:
+        logging.warning("⚠️ Не удалось очистить generic pending input states в БД", exc_info=True)
+
+    freeform_threshold_ts = now_ts - QUIZ_FREEFORM_INPUT_TTL_SECONDS
+    for user_id, payload in list(pending_quiz_freeform.items()):
+        started_at = float((payload or {}).get("started_at") or 0.0)
+        if started_at > 0 and started_at < freeform_threshold_ts:
+            pending_quiz_freeform.pop(user_id, None)
+            pruned_freeform += 1
+
+    language_threshold_ts = now_ts - LANGUAGE_TUTOR_INPUT_TTL_SECONDS
+    for user_id, payload in list(pending_language_tutor_input.items()):
+        started_at = float((payload or {}).get("started_at") or 0.0)
+        if started_at > 0 and started_at < language_threshold_ts:
+            pending_language_tutor_input.pop(user_id, None)
+            pruned_language += 1
+
+    tts_threshold_ts = now_ts - TTS_BUDGET_CUSTOM_TTL_SECONDS
+    for user_id, payload in list(pending_tts_budget_custom.items()):
+        started_at = float((payload or {}).get("started_at") or 0.0)
+        if started_at > 0 and started_at < tts_threshold_ts:
+            pending_tts_budget_custom.pop(user_id, None)
+            pruned_tts += 1
+
+    if deleted_db_rows or pruned_freeform or pruned_language or pruned_tts:
+        logging.info(
+            "🧹 pending input cleanup completed: db_deleted=%s freeform=%s language=%s tts=%s",
+            deleted_db_rows,
+            pruned_freeform,
+            pruned_language,
+            pruned_tts,
+        )
+
+
 def _toggle_quiz_delivery_mode(mode: str | None) -> str:
     return "new" if str(mode or "").strip().lower() == "repeat" else "repeat"
 
@@ -13220,11 +13608,27 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
     selected_text = options[selected_index] if 0 <= selected_index < len(options) else ""
 
     if freeform_option and selected_text == freeform_option:
-        pending_quiz_freeform[poll_answer.user.id] = {
+        state_key = f"quizfreeform:{int(poll_answer.user.id)}:{str(poll_answer.poll_id or '').strip()}"
+        pending_payload = {
             "poll_id": poll_answer.poll_id,
             "correct_text": quiz_data.get("correct_text") or "",
             "quiz_data": dict(quiz_data),
+            "started_at": pytime.time(),
+            "state_key": state_key,
         }
+        pending_quiz_freeform[poll_answer.user.id] = pending_payload
+        _store_pending_input_state(
+            state_key=state_key,
+            user_id=int(poll_answer.user.id),
+            state_type=PENDING_INPUT_STATE_QUIZ_FREEFORM,
+            payload={
+                "poll_id": str(poll_answer.poll_id or "").strip(),
+                "correct_text": str(quiz_data.get("correct_text") or "").strip(),
+                "quiz_data": dict(quiz_data),
+                "started_at": float(pending_payload.get("started_at") or 0.0),
+            },
+            ttl_seconds=QUIZ_FREEFORM_INPUT_TTL_SECONDS,
+        )
         try:
             await context.bot.send_message(
                 chat_id=poll_answer.user.id,
@@ -13739,6 +14143,10 @@ def main():
             user_removal_review_timezone = ZoneInfo(USER_REMOVAL_REVIEW_TZ)
         except Exception:
             user_removal_review_timezone = ZoneInfo("UTC")
+        try:
+            quiz_followup_cleanup_timezone = ZoneInfo(QUIZ_FOLLOWUP_CLEANUP_TZ)
+        except Exception:
+            quiz_followup_cleanup_timezone = ZoneInfo("UTC")
         scheduler.add_job(
             lambda: submit_async(cleanup_system_messages, CallbackContext(application=application)),
             "cron",
@@ -13781,6 +14189,18 @@ def main():
                 minute=budget_report_minute,
                 timezone=budget_report_timezone,
             )
+        scheduler.add_job(
+            lambda: submit_async(cleanup_quiz_followup_requests, CallbackContext(application=application)),
+            "cron",
+            hour=QUIZ_FOLLOWUP_CLEANUP_HOUR,
+            minute=QUIZ_FOLLOWUP_CLEANUP_MINUTE,
+            timezone=quiz_followup_cleanup_timezone,
+        )
+        scheduler.add_job(
+            lambda: submit_async(cleanup_pending_input_states, CallbackContext(application=application)),
+            "interval",
+            minutes=PENDING_INPUT_STATE_CLEANUP_INTERVAL_MINUTES,
+        )
 
         _run_bot_startup_phase(
             "start_bot_scheduler",

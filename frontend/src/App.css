@@ -4472,6 +4472,33 @@ body {
   align-self: flex-start;
 }
 
+.translation-block-visibility-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  align-self: flex-start;
+  font-size: 12px;
+  color: var(--tr-text-secondary, #94a3b8);
+}
+
+.translation-block-visibility-toggle input {
+  width: 15px;
+  height: 15px;
+}
+
+.translation-block-visibility-toggle-inner {
+  margin-bottom: 12px;
+}
+
+.translation-collapsed-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+  font-size: 14px;
+  color: var(--tr-text-primary, #e2e8f0);
+}
+
 .result-audio-optin {
   display: inline-flex;
   align-items: center;
@@ -6842,7 +6869,7 @@ body {
   padding: 8px 16px 4px;
 }
 
-.vocab-word-list { padding: 0 16px; }
+.vocab-word-list { padding: 0; }
 
 .vocab-word-item {
   border-radius: 14px;
@@ -10768,6 +10795,7 @@ body {
   justify-content: flex-end;
 }
 
+.translation-item-check-button,
 .translation-dict-jump {
   border: 1px solid rgba(148, 163, 184, 0.3);
   background: rgba(255, 255, 255, 0.16);
@@ -10787,6 +10815,17 @@ body {
   justify-content: center;
 }
 
+.translation-item-check-button[disabled],
+.translation-dict-jump[disabled] {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.translation-item-check-button.is-loading {
+  min-width: 92px;
+}
+
+.translation-item-check-button:hover,
 .translation-dict-jump:hover {
   transform: translateY(-1px);
   box-shadow: 0 8px 16px rgba(15, 23, 42, 0.3);
@@ -18993,10 +19032,11 @@ body {
 }
 
 .webapp-section.webapp-section-translations .translation-actions {
-  justify-content: flex-end;
+  justify-content: space-between;
   min-width: 0;
 }
 
+.webapp-section.webapp-section-translations .translation-item-check-button,
 .webapp-section.webapp-section-translations .translation-dict-jump {
   min-height: 30px;
   padding: 0 11px;
@@ -19008,6 +19048,7 @@ body {
   font-size: 10px;
 }
 
+.webapp-section.webapp-section-translations .translation-item-check-button:hover,
 .webapp-section.webapp-section-translations .translation-dict-jump:hover {
   transform: none;
   background: var(--tr-bg-hover);
@@ -19224,6 +19265,72 @@ body {
 .webapp-section.webapp-section-translations .webapp-result-text strong .clickable-word,
 .webapp-section.webapp-section-translations .webapp-explanation strong .clickable-word {
   font-weight: 800;
+}
+
+.webapp-section.webapp-section-translations .webapp-explanation-followup {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--tr-border);
+}
+
+.webapp-section.webapp-section-translations .explanation-followup-button {
+  justify-self: start;
+}
+
+.webapp-section.webapp-section-translations .webapp-explanation-followup-form {
+  display: grid;
+  gap: 10px;
+}
+
+.webapp-section.webapp-section-translations .webapp-explanation-followup-form textarea {
+  width: 100%;
+  min-height: 88px;
+  resize: vertical;
+  border-radius: 14px;
+  border: 1px solid var(--tr-border);
+  background: var(--tr-bg-card-alt);
+  color: var(--tr-text-primary);
+  padding: 12px 14px;
+  font: inherit;
+  line-height: 1.45;
+}
+
+.webapp-section.webapp-section-translations .webapp-explanation-followup-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.webapp-section.webapp-section-translations .webapp-explanation-followup-answer {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid var(--tr-border);
+  background: color-mix(in srgb, var(--tr-bg-card-alt) 86%, white 14%);
+}
+
+.webapp-section.webapp-section-translations .webapp-explanation-followup-save {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--tr-border);
+}
+
+.webapp-section.webapp-section-translations .webapp-explanation-followup-save-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--tr-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.webapp-section.webapp-section-translations .webapp-explanation-followup-save-list {
+  display: grid;
+  gap: 8px;
 }
 
 .webapp-section.webapp-section-translations .tr-history-result-text .webapp-feedback-line:last-child {

@@ -285,6 +285,7 @@ from backend.openai_manager import (
     run_theory_practice_sentences,
     run_theory_check_feedback,
     run_beginner_topic,
+    run_language_learning_private_question_detailed,
     run_tts_chunk_de,
     get_last_llm_usage,
 )
@@ -2436,6 +2437,7 @@ _BILLING_GUARD_RULES: dict[str, dict] = {
     "/api/webapp/flashcards/feel/dispatch": {"cap": True},
     "/api/webapp/flashcards/enrich": {"cap": True},
     "/api/webapp/explain": {"cap": True},
+    "/api/webapp/explain/question": {"cap": True},
     "/api/webapp/tts/generate": {"cap": True, "feature_code": "tts_chars_daily"},
     "/api/webapp/youtube/transcript": {"cap": True, "feature_code": "youtube_fetch_daily"},
     "/api/webapp/youtube/translate": {"cap": True},
@@ -46863,6 +46865,85 @@ def explain_webapp_translation():
         {
             "ok": True,
             "explanation": explanation,
+            "language_pair": _build_language_pair_payload(source_lang, target_lang),
+        }
+    )
+
+
+@app.route("/api/webapp/explain/question", methods=["POST"])
+def explain_webapp_translation_followup_question():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    original_text = str(payload.get("original_text") or "").strip()
+    user_translation = str(payload.get("user_translation") or "").strip()
+    explanation = str(payload.get("explanation") or "").strip()
+    learner_question = str(payload.get("learner_question") or "").strip()
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not original_text:
+        return jsonify({"error": "original_text обязателен"}), 400
+    if not user_translation:
+        return jsonify({"error": "user_translation обязателен"}), 400
+    if not explanation:
+        return jsonify({"error": "explanation обязателен"}), 400
+    if not learner_question:
+        return jsonify({"error": "learner_question обязателен"}), 400
+
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    context_question = (
+        "У пользователя уже есть подробное объяснение ошибок в переводе этого предложения. "
+        "Ответь на его уточняющий вопрос, опираясь на исходное предложение, перевод пользователя и уже данное объяснение."
+    )
+    context_answer = (
+        f"Original sentence:\n{original_text}\n\n"
+        f"User translation:\n{user_translation}\n\n"
+        f"Existing explanation:\n{explanation}"
+    )
+
+    try:
+        followup_payload = asyncio.run(
+            run_language_learning_private_question_detailed(
+                {
+                    "learner_question": learner_question,
+                    "source_language": source_lang,
+                    "target_language": target_lang,
+                    "conversation_context": {
+                        "previous_question": context_question,
+                        "previous_answer": context_answer,
+                    },
+                }
+            )
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка follow-up вопроса: {exc}"}), 500
+
+    if not isinstance(followup_payload, dict):
+        return jsonify({"error": "Некорректный ответ модели"}), 500
+
+    answer = str(followup_payload.get("answer") or "").strip()
+    if not answer:
+        return jsonify({"error": "Модель не вернула ответ"}), 500
+
+    return jsonify(
+        {
+            "ok": True,
+            "answer": answer,
+            "is_language_question": bool(followup_payload.get("is_language_question", True)),
+            "save_variants": (
+                followup_payload.get("save_variants")
+                if isinstance(followup_payload.get("save_variants"), list)
+                else []
+            ),
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
