@@ -2749,171 +2749,206 @@ async def prewarm_shared_translation_sentence_pool(
 
     provider_wait_ms_total = 0
     with db_acquire_scope("shared_sentence_pool_prewarm") as db_acquire_events:
-        conn = get_db_connection()
-    cursor = conn.cursor()
-    skill_catalog: list[dict[str, str]] | None = None
-    bucket_results: list[dict[str, Any]] = []
-    generated_total = 0
-    upserted_total = 0
-    try:
-        for focus in candidate_focuses:
-            focus_key = str(focus.get("key") or "").strip()
-            focus_levels = [
-                _normalize_level(item)
-                for item in (focus.get("_pool_levels") or normalized_levels)
-                if str(item or "").strip()
-            ] or list(normalized_levels)
-            for level_key in focus_levels:
-                bucket_key = (focus_key, level_key)
-                min_ready_for_bucket = max(
-                    1,
-                    int(
-                        (min_ready_by_bucket or {}).get(bucket_key)
-                        or (min_ready_by_focus or {}).get(focus_key)
-                        or target_ready_per_bucket
-                    ),
-                )
-                target_ready_for_bucket = max(
-                    int(min_ready_for_bucket),
-                    int(
-                        (target_ready_by_bucket or {}).get(bucket_key)
-                        or (target_ready_by_focus or {}).get(focus_key)
-                        or target_ready_per_bucket
-                    ),
-                )
-                ready_before = _count_shared_sentence_pool_entries_with_cursor(
-                    cursor,
-                    focus=focus,
-                    level=level_key,
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                )
-                if ready_before >= int(target_ready_for_bucket):
+        skill_catalog: list[dict[str, str]] | None = None
+        bucket_results: list[dict[str, Any]] = []
+        generated_total = 0
+        upserted_total = 0
+
+        def _load_bucket_state(
+            *,
+            focus: dict[str, Any],
+            level_key: str,
+            include_skill_catalog: bool,
+        ) -> tuple[int, set[str], list[dict[str, str]] | None]:
+            with get_db_connection_context() as conn:
+                cursor = conn.cursor()
+                try:
+                    ready_count = _count_shared_sentence_pool_entries_with_cursor(
+                        cursor,
+                        focus=focus,
+                        level=level_key,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                    )
+                    loaded_skill_catalog = None
+                    if include_skill_catalog:
+                        loaded_skill_catalog = _load_skill_catalog_with_cursor(
+                            cursor,
+                            target_lang=target_lang,
+                            authored_mastery_leaves_only=(str(target_lang or "").strip().lower() == "de"),
+                        )
+                    sentence_keys = _list_shared_sentence_pool_sentence_keys_with_cursor(
+                        cursor,
+                        focus=focus,
+                        level=level_key,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                    )
+                    return int(ready_count), sentence_keys, loaded_skill_catalog
+                finally:
+                    cursor.close()
+
+        def _write_generated_bucket_entries(
+            *,
+            focus: dict[str, Any],
+            level_key: str,
+            entries: list[dict[str, Any]],
+        ) -> tuple[int, int]:
+            with get_db_connection_context() as conn:
+                cursor = conn.cursor()
+                try:
+                    upserted_count = _upsert_shared_sentence_pool_entries_with_cursor(
+                        cursor,
+                        focus=focus,
+                        level=level_key,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        entries=entries,
+                    )
+                    conn.commit()
+                    ready_count = _count_shared_sentence_pool_entries_with_cursor(
+                        cursor,
+                        focus=focus,
+                        level=level_key,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                    )
+                    return int(upserted_count), int(ready_count)
+                finally:
+                    cursor.close()
+        try:
+            for focus in candidate_focuses:
+                focus_key = str(focus.get("key") or "").strip()
+                focus_levels = [
+                    _normalize_level(item)
+                    for item in (focus.get("_pool_levels") or normalized_levels)
+                    if str(item or "").strip()
+                ] or list(normalized_levels)
+                for level_key in focus_levels:
+                    bucket_key = (focus_key, level_key)
+                    min_ready_for_bucket = max(
+                        1,
+                        int(
+                            (min_ready_by_bucket or {}).get(bucket_key)
+                            or (min_ready_by_focus or {}).get(focus_key)
+                            or target_ready_per_bucket
+                        ),
+                    )
+                    target_ready_for_bucket = max(
+                        int(min_ready_for_bucket),
+                        int(
+                            (target_ready_by_bucket or {}).get(bucket_key)
+                            or (target_ready_by_focus or {}).get(focus_key)
+                            or target_ready_per_bucket
+                        ),
+                    )
+                    ready_before, existing_sentence_keys, loaded_skill_catalog = _load_bucket_state(
+                        focus=focus,
+                        level_key=level_key,
+                        include_skill_catalog=(skill_catalog is None),
+                    )
+                    if skill_catalog is None:
+                        skill_catalog = loaded_skill_catalog or []
+                    if ready_before >= int(target_ready_for_bucket):
+                        bucket_results.append(
+                            {
+                                "focus_key": focus_key,
+                                "level": level_key,
+                                "ready_before": int(ready_before),
+                                "ready_after": int(ready_before),
+                                "generated": 0,
+                                "upserted": 0,
+                                "min_ready": int(min_ready_for_bucket),
+                                "target_ready": int(target_ready_for_bucket),
+                                "skipped": "already_ready",
+                            }
+                        )
+                        continue
+                    remaining_budget = max(1, int(max_generate_per_bucket))
+                    ready_after = int(ready_before)
+                    generated_for_bucket = 0
+                    upserted_for_bucket = 0
+                    requested_total = 0
+                    generation_attempts = 0
+                    while ready_after < int(target_ready_for_bucket) and remaining_budget > 0:
+                        generation_attempts += 1
+                        needed = max(1, int(target_ready_for_bucket) - int(ready_after))
+                        requested_count = max(1, min(int(remaining_budget), int(needed)))
+                        requested_total += int(requested_count)
+                        provider_started_at = time.perf_counter()
+                        generated_entries = await _generate_legacy_sentence_entries_with_profiles(
+                            topic=str(focus.get("prompt_topic") or focus.get("label") or "Grammar practice").strip(),
+                            level=level_key,
+                            target_count=requested_count,
+                            skill_catalog=skill_catalog,
+                            focus_hint=focus,
+                        )
+                        provider_wait_ms = max(0, int((time.perf_counter() - provider_started_at) * 1000))
+                        provider_wait_ms_total += provider_wait_ms
+                        note_db_provider_wait(provider_wait_ms, provider_label="shared_sentence_pool_generate")
+                        filtered_entries = _filter_sentence_entries_for_session(
+                            generated_entries,
+                            level=level_key,
+                            excluded_sentence_keys=existing_sentence_keys,
+                        )
+                        if not filtered_entries:
+                            break
+                        upserted, next_ready_after = _write_generated_bucket_entries(
+                            focus=focus,
+                            level_key=level_key,
+                            entries=filtered_entries,
+                        )
+                        generated_for_bucket += int(len(filtered_entries))
+                        upserted_for_bucket += int(upserted)
+                        remaining_budget = max(0, int(remaining_budget) - int(upserted))
+                        existing_sentence_keys.update(
+                            _normalize_sentence_text_key(str((entry or {}).get("sentence") or "").strip())
+                            for entry in filtered_entries
+                            if str((entry or {}).get("sentence") or "").strip()
+                        )
+                        if int(next_ready_after) <= int(ready_after):
+                            break
+                        ready_after = int(next_ready_after)
+                        if generation_attempts >= 3 and ready_after < int(target_ready_for_bucket):
+                            break
+                    generated_total += int(generated_for_bucket)
+                    upserted_total += int(upserted_for_bucket)
                     bucket_results.append(
                         {
                             "focus_key": focus_key,
                             "level": level_key,
                             "ready_before": int(ready_before),
-                            "ready_after": int(ready_before),
-                            "generated": 0,
-                            "upserted": 0,
+                            "ready_after": int(ready_after),
+                            "generated": int(generated_for_bucket),
+                            "upserted": int(upserted_for_bucket),
+                            "requested": int(requested_total),
+                            "generation_attempts": int(generation_attempts),
                             "min_ready": int(min_ready_for_bucket),
                             "target_ready": int(target_ready_for_bucket),
-                            "skipped": "already_ready",
+                            "demand_score": int(focus.get("_demand_score") or 0),
                         }
                     )
-                    continue
-                if skill_catalog is None:
-                    skill_catalog = _load_skill_catalog_with_cursor(
-                        cursor,
-                        target_lang=target_lang,
-                        authored_mastery_leaves_only=(str(target_lang or "").strip().lower() == "de"),
-                    )
-                existing_sentence_keys = _list_shared_sentence_pool_sentence_keys_with_cursor(
-                    cursor,
-                    focus=focus,
-                    level=level_key,
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                )
-                remaining_budget = max(1, int(max_generate_per_bucket))
-                ready_after = int(ready_before)
-                generated_for_bucket = 0
-                upserted_for_bucket = 0
-                requested_total = 0
-                generation_attempts = 0
-                while ready_after < int(target_ready_for_bucket) and remaining_budget > 0:
-                    generation_attempts += 1
-                    needed = max(1, int(target_ready_for_bucket) - int(ready_after))
-                    requested_count = max(1, min(int(remaining_budget), int(needed)))
-                    requested_total += int(requested_count)
-                    provider_started_at = time.perf_counter()
-                    generated_entries = await _generate_legacy_sentence_entries_with_profiles(
-                        topic=str(focus.get("prompt_topic") or focus.get("label") or "Grammar practice").strip(),
-                        level=level_key,
-                        target_count=requested_count,
-                        skill_catalog=skill_catalog,
-                        focus_hint=focus,
-                    )
-                    provider_wait_ms = max(0, int((time.perf_counter() - provider_started_at) * 1000))
-                    provider_wait_ms_total += provider_wait_ms
-                    note_db_provider_wait(provider_wait_ms, provider_label="shared_sentence_pool_generate")
-                    filtered_entries = _filter_sentence_entries_for_session(
-                        generated_entries,
-                        level=level_key,
-                        excluded_sentence_keys=existing_sentence_keys,
-                    )
-                    if not filtered_entries:
-                        break
-                    upserted = _upsert_shared_sentence_pool_entries_with_cursor(
-                        cursor,
-                        focus=focus,
-                        level=level_key,
-                        source_lang=source_lang,
-                        target_lang=target_lang,
-                        entries=filtered_entries,
-                    )
-                    conn.commit()
-                    generated_for_bucket += int(len(filtered_entries))
-                    upserted_for_bucket += int(upserted)
-                    remaining_budget = max(0, int(remaining_budget) - int(upserted))
-                    existing_sentence_keys.update(
-                        _normalize_sentence_text_key(str((entry or {}).get("sentence") or "").strip())
-                        for entry in filtered_entries
-                        if str((entry or {}).get("sentence") or "").strip()
-                    )
-                    next_ready_after = _count_shared_sentence_pool_entries_with_cursor(
-                        cursor,
-                        focus=focus,
-                        level=level_key,
-                        source_lang=source_lang,
-                        target_lang=target_lang,
-                    )
-                    if int(next_ready_after) <= int(ready_after):
-                        break
-                    ready_after = int(next_ready_after)
-                    if generation_attempts >= 3 and ready_after < int(target_ready_for_bucket):
-                        break
-                generated_total += int(generated_for_bucket)
-                upserted_total += int(upserted_for_bucket)
-                bucket_results.append(
-                    {
-                        "focus_key": focus_key,
-                        "level": level_key,
-                        "ready_before": int(ready_before),
-                        "ready_after": int(ready_after),
-                        "generated": int(generated_for_bucket),
-                        "upserted": int(upserted_for_bucket),
-                        "requested": int(requested_total),
-                        "generation_attempts": int(generation_attempts),
-                        "min_ready": int(min_ready_for_bucket),
-                        "target_ready": int(target_ready_for_bucket),
-                        "demand_score": int(focus.get("_demand_score") or 0),
-                    }
-                )
-        return {
-            "ok": True,
-            "focuses": int(len(candidate_focuses)),
-            "levels": int(len(normalized_levels)),
-            "generated": int(generated_total),
-            "upserted": int(upserted_total),
-            "bucket_results": bucket_results,
-            "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
-        }
-    finally:
-        cursor.close()
-        conn.close()
-        db_summary = summarize_db_acquire_events(db_acquire_events)
-        _log_flow_observation(
-            "db_scope",
-            "shared_sentence_pool_prewarm",
-            source_lang=source_lang,
-            target_lang=target_lang,
-            provider_wait_ms=provider_wait_ms_total,
-            db_wait_ms=int(db_summary.get("db_pool_acquire_wait_ms_total") or 0),
-            db_hold_ms=int(db_summary.get("db_pool_checkout_hold_ms_total") or 0),
-            **db_summary,
-        )
+            return {
+                "ok": True,
+                "focuses": int(len(candidate_focuses)),
+                "levels": int(len(normalized_levels)),
+                "generated": int(generated_total),
+                "upserted": int(upserted_total),
+                "bucket_results": bucket_results,
+                "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
+            }
+        finally:
+            db_summary = summarize_db_acquire_events(db_acquire_events)
+            _log_flow_observation(
+                "db_scope",
+                "shared_sentence_pool_prewarm",
+                source_lang=source_lang,
+                target_lang=target_lang,
+                provider_wait_ms=provider_wait_ms_total,
+                db_wait_ms=int(db_summary.get("db_pool_acquire_wait_ms_total") or 0),
+                db_hold_ms=int(db_summary.get("db_pool_checkout_hold_ms_total") or 0),
+                **db_summary,
+            )
 
 
 _AUTHORED_PRIMARY_SKILL_SENTENCE_HINTS: dict[str, tuple[str, ...]] = {
