@@ -1233,60 +1233,13 @@ async def start_story_session_webapp(
     )
     provider_wait_ms_total = 0
     with db_acquire_scope("story_session_start") as db_acquire_events:
-        conn = get_db_connection()
-    cursor = conn.cursor()
-
-    try:
-        active_session_id = _get_active_session_id(cursor, user_id, source_lang=source_lang, target_lang=target_lang)
-        if active_session_id:
-            return {"session_id": active_session_id, "created": False, "blocked": True}
-
-        cursor.execute(
-            """
-            UPDATE bt_3_user_progress
-            SET
-                active_seconds = COALESCE(active_seconds, 0)
-                    + CASE
-                        WHEN COALESCE(active_running, FALSE) = TRUE
-                         AND active_started_at IS NOT NULL
-                            THEN GREATEST(
-                                0,
-                                EXTRACT(EPOCH FROM (NOW() - active_started_at))::BIGINT
-                            )
-                        ELSE 0
-                    END,
-                active_started_at = NULL,
-                active_running = FALSE,
-                end_time = NOW(),
-                completed = TRUE
-            WHERE user_id = %s AND completed = FALSE;
-            """,
-            (user_id,),
-        )
-
-        session_id = int(hashlib.md5(f"{user_id}{datetime.now()}".encode()).hexdigest(), 16) % (10**12)
-        cursor.execute(
-            """
-            INSERT INTO bt_3_user_progress (
-                session_id,
-                user_id,
-                username,
-                start_time,
-                active_seconds,
-                active_running,
-                completed
-            )
-            VALUES (%s, %s, %s, NOW(), 0, FALSE, FALSE);
-            """,
-            (session_id, user_id, username),
-        )
-
         story_payload: dict[str, Any] | None = None
         story_sentences: list[str] = []
         story_title = None
         story_answer = None
         story_aliases: list[str] = []
         story_extra_de = None
+        normalized_difficulty = _normalize_story_difficulty(difficulty)
 
         # Determine whether to load an existing story or generate a new one.
         # - mode "repeat": always load from DB (auto-pick last if no story_id given)
@@ -1294,117 +1247,176 @@ async def start_story_session_webapp(
         # - mode "arena" + no story_id: generate new (user becomes first challenger)
         # - mode "new" or anything else: generate new
         load_from_db = False
-        if mode == "repeat":
-            if not story_id:
-                cursor.execute(
-                    """
-                    SELECT story_id
-                    FROM bt_3_story_sessions
-                    WHERE user_id = %s
-                    ORDER BY created_at DESC
-                    LIMIT 1;
-                    """,
-                    (user_id,),
-                )
-                row = cursor.fetchone()
-                story_id = row[0] if row else None
-            if not story_id:
-                return {"error": "Нет сохранённых историй для повтора.", "created": False}
-            load_from_db = True
-        elif mode == "arena" and story_id:
-            load_from_db = True
-
-        if load_from_db:
-            cursor.execute(
-                """
-                SELECT title, answer, answer_aliases, extra_de, story_type, difficulty
-                FROM bt_3_story_bank
-                WHERE id = %s;
-                """,
-                (story_id,),
-            )
-            row = cursor.fetchone()
-            if not row:
-                return {"error": "История не найдена.", "created": False}
-            story_title, story_answer, aliases_json, story_extra_de, story_type, difficulty = row
-            if isinstance(aliases_json, str):
+        try:
+            with get_db_connection_context() as conn:
+                cursor = conn.cursor()
                 try:
-                    story_aliases = json.loads(aliases_json)
-                except json.JSONDecodeError:
-                    story_aliases = []
-            else:
-                story_aliases = aliases_json or []
-            cursor.execute(
-                """
-                SELECT sentence
-                FROM bt_3_story_sentences
-                WHERE story_id = %s
-                ORDER BY sentence_index ASC;
-                """,
-                (story_id,),
+                    active_session_id = _get_active_session_id(cursor, user_id, source_lang=source_lang, target_lang=target_lang)
+                    if active_session_id:
+                        return {"session_id": active_session_id, "created": False, "blocked": True}
+
+                    if mode == "repeat":
+                        if not story_id:
+                            cursor.execute(
+                                """
+                                SELECT story_id
+                                FROM bt_3_story_sessions
+                                WHERE user_id = %s
+                                ORDER BY created_at DESC
+                                LIMIT 1;
+                                """,
+                                (user_id,),
+                            )
+                            row = cursor.fetchone()
+                            story_id = row[0] if row else None
+                        if not story_id:
+                            return {"error": "Нет сохранённых историй для повтора.", "created": False}
+                        load_from_db = True
+                    elif mode == "arena" and story_id:
+                        load_from_db = True
+
+                    if load_from_db:
+                        cursor.execute(
+                            """
+                            SELECT title, answer, answer_aliases, extra_de, story_type, difficulty
+                            FROM bt_3_story_bank
+                            WHERE id = %s;
+                            """,
+                            (story_id,),
+                        )
+                        row = cursor.fetchone()
+                        if not row:
+                            return {"error": "История не найдена.", "created": False}
+                        story_title, story_answer, aliases_json, story_extra_de, story_type, difficulty = row
+                        normalized_difficulty = _normalize_story_difficulty(difficulty)
+                        if isinstance(aliases_json, str):
+                            try:
+                                story_aliases = json.loads(aliases_json)
+                            except json.JSONDecodeError:
+                                story_aliases = []
+                        else:
+                            story_aliases = aliases_json or []
+                        cursor.execute(
+                            """
+                            SELECT sentence
+                            FROM bt_3_story_sentences
+                            WHERE story_id = %s
+                            ORDER BY sentence_index ASC;
+                            """,
+                            (story_id,),
+                        )
+                        story_sentences = [row[0] for row in cursor.fetchall()]
+                finally:
+                    cursor.close()
+
+            if not load_from_db:
+                provider_started_at = time.perf_counter()
+                story_payload = await generate_mystery_story(story_type, normalized_difficulty)
+                provider_wait_ms = max(0, int((time.perf_counter() - provider_started_at) * 1000))
+                provider_wait_ms_total += provider_wait_ms
+                note_db_provider_wait(provider_wait_ms, provider_label="generate_mystery_story")
+                story_title = story_payload.get("title")
+                story_answer = story_payload.get("answer")
+                story_aliases = story_payload.get("aliases") or []
+                story_extra_de = story_payload.get("extra_de")
+                story_sentences = story_payload.get("story_ru") or []
+
+                if not story_answer or not story_extra_de or len(story_sentences) != 7:
+                    return {"error": "Не удалось сформировать историю.", "created": False}
+
+            session_id = int(hashlib.md5(f"{user_id}{datetime.now()}".encode()).hexdigest(), 16) % (10**12)
+            with get_db_connection_context() as conn:
+                cursor = conn.cursor()
+                try:
+                    active_session_id = _get_active_session_id(cursor, user_id, source_lang=source_lang, target_lang=target_lang)
+                    if active_session_id:
+                        return {"session_id": active_session_id, "created": False, "blocked": True}
+
+                    cursor.execute(
+                        """
+                        UPDATE bt_3_user_progress
+                        SET
+                            active_seconds = COALESCE(active_seconds, 0)
+                                + CASE
+                                    WHEN COALESCE(active_running, FALSE) = TRUE
+                                     AND active_started_at IS NOT NULL
+                                        THEN GREATEST(
+                                            0,
+                                            EXTRACT(EPOCH FROM (NOW() - active_started_at))::BIGINT
+                                        )
+                                    ELSE 0
+                                END,
+                            active_started_at = NULL,
+                            active_running = FALSE,
+                            end_time = NOW(),
+                            completed = TRUE
+                        WHERE user_id = %s AND completed = FALSE;
+                        """,
+                        (user_id,),
+                    )
+
+                    cursor.execute(
+                        """
+                        INSERT INTO bt_3_user_progress (
+                            session_id,
+                            user_id,
+                            username,
+                            start_time,
+                            active_seconds,
+                            active_running,
+                            completed
+                        )
+                        VALUES (%s, %s, %s, NOW(), 0, FALSE, FALSE);
+                        """,
+                        (session_id, user_id, username),
+                    )
+
+                    if not load_from_db:
+                        story_id = _save_story_bank(
+                            cursor,
+                            story_title,
+                            story_answer,
+                            story_aliases,
+                            story_extra_de,
+                            story_type,
+                            normalized_difficulty,
+                            story_sentences,
+                        )
+
+                    cursor.execute(
+                        """
+                        INSERT INTO bt_3_story_sessions (user_id, session_id, story_id, mode)
+                        VALUES (%s, %s, %s, %s);
+                        """,
+                        (user_id, str(session_id), story_id, mode),
+                    )
+
+                    _insert_story_session_sentences(cursor, user_id, session_id, story_sentences)
+                    conn.commit()
+                finally:
+                    cursor.close()
+
+            _clear_active_translation_session_pointer(user_id=int(user_id))
+            return {
+                "session_id": session_id,
+                "created": True,
+                "count": len(story_sentences),
+                "story_id": story_id,
+                "title": story_title,
+            }
+        finally:
+            db_summary = summarize_db_acquire_events(db_acquire_events)
+            _log_flow_observation(
+                "db_scope",
+                "story_session_start",
+                user_id=int(user_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                provider_wait_ms=provider_wait_ms_total,
+                db_wait_ms=int(db_summary.get("db_pool_acquire_wait_ms_total") or 0),
+                db_hold_ms=int(db_summary.get("db_pool_checkout_hold_ms_total") or 0),
+                **db_summary,
             )
-            story_sentences = [row[0] for row in cursor.fetchall()]
-        else:
-            normalized_difficulty = _normalize_story_difficulty(difficulty)
-            provider_started_at = time.perf_counter()
-            story_payload = await generate_mystery_story(story_type, normalized_difficulty)
-            provider_wait_ms = max(0, int((time.perf_counter() - provider_started_at) * 1000))
-            provider_wait_ms_total += provider_wait_ms
-            note_db_provider_wait(provider_wait_ms, provider_label="generate_mystery_story")
-            story_title = story_payload.get("title")
-            story_answer = story_payload.get("answer")
-            story_aliases = story_payload.get("aliases") or []
-            story_extra_de = story_payload.get("extra_de")
-            story_sentences = story_payload.get("story_ru") or []
-
-            if not story_answer or not story_extra_de or len(story_sentences) != 7:
-                return {"error": "Не удалось сформировать историю.", "created": False}
-
-            story_id = _save_story_bank(
-                cursor,
-                story_title,
-                story_answer,
-                story_aliases,
-                story_extra_de,
-                story_type,
-                normalized_difficulty,
-                story_sentences,
-            )
-
-        cursor.execute(
-            """
-            INSERT INTO bt_3_story_sessions (user_id, session_id, story_id, mode)
-            VALUES (%s, %s, %s, %s);
-            """,
-            (user_id, str(session_id), story_id, mode),
-        )
-
-        _insert_story_session_sentences(cursor, user_id, session_id, story_sentences)
-        conn.commit()
-        _clear_active_translation_session_pointer(user_id=int(user_id))
-
-        return {
-            "session_id": session_id,
-            "created": True,
-            "count": len(story_sentences),
-            "story_id": story_id,
-            "title": story_title,
-        }
-    finally:
-        cursor.close()
-        conn.close()
-        db_summary = summarize_db_acquire_events(db_acquire_events)
-        _log_flow_observation(
-            "db_scope",
-            "story_session_start",
-            user_id=int(user_id),
-            source_lang=source_lang,
-            target_lang=target_lang,
-            provider_wait_ms=provider_wait_ms_total,
-            db_wait_ms=int(db_summary.get("db_pool_acquire_wait_ms_total") or 0),
-            db_hold_ms=int(db_summary.get("db_pool_checkout_hold_ms_total") or 0),
-            **db_summary,
-        )
 
 
 async def submit_story_translation_webapp(
