@@ -3177,6 +3177,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
   handleToggleExplanationFollowupSaveVariant,
   handleSaveExplanationFollowupAnswer,
   renderExplanationContent,
+  getResultCardIdentityKey,
   handleFinishTranslation,
   finishStatus,
   handleLoadDailyHistory,
@@ -29824,6 +29825,7 @@ function AppInner() {
                 handleToggleExplanationFollowupSaveVariant={handleToggleExplanationFollowupSaveVariantStable}
                 handleSaveExplanationFollowupAnswer={handleSaveExplanationFollowupAnswerStable}
                 renderExplanationContent={renderExplanationContentStable}
+                getResultCardIdentityKey={getResultCardIdentityKey}
                 handleFinishTranslation={handleFinishTranslationStable}
                 finishStatus={finishStatus}
                 handleLoadDailyHistory={handleLoadDailyHistoryStable}
