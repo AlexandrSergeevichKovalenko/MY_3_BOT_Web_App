@@ -24,6 +24,7 @@ from calendar import monthrange
 from zoneinfo import ZoneInfo
 from typing import Any
 from dotenv import load_dotenv
+from backend.observability import _log_flow_observation
 try:
     from backend.config_mistakes_data import (
         VALID_CATEGORIES as VALID_CATEGORIES_DE,
@@ -81,6 +82,7 @@ DB_POOL_ACQUIRE_TIMEOUT_MS = max(0, int(os.getenv("DB_POOL_ACQUIRE_TIMEOUT_MS", 
 DB_POOL_ACQUIRE_RETRY_MS = max(10, int(os.getenv("DB_POOL_ACQUIRE_RETRY_MS", "50")))
 DB_POOL_LOG_SLOW_ACQUIRE_MS = max(0, int(os.getenv("DB_POOL_LOG_SLOW_ACQUIRE_MS", "100")))
 DB_POOL_ALLOW_DIRECT_FALLBACK = str(os.getenv("DB_POOL_ALLOW_DIRECT_FALLBACK", "0")).strip().lower() in {"1", "true", "yes", "on"}
+DB_CHECKOUT_HOLD_WARN_MS = max(0, int(os.getenv("DB_CHECKOUT_HOLD_WARN_MS", "1500")))
 BILLING_PLAN_CACHE_TTL_SEC = max(5, min(3600, int(os.getenv("BILLING_PLAN_CACHE_TTL_SEC", "300"))))
 READER_SESSION_AUTOCLOSE_MAX_SECONDS = max(
     300,
@@ -2067,18 +2069,70 @@ def get_db_connection_context(): #
             conn.close()
 
 
+def _db_runtime_service_name() -> str:
+    return str(os.getenv("RAILWAY_SERVICE_NAME") or os.getenv("SERVICE_NAME") or "").strip() or "-"
+
+
+def _db_runtime_base_fields(*, context_label: str | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "service": _db_runtime_service_name(),
+        "pid": os.getpid(),
+        "thread": threading.current_thread().name,
+    }
+    if context_label:
+        payload["context"] = str(context_label or "").strip() or "unknown"
+    return payload
+
+
+def _get_current_db_scope_context() -> dict[str, Any] | None:
+    scope = getattr(_DB_ACQUIRE_LOCAL, "scope", None)
+    return scope if isinstance(scope, dict) else None
+
+
+def note_db_provider_wait(wait_ms: int | float | None, *, provider_label: str | None = None) -> None:
+    scope = _get_current_db_scope_context()
+    if scope is None:
+        return
+    normalized_wait_ms = max(0, int(wait_ms or 0))
+    scope["provider_wait_ms_total"] = int(scope.get("provider_wait_ms_total") or 0) + normalized_wait_ms
+    scope["provider_wait_ms_max"] = max(int(scope.get("provider_wait_ms_max") or 0), normalized_wait_ms)
+    scope["provider_wait_count"] = int(scope.get("provider_wait_count") or 0) + 1
+    if provider_label:
+        labels = scope.setdefault("provider_labels", [])
+        if isinstance(labels, list):
+            labels.append(str(provider_label).strip() or "provider")
+    scoped_events = getattr(_DB_ACQUIRE_LOCAL, "events", None)
+    if isinstance(scoped_events, list):
+        event = {"event": "provider_wait", "wait_ms": normalized_wait_ms}
+        if provider_label:
+            event["provider_label"] = str(provider_label).strip() or "provider"
+        scoped_events.append(event)
+
+
 @contextmanager
 def db_acquire_scope(label: str):
     previous_label = getattr(_DB_ACQUIRE_LOCAL, "label", None)
     previous_events = getattr(_DB_ACQUIRE_LOCAL, "events", None)
+    previous_scope = getattr(_DB_ACQUIRE_LOCAL, "scope", None)
     scoped_events: list[dict[str, Any]] = []
-    _DB_ACQUIRE_LOCAL.label = str(label or "").strip() or "unknown"
+    normalized_label = str(label or "").strip() or "unknown"
+    _DB_ACQUIRE_LOCAL.label = normalized_label
     _DB_ACQUIRE_LOCAL.events = scoped_events
+    _DB_ACQUIRE_LOCAL.scope = {
+        "label": normalized_label,
+        "events": scoped_events,
+        "started_at_perf": time.perf_counter(),
+        "provider_wait_ms_total": 0,
+        "provider_wait_ms_max": 0,
+        "provider_wait_count": 0,
+        "provider_labels": [],
+    }
     try:
         yield scoped_events
     finally:
         _DB_ACQUIRE_LOCAL.label = previous_label
         _DB_ACQUIRE_LOCAL.events = previous_events
+        _DB_ACQUIRE_LOCAL.scope = previous_scope
 
 
 def summarize_db_acquire_events(events: list[dict[str, Any]] | None) -> dict[str, Any]:
@@ -2091,29 +2145,54 @@ def summarize_db_acquire_events(events: list[dict[str, Any]] | None) -> dict[str
             "db_pool_slow_acquire_count": 0,
             "db_pool_exhausted_count": 0,
             "db_pool_direct_fallback_count": 0,
+            "db_pool_direct_connect_count": 0,
+            "db_pool_acquire_timeout_count": 0,
             "db_pool_used_count_max": None,
             "db_pool_available_count_min": None,
+            "db_pool_checkout_hold_ms_total": 0,
+            "db_pool_checkout_hold_ms_max": 0,
+            "db_pool_long_hold_count": 0,
+            "db_provider_wait_ms_total": 0,
+            "db_provider_wait_ms_max": 0,
+            "db_provider_wait_count": 0,
         }
-    wait_values = [int(item.get("wait_ms") or 0) for item in normalized_events]
+    acquire_events = [item for item in normalized_events if str(item.get("event") or "acquire") == "acquire"]
+    return_events = [item for item in normalized_events if str(item.get("event") or "") == "return"]
+    provider_events = [item for item in normalized_events if str(item.get("event") or "") == "provider_wait"]
+    wait_values = [int(item.get("wait_ms") or 0) for item in acquire_events]
     used_values = [
         int(item.get("pool_used_count"))
-        for item in normalized_events
+        for item in acquire_events
         if item.get("pool_used_count") is not None
     ]
     available_values = [
         int(item.get("pool_available_count"))
-        for item in normalized_events
+        for item in acquire_events
         if item.get("pool_available_count") is not None
     ]
+    hold_values = [int(item.get("checkout_hold_ms") or 0) for item in return_events]
+    provider_wait_values = [int(item.get("wait_ms") or 0) for item in provider_events]
     return {
-        "db_pool_acquire_count": len(normalized_events),
+        "db_pool_acquire_count": len(acquire_events),
         "db_pool_acquire_wait_ms_total": sum(wait_values),
         "db_pool_acquire_wait_ms_max": max(wait_values) if wait_values else 0,
-        "db_pool_slow_acquire_count": sum(1 for item in normalized_events if bool(item.get("slow_acquire"))),
-        "db_pool_exhausted_count": sum(1 for item in normalized_events if bool(item.get("pool_exhausted"))),
-        "db_pool_direct_fallback_count": sum(1 for item in normalized_events if bool(item.get("direct_fallback"))),
+        "db_pool_slow_acquire_count": sum(1 for item in acquire_events if bool(item.get("slow_acquire"))),
+        "db_pool_exhausted_count": sum(1 for item in acquire_events if bool(item.get("pool_exhausted"))),
+        "db_pool_direct_fallback_count": sum(
+            1 for item in acquire_events if str(item.get("connection_source") or "") == "fallback_direct"
+        ),
+        "db_pool_direct_connect_count": sum(
+            1 for item in acquire_events if str(item.get("connection_source") or "") == "direct"
+        ),
+        "db_pool_acquire_timeout_count": sum(1 for item in acquire_events if bool(item.get("timed_out"))),
         "db_pool_used_count_max": max(used_values) if used_values else None,
         "db_pool_available_count_min": min(available_values) if available_values else None,
+        "db_pool_checkout_hold_ms_total": sum(hold_values),
+        "db_pool_checkout_hold_ms_max": max(hold_values) if hold_values else 0,
+        "db_pool_long_hold_count": sum(1 for item in return_events if bool(item.get("long_hold"))),
+        "db_provider_wait_ms_total": sum(provider_wait_values),
+        "db_provider_wait_ms_max": max(provider_wait_values) if provider_wait_values else 0,
+        "db_provider_wait_count": len(provider_events),
     }
 
 
@@ -2192,44 +2271,90 @@ def _record_db_acquire_event(
     *,
     context_label: str,
     wait_ms: int,
-    used_pool: bool,
+    connection_source: str,
+    success: bool,
+    timed_out: bool,
     pool_exhausted: bool,
-    direct_fallback: bool,
     pool: ThreadedConnectionPool | None = None,
 ) -> None:
     slow_acquire = wait_ms >= DB_POOL_LOG_SLOW_ACQUIRE_MS if DB_POOL_LOG_SLOW_ACQUIRE_MS > 0 else False
     pool_used_count, pool_available_count = _capture_pool_state(pool)
     event = {
+        "event": "acquire",
         "context": context_label,
         "wait_ms": int(wait_ms),
-        "used_pool": bool(used_pool),
+        "connection_source": str(connection_source or "").strip() or "unknown",
+        "used_pool": str(connection_source or "").strip() == "pool",
         "pool_exhausted": bool(pool_exhausted),
-        "direct_fallback": bool(direct_fallback),
+        "direct_fallback": str(connection_source or "").strip() == "fallback_direct",
         "slow_acquire": bool(slow_acquire),
+        "timed_out": bool(timed_out),
+        "success": bool(success),
         "pool_used_count": pool_used_count,
         "pool_available_count": pool_available_count,
     }
     scoped_events = getattr(_DB_ACQUIRE_LOCAL, "events", None)
     if isinstance(scoped_events, list):
         scoped_events.append(event)
-    if bool(pool_exhausted) or bool(direct_fallback) or bool(slow_acquire):
-        logging.warning(
-            "db acquire: context=%s wait_ms=%s used_pool=%s pool_exhausted=%s direct_fallback=%s pool_used=%s pool_available=%s",
-            context_label,
-            int(wait_ms),
-            bool(used_pool),
-            bool(pool_exhausted),
-            bool(direct_fallback),
-            pool_used_count,
-            pool_available_count,
+    if bool(pool_exhausted) or bool(event["direct_fallback"]) or bool(slow_acquire) or bool(timed_out):
+        _log_flow_observation(
+            "db",
+            "acquire",
+            **_db_runtime_base_fields(context_label=context_label),
+            connection_source=event["connection_source"],
+            acquire_wait_ms=int(wait_ms),
+            exhausted=bool(pool_exhausted),
+            timed_out=bool(timed_out),
+            success=bool(success),
+            pool_used=pool_used_count,
+            pool_available=pool_available_count,
+        )
+
+
+def _record_db_checkout_return_event(
+    *,
+    context_label: str,
+    connection_source: str,
+    checkout_hold_ms: int,
+    pool: ThreadedConnectionPool | None = None,
+    long_hold: bool = False,
+    provider_call_in_scope: bool = False,
+) -> None:
+    pool_used_count, pool_available_count = _capture_pool_state(pool)
+    event = {
+        "event": "return",
+        "context": context_label,
+        "connection_source": str(connection_source or "").strip() or "unknown",
+        "checkout_hold_ms": int(max(0, int(checkout_hold_ms or 0))),
+        "long_hold": bool(long_hold),
+        "provider_call_in_scope": bool(provider_call_in_scope),
+        "pool_used_count": pool_used_count,
+        "pool_available_count": pool_available_count,
+    }
+    scoped_events = getattr(_DB_ACQUIRE_LOCAL, "events", None)
+    if isinstance(scoped_events, list):
+        scoped_events.append(event)
+    if bool(long_hold):
+        _log_flow_observation(
+            "db",
+            "long_hold",
+            **_db_runtime_base_fields(context_label=context_label),
+            connection_source=event["connection_source"],
+            checkout_hold_ms=event["checkout_hold_ms"],
+            pool_used=pool_used_count,
+            pool_available=pool_available_count,
+            likely_path=context_label,
+            provider_call_in_scope=bool(provider_call_in_scope),
         )
 
 
 class _PooledConnectionProxy:
-    def __init__(self, conn, pool: ThreadedConnectionPool):
+    def __init__(self, conn, pool: ThreadedConnectionPool, *, context_label: str, acquired_at_perf: float):
         self._conn = conn
         self._pool = pool
         self._released = False
+        self._context_label = str(context_label or "").strip() or "unspecified"
+        self._acquired_at_perf = float(acquired_at_perf)
 
     def __getattr__(self, name):
         return getattr(self._conn, name)
@@ -2248,6 +2373,17 @@ class _PooledConnectionProxy:
         if self._released:
             return
         self._released = True
+        hold_ms = max(0, int((time.perf_counter() - self._acquired_at_perf) * 1000))
+        scope = _get_current_db_scope_context() or {}
+        provider_call_in_scope = bool(int(scope.get("provider_wait_ms_total") or 0) > 0)
+        _record_db_checkout_return_event(
+            context_label=self._context_label,
+            connection_source="pool",
+            checkout_hold_ms=hold_ms,
+            pool=self._pool,
+            long_hold=bool(DB_CHECKOUT_HOLD_WARN_MS > 0 and hold_ms >= DB_CHECKOUT_HOLD_WARN_MS),
+            provider_call_in_scope=provider_call_in_scope,
+        )
         try:
             self._pool.putconn(self._conn, close=bool(force_close))
         except Exception:
@@ -2258,9 +2394,12 @@ class _PooledConnectionProxy:
 
 
 class _DirectConnectionProxy:
-    def __init__(self, conn):
+    def __init__(self, conn, *, context_label: str, connection_source: str, acquired_at_perf: float):
         self._conn = conn
         self._closed = False
+        self._context_label = str(context_label or "").strip() or "unspecified"
+        self._connection_source = str(connection_source or "").strip() or "direct"
+        self._acquired_at_perf = float(acquired_at_perf)
 
     def __getattr__(self, name):
         return getattr(self._conn, name)
@@ -2279,6 +2418,17 @@ class _DirectConnectionProxy:
         if self._closed:
             return
         self._closed = True
+        hold_ms = max(0, int((time.perf_counter() - self._acquired_at_perf) * 1000))
+        scope = _get_current_db_scope_context() or {}
+        provider_call_in_scope = bool(int(scope.get("provider_wait_ms_total") or 0) > 0)
+        _record_db_checkout_return_event(
+            context_label=self._context_label,
+            connection_source=self._connection_source,
+            checkout_hold_ms=hold_ms,
+            pool=None,
+            long_hold=bool(DB_CHECKOUT_HOLD_WARN_MS > 0 and hold_ms >= DB_CHECKOUT_HOLD_WARN_MS),
+            provider_call_in_scope=provider_call_in_scope,
+        )
         self._conn.close()
 
 
@@ -2288,30 +2438,44 @@ def get_db_connection():
     if pool is None:
         started_at = time.perf_counter()
         conn = _new_raw_db_connection()
+        acquire_wait_ms = max(0, int((time.perf_counter() - started_at) * 1000))
         _record_db_acquire_event(
             context_label=context_label,
-            wait_ms=max(0, int((time.perf_counter() - started_at) * 1000)),
-            used_pool=False,
+            wait_ms=acquire_wait_ms,
+            connection_source="direct",
+            success=True,
+            timed_out=False,
             pool_exhausted=False,
-            direct_fallback=True,
             pool=None,
         )
-        return _DirectConnectionProxy(conn)
+        return _DirectConnectionProxy(
+            conn,
+            context_label=context_label,
+            connection_source="direct",
+            acquired_at_perf=time.perf_counter(),
+        )
     deadline = time.perf_counter() + (DB_POOL_ACQUIRE_TIMEOUT_MS / 1000.0)
     pool_exhausted = False
     acquire_started_at = time.perf_counter()
     while True:
         try:
             conn = pool.getconn()
+            acquired_at_perf = time.perf_counter()
             _record_db_acquire_event(
                 context_label=context_label,
-                wait_ms=max(0, int((time.perf_counter() - acquire_started_at) * 1000)),
-                used_pool=True,
+                wait_ms=max(0, int((acquired_at_perf - acquire_started_at) * 1000)),
+                connection_source="pool",
+                success=True,
+                timed_out=False,
                 pool_exhausted=pool_exhausted,
-                direct_fallback=False,
                 pool=pool,
             )
-            return _PooledConnectionProxy(conn, pool)
+            return _PooledConnectionProxy(
+                conn,
+                pool,
+                context_label=context_label,
+                acquired_at_perf=acquired_at_perf,
+            )
         except PoolError:
             pool_exhausted = True
             if time.perf_counter() >= deadline:
@@ -2323,12 +2487,27 @@ def get_db_connection():
         _record_db_acquire_event(
             context_label=context_label,
             wait_ms=wait_ms,
-            used_pool=False,
+            connection_source="fallback_direct",
+            success=True,
+            timed_out=True,
             pool_exhausted=True,
-            direct_fallback=True,
             pool=pool,
         )
-        return _DirectConnectionProxy(conn)
+        return _DirectConnectionProxy(
+            conn,
+            context_label=context_label,
+            connection_source="fallback_direct",
+            acquired_at_perf=time.perf_counter(),
+        )
+    _record_db_acquire_event(
+        context_label=context_label,
+        wait_ms=max(0, int((time.perf_counter() - acquire_started_at) * 1000)),
+        connection_source="pool",
+        success=False,
+        timed_out=True,
+        pool_exhausted=True,
+        pool=pool,
+    )
     raise RuntimeError(
         f"DB pool exhausted for context={context_label} after {max(0, int((time.perf_counter() - acquire_started_at) * 1000))}ms"
     )

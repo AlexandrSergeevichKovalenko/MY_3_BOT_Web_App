@@ -7,6 +7,7 @@ import json
 import hashlib
 import time
 import contextvars
+import threading
 #from openai import OpenAI
 import openai
 from openai import AsyncOpenAI
@@ -14,6 +15,7 @@ import psycopg2
 from contextlib import contextmanager
 from dotenv import load_dotenv
 from pathlib import Path
+from backend.observability import _log_flow_observation
 try:
     from backend.config_mistakes_data import (
         VALID_CATEGORIES as VALID_CATEGORIES_DE,
@@ -3290,14 +3292,57 @@ if not DATABASE_URL:
     logging.error("❌ Ошибка: DATABASE_URL не задан в .env-файле или переменных окружения!")
     raise RuntimeError("DATABASE_URL не установлен.")
 
+_OPENAI_MANAGER_DB_HOLD_WARN_MS = max(
+    0,
+    int((os.getenv("DB_CHECKOUT_HOLD_WARN_MS") or "1500").strip() or "1500"),
+)
+
+
+def _openai_manager_db_callsite() -> str:
+    try:
+        import sys
+        frame = sys._getframe(2)
+        return f"{frame.f_code.co_name}:{frame.f_lineno}"
+    except Exception:
+        return "unknown"
+
 @contextmanager
 def get_db_connection_context():
     """Контекстный менеджер для соединения с базой данных PostgreSQL."""
+    started_at = time.perf_counter()
     conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+    acquire_wait_ms = max(0, int((time.perf_counter() - started_at) * 1000))
+    callsite = _openai_manager_db_callsite()
+    _log_flow_observation(
+        "db",
+        "direct_connect",
+        service=str(os.getenv("RAILWAY_SERVICE_NAME") or "").strip() or "-",
+        pid=os.getpid(),
+        thread=threading.current_thread().name,
+        context="openai_manager_direct",
+        connection_source="direct",
+        acquire_wait_ms=acquire_wait_ms,
+        success=True,
+        likely_path=callsite,
+    )
+    checkout_started_at = time.perf_counter()
     try:
         yield conn
         conn.commit()
     finally:
+        hold_ms = max(0, int((time.perf_counter() - checkout_started_at) * 1000))
+        if _OPENAI_MANAGER_DB_HOLD_WARN_MS > 0 and hold_ms >= _OPENAI_MANAGER_DB_HOLD_WARN_MS:
+            _log_flow_observation(
+                "db",
+                "long_hold",
+                service=str(os.getenv("RAILWAY_SERVICE_NAME") or "").strip() or "-",
+                pid=os.getpid(),
+                thread=threading.current_thread().name,
+                context="openai_manager_direct",
+                connection_source="direct",
+                checkout_hold_ms=hold_ms,
+                likely_path=callsite,
+            )
         conn.close()
 
 # --- Инициализация глобального клиента OpenAI ---

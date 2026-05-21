@@ -36,10 +36,12 @@ from telegram.helpers import escape_markdown
 from telegram.error import TimedOut, BadRequest, RetryAfter, Forbidden
 import tempfile
 import sys
+import threading
 import livekit.api # Нужен для LiveKit комнат
 import multiprocessing
 from typing import Any, Callable
 from backend.analytics import fetch_user_summary, get_period_bounds
+from backend.observability import _log_flow_observation
 _BOT_BACKEND_SERVER_IMPORT_STARTED_AT = pytime.perf_counter()
 from backend.backend_server import (
     GoogleTTSBudgetBlockedError,
@@ -681,8 +683,71 @@ if DATABASE_URL:
 else:   
     logging.error("❌ Ошибка: DATABASE_URL не задан. Проверь переменные окружения!")
 
+_BOT_DB_DIRECT_HOLD_WARN_MS = max(0, int((os.getenv("DB_CHECKOUT_HOLD_WARN_MS") or "1500").strip() or "1500"))
+
+
+def _bot_db_direct_callsite() -> str:
+    try:
+        frame = sys._getframe(2)
+        return f"{frame.f_code.co_name}:{frame.f_lineno}"
+    except Exception:
+        return "unknown"
+
+
+class _BotDirectConnectionProxy:
+    def __init__(self, conn, *, opened_at_perf: float, callsite: str):
+        self._conn = conn
+        self._opened_at_perf = float(opened_at_perf)
+        self._callsite = str(callsite or "").strip() or "unknown"
+        self._closed = False
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def __enter__(self):
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return self._conn.__exit__(exc_type, exc, tb)
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        hold_ms = max(0, int((pytime.perf_counter() - self._opened_at_perf) * 1000))
+        if _BOT_DB_DIRECT_HOLD_WARN_MS > 0 and hold_ms >= _BOT_DB_DIRECT_HOLD_WARN_MS:
+            _log_flow_observation(
+                "db",
+                "long_hold",
+                service=str(os.getenv("RAILWAY_SERVICE_NAME") or "").strip() or "-",
+                pid=os.getpid(),
+                thread=threading.current_thread().name,
+                context="bot_3_direct",
+                connection_source="direct",
+                checkout_hold_ms=hold_ms,
+                likely_path=self._callsite,
+            )
+        self._conn.close()
+
+
 def get_db_connection():
-    return psycopg2.connect(DATABASE_URL, sslmode='require')
+    started_at = pytime.perf_counter()
+    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+    acquire_wait_ms = max(0, int((pytime.perf_counter() - started_at) * 1000))
+    callsite = _bot_db_direct_callsite()
+    _log_flow_observation(
+        "db",
+        "direct_connect",
+        service=str(os.getenv("RAILWAY_SERVICE_NAME") or "").strip() or "-",
+        pid=os.getpid(),
+        context="bot_3_direct",
+        connection_source="direct",
+        acquire_wait_ms=acquire_wait_ms,
+        success=True,
+        likely_path=callsite,
+    )
+    return _BotDirectConnectionProxy(conn, opened_at_perf=pytime.perf_counter(), callsite=callsite)
 
 # Проверка подключения
 conn = get_db_connection()

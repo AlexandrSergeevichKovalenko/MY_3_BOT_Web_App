@@ -39,6 +39,8 @@ from backend.database import (
     get_db_connection,
     get_db_connection_context,
     db_acquire_scope,
+    note_db_provider_wait,
+    summarize_db_acquire_events,
     apply_skill_events_for_error,
     close_stale_open_translation_sessions_for_user,
     get_skill_mapping_for_error,
@@ -46,6 +48,7 @@ from backend.database import (
     enforce_feature_limit,
     save_story_arena_score,
 )
+from backend.observability import _log_flow_observation
 from backend.job_queue import (
     clear_active_translation_session_state,
     clear_session_presence_card,
@@ -1228,7 +1231,8 @@ async def start_story_session_webapp(
         source_lang=source_lang,
         target_lang=target_lang,
     )
-    with db_acquire_scope("story_session_start"):
+    provider_wait_ms_total = 0
+    with db_acquire_scope("story_session_start") as db_acquire_events:
         conn = get_db_connection()
     cursor = conn.cursor()
 
@@ -1342,7 +1346,11 @@ async def start_story_session_webapp(
             story_sentences = [row[0] for row in cursor.fetchall()]
         else:
             normalized_difficulty = _normalize_story_difficulty(difficulty)
+            provider_started_at = time.perf_counter()
             story_payload = await generate_mystery_story(story_type, normalized_difficulty)
+            provider_wait_ms = max(0, int((time.perf_counter() - provider_started_at) * 1000))
+            provider_wait_ms_total += provider_wait_ms
+            note_db_provider_wait(provider_wait_ms, provider_label="generate_mystery_story")
             story_title = story_payload.get("title")
             story_answer = story_payload.get("answer")
             story_aliases = story_payload.get("aliases") or []
@@ -1385,6 +1393,18 @@ async def start_story_session_webapp(
     finally:
         cursor.close()
         conn.close()
+        db_summary = summarize_db_acquire_events(db_acquire_events)
+        _log_flow_observation(
+            "db_scope",
+            "story_session_start",
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            provider_wait_ms=provider_wait_ms_total,
+            db_wait_ms=int(db_summary.get("db_pool_acquire_wait_ms_total") or 0),
+            db_hold_ms=int(db_summary.get("db_pool_checkout_hold_ms_total") or 0),
+            **db_summary,
+        )
 
 
 async def submit_story_translation_webapp(
@@ -1398,7 +1418,8 @@ async def submit_story_translation_webapp(
     if not translations:
         return {"error": "translations обязательны"}
 
-    with db_acquire_scope("story_translation_submit"):
+    provider_wait_ms_total = 0
+    with db_acquire_scope("story_translation_submit") as db_acquire_events:
         conn = get_db_connection()
     cursor = conn.cursor()
 
@@ -1483,11 +1504,15 @@ async def submit_story_translation_webapp(
         original_text = "\n".join(original_sentences)
         user_text = "\n".join(user_sentences)
         try:
+            provider_started_at = time.perf_counter()
             raw_feedback, raw_arena = await asyncio.gather(
                 run_check_translation_story(original_text, user_text),
                 run_check_translation_story_arena(original_text, user_text),
                 return_exceptions=True,
             )
+            provider_wait_ms = max(0, int((time.perf_counter() - provider_started_at) * 1000))
+            provider_wait_ms_total += provider_wait_ms
+            note_db_provider_wait(provider_wait_ms, provider_label="story_translation_check")
             if isinstance(raw_feedback, BaseException):
                 raise raw_feedback
         except Exception as exc:
@@ -1572,11 +1597,15 @@ async def submit_story_translation_webapp(
 
         semantic_result = {"is_correct": False, "reason": ""}
         try:
+            provider_started_at = time.perf_counter()
             semantic_result = await run_check_story_guess_semantic(
                 canonical_answer=answer or "",
                 aliases=[item for item in aliases if item],
                 user_guess=guess,
             )
+            provider_wait_ms = max(0, int((time.perf_counter() - provider_started_at) * 1000))
+            provider_wait_ms_total += provider_wait_ms
+            note_db_provider_wait(provider_wait_ms, provider_label="story_guess_semantic")
         except Exception as exc:
             logging.warning("Semantic guess check failed: %s", exc)
 
@@ -1627,6 +1656,18 @@ async def submit_story_translation_webapp(
     finally:
         cursor.close()
         conn.close()
+        db_summary = summarize_db_acquire_events(db_acquire_events)
+        _log_flow_observation(
+            "db_scope",
+            "story_translation_submit",
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            provider_wait_ms=provider_wait_ms_total,
+            db_wait_ms=int(db_summary.get("db_pool_acquire_wait_ms_total") or 0),
+            db_hold_ms=int(db_summary.get("db_pool_checkout_hold_ms_total") or 0),
+            **db_summary,
+        )
 
 
 async def generate_sentences_webapp(
@@ -2706,7 +2747,8 @@ async def prewarm_shared_translation_sentence_pool(
             "elapsed_ms": 0,
         }
 
-    with db_acquire_scope("shared_sentence_pool_prewarm"):
+    provider_wait_ms_total = 0
+    with db_acquire_scope("shared_sentence_pool_prewarm") as db_acquire_events:
         conn = get_db_connection()
     cursor = conn.cursor()
     skill_catalog: list[dict[str, str]] | None = None
@@ -2785,6 +2827,7 @@ async def prewarm_shared_translation_sentence_pool(
                     needed = max(1, int(target_ready_for_bucket) - int(ready_after))
                     requested_count = max(1, min(int(remaining_budget), int(needed)))
                     requested_total += int(requested_count)
+                    provider_started_at = time.perf_counter()
                     generated_entries = await _generate_legacy_sentence_entries_with_profiles(
                         topic=str(focus.get("prompt_topic") or focus.get("label") or "Grammar practice").strip(),
                         level=level_key,
@@ -2792,6 +2835,9 @@ async def prewarm_shared_translation_sentence_pool(
                         skill_catalog=skill_catalog,
                         focus_hint=focus,
                     )
+                    provider_wait_ms = max(0, int((time.perf_counter() - provider_started_at) * 1000))
+                    provider_wait_ms_total += provider_wait_ms
+                    note_db_provider_wait(provider_wait_ms, provider_label="shared_sentence_pool_generate")
                     filtered_entries = _filter_sentence_entries_for_session(
                         generated_entries,
                         level=level_key,
@@ -2857,6 +2903,17 @@ async def prewarm_shared_translation_sentence_pool(
     finally:
         cursor.close()
         conn.close()
+        db_summary = summarize_db_acquire_events(db_acquire_events)
+        _log_flow_observation(
+            "db_scope",
+            "shared_sentence_pool_prewarm",
+            source_lang=source_lang,
+            target_lang=target_lang,
+            provider_wait_ms=provider_wait_ms_total,
+            db_wait_ms=int(db_summary.get("db_pool_acquire_wait_ms_total") or 0),
+            db_hold_ms=int(db_summary.get("db_pool_checkout_hold_ms_total") or 0),
+            **db_summary,
+        )
 
 
 _AUTHORED_PRIMARY_SKILL_SENTENCE_HINTS: dict[str, tuple[str, ...]] = {
@@ -4199,7 +4256,8 @@ async def fill_translation_session_webapp(
     target_count: int = 7,
     max_rounds: int = 6,
 ) -> dict[str, Any]:
-    with db_acquire_scope("translation_session_fill"):
+    provider_wait_ms_total = 0
+    with db_acquire_scope("translation_session_fill") as db_acquire_events:
         conn = get_db_connection()
     cursor = conn.cursor()
     advisory_lock_acquired = False
@@ -4256,6 +4314,7 @@ async def fill_translation_session_webapp(
             )
             if _is_legacy_ru_de_pair(source_lang, target_lang):
                 generation_diagnostics: dict[str, Any] = {}
+                provider_started_at = time.perf_counter()
                 candidate_entries = await get_original_sentences_webapp(
                     cursor,
                     user_id=int(user_id),
@@ -4269,6 +4328,9 @@ async def fill_translation_session_webapp(
                     diagnostics=generation_diagnostics,
                     progressive_fill_mode=False,
                 )
+                provider_wait_ms = max(0, int((time.perf_counter() - provider_started_at) * 1000))
+                provider_wait_ms_total += provider_wait_ms
+                note_db_provider_wait(provider_wait_ms, provider_label="translation_fill_legacy_generate")
             else:
                 generation_diagnostics = {}
                 skill_catalog = _load_skill_catalog_with_cursor(
@@ -4276,6 +4338,7 @@ async def fill_translation_session_webapp(
                     target_lang=target_lang,
                     authored_mastery_leaves_only=(str(target_lang or "").strip().lower() == "de"),
                 )
+                provider_started_at = time.perf_counter()
                 generated_entries = await _generate_sentence_entries_with_profiles(
                     task_name="generate_sentences_multilang",
                     system_instruction_key="generate_sentences_multilang",
@@ -4295,6 +4358,9 @@ async def fill_translation_session_webapp(
                     level=level,
                     valid_skill_ids={str(item.get("skill_id") or "").strip() for item in skill_catalog if str(item.get("skill_id") or "").strip()},
                 )
+                provider_wait_ms = max(0, int((time.perf_counter() - provider_started_at) * 1000))
+                provider_wait_ms_total += provider_wait_ms
+                note_db_provider_wait(provider_wait_ms, provider_label="translation_fill_multilang_generate")
                 candidate_entries = _normalize_sentence_entries(generated_entries)
 
             batch_summary = _summarize_sentence_entry_batch(
@@ -4484,6 +4550,19 @@ async def fill_translation_session_webapp(
                 logging.debug("Failed to release translation session fill advisory lock: %s", session_id, exc_info=True)
         cursor.close()
         conn.close()
+        db_summary = summarize_db_acquire_events(db_acquire_events)
+        _log_flow_observation(
+            "db_scope",
+            "translation_session_fill",
+            user_id=int(user_id),
+            session_id=int(session_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            provider_wait_ms=provider_wait_ms_total,
+            db_wait_ms=int(db_summary.get("db_pool_acquire_wait_ms_total") or 0),
+            db_hold_ms=int(db_summary.get("db_pool_checkout_hold_ms_total") or 0),
+            **db_summary,
+        )
 
 
 async def start_translation_session_webapp(
@@ -4497,7 +4576,8 @@ async def start_translation_session_webapp(
     tested_skill_profile_seed: dict[str, Any] | None = None,
     grammar_focus: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    with db_acquire_scope("translation_session_start"):
+    provider_wait_ms_total = 0
+    with db_acquire_scope("translation_session_start") as db_acquire_events:
         conn = get_db_connection()
     cursor = conn.cursor()
     level_key = _normalize_level(level)
@@ -4740,6 +4820,7 @@ async def start_translation_session_webapp(
                 )
             else:
                 seed_topup_started_at = time.perf_counter()
+                provider_started_at = time.perf_counter()
                 immediate_entries, topup_diagnostics = await _top_up_immediate_sentence_entries_with_cursor(
                     cursor,
                     topic=str(resolved_focus.get("prompt_topic") or topic or "Random sentences").strip(),
@@ -4752,6 +4833,9 @@ async def start_translation_session_webapp(
                     recent_sentence_keys=recent_sentence_keys,
                     tested_skill_profile_seed=tested_skill_profile_seed,
                 )
+                provider_wait_ms = max(0, int((time.perf_counter() - provider_started_at) * 1000))
+                provider_wait_ms_total += provider_wait_ms
+                note_db_provider_wait(provider_wait_ms, provider_label="translation_session_start_topup")
                 phase_metrics["seed_topup_ms"] = int((time.perf_counter() - seed_topup_started_at) * 1000)
                 seed_diagnostics.update(topup_diagnostics)
 
@@ -4917,6 +5001,18 @@ async def start_translation_session_webapp(
     finally:
         cursor.close()
         conn.close()
+        db_summary = summarize_db_acquire_events(db_acquire_events)
+        _log_flow_observation(
+            "db_scope",
+            "translation_session_start",
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            provider_wait_ms=provider_wait_ms_total,
+            db_wait_ms=int(db_summary.get("db_pool_acquire_wait_ms_total") or 0),
+            db_hold_ms=int(db_summary.get("db_pool_checkout_hold_ms_total") or 0),
+            **db_summary,
+        )
 
 
 def _parse_translation_feedback_payload(
@@ -7188,7 +7284,7 @@ def persist_translation_webapp_item_results_batch(
         return []
 
     persisted_rows: list[tuple[int | None, str, int, str, bool]] = []
-    with db_acquire_scope("translation_webapp_item_store"), get_db_connection_context() as conn:
+    with db_acquire_scope("translation_webapp_item_store") as db_acquire_events, get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             execute_values(
                 cursor,
@@ -7246,6 +7342,15 @@ def persist_translation_webapp_item_results_batch(
                 page_size=200,
             )
             persisted_rows = cursor.fetchall() or []
+    db_summary = summarize_db_acquire_events(db_acquire_events)
+    _log_flow_observation(
+        "db_scope",
+        "translation_check_batch_persist",
+        item_count=int(len(normalized_rows)),
+        db_wait_ms=int(db_summary.get("db_pool_acquire_wait_ms_total") or 0),
+        db_hold_ms=int(db_summary.get("db_pool_checkout_hold_ms_total") or 0),
+        **db_summary,
+    )
 
     persisted_by_sentence_id: dict[int, tuple[int | None, str, int, str, bool]] = {}
     for sentence_id, translation_id, user_translation, score, feedback, inserted_new_row in persisted_rows:
