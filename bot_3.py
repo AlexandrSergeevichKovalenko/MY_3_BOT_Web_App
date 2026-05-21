@@ -6,7 +6,6 @@ import openai
 from openai import OpenAI
 import logging
 import json
-import psycopg2
 import datetime
 import calendar
 import time as pytime
@@ -41,7 +40,6 @@ import livekit.api # Нужен для LiveKit комнат
 import multiprocessing
 from typing import Any, Callable
 from backend.analytics import fetch_user_summary, get_period_bounds
-from backend.observability import _log_flow_observation
 _BOT_BACKEND_SERVER_IMPORT_STARTED_AT = pytime.perf_counter()
 from backend.backend_server import (
     GoogleTTSBudgetBlockedError,
@@ -91,7 +89,12 @@ from backend.image_quiz_utils import (
     normalize_image_quiz_option_text,
 )
 from backend.database import (
+    DATABASE_URL as SHARED_DATABASE_URL,
+    DB_POOL_ALLOW_DIRECT_FALLBACK,
+    DB_POOL_ENABLED,
     init_db,
+    db_acquire_scope,
+    get_db_connection,
     build_translation_session_minutes_sql,
     get_random_dictionary_entry,
     get_random_dictionary_entry_for_quiz_type,
@@ -675,82 +678,19 @@ API_KEY_NEWS = os.getenv("API_KEY_NEWS")
 # VALID_CATEGORIES_lower = [cat.lower() for cat in VALID_CATEGORIES]
 # VALID_SUBCATEGORIES_lower = {k.lower(): [v.lower() for v in values] for k, values in VALID_SUBCATEGORIES.items()}
 
-# === Подключение к базе данных PostgreSQL ===
-DATABASE_URL = os.getenv("DATABASE_URL_RAILWAY")
-
-if DATABASE_URL:
-    logging.info("✅ DATABASE_URL успешно загружен!")
-else:   
-    logging.error("❌ Ошибка: DATABASE_URL не задан. Проверь переменные окружения!")
-
-_BOT_DB_DIRECT_HOLD_WARN_MS = max(0, int((os.getenv("DB_CHECKOUT_HOLD_WARN_MS") or "1500").strip() or "1500"))
-
-
-def _bot_db_direct_callsite() -> str:
-    try:
-        frame = sys._getframe(2)
-        return f"{frame.f_code.co_name}:{frame.f_lineno}"
-    except Exception:
-        return "unknown"
-
-
-class _BotDirectConnectionProxy:
-    def __init__(self, conn, *, opened_at_perf: float, callsite: str):
-        self._conn = conn
-        self._opened_at_perf = float(opened_at_perf)
-        self._callsite = str(callsite or "").strip() or "unknown"
-        self._closed = False
-
-    def __getattr__(self, name):
-        return getattr(self._conn, name)
-
-    def __enter__(self):
-        self._conn.__enter__()
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return self._conn.__exit__(exc_type, exc, tb)
-
-    def close(self):
-        if self._closed:
-            return
-        self._closed = True
-        hold_ms = max(0, int((pytime.perf_counter() - self._opened_at_perf) * 1000))
-        if _BOT_DB_DIRECT_HOLD_WARN_MS > 0 and hold_ms >= _BOT_DB_DIRECT_HOLD_WARN_MS:
-            _log_flow_observation(
-                "db",
-                "long_hold",
-                service=str(os.getenv("RAILWAY_SERVICE_NAME") or "").strip() or "-",
-                pid=os.getpid(),
-                thread=threading.current_thread().name,
-                context="bot_3_direct",
-                connection_source="direct",
-                checkout_hold_ms=hold_ms,
-                likely_path=self._callsite,
-            )
-        self._conn.close()
-
-
-def get_db_connection():
-    started_at = pytime.perf_counter()
-    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
-    acquire_wait_ms = max(0, int((pytime.perf_counter() - started_at) * 1000))
-    callsite = _bot_db_direct_callsite()
-    _log_flow_observation(
-        "db",
-        "direct_connect",
-        service=str(os.getenv("RAILWAY_SERVICE_NAME") or "").strip() or "-",
-        pid=os.getpid(),
-        context="bot_3_direct",
-        connection_source="direct",
-        acquire_wait_ms=acquire_wait_ms,
-        success=True,
-        likely_path=callsite,
+if not SHARED_DATABASE_URL:
+    raise RuntimeError("MY_3_BOT requires DATABASE_URL_RAILWAY for centralized pooled DB mode.")
+if not DB_POOL_ENABLED:
+    raise RuntimeError("MY_3_BOT requires centralized pooled DB mode; DB_POOL_ENABLED=0 is not allowed.")
+if DB_POOL_ALLOW_DIRECT_FALLBACK:
+    raise RuntimeError(
+        "MY_3_BOT refuses to start with DB_POOL_ALLOW_DIRECT_FALLBACK enabled; pooled acquisition must fail loudly."
     )
-    return _BotDirectConnectionProxy(conn, opened_at_perf=pytime.perf_counter(), callsite=callsite)
+logging.info("✅ MY_3_BOT configured to use centralized pooled DB connections.")
 
 # Проверка подключения
-conn = get_db_connection()
+with db_acquire_scope("bot_startup_connection_test"):
+    conn = get_db_connection()
 cursor = conn.cursor()
 cursor.execute("SELECT version();")
 db_version = cursor.fetchone()
@@ -1027,7 +967,9 @@ async def send_german_news(context: CallbackContext):
 
 # Используем контекстный менеджер для того чтобы Автоматически разрывает соединение закрывая курсор и соединения
 def initialise_database():
-    with get_db_connection() as connection:
+    with db_acquire_scope("bot_initialise_database"):
+        connection = get_db_connection()
+    try:
         with connection.cursor() as curr:
 
             # Table with user translations with 80 or more points
@@ -1262,7 +1204,9 @@ def initialise_database():
 
             """)
                          
-    connection.commit()
+        connection.commit()
+    finally:
+        connection.close()
 
     print("✅ Таблицы проверены и готовы к использованию.")
 
