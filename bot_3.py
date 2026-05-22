@@ -128,10 +128,13 @@ from backend.database import (
     upsert_dictionary_cache,
     save_webapp_dictionary_query,
     create_support_message,
+    get_dictionary_folders,
     get_or_create_dictionary_folder,
+    get_telegram_dictionary_folder_preference,
     record_telegram_system_message,
     get_pending_telegram_system_messages,
     mark_telegram_system_message_deleted,
+    set_telegram_dictionary_folder_preference,
     update_telegram_system_message_type,
     has_admin_scheduler_run,
     mark_admin_scheduler_run,
@@ -177,6 +180,17 @@ from backend.database import (
     record_image_quiz_answer,
     mark_image_quiz_answer_feedback_sent,
     list_top_weak_topics,
+    claim_next_ready_visual_riddle_template,
+    create_visual_riddle_dispatch,
+    mark_visual_riddle_dispatch_sent,
+    mark_visual_riddle_dispatch_failed,
+    get_visual_riddle_dispatch,
+    get_visual_riddle_template,
+    record_visual_riddle_answer,
+    mark_visual_riddle_answer_feedback_sent,
+    claim_or_create_visual_riddle_slot_template,
+    count_ready_visual_riddle_templates,
+    list_recent_visual_riddle_slot_assignments,
 )
 from backend.job_queue import (
     can_enqueue_background_jobs,
@@ -195,6 +209,11 @@ QUIZ_SCHEDULE_HOURS = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 2
 QUIZ_SCHEDULE_MINUTES = [0]
 QUIZ_SCHEDULE_TZ_NAME = (os.getenv("QUIZ_SCHEDULE_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
 QUIZ_IMAGE_SLOT_TIMES = {(9, 0), (12, 0), (18, 0)}
+VISUAL_RIDDLE_SLOT_TIMES = {(7, 30), (12, 30), (15, 30)}
+VISUAL_RIDDLE_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("VISUAL_RIDDLE_POOL_TOPUP_TRIGGER") or "5").strip() or "5"))
+VISUAL_RIDDLE_POOL_TOPUP_HOUR = max(0, min(23, int((os.getenv("VISUAL_RIDDLE_POOL_TOPUP_HOUR") or "6").strip() or "6")))
+VISUAL_RIDDLE_POOL_TOPUP_MINUTE = max(0, min(59, int((os.getenv("VISUAL_RIDDLE_POOL_TOPUP_MINUTE") or "15").strip() or "15")))
+VISUAL_RIDDLE_RECENCY_DAYS = max(1, int((os.getenv("VISUAL_RIDDLE_RECENCY_DAYS") or "7").strip() or "7"))
 QUIZ_FEEDBACK_TTL_SECONDS = 120
 QUIZ_CACHE_TTL_SECONDS = 60 * 60 * 24
 QUIZ_FREEFORM_OPTION = "keine korrekte Antworten"
@@ -233,6 +252,7 @@ pending_quiz_question_save_requests = {}
 pending_quiz_phrase_requests = {}
 pending_dictionary_cards = {}
 pending_dictionary_save_options = {}
+pending_dictionary_folder_create = {}
 pending_dictionary_lookup_requests = {}
 pending_dictionary_lookup_inflight = set()
 pending_feel_requests_inflight = set()
@@ -306,6 +326,20 @@ def _is_image_quiz_slot(slot_dt: datetime) -> bool:
     return (int(slot_dt.hour), int(slot_dt.minute)) in QUIZ_IMAGE_SLOT_TIMES
 
 
+def _is_visual_riddle_slot(slot_dt: datetime) -> bool:
+    return (int(slot_dt.hour), int(slot_dt.minute)) in VISUAL_RIDDLE_SLOT_TIMES
+
+
+def _visual_riddles_enabled() -> bool:
+    val = (os.getenv("VISUAL_RIDDLES_ENABLED") or "1").strip().lower()  # default: production ON
+    return val in ("1", "true", "yes", "on")
+
+
+def _visual_riddles_dry_run() -> bool:
+    val = (os.getenv("VISUAL_RIDDLES_DRY_RUN") or "0").strip().lower()  # default: real sends
+    return val in ("1", "true", "yes", "on")
+
+
 def _format_quiz_delivery_slot(slot_dt: datetime) -> str:
     return f"{int(slot_dt.hour):02d}:{int(slot_dt.minute):02d}"
 
@@ -359,6 +393,8 @@ QUIZ_FREEFORM_INPUT_TTL_SECONDS = 60 * 60 * 48
 PENDING_INPUT_STATE_QUIZ_FREEFORM = "quiz_freeform"
 PENDING_INPUT_STATE_LANGUAGE_TUTOR = "language_tutor_input"
 PENDING_INPUT_STATE_TTS_BUDGET_CUSTOM = "tts_budget_custom"
+PENDING_INPUT_STATE_DICTIONARY_FOLDER_CREATE = "dictionary_folder_create"
+DICTIONARY_FOLDER_CREATE_TTL_SECONDS = 60 * 10
 PENDING_INPUT_STATE_CLEANUP_INTERVAL_MINUTES = max(
     5,
     int((os.getenv("PENDING_INPUT_STATE_CLEANUP_INTERVAL_MINUTES") or "15").strip() or "15"),
@@ -4044,6 +4080,93 @@ async def handle_user_message(update: Update, context: CallbackContext):
             await update.message.reply_text(response_text, reply_markup=_build_tts_budget_keyboard())
             return
 
+    pending_folder_create = pending_dictionary_folder_create.get(int(user_id))
+    if not pending_folder_create:
+        restored_folder_create = _restore_active_pending_input_state(
+            int(user_id),
+            PENDING_INPUT_STATE_DICTIONARY_FOLDER_CREATE,
+        )
+        if restored_folder_create:
+            pending_folder_create = {
+                "option_key": str((restored_folder_create or {}).get("option_key") or "").strip(),
+                "source_lang": str((restored_folder_create or {}).get("source_lang") or "").strip().lower(),
+                "target_lang": str((restored_folder_create or {}).get("target_lang") or "").strip().lower(),
+                "message_chat_id": (restored_folder_create or {}).get("message_chat_id"),
+                "message_id": (restored_folder_create or {}).get("message_id"),
+                "started_at": float((restored_folder_create or {}).get("started_at") or 0.0),
+                "state_key": str((restored_folder_create or {}).get("state_key") or "").strip(),
+            }
+            pending_dictionary_folder_create[int(user_id)] = pending_folder_create
+    if pending_folder_create:
+        if update.effective_chat and update.effective_chat.type != "private":
+            await update.message.reply_text("Название папки отправьте в личку с ботом.")
+            return
+
+        started_at = float((pending_folder_create or {}).get("started_at") or 0.0)
+        state_key = str((pending_folder_create or {}).get("state_key") or f"dictfoldernew:{int(user_id)}").strip()
+        option_key = str((pending_folder_create or {}).get("option_key") or "").strip()
+        if started_at > 0 and (pytime.time() - started_at) > DICTIONARY_FOLDER_CREATE_TTL_SECONDS:
+            pending_dictionary_folder_create.pop(int(user_id), None)
+            _clear_pending_input_state(state_key=state_key, user_id=int(user_id))
+            await update.message.reply_text("Окно создания папки истекло. Нажмите `➕ Новая папка` ещё раз.", parse_mode="Markdown")
+            return
+
+        lowered = str(text or "").strip().lower()
+        if lowered in {"cancel", "/cancel", "отмена"}:
+            pending_dictionary_folder_create.pop(int(user_id), None)
+            _clear_pending_input_state(state_key=state_key, user_id=int(user_id))
+            await update.message.reply_text("Ок, отменил создание папки.")
+            return
+
+        folder_name = str(text or "").strip()
+        if not folder_name:
+            await update.message.reply_text("Нужно отправить название папки одним сообщением.")
+            return
+        if len(folder_name) > 80:
+            await update.message.reply_text("Название слишком длинное. Сделайте его короче 80 символов.")
+            return
+
+        source_lang = str((pending_folder_create or {}).get("source_lang") or "").strip().lower()
+        target_lang = str((pending_folder_create or {}).get("target_lang") or "").strip().lower()
+        try:
+            folder = get_or_create_dictionary_folder(
+                user_id=int(user_id),
+                name=folder_name,
+                color="#5ddcff",
+                icon="📁",
+            )
+            folder_payload = set_telegram_dictionary_folder_preference(
+                int(user_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                folder_id=int(folder.get("id")) if folder.get("id") is not None else None,
+            )
+        except Exception as exc:
+            logging.exception("❌ Ошибка создания папки словаря user_id=%s: %s", int(user_id), exc)
+            await update.message.reply_text("Не удалось создать папку. Попробуйте ещё раз.")
+            return
+
+        pending_dictionary_folder_create.pop(int(user_id), None)
+        _clear_pending_input_state(state_key=state_key, user_id=int(user_id))
+        updated_payload = _update_pending_dictionary_folder_payload(option_key, folder_payload)
+        if updated_payload:
+            message_chat_id = updated_payload.get("message_chat_id")
+            message_id = updated_payload.get("message_id")
+            if message_chat_id is not None and message_id is not None:
+                try:
+                    await context.bot.edit_message_reply_markup(
+                        chat_id=int(message_chat_id),
+                        message_id=int(message_id),
+                        reply_markup=_build_dictionary_save_keyboard_for_payload(option_key, updated_payload),
+                    )
+                except Exception:
+                    logging.debug("Failed to restore dictionary save keyboard after folder create", exc_info=True)
+        await update.message.reply_text(
+            f"✅ Папка «{str(folder_payload.get('name') or folder_name).strip()}» выбрана. Теперь можно нажать `Сохранить`.",
+            parse_mode="Markdown",
+        )
+        return
+
     pending = pending_quiz_freeform.get(user_id)
     if not pending:
         restored_freeform = _restore_active_pending_input_state(
@@ -4620,6 +4743,11 @@ def _rebuild_dictionary_save_options_payload_from_message(query, option_key: str
         "source_lang": source_lang,
         "target_lang": target_lang,
     }
+    folder_payload = _resolve_private_dictionary_save_folder(
+        user_id=user_id,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
     payload = {
         "user_id": user_id,
         "card_key": card_key,
@@ -4630,6 +4758,13 @@ def _rebuild_dictionary_save_options_payload_from_message(query, option_key: str
         "options": options,
         "selected": [],
         "question_request_key": question_request_key,
+        "keyboard_mode": "full",
+        "folder_id": folder_payload.get("folder_id"),
+        "folder_name": str(folder_payload.get("name") or "").strip(),
+        "folder_icon": str(folder_payload.get("icon") or "").strip(),
+        "folder_is_none": bool(folder_payload.get("is_none")),
+        "message_chat_id": int(message.chat_id) if getattr(message, "chat_id", None) is not None else None,
+        "message_id": int(message.message_id) if getattr(message, "message_id", None) is not None else None,
     }
     pending_dictionary_save_options[option_key] = payload
     if card_key and card_key not in pending_dictionary_cards:
@@ -4643,6 +4778,10 @@ def _rebuild_dictionary_save_options_payload_from_message(query, option_key: str
             "saved": False,
             "original_query": str(options[0].get("source") or "").strip(),
             "question_request_key": question_request_key,
+            "folder_id": folder_payload.get("folder_id"),
+            "folder_name": str(folder_payload.get("name") or "").strip(),
+            "folder_icon": str(folder_payload.get("icon") or "").strip(),
+            "folder_is_none": bool(folder_payload.get("is_none")),
         }
     return payload
 
@@ -4685,6 +4824,27 @@ def _normalize_dictionary_compare_key(text: str) -> str:
     normalized = re.sub(r"\s+", " ", normalized)
     normalized = normalized.strip(" \t\r\n.,!?;:()[]{}\"'«»")
     return normalized.casefold()
+
+
+def _normalize_dictionary_lookup_input(text: str) -> str:
+    cleaned = str(text or "").replace("\u00a0", " ").strip()
+    if not cleaned:
+        return ""
+    cleaned = cleaned.replace("…", "...")
+    cleaned = re.sub(r"(?<=\S)\s*(?:\.{3,})\s*(?=\S)", " ", cleaned)
+    cleaned = re.sub(r"\s*\+\s*", " + ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = cleaned.strip(" \t\r\n-–—")
+    return cleaned
+
+
+def _looks_like_noisy_dictionary_construction(text: str) -> bool:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return False
+    if "..." in cleaned or "…" in cleaned:
+        return True
+    return bool(re.search(r"\+\s*(?:Nominativ|Akkusativ|Dativ|Genitiv)\b", cleaned, flags=re.IGNORECASE))
 
 
 def _looks_like_target_language(text: str, target_lang: str) -> bool:
@@ -5385,6 +5545,46 @@ def _store_pending_dictionary_card(
     return key
 
 
+def _format_dictionary_folder_button_label(folder_payload: dict | None) -> str:
+    payload = folder_payload if isinstance(folder_payload, dict) else {}
+    if payload.get("is_none"):
+        return "📁 Без папки"
+    name = str(payload.get("name") or "").strip() or "GENERAL"
+    if len(name) > 22:
+        name = name[:19].rstrip() + "..."
+    return f"📁 {name}"
+
+
+def _resolve_private_dictionary_save_folder(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+) -> dict:
+    preference = get_telegram_dictionary_folder_preference(
+        int(user_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    if preference:
+        return preference
+    default_folder = get_or_create_dictionary_folder(
+        user_id=int(user_id),
+        name="GENERAL",
+        color="#7d8590",
+        icon="📁",
+    )
+    return {
+        "folder_id": int(default_folder.get("id")) if default_folder.get("id") is not None else None,
+        "name": str(default_folder.get("name") or "").strip() or "GENERAL",
+        "color": default_folder.get("color"),
+        "icon": default_folder.get("icon") or "📁",
+        "source_lang": str(source_lang or "").strip().lower(),
+        "target_lang": str(target_lang or "").strip().lower(),
+        "is_none": False,
+    }
+
+
 def _store_pending_dictionary_save_options(
     user_id: int,
     card_key: str,
@@ -5393,11 +5593,18 @@ def _store_pending_dictionary_save_options(
     source_lang: str,
     target_lang: str,
     question_request_key: str = "",
+    keyboard_mode: str = "full",
+    folder_payload: dict | None = None,
 ) -> str:
     direction = f"{source_lang}-{target_lang}"
     key = hashlib.sha1(
         f"{user_id}:{card_key}:{datetime.utcnow().isoformat()}".encode("utf-8")
     ).hexdigest()[:20]
+    resolved_folder_payload = folder_payload if isinstance(folder_payload, dict) else _resolve_private_dictionary_save_folder(
+        user_id=int(user_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
     pending_dictionary_save_options[key] = {
         "user_id": user_id,
         "card_key": card_key,
@@ -5408,6 +5615,11 @@ def _store_pending_dictionary_save_options(
         "options": options[:3],
         "selected": [],
         "question_request_key": str(question_request_key or "").strip(),
+        "keyboard_mode": str(keyboard_mode or "full").strip().lower() or "full",
+        "folder_id": resolved_folder_payload.get("folder_id"),
+        "folder_name": str(resolved_folder_payload.get("name") or "").strip(),
+        "folder_icon": str(resolved_folder_payload.get("icon") or "").strip(),
+        "folder_is_none": bool(resolved_folder_payload.get("is_none")),
     }
     if len(pending_dictionary_save_options) > 500:
         oldest_key = next(iter(pending_dictionary_save_options))
@@ -5415,11 +5627,96 @@ def _store_pending_dictionary_save_options(
     return key
 
 
+def _build_dictionary_folder_picker_keyboard(
+    option_key: str,
+    *,
+    folders: list[dict],
+    selected_folder_id: int | None,
+    selected_is_none: bool,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    general_mark = "✅" if (not selected_is_none and selected_folder_id is not None and any(int(item.get("id") or 0) == int(selected_folder_id) and str(item.get("name") or "").strip().casefold() == "general" for item in folders if item.get("id") is not None)) else ""
+    rows.append([InlineKeyboardButton(f"{general_mark} 📁 GENERAL".strip(), callback_data=f"dictfolderpick:{option_key}:general")])
+    none_mark = "✅" if selected_is_none else ""
+    rows.append([InlineKeyboardButton(f"{none_mark} 📂 Без папки".strip(), callback_data=f"dictfolderpick:{option_key}:none")])
+
+    folder_buttons: list[InlineKeyboardButton] = []
+    for folder in folders[:24]:
+        folder_id = int(folder.get("id") or 0)
+        if folder_id <= 0:
+            continue
+        name = str(folder.get("name") or "").strip() or "Без названия"
+        icon = str(folder.get("icon") or "📁").strip() or "📁"
+        mark = "✅ " if (not selected_is_none and selected_folder_id is not None and int(selected_folder_id) == folder_id) else ""
+        label = f"{mark}{icon} {name}"
+        if len(label) > 30:
+            label = label[:27].rstrip() + "..."
+        folder_buttons.append(InlineKeyboardButton(label, callback_data=f"dictfolderpick:{option_key}:{folder_id}"))
+    for index in range(0, len(folder_buttons), 2):
+        rows.append(folder_buttons[index:index + 2])
+
+    rows.append([InlineKeyboardButton("➕ Новая папка", callback_data=f"dictfoldernew:{option_key}")])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"dictfolderback:{option_key}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _build_dictionary_save_keyboard_for_payload(
+    option_key: str,
+    payload: dict,
+) -> InlineKeyboardMarkup:
+    options = payload.get("options") or []
+    folder_payload = {
+        "folder_id": payload.get("folder_id"),
+        "name": payload.get("folder_name"),
+        "icon": payload.get("folder_icon"),
+        "is_none": bool(payload.get("folder_is_none")),
+    }
+    folder_button = [InlineKeyboardButton(_format_dictionary_folder_button_label(folder_payload), callback_data=f"dictfolder:{option_key}")]
+    keyboard_mode = str(payload.get("keyboard_mode") or "full").strip().lower()
+    if keyboard_mode == "quick":
+        rows: list[list[InlineKeyboardButton]] = [folder_button]
+        if options:
+            rows.append([InlineKeyboardButton("✅ Сохранить 1", callback_data=f"dictquicksave:{option_key}:0")])
+        if len(options) >= 2:
+            rows.append([InlineKeyboardButton("✅ Сохранить 2", callback_data=f"dictquicksave:{option_key}:1")])
+            rows.append([InlineKeyboardButton("✅ Сохранить оба", callback_data=f"dictquicksave:{option_key}:all")])
+        return InlineKeyboardMarkup(rows)
+
+    selected_set = set(int(item) for item in (payload.get("selected") or []) if isinstance(item, int) or str(item).isdigit())
+    feel_card_key = str(payload.get("feel_card_key") or payload.get("card_key") or "").strip() or None
+    speak_card_key = str(payload.get("speak_card_key") or payload.get("card_key") or "").strip() or None
+    question_request_key = str(payload.get("question_request_key") or "").strip() or None
+
+    rows = []
+    for idx, _opt in enumerate(options[:3], start=1):
+        mark = "✅" if (idx - 1) in selected_set else "☐"
+        rows.append([InlineKeyboardButton(f"{mark} Вариант {idx}", callback_data=f"dictseltoggle:{option_key}:{idx-1}")])
+    rows.append([InlineKeyboardButton("✅ Сохранить выбранные", callback_data=f"dictsaveconfirm:{option_key}")])
+    rows.append([InlineKeyboardButton("☑️ Выбрать все", callback_data=f"dictselall:{option_key}")])
+    rows.append(folder_button)
+    if speak_card_key:
+        rows.append([InlineKeyboardButton("🔊 Прослушать", callback_data=f"dictspeak:{speak_card_key}")])
+    if feel_card_key:
+        rows.append([InlineKeyboardButton("📌 Почувствовать слово", callback_data=f"dictfeel:{feel_card_key}")])
+    if question_request_key:
+        rows.append([InlineKeyboardButton("❓ Задать свой вопрос", callback_data=f"quizask:{question_request_key}")])
+    return InlineKeyboardMarkup(rows)
+
+
 def _resolve_default_dictionary_option(payload: dict) -> dict:
     lookup = payload.get("lookup") or {}
     source_text = (payload.get("source_text") or lookup.get("word_source") or "").strip()
     source = (lookup.get("word_source") or source_text).strip()
     target = (lookup.get("word_target") or "").strip()
+    if _looks_like_noisy_dictionary_construction(source):
+        preferred = lookup.get("save_worthy_options") if isinstance(lookup.get("save_worthy_options"), list) else []
+        if preferred and isinstance(preferred[0], dict):
+            preferred_source = str(preferred[0].get("source") or "").strip()
+            preferred_target = str(preferred[0].get("target") or "").strip()
+            if preferred_source:
+                source = preferred_source
+            if preferred_target:
+                target = preferred_target
     return {"source": source, "target": target}
 
 
@@ -5431,20 +5728,17 @@ def _build_save_variant_keyboard(
     speak_card_key: str | None = None,
     question_request_key: str | None = None,
 ) -> InlineKeyboardMarkup:
-    selected_set = set(int(item) for item in (selected or []) if isinstance(item, int) or str(item).isdigit())
-    rows = []
-    for idx, _opt in enumerate(options[:3], start=1):
-        mark = "✅" if (idx - 1) in selected_set else "☐"
-        rows.append([InlineKeyboardButton(f"{mark} Вариант {idx}", callback_data=f"dictseltoggle:{option_key}:{idx-1}")])
-    rows.append([InlineKeyboardButton("✅ Сохранить выбранные", callback_data=f"dictsaveconfirm:{option_key}")])
-    rows.append([InlineKeyboardButton("☑️ Выбрать все", callback_data=f"dictselall:{option_key}")])
-    if speak_card_key:
-        rows.append([InlineKeyboardButton("🔊 Прослушать", callback_data=f"dictspeak:{speak_card_key}")])
-    if feel_card_key:
-        rows.append([InlineKeyboardButton("📌 Почувствовать слово", callback_data=f"dictfeel:{feel_card_key}")])
-    if question_request_key:
-        rows.append([InlineKeyboardButton("❓ Задать свой вопрос", callback_data=f"quizask:{question_request_key}")])
-    return InlineKeyboardMarkup(rows)
+    payload = pending_dictionary_save_options.get(option_key) or {}
+    payload = {
+        **payload,
+        "options": options[:3],
+        "selected": list(selected or []),
+        "feel_card_key": feel_card_key,
+        "speak_card_key": speak_card_key,
+        "question_request_key": str(question_request_key or "").strip(),
+        "keyboard_mode": "full",
+    }
+    return _build_dictionary_save_keyboard_for_payload(option_key, payload)
 
 
 def _build_save_variants_text(source_lang: str, target_lang: str, options: list[dict]) -> str:
@@ -5492,13 +5786,13 @@ def _build_quick_dictionary_result_text(
 
 
 def _build_quick_dictionary_save_keyboard(option_key: str, options: list[dict]) -> InlineKeyboardMarkup:
-    rows: list[list[InlineKeyboardButton]] = []
-    if options:
-        rows.append([InlineKeyboardButton("✅ Сохранить 1", callback_data=f"dictquicksave:{option_key}:0")])
-    if len(options) >= 2:
-        rows.append([InlineKeyboardButton("✅ Сохранить 2", callback_data=f"dictquicksave:{option_key}:1")])
-        rows.append([InlineKeyboardButton("✅ Сохранить оба", callback_data=f"dictquicksave:{option_key}:all")])
-    return InlineKeyboardMarkup(rows)
+    payload = pending_dictionary_save_options.get(option_key) or {}
+    payload = {
+        **payload,
+        "options": options[:3],
+        "keyboard_mode": "quick",
+    }
+    return _build_dictionary_save_keyboard_for_payload(option_key, payload)
 
 
 def _format_flashcard_feel_html_for_bot(feel_text: str) -> str:
@@ -6169,6 +6463,14 @@ async def _send_dictionary_lookup_result(
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
+    option_payload = pending_dictionary_save_options.get(prepared["option_key"])
+    if isinstance(option_payload, dict):
+        option_payload["message_chat_id"] = int(msg.chat_id)
+        option_payload["message_id"] = int(msg.message_id)
+        option_payload["feel_card_key"] = prepared["card_key"]
+        option_payload["speak_card_key"] = prepared["card_key"]
+        option_payload["question_request_key"] = prepared["question_request_key"]
+        pending_dictionary_save_options[prepared["option_key"]] = option_payload
     add_service_msg_id(context, msg.message_id)
 
 
@@ -6180,12 +6482,17 @@ async def _prepare_dictionary_lookup_response(
     target_lang: str,
     max_options: int = 3,
 ) -> dict:
-    lookup = await _run_dictionary_lookup_for_pair(lookup_input, source_lang, target_lang)
+    normalized_lookup_input = _normalize_dictionary_lookup_input(lookup_input)
+    lookup = await _run_dictionary_lookup_for_pair(
+        normalized_lookup_input or lookup_input,
+        source_lang,
+        target_lang,
+    )
     if not isinstance(lookup, dict):
         raise ValueError("lookup result is not a dict")
 
     lookup["original_query"] = str(lookup.get("original_query") or lookup_input).strip()
-    source_text = (lookup.get("word_source") or lookup_input).strip()
+    source_text = (lookup.get("word_source") or normalized_lookup_input or lookup_input).strip()
     card_key = _store_pending_dictionary_card(
         int(user_id),
         source_lang,
@@ -6225,6 +6532,11 @@ async def _prepare_dictionary_lookup_response(
 
     trimmed_options = [item for item in (options or []) if isinstance(item, dict)]
     trimmed_options = trimmed_options[: max(1, int(max_options or 1))]
+    folder_payload = _resolve_private_dictionary_save_folder(
+        user_id=int(user_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
     option_key = _store_pending_dictionary_save_options(
         user_id=int(user_id),
         card_key=card_key,
@@ -6233,7 +6545,16 @@ async def _prepare_dictionary_lookup_response(
         source_lang=source_lang,
         target_lang=target_lang,
         question_request_key=question_request_key,
+        keyboard_mode="full",
+        folder_payload=folder_payload,
     )
+    card_payload = pending_dictionary_cards.get(card_key)
+    if isinstance(card_payload, dict):
+        card_payload["folder_id"] = folder_payload.get("folder_id")
+        card_payload["folder_name"] = folder_payload.get("name")
+        card_payload["folder_icon"] = folder_payload.get("icon")
+        card_payload["folder_is_none"] = bool(folder_payload.get("is_none"))
+        pending_dictionary_cards[card_key] = card_payload
     return {
         "lookup": lookup,
         "source_text": source_text,
@@ -6241,6 +6562,7 @@ async def _prepare_dictionary_lookup_response(
         "question_request_key": question_request_key,
         "options": trimmed_options,
         "option_key": option_key,
+        "folder_payload": folder_payload,
     }
 
 
@@ -6290,6 +6612,12 @@ async def _send_dictionary_lookup_quick_result(
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
+    option_payload = pending_dictionary_save_options.get(prepared["option_key"])
+    if isinstance(option_payload, dict):
+        option_payload["message_chat_id"] = int(msg.chat_id)
+        option_payload["message_id"] = int(msg.message_id)
+        option_payload["keyboard_mode"] = "quick"
+        pending_dictionary_save_options[prepared["option_key"]] = option_payload
     add_service_msg_id(context, msg.message_id)
 
 
@@ -7216,6 +7544,13 @@ async def handle_dictionary_save_callback(update: Update, context: CallbackConte
         source_lang=source_lang,
         target_lang=target_lang,
         question_request_key=str(payload.get("question_request_key") or "").strip(),
+        keyboard_mode="full",
+        folder_payload={
+            "folder_id": payload.get("folder_id"),
+            "name": payload.get("folder_name"),
+            "icon": payload.get("folder_icon"),
+            "is_none": bool(payload.get("folder_is_none")),
+        },
     )
     variants_text = _build_save_variants_text(source_lang, target_lang, options)
     keyboard = _build_save_variant_keyboard(
@@ -7231,7 +7566,15 @@ async def handle_dictionary_save_callback(update: Update, context: CallbackConte
     except Exception:
         pass
     await query.answer("Выберите вариант")
-    await query.message.reply_text(variants_text, reply_markup=keyboard)
+    msg = await query.message.reply_text(variants_text, reply_markup=keyboard)
+    option_payload = pending_dictionary_save_options.get(option_key)
+    if isinstance(option_payload, dict):
+        option_payload["message_chat_id"] = int(msg.chat_id)
+        option_payload["message_id"] = int(msg.message_id)
+        option_payload["feel_card_key"] = key
+        option_payload["speak_card_key"] = key
+        option_payload["question_request_key"] = str(payload.get("question_request_key") or "").strip()
+        pending_dictionary_save_options[option_key] = option_payload
 
 
 async def handle_dictionary_save_option_callback(update: Update, context: CallbackContext) -> None:
@@ -7345,13 +7688,12 @@ def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) 
 
     try:
         try:
-            default_folder = get_or_create_dictionary_folder(
-                user_id=user_id,
-                name="GENERAL",
-                color="#7d8590",
-                icon="📁",
+            folder_pref = _resolve_private_dictionary_save_folder(
+                user_id=int(user_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
             )
-            folder_id = default_folder.get("id")
+            folder_id = folder_pref.get("folder_id")
         except Exception:
             folder_id = None
 
@@ -7598,6 +7940,205 @@ async def handle_dictionary_quick_save_callback(update: Update, context: Callbac
         await query.message.reply_text("✅ Сохранён вариант:\n" + saved_lines[0])
     else:
         await query.message.reply_text("✅ Сохранены варианты:\n" + "\n".join(saved_lines))
+
+
+def _update_pending_dictionary_folder_payload(
+    option_key: str,
+    folder_payload: dict,
+) -> dict | None:
+    payload = pending_dictionary_save_options.get(option_key)
+    if not isinstance(payload, dict):
+        return None
+    payload["folder_id"] = folder_payload.get("folder_id")
+    payload["folder_name"] = str(folder_payload.get("name") or "").strip()
+    payload["folder_icon"] = str(folder_payload.get("icon") or "").strip()
+    payload["folder_is_none"] = bool(folder_payload.get("is_none"))
+    pending_dictionary_save_options[option_key] = payload
+    card_key = str(payload.get("card_key") or "").strip()
+    if card_key:
+        card_payload = pending_dictionary_cards.get(card_key)
+        if isinstance(card_payload, dict):
+            card_payload["folder_id"] = folder_payload.get("folder_id")
+            card_payload["folder_name"] = str(folder_payload.get("name") or "").strip()
+            card_payload["folder_icon"] = str(folder_payload.get("icon") or "").strip()
+            card_payload["folder_is_none"] = bool(folder_payload.get("is_none"))
+            pending_dictionary_cards[card_key] = card_payload
+    return payload
+
+
+async def handle_dictionary_folder_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    data = str(query.data or "").strip()
+    parts = data.split(":")
+    if len(parts) != 2:
+        await query.answer("Неверный формат кнопки.", show_alert=True)
+        return
+    option_key = parts[1].strip()
+    payload = pending_dictionary_save_options.get(option_key)
+    if not payload:
+        payload = _rebuild_dictionary_save_options_payload_from_message(query, option_key)
+    if not payload:
+        await query.answer("Варианты устарели. Запросите перевод снова.", show_alert=True)
+        return
+    user = query.from_user
+    if not user or int(payload.get("user_id", 0)) != int(user.id):
+        await query.answer("Доступно только автору карточки.", show_alert=True)
+        return
+
+    try:
+        folders = get_dictionary_folders(int(user.id))
+    except Exception as exc:
+        logging.exception("❌ Ошибка загрузки папок для словаря user_id=%s: %s", int(user.id), exc)
+        await query.answer("Не удалось загрузить папки.", show_alert=True)
+        return
+
+    keyboard = _build_dictionary_folder_picker_keyboard(
+        option_key,
+        folders=folders,
+        selected_folder_id=int(payload.get("folder_id")) if payload.get("folder_id") is not None else None,
+        selected_is_none=bool(payload.get("folder_is_none")),
+    )
+    try:
+        await query.edit_message_reply_markup(reply_markup=keyboard)
+    except Exception:
+        pass
+    await query.answer("Выберите папку")
+
+
+async def handle_dictionary_folder_back_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    data = str(query.data or "").strip()
+    parts = data.split(":")
+    if len(parts) != 2:
+        await query.answer("Неверный формат кнопки.", show_alert=True)
+        return
+    option_key = parts[1].strip()
+    payload = pending_dictionary_save_options.get(option_key)
+    if not payload:
+        await query.answer("Карточка уже устарела.", show_alert=True)
+        return
+    try:
+        await query.edit_message_reply_markup(reply_markup=_build_dictionary_save_keyboard_for_payload(option_key, payload))
+    except Exception:
+        pass
+    await query.answer("Возвращаю сохранение")
+
+
+async def handle_dictionary_folder_pick_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    data = str(query.data or "").strip()
+    parts = data.split(":")
+    if len(parts) != 3:
+        await query.answer("Неверный формат кнопки.", show_alert=True)
+        return
+    option_key = parts[1].strip()
+    selector = parts[2].strip()
+    payload = pending_dictionary_save_options.get(option_key)
+    if not payload:
+        await query.answer("Карточка уже устарела.", show_alert=True)
+        return
+    user = query.from_user
+    if not user or int(payload.get("user_id", 0)) != int(user.id):
+        await query.answer("Доступно только автору карточки.", show_alert=True)
+        return
+
+    source_lang = str(payload.get("source_lang") or "").strip().lower()
+    target_lang = str(payload.get("target_lang") or "").strip().lower()
+    try:
+        if selector == "general":
+            default_folder = get_or_create_dictionary_folder(
+                user_id=int(user.id),
+                name="GENERAL",
+                color="#7d8590",
+                icon="📁",
+            )
+            folder_payload = set_telegram_dictionary_folder_preference(
+                int(user.id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                folder_id=int(default_folder.get("id")),
+            )
+        elif selector == "none":
+            folder_payload = set_telegram_dictionary_folder_preference(
+                int(user.id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                folder_id=None,
+            )
+        else:
+            folder_payload = set_telegram_dictionary_folder_preference(
+                int(user.id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                folder_id=int(selector),
+            )
+    except Exception as exc:
+        logging.exception("❌ Ошибка выбора папки словаря user_id=%s: %s", int(user.id), exc)
+        await query.answer("Не удалось выбрать папку.", show_alert=True)
+        return
+
+    updated_payload = _update_pending_dictionary_folder_payload(option_key, folder_payload)
+    if not updated_payload:
+        await query.answer("Карточка уже устарела.", show_alert=True)
+        return
+    try:
+        await query.edit_message_reply_markup(reply_markup=_build_dictionary_save_keyboard_for_payload(option_key, updated_payload))
+    except Exception:
+        pass
+    await query.answer(f"Папка: {str(folder_payload.get('name') or 'Без папки').strip()}")
+
+
+async def handle_dictionary_folder_new_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    data = str(query.data or "").strip()
+    parts = data.split(":")
+    if len(parts) != 2:
+        await query.answer("Неверный формат кнопки.", show_alert=True)
+        return
+    option_key = parts[1].strip()
+    payload = pending_dictionary_save_options.get(option_key)
+    if not payload:
+        await query.answer("Карточка уже устарела.", show_alert=True)
+        return
+    user = query.from_user
+    if not user or int(payload.get("user_id", 0)) != int(user.id):
+        await query.answer("Доступно только автору карточки.", show_alert=True)
+        return
+
+    state_key = f"dictfoldernew:{int(user.id)}:{option_key}"
+    pending_payload = {
+        "option_key": option_key,
+        "source_lang": str(payload.get("source_lang") or "").strip().lower(),
+        "target_lang": str(payload.get("target_lang") or "").strip().lower(),
+        "message_chat_id": int(payload.get("message_chat_id")) if payload.get("message_chat_id") is not None else (int(query.message.chat_id) if query.message else None),
+        "message_id": int(payload.get("message_id")) if payload.get("message_id") is not None else (int(query.message.message_id) if query.message else None),
+        "started_at": pytime.time(),
+        "state_key": state_key,
+    }
+    pending_dictionary_folder_create[int(user.id)] = pending_payload
+    _store_pending_input_state(
+        state_key=state_key,
+        user_id=int(user.id),
+        state_type=PENDING_INPUT_STATE_DICTIONARY_FOLDER_CREATE,
+        payload=pending_payload,
+        ttl_seconds=DICTIONARY_FOLDER_CREATE_TTL_SECONDS,
+    )
+    try:
+        await query.answer("Жду название папки")
+    except Exception:
+        pass
+    await query.message.reply_text(
+        "📁 Напишите названием одним сообщением новую папку для словаря.\n\n"
+        "Если передумали, напишите: отмена"
+    )
 
 
 async def delete_message_with_retry(bot, chat_id, message_id, retries=3, delay=2):
@@ -13168,6 +13709,433 @@ def _build_image_quiz_caption(template: dict, answer_options: list[str]) -> str:
     return _truncate_telegram_reply_text("\n".join(lines), max_chars=900)
 
 
+_VR_ANSWER_LABELS = ["A", "B", "C", "D"]
+
+
+def _build_visual_riddle_button_label(option_index: int) -> str:
+    if 0 <= option_index < len(_VR_ANSWER_LABELS):
+        return _VR_ANSWER_LABELS[option_index]
+    return str(option_index + 1)
+
+
+def _shuffle_visual_riddle_answers(
+    answers: list[dict],
+    correct_answer_id: str,
+    seed: int,
+) -> tuple[list[dict], str]:
+    """Deterministically shuffle answer dicts and return (shuffled, new_correct_answer_id).
+
+    The answer dicts retain their original id field; correct_answer_id is the id value
+    (A/B/C/D) of the correct answer in the SHUFFLED list.
+    """
+    rng = random.Random(seed)
+    shuffled = list(answers)
+    rng.shuffle(shuffled)
+    correct_id_upper = str(correct_answer_id or "A").strip().upper()
+    new_correct_id = _VR_ANSWER_LABELS[0]
+    for i, a in enumerate(shuffled):
+        if str(a.get("id") or "").strip().upper() == correct_id_upper:
+            new_correct_id = _VR_ANSWER_LABELS[i] if i < len(_VR_ANSWER_LABELS) else _VR_ANSWER_LABELS[0]
+            break
+    return shuffled, new_correct_id
+
+
+def _build_visual_riddle_keyboard(dispatch_id: int, shuffled_answers: list[dict]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    current_row: list[InlineKeyboardButton] = []
+    for idx, _answer in enumerate(shuffled_answers[:4]):
+        current_row.append(
+            InlineKeyboardButton(
+                _build_visual_riddle_button_label(idx),
+                callback_data=f"vr:{int(dispatch_id)}:{int(idx)}",
+            )
+        )
+        if len(current_row) == 2:
+            rows.append(current_row)
+            current_row = []
+    if current_row:
+        rows.append(current_row)
+    return InlineKeyboardMarkup(rows)
+
+
+def _build_visual_riddle_caption(template: dict, shuffled_answers: list[dict]) -> str:
+    caption = str(template.get("telegram_caption") or "").strip()
+    question = str(template.get("question_text") or "").strip()
+    lines: list[str] = []
+    if caption:
+        lines.append(caption)
+        lines.append("")
+    lines.append(question or "Was passt zum Bild?")
+    option_lines = []
+    for idx, answer in enumerate(shuffled_answers[:4]):
+        text = str(answer.get("text") or "").strip()
+        if text:
+            option_lines.append(f"{_build_visual_riddle_button_label(idx)}. {text}")
+    if option_lines:
+        lines.append("")
+        lines.extend(option_lines)
+    return "\n".join(lines)
+
+
+async def send_visual_riddle_template_to_chat(
+    context: CallbackContext,
+    *,
+    template_id: int,
+    chat_id: int,
+    target_user_id: int,
+    delivery_slot: str,
+    delivery_date_local,
+) -> bool:
+    """Load a ready visual riddle template and send it to the given chat.
+
+    Creates a dispatch row, sends the photo with inline keyboard, then marks dispatch sent.
+    Returns True on success.
+    """
+    try:
+        template = await asyncio.to_thread(get_visual_riddle_template, int(template_id))
+    except Exception:
+        logging.warning(
+            "vr_send: failed to load template template_id=%s chat_id=%s",
+            template_id, chat_id, exc_info=True,
+        )
+        return False
+
+    if not template:
+        logging.warning("vr_send: template not found template_id=%s chat_id=%s", template_id, chat_id)
+        return False
+
+    gen_status = str(template.get("generation_status") or "").strip()
+    if gen_status != "ready":
+        logging.warning(
+            "vr_send: template not ready template_id=%s status=%s chat_id=%s",
+            template_id, gen_status, chat_id,
+        )
+        return False
+
+    image_url = str(template.get("image_url") or "").strip()
+    if not image_url:
+        logging.warning("vr_send: template has no image_url template_id=%s", template_id)
+        return False
+
+    answers = list(template.get("answers") or [])
+    correct_answer_id = str(template.get("correct_answer_id") or "A").strip().upper()
+
+    dispatch = None
+    try:
+        dispatch = await asyncio.to_thread(
+            create_visual_riddle_dispatch,
+            template_id=int(template_id),
+            target_user_id=int(target_user_id),
+            chat_id=int(chat_id),
+            delivery_slot=delivery_slot,
+            delivery_date_local=delivery_date_local,
+        )
+    except Exception:
+        logging.warning(
+            "vr_send: failed to create dispatch template_id=%s chat_id=%s slot=%s date=%s",
+            template_id, chat_id, delivery_slot, delivery_date_local, exc_info=True,
+        )
+        return False
+
+    if not dispatch or not dispatch.get("id"):
+        logging.warning(
+            "vr_send: dispatch not created template_id=%s chat_id=%s", template_id, chat_id,
+        )
+        return False
+
+    dispatch_id = int(dispatch["id"])
+    dispatch_status = str(dispatch.get("status") or "").strip()
+
+    if dispatch_status != "claimed":
+        logging.info(
+            "visual_riddle_dispatch_duplicate_prevented template_id=%s chat_id=%s "
+            "slot=%s date=%s dispatch_id=%s existing_status=%s",
+            template_id, chat_id, delivery_slot, delivery_date_local,
+            dispatch_id, dispatch_status,
+        )
+        return False
+
+    logging.info(
+        "visual_riddle_dispatch_begin template_id=%s dispatch_id=%s chat_id=%s "
+        "user_id=%s slot=%s date=%s",
+        template_id, dispatch_id, chat_id, target_user_id, delivery_slot, delivery_date_local,
+    )
+
+    if _visual_riddles_dry_run():
+        logging.info(
+            "visual_riddle_dry_run_send_skipped template_id=%s dispatch_id=%s chat_id=%s slot=%s",
+            template_id, dispatch_id, chat_id, delivery_slot,
+        )
+        return True
+
+    shuffled_answers, _ = _shuffle_visual_riddle_answers(answers, correct_answer_id, dispatch_id)
+
+    try:
+        photo_message = await context.bot.send_photo(
+            chat_id=int(chat_id),
+            photo=image_url,
+            caption=_build_visual_riddle_caption(template, shuffled_answers),
+            reply_markup=_build_visual_riddle_keyboard(dispatch_id, shuffled_answers),
+        )
+    except Exception as exc:
+        try:
+            await asyncio.to_thread(
+                mark_visual_riddle_dispatch_failed,
+                dispatch_id,
+                failure_reason=str(exc)[:500],
+            )
+        except Exception:
+            logging.warning("vr_send: could not mark dispatch failed dispatch_id=%s", dispatch_id, exc_info=True)
+        logging.warning(
+            "visual_riddle_dispatch_failed template_id=%s dispatch_id=%s chat_id=%s slot=%s: %s",
+            template_id, dispatch_id, chat_id, delivery_slot, exc,
+        )
+        return False
+
+    import datetime as _dt
+    try:
+        await asyncio.to_thread(
+            mark_visual_riddle_dispatch_sent,
+            dispatch_id,
+            telegram_message_id=int(photo_message.message_id),
+            sent_at=_dt.datetime.now(_dt.timezone.utc),
+        )
+    except Exception:
+        logging.warning(
+            "vr_send: could not mark dispatch sent dispatch_id=%s template_id=%s",
+            dispatch_id, template_id, exc_info=True,
+        )
+
+    logging.info(
+        "visual_riddle_dispatch_sent template_id=%s dispatch_id=%s chat_id=%s user_id=%s slot=%s",
+        template_id, dispatch_id, chat_id, target_user_id, delivery_slot,
+    )
+    return True
+
+
+async def handle_visual_riddle_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user:
+        return
+    raw_data = str(query.data or "").strip()
+    match = re.match(r"^vr:(\d+):(\d+)$", raw_data)
+    if not match:
+        await query.answer("Riddle unavailable")
+        return
+
+    dispatch_id = int(match.group(1))
+    selected_index = int(match.group(2))
+
+    try:
+        dispatch = await asyncio.to_thread(get_visual_riddle_dispatch, dispatch_id)
+    except Exception:
+        logging.warning("vr_callback: failed to load dispatch id=%s", dispatch_id, exc_info=True)
+        dispatch = None
+    if not dispatch or str(dispatch.get("status") or "").strip().lower() != "sent":
+        await query.answer("Riddle unavailable")
+        return
+
+    try:
+        template = await asyncio.to_thread(get_visual_riddle_template, int(dispatch.get("template_id") or 0))
+    except Exception:
+        logging.warning(
+            "vr_callback: failed to load template dispatch_id=%s template_id=%s",
+            dispatch_id, dispatch.get("template_id"), exc_info=True,
+        )
+        template = None
+    if not template:
+        await query.answer("Riddle unavailable")
+        return
+
+    answers = list(template.get("answers") or [])
+    correct_answer_id = str(template.get("correct_answer_id") or "A").strip().upper()
+    shuffled_answers, correct_shuffled_id = _shuffle_visual_riddle_answers(answers, correct_answer_id, dispatch_id)
+
+    if selected_index < 0 or selected_index >= len(shuffled_answers):
+        await query.answer("Riddle unavailable")
+        return
+
+    selected_answer = shuffled_answers[selected_index]
+    selected_answer_id = _VR_ANSWER_LABELS[selected_index] if selected_index < len(_VR_ANSWER_LABELS) else "A"
+    is_correct = selected_answer_id == correct_shuffled_id
+
+    try:
+        answer_record = await asyncio.to_thread(
+            record_visual_riddle_answer,
+            dispatch_id=int(dispatch_id),
+            user_id=int(user.id),
+            selected_answer_id=selected_answer_id,
+            is_correct=bool(is_correct),
+        )
+    except Exception:
+        logging.warning(
+            "vr_callback: failed to record answer dispatch_id=%s user_id=%s",
+            dispatch_id, int(user.id), exc_info=True,
+        )
+        await query.answer("Riddle unavailable")
+        return
+
+    if not answer_record:
+        await query.answer("Riddle unavailable")
+        return
+
+    answer_created = bool(answer_record.get("created"))
+    feedback_already_sent = bool(answer_record.get("feedback_sent_at"))
+    stored_is_correct = bool(answer_record.get("is_correct")) if answer_record.get("is_correct") is not None else bool(is_correct)
+
+    short_explanation = str(template.get("short_explanation") or "").strip()
+    correct_text = str(next(
+        (a.get("text", "") for a in answers if str(a.get("id") or "").strip().upper() == correct_answer_id),
+        "",
+    ) or "").strip()
+
+    if stored_is_correct:
+        icon = "✅"
+        verdict = "Richtig!"
+    else:
+        icon = "❌"
+        verdict = f"Falsch. Richtig: {correct_text}" if correct_text else "Falsch."
+
+    if short_explanation:
+        alert_text = f"{icon} {verdict}\n\n{short_explanation}"
+    else:
+        alert_text = f"{icon} {verdict}"
+
+    if (not answer_created) and feedback_already_sent:
+        await query.answer(alert_text[:200], show_alert=True)
+        return
+
+    try:
+        await query.answer(alert_text[:200], show_alert=True)
+    except Exception:
+        logging.warning(
+            "vr_callback: failed to show alert dispatch_id=%s user_id=%s",
+            dispatch_id, int(user.id), exc_info=True,
+        )
+
+    if answer_created:
+        try:
+            await asyncio.to_thread(
+                mark_visual_riddle_answer_feedback_sent,
+                int(dispatch_id),
+                int(user.id),
+            )
+        except Exception:
+            logging.warning(
+                "vr_callback: could not mark feedback_sent dispatch_id=%s user_id=%s",
+                dispatch_id, int(user.id), exc_info=True,
+            )
+
+
+async def admin_riddle_send_command(update: Update, context: CallbackContext) -> None:
+    user = update.effective_user
+    chat = update.effective_chat
+    message = update.effective_message
+    if not user or not chat or not message:
+        return
+
+    logging.info(
+        "/admin_riddle_send invoked: user_id=%s chat_id=%s chat_type=%s",
+        int(user.id), int(chat.id), str(getattr(chat, "type", "") or ""),
+    )
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+
+    args = list(context.args or [])
+    explicit_template_id: int | None = None
+    if args:
+        try:
+            explicit_template_id = int(args[0])
+        except (ValueError, TypeError):
+            await message.reply_text("Usage: /admin_riddle_send [template_id]")
+            return
+
+    status_msg = await message.reply_text("Preparing visual riddle...")
+
+    template_id_to_send: int | None = None
+
+    if explicit_template_id is not None:
+        template_id_to_send = explicit_template_id
+    else:
+        try:
+            from backend.background_jobs import generate_and_prepare_single_visual_riddle
+            result = await asyncio.to_thread(generate_and_prepare_single_visual_riddle)
+            if result.get("status") == "ready" and result.get("template_id"):
+                template_id_to_send = int(result["template_id"])
+            else:
+                err = str(result.get("error") or "unknown error")
+                await status_msg.edit_text(f"Failed to generate riddle: {err}")
+                return
+        except Exception as exc:
+            logging.warning("/admin_riddle_send: generation failed user_id=%s: %s", int(user.id), exc, exc_info=True)
+            await status_msg.edit_text(f"Generation error: {exc}")
+            return
+
+    sent = await send_visual_riddle_template_to_chat(
+        context,
+        template_id=template_id_to_send,
+        chat_id=int(chat.id),
+        target_user_id=int(user.id),
+        delivery_slot=_build_manual_test_delivery_slot("manual_riddle"),
+        delivery_date_local=_get_quiz_schedule_now().date(),
+    )
+
+    try:
+        await status_msg.delete()
+    except Exception:
+        pass
+
+    if not sent:
+        await message.reply_text(f"Could not send riddle template_id={template_id_to_send}. Check logs.")
+
+
+async def admin_visual_riddle_health_command(update: Update, context: CallbackContext) -> None:
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    try:
+        from backend.background_jobs import get_visual_riddle_pool_health
+        health = await asyncio.to_thread(get_visual_riddle_pool_health)
+    except Exception as exc:
+        await message.reply_text(f"Health query failed: {exc}")
+        return
+    try:
+        recent_slots = await asyncio.to_thread(list_recent_visual_riddle_slot_assignments, limit=5)
+    except Exception:
+        recent_slots = []
+    enabled = _visual_riddles_enabled()
+    dry_run = _visual_riddles_dry_run()
+    lines = [
+        "Visual Riddle Health",
+        f"Enabled: {enabled} | Dry-run: {dry_run}",
+        "",
+        (
+            f"Pool: ready={health.get('ready')} pipeline={health.get('pipeline')} "
+            f"rendering={health.get('rendering')} failed={health.get('failed')}"
+        ),
+        f"Target: {health.get('pool_target')} | Topup trigger: {health.get('topup_trigger')}",
+    ]
+    if health.get("oldest_ready_age_hours") is not None:
+        lines.append(f"Oldest ready: {health['oldest_ready_age_hours']:.1f}h ago")
+    if health.get("latest_generation_at"):
+        lines.append(f"Last generated: {health['latest_generation_at']}")
+    if recent_slots:
+        lines.append("")
+        lines.append("Recent slot assignments:")
+        for s in recent_slots:
+            lines.append(
+                f"  {s.get('delivery_date_local')} {s.get('delivery_slot')} "
+                f"→ template #{s.get('template_id')}"
+            )
+    await message.reply_text("\n".join(lines))
+
+
 async def _send_image_quiz_for_target(
     context: CallbackContext,
     *,
@@ -13440,11 +14408,191 @@ def _build_manual_test_delivery_slot(prefix: str) -> str:
     return f"{prefix}_{now.strftime('%H%M%S')}"
 
 
+async def _maybe_topup_visual_riddle_pool() -> None:
+    from backend.job_queue import can_enqueue_background_jobs
+    if not can_enqueue_background_jobs():
+        return
+    try:
+        ready = await asyncio.to_thread(count_ready_visual_riddle_templates)
+        if int(ready or 0) < VISUAL_RIDDLE_POOL_TOPUP_TRIGGER:
+            from backend.background_jobs import prepare_visual_riddle_pool
+            result = await asyncio.to_thread(prepare_visual_riddle_pool, topup_limit=3)
+            logging.info(
+                "vr_pool_selfheal: triggered ready=%s trigger=%s result=%s",
+                ready, VISUAL_RIDDLE_POOL_TOPUP_TRIGGER, result,
+            )
+    except Exception:
+        logging.warning("vr_pool_selfheal: failed", exc_info=True)
+
+
+async def prepare_visual_riddle_pool_job(context: CallbackContext) -> None:
+    from backend.job_queue import can_enqueue_background_jobs
+    if not can_enqueue_background_jobs():
+        logging.info("vr_pool_topup: skipped (background jobs unavailable)")
+        return
+    try:
+        from backend.background_jobs import prepare_visual_riddle_pool
+        result = await asyncio.to_thread(prepare_visual_riddle_pool, topup_limit=3)
+        logging.info("vr_pool_topup: %s", result)
+    except Exception:
+        logging.warning("vr_pool_topup: failed", exc_info=True)
+
+
+async def _startup_visual_riddle_pool_check(context: CallbackContext) -> None:
+    from backend.job_queue import can_enqueue_background_jobs
+    enabled = _visual_riddles_enabled()
+    dry_run = _visual_riddles_dry_run()
+    prep_queue = (os.getenv("VISUAL_RIDDLE_PREP_QUEUE_NAME") or "riddle_prepare").strip()
+    render_queue = (os.getenv("VISUAL_RIDDLE_RENDER_QUEUE_NAME") or "riddle_render").strip()
+
+    logging.info(
+        "visual_riddle_system_enabled enabled=%s dry_run=%s",
+        enabled, dry_run,
+    )
+    logging.info(
+        "visual_riddle_worker_queues_ready prep_queue=%s render_queue=%s",
+        prep_queue, render_queue,
+    )
+
+    if not can_enqueue_background_jobs():
+        logging.warning(
+            "visual_riddle_startup_topup_begin skipped (background jobs unavailable)"
+        )
+        return
+
+    if not enabled:
+        logging.info("visual_riddle_startup_topup_begin skipped (VISUAL_RIDDLES_ENABLED=false)")
+        return
+
+    logging.info("visual_riddle_startup_topup_begin")
+    try:
+        ready = int((await asyncio.to_thread(count_ready_visual_riddle_templates)) or 0)
+        logging.info(
+            "visual_riddle_pool_status ready=%s target=%s topup_trigger=%s",
+            ready, VISUAL_RIDDLE_POOL_TARGET, VISUAL_RIDDLE_POOL_TOPUP_TRIGGER,
+        )
+
+        from backend.background_jobs import prepare_visual_riddle_pool
+
+        if ready == 0:
+            bootstrap_limit = max(
+                6,
+                int((os.getenv("VISUAL_RIDDLE_BOOTSTRAP_TOPUP_LIMIT") or "6").strip() or "6"),
+            )
+            logging.info(
+                "visual_riddle_bootstrap_begin ready=0 enqueuing=%s",
+                bootstrap_limit,
+            )
+            result = await asyncio.to_thread(prepare_visual_riddle_pool, topup_limit=bootstrap_limit)
+            logging.info("visual_riddle_bootstrap_end result=%s", result)
+        else:
+            result = await asyncio.to_thread(prepare_visual_riddle_pool, topup_limit=3)
+            logging.info("visual_riddle_startup_topup_end result=%s", result)
+    except Exception:
+        logging.warning("visual_riddle_startup_topup_end failed", exc_info=True)
+
+
+async def _send_scheduled_visual_riddles(
+    context: CallbackContext,
+    *,
+    delivery_slot: str,
+    delivery_date_local,
+) -> None:
+    if not _visual_riddles_enabled():
+        logging.info(
+            "visual_riddle_slot_triggered slot=%s date=%s enabled=False",
+            delivery_slot, delivery_date_local,
+        )
+        return
+
+    logging.info(
+        "visual_riddle_slot_triggered slot=%s date=%s",
+        delivery_slot, delivery_date_local,
+    )
+
+    slot_assignment = None
+    try:
+        slot_assignment = await asyncio.to_thread(
+            claim_or_create_visual_riddle_slot_template,
+            delivery_date_local=delivery_date_local,
+            delivery_slot=delivery_slot,
+            recency_days=VISUAL_RIDDLE_RECENCY_DAYS,
+        )
+    except Exception:
+        logging.warning(
+            "vr_scheduled: failed to resolve slot template slot=%s date=%s",
+            delivery_slot, delivery_date_local, exc_info=True,
+        )
+
+    if not slot_assignment or not slot_assignment.get("template_id"):
+        logging.warning(
+            "visual_riddle_empty_pool slot=%s date=%s",
+            delivery_slot, delivery_date_local,
+        )
+        await _maybe_topup_visual_riddle_pool()
+        return
+
+    template_id = int(slot_assignment["template_id"])
+    if bool(slot_assignment.get("created")):
+        logging.info(
+            "visual_riddle_slot_assignment_created slot=%s date=%s template_id=%s",
+            delivery_slot, delivery_date_local, template_id,
+        )
+    else:
+        logging.info(
+            "visual_riddle_slot_assignment_existing slot=%s date=%s template_id=%s",
+            delivery_slot, delivery_date_local, template_id,
+        )
+
+    delivery_targets = await _collect_quiz_delivery_user_targets(context)
+    if not delivery_targets:
+        logging.info(
+            "vr_scheduled: no delivery targets slot=%s date=%s template_id=%s",
+            delivery_slot, delivery_date_local, template_id,
+        )
+        await _maybe_topup_visual_riddle_pool()
+        return
+
+    sent = 0
+    not_sent = 0
+    for target in delivery_targets:
+        target_chat_id = int(target.get("chat_id") or 0)
+        if target_chat_id == 0:
+            continue
+        ok = await send_visual_riddle_template_to_chat(
+            context,
+            template_id=template_id,
+            chat_id=target_chat_id,
+            target_user_id=target_chat_id,
+            delivery_slot=delivery_slot,
+            delivery_date_local=delivery_date_local,
+        )
+        if ok:
+            sent += 1
+        else:
+            not_sent += 1
+
+    logging.info(
+        "vr_scheduled: slot=%s date=%s template_id=%s sent=%s not_sent=%s",
+        delivery_slot, delivery_date_local, template_id, sent, not_sent,
+    )
+    await _maybe_topup_visual_riddle_pool()
+
+
 async def send_scheduled_quiz(context: CallbackContext) -> None:
-    ordered = _get_scheduled_quiz_generators(context)
     slot_now = _get_quiz_schedule_now()
     delivery_slot = _format_quiz_delivery_slot(slot_now)
     delivery_date_local = slot_now.date()
+
+    if _is_visual_riddle_slot(slot_now):
+        await _send_scheduled_visual_riddles(
+            context,
+            delivery_slot=delivery_slot,
+            delivery_date_local=delivery_date_local,
+        )
+        return
+
+    ordered = _get_scheduled_quiz_generators(context)
     image_slot = _is_image_quiz_slot(slot_now)
     sent_count = 0
     if image_slot:
@@ -13916,6 +15064,8 @@ def main():
     application.add_handler(CommandHandler("ttsprewarmquota", tts_prewarm_quota_command))
     application.add_handler(CommandHandler("test_image_quiz", test_image_quiz_command))
     application.add_handler(CommandHandler("test_image_quiz_fallback", test_image_quiz_fallback_command))
+    application.add_handler(CommandHandler("admin_riddle_send", admin_riddle_send_command))
+    application.add_handler(CommandHandler("admin_riddle_health", admin_visual_riddle_health_command))
     application.add_handler(CallbackQueryHandler(request_access_from_button, pattern=r"^access:request$"))
     # 🔥 Логирование всех сообщений (группа -1, не блокирует цепочку)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message, block=False), group=-1)
@@ -13946,11 +15096,16 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_dictionary_save_confirm_callback, pattern=r"^dictsaveconfirm:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_save_option_callback, pattern=r"^dictsaveopt:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_quick_save_callback, pattern=r"^dictquicksave:"))
+    application.add_handler(CallbackQueryHandler(handle_dictionary_folder_back_callback, pattern=r"^dictfolderback:"))
+    application.add_handler(CallbackQueryHandler(handle_dictionary_folder_pick_callback, pattern=r"^dictfolderpick:"))
+    application.add_handler(CallbackQueryHandler(handle_dictionary_folder_new_callback, pattern=r"^dictfoldernew:"))
+    application.add_handler(CallbackQueryHandler(handle_dictionary_folder_callback, pattern=r"^dictfolder:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_save_callback, pattern=r"^dictsave:"))
     application.add_handler(CallbackQueryHandler(handle_group_enrollment_callback, pattern=r"^groupenroll:confirm$"))
     application.add_handler(CallbackQueryHandler(handle_language_tutor_callback, pattern=r"^langgpt:(ask|continue)$"))
     application.add_handler(CallbackQueryHandler(handle_language_tutor_detail_callback, pattern=r"^langgpt:detail$"))
     application.add_handler(CallbackQueryHandler(handle_image_quiz_callback, pattern=r"^iq:\d+:\d+$"))
+    application.add_handler(CallbackQueryHandler(handle_visual_riddle_callback, pattern=r"^vr:\d+:\d+$"))
 
     application.add_handler(CommandHandler("translate", check_user_translation))  # ✅ Проверка переводов
 
@@ -13974,6 +15129,7 @@ def main():
                 application.job_queue.run_once(backfill_group_enrollment_prompts, when=20),
                 application.job_queue.run_once(prepare_scheduled_quiz_pool, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS),
                 application.job_queue.run_once(prepare_image_quiz_pool, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 20),
+                application.job_queue.run_once(_startup_visual_riddle_pool_check, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 40),
             ),
             enabled=True,
             category="housekeeping",
@@ -14109,6 +15265,29 @@ def main():
             "cron",
             hour=IMAGE_QUIZ_POOL_TOPUP_HOUR,
             minute=IMAGE_QUIZ_POOL_TOPUP_MINUTE,
+        )
+        # -- Visual riddle slots (07:30, 12:30, 15:30 Europe/Vienna) --
+        for _vr_hour, _vr_minute in sorted(VISUAL_RIDDLE_SLOT_TIMES):
+            scheduler.add_job(
+                lambda: submit_async(send_scheduled_quiz, CallbackContext(application=application)),
+                "cron",
+                hour=_vr_hour,
+                minute=_vr_minute,
+                timezone=QUIZ_SCHEDULE_TZ_NAME,
+            )
+        logging.info(
+            "visual_riddle_scheduler_slots_registered slots=%s tz=%s enabled=%s",
+            sorted(VISUAL_RIDDLE_SLOT_TIMES),
+            QUIZ_SCHEDULE_TZ_NAME,
+            _visual_riddles_enabled(),
+        )
+        # -- Visual riddle pool topup (daily before first slot) --
+        scheduler.add_job(
+            lambda: submit_async(prepare_visual_riddle_pool_job, CallbackContext(application=application)),
+            "cron",
+            hour=VISUAL_RIDDLE_POOL_TOPUP_HOUR,
+            minute=VISUAL_RIDDLE_POOL_TOPUP_MINUTE,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
 
     # scheduler.add_job(

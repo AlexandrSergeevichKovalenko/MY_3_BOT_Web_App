@@ -8665,7 +8665,25 @@ body {
 }
 
 .flashcard-queue-source-options {
-  gap: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+
+.flashcard-queue-source-options .flashcard-queue-source-pill {
+  min-height: 42px;
+  width: auto;
+  max-width: 100%;
+  padding: 0 18px;
+  border-radius: 14px;
+  justify-self: start;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.flashcard-queue-source-options .flashcard-queue-source-pill:last-child {
+  justify-self: end;
 }
 
 .flashcard-queue-source-meta {
@@ -8874,7 +8892,7 @@ body {
 
 .flashcard-settings-pill {
   min-height: 40px;
-  border-radius: 999px;
+  border-radius: 14px;
   padding: 0 18px;
   background: transparent;
   border: 1px solid #334155;
@@ -9184,7 +9202,7 @@ body {
 
 .flashcard-settings-modal .option-pill.flashcard-settings-pill {
   min-height: 40px;
-  border-radius: 999px;
+  border-radius: 14px;
   padding: 0 18px;
   background: transparent;
   border: 1px solid #334155;
@@ -10822,7 +10840,34 @@ body {
 }
 
 .translation-item-check-button.is-loading {
-  min-width: 92px;
+  min-width: 128px;
+  background: rgba(251, 191, 36, 0.18);
+  color: #f8fafc;
+}
+
+.translation-item-check-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  border: 2px solid rgba(248, 250, 252, 0.28);
+  border-top-color: rgba(248, 250, 252, 0.92);
+  animation: translationCheckSpin 0.8s linear infinite;
+  flex: 0 0 auto;
+}
+
+.translation-item-check-button.is-loading {
+  gap: 7px;
+}
+
+.translation-item-check-status {
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: rgba(248, 250, 252, 0.76);
+}
+
+@keyframes translationCheckSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .translation-item-check-button:hover,
@@ -15610,11 +15655,13 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
 }
 
 .reader-lib-search {
   flex: 1 1 auto;
   min-width: 0;
+  width: 100%;
   height: 40px;
   padding: 0 14px;
   border-radius: 14px;
@@ -15624,6 +15671,9 @@ body {
   font-size: 14px;
   font-family: inherit;
   outline: none;
+  box-sizing: border-box;
+  appearance: none;
+  -webkit-appearance: none;
   transition: border-color 0.15s ease;
 }
 
@@ -19048,6 +19098,15 @@ body {
   font-size: 10px;
 }
 
+.webapp-section.webapp-section-translations .translation-item-check-button.is-loading {
+  background: rgba(245, 158, 11, 0.14);
+  color: var(--tr-text-title);
+}
+
+.webapp-section.webapp-section-translations .translation-item-check-status {
+  color: var(--tr-text-secondary);
+}
+
 .webapp-section.webapp-section-translations .translation-item-check-button:hover,
 .webapp-section.webapp-section-translations .translation-dict-jump:hover {
   transform: none;
@@ -19300,7 +19359,25 @@ body {
 .webapp-section.webapp-section-translations .webapp-explanation-followup-actions {
   display: flex;
   gap: 10px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  align-items: stretch;
+}
+
+.webapp-section.webapp-section-translations .webapp-explanation-followup-action-button {
+  flex: 1 1 0;
+  width: 100%;
+  min-width: 0;
+  min-height: 52px;
+  padding: 0 16px;
+  border-radius: 16px;
+  justify-content: center;
+  text-align: center;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.webapp-section.webapp-section-translations .webapp-explanation-followup-action-button.secondary-button {
+  border-width: 1px;
 }
 
 .webapp-section.webapp-section-translations .webapp-explanation-followup-answer {
@@ -19309,7 +19386,7 @@ body {
   padding: 14px;
   border-radius: 14px;
   border: 1px solid var(--tr-border);
-  background: color-mix(in srgb, var(--tr-bg-card-alt) 86%, white 14%);
+  background: var(--tr-bg-card-alt);
 }
 
 .webapp-section.webapp-section-translations .webapp-explanation-followup-save {
@@ -20040,11 +20117,11 @@ body {
   width: 100%;
   min-height: 46px;
   border-radius: 14px;
-  border: 1px solid var(--tr-border);
-  background: transparent;
-  color: var(--tr-text-muted);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(30, 41, 59, 0.5);
+  color: var(--tr-text-primary, #f8fafc);
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 700;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -20254,6 +20331,24 @@ body {
   border-radius: 16px;
   font-size: 14px;
   font-weight: 600;
+}
+
+.language-profile-starter-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  width: 100%;
+}
+
+.language-profile-starter-btn-danger {
+  border-color: rgba(220, 38, 38, 0.28);
+  color: #b91c1c;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.language-profile-starter-btn-danger:hover:not(:disabled) {
+  background: rgba(254, 242, 242, 0.98);
+  border-color: rgba(220, 38, 38, 0.4);
 }
 
 .starter-dictionary-card {
@@ -23069,6 +23164,13 @@ body {
 
 .webapp-page.is-theme-light .reader-lib-search::placeholder {
   color: #7a6552;
+}
+
+.webapp-page.is-theme-light .reader-lib-search {
+  border-color: #d2c2aa;
+  background: #fff8ee;
+  color: #1f1a14;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.42);
 }
 
 .webapp-page.is-theme-light .reader-lib-archive-toggle {

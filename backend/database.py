@@ -257,6 +257,34 @@ def _normalize_image_quiz_options(options: list[str] | tuple[str, ...] | None) -
     return normalized
 
 
+def _normalize_vr_generation_status(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"pending", "blueprint_ready", "rendering", "ready", "failed"}:
+        return normalized
+    return "pending"
+
+
+def _normalize_vr_visual_status(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"unknown", "valid", "rejected"}:
+        return normalized
+    return "unknown"
+
+
+def _normalize_vr_dispatch_status(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"claimed", "sent", "failed"}:
+        return normalized
+    return "claimed"
+
+
+def _normalize_vr_answer_id(value: str | None) -> str:
+    normalized = str(value or "").strip().upper()
+    if normalized in {"A", "B", "C", "D"}:
+        return normalized
+    return "A"
+
+
 def _map_image_quiz_template_row(row: tuple | None) -> dict | None:
     if not row:
         return None
@@ -359,6 +387,96 @@ def _map_image_quiz_candidate_row(row: tuple | None) -> dict | None:
         "source_text": source_text,
         "target_text": target_text,
         "created_at": row[10].isoformat() if row[10] else None,
+    }
+
+
+def _map_vr_template_row(row: tuple | None) -> dict | None:
+    if not row:
+        return None
+    raw_answers = row[13]
+    if isinstance(raw_answers, str):
+        try:
+            raw_answers = json.loads(raw_answers)
+        except Exception:
+            raw_answers = []
+    raw_why_wrong = row[17]
+    if isinstance(raw_why_wrong, str):
+        try:
+            raw_why_wrong = json.loads(raw_why_wrong)
+        except Exception:
+            raw_why_wrong = {}
+    return {
+        "id": int(row[0]),
+        "user_id": int(row[1]) if row[1] is not None else None,
+        "quiz_type": str(row[2] or ""),
+        "difficulty": str(row[3] or ""),
+        "target_language": str(row[4] or "German"),
+        "target_skill": str(row[5] or ""),
+        "target_word_or_phrase": str(row[6] or "") or None,
+        "title": str(row[7] or "") or None,
+        "telegram_caption": str(row[8] or "") or None,
+        "question_text": str(row[9] or ""),
+        "image_prompt": str(row[10] or ""),
+        "image_object_key": str(row[11] or "") or None,
+        "image_url": str(row[12] or "") or None,
+        "answers": raw_answers if isinstance(raw_answers, list) else [],
+        "correct_answer_id": str(row[14] or "A"),
+        "short_explanation": str(row[15] or "") or None,
+        "language_explanation": str(row[16] or "") or None,
+        "why_wrong_answers": raw_why_wrong if isinstance(raw_why_wrong, dict) else {},
+        "generation_status": _normalize_vr_generation_status(row[18]),
+        "visual_status": _normalize_vr_visual_status(row[19]),
+        "failure_reason": str(row[20] or "") or None,
+        "use_count": int(row[21] or 0),
+        "last_used_at": row[22].isoformat() if row[22] else None,
+        "created_at": row[23].isoformat() if row[23] else None,
+        "updated_at": row[24].isoformat() if row[24] else None,
+    }
+
+
+def _map_vr_dispatch_row(row: tuple | None) -> dict | None:
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "template_id": int(row[1]),
+        "target_user_id": int(row[2]),
+        "chat_id": int(row[3]),
+        "delivery_date_local": row[4].isoformat() if row[4] else None,
+        "delivery_slot": str(row[5] or ""),
+        "status": _normalize_vr_dispatch_status(row[6]),
+        "telegram_message_id": int(row[7]) if row[7] is not None else None,
+        "failure_reason": str(row[8] or "") or None,
+        "claimed_at": row[9].isoformat() if row[9] else None,
+        "sent_at": row[10].isoformat() if row[10] else None,
+        "failed_at": row[11].isoformat() if row[11] else None,
+        "created_at": row[12].isoformat() if row[12] else None,
+    }
+
+
+def _map_vr_answer_row(row: tuple | None) -> dict | None:
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "dispatch_id": int(row[1]),
+        "user_id": int(row[2]),
+        "selected_answer_id": str(row[3] or "A"),
+        "is_correct": bool(row[4]),
+        "answered_at": row[5].isoformat() if row[5] else None,
+        "feedback_sent_at": row[6].isoformat() if row[6] else None,
+    }
+
+
+def _map_vr_slot_template_row(row: tuple | None) -> dict | None:
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "delivery_date_local": row[1].isoformat() if row[1] else None,
+        "delivery_slot": str(row[2] or ""),
+        "template_id": int(row[3]),
+        "created_at": row[4].isoformat() if row[4] else None,
     }
 
 
@@ -523,6 +641,82 @@ def _resolve_dictionary_source_target_texts(
         target_text = str(translation_de or payload.get("translation_de") or "").strip()
 
     return source_text, target_text
+
+
+def _apply_ru_de_dictionary_pair_alignment(
+    *,
+    source_lang: str,
+    target_lang: str,
+    german_text: str | None,
+    russian_text: str | None,
+    current_word_ru: str | None = None,
+    current_translation_de: str | None = None,
+    current_word_de: str | None = None,
+    current_translation_ru: str | None = None,
+    response_json: dict | None = None,
+) -> tuple[dict, str, str]:
+    payload = _coerce_json_object(response_json)
+    resolved_source_lang = _normalize_lang_code(source_lang)
+    resolved_target_lang = _normalize_lang_code(target_lang)
+
+    existing_source_text, existing_target_text = _resolve_dictionary_source_target_texts(
+        source_lang=resolved_source_lang,
+        target_lang=resolved_target_lang,
+        word_ru=current_word_ru,
+        translation_de=current_translation_de,
+        word_de=current_word_de,
+        translation_ru=current_translation_ru,
+        response_json=payload,
+    )
+
+    normalized_german = str(german_text or "").strip()
+    normalized_russian = str(russian_text or "").strip()
+
+    source_text = existing_source_text
+    target_text = existing_target_text
+
+    if resolved_source_lang == "de" and normalized_german:
+        source_text = normalized_german
+    if resolved_target_lang == "de" and normalized_german:
+        target_text = normalized_german
+    if resolved_source_lang == "ru" and normalized_russian:
+        source_text = normalized_russian
+    if resolved_target_lang == "ru" and normalized_russian:
+        target_text = normalized_russian
+
+    word_ru = str(current_word_ru or "").strip()
+    translation_de = str(current_translation_de or "").strip()
+    word_de = str(current_word_de or "").strip()
+    translation_ru = str(current_translation_ru or "").strip()
+
+    if resolved_source_lang == "ru" and source_text:
+        word_ru = source_text
+        translation_ru = source_text
+    if resolved_source_lang == "de" and source_text:
+        word_de = source_text
+        translation_de = source_text
+    if resolved_target_lang == "de" and target_text:
+        word_de = target_text
+        translation_de = target_text
+    if resolved_target_lang == "ru" and target_text:
+        word_ru = target_text
+        translation_ru = target_text
+
+    payload["source_text"] = source_text
+    payload["target_text"] = target_text
+    payload["source_lang"] = resolved_source_lang or source_lang
+    payload["target_lang"] = resolved_target_lang or target_lang
+    payload["word_ru"] = word_ru
+    payload["translation_de"] = translation_de
+    payload["word_de"] = word_de
+    payload["translation_ru"] = translation_ru
+
+    return {
+        "word_ru": word_ru,
+        "translation_de": translation_de,
+        "word_de": word_de,
+        "translation_ru": translation_ru,
+    }, source_text, target_text
 
 
 def _dedupe_webapp_dictionary_entry_after_insert(
@@ -3264,6 +3458,21 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_webapp_dictionary_queries (user_id, folder_id);
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_telegram_dictionary_folder_preferences (
+                    user_id BIGINT NOT NULL,
+                    source_lang TEXT NOT NULL,
+                    target_lang TEXT NOT NULL,
+                    folder_id BIGINT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, source_lang, target_lang),
+                    FOREIGN KEY (folder_id) REFERENCES bt_3_dictionary_folders(id) ON DELETE SET NULL
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_telegram_dictionary_folder_preferences_user
+                ON bt_3_telegram_dictionary_folder_preferences (user_id, updated_at DESC);
+            """)
+            cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_user_pair_created
                 ON bt_3_webapp_dictionary_queries (user_id, source_lang, target_lang, created_at DESC);
             """)
@@ -4434,6 +4643,132 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_image_quiz_answers_user_time
                 ON bt_3_image_quiz_answers (user_id, answered_at DESC);
             """)
+            # ── Visual Riddles tables ─────────────────────────────────────────
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_visual_riddle_templates (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT,
+                    quiz_type TEXT NOT NULL,
+                    difficulty TEXT NOT NULL,
+                    target_language TEXT NOT NULL DEFAULT 'German',
+                    target_skill TEXT NOT NULL,
+                    target_word_or_phrase TEXT,
+                    title TEXT,
+                    telegram_caption TEXT,
+                    question_text TEXT NOT NULL DEFAULT '',
+                    image_prompt TEXT NOT NULL DEFAULT '',
+                    image_object_key TEXT,
+                    image_url TEXT,
+                    answers JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    correct_answer_id TEXT NOT NULL DEFAULT 'A',
+                    short_explanation TEXT,
+                    language_explanation TEXT,
+                    why_wrong_answers JSONB,
+                    generation_status TEXT NOT NULL DEFAULT 'pending',
+                    visual_status TEXT NOT NULL DEFAULT 'unknown',
+                    failure_reason TEXT,
+                    use_count INTEGER NOT NULL DEFAULT 0,
+                    last_used_at TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (quiz_type IN (
+                        'VISUAL_WORD_REBUS', 'SITUATIONAL_REBUS', 'GRAMMAR_PUZZLE',
+                        'DETECTIVE_PUZZLE', 'FIND_THE_MISTAKE', 'MEME_STYLE_RIDDLE',
+                        'ASSOCIATION_RIDDLE', 'MULTI_STEP_IMAGE_QUIZ'
+                    )),
+                    CHECK (difficulty IN ('A2', 'B1', 'B2')),
+                    CHECK (generation_status IN ('pending', 'blueprint_ready', 'rendering', 'ready', 'failed')),
+                    CHECK (visual_status IN ('unknown', 'valid', 'rejected')),
+                    CHECK (correct_answer_id IN ('A', 'B', 'C', 'D'))
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_vr_templates_ready_lookup
+                ON bt_3_visual_riddle_templates (
+                    generation_status,
+                    visual_status,
+                    last_used_at,
+                    created_at DESC
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_vr_templates_user_status
+                ON bt_3_visual_riddle_templates (user_id, generation_status, created_at DESC)
+                WHERE user_id IS NOT NULL;
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_vr_templates_quiz_type
+                ON bt_3_visual_riddle_templates (quiz_type, generation_status, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_visual_riddle_dispatches (
+                    id BIGSERIAL PRIMARY KEY,
+                    template_id BIGINT NOT NULL REFERENCES bt_3_visual_riddle_templates(id),
+                    target_user_id BIGINT NOT NULL,
+                    chat_id BIGINT NOT NULL,
+                    delivery_date_local DATE NOT NULL,
+                    delivery_slot TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'claimed',
+                    telegram_message_id BIGINT,
+                    failure_reason TEXT,
+                    claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    sent_at TIMESTAMPTZ,
+                    failed_at TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (status IN ('claimed', 'sent', 'failed')),
+                    UNIQUE (target_user_id, delivery_date_local, delivery_slot)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_vr_dispatches_target_time
+                ON bt_3_visual_riddle_dispatches (target_user_id, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_vr_dispatches_template_target
+                ON bt_3_visual_riddle_dispatches (template_id, target_user_id, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_visual_riddle_answers (
+                    id BIGSERIAL PRIMARY KEY,
+                    dispatch_id BIGINT NOT NULL REFERENCES bt_3_visual_riddle_dispatches(id),
+                    user_id BIGINT NOT NULL,
+                    selected_answer_id TEXT NOT NULL,
+                    is_correct BOOLEAN NOT NULL,
+                    answered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    feedback_sent_at TIMESTAMPTZ,
+                    CHECK (selected_answer_id IN ('A', 'B', 'C', 'D')),
+                    UNIQUE (dispatch_id, user_id)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_vr_answers_dispatch_time
+                ON bt_3_visual_riddle_answers (dispatch_id, answered_at DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_vr_answers_user_time
+                ON bt_3_visual_riddle_answers (user_id, answered_at DESC);
+            """)
+            # -- Visual Riddle Slot Templates (global per-slot assignment) --
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_visual_riddle_slot_templates (
+                    id              BIGSERIAL PRIMARY KEY,
+                    delivery_date_local DATE NOT NULL,
+                    delivery_slot   TEXT NOT NULL,
+                    template_id     BIGINT NOT NULL
+                                    REFERENCES bt_3_visual_riddle_templates(id),
+                    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CONSTRAINT uq_vr_slot UNIQUE (delivery_date_local, delivery_slot)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_vr_slot_templates_date_slot
+                ON bt_3_visual_riddle_slot_templates (delivery_date_local, delivery_slot);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_vr_slot_templates_template
+                ON bt_3_visual_riddle_slot_templates (template_id);
+            """)
+            # ─────────────────────────────────────────────────────────────────
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_dictionary_cache (
                     word_ru TEXT PRIMARY KEY,
@@ -11009,6 +11344,103 @@ def count_dictionary_entries_for_language_pair(
             return _count(own_cursor)
 
 
+def count_starter_dictionary_entries_for_language_pair(
+    user_id: int,
+    source_lang: str | None,
+    target_lang: str | None,
+    cursor=None,
+) -> int:
+    def _count(cur) -> int:
+        where_clause = """
+            WHERE user_id = %s
+              AND origin_meta ->> 'import_kind' = 'starter_dictionary_snapshot'
+        """
+        params: list = [int(user_id)]
+        language_filter_sql, language_params = _build_language_pair_filter(source_lang, target_lang)
+        if language_filter_sql:
+            where_clause += language_filter_sql
+            params.extend(language_params)
+        cur.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM bt_3_webapp_dictionary_queries
+            {where_clause};
+            """,
+            params,
+        )
+        row = cur.fetchone()
+        return int((row or [0])[0] or 0)
+
+    if cursor is not None:
+        return _count(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own_cursor:
+            return _count(own_cursor)
+
+
+def delete_starter_dictionary_snapshot(
+    *,
+    user_id: int,
+    source_lang: str | None,
+    target_lang: str | None,
+) -> dict:
+    safe_user_id = int(user_id)
+    deleted_count = 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            where_clause = """
+                WHERE user_id = %s
+                  AND origin_meta ->> 'import_kind' = 'starter_dictionary_snapshot'
+            """
+            params: list = [safe_user_id]
+            language_filter_sql, language_params = _build_language_pair_filter(source_lang, target_lang)
+            if language_filter_sql:
+                where_clause += language_filter_sql
+                params.extend(language_params)
+            cursor.execute(
+                f"""
+                WITH doomed AS (
+                    SELECT id
+                    FROM bt_3_webapp_dictionary_queries
+                    {where_clause}
+                )
+                DELETE FROM bt_3_card_srs_state
+                WHERE user_id = %s
+                  AND card_id IN (SELECT id FROM doomed);
+                """,
+                [*params, safe_user_id],
+            )
+            cursor.execute(
+                f"""
+                WITH doomed AS (
+                    SELECT id
+                    FROM bt_3_webapp_dictionary_queries
+                    {where_clause}
+                )
+                DELETE FROM bt_3_card_review_log
+                WHERE user_id = %s
+                  AND card_id IN (SELECT id FROM doomed);
+                """,
+                [*params, safe_user_id],
+            )
+            cursor.execute(
+                f"""
+                DELETE FROM bt_3_webapp_dictionary_queries
+                {where_clause}
+                RETURNING id;
+                """,
+                params,
+            )
+            deleted_rows = cursor.fetchall() or []
+            deleted_count = len(deleted_rows)
+    return {
+        "user_id": safe_user_id,
+        "source_lang": _normalize_lang_code(source_lang),
+        "target_lang": _normalize_lang_code(target_lang),
+        "deleted_count": int(deleted_count),
+    }
+
+
 def import_starter_dictionary_snapshot(
     *,
     source_user_id: int,
@@ -14364,6 +14796,81 @@ def count_due_cards_reviewed_today(
             return _count(own_cursor)
 
 
+def count_card_review_response_seconds_today(
+    user_id: int,
+    *,
+    now_utc: datetime | None = None,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+    review_kind: str = "all",
+    tz_name: str = TRIAL_POLICY_TZ,
+    allowed_card_ids: list[int] | None = None,
+    cursor=None,
+) -> int:
+    now_utc = now_utc or datetime.now(timezone.utc)
+    tzinfo = _resolve_timezone(tz_name)
+    day_local = now_utc.astimezone(tzinfo).date()
+    day_start = datetime.combine(day_local, dt_time.min, tzinfo=tzinfo).astimezone(timezone.utc)
+    day_end = day_start + timedelta(days=1)
+    normalized_allowed_ids = _normalize_positive_bigint_list(allowed_card_ids)
+    if allowed_card_ids is not None and not normalized_allowed_ids:
+        return 0
+    normalized_review_kind = str(review_kind or "all").strip().lower() or "all"
+    if normalized_review_kind not in {"all", "due", "new"}:
+        normalized_review_kind = "all"
+
+    def _count(cur):
+        if normalized_allowed_ids:
+            language_filter_sql, language_params = "", []
+        else:
+            language_filter_sql, language_params = _build_language_pair_filter(
+                source_lang, target_lang, table_alias="q",
+            )
+        allowed_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
+        kind_sql = ""
+        kind_params: list[object] = []
+        if normalized_review_kind == "due":
+            kind_sql = " AND s.created_at < %s"
+            kind_params.append(day_start)
+        elif normalized_review_kind == "new":
+            kind_sql = " AND s.created_at >= %s AND s.created_at < %s"
+            kind_params.extend([day_start, day_end])
+        cur.execute(
+            f"""
+            SELECT COALESCE(SUM(GREATEST(COALESCE(rl.response_ms, 0), 0)), 0)
+            FROM bt_3_card_review_log rl
+            JOIN bt_3_card_srs_state s
+              ON s.user_id = rl.user_id AND s.card_id = rl.card_id
+            JOIN bt_3_webapp_dictionary_queries q
+              ON q.id = rl.card_id AND q.user_id = rl.user_id
+            WHERE rl.user_id = %s
+              AND rl.reviewed_at >= %s
+              AND rl.reviewed_at < %s
+              AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
+              {language_filter_sql}
+              {kind_sql}
+              {allowed_sql}
+            """,
+            [
+                int(user_id),
+                day_start,
+                day_end,
+                *language_params,
+                *kind_params,
+                *([normalized_allowed_ids] if normalized_allowed_ids else []),
+            ],
+        )
+        row = cur.fetchone()
+        total_ms = int(row[0] or 0) if row else 0
+        return max(0, total_ms // 1000)
+
+    if cursor is not None:
+        return _count(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own_cursor:
+            return _count(own_cursor)
+
+
 def reschedule_overdue_srs_cards(
     user_id: int,
     source_lang: str | None = None,
@@ -14867,6 +15374,148 @@ def get_or_create_dictionary_folder(
             }
 
 
+def get_telegram_dictionary_folder_preference(
+    user_id: int,
+    *,
+    source_lang: str,
+    target_lang: str,
+) -> dict | None:
+    normalized_source_lang = _normalize_lang_code(source_lang)
+    normalized_target_lang = _normalize_lang_code(target_lang)
+    if not normalized_source_lang or not normalized_target_lang:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    p.folder_id,
+                    f.name,
+                    f.color,
+                    f.icon,
+                    p.updated_at
+                FROM bt_3_telegram_dictionary_folder_preferences p
+                LEFT JOIN bt_3_dictionary_folders f
+                  ON f.id = p.folder_id AND f.user_id = p.user_id
+                WHERE p.user_id = %s
+                  AND p.source_lang = %s
+                  AND p.target_lang = %s
+                LIMIT 1;
+                """,
+                (int(user_id), normalized_source_lang, normalized_target_lang),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    folder_id = row[0]
+    if folder_id is None:
+        return {
+            "folder_id": None,
+            "name": "Без папки",
+            "color": None,
+            "icon": "📂",
+            "updated_at": row[4].isoformat() if row[4] else None,
+            "source_lang": normalized_source_lang,
+            "target_lang": normalized_target_lang,
+            "is_none": True,
+        }
+    return {
+        "folder_id": int(folder_id),
+        "name": str(row[1] or "").strip() or "GENERAL",
+        "color": row[2],
+        "icon": row[3] or "📁",
+        "updated_at": row[4].isoformat() if row[4] else None,
+        "source_lang": normalized_source_lang,
+        "target_lang": normalized_target_lang,
+        "is_none": False,
+    }
+
+
+def set_telegram_dictionary_folder_preference(
+    user_id: int,
+    *,
+    source_lang: str,
+    target_lang: str,
+    folder_id: int | None,
+) -> dict:
+    normalized_source_lang = _normalize_lang_code(source_lang)
+    normalized_target_lang = _normalize_lang_code(target_lang)
+    if not normalized_source_lang or not normalized_target_lang:
+        raise ValueError("source_lang и target_lang обязательны")
+
+    folder_payload = None
+    if folder_id is not None:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, name, color, icon, created_at
+                    FROM bt_3_dictionary_folders
+                    WHERE user_id = %s AND id = %s
+                    LIMIT 1;
+                    """,
+                    (int(user_id), int(folder_id)),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    raise ValueError("Папка не найдена")
+                folder_payload = {
+                    "folder_id": int(row[0]),
+                    "name": row[1],
+                    "color": row[2],
+                    "icon": row[3],
+                    "created_at": row[4].isoformat() if row[4] else None,
+                    "source_lang": normalized_source_lang,
+                    "target_lang": normalized_target_lang,
+                    "is_none": False,
+                }
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_telegram_dictionary_folder_preferences (
+                        user_id,
+                        source_lang,
+                        target_lang,
+                        folder_id,
+                        updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, NOW())
+                    ON CONFLICT (user_id, source_lang, target_lang) DO UPDATE
+                    SET folder_id = EXCLUDED.folder_id,
+                        updated_at = NOW();
+                    """,
+                    (int(user_id), normalized_source_lang, normalized_target_lang, int(folder_id)),
+                )
+        return folder_payload
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_telegram_dictionary_folder_preferences (
+                    user_id,
+                    source_lang,
+                    target_lang,
+                    folder_id,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, NULL, NOW())
+                ON CONFLICT (user_id, source_lang, target_lang) DO UPDATE
+                SET folder_id = NULL,
+                    updated_at = NOW();
+                """,
+                (int(user_id), normalized_source_lang, normalized_target_lang),
+            )
+    return {
+        "folder_id": None,
+        "name": "Без папки",
+        "color": None,
+        "icon": "📂",
+        "source_lang": normalized_source_lang,
+        "target_lang": normalized_target_lang,
+        "is_none": True,
+    }
+
+
 def rename_dictionary_folder(user_id: int, folder_id: int, name: str, icon: str | None = None, color: str | None = None) -> dict | None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -15214,7 +15863,7 @@ def edit_vocabulary_entry(
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id, response_json
+                SELECT id, word_ru, translation_de, word_de, translation_ru, source_lang, target_lang, response_json
                 FROM bt_3_webapp_dictionary_queries
                 WHERE id = %s AND user_id = %s
                 """,
@@ -15223,7 +15872,13 @@ def edit_vocabulary_entry(
             existing_row = cursor.fetchone()
             if not existing_row:
                 return None
-            response_json = _coerce_json_object(existing_row[1])
+            current_word_ru = str(existing_row[1] or "").strip()
+            current_translation_de = str(existing_row[2] or "").strip()
+            current_word_de = str(existing_row[3] or "").strip()
+            current_translation_ru = str(existing_row[4] or "").strip()
+            source_lang = _normalize_lang_code(existing_row[5])
+            target_lang = _normalize_lang_code(existing_row[6])
+            response_json = _coerce_json_object(existing_row[7])
 
             set_parts = []
             params: list = []
@@ -15246,23 +15901,7 @@ def edit_vocabulary_entry(
                     else:
                         normalized_senses = [normalized_translation]
 
-            if word_de is not None:
-                set_parts.append("word_de = %s")
-                params.append(normalized_word)
-                set_parts.append("word_ru = %s")
-                params.append(normalized_word)
-                response_json["word_de"] = normalized_word
-                response_json["word_ru"] = normalized_word
-                response_json["source_text"] = normalized_word
-
             if translation_ru is not None and not normalized_senses:
-                set_parts.append("translation_ru = %s")
-                params.append(normalized_translation)
-                set_parts.append("translation_de = %s")
-                params.append(normalized_translation)
-                response_json["translation_ru"] = normalized_translation
-                response_json["translation_de"] = normalized_translation
-                response_json["target_text"] = normalized_translation
                 meanings = response_json.get("meanings")
                 if isinstance(meanings, dict) and isinstance(meanings.get("primary"), dict):
                     meanings["primary"]["value"] = normalized_translation
@@ -15279,13 +15918,6 @@ def edit_vocabulary_entry(
 
             if normalized_senses is not None and normalized_senses:
                 primary_value = normalized_senses[0]
-                set_parts.append("translation_ru = %s")
-                params.append(primary_value)
-                set_parts.append("translation_de = %s")
-                params.append(primary_value)
-                response_json["translation_ru"] = primary_value
-                response_json["translation_de"] = primary_value
-                response_json["target_text"] = primary_value
                 existing_primary = response_json.get("meanings", {}).get("primary") if isinstance(response_json.get("meanings"), dict) else {}
                 existing_secondary = response_json.get("meanings", {}).get("secondary") if isinstance(response_json.get("meanings", {}).get("secondary"), list) else []
                 existing_senses = response_json.get("dictionary_senses") if isinstance(response_json.get("dictionary_senses"), list) else []
@@ -15340,6 +15972,48 @@ def edit_vocabulary_entry(
                     },
                     "secondary": rebuilt_secondary,
                 }
+
+            should_update_texts = (
+                word_de is not None
+                or translation_ru is not None
+                or normalized_senses is not None
+            )
+            if should_update_texts:
+                effective_german = normalized_word if word_de is not None else current_word_de
+                if normalized_senses is not None and normalized_senses:
+                    effective_russian = normalized_senses[0]
+                elif translation_ru is not None:
+                    effective_russian = normalized_translation
+                else:
+                    effective_russian = current_translation_ru
+
+                aligned_columns, _source_text, _target_text = _apply_ru_de_dictionary_pair_alignment(
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    german_text=effective_german,
+                    russian_text=effective_russian,
+                    current_word_ru=current_word_ru,
+                    current_translation_de=current_translation_de,
+                    current_word_de=current_word_de,
+                    current_translation_ru=current_translation_ru,
+                    response_json=response_json,
+                )
+                set_parts.extend(
+                    [
+                        "word_ru = %s",
+                        "translation_de = %s",
+                        "word_de = %s",
+                        "translation_ru = %s",
+                    ]
+                )
+                params.extend(
+                    [
+                        aligned_columns["word_ru"],
+                        aligned_columns["translation_de"],
+                        aligned_columns["word_de"],
+                        aligned_columns["translation_ru"],
+                    ]
+                )
 
             if clear_folder:
                 set_parts.append("folder_id = NULL")
@@ -26777,3 +27451,956 @@ def get_user_story_rank(story_id: int, user_id: int) -> dict:
         "rank":               int(row[1]),
         "total_participants": int(row[2]),
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Visual Riddles — DB helper functions
+# ═══════════════════════════════════════════════════════════════════════
+
+_VR_TEMPLATE_RETURNING = """
+    id,
+    user_id,
+    quiz_type,
+    difficulty,
+    target_language,
+    target_skill,
+    target_word_or_phrase,
+    title,
+    telegram_caption,
+    question_text,
+    image_prompt,
+    image_object_key,
+    image_url,
+    answers,
+    correct_answer_id,
+    short_explanation,
+    language_explanation,
+    why_wrong_answers,
+    generation_status,
+    visual_status,
+    failure_reason,
+    use_count,
+    last_used_at,
+    created_at,
+    updated_at
+"""
+
+_VR_DISPATCH_RETURNING = """
+    id,
+    template_id,
+    target_user_id,
+    chat_id,
+    delivery_date_local,
+    delivery_slot,
+    status,
+    telegram_message_id,
+    failure_reason,
+    claimed_at,
+    sent_at,
+    failed_at,
+    created_at
+"""
+
+_VR_ANSWER_RETURNING = """
+    id,
+    dispatch_id,
+    user_id,
+    selected_answer_id,
+    is_correct,
+    answered_at,
+    feedback_sent_at
+"""
+
+
+def create_visual_riddle_template_pending(
+    *,
+    quiz_type: str,
+    difficulty: str,
+    target_skill: str,
+    question_text: str,
+    image_prompt: str,
+    answers: list,
+    correct_answer_id: str,
+    user_id: int | None = None,
+    target_language: str = "German",
+    target_word_or_phrase: str | None = None,
+    title: str | None = None,
+    telegram_caption: str | None = None,
+    short_explanation: str | None = None,
+    language_explanation: str | None = None,
+    why_wrong_answers: dict | None = None,
+) -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_visual_riddle_templates (
+                    user_id,
+                    quiz_type,
+                    difficulty,
+                    target_language,
+                    target_skill,
+                    target_word_or_phrase,
+                    title,
+                    telegram_caption,
+                    question_text,
+                    image_prompt,
+                    answers,
+                    correct_answer_id,
+                    short_explanation,
+                    language_explanation,
+                    why_wrong_answers,
+                    generation_status,
+                    visual_status,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s::jsonb, %s, %s, %s, %s::jsonb,
+                    'pending', 'unknown', NOW(), NOW()
+                )
+                RETURNING id;
+                """,
+                (
+                    int(user_id) if user_id is not None else None,
+                    str(quiz_type or "").strip(),
+                    str(difficulty or "").strip(),
+                    str(target_language or "German").strip() or "German",
+                    str(target_skill or "").strip(),
+                    str(target_word_or_phrase or "").strip() or None,
+                    str(title or "").strip() or None,
+                    str(telegram_caption or "").strip() or None,
+                    str(question_text or "").strip(),
+                    str(image_prompt or "").strip(),
+                    json.dumps(answers if isinstance(answers, list) else [], ensure_ascii=False),
+                    _normalize_vr_answer_id(correct_answer_id),
+                    str(short_explanation or "").strip() or None,
+                    str(language_explanation or "").strip() or None,
+                    json.dumps(why_wrong_answers if isinstance(why_wrong_answers, dict) else {}, ensure_ascii=False),
+                ),
+            )
+            row = cursor.fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def _update_vr_template(
+    template_id: int,
+    *,
+    generation_status: str | None = None,
+    visual_status: str | None = None,
+    image_prompt: str | None = None,
+    question_text: str | None = None,
+    answers: list | None = None,
+    correct_answer_id: str | None = None,
+    short_explanation: str | None = None,
+    language_explanation: str | None = None,
+    why_wrong_answers: dict | None = None,
+    image_object_key: str | None = None,
+    image_url: str | None = None,
+    failure_reason: str | None = None,
+) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                UPDATE bt_3_visual_riddle_templates
+                SET
+                    generation_status = COALESCE(%s, generation_status),
+                    visual_status = COALESCE(%s, visual_status),
+                    image_prompt = COALESCE(%s, image_prompt),
+                    question_text = COALESCE(%s, question_text),
+                    answers = CASE
+                        WHEN %s IS NULL THEN answers
+                        ELSE %s::jsonb
+                    END,
+                    correct_answer_id = COALESCE(%s, correct_answer_id),
+                    short_explanation = COALESCE(%s, short_explanation),
+                    language_explanation = COALESCE(%s, language_explanation),
+                    why_wrong_answers = CASE
+                        WHEN %s IS NULL THEN why_wrong_answers
+                        ELSE %s::jsonb
+                    END,
+                    image_object_key = COALESCE(%s, image_object_key),
+                    image_url = COALESCE(%s, image_url),
+                    failure_reason = CASE
+                        WHEN %s IS NULL THEN failure_reason
+                        ELSE %s
+                    END,
+                    updated_at = NOW()
+                WHERE id = %s
+                RETURNING {_VR_TEMPLATE_RETURNING};
+                """,
+                (
+                    _normalize_vr_generation_status(generation_status) if generation_status is not None else None,
+                    _normalize_vr_visual_status(visual_status) if visual_status is not None else None,
+                    str(image_prompt or "").strip() or None,
+                    str(question_text or "").strip() or None,
+                    json.dumps(answers, ensure_ascii=False) if answers is not None else None,
+                    json.dumps(answers, ensure_ascii=False) if answers is not None else None,
+                    _normalize_vr_answer_id(correct_answer_id) if correct_answer_id is not None else None,
+                    str(short_explanation or "").strip() or None,
+                    str(language_explanation or "").strip() or None,
+                    json.dumps(why_wrong_answers, ensure_ascii=False) if why_wrong_answers is not None else None,
+                    json.dumps(why_wrong_answers, ensure_ascii=False) if why_wrong_answers is not None else None,
+                    str(image_object_key or "").strip() or None,
+                    str(image_url or "").strip() or None,
+                    str(failure_reason or "").strip() if failure_reason is not None else None,
+                    str(failure_reason or "").strip() if failure_reason is not None else None,
+                    int(template_id),
+                ),
+            )
+            return _map_vr_template_row(cursor.fetchone())
+
+
+def store_visual_riddle_template_blueprint(
+    template_id: int,
+    *,
+    image_prompt: str,
+    question_text: str,
+    answers: list,
+    correct_answer_id: str,
+    short_explanation: str | None = None,
+    language_explanation: str | None = None,
+    why_wrong_answers: dict | None = None,
+) -> dict | None:
+    return _update_vr_template(
+        int(template_id),
+        generation_status="blueprint_ready",
+        visual_status="valid",
+        image_prompt=image_prompt,
+        question_text=question_text,
+        answers=answers,
+        correct_answer_id=correct_answer_id,
+        short_explanation=short_explanation,
+        language_explanation=language_explanation,
+        why_wrong_answers=why_wrong_answers,
+        failure_reason="",
+    )
+
+
+def mark_visual_riddle_template_rendering(template_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                UPDATE bt_3_visual_riddle_templates
+                SET
+                    generation_status = 'rendering',
+                    failure_reason = NULL,
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND generation_status = 'blueprint_ready'
+                RETURNING {_VR_TEMPLATE_RETURNING};
+                """,
+                (int(template_id),),
+            )
+            return _map_vr_template_row(cursor.fetchone())
+
+
+def mark_visual_riddle_template_ready(
+    template_id: int,
+    *,
+    image_object_key: str,
+    image_url: str,
+) -> dict | None:
+    return _update_vr_template(
+        int(template_id),
+        generation_status="ready",
+        visual_status="valid",
+        image_object_key=image_object_key,
+        image_url=image_url,
+        failure_reason="",
+    )
+
+
+def mark_visual_riddle_template_failed(
+    template_id: int,
+    *,
+    failure_reason: str | None = None,
+    visual_status: str | None = None,
+) -> dict | None:
+    return _update_vr_template(
+        int(template_id),
+        generation_status="failed",
+        visual_status=visual_status,
+        failure_reason=failure_reason,
+    )
+
+
+def claim_next_ready_visual_riddle_template(
+    *,
+    target_user_id: int,
+) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                WITH selected AS (
+                    SELECT t.id
+                    FROM bt_3_visual_riddle_templates t
+                    WHERE t.generation_status = 'ready'
+                      AND t.visual_status = 'valid'
+                      AND COALESCE(NULLIF(t.image_prompt, ''), '') <> ''
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM bt_3_visual_riddle_dispatches d
+                          WHERE d.template_id = t.id
+                            AND d.target_user_id = %s
+                      )
+                    ORDER BY
+                        COALESCE(t.last_used_at, to_timestamp(0)) ASC,
+                        t.created_at ASC,
+                        t.id ASC
+                    LIMIT 1
+                    FOR UPDATE SKIP LOCKED
+                )
+                SELECT
+                    t.id,
+                    t.user_id,
+                    t.quiz_type,
+                    t.difficulty,
+                    t.target_language,
+                    t.target_skill,
+                    t.target_word_or_phrase,
+                    t.title,
+                    t.telegram_caption,
+                    t.question_text,
+                    t.image_prompt,
+                    t.image_object_key,
+                    t.image_url,
+                    t.answers,
+                    t.correct_answer_id,
+                    t.short_explanation,
+                    t.language_explanation,
+                    t.why_wrong_answers,
+                    t.generation_status,
+                    t.visual_status,
+                    t.failure_reason,
+                    t.use_count,
+                    t.last_used_at,
+                    t.created_at,
+                    t.updated_at
+                FROM bt_3_visual_riddle_templates t
+                INNER JOIN selected ON t.id = selected.id;
+                """,
+                (int(target_user_id),),
+            )
+            return _map_vr_template_row(cursor.fetchone())
+
+
+def create_visual_riddle_dispatch(
+    *,
+    template_id: int,
+    target_user_id: int,
+    chat_id: int,
+    delivery_date_local,
+    delivery_slot: str,
+) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                INSERT INTO bt_3_visual_riddle_dispatches (
+                    template_id,
+                    target_user_id,
+                    chat_id,
+                    delivery_date_local,
+                    delivery_slot,
+                    status,
+                    claimed_at,
+                    created_at
+                )
+                VALUES (%s, %s, %s, %s, %s, 'claimed', NOW(), NOW())
+                ON CONFLICT (target_user_id, delivery_date_local, delivery_slot) DO NOTHING
+                RETURNING {_VR_DISPATCH_RETURNING};
+                """,
+                (
+                    int(template_id),
+                    int(target_user_id),
+                    int(chat_id),
+                    delivery_date_local,
+                    str(delivery_slot or "").strip(),
+                ),
+            )
+            row = cursor.fetchone()
+            if row:
+                return _map_vr_dispatch_row(row)
+            # Conflict: another dispatch already claimed this slot
+            cursor.execute(
+                f"""
+                SELECT {_VR_DISPATCH_RETURNING}
+                FROM bt_3_visual_riddle_dispatches
+                WHERE target_user_id = %s
+                  AND delivery_date_local = %s
+                  AND delivery_slot = %s
+                LIMIT 1;
+                """,
+                (int(target_user_id), delivery_date_local, str(delivery_slot or "").strip()),
+            )
+            return _map_vr_dispatch_row(cursor.fetchone())
+
+
+def mark_visual_riddle_dispatch_sent(
+    dispatch_id: int,
+    *,
+    telegram_message_id: int,
+    sent_at=None,
+) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                WITH updated AS (
+                    UPDATE bt_3_visual_riddle_dispatches
+                    SET
+                        status = 'sent',
+                        telegram_message_id = %s,
+                        sent_at = COALESCE(%s, NOW())
+                    WHERE id = %s
+                    RETURNING template_id, sent_at
+                )
+                UPDATE bt_3_visual_riddle_templates t
+                SET
+                    last_used_at = COALESCE((SELECT sent_at FROM updated), NOW()),
+                    use_count = t.use_count + 1,
+                    updated_at = NOW()
+                FROM updated
+                WHERE t.id = updated.template_id;
+                """,
+                (
+                    int(telegram_message_id),
+                    sent_at,
+                    int(dispatch_id),
+                ),
+            )
+            cursor.execute(
+                f"""
+                SELECT {_VR_DISPATCH_RETURNING}
+                FROM bt_3_visual_riddle_dispatches
+                WHERE id = %s
+                LIMIT 1;
+                """,
+                (int(dispatch_id),),
+            )
+            return _map_vr_dispatch_row(cursor.fetchone())
+
+
+def mark_visual_riddle_dispatch_failed(
+    dispatch_id: int,
+    *,
+    failure_reason: str | None = None,
+) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                UPDATE bt_3_visual_riddle_dispatches
+                SET
+                    status = 'failed',
+                    failure_reason = COALESCE(%s, failure_reason),
+                    failed_at = COALESCE(failed_at, NOW())
+                WHERE id = %s
+                RETURNING {_VR_DISPATCH_RETURNING};
+                """,
+                (
+                    str(failure_reason or "").strip() or None,
+                    int(dispatch_id),
+                ),
+            )
+            return _map_vr_dispatch_row(cursor.fetchone())
+
+
+def record_visual_riddle_answer(
+    *,
+    dispatch_id: int,
+    user_id: int,
+    selected_answer_id: str,
+    is_correct: bool,
+) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                INSERT INTO bt_3_visual_riddle_answers (
+                    dispatch_id,
+                    user_id,
+                    selected_answer_id,
+                    is_correct,
+                    answered_at
+                )
+                VALUES (%s, %s, %s, %s, NOW())
+                ON CONFLICT (dispatch_id, user_id) DO NOTHING
+                RETURNING {_VR_ANSWER_RETURNING};
+                """,
+                (
+                    int(dispatch_id),
+                    int(user_id),
+                    _normalize_vr_answer_id(selected_answer_id),
+                    bool(is_correct),
+                ),
+            )
+            row = cursor.fetchone()
+            if row:
+                answer = _map_vr_answer_row(row)
+                if answer is not None:
+                    answer["created"] = True
+                return answer
+            cursor.execute(
+                f"""
+                SELECT {_VR_ANSWER_RETURNING}
+                FROM bt_3_visual_riddle_answers
+                WHERE dispatch_id = %s
+                  AND user_id = %s
+                LIMIT 1;
+                """,
+                (int(dispatch_id), int(user_id)),
+            )
+            answer = _map_vr_answer_row(cursor.fetchone())
+            if answer is not None:
+                answer["created"] = False
+            return answer
+
+
+def mark_visual_riddle_answer_feedback_sent(
+    dispatch_id: int,
+    user_id: int,
+) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                UPDATE bt_3_visual_riddle_answers
+                SET
+                    feedback_sent_at = COALESCE(feedback_sent_at, NOW())
+                WHERE dispatch_id = %s
+                  AND user_id = %s
+                RETURNING {_VR_ANSWER_RETURNING};
+                """,
+                (int(dispatch_id), int(user_id)),
+            )
+            return _map_vr_answer_row(cursor.fetchone())
+
+
+def count_ready_visual_riddle_templates() -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM bt_3_visual_riddle_templates
+                WHERE generation_status = 'ready'
+                  AND visual_status = 'valid'
+                  AND image_object_key IS NOT NULL
+                  AND image_object_key <> '';
+                """
+            )
+            row = cursor.fetchone()
+            return int(row[0] or 0) if row else 0
+
+
+def count_pipeline_visual_riddle_templates() -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM bt_3_visual_riddle_templates
+                WHERE generation_status IN ('pending', 'blueprint_ready', 'rendering');
+                """
+            )
+            row = cursor.fetchone()
+            return int(row[0] or 0) if row else 0
+
+
+def claim_next_blueprint_ready_vr_template() -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                WITH selected AS (
+                    SELECT t.id
+                    FROM bt_3_visual_riddle_templates t
+                    WHERE t.generation_status = 'blueprint_ready'
+                      AND t.visual_status = 'valid'
+                      AND COALESCE(NULLIF(t.image_prompt, ''), '') <> ''
+                    ORDER BY
+                        COALESCE(t.created_at, NOW()) ASC,
+                        t.id ASC
+                    LIMIT 1
+                    FOR UPDATE SKIP LOCKED
+                )
+                UPDATE bt_3_visual_riddle_templates t
+                SET
+                    generation_status = 'rendering',
+                    failure_reason = NULL,
+                    updated_at = NOW()
+                FROM selected
+                WHERE t.id = selected.id
+                RETURNING {_VR_TEMPLATE_RETURNING};
+                """
+            )
+            return _map_vr_template_row(cursor.fetchone())
+
+
+def fail_stale_rendering_vr_templates(
+    *,
+    stale_after_minutes: int,
+    limit: int = 25,
+) -> list[dict]:
+    safe_stale = max(5, int(stale_after_minutes or 45))
+    safe_limit = max(1, min(int(limit or 25), 200))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                WITH stale AS (
+                    SELECT t.id
+                    FROM bt_3_visual_riddle_templates t
+                    WHERE t.generation_status = 'rendering'
+                      AND t.updated_at <= NOW() - (%s || ' minutes')::interval
+                    ORDER BY t.updated_at ASC, t.id ASC
+                    LIMIT %s
+                    FOR UPDATE SKIP LOCKED
+                )
+                UPDATE bt_3_visual_riddle_templates t
+                SET
+                    generation_status = 'failed',
+                    failure_reason = %s,
+                    updated_at = NOW()
+                FROM stale
+                WHERE t.id = stale.id
+                RETURNING {_VR_TEMPLATE_RETURNING};
+                """,
+                (
+                    str(safe_stale),
+                    safe_limit,
+                    f"stale_rendering_timeout:{safe_stale}m",
+                ),
+            )
+            return [_map_vr_template_row(row) for row in cursor.fetchall() or [] if row]
+
+
+def get_visual_riddle_template(template_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT {_VR_TEMPLATE_RETURNING}
+                FROM bt_3_visual_riddle_templates
+                WHERE id = %s
+                LIMIT 1;
+                """,
+                (int(template_id),),
+            )
+            return _map_vr_template_row(cursor.fetchone())
+
+
+def get_visual_riddle_dispatch(dispatch_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT {_VR_DISPATCH_RETURNING}
+                FROM bt_3_visual_riddle_dispatches
+                WHERE id = %s
+                LIMIT 1;
+                """,
+                (int(dispatch_id),),
+            )
+            return _map_vr_dispatch_row(cursor.fetchone())
+
+
+def claim_or_create_visual_riddle_slot_template(
+    *,
+    delivery_date_local,
+    delivery_slot: str,
+    recency_days: int = 7,
+) -> dict | None:
+    """Atomically assign (or retrieve the existing assignment of) a ready visual
+    riddle template to the given slot.
+
+    Multiple replicas calling this simultaneously are safe: the UNIQUE constraint
+    on (delivery_date_local, delivery_slot) plus ON CONFLICT DO NOTHING guarantee
+    only one assignment is ever written.  All replicas receive the same template_id.
+
+    Returns None when no ready template is available AND no prior assignment exists.
+    """
+    from datetime import timedelta as _td
+    safe_slot = str(delivery_slot or "").strip()
+    safe_recency = max(1, int(recency_days or 7))
+    recency_cutoff = delivery_date_local - _td(days=safe_recency)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH eligible AS (
+                    SELECT t.id AS template_id
+                    FROM bt_3_visual_riddle_templates t
+                    WHERE t.generation_status = 'ready'
+                      AND t.image_url IS NOT NULL AND t.image_url <> ''
+                      AND t.visual_status IN ('unknown', 'valid')
+                      AND NOT EXISTS (
+                          SELECT 1 FROM bt_3_visual_riddle_slot_templates s
+                          WHERE s.template_id = t.id
+                            AND s.delivery_date_local >= %s
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM bt_3_visual_riddle_slot_templates x
+                          WHERE x.delivery_date_local = %s AND x.delivery_slot = %s
+                      )
+                    ORDER BY t.use_count ASC, t.last_used_at ASC NULLS FIRST, t.id ASC
+                    LIMIT 1
+                    FOR UPDATE SKIP LOCKED
+                ),
+                upsert AS (
+                    INSERT INTO bt_3_visual_riddle_slot_templates
+                        (delivery_date_local, delivery_slot, template_id)
+                    SELECT %s, %s, template_id FROM eligible
+                    ON CONFLICT (delivery_date_local, delivery_slot) DO NOTHING
+                    RETURNING id, delivery_date_local, delivery_slot, template_id, created_at, TRUE AS created
+                )
+                SELECT id, delivery_date_local, delivery_slot, template_id, created_at, TRUE AS created
+                FROM upsert
+                UNION ALL
+                SELECT id, delivery_date_local, delivery_slot, template_id, created_at, FALSE AS created
+                FROM bt_3_visual_riddle_slot_templates
+                WHERE delivery_date_local = %s AND delivery_slot = %s
+                  AND NOT EXISTS (SELECT 1 FROM upsert)
+                LIMIT 1;
+                """,
+                (
+                    recency_cutoff,          # eligible: recency exclusion cutoff
+                    delivery_date_local,     # eligible: check slot not yet assigned
+                    safe_slot,
+                    delivery_date_local,     # upsert INSERT values
+                    safe_slot,
+                    delivery_date_local,     # fallback SELECT
+                    safe_slot,
+                ),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "id": int(row[0]),
+                "delivery_date_local": row[1].isoformat() if row[1] else None,
+                "delivery_slot": str(row[2] or ""),
+                "template_id": int(row[3]),
+                "created_at": row[4].isoformat() if row[4] else None,
+                "created": bool(row[5]),
+            }
+
+
+def list_exhausted_visual_riddle_r2_objects(
+    *,
+    limit: int = 200,
+    idle_days: int = 30,
+) -> list[dict]:
+    """Ready VR templates that have been dispatched at least once and have not
+    been used for idle_days.  Their R2 objects are safe to delete.
+    """
+    safe_limit = max(1, min(5000, int(limit or 200)))
+    safe_idle_days = max(1, int(idle_days or 30))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, image_object_key
+                FROM bt_3_visual_riddle_templates
+                WHERE generation_status = 'ready'
+                  AND image_object_key IS NOT NULL
+                  AND image_object_key <> ''
+                  AND use_count >= 1
+                  AND last_used_at < NOW() - (%s || ' days')::interval
+                ORDER BY last_used_at ASC
+                LIMIT %s;
+                """,
+                (str(safe_idle_days), safe_limit),
+            )
+            rows = cursor.fetchall() or []
+    return [{"template_id": int(r[0]), "object_key": str(r[1])} for r in rows]
+
+
+def list_orphaned_visual_riddle_r2_objects(
+    *,
+    limit: int = 200,
+    min_age_days: int = 90,
+) -> list[dict]:
+    """Ready VR templates with an R2 object but use_count=0 (never dispatched)
+    and older than min_age_days.  Safe to delete — they are stale pool entries.
+    """
+    safe_limit = max(1, min(5000, int(limit or 200)))
+    safe_min_age_days = max(7, int(min_age_days or 90))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, image_object_key
+                FROM bt_3_visual_riddle_templates
+                WHERE generation_status = 'ready'
+                  AND image_object_key IS NOT NULL
+                  AND image_object_key <> ''
+                  AND use_count = 0
+                  AND created_at < NOW() - (%s || ' days')::interval
+                ORDER BY created_at ASC
+                LIMIT %s;
+                """,
+                (str(safe_min_age_days), safe_limit),
+            )
+            rows = cursor.fetchall() or []
+    return [{"template_id": int(r[0]), "object_key": str(r[1])} for r in rows]
+
+
+def clear_visual_riddle_template_r2_ref(template_id: int) -> bool:
+    """Clear image_object_key and image_url on a VR template after its R2 object
+    has been deleted.  The template record and dispatch/answer history are kept.
+    Returns True if a row was updated.
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_visual_riddle_templates
+                SET image_object_key = NULL,
+                    image_url        = NULL,
+                    updated_at       = NOW()
+                WHERE id = %s
+                  AND image_object_key IS NOT NULL;
+                """,
+                (int(template_id),),
+            )
+            return (cursor.rowcount or 0) > 0
+
+
+def get_visual_riddle_pool_health_stats() -> dict:
+    """Return pool health counters for admin monitoring and automated health checks."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    COUNT(*) FILTER (
+                        WHERE generation_status = 'ready'
+                          AND image_url IS NOT NULL AND image_url <> ''
+                    ) AS ready,
+                    COUNT(*) FILTER (
+                        WHERE generation_status IN ('pending_blueprint', 'pending_render')
+                    ) AS pipeline,
+                    COUNT(*) FILTER (
+                        WHERE generation_status = 'rendering'
+                    ) AS rendering,
+                    COUNT(*) FILTER (
+                        WHERE generation_status = 'failed'
+                    ) AS failed,
+                    MAX(
+                        CASE WHEN generation_status = 'ready'
+                              AND image_url IS NOT NULL AND image_url <> ''
+                             THEN EXTRACT(EPOCH FROM (NOW() - created_at)) / 3600.0
+                        END
+                    ) AS oldest_ready_age_hours,
+                    MAX(updated_at) AS latest_generation_at
+                FROM bt_3_visual_riddle_templates;
+                """
+            )
+            row = cursor.fetchone() or (0, 0, 0, 0, None, None)
+            return {
+                "ready": int(row[0] or 0),
+                "pipeline": int(row[1] or 0),
+                "rendering": int(row[2] or 0),
+                "failed": int(row[3] or 0),
+                "oldest_ready_age_hours": float(row[4]) if row[4] is not None else None,
+                "latest_generation_at": row[5].isoformat() if row[5] else None,
+            }
+
+
+def list_recent_visual_riddle_slot_assignments(*, limit: int = 10) -> list[dict]:
+    """Return recent slot → template assignments, newest first."""
+    safe_limit = max(1, min(100, int(limit or 10)))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, delivery_date_local, delivery_slot, template_id, created_at
+                FROM bt_3_visual_riddle_slot_templates
+                ORDER BY created_at DESC
+                LIMIT %s;
+                """,
+                (safe_limit,),
+            )
+            rows = cursor.fetchall() or []
+    return [
+        {
+            "id": int(r[0]),
+            "delivery_date_local": r[1].isoformat() if r[1] else None,
+            "delivery_slot": str(r[2] or ""),
+            "template_id": int(r[3]),
+            "created_at": r[4].isoformat() if r[4] else None,
+        }
+        for r in rows
+    ]
+
+
+def get_recent_visual_riddle_generation_memory_rows(
+    *,
+    limit: int = 60,
+    lookback_days: int = 30,
+) -> list[dict]:
+    """Return recent ready VR template rows needed to build diversity memory.
+
+    Cheap: uses existing ready_lookup index; returns only the columns needed
+    for theme/emotion/word extraction — no large fields.
+    """
+    safe_limit = max(1, min(200, int(limit or 60)))
+    safe_days = max(1, int(lookback_days or 30))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT quiz_type, target_word_or_phrase, title, image_prompt, question_text
+                FROM bt_3_visual_riddle_templates
+                WHERE generation_status = 'ready'
+                  AND image_prompt IS NOT NULL AND image_prompt <> ''
+                  AND created_at > NOW() - (%s || ' days')::interval
+                ORDER BY created_at DESC
+                LIMIT %s;
+                """,
+                (str(safe_days), safe_limit),
+            )
+            rows = cursor.fetchall() or []
+    return [
+        {
+            "quiz_type": str(r[0] or ""),
+            "target_word_or_phrase": str(r[1] or "") or None,
+            "title": str(r[2] or "") or None,
+            "image_prompt": str(r[3] or ""),
+            "question_text": str(r[4] or ""),
+        }
+        for r in rows
+    ]
+
+
+def get_visual_riddle_quiz_type_distribution(*, lookback_count: int = 30) -> dict:
+    """Return {quiz_type: count} for the most recent N ready templates.
+
+    Used to adjust generation weights: penalise overused types, favour underused ones.
+    """
+    safe_count = max(10, min(200, int(lookback_count or 30)))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT quiz_type, COUNT(*) AS cnt
+                FROM (
+                    SELECT quiz_type
+                    FROM bt_3_visual_riddle_templates
+                    WHERE generation_status = 'ready'
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                ) sub
+                GROUP BY quiz_type;
+                """,
+                (safe_count,),
+            )
+            rows = cursor.fetchall() or []
+    return {str(r[0] or ""): int(r[1] or 0) for r in rows if r[0]}

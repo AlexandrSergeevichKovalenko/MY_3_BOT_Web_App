@@ -352,6 +352,7 @@ from backend.database import (
     count_due_srs_cards,
     count_new_cards_introduced_today,
     count_due_cards_reviewed_today,
+    count_card_review_response_seconds_today,
     has_available_new_srs_cards,
     get_manual_training_selection_card_ids,
     replace_manual_training_selection,
@@ -466,7 +467,9 @@ from backend.database import (
     get_starter_dictionary_state,
     upsert_starter_dictionary_state,
     count_dictionary_entries_for_language_pair,
+    count_starter_dictionary_entries_for_language_pair,
     import_starter_dictionary_snapshot,
+    delete_starter_dictionary_snapshot,
     has_youtube_proxy_subtitles_access,
     upsert_youtube_proxy_subtitles_access,
     list_youtube_proxy_subtitles_access,
@@ -3106,10 +3109,12 @@ def webapp_starter_dictionary_apply():
     ).strip().lower()
     if raw_action in {"yes", "accept", "accepted", "connect", "reconnect"}:
         action = "accepted"
+    elif raw_action in {"disconnect", "remove", "disable"}:
+        action = "disconnected"
     elif raw_action in {"no", "decline", "declined", "skip"}:
         action = "declined"
     else:
-        return jsonify({"error": "action должен быть accept/decline"}), 400
+        return jsonify({"error": "action должен быть accept/decline/disconnect"}), 400
 
     force_reimport = bool(payload.get("force_reimport"))
     source_lang, target_lang, profile = _get_user_language_pair(int(user_id))
@@ -3167,6 +3172,48 @@ def webapp_starter_dictionary_apply():
                 "action": "declined",
                 "state": state,
                 "offer": offer,
+                "template_total": int(template_total),
+            }
+        )
+
+    if action == "disconnected":
+        try:
+            disconnect_result = delete_starter_dictionary_snapshot(
+                user_id=int(user_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+            state = upsert_starter_dictionary_state(
+                user_id=int(user_id),
+                decision_status="declined",
+                source_user_id=int(STARTER_DICTIONARY_SOURCE_USER_ID),
+                template_version=STARTER_DICTIONARY_TEMPLATE_VERSION,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                last_imported_count=0,
+                decided_at=decided_at,
+                last_imported_at=None,
+                import_status="idle",
+                active_job_id=None,
+                last_error=None,
+                import_started_at=None,
+                import_finished_at=datetime.now(timezone.utc),
+            )
+            offer = _build_starter_dictionary_offer(
+                user_id=int(user_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                profile=profile,
+            )
+        except Exception as exc:
+            return jsonify({"error": f"Ошибка отключения базового словаря: {exc}"}), 500
+        return jsonify(
+            {
+                "ok": True,
+                "action": "disconnected",
+                "state": state,
+                "offer": offer,
+                "disconnect_result": disconnect_result,
                 "template_total": int(template_total),
             }
         )
@@ -5081,6 +5128,11 @@ def _build_starter_dictionary_offer(
         pair_source,
         pair_target,
     )
+    starter_pair_total = count_starter_dictionary_entries_for_language_pair(
+        safe_user_id,
+        pair_source,
+        pair_target,
+    )
 
     template_total = 0
     if STARTER_DICTIONARY_ENABLED and STARTER_DICTIONARY_SOURCE_USER_ID > 0:
@@ -5111,10 +5163,12 @@ def _build_starter_dictionary_offer(
         "state": state,
         "has_profile": has_profile,
         "user_pair_total": int(user_pair_total),
+        "starter_pair_total": int(starter_pair_total),
         "template_total": int(template_total),
         "suggested_count": int(suggested_count),
         "should_prompt": should_prompt,
         "can_reconnect": bool(STARTER_DICTIONARY_ENABLED and template_total > 0 and has_profile),
+        "can_disconnect": bool(int(starter_pair_total) > 0),
     }
 
 
@@ -33698,6 +33752,10 @@ WHAT TO EXTRACT — LEARNABLE UNITS ONLY:
   B) A complete natural sentence that demonstrates a word in real use: \
      "Er hat eine neue Methode erfunden." — one block per sentence.
   C) A ✗/✓ correction pair — both the wrong and correct form together as ONE block.
+  D) A pedagogical grammar-construction fragment such as \
+     "erinnert... an + Akkusativ", "ist... ähnlich + Dativ", \
+     "hat Ähnlichkeit mit + Dativ" IF it is genuinely worth saving. \
+     Keep it as a learnable unit, but remove raw ellipsis and obvious teaching noise.
 
 WHAT TO DISCARD — NOT LEARNABLE UNITS:
   • Section titles and topic headers.
@@ -33725,6 +33783,9 @@ STRICT CLEANUP RULES:
 — Remove translations, glosses, explanations, and commentary.
 — Keep only the actual learnable unit.
 — In normal cases, "term" and "content" should be identical or nearly identical.
+— If the input contains teaching shorthand like "...", "…" or case labels such as \
+  "+ Akkusativ" / "+ Dativ", keep the grammar signal but normalize the text into a \
+  clean readable lookup unit.
 
 SELF-CHECK BEFORE OUTPUTTING:
 — Every extracted block passes the "would I save this to a dictionary?" test
@@ -33763,6 +33824,8 @@ STEP 2 — ONE BLOCK PER ATOMIC UNIT (from what survived Step 1):
   TYPE S — one complete natural sentence → one block, just that sentence.
   Never bundle a TYPE W together with its TYPE S examples — they are always separate.
   Exception: a ✗/✓ correction pair stays together as one block.
+  Pedagogical grammar fragments like "ist... ähnlich + Dativ" may stay as TYPE W
+  if they are worth saving, but remove raw ellipsis and keep only the clean construction.
 
 STEP 3 — FILL BOTH FIELDS:
   "term"    — canonical form: bare infinitive / nominative / full sentence as appropriate.
@@ -33773,6 +33836,8 @@ STEP 3A — CLEAN THE UNIT:
 • remove parenthetical translations and glosses
 • remove explanatory commentary before/after the unit
 • do not include examples together with the main word/phrase
+• if the input contains teaching shorthand like "...", "…" or "+ Akkusativ/Dativ",
+  keep the grammatical signal but normalize it into readable lookup text
 
 STEP 4 — VALIDATE:
 • Every block has genuine dictionary value — a learner would save it
@@ -33786,6 +33851,9 @@ Output ONLY: {"blocks": [{"term": "...", "content": "..."}, ...]}"""
 
 def _shortcut_normalize_unit_text(text: str) -> str:
     cleaned = str(text or "").replace("\u00a0", " ").strip()
+    cleaned = cleaned.replace("…", "...")
+    cleaned = re.sub(r"(?<=\S)\s*(?:\.{3,})\s*(?=\S)", " ", cleaned)
+    cleaned = re.sub(r"\s*\+\s*", " + ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned)
     cleaned = re.sub(r"^[•▪◦●■▸▹▶►*]+\s*", "", cleaned)
     cleaned = re.sub(r"^\d+[\.)]\s*", "", cleaned)
@@ -35212,6 +35280,13 @@ def review_srs_card():
 
     interval_days = int(persisted.get("interval_days") or 0)
     due_at = persisted.get("due_at")
+    try:
+        _mark_today_plan_snapshot_stale(
+            user_id=int(user_id),
+            plan_date=_get_local_today_date(TODAY_PLAN_DEFAULT_TZ),
+        )
+    except Exception:
+        logging.warning("Failed to mark today snapshot stale after SRS review: user=%s", user_id, exc_info=True)
     log_profile(int(user_id), int(card_id), queue_source, error_text=None)
     return jsonify(
         {
@@ -44436,6 +44511,8 @@ def _sync_today_plan_cards_progress(
     now_utc = datetime.now(timezone.utc)
     srs_queue_computed = False
     current_due = 0
+    due_review_elapsed_seconds: int | None = None
+    new_review_elapsed_seconds: int | None = None
 
     synced_items: list[dict] = []
     changed = False
@@ -44446,17 +44523,31 @@ def _sync_today_plan_cards_progress(
             continue
 
         current_status = str(item.get("status") or "todo").strip().lower() or "todo"
-        if current_status == "done":
-            synced_items.append(item)
-            continue
-
         payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
         mode = str(payload.get("mode") or "").strip().lower()
         limit = max(1, int(payload.get("limit") or 1))
+        goal_seconds = max(0, int(payload.get("timer_goal_seconds") or (max(0, int(item.get("estimated_minutes") or 0)) * 60)))
+        stored_elapsed = max(0, int(payload.get("timer_seconds") or 0))
+        derived_elapsed = stored_elapsed
 
         desired_status = current_status
 
         if mode == "fsrs_due":
+            if due_review_elapsed_seconds is None:
+                try:
+                    due_review_elapsed_seconds = int(
+                        count_card_review_response_seconds_today(
+                            user_id=int(user_id),
+                            now_utc=now_utc,
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                            review_kind="due",
+                            tz_name=TODAY_PLAN_DEFAULT_TZ,
+                        )
+                    )
+                except Exception:
+                    due_review_elapsed_seconds = 0
+            derived_elapsed = max(derived_elapsed, max(0, int(due_review_elapsed_seconds or 0)))
             if not srs_queue_computed:
                 try:
                     current_due = int(
@@ -44470,17 +44561,30 @@ def _sync_today_plan_cards_progress(
                 except Exception:
                     current_due = -1
                 srs_queue_computed = True
-            if current_due < 0:
-                synced_items.append(item)
-                continue
-            initial_due = max(0, int(payload.get("due_total") or limit))
-            reviewed = max(0, min(limit, initial_due - current_due))
-            if current_due <= 0 or reviewed >= limit:
-                desired_status = "done"
-            elif reviewed > 0 and current_status == "todo":
-                desired_status = "doing"
+            if current_due >= 0:
+                initial_due = max(0, int(payload.get("due_total") or limit))
+                reviewed = max(0, min(limit, initial_due - current_due))
+                if current_due <= 0 or reviewed >= limit:
+                    desired_status = "done"
+                elif reviewed > 0 and current_status == "todo":
+                    desired_status = "doing"
 
         elif mode == "cards_new":
+            if new_review_elapsed_seconds is None:
+                try:
+                    new_review_elapsed_seconds = int(
+                        count_card_review_response_seconds_today(
+                            user_id=int(user_id),
+                            now_utc=now_utc,
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                            review_kind="new",
+                            tz_name=TODAY_PLAN_DEFAULT_TZ,
+                        )
+                    )
+                except Exception:
+                    new_review_elapsed_seconds = 0
+            derived_elapsed = max(derived_elapsed, max(0, int(new_review_elapsed_seconds or 0)))
             try:
                 introduced_today = int(
                     count_new_cards_introduced_today(
@@ -44498,11 +44602,49 @@ def _sync_today_plan_cards_progress(
             elif introduced_today > 0 and current_status == "todo":
                 desired_status = "doing"
 
+        progress_percent = 0.0
+        if goal_seconds > 0:
+            progress_percent = min(100.0, (float(derived_elapsed) / float(goal_seconds)) * 100.0)
+        elif derived_elapsed > 0:
+            progress_percent = 100.0
+
+        if goal_seconds > 0 and derived_elapsed >= goal_seconds:
+            desired_status = "done"
+        elif desired_status in {"todo", "skipped"} and derived_elapsed > 0:
+            desired_status = "doing"
+
+        payload_updates = {
+            "timer_seconds": int(derived_elapsed),
+            "timer_goal_seconds": int(goal_seconds),
+            "timer_progress_percent": round(progress_percent, 2),
+        }
+        changed_payload = any(payload.get(key) != value for key, value in payload_updates.items())
+
+        updated_item = item
+        if changed_payload:
+            try:
+                saved_item = update_daily_plan_item_payload(
+                    user_id=int(user_id),
+                    item_id=int(item.get("id") or 0),
+                    payload_updates=payload_updates,
+                )
+                if saved_item:
+                    updated_item = saved_item
+                    changed = True
+            except Exception:
+                logging.warning(
+                    "Failed to sync cards item payload: user=%s item=%s trigger=%s",
+                    user_id,
+                    item.get("id"),
+                    trigger,
+                    exc_info=True,
+                )
+
         if desired_status != current_status:
             try:
                 updated = update_daily_plan_item_status(
                     user_id=int(user_id),
-                    item_id=int(item.get("id") or 0),
+                    item_id=int((updated_item or item).get("id") or 0),
                     status=desired_status,
                 )
                 if updated:
@@ -44532,7 +44674,7 @@ def _sync_today_plan_cards_progress(
                     trigger,
                     exc_info=True,
                 )
-        synced_items.append(item)
+        synced_items.append(updated_item or item)
 
     if not changed:
         return plan
@@ -46939,11 +47081,6 @@ def explain_webapp_translation_followup_question():
             "ok": True,
             "answer": answer,
             "is_language_question": bool(followup_payload.get("is_language_question", True)),
-            "save_variants": (
-                followup_payload.get("save_variants")
-                if isinstance(followup_payload.get("save_variants"), list)
-                else []
-            ),
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )

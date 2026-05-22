@@ -65,6 +65,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "image_quiz_sentence_fallback",
     "image_quiz_visual_screen",
     "image_quiz_blueprint",
+    "visual_riddle_blueprint",
     "tts_chunk_de",
     "translate_subtitles_ru",
     "translate_subtitles_multilang",
@@ -1857,6 +1858,14 @@ Correction rules:
 - If correction is needed, use the corrected German form for lookup.
 - Preserve the learner's original request via dedicated fields.
 - Do not aggressively rewrite uncertain input.
+- If the input is a noisy pedagogical grammar fragment such as
+  "erinnert... an + Akkusativ", "ist... ähnlich + Dativ",
+  "hat Ähnlichkeit mit + Dativ":
+  * treat "...", "…", "+", and case labels as teaching annotations, not literal translatable tokens
+  * normalize the result into a clean save-worthy dictionary expression
+  * prefer canonical construction form such as infinitive/base expression or standard pattern
+  * use government_patterns to capture the preposition/case explicitly
+  * do not leave raw noise like "..." in word_de or save_worthy_options
 
 Sentence handling:
 - If the input is a full sentence, translate the FULL sentence.
@@ -1941,6 +1950,7 @@ Output rules:
 - GERMAN HEADWORD NORMALIZATION:
   - If the looked-up word is a standalone noun, word_de must include the correct definite article in nominative: "der/die/das + noun". Never return a bare noun.
   - If the looked-up word is a standalone verb, word_de must be the infinitive.
+  - If the looked-up item is a grammatical construction fragment, word_de must be the clean canonical construction, not the noisy surface fragment.
 - If adjective: include comparative/superlative if useful and common collocations.
 - If phrase/expression: explain whether it is fixed, idiomatic, formal/informal, spoken/written.
 - memory_tip must help the learner remember the word vividly.
@@ -2052,6 +2062,13 @@ Task:
 - If input is a full sentence, translate the FULL sentence literally and keep full-sentence mapping in word_source/word_target.
 - Never collapse sentence input to a single word/lemma.
 - Detect obvious typos only when confidence is high and normalize the lookup form.
+- If the input is a noisy pedagogical grammar fragment such as
+  "erinnert... an + Akkusativ", "ist... ähnlich + Dativ",
+  "hat Ähnlichkeit mit + Dativ":
+  * treat "...", "…", "+", and case labels as grammar annotations, not literal tokens to translate
+  * normalize word_source into a clean canonical save-worthy expression in source_language
+  * use government_patterns to preserve the preposition/case information explicitly
+  * do not leave raw noise like "..." in word_source or save_worthy_options
 
 Return STRICT JSON with keys:
 {
@@ -2145,6 +2162,7 @@ Rules:
 - Each meaning must include one short real example pair.
 - Provide 2–3 short natural usage_examples different from meaning examples.
 - Keep explanations compact but clear.
+- For noisy grammar-construction input, the base save_worthy_options item must use the normalized clean construction, not the raw fragment.
 - If noun: include article/gender, plural, genitive if useful, pronunciation and stress.
 - If verb: include separable/inseparable if relevant, up to 3 useful government patterns, and key forms.
 - GERMAN HEADWORD NORMALIZATION:
@@ -2704,6 +2722,95 @@ Rules:
 - explanation must briefly say why the correct answer is right and why the three distractors are wrong or less precise.
 - Never fall back to a generic question like "Was zeigt das Bild?".
 - Output ONLY JSON.
+""",
+"visual_riddle_blueprint": """
+You create visual riddle puzzles for a German language learning Telegram bot.
+
+You receive JSON:
+{
+  "quiz_type": "one of: VISUAL_WORD_REBUS | SITUATIONAL_REBUS | GRAMMAR_PUZZLE | DETECTIVE_PUZZLE | FIND_THE_MISTAKE | MEME_STYLE_RIDDLE | ASSOCIATION_RIDDLE | MULTI_STEP_IMAGE_QUIZ",
+  "difficulty": "A2 | B1 | B2",
+  "target_skill": "vocabulary | grammar | logic | speaking_phrase | cultural_context | reading_context",
+  "recent_generation_memory": {  // OPTIONAL — diversity context from recent riddles
+    "recent_target_words": ["word1", "word2", ...],
+    "recent_quiz_types": ["TYPE1", "TYPE2", ...],
+    "recent_visual_themes": ["theme signature 1", "theme signature 2", ...],
+    "recent_emotional_patterns": ["pattern1", "pattern2", ...],
+    "recent_question_patterns": ["question lead 1", ...],
+    "recent_titles": ["title1", "title2", ...]
+  }
+}
+
+Task:
+1. Choose a specific German word, phrase, or grammar pattern appropriate for the given difficulty and target_skill.
+   - A2: very common everyday words (der Hund, trinken, groß, ein Buch lesen)
+   - B1: everyday but less frequent words or simple grammar patterns (die Ampel, umziehen, Perfekt vs Präteritum, sich beeilen)
+   - B2: less common vocabulary or more complex grammar (die Fassade, obwohl-clause, Konjunktiv II, das Vorurteil)
+2. Create a complete visual riddle that can be illustrated as one single concrete, unambiguous image.
+3. The image MUST depict one clear real-world scene. What is shown must make the correct German answer the obvious first choice.
+4. Do NOT include any text overlays, labels, or signs in the image_prompt — all text belongs in question_text and answers only.
+5. Generate exactly 4 answer options with IDs A, B, C, D (one correct, three plausible distractors).
+6. Wrong answers must be semantically close to the correct answer but clearly wrong for the depicted scene.
+
+Diversity rules (always active):
+- STRONGLY prefer novelty. Every new riddle should feel different from the last 30.
+- Vary locations widely: home, kitchen, garden, park, street, café, hospital, museum, library, gym, beach, farm, factory, theatre, school, office, market, train, boat, forest, mountain, workshop.
+- Vary professions: not just "teacher" — also chef, doctor, engineer, musician, athlete, nurse, farmer, mechanic, librarian, artist, scientist, pilot, etc.
+- Vary time of day, seasons, and weather conditions across riddles.
+- Vary emotional tone: curiosity, joy, frustration, surprise, calm, urgency, nostalgia, confusion, pride.
+- Vary quiz structures: different question phrasings, different cognitive challenges.
+
+Anti-trope rules (reduce repetition of overused German clichés):
+- Do NOT default to: umbrella/rain grammar scenes, airport departure sadness, strict classroom grammar, broken vase detective scene, office desk procrastination, missed train panic, beer/sausage stereotypes, punctual German jokes, Oktoberfest costumes.
+- These are NOT banned. But if you have used one recently (check recent_generation_memory), choose something very different.
+- There are infinitely many interesting German-language scenarios — explore them.
+
+If recent_generation_memory is provided, follow these hard rules:
+- DO NOT reuse any word from recent_target_words as the target_word_or_phrase.
+- DO NOT create a scene whose theme signature matches any entry in recent_visual_themes.
+- DO NOT reuse an emotional/situational pattern from recent_emotional_patterns that appears 3+ times.
+- AVOID question structures that appear repeatedly in recent_question_patterns.
+- If recent_quiz_types shows one type dominating, make your content maximally different within the required quiz_type.
+- If recent_titles suggest a conceptual cluster (travel/longing, mystery/crime, school/grammar), move to a different cluster.
+
+Rules:
+- image_prompt: minimum 60 characters. Must describe ONE concrete scene with objects, action, lighting, style. No text in the image.
+- question_text: must be in German. Specific and scene-relevant, NOT generic like "Was zeigt das Bild?".
+- answers[].text: must be in German.
+- correct_answer_id must match exactly one answer where is_correct = true.
+- All 4 answer IDs must be A, B, C, D — exactly once each.
+- Place the correct answer at a RANDOM position (not always A). Distribute across A, B, C, D.
+- short_explanation: in Russian — explain in 1-2 sentences why the answer is correct.
+- language_explanation: in Russian — briefly explain the German word/grammar rule being tested.
+- title: in Russian — short catchy title for the riddle (max 40 chars).
+- telegram_caption: in Russian — short caption for Telegram bot message (max 80 chars, include difficulty emoji: 🟢 A2, 🟡 B1, 🔴 B2).
+- target_word_or_phrase: the German word or phrase being tested.
+- Avoid: politics, violence, weapons, NSFW content, discrimination, dangerous topics.
+- No markdown, no code blocks in any field.
+
+Return STRICT JSON, no markdown, no code blocks:
+{
+  "quiz_type": "...",
+  "difficulty": "...",
+  "target_language": "German",
+  "target_skill": "...",
+  "target_word_or_phrase": "...",
+  "title": "...",
+  "telegram_caption": "...",
+  "question_text": "...",
+  "image_prompt": "...",
+  "answers": [
+    {"id": "A", "text": "...", "is_correct": false},
+    {"id": "B", "text": "...", "is_correct": true},
+    {"id": "C", "text": "...", "is_correct": false},
+    {"id": "D", "text": "...", "is_correct": false}
+  ],
+  "correct_answer_id": "B",
+  "short_explanation": "...",
+  "language_explanation": "..."
+}
+
+Output ONLY JSON.
 """,
 "check_translation_multilang": """
 You are a strict translation evaluator.
@@ -4697,6 +4804,15 @@ async def run_image_quiz_blueprint(payload: dict) -> dict:
         system_instruction_key="image_quiz_blueprint",
         payload=payload or {},
         poll_delay_sec=1.2,
+    )
+
+
+async def run_visual_riddle_blueprint(payload: dict) -> dict:
+    return await _run_json_assistant_task(
+        task_name="visual_riddle_blueprint",
+        system_instruction_key="visual_riddle_blueprint",
+        payload=payload or {},
+        poll_delay_sec=1.5,
     )
 
 

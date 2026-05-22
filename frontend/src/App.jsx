@@ -2801,6 +2801,7 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
   onCheckTranslation,
   checkDisabled,
   checkLoading,
+  checkStatusText,
   onJumpToDictionary,
 }) {
   const textareaRef = useRef(null);
@@ -3059,20 +3060,32 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
           type="button"
           className={`translation-item-check-button ${checkLoading ? 'is-loading' : ''}`}
           onClick={() => onCheckTranslation?.(sentenceId)}
-          disabled={Boolean(checkDisabled)}
+          disabled={Boolean(checkDisabled || checkLoading)}
           aria-label={checkLoading ? checkLoadingLabel : checkLabel}
+          aria-busy={checkLoading ? 'true' : 'false'}
         >
-          {checkLoading ? checkLoadingLabel : checkLabel}
+          {checkLoading ? (
+            <>
+              <span className="translation-item-check-spinner" aria-hidden="true" />
+              <span>{checkLoadingLabel}</span>
+            </>
+          ) : checkLabel}
         </button>
         <button
           type="button"
           className="translation-dict-jump"
           onClick={onJumpToDictionary}
           aria-label={dictionaryLabel}
+          disabled={Boolean(checkLoading)}
         >
           {dictionaryLabel}
         </button>
       </div>
+      {checkLoading && checkStatusText ? (
+        <div className="translation-item-check-status" role="status" aria-live="polite">
+          {checkStatusText}
+        </div>
+      ) : null}
     </label>
   );
 });
@@ -3597,6 +3610,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
                         || !String(draft || '').trim()
                       }
                       checkLoading={Number(singleSentenceCheckLoadingId || 0) === Number(item.id_for_mistake_table || 0)}
+                      checkStatusText={tr('Проверяем это предложение. Результат появится ниже.', 'Dieser Satz wird geprueft. Das Ergebnis erscheint weiter unten.')}
                       onJumpToDictionary={jumpToDictionaryFromSentence}
                     />
                   );
@@ -3842,15 +3856,12 @@ const TranslationsSection = React.memo(function TranslationsSection({
                 const followupLoading = Boolean(explanationQuestionLoading[explanationKey]);
                 const followupAnswerPayload = parseExplanationFollowupAnswerPayload(explanationQuestionAnswers[explanationKey]);
                 const followupAnswer = String(followupAnswerPayload.answer || '').trim();
-                const followupSaveVariants = Array.isArray(followupAnswerPayload.saveVariants) ? followupAnswerPayload.saveVariants : [];
-                const followupSaveChecked = explanationQuestionSaveChecked[explanationKey] && typeof explanationQuestionSaveChecked[explanationKey] === 'object'
-                  ? explanationQuestionSaveChecked[explanationKey]
-                  : {};
-                const followupSaveLoading = Boolean(explanationQuestionSaveLoading[explanationKey]);
-                const followupSaveError = String(explanationQuestionSaveError[explanationKey] || '').trim();
-                const followupSaveMessage = String(explanationQuestionSaveMessage[explanationKey] || '').trim();
                 return (
-                  <div key={`${item.check_item_id ?? item.translation_id ?? item.sentence_id_for_mistake_table ?? item.sentence_number ?? index}-${index}`} className="webapp-result-card">
+                  <div
+                    key={`${item.check_item_id ?? item.translation_id ?? item.sentence_id_for_mistake_table ?? item.sentence_number ?? index}-${index}`}
+                    className="webapp-result-card"
+                    ref={(node) => registerTranslationResultCardNode(resultCardKey, node)}
+                  >
                     <label className="translation-block-visibility-toggle">
                       <input
                         type="checkbox"
@@ -3981,7 +3992,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
                                       <div className="webapp-explanation-followup-actions">
                                         <button
                                           type="button"
-                                          className="primary-button"
+                                          className="primary-button webapp-explanation-followup-action-button"
                                           onClick={() => handleAskExplanationQuestion(item)}
                                           disabled={followupLoading || !followupDraft.trim()}
                                         >
@@ -3989,7 +4000,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
                                         </button>
                                         <button
                                           type="button"
-                                          className="secondary-button"
+                                          className="secondary-button webapp-explanation-followup-action-button"
                                           onClick={() => handleToggleExplanationQuestion(item, false)}
                                           disabled={followupLoading}
                                         >
@@ -4020,51 +4031,6 @@ const TranslationsSection = React.memo(function TranslationsSection({
                                           </span>
                                         </div>
                                         {renderExplanationContent(followupAnswer)}
-                                        {followupSaveVariants.length > 0 && (
-                                          <div className="webapp-explanation-followup-save">
-                                            <div className="webapp-explanation-followup-save-title">
-                                              {tr('Сохранить в словарь', 'Im Wörterbuch speichern')}
-                                            </div>
-                                            <div className="webapp-explanation-followup-save-list">
-                                              {followupSaveVariants.map((variant, variantIndex) => (
-                                                <label key={`${explanationKey}-save-${variantIndex}`} className="webapp-gpt-save-option">
-                                                  <input
-                                                    type="checkbox"
-                                                    checked={Boolean(followupSaveChecked[variantIndex])}
-                                                    onChange={(event) => handleToggleExplanationFollowupSaveVariant(item, variantIndex, event.target.checked)}
-                                                  />
-                                                  <span>
-                                                    <strong>{variant.source_text}</strong>
-                                                    {' — '}
-                                                    {variant.target_text}
-                                                  </span>
-                                                </label>
-                                              ))}
-                                            </div>
-                                            <div className="webapp-explanation-followup-actions">
-                                              <button
-                                                type="button"
-                                                className="secondary-button webapp-gpt-save-button"
-                                                onClick={() => handleSaveExplanationFollowupAnswer(item)}
-                                                disabled={followupSaveLoading}
-                                              >
-                                                {followupSaveLoading
-                                                  ? tr('Сохраняем...', 'Speichern...')
-                                                  : tr('Сохранить в словарь', 'Ins Wörterbuch speichern')}
-                                              </button>
-                                            </div>
-                                            {followupSaveMessage && (
-                                              <div className="webapp-gpt-save-status">
-                                                {followupSaveMessage}
-                                              </div>
-                                            )}
-                                            {followupSaveError && (
-                                              <div className="webapp-gpt-save-status is-error">
-                                                {followupSaveError}
-                                              </div>
-                                            )}
-                                          </div>
-                                        )}
                                       </>
                                     )}
                                   </div>
@@ -5105,6 +5071,7 @@ function AppInner() {
   const [results, setResults] = useState([]);
   const [sentences, setSentences] = useState([]);
   const [singleSentenceCheckLoadingId, setSingleSentenceCheckLoadingId] = useState(null);
+  const [pendingSingleResultScrollSentenceId, setPendingSingleResultScrollSentenceId] = useState(null);
   const [webappError, setWebappError] = useState('');
   const [webappLoading, setWebappLoading] = useState(false);
   const [translationCheckProgress, setTranslationCheckProgress] = useState({ active: false, done: 0, total: 0 });
@@ -5175,6 +5142,7 @@ function AppInner() {
   const [youtubeDictFeelLoading, setYoutubeDictFeelLoading] = useState(false);
   const [youtubeDictFeelStatus, setYoutubeDictFeelStatus] = useState('');
   const [manualTranscript, setManualTranscript] = useState('');
+  const translationResultCardRefsRef = useRef(new Map());
   const [readerInput, setReaderInput] = useState('');
   const [readerSelectedFile, setReaderSelectedFile] = useState(null);
   const [readerLoading, setReaderLoading] = useState(false);
@@ -9308,15 +9276,13 @@ function AppInner() {
         };
         await addVocabMutation(editUserId, { type: 'edit', entry_id: vocabEditItem.id, payload: editPayload });
         setVocabOfflinePendingCount((c) => c + 1);
-        // Optimistic local update
-        const localItem = {
-          ...vocabEditItem,
-          word_de:          vocabEditWord.trim() || vocabEditItem.word_de,
-          translation_ru:   primaryMeaning || vocabEditItem.translation_ru,
-          folder_id:        folderId,
-          display_word:     vocabEditWord.trim() || vocabEditItem.word_de || vocabEditItem.display_word,
-          display_translation: primaryMeaning || vocabEditItem.translation_ru || vocabEditItem.display_translation,
-        };
+        const localItem = applySavedVocabEditLocally(
+          vocabEditItem,
+          vocabEditWord.trim() || vocabEditItem.word_de || '',
+          primaryMeaning || vocabEditItem.translation_ru || '',
+          supportsMeanings ? [primaryMeaning, secondaryMeaning, tertiaryMeaning] : [],
+          folderId,
+        );
         setVocabItems((prev) => prev.map((it) => it.id === localItem.id ? localItem : it));
         updateCachedVocabEntry(editUserId, localItem).catch(() => {});
         setVocabEditItem(null);
@@ -9395,6 +9361,7 @@ function AppInner() {
     tr,
     webappUser?.id,
     isOnline,
+    applySavedVocabEditLocally,
   ]);
 
   const renameFolderSubmit = useCallback(async () => {
@@ -11362,10 +11329,12 @@ function AppInner() {
       target_lang: String(payload.target_lang || '').trim().toLowerCase() || '',
       has_profile: Boolean(payload.has_profile),
       user_pair_total: Math.max(0, Number(payload.user_pair_total || 0) || 0),
+      starter_pair_total: Math.max(0, Number(payload.starter_pair_total || 0) || 0),
       template_total: Math.max(0, Number(payload.template_total || 0) || 0),
       suggested_count: Math.max(0, Number(payload.suggested_count || 0) || 0),
       should_prompt: Boolean(payload.should_prompt),
       can_reconnect: Boolean(payload.can_reconnect),
+      can_disconnect: Boolean(payload.can_disconnect),
       state,
     };
   }, []);
@@ -11465,11 +11434,14 @@ function AppInner() {
     }
   }, [initData, normalizeStarterDictionaryOffer, pollStarterDictionaryStatus, readApiError, tr]);
 
-  const applyStarterDictionaryDecision = useCallback(async (accept, { forceReimport = false, closePromptOnSuccess = true } = {}) => {
+  const applyStarterDictionaryDecision = useCallback(async (actionOrAccept, { forceReimport = false, closePromptOnSuccess = true } = {}) => {
     if (!initData) {
       setStarterDictionaryActionError(initDataMissingMsg);
       return;
     }
+    const resolvedAction = typeof actionOrAccept === 'string'
+      ? String(actionOrAccept || '').trim().toLowerCase()
+      : (actionOrAccept ? 'accept' : 'decline');
     try {
       setStarterDictionaryActionLoading(true);
       setStarterDictionaryActionError('');
@@ -11479,7 +11451,7 @@ function AppInner() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           initData,
-          action: accept ? 'accept' : 'decline',
+          action: resolvedAction,
           force_reimport: Boolean(forceReimport),
         }),
       });
@@ -11489,7 +11461,7 @@ function AppInner() {
       const data = await response.json();
       const offer = normalizeStarterDictionaryOffer(data?.offer);
       setStarterDictionaryOffer(offer);
-      if (accept) {
+      if (resolvedAction === 'accept') {
         const importStatus = String(offer?.state?.import_status || 'idle').trim().toLowerCase() || 'idle';
         const startedInBackground = Boolean(data?.started_in_background) || importStatus === 'running';
         const inserted = Math.max(0, Number(data?.import_result?.inserted_count || offer?.state?.last_imported_count || 0) || 0);
@@ -11506,6 +11478,13 @@ function AppInner() {
         if (startedInBackground) {
           pollStarterDictionaryStatus(1200);
         }
+      } else if (resolvedAction === 'disconnect') {
+        const deleted = Math.max(0, Number(data?.disconnect_result?.deleted_count || 0) || 0);
+        setStarterDictionaryActionMessage(
+          deleted > 0
+            ? tr(`Базовый словарь отключён: удалено ${deleted} стартовых записей.`, `Basiswoerterbuch getrennt: ${deleted} Starter-Eintraege entfernt.`)
+            : tr('Базовый словарь отключён. Стартовых записей для удаления не найдено.', 'Basiswoerterbuch getrennt. Keine Starter-Eintraege zum Entfernen gefunden.')
+        );
       } else {
         setStarterDictionaryActionMessage(tr('Ок, начинаем с пустого словаря.', 'Alles klar, wir starten mit einem leeren Woerterbuch.'));
       }
@@ -17737,6 +17716,18 @@ function AppInner() {
     return '';
   };
 
+  const registerTranslationResultCardNode = useCallback((resultKey, node) => {
+    const normalizedKey = String(resultKey || '').trim();
+    if (!normalizedKey) {
+      return;
+    }
+    if (node) {
+      translationResultCardRefsRef.current.set(normalizedKey, node);
+    } else {
+      translationResultCardRefsRef.current.delete(normalizedKey);
+    }
+  }, []);
+
   const applyTranslationCheckStatusPayload = (payload) => {
     const checkSession = payload?.check_session && typeof payload.check_session === 'object'
       ? payload.check_session
@@ -17832,6 +17823,29 @@ function AppInner() {
       sessionId: checkSession?.id ?? null,
     };
   };
+
+  useEffect(() => {
+    const targetSentenceId = Number(pendingSingleResultScrollSentenceId || 0);
+    if (!Number.isFinite(targetSentenceId) || targetSentenceId <= 0) {
+      return undefined;
+    }
+    const matchedResult = results.find(
+      (item) => Number(item?.sentence_id_for_mistake_table || 0) === targetSentenceId
+    );
+    if (!matchedResult) {
+      return undefined;
+    }
+    const resultKey = getResultCardIdentityKey(matchedResult);
+    const node = translationResultCardRefsRef.current.get(resultKey);
+    if (!node) {
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      node.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+      setPendingSingleResultScrollSentenceId(null);
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [getResultCardIdentityKey, pendingSingleResultScrollSentenceId, results]);
 
   const pollTranslationCheckStatus = async ({ checkSessionId: checkSessionIdParam, pollToken }) => {
     const getCheckStatusPollDelayMs = (attempt, suggestedDelayMs = 0) => {
@@ -18044,6 +18058,7 @@ function AppInner() {
         checkSessionId: startState.sessionId,
         pollToken,
       });
+      return true;
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
         error,
@@ -18051,6 +18066,7 @@ function AppInner() {
         'Uebersetzungen konnten nicht geprueft werden.'
       );
       setWebappError(`${tr('Ошибка проверки', 'Pruefungsfehler')}: ${friendly}`);
+      return false;
     } finally {
       translationSubmitInFlightRef.current = false;
       setWebappLoading(false);
@@ -18110,12 +18126,15 @@ function AppInner() {
     }
     setSingleSentenceCheckLoadingId(normalizedSentenceId);
     try {
-      await submitTranslationCheck({
+      const checkCompleted = await submitTranslationCheck({
         submittedEntries: [{ id: normalizedSentenceId, translation: translationText }],
         resetExistingResults: false,
         clearExistingExplanations: false,
         showBackgroundHint: false,
       });
+      if (checkCompleted) {
+        setPendingSingleResultScrollSentenceId(normalizedSentenceId);
+      }
     } finally {
       setSingleSentenceCheckLoadingId(null);
     }
@@ -19196,6 +19215,122 @@ function AppInner() {
       String(meanings[1]?.value || '').trim(),
       String(meanings[2]?.value || '').trim(),
     ];
+  };
+  const applySavedVocabEditLocally = (item, germanText, russianText, meaningValues, folderId) => {
+    const responseJson = coerceResponseJson(item?.response_json);
+    const sourceLang = normalizeLangCode(item?.source_lang || responseJson?.source_lang || '');
+    const targetLang = normalizeLangCode(item?.target_lang || responseJson?.target_lang || '');
+    const normalizedGerman = String(germanText || '').trim();
+    const normalizedRussian = String(russianText || '').trim();
+
+    let sourceText = String(responseJson.source_text || '').trim();
+    let targetText = String(responseJson.target_text || '').trim();
+    if (sourceLang === 'de' && normalizedGerman) sourceText = normalizedGerman;
+    if (targetLang === 'de' && normalizedGerman) targetText = normalizedGerman;
+    if (sourceLang === 'ru' && normalizedRussian) sourceText = normalizedRussian;
+    if (targetLang === 'ru' && normalizedRussian) targetText = normalizedRussian;
+
+    let wordRu = String(item?.word_ru || responseJson.word_ru || '').trim();
+    let translationDe = String(item?.translation_de || responseJson.translation_de || '').trim();
+    let wordDe = String(item?.word_de || responseJson.word_de || '').trim();
+    let translationRu = String(item?.translation_ru || responseJson.translation_ru || '').trim();
+
+    if (sourceLang === 'ru' && sourceText) {
+      wordRu = sourceText;
+      translationRu = sourceText;
+    }
+    if (sourceLang === 'de' && sourceText) {
+      wordDe = sourceText;
+      translationDe = sourceText;
+    }
+    if (targetLang === 'de' && targetText) {
+      wordDe = targetText;
+      translationDe = targetText;
+    }
+    if (targetLang === 'ru' && targetText) {
+      wordRu = targetText;
+      translationRu = targetText;
+    }
+
+    const updatedResponseJson = {
+      ...responseJson,
+      source_text: sourceText,
+      target_text: targetText,
+      word_ru: wordRu,
+      translation_de: translationDe,
+      word_de: wordDe,
+      translation_ru: translationRu,
+      source_lang: sourceLang || item?.source_lang || '',
+      target_lang: targetLang || item?.target_lang || '',
+    };
+
+    const normalizedMeanings = Array.isArray(meaningValues)
+      ? meaningValues.map((value) => String(value || '').trim()).filter(Boolean).slice(0, 3)
+      : [];
+    if (normalizedMeanings.length > 0) {
+      const existingMeanings = responseJson?.meanings && typeof responseJson.meanings === 'object' ? responseJson.meanings : {};
+      const existingPrimary = existingMeanings?.primary && typeof existingMeanings.primary === 'object' ? existingMeanings.primary : {};
+      const existingSecondary = Array.isArray(existingMeanings?.secondary) ? existingMeanings.secondary : [];
+      const existingSenses = Array.isArray(responseJson?.dictionary_senses) ? responseJson.dictionary_senses : [];
+      const rebuiltSenses = [];
+      const rebuiltSecondary = [];
+      const rebuiltTranslations = [];
+      normalizedMeanings.forEach((value, index) => {
+        const baseSense = existingSenses[index] && typeof existingSenses[index] === 'object' ? existingSenses[index] : {};
+        const baseMeaning = index === 0
+          ? existingPrimary
+          : (existingSecondary[index - 1] && typeof existingSecondary[index - 1] === 'object' ? existingSecondary[index - 1] : {});
+        const contextValue = String(baseSense.context || baseMeaning.context || '').trim();
+        const exampleSource = String(baseSense.example_source || baseMeaning.example_source || '').trim();
+        const exampleTarget = String(baseSense.example_target || baseMeaning.example_target || '').trim();
+        rebuiltSenses.push({
+          rank: index + 1,
+          label: index === 0 ? 'main' : 'secondary',
+          value,
+          context: contextValue,
+          example_source: exampleSource,
+          example_target: exampleTarget,
+        });
+        rebuiltTranslations.push({
+          value,
+          context: contextValue,
+          is_primary: index === 0,
+        });
+        if (index > 0) {
+          rebuiltSecondary.push({
+            value,
+            priority: index + 1,
+            context: contextValue,
+            example_source: exampleSource,
+            example_target: exampleTarget,
+          });
+        }
+      });
+      updatedResponseJson.dictionary_senses = rebuiltSenses;
+      updatedResponseJson.translations = rebuiltTranslations;
+      updatedResponseJson.meanings = {
+        primary: {
+          value: rebuiltSenses[0]?.value || normalizedRussian,
+          priority: 1,
+          context: rebuiltSenses[0]?.context || '',
+          example_source: rebuiltSenses[0]?.example_source || '',
+          example_target: rebuiltSenses[0]?.example_target || '',
+        },
+        secondary: rebuiltSecondary,
+      };
+    }
+
+    return {
+      ...item,
+      word_ru: wordRu,
+      translation_de: translationDe,
+      word_de: wordDe,
+      translation_ru: translationRu,
+      folder_id: folderId,
+      response_json: updatedResponseJson,
+      display_word: wordDe || wordRu || item?.display_word || '',
+      display_translation: normalizedMeanings[0] || translationRu || translationDe || item?.display_translation || '',
+    };
   };
   const normalizeComparableText = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
   const getSavedEntryMeaningRows = (item, limit = 3) => {
@@ -24175,28 +24310,16 @@ function AppInner() {
         throw new Error(message);
       }
       const data = await response.json();
-      const normalizedSaveVariants = Array.isArray(data?.save_variants)
-        ? data.save_variants
-          .filter((item) => item && typeof item === 'object')
-          .map((item) => ({
-            source_text: String(item.source_text || '').trim(),
-            target_text: String(item.target_text || '').trim(),
-          }))
-          .filter((item) => item.source_text && item.target_text)
-        : [];
       setExplanationQuestionAnswers((prev) => ({
         ...prev,
         [key]: {
           answer: String(data.answer || '').trim(),
-          saveVariants: normalizedSaveVariants,
+          saveVariants: [],
         },
       }));
       setCollapsedExplanationBlocks((prev) => ({ ...prev, [key]: true }));
       setCollapsedFollowupAnswerBlocks((prev) => ({ ...prev, [key]: false }));
-      setExplanationQuestionSaveChecked((prev) => ({
-        ...prev,
-        [key]: normalizedSaveVariants.reduce((acc, _item, index) => ({ ...acc, [index]: true }), {}),
-      }));
+      setExplanationQuestionSaveChecked((prev) => ({ ...prev, [key]: {} }));
       setExplanationQuestionSaveError((prev) => ({ ...prev, [key]: '' }));
       setExplanationQuestionSaveMessage((prev) => ({ ...prev, [key]: '' }));
       setExplanationQuestionOpen((prev) => ({ ...prev, [key]: false }));
@@ -28960,25 +29083,40 @@ function AppInner() {
                       {languageProfileSaving ? tr('Сохраняем...', 'Speichern...') : tr('Сохранить и продолжить', 'Speichern und fortsetzen')}
                     </button>
                     {languageProfile?.has_profile && starterDictionaryOffer?.enabled && (
-                      <button
-                        type="button"
-                        className="secondary-button language-profile-starter-btn"
-                        onClick={() => void applyStarterDictionaryDecision(true, { forceReimport: true, closePromptOnSuccess: false })}
-                        disabled={
-                          languageProfileSaving
-                          || starterDictionaryActionLoading
-                          || String(starterDictionaryOffer?.state?.import_status || 'idle').trim().toLowerCase() === 'running'
-                          || !starterDictionaryOffer?.can_reconnect
-                        }
-                      >
-                        {starterDictionaryActionLoading || String(starterDictionaryOffer?.state?.import_status || 'idle').trim().toLowerCase() === 'running'
-                          ? tr('Подключаем...', 'Wird verbunden...')
-                          : !starterDictionaryOffer?.can_reconnect
-                            ? tr('Базовый словарь пока пуст', 'Basiswoerterbuch ist noch leer')
-                            : starterDictionaryOffer?.state?.decision_status === 'accepted'
-                              ? tr('Переподключить базовый словарь', 'Basiswoerterbuch neu verbinden')
-                              : tr('Подключить базовый словарь', 'Basiswoerterbuch verbinden')}
-                      </button>
+                      <div className="language-profile-starter-actions">
+                        <button
+                          type="button"
+                          className="secondary-button language-profile-starter-btn"
+                          onClick={() => void applyStarterDictionaryDecision('accept', { forceReimport: true, closePromptOnSuccess: false })}
+                          disabled={
+                            languageProfileSaving
+                            || starterDictionaryActionLoading
+                            || String(starterDictionaryOffer?.state?.import_status || 'idle').trim().toLowerCase() === 'running'
+                            || !starterDictionaryOffer?.can_reconnect
+                          }
+                        >
+                          {starterDictionaryActionLoading || String(starterDictionaryOffer?.state?.import_status || 'idle').trim().toLowerCase() === 'running'
+                            ? tr('Подключаем...', 'Wird verbunden...')
+                            : !starterDictionaryOffer?.can_reconnect
+                              ? tr('Базовый словарь пока пуст', 'Basiswoerterbuch ist noch leer')
+                              : starterDictionaryOffer?.state?.decision_status === 'accepted'
+                                ? tr('Переподключить базовый словарь', 'Basiswoerterbuch neu verbinden')
+                                : tr('Подключить базовый словарь', 'Basiswoerterbuch verbinden')}
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary-button language-profile-starter-btn language-profile-starter-btn-danger"
+                          onClick={() => void applyStarterDictionaryDecision('disconnect', { closePromptOnSuccess: false })}
+                          disabled={
+                            languageProfileSaving
+                            || starterDictionaryActionLoading
+                            || String(starterDictionaryOffer?.state?.import_status || 'idle').trim().toLowerCase() === 'running'
+                            || !starterDictionaryOffer?.can_disconnect
+                          }
+                        >
+                          {tr('Отключить базовый словарь', 'Basiswoerterbuch trennen')}
+                        </button>
+                      </div>
                     )}
                     {!needsLanguageProfileChoice && (
                       <button
@@ -32108,7 +32246,7 @@ function AppInner() {
                           <div className="setup-options flashcard-queue-source-options">
                             <button
                               type="button"
-                              className={`option-pill flashcard-settings-pill ${flashcardQueueSource === 'system' ? 'is-active' : ''}`}
+                              className={`option-pill flashcard-settings-pill flashcard-queue-source-pill ${flashcardQueueSource === 'system' ? 'is-active' : ''}`}
                               onClick={() => {
                                 setFlashcardQueueSource('system');
                                 setFlashcardsError('');
@@ -32118,7 +32256,7 @@ function AppInner() {
                             </button>
                             <button
                               type="button"
-                              className={`option-pill flashcard-settings-pill ${flashcardQueueSource === 'manual' ? 'is-active' : ''}`}
+                              className={`option-pill flashcard-settings-pill flashcard-queue-source-pill ${flashcardQueueSource === 'manual' ? 'is-active' : ''}`}
                               onClick={() => {
                                 setFlashcardQueueSource('manual');
                                 setFlashcardsError('');
@@ -32903,14 +33041,14 @@ function AppInner() {
                                   <div className="setup-options">
                                     <button
                                       type="button"
-                                      className={`option-pill flashcard-settings-pill ${flashcardQueueSource === 'system' ? 'is-active' : ''}`}
+                                      className={`option-pill flashcard-settings-pill flashcard-queue-source-pill ${flashcardQueueSource === 'system' ? 'is-active' : ''}`}
                                       onClick={() => setFlashcardQueueSource('system')}
                                     >
                                       {tr('Очередь системы', 'System-Warteschlange')}
                                     </button>
                                     <button
                                       type="button"
-                                      className={`option-pill flashcard-settings-pill ${flashcardQueueSource === 'manual' ? 'is-active' : ''}`}
+                                      className={`option-pill flashcard-settings-pill flashcard-queue-source-pill ${flashcardQueueSource === 'manual' ? 'is-active' : ''}`}
                                       onClick={() => setFlashcardQueueSource('manual')}
                                     >
                                       {tr('Текущая выборка', 'Aktuelle Auswahl')}
@@ -32961,14 +33099,14 @@ function AppInner() {
                                     <div className="setup-options">
                                       <button
                                         type="button"
-                                        className={`option-pill flashcard-settings-pill ${flashcardQueueSource === 'system' ? 'is-active' : ''}`}
+                                        className={`option-pill flashcard-settings-pill flashcard-queue-source-pill ${flashcardQueueSource === 'system' ? 'is-active' : ''}`}
                                         onClick={() => setFlashcardQueueSource('system')}
                                       >
                                         {tr('Очередь системы', 'System-Warteschlange')}
                                       </button>
                                       <button
                                         type="button"
-                                        className={`option-pill flashcard-settings-pill ${flashcardQueueSource === 'manual' ? 'is-active' : ''}`}
+                                        className={`option-pill flashcard-settings-pill flashcard-queue-source-pill ${flashcardQueueSource === 'manual' ? 'is-active' : ''}`}
                                         onClick={() => setFlashcardQueueSource('manual')}
                                       >
                                         {tr('Текущая выборка', 'Aktuelle Auswahl')}

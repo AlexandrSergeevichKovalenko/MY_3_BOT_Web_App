@@ -92,6 +92,15 @@ def run_image_quiz_r2_cleanup_job() -> None:
         raise
 
 
+def run_visual_riddle_r2_cleanup_job() -> None:
+    from backend.visual_riddle_cleanup import run_visual_riddle_r2_cleanup
+    try:
+        run_visual_riddle_r2_cleanup()
+    except Exception:
+        logging.exception("❌ Visual-riddle R2 cleanup failed")
+        raise
+
+
 def _delete_telegram_message(chat_id: int, message_id: int) -> None:
     token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
     url = f"https://api.telegram.org/bot{token}/deleteMessage"

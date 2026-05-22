@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 from unittest.mock import patch
 
@@ -8,6 +9,16 @@ import backend.backend_server as server
 class ShortcutLookupSplitTests(unittest.TestCase):
     def setUp(self):
         self.client = server.app.test_client()
+
+    def test_normalize_unit_text_cleans_pedagogical_grammar_noise(self):
+        self.assertEqual(
+            server._shortcut_normalize_unit_text("  erinnert... an  +Akkusativ "),
+            "erinnert an + Akkusativ",
+        )
+        self.assertEqual(
+            server._shortcut_normalize_unit_text("ist… ähnlich +  Dativ"),
+            "ist ähnlich + Dativ",
+        )
 
     def test_extract_blocks_normalizes_wrapper_quotes(self):
         raw = json.dumps(
@@ -49,7 +60,7 @@ class ShortcutLookupSplitTests(unittest.TestCase):
         )
 
     def test_shortcut_lookup_sends_one_clean_request_per_block(self):
-        with patch.object(server, "SHORTCUT_SECRET", "secret"), \
+        with patch.dict(os.environ, {"SHORTCUT_SECRET": "secret"}, clear=False), \
              patch.object(server, "is_telegram_user_allowed", return_value=True), \
              patch.object(server, "_shortcut_dedup_check", return_value=False), \
              patch.object(
