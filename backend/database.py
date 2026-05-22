@@ -23873,8 +23873,8 @@ def claim_prepared_telegram_quiz(
                     LIMIT 1
                     FOR UPDATE SKIP LOCKED
                 )
-                DELETE FROM bt_3_prepared_telegram_quizzes q
-                FROM selected
+                DELETE FROM bt_3_prepared_telegram_quizzes AS q
+                USING selected
                 WHERE q.id = selected.id
                 RETURNING q.id, q.quiz_type, q.word_ru, q.payload, q.source_lang, q.target_lang, q.prepared_at, q.last_used_at, q.use_count;
                 """,
