@@ -94,6 +94,14 @@ def _add_phase_metric(metrics: dict[str, int] | None, key: str, elapsed_ms: int 
     return safe_elapsed_ms
 
 
+def _db_event_summary_snapshot(events: list[dict[str, Any]] | None) -> dict[str, int]:
+    summary = summarize_db_acquire_events(events)
+    return {
+        "db_pool_acquire_count": int(summary.get("db_pool_acquire_count") or 0),
+        "db_pool_acquire_wait_ms_total": int(summary.get("db_pool_acquire_wait_ms_total") or 0),
+    }
+
+
 def _remember_active_translation_session_pointer(
     *,
     user_id: int,
@@ -3871,6 +3879,7 @@ def _collect_seed_sentence_entries_with_cursor(
     target_count: int = 7,
     diagnostics: dict[str, Any] | None = None,
     timing_metrics: dict[str, int] | None = None,
+    db_acquire_events: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     started_at = time.perf_counter()
     target_total = max(1, int(target_count or 7))
@@ -3945,10 +3954,20 @@ def _collect_seed_sentence_entries_with_cursor(
                         skill_seed_cache=remediation_skill_seed_cache,
                         membership_cache=remediation_membership_cache,
                         leaf_cache=remediation_leaf_cache,
+                        timing_metrics=timing_metrics,
+                        db_acquire_events=db_acquire_events,
                     ),
                 }
             )
-            _add_phase_metric(timing_metrics, "sentence_materialization_ms", _elapsed_perf_ms(materialization_started_at))
+            per_sentence_materialization_ms = _elapsed_perf_ms(materialization_started_at)
+            _add_phase_metric(timing_metrics, "sentence_materialization_ms", per_sentence_materialization_ms)
+            _add_phase_metric(timing_metrics, "per_sentence_materialization_ms_total", per_sentence_materialization_ms)
+            if isinstance(timing_metrics, dict):
+                timing_metrics["materialized_sentence_count"] = int(timing_metrics.get("materialized_sentence_count") or 0) + 1
+                timing_metrics["per_sentence_materialization_ms"] = max(
+                    int(timing_metrics.get("per_sentence_materialization_ms") or 0),
+                    int(per_sentence_materialization_ms),
+                )
             seen_sentence_keys.add(sentence_key)
             if len([item for item in sentence_entries if item.get("tested_skill_profile")]) >= min(5, target_total):
                 break
@@ -4013,6 +4032,14 @@ def _collect_seed_sentence_entries_with_cursor(
     _add_phase_metric(timing_metrics, "load_bucket_ms", int((timing_metrics or {}).get("sentence_selection_pool_count_ms") or 0))
     _add_phase_metric(timing_metrics, "load_bucket_ms", int((timing_metrics or {}).get("sentence_selection_pool_fetch_ms") or 0))
     _add_phase_metric(timing_metrics, "load_bucket_ms", int((timing_metrics or {}).get("sentence_selection_pool_update_ms") or 0))
+    if isinstance(timing_metrics, dict):
+        materialized_sentence_count = int(timing_metrics.get("materialized_sentence_count") or 0)
+        total_per_sentence_materialization_ms = int(timing_metrics.get("per_sentence_materialization_ms_total") or 0)
+        timing_metrics["per_sentence_materialization_ms_avg"] = (
+            int(total_per_sentence_materialization_ms / materialized_sentence_count)
+            if materialized_sentence_count > 0
+            else 0
+        )
     return sentence_entries[:target_total]
 
 
@@ -4847,6 +4874,22 @@ async def start_translation_session_webapp(
             "sentence_selection_pool_fetch_ms": 0,
             "sentence_selection_pool_update_ms": 0,
             "sentence_materialization_ms": 0,
+            "remediation_profile_ms": 0,
+            "sentence_context_ms": 0,
+            "sentence_stats_ms": 0,
+            "mistake_lookup_ms": 0,
+            "enrichment_ms": 0,
+            "enrichment_python_only_ms": 0,
+            "remediation_skill_mapping_ms": 0,
+            "remediation_skill_mapping_call_count": 0,
+            "nested_acquire_count": 0,
+            "nested_acquire_wait_ms": 0,
+            "per_sentence_materialization_ms": 0,
+            "per_sentence_materialization_ms_total": 0,
+            "per_sentence_materialization_ms_avg": 0,
+            "materialized_sentence_count": 0,
+            "materialization_python_only_ms": 0,
+            "materialization_db_ms": 0,
             "session_insert_ms": 0,
             "shared_pool_upsert_ms": 0,
             "recent_keys_ms": 0,
@@ -5157,6 +5200,7 @@ async def start_translation_session_webapp(
                             target_count=sync_seed_target_count,
                             diagnostics=seed_diagnostics,
                             timing_metrics=phase_metrics,
+                            db_acquire_events=db_acquire_events,
                         )
                         phase_metrics["seed_collect_ms"] = int((time.perf_counter() - seed_collect_started_at) * 1000)
                         if _translation_sentence_fill_async_enabled():
@@ -6278,9 +6322,15 @@ def _build_remediation_profile_with_cursor(
     skill_seed_cache: dict[tuple[str, str], dict[str, str] | None] | None = None,
     membership_cache: dict[tuple[str, str], dict[str, Any] | None] | None = None,
     leaf_cache: dict[tuple[str, str], list[str]] | None = None,
+    timing_metrics: dict[str, int] | None = None,
+    db_acquire_events: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     if not user_id or not sentence_id_for_mistake:
         return []
+    remediation_started_at = time.perf_counter()
+    remediation_db_ms = 0
+    enrichment_started_at = time.perf_counter()
+    mistake_lookup_started_at = time.perf_counter()
     cursor.execute(
         """
         SELECT
@@ -6296,18 +6346,40 @@ def _build_remediation_profile_with_cursor(
         """,
         (int(user_id), int(sentence_id_for_mistake)),
     )
+    mistake_lookup_ms = _elapsed_perf_ms(mistake_lookup_started_at)
+    remediation_db_ms += _add_phase_metric(timing_metrics, "mistake_lookup_ms", mistake_lookup_ms)
     rows = cursor.fetchall() or []
     if not rows:
+        _add_phase_metric(timing_metrics, "remediation_profile_ms", _elapsed_perf_ms(remediation_started_at))
         return []
 
     aggregated_skill_weights: dict[str, float] = {}
     mapped_pairs: list[tuple[list[dict[str, Any]], float]] = []
     candidate_skill_ids: set[str] = set()
     for main_category, sub_category, total_mistakes in rows:
+        skill_mapping_before = _db_event_summary_snapshot(db_acquire_events)
+        skill_mapping_started_at = time.perf_counter()
         mapped = get_skill_mapping_for_error(
             str(main_category or "").strip(),
             str(sub_category or "").strip(),
             language_code=target_lang or "de",
+        )
+        skill_mapping_elapsed_ms = _elapsed_perf_ms(skill_mapping_started_at)
+        _add_phase_metric(timing_metrics, "remediation_skill_mapping_ms", skill_mapping_elapsed_ms)
+        if isinstance(timing_metrics, dict):
+            timing_metrics["remediation_skill_mapping_call_count"] = int(
+                timing_metrics.get("remediation_skill_mapping_call_count") or 0
+            ) + 1
+        skill_mapping_after = _db_event_summary_snapshot(db_acquire_events)
+        _add_phase_metric(
+            timing_metrics,
+            "nested_acquire_count",
+            int(skill_mapping_after["db_pool_acquire_count"] - skill_mapping_before["db_pool_acquire_count"]),
+        )
+        _add_phase_metric(
+            timing_metrics,
+            "nested_acquire_wait_ms",
+            int(skill_mapping_after["db_pool_acquire_wait_ms_total"] - skill_mapping_before["db_pool_acquire_wait_ms_total"]),
         )
         pair_weight = max(1.0, float(total_mistakes or 1))
         mapped_pairs.append((mapped, pair_weight))
@@ -6317,12 +6389,15 @@ def _build_remediation_profile_with_cursor(
                 continue
             candidate_skill_ids.add(skill_id)
 
+    skill_seed_started_at = time.perf_counter()
     available_skill_seeds = _load_skill_seeds_map_with_cursor(
         cursor,
         skill_ids=list(candidate_skill_ids),
         target_lang=target_lang,
         cache=skill_seed_cache,
     )
+    skill_seed_ms = _elapsed_perf_ms(skill_seed_started_at)
+    remediation_db_ms += _add_phase_metric(timing_metrics, "sentence_stats_ms", skill_seed_ms)
     for mapped, pair_weight in mapped_pairs:
         for item in mapped:
             skill_id = str(item.get("skill_id") or "").strip()
@@ -6330,19 +6405,29 @@ def _build_remediation_profile_with_cursor(
                 continue
             aggregated_skill_weights[skill_id] = aggregated_skill_weights.get(skill_id, 0.0) + pair_weight * max(float(item.get("weight") or 1.0), 0.1)
 
-    resolved_sentence_text = str(sentence_text or "").strip() or _load_sentence_text_for_remediation_with_cursor(
-        cursor,
-        sentence_id_for_mistake=int(sentence_id_for_mistake),
-        source_lang=source_lang or "ru",
-        target_lang=target_lang or "de",
-    )
+    sentence_context_started_at = time.perf_counter()
+    resolved_sentence_text = str(sentence_text or "").strip()
+    if not resolved_sentence_text:
+        sentence_text_lookup_started_at = time.perf_counter()
+        resolved_sentence_text = _load_sentence_text_for_remediation_with_cursor(
+            cursor,
+            sentence_id_for_mistake=int(sentence_id_for_mistake),
+            source_lang=source_lang or "ru",
+            target_lang=target_lang or "de",
+        )
+        sentence_text_lookup_ms = _elapsed_perf_ms(sentence_text_lookup_started_at)
+        remediation_db_ms += sentence_text_lookup_ms
     anchor_skill_weights, has_structural_anchor = _collect_sentence_anchor_skill_weights(resolved_sentence_text)
+    _add_phase_metric(timing_metrics, "sentence_context_ms", _elapsed_perf_ms(sentence_context_started_at))
+    anchor_skill_seed_started_at = time.perf_counter()
     anchor_skill_seeds = _load_skill_seeds_map_with_cursor(
         cursor,
         skill_ids=list(anchor_skill_weights.keys()),
         target_lang=target_lang,
         cache=skill_seed_cache,
     )
+    anchor_skill_seed_ms = _elapsed_perf_ms(anchor_skill_seed_started_at)
+    remediation_db_ms += _add_phase_metric(timing_metrics, "sentence_stats_ms", anchor_skill_seed_ms)
     for skill_id, bonus in anchor_skill_weights.items():
         if skill_id not in anchor_skill_seeds:
             continue
@@ -6353,14 +6438,26 @@ def _build_remediation_profile_with_cursor(
             if skill_id in aggregated_skill_weights and skill_id not in anchor_skill_weights:
                 aggregated_skill_weights[skill_id] = aggregated_skill_weights.get(skill_id, 0.0) * 0.4
     if not aggregated_skill_weights:
+        _add_phase_metric(timing_metrics, "enrichment_ms", _elapsed_perf_ms(enrichment_started_at))
+        _add_phase_metric(timing_metrics, "remediation_profile_ms", _elapsed_perf_ms(remediation_started_at))
+        _add_phase_metric(timing_metrics, "materialization_db_ms", remediation_db_ms)
+        _add_phase_metric(
+            timing_metrics,
+            "materialization_python_only_ms",
+            max(0, _elapsed_perf_ms(remediation_started_at) - remediation_db_ms),
+        )
         return []
 
+    membership_started_at = time.perf_counter()
     memberships = _load_skill_mastery_memberships_with_cursor(
         cursor,
         target_lang=target_lang,
         skill_ids=list(aggregated_skill_weights.keys()),
         cache=membership_cache,
     )
+    membership_ms = _elapsed_perf_ms(membership_started_at)
+    remediation_db_ms += _add_phase_metric(timing_metrics, "sentence_stats_ms", membership_ms)
+    leaf_started_at = time.perf_counter()
     leaf_candidates_by_group = _list_mastery_leaf_skill_ids_for_groups_with_cursor(
         cursor,
         target_lang=target_lang,
@@ -6371,6 +6468,8 @@ def _build_remediation_profile_with_cursor(
         ],
         cache=leaf_cache,
     )
+    leaf_ms = _elapsed_perf_ms(leaf_started_at)
+    remediation_db_ms += _add_phase_metric(timing_metrics, "sentence_stats_ms", leaf_ms)
 
     promoted_leaf_scores: dict[str, float] = {}
     for skill_id, raw_score in aggregated_skill_weights.items():
@@ -6415,12 +6514,24 @@ def _build_remediation_profile_with_cursor(
         profile_source=REMEDIATION_PROFILE_SOURCE,
         profile_confidence=REMEDIATION_PROFILE_CONFIDENCE,
     )
-    return rerank_tested_skill_profile_for_sentence(
+    rerank_started_at = time.perf_counter()
+    reranked_profile = rerank_tested_skill_profile_for_sentence(
         resolved_sentence_text,
         base_profile,
         profile_source=REMEDIATION_PROFILE_SOURCE,
         profile_confidence=REMEDIATION_PROFILE_CONFIDENCE,
     )
+    _add_phase_metric(timing_metrics, "enrichment_ms", _elapsed_perf_ms(enrichment_started_at))
+    remediation_total_ms = _elapsed_perf_ms(remediation_started_at)
+    _add_phase_metric(timing_metrics, "remediation_profile_ms", remediation_total_ms)
+    _add_phase_metric(timing_metrics, "materialization_db_ms", remediation_db_ms)
+    _add_phase_metric(
+        timing_metrics,
+        "materialization_python_only_ms",
+        max(0, remediation_total_ms - remediation_db_ms),
+    )
+    _add_phase_metric(timing_metrics, "enrichment_python_only_ms", _elapsed_perf_ms(rerank_started_at))
+    return reranked_profile
 
 
 def _insert_sentence_skill_targets_with_cursor(
