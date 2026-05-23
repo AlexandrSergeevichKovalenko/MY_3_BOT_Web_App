@@ -19216,7 +19216,7 @@ function AppInner() {
       String(meanings[2]?.value || '').trim(),
     ];
   };
-  const applySavedVocabEditLocally = (item, germanText, russianText, meaningValues, folderId) => {
+  function applySavedVocabEditLocally(item, germanText, russianText, meaningValues, folderId) {
     const responseJson = coerceResponseJson(item?.response_json);
     const sourceLang = normalizeLangCode(item?.source_lang || responseJson?.source_lang || '');
     const targetLang = normalizeLangCode(item?.target_lang || responseJson?.target_lang || '');
@@ -19331,7 +19331,7 @@ function AppInner() {
       display_word: wordDe || wordRu || item?.display_word || '',
       display_translation: normalizedMeanings[0] || translationRu || translationDe || item?.display_translation || '',
     };
-  };
+  }
   const normalizeComparableText = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
   const getSavedEntryMeaningRows = (item, limit = 3) => {
     const rows = [];
@@ -24188,9 +24188,11 @@ function AppInner() {
     }
   };
 
-  const getExplanationItemKey = (item) => String(item?.sentence_number ?? item?.original_text ?? '');
+  function getExplanationItemKey(item) {
+    return String(item?.sentence_number ?? item?.original_text ?? '');
+  }
 
-  const parseExplanationFollowupAnswerPayload = (value) => {
+  function parseExplanationFollowupAnswerPayload(value) {
     if (value && typeof value === 'object' && !Array.isArray(value)) {
       return {
         answer: String(value.answer || '').trim(),
@@ -24201,12 +24203,14 @@ function AppInner() {
       answer: String(value || '').trim(),
       saveVariants: [],
     };
-  };
+  }
 
-  const getResultCardIdentityKey = (item, fallbackIndex = 0) => (
-    getTranslationResultIdentityKey(item)
-    || `result:${item?.sentence_number ?? 'x'}:${fallbackIndex}`
-  );
+  function getResultCardIdentityKey(item, fallbackIndex = 0) {
+    return (
+      getTranslationResultIdentityKey(item)
+      || `result:${item?.sentence_number ?? 'x'}:${fallbackIndex}`
+    );
+  }
 
   const handleExplainTranslation = async (item) => {
     if (!initData) {

@@ -1755,6 +1755,36 @@ def enqueue_finish_daily_summary_job(
         raise
 
 
+def enqueue_shortcut_lookup_job(
+    *,
+    user_id: int,
+    text: str,
+    request_key: str | None = None,
+) -> str | None:
+    if not can_enqueue_background_jobs():
+        raise RuntimeError("background_jobs_unavailable")
+    safe_user_id = int(user_id or 0)
+    normalized_text = str(text or "").strip()
+    normalized_request_key = str(request_key or "").strip() or None
+    if safe_user_id <= 0:
+        raise ValueError("user_id is required")
+    if not normalized_text:
+        raise ValueError("text is required")
+    try:
+        get_dramatiq_broker()
+        from backend.background_jobs import run_shortcut_lookup_job
+
+        message = run_shortcut_lookup_job.send(
+            user_id=safe_user_id,
+            text=normalized_text,
+            request_key=normalized_request_key,
+        )
+        return str(getattr(message, "message_id", None) or "").strip() or None
+    except Exception:
+        logging.exception("enqueue_shortcut_lookup_job failed user_id=%s", safe_user_id)
+        raise
+
+
 def enqueue_translation_result_side_effects_job(
     *,
     user_id: int,

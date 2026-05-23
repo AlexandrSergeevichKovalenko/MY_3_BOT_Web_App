@@ -15662,9 +15662,10 @@ body {
   flex: 1 1 auto;
   min-width: 0;
   width: 100%;
-  height: 40px;
-  padding: 0 14px;
-  border-radius: 14px;
+  display: block;
+  height: 42px;
+  padding: 0 16px;
+  border-radius: 18px;
   border: 1px solid #334155;
   background: #0b1220;
   color: #f8fafc;
@@ -15674,7 +15675,8 @@ body {
   box-sizing: border-box;
   appearance: none;
   -webkit-appearance: none;
-  transition: border-color 0.15s ease;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
 }
 
 .reader-lib-search::placeholder {
@@ -15683,6 +15685,7 @@ body {
 
 .reader-lib-search:focus {
   border-color: #475569;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 0 0 3px rgba(71, 85, 105, 0.14);
 }
 
 .reader-lib-archive-toggle {
@@ -23157,20 +23160,19 @@ body {
 }
 
 .webapp-page.is-theme-light .reader-lib-search {
-  border-color: #c4ae94;
-  background: #fff8ee;
+  border-color: #d2c2aa;
+  background: #fffaf2;
   color: #1f1a14;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.42), 0 1px 2px rgba(111, 78, 37, 0.04);
 }
 
 .webapp-page.is-theme-light .reader-lib-search::placeholder {
   color: #7a6552;
 }
 
-.webapp-page.is-theme-light .reader-lib-search {
-  border-color: #d2c2aa;
-  background: #fff8ee;
-  color: #1f1a14;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.42);
+.webapp-page.is-theme-light .reader-lib-search:focus {
+  border-color: #b99f7f;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 0 0 3px rgba(185, 159, 127, 0.18);
 }
 
 .webapp-page.is-theme-light .reader-lib-archive-toggle {

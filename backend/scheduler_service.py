@@ -78,7 +78,6 @@ from backend.background_jobs import (  # noqa: E402
     run_tts_r2_cache_cleanup_actor,
     run_image_quiz_r2_cleanup_actor,
     run_visual_riddle_r2_cleanup_actor,
-    run_visual_riddle_pool_topup_actor,
     run_database_table_sizes_report_actor,
     run_tts_prewarm_scheduler_actor,
     run_tts_generation_recovery_actor,
@@ -212,10 +211,6 @@ def _dispatch_image_quiz_r2_cleanup() -> None:
 
 def _dispatch_visual_riddle_r2_cleanup() -> None:
     run_visual_riddle_r2_cleanup_actor.send()
-
-
-def _dispatch_visual_riddle_pool_topup() -> None:
-    run_visual_riddle_pool_topup_actor.send()
 
 
 def _dispatch_database_table_sizes_report() -> None:
@@ -512,20 +507,6 @@ def _build_scheduler():
             misfire_grace_time=3600,
         )
 
-    # -- Visual-riddle pool topup (periodic self-healing) --
-    if _enabled("VISUAL_RIDDLE_POOL_TOPUP_ENABLED", "1"):
-        scheduler.add_job(
-            _dispatch_visual_riddle_pool_topup,
-            "interval",
-            minutes=_int_env("VISUAL_RIDDLE_POOL_TOPUP_INTERVAL_MINUTES", 20),
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=300,
-        )
-        logging.info(
-            "visual_riddle_pool_topup_scheduled interval_minutes=%s",
-            _int_env("VISUAL_RIDDLE_POOL_TOPUP_INTERVAL_MINUTES", 20),
-        )
 
     # -- TTS prewarm (interval) --
     if _enabled("TTS_PREWARM_ENABLED", "0"):

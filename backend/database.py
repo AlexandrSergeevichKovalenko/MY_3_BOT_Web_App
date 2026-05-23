@@ -28019,7 +28019,7 @@ def claim_next_blueprint_ready_vr_template() -> dict | None:
             cursor.execute(
                 f"""
                 WITH selected AS (
-                    SELECT t.id
+                    SELECT t.id AS selected_id
                     FROM bt_3_visual_riddle_templates t
                     WHERE t.generation_status = 'blueprint_ready'
                       AND t.visual_status = 'valid'
@@ -28036,7 +28036,7 @@ def claim_next_blueprint_ready_vr_template() -> dict | None:
                     failure_reason = NULL,
                     updated_at = NOW()
                 FROM selected
-                WHERE t.id = selected.id
+                WHERE t.id = selected.selected_id
                 RETURNING {_VR_TEMPLATE_RETURNING};
                 """
             )
@@ -28055,7 +28055,7 @@ def fail_stale_rendering_vr_templates(
             cursor.execute(
                 f"""
                 WITH stale AS (
-                    SELECT t.id
+                    SELECT t.id AS stale_id
                     FROM bt_3_visual_riddle_templates t
                     WHERE t.generation_status = 'rendering'
                       AND t.updated_at <= NOW() - (%s || ' minutes')::interval
@@ -28069,7 +28069,7 @@ def fail_stale_rendering_vr_templates(
                     failure_reason = %s,
                     updated_at = NOW()
                 FROM stale
-                WHERE t.id = stale.id
+                WHERE t.id = stale.stale_id
                 RETURNING {_VR_TEMPLATE_RETURNING};
                 """,
                 (

@@ -1226,6 +1226,48 @@ def run_finish_daily_summary_job(
         raise
 
 
+@dramatiq.actor(max_retries=0, queue_name="shortcut_lookup")
+def run_shortcut_lookup_job(
+    user_id: int,
+    text: str,
+    request_key: str | None = None,
+) -> None:
+    safe_user_id = int(user_id or 0)
+    normalized_text = str(text or "").strip()
+    normalized_request_key = str(request_key or "").strip() or None
+    if safe_user_id <= 0 or not normalized_text:
+        logging.warning(
+            "shortcut_lookup_job skipped invalid_payload user_id=%s request_key=%s has_text=%s",
+            safe_user_id,
+            normalized_request_key,
+            bool(normalized_text),
+        )
+        return
+    started_at = time.perf_counter()
+    try:
+        from backend.backend_server import _run_shortcut_lookup_delivery
+
+        sent = _run_shortcut_lookup_delivery(
+            user_id=safe_user_id,
+            text=normalized_text,
+        )
+        logging.info(
+            "shortcut_lookup_job completed user_id=%s request_key=%s sent=%s total_ms=%s",
+            safe_user_id,
+            normalized_request_key,
+            int(sent or 0),
+            int((time.perf_counter() - started_at) * 1000),
+        )
+    except Exception:
+        logging.exception(
+            "shortcut_lookup_job failed user_id=%s request_key=%s total_ms=%s",
+            safe_user_id,
+            normalized_request_key,
+            int((time.perf_counter() - started_at) * 1000),
+        )
+        raise
+
+
 def _run_projection_materialization_job_impl(
     *,
     job_id: int,
@@ -2803,9 +2845,3 @@ def get_visual_riddle_pool_health() -> dict:
             int((os.getenv("VISUAL_RIDDLE_POOL_TOPUP_TRIGGER") or "5").strip() or "5"),
         ),
     }
-
-
-@dramatiq.actor(max_retries=0, queue_name=_VR_PREP_QUEUE_NAME)
-def run_visual_riddle_pool_topup_actor() -> None:
-    result = prepare_visual_riddle_pool(topup_limit=3)
-    logging.info("run_visual_riddle_pool_topup_actor result=%s", result)

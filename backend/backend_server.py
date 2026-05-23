@@ -119,6 +119,7 @@ from backend.job_queue import (
     enqueue_reader_library_ingest_job,
     enqueue_reader_audio_page_job,
     enqueue_tts_generation_job,
+    enqueue_shortcut_lookup_job,
     enqueue_translation_check_completion_job,
     enqueue_translation_check_job,
     enqueue_translation_fill_job,
@@ -33794,7 +33795,7 @@ SELF-CHECK BEFORE OUTPUTTING:
 — No block contains translations, glosses, or explanatory prose
 — All genuinely learnable words, phrases, and sentences from the input are represented
 
-Return ONLY valid JSON — no markdown, no explanation:
+Return ONLY valid json — no markdown, no explanation:
 {"blocks": [{"term": "unit 1", "content": "clean unit 1"}, ...]}"""
 
 _SHORTCUT_SPLIT_PROMPT_FALLBACK = """\
@@ -33846,7 +33847,7 @@ STEP 4 — VALIDATE:
 • No ✗/✓ pair is split
 • No block contains commentary, glosses, or translations
 
-Output ONLY: {"blocks": [{"term": "...", "content": "..."}, ...]}"""
+Output ONLY valid json: {"blocks": [{"term": "...", "content": "..."}, ...]}"""
 
 
 def _shortcut_normalize_unit_text(text: str) -> str:
@@ -33994,6 +33995,79 @@ def _shortcut_build_pair_keyboard_rows(request_key: str) -> list[list[dict]]:
     return rows
 
 
+def _run_shortcut_lookup_delivery(*, user_id: int, text: str) -> int:
+    normalized_text = str(text or "").strip()
+    safe_user_id = int(user_id or 0)
+    if safe_user_id <= 0 or not normalized_text:
+        return 0
+
+    blocks = _shortcut_split_blocks(normalized_text)
+    if not blocks:
+        return 0
+
+    shortcut_max_blocks = 10
+    if len(blocks) > shortcut_max_blocks:
+        blocks = blocks[:shortcut_max_blocks]
+
+    sent = 0
+    for term, content in blocks:
+        lookup_text = str(term or content or "").strip()
+        if not lookup_text:
+            continue
+        request_key = hashlib.sha1(
+            f"{safe_user_id}:{lookup_text}:{time.time()}:{sent}".encode("utf-8")
+        ).hexdigest()[:20]
+        message_text = f"Запрос: {lookup_text}\n\nВыберите языковую пару для перевода:"
+
+        try:
+            _send_private_message(
+                safe_user_id,
+                message_text,
+                reply_markup={"inline_keyboard": _shortcut_build_pair_keyboard_rows(request_key)},
+            )
+            sent += 1
+        except Exception as exc:
+            logging.warning("shortcut_lookup send failed user_id=%s block=%s: %s", safe_user_id, sent, exc)
+
+        if sent < len(blocks):
+            time.sleep(0.35)
+    return sent
+
+
+def _start_shortcut_lookup_enqueue_runner(*, user_id: int, text: str) -> str:
+    safe_user_id = int(user_id or 0)
+    normalized_text = str(text or "").strip()
+    request_key = hashlib.sha1(
+        f"shortcut-enqueue:{safe_user_id}:{normalized_text}:{time.time_ns()}".encode("utf-8")
+    ).hexdigest()[:20]
+
+    def _worker() -> None:
+        try:
+            enqueue_shortcut_lookup_job(
+                user_id=safe_user_id,
+                text=normalized_text,
+                request_key=request_key,
+            )
+            logging.info(
+                "shortcut_lookup enqueue accepted user_id=%s request_key=%s",
+                safe_user_id,
+                request_key,
+            )
+        except Exception:
+            logging.exception(
+                "shortcut_lookup enqueue failed user_id=%s request_key=%s",
+                safe_user_id,
+                request_key,
+            )
+
+    threading.Thread(
+        target=_worker,
+        name=f"shortcut-lookup-enqueue-{request_key}",
+        daemon=True,
+    ).start()
+    return request_key
+
+
 @app.route("/api/shortcut/lookup", methods=["POST"])
 def shortcut_dictionary_lookup():
     """
@@ -34001,7 +34075,10 @@ def shortcut_dictionary_lookup():
     units, and sends each unit as a separate Telegram private message with the
     language pair keyboard under it.
 
-    Auth: Authorization: Bearer <SHORTCUT_SECRET>
+    Auth: one of
+      - Authorization: Bearer <SHORTCUT_SECRET>
+      - X-Shortcut-Secret: <SHORTCUT_SECRET>
+      - body.shortcut_secret / body.secret
     Body: {"text": "...", "user_id": 117649764}
     """
     shortcut_secret = (os.getenv("SHORTCUT_SECRET") or "").strip()
@@ -34009,13 +34086,34 @@ def shortcut_dictionary_lookup():
         return jsonify({"error": "Shortcut endpoint не настроен (SHORTCUT_SECRET не задан)"}), 503
 
     auth_header = (request.headers.get("Authorization") or "").strip()
-    if not auth_header.lower().startswith("bearer "):
-        return jsonify({"error": "Требуется Authorization: Bearer <SHORTCUT_SECRET>"}), 401
-    provided_secret = auth_header[7:].strip()
+    header_shortcut_secret = (request.headers.get("X-Shortcut-Secret") or "").strip()
+
+    body = request.get_json(silent=True) or {}
+    provided_secret = ""
+    if auth_header.lower().startswith("bearer "):
+        provided_secret = auth_header[7:].strip()
+    elif header_shortcut_secret:
+        provided_secret = header_shortcut_secret
+    else:
+        provided_secret = str(body.get("shortcut_secret") or body.get("secret") or "").strip()
+
+    if not provided_secret:
+        return (
+            jsonify(
+                {
+                    "error": (
+                        "Требуется один из способов аутентификации: "
+                        "Authorization: Bearer <SHORTCUT_SECRET>, "
+                        "X-Shortcut-Secret: <SHORTCUT_SECRET> "
+                        "или body.shortcut_secret"
+                    )
+                }
+            ),
+            401,
+        )
     if not hmac.compare_digest(provided_secret, shortcut_secret):
         return jsonify({"error": "Неверный секрет"}), 401
 
-    body = request.get_json(silent=True) or {}
     text = (body.get("text") or "").strip()
     raw_user_id = body.get("user_id")
 
@@ -34035,41 +34133,23 @@ def shortcut_dictionary_lookup():
         logging.info("shortcut_lookup: duplicate request suppressed user_id=%s", user_id)
         return jsonify({"ok": True, "blocks_sent": 0, "duplicate": True}), 200
 
-    blocks = _shortcut_split_blocks(text)
-    if not blocks:
-        return jsonify({"error": "text не содержит текста"}), 400
+    if not can_enqueue_background_jobs():
+        return jsonify({"error": "Shortcut processing is temporarily unavailable"}), 503
 
-    _SHORTCUT_MAX_BLOCKS = 10
-    if len(blocks) > _SHORTCUT_MAX_BLOCKS:
-        blocks = blocks[:_SHORTCUT_MAX_BLOCKS]
+    request_key = _start_shortcut_lookup_enqueue_runner(
+        user_id=user_id,
+        text=text,
+    )
 
-    sent = 0
-    for term, content in blocks:
-        lookup_text = str(term or content or "").strip()
-        if not lookup_text:
-            continue
-        request_key = hashlib.sha1(
-            f"{user_id}:{lookup_text}:{time.time()}:{sent}".encode("utf-8")
-        ).hexdigest()[:20]
-        message_text = f"Запрос: {lookup_text}\n\nВыберите языковую пару для перевода:"
-
-        try:
-            _send_private_message(
-                user_id,
-                message_text,
-                reply_markup={"inline_keyboard": _shortcut_build_pair_keyboard_rows(request_key)},
-            )
-            sent += 1
-        except Exception as exc:
-            logging.warning("shortcut_lookup send failed user_id=%s block=%s: %s", user_id, sent, exc)
-
-        if sent < len(blocks):
-            time.sleep(0.35)
-
-    if sent == 0:
-        return jsonify({"error": "Не удалось отправить ни одного сообщения"}), 500
-
-    return jsonify({"ok": True, "blocks_sent": sent})
+    return jsonify(
+        {
+            "ok": True,
+            "accepted": True,
+            "queued": True,
+            "duplicate": False,
+            "job_id": str(request_key or "").strip() or None,
+        }
+    )
 
 
 @app.route("/api/internal/bot-private/dictionary/save", methods=["POST"])
