@@ -1369,6 +1369,39 @@ _TODAY_PREFERRED_CHANNELS = [
 app = Flask(__name__)
 CORS(app)
 logging.basicConfig(level=logging.INFO)
+_BACKEND_LOG_LEVEL_NAME = str(os.getenv("LOG_LEVEL", "INFO")).strip().upper() or "INFO"
+_BACKEND_LOG_LEVEL = getattr(logging, _BACKEND_LOG_LEVEL_NAME, logging.INFO)
+_BACKEND_LOGGING_LOCK = threading.Lock()
+_BACKEND_LOGGING_CONFIGURED = False
+
+
+def _configure_backend_web_logging() -> None:
+    global _BACKEND_LOGGING_CONFIGURED
+    with _BACKEND_LOGGING_LOCK:
+        root_logger = logging.getLogger()
+        gunicorn_error_logger = logging.getLogger("gunicorn.error")
+        gunicorn_access_logger = logging.getLogger("gunicorn.access")
+        gunicorn_handlers = list(gunicorn_error_logger.handlers or [])
+
+        if gunicorn_handlers:
+            root_logger.handlers = []
+            for handler in gunicorn_handlers:
+                root_logger.addHandler(handler)
+        elif not root_logger.handlers:
+            stream_handler = logging.StreamHandler(sys.stdout)
+            stream_handler.setFormatter(logging.Formatter("%(message)s"))
+            root_logger.addHandler(stream_handler)
+
+        root_logger.setLevel(_BACKEND_LOG_LEVEL)
+        gunicorn_error_logger.setLevel(_BACKEND_LOG_LEVEL)
+        gunicorn_access_logger.setLevel(_BACKEND_LOG_LEVEL)
+        app.logger.handlers = list(root_logger.handlers)
+        app.logger.setLevel(_BACKEND_LOG_LEVEL)
+        app.logger.propagate = False
+        _BACKEND_LOGGING_CONFIGURED = True
+
+
+_configure_backend_web_logging()
 
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
 LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET")
@@ -3547,6 +3580,10 @@ _AUTH_TRACE_PATHS = {
     "/api/webapp/session",
     "/api/billing/status",
 }
+_REQUEST_LOG_PATHS = {
+    "/api/healthz",
+    "/api/webapp/topics",
+}
 
 
 def _log_compact_trace(event: str, **fields) -> None:
@@ -3566,6 +3603,7 @@ def _log_compact_trace(event: str, **fields) -> None:
 
 @app.before_request
 def trace_authenticated_webapp_request_entry():
+    _configure_backend_web_logging()
     path = request.path or ""
     if path not in _AUTH_TRACE_PATHS:
         return None
@@ -3585,6 +3623,24 @@ def trace_authenticated_webapp_request_entry():
     return None
 
 
+@app.before_request
+def init_compact_request_observability():
+    _configure_backend_web_logging()
+    path = request.path or ""
+    if path not in _REQUEST_LOG_PATHS:
+        return None
+    payload = request.get_json(silent=True) if request.method in {"POST", "PUT", "PATCH"} else None
+    if not getattr(g, "request_id", None):
+        g.request_id = _extract_observability_request_id(payload if isinstance(payload, dict) else None)
+    if not getattr(g, "correlation_id", None):
+        g.correlation_id = _build_observability_correlation_id(
+            payload=payload if isinstance(payload, dict) else None,
+            prefix="http_request",
+        )
+    g.request_log_started_perf = time.perf_counter()
+    return None
+
+
 @app.after_request
 def trace_authenticated_webapp_request_exit(response):
     path = request.path or ""
@@ -3599,6 +3655,26 @@ def trace_authenticated_webapp_request_exit(response):
         path=path,
         method=request.method,
         user_id=getattr(g, "trace_auth_user_id", None),
+        duration_ms=duration_ms,
+        status=getattr(response, "status_code", None),
+    )
+    return response
+
+
+@app.after_request
+def emit_compact_request_observability(response):
+    path = request.path or ""
+    if path not in _REQUEST_LOG_PATHS:
+        return response
+    started_perf = getattr(g, "request_log_started_perf", None)
+    duration_ms = int((time.perf_counter() - started_perf) * 1000) if started_perf is not None else None
+    _log_flow_observation(
+        "http_request",
+        "completed",
+        route=path,
+        method=request.method,
+        request_id=getattr(g, "request_id", None),
+        correlation_id=getattr(g, "correlation_id", None),
         duration_ms=duration_ms,
         status=getattr(response, "status_code", None),
     )
