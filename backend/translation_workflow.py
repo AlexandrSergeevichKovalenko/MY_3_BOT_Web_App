@@ -4228,10 +4228,14 @@ def _insert_sentence_entries_into_session_with_cursor(
     _add_phase_metric(timing_metrics, "sentence_insert_next_unique_id_ms", _elapsed_perf_ms(next_unique_id_started_at))
     row = cursor.fetchone()
     next_unique_id = int(row[0] or 0) + 1
+    normalized_level = _normalize_level(level)
+    normalized_focus_key = str(focus_key or "").strip() or None
     created_sentence_profiles: list[tuple[int, list[dict[str, Any]]]] = []
     inserted_items: list[dict[str, Any]] = []
     loop_sql_ms_total = 0
     loop_started_at = time.perf_counter()
+    candidate_entries: list[dict[str, Any]] = []
+    candidate_count = 0
 
     for entry in _normalize_sentence_entries(sentence_entries):
         sentence = str(entry.get("sentence") or "").strip()
@@ -4240,37 +4244,89 @@ def _insert_sentence_entries_into_session_with_cursor(
         sentence_key = _normalize_sentence_text_key(sentence)
         if not sentence_key or sentence_key in blocked_sentence_keys:
             continue
-        if len(existing_rows) + len(inserted_items) >= safe_limit:
+        if len(existing_rows) + candidate_count >= safe_limit:
             break
-
+        candidate_entries.append(
+            {
+                "sentence": sentence,
+                "tested_skill_profile": list(entry.get("tested_skill_profile") or []),
+            }
+        )
+        blocked_sentence_keys.add(sentence_key)
+        candidate_count += 1
+    candidate_sentences = list(dict.fromkeys(str(item.get("sentence") or "").strip() for item in candidate_entries if str(item.get("sentence") or "").strip()))
+    existing_mistake_ids_by_sentence: dict[str, int] = {}
+    if candidate_sentences:
         reuse_lookup_started_at = time.perf_counter()
         cursor.execute(
             """
-            SELECT id_for_mistake_table
+            SELECT sentence, MIN(id_for_mistake_table) AS id_for_mistake_table
             FROM bt_3_daily_sentences
-            WHERE sentence = %s
+            WHERE sentence = ANY(%s)
               AND COALESCE(source_lang, 'ru') = %s
               AND COALESCE(target_lang, 'de') = %s
-            LIMIT 1;
+            GROUP BY sentence;
             """,
-            (sentence, source_lang, target_lang),
+            (candidate_sentences, source_lang, target_lang),
         )
         reuse_lookup_ms = _elapsed_perf_ms(reuse_lookup_started_at)
         loop_sql_ms_total += _add_phase_metric(timing_metrics, "sentence_insert_reuse_lookup_ms", reuse_lookup_ms)
-        result = cursor.fetchone()
-        if result:
-            id_for_mistake_table = int(result[0])
-        else:
-            next_mistake_id_started_at = time.perf_counter()
-            cursor.execute("SELECT MAX(id_for_mistake_table) FROM bt_3_daily_sentences;")
-            next_mistake_id_ms = _elapsed_perf_ms(next_mistake_id_started_at)
-            loop_sql_ms_total += _add_phase_metric(timing_metrics, "sentence_insert_new_mistake_id_ms", next_mistake_id_ms)
-            max_row = cursor.fetchone()
-            max_id = int(max_row[0] or 0) if max_row else 0
-            id_for_mistake_table = max_id + 1
+        existing_mistake_ids_by_sentence = {
+            str(sentence or "").strip(): int(id_for_mistake_table)
+            for sentence, id_for_mistake_table in (cursor.fetchall() or [])
+            if str(sentence or "").strip() and id_for_mistake_table is not None
+        }
 
+    missing_mistake_id_count = sum(
+        1
+        for item in candidate_entries
+        if str(item.get("sentence") or "").strip() not in existing_mistake_ids_by_sentence
+    )
+    next_mistake_id = 0
+    if missing_mistake_id_count > 0:
+        next_mistake_id_started_at = time.perf_counter()
+        cursor.execute("SELECT MAX(id_for_mistake_table) FROM bt_3_daily_sentences;")
+        next_mistake_id_ms = _elapsed_perf_ms(next_mistake_id_started_at)
+        loop_sql_ms_total += _add_phase_metric(timing_metrics, "sentence_insert_new_mistake_id_ms", next_mistake_id_ms)
+        max_row = cursor.fetchone()
+        next_mistake_id = (int(max_row[0] or 0) if max_row else 0) + 1
+
+    rows_to_insert: list[tuple[Any, ...]] = []
+    rows_to_insert_meta: list[dict[str, Any]] = []
+    for candidate_entry in candidate_entries:
+        sentence = str(candidate_entry.get("sentence") or "").strip()
+        id_for_mistake_table = existing_mistake_ids_by_sentence.get(sentence)
+        if id_for_mistake_table is None:
+            id_for_mistake_table = int(next_mistake_id)
+            next_mistake_id += 1
+        assigned_unique_id = int(next_unique_id)
+        rows_to_insert.append(
+            (
+                sentence,
+                assigned_unique_id,
+                int(user_id),
+                int(session_id),
+                int(id_for_mistake_table),
+                source_lang,
+                target_lang,
+                normalized_focus_key,
+                normalized_level,
+            )
+        )
+        rows_to_insert_meta.append(
+            {
+                "sentence": sentence,
+                "unique_id": assigned_unique_id,
+                "id_for_mistake_table": int(id_for_mistake_table),
+                "tested_skill_profile": list(candidate_entry.get("tested_skill_profile") or []),
+            }
+        )
+        next_unique_id += 1
+
+    if rows_to_insert:
         row_insert_started_at = time.perf_counter()
-        cursor.execute(
+        inserted_rows = execute_values(
+            cursor,
             """
             INSERT INTO bt_3_daily_sentences (
                 date,
@@ -4284,44 +4340,43 @@ def _insert_sentence_entries_into_session_with_cursor(
                 focus_key,
                 level
             )
-            VALUES (CURRENT_DATE, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING id;
+            VALUES %s
+            RETURNING id, sentence, unique_id, id_for_mistake_table;
             """,
-            (
-                sentence,
-                next_unique_id,
-                int(user_id),
-                int(session_id),
-                id_for_mistake_table,
-                source_lang,
-                target_lang,
-                str(focus_key or "").strip() or None,
-                _normalize_level(level),
-            ),
-        )
+            rows_to_insert,
+            template="(CURRENT_DATE, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            fetch=True,
+        ) or []
         row_insert_ms = _elapsed_perf_ms(row_insert_started_at)
         loop_sql_ms_total += _add_phase_metric(timing_metrics, "sentence_insert_row_insert_ms", row_insert_ms)
-        inserted_row = cursor.fetchone()
-        if not inserted_row or not inserted_row[0]:
-            continue
-        created_sentence_profiles.append(
-            (
-                int(inserted_row[0]),
-                list(entry.get("tested_skill_profile") or []),
-            )
-        )
-        inserted_items.append(
-            {
-                "_row_id": int(inserted_row[0]),
+        inserted_rows_by_unique_id = {
+            int(unique_id): {
+                "row_id": int(row_id),
+                "sentence": str(sentence or "").strip(),
                 "id_for_mistake_table": int(id_for_mistake_table),
-                "sentence": sentence,
-                "unique_id": int(next_unique_id),
-                "source_session_id": str(session_id),
             }
-        )
-        session_sentence_keys.add(sentence_key)
-        blocked_sentence_keys.add(sentence_key)
-        next_unique_id += 1
+            for row_id, sentence, unique_id, id_for_mistake_table in inserted_rows
+            if row_id is not None and unique_id is not None
+        }
+        for item in rows_to_insert_meta:
+            inserted_row = inserted_rows_by_unique_id.get(int(item.get("unique_id") or 0))
+            if not inserted_row:
+                continue
+            created_sentence_profiles.append(
+                (
+                    int(inserted_row["row_id"]),
+                    list(item.get("tested_skill_profile") or []),
+                )
+            )
+            inserted_items.append(
+                {
+                    "_row_id": int(inserted_row["row_id"]),
+                    "id_for_mistake_table": int(inserted_row["id_for_mistake_table"]),
+                    "sentence": str(inserted_row["sentence"] or item.get("sentence") or "").strip(),
+                    "unique_id": int(item.get("unique_id") or 0),
+                    "source_session_id": str(session_id),
+                }
+            )
 
     _add_phase_metric(
         timing_metrics,
