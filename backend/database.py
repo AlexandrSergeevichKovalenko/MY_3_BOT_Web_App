@@ -2290,6 +2290,83 @@ def _enforce_db_runtime_policy() -> None:
 
 _enforce_db_runtime_policy()
 
+
+def _env_int_or_none(name: str) -> int | None:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return None
+    try:
+        return int(str(raw_value).strip())
+    except Exception:
+        return None
+
+
+def _emit_db_pool_runtime_audit() -> None:
+    service_name = _db_policy_runtime_service_name()
+    strict_pooled_runtime = _is_strict_pooled_db_runtime(service_name)
+    web_concurrency = _env_int_or_none("WEB_CONCURRENCY")
+    gunicorn_threads = _env_int_or_none("GUNICORN_THREADS")
+    background_jobs_processes = _env_int_or_none("BACKGROUND_JOBS_PROCESSES")
+    background_jobs_threads = _env_int_or_none("BACKGROUND_JOBS_THREADS")
+    dramatiq_worker_threads = _env_int_or_none("DRAMATIQ_WORKER_THREADS")
+
+    process_hint = 1
+    thread_hint = 1
+    runtime_kind = "generic"
+    service_label = str(service_name or "").strip()
+    if service_label.startswith("BACKEND_WEB"):
+        runtime_kind = "gunicorn_gthread"
+        process_hint = max(1, int(web_concurrency or 1))
+        thread_hint = max(1, int(gunicorn_threads or 8))
+    elif service_label in {"BACKGROUND_JOBS", "AUX_BACKGROUND_WORKER"}:
+        runtime_kind = "dramatiq_worker"
+        process_hint = max(1, int(background_jobs_processes or 1))
+        thread_hint = max(1, int(dramatiq_worker_threads or background_jobs_threads or 8))
+    elif service_label == "TRANSLATION_CHECK_WORKER":
+        runtime_kind = "dramatiq_worker"
+        process_hint = 1
+        thread_hint = max(1, int(dramatiq_worker_threads or background_jobs_threads or 8))
+    elif service_label == "SCHEDULER_SERVICE":
+        runtime_kind = "scheduler_single_process"
+    elif service_label == "MY_3_BOT":
+        runtime_kind = "bot_single_process"
+    elif service_label == "AGENT_WORKER":
+        runtime_kind = "agent_single_process"
+
+    _log_flow_observation(
+        "startup",
+        "db_pool_runtime_audit",
+        event="db_pool_runtime_audit",
+        service=service_label or "-",
+        runtime_kind=runtime_kind,
+        strict_pooled_runtime=bool(strict_pooled_runtime),
+        db_pool_enabled=bool(DB_POOL_ENABLED),
+        db_pool_impl="psycopg2.ThreadedConnectionPool" if DB_POOL_ENABLED else "direct_connect_only",
+        db_pool_thread_safe=True,
+        db_pool_process_safe=False,
+        db_pool_minconn=int(DB_POOL_MINCONN),
+        db_pool_maxconn=int(DB_POOL_MAXCONN),
+        db_pool_acquire_timeout_ms=int(DB_POOL_ACQUIRE_TIMEOUT_MS),
+        db_pool_acquire_retry_ms=int(DB_POOL_ACQUIRE_RETRY_MS),
+        db_pool_log_slow_acquire_ms=int(DB_POOL_LOG_SLOW_ACQUIRE_MS),
+        db_checkout_hold_warn_ms=int(DB_CHECKOUT_HOLD_WARN_MS),
+        db_pool_allow_direct_fallback=bool(DB_POOL_ALLOW_DIRECT_FALLBACK),
+        db_direct_connect_possible=bool((not DB_POOL_ENABLED) or DB_POOL_ALLOW_DIRECT_FALLBACK),
+        web_concurrency=web_concurrency,
+        gunicorn_threads=gunicorn_threads,
+        background_jobs_processes=background_jobs_processes,
+        background_jobs_threads=background_jobs_threads,
+        dramatiq_worker_threads=dramatiq_worker_threads,
+        runtime_process_hint=int(process_hint),
+        runtime_thread_hint=int(thread_hint),
+        runtime_concurrency_hint=int(max(1, process_hint * thread_hint)),
+        process_local_pool_ceiling=int(DB_POOL_MAXCONN),
+        theoretical_service_pool_ceiling=int(max(1, process_hint) * int(DB_POOL_MAXCONN)),
+    )
+
+
+_emit_db_pool_runtime_audit()
+
 @contextmanager
 def get_db_connection_context(): #
     conn = get_db_connection()
