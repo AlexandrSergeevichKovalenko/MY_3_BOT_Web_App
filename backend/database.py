@@ -2396,6 +2396,7 @@ def summarize_db_acquire_events(events: list[dict[str, Any]] | None) -> dict[str
             "db_provider_wait_ms_total": 0,
             "db_provider_wait_ms_max": 0,
             "db_provider_wait_count": 0,
+            "db_provider_wait_labels": [],
         }
     acquire_events = [item for item in normalized_events if str(item.get("event") or "acquire") == "acquire"]
     return_events = [item for item in normalized_events if str(item.get("event") or "") == "return"]
@@ -2413,6 +2414,14 @@ def summarize_db_acquire_events(events: list[dict[str, Any]] | None) -> dict[str
     ]
     hold_values = [int(item.get("checkout_hold_ms") or 0) for item in return_events]
     provider_wait_values = [int(item.get("wait_ms") or 0) for item in provider_events]
+    provider_wait_labels: list[str] = []
+    seen_provider_wait_labels: set[str] = set()
+    for item in provider_events:
+        label = str(item.get("provider_label") or "").strip()
+        if not label or label in seen_provider_wait_labels:
+            continue
+        seen_provider_wait_labels.add(label)
+        provider_wait_labels.append(label)
     return {
         "db_pool_acquire_count": len(acquire_events),
         "db_pool_acquire_wait_ms_total": sum(wait_values),
@@ -2434,6 +2443,7 @@ def summarize_db_acquire_events(events: list[dict[str, Any]] | None) -> dict[str
         "db_provider_wait_ms_total": sum(provider_wait_values),
         "db_provider_wait_ms_max": max(provider_wait_values) if provider_wait_values else 0,
         "db_provider_wait_count": len(provider_events),
+        "db_provider_wait_labels": provider_wait_labels,
     }
 
 

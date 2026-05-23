@@ -48,7 +48,7 @@ from backend.database import (
     enforce_feature_limit,
     save_story_arena_score,
 )
-from backend.observability import _log_flow_observation
+from backend.observability import _log_flow_observation, _sanitize_observability_id
 from backend.job_queue import (
     clear_active_translation_session_state,
     clear_session_presence_card,
@@ -4685,11 +4685,30 @@ async def start_translation_session_webapp(
     force_new_session: bool = False,
     tested_skill_profile_seed: dict[str, Any] | None = None,
     grammar_focus: dict[str, Any] | None = None,
+    observability_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     provider_wait_ms_total = 0
+    workflow_result_status = "exception"
+    workflow_created: bool | None = None
+    workflow_blocked: bool | None = None
+    workflow_completion_required: bool | None = None
+    workflow_background_fill_required: bool | None = None
+    workflow_ready_count: int | None = None
+    workflow_expected_total: int | None = None
+    workflow_remaining_count: int | None = None
+    workflow_session_id: int | None = None
+    observability_fields = dict(observability_context or {}) if isinstance(observability_context, dict) else {}
+    request_id = _sanitize_observability_id(observability_fields.get("request_id"))
+    correlation_id = _sanitize_observability_id(observability_fields.get("correlation_id"))
+    route_path = str(observability_fields.get("route") or "").strip() or None
     with db_acquire_scope("translation_session_start") as db_acquire_events:
         level_key = _normalize_level(level)
         resolved_focus = grammar_focus if isinstance(grammar_focus, dict) else resolve_webapp_focus(topic)
+        resolved_focus_kind = str((resolved_focus or {}).get("kind") or "").strip().lower() or None
+        resolved_focus_key = str((resolved_focus or {}).get("key") or "").strip() or None
+        safe_topic = str(topic or "").strip() or None
+        if resolved_focus_kind == "custom":
+            safe_topic = None
         requested_focus_kind = "legacy"
         requested_focus_key = ""
         requested_focus_label = ""
@@ -4731,6 +4750,15 @@ async def start_translation_session_webapp(
             active_session_id: str,
             session_state: dict[str, Any] | None = None,
         ) -> dict[str, Any]:
+            nonlocal workflow_background_fill_required
+            nonlocal workflow_blocked
+            nonlocal workflow_completion_required
+            nonlocal workflow_created
+            nonlocal workflow_expected_total
+            nonlocal workflow_ready_count
+            nonlocal workflow_remaining_count
+            nonlocal workflow_result_status
+            nonlocal workflow_session_id
             active_signature = _resolve_translation_session_signature_with_cursor(
                 cursor,
                 user_id=int(user_id),
@@ -4813,6 +4841,18 @@ async def start_translation_session_webapp(
                 session_state["pending_count"] == 0
                 and session_state["translated_count"] > 0
             )
+            try:
+                workflow_session_id = int(active_session_id)
+            except Exception:
+                workflow_session_id = None
+            workflow_result_status = "existing_active_session"
+            workflow_created = False
+            workflow_blocked = True
+            workflow_completion_required = bool(completion_required)
+            workflow_ready_count = int(session_state["stored_count"])
+            workflow_expected_total = 7
+            workflow_remaining_count = max(0, 7 - int(session_state["stored_count"]))
+            workflow_background_fill_required = bool(int(session_state["stored_count"]) < 7)
             return {
                 "session_id": active_session_id,
                 "created": False,
@@ -4943,6 +4983,9 @@ async def start_translation_session_webapp(
                     )
                     phase_metrics["feature_limit_ms"] = int((time.perf_counter() - feature_limit_started_at) * 1000)
                     if translation_limit_error:
+                        workflow_result_status = str(translation_limit_error.get("error") or "workflow_error").strip().lower() or "workflow_error"
+                        workflow_created = False
+                        workflow_blocked = False
                         translation_limit_error["phase_metrics"] = dict(phase_metrics)
                         return translation_limit_error
 
@@ -5258,6 +5301,15 @@ async def start_translation_session_webapp(
                     background_fill_required=bool(ready_count < 7),
                 ),
             )
+            workflow_result_status = "created_ready" if ready_count >= 7 else "created_pending"
+            workflow_created = True
+            workflow_blocked = False
+            workflow_completion_required = False
+            workflow_background_fill_required = bool(ready_count < 7)
+            workflow_ready_count = int(ready_count)
+            workflow_expected_total = 7
+            workflow_remaining_count = max(0, 7 - int(ready_count))
+            workflow_session_id = int(session_id)
             return {
                 "session_id": int(session_id),
                 "created": True,
@@ -5288,10 +5340,28 @@ async def start_translation_session_webapp(
             _log_flow_observation(
                 "db_scope",
                 "translation_session_start",
+                db_scope="translation_session_start",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                route=route_path,
                 user_id=int(user_id),
                 source_lang=source_lang,
                 target_lang=target_lang,
+                level=level_key,
+                topic=safe_topic,
+                focus_kind=resolved_focus_kind,
+                focus_key=resolved_focus_key,
+                session_id=workflow_session_id,
+                result_status=workflow_result_status,
+                created=workflow_created,
+                blocked=workflow_blocked,
+                completion_required=workflow_completion_required,
+                ready_count=workflow_ready_count,
+                expected_total=workflow_expected_total,
+                remaining_count=workflow_remaining_count,
+                background_fill_required=workflow_background_fill_required,
                 provider_wait_ms=provider_wait_ms_total,
+                provider_wait_labels=list(db_summary.get("db_provider_wait_labels") or []),
                 db_wait_ms=int(db_summary.get("db_pool_acquire_wait_ms_total") or 0),
                 db_hold_ms=int(db_summary.get("db_pool_checkout_hold_ms_total") or 0),
                 **db_summary,

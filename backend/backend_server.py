@@ -40868,24 +40868,45 @@ def start_webapp_translation():
     request_id = _extract_observability_request_id(payload)
     g.request_id = request_id
     correlation_id = _build_observability_correlation_id(payload=payload, prefix="webapp_start")
+    g.correlation_id = correlation_id
+    route_path = request.path or "/api/webapp/start"
     init_data = payload.get("initData")
     topic = (payload.get("topic") or "Random sentences").strip()
     custom_focus = str(payload.get("custom_focus") or "").strip()
     valid_translation_levels = {"a1", "a2", "b1", "b2", "c1", "c2"}
     level = str(payload.get("level") or "").strip().lower()
-    if not level:
-        return jsonify({"error": "level обязателен"}), 400
-    if level not in valid_translation_levels:
-        return jsonify({"error": "Некорректный level"}), 400
-    force_new_session = bool(payload.get("force_new_session"))
-    auth_resolution_started_perf = time.perf_counter()
 
-    if not init_data:
+    def _log_start_route_observation(**fields: Any) -> None:
         _log_flow_observation(
             "webapp_translation",
             "start_completed",
             request_id=request_id,
             correlation_id=correlation_id,
+            route=route_path,
+            **fields,
+        )
+
+    if not level:
+        _log_start_route_observation(
+            final_status="error",
+            error_code="level_required",
+            duration_ms=_elapsed_ms_since(started_at),
+            http_status=400,
+        )
+        return jsonify({"error": "level обязателен"}), 400
+    if level not in valid_translation_levels:
+        _log_start_route_observation(
+            final_status="error",
+            error_code="invalid_level",
+            duration_ms=_elapsed_ms_since(started_at),
+            http_status=400,
+        )
+        return jsonify({"error": "Некорректный level"}), 400
+    force_new_session = bool(payload.get("force_new_session"))
+    auth_resolution_started_perf = time.perf_counter()
+
+    if not init_data:
+        _log_start_route_observation(
             final_status="error",
             duration_ms=_elapsed_ms_since(started_at),
             http_status=400,
@@ -40893,11 +40914,7 @@ def start_webapp_translation():
         return jsonify({"error": "initData обязателен"}), 400
 
     if not _telegram_hash_is_valid(init_data):
-        _log_flow_observation(
-            "webapp_translation",
-            "start_completed",
-            request_id=request_id,
-            correlation_id=correlation_id,
+        _log_start_route_observation(
             final_status="error",
             duration_ms=_elapsed_ms_since(started_at),
             http_status=401,
@@ -40910,11 +40927,7 @@ def start_webapp_translation():
     username = _extract_display_name(user_data)
 
     if not user_id:
-        _log_flow_observation(
-            "webapp_translation",
-            "start_completed",
-            request_id=request_id,
-            correlation_id=correlation_id,
+        _log_start_route_observation(
             final_status="error",
             duration_ms=_elapsed_ms_since(started_at),
             http_status=400,
@@ -40938,11 +40951,7 @@ def start_webapp_translation():
         ttl_sec=WEBAPP_START_IDEMPOTENCY_TTL_SEC,
     )
     if not start_idempotency_token:
-        _log_flow_observation(
-            "webapp_translation",
-            "start_completed",
-            request_id=request_id,
-            correlation_id=correlation_id,
+        _log_start_route_observation(
             user_id=int(user_id),
             final_status="error",
             error_code="start_in_progress",
@@ -40976,11 +40985,7 @@ def start_webapp_translation():
                 focus_key=str(resolved_focus.get("key") or "").strip() or None,
             )
             if str(resolved_focus.get("kind") or "") == "custom" and not str(resolved_focus.get("custom_text") or "").strip():
-                _log_flow_observation(
-                    "webapp_translation",
-                    "start_completed",
-                    request_id=request_id,
-                    correlation_id=correlation_id,
+                _log_start_route_observation(
                     user_id=int(user_id),
                     source_lang=source_lang,
                     target_lang=target_lang,
@@ -41018,6 +41023,11 @@ def start_webapp_translation():
                         target_lang=target_lang,
                         force_new_session=force_new_session,
                         grammar_focus=resolved_focus,
+                        observability_context={
+                            "request_id": request_id,
+                            "correlation_id": correlation_id,
+                            "route": route_path,
+                        },
                     )
                 )
                 workflow_elapsed_ms = int((time.perf_counter() - workflow_started_at) * 1000)
@@ -41053,11 +41063,7 @@ def start_webapp_translation():
                     duration_ms=_elapsed_ms_since(started_at),
                     exception=exc.__class__.__name__,
                 )
-                _log_flow_observation(
-                    "webapp_translation",
-                    "start_completed",
-                    request_id=request_id,
-                    correlation_id=correlation_id,
+                _log_start_route_observation(
                     user_id=int(user_id),
                     source_lang=source_lang,
                     target_lang=target_lang,
@@ -41081,11 +41087,7 @@ def start_webapp_translation():
                 error_code = str(result.get("error") or "").strip().lower()
                 status_code = 429 if error_code in {"feature_limit_exceeded", "cost_cap_exceeded"} else 500
                 start_phase_metrics = dict(result.get("phase_metrics") or {})
-                _log_flow_observation(
-                    "webapp_translation",
-                    "start_completed",
-                    request_id=request_id,
-                    correlation_id=correlation_id,
+                _log_start_route_observation(
                     user_id=int(user_id),
                     source_lang=source_lang,
                     target_lang=target_lang,
@@ -41211,11 +41213,7 @@ def start_webapp_translation():
                         int(session_id or 0),
                         exc_info=True,
                     )
-            _log_flow_observation(
-                "webapp_translation",
-                "start_completed",
-                request_id=request_id,
-                correlation_id=correlation_id,
+            _log_start_route_observation(
                 user_id=int(user_id),
                 session_id=int(session_id or 0) if session_id else None,
                 source_lang=source_lang,
