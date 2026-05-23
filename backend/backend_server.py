@@ -103,7 +103,12 @@ from flask import Flask, request, jsonify, send_from_directory, send_file, g, re
 from flask_cors import CORS
 from dotenv import load_dotenv
 from werkzeug.exceptions import HTTPException
-from backend.database import get_db_connection_context, db_acquire_scope, summarize_db_acquire_events
+from backend.database import (
+    get_db_connection_context,
+    db_acquire_scope,
+    summarize_db_acquire_events,
+    _emit_db_pool_runtime_audit,
+)
 from backend.hotpath_cache import HotPathCacheManager
 from backend.job_queue import (
     can_enqueue_background_jobs,
@@ -1402,6 +1407,7 @@ def _configure_backend_web_logging() -> None:
 
 
 _configure_backend_web_logging()
+_emit_db_pool_runtime_audit()
 
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
 LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET")
