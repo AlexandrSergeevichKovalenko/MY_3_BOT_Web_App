@@ -25881,6 +25881,8 @@ def get_skill_mapping_for_error(
     error_category: str,
     error_subcategory: str | None,
     language_code: str | None = None,
+    cursor=None,
+    cache: dict[tuple[str, str, str], list[dict]] | None = None,
 ) -> list[dict]:
     category = str(error_category or "").strip()
     subcategory = str(error_subcategory or "").strip()
@@ -25889,41 +25891,52 @@ def get_skill_mapping_for_error(
         return []
     if _is_unclassified_error(category, subcategory):
         return []
+    cache_key = (lang, category, subcategory)
+    if cache is not None and cache_key in cache:
+        return [dict(item) for item in list(cache.get(cache_key) or [])]
 
-    with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT skill_id, weight
-                FROM bt_3_error_skill_map
-                WHERE language_code = %s
-                  AND error_category = %s
-                  AND error_subcategory = %s
-                ORDER BY weight DESC, skill_id ASC;
-                """,
-                (lang, category, subcategory),
-            )
-            rows = cursor.fetchall()
-            if rows:
-                return [{"skill_id": row[0], "weight": float(row[1] or 1.0)} for row in rows]
+    def _query(cur) -> list[dict]:
+        cur.execute(
+            """
+            SELECT skill_id, weight
+            FROM bt_3_error_skill_map
+            WHERE language_code = %s
+              AND error_category = %s
+              AND error_subcategory = %s
+            ORDER BY weight DESC, skill_id ASC;
+            """,
+            (lang, category, subcategory),
+        )
+        rows = cur.fetchall()
+        if rows:
+            return [{"skill_id": row[0], "weight": float(row[1] or 1.0)} for row in rows]
 
-            cursor.execute(
-                """
-                SELECT skill_id, weight
-                FROM bt_3_error_skill_map
-                WHERE language_code = %s
-                  AND error_category = %s
-                  AND LOWER(COALESCE(error_subcategory, '')) NOT IN ('unclassified mistake', 'unclassified mistakes')
-                ORDER BY weight DESC, skill_id ASC
-                LIMIT 3;
-                """,
-                (lang, category),
-            )
-            fallback_rows = cursor.fetchall()
-            if fallback_rows:
-                return [{"skill_id": row[0], "weight": float(row[1] or 1.0)} for row in fallback_rows]
+        cur.execute(
+            """
+            SELECT skill_id, weight
+            FROM bt_3_error_skill_map
+            WHERE language_code = %s
+              AND error_category = %s
+              AND LOWER(COALESCE(error_subcategory, '')) NOT IN ('unclassified mistake', 'unclassified mistakes')
+            ORDER BY weight DESC, skill_id ASC
+            LIMIT 3;
+            """,
+            (lang, category),
+        )
+        fallback_rows = cur.fetchall()
+        if fallback_rows:
+            return [{"skill_id": row[0], "weight": float(row[1] or 1.0)} for row in fallback_rows]
+        return []
 
-    return []
+    if cursor is not None:
+        result = _query(cursor)
+    else:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as own_cursor:
+                result = _query(own_cursor)
+    if cache is not None:
+        cache[cache_key] = [dict(item) for item in result]
+    return [dict(item) for item in result]
 
 
 def _clamp_mastery(value: float) -> float:
