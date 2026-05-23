@@ -28285,7 +28285,7 @@ def get_visual_riddle_pool_health_stats() -> dict:
                           AND image_url IS NOT NULL AND image_url <> ''
                     ) AS ready,
                     COUNT(*) FILTER (
-                        WHERE generation_status IN ('pending_blueprint', 'pending_render')
+                        WHERE generation_status IN ('pending', 'blueprint_ready')
                     ) AS pipeline,
                     COUNT(*) FILTER (
                         WHERE generation_status = 'rendering'
