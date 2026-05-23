@@ -25939,6 +25939,123 @@ def get_skill_mapping_for_error(
     return [dict(item) for item in result]
 
 
+def prefetch_skill_mappings_for_error_pairs_with_cursor(
+    cursor,
+    *,
+    error_pairs: list[tuple[str, str]],
+    language_code: str | None = None,
+    cache: dict[tuple[str, str, str], list[dict]] | None = None,
+) -> dict[str, int]:
+    lang = (language_code or "de").strip().lower() or "de"
+    unique_pairs: list[tuple[str, str]] = []
+    for raw_category, raw_subcategory in list(error_pairs or []):
+        category = str(raw_category or "").strip()
+        subcategory = str(raw_subcategory or "").strip()
+        if not category:
+            continue
+        cache_key = (lang, category, subcategory)
+        if _is_unclassified_error(category, subcategory):
+            if cache is not None and cache_key not in cache:
+                cache[cache_key] = []
+            continue
+        if cache is not None and cache_key in cache:
+            continue
+        unique_pairs.append((category, subcategory))
+    deduped_pairs = list(dict.fromkeys(unique_pairs))
+    if not deduped_pairs:
+        return {
+            "unique_pair_count": 0,
+            "batch_query_ms": 0,
+        }
+
+    batch_started_at = time.perf_counter()
+    values_sql = ",".join(
+        cursor.mogrify("(%s, %s)", (category, subcategory)).decode("utf-8")
+        for category, subcategory in deduped_pairs
+    )
+    cursor.execute(
+        f"""
+        WITH requested_pairs(error_category, error_subcategory) AS (
+            VALUES {values_sql}
+        )
+        SELECT
+            requested_pairs.error_category,
+            requested_pairs.error_subcategory,
+            mapped.skill_id,
+            mapped.weight
+        FROM requested_pairs
+        JOIN bt_3_error_skill_map AS mapped
+          ON mapped.language_code = %s
+         AND mapped.error_category = requested_pairs.error_category
+         AND mapped.error_subcategory = requested_pairs.error_subcategory
+        ORDER BY
+            requested_pairs.error_category ASC,
+            requested_pairs.error_subcategory ASC,
+            mapped.weight DESC,
+            mapped.skill_id ASC;
+        """,
+        (lang,),
+    )
+    exact_rows = cursor.fetchall() or []
+    exact_by_pair: dict[tuple[str, str], list[dict]] = {}
+    for category, subcategory, skill_id, weight in exact_rows:
+        pair_key = (str(category or "").strip(), str(subcategory or "").strip())
+        exact_by_pair.setdefault(pair_key, []).append(
+            {
+                "skill_id": str(skill_id or "").strip(),
+                "weight": float(weight or 1.0),
+            }
+        )
+
+    unresolved_pairs = [pair for pair in deduped_pairs if pair not in exact_by_pair]
+    fallback_by_category: dict[str, list[dict]] = {}
+    if unresolved_pairs:
+        fallback_categories = list(dict.fromkeys(category for category, _ in unresolved_pairs))
+        cursor.execute(
+            """
+            WITH ranked_fallback AS (
+                SELECT
+                    error_category,
+                    skill_id,
+                    weight,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY error_category
+                        ORDER BY weight DESC, skill_id ASC
+                    ) AS row_no
+                FROM bt_3_error_skill_map
+                WHERE language_code = %s
+                  AND error_category = ANY(%s)
+                  AND LOWER(COALESCE(error_subcategory, '')) NOT IN ('unclassified mistake', 'unclassified mistakes')
+            )
+            SELECT error_category, skill_id, weight
+            FROM ranked_fallback
+            WHERE row_no <= 3
+            ORDER BY error_category ASC, row_no ASC, skill_id ASC;
+            """,
+            (lang, fallback_categories),
+        )
+        fallback_rows = cursor.fetchall() or []
+        for category, skill_id, weight in fallback_rows:
+            normalized_category = str(category or "").strip()
+            fallback_by_category.setdefault(normalized_category, []).append(
+                {
+                    "skill_id": str(skill_id or "").strip(),
+                    "weight": float(weight or 1.0),
+                }
+            )
+
+    if cache is not None:
+        for category, subcategory in deduped_pairs:
+            cache[(lang, category, subcategory)] = [
+                dict(item)
+                for item in list(exact_by_pair.get((category, subcategory)) or fallback_by_category.get(category) or [])
+            ]
+    return {
+        "unique_pair_count": int(len(deduped_pairs)),
+        "batch_query_ms": max(0, int((time.perf_counter() - batch_started_at) * 1000)),
+    }
+
+
 def _clamp_mastery(value: float) -> float:
     return max(0.0, min(100.0, float(value)))
 

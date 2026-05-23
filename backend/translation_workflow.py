@@ -44,6 +44,7 @@ from backend.database import (
     apply_skill_events_for_error,
     close_stale_open_translation_sessions_for_user,
     get_skill_mapping_for_error,
+    prefetch_skill_mappings_for_error_pairs_with_cursor,
     build_translation_session_minutes_sql,
     enforce_feature_limit,
     save_story_arena_score,
@@ -3937,6 +3938,8 @@ def _collect_seed_sentence_entries_with_cursor(
     remediation_membership_cache: dict[tuple[str, str], dict[str, Any] | None] = {}
     remediation_leaf_cache: dict[tuple[str, str], list[str]] = {}
     personal_rows_scanned = 0
+    sentence_error_pairs_by_sentence_id: dict[int, list[tuple[str, str]]] = {}
+    sentence_error_pair_keys_by_sentence_id: dict[int, set[tuple[str, str]]] = {}
 
     sentence_entries: list[dict[str, Any]] = []
     generic_ready_count = 0
@@ -3980,62 +3983,109 @@ def _collect_seed_sentence_entries_with_cursor(
         detailed_rows = cursor.fetchall() or []
         personal_rows_scanned = len(detailed_rows)
         for sentence, sentence_id, main_category, sub_category in detailed_rows:
+            if not sentence_id:
+                continue
+            normalized_pair = (
+                str(main_category or "").strip(),
+                str(sub_category or "").strip(),
+            )
+            pair_keys = sentence_error_pair_keys_by_sentence_id.setdefault(int(sentence_id), set())
+            if normalized_pair in pair_keys:
+                continue
+            pair_keys.add(normalized_pair)
+            sentence_error_pairs_by_sentence_id.setdefault(int(sentence_id), []).append(normalized_pair)
+        candidate_sentence_keys = set(seen_sentence_keys)
+        candidate_personal_sentences: list[dict[str, Any]] = []
+        for sentence, sentence_id, main_category, sub_category in detailed_rows:
             normalized_sentence = " ".join(str(sentence or "").strip().split())
             sentence_key = _normalize_sentence_text_key(normalized_sentence)
             if focus_kind == "preset" and not focus_matches_error_pair(resolved_focus, main_category, sub_category):
                 continue
             if not normalized_sentence or not _sentence_fits_level(normalized_sentence, level_key):
                 continue
-            if not sentence_id or sentence_id in already_given_sentence_ids or sentence_key in seen_sentence_keys:
+            if not sentence_id or sentence_id in already_given_sentence_ids or sentence_key in candidate_sentence_keys:
                 continue
             already_given_sentence_ids.add(sentence_id)
-            prefetched_remediation = _prefetch_remediation_profile_with_cursor(
+            candidate_sentence_keys.add(sentence_key)
+            candidate_personal_sentences.append(
+                {
+                    "sentence": normalized_sentence,
+                    "sentence_id": int(sentence_id),
+                    "sentence_key": sentence_key,
+                }
+            )
+        candidate_index = 0
+        personal_target_count = min(5, target_total)
+        while candidate_index < len(candidate_personal_sentences) and personal_entries_selected < personal_target_count:
+            remaining_needed = max(1, int(personal_target_count - personal_entries_selected))
+            candidate_chunk = candidate_personal_sentences[candidate_index:candidate_index + remaining_needed]
+            candidate_index += len(candidate_chunk)
+            batch_error_pairs: list[tuple[str, str]] = []
+            for candidate in candidate_chunk:
+                batch_error_pairs.extend(
+                    sentence_error_pairs_by_sentence_id.get(int(candidate.get("sentence_id") or 0), [])
+                )
+            batch_mapping_stats = prefetch_skill_mappings_for_error_pairs_with_cursor(
                 cursor,
-                user_id=int(user_id),
-                sentence_id_for_mistake=int(sentence_id),
-                target_lang=target_lang,
-                source_lang=source_lang,
-                sentence_text=normalized_sentence,
-                error_skill_map_cache=remediation_error_skill_map_cache,
-                skill_seed_cache=remediation_skill_seed_cache,
-                membership_cache=remediation_membership_cache,
-                leaf_cache=remediation_leaf_cache,
-                timing_metrics=timing_metrics,
-                db_acquire_events=db_acquire_events,
+                error_pairs=batch_error_pairs,
+                language_code=target_lang,
+                cache=remediation_error_skill_map_cache,
             )
-            prefetched_profile_ready = bool(
-                isinstance(prefetched_remediation, dict)
-                and list(prefetched_remediation.get("mapped_pairs") or [])
-                and dict(prefetched_remediation.get("available_skill_seeds") or {})
+            _add_phase_metric(
+                timing_metrics,
+                "remediation_skill_mapping_unique_pair_count",
+                int(batch_mapping_stats.get("unique_pair_count") or 0),
             )
-            entry = {
-                "sentence": normalized_sentence,
-                "tested_skill_profile": [],
-            }
-            if deferred_materialization_tasks is not None:
-                sentence_entries.append(entry)
-                deferred_materialization_tasks.append(
-                    {
-                        "entry": entry,
-                        "prefetched": prefetched_remediation,
-                    }
-                )
-            else:
-                entry["tested_skill_profile"], per_sentence_materialization_ms = _finalize_prefetched_remediation_profile(
-                    prefetched_remediation,
+            batch_query_ms = int(batch_mapping_stats.get("batch_query_ms") or 0)
+            _add_phase_metric(timing_metrics, "remediation_skill_mapping_batch_query_ms", batch_query_ms)
+            _add_phase_metric(timing_metrics, "remediation_skill_mapping_ms", batch_query_ms)
+            _add_phase_metric(timing_metrics, "materialization_db_ms", batch_query_ms)
+            for candidate in candidate_chunk:
+                prefetched_remediation = _prefetch_remediation_profile_with_cursor(
+                    cursor,
+                    user_id=int(user_id),
+                    sentence_id_for_mistake=int(candidate.get("sentence_id") or 0),
+                    target_lang=target_lang,
+                    source_lang=source_lang,
+                    sentence_text=str(candidate.get("sentence") or "").strip(),
+                    error_skill_map_cache=remediation_error_skill_map_cache,
+                    skill_seed_cache=remediation_skill_seed_cache,
+                    membership_cache=remediation_membership_cache,
+                    leaf_cache=remediation_leaf_cache,
                     timing_metrics=timing_metrics,
+                    db_acquire_events=db_acquire_events,
                 )
-                sentence_entries.append(entry)
-                _record_sentence_materialization_metrics(
-                    timing_metrics,
-                    elapsed_ms=per_sentence_materialization_ms,
+                prefetched_profile_ready = bool(
+                    isinstance(prefetched_remediation, dict)
+                    and list(prefetched_remediation.get("mapped_pairs") or [])
+                    and dict(prefetched_remediation.get("available_skill_seeds") or {})
                 )
-                prefetched_profile_ready = bool(entry.get("tested_skill_profile"))
-            if prefetched_profile_ready:
-                personal_entries_selected += 1
-            seen_sentence_keys.add(sentence_key)
-            if personal_entries_selected >= min(5, target_total):
-                break
+                entry = {
+                    "sentence": str(candidate.get("sentence") or "").strip(),
+                    "tested_skill_profile": [],
+                }
+                if deferred_materialization_tasks is not None:
+                    sentence_entries.append(entry)
+                    deferred_materialization_tasks.append(
+                        {
+                            "entry": entry,
+                            "prefetched": prefetched_remediation,
+                        }
+                    )
+                else:
+                    entry["tested_skill_profile"], per_sentence_materialization_ms = _finalize_prefetched_remediation_profile(
+                        prefetched_remediation,
+                        timing_metrics=timing_metrics,
+                    )
+                    sentence_entries.append(entry)
+                    _record_sentence_materialization_metrics(
+                        timing_metrics,
+                        elapsed_ms=per_sentence_materialization_ms,
+                    )
+                    prefetched_profile_ready = bool(entry.get("tested_skill_profile"))
+                if prefetched_profile_ready:
+                    personal_entries_selected += 1
+                seen_sentence_keys.add(str(candidate.get("sentence_key") or "").strip())
         personal_elapsed_ms = int((time.perf_counter() - personal_started_at) * 1000)
     else:
         personal_elapsed_ms = 0
@@ -4940,6 +4990,10 @@ async def start_translation_session_webapp(
             "enrichment_python_only_ms": 0,
             "remediation_skill_mapping_ms": 0,
             "remediation_skill_mapping_call_count": 0,
+            "remediation_skill_mapping_unique_pair_count": 0,
+            "remediation_skill_mapping_batch_query_ms": 0,
+            "remediation_skill_mapping_cache_hit_count": 0,
+            "remediation_skill_mapping_cache_miss_count": 0,
             "nested_acquire_count": 0,
             "nested_acquire_wait_ms": 0,
             "per_sentence_materialization_ms": 0,
@@ -6442,11 +6496,29 @@ def _prefetch_remediation_profile_with_cursor(
     mapped_pairs: list[tuple[list[dict[str, Any]], float]] = []
     candidate_skill_ids: set[str] = set()
     for main_category, sub_category, total_mistakes in rows:
+        normalized_main_category = str(main_category or "").strip()
+        normalized_sub_category = str(sub_category or "").strip()
+        cache_key = (
+            str(target_lang or "de").strip().lower() or "de",
+            normalized_main_category,
+            normalized_sub_category,
+        )
+        cache_hit_before_lookup = bool(error_skill_map_cache is not None and cache_key in error_skill_map_cache)
+        _add_phase_metric(
+            timing_metrics,
+            "remediation_skill_mapping_cache_hit_count",
+            1 if cache_hit_before_lookup else 0,
+        )
+        _add_phase_metric(
+            timing_metrics,
+            "remediation_skill_mapping_cache_miss_count",
+            0 if cache_hit_before_lookup else 1,
+        )
         skill_mapping_before = _db_event_summary_snapshot(db_acquire_events)
         skill_mapping_started_at = time.perf_counter()
         mapped = get_skill_mapping_for_error(
-            str(main_category or "").strip(),
-            str(sub_category or "").strip(),
+            normalized_main_category,
+            normalized_sub_category,
             language_code=target_lang or "de",
             cursor=cursor,
             cache=error_skill_map_cache,
