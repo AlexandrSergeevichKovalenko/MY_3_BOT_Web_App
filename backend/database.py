@@ -23,6 +23,7 @@ from uuid import uuid4
 from calendar import monthrange
 from zoneinfo import ZoneInfo
 from typing import Any
+from urllib.parse import parse_qsl, urlparse
 from dotenv import load_dotenv
 from backend.observability import _log_flow_observation
 try:
@@ -71,7 +72,39 @@ _DAILY_PLAN_CACHE = _HotPathCacheManager(name="daily_plan", max_entries=5000)
 env_path = Path(__file__).parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
-DATABASE_URL = os.getenv("DATABASE_URL_RAILWAY") #
+DATABASE_URL_DIRECT = str(
+    os.getenv("DATABASE_URL_DIRECT_RAILWAY")
+    or os.getenv("DATABASE_URL_RAILWAY")
+    or ""
+).strip()
+DATABASE_URL_PGBOUNCER = str(
+    os.getenv("DATABASE_URL_PGBOUNCER_RAILWAY")
+    or os.getenv("DATABASE_URL_PGBOUNCER")
+    or ""
+).strip()
+
+
+def _normalize_db_connection_target(raw_value: str | None) -> str:
+    normalized = str(raw_value or "").strip().lower()
+    if normalized in {"pgbouncer", "pgbouncer_transaction", "transaction", "transaction_pool"}:
+        return "pgbouncer_transaction"
+    return "direct"
+
+
+DB_CONNECTION_TARGET = _normalize_db_connection_target(os.getenv("DB_CONNECTION_TARGET"))
+DATABASE_URL = DATABASE_URL_DIRECT
+DATABASE_URL_SOURCE = "DATABASE_URL_RAILWAY"
+DATABASE_URL_SELECTION_ERROR: str | None = None
+if DB_CONNECTION_TARGET == "pgbouncer_transaction":
+    if DATABASE_URL_PGBOUNCER:
+        DATABASE_URL = DATABASE_URL_PGBOUNCER
+        DATABASE_URL_SOURCE = "DATABASE_URL_PGBOUNCER"
+    else:
+        DATABASE_URL_SELECTION_ERROR = (
+            "DB_CONNECTION_TARGET=pgbouncer_transaction requires DATABASE_URL_PGBOUNCER or "
+            "DATABASE_URL_PGBOUNCER_RAILWAY"
+        )
+
 DB_CONNECT_TIMEOUT_SECONDS = int(os.getenv("DB_CONNECT_TIMEOUT_SECONDS", "12"))
 DB_CONNECT_RETRIES = max(1, int(os.getenv("DB_CONNECT_RETRIES", "3")))
 DB_CONNECT_RETRY_DELAY_SECONDS = float(os.getenv("DB_CONNECT_RETRY_DELAY_SECONDS", "0.6"))
@@ -103,6 +136,7 @@ _STRICT_POOLED_DB_SERVICE_NAMES = {
     "MY_3_BOT",
     "BACKGROUND_JOBS",
     "TRANSLATION_CHECK_WORKER",
+    "AUX_BACKGROUND_WORKER",
     "SCHEDULER_SERVICE",
     "AGENT_WORKER",
 }
@@ -2262,11 +2296,59 @@ def _is_strict_pooled_db_runtime(service_name: str) -> bool:
     return normalized.startswith("BACKEND_WEB") or normalized in _STRICT_POOLED_DB_SERVICE_NAMES
 
 
+def _safe_parse_database_url(dsn: str | None) -> dict[str, Any]:
+    raw_dsn = str(dsn or "").strip()
+    if not raw_dsn:
+        return {
+            "configured": False,
+            "host": None,
+            "port": None,
+            "scheme": None,
+            "sslmode": None,
+            "endpoint_kind": "missing",
+        }
+    try:
+        parsed = urlparse(raw_dsn)
+        query = dict(parse_qsl(parsed.query or "", keep_blank_values=True))
+        host = str(parsed.hostname or "").strip() or None
+        endpoint_kind = "custom"
+        if host and host.endswith(".proxy.rlwy.net"):
+            endpoint_kind = "railway_tcp_proxy"
+        elif host and host.endswith(".railway.internal"):
+            endpoint_kind = "railway_private_network"
+        elif host and host.endswith(".up.railway.app"):
+            endpoint_kind = "railway_public_http"
+        return {
+            "configured": True,
+            "host": host,
+            "port": int(parsed.port) if parsed.port else None,
+            "scheme": str(parsed.scheme or "").strip() or None,
+            "sslmode": str(query.get("sslmode") or "require").strip() or "require",
+            "endpoint_kind": endpoint_kind,
+        }
+    except Exception:
+        return {
+            "configured": True,
+            "host": None,
+            "port": None,
+            "scheme": None,
+            "sslmode": None,
+            "endpoint_kind": "unparseable",
+        }
+
+
+_DIRECT_DATABASE_URL_META = _safe_parse_database_url(DATABASE_URL_DIRECT)
+_PGBOUNCER_DATABASE_URL_META = _safe_parse_database_url(DATABASE_URL_PGBOUNCER)
+_ACTIVE_DATABASE_URL_META = _safe_parse_database_url(DATABASE_URL)
+
+
 def _enforce_db_runtime_policy() -> None:
     service_name = _db_policy_runtime_service_name()
     production_service = _is_strict_pooled_db_runtime(service_name)
     failure_reason = None
-    if production_service:
+    if DATABASE_URL_SELECTION_ERROR:
+        failure_reason = DATABASE_URL_SELECTION_ERROR
+    elif production_service:
         if not DB_POOL_ENABLED:
             failure_reason = "DB_POOL_ENABLED=0 is not allowed for strict pooled production services"
         elif DB_POOL_ALLOW_DIRECT_FALLBACK:
@@ -2279,6 +2361,14 @@ def _enforce_db_runtime_policy() -> None:
         db_pool_enabled=bool(DB_POOL_ENABLED),
         db_pool_allow_direct_fallback=bool(DB_POOL_ALLOW_DIRECT_FALLBACK),
         production_service=bool(production_service),
+        db_connection_target=DB_CONNECTION_TARGET,
+        db_connection_url_source=DATABASE_URL_SOURCE,
+        db_endpoint_kind=_ACTIVE_DATABASE_URL_META.get("endpoint_kind"),
+        db_endpoint_host=_ACTIVE_DATABASE_URL_META.get("host"),
+        db_endpoint_port=_ACTIVE_DATABASE_URL_META.get("port"),
+        db_endpoint_sslmode=_ACTIVE_DATABASE_URL_META.get("sslmode"),
+        db_direct_url_configured=bool(_DIRECT_DATABASE_URL_META.get("configured")),
+        db_pgbouncer_url_configured=bool(_PGBOUNCER_DATABASE_URL_META.get("configured")),
         success=failure_reason is None,
         failure_reason=failure_reason,
     )
@@ -2352,6 +2442,19 @@ def _emit_db_pool_runtime_audit() -> None:
         db_checkout_hold_warn_ms=int(DB_CHECKOUT_HOLD_WARN_MS),
         db_pool_allow_direct_fallback=bool(DB_POOL_ALLOW_DIRECT_FALLBACK),
         db_direct_connect_possible=bool((not DB_POOL_ENABLED) or DB_POOL_ALLOW_DIRECT_FALLBACK),
+        db_connection_target=DB_CONNECTION_TARGET,
+        db_connection_url_source=DATABASE_URL_SOURCE,
+        db_endpoint_kind=_ACTIVE_DATABASE_URL_META.get("endpoint_kind"),
+        db_endpoint_host=_ACTIVE_DATABASE_URL_META.get("host"),
+        db_endpoint_port=_ACTIVE_DATABASE_URL_META.get("port"),
+        db_endpoint_sslmode=_ACTIVE_DATABASE_URL_META.get("sslmode"),
+        db_direct_url_configured=bool(_DIRECT_DATABASE_URL_META.get("configured")),
+        db_direct_endpoint_kind=_DIRECT_DATABASE_URL_META.get("endpoint_kind"),
+        db_direct_endpoint_host=_DIRECT_DATABASE_URL_META.get("host"),
+        db_pgbouncer_url_configured=bool(_PGBOUNCER_DATABASE_URL_META.get("configured")),
+        db_pgbouncer_endpoint_kind=_PGBOUNCER_DATABASE_URL_META.get("endpoint_kind"),
+        db_pgbouncer_endpoint_host=_PGBOUNCER_DATABASE_URL_META.get("host"),
+        db_target_config_error=DATABASE_URL_SELECTION_ERROR,
         web_concurrency=web_concurrency,
         gunicorn_threads=gunicorn_threads,
         background_jobs_processes=background_jobs_processes,
@@ -2371,16 +2474,36 @@ _emit_db_pool_runtime_audit()
 def get_db_connection_context(): #
     conn = get_db_connection()
     force_close = False
+    transaction_started_at = time.perf_counter()
+    commit_duration_ms = 0
+    rollback_duration_ms = 0
+    transaction_outcome = "open"
     try:
         yield conn #
+        commit_started_at = time.perf_counter()
         conn.commit() #
+        commit_duration_ms = max(0, int((time.perf_counter() - commit_started_at) * 1000))
+        transaction_outcome = "committed"
     except Exception:
         try:
+            rollback_started_at = time.perf_counter()
             conn.rollback()
+            rollback_duration_ms = max(0, int((time.perf_counter() - rollback_started_at) * 1000))
+            transaction_outcome = "rolled_back"
         except Exception:
             force_close = True
+            transaction_outcome = "rollback_failed"
         raise
     finally:
+        transaction_duration_ms = max(0, int((time.perf_counter() - transaction_started_at) * 1000))
+        txn_observation = {
+            "transaction_duration_ms": transaction_duration_ms,
+            "transaction_commit_ms": commit_duration_ms,
+            "transaction_rollback_ms": rollback_duration_ms,
+            "transaction_outcome": transaction_outcome,
+        }
+        if isinstance(conn, (_PooledConnectionProxy, _DirectConnectionProxy)):
+            conn._txn_observation = txn_observation
         if isinstance(conn, _PooledConnectionProxy):
             conn.close(force_close=force_close)
         else:
@@ -2466,10 +2589,18 @@ def summarize_db_acquire_events(events: list[dict[str, Any]] | None) -> dict[str
             "db_pool_direct_connect_count": 0,
             "db_pool_acquire_timeout_count": 0,
             "db_pool_used_count_max": None,
+            "db_pool_active_checkout_count_max": None,
             "db_pool_available_count_min": None,
             "db_pool_checkout_hold_ms_total": 0,
             "db_pool_checkout_hold_ms_max": 0,
             "db_pool_long_hold_count": 0,
+            "db_transaction_duration_ms_total": 0,
+            "db_transaction_duration_ms_max": 0,
+            "db_transaction_commit_ms_total": 0,
+            "db_transaction_commit_ms_max": 0,
+            "db_transaction_rollback_ms_total": 0,
+            "db_transaction_rollback_ms_max": 0,
+            "db_transaction_rollback_count": 0,
             "db_provider_wait_ms_total": 0,
             "db_provider_wait_ms_max": 0,
             "db_provider_wait_count": 0,
@@ -2490,6 +2621,9 @@ def summarize_db_acquire_events(events: list[dict[str, Any]] | None) -> dict[str
         if item.get("pool_available_count") is not None
     ]
     hold_values = [int(item.get("checkout_hold_ms") or 0) for item in return_events]
+    transaction_duration_values = [int(item.get("transaction_duration_ms") or 0) for item in return_events]
+    transaction_commit_values = [int(item.get("transaction_commit_ms") or 0) for item in return_events]
+    transaction_rollback_values = [int(item.get("transaction_rollback_ms") or 0) for item in return_events]
     provider_wait_values = [int(item.get("wait_ms") or 0) for item in provider_events]
     provider_wait_labels: list[str] = []
     seen_provider_wait_labels: set[str] = set()
@@ -2513,10 +2647,20 @@ def summarize_db_acquire_events(events: list[dict[str, Any]] | None) -> dict[str
         ),
         "db_pool_acquire_timeout_count": sum(1 for item in acquire_events if bool(item.get("timed_out"))),
         "db_pool_used_count_max": max(used_values) if used_values else None,
+        "db_pool_active_checkout_count_max": max(used_values) if used_values else None,
         "db_pool_available_count_min": min(available_values) if available_values else None,
         "db_pool_checkout_hold_ms_total": sum(hold_values),
         "db_pool_checkout_hold_ms_max": max(hold_values) if hold_values else 0,
         "db_pool_long_hold_count": sum(1 for item in return_events if bool(item.get("long_hold"))),
+        "db_transaction_duration_ms_total": sum(transaction_duration_values),
+        "db_transaction_duration_ms_max": max(transaction_duration_values) if transaction_duration_values else 0,
+        "db_transaction_commit_ms_total": sum(transaction_commit_values),
+        "db_transaction_commit_ms_max": max(transaction_commit_values) if transaction_commit_values else 0,
+        "db_transaction_rollback_ms_total": sum(transaction_rollback_values),
+        "db_transaction_rollback_ms_max": max(transaction_rollback_values) if transaction_rollback_values else 0,
+        "db_transaction_rollback_count": sum(
+            1 for item in return_events if str(item.get("transaction_outcome") or "") == "rolled_back"
+        ),
         "db_provider_wait_ms_total": sum(provider_wait_values),
         "db_provider_wait_ms_max": max(provider_wait_values) if provider_wait_values else 0,
         "db_provider_wait_count": len(provider_events),
@@ -2647,6 +2791,10 @@ def _record_db_checkout_return_event(
     pool: ThreadedConnectionPool | None = None,
     long_hold: bool = False,
     provider_call_in_scope: bool = False,
+    transaction_duration_ms: int = 0,
+    transaction_commit_ms: int = 0,
+    transaction_rollback_ms: int = 0,
+    transaction_outcome: str | None = None,
 ) -> None:
     pool_used_count, pool_available_count = _capture_pool_state(pool)
     event = {
@@ -2656,6 +2804,10 @@ def _record_db_checkout_return_event(
         "checkout_hold_ms": int(max(0, int(checkout_hold_ms or 0))),
         "long_hold": bool(long_hold),
         "provider_call_in_scope": bool(provider_call_in_scope),
+        "transaction_duration_ms": int(max(0, int(transaction_duration_ms or 0))),
+        "transaction_commit_ms": int(max(0, int(transaction_commit_ms or 0))),
+        "transaction_rollback_ms": int(max(0, int(transaction_rollback_ms or 0))),
+        "transaction_outcome": str(transaction_outcome or "").strip() or "unknown",
         "pool_used_count": pool_used_count,
         "pool_available_count": pool_available_count,
     }
@@ -2669,6 +2821,9 @@ def _record_db_checkout_return_event(
             **_db_runtime_base_fields(context_label=context_label),
             connection_source=event["connection_source"],
             checkout_hold_ms=event["checkout_hold_ms"],
+            transaction_duration_ms=event["transaction_duration_ms"],
+            transaction_commit_ms=event["transaction_commit_ms"],
+            transaction_outcome=event["transaction_outcome"],
             pool_used=pool_used_count,
             pool_available=pool_available_count,
             likely_path=context_label,
@@ -2683,6 +2838,7 @@ class _PooledConnectionProxy:
         self._released = False
         self._context_label = str(context_label or "").strip() or "unspecified"
         self._acquired_at_perf = float(acquired_at_perf)
+        self._txn_observation: dict[str, Any] = {}
 
     def __getattr__(self, name):
         return getattr(self._conn, name)
@@ -2704,6 +2860,7 @@ class _PooledConnectionProxy:
         hold_ms = max(0, int((time.perf_counter() - self._acquired_at_perf) * 1000))
         scope = _get_current_db_scope_context() or {}
         provider_call_in_scope = bool(int(scope.get("provider_wait_ms_total") or 0) > 0)
+        txn_observation = self._txn_observation if isinstance(self._txn_observation, dict) else {}
         _record_db_checkout_return_event(
             context_label=self._context_label,
             connection_source="pool",
@@ -2711,6 +2868,10 @@ class _PooledConnectionProxy:
             pool=self._pool,
             long_hold=bool(DB_CHECKOUT_HOLD_WARN_MS > 0 and hold_ms >= DB_CHECKOUT_HOLD_WARN_MS),
             provider_call_in_scope=provider_call_in_scope,
+            transaction_duration_ms=int(txn_observation.get("transaction_duration_ms") or 0),
+            transaction_commit_ms=int(txn_observation.get("transaction_commit_ms") or 0),
+            transaction_rollback_ms=int(txn_observation.get("transaction_rollback_ms") or 0),
+            transaction_outcome=str(txn_observation.get("transaction_outcome") or "").strip() or None,
         )
         try:
             self._pool.putconn(self._conn, close=bool(force_close))
@@ -2728,6 +2889,7 @@ class _DirectConnectionProxy:
         self._context_label = str(context_label or "").strip() or "unspecified"
         self._connection_source = str(connection_source or "").strip() or "direct"
         self._acquired_at_perf = float(acquired_at_perf)
+        self._txn_observation: dict[str, Any] = {}
 
     def __getattr__(self, name):
         return getattr(self._conn, name)
@@ -2749,6 +2911,7 @@ class _DirectConnectionProxy:
         hold_ms = max(0, int((time.perf_counter() - self._acquired_at_perf) * 1000))
         scope = _get_current_db_scope_context() or {}
         provider_call_in_scope = bool(int(scope.get("provider_wait_ms_total") or 0) > 0)
+        txn_observation = self._txn_observation if isinstance(self._txn_observation, dict) else {}
         _record_db_checkout_return_event(
             context_label=self._context_label,
             connection_source=self._connection_source,
@@ -2756,6 +2919,10 @@ class _DirectConnectionProxy:
             pool=None,
             long_hold=bool(DB_CHECKOUT_HOLD_WARN_MS > 0 and hold_ms >= DB_CHECKOUT_HOLD_WARN_MS),
             provider_call_in_scope=provider_call_in_scope,
+            transaction_duration_ms=int(txn_observation.get("transaction_duration_ms") or 0),
+            transaction_commit_ms=int(txn_observation.get("transaction_commit_ms") or 0),
+            transaction_rollback_ms=int(txn_observation.get("transaction_rollback_ms") or 0),
+            transaction_outcome=str(txn_observation.get("transaction_outcome") or "").strip() or None,
         )
         self._conn.close()
 
