@@ -4600,6 +4600,13 @@ def _translation_session_is_open_with_cursor(
     return bool(cursor.fetchone())
 
 
+def _try_acquire_translation_fill_round_lock(cursor, *, session_id: int) -> tuple[bool, int]:
+    lock_started_perf = time.perf_counter()
+    cursor.execute("SELECT pg_try_advisory_xact_lock(%s::bigint);", (int(session_id),))
+    row = cursor.fetchone()
+    return bool(row and row[0]), max(0, int((time.perf_counter() - lock_started_perf) * 1000))
+
+
 async def fill_translation_session_webapp(
     *,
     user_id: int,
@@ -4618,7 +4625,9 @@ async def fill_translation_session_webapp(
     with db_acquire_scope("translation_session_fill") as db_acquire_events:
         conn = get_db_connection()
     cursor = conn.cursor()
-    advisory_lock_acquired = False
+    advisory_lock_wait_ms_total = 0
+    advisory_lock_held_ms_total = 0
+    advisory_lock_started_perf: float | None = None
     round_diagnostics: list[dict[str, Any]] = []
     try:
         resolved_focus = grammar_focus if isinstance(grammar_focus, dict) else resolve_webapp_focus(topic)
@@ -4626,21 +4635,35 @@ async def fill_translation_session_webapp(
             focus=resolved_focus,
             level=level,
         )
-        cursor.execute("SELECT pg_try_advisory_lock(%s);", (int(session_id),))
-        lock_row = cursor.fetchone()
-        advisory_lock_acquired = bool(lock_row and lock_row[0])
-        if not advisory_lock_acquired:
-            return {"session_id": int(session_id), "filled": 0, "ready_count": 0, "expected_total": int(target_count), "skipped": "lock"}
-
         total_inserted = 0
         current_count = 0
         initial_ready_count: int | None = None
         for _round in range(max(1, int(max_rounds or 1))):
+            advisory_lock_acquired, advisory_lock_wait_ms = _try_acquire_translation_fill_round_lock(
+                cursor,
+                session_id=int(session_id),
+            )
+            advisory_lock_wait_ms_total += int(advisory_lock_wait_ms)
+            if not advisory_lock_acquired:
+                round_diagnostics.append(
+                    {
+                        "round": int(_round + 1),
+                        "skipped": "lock",
+                    }
+                )
+                break
+            advisory_lock_started_perf = time.perf_counter()
             if not _translation_session_is_open_with_cursor(
                 cursor,
                 user_id=int(user_id),
                 session_id=int(session_id),
             ):
+                conn.commit()
+                advisory_lock_held_ms_total += max(
+                    0,
+                    int((time.perf_counter() - advisory_lock_started_perf) * 1000),
+                )
+                advisory_lock_started_perf = None
                 break
             cursor.execute(
                 """
@@ -4658,9 +4681,21 @@ async def fill_translation_session_webapp(
             if initial_ready_count is None:
                 initial_ready_count = int(current_count)
             if current_count >= int(target_count):
+                conn.commit()
+                advisory_lock_held_ms_total += max(
+                    0,
+                    int((time.perf_counter() - advisory_lock_started_perf) * 1000),
+                )
+                advisory_lock_started_perf = None
                 break
             missing_count = max(0, int(target_count) - int(current_count))
             if missing_count <= 0:
+                conn.commit()
+                advisory_lock_held_ms_total += max(
+                    0,
+                    int((time.perf_counter() - advisory_lock_started_perf) * 1000),
+                )
+                advisory_lock_started_perf = None
                 break
 
             existing_sentence_keys = _get_session_sentence_keys_with_cursor(
@@ -4802,9 +4837,20 @@ async def fill_translation_session_webapp(
                     round_info["candidate_duplicate_blocked"],
                     round_info["candidate_insertable"],
                 )
+                conn.commit()
+                advisory_lock_held_ms_total += max(
+                    0,
+                    int((time.perf_counter() - advisory_lock_started_perf) * 1000),
+                )
+                advisory_lock_started_perf = None
                 continue
             total_inserted += len(inserted_items)
             conn.commit()
+            advisory_lock_held_ms_total += max(
+                0,
+                int((time.perf_counter() - advisory_lock_started_perf) * 1000),
+            )
+            advisory_lock_started_perf = None
 
         cursor.execute(
             """
@@ -4901,11 +4947,11 @@ async def fill_translation_session_webapp(
             "time_to_first_ready_ms": time_to_first_ready_ms,
         }
     finally:
-        if advisory_lock_acquired:
-            try:
-                cursor.execute("SELECT pg_advisory_unlock(%s);", (int(session_id),))
-            except Exception:
-                logging.debug("Failed to release translation session fill advisory lock: %s", session_id, exc_info=True)
+        if advisory_lock_started_perf is not None:
+            advisory_lock_held_ms_total += max(
+                0,
+                int((time.perf_counter() - advisory_lock_started_perf) * 1000),
+            )
         cursor.close()
         conn.close()
         db_summary = summarize_db_acquire_events(db_acquire_events)
@@ -4916,6 +4962,11 @@ async def fill_translation_session_webapp(
             session_id=int(session_id),
             source_lang=source_lang,
             target_lang=target_lang,
+            advisory_lock_kind="advisory",
+            advisory_lock_scope="transaction",
+            advisory_lock_wait_ms=int(advisory_lock_wait_ms_total),
+            advisory_lock_held_ms=int(advisory_lock_held_ms_total),
+            advisory_lock_path="translation_session_fill_round",
             provider_wait_ms=provider_wait_ms_total,
             db_wait_ms=int(db_summary.get("db_pool_acquire_wait_ms_total") or 0),
             db_hold_ms=int(db_summary.get("db_pool_checkout_hold_ms_total") or 0),

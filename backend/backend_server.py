@@ -1838,6 +1838,8 @@ def _emit_startup_schema_bootstrap_election(
     duration_ms: int,
     marker_status: str,
     lock_acquired: bool,
+    advisory_lock_wait_ms: int = 0,
+    advisory_lock_held_ms: int = 0,
     wait_timeout_ms: int,
     success: bool,
     exception: Exception | None = None,
@@ -1851,6 +1853,11 @@ def _emit_startup_schema_bootstrap_election(
         "duration_ms": int(duration_ms),
         "marker_status": marker_status,
         "lock_acquired": bool(lock_acquired),
+        "advisory_lock_kind": "advisory",
+        "advisory_lock_scope": "transaction",
+        "advisory_lock_wait_ms": int(advisory_lock_wait_ms),
+        "advisory_lock_held_ms": int(advisory_lock_held_ms),
+        "advisory_lock_path": "startup_bootstrap_owner",
         "wait_timeout_ms": int(wait_timeout_ms),
         "success": bool(success),
         "bootstrap_name": _WEBAPP_STARTUP_BOOTSTRAP_MARKER_NAME,
@@ -1867,6 +1874,8 @@ def _emit_startup_marker_store_provisioning(
     role: str,
     duration_ms: int,
     lock_acquired: bool,
+    advisory_lock_wait_ms: int = 0,
+    advisory_lock_held_ms: int = 0,
     success: bool,
     exception: Exception | None = None,
 ) -> None:
@@ -1878,6 +1887,11 @@ def _emit_startup_marker_store_provisioning(
         "worker": _startup_worker_info(),
         "duration_ms": int(duration_ms),
         "lock_acquired": bool(lock_acquired),
+        "advisory_lock_kind": "advisory",
+        "advisory_lock_scope": "transaction",
+        "advisory_lock_wait_ms": int(advisory_lock_wait_ms),
+        "advisory_lock_held_ms": int(advisory_lock_held_ms),
+        "advisory_lock_path": "startup_bootstrap_marker_store",
         "success": bool(success),
         "marker_store": "bt_3_startup_bootstrap_markers",
     }
@@ -1901,57 +1915,73 @@ def _ensure_startup_bootstrap_marker_store_ready(conn) -> None:
 
     role = "provision_waiter"
     lock_acquired = False
-    lock_held = False
+    advisory_lock_wait_ms = 0
+    advisory_lock_started_perf: float | None = None
     try:
         with conn.cursor() as cursor:
+            lock_attempt_started_perf = time.perf_counter()
             cursor.execute(
-                "SELECT pg_try_advisory_lock(%s::bigint);",
+                "SELECT pg_try_advisory_xact_lock(%s::bigint);",
                 (_WEBAPP_STARTUP_BOOTSTRAP_MARKER_STORE_LOCK_KEY,),
             )
             lock_acquired = bool((cursor.fetchone() or [False])[0])
-        lock_held = lock_acquired
+            advisory_lock_wait_ms = max(
+                0,
+                int((time.perf_counter() - lock_attempt_started_perf) * 1000),
+            )
+        if lock_acquired:
+            advisory_lock_started_perf = time.perf_counter()
 
         if lock_acquired:
             role = "provision_owner"
             _ensure_startup_bootstrap_markers_table(conn)
         else:
             with conn.cursor() as cursor:
+                lock_attempt_started_perf = time.perf_counter()
                 cursor.execute(
-                    "SELECT pg_advisory_lock(%s::bigint);",
+                    "SELECT pg_advisory_xact_lock(%s::bigint);",
                     (_WEBAPP_STARTUP_BOOTSTRAP_MARKER_STORE_LOCK_KEY,),
                 )
-            lock_held = True
+                advisory_lock_wait_ms += max(
+                    0,
+                    int((time.perf_counter() - lock_attempt_started_perf) * 1000),
+                )
+            advisory_lock_started_perf = time.perf_counter()
             if not _startup_bootstrap_marker_store_exists(conn):
                 raise RuntimeError(
                     "Startup bootstrap marker store missing after provisioning wait"
                 )
+        advisory_lock_held_ms = (
+            max(0, int((time.perf_counter() - advisory_lock_started_perf) * 1000))
+            if advisory_lock_started_perf is not None
+            else 0
+        )
+        conn.commit()
         _STARTUP_BOOTSTRAP_MARKER_STORE_READY = True
         _emit_startup_marker_store_provisioning(
             role=role,
             duration_ms=int((time.perf_counter() - started_perf) * 1000),
             lock_acquired=lock_acquired,
+            advisory_lock_wait_ms=advisory_lock_wait_ms,
+            advisory_lock_held_ms=advisory_lock_held_ms,
             success=True,
         )
     except Exception as exc:
+        advisory_lock_held_ms = (
+            max(0, int((time.perf_counter() - advisory_lock_started_perf) * 1000))
+            if advisory_lock_started_perf is not None
+            else 0
+        )
         _emit_startup_marker_store_provisioning(
             role=role,
             duration_ms=int((time.perf_counter() - started_perf) * 1000),
             lock_acquired=lock_acquired,
+            advisory_lock_wait_ms=advisory_lock_wait_ms,
+            advisory_lock_held_ms=advisory_lock_held_ms,
             success=False,
             exception=exc,
         )
         raise
-    finally:
-        if lock_held:
-            try:
-                with conn.cursor() as cursor:
-                    cursor.execute(
-                        "SELECT pg_advisory_unlock(%s::bigint);",
-                        (_WEBAPP_STARTUP_BOOTSTRAP_MARKER_STORE_LOCK_KEY,),
-                    )
-                conn.commit()
-            except Exception:
-                logging.exception("Failed to unlock startup bootstrap marker store advisory lock")
 
 
 def _is_retryable_schema_bootstrap_error(exc: Exception) -> bool:
@@ -2008,6 +2038,8 @@ def _coordinated_startup_bootstrap_backend_schema_or_raise() -> None:
     waited_for_owner_ms = 0
     skip_reason: str | None = None
     marker_status = "missing"
+    advisory_lock_wait_ms = 0
+    advisory_lock_started_perf: float | None = None
     bootstrap_version = _webapp_startup_bootstrap_version()
     deploy_ref = _startup_deploy_ref()
 
@@ -2055,30 +2087,38 @@ def _coordinated_startup_bootstrap_backend_schema_or_raise() -> None:
                 return
 
             with conn.cursor() as cursor:
+                lock_attempt_started_perf = time.perf_counter()
                 cursor.execute(
-                    "SELECT pg_try_advisory_lock(%s::bigint);",
+                    "SELECT pg_try_advisory_xact_lock(%s::bigint);",
                     (_WEBAPP_STARTUP_BOOTSTRAP_OWNER_LOCK_KEY,),
                 )
                 lock_acquired = bool((cursor.fetchone() or [False])[0])
+                advisory_lock_wait_ms = max(
+                    0,
+                    int((time.perf_counter() - lock_attempt_started_perf) * 1000),
+                )
 
             if lock_acquired:
+                advisory_lock_started_perf = time.perf_counter()
                 role = "owner"
                 marker = _fetch_startup_bootstrap_marker(conn, _WEBAPP_STARTUP_BOOTSTRAP_MARKER_NAME)
                 if _is_valid_completed_marker(marker):
                     _BACKEND_SCHEMA_READY = True
                     marker_status = "completed"
                     skip_reason = "completed_marker_after_lock"
-                    with conn.cursor() as cursor:
-                        cursor.execute(
-                            "SELECT pg_advisory_unlock(%s::bigint);",
-                            (_WEBAPP_STARTUP_BOOTSTRAP_OWNER_LOCK_KEY,),
-                        )
                     conn.commit()
+                    advisory_lock_held_ms = (
+                        max(0, int((time.perf_counter() - advisory_lock_started_perf) * 1000))
+                        if advisory_lock_started_perf is not None
+                        else 0
+                    )
                     _emit_startup_schema_bootstrap_election(
                         role="skip_completed",
                         duration_ms=int((time.perf_counter() - started_perf) * 1000),
                         marker_status=marker_status,
                         lock_acquired=True,
+                        advisory_lock_wait_ms=advisory_lock_wait_ms,
+                        advisory_lock_held_ms=advisory_lock_held_ms,
                         wait_timeout_ms=_WEBAPP_STARTUP_BOOTSTRAP_WAIT_TIMEOUT_MS,
                         success=True,
                     )
@@ -2115,6 +2155,8 @@ def _coordinated_startup_bootstrap_backend_schema_or_raise() -> None:
                     duration_ms=int((time.perf_counter() - started_perf) * 1000),
                     marker_status="running",
                     lock_acquired=True,
+                    advisory_lock_wait_ms=advisory_lock_wait_ms,
+                    advisory_lock_held_ms=0,
                     wait_timeout_ms=_WEBAPP_STARTUP_BOOTSTRAP_WAIT_TIMEOUT_MS,
                     success=True,
                 )
@@ -2138,11 +2180,19 @@ def _coordinated_startup_bootstrap_backend_schema_or_raise() -> None:
                         deploy_ref=deploy_ref,
                     )
                     marker_status = "completed"
+                    conn.commit()
+                    advisory_lock_held_ms = (
+                        max(0, int((time.perf_counter() - advisory_lock_started_perf) * 1000))
+                        if advisory_lock_started_perf is not None
+                        else 0
+                    )
                     _emit_startup_schema_bootstrap_election(
                         role=role,
                         duration_ms=int((time.perf_counter() - started_perf) * 1000),
                         marker_status=marker_status,
                         lock_acquired=True,
+                        advisory_lock_wait_ms=advisory_lock_wait_ms,
+                        advisory_lock_held_ms=advisory_lock_held_ms,
                         wait_timeout_ms=_WEBAPP_STARTUP_BOOTSTRAP_WAIT_TIMEOUT_MS,
                         success=True,
                     )
@@ -2169,11 +2219,19 @@ def _coordinated_startup_bootstrap_backend_schema_or_raise() -> None:
                         error_message=str(exc),
                     )
                     marker_status = "failed"
+                    conn.commit()
+                    advisory_lock_held_ms = (
+                        max(0, int((time.perf_counter() - advisory_lock_started_perf) * 1000))
+                        if advisory_lock_started_perf is not None
+                        else 0
+                    )
                     _emit_startup_schema_bootstrap_election(
                         role=role,
                         duration_ms=int((time.perf_counter() - started_perf) * 1000),
                         marker_status=marker_status,
                         lock_acquired=True,
+                        advisory_lock_wait_ms=advisory_lock_wait_ms,
+                        advisory_lock_held_ms=advisory_lock_held_ms,
                         wait_timeout_ms=_WEBAPP_STARTUP_BOOTSTRAP_WAIT_TIMEOUT_MS,
                         success=False,
                         exception=exc,
@@ -2181,12 +2239,6 @@ def _coordinated_startup_bootstrap_backend_schema_or_raise() -> None:
                     raise
                 finally:
                     _clear_startup_phase_context()
-                    with conn.cursor() as cursor:
-                        cursor.execute(
-                            "SELECT pg_advisory_unlock(%s::bigint);",
-                            (_WEBAPP_STARTUP_BOOTSTRAP_OWNER_LOCK_KEY,),
-                        )
-                    conn.commit()
                 return
 
         deadline_perf = time.perf_counter() + (_WEBAPP_STARTUP_BOOTSTRAP_WAIT_TIMEOUT_MS / 1000.0)
