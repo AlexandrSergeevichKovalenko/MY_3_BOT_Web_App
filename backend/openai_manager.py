@@ -1964,7 +1964,7 @@ Output rules:
 - Output ONLY JSON.
 """,
 "dictionary_collocations": """
-You generate grammatically correct, natural German collocations or usage examples for a given word or phrase.
+You create vivid, memorable German phrases for a given word or phrase — phrases that place the word in a real everyday situation so the learner can feel and remember it.
 Input payload is JSON:
   direction: "ru-de" or "de-ru"
   word: the original word or phrase in the source language
@@ -1981,32 +1981,31 @@ Return STRICT JSON:
 
 Rules:
 - Exactly 3 items.
-- CRITICAL: Every item must be GENUINELY DISTINCT from the others. Different punctuation, capitalisation, or one-word swaps do NOT make items distinct.
-- ARTICLES: When the source side contains a German noun standing alone (not inside a longer phrase), ALWAYS include the correct definite article (der/die/das). Never output a bare noun without an article.
-- If "word" is a SHORT WORD or SHORT PHRASE (up to 4 words):
-  * Generate 3 short natural collocations (2–5 source words each).
-  * Respect the word's part of speech:
-    - Adjective → noun phrase with correct German declension (e.g. "ein neues Buch")
-    - Verb → realistic object/complement with correct German case (e.g. "die Frage beantworten")
-    - Noun → natural phrase with a typical verb (e.g. "eine Frage stellen"); if showing the noun in isolation, prepend the correct definite article (e.g. "der Tisch", "die Frage", "das Buch")
-    - Adverb/particle → pair with a verb phrase (e.g. "leider nicht kommen")
+- CRITICAL: Every item must be GENUINELY DISTINCT from the others — different situation, different context, different emotional tone. One-word swaps do NOT make items distinct.
+- VIVIDNESS: Each phrase must paint a mini-scene. Include a concrete subject (a person, a child, someone at work, at home) or a recognisable everyday situation. Avoid abstract grammar-exercise style. A learner should be able to picture exactly what is happening.
+  * Bad: "die Fibel lesen" — dry, no context
+  * Good: "Das Kind lernt mit der Fibel lesen" — you can see it
+  * Bad: "die Frage beantworten" — textbook style
+  * Good: "Er konnte die Frage kaum beantworten" — feels real
+- LENGTH: 4–8 source words. Long enough to carry a situation, short enough to save as a flashcard.
+- ARTICLES: German nouns must have the correct definite or indefinite article (der/die/das/ein/eine). Never output a bare German noun.
+- GRAMMAR: Correct German word order and case throughout.
+- If "word" is a SHORT WORD or PHRASE (up to 4 words):
+  * Generate 3 vivid situational phrases using the word in a natural everyday context.
+  * Cover varied situations: e.g. at home, at work/school, in conversation.
+  * Respect part of speech — noun, verb, adjective, adverb must appear in correct form.
 - If "word" is a FULL SENTENCE or long phrase (more than 4 words):
-  * Identify the KEY CONTENT WORD or CORE EXPRESSION in the phrase (the main verb, noun, particle, or idiomatic unit that carries the meaning).
-  * Generate 3 SHORT COLLOCATIONS (2–5 words each) of that key word — NOT repetitions or variants of the full input sentence.
-  * Each collocation must be a compact, standalone save-worthy phrase: the key word combined with a typical complement, preposition, or case partner.
-  * CRITICAL: Do NOT output the full input phrase or a near-identical variant with minor changes. The items must be shorter and structurally different from the input.
-  * Example: input "Nein, spricht nichts dagegen" → key word "dagegen" →
-    - "nichts dagegen haben" / "быть не против"
-    - "dagegen sein" / "быть против этого"
-    - "Einwände dagegen" / "возражения против"
-  * Example: input "Das hängt von den Umständen ab" → key: "abhängen von" →
-    - "von etwas abhängen" / "зависеть от чего-либо"
-    - "es kommt darauf an" / "это зависит от..."
-    - "unabhängig von etwas sein" / "быть независимым от"
+  * Extract the KEY WORD or CORE EXPRESSION (main verb, noun, or idiomatic unit).
+  * Generate 3 vivid phrases (4–8 words each) for that key word — NOT variants of the full input sentence.
+  * CRITICAL: Do NOT repeat or paraphrase the input. The output must be structurally different and shorter.
+  * Example: input "Das hängt von den Umständen ab" → key "abhängen von" →
+    - "Das Ergebnis hängt von dir ab" / "Результат зависит от тебя"
+    - "Es hängt vom Wetter ab" / "Это зависит от погоды"
+    - "Der Preis hängt davon ab" / "Цена зависит от этого"
 - Output ONLY JSON.
 """,
 "dictionary_collocations_multilang": """
-You generate grammatically correct, natural collocations or usage examples for a word or phrase in arbitrary language pairs.
+You create vivid, memorable phrases for a word or phrase in arbitrary language pairs — phrases that place the word in a real everyday situation so the learner can feel and remember it.
 Input JSON:
 {
   "source_language": "...",
@@ -2026,21 +2025,20 @@ Return STRICT JSON:
 
 Rules:
 - Exactly 3 items.
-- CRITICAL: Every item must be GENUINELY DISTINCT from the others. Different punctuation spacing, capitalisation, or one-word swaps do NOT make items distinct. Each item must use a clearly different noun, object, context, or sentence structure.
-- ARTICLES: When source_language is German and the source side contains a German noun standing alone (not inside a longer phrase), ALWAYS include the correct definite article (der/die/das). Never output a bare German noun without an article. Example: write "der Ersatzstift", NOT "Ersatzstift".
-- If "word_source" is a SHORT WORD or SHORT PHRASE (up to 4 words):
-  * Generate 3 short natural collocations (2–5 source words each).
-  * Respect the word's part of speech:
-    - Adjective → noun phrase with correct agreement/declension
-    - Verb → realistic object/complement in correct grammatical case
-    - Noun → natural phrase with a typical verb; if showing the noun in isolation, prepend the correct definite article
-    - Adverb/particle → combine with a verb or clause where it fits
+- CRITICAL: Every item must be GENUINELY DISTINCT — different situation, different emotional tone, different context. One-word swaps do NOT count as distinct.
+- VIVIDNESS: Each phrase must paint a mini-scene with a concrete subject or recognisable everyday situation. Avoid abstract grammar-exercise style. A learner should be able to picture what is happening.
+  * Bad: "die Frage beantworten" — dry
+  * Good: "Er konnte die Frage kaum beantworten" — vivid, feels real
+- LENGTH: 4–8 source words. Long enough to carry a situation, short enough to memorise.
+- ARTICLES: When source_language is German and the source contains a German noun, always include the correct article (der/die/das/ein/eine). Never output a bare German noun.
+- GRAMMAR: Correct grammar, word order, and case throughout.
+- If "word_source" is a SHORT WORD or PHRASE (up to 4 words):
+  * Generate 3 vivid situational phrases covering varied everyday contexts (home, work, conversation, emotions).
+  * The target side must be a natural, idiomatic translation — not a word-for-word gloss.
 - If "word_source" is a FULL SENTENCE or long phrase (more than 4 words):
-  * Identify the KEY CONTENT WORD or CORE EXPRESSION in the phrase (main verb, noun, particle, or idiomatic unit).
-  * Generate 3 SHORT COLLOCATIONS (2–5 words each) of that key word — NOT repetitions or variants of the full input sentence.
-  * Each collocation must be a compact, standalone save-worthy phrase: the key word with its typical complement, preposition, or case partner.
-  * CRITICAL: Do NOT output the full input phrase or a near-identical variant. Items must be shorter and structurally different from the input.
-  * Example: input "Nein, spricht nichts dagegen" → key "dagegen" → items: "nichts dagegen haben", "dagegen sein", "Einwände dagegen"
+  * Extract the KEY WORD or CORE EXPRESSION.
+  * Generate 3 vivid phrases (4–8 words) for that key word — NOT variants of the full input.
+  * CRITICAL: Do NOT repeat or paraphrase the input sentence.
 - Output ONLY JSON.
 """,
 "dictionary_assistant_multilang": """
