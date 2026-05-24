@@ -2340,6 +2340,7 @@ def _safe_parse_database_url(dsn: str | None) -> dict[str, Any]:
 _DIRECT_DATABASE_URL_META = _safe_parse_database_url(DATABASE_URL_DIRECT)
 _PGBOUNCER_DATABASE_URL_META = _safe_parse_database_url(DATABASE_URL_PGBOUNCER)
 _ACTIVE_DATABASE_URL_META = _safe_parse_database_url(DATABASE_URL)
+DB_CONNECT_SSLMODE = str(_ACTIVE_DATABASE_URL_META.get("sslmode") or "require").strip() or "require"
 
 
 def _enforce_db_runtime_policy() -> None:
@@ -2675,7 +2676,7 @@ def _new_raw_db_connection():
         try:
             conn = psycopg2.connect(
                 DATABASE_URL,
-                sslmode='require',
+                sslmode=DB_CONNECT_SSLMODE,
                 connect_timeout=DB_CONNECT_TIMEOUT_SECONDS,
                 keepalives=1,
                 keepalives_idle=30,
@@ -2707,7 +2708,7 @@ def _get_or_init_db_pool() -> ThreadedConnectionPool | None:
                     DB_POOL_MINCONN,
                     DB_POOL_MAXCONN,
                     DATABASE_URL,
-                    sslmode='require',
+                    sslmode=DB_CONNECT_SSLMODE,
                     connect_timeout=DB_CONNECT_TIMEOUT_SECONDS,
                     keepalives=1,
                     keepalives_idle=30,
