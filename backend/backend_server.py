@@ -18573,6 +18573,7 @@ def _dispatch_translation_focus_pool_refill(*, force: bool = False, tz_name: str
         return focus_pool_result
     except Exception:
         logging.exception("Translation focus pool refill failed")
+        _persist_daily_snapshot()
         return {
             "ok": False,
             "skipped": False,
