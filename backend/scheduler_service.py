@@ -40,6 +40,8 @@ Timing env vars (all optional, defaults match original _start_audio_scheduler):
   TRANSLATION_FOCUS_POOL_ADMIN_REPORT_ENABLED, ...HOUR/MINUTE/TZ
   SKILL_STATE_V2_AGGREGATION_ENABLED, SKILL_STATE_V2_AGGREGATION_INTERVAL_SECONDS
   TRANSLATION_CHECK_WORKER_SCHEDULE_ENABLED, ...START_TIMES/STOP_TIMES/TIMEZONE/IDLE_STOP_GRACE_MINUTES
+  BACKGROUND_JOBS_RESOURCE_SCHEDULE_ENABLED, ...START_TIMES/STOP_TIMES/TIMEZONE/RECONCILE_MINUTES/DAY_PROFILE/NIGHT_PROFILE
+  AUX_BACKGROUND_WORKER_RESOURCE_SCHEDULE_ENABLED, ...START_TIMES/STOP_TIMES/TIMEZONE/RECONCILE_MINUTES/DAY_PROFILE/NIGHT_PROFILE
 """
 
 import logging
@@ -90,6 +92,7 @@ from backend.background_jobs import (  # noqa: E402
     run_skill_state_v2_aggregation_actor,
     run_agent_worker_schedule_control_actor,
     run_translation_check_worker_schedule_control_actor,
+    run_service_resource_schedule_control_actor,
 )
 
 # ---------------------------------------------------------------------------
@@ -151,6 +154,29 @@ def _translation_check_worker_schedule_timezone_name() -> str:
 
 def _translation_check_worker_idle_stop_grace_minutes() -> int:
     return max(1, _int_env("TRANSLATION_CHECK_WORKER_IDLE_STOP_GRACE_MINUTES", 10))
+
+
+def _resource_schedule_timezone_name(service_name: str) -> str:
+    return (os.getenv(f"{service_name}_RESOURCE_SCHEDULE_TIMEZONE") or "Europe/Vienna").strip() or "Europe/Vienna"
+
+
+def _resource_schedule_reconcile_minutes(service_name: str) -> int:
+    return max(1, _int_env(f"{service_name}_RESOURCE_SCHEDULE_RECONCILE_MINUTES", 10))
+
+
+def _resource_schedule_enabled(service_name: str) -> bool:
+    return _enabled(f"{service_name}_RESOURCE_SCHEDULE_ENABLED", "0")
+
+
+def _resource_schedule_windows(service_name: str) -> list[tuple[dt_time, dt_time]]:
+    start_times = _parse_hhmm_list(os.getenv(f"{service_name}_RESOURCE_SCHEDULE_START_TIMES") or "")
+    stop_times = _parse_hhmm_list(os.getenv(f"{service_name}_RESOURCE_SCHEDULE_STOP_TIMES") or "")
+    if len(start_times) != len(stop_times):
+        raise ValueError(
+            f"{service_name}_RESOURCE_SCHEDULE_START_TIMES count {len(start_times)} does not match "
+            f"{service_name}_RESOURCE_SCHEDULE_STOP_TIMES count {len(stop_times)}"
+        )
+    return list(zip(start_times, stop_times))
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +302,10 @@ def _dispatch_translation_check_worker_schedule_stop() -> None:
 
 def _dispatch_translation_check_worker_schedule_reconcile_stop() -> None:
     run_translation_check_worker_schedule_control_actor.send(action="reconcile_stop")
+
+
+def _dispatch_service_resource_schedule_control(service_name: str, action: str) -> None:
+    run_service_resource_schedule_control_actor.send(service_name=service_name, action=action)
 
 
 # ---------------------------------------------------------------------------
@@ -708,6 +738,69 @@ def _build_scheduler():
         else:
             logging.warning(
                 "scheduler_service: TRANSLATION_CHECK_WORKER schedule enabled but no valid windows were configured"
+            )
+
+    # -- Service resource profile schedules --
+    for service_name in ("BACKGROUND_JOBS", "AUX_BACKGROUND_WORKER"):
+        if not _resource_schedule_enabled(service_name):
+            continue
+        try:
+            schedule_windows = _resource_schedule_windows(service_name)
+        except Exception:
+            logging.exception(
+                "scheduler_service: failed to parse %s resource schedule",
+                service_name,
+            )
+            schedule_windows = []
+        if schedule_windows:
+            resource_tz_name = _resource_schedule_timezone_name(service_name)
+            resource_tz = _tz(resource_tz_name, default_tz_name)
+            for index, (start_time, stop_time) in enumerate(schedule_windows):
+                scheduler.add_job(
+                    _dispatch_service_resource_schedule_control,
+                    "cron",
+                    hour=start_time.hour,
+                    minute=start_time.minute,
+                    timezone=resource_tz,
+                    kwargs={"service_name": service_name, "action": "day"},
+                    id=f"{service_name.lower()}_resource_day_{index}",
+                    max_instances=1,
+                    coalesce=True,
+                    misfire_grace_time=300,
+                )
+                scheduler.add_job(
+                    _dispatch_service_resource_schedule_control,
+                    "cron",
+                    hour=stop_time.hour,
+                    minute=stop_time.minute,
+                    timezone=resource_tz,
+                    kwargs={"service_name": service_name, "action": "night"},
+                    id=f"{service_name.lower()}_resource_night_{index}",
+                    max_instances=1,
+                    coalesce=True,
+                    misfire_grace_time=300,
+                )
+            scheduler.add_job(
+                _dispatch_service_resource_schedule_control,
+                "interval",
+                minutes=_resource_schedule_reconcile_minutes(service_name),
+                kwargs={"service_name": service_name, "action": "reconcile"},
+                id=f"{service_name.lower()}_resource_reconcile",
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=180,
+            )
+            logging.info(
+                "scheduler_service: %s resource schedule enabled tz=%s windows=%s reconcile_minutes=%s",
+                service_name,
+                resource_tz_name,
+                [f"{start.strftime('%H:%M')}-{stop.strftime('%H:%M')}" for start, stop in schedule_windows],
+                _resource_schedule_reconcile_minutes(service_name),
+            )
+        else:
+            logging.warning(
+                "scheduler_service: %s resource schedule enabled but no valid windows were configured",
+                service_name,
             )
 
     return scheduler
