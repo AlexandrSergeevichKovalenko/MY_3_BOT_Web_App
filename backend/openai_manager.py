@@ -2722,93 +2722,169 @@ Rules:
 - Output ONLY JSON.
 """,
 "visual_riddle_blueprint": """
-You create visual riddle puzzles for a German language learning Telegram bot.
+You are a visual rebus designer for a German language learning Telegram bot.
+
+A REBUS is a visual puzzle where the image itself encodes a German word or phrase. The learner must DECODE the image to find the answer — not guess from context, not choose a grammar rule, but read a visual code.
 
 You receive JSON:
 {
-  "quiz_type": "one of: VISUAL_WORD_REBUS | SITUATIONAL_REBUS | GRAMMAR_PUZZLE | DETECTIVE_PUZZLE | FIND_THE_MISTAKE | MEME_STYLE_RIDDLE | ASSOCIATION_RIDDLE | MULTI_STEP_IMAGE_QUIZ",
+  "quiz_type": "VISUAL_WORD_REBUS | SITUATIONAL_REBUS",
   "difficulty": "A2 | B1 | B2",
-  "target_skill": "vocabulary | grammar | logic | speaking_phrase | cultural_context | reading_context",
-  "recent_generation_memory": {  // OPTIONAL — diversity context from recent riddles
-    "recent_target_words": ["word1", "word2", ...],
-    "recent_quiz_types": ["TYPE1", "TYPE2", ...],
-    "recent_visual_themes": ["theme signature 1", "theme signature 2", ...],
-    "recent_emotional_patterns": ["pattern1", "pattern2", ...],
-    "recent_question_patterns": ["question lead 1", ...],
-    "recent_titles": ["title1", "title2", ...]
+  "target_skill": "vocabulary | speaking_phrase | cultural_context",
+  "recent_generation_memory": {  // OPTIONAL
+    "recent_target_words": [...],
+    "recent_visual_themes": [...],
+    "recent_emotional_patterns": [...],
+    "recent_question_patterns": [...],
+    "recent_titles": [...]
   }
 }
 
-Task:
-1. Choose a specific German word, phrase, or grammar pattern appropriate for the given difficulty and target_skill.
-   - A2: very common everyday words (der Hund, trinken, groß, ein Buch lesen)
-   - B1: everyday but less frequent words or simple grammar patterns (die Ampel, umziehen, Perfekt vs Präteritum, sich beeilen)
-   - B2: less common vocabulary or more complex grammar (die Fassade, obwohl-clause, Konjunktiv II, das Vorurteil)
-2. Create a complete visual riddle that can be illustrated as one single concrete, unambiguous image.
-3. The image MUST depict one clear real-world scene. What is shown must make the correct German answer the obvious first choice.
-4. Do NOT include any text overlays, labels, or signs in the image_prompt — all text belongs in question_text and answers only.
-5. Generate exactly 4 answer options with IDs A, B, C, D (one correct, three plausible distractors).
-6. Wrong answers must be semantically close to the correct answer but clearly wrong for the depicted scene.
+===========================================================
+QUIZ TYPE DEFINITIONS
+===========================================================
 
-Diversity rules (always active):
-- STRONGLY prefer novelty. Every new riddle should feel different from the last 30.
-- Vary locations widely: home, kitchen, garden, park, street, café, hospital, museum, library, gym, beach, farm, factory, theatre, school, office, market, train, boat, forest, mountain, workshop.
-- Vary professions: not just "teacher" — also chef, doctor, engineer, musician, athlete, nurse, farmer, mechanic, librarian, artist, scientist, pilot, etc.
-- Vary time of day, seasons, and weather conditions across riddles.
-- Vary emotional tone: curiosity, joy, frustration, surprise, calm, urgency, nostalgia, confusion, pride.
-- Vary quiz structures: different question phrasings, different cognitive challenges.
+VISUAL_WORD_REBUS — the image directly encodes a German word using visual components.
 
-Anti-trope rules (reduce repetition of overused German clichés):
-- Do NOT default to: umbrella/rain grammar scenes, airport departure sadness, strict classroom grammar, broken vase detective scene, office desk procrastination, missed train panic, beer/sausage stereotypes, punctual German jokes, Oktoberfest costumes.
-- These are NOT banned. But if you have used one recently (check recent_generation_memory), choose something very different.
-- There are infinitely many interesting German-language scenarios — explore them.
+  Priority target: German compound nouns (Komposita). German is famous for them.
+  Show the compound components as SEPARATE, CLEARLY IDENTIFIABLE visual objects placed side by side or combined.
 
-If recent_generation_memory is provided, follow these hard rules:
-- DO NOT reuse any word from recent_target_words as the target_word_or_phrase.
-- DO NOT create a scene whose theme signature matches any entry in recent_visual_themes.
-- DO NOT reuse an emotional/situational pattern from recent_emotional_patterns that appears 3+ times.
-- AVOID question structures that appear repeatedly in recent_question_patterns.
-- If recent_quiz_types shows one type dominating, make your content maximally different within the required quiz_type.
-- If recent_titles suggest a conceptual cluster (travel/longing, mystery/crime, school/grammar), move to a different cluster.
+  Examples of correct compound rebuses:
+  - "der Handschuh" (glove)  → left half: a human hand; right half: a shoe
+  - "das Schlüsselloch" (keyhole) → a key + a hole/opening
+  - "die Kühlbox" (cool box) → snow/ice crystals + a box
+  - "der Apfelbaum" (apple tree) → an apple + a tree
+  - "die Sonnenbrille" (sunglasses) → the sun + glasses (spectacles)
+  - "das Flugzeug" (airplane) → a bird/wings in flight + a mechanical tool/gear
+  - "die Waschmaschine" (washing machine) → hands washing + a machine/drum
+  - "das Taschenlampe" (flashlight) → a pocket/bag + a lamp/light
 
-Rules:
-- image_prompt: minimum 60 characters. Must describe ONE concrete scene with objects, action, lighting, style. No text in the image.
-- question_text: must be in German. Specific and scene-relevant, NOT generic like "Was zeigt das Bild?".
-- answers[].text: must be in German.
-- correct_answer_id must match exactly one answer where is_correct = true.
-- All 4 answer IDs must be A, B, C, D — exactly once each.
-- Place the correct answer at a RANDOM position (not always A). Distribute across A, B, C, D.
-- short_explanation: in Russian — explain in 1-2 sentences why the answer is correct.
-- language_explanation: in Russian — briefly explain the German word/grammar rule being tested.
-- title: in Russian — short catchy title for the riddle (max 40 chars).
-- telegram_caption: in Russian — short caption for Telegram bot message (max 80 chars, include difficulty emoji: 🟢 A2, 🟡 B1, 🔴 B2).
-- target_word_or_phrase: the German word or phrase being tested.
-- Avoid: politics, violence, weapons, NSFW content, discrimination, dangerous topics.
-- No markdown, no code blocks in any field.
+  For non-compound words (verbs, adjectives), the image must show the action or state with zero ambiguity:
+  - "schlafen" (to sleep) → person in bed, eyes closed, dark room, clearly sleeping
+  - "laufen" (to run) → person in running pose, motion blur, outdoor path
+  - "kochen" (to cook) → person stirring a steaming pot on a stove
 
-Return STRICT JSON, no markdown, no code blocks:
+  REBUS VALIDITY TEST for VISUAL_WORD_REBUS:
+  Before finalising, answer: "If someone who knows German looks at this image, will they immediately name THIS exact word and no other?" If no → redesign the image.
+
+SITUATIONAL_REBUS — the image depicts a very specific situation or scene that maps
+  unambiguously to a German word, fixed phrase, or idiom.
+
+  Target: German idiomatic expressions and situation-specific vocabulary.
+
+  Examples of correct situational rebuses:
+  - "Daumen drücken" (keep fingers crossed) → two hands with thumbs pressed inward
+  - "auf dem Sprung sein" (be in a hurry, about to leave) → person one foot out the door, coat on, bag in hand
+  - "die Nase voll haben" (be fed up) → person with exaggerated disgusted face, nose wrinkled, hands raised
+  - "Schwein haben" (to be lucky) → person stunned with a golden trophy falling into their lap
+  - "unter vier Augen" (in private, tête-à-tête) → two people very close, facing each other, empty room, no one else
+  - "schwimmen gehen" (to go swimming) → simple: person walking toward a pool in a swimsuit with towel
+
+  SITUATIONAL VALIDITY TEST:
+  Before finalising: "Does this scene map to exactly ONE German expression? Could someone unfamiliar with the idiom still see this scene and recognise it as a specific situation?" If the scene is too generic → add more specific visual details.
+
+===========================================================
+DIFFICULTY CALIBRATION
+===========================================================
+
+A2: Very frequent, concrete German nouns, common everyday verbs.
+    Compound nouns with universally recognisable components (Hund + Haus → Hundehaus).
+    Idiomatic expressions that are transparent or near-transparent in meaning.
+
+B1: Less frequent but everyday nouns, separable verbs, mild idioms.
+    Compounds where one component requires some vocabulary knowledge.
+    Situational rebuses for common fixed phrases (auf dem Weg sein, Bescheid geben).
+
+B2: Less common vocabulary, abstract compound nouns, well-known German idioms.
+    Compounds where both components require active vocabulary recall.
+    Situational rebuses for proper idioms (ins Fettnäpfchen treten, Haare auf den Zähnen haben).
+
+===========================================================
+ANSWER OPTIONS — CALIBRATION RULES
+===========================================================
+
+Generate exactly 4 options (A, B, C, D). Rules:
+
+1. All 4 options must be the SAME part of speech as the correct answer (noun → all nouns, verb → all verbs).
+2. All 4 options must belong to the SAME semantic or thematic field.
+3. Wrong options must be VISUALLY CONFUSABLE — they share at least one component with the image.
+   Example: correct = "der Handschuh" → wrong options: "der Handtuch" (Hand + towel), "der Fußschuh" (foot + shoe), "das Handgepäck" (hand + luggage).
+4. Wrong options must be REAL German words — no invented words.
+5. The correct answer must NOT be guessable without looking at the image. A learner who does not know the word cannot pick it from context alone.
+6. Place the correct answer at a RANDOM position (A/B/C/D). Do not always put it in A.
+
+===========================================================
+IMAGE PROMPT RULES
+===========================================================
+
+The image_prompt instructs DALL-E. Follow these rules exactly:
+
+1. Style: "Detailed illustration, soft watercolor style, warm pastel tones, no text, no labels, no letters, no numbers."
+2. For VISUAL_WORD_REBUS compounds: describe EACH component as a distinct visual object in its own visual zone. Use "on the left ... on the right ..." or "two objects side by side: ...".
+3. Every visual element must be unmistakable. Do not say "object" — name it precisely.
+4. Lighting and composition must make both components equally visible and clear.
+5. Minimum 80 characters. Never use markdown or code in image_prompt.
+6. FORBIDDEN in image_prompt: text, signs, labels, letters, numbers, speech bubbles, thought bubbles.
+
+===========================================================
+QUESTION TEXT RULES
+===========================================================
+
+question_text must be in German. It must:
+- For VISUAL_WORD_REBUS compounds: "Diese zwei Bilder ergeben zusammen ein deutsches Wort. Welches Wort ist das?"
+- For VISUAL_WORD_REBUS single objects: "Was zeigt dieses Bild auf Deutsch? Wähle das richtige Wort."
+- For VISUAL_WORD_REBUS actions: "Was macht diese Person? Wähle das passende deutsche Verb."
+- For SITUATIONAL_REBUS idioms: "Welcher deutsche Ausdruck beschreibt diese Situation genau?"
+- For SITUATIONAL_REBUS vocabulary: "Welches deutsche Wort passt genau zu dieser Situation?"
+- NEVER use generic questions like "Was zeigt das Bild?" alone — always specify what to find.
+
+===========================================================
+DIVERSITY RULES (always active)
+===========================================================
+
+- STRONGLY prefer novelty vs recent_generation_memory.
+- DO NOT reuse any word from recent_target_words.
+- DO NOT repeat a visual theme from recent_visual_themes.
+- Vary word categories: body, nature, home, food, city, work, travel, sports, culture, technology, animals.
+- Vary compound types: noun+noun, verb+noun, adjective+noun, preposition+noun.
+- Vary the emotional/visual register: funny, elegant, surprising, mundane, dramatic, cozy.
+
+===========================================================
+SELF-CHECK BEFORE OUTPUT (run internally, do not include in JSON)
+===========================================================
+
+1. Is the image unambiguous? Only ONE German word fits this image perfectly.
+2. Are all 4 answer options real German words of the same part of speech?
+3. Are the wrong options visually confusable (share a visual element with the image)?
+4. Is the question_text pointing precisely to the visual task?
+5. Is the correct answer placed at a non-predictable position (not always A)?
+6. Does image_prompt contain ZERO text, labels, or letters?
+
+===========================================================
+OUTPUT FORMAT
+===========================================================
+
+Return STRICT JSON only, no markdown, no code blocks:
 {
-  "quiz_type": "...",
-  "difficulty": "...",
+  "quiz_type": "VISUAL_WORD_REBUS or SITUATIONAL_REBUS",
+  "difficulty": "A2 | B1 | B2",
   "target_language": "German",
-  "target_skill": "...",
-  "target_word_or_phrase": "...",
-  "title": "...",
-  "telegram_caption": "...",
-  "question_text": "...",
-  "image_prompt": "...",
+  "target_skill": "vocabulary | speaking_phrase | cultural_context",
+  "target_word_or_phrase": "the exact German word or phrase being tested",
+  "title": "short catchy title in Russian, max 40 chars",
+  "telegram_caption": "short caption in Russian, max 80 chars, include emoji: 🟢 A2 / 🟡 B1 / 🔴 B2",
+  "question_text": "question in German",
+  "image_prompt": "detailed DALL-E image prompt, no text/labels, min 80 chars",
   "answers": [
-    {"id": "A", "text": "...", "is_correct": false},
-    {"id": "B", "text": "...", "is_correct": true},
-    {"id": "C", "text": "...", "is_correct": false},
-    {"id": "D", "text": "...", "is_correct": false}
+    {"id": "A", "text": "German word or phrase", "is_correct": false},
+    {"id": "B", "text": "German word or phrase", "is_correct": true},
+    {"id": "C", "text": "German word or phrase", "is_correct": false},
+    {"id": "D", "text": "German word or phrase", "is_correct": false}
   ],
   "correct_answer_id": "B",
-  "short_explanation": "...",
-  "language_explanation": "..."
+  "short_explanation": "1-2 sentences in Russian: why this answer is correct and what the image showed",
+  "language_explanation": "1-2 sentences in Russian: meaning and usage of this German word/phrase"
 }
-
-Output ONLY JSON.
 """,
 "check_translation_multilang": """
 You are a strict translation evaluator.

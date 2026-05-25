@@ -1995,12 +1995,6 @@ _VR_MAX_ANSWER_CHARS = max(
 _VR_ALLOWED_QUIZ_TYPES = frozenset({
     "VISUAL_WORD_REBUS",
     "SITUATIONAL_REBUS",
-    "GRAMMAR_PUZZLE",
-    "DETECTIVE_PUZZLE",
-    "FIND_THE_MISTAKE",
-    "MEME_STYLE_RIDDLE",
-    "ASSOCIATION_RIDDLE",
-    "MULTI_STEP_IMAGE_QUIZ",
 })
 
 _VR_ALLOWED_DIFFICULTIES = frozenset({"A2", "B1", "B2"})
@@ -2078,14 +2072,8 @@ _VR_GERMAN_STEREOTYPE_TROPES: list[str] = [
 # -------------------------------------------------------------------------
 
 _VR_QUIZ_TYPE_WEIGHTS = (
-    ("VISUAL_WORD_REBUS",     30),
-    ("SITUATIONAL_REBUS",     20),
-    ("GRAMMAR_PUZZLE",        15),
-    ("DETECTIVE_PUZZLE",      10),
-    ("FIND_THE_MISTAKE",      10),
-    ("MEME_STYLE_RIDDLE",      5),
-    ("ASSOCIATION_RIDDLE",     5),
-    ("MULTI_STEP_IMAGE_QUIZ",  5),
+    ("VISUAL_WORD_REBUS",  65),
+    ("SITUATIONAL_REBUS",  35),
 )
 
 _VR_DIFFICULTY_WEIGHTS = (
@@ -2095,11 +2083,9 @@ _VR_DIFFICULTY_WEIGHTS = (
 )
 
 _VR_SKILL_WEIGHTS = (
-    ("vocabulary",       40),
-    ("grammar",          30),
-    ("logic",            10),
-    ("speaking_phrase",  10),
-    ("cultural_context", 10),
+    ("vocabulary",       65),
+    ("speaking_phrase",  20),
+    ("cultural_context", 15),
 )
 
 
