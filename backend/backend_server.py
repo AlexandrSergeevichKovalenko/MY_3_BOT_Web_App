@@ -33923,12 +33923,19 @@ STRICT CLEANUP RULES:
   "+ Akkusativ" / "+ Dativ", keep the grammar signal but normalize the text into a \
   clean readable lookup unit.
 
+MULTI-LINE INPUT RULE:
+When the input contains multiple non-empty lines, treat each line as a separate \
+candidate. Each line that passes the learner-value test becomes its own block. \
+Never merge several input lines into a single block. \
+A 5-line input of learnable items must produce 5 separate blocks.
+
 SELF-CHECK BEFORE OUTPUTTING:
 — Every extracted block passes the "would I save this to a dictionary?" test
 — No block is a morphological annotation or parenthetical comment about word structure
 — No block mixes a bare word with its example sentences
 — No block contains translations, glosses, or explanatory prose
 — All genuinely learnable words, phrases, and sentences from the input are represented
+— If the input had N non-empty lines, the output has N blocks (one per line)
 
 Return ONLY valid json — no markdown, no explanation:
 {"blocks": [{"term": "unit 1", "content": "clean unit 1"}, ...]}"""
@@ -33981,6 +33988,8 @@ STEP 4 — VALIDATE:
 • No block mixes a bare word with complete sentences
 • No ✗/✓ pair is split
 • No block contains commentary, glosses, or translations
+• If the input had N non-empty lines, the output must have N blocks — one per line; \
+  never collapse multiple input lines into a single block
 
 Output ONLY valid json: {"blocks": [{"term": "...", "content": "..."}, ...]}"""
 
@@ -34078,6 +34087,19 @@ def _shortcut_split_blocks(text: str) -> list[tuple[str, str]]:
     """
     from backend.openai_manager import client as _openai_async_client
 
+    # Pre-compute input lines count — used to detect under-split LLM results
+    input_lines = [line.strip() for line in text.splitlines() if line.strip()]
+    multiline = len(input_lines) >= 2
+
+    def _line_split_fallback() -> list[tuple[str, str]]:
+        """Per-line split with basic normalization — no LLM, guaranteed N-in N-out."""
+        result = [
+            (_shortcut_normalize_unit_text(line), _shortcut_normalize_unit_text(line))
+            for line in input_lines
+            if _shortcut_normalize_unit_text(line)
+        ]
+        return result or [(text.strip(), text.strip())]
+
     async def _call(model: str, system_prompt: str, timeout: float) -> str:
         response = await _openai_async_client.chat.completions.create(
             model=model,
@@ -34109,12 +34131,14 @@ def _shortcut_split_blocks(text: str) -> list[tuple[str, str]]:
         if blocks:
             logging.info("shortcut split: gpt-4o succeeded, %d blocks", len(blocks))
             return blocks
-        logging.warning("shortcut split: gpt-4o returned no valid blocks, using single-block")
+        logging.warning("shortcut split: gpt-4o returned no valid blocks, using line-split fallback")
     except Exception as exc:
-        logging.warning("shortcut split: gpt-4o failed (%s), using single-block", exc)
+        logging.warning("shortcut split: gpt-4o failed (%s), using line-split fallback", exc)
 
-    # Last resort: whole text as one block — nothing is lost
-    logging.warning("shortcut split: both models failed, returning whole text as one block")
+    # Last resort: per-line split for multi-line input, single block for single-line
+    logging.warning("shortcut split: both models failed, using last-resort split (%d input lines)", len(input_lines))
+    if multiline:
+        return _line_split_fallback()
     return [(text.strip(), text.strip())]
 def _shortcut_build_pair_keyboard_rows(request_key: str) -> list[list[dict]]:
     rows: list[list[dict]] = []

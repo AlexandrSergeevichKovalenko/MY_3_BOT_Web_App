@@ -10318,7 +10318,7 @@ function AppInner() {
 
   const isTodayItemTimerRunning = (item) => {
     const payload = getTodayItemTimerPayload(item);
-    return Boolean(payload?.timer_running) && String(item?.status || '').toLowerCase() !== 'done';
+    return Boolean(payload?.timer_running);
   };
 
   const buildOptimisticTodayItemTimerState = (item, action, options = {}) => {
@@ -10343,17 +10343,19 @@ function AppInner() {
     if (normalizedAction === 'start' || normalizedAction === 'resume') {
       if (nextStatus !== 'done') {
         nextStatus = 'doing';
-        nextRunning = true;
-        nextPaused = false;
-        nextStartedAt = nowIso;
       }
+      nextRunning = true;
+      nextPaused = false;
+      nextStartedAt = nowIso;
     } else if (normalizedAction === 'pause') {
       nextRunning = false;
       nextPaused = nextStatus !== 'done';
       nextStartedAt = null;
     } else if (normalizedAction === 'sync' && explicitRunning !== undefined) {
-      if (explicitRunning && nextStatus !== 'done') {
-        nextStatus = 'doing';
+      if (explicitRunning) {
+        if (nextStatus !== 'done') {
+          nextStatus = 'doing';
+        }
         nextRunning = true;
         nextPaused = false;
         nextStartedAt = nowIso;
@@ -10373,9 +10375,6 @@ function AppInner() {
 
     if (taskType !== 'translation' && goalSeconds > 0 && nextElapsed >= goalSeconds) {
       nextStatus = 'done';
-      nextRunning = false;
-      nextPaused = false;
-      nextStartedAt = null;
     } else if (nextStatus !== 'done' && nextElapsed > 0 && ['todo', 'skipped'].includes(nextStatus)) {
       nextStatus = 'doing';
     }
@@ -10552,7 +10551,7 @@ function AppInner() {
 
   const toggleTodaySectionTaskTimer = async (sectionKey) => {
     const item = getTodayTaskForSection(sectionKey);
-    if (!item || String(item?.status || '').toLowerCase() === 'done') return;
+    if (!item) return;
     const nowElapsed = getTodayItemElapsedSeconds(item, Date.now());
     if (isTodayItemTimerRunning(item)) {
       await syncTodayItemTimer(item, 'pause', { elapsedSeconds: nowElapsed, running: false });
@@ -10579,25 +10578,24 @@ function AppInner() {
     const running = isTodayItemTimerRunning(item);
     return (
       <div className={`today-section-task-hud ${inline ? 'is-inline' : ''}`.trim()}>
-        {done ? (
+        {done && (
           <span className="today-section-task-done" title={tr('Задача выполнена', 'Aufgabe erledigt')}>✅</span>
-        ) : (
-          <button
-            type="button"
-            className={`reader-timer-pill today-section-timer-pill ${!running ? 'is-paused' : ''}`}
-            onClick={() => toggleTodaySectionTaskTimer(sectionKey)}
-            title={tr('Пауза/продолжение таймера задачи', 'Aufgaben-Timer pausieren/fortsetzen')}
-          >
-            {running ? `⏱ ${formatCompactTimer(elapsed)}` : `⏸ ${formatCompactTimer(elapsed)}`}
-          </button>
         )}
+        <button
+          type="button"
+          className={`reader-timer-pill today-section-timer-pill ${!running ? 'is-paused' : ''}`}
+          onClick={() => toggleTodaySectionTaskTimer(sectionKey)}
+          title={tr('Пауза/продолжение таймера задачи', 'Aufgaben-Timer pausieren/fortsetzen')}
+        >
+          {running ? `⏱ ${formatCompactTimer(elapsed)}` : `⏸ ${formatCompactTimer(elapsed)}`}
+        </button>
       </div>
     );
   };
 
   const ensureFlashcardsTaskTimerRunning = async () => {
     const item = getTodayTaskForSection('flashcards');
-    if (!item || String(item?.status || '').toLowerCase() === 'done') return;
+    if (!item) return;
     if (isTodayItemTimerRunning(item)) return;
     const elapsedSeconds = getTodayItemElapsedSeconds(item, Date.now());
     const hasStartedBefore = elapsedSeconds > 0 || String(item?.status || '').toLowerCase() === 'doing';
@@ -10610,7 +10608,7 @@ function AppInner() {
 
   const pauseFlashcardsTaskTimer = async () => {
     const item = getTodayTaskForSection('flashcards');
-    if (!item || String(item?.status || '').toLowerCase() === 'done') return;
+    if (!item) return;
     if (!isTodayItemTimerRunning(item)) return;
     const elapsedSeconds = getTodayItemElapsedSeconds(item, Date.now());
     await syncTodayItemTimer(item, 'pause', { elapsedSeconds, running: false });
@@ -11029,7 +11027,7 @@ function AppInner() {
       if (elapsed < goal) return;
       if (todayTimerCompletionLockRef.current.has(item.id)) return;
       todayTimerCompletionLockRef.current.add(item.id);
-      syncTodayItemTimer(item, 'sync', { elapsedSeconds: elapsed, running: false })
+      syncTodayItemTimer(item, 'sync', { elapsedSeconds: elapsed, running: true })
         .finally(() => {
           todayTimerCompletionLockRef.current.delete(item.id);
         });
@@ -11052,7 +11050,7 @@ function AppInner() {
           running: true,
         });
       });
-    }, 15000);
+    }, 5000);
 
     return () => window.clearInterval(intervalId);
   }, [todayPlan, getTodayItemElapsedSeconds, isTodayItemSectionVisible, isTodayItemTimerRunning, syncTodayItemTimer]);
@@ -14734,10 +14732,6 @@ function AppInner() {
         const item = getSectionTask(sectionKey);
         if (!item?.id) return;
         const status = String(item?.status || '').toLowerCase();
-        if (status === 'done') {
-          autoPausedTodayTimerIdsRef.current.delete(item.id);
-          return;
-        }
         if (!autoPausedTodayTimerIdsRef.current.has(item.id)) return;
         if (isTodayItemTimerRunning(item)) {
           autoPausedTodayTimerIdsRef.current.delete(item.id);

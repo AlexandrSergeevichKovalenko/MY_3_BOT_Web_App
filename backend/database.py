@@ -11514,7 +11514,7 @@ def upsert_starter_dictionary_state(
                     import_finished_at,
                     updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (user_id) DO UPDATE
                 SET
                     decision_status = EXCLUDED.decision_status,
@@ -20570,22 +20570,24 @@ def update_daily_plan_item_timer(
             if normalized_action == "start":
                 if next_status != "done":
                     next_status = "doing"
-                    next_running = True
-                    next_paused = False
-                    next_started_at = now_utc
+                next_running = True
+                next_paused = False
+                next_started_at = now_utc
             elif normalized_action == "resume":
                 if next_status != "done":
                     next_status = "doing"
-                    next_running = True
-                    next_started_at = now_utc
-                    next_paused = False
+                next_running = True
+                next_started_at = now_utc
+                next_paused = False
             elif normalized_action == "pause":
                 next_running = False
                 next_paused = next_status != "done"
                 next_started_at = None
             elif normalized_action == "sync":
                 if running is not None:
-                    if bool(running) and next_status != "done":
+                    if bool(running):
+                        if next_status != "done":
+                            next_status = "doing"
                         next_running = True
                         next_paused = False
                         next_started_at = now_utc
@@ -20602,9 +20604,6 @@ def update_daily_plan_item_timer(
 
             if not is_translation_task and goal_seconds > 0 and next_elapsed >= goal_seconds:
                 next_status = "done"
-                next_running = False
-                next_paused = False
-                next_started_at = None
             elif next_status != "done" and next_elapsed > 0 and next_status in {"todo", "skipped"}:
                 next_status = "doing"
 
