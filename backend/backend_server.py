@@ -29430,7 +29430,7 @@ def _schedule_skill_progress_snapshot_refresh(*, user_id: int, username: str | N
                     final_status=final_status,
                     error_code=error_code,
                     duration_ms=_elapsed_ms_since(started_perf),
-                    **meta,
+                    **{k: v for k, v in meta.items() if k not in ("lookback_days", "final_status")},
                     **summarize_db_acquire_events(db_acquire_events),
                 )
 
@@ -29699,7 +29699,7 @@ def _refresh_skill_progress_snapshot_now(*, user_id: int, username: str | None, 
                 final_status=final_status,
                 error_code=error_code,
                 duration_ms=_elapsed_ms_since(started_perf),
-                **meta,
+                **{k: v for k, v in meta.items() if k not in ("lookback_days", "final_status")},
                 **summarize_db_acquire_events(db_acquire_events),
             )
 
