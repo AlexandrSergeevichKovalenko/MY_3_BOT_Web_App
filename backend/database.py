@@ -7212,12 +7212,26 @@ def _get_skill_state_v2_snapshot_since_date(
     source_lang: str,
     target_lang: str,
     reset_date: date | None,
-) -> dict[str, dict[str, Any]]:
+    include_debug_meta: bool = False,
+) -> dict[str, dict[str, Any]] | tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     if reset_date is None:
-        return {}
+        empty_state: dict[str, dict[str, Any]] = {}
+        if include_debug_meta:
+            return empty_state, {
+                "query_count": 0,
+                "query_rows_count": 0,
+                "query_duration_ms": 0,
+                "aggregation_duration_ms": 0,
+                "python_under_checkout_ms": 0,
+                "checkout_spans_cpu_work": False,
+                "checkout_spans_aggregation": False,
+                "checkout_spans_serialization": False,
+            }
+        return empty_state
     normalized_source = str(source_lang or "ru").strip().lower() or "ru"
     normalized_target = str(target_lang or "de").strip().lower() or "de"
     start_dt = datetime.combine(reset_date, dt_time.min, tzinfo=timezone.utc)
+    query_started_perf = time.perf_counter()
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -7238,9 +7252,11 @@ def _get_skill_state_v2_snapshot_since_date(
                 (int(user_id), normalized_source, normalized_target, start_dt),
             )
             rows = cursor.fetchall() or []
+    query_duration_ms = int((time.perf_counter() - query_started_perf) * 1000)
 
     state_map: dict[str, dict[str, Any]] = {}
     tau_seconds = SKILL_STATE_V2_RECENT_TAU_DAYS * 24.0 * 60.0 * 60.0
+    aggregation_started_perf = time.perf_counter()
     for row in rows:
         skill_id = str(row[0] or "").strip()
         if not skill_id:
@@ -7288,6 +7304,17 @@ def _get_skill_state_v2_snapshot_since_date(
             item["last_practiced_at"] = last_practiced_at.isoformat()
         else:
             item["last_practiced_at"] = None
+    if include_debug_meta:
+        return state_map, {
+            "query_count": 1,
+            "query_rows_count": len(rows),
+            "query_duration_ms": query_duration_ms,
+            "aggregation_duration_ms": int((time.perf_counter() - aggregation_started_perf) * 1000),
+            "python_under_checkout_ms": 0,
+            "checkout_spans_cpu_work": False,
+            "checkout_spans_aggregation": False,
+            "checkout_spans_serialization": False,
+        }
     return state_map
 
 
@@ -26469,19 +26496,28 @@ def get_skill_progress_report(
     lookback_days: int = 7,
     source_lang: str | None = None,
     target_lang: str | None = None,
-) -> dict:
+    include_debug_meta: bool = False,
+) -> dict | tuple[dict, dict[str, Any]]:
     window_days = max(1, min(int(lookback_days), 30))
     now_utc = datetime.now(timezone.utc)
     normalized_source_lang = str(source_lang or "ru").strip().lower() or "ru"
     normalized_target_lang = str(target_lang or "de").strip().lower() or "de"
+    reset_lookup_started_perf = time.perf_counter()
     reset_date = get_user_progress_reset_date(
         user_id=int(user_id),
         source_lang=normalized_source_lang,
         target_lang=normalized_target_lang,
     )
+    reset_lookup_duration_ms = int((time.perf_counter() - reset_lookup_started_perf) * 1000)
+    report_query_duration_ms = 0
+    inline_state_query_duration_ms = 0
+    inline_state_python_decode_ms = 0
+    state_rows_count = 0
+    state_v2_meta: dict[str, Any] = {}
 
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
+            report_query_started_perf = time.perf_counter()
             cursor.execute(
                 """
                 WITH err_7d AS (
@@ -26561,8 +26597,10 @@ def get_skill_progress_report(
                 ),
             )
             rows = cursor.fetchall()
+            report_query_duration_ms = int((time.perf_counter() - report_query_started_perf) * 1000)
             state_map: dict[str, dict[str, Any]] = {}
             if reset_date is None:
+                inline_state_query_started_perf = time.perf_counter()
                 cursor.execute(
                     """
                     SELECT skill_id, mastery, total_events, last_practiced_at
@@ -26574,6 +26612,9 @@ def get_skill_progress_report(
                     (int(user_id), normalized_source_lang, normalized_target_lang),
                 )
                 state_rows = cursor.fetchall() or []
+                inline_state_query_duration_ms = int((time.perf_counter() - inline_state_query_started_perf) * 1000)
+                state_rows_count = len(state_rows)
+                inline_state_decode_started_perf = time.perf_counter()
                 for state_row in state_rows:
                     skill_id = str(state_row[0] or "").strip()
                     if not skill_id:
@@ -26583,16 +26624,19 @@ def get_skill_progress_report(
                         "total_events": int(state_row[2] or 0),
                         "last_practiced_at": state_row[3].isoformat() if hasattr(state_row[3], "isoformat") else None,
                     }
+                inline_state_python_decode_ms = int((time.perf_counter() - inline_state_decode_started_perf) * 1000)
             else:
-                state_map = _get_skill_state_v2_snapshot_since_date(
+                state_map, state_v2_meta = _get_skill_state_v2_snapshot_since_date(
                     user_id=int(user_id),
                     source_lang=normalized_source_lang,
                     target_lang=normalized_target_lang,
                     reset_date=reset_date,
+                    include_debug_meta=True,
                 )
 
     skills: list[dict] = []
     groups_map: dict[str, list[dict]] = {}
+    aggregation_started_perf = time.perf_counter()
     for row in rows:
         if not isinstance(row, (tuple, list)):
             continue
@@ -26668,13 +26712,34 @@ def get_skill_progress_report(
         {"group": group_name, "skills": groups_map[group_name]}
         for group_name in sorted(groups_map.keys())
     ]
-    return {
+    report_payload = {
         "updated_at": now_utc.isoformat(),
         "period_days": window_days,
         "top_weak": top_weak,
         "groups": groups,
         "total_skills": len(skills),
         "skills_with_data": len(skills_with_data),
+    }
+    if not include_debug_meta:
+        return report_payload
+    aggregation_duration_ms = int((time.perf_counter() - aggregation_started_perf) * 1000)
+    return report_payload, {
+        "used_reset_date": bool(reset_date is not None),
+        "reset_lookup_duration_ms": reset_lookup_duration_ms,
+        "report_query_duration_ms": report_query_duration_ms,
+        "report_query_rows_count": len(rows),
+        "inline_state_query_duration_ms": inline_state_query_duration_ms,
+        "inline_state_rows_count": state_rows_count,
+        "inline_state_python_decode_ms": inline_state_python_decode_ms,
+        "state_v2_query_duration_ms": int(state_v2_meta.get("query_duration_ms") or 0),
+        "state_v2_rows_count": int(state_v2_meta.get("query_rows_count") or 0),
+        "state_v2_aggregation_duration_ms": int(state_v2_meta.get("aggregation_duration_ms") or 0),
+        "post_query_aggregation_duration_ms": aggregation_duration_ms,
+        "query_count": 2 + (0 if reset_date is None else int(state_v2_meta.get("query_count") or 0)),
+        "python_under_checkout_ms": inline_state_python_decode_ms,
+        "checkout_spans_cpu_work": bool(inline_state_python_decode_ms > 0),
+        "checkout_spans_aggregation": False,
+        "checkout_spans_serialization": False,
     }
 
 

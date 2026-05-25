@@ -10624,10 +10624,17 @@ def _record_skill_training_event(
     }
 
 
-def _get_skill_training_status_map(user_id: int) -> dict[str, dict]:
+def _get_skill_training_status_map(
+    user_id: int,
+    *,
+    include_debug_meta: bool = False,
+) -> dict[str, dict] | tuple[dict[str, dict], dict[str, int | bool]]:
+    ensure_started_perf = time.perf_counter()
     _ensure_skill_training_daily_table()
+    ensure_duration_ms = _elapsed_ms_since(ensure_started_perf)
     plan_date = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
     result: dict[str, dict] = {}
+    query_started_perf = time.perf_counter()
     with db_acquire_scope("skill_training_status_map"), get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -10639,6 +10646,8 @@ def _get_skill_training_status_map(user_id: int) -> dict[str, dict]:
                 (int(user_id), plan_date),
             )
             rows = cursor.fetchall() or []
+    query_duration_ms = _elapsed_ms_since(query_started_perf)
+    decode_started_perf = time.perf_counter()
     for row in rows:
         skill_id = str(row[0] or "").strip()
         if not skill_id:
@@ -10657,7 +10666,19 @@ def _get_skill_training_status_map(user_id: int) -> dict[str, dict]:
             "required_count": int(required_count),
             "practice_submitted": bool(practice_submitted),
         }
-    return result
+    if not include_debug_meta:
+        return result
+    return result, {
+        "query_count": 2,
+        "ensure_duration_ms": ensure_duration_ms,
+        "rows_count": len(rows),
+        "query_duration_ms": query_duration_ms,
+        "decode_duration_ms": _elapsed_ms_since(decode_started_perf),
+        "python_under_checkout_ms": 0,
+        "checkout_spans_cpu_work": False,
+        "checkout_spans_aggregation": False,
+        "checkout_spans_serialization": False,
+    }
 
 
 def _billing_env_float(name: str) -> float:
@@ -28690,23 +28711,6 @@ def _build_skills_card_projection_fallback_from_source_snapshot(
         if isinstance(existing_projection_payload, dict) and isinstance(existing_projection_payload.get("recent_session"), dict)
         else None
     )
-    if bool(source_payload.get("snapshot_pending")):
-        fresh = _refresh_skill_progress_snapshot_now(
-            user_id=int(user_id),
-            username=username,
-            lookback_days=int(lookback_days),
-        )
-        if isinstance(fresh, dict):
-            payload, _meta = _build_skills_card_payload_from_skill_snapshot(
-                user_id=int(user_id),
-                lookback_days=int(lookback_days),
-                skill_snapshot=fresh,
-                card_version=f"source_fallback:{int(lookback_days)}",
-                recent_session_seed=existing_recent_session,
-                projection_status="ready",
-                pending_finish_session_id=None,
-            )
-            return payload, "skill_progress_sync_build"
     synthetic_snapshot = {
         "payload": source_payload,
         "source_lang": source_meta.get("source_lang"),
@@ -29135,12 +29139,14 @@ def _build_skill_progress_response_payload(
     language_pair_duration_ms = _elapsed_ms_since(language_pair_started_perf)
     report_warning: str | None = None
     report_started_perf = time.perf_counter()
+    report_debug_meta: dict[str, Any] = {}
     try:
-        report = get_skill_progress_report(
+        report, report_debug_meta = get_skill_progress_report(
             user_id=int(user_id),
             lookback_days=int(lookback_days),
             source_lang=source_lang,
             target_lang=target_lang,
+            include_debug_meta=True,
         )
     except Exception as exc:
         logging.exception("Skill progress report failed user_id=%s", user_id)
@@ -29153,14 +29159,20 @@ def _build_skill_progress_response_payload(
             "total_skills": 0,
             "skills_with_data": 0,
         }
+        report_debug_meta = {}
     report_duration_ms = _elapsed_ms_since(report_started_perf)
 
     training_status_started_perf = time.perf_counter()
+    training_status_debug_meta: dict[str, Any] = {}
     try:
-        skill_training_status = _get_skill_training_status_map(int(user_id))
+        skill_training_status, training_status_debug_meta = _get_skill_training_status_map(
+            int(user_id),
+            include_debug_meta=True,
+        )
     except Exception as exc:
         logging.warning("Skill training status load failed: %s", exc)
         skill_training_status = {}
+        training_status_debug_meta = {}
     training_status_duration_ms = _elapsed_ms_since(training_status_started_perf)
 
     response_payload = {
@@ -29185,6 +29197,30 @@ def _build_skill_progress_response_payload(
         "source_lang": source_lang,
         "target_lang": target_lang,
         "final_status": "success" if not report_warning else "partial",
+        "report_query_count": int(report_debug_meta.get("query_count") or 0),
+        "report_reset_lookup_duration_ms": int(report_debug_meta.get("reset_lookup_duration_ms") or 0),
+        "report_query_duration_ms": int(report_debug_meta.get("report_query_duration_ms") or 0),
+        "report_query_rows_count": int(report_debug_meta.get("report_query_rows_count") or 0),
+        "report_inline_state_query_duration_ms": int(report_debug_meta.get("inline_state_query_duration_ms") or 0),
+        "report_inline_state_rows_count": int(report_debug_meta.get("inline_state_rows_count") or 0),
+        "report_inline_state_python_decode_ms": int(report_debug_meta.get("inline_state_python_decode_ms") or 0),
+        "report_state_v2_query_duration_ms": int(report_debug_meta.get("state_v2_query_duration_ms") or 0),
+        "report_state_v2_rows_count": int(report_debug_meta.get("state_v2_rows_count") or 0),
+        "report_state_v2_aggregation_duration_ms": int(report_debug_meta.get("state_v2_aggregation_duration_ms") or 0),
+        "report_post_query_aggregation_duration_ms": int(report_debug_meta.get("post_query_aggregation_duration_ms") or 0),
+        "report_python_under_checkout_ms": int(report_debug_meta.get("python_under_checkout_ms") or 0),
+        "report_checkout_spans_cpu_work": bool(report_debug_meta.get("checkout_spans_cpu_work")),
+        "report_checkout_spans_aggregation": bool(report_debug_meta.get("checkout_spans_aggregation")),
+        "report_checkout_spans_serialization": bool(report_debug_meta.get("checkout_spans_serialization")),
+        "training_status_query_count": int(training_status_debug_meta.get("query_count") or 0),
+        "training_status_ensure_duration_ms": int(training_status_debug_meta.get("ensure_duration_ms") or 0),
+        "training_status_rows_count": int(training_status_debug_meta.get("rows_count") or 0),
+        "training_status_query_duration_ms": int(training_status_debug_meta.get("query_duration_ms") or 0),
+        "training_status_decode_duration_ms": int(training_status_debug_meta.get("decode_duration_ms") or 0),
+        "training_status_python_under_checkout_ms": int(training_status_debug_meta.get("python_under_checkout_ms") or 0),
+        "training_status_checkout_spans_cpu_work": bool(training_status_debug_meta.get("checkout_spans_cpu_work")),
+        "training_status_checkout_spans_aggregation": bool(training_status_debug_meta.get("checkout_spans_aggregation")),
+        "training_status_checkout_spans_serialization": bool(training_status_debug_meta.get("checkout_spans_serialization")),
     }
     return response_payload, meta
 
@@ -29350,30 +29386,53 @@ def _schedule_skill_progress_snapshot_refresh(*, user_id: int, username: str | N
         return
 
     def _refresh() -> None:
-        with db_acquire_scope("skill_progress_refresh"):
-            response_payload, meta = _build_skill_progress_response_payload(
-                user_id=int(user_id),
-                username=username,
-                lookback_days=int(lookback_days),
-            )
-            snapshot = upsert_user_api_snapshot(
-                user_id=int(user_id),
-                snapshot_kind="skill_progress",
-                snapshot_key=snapshot_key,
-                payload=response_payload,
-                source_lang=str(meta.get("source_lang") or "").strip() or None,
-                target_lang=str(meta.get("target_lang") or "").strip() or None,
-                meta=meta,
-                fresh_ttl_seconds=SKILL_PROGRESS_SNAPSHOT_FRESH_TTL_SEC,
-                stale_ttl_seconds=SKILL_PROGRESS_SNAPSHOT_STALE_TTL_SEC,
-            )
-            _store_snapshot_in_front_cache(
-                _HOTPATH_SKILL_PROGRESS_CACHE,
-                front_key=front_key,
-                snapshot=snapshot,
-                fresh_ttl_sec=SKILL_PROGRESS_SNAPSHOT_FRESH_TTL_SEC,
-                stale_ttl_sec=SKILL_PROGRESS_SNAPSHOT_STALE_TTL_SEC,
-            )
+        started_perf = time.perf_counter()
+        meta: dict[str, Any] = {}
+        final_status = "success"
+        error_code: str | None = None
+        with db_acquire_scope("skill_progress_refresh") as db_acquire_events:
+            try:
+                response_payload, meta = _build_skill_progress_response_payload(
+                    user_id=int(user_id),
+                    username=username,
+                    lookback_days=int(lookback_days),
+                )
+                snapshot = upsert_user_api_snapshot(
+                    user_id=int(user_id),
+                    snapshot_kind="skill_progress",
+                    snapshot_key=snapshot_key,
+                    payload=response_payload,
+                    source_lang=str(meta.get("source_lang") or "").strip() or None,
+                    target_lang=str(meta.get("target_lang") or "").strip() or None,
+                    meta=meta,
+                    fresh_ttl_seconds=SKILL_PROGRESS_SNAPSHOT_FRESH_TTL_SEC,
+                    stale_ttl_seconds=SKILL_PROGRESS_SNAPSHOT_STALE_TTL_SEC,
+                )
+                _store_snapshot_in_front_cache(
+                    _HOTPATH_SKILL_PROGRESS_CACHE,
+                    front_key=front_key,
+                    snapshot=snapshot,
+                    fresh_ttl_sec=SKILL_PROGRESS_SNAPSHOT_FRESH_TTL_SEC,
+                    stale_ttl_sec=SKILL_PROGRESS_SNAPSHOT_STALE_TTL_SEC,
+                )
+            except Exception as exc:
+                final_status = "error"
+                error_code = exc.__class__.__name__
+                raise
+            finally:
+                _log_flow_observation(
+                    "skill_progress_snapshot",
+                    "refresh_completed",
+                    user_id=int(user_id),
+                    snapshot_key=snapshot_key,
+                    lookback_days=int(lookback_days),
+                    executor_thread=threading.current_thread().name,
+                    final_status=final_status,
+                    error_code=error_code,
+                    duration_ms=_elapsed_ms_since(started_perf),
+                    **meta,
+                    **summarize_db_acquire_events(db_acquire_events),
+                )
 
     _HOTPATH_SKILL_PROGRESS_CACHE.enqueue_refresh(front_key, _refresh)
 
@@ -29595,31 +29654,54 @@ def _refresh_today_plan_snapshot_now(*, user_id: int, username: str | None, plan
 def _refresh_skill_progress_snapshot_now(*, user_id: int, username: str | None, lookback_days: int) -> dict | None:
     snapshot_key = _skill_progress_snapshot_key(lookback_days)
     front_key = ("skill_progress", int(user_id), snapshot_key)
-    with db_acquire_scope("skill_progress_finish_seed"):
-        response_payload, meta = _build_skill_progress_response_payload(
-            user_id=int(user_id),
-            username=username,
-            lookback_days=int(lookback_days),
-        )
-        snapshot = upsert_user_api_snapshot(
-            user_id=int(user_id),
-            snapshot_kind="skill_progress",
-            snapshot_key=snapshot_key,
-            payload=response_payload,
-            source_lang=str(meta.get("source_lang") or "").strip() or None,
-            target_lang=str(meta.get("target_lang") or "").strip() or None,
-            meta=meta,
-            fresh_ttl_seconds=SKILL_PROGRESS_SNAPSHOT_FRESH_TTL_SEC,
-            stale_ttl_seconds=SKILL_PROGRESS_SNAPSHOT_STALE_TTL_SEC,
-        )
-        _store_snapshot_in_front_cache(
-            _HOTPATH_SKILL_PROGRESS_CACHE,
-            front_key=front_key,
-            snapshot=snapshot,
-            fresh_ttl_sec=SKILL_PROGRESS_SNAPSHOT_FRESH_TTL_SEC,
-            stale_ttl_sec=SKILL_PROGRESS_SNAPSHOT_STALE_TTL_SEC,
-        )
-        return snapshot
+    started_perf = time.perf_counter()
+    meta: dict[str, Any] = {}
+    final_status = "success"
+    error_code: str | None = None
+    with db_acquire_scope("skill_progress_finish_seed") as db_acquire_events:
+        try:
+            response_payload, meta = _build_skill_progress_response_payload(
+                user_id=int(user_id),
+                username=username,
+                lookback_days=int(lookback_days),
+            )
+            snapshot = upsert_user_api_snapshot(
+                user_id=int(user_id),
+                snapshot_kind="skill_progress",
+                snapshot_key=snapshot_key,
+                payload=response_payload,
+                source_lang=str(meta.get("source_lang") or "").strip() or None,
+                target_lang=str(meta.get("target_lang") or "").strip() or None,
+                meta=meta,
+                fresh_ttl_seconds=SKILL_PROGRESS_SNAPSHOT_FRESH_TTL_SEC,
+                stale_ttl_seconds=SKILL_PROGRESS_SNAPSHOT_STALE_TTL_SEC,
+            )
+            _store_snapshot_in_front_cache(
+                _HOTPATH_SKILL_PROGRESS_CACHE,
+                front_key=front_key,
+                snapshot=snapshot,
+                fresh_ttl_sec=SKILL_PROGRESS_SNAPSHOT_FRESH_TTL_SEC,
+                stale_ttl_sec=SKILL_PROGRESS_SNAPSHOT_STALE_TTL_SEC,
+            )
+            return snapshot
+        except Exception as exc:
+            final_status = "error"
+            error_code = exc.__class__.__name__
+            raise
+        finally:
+            _log_flow_observation(
+                "skill_progress_snapshot",
+                "finish_seed_completed",
+                user_id=int(user_id),
+                snapshot_key=snapshot_key,
+                lookback_days=int(lookback_days),
+                executor_thread=threading.current_thread().name,
+                final_status=final_status,
+                error_code=error_code,
+                duration_ms=_elapsed_ms_since(started_perf),
+                **meta,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
 
 
 def _refresh_post_finish_user_critical_snapshots(
@@ -35279,6 +35361,7 @@ def get_next_srs_card():
 
 @app.route("/api/cards/prefetch", methods=["GET"])
 def get_srs_prefetch_cards():
+    started_perf = time.perf_counter()
     init_data = request.args.get("initData") or request.headers.get("X-Telegram-Init-Data")
     queue_source = _normalize_flashcards_queue_source(request.args.get("queue_source"))
     if not init_data:
@@ -35292,49 +35375,76 @@ def get_srs_prefetch_cards():
 
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
     now_utc = datetime.now(timezone.utc)
+    language_pair_duration_ms = _elapsed_ms_since(started_perf)
+    db_acquire_events: list[dict[str, Any]] | None = None
+    manual_selection_duration_ms = 0
+    queue_info_duration_ms = 0
+    limit_check_duration_ms = 0
+    list_cards_duration_ms = 0
+    decorate_duration_ms = 0
+    due_count = 0
+    new_remaining_today = 0
+    queue_info: dict[str, Any] = {}
+    cards: list[dict] = []
+    decorated_items: list[dict] = []
+    final_status = "success"
+    error_code: str | None = None
+    http_status = 200
 
     try:
-        with db_acquire_scope("srs_prefetch"), get_db_connection_context() as conn:
-            with conn.cursor() as cursor:
-                manual_selected_card_ids = _resolve_flashcards_manual_selection(
-                    user_id=int(user_id),
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                    queue_source=queue_source,
-                    cursor=cursor,
-                )
-                queue_info = _compute_srs_queue_info(
-                    user_id=int(user_id),
-                    now_utc=now_utc,
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                    queue_source=queue_source,
-                    allowed_card_ids=manual_selected_card_ids,
-                    cursor=cursor,
-                )
-                due_count = max(0, int(queue_info.get("due_count") or 0))
-                new_remaining_today = max(0, int(queue_info.get("new_remaining_today") or 0))
-                max_items = max(1, min(20, due_count + new_remaining_today))
-                fsrs_limit_state = _check_flashcards_words_daily_limit(
-                    user_id=int(user_id),
-                    mode="fsrs",
-                    requested_words=max_items,
-                )
-                if fsrs_limit_state.get("error"):
-                    return jsonify(fsrs_limit_state.get("error")), 429
-                max_items = max(1, min(max_items, int(fsrs_limit_state.get("allowed_words") or max_items)))
-                cards, _selection = _list_srs_queue_cards(
-                    user_id=int(user_id),
-                    now_utc=now_utc,
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                    limit=max_items,
-                    queue_source=queue_source,
-                    allowed_card_ids=manual_selected_card_ids,
-                    cursor=cursor,
-                )
+        with db_acquire_scope("srs_prefetch") as db_acquire_events:
+            with get_db_connection_context() as conn:
+                with conn.cursor() as cursor:
+                    manual_selection_started_perf = time.perf_counter()
+                    manual_selected_card_ids = _resolve_flashcards_manual_selection(
+                        user_id=int(user_id),
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        queue_source=queue_source,
+                        cursor=cursor,
+                    )
+                    manual_selection_duration_ms = _elapsed_ms_since(manual_selection_started_perf)
+                    queue_info_started_perf = time.perf_counter()
+                    queue_info = _compute_srs_queue_info(
+                        user_id=int(user_id),
+                        now_utc=now_utc,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        queue_source=queue_source,
+                        allowed_card_ids=manual_selected_card_ids,
+                        cursor=cursor,
+                    )
+                    queue_info_duration_ms = _elapsed_ms_since(queue_info_started_perf)
+            due_count = max(0, int(queue_info.get("due_count") or 0))
+            new_remaining_today = max(0, int(queue_info.get("new_remaining_today") or 0))
+            max_items = max(1, min(20, due_count + new_remaining_today))
+            limit_check_started_perf = time.perf_counter()
+            fsrs_limit_state = _check_flashcards_words_daily_limit(
+                user_id=int(user_id),
+                mode="fsrs",
+                requested_words=max_items,
+            )
+            limit_check_duration_ms = _elapsed_ms_since(limit_check_started_perf)
+            if fsrs_limit_state.get("error"):
+                final_status = "error"
+                error_code = str((fsrs_limit_state.get("error") or {}).get("error_code") or "flashcards_daily_words_limit_exceeded")
+                http_status = 429
+                return jsonify(fsrs_limit_state.get("error")), 429
+            max_items = max(1, min(max_items, int(fsrs_limit_state.get("allowed_words") or max_items)))
+            list_cards_started_perf = time.perf_counter()
+            cards, _selection = _list_srs_queue_cards(
+                user_id=int(user_id),
+                now_utc=now_utc,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                limit=max_items,
+                queue_source=queue_source,
+                allowed_card_ids=manual_selected_card_ids,
+            )
+            list_cards_duration_ms = _elapsed_ms_since(list_cards_started_perf)
 
         direction = f"{source_lang}-{target_lang}"
+        decorate_started_perf = time.perf_counter()
         decorated_items = [
             _decorate_training_dictionary_item(
                 item if isinstance(item, dict) else {},
@@ -35344,8 +35454,47 @@ def get_srs_prefetch_cards():
             )
             for item in cards
         ]
+        decorate_duration_ms = _elapsed_ms_since(decorate_started_perf)
     except Exception as exc:
+        final_status = "error"
+        error_code = exc.__class__.__name__
+        http_status = 500
         return jsonify({"error": f"Ошибка prefetch карточек: {exc}"}), 500
+    finally:
+        manual_selection_query_count_visible = 1 if queue_source == "manual" else 0
+        _log_flow_observation(
+            "srs_prefetch",
+            "prefetch_completed",
+            user_id=int(user_id),
+            queue_source=queue_source,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            final_status=final_status,
+            error_code=error_code,
+            http_status=http_status,
+            language_pair_duration_ms=language_pair_duration_ms,
+            manual_selection_duration_ms=manual_selection_duration_ms,
+            queue_info_duration_ms=queue_info_duration_ms,
+            limit_check_duration_ms=limit_check_duration_ms,
+            list_cards_duration_ms=list_cards_duration_ms,
+            decorate_duration_ms=decorate_duration_ms,
+            returned_items_count=len(decorated_items),
+            due_count=int(queue_info.get("due_count") or due_count),
+            due_count_total=int(queue_info.get("due_count_total") or 0),
+            new_remaining_today=int(queue_info.get("new_remaining_today") or new_remaining_today),
+            due_reviewed_today=int(queue_info.get("due_reviewed_today") or 0),
+            manual_selection_query_count_visible=manual_selection_query_count_visible,
+            queue_info_query_count_visible=4,
+            limit_check_query_count_visible=1,
+            list_cards_query_count_visible_min=1,
+            total_query_count_visible_min=6 + manual_selection_query_count_visible,
+            checkout_spans_cpu_work=False,
+            checkout_spans_aggregation=True,
+            checkout_spans_serialization=False,
+            nested_limit_check_checkout=False,
+            duration_ms=_elapsed_ms_since(started_perf),
+            **(summarize_db_acquire_events(db_acquire_events) if db_acquire_events is not None else {}),
+        )
 
     return jsonify(
         {
