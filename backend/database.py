@@ -688,7 +688,7 @@ def _apply_ru_de_dictionary_pair_alignment(
     current_word_de: str | None = None,
     current_translation_ru: str | None = None,
     response_json: dict | None = None,
-) -> tuple[dict, str, str]:
+) -> tuple[dict, str, str, dict]:
     payload = _coerce_json_object(response_json)
     resolved_source_lang = _normalize_lang_code(source_lang)
     resolved_target_lang = _normalize_lang_code(target_lang)
@@ -750,7 +750,7 @@ def _apply_ru_de_dictionary_pair_alignment(
         "translation_de": translation_de,
         "word_de": word_de,
         "translation_ru": translation_ru,
-    }, source_text, target_text
+    }, source_text, target_text, payload
 
 
 def _dedupe_webapp_dictionary_entry_after_insert(
@@ -16316,7 +16316,7 @@ def edit_vocabulary_entry(
                 else:
                     effective_russian = current_translation_ru
 
-                aligned_columns, _source_text, _target_text = _apply_ru_de_dictionary_pair_alignment(
+                aligned_columns, _source_text, _target_text, aligned_response_json = _apply_ru_de_dictionary_pair_alignment(
                     source_lang=source_lang,
                     target_lang=target_lang,
                     german_text=effective_german,
@@ -16327,6 +16327,7 @@ def edit_vocabulary_entry(
                     current_translation_ru=current_translation_ru,
                     response_json=response_json,
                 )
+                response_json = aligned_response_json
                 set_parts.extend(
                     [
                         "word_ru = %s",
