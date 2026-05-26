@@ -10,7 +10,7 @@ from api import GermanTeacherTools
 from openai_manager import system_message
 from dotenv import load_dotenv
 from datetime import datetime
-from database import get_db_connection_context # Імпорт контекстного менеджера для підключення до БД
+from database import get_db_connection_context, get_latest_active_agent_voice_session
 from voice_session_service import (
     append_transcript_segment as persist_voice_transcript_segment,
     load_voice_session_context as load_bound_voice_session_context,
@@ -585,6 +585,31 @@ async def entrypoint(ctx: JobContext):
                     teacher_logic.current_voice_session_id,
                 )
                 await _load_voice_session_context_best_effort()
+            else:
+                logging.warning(
+                    "⚠️ voice_session_id not found in participant attributes for user_id=%s — trying DB fallback",
+                    user_id_int,
+                )
+                try:
+                    active_session = await asyncio.to_thread(
+                        get_latest_active_agent_voice_session,
+                        user_id=int(user_id_int),
+                    )
+                    if active_session:
+                        teacher_logic.current_voice_session_id = int(active_session["session_id"])
+                        logging.info(
+                            "✅ Resolved voice session_id=%s from DB fallback for user_id=%s",
+                            teacher_logic.current_voice_session_id,
+                            user_id_int,
+                        )
+                        await _load_voice_session_context_best_effort()
+                    else:
+                        logging.warning(
+                            "⚠️ No active voice session in DB for user_id=%s",
+                            user_id_int,
+                        )
+                except Exception:
+                    logging.warning("⚠️ DB fallback for voice session_id failed", exc_info=True)
 
             # 4) Анти-спам приветствия (один раз на user_id)
             if teacher_logic.current_user_id not in teacher_logic._greeted_user_ids:
@@ -671,10 +696,31 @@ async def entrypoint(ctx: JobContext):
             await _resolve_bound_voice_session_id_from_room()
         if not teacher_logic.current_voice_session_id:
             await _resolve_user_id_from_room()
+        # Final fallback: look up latest active session from DB using user_id
+        if not teacher_logic.current_voice_session_id and teacher_logic.current_user_id:
+            try:
+                active_session = await asyncio.to_thread(
+                    get_latest_active_agent_voice_session,
+                    user_id=int(teacher_logic.current_user_id),
+                )
+                if active_session:
+                    teacher_logic.current_voice_session_id = int(active_session["session_id"])
+                    logging.info(
+                        "✅ Transcript persist: resolved session_id=%s from DB for user_id=%s",
+                        teacher_logic.current_voice_session_id,
+                        teacher_logic.current_user_id,
+                    )
+            except Exception:
+                logging.warning("⚠️ DB session_id fallback in transcript persist failed", exc_info=True)
         if teacher_logic.current_voice_session_id and not teacher_logic.current_voice_session_context:
             await _load_voice_session_context_best_effort()
         session_id_value = teacher_logic.current_voice_session_id
         if not session_id_value:
+            logging.warning(
+                "⚠️ Cannot persist transcript segment role=%s — session_id not resolved (user_id=%s)",
+                role,
+                teacher_logic.current_user_id,
+            )
             return
         try:
             await asyncio.to_thread(
@@ -850,14 +896,24 @@ async def entrypoint(ctx: JobContext):
                 return
 
             role = getattr(item, "role", "unknown")
-            content = getattr(item, "content", [])
             text = ""
 
-            if content:
-                first = content[0]
-                text = first if isinstance(first, str) else str(first)
+            # Use text_content property if available (livekit-agents v1.x)
+            text_content_prop = getattr(item, "text_content", None)
+            if text_content_prop:
+                text = str(text_content_prop).strip()
+            else:
+                content = getattr(item, "content", []) or []
+                for c in content:
+                    if isinstance(c, str) and c.strip():
+                        text = c.strip()
+                        break
+                if not text and content:
+                    # Last resort: stringify first content item
+                    first = content[0]
+                    text = str(first).strip()
 
-            logging.info(f"🧩 conversation_item_added | role={role} | text={text}")
+            logging.info(f"🧩 conversation_item_added | role={role} | session_id={teacher_logic.current_voice_session_id} | text_len={len(text)} | text={text[:120]!r}")
 
             if role == "user":
                 # при первом пользовательском сообщении пытаемся резолвить ID+имя

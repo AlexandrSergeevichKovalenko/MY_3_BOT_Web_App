@@ -231,7 +231,7 @@ def resolve_shared_sentence_pool_focus(
             "_pool_levels": [str(level or "").strip().lower()] if str(level or "").strip() else [],
             "source_focus_kind": "preset",
         }
-    if focus_kind == "legacy":
+    if focus_kind in {"legacy", "legacy_pool"}:
         return get_legacy_shared_pool_focus(level)
     return None
 

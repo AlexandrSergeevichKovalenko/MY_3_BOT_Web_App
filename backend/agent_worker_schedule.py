@@ -161,7 +161,12 @@ def _release_transition_lock(token: str | None) -> None:
 
 
 def _railway_headers() -> dict[str, str]:
-    project_token = str(os.getenv("AGENT_WORKER_RAILWAY_PROJECT_TOKEN") or "").strip()
+    project_token = str(
+        os.getenv("AGENT_WORKER_RAILWAY_PROJECT_TOKEN")
+        or os.getenv("AGENT_WORKER_RAILWAY_TOKEN")
+        or os.getenv("RAILWAY_TOKEN")
+        or ""
+    ).strip()
     workspace_token = str(
         os.getenv("AGENT_WORKER_RAILWAY_API_TOKEN")
         or os.getenv("RAILWAY_API_TOKEN")
@@ -177,18 +182,96 @@ def _railway_headers() -> dict[str, str]:
     raise RuntimeError("Missing Railway API token for AGENT_WORKER schedule control")
 
 
+def _railway_header_candidates() -> list[tuple[str, dict[str, str]]]:
+    project_token = str(
+        os.getenv("AGENT_WORKER_RAILWAY_PROJECT_TOKEN")
+        or os.getenv("AGENT_WORKER_RAILWAY_TOKEN")
+        or os.getenv("RAILWAY_TOKEN")
+        or ""
+    ).strip()
+    workspace_token = str(
+        os.getenv("AGENT_WORKER_RAILWAY_API_TOKEN")
+        or os.getenv("RAILWAY_API_TOKEN")
+        or ""
+    ).strip()
+    candidates: list[tuple[str, dict[str, str]]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _append(label: str, header_key: str, token: str) -> None:
+        if not token:
+            return
+        signature = (header_key, token)
+        if signature in seen:
+            return
+        seen.add(signature)
+        candidates.append((label, {"Content-Type": "application/json", header_key: token}))
+
+    _append("project_token", "Project-Access-Token", project_token)
+    _append("bearer_token", "Authorization", f"Bearer {workspace_token}" if workspace_token else "")
+    # Some Railway tokens are stored under *_API_TOKEN but only authorize GraphQL when
+    # sent as Project-Access-Token. Retrying with both modes avoids a config-only outage.
+    _append("project_token_fallback", "Project-Access-Token", workspace_token)
+
+    if not candidates:
+        raise RuntimeError("Missing Railway API token for AGENT_WORKER schedule control")
+    return candidates
+
+
+def _railway_payload_is_not_authorized(payload: dict[str, Any] | None) -> bool:
+    for item in list((payload or {}).get("errors") or []):
+        message = str((item or {}).get("message") or "").strip().lower()
+        if "not authorized" in message or "unauthorized" in message:
+            return True
+    return False
+
+
 def _railway_graphql(query: str, variables: dict) -> dict:
-    response = requests.post(
-        os.getenv("AGENT_WORKER_RAILWAY_GRAPHQL_URL") or RAILWAY_GRAPHQL_URL,
-        headers=_railway_headers(),
-        json={"query": query, "variables": variables},
-        timeout=25,
-    )
-    response.raise_for_status()
-    payload = response.json() if response.content else {}
-    if payload.get("errors"):
-        raise RuntimeError(str(payload["errors"]))
-    return payload.get("data") or {}
+    graphql_url = os.getenv("AGENT_WORKER_RAILWAY_GRAPHQL_URL") or RAILWAY_GRAPHQL_URL
+    header_candidates = _railway_header_candidates()
+    last_exception: Exception | None = None
+    for index, (auth_mode, headers) in enumerate(header_candidates):
+        is_last = index == len(header_candidates) - 1
+        try:
+            response = requests.post(
+                graphql_url,
+                headers=headers,
+                json={"query": query, "variables": variables},
+                timeout=25,
+            )
+            response.raise_for_status()
+            payload = response.json() if response.content else {}
+            if payload.get("errors"):
+                if _railway_payload_is_not_authorized(payload) and not is_last:
+                    logging.warning(
+                        "agent_worker_schedule: Railway GraphQL auth rejected auth_mode=%s, retrying alternate auth mode",
+                        auth_mode,
+                    )
+                    continue
+                raise RuntimeError(str(payload["errors"]))
+            return payload.get("data") or {}
+        except requests.HTTPError as exc:
+            last_exception = exc
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            if status_code in {401, 403} and not is_last:
+                logging.warning(
+                    "agent_worker_schedule: Railway GraphQL HTTP auth rejected auth_mode=%s status=%s, retrying alternate auth mode",
+                    auth_mode,
+                    status_code,
+                )
+                continue
+            raise
+        except RuntimeError as exc:
+            last_exception = exc
+            if not is_last and "Not Authorized" in str(exc):
+                logging.warning(
+                    "agent_worker_schedule: Railway GraphQL payload auth rejected auth_mode=%s, retrying alternate auth mode",
+                    auth_mode,
+                )
+                continue
+            raise
+    if last_exception is not None:
+        raise last_exception
+    return {}
 
 
 def fetch_agent_worker_service_instance_state() -> dict:

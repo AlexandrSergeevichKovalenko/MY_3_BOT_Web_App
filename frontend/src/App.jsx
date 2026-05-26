@@ -1,7 +1,9 @@
 import React, { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
+import './components/reader-redesign.css';
 import BlocksTrainer from './components/BlocksTrainer';
 import HomeDashboardTiles from './components/HomeDashboardTiles';
+import ReaderSection from './components/ReaderSection';
 import HomeMoreTiles from './components/HomeMoreTiles';
 import WeeklySummaryModal from './components/WeeklySummaryModal';
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
@@ -13,6 +15,8 @@ import {
   getCachedVocab,
   getVocabCacheMeta,
   getCachedFolderStats,
+  getCachedVocabSyncStats,
+  reconcileCachedFolderEntries,
   deleteCachedVocabEntry,
   updateCachedVocabEntry,
   saveSrsQueue,
@@ -29,8 +33,7 @@ import {
 import {
   lookupOfflineBaseDictEntry,
   saveBaseDictEntryFromServerResult,
-  isOfflinePackFresh,
-  downloadOfflinePack,
+  ensureOfflinePack,
 } from './offline/baseDictCache';
 
 import './styles/topbar-redesign.css';
@@ -46,6 +49,9 @@ const TTS_CACHE_MAX_ENTRIES = 60;
 const READER_IDLE_TIMEOUT_MS = 60000;
 const READER_DEFAULT_FONT_SIZE = 18;
 const READER_DEFAULT_FONT_WEIGHT = 500;
+const READER_PAGINATION_FIT_RESERVE_PX = 12;
+const READER_LOCAL_BOOKMARKS_STORAGE_KEY = 'dds_reader_exact_bookmarks_v1';
+const READER_LOCAL_ORIGINAL_LOCATIONS_STORAGE_KEY = 'dds_reader_original_locations_v1';
 const WEEKLY_SUMMARY_VISITS_ENABLED = false;
 const ALLOW_MANUAL_INITDATA_FALLBACK = Boolean(import.meta.env.DEV);
 const ANDROID_TRANSLATION_DRAFT_DEBUG_QUERY_KEY = 'translation_draft_debug';
@@ -62,6 +68,11 @@ const ECONOMICS_RAILWAY_POSTGRES_VOLUME_STORAGE_KEY = 'dds_economics_railway_pos
 const ECONOMICS_RAILWAY_REDIS_RAM_STORAGE_KEY = 'dds_economics_railway_redis_ram_v1';
 const ECONOMICS_RAILWAY_EGRESS_STORAGE_KEY = 'dds_economics_railway_egress_v1';
 const ECONOMICS_PERIOD_OPTIONS = new Set(['day', 'week', 'month', 'quarter', 'half-year', 'year', 'all']);
+const EPUB_RUNTIME_CDN_URLS = [
+  'https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js',
+  'https://unpkg.com/epubjs/dist/epub.min.js',
+];
+let readerEpubRuntimePromise = null;
 
 function normalizeReaderPaginationText(rawText) {
   return String(rawText || '')
@@ -71,25 +82,337 @@ function normalizeReaderPaginationText(rawText) {
     .join('\n\n');
 }
 
+function normalizeReaderVisiblePageText(rawText) {
+  return String(rawText || '')
+    .split(/\n\n+/)
+    .map((para) => para.replace(/\n/g, ' ').replace(/ {2,}/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+function normalizeReaderEpubHref(rawHref) {
+  return String(rawHref || '')
+    .trim()
+    .replace(/^https?:\/\/[^/]+/i, '')
+    .replace(/^[./]+/, '')
+    .split('#', 1)[0]
+    .toLowerCase();
+}
+
+function readStoredReaderExactBookmarks() {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = String(window.localStorage.getItem(READER_LOCAL_BOOKMARKS_STORAGE_KEY) || '').trim();
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function readStoredReaderExactBookmark(documentId) {
+  const safeId = String(documentId || '').trim();
+  if (!safeId) return null;
+  const all = readStoredReaderExactBookmarks();
+  const item = all[safeId];
+  if (!item || typeof item !== 'object') return null;
+  const page = Number(item.page || 0);
+  if (!Number.isFinite(page) || page <= 0) return null;
+  return {
+    page,
+    pageCount: Number(item.pageCount || 0),
+    layoutMode: String(item.layoutMode || '').trim().toLowerCase() || '',
+  };
+}
+
+function writeStoredReaderExactBookmark(documentId, payload) {
+  if (typeof window === 'undefined') return;
+  const safeId = String(documentId || '').trim();
+  if (!safeId) return;
+  try {
+    const all = readStoredReaderExactBookmarks();
+    all[safeId] = {
+      page: Math.max(1, Number(payload?.page || 1)),
+      pageCount: Math.max(0, Number(payload?.pageCount || 0)),
+      layoutMode: String(payload?.layoutMode || '').trim().toLowerCase() || '',
+      updatedAt: new Date().toISOString(),
+    };
+    window.localStorage.setItem(READER_LOCAL_BOOKMARKS_STORAGE_KEY, JSON.stringify(all));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function readStoredReaderOriginalLocations() {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = String(window.localStorage.getItem(READER_LOCAL_ORIGINAL_LOCATIONS_STORAGE_KEY) || '').trim();
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function readStoredReaderOriginalLocation(documentId) {
+  const safeId = String(documentId || '').trim();
+  if (!safeId) return null;
+  const all = readStoredReaderOriginalLocations();
+  const item = all[safeId];
+  if (!item || typeof item !== 'object') return null;
+  const cfi = String(item.cfi || '').trim();
+  const progressPercent = Number(item.progressPercent || 0);
+  return {
+    cfi: cfi || '',
+    progressPercent: Number.isFinite(progressPercent) ? Math.max(0, Math.min(100, progressPercent)) : 0,
+  };
+}
+
+function writeStoredReaderOriginalLocation(documentId, payload) {
+  if (typeof window === 'undefined') return;
+  const safeId = String(documentId || '').trim();
+  if (!safeId) return;
+  try {
+    const all = readStoredReaderOriginalLocations();
+    all[safeId] = {
+      cfi: String(payload?.cfi || '').trim(),
+      progressPercent: Math.max(0, Math.min(100, Number(payload?.progressPercent || 0))),
+      updatedAt: new Date().toISOString(),
+    };
+    window.localStorage.setItem(READER_LOCAL_ORIGINAL_LOCATIONS_STORAGE_KEY, JSON.stringify(all));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function loadReaderEpubRuntime() {
+  if (typeof window === 'undefined') {
+    return Promise.reject(new Error('EPUB runtime is unavailable outside the browser'));
+  }
+  if (typeof window.ePub === 'function') {
+    return Promise.resolve(window.ePub);
+  }
+  if (readerEpubRuntimePromise) {
+    return readerEpubRuntimePromise;
+  }
+  readerEpubRuntimePromise = (async () => {
+    for (const url of EPUB_RUNTIME_CDN_URLS) {
+      try {
+        await new Promise((resolve, reject) => {
+          const existing = document.querySelector(`script[data-reader-epub-runtime="${url}"]`);
+          if (existing) {
+            existing.addEventListener('load', resolve, { once: true });
+            existing.addEventListener('error', reject, { once: true });
+            if (typeof window.ePub === 'function') {
+              resolve();
+            }
+            return;
+          }
+          const script = document.createElement('script');
+          script.async = true;
+          script.src = url;
+          script.dataset.readerEpubRuntime = url;
+          script.onload = () => resolve();
+          script.onerror = () => reject(new Error(`Failed to load ${url}`));
+          document.body.appendChild(script);
+        });
+        if (typeof window.ePub === 'function') {
+          return window.ePub;
+        }
+      } catch (_error) {
+        // try the next CDN
+      }
+    }
+    throw new Error('EPUB runtime failed to load');
+  })();
+  return readerEpubRuntimePromise;
+}
+
+function resolveStoredReaderExactBookmarkPage(storedBookmark, {
+  pageCount = 0,
+  layoutMode = '',
+} = {}) {
+  if (!storedBookmark || typeof storedBookmark !== 'object') return 0;
+  const safePageCount = Math.max(0, Number(pageCount || 0));
+  if (safePageCount <= 0) return 0;
+  const storedPage = Math.max(0, Number(storedBookmark.page || 0));
+  if (!Number.isFinite(storedPage) || storedPage <= 0) return 0;
+  const storedPageCount = Math.max(0, Number(storedBookmark.pageCount || 0));
+  const storedLayoutMode = String(storedBookmark.layoutMode || '').trim().toLowerCase();
+  const safeLayoutMode = String(layoutMode || '').trim().toLowerCase();
+  if (storedPageCount > 0 && storedPageCount !== safePageCount) return 0;
+  if (safeLayoutMode && storedLayoutMode && safeLayoutMode !== storedLayoutMode) return 0;
+  return Math.max(1, Math.min(safePageCount, storedPage));
+}
+
+function getReaderMeasureDimension(measureNode, axis = 'height') {
+  if (!measureNode) return 0;
+  const isWidth = axis === 'width';
+  const ownSize = Number(isWidth ? measureNode.clientWidth : measureNode.clientHeight) || 0;
+  const parent = measureNode.parentElement;
+  const parentSize = Number(parent ? (isWidth ? parent.clientWidth : parent.clientHeight) : 0) || 0;
+  return Math.max(ownSize, parentSize);
+}
+
 function readerPageTextFits(measureNode, text) {
   if (!measureNode) return false;
   measureNode.textContent = String(text || '');
-  return measureNode.scrollHeight <= measureNode.clientHeight + 1;
+  const availableHeight = Math.max(1, getReaderMeasureDimension(measureNode, 'height') - READER_PAGINATION_FIT_RESERVE_PX);
+  return measureNode.scrollHeight <= availableHeight + 1;
+}
+
+const READER_HEADING_MINOR_WORDS = new Set([
+  'a', 'an', 'and', 'as', 'at', 'by', 'for', 'from', 'in', 'into', 'of', 'on', 'or', 'the', 'to', 'und', 'oder',
+  'der', 'die', 'das', 'dem', 'den', 'des', 'ein', 'eine', 'einer', 'einem', 'einen', 'im', 'am', 'vom', 'zum',
+  'zur', 'von', 'mit', 'ohne', 'ueber', 'unter', 'vor', 'nach', 'bei', 'aus', 'als', 'ist', 'war', 'wie', 'zu',
+  'и', 'в', 'во', 'на', 'с', 'со', 'к', 'ко', 'о', 'об', 'от', 'по', 'под', 'над', 'для', 'без', 'при', 'или',
+  'а', 'но', 'что', 'как', 'из', 'у', 'за',
+]);
+
+function normalizeReaderHeadingWord(rawWord) {
+  return String(rawWord || '')
+    .replace(/^[^0-9A-Za-zА-Яа-яÄÖÜäöüẞßIVXLCDM]+|[^0-9A-Za-zА-Яа-яÄÖÜäöüẞßIVXLCDM]+$/g, '')
+    .trim();
+}
+
+function isReaderTitleCaseWord(word) {
+  const normalized = normalizeReaderHeadingWord(word);
+  if (!normalized) return false;
+  if (/^\d+(?:[.)]\d+)*(?:[.)])?$/.test(normalized)) return true;
+  if (/^[IVXLCDM]+$/i.test(normalized) && normalized.length <= 8) return true;
+  return /^[A-ZА-ЯÄÖÜẞ]/.test(normalized);
+}
+
+function isReaderHeadingParagraph(paragraph) {
+  const text = String(paragraph || '').replace(/\s+/g, ' ').trim();
+  if (!text) return false;
+  if (text.length > 120) return false;
+  const words = text.split(/\s+/).filter(Boolean);
+  const wordCount = words.length;
+  if (wordCount > 14) return false;
+  if (/^(kapitel|chapter|teil|abschnitt|section|prolog|epilog)\b/i.test(text)) return true;
+  if (/^(?:\d+(?:\.\d+)*|[IVXLCDM]+)[.)]?\s+[A-ZА-ЯÄÖÜẞ]/.test(text)) return true;
+  if (/^[A-ZА-Я0-9ÄÖÜẞIVXLCDM .,:;'"“”«»()\-–—]+$/.test(text) && wordCount <= 12) return true;
+  if (/[!?…]$/.test(text)) return false;
+  if (/[.;]/.test(text) && !/:$/.test(text)) return false;
+
+  const normalizedWords = words.map(normalizeReaderHeadingWord).filter(Boolean);
+  const significantWords = normalizedWords.filter((word) => !READER_HEADING_MINOR_WORDS.has(word.toLowerCase()));
+  const titleCaseWords = significantWords.filter(isReaderTitleCaseWord);
+  const significantCount = significantWords.length;
+  const titleCaseRatio = significantCount > 0 ? titleCaseWords.length / significantCount : 0;
+  const hasSentenceLikePunctuation = /[,]/.test(text) || /[.!?…]$/.test(text);
+
+  if (!hasSentenceLikePunctuation && wordCount <= 4 && titleCaseRatio >= 0.34) return true;
+  if (!hasSentenceLikePunctuation && wordCount <= 8 && titleCaseRatio >= 0.6) return true;
+  if (!hasSentenceLikePunctuation && wordCount <= 12 && titleCaseRatio >= 0.8) return true;
+  if (/:$/.test(text) && wordCount <= 10) return true;
+  return false;
+}
+
+function splitReaderTrailingHeadingBlock(text) {
+  const paragraphs = String(text || '').split(/\n\n+/).map((item) => item.trim()).filter(Boolean);
+  if (paragraphs.length < 2) return null;
+  let splitIndex = paragraphs.length;
+  while (splitIndex > 1 && isReaderHeadingParagraph(paragraphs[splitIndex - 1])) {
+    splitIndex -= 1;
+  }
+  const headingCount = paragraphs.length - splitIndex;
+  if (headingCount <= 0 || headingCount > 3) return null;
+  const leading = paragraphs.slice(0, splitIndex).join('\n\n').trim();
+  const trailing = paragraphs.slice(splitIndex).join('\n\n').trim();
+  if (!leading || !trailing) return null;
+  return { leading, trailing };
+}
+
+function findReaderBestFittingWordCount(measureNode, words, buildText) {
+  if (!measureNode || !Array.isArray(words) || words.length === 0 || typeof buildText !== 'function') {
+    return 0;
+  }
+  let low = 1;
+  let high = words.length;
+  let bestWordCount = 0;
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const midText = buildText(words.slice(0, mid));
+    if (readerPageTextFits(measureNode, midText)) {
+      bestWordCount = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return bestWordCount;
+}
+
+function isReaderPaginationSane(sourceText, pages, measureNode) {
+  const normalizedText = normalizeReaderPaginationText(sourceText);
+  if (!normalizedText) return true;
+  if (!Array.isArray(pages) || pages.length === 0) return false;
+
+  const layoutWidth = getReaderMeasureDimension(measureNode, 'width');
+  const layoutHeight = getReaderMeasureDimension(measureNode, 'height');
+  if (layoutWidth <= 120 || layoutHeight <= 120) {
+    return false;
+  }
+
+  const lengths = pages.map((item) => String(item || '').trim().length);
+  const totalChars = lengths.reduce((sum, value) => sum + value, 0);
+  const avgCharsPerPage = totalChars / Math.max(1, lengths.length);
+  const tinyPages = lengths.filter((value) => value <= 3).length;
+
+  if (normalizedText.length >= 80 && avgCharsPerPage < 12) {
+    return false;
+  }
+  if (normalizedText.length >= 160 && avgCharsPerPage < 24) {
+    return false;
+  }
+  if (pages.length > Math.ceil(normalizedText.length / 6)) {
+    return false;
+  }
+  if (pages.length >= 12 && tinyPages >= Math.ceil(pages.length * 0.5)) {
+    return false;
+  }
+  return true;
 }
 
 function paginateReaderText(text, measureNode) {
   const normalizedText = normalizeReaderPaginationText(text);
   if (!normalizedText || !measureNode) return [];
-  if (measureNode.clientWidth <= 0 || measureNode.clientHeight <= 0) return [];
+  if (getReaderMeasureDimension(measureNode, 'width') <= 0 || getReaderMeasureDimension(measureNode, 'height') <= 0) return [];
 
   const paragraphs = normalizedText.split(/\n\n+/).map((item) => item.trim()).filter(Boolean);
   const pages = [];
   let buffer = '';
 
-  for (const paragraph of paragraphs) {
+  for (let paragraphIndex = 0; paragraphIndex < paragraphs.length; paragraphIndex += 1) {
+    let paragraph = paragraphs[paragraphIndex];
+    let stickyHeadingText = '';
+
+    if (isReaderHeadingParagraph(paragraph)) {
+      const headingParts = [paragraph];
+      let nextIndex = paragraphIndex + 1;
+      while (nextIndex < paragraphs.length && isReaderHeadingParagraph(paragraphs[nextIndex])) {
+        headingParts.push(paragraphs[nextIndex]);
+        nextIndex += 1;
+      }
+      if (nextIndex < paragraphs.length) {
+        stickyHeadingText = headingParts.join('\n\n');
+        paragraph = paragraphs[nextIndex];
+        paragraphIndex = nextIndex;
+      } else {
+        paragraph = headingParts.join('\n\n');
+        paragraphIndex = nextIndex - 1;
+      }
+    }
+
     let words = paragraph.split(/\s+/).filter(Boolean);
     while (words.length > 0) {
-      const paragraphText = words.join(' ');
+      const paragraphText = stickyHeadingText
+        ? `${stickyHeadingText}\n\n${words.join(' ')}`
+        : words.join(' ');
       const candidate = buffer ? `${buffer}\n\n${paragraphText}` : paragraphText;
       if (readerPageTextFits(measureNode, candidate)) {
         buffer = candidate;
@@ -97,25 +420,61 @@ function paginateReaderText(text, measureNode) {
       }
 
       if (buffer) {
+        const bestWordCountWithBuffer = findReaderBestFittingWordCount(
+          measureNode,
+          words,
+          (slice) => {
+            const sliceText = stickyHeadingText
+              ? `${stickyHeadingText}\n\n${slice.join(' ')}`
+              : slice.join(' ');
+            return `${buffer}\n\n${sliceText}`;
+          }
+        );
+        if (bestWordCountWithBuffer > 0) {
+          const sliceText = stickyHeadingText
+            ? `${stickyHeadingText}\n\n${words.slice(0, bestWordCountWithBuffer).join(' ')}`
+            : words.slice(0, bestWordCountWithBuffer).join(' ');
+          pages.push(`${buffer}\n\n${sliceText}`);
+          buffer = '';
+          words = words.slice(bestWordCountWithBuffer);
+          stickyHeadingText = '';
+          continue;
+        }
+        const trailingHeadingBlock = splitReaderTrailingHeadingBlock(buffer);
+        if (trailingHeadingBlock) {
+          pages.push(trailingHeadingBlock.leading);
+          buffer = trailingHeadingBlock.trailing;
+          continue;
+        }
         pages.push(buffer);
         buffer = '';
         continue;
       }
 
-      let low = 1;
-      let high = words.length;
-      let bestWordCount = 0;
-      while (low <= high) {
-        const mid = Math.floor((low + high) / 2);
-        const midText = words.slice(0, mid).join(' ');
-        if (readerPageTextFits(measureNode, midText)) {
-          bestWordCount = mid;
-          low = mid + 1;
-        } else {
-          high = mid - 1;
+      if (stickyHeadingText) {
+        const bestWordCount = findReaderBestFittingWordCount(
+          measureNode,
+          words,
+          (slice) => `${stickyHeadingText}\n\n${slice.join(' ')}`
+        );
+        if (bestWordCount > 0) {
+          pages.push(`${stickyHeadingText}\n\n${words.slice(0, bestWordCount).join(' ')}`);
+          words = words.slice(bestWordCount);
+          stickyHeadingText = '';
+          continue;
+        }
+        if (readerPageTextFits(measureNode, stickyHeadingText)) {
+          pages.push(stickyHeadingText);
+          stickyHeadingText = '';
+          continue;
         }
       }
 
+      const bestWordCount = findReaderBestFittingWordCount(
+        measureNode,
+        words,
+        (slice) => slice.join(' ')
+      );
       if (bestWordCount > 0) {
         pages.push(words.slice(0, bestWordCount).join(' '));
         words = words.slice(bestWordCount);
@@ -169,6 +528,13 @@ function areReaderPagesEqual(prevPages, nextPages) {
     if (String(prevItem?.text || '') !== String(nextItem?.text || '')) return false;
   }
   return true;
+}
+
+function getReaderPreferredLayoutMode(sourceType, pages) {
+  const normalizedSourceType = String(sourceType || '').trim().toLowerCase();
+  const hasPages = Array.isArray(pages) && pages.length > 0;
+  if (!hasPages) return 'custom';
+  return normalizedSourceType === 'pdf' || normalizedSourceType === 'epub' ? 'original' : 'custom';
 }
 
 function readStoredEconomicsPeriod() {
@@ -1362,33 +1728,33 @@ function buildGuideStepItems(uiLang = 'ru') {
           title: 'Для чего нужно приложение',
           items: [
             'DeutschFlow связывает переводы, словарь, карточки, видео, чтение, разговорную практику и аналитику в один учебный поток.',
-            'Вы можете пользоваться приложением как в Telegram Mini App, так и через браузер, не теряя логику обучения.',
-            'Самая глубокая и полноценно собранная траектория сейчас это RU ↔ DE.',
+            'Работает как Telegram Mini App и в браузере — прогресс и слова синхронизируются между устройствами.',
+            'Самая глубокая и полноценно собранная траектория сейчас: RU ↔ DE.',
           ],
         },
         {
           title: 'Что вы видите в верхней панели',
           items: [
-            'RU / DE переключает только язык интерфейса.',
-            'DARK / LIGHT переключает цветовую тему приложения.',
-            'Кнопка с языковой парой открывает профиль обучения: какой язык вы изучаете и какой у вас родной.',
-            'Кнопка ? в любой момент снова открывает этот гид.',
+            'RU / DE — переключает язык интерфейса (не язык обучения).',
+            'DARK / LIGHT — цветовая тема приложения.',
+            'Кнопка с языковой парой открывает профиль обучения: что изучаете и какой родной язык.',
+            'Кнопка ? открывает этот гид в любой момент.',
           ],
         },
         {
-          title: 'Главный экран: 3 быстрые метрики',
+          title: 'Быстрые плитки на главном экране',
           items: [
-            'Задачи — прогресс дневного плана (выполнено / всего).',
-            'Карта навыков — средний % освоения всех грамматических и лексических блоков. Нажмите, чтобы увидеть кольца по каждой теме.',
-            'Wochenplan — насколько вы выполнили недельные цели: переводы, слова, минуты разговора, время чтения.',
+            'На главной видны плитки-ярлыки для всех разделов: Переводы, Словарь, Карточки, YouTube, Читалка, Практика.',
+            'Три метрики вверху: задачи дня, средний % по карте навыков и прогресс по недельным целям.',
+            'Нажмите на метрику «Навыки», чтобы развернуть кольца по каждой грамматической теме.',
           ],
         },
         {
           title: 'Как лучше начать',
           items: [
-            'Сначала задайте язык изучения и родной язык.',
-            'Потом идите либо в Сегодня за готовым маршрутом, либо сразу в Переводы.',
-            'Если вы хотите использовать и личку с ботом, отправьте ему /start один раз.',
+            'Задайте язык изучения и родной язык в профиле.',
+            'Перейдите в «Сегодня» за готовым маршрутом дня или сразу в «Переводы».',
+            'Если хотите получать уведомления и работать в личке — откройте бота в Telegram и отправьте /start.',
           ],
         },
       ],
@@ -1396,30 +1762,30 @@ function buildGuideStepItems(uiLang = 'ru') {
     {
       key: 'subscription',
       title: 'Подписка',
-      summary: 'Здесь видны ваш тариф, лимиты и путь в Stripe Portal.',
+      summary: 'Здесь видны ваш тариф, лимиты, расход за сегодня и путь в Stripe Portal.',
       sections: [
         {
           title: 'Что показывает этот раздел',
           items: [
             'Текущий тариф, статус, расход за сегодня и доступные планы.',
-            'Не нужно искать оплату где-то снаружи: основные действия видны прямо в Mini App.',
+            'Не нужно искать оплату снаружи — все действия доступны прямо в Mini App.',
             'Это центральная точка для управления доступом и лимитами.',
           ],
         },
         {
           title: 'Как работает смена тарифа и отмена',
           items: [
-            'Если вы отменяете платную подписку, она продолжает работать до конца уже оплаченного периода.',
-            'Новый платный тариф стартует аккуратно со следующего расчетного периода, без двойного списания.',
-            'Так вы не теряете уже оплаченный доступ и не платите дважды за один и тот же промежуток.',
+            'При отмене подписка продолжает работать до конца оплаченного периода.',
+            'Новый платный тариф стартует со следующего расчётного периода — без двойного списания.',
+            'Вы не теряете уже оплаченный доступ.',
           ],
         },
         {
           title: 'Что можно нажать',
           items: [
             'Выбрать тариф, посмотреть лимиты и открыть Stripe Portal.',
-            'В Stripe Portal меняются карта, квитанции, отмена и возобновление подписки.',
-            'После возврата лучше коротко обновить раздел, чтобы статус подтянулся.',
+            'В Stripe Portal — смена карты, квитанции, отмена и возобновление подписки.',
+            'После возврата лучше обновить раздел, чтобы статус подтянулся.',
           ],
         },
       ],
@@ -1432,25 +1798,25 @@ function buildGuideStepItems(uiLang = 'ru') {
         {
           title: 'Дневной план',
           items: [
-            'Компактный маршрут дня: переводы, карточки, теория, видео или разговорная практика.',
-            'Статус каждой задачи: ещё не начато, в процессе или закончено.',
-            'Если какой-то блок проседает, он поднимается выше в плане.',
+            'Компактный маршрут дня: переводы, карточки, теория, видео, разговорная практика.',
+            'Статус каждой задачи: не начато, в процессе, завершено.',
+            'Если блок проседает, он поднимается выше в приоритете.',
           ],
         },
         {
           title: 'Карта навыков (skill rings)',
           items: [
-            'Ниже дневного плана находится блок Карта навыков с кольцами по каждому грамматическому и лексическому направлению.',
-            'Чем полнее кольцо — тем лучше вы освоили эту тему по результатам ваших упражнений и тестов.',
-            'Слабые кольца — ваши текущие пробелы. Нажмите на кольцо, чтобы открыть целевую тренировку.',
+            'Кольца по каждому грамматическому и лексическому направлению.',
+            'Чем полнее кольцо — тем лучше освоена тема по результатам упражнений и тестов.',
+            'Нажмите на слабое кольцо, чтобы открыть целевую тренировку именно по этой теме.',
           ],
         },
         {
-          title: 'Недельный план и уведомления',
+          title: 'Недельный план (Wochenplan)',
           items: [
-            'Блок Wochenplan показывает прогресс недельных целей: переводы, выученные слова, минуты разговора, время чтения.',
-            'По текущим стандартным настройкам план приходит утром около 07:00, вечером около 18:00 — напоминание или поздравление.',
-            'Эти уведомления синхронизированы с экраном Сегодня внутри приложения.',
+            'Прогресс по четырём целям: переводы, выученные слова, минуты разговора, время чтения.',
+            'По стандартным настройкам план приходит в личку утром (~07:00), напоминание вечером (~18:00).',
+            'Экран «Сегодня» и Telegram-уведомления синхронизированы.',
           ],
         },
       ],
@@ -1458,30 +1824,30 @@ function buildGuideStepItems(uiLang = 'ru') {
     {
       key: 'translations',
       title: 'Переводы',
-      summary: 'Это главный блок для тренировки грамматики, структуры предложения и системной работы над ошибками.',
+      summary: 'Главный блок для тренировки грамматики, структуры предложения и системной работы над ошибками.',
       sections: [
         {
-          title: 'Как начать',
+          title: 'Как начать сессию',
           items: [
-            'Сначала выберите грамматический фокус и уровень. Если выбрана история, вместо обычных предложений будет story-режим.',
-            'В обычном режиме стандартный набор чаще всего состоит из 7 предложений.',
-            'Если наверху есть рекомендация на сегодня, она строится по вашим последним слабым местам.',
+            'Выберите грамматический фокус (тему) и уровень A1–C1. Без фокуса система подберёт темы сама по вашим слабым местам.',
+            'Стандартный набор — 7 предложений: до 5 из ваших прошлых ошибок по этой теме + новые.',
+            'В story-режиме вместо отдельных предложений будет связная история с нарративом.',
           ],
         },
         {
           title: 'Что можно делать во время перевода',
           items: [
-            'Через маленький переход к словарю рядом с предложением можно открыть быстрый lookup именно в нужный момент.',
-            'Можно держать словарь рядом и не выпадать из основного учебного потока.',
-            'Перед проверкой можно включить отправку текстовых объяснений грамматики в личку.',
+            'Открыть словарный lookup прямо рядом с предложением, не выходя из потока.',
+            'Включить чекбокс «Отправить объяснение в личку» — после проверки грамматический разбор придёт в Telegram.',
+            'Прослушать эталонный вариант перевода с озвучкой перед отправкой ответа.',
           ],
         },
         {
           title: 'Что происходит после проверки',
           items: [
-            'Вы видите балл, эталон, текстовый разбор и можете сразу озвучить корректный вариант.',
-            'Для отдельных ответов можно запросить ещё более глубокое объяснение.',
-            'Набор предложений смешивает ваши прошлые ошибки и новые предложения: слабые места возвращаются в работу, но система не зацикливается только на старом.',
+            'Балл, эталон, текстовый разбор ошибок и кнопка «Спросить у GPT» для глубокого разъяснения.',
+            '«Спросить у GPT» даёт развёрнутый ответ: формы, примеры, нюансы, мнемоника для запоминания.',
+            'Ошибки (< 80 баллов) сохраняются и возвращаются в следующих сессиях по той же теме — система не зацикливается, но слабые места обязательно закрываются.',
           ],
         },
       ],
@@ -1489,30 +1855,30 @@ function buildGuideStepItems(uiLang = 'ru') {
     {
       key: 'youtube',
       title: 'YouTube',
-      summary: 'Здесь вы учитесь прямо на реальном видео: субтитры, lookup, сохранение слов и focus-режим собраны в одном месте.',
+      summary: 'Учитесь прямо на реальном видео: субтитры, lookup, сохранение слов и фокус-режим в одном месте.',
       sections: [
         {
           title: 'Как начать',
           items: [
-            'Можно вставить ссылку на видео или выполнить поиск прямо в приложении.',
-            'После открытия видео нажмите Play и загрузите субтитры.',
-            'При необходимости включайте overlay, показ родного языка и разворот во весь экран.',
+            'Вставьте ссылку на видео или выполните поиск прямо внутри приложения.',
+            'После открытия нажмите Play и загрузите субтитры. Если автоматические субтитры не пришли — вставьте транскрипт с таймкодами вручную.',
+            'Включайте overlay, режим параллельного текста (оригинал + перевод) и разворот в фокус-режим.',
           ],
         },
         {
           title: 'Что можно делать во время просмотра',
           items: [
-            'При нажатии на слово видео ставится на паузу, а вы получаете объяснение и возможность сохранить слово.',
-            'Если данные доступны, можно видеть оригинал и перевод параллельно.',
-            'Этот раздел нужен для перехода от учебных примеров к реальному языку.',
+            'Нажмите на слово — видео паузируется, появляется перевод и кнопка «Сохранить в словарь».',
+            'Нажмите на субтитр целиком — получите разбор всей фразы.',
+            'Этот раздел нужен для перехода от учебных примеров к живому языку на реальном материале.',
           ],
         },
         {
           title: 'Если субтитры не подтянулись автоматически',
           items: [
-            'Можно вставить транскрипт вручную.',
-            'Лучше всего работает вариант с таймкодами.',
-            'Так вы не зависите полностью от того, удалось ли YouTube отдать субтитры автоматически.',
+            'Вставьте транскрипт вручную — лучше всего с таймкодами.',
+            'Такой транскрипт можно сгенерировать через Whisper или скопировать со страницы видео.',
+            'Так вы не зависите от того, отдаёт ли YouTube субтитры автоматически.',
           ],
         },
       ],
@@ -1520,30 +1886,30 @@ function buildGuideStepItems(uiLang = 'ru') {
     {
       key: 'movies',
       title: 'Фильмы',
-      summary: 'Это быстрый каталог уже сохраненных видео, где субтитры и учебный старт подготовлены заранее.',
+      summary: 'Быстрый каталог уже сохранённых видео, где субтитры и учебный старт подготовлены заранее.',
       sections: [
         {
           title: 'Для чего нужен этот раздел',
           items: [
-            'Чтобы не искать каждый раз видео заново на YouTube.',
-            'Чтобы быстро входить в уже отобранный каталог материалов.',
-            'Чтобы сразу перейти к просмотру и работе с субтитрами.',
+            'Чтобы не искать видео каждый раз заново.',
+            'Весь материал уже отобран и структурирован — заходите и начинайте.',
+            'Фильмы — каталог, YouTube — рабочий режим просмотра.',
           ],
         },
         {
           title: 'Как им пользоваться',
           items: [
-            'Отфильтруйте видео по языку, выберите нужное и нажмите на карточку.',
-            'После этого приложение само перебросит вас в раздел YouTube с уже выбранным видео.',
-            'То есть Фильмы это быстрый каталог, а YouTube это основной рабочий режим просмотра.',
+            'Отфильтруйте по языку или уровню, выберите нужное и нажмите на карточку.',
+            'Приложение само перебросит вас в раздел YouTube с уже выбранным видео.',
+            'Оттуда можно сразу начинать работу с субтитрами.',
           ],
         },
         {
-          title: 'Когда раздел особенно удобен',
+          title: 'Когда особенно удобен',
           items: [
             'Когда не хочется тратить время на поиск.',
-            'Когда хочется работать с уже подготовленным материалом.',
-            'Когда вы просто хотите быстро открыть видео из текущей учебной рутины.',
+            'Когда важна подборка по уровню, а не случайное видео.',
+            'Когда хочется быстро войти в привычный учебный материал.',
           ],
         },
       ],
@@ -1551,47 +1917,46 @@ function buildGuideStepItems(uiLang = 'ru') {
     {
       key: 'dictionary',
       title: 'Словарь',
-      summary: 'Здесь вы переводите, разбираете, сохраняете и организуете слова и фразы — в том числе в офлайн-режиме.',
+      summary: 'Переводите, разбираете, сохраняете и организуете слова и фразы — в том числе в офлайн-режиме.',
       sections: [
         {
           title: 'Два режима lookup',
           items: [
-            'Быстрый перевод нужен для мгновенного ответа.',
-            'GPT-разбор нужен для глубины: формы, примеры, нюансы, дополнительные подсказки.',
-            'Оба режима полезны, но под разную глубину задачи.',
+            'Быстрый перевод — мгновенный результат: перевод, часть речи, артикль и основные формы.',
+            'GPT-разбор — полный: примеры, оттенки, устойчивые сочетания, дополнительные подсказки.',
+            'Кнопка «Спросить у GPT» внутри результата — отдельный глубокий ответ с мнемоникой, таблицами сравнения и реальными примерами.',
           ],
         },
         {
           title: 'Что показывает результат',
           items: [
-            'Перевод, часть речи, артикль, формы слова, примеры и иногда варианты или префиксы.',
-            'Там, где это уместно, можно сразу прослушать озвучку на языке обучения.',
-            'То есть вы учите не только голый перевод, но и поведение слова.',
+            'Перевод, часть речи, артикль, формы слова, примеры и варианты.',
+            'Там, где уместно, кнопка аудио — прослушать произношение прямо в словаре.',
+            'Вы учите не только голый перевод, но и поведение слова в языке.',
           ],
         },
         {
           title: 'Как сохранять и использовать дальше',
           items: [
             'Сохраняйте слово или фразу сразу в нужную папку.',
-            'При желании создавайте свои папки под темы, поездки, работу, фильмы и так далее.',
-            'Позже именно это личное содержимое идет в карточки, Space Repetition и другие тренировки.',
+            'Создавайте папки под темы, поездки, работу, фильмы — что угодно.',
+            'Позже сохранённые слова идут в карточки, Space Repetition и другие тренировки.',
           ],
         },
         {
-          title: 'Как подготовить словарь к работе офлайн',
+          title: 'Офлайн — через пролистывание',
           items: [
-            'Пока вы в сети, просто пролистывайте страницы своей библиотеки слов — каждая открытая страница автоматически сохраняется в локальный кеш устройства.',
-            'Никакой отдельной кнопки «скачать офлайн» нет: кеш накапливается сам по мере использования приложения.',
-            'Чем больше страниц вы просматривали онлайн, тем больше слов будет доступно в офлайн-режиме.',
+            'Пока вы онлайн, пролистывайте страницы библиотеки — каждая страница автоматически сохраняется в локальный кеш.',
+            'Никакой отдельной кнопки «скачать» нет: кеш накапливается в процессе обычной работы.',
+            'Чем больше страниц просмотрено онлайн — тем полнее офлайн-доступ.',
           ],
         },
         {
-          title: 'Как загрузить целую папку для офлайн-режима',
+          title: 'Офлайн — загрузка целой папки',
           items: [
             'Удержите палец на нужной папке — появится контекстное меню.',
-            'Нажмите «Загрузить слова для офлайн» — приложение само постранично скачает все слова из этой папки и сохранит их в локальный кеш устройства.',
-            'Прогресс отображается прямо под сеткой папок: «X / Y». После завершения все слова из папки доступны без интернета.',
-            'Так можно загрузить любую папку одной кнопкой вместо того чтобы вручную листать тысячи слов.',
+            'Нажмите «Загрузить слова для офлайн» — все слова из папки скачиваются постранично в фоне.',
+            'Прогресс виден под сеткой папок. Операцию можно прервать крестиком в любой момент.',
           ],
         },
       ],
@@ -1599,40 +1964,39 @@ function buildGuideStepItems(uiLang = 'ru') {
     {
       key: 'flashcards',
       title: 'Карточки',
-      summary: 'Здесь автоматизируются сохраненные слова и фразы через несколько разных режимов тренировки — включая офлайн.',
+      summary: 'Четыре режима тренировки сохранённых слов и фраз — включая офлайн и изображения.',
       sections: [
         {
           title: 'Какие режимы есть',
           items: [
-            'Space Repetition для умного интервального повторения.',
-            'Quiz для быстрых решений с вариантами ответа.',
-            'Blocks для активной сборки ответа.',
-            'Sentence для работы со словом в контексте.',
+            'Space Repetition (FSRS) — умное интервальное повторение: сначала due-карточки, потом новые.',
+            'Quiz — быстрые варианты ответа с выбором из нескольких.',
+            'Blocks — активная сборка ответа из слов-блоков.',
+            'Sentence — слово в контексте полного предложения.',
           ],
         },
         {
-          title: 'Как формируется содержимое',
+          title: 'Image Quiz — карточки с картинками',
           items: [
-            'Ядро очереди строится из вашего личного материала: сохраненных слов и фраз.',
-            'В Space Repetition сначала идут due-карточки, потом новые.',
-            'Telegram-квизы в течение дня не шлют всё подряд, а чередуют новое и повтор слабых слов.',
+            'Можно добавить изображение к любому сохранённому слову через словарь.',
+            'В режиме Image Quiz карточка показывает картинку, и вы вводите или выбираете слово.',
+            'Визуальная ассоциация значительно ускоряет запоминание.',
           ],
         },
         {
-          title: 'Офлайн-режим для карточек',
+          title: 'Офлайн-режим карточек',
           items: [
-            'Space Repetition карточки предзагружаются в локальный кеш устройства при каждом онлайн-запуске сессии.',
-            'Если интернет пропал во время тренировки — продолжайте, ответы сохраняются локально.',
-            'Как только связь восстановится, все отложенные результаты автоматически синхронизируются с сервером.',
-            'Значок со счётчиком показывает, сколько ответов ожидают отправки.',
+            'При каждом онлайн-запуске Space Repetition следующая порция карточек предзагружается локально.',
+            'Если интернет пропал — продолжайте, ответы сохраняются в очереди на устройстве.',
+            'Как только связь восстановится, все отложенные результаты синхронизируются автоматически.',
           ],
         },
         {
           title: 'Что можно настроить',
           items: [
-            'Размер набора, папку, скорость и автоматический или ручной переход.',
-            'В зависимости от режима появляются дополнительные параметры: таймер или сложность.',
-            'Так один и тот же словарь можно тренировать коротко, быстро или более глубоко.',
+            'Размер набора, папку, скорость и переход — автоматический или ручной.',
+            'В зависимости от режима: таймер, подсказки, уровень сложности.',
+            'Один словарь можно тренировать по-разному в зависимости от задачи.',
           ],
         },
       ],
@@ -1646,40 +2010,32 @@ function buildGuideStepItems(uiLang = 'ru') {
           title: 'Что доступно без интернета',
           items: [
             'Вся библиотека слов — все страницы, которые вы уже открывали онлайн: просмотр, редактирование заметок, смена папки.',
-            'Space Repetition карточки — повторение и новые карточки из предзагруженной очереди.',
-            'Все изменения (добавление, удаление слов, ответы на карточки), сделанные офлайн, ждут синхронизации в локальной очереди.',
+            'Space Repetition карточки — повторение и новые из предзагруженной очереди.',
+            'Все изменения (добавление, удаление, ответы) ждут синхронизации в локальной очереди.',
           ],
         },
         {
-          title: 'Как подготовить словарь (что делать заранее)',
+          title: 'Как подготовить словарь',
           items: [
-            'Будучи онлайн, откройте раздел Словарь и прокрутите несколько страниц своей библиотеки — каждая показанная страница автоматически сохраняется на устройство.',
-            'Специальной кнопки «сохранить для офлайна» нет — кеш строится в процессе обычного использования.',
-            'Чем больше страниц вы просмотрели онлайн, тем полнее ваша офлайн-библиотека.',
+            'Будучи онлайн, откройте Словарь и прокрутите несколько страниц библиотеки — каждая страница автоматически сохраняется на устройство.',
+            'Или удержите папку и выберите «Загрузить слова для офлайн» — все слова из папки скачаются постранично.',
+            'Никакой отдельной кнопки «сохранить офлайн» нет — кеш строится в процессе обычного использования.',
           ],
         },
         {
-          title: 'Как подготовить карточки (что делать заранее)',
+          title: 'Как подготовить карточки',
           items: [
-            'Запустите хотя бы одну сессию Space Repetition онлайн — при этом следующая порция карточек автоматически скачивается на устройство.',
-            'При следующем открытии без интернета режим офлайн включается сам, без дополнительных действий.',
-            'После восстановления связи все отложенные ответы отправляются на сервер автоматически в фоне.',
+            'Запустите хотя бы одну сессию Space Repetition онлайн — следующая порция карточек скачивается автоматически.',
+            'При следующем открытии без интернета офлайн-режим включается сам.',
+            'После восстановления связи все отложенные ответы отправляются на сервер в фоне.',
           ],
         },
         {
           title: 'Что означают индикаторы',
           items: [
-            'В Словаре вверху появляется баннер 📵 с датой последнего обновления кеша.',
-            'В Карточках отображается значок с количеством ответов, ожидающих синхронизации.',
-            'Когда связь восстанавливается, синхронизация начинается автоматически — вам ничего дополнительно нажимать не нужно.',
-          ],
-        },
-        {
-          title: 'Как быстро загрузить всю папку для офлайн-режима',
-          items: [
-            'Удержите палец на нужной папке в разделе Словарь и выберите «Загрузить слова для офлайн».',
-            'Приложение автоматически скачает все слова из этой папки постранично и сохранит их в локальный кеш — без необходимости вручную листать список.',
-            'Прогресс виден прямо под сеткой папок. Операцию можно прервать в любой момент крестиком.',
+            'В Словаре — баннер 📵 с датой последнего обновления кеша.',
+            'В Карточках — значок с количеством ответов, ожидающих синхронизации.',
+            'Синхронизация начинается автоматически при восстановлении связи.',
           ],
         },
       ],
@@ -1687,30 +2043,38 @@ function buildGuideStepItems(uiLang = 'ru') {
     {
       key: 'reader',
       title: 'Читалка',
-      summary: 'Раздел для спокойного чтения, аудио, учёта времени и более глубокого погружения в текст.',
+      summary: 'Читайте книги, статьи и PDF с аудио, темами оформления, закладками и трекингом времени.',
       sections: [
         {
           title: 'Как добавить материал',
           items: [
-            'Можно вставить текст, ссылку или загрузить файл.',
-            'После этого документ сохраняется в библиотеке и его можно открыть позже.',
-            'Для длинных текстов это гораздо удобнее, чем читать их как обычное сообщение в чате.',
+            'Вставьте URL статьи или книги, введите текст прямо в поле или загрузите файл: TXT, MD, PDF, EPUB.',
+            'Документ сохраняется в личной библиотеке с обложкой, прогрессом и датой открытия.',
+            'Плашка «Продолжаешь читать» на экране библиотеки ведёт к последней открытой книге.',
           ],
         },
         {
-          title: 'Что можно делать во время чтения',
+          title: 'Темы и настройки чтения',
           items: [
-            'Нажимать на слова и фрагменты текста, чтобы быстрее разбираться в содержании.',
-            'Менять шрифт, направление прокрутки, режим чтения и фокусный вид.',
-            'Таймер чтения идёт параллельно и учитывается в вашем прогрессе.',
+            'Три темы: тёмная, сепия, кремовая — выберите под обстановку.',
+            'Шрифт (размер, насыщенность), направление прокрутки и чувствительность свайпа.',
+            'Иммерсивный режим убирает весь лишний UI и оставляет только текст.',
           ],
         },
         {
-          title: 'Дополнительные возможности',
+          title: 'Аудио TTS',
           items: [
-            'Закладки, сохранение прогресса, архив документов.',
-            'Офлайн-аудио для всего документа или крупных частей.',
-            'Читалка нужна для спокойного понимания и глубокой работы с текстом, а не только для быстрого поиска слова.',
+            'Кнопка Play озвучивает текущую страницу: текст и аудио синхронизированы — выделение перемещается по словам.',
+            'Нажмите на слово, чтобы начать воспроизведение с этого места.',
+            'Поддерживается EPUB в оригинальной вёрстке — со своей навигацией, оглавлением и стилями.',
+          ],
+        },
+        {
+          title: 'Навигация и закладки',
+          items: [
+            'Оглавление (TOC) для быстрого перехода по главам.',
+            'Закладки: нажмите на значок закладки, чтобы сохранить текущую позицию.',
+            'Таймер чтения идёт параллельно и учитывается в недельном плане.',
           ],
         },
       ],
@@ -1718,39 +2082,30 @@ function buildGuideStepItems(uiLang = 'ru') {
     {
       key: 'assistant',
       title: 'Разговорная практика',
-      summary: 'Live-ассистент нужен для настоящей устной речи — с AI-разбором каждой сессии после её завершения.',
+      summary: 'Live-ассистент для настоящей устной речи — с AI-разбором каждой сессии после завершения.',
       sections: [
         {
           title: 'Как начать',
           items: [
-            'Подключите ассистента и разрешите доступ к микрофону.',
-            'После этого можно сразу начинать диалог.',
-            'Здесь не нужен готовый текст: вы говорите свободно.',
-          ],
-        },
-        {
-          title: 'Для чего нужен этот режим',
-          items: [
-            'Для произношения, спонтанной речи, скорости реакции и уверенности в разговоре.',
-            'Для короткой ежедневной устной практики вместо только тихого чтения или письма.',
-            'Этот блок дополняет переводы, а не заменяет их.',
+            'Подключите ассистента, разрешите доступ к микрофону и начинайте говорить свободно.',
+            'Не нужен готовый текст — живой диалог, вопросы и ответы по любой теме.',
+            'Разговорная практика дополняет переводы, а не заменяет их.',
           ],
         },
         {
           title: 'Разбор сессии после завершения',
           items: [
-            'После каждой завершённой сессии AI автоматически генерирует детальный разбор.',
-            'Вы увидите: строгий фидбек, следующий рекомендуемый фокус, и развёрнутые заметки по лексике, грамматике, беглости речи, связности и самокоррекции.',
-            'Отдельно показывается целевая лексика: какие слова прозвучали в разговоре, а какие так и не были использованы.',
-            'Если сессия была слишком короткой, вместо полного разбора появится краткое уведомление — просто поговорите подольше в следующий раз.',
+            'AI автоматически генерирует детальный анализ: строгий фидбек и следующий рекомендуемый фокус.',
+            'Развёрнутые заметки по лексике, грамматике, беглости речи, связности и самокоррекции.',
+            'Отдельно показывается целевая лексика: какие слова прозвучали, а какие так и не были использованы.',
           ],
         },
         {
-          title: 'Как разговорная практика связана с остальной системой',
+          title: 'Как практика связана с системой',
           items: [
-            'Минуты разговора учитываются в целях и в недельном плане.',
-            'Этот блок может появляться как отдельная задача в плане на сегодня.',
-            'Так живая речь становится регулярной частью учебной рутины.',
+            'Минуты разговора учитываются в недельных целях и в экране «Сегодня».',
+            'Этот блок может появляться как отдельная задача в дневном плане.',
+            'Живая речь становится регулярной частью учебной рутины.',
           ],
         },
       ],
@@ -1763,25 +2118,25 @@ function buildGuideStepItems(uiLang = 'ru') {
         {
           title: 'Когда сюда стоит писать',
           items: [
-            'Если кнопка не срабатывает или блок выглядит неправильно.',
-            'Если вы не понимаете, как устроен какой-то сценарий.',
+            'Если кнопка не срабатывает или экран выглядит неправильно.',
+            'Если непонятно, как устроен какой-то сценарий.',
             'Если хотите предложить улучшение или сообщить о баге.',
           ],
         },
         {
           title: 'Как быстрее получить помощь',
           items: [
-            'Коротко напишите, в каком разделе вы были и что нажали.',
+            'Коротко напишите, в каком разделе были и что нажали.',
             'По возможности приложите скриншот.',
             'Так причину намного легче понять и быстрее исправить.',
           ],
         },
         {
-          title: 'Важно для обычного пользователя',
+          title: 'Не нужно знать термины',
           items: [
-            'Вам не нужно знать технические термины.',
-            'Достаточно просто описать, что вы увидели и чего ожидали.',
-            'Раздел специально сделан под обычную человеческую формулировку, а не под язык программистов.',
+            'Достаточно описать, что вы увидели и чего ожидали.',
+            'Раздел сделан под человеческую формулировку, а не под язык программистов.',
+            'Любой вопрос — по делу.',
           ],
         },
       ],
@@ -1789,7 +2144,7 @@ function buildGuideStepItems(uiLang = 'ru') {
     {
       key: 'analytics',
       title: 'Аналитика',
-      summary: 'Здесь видны период, динамика, сравнение с группой и ваши недельные цели.',
+      summary: 'Период, динамика, сравнение с группой и ваши недельные цели — всё в одном экране.',
       sections: [
         {
           title: 'Что можно настроить',
@@ -1802,17 +2157,17 @@ function buildGuideStepItems(uiLang = 'ru') {
         {
           title: 'Что вы там увидите',
           items: [
-            'Сколько переводов сделано, сколько было запланировано и что осталось не закрытым.',
+            'Сколько переводов сделано, сколько запланировано и что осталось.',
             'Сравнения, графики и рейтинги за выбранный период.',
             'Где вы идёте по плану, а где проседаете.',
           ],
         },
         {
-          title: 'Какие регулярные сообщения с этим связаны',
+          title: 'Регулярные сообщения с аналитикой',
           items: [
-            'Личная недельная аналитика по текущим стандартным настройкам обычно приходит вечером около 19:30 вместе с графиками.',
-            'Групповые итоги дня обычно приходят поздно вечером, а недельные итоги — в воскресенье поздно вечером.',
-            'Mini App нужна для полной детализации, Telegram для коротких регулярных сводок.',
+            'Личная недельная аналитика с графиками приходит по стандартным настройкам вечером (~19:30).',
+            'Групповые итоги дня — поздно вечером, недельные — в воскресенье вечером.',
+            'Mini App — для полной детализации, Telegram — для коротких регулярных сводок.',
           ],
         },
       ],
@@ -1820,14 +2175,14 @@ function buildGuideStepItems(uiLang = 'ru') {
     {
       key: 'skill_training',
       title: 'Тренировка навыка',
-      summary: 'Это фокусный блок под одну конкретную слабую тему.',
+      summary: 'Фокусный блок под одну конкретную слабую тему — теория, видео и практика вместе.',
       sections: [
         {
           title: 'Что делает этот раздел',
           items: [
-            'Берёт одну слабую тему и собирает по ней компактный пакет.',
+            'Берёт одну слабую тему и собирает по ней компактный учебный пакет.',
             'Вы получаете теорию, нередко подходящее видео и затем практические предложения.',
-            'Этот раздел нужен не для общего просмотра всего подряд, а для точечного закрытия слабого места.',
+            'Нужен не для широкого обзора, а для точечного закрытия конкретного пробела.',
           ],
         },
         {
@@ -1835,7 +2190,7 @@ function buildGuideStepItems(uiLang = 'ru') {
           items: [
             'Чётко названный фокус на понятном пользовательском языке.',
             'Короткое ядро теории по теме.',
-            'Практику и затем обратную связь по вашим ответам.',
+            'Практику и обратную связь по вашим ответам.',
           ],
         },
         {
@@ -1851,31 +2206,30 @@ function buildGuideStepItems(uiLang = 'ru') {
     {
       key: 'private_bot',
       title: 'Личка с ботом',
-      summary: 'В личном чате вы получаете быструю помощь, приватные сообщения системы и прямой доступ к GPT-функциям.',
+      summary: 'В личном чате — быстрая помощь, приватные сообщения системы и прямой доступ к GPT-функциям.',
       sections: [
         {
-          title: 'Как её активировать',
+          title: 'Как активировать',
           items: [
-            'Откройте бота в личке и один раз отправьте /start.',
-            'После этого внизу появится кнопка «💬 Спросить у GPT».',
-            'Так включается быстрый приватный режим для языка, вопросов и сохранения фраз.',
+            'Откройте бота в личке в Telegram и один раз отправьте /start.',
+            'После этого внизу появляется кнопка «💬 Спросить у GPT».',
+            'Так включается быстрый режим для языковых вопросов и сохранения фраз.',
           ],
         },
         {
           title: 'Что можно делать в личке',
           items: [
-            'Отправить слово, фразу или целое предложение и получить перевод.',
-            'Спросить про грамматику, значение, оттенок, происхождение слова или естественную формулировку.',
-            'После ответа сохранить полезную фразу и сразу задать следующий вопрос.',
-            'Там, где это уместно, бот может также присылать озвучку или аудио-объяснение.',
+            'Отправить слово, фразу или предложение и получить перевод.',
+            'Спросить про грамматику, значение, оттенок, происхождение или более естественную формулировку.',
+            'Ответ «Спросить у GPT» — развёрнутый: примеры, таблицы сравнения, мнемоника для запоминания, форматирование.',
           ],
         },
         {
-          title: 'Что туда может приходить автоматически',
+          title: 'Что туда приходит автоматически',
           items: [
-            'По текущим стандартным настройкам: план на день утром, напоминания в течение дня и вечернее напоминание ближе к концу дня.',
-            'Аудио-разбор ошибок обычно приходит днём и чаще всего опирается на ошибки предыдущего учебного дня.',
-            'Личная аналитика и графики приходят регулярно, а Mini App остаётся местом для полной детализации.',
+            'По стандартным настройкам: план на день утром, напоминания в течение дня и вечернее подведение итогов.',
+            'Грамматические объяснения после проверки переводов, если включён соответствующий чекбокс.',
+            'Аудио-разбор ошибок, личная аналитика с графиками.',
           ],
         },
       ],
@@ -1883,30 +2237,75 @@ function buildGuideStepItems(uiLang = 'ru') {
     {
       key: 'group_bot',
       title: 'Группа с ботом',
-      summary: 'Так работает совместное обучение, рейтинг и общий поток сообщений в Telegram-группе.',
+      summary: 'Совместное обучение, рейтинг и общий поток сообщений в Telegram-группе.',
       sections: [
         {
-          title: 'Как правильно запустить групповой режим',
+          title: 'Как запустить групповой режим',
           items: [
             'Добавьте бота в Telegram-группу.',
             'Участники подтверждают участие через сообщение в группе.',
-            'Каждому участнику дополнительно лучше один раз открыть бота в личке.',
+            'Каждому участнику дополнительно стоит один раз открыть бота в личке.',
           ],
         },
         {
-          title: 'Что может приходить в группу',
+          title: 'Что приходит в группу',
           items: [
-            'Квизы в течение дня. По текущим legacy-настройкам обычно в промежутке 06:00–22:30 каждые 30 минут.',
+            'Квизы в течение дня. По текущим настройкам: обычно в промежутке 06:00–22:30 каждые ~30 минут.',
             'Итоги дня вечером и итоги недели в воскресенье поздно вечером.',
-            'В зависимости от маршрута доставки также могут приходить групповые планы, объявления о выполнении задач и аудио по ошибкам или историям.',
+            'В зависимости от маршрута доставки — также групповые планы, аудио по ошибкам, объявления о выполнении задач.',
           ],
         },
         {
-          title: 'Какой здесь общий принцип',
+          title: 'Общий принцип',
           items: [
             'В рейтинг попадают только подтверждённые участники.',
-            'Квизы чередуют новые и слабые повторные элементы, а не шлют только новое.',
-            'Группа нужна для мотивации, сравнения и ритма, а глубокая работа всё равно происходит в Mini App и в личке.',
+            'Квизы чередуют новое и слабые повторные элементы — не только новое.',
+            'Группа — для мотивации, сравнения и ритма. Глубокая работа всё равно в Mini App и в личке.',
+          ],
+        },
+      ],
+    },
+    {
+      key: 'ios_shortcut',
+      title: 'iOS Shortcut — быстрый вход',
+      summary: 'Откройте любой раздел приложения одним нажатием с экрана iPhone — без поиска бота в Telegram.',
+      sections: [
+        {
+          title: 'Как работают глубокие ссылки',
+          items: [
+            'Приложение поддерживает deep-ссылки: специальный URL открывает Telegram и сразу запускает Mini App в нужном разделе.',
+            'Формат: t.me/ИМЯ_БОТА?startapp=РАЗДЕЛ — где РАЗДЕЛ это одно из ключевых слов ниже.',
+            'Ссылки работают в iOS Shortcuts, на иконке главного экрана и везде, где можно нажать ссылку.',
+          ],
+        },
+        {
+          title: 'Доступные разделы',
+          items: [
+            'review — Карточки (Space Repetition): открывает сразу режим повторения.',
+            'translations — Переводы: переходит к выбору темы и уровня.',
+            'today — Сегодня: план дня, карта навыков, недельные цели.',
+            'dictionary — Словарь: поиск и lookup.',
+            'reader — Читалка: библиотека документов.',
+            'assistant — Разговорная практика: живой диалог с ассистентом.',
+            'analytics — Аналитика: статистика и прогресс.',
+          ],
+        },
+        {
+          title: 'Как создать Shortcut на iPhone (шаг за шагом)',
+          items: [
+            '1. Откройте приложение «Быстрые команды» (Shortcuts) на iPhone.',
+            '2. Нажмите + (новая команда) → «Добавить действие» → найдите «Открыть URL».',
+            '3. Вставьте URL: t.me/ИМЯ_БОТА?startapp=review (замените review на нужный раздел).',
+            '4. Нажмите ⋯ вверху → дайте имя (например «Немецкий — карточки») → нажмите «Добавить на экран Домой».',
+            '5. Готово: иконка на главном экране открывает карточки одним нажатием.',
+          ],
+        },
+        {
+          title: 'Как узнать имя вашего бота',
+          items: [
+            'Имя бота — это @username в Telegram. Найдите бота через поиск Telegram; его @username видно в профиле.',
+            'Или откройте бота в личке: в верхней строке Telegram показан @username.',
+            'Готовую ссылку на Mini App бот также отправляет в кнопке «Открыть приложение» в своих сообщениях — просто скопируйте её.',
           ],
         },
       ],
@@ -2388,6 +2787,8 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
   sentenceText,
   initialValue,
   placeholder,
+  checkLabel,
+  checkLoadingLabel,
   dictionaryLabel,
   isAndroidClient,
   androidDebugEnabled,
@@ -2397,6 +2798,10 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
   onRequestPersist,
   onRegisterValueAccessor,
   onDebugEvent,
+  onCheckTranslation,
+  checkDisabled,
+  checkLoading,
+  checkStatusText,
   onJumpToDictionary,
 }) {
   const textareaRef = useRef(null);
@@ -2653,13 +3058,34 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
       <div className="translation-actions">
         <button
           type="button"
+          className={`translation-item-check-button ${checkLoading ? 'is-loading' : ''}`}
+          onClick={() => onCheckTranslation?.(sentenceId)}
+          disabled={Boolean(checkDisabled || checkLoading)}
+          aria-label={checkLoading ? checkLoadingLabel : checkLabel}
+          aria-busy={checkLoading ? 'true' : 'false'}
+        >
+          {checkLoading ? (
+            <>
+              <span className="translation-item-check-spinner" aria-hidden="true" />
+              <span>{checkLoadingLabel}</span>
+            </>
+          ) : checkLabel}
+        </button>
+        <button
+          type="button"
           className="translation-dict-jump"
           onClick={onJumpToDictionary}
           aria-label={dictionaryLabel}
+          disabled={Boolean(checkLoading)}
         >
           {dictionaryLabel}
         </button>
       </div>
+      {checkLoading && checkStatusText ? (
+        <div className="translation-item-check-status" role="status" aria-live="polite">
+          {checkStatusText}
+        </div>
+      ) : null}
     </label>
   );
 });
@@ -2691,6 +3117,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
   setCustomTopicInput,
   selectedLevel,
   setSelectedLevel,
+  hasSelectedTranslationLevel,
   storyMode,
   setStoryMode,
   selectedStoryId,
@@ -2718,6 +3145,8 @@ const TranslationsSection = React.memo(function TranslationsSection({
   requestAndroidDraftPersistence,
   registerTranslationDraftValueAccessor,
   recordTranslationDraftAndroidDebugEvent,
+  handleSingleSentenceCheck,
+  singleSentenceCheckLoadingId,
   jumpToDictionaryFromSentence,
   isStorySession,
   hasActiveTranslationSentences,
@@ -2741,7 +3170,30 @@ const TranslationsSection = React.memo(function TranslationsSection({
   handleExplainTranslation,
   explanationLoading,
   explanations,
+  collapsedResultCards,
+  collapsedExplanationBlocks,
+  collapsedFollowupAnswerBlocks,
+  explanationQuestionOpen,
+  explanationQuestionDrafts,
+  explanationQuestionLoading,
+  explanationQuestionAnswers,
+  explanationQuestionSaveChecked,
+  explanationQuestionSaveLoading,
+  explanationQuestionSaveError,
+  explanationQuestionSaveMessage,
+  handleToggleResultCardCollapsed,
+  handleToggleExplanationCollapsed,
+  handleToggleFollowupAnswerCollapsed,
+  handleToggleExplanationQuestion,
+  handleExplanationQuestionDraftChange,
+  handleAskExplanationQuestion,
+  handleToggleExplanationFollowupSaveVariant,
+  handleSaveExplanationFollowupAnswer,
   renderExplanationContent,
+  getResultCardIdentityKey,
+  registerTranslationResultCardNode,
+  parseExplanationFollowupAnswerPayload,
+  handleToggleResultAudioGrammar,
   handleFinishTranslation,
   finishStatus,
   handleLoadDailyHistory,
@@ -2765,6 +3217,9 @@ const TranslationsSection = React.memo(function TranslationsSection({
   handleTranslationVoteStable,
 }) {
   const [focusSheetOpen, setFocusSheetOpen] = React.useState(false);
+
+  const hasSelectedTranslationLevel = ['a1', 'a2', 'b1', 'b2', 'c1', 'c2']
+    .includes(String(selectedLevel || '').trim().toLowerCase());
 
   const progressiveReadyCount = Math.max(
     sentences.length,
@@ -2792,6 +3247,30 @@ const TranslationsSection = React.memo(function TranslationsSection({
     setFocusSheetOpen(false);
   };
 
+  const buildHistoryFeedback = (item) => {
+    const sentenceNumber = item?.sentence_number ?? '—';
+    const score = item?.score ?? '—';
+    const originalText = String(item?.original_text || '').trim();
+    const userTranslation = String(item?.user_translation || '').trim();
+    const correctTranslation = String(item?.correct_translation || '').trim();
+    const lines = [
+      `🟢 Sentence number: ${sentenceNumber}`,
+      `✅ Score: ${score}/100`,
+    ];
+
+    if (originalText) {
+      lines.push(`🔵 Original Sentence: ${originalText}`);
+    }
+    if (userTranslation) {
+      lines.push(`🟡 User Translation: ${userTranslation}`);
+    }
+    if (correctTranslation) {
+      lines.push(`🟣 Correct Translation: ${correctTranslation}`);
+    }
+
+    return lines.join('\n');
+  };
+
   return (
     <PerfProfiler id="section.translations">
       <section className="webapp-section webapp-section-translations" ref={translationsRef}>
@@ -2799,9 +3278,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
           <div className="translations-title-main">
             <h2>{tr('Ваши переводы', 'Ihre Uebersetzungen')}</h2>
           </div>
-          <div className="translations-title-side">
-            <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo translations-corner-logo" />
-          </div>
+          <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo translations-corner-logo" />
         </div>
         {showTranslationStartConfigurator && todayTranslationRecommendation && (
           <div className="today-translation-recommendation-card">
@@ -2857,6 +3334,11 @@ const TranslationsSection = React.memo(function TranslationsSection({
                     </button>
                   ))}
                 </div>
+                {!hasSelectedTranslationLevel && (
+                  <div className="webapp-muted">
+                    {tr('Сначала выберите уровень.', 'Bitte zuerst ein Niveau waehlen.')}
+                  </div>
+                )}
               </div>
             )}
 
@@ -2971,6 +3453,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
                 webappLoading
                 || topicsLoading
                 || showPreparingTranslationEmptyState
+                || (!selectedTopicIsStoryTopic && !hasSelectedTranslationLevel)
                 || (selectedTopicIsCustomTopic && !customTopicInput.trim())
               }
             >
@@ -3088,7 +3571,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
                 </p>
               )}
               {sentences.length === 0 ? (
-                <div className="tr-empty-card">
+                <div className={`tr-empty-card ${showPreparingTranslationEmptyState ? 'is-preparing' : ''}`}>
                   <div className="tr-empty-icon">
                     {showPreparingTranslationEmptyState ? '⏳' : '📭'}
                   </div>
@@ -3114,6 +3597,8 @@ const TranslationsSection = React.memo(function TranslationsSection({
                       sentenceText={item.sentence}
                       initialValue={draft}
                       placeholder={tr('Введите перевод...', 'Uebersetzung eingeben...')}
+                      checkLabel={tr('Проверить', 'Pruefen')}
+                      checkLoadingLabel={tr('Проверяем...', 'Pruefen...')}
                       dictionaryLabel={tr('Открыть словарь', 'Woerterbuch')}
                       isAndroidClient={isAndroidTelegramClient}
                       androidDebugEnabled={androidTranslationDraftDebugConfig.enabled}
@@ -3123,6 +3608,13 @@ const TranslationsSection = React.memo(function TranslationsSection({
                       onRequestPersist={requestAndroidDraftPersistence}
                       onRegisterValueAccessor={registerTranslationDraftValueAccessor}
                       onDebugEvent={recordTranslationDraftAndroidDebugEvent}
+                      onCheckTranslation={handleSingleSentenceCheck}
+                      checkDisabled={
+                        webappLoading
+                        || !String(draft || '').trim()
+                      }
+                      checkLoading={Number(singleSentenceCheckLoadingId || 0) === Number(item.id_for_mistake_table || 0)}
+                      checkStatusText={tr('Проверяем это предложение. Результат появится ниже.', 'Dieser Satz wird geprueft. Das Ergebnis erscheint weiter unten.')}
                       onJumpToDictionary={jumpToDictionaryFromSentence}
                     />
                   );
@@ -3357,10 +3849,46 @@ const TranslationsSection = React.memo(function TranslationsSection({
             <div className="webapp-result-list">
               {results.map((item, index) => {
                 const correctTextForTts = extractCorrectTranslationText(item);
+                const explanationKey = String(item.sentence_number ?? item.original_text);
+                const resultCardKey = getResultCardIdentityKey(item, index);
+                const resultCollapsed = Boolean(collapsedResultCards[resultCardKey]);
+                const explanationCollapsed = Boolean(collapsedExplanationBlocks[explanationKey]);
+                const followupAnswerCollapsed = Boolean(collapsedFollowupAnswerBlocks[explanationKey]);
+                const explanationText = explanations[explanationKey];
+                const followupOpen = Boolean(explanationQuestionOpen[explanationKey]);
+                const followupDraft = String(explanationQuestionDrafts[explanationKey] || '');
+                const followupLoading = Boolean(explanationQuestionLoading[explanationKey]);
+                const followupAnswerPayload = parseExplanationFollowupAnswerPayload(explanationQuestionAnswers[explanationKey]);
+                const followupAnswer = String(followupAnswerPayload.answer || '').trim();
                 return (
-                  <div key={`${item.check_item_id ?? item.translation_id ?? item.sentence_id_for_mistake_table ?? item.sentence_number ?? index}-${index}`} className="webapp-result-card">
+                  <div
+                    key={`${item.check_item_id ?? item.translation_id ?? item.sentence_id_for_mistake_table ?? item.sentence_number ?? index}-${index}`}
+                    className="webapp-result-card"
+                    ref={(node) => registerTranslationResultCardNode(resultCardKey, node)}
+                  >
+                    <label className="translation-block-visibility-toggle">
+                      <input
+                        type="checkbox"
+                        checked={resultCollapsed}
+                        onChange={(event) => handleToggleResultCardCollapsed(item, event.target.checked)}
+                      />
+                      <span>
+                        {resultCollapsed
+                          ? tr('Скрыто', 'Ausgeblendet')
+                          : tr('Скрыть этот результат', 'Dieses Ergebnis ausblenden')}
+                      </span>
+                    </label>
                     {item.error ? (
                       <div className="webapp-error">{item.error}</div>
+                    ) : resultCollapsed ? (
+                      <div className="translation-collapsed-summary">
+                        <strong>
+                          {tr('Предложение', 'Satz')} {item.sentence_number ?? '—'}
+                        </strong>
+                        <span>
+                          {tr('Балл', 'Punktzahl')}: {item.score ?? '—'}/100
+                        </span>
+                      </div>
                     ) : (
                       <>
                         {Number(item?.translation_id || 0) > 0 && (
@@ -3423,16 +3951,96 @@ const TranslationsSection = React.memo(function TranslationsSection({
                           type="button"
                           className="secondary-button explanation-button"
                           onClick={() => handleExplainTranslation(item)}
-                          disabled={explanationLoading[String(item.sentence_number ?? item.original_text)]}
+                          disabled={explanationLoading[explanationKey]}
                         >
-                          {explanationLoading[String(item.sentence_number ?? item.original_text)]
+                          {explanationLoading[explanationKey]
                             ? tr('Запрашиваем объяснение...', 'Erklaerung wird angefragt...')
                             : tr('Объяснить ошибки', 'Fehler erklaeren')}
                         </button>
-                        {explanations[String(item.sentence_number ?? item.original_text)] && (
+                        {explanationText && (
                           <div className="webapp-explanation">
-                            {renderExplanationContent(
-                              explanations[String(item.sentence_number ?? item.original_text)]
+                            <label className="translation-block-visibility-toggle translation-block-visibility-toggle-inner">
+                              <input
+                                type="checkbox"
+                                checked={explanationCollapsed}
+                                onChange={(event) => handleToggleExplanationCollapsed(item, event.target.checked)}
+                              />
+                              <span>
+                                {explanationCollapsed
+                                  ? tr('Разбор скрыт', 'Erklaerung ausgeblendet')
+                                  : tr('Скрыть разбор', 'Erklaerung ausblenden')}
+                              </span>
+                            </label>
+                            {!explanationCollapsed && (
+                              <>
+                                {renderExplanationContent(explanationText)}
+                                <div className="webapp-explanation-followup">
+                                  <button
+                                    type="button"
+                                    className="secondary-button explanation-followup-button"
+                                    onClick={() => handleToggleExplanationQuestion(item, !followupOpen)}
+                                    disabled={followupLoading}
+                                  >
+                                    {followupOpen
+                                      ? tr('Скрыть вопрос', 'Frage ausblenden')
+                                      : tr('Задать вопрос', 'Frage stellen')}
+                                  </button>
+                                  {followupOpen && (
+                                    <div className="webapp-explanation-followup-form">
+                                      <textarea
+                                        rows={3}
+                                        value={followupDraft}
+                                        onChange={(event) => handleExplanationQuestionDraftChange(item, event.target.value)}
+                                        placeholder={tr('Напишите уточняющий вопрос по этому разбору...', 'Schreibe eine Rueckfrage zu dieser Erklaerung...')}
+                                      />
+                                      <div className="webapp-explanation-followup-actions">
+                                        <button
+                                          type="button"
+                                          className="primary-button webapp-explanation-followup-action-button"
+                                          onClick={() => handleAskExplanationQuestion(item)}
+                                          disabled={followupLoading || !followupDraft.trim()}
+                                        >
+                                          {followupLoading ? tr('Спрашиваем...', 'Fragen...') : tr('Отправить вопрос', 'Frage senden')}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="secondary-button webapp-explanation-followup-action-button"
+                                          onClick={() => handleToggleExplanationQuestion(item, false)}
+                                          disabled={followupLoading}
+                                        >
+                                          {tr('Отмена', 'Abbrechen')}
+                                        </button>
+                                      </div>
+                                    </div>
+                                  )}
+                                {followupAnswer && (
+                                  <div className="webapp-explanation-followup-answer">
+                                    <label className="translation-block-visibility-toggle translation-block-visibility-toggle-inner">
+                                      <input
+                                        type="checkbox"
+                                        checked={followupAnswerCollapsed}
+                                        onChange={(event) => handleToggleFollowupAnswerCollapsed(item, event.target.checked)}
+                                      />
+                                      <span>
+                                        {followupAnswerCollapsed
+                                          ? tr('Ответ скрыт', 'Antwort ausgeblendet')
+                                          : tr('Скрыть ответ', 'Antwort ausblenden')}
+                                      </span>
+                                    </label>
+                                    {!followupAnswerCollapsed && (
+                                      <>
+                                        <div className="webapp-feedback-line webapp-explanation-line">
+                                          <span className="webapp-feedback-label">
+                                            {tr('Ответ на ваш вопрос:', 'Antwort auf deine Frage:')}
+                                          </span>
+                                        </div>
+                                        {renderExplanationContent(followupAnswer)}
+                                      </>
+                                    )}
+                                  </div>
+                                )}
+                                </div>
+                              </>
                             )}
                           </div>
                         )}
@@ -3492,13 +4100,13 @@ const TranslationsSection = React.memo(function TranslationsSection({
               <div className="webapp-result-list">
                 {historyItems.map((item, index) => (
                   <div key={item.id ?? index} className="webapp-result-card">
-                    <pre className="webapp-result-text">
-                      {`Sentence number: ${item.sentence_number ?? '—'}\nScore: ${
-                        item.score ?? '—'
-                      }/100\nOriginal: ${item.original_text ?? '—'}\nTranslation: ${
-                        item.user_translation ?? '—'
-                      }\nCorrect: ${item.correct_translation ?? '—'}`}
-                    </pre>
+                    <div
+                      className="webapp-result-text tr-history-result-text"
+                      onMouseUp={handleSelection}
+                      onTouchEnd={handleSelection}
+                    >
+                      {renderFeedback(buildHistoryFeedback(item))}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -4466,6 +5074,8 @@ function AppInner() {
   const [webappChatType, setWebappChatType] = useState('');
   const [results, setResults] = useState([]);
   const [sentences, setSentences] = useState([]);
+  const [singleSentenceCheckLoadingId, setSingleSentenceCheckLoadingId] = useState(null);
+  const [pendingSingleResultScrollSentenceId, setPendingSingleResultScrollSentenceId] = useState(null);
   const [webappError, setWebappError] = useState('');
   const [webappLoading, setWebappLoading] = useState(false);
   const [translationCheckProgress, setTranslationCheckProgress] = useState({ active: false, done: 0, total: 0 });
@@ -4532,10 +5142,15 @@ function AppInner() {
   const [youtubeDictLoading, setYoutubeDictLoading] = useState(false);
   const [youtubeDictError, setYoutubeDictError] = useState('');
   const [youtubeDictSaved, setYoutubeDictSaved] = useState(false);
+  const [youtubeDictSavedEntryId, setYoutubeDictSavedEntryId] = useState(0);
+  const [youtubeDictFeelLoading, setYoutubeDictFeelLoading] = useState(false);
+  const [youtubeDictFeelStatus, setYoutubeDictFeelStatus] = useState('');
   const [manualTranscript, setManualTranscript] = useState('');
+  const translationResultCardRefsRef = useRef(new Map());
   const [readerInput, setReaderInput] = useState('');
   const [readerSelectedFile, setReaderSelectedFile] = useState(null);
   const [readerLoading, setReaderLoading] = useState(false);
+  const [readerOpeningDocumentId, setReaderOpeningDocumentId] = useState(0);
   const [readerError, setReaderError] = useState('');
   const [readerErrorCode, setReaderErrorCode] = useState('');
   const [readerContent, setReaderContent] = useState('');
@@ -4551,6 +5166,16 @@ function AppInner() {
   const [readerPages, setReaderPages] = useState([]);
   const [readerDynamicPages, setReaderDynamicPages] = useState([]);
   const [readerCurrentPage, setReaderCurrentPage] = useState(1);
+  const [readerOriginalEpubLoading, setReaderOriginalEpubLoading] = useState(false);
+  const [readerOriginalEpubError, setReaderOriginalEpubError] = useState('');
+  const [readerOriginalTocHref, setReaderOriginalTocHref] = useState('');
+  const [readerOriginalTocTitle, setReaderOriginalTocTitle] = useState('');
+  const [readerOriginalCoverUrl, setReaderOriginalCoverUrl] = useState('');
+  const [readerOriginalCoverVisible, setReaderOriginalCoverVisible] = useState(false);
+  const [readerShowToc, setReaderShowToc] = useState(false);
+  const [readerTocItems, setReaderTocItems] = useState([]);
+  const [readerShowPageJump, setReaderShowPageJump] = useState(false);
+  const [readerPageJumpInput, setReaderPageJumpInput] = useState('');
   const [readerAudioFromPage, setReaderAudioFromPage] = useState('');
   const [readerAudioToPage, setReaderAudioToPage] = useState('');
   const [readerAudioLoading, setReaderAudioLoading] = useState(false);
@@ -4574,6 +5199,75 @@ function AppInner() {
   const [readerAddOpen, setReaderAddOpen] = useState(false);
   const [readerFontSize, setReaderFontSize] = useState(READER_DEFAULT_FONT_SIZE);
   const [readerFontWeight, setReaderFontWeight] = useState(READER_DEFAULT_FONT_WEIGHT);
+
+  // ── Reader audio-sync state (Patch 2.4) ────────────────────────────────
+  const [readerAudioPlayActive, setReaderAudioPlayActive] = useState(false);
+  const [readerAudioPlayLoading, setReaderAudioPlayLoading] = useState(false);
+  const [readerAudioPlayError, setReaderAudioPlayError] = useState('');
+  const [readerAudioPlayData, setReaderAudioPlayData] = useState(null);
+  const [readerAudioPlayPosition, setReaderAudioPlayPosition] = useState(0);
+  const [readerAudioVoice, setReaderAudioVoice] = useState('');
+  const [readerAudioRate, setReaderAudioRate] = useState(1.0);
+  const [readerAudioPaused, setReaderAudioPaused] = useState(false);
+  const [readerAudioCurrentPageCharOffset, setReaderAudioCurrentPageCharOffset] = useState(0);
+  const audioElementRef = useRef(null);
+  const readerAudioPreloadElementRef = useRef(null);
+  const readerEpubViewportRef = useRef(null);
+  const readerEpubBookRef = useRef(null);
+  const readerEpubRenditionRef = useRef(null);
+  const readerEpubRelocationSaveTimeoutRef = useRef(null);
+  const readerEpubLoadTokenRef = useRef(0);
+  const audioRafRef = useRef(0);
+  const readerAudioPlayingForPageRef = useRef(null);
+  const readerAudioRequestTokenRef = useRef(0);
+  const readerAudioPrefetchTimeoutRef = useRef(null);
+  const readerAudioPageCacheRef = useRef(new Map());
+  const readerAudioPageRequestsRef = useRef(new Map());
+  const readerAudioPrimedRef = useRef(false);
+  const readerAudioCurrentPageCharOffsetRef = useRef(0);
+  const readerAudioWindowMetaRef = useRef(null);
+
+  const [readerColorTheme, setReaderColorTheme] = useState(() => {
+    try {
+      const v = localStorage.getItem('reader_color_theme');
+      return (v === 'sepia' || v === 'cream') ? v : 'dark';
+    } catch { return 'dark'; }
+  });
+  const destroyReaderOriginalEpub = useCallback(() => {
+    if (readerEpubRelocationSaveTimeoutRef.current) {
+      window.clearTimeout(readerEpubRelocationSaveTimeoutRef.current);
+      readerEpubRelocationSaveTimeoutRef.current = null;
+    }
+    try {
+      readerEpubRenditionRef.current?.destroy?.();
+    } catch (_error) {
+      // ignore renderer teardown failures
+    }
+    try {
+      readerEpubBookRef.current?.destroy?.();
+    } catch (_error) {
+      // ignore book teardown failures
+    }
+    readerEpubRenditionRef.current = null;
+    readerEpubBookRef.current = null;
+    const viewport = readerEpubViewportRef.current;
+    if (viewport) {
+      viewport.innerHTML = '';
+    }
+  }, []);
+  useEffect(() => () => {
+    if (readerOriginalCoverUrl && readerOriginalCoverUrl.startsWith('blob:')) {
+      try {
+        URL.revokeObjectURL(readerOriginalCoverUrl);
+      } catch (_error) {
+        // ignore cleanup failures for cover blobs
+      }
+    }
+  }, [readerOriginalCoverUrl]);
+  const applyReaderColorTheme = (next) => {
+    setReaderColorTheme(next);
+    try { localStorage.setItem('reader_color_theme', next); } catch {}
+  };
   const [readerLayoutMode, setReaderLayoutMode] = useState('custom');
   const [readerDragSelectionMeta, setReaderDragSelectionMeta] = useState(null);
   const [youtubeDragSelectionMeta, setYoutubeDragSelectionMeta] = useState(null);
@@ -4581,6 +5275,8 @@ function AppInner() {
   const [selectionPos, setSelectionPos] = useState(null);
   const [selectionType, setSelectionType] = useState('');
   const [selectedMeta, setSelectedMeta] = useState(null);
+  const [readerAudioStartWid, setReaderAudioStartWid] = useState(null);
+  const [readerAudioAwaitingWordTap, setReaderAudioAwaitingWordTap] = useState(false);
   const [selectionCompact, setSelectionCompact] = useState(false);
   const [selectionLookupLang, setSelectionLookupLang] = useState('');
   const [selectionInlineMode, setSelectionInlineMode] = useState(false);
@@ -4608,6 +5304,17 @@ function AppInner() {
   const [finishStatus, setFinishStatus] = useState('idle');
   const [explanations, setExplanations] = useState({});
   const [explanationLoading, setExplanationLoading] = useState({});
+  const [collapsedResultCards, setCollapsedResultCards] = useState({});
+  const [collapsedExplanationBlocks, setCollapsedExplanationBlocks] = useState({});
+  const [collapsedFollowupAnswerBlocks, setCollapsedFollowupAnswerBlocks] = useState({});
+  const [explanationQuestionOpen, setExplanationQuestionOpen] = useState({});
+  const [explanationQuestionDrafts, setExplanationQuestionDrafts] = useState({});
+  const [explanationQuestionLoading, setExplanationQuestionLoading] = useState({});
+  const [explanationQuestionAnswers, setExplanationQuestionAnswers] = useState({});
+  const [explanationQuestionSaveChecked, setExplanationQuestionSaveChecked] = useState({});
+  const [explanationQuestionSaveLoading, setExplanationQuestionSaveLoading] = useState({});
+  const [explanationQuestionSaveError, setExplanationQuestionSaveError] = useState({});
+  const [explanationQuestionSaveMessage, setExplanationQuestionSaveMessage] = useState({});
   const [flashcardsVisible, setFlashcardsVisible] = useState(false);
   const [flashcardsOnly, setFlashcardsOnly] = useState(false);
   const [flashcardsLoading, setFlashcardsLoading] = useState(false);
@@ -4724,7 +5431,7 @@ function AppInner() {
   const [topicsError, setTopicsError] = useState('');
   const [selectedTopic, setSelectedTopic] = useState('🧱 V2 в главном предложении');
   const [customTopicInput, setCustomTopicInput] = useState('');
-  const [selectedLevel, setSelectedLevel] = useState('c1');
+  const [selectedLevel, setSelectedLevel] = useState('');
   const [uiLang, setUiLang] = useState('ru');
   const [themeMode, setThemeMode] = useState(() => resolveExternalThemeMode(window.Telegram?.WebApp));
   const [themeModeOverride, setThemeModeOverride] = useState(null);
@@ -4837,10 +5544,10 @@ function AppInner() {
     return observed.reduce((best, current) => (rank[current] > rank[best] ? current : best), observed[0]);
   }, []);
   const maxTranslationRecommendationLevel = useCallback((...levels) => {
-    const rank = { a2: 1, b1: 2, b2: 3, c1: 4, c2: 5 };
+    const rank = { a1: 1, a2: 2, b1: 3, b2: 4, c1: 5, c2: 6 };
     const normalized = levels
       .map((value) => String(value || '').trim().toLowerCase())
-      .filter((value) => ['a2', 'b1', 'b2', 'c1', 'c2'].includes(value));
+      .filter((value) => ['a1', 'a2', 'b1', 'b2', 'c1', 'c2'].includes(value));
     if (!normalized.length) return 'b1';
     return normalized.reduce((best, current) => (rank[current] > rank[best] ? current : best), normalized[0]);
   }, []);
@@ -4864,7 +5571,6 @@ function AppInner() {
       payload?.recommended_level,
       payload?.level,
       inferTranslationRecommendationLevelFloor(reasonExamples),
-      selectedLevel || 'b1',
     );
     const skillTitle = String(payload?.skill_title || '').trim();
     const subCategory = String(payload?.sub_category || '').trim();
@@ -4897,7 +5603,7 @@ function AppInner() {
         .slice(0, 2),
       createdAt: Date.now(),
     };
-  }, [inferTranslationRecommendationLevelFloor, maxTranslationRecommendationLevel, selectedLevel, tr, uiLang]);
+  }, [inferTranslationRecommendationLevelFloor, maxTranslationRecommendationLevel, tr, uiLang]);
   const applyTodayTranslationRecommendation = useCallback(() => {
     if (!todayTranslationRecommendation) return;
     const recommendedLevel = String(todayTranslationRecommendation?.level || '').trim().toLowerCase();
@@ -5118,6 +5824,7 @@ function AppInner() {
   const showTranslationStartConfigurator = !(hasActiveTranslationSentences || hasActiveRegularTranslationSession);
   const selectedTopicIsStoryTopic = isStoryTopic(selectedTopic);
   const selectedTopicIsCustomTopic = isCustomTopic(selectedTopic);
+  const hasSelectedTranslationLevel = ['a1', 'a2', 'b1', 'b2', 'c1', 'c2'].includes(String(selectedLevel || '').trim().toLowerCase());
   const FLASHCARDS_LOAD_DEDUP_WINDOW_MS = 900;
   const SRS_NEXT_DEDUP_WINDOW_MS = 900;
   const SRS_EASY_LOCK_AFTER_SEC = 5;
@@ -5134,8 +5841,19 @@ function AppInner() {
   const homeSkillsRef = useRef(null);
   const homeMoreRef = useRef(null);
   const readerRef = useRef(null);
+  const translationConfiguratorWasVisibleRef = useRef(false);
+
+  useEffect(() => {
+    const wasVisible = Boolean(translationConfiguratorWasVisibleRef.current);
+    if (showTranslationStartConfigurator && !wasVisible) {
+      setSelectedLevel('');
+    }
+    translationConfiguratorWasVisibleRef.current = Boolean(showTranslationStartConfigurator);
+  }, [showTranslationStartConfigurator]);
   const readerArticleRef = useRef(null);
+  const readerPageInnerRef = useRef(null);
   const readerMeasureInnerRef = useRef(null);
+  const readerFileInputRef = useRef(null);
   const flashcardsRef = useRef(null);
   const translationsRef = useRef(null);
   const youtubeRef = useRef(null);
@@ -5292,9 +6010,19 @@ function AppInner() {
     startY: 0,
   });
   const readerSuppressStructuredClickRef = useRef(0);
+  const readerAudioAwaitingWordTapRef = useRef(false);
+  const readerLastTapRef = useRef({ time: 0, sid: null, count: 0 });
+  const readerAudioPagesPlayedRef = useRef(0);
+  const readerAudioPageLimitRef = useRef(0); // 0 = no limit active
+  const readerWordLongPressTimerRef = useRef(null);
+  const readerCurrentPageRef = useRef(1);
   const readerStatusPollTokenRef = useRef(0);
   const readerPaginationResizeFrameRef = useRef(0);
+  const readerPaginationObservedWidthRef = useRef(0);
   const readerPaginationRunRef = useRef(0);
+  const readerPendingPagePercentRef = useRef(null);
+  const readerOpenInFlightRef = useRef(0);
+  const readerPageLoadInFlightRef = useRef(new Set());
   const todayTimerCompletionLockRef = useRef(new Set());
   const globalTimerAutoPauseInFlightRef = useRef(false);
   const globalTimerAutoResumeInFlightRef = useRef(false);
@@ -7793,7 +8521,13 @@ function AppInner() {
     if (quizType === 'separable_prefix_verb_gap') {
       return String(responseJson?.correct_full_sentence || '').trim() || resolveFlashcardTexts(entry).targetText;
     }
-    return resolveFlashcardTexts(entry).targetText;
+    const texts = resolveFlashcardTexts(entry);
+    const entrySourceLang = String(entry?.source_lang || responseJson?.source_lang || 'ru').trim().toLowerCase();
+    // For reversed cards (source_lang=de), source_text holds German, target_text holds Russian
+    if (entrySourceLang === 'de') {
+      return texts.sourceText || texts.targetText;
+    }
+    return texts.targetText || texts.sourceText;
   };
 
   const resolveFlashcardFeelEntryId = useCallback((entry) => {
@@ -8071,7 +8805,7 @@ function AppInner() {
           due_count: dueCount - 1,
           new_remaining_today: newRemaining,
           due_count_total: Math.max(0, dueCountTotal - 1),
-          due_reviewed_today: dueReviewedToday + 1,
+          due_reviewed_today: Math.min(dueReviewedToday + 1, dueLimitToday),
           due_limit_today: dueLimitToday,
         };
       }
@@ -8080,7 +8814,7 @@ function AppInner() {
           due_count: dueCount,
           new_remaining_today: newRemaining - 1,
           due_count_total: dueCountTotal,
-          due_reviewed_today: dueReviewedToday,
+          due_reviewed_today: Math.min(dueReviewedToday + 1, dueLimitToday),
           due_limit_today: dueLimitToday,
         };
       }
@@ -8175,7 +8909,7 @@ function AppInner() {
               setSrsCard(null);
               setSrsState(null);
               setSrsPreview(null);
-              setSrsQueueInfo({ due_count: 0, new_remaining_today: 0 });
+              setSrsQueueInfo((prev) => ({ ...prev, due_count: 0, new_remaining_today: 0 }));
               setSrsError('');
               return;
             }
@@ -8349,13 +9083,13 @@ function AppInner() {
       const data = await response.json();
       const queueInfo = data?.queue_info && typeof data.queue_info === 'object' ? data.queue_info : null;
       if (queueInfo) {
-        setSrsQueueInfo({
+        setSrsQueueInfo((prev) => ({
           due_count: Math.max(0, Math.trunc(Number(queueInfo.due_count || 0))),
           new_remaining_today: Math.max(0, Math.trunc(Number(queueInfo.new_remaining_today || 0))),
           due_count_total: Math.max(0, Math.trunc(Number(queueInfo.due_count_total || 0))),
           due_reviewed_today: Math.max(0, Math.trunc(Number(queueInfo.due_reviewed_today || 0))),
           due_limit_today: Math.max(1, Math.trunc(Number(queueInfo.due_limit_today || 30))),
-        });
+        }));
       }
     } catch (error) {
       console.warn('Reschedule backlog failed', error);
@@ -8546,15 +9280,13 @@ function AppInner() {
         };
         await addVocabMutation(editUserId, { type: 'edit', entry_id: vocabEditItem.id, payload: editPayload });
         setVocabOfflinePendingCount((c) => c + 1);
-        // Optimistic local update
-        const localItem = {
-          ...vocabEditItem,
-          word_de:          vocabEditWord.trim() || vocabEditItem.word_de,
-          translation_ru:   primaryMeaning || vocabEditItem.translation_ru,
-          folder_id:        folderId,
-          display_word:     vocabEditWord.trim() || vocabEditItem.word_de || vocabEditItem.display_word,
-          display_translation: primaryMeaning || vocabEditItem.translation_ru || vocabEditItem.display_translation,
-        };
+        const localItem = applySavedVocabEditLocally(
+          vocabEditItem,
+          vocabEditWord.trim() || vocabEditItem.word_de || '',
+          primaryMeaning || vocabEditItem.translation_ru || '',
+          supportsMeanings ? [primaryMeaning, secondaryMeaning, tertiaryMeaning] : [],
+          folderId,
+        );
         setVocabItems((prev) => prev.map((it) => it.id === localItem.id ? localItem : it));
         updateCachedVocabEntry(editUserId, localItem).catch(() => {});
         setVocabEditItem(null);
@@ -8596,6 +9328,18 @@ function AppInner() {
         const updatedPrimarySense = Array.isArray(updatedResponseJson.dictionary_senses)
           ? String(updatedResponseJson.dictionary_senses.find((entry) => entry && typeof entry === 'object' && String(entry.value || '').trim())?.value || '').trim()
           : '';
+        const applyUpdatedCardFields = (entry = {}) => ({
+          ...entry,
+          word_de: updated.word_de,
+          word_ru: updated.word_ru,
+          translation_ru: updated.translation_ru,
+          translation_de: updated.translation_de,
+          response_json: updatedResponseJson,
+          target_text: updated.translation_de || updated.translation_ru || entry.target_text,
+          source_text: updated.word_de || updated.word_ru || entry.source_text,
+          display_word: updated.word_de || updated.word_ru || entry.display_word,
+          display_translation: updatedPrimarySense || updated.translation_ru || updated.translation_de || entry.display_translation,
+        });
         setVocabItems((prev) => prev.map((it) => it.id === updated.id
           ? {
               ...it,
@@ -8609,6 +9353,18 @@ function AppInner() {
               display_translation: updatedPrimarySense || updated.translation_ru || updated.translation_de || it.display_translation,
             }
           : it));
+        setFlashcards((prev) => prev.map((item) => (Number(item?.id) === Number(updated.id)
+          ? applyUpdatedCardFields(item)
+          : item)));
+        setFlashcardPool((prev) => prev.map((item) => (Number(item?.id) === Number(updated.id)
+          ? applyUpdatedCardFields(item)
+          : item)));
+        setSrsCard((prev) => {
+          if (!prev || Number(prev?.id) !== Number(updated.id)) return prev;
+          const next = applyUpdatedCardFields(prev);
+          srsCardRef.current = next;
+          return next;
+        });
         const userId = webappUser?.id ? Number(webappUser.id) : null;
         if (userId && isOfflineCacheAvailable()) {
           updateCachedVocabEntry(userId, updated).catch(() => {});
@@ -8633,6 +9389,7 @@ function AppInner() {
     tr,
     webappUser?.id,
     isOnline,
+    applySavedVocabEditLocally,
   ]);
 
   const renameFolderSubmit = useCallback(async () => {
@@ -9588,7 +10345,7 @@ function AppInner() {
 
   const isTodayItemTimerRunning = (item) => {
     const payload = getTodayItemTimerPayload(item);
-    return Boolean(payload?.timer_running) && String(item?.status || '').toLowerCase() !== 'done';
+    return Boolean(payload?.timer_running);
   };
 
   const buildOptimisticTodayItemTimerState = (item, action, options = {}) => {
@@ -9613,17 +10370,19 @@ function AppInner() {
     if (normalizedAction === 'start' || normalizedAction === 'resume') {
       if (nextStatus !== 'done') {
         nextStatus = 'doing';
-        nextRunning = true;
-        nextPaused = false;
-        nextStartedAt = nowIso;
       }
+      nextRunning = true;
+      nextPaused = false;
+      nextStartedAt = nowIso;
     } else if (normalizedAction === 'pause') {
       nextRunning = false;
       nextPaused = nextStatus !== 'done';
       nextStartedAt = null;
     } else if (normalizedAction === 'sync' && explicitRunning !== undefined) {
-      if (explicitRunning && nextStatus !== 'done') {
-        nextStatus = 'doing';
+      if (explicitRunning) {
+        if (nextStatus !== 'done') {
+          nextStatus = 'doing';
+        }
         nextRunning = true;
         nextPaused = false;
         nextStartedAt = nowIso;
@@ -9643,9 +10402,6 @@ function AppInner() {
 
     if (taskType !== 'translation' && goalSeconds > 0 && nextElapsed >= goalSeconds) {
       nextStatus = 'done';
-      nextRunning = false;
-      nextPaused = false;
-      nextStartedAt = null;
     } else if (nextStatus !== 'done' && nextElapsed > 0 && ['todo', 'skipped'].includes(nextStatus)) {
       nextStatus = 'doing';
     }
@@ -9822,7 +10578,7 @@ function AppInner() {
 
   const toggleTodaySectionTaskTimer = async (sectionKey) => {
     const item = getTodayTaskForSection(sectionKey);
-    if (!item || String(item?.status || '').toLowerCase() === 'done') return;
+    if (!item) return;
     const nowElapsed = getTodayItemElapsedSeconds(item, Date.now());
     if (isTodayItemTimerRunning(item)) {
       await syncTodayItemTimer(item, 'pause', { elapsedSeconds: nowElapsed, running: false });
@@ -9849,25 +10605,24 @@ function AppInner() {
     const running = isTodayItemTimerRunning(item);
     return (
       <div className={`today-section-task-hud ${inline ? 'is-inline' : ''}`.trim()}>
-        {done ? (
+        {done && (
           <span className="today-section-task-done" title={tr('Задача выполнена', 'Aufgabe erledigt')}>✅</span>
-        ) : (
-          <button
-            type="button"
-            className={`reader-timer-pill today-section-timer-pill ${!running ? 'is-paused' : ''}`}
-            onClick={() => toggleTodaySectionTaskTimer(sectionKey)}
-            title={tr('Пауза/продолжение таймера задачи', 'Aufgaben-Timer pausieren/fortsetzen')}
-          >
-            {running ? `⏱ ${formatCompactTimer(elapsed)}` : `⏸ ${formatCompactTimer(elapsed)}`}
-          </button>
         )}
+        <button
+          type="button"
+          className={`reader-timer-pill today-section-timer-pill ${!running ? 'is-paused' : ''}`}
+          onClick={() => toggleTodaySectionTaskTimer(sectionKey)}
+          title={tr('Пауза/продолжение таймера задачи', 'Aufgaben-Timer pausieren/fortsetzen')}
+        >
+          {running ? `⏱ ${formatCompactTimer(elapsed)}` : `⏸ ${formatCompactTimer(elapsed)}`}
+        </button>
       </div>
     );
   };
 
   const ensureFlashcardsTaskTimerRunning = async () => {
     const item = getTodayTaskForSection('flashcards');
-    if (!item || String(item?.status || '').toLowerCase() === 'done') return;
+    if (!item) return;
     if (isTodayItemTimerRunning(item)) return;
     const elapsedSeconds = getTodayItemElapsedSeconds(item, Date.now());
     const hasStartedBefore = elapsedSeconds > 0 || String(item?.status || '').toLowerCase() === 'doing';
@@ -9880,7 +10635,7 @@ function AppInner() {
 
   const pauseFlashcardsTaskTimer = async () => {
     const item = getTodayTaskForSection('flashcards');
-    if (!item || String(item?.status || '').toLowerCase() === 'done') return;
+    if (!item) return;
     if (!isTodayItemTimerRunning(item)) return;
     const elapsedSeconds = getTodayItemElapsedSeconds(item, Date.now());
     await syncTodayItemTimer(item, 'pause', { elapsedSeconds, running: false });
@@ -10299,7 +11054,7 @@ function AppInner() {
       if (elapsed < goal) return;
       if (todayTimerCompletionLockRef.current.has(item.id)) return;
       todayTimerCompletionLockRef.current.add(item.id);
-      syncTodayItemTimer(item, 'sync', { elapsedSeconds: elapsed, running: false })
+      syncTodayItemTimer(item, 'sync', { elapsedSeconds: elapsed, running: true })
         .finally(() => {
           todayTimerCompletionLockRef.current.delete(item.id);
         });
@@ -10322,7 +11077,7 @@ function AppInner() {
           running: true,
         });
       });
-    }, 15000);
+    }, 5000);
 
     return () => window.clearInterval(intervalId);
   }, [todayPlan, getTodayItemElapsedSeconds, isTodayItemSectionVisible, isTodayItemTimerRunning, syncTodayItemTimer]);
@@ -10550,10 +11305,10 @@ function AppInner() {
     const key = String(srsCard?.id || srsCard?.entry_id || '');
     if (!key) return;
     if (srsAutoTtsPlayedRef.current === key) return;
-    const answerText = getDictionarySourceTarget(
-      srsCard,
-      (srsCard?.source_lang || 'ru') === 'de' ? 'de-ru' : 'ru-de'
-    ).targetText || '';
+    const _srsCardDir = (srsCard?.source_lang || 'ru') === 'de' ? 'de-ru' : 'ru-de';
+    const _srsCardTexts = getDictionarySourceTarget(srsCard, _srsCardDir);
+    const _srsCardReversed = (srsCard?.source_lang || 'ru') === 'de';
+    const answerText = (_srsCardReversed ? _srsCardTexts?.sourceText : _srsCardTexts?.targetText) || '';
     const langCode = detectTtsLangFromText(answerText);
     const locale = getTtsLocaleForLang(langCode);
     srsAutoTtsPlayedRef.current = key;
@@ -10600,10 +11355,12 @@ function AppInner() {
       target_lang: String(payload.target_lang || '').trim().toLowerCase() || '',
       has_profile: Boolean(payload.has_profile),
       user_pair_total: Math.max(0, Number(payload.user_pair_total || 0) || 0),
+      starter_pair_total: Math.max(0, Number(payload.starter_pair_total || 0) || 0),
       template_total: Math.max(0, Number(payload.template_total || 0) || 0),
       suggested_count: Math.max(0, Number(payload.suggested_count || 0) || 0),
       should_prompt: Boolean(payload.should_prompt),
       can_reconnect: Boolean(payload.can_reconnect),
+      can_disconnect: Boolean(payload.can_disconnect),
       state,
     };
   }, []);
@@ -10703,11 +11460,14 @@ function AppInner() {
     }
   }, [initData, normalizeStarterDictionaryOffer, pollStarterDictionaryStatus, readApiError, tr]);
 
-  const applyStarterDictionaryDecision = useCallback(async (accept, { forceReimport = false, closePromptOnSuccess = true } = {}) => {
+  const applyStarterDictionaryDecision = useCallback(async (actionOrAccept, { forceReimport = false, closePromptOnSuccess = true } = {}) => {
     if (!initData) {
       setStarterDictionaryActionError(initDataMissingMsg);
       return;
     }
+    const resolvedAction = typeof actionOrAccept === 'string'
+      ? String(actionOrAccept || '').trim().toLowerCase()
+      : (actionOrAccept ? 'accept' : 'decline');
     try {
       setStarterDictionaryActionLoading(true);
       setStarterDictionaryActionError('');
@@ -10717,7 +11477,7 @@ function AppInner() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           initData,
-          action: accept ? 'accept' : 'decline',
+          action: resolvedAction,
           force_reimport: Boolean(forceReimport),
         }),
       });
@@ -10727,7 +11487,7 @@ function AppInner() {
       const data = await response.json();
       const offer = normalizeStarterDictionaryOffer(data?.offer);
       setStarterDictionaryOffer(offer);
-      if (accept) {
+      if (resolvedAction === 'accept') {
         const importStatus = String(offer?.state?.import_status || 'idle').trim().toLowerCase() || 'idle';
         const startedInBackground = Boolean(data?.started_in_background) || importStatus === 'running';
         const inserted = Math.max(0, Number(data?.import_result?.inserted_count || offer?.state?.last_imported_count || 0) || 0);
@@ -10744,6 +11504,13 @@ function AppInner() {
         if (startedInBackground) {
           pollStarterDictionaryStatus(1200);
         }
+      } else if (resolvedAction === 'disconnect') {
+        const deleted = Math.max(0, Number(data?.disconnect_result?.deleted_count || 0) || 0);
+        setStarterDictionaryActionMessage(
+          deleted > 0
+            ? tr(`Базовый словарь отключён: удалено ${deleted} стартовых записей.`, `Basiswoerterbuch getrennt: ${deleted} Starter-Eintraege entfernt.`)
+            : tr('Базовый словарь отключён. Стартовых записей для удаления не найдено.', 'Basiswoerterbuch getrennt. Keine Starter-Eintraege zum Entfernen gefunden.')
+        );
       } else {
         setStarterDictionaryActionMessage(tr('Ок, начинаем с пустого словаря.', 'Alles klar, wir starten mit einem leeren Woerterbuch.'));
       }
@@ -11888,9 +12655,14 @@ function AppInner() {
     () => normalizeReaderPaginationText(readerContent),
     [readerContent]
   );
-  const readerCanUseOriginalLayout = Array.isArray(readerPages) && readerPages.length > 0;
+  const readerUsesOriginalEpubLayout = readerSourceType === 'epub' && readerLayoutMode === 'original';
+  const readerCanUseOriginalLayout = readerSourceType === 'epub'
+    || (readerSourceType === 'pdf' && Array.isArray(readerPages) && readerPages.length > 0);
   const readerUsesCustomLayout = !readerCanUseOriginalLayout || readerLayoutMode === 'custom';
   const readerDisplayPages = useMemo(() => {
+    if (readerUsesOriginalEpubLayout) {
+      return [];
+    }
     if (readerUsesCustomLayout && Array.isArray(readerDynamicPages) && readerDynamicPages.length > 0) {
       return readerDynamicPages
         .map((item, index) => ({
@@ -11899,17 +12671,53 @@ function AppInner() {
         }));
     }
     if (Array.isArray(readerPages) && readerPages.length > 0) {
-      return readerPages
-        .map((item, index) => ({
-          page_number: Number(item?.page_number || index + 1),
-          text: String(item?.text || '').trim(),
-        }))
-        .filter((item) => item.text);
+      return readerPages.map((item, index) => ({
+        page_number: Number(item?.page_number || index + 1),
+        text: item ? String(item?.text || '').trim() : '',
+      }));
     }
     if (!readerCanonicalText) return [];
     return [{ page_number: 1, text: readerCanonicalText }];
-  }, [readerCanonicalText, readerDynamicPages, readerPages, readerUsesCustomLayout]);
+  }, [readerCanonicalText, readerDynamicPages, readerPages, readerUsesCustomLayout, readerUsesOriginalEpubLayout]);
+  const getReaderDisplayPageText = useCallback((page) => {
+    const pageIndex = Math.max(0, Number(page || 1) - 1);
+    return normalizeReaderVisiblePageText(String(readerDisplayPages[pageIndex]?.text || ''));
+  }, [readerDisplayPages]);
   const readerPageCount = readerDisplayPages.length;
+  const buildReaderAudioWindow = useCallback((startPage, maxPages = 3) => {
+    const safeStartPage = Math.max(1, Math.min(readerPageCount || 1, Number(startPage || 1) || 1));
+    const segments = [];
+    let combinedText = '';
+    for (let page = safeStartPage; page <= readerPageCount && segments.length < maxPages; page += 1) {
+      const pageText = getReaderDisplayPageText(page);
+      if (!pageText) continue;
+      const separator = segments.length > 0 ? '\n\n' : '';
+      const charStart = combinedText.length + separator.length;
+      combinedText += `${separator}${pageText}`;
+      segments.push({
+        page,
+        charStart,
+        charEnd: combinedText.length,
+        text: pageText,
+      });
+    }
+    if (!segments.length || !combinedText) return null;
+    return {
+      startPage: segments[0].page,
+      endPage: segments[segments.length - 1].page,
+      combinedText,
+      segments,
+    };
+  }, [getReaderDisplayPageText, readerPageCount]);
+  const persistReaderExactBookmark = useCallback((page) => {
+    if (!readerDocumentId || readerPageCount <= 0) return;
+    const safePage = Math.max(1, Math.min(readerPageCount, Number(page || 1)));
+    writeStoredReaderExactBookmark(readerDocumentId, {
+      page: safePage,
+      pageCount: readerPageCount,
+      layoutMode: readerLayoutMode,
+    });
+  }, [readerDocumentId, readerLayoutMode, readerPageCount]);
   const supportTimelineItems = useMemo(() => {
     const remote = Array.isArray(supportMessages) ? supportMessages : [];
     const failed = Array.isArray(supportFailedMessages) ? supportFailedMessages : [];
@@ -12018,17 +12826,28 @@ function AppInner() {
       'Formel fuer den Gesamtscore: Durchschnittsbewertung - durchschnittliche Zeit pro Uebersetzung × 0.5 - Tage ohne Praxis × 0.5. Der Wert ist weder nach unten noch nach oben begrenzt: Er kann negativ sein oder ueber 100 liegen.'
     );
   }, [analyticsSummary, tr]);
+  const showReaderTopbarPeekInAppTopbar = readerSectionVisible
+    && readerHasContent
+    && readerImmersive
+    && readerTopbarCollapsed
+    && !readerArchiveOpen;
   const readerVisibleText = useMemo(() => {
-    const raw = readerPageCount > 0
-      ? String(readerDisplayPages[Math.max(0, Number(readerCurrentPage || 1) - 1)]?.text || '')
-      : String(readerContent || '');
-    // Normalize PDF line-breaks: single \n within paragraphs → space; keep \n\n as paragraph break
-    return raw
-      .split(/\n\n+/)
-      .map((para) => para.replace(/\n/g, ' ').replace(/ {2,}/g, ' ').trim())
-      .filter(Boolean)
-      .join('\n\n');
-  }, [readerPageCount, readerDisplayPages, readerCurrentPage, readerContent]);
+    if (readerUsesOriginalEpubLayout) {
+      return '';
+    }
+    if (readerPageCount > 0) {
+      return getReaderDisplayPageText(readerCurrentPage);
+    }
+    return normalizeReaderVisiblePageText(String(readerContent || ''));
+  }, [getReaderDisplayPageText, readerPageCount, readerCurrentPage, readerContent, readerUsesOriginalEpubLayout]);
+  const readerResolvedOriginalTocTitle = useMemo(() => {
+    const currentHref = normalizeReaderEpubHref(readerOriginalTocHref);
+    if (!currentHref) return String(readerOriginalTocTitle || '').trim();
+    const matched = (Array.isArray(readerTocItems) ? readerTocItems : []).find((item) => (
+      normalizeReaderEpubHref(item?.href || item?.cfi || '') === currentHref
+    ));
+    return String(matched?.title || readerOriginalTocTitle || '').trim();
+  }, [readerOriginalTocHref, readerOriginalTocTitle, readerTocItems]);
   const readerSegmentationHash = useMemo(() => {
     const value = String(readerVisibleText || '');
     let hash = 0;
@@ -12096,6 +12915,80 @@ function AppInner() {
     ? Math.max(1, Math.min(readerPageCount, Math.round((Math.max(0, Math.min(100, Number(readerBookmarkPercent || 0))) / 100) * readerPageCount) || 1))
     : 0;
   const isCurrentReaderPageBookmarked = readerPageCount > 0 && readerBookmarkPage === Math.max(1, Math.min(readerPageCount, Number(readerCurrentPage || 1)));
+
+  // ── Audio-sync: positional-index ↔ frontend wid maps ───────────────────
+  const readerAudioWidMap = useMemo(() => {
+    const map = new Map();
+    let idx = 0;
+    for (const sentence of readerSentencesModel) {
+      for (const token of sentence.tokens) {
+        if (token.kind === 'word') { map.set(String(idx), String(token.wid ?? '')); idx++; }
+      }
+    }
+    return map;
+  }, [readerSentencesModel]);
+
+  const readerAudioWidReverseMap = useMemo(() => {
+    const map = new Map();
+    let idx = 0;
+    for (const sentence of readerSentencesModel) {
+      for (const token of sentence.tokens) {
+        if (token.kind === 'word') { map.set(String(token.wid ?? ''), String(idx)); idx++; }
+      }
+    }
+    return map;
+  }, [readerSentencesModel]);
+
+  // Maps char_start (character offset in page text) → local wid string.
+  // Used for karaoke + seek when backend returns char_start in word_timings.
+  const readerAudioCharStartMap = useMemo(() => {
+    const map = new Map();
+    for (const sentence of readerSentencesModel) {
+      for (const token of sentence.tokens) {
+        if (token.kind === 'word' && token.start != null) {
+          map.set(String(token.start), String(token.wid ?? ''));
+        }
+      }
+    }
+    return map;
+  }, [readerSentencesModel]);
+
+  // Maps local wid → char_start, for reverse lookup during seek.
+  const readerAudioWidToCharStart = useMemo(() => {
+    const map = new Map();
+    for (const sentence of readerSentencesModel) {
+      for (const token of sentence.tokens) {
+        if (token.kind === 'word' && token.start != null) {
+          map.set(String(token.wid ?? ''), token.start);
+        }
+      }
+    }
+    return map;
+  }, [readerSentencesModel]);
+
+  const readerAudioPlayingWid = useMemo(() => {
+    if (!readerAudioPlayData || !readerAudioPlayActive) return null;
+    const t = readerAudioPlayPosition;
+    const timing = readerAudioPlayData.word_timings.find((w) => t >= w.start_ms && t < w.end_ms);
+    if (!timing) return null;
+    // Prefer char_start matching (robust against frontend/backend word-count differences).
+    if (timing.char_start != null) {
+      const localCharStart = Number(timing.char_start) - Number(readerAudioCurrentPageCharOffset || 0);
+      return readerAudioCharStartMap.get(String(localCharStart)) || null;
+    }
+    return readerAudioWidMap.get(String(timing.wid)) || null;
+  }, [readerAudioPlayData, readerAudioPlayPosition, readerAudioWidMap, readerAudioCharStartMap, readerAudioPlayActive, readerAudioCurrentPageCharOffset]);
+
+  const readerAudioPlayingSid = useMemo(() => {
+    if (!readerAudioPlayingWid) return null;
+    for (const sentence of readerSentencesModel) {
+      for (const token of sentence.tokens) {
+        if (String(token.wid ?? '') === readerAudioPlayingWid) return sentence.sid;
+      }
+    }
+    return null;
+  }, [readerAudioPlayingWid, readerSentencesModel]);
+
   const readerElapsedTotalSeconds = Math.max(0, Number(readerAccumulatedSeconds || 0) + Number(readerLiveSeconds || 0));
   const readerSwipeThreshold = readerSwipeSensitivity === 'high' ? 24 : readerSwipeSensitivity === 'low' ? 52 : 36;
   const readerSwipeLockMs = readerSwipeSensitivity === 'high' ? 180 : readerSwipeSensitivity === 'low' ? 340 : 260;
@@ -12649,6 +13542,23 @@ function AppInner() {
       scrollToRef(ref, { center: key === 'flashcards', block: 'start' });
     }, 80);
   };
+
+  const billingEffectiveMode = String(billingStatus?.effective_mode || '').trim().toLowerCase();
+  const readerAudioPremiumKnown = Boolean(billingStatus && typeof billingStatus === 'object');
+  const readerAudioPremiumEnabled = ['pro', 'trial'].includes(billingEffectiveMode);
+
+  function openReaderAudioPremiumPaywall() {
+    const message = tr(
+      'Аудио в книге доступно только по премиум подписке.',
+      'Audio im Reader ist nur mit Premium verfuegbar.'
+    );
+    setReaderAudioError(message);
+    setReaderAudioPlayError(message);
+    if (readerAudioPlayActive) {
+      stopReaderAudioPlay();
+    }
+    openSingleSectionAndScroll('subscription', billingRef);
+  }
 
   const goHomeScreen = () => {
     setFlashcardsOnly(false);
@@ -13253,7 +14163,9 @@ function AppInner() {
   const [assistantError, setAssistantError] = useState('');
   const [assistantSessionId, setAssistantSessionId] = useState(null);
   const [assistantSessionAssessment, setAssistantSessionAssessment] = useState(null);
+  const [assistantSessionMistakes, setAssistantSessionMistakes] = useState([]);
   const [assistantSessionReviewRequested, setAssistantSessionReviewRequested] = useState(false);
+  const [voiceMistakesExpanded, setVoiceMistakesExpanded] = useState(false);
   const [readerSessionId, setReaderSessionId] = useState(null);
 
   // LiveKit login state
@@ -13342,7 +14254,9 @@ function AppInner() {
       setAssistantConnecting(true);
       setAssistantError('');
       setAssistantSessionAssessment(null);
+      setAssistantSessionMistakes([]);
       setAssistantSessionReviewRequested(false);
+      setVoiceMistakesExpanded(false);
       boundSessionId = assistantSessionId;
       if (!boundSessionId) {
         boundSessionId = await startAssistantSessionTracking();
@@ -13413,6 +14327,7 @@ function AppInner() {
       }
       const data = await response.json().catch(() => null);
       setAssistantSessionAssessment(data?.assessment || null);
+      setAssistantSessionMistakes(data?.mistakes || []);
       setAssistantSessionReviewRequested(true);
       if (!shouldSkipRefresh) {
         await loadWeeklyPlan();
@@ -13844,10 +14759,6 @@ function AppInner() {
         const item = getSectionTask(sectionKey);
         if (!item?.id) return;
         const status = String(item?.status || '').toLowerCase();
-        if (status === 'done') {
-          autoPausedTodayTimerIdsRef.current.delete(item.id);
-          return;
-        }
         if (!autoPausedTodayTimerIdsRef.current.has(item.id)) return;
         if (isTodayItemTimerRunning(item)) {
           autoPausedTodayTimerIdsRef.current.delete(item.id);
@@ -14984,12 +15895,8 @@ function AppInner() {
 
   useEffect(() => {
     if (!isWebAppMode || !initData || !startupPhase3Ready) return;
-    // Download base dictionary offline pack in the background when stale
-    isOfflinePackFresh().then((fresh) => {
-      if (!fresh) {
-        void downloadOfflinePack('de', 10000);
-      }
-    });
+    // Warm the offline dictionary in the background, but do not start duplicate downloads.
+    void ensureOfflinePack('de', 30000);
   }, [isWebAppMode, initData, startupPhase3Ready]);
 
   useEffect(() => {
@@ -15195,11 +16102,47 @@ function AppInner() {
     safeStorageSet('reader_swipe_sensitivity', readerSwipeSensitivity);
   }, [isWebAppMode, readerSwipeSensitivity]);
 
+  const switchReaderLayoutMode = useCallback((nextMode, options = {}) => {
+    const normalizedNextMode = String(nextMode || '').trim().toLowerCase();
+    if (normalizedNextMode !== 'original' && normalizedNextMode !== 'custom') return;
+    if (normalizedNextMode === readerLayoutMode) return;
+    const resetTypography = Boolean(options?.resetTypography);
+    if (normalizedNextMode === 'custom') {
+      const stablePercent = computeReaderProgressPercent();
+      readerPendingPagePercentRef.current = stablePercent;
+      setReaderProgressPercent(stablePercent);
+      setReaderOriginalCoverVisible(false);
+      if (resetTypography) {
+        setReaderFontSize(READER_DEFAULT_FONT_SIZE);
+        setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
+      }
+      setReaderLayoutMode('custom');
+      return;
+    }
+    if (resetTypography) {
+      setReaderFontSize(READER_DEFAULT_FONT_SIZE);
+      setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
+    }
+    setReaderOriginalCoverVisible(false);
+    setReaderLayoutMode('original');
+  }, [
+    computeReaderProgressPercent,
+    readerLayoutMode,
+  ]);
+
   useEffect(() => {
     if (readerHasContent) return;
+    destroyReaderOriginalEpub();
     setReaderDynamicPages([]);
     setReaderPaginationLayoutTick(0);
     setReaderLayoutMode('custom');
+    setReaderOriginalEpubLoading(false);
+    setReaderOriginalEpubError('');
+    setReaderOriginalTocHref('');
+    setReaderOriginalTocTitle('');
+    setReaderOriginalCoverUrl('');
+    setReaderOriginalCoverVisible(false);
+    readerPendingPagePercentRef.current = null;
     setReaderImmersive(false);
     setReaderTimerPaused(false);
     setReaderAccumulatedSeconds(0);
@@ -15207,26 +16150,274 @@ function AppInner() {
     setReaderSessionStartedAt('');
     readerAutoPausedByIdleRef.current = false;
     readerLastInteractionAtRef.current = 0;
-  }, [readerHasContent]);
+  }, [destroyReaderOriginalEpub, readerHasContent]);
+
+  useEffect(() => {
+    if (!readerUsesOriginalEpubLayout || !readerHasContent || !initData || !readerDocumentId) {
+      setReaderOriginalEpubLoading(false);
+      setReaderOriginalEpubError('');
+      setReaderOriginalTocHref('');
+      setReaderOriginalTocTitle('');
+      setReaderOriginalCoverVisible(false);
+      destroyReaderOriginalEpub();
+      return undefined;
+    }
+
+    const loadToken = readerEpubLoadTokenRef.current + 1;
+    readerEpubLoadTokenRef.current = loadToken;
+    let cancelled = false;
+
+    const flattenNavigationItems = (items, acc = []) => {
+      (Array.isArray(items) ? items : []).forEach((item) => {
+        const title = String(item?.label || item?.title || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        const href = String(item?.href || '').trim();
+        if (title && href) {
+          acc.push({ title, href, href_normalized: normalizeReaderEpubHref(href) });
+        }
+        if (Array.isArray(item?.subitems) && item.subitems.length > 0) {
+          flattenNavigationItems(item.subitems, acc);
+        }
+      });
+      return acc;
+    };
+
+    const resolveActiveNavigationItem = (items, href) => {
+      const normalizedHref = normalizeReaderEpubHref(href);
+      if (!normalizedHref || !Array.isArray(items) || items.length === 0) return null;
+      return items.find((item) => item?.href_normalized === normalizedHref)
+        || items.find((item) => normalizedHref.startsWith(String(item?.href_normalized || '')))
+        || null;
+    };
+
+    const readReaderSourceError = async (response) => {
+      try {
+        const raw = await response.text();
+        if (!raw) {
+          return `HTTP ${response.status}`;
+        }
+        try {
+          const parsed = JSON.parse(raw);
+          return String(parsed?.error || parsed?.message || '').trim() || `HTTP ${response.status}`;
+        } catch (_error) {
+          return raw.replace(/\s+/g, ' ').trim() || `HTTP ${response.status}`;
+        }
+      } catch (_error) {
+        return `HTTP ${response.status}`;
+      }
+    };
+
+    const bootOriginalEpub = async () => {
+      try {
+        setReaderOriginalEpubLoading(true);
+        setReaderOriginalEpubError('');
+        setReaderTocItems([]);
+        destroyReaderOriginalEpub();
+
+        const response = await fetch('/api/webapp/reader/library/source', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData, document_id: readerDocumentId }),
+        });
+        if (!response.ok) {
+          throw new Error(await readReaderSourceError(response));
+        }
+
+        const epubBuffer = await response.arrayBuffer();
+        const ePubFactory = await loadReaderEpubRuntime();
+        if (cancelled || readerEpubLoadTokenRef.current !== loadToken) return;
+
+        const viewport = readerEpubViewportRef.current;
+        if (!viewport) {
+          throw new Error('EPUB viewport is unavailable');
+        }
+
+        const book = ePubFactory(epubBuffer);
+        const rendition = book.renderTo(viewport, {
+          width: '100%',
+          height: '100%',
+          spread: 'none',
+          flow: readerReadingMode === 'horizontal' ? 'paginated' : 'scrolled-doc',
+          manager: readerReadingMode === 'horizontal' ? 'default' : 'continuous',
+        });
+
+        readerEpubBookRef.current = book;
+        readerEpubRenditionRef.current = rendition;
+
+        let flattenedNavigationItems = [];
+
+        rendition.on('relocated', (location) => {
+          if (cancelled || readerEpubLoadTokenRef.current !== loadToken) return;
+          const start = location?.start || {};
+          const pct = Math.max(0, Math.min(100, Number((Number(start.percentage || 0) * 100).toFixed(2))));
+          const cfi = String(start.cfi || '').trim();
+          const href = String(start.href || '').trim();
+          const activeNavItem = resolveActiveNavigationItem(flattenedNavigationItems, href);
+          setReaderProgressPercent(pct);
+          setReaderOriginalTocHref(normalizeReaderEpubHref(href));
+          setReaderOriginalTocTitle(String(activeNavItem?.title || ''));
+          if (cfi) {
+            writeStoredReaderOriginalLocation(readerDocumentId, { cfi, progressPercent: pct });
+          }
+          if (readerEpubRelocationSaveTimeoutRef.current) {
+            window.clearTimeout(readerEpubRelocationSaveTimeoutRef.current);
+          }
+          readerEpubRelocationSaveTimeoutRef.current = window.setTimeout(() => {
+            syncReaderState({ progress_percent: pct });
+          }, 500);
+        });
+
+        try {
+          const navigation = await book.loaded.navigation;
+          if (!cancelled && readerEpubLoadTokenRef.current === loadToken) {
+            flattenedNavigationItems = flattenNavigationItems(navigation?.toc);
+            setReaderTocItems(flattenedNavigationItems);
+          }
+        } catch (_error) {
+          flattenedNavigationItems = [];
+          setReaderTocItems([]);
+        }
+
+        try {
+          await book.ready;
+        } catch (_error) {
+          // continue with best effort rendering
+        }
+
+        const storedOriginalLocation = readStoredReaderOriginalLocation(readerDocumentId);
+        const bookmarkPercent = Math.max(0, Number(readerBookmarkPercent || 0));
+        const progressPercent = Math.max(0, Number(readerProgressPercent || 0));
+        const shouldOfferCover = !String(storedOriginalLocation?.cfi || '').trim();
+        try {
+          const nextCoverUrl = typeof book.coverUrl === 'function'
+            ? String((await book.coverUrl()) || '').trim()
+            : '';
+          if (!cancelled && readerEpubLoadTokenRef.current === loadToken) {
+            setReaderOriginalCoverUrl((prev) => {
+              if (prev && prev !== nextCoverUrl && prev.startsWith('blob:')) {
+                try {
+                  URL.revokeObjectURL(prev);
+                } catch (_error) {
+                  // ignore stale blob cleanup failures
+                }
+              }
+              return nextCoverUrl;
+            });
+            setReaderOriginalCoverVisible(Boolean(nextCoverUrl) && shouldOfferCover);
+          }
+        } catch (_error) {
+          if (!cancelled && readerEpubLoadTokenRef.current === loadToken) {
+            setReaderOriginalCoverUrl((prev) => {
+              if (prev && prev.startsWith('blob:')) {
+                try {
+                  URL.revokeObjectURL(prev);
+                } catch (_cleanupError) {
+                  // ignore stale blob cleanup failures
+                }
+              }
+              return '';
+            });
+            setReaderOriginalCoverVisible(false);
+          }
+        }
+        try {
+          await book.locations.generate(1600);
+        } catch (_error) {
+          // percentage mapping is optional
+        }
+
+        const initialTarget = (
+          bookmarkPercent > 0 && book.locations && typeof book.locations.cfiFromPercentage === 'function'
+            ? String(book.locations.cfiFromPercentage(bookmarkPercent / 100) || '').trim()
+            : ''
+        ) || storedOriginalLocation?.cfi
+          || (progressPercent > 0 && book.locations && typeof book.locations.cfiFromPercentage === 'function'
+            ? String(book.locations.cfiFromPercentage(progressPercent / 100) || '').trim()
+            : '');
+
+        await rendition.display(initialTarget || undefined);
+        if (!cancelled && readerEpubLoadTokenRef.current === loadToken) {
+          setReaderOriginalEpubLoading(false);
+          setReaderOriginalEpubError('');
+        }
+      } catch (error) {
+        if (cancelled || readerEpubLoadTokenRef.current !== loadToken) return;
+        destroyReaderOriginalEpub();
+        setReaderOriginalEpubLoading(false);
+        setReaderOriginalEpubError(normalizeNetworkErrorMessage(
+          error,
+          'Не удалось открыть оригинальный EPUB. Переключаемся на адаптивный текстовый режим.',
+          'Original-EPUB konnte nicht geladen werden. Wir wechseln in den adaptiven Textmodus.'
+        ));
+        setReaderLayoutMode('custom');
+      }
+    };
+
+    void bootOriginalEpub();
+
+    return () => {
+      cancelled = true;
+      destroyReaderOriginalEpub();
+    };
+  }, [
+    destroyReaderOriginalEpub,
+    initData,
+    normalizeNetworkErrorMessage,
+    readerDocumentId,
+    readerHasContent,
+    readerReadingMode,
+    readerUsesOriginalEpubLayout,
+  ]);
 
   useLayoutEffect(() => {
     if (!readerUsesCustomLayout) return undefined;
     if (!readerHasContent) return undefined;
-    const scheduleRepagination = () => {
+    const scheduleRepagination = (reason) => {
       if (readerPaginationResizeFrameRef.current) {
         window.cancelAnimationFrame(readerPaginationResizeFrameRef.current);
       }
       readerPaginationResizeFrameRef.current = window.requestAnimationFrame(() => {
         readerPaginationResizeFrameRef.current = 0;
+        console.log('[PAGINATE] tick scheduled reason=', reason);
         setReaderPaginationLayoutTick((prev) => prev + 1);
       });
     };
+    const scheduleWidthDrivenRepagination = (reason) => {
+      const measureNode = readerMeasureInnerRef.current;
+      const width = Math.round(getReaderMeasureDimension(measureNode, 'width'));
+      if (width <= 0) return;
+      const prevWidth = readerPaginationObservedWidthRef.current;
+      if (prevWidth > 0 && Math.abs(prevWidth - width) <= 1) {
+        return;
+      }
+      readerPaginationObservedWidthRef.current = width;
+      scheduleRepagination(`${reason}:w=${width}`);
+    };
 
-    scheduleRepagination();
+    readerPaginationObservedWidthRef.current = 0;
+    scheduleWidthDrivenRepagination('init');
+    const settleTimeoutIds = [
+      window.setTimeout(() => scheduleRepagination('settle:180ms'), 180),
+      window.setTimeout(() => scheduleRepagination('settle:900ms'), 900),
+    ];
+    let fontsCancelled = false;
+    const fontSet = typeof document !== 'undefined' ? document.fonts : null;
+    if (fontSet?.ready && typeof fontSet.ready.then === 'function') {
+      fontSet.ready
+        .then(() => {
+          if (!fontsCancelled) {
+            scheduleRepagination('fonts-ready');
+          }
+        })
+        .catch(() => {});
+    }
     let resizeObserver;
     if (typeof ResizeObserver !== 'undefined') {
-      resizeObserver = new ResizeObserver(() => {
-        scheduleRepagination();
+      resizeObserver = new ResizeObserver((entries) => {
+        const info = entries
+          .map((entry) => `${entry.target.className?.slice(0, 30)}:${Math.round(entry.contentRect.width)}x${Math.round(entry.contentRect.height)}px`)
+          .join(', ');
+        console.log('[PAGINATE] ResizeObserver fired:', info);
+        scheduleWidthDrivenRepagination(`resize:${info}`);
       });
       if (readerArticleRef.current) {
         resizeObserver.observe(readerArticleRef.current);
@@ -15238,6 +16429,8 @@ function AppInner() {
 
     window.addEventListener('orientationchange', scheduleRepagination);
     return () => {
+      fontsCancelled = true;
+      settleTimeoutIds.forEach((timeoutId) => window.clearTimeout(timeoutId));
       window.removeEventListener('orientationchange', scheduleRepagination);
       resizeObserver?.disconnect();
       if (readerPaginationResizeFrameRef.current) {
@@ -15245,7 +16438,7 @@ function AppInner() {
         readerPaginationResizeFrameRef.current = 0;
       }
     };
-  }, [readerHasContent, readerImmersive, readerTopbarCollapsed, readerReadingMode, readerUsesCustomLayout]);
+  }, [readerHasContent, readerImmersive, readerReadingMode, readerUsesCustomLayout]);
 
   useLayoutEffect(() => {
     if (!readerUsesCustomLayout) {
@@ -15263,33 +16456,89 @@ function AppInner() {
 
     const runId = readerPaginationRunRef.current + 1;
     readerPaginationRunRef.current = runId;
+    console.log('[PAGINATE] run start tick=', readerPaginationLayoutTick, 'textLen=', readerCanonicalText?.length);
     const nextTextPages = paginateReaderText(readerCanonicalText, measureNode);
+    if (!isReaderPaginationSane(readerCanonicalText, nextTextPages, measureNode)) {
+      console.warn('[PAGINATE] rejected implausible pagination result', {
+        textLength: readerCanonicalText?.length || 0,
+        pages: nextTextPages.length,
+        width: getReaderMeasureDimension(measureNode, 'width'),
+        height: getReaderMeasureDimension(measureNode, 'height'),
+        sample: nextTextPages.slice(0, 5),
+      });
+      setReaderDynamicPages([]);
+      if (readerCanUseOriginalLayout) {
+        setReaderLayoutMode('original');
+      }
+      return;
+    }
     if (readerPaginationRunRef.current !== runId) {
+      console.log('[PAGINATE] run superseded, discarding');
       return;
     }
     const nextPages = nextTextPages.map((text, index) => ({
       page_number: index + 1,
       text,
     }));
+    console.log('[PAGINATE] computed pages=', nextPages.length);
     setReaderDynamicPages((prev) => (areReaderPagesEqual(prev, nextPages) ? prev : nextPages));
 
     if (nextPages.length > 0) {
-      const safePercent = Math.max(0, Math.min(100, Number(readerProgressPercent) || 0));
-      const resolvedPage = Math.max(1, Math.min(nextPages.length, Math.round((safePercent / 100) * nextPages.length) || 1));
-      setReaderCurrentPage(resolvedPage);
+      setReaderCurrentPage((prev) => {
+        const pendingPercent = readerPendingPagePercentRef.current;
+        if (pendingPercent !== null && pendingPercent !== undefined) {
+          readerPendingPagePercentRef.current = null;
+          const remappedPage = resolveReaderPageFromPercent(pendingPercent, nextPages.length);
+          console.log('[PAGINATE] remapping page by percent=', pendingPercent, '->', remappedPage, 'of', nextPages.length);
+          return remappedPage;
+        }
+        const current = Math.max(1, Number(prev || 1));
+        // Don't reset to progress-based page if current page is still valid.
+        // Prevents ResizeObserver loop: audio player height change → repaginate → page jump.
+        if (current <= nextPages.length) {
+          console.log('[PAGINATE] keeping current page=', current, 'of', nextPages.length);
+          return current;
+        }
+        // Out of bounds after re-layout — clamp to last page.
+        console.log('[PAGINATE] clamping page', current, '->', nextPages.length);
+        return nextPages.length;
+      });
     }
   }, [
     readerCanonicalText,
     readerFontSize,
     readerFontWeight,
     readerPaginationLayoutTick,
-    readerProgressPercent,
+    readerCanUseOriginalLayout,
     readerUsesCustomLayout,
+  ]);
+
+  useLayoutEffect(() => {
+    if (readerLayoutMode !== 'original' || !readerCanUseOriginalLayout) return;
+    const visibleNode = readerPageInnerRef.current;
+    if (!visibleNode) return;
+    if (visibleNode.scrollHeight <= visibleNode.clientHeight + 1) return;
+    // Source PDF/EPUB chunks are not guaranteed to fit the screen sheet as-is.
+    // Fall back to adaptive pagination instead of clipping and losing text.
+    // Sync progress before switching so custom layout can restore the correct page.
+    const stablePercent = computeReaderProgressPercent();
+    readerPendingPagePercentRef.current = stablePercent;
+    setReaderProgressPercent(stablePercent);
+    switchReaderLayoutMode('custom');
+  }, [
+    readerLayoutMode,
+    readerCanUseOriginalLayout,
+    readerCurrentPage,
+    readerFontSize,
+    readerFontWeight,
+    readerImmersive,
+    switchReaderLayoutMode,
   ]);
 
   useEffect(() => {
     const node = readerArticleRef.current;
     if (!node || !readerDocumentId || !readerContent) return undefined;
+    if (readerUsesOriginalEpubLayout) return undefined;
     if (readerPageCount > 0) return undefined;
     const handleScroll = () => {
       markReaderInteraction();
@@ -15299,7 +16548,8 @@ function AppInner() {
         clearTimeout(readerStateSaveTimeoutRef.current);
       }
       readerStateSaveTimeoutRef.current = setTimeout(() => {
-        syncReaderState({ progress_percent: Number(nextPercent.toFixed(2)) });
+        const pct = Number(nextPercent.toFixed(2));
+        syncReaderState({ progress_percent: pct });
       }, 900);
     };
     node.addEventListener('scroll', handleScroll, { passive: true });
@@ -15310,14 +16560,82 @@ function AppInner() {
         readerStateSaveTimeoutRef.current = null;
       }
     };
-  }, [readerDocumentId, readerReadingMode, readerContent, readerPageCount, markReaderInteraction]);
+  }, [markReaderInteraction, readerContent, readerDocumentId, readerPageCount, readerReadingMode, readerUsesOriginalEpubLayout]);
+
+  const loadReaderPageRange = useCallback(async (targetPage) => {
+    if (!initData || !readerDocumentId) return;
+    const pageCount = readerPages.length;
+    if (pageCount === 0) return;
+    const windowSize = 50;
+    const start = Math.max(1, targetPage - 5);
+    const end = Math.min(pageCount, start + windowSize - 1);
+    const adjustedStart = Math.max(1, end - windowSize + 1);
+    const key = `${readerDocumentId}:${adjustedStart}:${end}`;
+    if (readerPageLoadInFlightRef.current.has(key)) return;
+    readerPageLoadInFlightRef.current.add(key);
+    try {
+      const response = await fetch('/api/webapp/reader/library/pages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          document_id: readerDocumentId,
+          start_page: adjustedStart,
+          end_page: end,
+        }),
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      const newPages = Array.isArray(data?.pages) ? data.pages : [];
+      if (newPages.length === 0) return;
+      setReaderPages((prev) => {
+        const next = [...prev];
+        newPages.forEach((page) => {
+          const idx = (page.page_number || 0) - 1;
+          if (idx >= 0 && idx < next.length) next[idx] = page;
+        });
+        return next;
+      });
+    } catch (_error) {
+      // ignore transient errors
+    } finally {
+      readerPageLoadInFlightRef.current.delete(key);
+    }
+  }, [initData, readerDocumentId, readerPages.length]);
+
+  useEffect(() => {
+    if (readerUsesCustomLayout) return;
+    if (!readerDocumentId || readerPageCount === 0) return;
+    // Load current page if it's a null placeholder (lazy-loaded doc)
+    const curIdx = readerCurrentPage - 1;
+    if (Array.isArray(readerPages) && readerPages[curIdx] === null) {
+      void loadReaderPageRange(readerCurrentPage);
+      return;
+    }
+    // Pre-fetch the next window ahead
+    if (Array.isArray(readerPages)) {
+      for (let p = readerCurrentPage + 1; p <= Math.min(readerCurrentPage + 30, readerPageCount); p++) {
+        if (readerPages[p - 1] === null) { void loadReaderPageRange(p); break; }
+      }
+      // Pre-fetch behind
+      for (let p = readerCurrentPage - 1; p >= Math.max(1, readerCurrentPage - 10); p--) {
+        if (readerPages[p - 1] === null) { void loadReaderPageRange(p); break; }
+      }
+    }
+  }, [readerCurrentPage, readerDocumentId, readerPageCount, loadReaderPageRange, readerPages, readerUsesCustomLayout]);
 
   useEffect(() => {
     if (!readerDocumentId || readerPageCount === 0) return;
     const nextPercent = computeReaderProgressPercent();
+    const pct = Number(nextPercent.toFixed(2));
     setReaderProgressPercent(nextPercent);
-    syncReaderState({ progress_percent: Number(nextPercent.toFixed(2)) });
+    syncReaderState({ progress_percent: pct });
   }, [readerCurrentPage, readerDocumentId, readerPageCount]);
+
+  useEffect(() => {
+    readerCurrentPageRef.current = readerCurrentPage;
+    setReaderAudioStartWid(null);
+  }, [readerCurrentPage, readerDocumentId]);
 
   useEffect(() => {
     if (readerPageCount <= 0) {
@@ -15326,13 +16644,6 @@ function AppInner() {
     }
     setReaderCurrentPage((prev) => Math.max(1, Math.min(readerPageCount, Number(prev || 1))));
   }, [readerPageCount]);
-
-  useEffect(() => {
-    if (!readerDocumentId || !readerContent || readerPageCount <= 0) return;
-    const targetPercent = readerProgressPercent;
-    const timer = setTimeout(() => applyReaderProgressPercent(targetPercent), 90);
-    return () => clearTimeout(timer);
-  }, [readerReadingMode, readerDocumentId, readerContent, readerLayoutMode, readerPageCount, readerProgressPercent]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -15348,15 +16659,42 @@ function AppInner() {
       setFlashcardsOnly(true);
       setFlashcardActiveMode('fsrs');
       setFlashcardSessionActive(false);
-    }
-    if (startParam === 'analytics') {
+    } else if (startParam === 'analytics') {
       setFlashcardsOnly(false);
       setFlashcardSessionActive(false);
       setSelectedSections(new Set(['analytics']));
-      const timer = setTimeout(() => {
-        scrollToRef(analyticsRef, { block: 'start' });
-      }, 120);
-      return () => clearTimeout(timer);
+      const t = setTimeout(() => { scrollToRef(analyticsRef, { block: 'start' }); }, 120);
+      return () => clearTimeout(t);
+    } else if (startParam === 'today') {
+      setFlashcardsOnly(false);
+      setFlashcardSessionActive(false);
+      setSelectedSections(new Set());
+      const t = setTimeout(() => { scrollToRef(homeTodayPlanRef, { block: 'start' }); }, 120);
+      return () => clearTimeout(t);
+    } else if (startParam === 'translations') {
+      setFlashcardsOnly(false);
+      setFlashcardSessionActive(false);
+      setSelectedSections(new Set(['translations']));
+      const t = setTimeout(() => { scrollToRef(translationsRef, { block: 'start' }); }, 120);
+      return () => clearTimeout(t);
+    } else if (startParam === 'dictionary') {
+      setFlashcardsOnly(false);
+      setFlashcardSessionActive(false);
+      setSelectedSections(new Set(['dictionary']));
+      const t = setTimeout(() => { scrollToRef(dictionaryRef, { block: 'start' }); }, 120);
+      return () => clearTimeout(t);
+    } else if (startParam === 'reader') {
+      setFlashcardsOnly(false);
+      setFlashcardSessionActive(false);
+      setSelectedSections(new Set(['reader']));
+      const t = setTimeout(() => { scrollToRef(readerRef, { block: 'start' }); }, 120);
+      return () => clearTimeout(t);
+    } else if (startParam === 'assistant') {
+      setFlashcardsOnly(false);
+      setFlashcardSessionActive(false);
+      setSelectedSections(new Set(['assistant']));
+      const t = setTimeout(() => { scrollToRef(assistantRef, { block: 'start' }); }, 120);
+      return () => clearTimeout(t);
     }
     if (window.location.pathname === '/webapp/review') {
       setFlashcardsVisible(true);
@@ -15515,8 +16853,9 @@ function AppInner() {
     cardsToWarm.forEach((card) => {
       if (!card) return;
       const direction = (card?.source_lang || 'ru') === 'de' ? 'de-ru' : 'ru-de';
-      const { targetText } = getDictionarySourceTarget(card, direction);
-      const text = String(targetText || '').trim();
+      const _cardTexts = getDictionarySourceTarget(card, direction);
+      const _cardReversed = (card?.source_lang || 'ru') === 'de';
+      const text = String((_cardReversed ? _cardTexts?.sourceText : _cardTexts?.targetText) || '').trim();
       if (!text) return;
       const locale = getTtsLocaleForLang(detectTtsLangFromText(text));
       preloadTts(text, locale);
@@ -16377,6 +17716,40 @@ function AppInner() {
     };
   };
 
+  const getTranslationResultIdentityKey = (item) => {
+    if (!item || typeof item !== 'object') return '';
+    const sentenceId = Number(item?.sentence_id_for_mistake_table || 0);
+    if (sentenceId > 0) {
+      return `sentence:${sentenceId}`;
+    }
+    const translationId = Number(item?.translation_id || 0);
+    if (translationId > 0) {
+      return `translation:${translationId}`;
+    }
+    const checkItemId = Number(item?.check_item_id || 0);
+    if (checkItemId > 0) {
+      return `check:${checkItemId}`;
+    }
+    const sentenceNumber = Number(item?.sentence_number || 0);
+    const originalText = String(item?.original_text || '').trim();
+    if (sentenceNumber > 0 || originalText) {
+      return `fallback:${sentenceNumber}:${originalText}`;
+    }
+    return '';
+  };
+
+  const registerTranslationResultCardNode = useCallback((resultKey, node) => {
+    const normalizedKey = String(resultKey || '').trim();
+    if (!normalizedKey) {
+      return;
+    }
+    if (node) {
+      translationResultCardRefsRef.current.set(normalizedKey, node);
+    } else {
+      translationResultCardRefsRef.current.delete(normalizedKey);
+    }
+  }, []);
+
   const applyTranslationCheckStatusPayload = (payload) => {
     const checkSession = payload?.check_session && typeof payload.check_session === 'object'
       ? payload.check_session
@@ -16400,8 +17773,26 @@ function AppInner() {
     });
 
     if (itemsIncluded) {
-      setResults(mappedResults);
-      setTranslationAudioGrammarOptIn(audioOptInMap);
+      setResults((prev) => {
+        const nextByKey = new Map();
+        (Array.isArray(prev) ? prev : []).forEach((item, index) => {
+          const key = getTranslationResultIdentityKey(item) || `prev:${index}`;
+          nextByKey.set(key, item);
+        });
+        mappedResults.forEach((item, index) => {
+          const key = getTranslationResultIdentityKey(item) || `next:${index}`;
+          nextByKey.set(key, item);
+        });
+        return Array.from(nextByKey.values()).sort((a, b) => {
+          const orderA = Number.isFinite(Number(a?.item_order)) ? Number(a.item_order) : Number(a?.sentence_number || 0);
+          const orderB = Number.isFinite(Number(b?.item_order)) ? Number(b.item_order) : Number(b?.sentence_number || 0);
+          return orderA - orderB;
+        });
+      });
+      setTranslationAudioGrammarOptIn((prev) => ({
+        ...(prev || {}),
+        ...audioOptInMap,
+      }));
     }
     const processedSentenceIds = new Set(
       checkItems
@@ -16454,6 +17845,29 @@ function AppInner() {
       sessionId: checkSession?.id ?? null,
     };
   };
+
+  useEffect(() => {
+    const targetSentenceId = Number(pendingSingleResultScrollSentenceId || 0);
+    if (!Number.isFinite(targetSentenceId) || targetSentenceId <= 0) {
+      return undefined;
+    }
+    const matchedResult = results.find(
+      (item) => Number(item?.sentence_id_for_mistake_table || 0) === targetSentenceId
+    );
+    if (!matchedResult) {
+      return undefined;
+    }
+    const resultKey = getResultCardIdentityKey(matchedResult);
+    const node = translationResultCardRefsRef.current.get(resultKey);
+    if (!node) {
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      node.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+      setPendingSingleResultScrollSentenceId(null);
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [getResultCardIdentityKey, pendingSingleResultScrollSentenceId, results]);
 
   const pollTranslationCheckStatus = async ({ checkSessionId: checkSessionIdParam, pollToken }) => {
     const getCheckStatusPollDelayMs = (attempt, suggestedDelayMs = 0) => {
@@ -16592,49 +18006,33 @@ function AppInner() {
     }
   };
 
-  const handleWebappSubmit = async (event) => {
-    event.preventDefault();
-    const liveDrafts = getActiveTranslationDraftMap();
+  const submitTranslationCheck = async ({
+    submittedEntries,
+    resetExistingResults = false,
+    clearExistingExplanations = false,
+    showBackgroundHint = true,
+  }) => {
     const sourceSessionId = String(
       translationSessionIdRef.current
       || sentences[0]?.source_session_id
       || ''
     ).trim();
-    if (translationSubmitInFlightRef.current) {
-      return;
-    }
-    if (!initData) {
-      setWebappError(initDataMissingMsg);
-      return;
-    }
-    if (sentences.length === 0) {
-      setWebappError(tr('Нет предложений для перевода.', 'Keine Saetze zur Uebersetzung vorhanden.'));
-      return;
-    }
-    if (Object.values(liveDrafts).every((text) => !String(text || '').trim())) {
-      setWebappError(tr('Заполните хотя бы один перевод.', 'Bitte fuelle mindestens eine Uebersetzung aus.'));
-      return;
-    }
 
     setWebappLoading(true);
     translationSubmitInFlightRef.current = true;
     setWebappError('');
-    setResults([]);
-    setTranslationAudioGrammarOptIn({});
+    if (resetExistingResults) {
+      setResults([]);
+      setTranslationAudioGrammarOptIn({});
+    }
     setTranslationAudioGrammarSaving({});
-    setExplanations({});
-    setExplanationLoading({});
+    if (clearExistingExplanations) {
+      setExplanations({});
+      setExplanationLoading({});
+    }
     setTranslationCheckProgress({ active: false, done: 0, total: 0 });
 
     try {
-      const currentSentenceIds = new Set(
-        sentences
-          .map((item) => Number(item?.id_for_mistake_table || 0))
-          .filter((value) => Number.isFinite(value) && value > 0)
-      );
-      const submittedEntries = Object.entries(liveDrafts)
-        .map(([id, translation]) => ({ id: Number(id), translation: String(translation || '').trim() }))
-        .filter((item) => currentSentenceIds.has(item.id) && item.translation);
       if (!submittedEntries.length) {
         throw new Error(tr('Нет переводов для проверки.', 'Keine Uebersetzungen zur Pruefung.'));
       }
@@ -16669,17 +18067,20 @@ function AppInner() {
       if (!startState.sessionId) {
         throw new Error(tr('Не удалось создать сессию проверки.', 'Pruefungssession konnte nicht erstellt werden.'));
       }
-      showInlineToast(
-        tr(
-          'Можно подождать здесь или вернуться позже. Проверка продолжится в фоновом режиме.',
-          'Du kannst hier warten oder spaeter zurueckkommen. Die Pruefung laeuft im Hintergrund weiter.'
-        ),
-        3000,
-      );
+      if (showBackgroundHint) {
+        showInlineToast(
+          tr(
+            'Можно подождать здесь или вернуться позже. Проверка продолжится в фоновом режиме.',
+            'Du kannst hier warten oder spaeter zurueckkommen. Die Pruefung laeuft im Hintergrund weiter.'
+          ),
+          3000,
+        );
+      }
       await pollTranslationCheckStatus({
         checkSessionId: startState.sessionId,
         pollToken,
       });
+      return true;
     } catch (error) {
       const friendly = normalizeNetworkErrorMessage(
         error,
@@ -16687,9 +18088,77 @@ function AppInner() {
         'Uebersetzungen konnten nicht geprueft werden.'
       );
       setWebappError(`${tr('Ошибка проверки', 'Pruefungsfehler')}: ${friendly}`);
+      return false;
     } finally {
       translationSubmitInFlightRef.current = false;
       setWebappLoading(false);
+    }
+  };
+
+  const handleWebappSubmit = async (event) => {
+    event.preventDefault();
+    const liveDrafts = getActiveTranslationDraftMap();
+    if (translationSubmitInFlightRef.current) {
+      return;
+    }
+    if (!initData) {
+      setWebappError(initDataMissingMsg);
+      return;
+    }
+    if (sentences.length === 0) {
+      setWebappError(tr('Нет предложений для перевода.', 'Keine Saetze zur Uebersetzung vorhanden.'));
+      return;
+    }
+    if (Object.values(liveDrafts).every((text) => !String(text || '').trim())) {
+      setWebappError(tr('Заполните хотя бы один перевод.', 'Bitte fuelle mindestens eine Uebersetzung aus.'));
+      return;
+    }
+
+    const currentSentenceIds = new Set(
+      sentences
+        .map((item) => Number(item?.id_for_mistake_table || 0))
+        .filter((value) => Number.isFinite(value) && value > 0)
+    );
+    const submittedEntries = Object.entries(liveDrafts)
+      .map(([id, translation]) => ({ id: Number(id), translation: String(translation || '').trim() }))
+      .filter((item) => currentSentenceIds.has(item.id) && item.translation);
+
+    await submitTranslationCheck({
+      submittedEntries,
+      resetExistingResults: results.length === 0,
+      clearExistingExplanations: true,
+      showBackgroundHint: true,
+    });
+  };
+
+  const handleSingleSentenceCheck = async (sentenceId) => {
+    const normalizedSentenceId = Number(sentenceId || 0);
+    if (translationSubmitInFlightRef.current || !Number.isFinite(normalizedSentenceId) || normalizedSentenceId <= 0) {
+      return;
+    }
+    if (!initData) {
+      setWebappError(initDataMissingMsg);
+      return;
+    }
+    const liveDrafts = getActiveTranslationDraftMap();
+    const translationText = String(liveDrafts[String(normalizedSentenceId)] || '').trim();
+    if (!translationText) {
+      setWebappError(tr('Сначала введите перевод этого предложения.', 'Bitte gib zuerst die Uebersetzung dieses Satzes ein.'));
+      return;
+    }
+    setSingleSentenceCheckLoadingId(normalizedSentenceId);
+    try {
+      const checkCompleted = await submitTranslationCheck({
+        submittedEntries: [{ id: normalizedSentenceId, translation: translationText }],
+        resetExistingResults: false,
+        clearExistingExplanations: false,
+        showBackgroundHint: false,
+      });
+      if (checkCompleted) {
+        setPendingSingleResultScrollSentenceId(normalizedSentenceId);
+      }
+    } finally {
+      setSingleSentenceCheckLoadingId(null);
     }
   };
 
@@ -16715,6 +18184,10 @@ function AppInner() {
     }
     if (!initData) {
       setWebappError(initDataMissingMsg);
+      return;
+    }
+    if (!hasSelectedTranslationLevel) {
+      setWebappError(tr('Выберите уровень перед началом перевода.', 'Waehle vor dem Start der Uebersetzung ein Niveau.'));
       return;
     }
     if (isCustomTopic(selectedTopic) && !customTopicInput.trim()) {
@@ -16744,7 +18217,7 @@ function AppInner() {
           initData,
           topic: selectedTopic,
           custom_focus: isCustomTopic(selectedTopic) ? customTopicInput.trim() : '',
-          level: selectedLevel,
+          level: String(selectedLevel || '').trim().toLowerCase(),
           language_pair: getWebappLanguagePairHint() || undefined,
         }),
       });
@@ -17628,6 +19101,8 @@ function AppInner() {
   }, [movies, moviesLanguageFilter]);
   function getDictionarySourceTarget(item, direction = dictionaryDirection) {
     if (!item) return { sourceText: '', targetText: '' };
+    const directionParts = String(direction || '').trim().toLowerCase().split('-', 2);
+    const targetLang = directionParts.length === 2 ? directionParts[1] : '';
     const sourceTextRaw = String(
       item.source_text
       || (direction === 'de-ru'
@@ -17642,7 +19117,8 @@ function AppInner() {
         : (item.translation_de || item.word_de || ''))
       || ''
     ).trim();
-    return applyArticleForDirection(sourceTextRaw, targetTextRaw, direction, item);
+    const targetText = sanitizeBilingualTargetText(sourceTextRaw, targetTextRaw, targetLang);
+    return applyArticleForDirection(sourceTextRaw, targetText, direction, item);
   }
   function getDictionaryDisplayedTranslation(item, direction = dictionaryDirection) {
     const { sourceText, targetText } = getDictionarySourceTarget(item, direction);
@@ -17744,13 +19220,140 @@ function AppInner() {
   };
   const getSavedEntrySenseValues = (item) => {
     const meanings = getSavedEntryRankedMeanings(item);
-    const primaryFallback = String(item?.translation_ru || item?.translation_de || item?.display_translation || '').trim();
+    const responseJson = item?.response_json && typeof item.response_json === 'object' ? item.response_json : {};
+    const sourceText = String(
+      responseJson.source_text
+      || item?.word_ru
+      || responseJson.word_ru
+      || item?.word_de
+      || responseJson.word_de
+      || ''
+    ).trim();
+    const targetLang = item?.target_lang || responseJson.target_lang || '';
+    const primaryFallbackRaw = String(item?.translation_ru || item?.translation_de || item?.display_translation || '').trim();
+    const primaryFallback = sanitizeBilingualTargetText(sourceText, primaryFallbackRaw, targetLang);
     return [
       String(meanings[0]?.value || primaryFallback).trim(),
       String(meanings[1]?.value || '').trim(),
       String(meanings[2]?.value || '').trim(),
     ];
   };
+  function applySavedVocabEditLocally(item, germanText, russianText, meaningValues, folderId) {
+    const responseJson = coerceResponseJson(item?.response_json);
+    const sourceLang = normalizeLangCode(item?.source_lang || responseJson?.source_lang || '');
+    const targetLang = normalizeLangCode(item?.target_lang || responseJson?.target_lang || '');
+    const normalizedGerman = String(germanText || '').trim();
+    const normalizedRussian = String(russianText || '').trim();
+
+    let sourceText = String(responseJson.source_text || '').trim();
+    let targetText = String(responseJson.target_text || '').trim();
+    if (sourceLang === 'de' && normalizedGerman) sourceText = normalizedGerman;
+    if (targetLang === 'de' && normalizedGerman) targetText = normalizedGerman;
+    if (sourceLang === 'ru' && normalizedRussian) sourceText = normalizedRussian;
+    if (targetLang === 'ru' && normalizedRussian) targetText = normalizedRussian;
+
+    let wordRu = String(item?.word_ru || responseJson.word_ru || '').trim();
+    let translationDe = String(item?.translation_de || responseJson.translation_de || '').trim();
+    let wordDe = String(item?.word_de || responseJson.word_de || '').trim();
+    let translationRu = String(item?.translation_ru || responseJson.translation_ru || '').trim();
+
+    if (sourceLang === 'ru' && sourceText) {
+      wordRu = sourceText;
+      translationRu = sourceText;
+    }
+    if (sourceLang === 'de' && sourceText) {
+      wordDe = sourceText;
+      translationDe = sourceText;
+    }
+    if (targetLang === 'de' && targetText) {
+      wordDe = targetText;
+      translationDe = targetText;
+    }
+    if (targetLang === 'ru' && targetText) {
+      wordRu = targetText;
+      translationRu = targetText;
+    }
+
+    const updatedResponseJson = {
+      ...responseJson,
+      source_text: sourceText,
+      target_text: targetText,
+      word_ru: wordRu,
+      translation_de: translationDe,
+      word_de: wordDe,
+      translation_ru: translationRu,
+      source_lang: sourceLang || item?.source_lang || '',
+      target_lang: targetLang || item?.target_lang || '',
+    };
+
+    const normalizedMeanings = Array.isArray(meaningValues)
+      ? meaningValues.map((value) => String(value || '').trim()).filter(Boolean).slice(0, 3)
+      : [];
+    if (normalizedMeanings.length > 0) {
+      const existingMeanings = responseJson?.meanings && typeof responseJson.meanings === 'object' ? responseJson.meanings : {};
+      const existingPrimary = existingMeanings?.primary && typeof existingMeanings.primary === 'object' ? existingMeanings.primary : {};
+      const existingSecondary = Array.isArray(existingMeanings?.secondary) ? existingMeanings.secondary : [];
+      const existingSenses = Array.isArray(responseJson?.dictionary_senses) ? responseJson.dictionary_senses : [];
+      const rebuiltSenses = [];
+      const rebuiltSecondary = [];
+      const rebuiltTranslations = [];
+      normalizedMeanings.forEach((value, index) => {
+        const baseSense = existingSenses[index] && typeof existingSenses[index] === 'object' ? existingSenses[index] : {};
+        const baseMeaning = index === 0
+          ? existingPrimary
+          : (existingSecondary[index - 1] && typeof existingSecondary[index - 1] === 'object' ? existingSecondary[index - 1] : {});
+        const contextValue = String(baseSense.context || baseMeaning.context || '').trim();
+        const exampleSource = String(baseSense.example_source || baseMeaning.example_source || '').trim();
+        const exampleTarget = String(baseSense.example_target || baseMeaning.example_target || '').trim();
+        rebuiltSenses.push({
+          rank: index + 1,
+          label: index === 0 ? 'main' : 'secondary',
+          value,
+          context: contextValue,
+          example_source: exampleSource,
+          example_target: exampleTarget,
+        });
+        rebuiltTranslations.push({
+          value,
+          context: contextValue,
+          is_primary: index === 0,
+        });
+        if (index > 0) {
+          rebuiltSecondary.push({
+            value,
+            priority: index + 1,
+            context: contextValue,
+            example_source: exampleSource,
+            example_target: exampleTarget,
+          });
+        }
+      });
+      updatedResponseJson.dictionary_senses = rebuiltSenses;
+      updatedResponseJson.translations = rebuiltTranslations;
+      updatedResponseJson.meanings = {
+        primary: {
+          value: rebuiltSenses[0]?.value || normalizedRussian,
+          priority: 1,
+          context: rebuiltSenses[0]?.context || '',
+          example_source: rebuiltSenses[0]?.example_source || '',
+          example_target: rebuiltSenses[0]?.example_target || '',
+        },
+        secondary: rebuiltSecondary,
+      };
+    }
+
+    return {
+      ...item,
+      word_ru: wordRu,
+      translation_de: translationDe,
+      word_de: wordDe,
+      translation_ru: translationRu,
+      folder_id: folderId,
+      response_json: updatedResponseJson,
+      display_word: wordDe || wordRu || item?.display_word || '',
+      display_translation: normalizedMeanings[0] || translationRu || translationDe || item?.display_translation || '',
+    };
+  }
   const normalizeComparableText = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
   const getSavedEntryMeaningRows = (item, limit = 3) => {
     const rows = [];
@@ -17922,6 +19525,57 @@ function AppInner() {
   const hasLatin = (value) => /[A-Za-zÄÖÜäöüßÀ-ÿ]/.test(value || '');
   const cyrillicLangs = new Set(['ru', 'uk', 'be', 'bg', 'sr', 'mk']);
   const isCyrillicLang = (lang) => cyrillicLangs.has(String(lang || '').toLowerCase());
+  const normalizeComparableTranslationText = (value) => normalizeSelectionText(value)
+    .toLocaleLowerCase()
+    .replace(/[“”„«»"'`]/g, '')
+    .replace(/[–—−]/g, '-')
+    .replace(/[^0-9A-Za-zÀ-ÿА-Яа-яЁёÄÖÜäöüß\s-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const getComparableTranslationTokens = (value) => normalizeComparableTranslationText(value)
+    .split(' ')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const looksLikeEmbeddedSourceText = (candidateText, sourceText) => {
+    const candidate = normalizeComparableTranslationText(candidateText);
+    const source = normalizeComparableTranslationText(sourceText);
+    if (!candidate || !source) return false;
+    if (candidate === source || source.startsWith(candidate) || candidate.startsWith(source)) {
+      return true;
+    }
+    const candidateTokens = getComparableTranslationTokens(candidate);
+    if (candidateTokens.length < 3) return false;
+    const sourceTokens = new Set(getComparableTranslationTokens(source));
+    const overlap = candidateTokens.filter((token) => sourceTokens.has(token)).length;
+    return overlap >= Math.max(2, Math.ceil(candidateTokens.length * 0.7));
+  };
+  const textLooksCompatibleWithTargetLang = (value, lang) => {
+    const text = normalizeSelectionText(value);
+    if (!text) return false;
+    if (isCyrillicLang(lang)) return hasCyrillic(text);
+    return hasLatin(text) && !hasCyrillic(text);
+  };
+  const sanitizeBilingualTargetText = (sourceText, rawTargetText, targetLang) => {
+    const source = normalizeSelectionText(sourceText);
+    const target = normalizeSelectionText(rawTargetText);
+    const normalizedTargetLang = normalizeLangCode(targetLang || '');
+    if (!source || !target || !normalizedTargetLang) return target;
+    const separators = [' → ', ' — ', ' – ', ' - '];
+    for (const separator of separators) {
+      const splitIndex = target.indexOf(separator);
+      if (splitIndex <= 0) continue;
+      const left = normalizeSelectionText(target.slice(0, splitIndex));
+      const right = normalizeSelectionText(target.slice(splitIndex + separator.length));
+      if (!left || !right) continue;
+      if (looksLikeEmbeddedSourceText(left, source) && textLooksCompatibleWithTargetLang(right, normalizedTargetLang)) {
+        return right;
+      }
+      if (looksLikeEmbeddedSourceText(right, source) && textLooksCompatibleWithTargetLang(left, normalizedTargetLang)) {
+        return left;
+      }
+    }
+    return target;
+  };
 
   const handleSelection = (event, overrideText = '', options = {}) => {
     const text = overrideText || normalizeSelectionText(window.getSelection()?.toString() || '');
@@ -18073,9 +19727,10 @@ function AppInner() {
         throw new Error(await readApiError(response, 'Ошибка быстрого перевода', 'Fehler bei Schnelluebersetzung'));
       }
       const data = await response.json();
+      const rawTranslation = String(data?.translation || '').trim();
       const payload = {
         cleaned,
-        translation: String(data?.translation || '').trim(),
+        translation: sanitizeBilingualTargetText(cleaned, rawTranslation, targetLang),
         provider: String(data?.provider || '').trim(),
         sourceLangHint,
         targetLang,
@@ -18441,6 +20096,7 @@ function AppInner() {
     const resolvedSourceLang = normalizeLangCode(sourceLang || pair.source_lang) || pair.source_lang;
     const resolvedTargetLang = normalizeLangCode(targetLang || pair.target_lang) || pair.target_lang;
     const resolvedDirection = String(direction || `${resolvedSourceLang}-${resolvedTargetLang}`).trim().toLowerCase();
+    const sanitizedTarget = sanitizeBilingualTargetText(source, target, resolvedTargetLang);
     const isLegacyPair = pair.source_lang === 'ru' && pair.target_lang === 'de' && isLegacyRuDeDirection(resolvedDirection);
     const response = await fetch('/api/webapp/dictionary/save', {
       method: 'POST',
@@ -18449,14 +20105,14 @@ function AppInner() {
         initData,
         word_ru: isLegacyPair && resolvedDirection === 'ru-de' ? source : '',
         word_de: isLegacyPair && resolvedDirection === 'de-ru' ? source : '',
-        translation_de: isLegacyPair && resolvedDirection === 'ru-de' ? target : '',
-        translation_ru: isLegacyPair && resolvedDirection === 'de-ru' ? target : '',
+        translation_de: isLegacyPair && resolvedDirection === 'ru-de' ? sanitizedTarget : '',
+        translation_ru: isLegacyPair && resolvedDirection === 'de-ru' ? sanitizedTarget : '',
         source_text: source,
-        target_text: target,
+        target_text: sanitizedTarget,
         response_json: {
           ...(responseJson && typeof responseJson === 'object' ? responseJson : {}),
           source_text: source,
-          target_text: target,
+          target_text: sanitizedTarget,
           source_lang: resolvedSourceLang,
           target_lang: resolvedTargetLang,
           direction: resolvedDirection,
@@ -18721,6 +20377,13 @@ function AppInner() {
     return `${pad(minutes)}:${pad(secs)}`;
   }
 
+  function resolveReaderPageFromPercent(percent, totalPages) {
+    const pageCount = Math.max(1, Number(totalPages || 0));
+    const safe = Math.max(0, Math.min(100, Number(percent || 0)));
+    if (safe <= 0) return 1;
+    return Math.max(1, Math.min(pageCount, Math.round((safe / 100) * pageCount)));
+  }
+
   function getReaderTrackedDurationSeconds(options = {}) {
     const baseSeconds = Math.max(0, Math.floor(Number(
       options?.baseSeconds ?? readerAccumulatedSeconds ?? 0
@@ -18737,6 +20400,9 @@ function AppInner() {
   }
 
   function computeReaderProgressPercent() {
+    if (readerUsesOriginalEpubLayout) {
+      return Math.max(0, Math.min(100, Number(readerProgressPercent || 0)));
+    }
     if (readerPageCount > 0) {
       const page = Math.max(1, Math.min(readerPageCount, Number(readerCurrentPage || 1)));
       return Math.max(0, Math.min(100, (page / readerPageCount) * 100));
@@ -18752,10 +20418,19 @@ function AppInner() {
   }
 
   function applyReaderProgressPercent(percent) {
-    if (readerPageCount > 0) {
+    if (readerUsesOriginalEpubLayout) {
+      const rendition = readerEpubRenditionRef.current;
+      const book = readerEpubBookRef.current;
+      if (!rendition || !book?.locations || typeof book.locations.cfiFromPercentage !== 'function') return;
       const safe = Math.max(0, Math.min(100, Number(percent || 0)));
-      const resolved = Math.max(1, Math.min(readerPageCount, Math.round((safe / 100) * readerPageCount) || 1));
-      setReaderCurrentPage(resolved);
+      const targetCfi = safe <= 0 ? '' : String(book.locations.cfiFromPercentage(safe / 100) || '').trim();
+      setReaderOriginalCoverVisible(false);
+      const displayPromise = targetCfi ? rendition.display(targetCfi) : rendition.display();
+      Promise.resolve(displayPromise).catch(() => {});
+      return;
+    }
+    if (readerPageCount > 0) {
+      setReaderCurrentPage(resolveReaderPageFromPercent(percent, readerPageCount));
       return;
     }
     const node = readerArticleRef.current;
@@ -18769,6 +20444,20 @@ function AppInner() {
     const max = Math.max(1, node.scrollHeight - node.clientHeight);
     node.scrollTop = (safe / 100) * max;
   }
+
+  const jumpReaderTocItem = useCallback((item) => {
+    if (readerUsesOriginalEpubLayout) {
+      const href = String(item?.href || item?.cfi || '').trim();
+      if (!href || !readerEpubRenditionRef.current) return;
+      setReaderOriginalCoverVisible(false);
+      setReaderOriginalTocHref(normalizeReaderEpubHref(href));
+      setReaderOriginalTocTitle(String(item?.title || '').trim());
+      Promise.resolve(readerEpubRenditionRef.current.display(href)).catch(() => {});
+      return;
+    }
+    const pageNumber = Math.max(1, Number(item?.page_number || 1));
+    setReaderCurrentPage(pageNumber);
+  }, [readerUsesOriginalEpubLayout]);
 
   const resetReaderPhraseGesture = () => {
     readerPhraseGestureRef.current = {
@@ -18835,11 +20524,62 @@ function AppInner() {
     if (!(target instanceof Element)) return;
 
     const wordEl = target.closest('[data-wid]');
+
+    // ── Audio awaiting word tap: next tap starts audio from this word ──
+    if (readerAudioAwaitingWordTapRef.current || readerAudioAwaitingWordTap) {
+      readerAudioAwaitingWordTapRef.current = false;
+      setReaderAudioAwaitingWordTap(false);
+      if (wordEl && root.contains(wordEl)) {
+        const wid = String(wordEl.getAttribute('data-wid') || '').trim();
+        const charStart = parseInt(wordEl.getAttribute('data-start') || '', 10);
+        console.log('[ReaderAudio] awaiting tap: wid=', wid, 'charStart=', charStart, 'isFinite=', Number.isFinite(charStart));
+        if (wid) {
+          const currentPage = readerCurrentPageRef.current;
+          void primeReaderAudioPlayback();
+          playReaderAudioPage(currentPage, wid, Number.isFinite(charStart) && charStart >= 0 ? charStart : undefined);
+        }
+      }
+      return; // don't show translation when starting audio
+    }
+
     if (wordEl && root.contains(wordEl)) {
       const wid = String(wordEl.getAttribute('data-wid') || '').trim();
       const sid = String(wordEl.getAttribute('data-sid') || '').trim();
       const metaWord = readerWordMap.get(wid);
       if (!metaWord || !sid) return;
+
+      // Track tap count — same sentence within 320ms increments the counter
+      const now = Date.now();
+      const lastTap = readerLastTapRef.current;
+      const isFast = now - lastTap.time < 320 && lastTap.sid === sid;
+      const tapCount = isFast ? lastTap.count + 1 : 1;
+      readerLastTapRef.current = { time: now, sid, count: tapCount };
+
+      // ── Double tap → sentence translation ────────────────────────
+      if (tapCount >= 2) {
+        const sentence = readerSentenceMap.get(sid);
+        if (!sentence) return;
+        if (readerAudioPlayActive && readerAudioPlayData) {
+          setReaderAudioStartWid(wid);
+          seekReaderAudioToWid(wid);
+        }
+        handleSelection(event, String(sentence.text || ''), {
+          compact: true,
+          inlineLookup: true,
+          lookupLang: getNormalizeLookupLang(),
+          selectionType: 'sentence',
+          selectedMeta: {
+            sids: [sid],
+            start: Number(sentence.start || 0),
+            end: Number(sentence.end || 0),
+          },
+        });
+        return;
+      }
+
+      // ── Single tap → word translation ────────────────────────────
+      setReaderAudioStartWid(wid);
+      if (readerAudioPlayActive && readerAudioPlayData) seekReaderAudioToWid(wid);
       handleSelection(event, metaWord.value, {
         compact: true,
         inlineLookup: true,
@@ -18860,6 +20600,7 @@ function AppInner() {
       const sid = String(sentenceEl.getAttribute('data-sid') || '').trim();
       const sentence = readerSentenceMap.get(sid);
       if (!sentence) return;
+      readerLastTapRef.current = { time: 0, sid: null, count: 0 };
       handleSelection(event, String(sentence.text || ''), {
         compact: true,
         inlineLookup: true,
@@ -19028,6 +20769,9 @@ function AppInner() {
     };
     readerDragSelectionMetaRef.current = null;
     setReaderDragSelectionMeta(null);
+
+    // Long press is now only used for phrase drag-selection, not audio start.
+    if (readerWordLongPressTimerRef.current) clearTimeout(readerWordLongPressTimerRef.current);
   };
 
   const handleReaderArticleTouchMove = (event) => {
@@ -19037,6 +20781,11 @@ function AppInner() {
     if (!touch) return;
     const dx = touch.clientX - Number(gesture.startX || 0);
     const dy = touch.clientY - Number(gesture.startY || 0);
+    // Cancel long press if finger moves more than 8px
+    if ((Math.abs(dx) > 8 || Math.abs(dy) > 8) && readerWordLongPressTimerRef.current) {
+      clearTimeout(readerWordLongPressTimerRef.current);
+      readerWordLongPressTimerRef.current = null;
+    }
     if (Math.abs(dx) < 10 || Math.abs(dx) <= Math.abs(dy)) return;
     const wordEl = getReaderWordElementByPoint(touch.clientX, touch.clientY);
     if (!wordEl) return;
@@ -19061,6 +20810,10 @@ function AppInner() {
   };
 
   const handleReaderArticleTouchEnd = (event) => {
+    if (readerWordLongPressTimerRef.current) {
+      clearTimeout(readerWordLongPressTimerRef.current);
+      readerWordLongPressTimerRef.current = null;
+    }
     markReaderInteraction();
     const gesture = readerPhraseGestureRef.current;
     const previewMeta = readerDragSelectionMetaRef.current;
@@ -19069,6 +20822,7 @@ function AppInner() {
       const selectionEvent = touch
         ? { clientX: touch.clientX, clientY: touch.clientY }
         : event;
+      if (Array.isArray(previewMeta.wids) && previewMeta.wids[0]) setReaderAudioStartWid(previewMeta.wids[0]);
       handleSelection(selectionEvent, previewMeta.text, {
         compact: true,
         inlineLookup: true,
@@ -19086,11 +20840,37 @@ function AppInner() {
       return;
     }
     resetReaderPhraseGesture();
+
+    // ── Audio awaiting word tap — handle in touchend (more reliable than click on iOS) ──
+    if (readerAudioAwaitingWordTapRef.current && touch) {
+      const root = readerArticleRef.current;
+      const wordEl = getReaderWordElementByPoint(touch.clientX, touch.clientY);
+      console.log('[ReaderAudio] touchend awaiting: wordEl=', wordEl?.getAttribute('data-wid'), 'x=', touch.clientX, 'y=', touch.clientY);
+      readerAudioAwaitingWordTapRef.current = false;
+      setReaderAudioAwaitingWordTap(false);
+      readerSuppressStructuredClickRef.current = Date.now(); // suppress the follow-up click
+      if (wordEl && root && root.contains(wordEl)) {
+        const wid = String(wordEl.getAttribute('data-wid') || '').trim();
+        const charStart = parseInt(wordEl.getAttribute('data-start') || '', 10);
+        console.log('[ReaderAudio] touchend tap word: wid=', wid, 'charStart=', charStart);
+        if (wid) {
+          void primeReaderAudioPlayback();
+          playReaderAudioPage(readerCurrentPageRef.current, wid, Number.isFinite(charStart) && charStart >= 0 ? charStart : undefined);
+          return;
+        }
+      }
+      return; // tapped outside a word — cancel awaiting, no audio
+    }
+
     handleReaderPageTouchEnd(event);
     handleReaderStructuredSelectionEnd(event);
   };
 
   const handleReaderArticleTouchCancel = () => {
+    if (readerWordLongPressTimerRef.current) {
+      clearTimeout(readerWordLongPressTimerRef.current);
+      readerWordLongPressTimerRef.current = null;
+    }
     resetReaderPhraseGesture();
   };
 
@@ -19099,7 +20879,7 @@ function AppInner() {
       {readerSentencesModel.map((sentence) => (
         <span
           key={sentence.sid}
-          className={`reader-sentence ${selectedSentenceIds.has(sentence.sid) ? 'is-selected' : ''}`}
+          className={`reader-sentence ${selectedSentenceIds.has(sentence.sid) ? 'is-selected' : ''}${readerAudioPlayingSid === sentence.sid ? ' is-playing-sentence' : ''}`}
           data-sid={sentence.sid}
           data-start={sentence.start}
           data-end={sentence.end}
@@ -19107,15 +20887,18 @@ function AppInner() {
           {sentence.tokens.map((token, tokenIndex) => {
             if (token.kind === 'word') {
               const wordId = String(token.wid || '');
+              const isPlayingWord = readerAudioPlayingWid === wordId;
               return (
                 <span
                   key={wordId || `${sentence.sid}-word-${tokenIndex}`}
-                  className={`reader-word ${selectedWordIds.has(wordId) ? 'is-selected' : ''}`}
+                  className={`reader-word ${selectedWordIds.has(wordId) ? 'is-selected' : ''}${isPlayingWord ? ' is-playing-word' : ''}`}
                   data-wid={wordId}
                   data-sid={sentence.sid}
                   data-start={token.start}
                   data-end={token.end}
+                  data-reader-start-word={wordId === readerAudioStartWid ? 'true' : undefined}
                   onTouchStart={handleReaderWordTouchStart}
+                  onClick={readerAudioPlayActive && !isPlayingWord ? () => seekReaderAudioToWid(wordId) : undefined}
                 >
                   {token.value}
                 </span>
@@ -19204,11 +20987,31 @@ function AppInner() {
     return bits.join(' • ');
   };
 
-  const loadReaderLibrary = useCallback(async (includeArchivedOverride = readerIncludeArchived) => {
+  const buildReaderTextFromPages = useCallback((pages) => {
+    if (!Array.isArray(pages) || pages.length === 0) return '';
+    return pages
+      .map((page) => {
+        if (typeof page === 'string') return page;
+        if (page && typeof page === 'object') {
+          return String(page.text || page.content || '').trim();
+        }
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n\n')
+      .trim();
+  }, []);
+
+  const loadReaderLibrary = useCallback(async (
+    includeArchivedOverride = readerIncludeArchived,
+    { resetError = true, showError = true } = {},
+  ) => {
     if (!initData) return;
     try {
       setReaderLibraryLoading(true);
-      setReaderLibraryError('');
+      if (resetError) {
+        setReaderLibraryError('');
+      }
       const response = await fetch('/api/webapp/reader/library', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -19220,11 +21023,13 @@ function AppInner() {
       const data = await response.json();
       setReaderDocuments(Array.isArray(data?.items) ? data.items : []);
     } catch (error) {
-      setReaderLibraryError(normalizeNetworkErrorMessage(error, 'Не удалось загрузить библиотеку.', 'Bibliothek konnte nicht geladen werden.'));
+      if (showError && (!Array.isArray(readerDocuments) || readerDocuments.length === 0)) {
+        setReaderLibraryError(normalizeNetworkErrorMessage(error, 'Не удалось загрузить библиотеку.', 'Bibliothek konnte nicht geladen werden.'));
+      }
     } finally {
       setReaderLibraryLoading(false);
     }
-  }, [initData, normalizeNetworkErrorMessage, readApiError, readerIncludeArchived]);
+  }, [initData, normalizeNetworkErrorMessage, readApiError, readerDocuments, readerIncludeArchived]);
 
   const upsertReaderLibraryDocument = useCallback((nextDoc) => {
     if (!nextDoc || typeof nextDoc !== 'object') return;
@@ -19279,7 +21084,7 @@ function AppInner() {
       )));
       const status = String(data?.status || doc?.processing_status || 'pending').trim().toLowerCase() || 'pending';
       if (status === 'ready') {
-        await loadReaderLibrary();
+        await loadReaderLibrary(readerIncludeArchived, { resetError: false, showError: false });
         if (openWhenReady) {
           await openReaderDocument(Number(doc?.id || documentId));
         }
@@ -19289,7 +21094,7 @@ function AppInner() {
         const message = String(data?.error || doc?.processing_error || '').trim()
           || tr('Не удалось обработать документ.', 'Dokument konnte nicht verarbeitet werden.');
         setReaderLibraryError(message);
-        await loadReaderLibrary();
+        await loadReaderLibrary(readerIncludeArchived, { resetError: false, showError: false });
         return data;
       }
     }
@@ -19307,14 +21112,24 @@ function AppInner() {
   const handleReaderFileSelect = (event) => {
     const file = event?.target?.files?.[0] || null;
     setReaderSelectedFile(file);
-    if (file?.name && !readerInput.trim()) {
-      setReaderInput(file.name);
+    setReaderError('');
+    setReaderErrorCode('');
+    if (file) {
+      setReaderInput('');
+      return;
+    }
+    if (!file) {
+      const currentInput = String(readerInput || '').trim();
+      if (/^[^:/\\\n]+?\.(epub|pdf|txt|md)$/i.test(currentInput)) {
+        setReaderInput('');
+      }
     }
   };
 
   const goReaderPage = (delta) => {
     if (readerPageCount === 0) return;
     const step = delta > 0 ? 1 : -1;
+    if (readerAudioPlayActive) stopReaderAudioPlay();
     setReaderCurrentPage((prev) => {
       const next = prev + step;
       return Math.max(1, Math.min(readerPageCount, next));
@@ -19389,6 +21204,32 @@ function AppInner() {
     reader.readAsDataURL(file);
   });
 
+  const clearReaderSelectedFile = useCallback(() => {
+    setReaderSelectedFile(null);
+    if (readerFileInputRef.current) {
+      try {
+        readerFileInputRef.current.value = '';
+      } catch (_error) {
+        // ignore browser restrictions
+      }
+    }
+  }, []);
+
+  const loadReaderToc = useCallback(async () => {
+    if (readerUsesOriginalEpubLayout) return;
+    if (!initData || !readerDocumentId) return;
+    try {
+      const response = await fetch('/api/webapp/reader/library/toc', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, document_id: readerDocumentId }),
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      setReaderTocItems(Array.isArray(data?.toc) ? data.toc : []);
+    } catch (_e) {}
+  }, [initData, readerDocumentId, readerUsesOriginalEpubLayout]);
+
   async function syncReaderState(patch = {}) {
     if (!initData || !readerDocumentId) return;
     try {
@@ -19413,14 +21254,23 @@ function AppInner() {
 
   async function openReaderDocument(documentId) {
     if (!initData || !documentId) return;
+    const safeDocumentId = Number(documentId || 0);
+    if (!safeDocumentId) return;
+    if (readerOpenInFlightRef.current === safeDocumentId) return;
+    readerOpenInFlightRef.current = safeDocumentId;
+    setReaderOpeningDocumentId(safeDocumentId);
     try {
       setReaderLoading(true);
       setReaderError('');
       setReaderLibraryError('');
+      setReaderOriginalEpubError('');
+      setReaderOriginalTocHref('');
+      setReaderOriginalTocTitle('');
+      setReaderTocItems([]);
       const response = await fetch('/api/webapp/reader/library/open', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, document_id: documentId }),
+        body: JSON.stringify({ initData, document_id: safeDocumentId }),
       });
       if (!response.ok) {
         throw new Error(await readApiError(response, 'Ошибка открытия книги', 'Fehler beim Oeffnen des Dokuments'));
@@ -19429,36 +21279,77 @@ function AppInner() {
       const doc = data?.document || {};
       const processingStatus = String(data?.status || doc?.processing_status || 'ready').trim().toLowerCase() || 'ready';
       if (processingStatus !== 'ready') {
-        const pendingMessage = processingStatus === 'failed'
-          ? String(data?.error || doc?.processing_error || '').trim() || tr('Не удалось обработать книгу.', 'Dokument konnte nicht verarbeitet werden.')
-          : tr('Книга ещё обрабатывается. Откроем автоматически, когда всё будет готово.', 'Das Dokument wird noch verarbeitet. Es wird automatisch geoeffnet, sobald es fertig ist.');
-        setReaderLibraryError(pendingMessage);
-      if (processingStatus !== 'failed') {
-          void pollReaderDocumentStatus(Number(doc?.id || documentId), { openWhenReady: true });
+        if (processingStatus === 'failed') {
+          const failedMessage = String(data?.error || doc?.processing_error || '').trim()
+            || tr('Не удалось обработать книгу.', 'Dokument konnte nicht verarbeitet werden.');
+          setReaderLibraryError(failedMessage);
+        } else {
+          setReaderLibraryError('');
+        }
+        if (processingStatus !== 'failed') {
+          void pollReaderDocumentStatus(Number(doc?.id || safeDocumentId), { openWhenReady: true });
         }
         return;
       }
       const progress = Number(doc?.progress_percent || 0);
       const bookmark = Number(doc?.bookmark_percent || 0);
-      const pages = Array.isArray(doc?.content_pages) ? doc.content_pages : [];
+      const pages = Array.isArray(data?.content_pages)
+        ? data.content_pages
+        : (Array.isArray(doc?.content_pages) ? doc.content_pages : []);
+      const sourceType = String(data?.source_type || doc?.source_type || 'text');
+      const resolvedText = String(data?.text || '').trim() || buildReaderTextFromPages(pages);
+      const preferredLayoutMode = getReaderPreferredLayoutMode(sourceType, pages);
       setReaderFontSize(READER_DEFAULT_FONT_SIZE);
       setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
-      setReaderDocumentId(Number(doc?.id || documentId));
+      readerPendingPagePercentRef.current = preferredLayoutMode === 'custom'
+        ? (bookmark > 0 ? bookmark : progress)
+        : null;
+      setReaderDocumentId(Number(doc?.id || safeDocumentId));
       setReaderTitle(String(data?.title || doc?.title || ''));
-      setReaderContent(String(data?.text || doc?.content_text || '').trim());
-      setReaderPages(pages);
+      setReaderContent(resolvedText);
+      const totalPages = Number(data?.total_pages || pages.length || 0);
+      let sparsePages;
+      if (totalPages > pages.length && pages.length > 0) {
+        sparsePages = new Array(totalPages).fill(null);
+        pages.forEach((page) => {
+          const idx = (page.page_number || 1) - 1;
+          if (idx >= 0 && idx < totalPages) sparsePages[idx] = page;
+        });
+      } else {
+        sparsePages = pages;
+      }
+      setReaderPages(sparsePages);
       setReaderDynamicPages([]);
-      setReaderLayoutMode(pages.length > 0 ? 'original' : 'custom');
-      setReaderSourceType(String(data?.source_type || doc?.source_type || 'text'));
+      readerPageLoadInFlightRef.current.clear();
+      setReaderLayoutMode(preferredLayoutMode);
+      setReaderSourceType(sourceType);
       setReaderSourceUrl(String(data?.source_url || doc?.source_url || ''));
       setReaderDetectedLanguage(normalizeLangCode(data?.detected_language || ''));
       setReaderReadingMode(String(doc?.reading_mode || 'vertical'));
       setReaderProgressPercent(progress);
-      setReaderBookmarkPercent(bookmark);
-      const pageFromProgress = pages.length > 0
-        ? Math.max(1, Math.min(pages.length, Math.round(((bookmark > 0 ? bookmark : progress) / 100) * pages.length) || 1))
+      const storedBookmark = readStoredReaderExactBookmark(safeDocumentId);
+      const resolvedTotalPages = sparsePages.length;
+      const usesOriginalEpub = String(sourceType || '').trim().toLowerCase() === 'epub' && preferredLayoutMode === 'original';
+      const pageFromProgress = resolvedTotalPages > 0
+        ? resolveReaderPageFromPercent(bookmark > 0 ? bookmark : progress, resolvedTotalPages)
         : 1;
-      setReaderCurrentPage(pageFromProgress);
+      const exactBookmarkPage = resolveStoredReaderExactBookmarkPage(storedBookmark, {
+        pageCount: resolvedTotalPages,
+        layoutMode: preferredLayoutMode,
+      });
+      const initialPage = preferredLayoutMode === 'custom' || usesOriginalEpub
+        ? 1
+        : (exactBookmarkPage || pageFromProgress);
+      setReaderCurrentPage(initialPage);
+      setReaderBookmarkPercent(
+        usesOriginalEpub
+          ? Number((bookmark > 0 ? bookmark : progress).toFixed(2))
+          : resolvedTotalPages > 0
+          ? Number((preferredLayoutMode === 'custom'
+            ? (bookmark > 0 ? bookmark : progress)
+            : ((initialPage / resolvedTotalPages) * 100)).toFixed(2))
+          : bookmark
+      );
       setReaderAudioFromPage(pages.length > 0 ? '1' : '');
       setReaderAudioToPage(pages.length > 0 ? String(pages.length) : '');
       setReaderAudioError('');
@@ -19472,13 +21363,17 @@ function AppInner() {
       ensureSectionVisible('reader');
       setTimeout(() => {
         scrollToRef(readerRef, { block: 'start' });
-        const target = bookmark > 0 ? bookmark : progress;
-        applyReaderProgressPercent(target);
+        if (sparsePages.length === 0) {
+          const target = bookmark > 0 ? bookmark : progress;
+          applyReaderProgressPercent(target);
+        }
       }, 100);
-      loadReaderLibrary();
+      loadReaderLibrary(readerIncludeArchived, { showError: false });
     } catch (error) {
       setReaderError(normalizeNetworkErrorMessage(error, 'Не удалось открыть книгу.', 'Dokument konnte nicht geoeffnet werden.'));
     } finally {
+      readerOpenInFlightRef.current = 0;
+      setReaderOpeningDocumentId(0);
       setReaderLoading(false);
     }
   }
@@ -19568,6 +21463,10 @@ function AppInner() {
 
   const downloadReaderAudio = async (fullDocument = false) => {
     if (!initData || !readerDocumentId) return;
+    if (readerAudioPremiumKnown && !readerAudioPremiumEnabled) {
+      openReaderAudioPremiumPaywall();
+      return;
+    }
     try {
       setReaderAudioLoading(true);
       setReaderAudioError('');
@@ -19590,6 +21489,17 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
+        if (response.status === 403) {
+          try {
+            const errorPayload = await response.clone().json();
+            if (String(errorPayload?.error_code || '').trim() === 'reader_audio_premium_required') {
+              openReaderAudioPremiumPaywall();
+              return;
+            }
+          } catch (_error) {
+            // ignore non-JSON premium gate payload parsing errors
+          }
+        }
         throw new Error(await readApiError(response, 'Ошибка аудио-конвертации', 'Fehler bei Audio-Konvertierung'));
       }
       const blob = await response.blob();
@@ -19661,11 +21571,581 @@ function AppInner() {
     readerStatusPollTokenRef.current += 1;
   }, []);
 
+  // ── Audio-sync callbacks (Patch 2.4) ────────────────────────────────────
+  const primeReaderAudioPlayback = useCallback(async () => {
+    unlockAudio();
+    const audio = audioElementRef.current;
+    if (!audio) return;
+    audio.playsInline = true;
+    audio.setAttribute('playsinline', '');
+    audio.setAttribute('webkit-playsinline', 'true');
+    if (readerAudioPrimedRef.current) return;
+    const primeSrc = String(positiveAudioRef.current?.currentSrc || positiveAudioRef.current?.src || '').trim();
+    if (!primeSrc) {
+      return;
+    }
+    const primeToken = `reader-prime-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const previousMuted = Boolean(audio.muted);
+    const previousVolume = Number.isFinite(audio.volume) ? audio.volume : 1;
+    audio.dataset.readerPrimeToken = primeToken;
+    audio.dataset.readerPrimeSrc = primeSrc;
+    audio.preload = 'auto';
+    audio.muted = true;
+    audio.volume = 0;
+    audio.src = primeSrc;
+    audio.load();
+    let primedSuccessfully = false;
+    try {
+      const playPromise = audio.play();
+      if (playPromise && typeof playPromise.then === 'function') {
+        await playPromise
+          .then(() => {
+            primedSuccessfully = true;
+          })
+          .catch(() => {});
+      } else {
+        primedSuccessfully = true;
+      }
+    } finally {
+      const isStillPrimeSession = String(audio.dataset.readerPrimeToken || '') === primeToken;
+      const currentSrcAttr = String(audio.getAttribute('src') || '').trim();
+      const currentSrc = String(audio.currentSrc || '').trim();
+      const isStillPrimeSource = currentSrcAttr === primeSrc || currentSrc === primeSrc;
+      if (isStillPrimeSession && isStillPrimeSource) {
+        audio.pause();
+        try {
+          audio.currentTime = 0;
+        } catch (_seekError) {
+          // ignore seek reset errors on priming
+        }
+        audio.removeAttribute('src');
+        audio.load();
+      }
+      if (isStillPrimeSession) {
+        delete audio.dataset.readerPrimeToken;
+        delete audio.dataset.readerPrimeSrc;
+      }
+      audio.muted = previousMuted;
+      audio.volume = previousVolume;
+      if (primedSuccessfully) {
+        readerAudioPrimedRef.current = true;
+      }
+    }
+  }, []);
+
+  const playReaderAudioPage = useCallback(async (page, startWidOverride, charStartOverride) => {
+    if (readerAudioPremiumKnown && !readerAudioPremiumEnabled) {
+      openReaderAudioPremiumPaywall();
+      return;
+    }
+    const startWid = startWidOverride !== undefined ? startWidOverride : (readerAudioStartWid || null);
+    const requestToken = readerAudioRequestTokenRef.current + 1;
+    readerAudioRequestTokenRef.current = requestToken;
+    if (readerAudioPrefetchTimeoutRef.current) {
+      window.clearTimeout(readerAudioPrefetchTimeoutRef.current);
+      readerAudioPrefetchTimeoutRef.current = null;
+    }
+    console.log('[ReaderAudio] playReaderAudioPage called: page=', page, 'startWid=', startWid, 'charStartOverride=', charStartOverride);
+    readerAudioPlayingForPageRef.current = page;
+    setReaderAudioPlayLoading(true);
+    setReaderAudioPlayError('');
+    try {
+      const voice = readerAudioVoice || '';
+      const playbackWindow = buildReaderAudioWindow(page, 3);
+      if (!playbackWindow?.combinedText) {
+        throw new Error('Reader audio page text is empty');
+      }
+      const currentSegment = playbackWindow.segments.find((segment) => segment.page === page) || playbackWindow.segments[0];
+      const visiblePageText = playbackWindow.combinedText;
+      const buildPageAudioRequestKey = (targetPage, targetVoice, targetRate, targetText) => {
+        const raw = `${String(readerDocumentId || '')}|${String(targetPage || '')}|${String(targetVoice || '')}|${String(targetRate || '')}|${String(targetText || '')}`;
+        let hash = 0;
+        for (let index = 0; index < raw.length; index += 1) {
+          hash = ((hash << 5) - hash + raw.charCodeAt(index)) | 0;
+        }
+        return `${String(readerDocumentId || 'doc')}:${String(targetPage || '')}:${String(targetVoice || '')}:${String(targetRate || '')}:${raw.length}:${hash}`;
+      };
+      const preloadReaderAudioUrl = (requestKey, audioUrl) => {
+        if (!requestKey || !audioUrl) return;
+        const preloadEl = readerAudioPreloadElementRef.current;
+        if (!preloadEl) return;
+        const currentKey = String(preloadEl.dataset.readerAudioKey || '');
+        const currentUrl = String(preloadEl.currentSrc || preloadEl.src || '');
+        if (currentKey === requestKey && currentUrl === audioUrl && preloadEl.readyState >= 1) {
+          return;
+        }
+        preloadEl.dataset.readerAudioKey = requestKey;
+        if (currentUrl !== audioUrl) {
+          preloadEl.src = audioUrl;
+        }
+        preloadEl.preload = 'auto';
+        preloadEl.load();
+      };
+      const loadReaderAudioPageData = async ({
+        targetPage,
+        targetVoice,
+        targetRate,
+        targetText,
+        token,
+        prefetchOnly = false,
+        browserPreload = false,
+      }) => {
+        const requestKey = buildPageAudioRequestKey(targetPage, targetVoice, targetRate, targetText);
+        const cachedPayload = readerAudioPageCacheRef.current.get(requestKey);
+        if (cachedPayload?.audio_url) {
+          if (browserPreload) {
+            preloadReaderAudioUrl(requestKey, String(cachedPayload.audio_url || ''));
+          }
+          return cachedPayload;
+        }
+        const existingRequestEntry = readerAudioPageRequestsRef.current.get(requestKey);
+        const existingRequest = existingRequestEntry?.promise || existingRequestEntry || null;
+        const existingPrefetchOnly = Boolean(existingRequestEntry?.prefetchOnly);
+        if (existingRequest && (prefetchOnly || !existingPrefetchOnly)) {
+          try {
+            return await existingRequest;
+          } catch (error) {
+            if (prefetchOnly) return null;
+            throw error;
+          }
+        }
+        const requestPromise = (async () => {
+          const requestBody = {
+            initData,
+            document_id: readerDocumentId,
+            page: targetPage,
+            voice: targetVoice,
+            rate: targetRate,
+            page_text: targetText,
+            prefetch_only: prefetchOnly,
+          };
+          const maxAttempts = prefetchOnly ? 12 : 30;
+          for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+            const resp = await fetch('/api/webapp/reader/audio/page', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(requestBody),
+            });
+            const payload = await resp.json().catch(() => ({}));
+            if (!resp.ok && resp.status !== 202) {
+              if (String(payload?.error_code || '').trim() === 'reader_audio_premium_required') {
+                openReaderAudioPremiumPaywall();
+                return null;
+              }
+              throw new Error(payload.error || `HTTP ${resp.status}`);
+            }
+            if (token != null && readerAudioRequestTokenRef.current !== token) {
+              return null;
+            }
+            const normalizedStatus = String(payload?.status || '').trim().toLowerCase();
+            if (normalizedStatus === 'failed') {
+              throw new Error(payload.error || payload.message || 'Reader audio generation failed');
+            }
+            if (normalizedStatus === 'skipped') {
+              return null;
+            }
+            if (normalizedStatus === 'pending') {
+              const retryAfterMs = Math.max(250, Number(payload?.retry_after_ms || 1000));
+              await new Promise((resolve) => window.setTimeout(resolve, retryAfterMs));
+              continue;
+            }
+            if (payload?.audio_url) {
+              readerAudioPageCacheRef.current.set(requestKey, payload);
+              if (browserPreload) {
+                preloadReaderAudioUrl(requestKey, String(payload.audio_url || ''));
+              }
+              return payload;
+            }
+            if (prefetchOnly) {
+              return null;
+            }
+          }
+          if (prefetchOnly) {
+            return null;
+          }
+          throw new Error('Reader audio generation timed out');
+        })();
+        readerAudioPageRequestsRef.current.set(requestKey, {
+          promise: requestPromise,
+          prefetchOnly: Boolean(prefetchOnly),
+        });
+        try {
+          return await requestPromise;
+        } finally {
+          const currentRequestEntry = readerAudioPageRequestsRef.current.get(requestKey);
+          if (currentRequestEntry?.promise === requestPromise) {
+            readerAudioPageRequestsRef.current.delete(requestKey);
+          }
+        }
+      };
+      const nextWindow = buildReaderAudioWindow((playbackWindow.endPage || page) + 1, 3);
+      if (nextWindow?.combinedText) {
+        loadReaderAudioPageData({
+          targetPage: nextWindow.startPage,
+          targetVoice: voice,
+          targetRate: readerAudioRate,
+          targetText: nextWindow.combinedText,
+          token: null,
+          prefetchOnly: true,
+          browserPreload: true,
+        }).catch(() => {});
+        const trailingWindow = buildReaderAudioWindow(nextWindow.endPage + 1, 3);
+        if (trailingWindow?.combinedText) {
+          loadReaderAudioPageData({
+            targetPage: trailingWindow.startPage,
+            targetVoice: voice,
+            targetRate: readerAudioRate,
+            targetText: trailingWindow.combinedText,
+            token: null,
+            prefetchOnly: true,
+            browserPreload: false,
+          }).catch(() => {});
+        }
+      }
+      const data = await loadReaderAudioPageData({
+        targetPage: playbackWindow.startPage,
+        targetVoice: voice,
+        targetRate: readerAudioRate,
+        targetText: visiblePageText,
+        token: requestToken,
+        prefetchOnly: false,
+        browserPreload: false,
+      });
+      if (readerAudioRequestTokenRef.current !== requestToken) {
+        return;
+      }
+      if (!data?.audio_url) {
+        return;
+      }
+      const windowSegments = playbackWindow.segments.map((segment) => {
+        const matchingWords = (data.word_timings || []).filter((word) => {
+          if (word?.char_start == null) return false;
+          const charStart = Number(word.char_start);
+          return charStart >= segment.charStart && charStart < segment.charEnd;
+        });
+        return {
+          ...segment,
+          startMs: matchingWords[0]?.start_ms ?? null,
+          endMs: matchingWords[matchingWords.length - 1]?.end_ms ?? null,
+        };
+      });
+      const normalizedWindow = {
+        ...playbackWindow,
+        segments: windowSegments,
+      };
+      readerAudioWindowMetaRef.current = normalizedWindow;
+      const initialCharOffset = Number(currentSegment?.charStart || 0);
+      readerAudioCurrentPageCharOffsetRef.current = initialCharOffset;
+      setReaderAudioCurrentPageCharOffset(initialCharOffset);
+      setReaderAudioPlayData(data);
+      setReaderAudioPaused(false);
+      setReaderAudioPlayActive(true);
+      if (audioElementRef.current) {
+        const el = audioElementRef.current;
+        const currentRequestKey = buildPageAudioRequestKey(playbackWindow.startPage, voice, readerAudioRate, visiblePageText);
+        const preloadEl = readerAudioPreloadElementRef.current;
+        const preloadedKey = String(preloadEl?.dataset?.readerAudioKey || '');
+        const preloadedUrl = String(preloadEl?.currentSrc || preloadEl?.src || '');
+        delete el.dataset.readerPrimeToken;
+        delete el.dataset.readerPrimeSrc;
+        el.muted = false;
+        if (!Number.isFinite(el.volume) || el.volume <= 0) el.volume = 1;
+        el.src = data.audio_url;
+        if (preloadedKey === currentRequestKey && preloadedUrl === data.audio_url) {
+          el.preload = 'auto';
+        }
+        el.playbackRate = readerAudioRate;
+        let startMs = 0;
+        if (startWid) {
+          // Use DOM-captured charStart first, fall back to map lookup.
+          const localCharStart = (Number.isFinite(charStartOverride) && charStartOverride >= 0)
+            ? charStartOverride
+            : readerAudioWidToCharStart.get(startWid);
+          const charStart = localCharStart == null ? null : Number(localCharStart) + initialCharOffset;
+          const timings = data.word_timings || [];
+          let timing = null;
+          console.log('[ReaderAudio] seek: charStart=', charStart, 'timings=', timings.length, 'first_char_start=', timings[0]?.char_start);
+          if (charStart != null && timings.length > 0 && timings[0].char_start != null) {
+            // Containment first: find the word spanning charStart
+            timing = timings.find((w) => charStart >= Number(w.char_start) && charStart <= Number(w.char_end))
+              || timings.find((w) => Number(w.char_start) >= charStart)
+              || timings.find((w) => charStart <= Number(w.char_end));
+          }
+          if (!timing) {
+            const posIdx = readerAudioWidReverseMap.get(startWid);
+            console.log('[ReaderAudio] char seek missed, trying posIdx=', posIdx, 'charStart=', charStart);
+            if (posIdx !== undefined) {
+              timing = timings.find((w) => String(w.wid) === posIdx);
+            }
+          }
+          console.log('[ReaderAudio] timing found=', timing, 'startMs=', timing?.start_ms);
+          if (timing) startMs = timing.start_ms;
+        }
+        console.log('[ReaderAudio] audio starting at startMs=', startMs);
+        setReaderAudioPlayPosition(startMs);
+        // Explicit load() so iOS fires loadedmetadata after src change.
+        el.load();
+        if (startMs > 0) {
+          // iOS Safari ignores currentTime set before loadedmetadata fires.
+          // Wait for metadata, then seek, then play.
+          await new Promise((resolve) => {
+            if (!audioElementRef.current) { resolve(); return; }
+            const doSeek = () => {
+              if (audioElementRef.current) audioElementRef.current.currentTime = startMs / 1000;
+              resolve();
+            };
+            if (audioElementRef.current.readyState >= 1) { doSeek(); }
+            else { audioElementRef.current.addEventListener('loadedmetadata', doSeek, { once: true }); }
+          });
+        }
+        try {
+          await audioElementRef.current?.play();
+        } catch (err) {
+          console.warn('[ReaderAudio] play() failed:', err?.message || err);
+          throw new Error(
+            String(err?.message || '').trim()
+              || 'Reader audio playback failed to start'
+          );
+        }
+      }
+    } catch (e) {
+      if (String(e?.message || '') === 'cancelled') {
+        return;
+      }
+      readerAudioPlayingForPageRef.current = null;
+      readerAudioWindowMetaRef.current = null;
+      readerAudioCurrentPageCharOffsetRef.current = 0;
+      setReaderAudioCurrentPageCharOffset(0);
+      setReaderAudioPlayActive(false);
+      setReaderAudioPlayData(null);
+      setReaderAudioPlayPosition(0);
+      setReaderAudioPaused(false);
+      setReaderAudioPlayError(String(e?.message || e));
+    } finally {
+      setReaderAudioPlayLoading(false);
+    }
+  }, [
+    buildReaderAudioWindow,
+    initData,
+    openReaderAudioPremiumPaywall,
+    readerAudioPremiumEnabled,
+    readerAudioPremiumKnown,
+    readerAudioRate,
+    readerAudioStartWid,
+    readerAudioVoice,
+    readerAudioWidReverseMap,
+    readerAudioWidToCharStart,
+    readerDocumentId,
+  ]);
+
+  const pauseReaderAudioPlay = useCallback(() => {
+    audioElementRef.current?.pause();
+    setReaderAudioPaused(true);
+  }, []);
+
+  const resumeReaderAudioPlay = useCallback(() => {
+    audioElementRef.current?.play().catch(() => {});
+    setReaderAudioPaused(false);
+  }, []);
+
+  // Toolbar play button: pause/resume if playing, else toggle word-select mode
+  const handleReaderAudioPlayBtn = useCallback(() => {
+    if (readerAudioPremiumKnown && !readerAudioPremiumEnabled) {
+      openReaderAudioPremiumPaywall();
+      return;
+    }
+    if (readerUsesOriginalEpubLayout) {
+      setReaderAudioPlayError(tr(
+        'Аудио с выбором слова доступно в адаптивном текстовом режиме. Переключись из Original в Settings.',
+        'Audio mit Wortauswahl ist im adaptiven Textmodus verfuegbar. Wechsle in den Einstellungen aus Original heraus.'
+      ));
+      return;
+    }
+    if (readerAudioPlayActive) {
+      if (readerAudioPaused) resumeReaderAudioPlay();
+      else pauseReaderAudioPlay();
+      return;
+    }
+    void primeReaderAudioPlayback();
+    const next = !readerAudioAwaitingWordTapRef.current;
+    readerAudioAwaitingWordTapRef.current = next;
+    setReaderAudioAwaitingWordTap(next);
+  }, [
+    openReaderAudioPremiumPaywall,
+    pauseReaderAudioPlay,
+    primeReaderAudioPlayback,
+    readerAudioPaused,
+    readerAudioPlayActive,
+    readerAudioPremiumEnabled,
+    readerAudioPremiumKnown,
+    readerUsesOriginalEpubLayout,
+    resumeReaderAudioPlay,
+    tr,
+  ]);
+
+  const stopReaderAudioPlay = useCallback(() => {
+    readerAudioRequestTokenRef.current += 1;
+    if (readerAudioPrefetchTimeoutRef.current) {
+      window.clearTimeout(readerAudioPrefetchTimeoutRef.current);
+      readerAudioPrefetchTimeoutRef.current = null;
+    }
+    if (audioElementRef.current) {
+      audioElementRef.current.pause();
+      audioElementRef.current.src = '';
+    }
+    if (readerAudioPreloadElementRef.current) {
+      readerAudioPreloadElementRef.current.pause?.();
+      readerAudioPreloadElementRef.current.removeAttribute('src');
+      readerAudioPreloadElementRef.current.load?.();
+      delete readerAudioPreloadElementRef.current.dataset.readerAudioKey;
+    }
+    cancelAnimationFrame(audioRafRef.current);
+    readerAudioPlayingForPageRef.current = null;
+    readerAudioWindowMetaRef.current = null;
+    readerAudioPagesPlayedRef.current = 0;
+    readerAudioPageLimitRef.current = 0;
+    readerAudioCurrentPageCharOffsetRef.current = 0;
+    setReaderAudioPlayActive(false);
+    setReaderAudioPlayData(null);
+    setReaderAudioPlayPosition(0);
+    setReaderAudioCurrentPageCharOffset(0);
+    setReaderAudioPaused(false);
+    setReaderAudioPlayError('');
+    readerAudioAwaitingWordTapRef.current = false;
+    setReaderAudioAwaitingWordTap(false);
+  }, []);
+
+  const seekReaderAudioToWid = useCallback((wid) => {
+    if (!readerAudioPlayData || !audioElementRef.current) return;
+    const timings = readerAudioPlayData.word_timings || [];
+    let timing = null;
+    // Prefer char_start matching.
+    const charStart = readerAudioWidToCharStart.get(wid);
+    const absoluteCharStart = charStart == null
+      ? null
+      : Number(charStart) + Number(readerAudioCurrentPageCharOffsetRef.current || 0);
+    console.log('[AUDIO_SEEK] wid=', wid, 'charStart=', charStart, 'absoluteCharStart=', absoluteCharStart, 'timings=', timings.length, 'first_timing_char_start=', timings[0]?.char_start);
+    if (absoluteCharStart != null && timings.length > 0 && timings[0].char_start != null) {
+      timing = timings.find((w) => absoluteCharStart >= Number(w.char_start) && absoluteCharStart <= Number(w.char_end))
+        || timings.find((w) => Number(w.char_start) >= absoluteCharStart)
+        || timings.find((w) => absoluteCharStart <= Number(w.char_end));
+    }
+    if (!timing) {
+      const posIdx = readerAudioWidReverseMap.get(wid);
+      console.log('[AUDIO_SEEK] char miss, trying posIdx=', posIdx);
+      if (posIdx === undefined) return;
+      timing = timings.find((w) => String(w.wid) === posIdx);
+    }
+    console.log('[AUDIO_SEEK] result timing=', timing, '→ seekTo', timing?.start_ms, 'ms');
+    if (!timing) return;
+    audioElementRef.current.currentTime = timing.start_ms / 1000;
+    setReaderAudioPlayPosition(timing.start_ms);
+  }, [readerAudioPlayData, readerAudioWidReverseMap, readerAudioWidToCharStart]);
+
+  // RAF position sync
+  useEffect(() => {
+    if (!readerAudioPlayActive) return undefined;
+    const tick = () => {
+      const audio = audioElementRef.current;
+      if (audio && !audio.paused) {
+        setReaderAudioPlayPosition(audio.currentTime * 1000);
+      }
+      audioRafRef.current = requestAnimationFrame(tick);
+    };
+    audioRafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(audioRafRef.current);
+  }, [readerAudioPlayActive]);
+
+  // Windowed audio page sync: keep the visible page aligned with the page
+  // segment currently speaking inside a multi-page clip.
+  useEffect(() => {
+    const audio = audioElementRef.current;
+    if (!audio || !readerAudioPlayActive) return undefined;
+    const syncVisiblePageFromAudio = () => {
+      const windowMeta = readerAudioWindowMetaRef.current;
+      if (!windowMeta?.segments?.length) return;
+      const positionMs = Math.max(0, Number(audio.currentTime || 0) * 1000);
+      const activeSegment = windowMeta.segments.find((segment) => (
+        Number.isFinite(segment?.startMs)
+        && Number.isFinite(segment?.endMs)
+        && positionMs >= Number(segment.startMs)
+        && positionMs < Number(segment.endMs)
+      )) || windowMeta.segments.find((segment) => Number.isFinite(segment?.startMs) && positionMs < Number(segment.startMs))
+        || windowMeta.segments[0];
+      if (!activeSegment) return;
+      const nextPage = Number(activeSegment.page || 0);
+      const nextOffset = Number(activeSegment.charStart || 0);
+      if (nextPage > 0 && readerCurrentPageRef.current !== nextPage) {
+        readerCurrentPageRef.current = nextPage;
+        readerAudioPlayingForPageRef.current = nextPage;
+        setReaderCurrentPage(nextPage);
+      }
+      if (readerAudioCurrentPageCharOffsetRef.current !== nextOffset) {
+        readerAudioCurrentPageCharOffsetRef.current = nextOffset;
+        setReaderAudioCurrentPageCharOffset(nextOffset);
+      }
+    };
+    audio.addEventListener('timeupdate', syncVisiblePageFromAudio);
+    return () => audio.removeEventListener('timeupdate', syncVisiblePageFromAudio);
+  }, [readerAudioPlayActive]);
+
+  // Auto-next-page: advance from the page that was actually playing (not the display page)
+  useEffect(() => {
+    const audio = audioElementRef.current;
+    if (!audio || !readerAudioPlayActive) return undefined;
+    const onEnded = () => {
+      const windowMeta = readerAudioWindowMetaRef.current;
+      const lastPageInWindow = Number(windowMeta?.endPage || 0);
+      if (!lastPageInWindow || lastPageInWindow >= readerPageCount) {
+        stopReaderAudioPlay();
+        return;
+      }
+      // Check 10 000-char page budget
+      readerAudioPagesPlayedRef.current += Number(windowMeta?.segments?.length || 1);
+      const limit = readerAudioPageLimitRef.current;
+      if (limit > 0 && readerAudioPagesPlayedRef.current >= limit) {
+        stopReaderAudioPlay();
+        return;
+      }
+      const nextPage = lastPageInWindow + 1;
+      readerAudioPlayingForPageRef.current = nextPage;
+      setReaderCurrentPage(nextPage);
+      setReaderAudioStartWid(null);
+      playReaderAudioPage(nextPage, null, undefined);
+    };
+    audio.addEventListener('ended', onEnded);
+    return () => audio.removeEventListener('ended', onEnded);
+  }, [readerAudioPlayActive, readerPageCount, playReaderAudioPage, stopReaderAudioPlay]);
+
+  // Stop audio when leaving reader or changing document
+  useEffect(() => {
+    stopReaderAudioPlay();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readerDocumentId]);
+
   async function handleReaderIngest(event) {
     event?.preventDefault?.();
     const rawInput = String(readerInput || '').trim();
-    if (!rawInput && !readerSelectedFile) {
+    const liveSelectedFile = readerFileInputRef.current?.files?.[0] || null;
+    const selectedFile = liveSelectedFile || null;
+    const looksLikeLocalReaderFileName = /^[^:/\\\n]+?\.(epub|pdf|txt|md)$/i.test(rawInput);
+    if (!rawInput && !selectedFile) {
       setReaderError(tr('Вставьте ссылку или текст.', 'Fuege einen Link oder Text ein.'));
+      return;
+    }
+    if (!selectedFile && looksLikeLocalReaderFileName) {
+      setReaderError(tr(
+        'Файл не выбран. Выберите EPUB/PDF через поле загрузки файла.',
+        'Keine Datei ausgewaehlt. Bitte waehle die EPUB/PDF-Datei ueber das Datei-Feld aus.'
+      ));
+      return;
+    }
+    if (!selectedFile && readerSelectedFile) {
+      clearReaderSelectedFile();
+      setReaderError(tr(
+        'Файл сбросился в браузере. Выберите EPUB/PDF заново и повторите.',
+        'Die Datei wurde im Browser zurueckgesetzt. Bitte waehle die EPUB/PDF erneut aus.'
+      ));
       return;
     }
     if (!initData) {
@@ -19675,6 +22155,10 @@ function AppInner() {
     setReaderLoading(true);
     setReaderError('');
     setReaderErrorCode('');
+    setReaderOriginalEpubError('');
+    setReaderOriginalTocHref('');
+    setReaderOriginalTocTitle('');
+    setReaderTocItems([]);
     try {
       const buildReaderApiError = async (response, fallbackRu, fallbackDe) => {
         const fallback = tr(fallbackRu, fallbackDe);
@@ -19701,7 +22185,7 @@ function AppInner() {
         return apiError;
       };
       const looksLikeUrl = /^https?:\/\//i.test(rawInput) || /^[a-z0-9.-]+\.[a-z]{2,}(\/.*)?$/i.test(rawInput);
-      const shouldUseAsyncReaderFlow = Boolean(readerSelectedFile || looksLikeUrl);
+      const shouldUseAsyncReaderFlow = Boolean(selectedFile || looksLikeUrl);
       if (shouldUseAsyncReaderFlow) {
         setReaderArchiveOpen(true);
         setReaderImmersive(false);
@@ -19709,128 +22193,25 @@ function AppInner() {
         setReaderAddOpen(false);
         setSelectedSections(new Set(['reader']));
         ensureSectionVisible('reader');
-        setReaderLibraryError(tr(
-          'Файл отправляется на сервер. Как только документ встанет в очередь, покажем его в библиотеке.',
-          'Die Datei wird an den Server gesendet. Sobald das Dokument in der Warteschlange ist, erscheint es in der Bibliothek.'
-        ));
+        setReaderLibraryError('');
       }
       let data;
-      if (readerSelectedFile) {
-        const selectedFile = readerSelectedFile;
-        let usedDirectUpload = false;
-        let directDocId = null;
-        try {
-          const initResponse = await fetch('/api/webapp/reader/upload-init', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              initData,
-              file_name: selectedFile.name,
-              file_mime: selectedFile.type,
-            }),
-          });
-          if (!initResponse.ok) {
-            throw await buildReaderApiError(initResponse, 'Ошибка подготовки загрузки', 'Fehler bei der Upload-Vorbereitung');
-          }
-          const initDataPayload = await initResponse.json();
-          const upload = initDataPayload?.upload || {};
-          const directDoc = initDataPayload?.document || {};
-          directDocId = Number(directDoc?.id || 0) || null;
-          if (!upload?.url || !directDocId || !upload?.object_key) {
-            throw new Error(tr('Сервер не вернул параметры прямой загрузки.', 'Der Server hat keine Direct-Upload-Parameter zurückgegeben.'));
-          }
-          usedDirectUpload = true;
-          upsertReaderLibraryDocument({
-            ...directDoc,
-            id: directDocId,
-            title: String(initDataPayload?.title || directDoc?.title || selectedFile.name || rawInput.slice(0, 80)),
-            source_type: String(initDataPayload?.source_type || directDoc?.source_type || 'file'),
-            processing_status: String(directDoc?.processing_status || initDataPayload?.status || 'pending'),
-            is_archived: Boolean(directDoc?.is_archived),
-          });
-          setReaderDocumentId(directDocId);
-          setReaderFontSize(READER_DEFAULT_FONT_SIZE);
-          setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
-          setReaderTitle(String(initDataPayload?.title || directDoc?.title || selectedFile.name || rawInput.slice(0, 80)));
-          setReaderSourceType(String(initDataPayload?.source_type || directDoc?.source_type || 'file'));
-          setReaderSourceUrl('');
-          setReaderContent('');
-          setReaderPages([]);
-          setReaderDynamicPages([]);
-          setReaderLayoutMode('custom');
-          setReaderCurrentPage(1);
-          setReaderAddOpen(false);
-          setReaderSelectedFile(null);
-          setReaderLibraryError(tr(
-            'Файл загружается напрямую в object storage. Как только upload завершится, сразу запустим обработку.',
-            'Die Datei wird direkt in den Object Storage geladen. Sobald der Upload fertig ist, startet sofort die Verarbeitung.'
-          ));
-          await loadReaderLibrary(true);
-
-          const uploadResponse = await fetch(String(upload.url), {
-            method: String(upload.method || 'PUT').toUpperCase(),
-            headers: upload.headers && typeof upload.headers === 'object' ? upload.headers : undefined,
-            body: selectedFile,
-          });
-          if (!uploadResponse.ok) {
-            throw new Error(tr('Прямая загрузка файла в storage не удалась.', 'Direkter Upload in den Storage ist fehlgeschlagen.'));
-          }
-          let completeResponse = null;
-          for (let attempt = 0; attempt < 5; attempt += 1) {
-            completeResponse = await fetch('/api/webapp/reader/ingest/complete', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                initData,
-                document_id: directDocId,
-                object_key: String(upload.object_key || ''),
-                file_name: selectedFile.name,
-                file_mime: selectedFile.type,
-              }),
-            });
-            if (completeResponse.ok || completeResponse.status !== 409) {
-              break;
-            }
-            await new Promise((resolve) => window.setTimeout(resolve, 700));
-          }
-          if (!completeResponse.ok) {
-            throw await buildReaderApiError(completeResponse, 'Ошибка постановки книги в обработку', 'Fehler beim Start der Dokumentverarbeitung');
-          }
-          data = await completeResponse.json();
-          upsertReaderLibraryDocument(data?.document || {});
-        } catch (directUploadError) {
-          if (usedDirectUpload) {
-            if (directDocId) {
-              try {
-                await fetch('/api/webapp/reader/ingest/abort', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    initData,
-                    document_id: directDocId,
-                    error: String(directUploadError?.message || 'direct_upload_failed'),
-                  }),
-                });
-              } catch (_abortError) {
-                // ignore best-effort status update
-              }
-            }
-            throw directUploadError;
-          }
-          const formData = new FormData();
-          formData.append('initData', initData);
-          formData.append('url', '');
-          formData.append('text', '');
-          formData.append('file', selectedFile, selectedFile.name || 'reader-upload');
-          const fallbackResponse = await fetch('/api/webapp/reader/ingest', {
-            method: 'POST',
-            body: formData,
-          });
-          if (!fallbackResponse.ok) {
-            throw await buildReaderApiError(fallbackResponse, 'Ошибка загрузки читалки', 'Fehler beim Laden des Leser-Modus');
-          }
-          data = await fallbackResponse.json();
+      if (selectedFile) {
+        const fileContentBase64 = await readFileAsBase64(selectedFile);
+        const response = await fetch('/api/webapp/reader/ingest', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            initData,
+            file_name: selectedFile.name || 'reader-upload.bin',
+            file_mime: selectedFile.type || '',
+            file_content_base64: fileContentBase64,
+          }),
+        });
+        if (!response.ok) {
+          throw await buildReaderApiError(response, 'Ошибка загрузки читалки', 'Fehler beim Laden des Leser-Modus');
         }
+        data = await response.json();
       } else {
         const response = await fetch('/api/webapp/reader/ingest', {
           method: 'POST',
@@ -19874,37 +22255,62 @@ function AppInner() {
         setReaderAddOpen(false);
         setSelectedSections(new Set(['reader']));
         ensureSectionVisible('reader');
-        setReaderSelectedFile(null);
+        clearReaderSelectedFile();
         setReaderErrorCode('');
-        setReaderLibraryError(tr(
-          'Книга загружена в очередь. Обработка идёт в фоне, откроем автоматически, когда всё будет готово.',
-          'Das Dokument wurde zur Verarbeitung eingereiht und wird automatisch geoeffnet, sobald es fertig ist.'
-        ));
-        await loadReaderLibrary(true);
+        setReaderLibraryError('');
+        await loadReaderLibrary(true, { resetError: false, showError: false });
         if (docId) {
           void pollReaderDocumentStatus(docId, { openWhenReady: true });
         }
         return;
       }
-      const pages = Array.isArray(doc?.content_pages) ? doc.content_pages : [];
+      const pages = Array.isArray(data?.content_pages)
+        ? data.content_pages
+        : (Array.isArray(doc?.content_pages) ? doc.content_pages : []);
+      const sourceType = String(data?.source_type || doc?.source_type || 'text');
+      const resolvedText = String(data?.text || '').trim() || buildReaderTextFromPages(pages);
+      const preferredLayoutMode = getReaderPreferredLayoutMode(sourceType, pages);
+      const progress = Number(doc?.progress_percent || 0);
+      const bookmark = Number(doc?.bookmark_percent || 0);
       setReaderFontSize(READER_DEFAULT_FONT_SIZE);
       setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
-      setReaderContent(String(data?.text || '').trim());
+      readerPendingPagePercentRef.current = preferredLayoutMode === 'custom'
+        ? (bookmark || progress || 0)
+        : null;
+      setReaderContent(resolvedText);
       setReaderTitle(String(data?.title || doc?.title || rawInput.slice(0, 80)));
       setReaderPages(pages);
       setReaderDynamicPages([]);
-      setReaderLayoutMode(pages.length > 0 ? 'original' : 'custom');
-      setReaderSourceType(String(data?.source_type || 'text'));
+      setReaderLayoutMode(preferredLayoutMode);
+      setReaderSourceType(sourceType);
       setReaderSourceUrl(String(data?.source_url || rawInput));
       setReaderDetectedLanguage(normalizeLangCode(data?.detected_language || ''));
       setReaderDocumentId(docId);
       setReaderReadingMode(String(doc?.reading_mode || 'vertical'));
-      setReaderProgressPercent(Number(doc?.progress_percent || 0));
-      setReaderBookmarkPercent(Number(doc?.bookmark_percent || 0));
-      const pageFromProgress = pages.length > 0
-        ? Math.max(1, Math.min(pages.length, Math.round((Number(doc?.bookmark_percent || doc?.progress_percent || 0) / 100) * pages.length) || 1))
+      setReaderProgressPercent(progress);
+      const storedBookmark = readStoredReaderExactBookmark(docId);
+      const resolvedTotalPages = pages.length;
+      const usesOriginalEpub = String(sourceType || '').trim().toLowerCase() === 'epub' && preferredLayoutMode === 'original';
+      const pageFromProgress = resolvedTotalPages > 0
+        ? resolveReaderPageFromPercent(bookmark || progress, resolvedTotalPages)
         : 1;
-      setReaderCurrentPage(pageFromProgress);
+      const exactBookmarkPage = resolveStoredReaderExactBookmarkPage(storedBookmark, {
+        pageCount: resolvedTotalPages,
+        layoutMode: preferredLayoutMode,
+      });
+      const initialPage = preferredLayoutMode === 'custom' || usesOriginalEpub
+        ? 1
+        : (exactBookmarkPage || pageFromProgress);
+      setReaderCurrentPage(initialPage);
+      setReaderBookmarkPercent(
+        usesOriginalEpub
+          ? Number((bookmark || progress || 0).toFixed(2))
+          : resolvedTotalPages > 0
+          ? Number((preferredLayoutMode === 'custom'
+            ? (bookmark || progress || 0)
+            : ((initialPage / resolvedTotalPages) * 100)).toFixed(2))
+          : bookmark
+      );
       setReaderAudioFromPage(pages.length > 0 ? '1' : '');
       setReaderAudioToPage(pages.length > 0 ? String(pages.length) : '');
       setReaderAudioError('');
@@ -19918,13 +22324,18 @@ function AppInner() {
       ensureSectionVisible('reader');
       setTimeout(() => {
         scrollToRef(readerRef, { block: 'start' });
-        const target = Number(doc?.bookmark_percent || doc?.progress_percent || 0);
-        applyReaderProgressPercent(target);
+        if (pages.length === 0) {
+          const target = Number(doc?.bookmark_percent || doc?.progress_percent || 0);
+          applyReaderProgressPercent(target);
+        }
       }, 80);
-      loadReaderLibrary();
-      setReaderSelectedFile(null);
+      loadReaderLibrary(readerIncludeArchived, { showError: false });
+      clearReaderSelectedFile();
       setReaderErrorCode('');
     } catch (error) {
+      if (readerFileInputRef.current && !readerFileInputRef.current.files?.length) {
+        clearReaderSelectedFile();
+      }
       const code = String(error?.code || '').trim();
       setReaderErrorCode(code);
       if (code === 'LIMIT_FREE_PLAN_1_BOOK') {
@@ -20311,41 +22722,134 @@ function AppInner() {
     setFolderContextMenu(null);
     setFolderTtsJob({ folderId, folderName: folder.name, total: 0, done: 0, status: 'loading', cancelRef });
     try {
-      let offset = 0;
-      let folderTotal = Infinity;
-      while (offset < folderTotal) {
-        if (cancelRef.cancelled) return;
+      const fetchVocabPage = async ({ folderId: requestFolderId = null, offset = 0, updatedSince = null, sort = 'updated_asc' }) => {
         const resp = await fetchWithTimeout('/api/webapp/vocabulary/list', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ initData, folder_id: folderId, search: null, sort: 'date_desc', limit: 100, offset }),
+          body: JSON.stringify({
+            initData,
+            folder_id: requestFolderId,
+            search: null,
+            sort,
+            limit: 100,
+            offset,
+            updated_since: updatedSince || null,
+          }),
         }, 15000);
         if (!resp.ok) {
-          throw new Error(await readApiError(resp,
+          throw new Error(await readApiError(
+            resp,
             'Не удалось загрузить слова папки.',
             'Die Wörter des Ordners konnten nicht geladen werden.'
           ));
         }
-        const data = await resp.json();
-        const page = Array.isArray(data?.items) ? data.items : [];
-        folderTotal = Math.max(0, Number(data?.total || 0));
-        if (offset === 0) setFolderTtsJob((prev) => prev ? { ...prev, total: folderTotal } : null);
-        if (page.length > 0) {
-          // Pass true total (all folders) so meta isn't corrupted
-          const trueTotalForMeta = Number(vocabFoldersMeta?.total_count || folderTotal);
-          await saveVocabBatch(userId, page, trueTotalForMeta);
+        return resp.json();
+      };
+
+      const syncChangedVocabularySince = async (updatedSince) => {
+        if (!updatedSince) return 0;
+        let offset = 0;
+        let changedTotal = Infinity;
+        let changedLoaded = 0;
+        while (offset < changedTotal) {
+          if (cancelRef.cancelled) return changedLoaded;
+          const data = await fetchVocabPage({ offset, updatedSince, sort: 'updated_asc' });
+          const page = Array.isArray(data?.items) ? data.items : [];
+          changedTotal = Math.max(0, Number(data?.total || 0));
+          if (page.length > 0) {
+            const trueTotalForMeta = Number(vocabFoldersMeta?.total_count || data?.folders_meta?.total_count || 0);
+            await saveVocabBatch(userId, page, trueTotalForMeta);
+          }
+          offset += page.length;
+          changedLoaded += page.length;
+          if (page.length === 0) break;
+          if (offset < changedTotal) await new Promise((r) => setTimeout(r, 60));
         }
-        offset += page.length;
-        setFolderTtsJob((prev) => prev ? { ...prev, done: Math.min(folderTotal, offset) } : null);
-        if (page.length === 0) break;
-        if (offset < folderTotal) await new Promise((r) => setTimeout(r, 100));
+        return changedLoaded;
+      };
+
+      const fullSyncFolder = async (folderTotalHint = 0) => {
+        let offset = 0;
+        let folderTotal = Math.max(0, Number(folderTotalHint || 0));
+        const keepIds = [];
+        setFolderTtsJob((prev) => prev ? { ...prev, total: folderTotal, done: 0 } : null);
+        while (offset < Math.max(folderTotal, 1)) {
+          if (cancelRef.cancelled) return { folderTotal, keepIds };
+          const data = await fetchVocabPage({ folderId, offset, sort: 'updated_asc' });
+          const page = Array.isArray(data?.items) ? data.items : [];
+          folderTotal = Math.max(0, Number(data?.total || 0));
+          if (page.length > 0) {
+            const trueTotalForMeta = Number(vocabFoldersMeta?.total_count || data?.folders_meta?.total_count || folderTotal);
+            await saveVocabBatch(userId, page, trueTotalForMeta);
+            keepIds.push(...page.map((item) => Number(item?.id)).filter((id) => Number.isFinite(id) && id > 0));
+          }
+          offset += page.length;
+          setFolderTtsJob((prev) => prev ? { ...prev, total: folderTotal, done: Math.min(folderTotal, offset) } : null);
+          if (page.length === 0) break;
+          if (offset < folderTotal) await new Promise((r) => setTimeout(r, 100));
+        }
+        await reconcileCachedFolderEntries(userId, folderId, keepIds);
+        return { folderTotal, keepIds };
+      };
+
+      const localStatsBefore = await getCachedVocabSyncStats(userId, folderId);
+      const metaPage = await fetchVocabPage({ folderId, offset: 0, sort: 'updated_desc' });
+      const remoteFolderTotal = Math.max(0, Number(metaPage?.total || 0));
+      setFolderTtsJob((prev) => prev ? {
+        ...prev,
+        total: remoteFolderTotal,
+        done: Math.min(remoteFolderTotal, Number(localStatsBefore?.folderCount || 0)),
+      } : null);
+
+      const shouldFullSyncImmediately = (
+        Number(localStatsBefore?.totalCount || 0) <= 0
+        || Number(localStatsBefore?.folderCount || 0) <= 0
+        || !String(localStatsBefore?.latestUpdatedAt || '').trim()
+        || Number(localStatsBefore?.folderCount || 0) > remoteFolderTotal
+      );
+
+      if (shouldFullSyncImmediately) {
+        const fullResult = await fullSyncFolder(remoteFolderTotal);
+        setFolderTtsJob((prev) => prev ? {
+          ...prev,
+          total: fullResult.folderTotal,
+          done: fullResult.folderTotal,
+          status: 'done',
+        } : null);
+        setTimeout(() => setFolderTtsJob(null), 4000);
+        return;
       }
-      setFolderTtsJob((prev) => prev ? { ...prev, status: 'done' } : null);
+
+      await syncChangedVocabularySince(localStatsBefore.latestUpdatedAt);
+      const localStatsAfter = await getCachedVocabSyncStats(userId, folderId);
+
+      if (Number(localStatsAfter?.folderCount || 0) !== remoteFolderTotal) {
+        const fullResult = await fullSyncFolder(remoteFolderTotal);
+        setFolderTtsJob((prev) => prev ? {
+          ...prev,
+          total: fullResult.folderTotal,
+          done: fullResult.folderTotal,
+          status: 'done',
+        } : null);
+      } else {
+        setFolderTtsJob((prev) => prev ? {
+          ...prev,
+          total: remoteFolderTotal,
+          done: remoteFolderTotal,
+          status: 'done',
+        } : null);
+      }
       setTimeout(() => setFolderTtsJob(null), 4000);
     } catch (err) {
       setFolderTtsJob((prev) => prev ? { ...prev, status: 'error', error: String(err?.message || err) } : null);
     }
-  }, [initData, fetchWithTimeout, readApiError, webappUser?.id, vocabFoldersMeta?.total_count]);
+  }, [
+    initData,
+    fetchWithTimeout,
+    readApiError,
+    webappUser?.id,
+    vocabFoldersMeta?.total_count,
+  ]);
 
   const persistManualTrainingSelection = useCallback(async () => {
     if (manualTrainingSelectionCount <= 0) {
@@ -20890,6 +23394,8 @@ function AppInner() {
     setYoutubeDictError('');
     setYoutubeDictResult(null);
     setYoutubeDictSaved(false);
+    setYoutubeDictSavedEntryId(0);
+    setYoutubeDictFeelStatus('');
     try {
       const response = await fetch('/api/webapp/dictionary', {
         method: 'POST',
@@ -20956,10 +23462,41 @@ function AppInner() {
         }),
       });
       if (saveResponse.ok) {
+        const saveData = await saveResponse.json();
         setYoutubeDictSaved(true);
+        const entryId = Number(saveData?.entry_id || 0);
+        if (entryId > 0) setYoutubeDictSavedEntryId(entryId);
+        return entryId;
       }
     } catch (_err) {
       // ignore save errors silently
+    }
+    return 0;
+  };
+
+  const handleYoutubeDictFeel = async () => {
+    if (youtubeDictFeelLoading || !youtubeDictResult) return;
+    setYoutubeDictFeelLoading(true);
+    setYoutubeDictFeelStatus(tr('Обрабатываем...', 'Verarbeitung...'));
+    try {
+      let entryId = youtubeDictSavedEntryId;
+      if (!entryId) {
+        entryId = await saveYoutubeDictWord() || 0;
+      }
+      if (!entryId) {
+        setYoutubeDictFeelStatus(tr('Не удалось сохранить слово', 'Wort konnte nicht gespeichert werden'));
+        return;
+      }
+      queueFlashcardFeel({ id: entryId, entry_id: entryId });
+      await dispatchQueuedFlashcardFeel('youtube_dict');
+      setYoutubeDictFeelStatus(tr(
+        '✓ Объяснение отправлено в Telegram',
+        '✓ Erklärung wurde an Telegram gesendet'
+      ));
+    } catch (_e) {
+      setYoutubeDictFeelStatus(tr('Ошибка. Попробуйте ещё раз.', 'Fehler. Bitte erneut versuchen.'));
+    } finally {
+      setYoutubeDictFeelLoading(false);
     }
   };
 
@@ -21673,12 +24210,36 @@ function AppInner() {
     }
   };
 
+  function getExplanationItemKey(item) {
+    return String(item?.sentence_number ?? item?.original_text ?? '');
+  }
+
+  function parseExplanationFollowupAnswerPayload(value) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return {
+        answer: String(value.answer || '').trim(),
+        saveVariants: Array.isArray(value.saveVariants) ? value.saveVariants : [],
+      };
+    }
+    return {
+      answer: String(value || '').trim(),
+      saveVariants: [],
+    };
+  }
+
+  function getResultCardIdentityKey(item, fallbackIndex = 0) {
+    return (
+      getTranslationResultIdentityKey(item)
+      || `result:${item?.sentence_number ?? 'x'}:${fallbackIndex}`
+    );
+  }
+
   const handleExplainTranslation = async (item) => {
     if (!initData) {
       setWebappError(initDataMissingMsg);
       return;
     }
-    const key = String(item.sentence_number ?? item.original_text);
+    const key = getExplanationItemKey(item);
     if (explanationInFlightKeysRef.current.has(key)) {
       return;
     }
@@ -21706,11 +24267,183 @@ function AppInner() {
       }
       const data = await response.json();
       setExplanations((prev) => ({ ...prev, [key]: data.explanation }));
+      setCollapsedExplanationBlocks((prev) => ({ ...prev, [key]: false }));
+      setCollapsedFollowupAnswerBlocks((prev) => ({ ...prev, [key]: false }));
+      setExplanationQuestionOpen((prev) => ({ ...prev, [key]: false }));
+      setExplanationQuestionDrafts((prev) => ({ ...prev, [key]: '' }));
+      setExplanationQuestionAnswers((prev) => ({ ...prev, [key]: null }));
+      setExplanationQuestionSaveChecked((prev) => ({ ...prev, [key]: {} }));
+      setExplanationQuestionSaveError((prev) => ({ ...prev, [key]: '' }));
+      setExplanationQuestionSaveMessage((prev) => ({ ...prev, [key]: '' }));
     } catch (error) {
       setWebappError(`${tr('Ошибка объяснения', 'Erklaerungsfehler')}: ${error.message}`);
     } finally {
       explanationInFlightKeysRef.current.delete(key);
       setExplanationLoading((prev) => ({ ...prev, [key]: false }));
+    }
+  };
+
+  const handleToggleExplanationQuestion = (item, nextOpen = true) => {
+    const key = getExplanationItemKey(item);
+    setExplanationQuestionOpen((prev) => ({ ...prev, [key]: Boolean(nextOpen) }));
+    if (!nextOpen) {
+      setExplanationQuestionDrafts((prev) => ({ ...prev, [key]: '' }));
+    }
+  };
+
+  const handleExplanationQuestionDraftChange = (item, value) => {
+    const key = getExplanationItemKey(item);
+    setExplanationQuestionDrafts((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const handleAskExplanationQuestion = async (item) => {
+    if (!initData) {
+      setWebappError(initDataMissingMsg);
+      return;
+    }
+    const key = getExplanationItemKey(item);
+    const learnerQuestion = String(explanationQuestionDrafts[key] || '').trim();
+    const explanation = String(explanations[key] || '').trim();
+    if (!learnerQuestion) {
+      setWebappError(tr('Сначала напишите вопрос.', 'Bitte schreibe zuerst deine Frage.'));
+      return;
+    }
+    if (!explanation) {
+      setWebappError(tr('Сначала получите объяснение ошибок.', 'Bitte hole zuerst die Fehlererklaerung.'));
+      return;
+    }
+    setExplanationQuestionLoading((prev) => ({ ...prev, [key]: true }));
+    try {
+      const response = await fetch('/api/webapp/explain/question', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          original_text: item.original_text,
+          user_translation: item.user_translation,
+          explanation,
+          learner_question: learnerQuestion,
+        }),
+      });
+      if (!response.ok) {
+        let message = await response.text();
+        try {
+          const data = JSON.parse(message);
+          message = data.error || message;
+        } catch (error) {
+          // ignore parsing errors
+        }
+        throw new Error(message);
+      }
+      const data = await response.json();
+      setExplanationQuestionAnswers((prev) => ({
+        ...prev,
+        [key]: {
+          answer: String(data.answer || '').trim(),
+          saveVariants: [],
+        },
+      }));
+      setCollapsedExplanationBlocks((prev) => ({ ...prev, [key]: true }));
+      setCollapsedFollowupAnswerBlocks((prev) => ({ ...prev, [key]: false }));
+      setExplanationQuestionSaveChecked((prev) => ({ ...prev, [key]: {} }));
+      setExplanationQuestionSaveError((prev) => ({ ...prev, [key]: '' }));
+      setExplanationQuestionSaveMessage((prev) => ({ ...prev, [key]: '' }));
+      setExplanationQuestionOpen((prev) => ({ ...prev, [key]: false }));
+      setExplanationQuestionDrafts((prev) => ({ ...prev, [key]: '' }));
+    } catch (error) {
+      setWebappError(`${tr('Ошибка вопроса', 'Fragefehler')}: ${error.message}`);
+    } finally {
+      setExplanationQuestionLoading((prev) => ({ ...prev, [key]: false }));
+    }
+  };
+
+  const handleToggleResultCardCollapsed = (item, collapsed) => {
+    const key = getResultCardIdentityKey(item);
+    setCollapsedResultCards((prev) => ({ ...prev, [key]: Boolean(collapsed) }));
+  };
+
+  const handleToggleExplanationCollapsed = (item, collapsed) => {
+    const key = getExplanationItemKey(item);
+    setCollapsedExplanationBlocks((prev) => ({ ...prev, [key]: Boolean(collapsed) }));
+  };
+
+  const handleToggleFollowupAnswerCollapsed = (item, collapsed) => {
+    const key = getExplanationItemKey(item);
+    setCollapsedFollowupAnswerBlocks((prev) => ({ ...prev, [key]: Boolean(collapsed) }));
+  };
+
+  const handleToggleExplanationFollowupSaveVariant = (item, variantIndex, checked) => {
+    const key = getExplanationItemKey(item);
+    setExplanationQuestionSaveChecked((prev) => ({
+      ...prev,
+      [key]: {
+        ...(prev[key] && typeof prev[key] === 'object' ? prev[key] : {}),
+        [variantIndex]: Boolean(checked),
+      },
+    }));
+    setExplanationQuestionSaveError((prev) => ({ ...prev, [key]: '' }));
+    setExplanationQuestionSaveMessage((prev) => ({ ...prev, [key]: '' }));
+  };
+
+  const handleSaveExplanationFollowupAnswer = async (item) => {
+    const key = getExplanationItemKey(item);
+    const answerPayload = parseExplanationFollowupAnswerPayload(explanationQuestionAnswers[key]);
+    const variants = Array.isArray(answerPayload.saveVariants) ? answerPayload.saveVariants : [];
+    const checkedMap = explanationQuestionSaveChecked[key] && typeof explanationQuestionSaveChecked[key] === 'object'
+      ? explanationQuestionSaveChecked[key]
+      : {};
+    const selectedVariants = variants
+      .map((variant, index) => ({ ...variant, index }))
+      .filter((variant) => Boolean(checkedMap[variant.index]));
+    if (!selectedVariants.length) {
+      setExplanationQuestionSaveError((prev) => ({
+        ...prev,
+        [key]: tr('Выберите минимум один пример для сохранения.', 'Waehle mindestens ein Beispiel zum Speichern.'),
+      }));
+      setExplanationQuestionSaveMessage((prev) => ({ ...prev, [key]: '' }));
+      return;
+    }
+    setExplanationQuestionSaveLoading((prev) => ({ ...prev, [key]: true }));
+    setExplanationQuestionSaveError((prev) => ({ ...prev, [key]: '' }));
+    try {
+      const activePair = resolveLanguagePairForUI(dictionaryLanguagePair);
+      const sourceLang = normalizeLangCode(activePair?.source_lang || '') || 'ru';
+      const targetLang = normalizeLangCode(activePair?.target_lang || '') || 'de';
+      let savedCount = 0;
+      for (const variant of selectedVariants) {
+        await saveSelectionGptDictionaryEntry({
+          sourceText: variant.source_text,
+          targetText: variant.target_text,
+          sourceLang,
+          targetLang,
+          direction: `${sourceLang}-${targetLang}`,
+          responseJson: {
+            source_text: variant.source_text,
+            target_text: variant.target_text,
+          },
+          originMeta: {
+            source_kind: 'translation_explanation_followup',
+            original_text: String(item?.original_text || '').trim(),
+            sentence_number: Number(item?.sentence_number || 0) || undefined,
+            example_index: Number(variant.index) + 1,
+          },
+        });
+        savedCount += 1;
+      }
+      const successMessage = tr(
+        `Сохранено в словарь: ${savedCount}`,
+        `Im Wörterbuch gespeichert: ${savedCount}`
+      );
+      setExplanationQuestionSaveMessage((prev) => ({ ...prev, [key]: successMessage }));
+      setCollapsedFollowupAnswerBlocks((prev) => ({ ...prev, [key]: true }));
+      showInlineToast(successMessage);
+    } catch (error) {
+      setExplanationQuestionSaveError((prev) => ({
+        ...prev,
+        [key]: String(error?.message || tr('Ошибка сохранения', 'Speicherfehler')),
+      }));
+    } finally {
+      setExplanationQuestionSaveLoading((prev) => ({ ...prev, [key]: false }));
     }
   };
 
@@ -21803,6 +24536,7 @@ function AppInner() {
       startY: 0,
     });
     const suppressStructuredClickRef = useRef(0);
+    const lastTapRef = useRef({ time: 0, sid: null });
     const [dragSelectionMeta, setDragSelectionMeta] = useState(null);
 
     const structuredSentencesModel = useMemo(
@@ -21925,6 +24659,23 @@ function AppInner() {
         const sid = String(wordEl.getAttribute('data-sid') || '').trim();
         const metaWord = structuredWordMap.get(wid);
         if (!metaWord || !sid) return;
+
+        const now = Date.now();
+        const lastTap = lastTapRef.current;
+        const isDoubleTap = now - lastTap.time < 320 && lastTap.sid === sid;
+        lastTapRef.current = { time: now, sid };
+
+        if (isDoubleTap) {
+          const sentence = structuredSentenceMap.get(sid);
+          if (!sentence) return;
+          openStructuredSelection(event, String(sentence.text || ''), 'translation_result_sentence', {
+            sids: [sid],
+            start: Number(sentence.start || 0),
+            end: Number(sentence.end || 0),
+          });
+          return;
+        }
+
         openStructuredSelection(event, metaWord.value, 'translation_result_word', {
           sids: [sid],
           wids: [wid],
@@ -21939,6 +24690,7 @@ function AppInner() {
         const sid = String(sentenceEl.getAttribute('data-sid') || '').trim();
         const sentence = structuredSentenceMap.get(sid);
         if (!sentence) return;
+        lastTapRef.current = { time: 0, sid: null };
         openStructuredSelection(event, String(sentence.text || ''), 'translation_result_sentence', {
           sids: [sid],
           start: Number(sentence.start || 0),
@@ -22845,8 +25597,14 @@ function AppInner() {
     setDictionaryResult(null);
     setDictionarySaved('');
     setLastLookupScrollY(null);
+    let baseLookupTimeoutId = null;
 
     try {
+      const offlineNotFoundMessage = tr(
+        'Слово не найдено в локальном офлайн-словаре.',
+        'Wort wurde im lokalen Offline-Wörterbuch nicht gefunden.'
+      );
+      void ensureOfflinePack('de', 30000);
       // 1. Check offline IndexedDB first
       const offlineResult = await lookupOfflineBaseDictEntry(sourceWord);
       if (offlineResult) {
@@ -22859,16 +25617,30 @@ function AppInner() {
         return;
       }
 
-      // 2. Try server-side pre-loaded dictionary (PostgreSQL)
-      if (!initData) {
-        setDictionaryError(tr('Слово не найдено в словаре.', 'Wort nicht im Wörterbuch gefunden.'));
+      if (!isOnline) {
+        setDictionaryError(tr('Нет соединения и слово не найдено офлайн.', 'Kein Netz und Wort nicht offline gefunden.'));
         return;
       }
+
+      // 2. Try server-side pre-loaded dictionary (PostgreSQL)
+      if (!initData) {
+        setDictionaryError(offlineNotFoundMessage);
+        return;
+      }
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      baseLookupTimeoutId = controller
+        ? window.setTimeout(() => controller.abort(new Error('base_lookup_timeout')), 1800)
+        : null;
       const response = await fetch('/api/webapp/dictionary/base-lookup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ initData, word: sourceWord, source_lang: queryLang }),
+        signal: controller?.signal,
       });
+      if (baseLookupTimeoutId) {
+        window.clearTimeout(baseLookupTimeoutId);
+        baseLookupTimeoutId = null;
+      }
       if (!response.ok && response.status !== 202) {
         setDictionaryError(tr('Ошибка соединения со словарём.', 'Verbindungsfehler zum Wörterbuch.'));
         return;
@@ -22884,7 +25656,7 @@ function AppInner() {
       }
 
       if (data.not_found || !data.item) {
-        setDictionaryError(tr('Слово не найдено в словаре. Попробуйте ⚡ Перевод.', 'Wort nicht gefunden. Versuche ⚡ Übersetzen.'));
+        setDictionaryError(tr('Слово не найдено в базовом словаре. Попробуйте ⚡ Перевод.', 'Wort nicht im Basiswörterbuch gefunden. Versuche ⚡ Übersetzen.'));
         return;
       }
 
@@ -22895,7 +25667,7 @@ function AppInner() {
         target_lang: queryLang === 'ru' ? 'de' : 'ru',
       }));
       void saveBaseDictEntryFromServerResult(sourceWord, data.item);
-    } catch {
+    } catch (error) {
       // Network failure — try offline cache only
       const offlineFallback = await lookupOfflineBaseDictEntry(sourceWord);
       if (offlineFallback) {
@@ -22906,9 +25678,20 @@ function AppInner() {
           target_lang: queryLang === 'ru' ? 'de' : 'ru',
         }));
       } else {
-        setDictionaryError(tr('Нет соединения и слово не найдено офлайн.', 'Kein Netz und Wort nicht offline gefunden.'));
+        const isAbort = String(error?.name || '').trim() === 'AbortError';
+        if (isAbort) {
+          setDictionaryError(tr(
+            'Локально слово не найдено, а онлайн-поиск словаря отвечает слишком долго. Попробуйте ⚡ Перевод.',
+            'Lokal nicht gefunden und die Online-Suche des Wörterbuchs reagiert zu langsam. Versuche ⚡ Übersetzen.'
+          ));
+        } else {
+          setDictionaryError(tr('Нет соединения и слово не найдено офлайн.', 'Kein Netz und Wort nicht offline gefunden.'));
+        }
       }
     } finally {
+      if (baseLookupTimeoutId) {
+        window.clearTimeout(baseLookupTimeoutId);
+      }
       setDictionaryLoading(false);
       setDictionaryLookupMode('');
     }
@@ -23942,6 +26725,14 @@ function AppInner() {
   const renderStoryFeedbackStable = useStableCallback(renderStoryFeedback);
   const renderFeedbackStable = useStableCallback(renderFeedback);
   const handleExplainTranslationStable = useStableCallback(handleExplainTranslation);
+  const handleToggleResultCardCollapsedStable = useStableCallback(handleToggleResultCardCollapsed);
+  const handleToggleExplanationCollapsedStable = useStableCallback(handleToggleExplanationCollapsed);
+  const handleToggleFollowupAnswerCollapsedStable = useStableCallback(handleToggleFollowupAnswerCollapsed);
+  const handleToggleExplanationQuestionStable = useStableCallback(handleToggleExplanationQuestion);
+  const handleExplanationQuestionDraftChangeStable = useStableCallback(handleExplanationQuestionDraftChange);
+  const handleAskExplanationQuestionStable = useStableCallback(handleAskExplanationQuestion);
+  const handleToggleExplanationFollowupSaveVariantStable = useStableCallback(handleToggleExplanationFollowupSaveVariant);
+  const handleSaveExplanationFollowupAnswerStable = useStableCallback(handleSaveExplanationFollowupAnswer);
   const renderExplanationContentStable = useStableCallback(renderExplanationContent);
   const handleFinishTranslationStable = useStableCallback(handleFinishTranslation);
   const handleLoadDailyHistoryStable = useStableCallback(handleLoadDailyHistory);
@@ -24969,8 +27760,12 @@ function AppInner() {
     if (!isWebAppMode || !initData) {
       return;
     }
-    if (!flashcardsOnly && isSectionVisible('subscription')) {
+    const subscriptionSectionVisible = !flashcardsOnly && isSectionVisible('subscription');
+    const readerSectionVisible = !flashcardsOnly && isSectionVisible('reader');
+    if (subscriptionSectionVisible || readerSectionVisible) {
       loadBillingStatus();
+    }
+    if (subscriptionSectionVisible) {
       loadBillingPlans();
     }
   }, [initData, isWebAppMode, selectedSections, flashcardsOnly, billingReturnContext.kind, billingReturnContext.shouldHandle]);
@@ -25226,7 +28021,7 @@ function AppInner() {
     };
 
     (async () => {
-      const echartsModule = await import('echarts');
+      const { echarts: echartsModule } = await import('./utils/echartsRuntime');
       if (disposed || !analyticsTrendRef.current) {
         return;
       }
@@ -25359,7 +28154,7 @@ function AppInner() {
     });
 
     (async () => {
-      const echartsModule = await import('echarts');
+      const { echarts: echartsModule } = await import('./utils/echartsRuntime');
       if (disposed) return;
       const chartConfigs = [
         {
@@ -25445,7 +28240,10 @@ function AppInner() {
       );
     }
     return (
-      <div className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isAndroidTelegramClient ? 'is-android-client' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''} ${canTopbarGoBack ? 'is-topbar-back-mode' : ''}`}>
+      <div
+        className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${showReaderTopbarPeekInAppTopbar ? 'is-reader-peek' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isAndroidTelegramClient ? 'is-android-client' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''} ${canTopbarGoBack ? 'is-topbar-back-mode' : ''}`}
+        data-reader-theme={readerHasContent && readerImmersive ? readerColorTheme : undefined}
+      >
         <pre id="app-perf-report" style={{ display: 'none' }} />
         <div className="webapp-shell">
           <aside className="webapp-sidebar">
@@ -25650,6 +28448,28 @@ function AppInner() {
                     <span>{Boolean(flashcardActiveMode) ? tr('Назад', 'Zurück') : tr('На главную', 'Startseite')}</span>
                   </button>
                   {Boolean(flashcardActiveMode) && renderTodaySectionTaskHud('flashcards', { ignoreProgress: true, inline: true })}
+                  {showReaderTopbarPeekInAppTopbar && (
+                    <button
+                      type="button"
+                      className="topbar-home-button topbar-home-button-archiv"
+                      onClick={() => {
+                        setReaderArchiveOpen(true);
+                        setReaderImmersive(false);
+                        setReaderTopbarCollapsed(false);
+                        setReaderSettingsOpen(false);
+                      }}
+                    >
+                      <span className="topbar-home-arrow" aria-hidden="true">◀</span>
+                      <span>{tr('Архив', 'Archiv')}</span>
+                    </button>
+                  )}
+                  {showReaderTopbarPeekInAppTopbar && readerPageCount > 0 && !readerUsesOriginalEpubLayout && (
+                    <span className="topbar-reader-page-pill" aria-live="polite">
+                      {tr('стр.', 'S.')} {readerCurrentPage}
+                      <span className="topbar-reader-page-pill-sep">/</span>
+                      {readerPageCount}
+                    </span>
+                  )}
                 </div>
               ) : (
                 <>
@@ -26289,25 +29109,40 @@ function AppInner() {
                       {languageProfileSaving ? tr('Сохраняем...', 'Speichern...') : tr('Сохранить и продолжить', 'Speichern und fortsetzen')}
                     </button>
                     {languageProfile?.has_profile && starterDictionaryOffer?.enabled && (
-                      <button
-                        type="button"
-                        className="secondary-button language-profile-starter-btn"
-                        onClick={() => void applyStarterDictionaryDecision(true, { forceReimport: true, closePromptOnSuccess: false })}
-                        disabled={
-                          languageProfileSaving
-                          || starterDictionaryActionLoading
-                          || String(starterDictionaryOffer?.state?.import_status || 'idle').trim().toLowerCase() === 'running'
-                          || !starterDictionaryOffer?.can_reconnect
-                        }
-                      >
-                        {starterDictionaryActionLoading || String(starterDictionaryOffer?.state?.import_status || 'idle').trim().toLowerCase() === 'running'
-                          ? tr('Подключаем...', 'Wird verbunden...')
-                          : !starterDictionaryOffer?.can_reconnect
-                            ? tr('Базовый словарь пока пуст', 'Basiswoerterbuch ist noch leer')
-                            : starterDictionaryOffer?.state?.decision_status === 'accepted'
-                              ? tr('Переподключить базовый словарь', 'Basiswoerterbuch neu verbinden')
-                              : tr('Подключить базовый словарь', 'Basiswoerterbuch verbinden')}
-                      </button>
+                      <div className="language-profile-starter-actions">
+                        <button
+                          type="button"
+                          className="secondary-button language-profile-starter-btn"
+                          onClick={() => void applyStarterDictionaryDecision('accept', { forceReimport: true, closePromptOnSuccess: false })}
+                          disabled={
+                            languageProfileSaving
+                            || starterDictionaryActionLoading
+                            || String(starterDictionaryOffer?.state?.import_status || 'idle').trim().toLowerCase() === 'running'
+                            || !starterDictionaryOffer?.can_reconnect
+                          }
+                        >
+                          {starterDictionaryActionLoading || String(starterDictionaryOffer?.state?.import_status || 'idle').trim().toLowerCase() === 'running'
+                            ? tr('Подключаем...', 'Wird verbunden...')
+                            : !starterDictionaryOffer?.can_reconnect
+                              ? tr('Базовый словарь пока пуст', 'Basiswoerterbuch ist noch leer')
+                              : starterDictionaryOffer?.state?.decision_status === 'accepted'
+                                ? tr('Переподключить базовый словарь', 'Basiswoerterbuch neu verbinden')
+                                : tr('Подключить базовый словарь', 'Basiswoerterbuch verbinden')}
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary-button language-profile-starter-btn language-profile-starter-btn-danger"
+                          onClick={() => void applyStarterDictionaryDecision('disconnect', { closePromptOnSuccess: false })}
+                          disabled={
+                            languageProfileSaving
+                            || starterDictionaryActionLoading
+                            || String(starterDictionaryOffer?.state?.import_status || 'idle').trim().toLowerCase() === 'running'
+                            || !starterDictionaryOffer?.can_disconnect
+                          }
+                        >
+                          {tr('Отключить базовый словарь', 'Basiswoerterbuch trennen')}
+                        </button>
+                      </div>
                     )}
                     {!needsLanguageProfileChoice && (
                       <button
@@ -27083,6 +29918,7 @@ function AppInner() {
                 setCustomTopicInput={setCustomTopicInput}
                 selectedLevel={selectedLevel}
                 setSelectedLevel={setSelectedLevel}
+                hasSelectedTranslationLevel={hasSelectedTranslationLevel}
                 storyMode={storyMode}
                 setStoryMode={setStoryMode}
                 selectedStoryId={selectedStoryId}
@@ -27110,6 +29946,8 @@ function AppInner() {
                 requestAndroidDraftPersistence={requestAndroidDraftPersistence}
                 registerTranslationDraftValueAccessor={registerTranslationDraftValueAccessor}
                 recordTranslationDraftAndroidDebugEvent={recordTranslationDraftAndroidDebugEvent}
+                handleSingleSentenceCheck={handleSingleSentenceCheck}
+                singleSentenceCheckLoadingId={singleSentenceCheckLoadingId}
                 jumpToDictionaryFromSentence={jumpToDictionaryFromSentence}
                 isStorySession={isStorySession}
                 hasActiveTranslationSentences={hasActiveTranslationSentences}
@@ -27133,7 +29971,30 @@ function AppInner() {
                 handleExplainTranslation={handleExplainTranslationStable}
                 explanationLoading={explanationLoading}
                 explanations={explanations}
+                collapsedResultCards={collapsedResultCards}
+                collapsedExplanationBlocks={collapsedExplanationBlocks}
+                collapsedFollowupAnswerBlocks={collapsedFollowupAnswerBlocks}
+                explanationQuestionOpen={explanationQuestionOpen}
+                explanationQuestionDrafts={explanationQuestionDrafts}
+                explanationQuestionLoading={explanationQuestionLoading}
+                explanationQuestionAnswers={explanationQuestionAnswers}
+                explanationQuestionSaveChecked={explanationQuestionSaveChecked}
+                explanationQuestionSaveLoading={explanationQuestionSaveLoading}
+                explanationQuestionSaveError={explanationQuestionSaveError}
+                explanationQuestionSaveMessage={explanationQuestionSaveMessage}
+                handleToggleResultCardCollapsed={handleToggleResultCardCollapsedStable}
+                handleToggleExplanationCollapsed={handleToggleExplanationCollapsedStable}
+                handleToggleFollowupAnswerCollapsed={handleToggleFollowupAnswerCollapsedStable}
+                handleToggleExplanationQuestion={handleToggleExplanationQuestionStable}
+                handleExplanationQuestionDraftChange={handleExplanationQuestionDraftChangeStable}
+                handleAskExplanationQuestion={handleAskExplanationQuestionStable}
+                handleToggleExplanationFollowupSaveVariant={handleToggleExplanationFollowupSaveVariantStable}
+                handleSaveExplanationFollowupAnswer={handleSaveExplanationFollowupAnswerStable}
                 renderExplanationContent={renderExplanationContentStable}
+                getResultCardIdentityKey={getResultCardIdentityKey}
+                registerTranslationResultCardNode={registerTranslationResultCardNode}
+                parseExplanationFollowupAnswerPayload={parseExplanationFollowupAnswerPayload}
+                handleToggleResultAudioGrammar={handleToggleResultAudioGrammar}
                 handleFinishTranslation={handleFinishTranslationStable}
                 finishStatus={finishStatus}
                 handleLoadDailyHistory={handleLoadDailyHistoryStable}
@@ -27886,6 +30747,19 @@ function AppInner() {
                               >
                                 {youtubeDictSaved ? `✓ ${tr('Сохранено', 'Gespeichert')}` : `+ ${tr('В словарь', 'Speichern')}`}
                               </button>
+                              <button
+                                type="button"
+                                className="yt-dict-feel-btn"
+                                onClick={handleYoutubeDictFeel}
+                                disabled={youtubeDictFeelLoading}
+                              >
+                                {youtubeDictFeelLoading
+                                  ? tr('Обрабатываем...', 'Verarbeitung...')
+                                  : tr('Почувствовать слово', 'Feel the Word')}
+                              </button>
+                              {youtubeDictFeelStatus && (
+                                <div className="yt-dict-feel-status">{youtubeDictFeelStatus}</div>
+                              )}
                             </div>
                           </div>
                         )}
@@ -28261,7 +31135,11 @@ function AppInner() {
                                   const dotColor = srsColors[item.srs_label] || srsColors.none;
                                   const folder = (vocabFoldersMeta?.folders || []).find((f) => f.id === item.folder_id);
                                   const displayWord = item.display_word || item.word_de || item.word_ru || '—';
-                                  const displayTrans = item.display_translation || item.translation_ru || item.translation_de || '';
+                                  const displayTrans = sanitizeBilingualTargetText(
+                                    displayWord,
+                                    item.display_translation || item.translation_ru || item.translation_de || '',
+                                    item.target_lang || '',
+                                  );
                                   const savedMeanings = getSavedEntryRankedMeanings(item);
                                   const partOfSpeech = item.srs_label !== 'none'
                                     ? `${srsLabels[item.srs_label]} · ${tr('повт.', 'Wdh.')} ${item.srs_reps}`
@@ -29173,573 +32051,136 @@ function AppInner() {
 
             {!flashcardsOnly && isSectionVisible('reader') && (
               <PerfProfiler id="section.reader">
-                <section className={`webapp-section webapp-reader ${readerHasContent && readerImmersive && !readerArchiveOpen ? 'is-immersive' : ''} ${readerHasContent && readerImmersive && !readerArchiveOpen && readerTopbarCollapsed ? 'is-topbar-collapsed' : ''}`} ref={readerRef}>
-                {(() => {
-                  const showLibraryMode = !readerHasContent || readerArchiveOpen || !readerImmersive;
-                  const searchRaw = String(readerLibrarySearch || '').trim().toLowerCase();
-                  const visibleLibraryItems = readerDocuments.filter((item) => {
-                    const isArchived = Boolean(item?.is_archived);
-                    if (!readerIncludeArchived && isArchived) return false;
-                    if (!searchRaw) return true;
-                    const haystack = `${item?.title || ''} ${item?.source_type || ''} ${item?.target_lang || ''}`.toLowerCase();
-                    return haystack.includes(searchRaw);
-                  });
+                <ReaderSection
+                  tr={tr}
+                  handleBillingUpgrade={handleBillingUpgrade}
+                  billingActionLoading={billingActionLoading}
 
-                  if (showLibraryMode) {
-                    return (
-                      <div className="reader-library-mode">
+                  readerRef={readerRef}
+                  readerArticleRef={readerArticleRef}
+                  readerPageInnerRef={readerPageInnerRef}
+                  readerMeasureInnerRef={readerMeasureInnerRef}
+                  readerFileInputRef={readerFileInputRef}
 
-                        {/* ── Library header ───────────────────────────────── */}
-                        <div className="reader-lib-header">
-                          <h2 className="reader-lib-header-title">
-                            {readerArchiveOpen ? tr('Архив', 'Archiv') : tr('Моя библиотека', 'Meine Bibliothek')}
-                          </h2>
-                          <div className="reader-lib-header-actions">
-                            <button
-                              type="button"
-                              className="reader-lib-icon-btn"
-                              onClick={() => loadReaderLibrary()}
-                              title={tr('Обновить', 'Aktualisieren')}
-                            >
-                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className={readerLibraryLoading ? 'is-spinning' : ''}>
-                                <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" />
-                                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
-                              </svg>
-                            </button>
-                            <button
-                              type="button"
-                              className={`reader-lib-add-btn${readerAddOpen ? ' is-open' : ''}`}
-                              onClick={() => setReaderAddOpen((prev) => !prev)}
-                            >
-                              {readerAddOpen ? tr('✕ Скрыть', '✕ Schließen') : tr('+ Добавить', '+ Hinzufügen')}
-                            </button>
-                          </div>
-                        </div>
+                  readerDocuments={readerDocuments}
+                  readerLibrarySearch={readerLibrarySearch}           setReaderLibrarySearch={setReaderLibrarySearch}
+                  readerIncludeArchived={readerIncludeArchived}       setReaderIncludeArchived={setReaderIncludeArchived}
+                  readerLibraryLoading={readerLibraryLoading}
+                  readerLibraryError={readerLibraryError}
+                  loadReaderLibrary={loadReaderLibrary}
+                  readerAddOpen={readerAddOpen}                       setReaderAddOpen={setReaderAddOpen}
+                  readerOpeningDocumentId={readerOpeningDocumentId}
+                  openReaderDocument={openReaderDocument}
+                  renameReaderDocument={renameReaderDocument}
+                  archiveReaderDocument={archiveReaderDocument}
+                  deleteReaderDocument={deleteReaderDocument}
 
-                        {/* ── Collapsible upload form ───────────────────────── */}
-                        {readerAddOpen && (
-                          <div className="reader-add-form-wrap">
-                            <form className="webapp-reader-form" onSubmit={handleReaderIngest}>
-                              <label className="webapp-field">
-                                <span>{tr('URL или текст', 'URL oder Text')}</span>
-                                <textarea
-                                  rows={2}
-                                  value={readerInput}
-                                  onChange={(event) => setReaderInput(event.target.value)}
-                                  placeholder={tr(
-                                    'Вставьте URL статьи/книги (включая PDF) или сам текст.',
-                                    'Füge URL eines Artikels/Buchs (auch PDF) oder den Text selbst ein.'
-                                  )}
-                                />
-                              </label>
-                              <label className="webapp-field">
-                                <span>{tr('Файл с телефона', 'Datei vom Telefon')}</span>
-                                <input
-                                  type="file"
-                                  accept=".txt,.md,.pdf,.epub,text/plain,application/pdf,application/epub+zip"
-                                  onChange={handleReaderFileSelect}
-                                />
-                                {readerSelectedFile && (
-                                  <small className="webapp-muted">
-                                    {tr('Выбран файл', 'Datei gewaehlt')}: {readerSelectedFile.name}
-                                  </small>
-                                )}
-                              </label>
-                              <div className="webapp-actions">
-                                <button type="submit" className="primary-button" disabled={readerLoading}>
-                                  {readerLoading ? tr('Загружаем...', 'Laden...') : tr('Открыть в читалке', 'Im Leser oeffnen')}
-                                </button>
-                              </div>
-                            </form>
-                            {readerError && (
-                              <div className="webapp-error">
-                                <span>{readerError}</span>
-                                {readerErrorCode === 'LIMIT_FREE_PLAN_1_BOOK' && (
-                                  <div>
-                                    <button
-                                      type="button"
-                                      className="secondary-button"
-                                      onClick={handleBillingUpgrade}
-                                      disabled={billingActionLoading}
-                                    >
-                                      {billingActionLoading ? tr('Открываем...', 'Oeffnen...') : tr('Upgrade', 'Upgrade')}
-                                    </button>
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        )}
+                  readerInput={readerInput}                           setReaderInput={setReaderInput}
+                  readerSelectedFile={readerSelectedFile}
+                  handleReaderFileSelect={handleReaderFileSelect}
+                  handleReaderIngest={handleReaderIngest}
+                  readerLoading={readerLoading}
+                  readerError={readerError}
+                  readerErrorCode={readerErrorCode}
 
-                        {/* ── Library section ──────────────────────────────── */}
-                        <section className="reader-library">
-                          <div className="reader-lib-controls">
-                            <input
-                              type="text"
-                              className="reader-lib-search"
-                              value={readerLibrarySearch}
-                              onChange={(event) => setReaderLibrarySearch(event.target.value)}
-                              placeholder={tr('Поиск по библиотеке…', 'Suche in Bibliothek…')}
-                            />
-                            <label className="reader-lib-archive-toggle">
-                              <input
-                                type="checkbox"
-                                checked={readerIncludeArchived}
-                                onChange={(event) => setReaderIncludeArchived(event.target.checked)}
-                              />
-                              <span>{tr('Архив', 'Archiv')}</span>
-                            </label>
-                          </div>
+                  readerDocumentId={readerDocumentId}
+                  readerTitle={readerTitle}
+                  readerContent={readerContent}
+                  readerPages={readerPages}
+                  readerDisplayPages={readerDisplayPages}
+                  readerPageCount={readerPageCount}
+                  readerCurrentPage={readerCurrentPage}               setReaderCurrentPage={setReaderCurrentPage}
+                  readerProgressPercent={readerProgressPercent}
+                  applyReaderProgressPercent={applyReaderProgressPercent}
+                  readerBookmarkPercent={readerBookmarkPercent}       setReaderBookmarkPercent={setReaderBookmarkPercent}
+                  readerBookmarkPage={readerBookmarkPage}
+                  persistReaderExactBookmark={persistReaderExactBookmark}
+                  isCurrentReaderPageBookmarked={isCurrentReaderPageBookmarked}
+                  readerCanUseOriginalLayout={readerCanUseOriginalLayout}
+                  readerUsesOriginalEpubLayout={readerUsesOriginalEpubLayout}
+                  readerOriginalTocHref={readerOriginalTocHref}
+                  readerResolvedOriginalTocTitle={readerResolvedOriginalTocTitle}
+                  readerOriginalCoverUrl={readerOriginalCoverUrl}
+                  readerOriginalCoverVisible={readerOriginalCoverVisible}
+                  dismissReaderOriginalCover={() => setReaderOriginalCoverVisible(false)}
+                  readerLayoutMode={readerLayoutMode}                 setReaderLayoutMode={setReaderLayoutMode}
+                  readerReadingMode={readerReadingMode}               setReaderReadingMode={setReaderReadingMode}
+                  readerFontSize={readerFontSize}                     setReaderFontSize={setReaderFontSize}
+                  readerFontWeight={readerFontWeight}                 setReaderFontWeight={setReaderFontWeight}
+                  readerSwipeSensitivity={readerSwipeSensitivity}     setReaderSwipeSensitivity={setReaderSwipeSensitivity}
+                  readerImmersive={readerImmersive}                   setReaderImmersive={setReaderImmersive}
+                  readerTopbarCollapsed={readerTopbarCollapsed}       setReaderTopbarCollapsed={setReaderTopbarCollapsed}
+                  readerSettingsOpen={readerSettingsOpen}             setReaderSettingsOpen={setReaderSettingsOpen}
+                  readerArchiveOpen={readerArchiveOpen}               setReaderArchiveOpen={setReaderArchiveOpen}
+                  readerHasContent={readerHasContent}
+                  readerOriginalEpubLoading={readerOriginalEpubLoading}
+                  readerOriginalEpubError={readerOriginalEpubError}
 
-                          {readerLibraryError && <div className="webapp-error">{readerLibraryError}</div>}
-                          {!readerLibraryError && visibleLibraryItems.length === 0 && (
-                            <div className="webapp-muted">{tr('Библиотека пока пуста.', 'Bibliothek ist noch leer.')}</div>
-                          )}
+                  handleReaderStructuredClick={handleReaderStructuredClick}
+                  handleReaderArticleMouseUp={handleReaderArticleMouseUp}
+                  handleReaderPageWheel={handleReaderPageWheel}
+                  handleReaderPageTouchStart={handleReaderPageTouchStart}
+                  handleReaderArticleTouchMove={handleReaderArticleTouchMove}
+                  handleReaderArticleTouchEnd={handleReaderArticleTouchEnd}
+                  handleReaderArticleTouchCancel={handleReaderArticleTouchCancel}
+                  renderReaderStructuredText={renderReaderStructuredText}
 
-                          {visibleLibraryItems.length > 0 && (
-                            <div className="reader-library-grid">
-                              {visibleLibraryItems.map((item) => {
-                                const progress = Math.max(0, Math.min(100, Number(item?.progress_percent || 0)));
-                                const coverUrl = getReaderCoverUrl(item);
-                                const initials = getReaderCoverInitials(item?.title);
-                                const gradient = getReaderCoverGradient(item);
-                                const meta = buildReaderArchiveMeta(item);
-                                return (
-                                  <div
-                                    key={`reader-doc-${item.id}`}
-                                    className={`reader-library-card${Number(readerDocumentId) === Number(item.id) ? ' is-active' : ''}`}
-                                    onClick={() => openReaderDocument(item.id)}
-                                    role="button"
-                                    tabIndex={0}
-                                    onKeyDown={(e) => e.key === 'Enter' && openReaderDocument(item.id)}
-                                  >
-                                    <div
-                                      className="reader-library-cover"
-                                      style={{ background: `linear-gradient(150deg, ${gradient[0]} 0%, ${gradient[1]} 100%)` }}
-                                    >
-                                      {coverUrl ? (
-                                        <img src={coverUrl} alt="" loading="lazy" className="reader-archive-cover-img" />
-                                      ) : (
-                                        <span className="reader-archive-cover-fallback">{initials}</span>
-                                      )}
-                                      <div className="reader-library-cover-progress" style={{ width: `${progress}%` }} />
-                                    </div>
-                                    <div className="reader-library-card-body">
-                                      <div className="reader-library-title">{item.title || tr('Без названия', 'Ohne Titel')}</div>
-                                      <div className="reader-library-meta">
-                                        <span>{Math.round(progress)}%</span>
-                                        {meta && <span>{meta}</span>}
-                                      </div>
-                                    </div>
-                                    <div className="reader-library-actions" onClick={(event) => event.stopPropagation()}>
-                                      <button
-                                        type="button"
-                                        className="reader-lib-action"
-                                        onClick={() => renameReaderDocument(item.id, item.title)}
-                                        title={tr('Переименовать', 'Umbenennen')}
-                                      >
-                                        ✎
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="reader-lib-action"
-                                        onClick={() => archiveReaderDocument(item.id, !Boolean(item?.is_archived))}
-                                        title={Boolean(item?.is_archived) ? tr('Разархивировать', 'Wiederherstellen') : tr('В архив', 'Archivieren')}
-                                      >
-                                        {Boolean(item?.is_archived) ? '↺' : '⤓'}
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="reader-lib-action is-danger"
-                                        onClick={() => deleteReaderDocument(item.id)}
-                                        title={tr('Удалить', 'Loeschen')}
-                                      >
-                                        ×
-                                      </button>
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </section>
+                  readerTimerPaused={readerTimerPaused}
+                  readerElapsedTotalSeconds={readerElapsedTotalSeconds}
+                  formatReaderTimer={formatReaderTimer}
+                  toggleReaderTimerPause={toggleReaderTimerPause}
+                  computeReaderProgressPercent={computeReaderProgressPercent}
+                  syncReaderState={syncReaderState}
 
-                        {readerDocumentId && (
-                          <section className="reader-audio-panel">
-                            <div className="reader-audio-head">
-                              <strong>{tr('Оффлайн-аудио документа', 'Offline-Audio des Dokuments')}</strong>
-                            </div>
-                            <div className="reader-audio-actions">
-                              <button
-                                type="button"
-                                className="secondary-button"
-                                onClick={() => downloadReaderAudio(true)}
-                                disabled={readerAudioLoading}
-                              >
-                                {readerAudioLoading ? tr('Готовим...', 'Erstellen...') : tr('Скачать весь документ', 'Ganzes Dokument herunterladen')}
-                              </button>
-                            </div>
-                            {readerAudioError && <div className="webapp-error">{readerAudioError}</div>}
-                            {readerAudioPreviewUrl && (
-                              <div className="reader-audio-preview">
-                                <audio controls preload="metadata" src={readerAudioPreviewUrl} className="reader-audio-player" />
-                                <div className="reader-audio-preview-actions">
-                                  <a
-                                    href={readerAudioPreviewUrl}
-                                    download={readerAudioPreviewName || 'reader_audio.wav'}
-                                    className="secondary-button"
-                                  >
-                                    {tr('Скачать файл', 'Datei herunterladen')}
-                                  </a>
-                                  <button type="button" className="secondary-button" onClick={closeReaderAudioPreview}>
-                                    {tr('Назад', 'Zurueck')}
-                                  </button>
-                                </div>
-                              </div>
-                            )}
-                          </section>
-                        )}
-                      </div>
-                    );
-                  }
+                  readerShowToc={readerShowToc}                       setReaderShowToc={setReaderShowToc}
+                  readerTocItems={readerTocItems}
+                  loadReaderToc={loadReaderToc}
 
-                  return (
-                    <>
-                      {!readerTopbarCollapsed && (
-                      <div className="reader-topbar reader-immersive-topbar">
-                        <div className="reader-immersive-head">
-                          <div className="reader-immersive-title-wrap">
-                            <div className="reader-topbar-title">
-                              {readerTitle || tr('Читалка', 'Leser')}
-                            </div>
-                            <div className="webapp-muted reader-topbar-meta">
-                              {tr('Прогресс', 'Fortschritt')}: {Math.round(readerProgressPercent)}%
-                              {readerPageCount > 0 ? ` • ${tr('Страница', 'Seite')} ${readerCurrentPage}/${readerPageCount}` : ''}
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            className={`reader-timer-pill ${readerTimerPaused ? 'is-paused' : ''}`}
-                            onClick={toggleReaderTimerPause}
-                            disabled={!readerHasContent}
-                          >
-                            {readerTimerPaused
-                              ? `⏸ ${formatReaderTimer(readerElapsedTotalSeconds)}`
-                              : `⏱ ${formatReaderTimer(readerElapsedTotalSeconds)}`}
-                          </button>
-                        </div>
-                        <div className="reader-immersive-dock">
-                          <button
-                            type="button"
-                            className="section-home-back reader-toolbar-btn reader-toolbar-btn-back"
-                            onClick={() => {
-                              setReaderArchiveOpen(true);
-                              setReaderImmersive(false);
-                              setReaderTopbarCollapsed(false);
-                              setReaderSettingsOpen(false);
-                            }}
-                          >
-                            <span className="reader-toolbar-btn-icon" aria-hidden="true">
-                              <svg viewBox="0 0 18 18" fill="none">
-                                <path
-                                  d="M10.75 4.25 6 9l4.75 4.75M6.6 9h6.15"
-                                  stroke="currentColor"
-                                  strokeWidth="1.75"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                />
-                              </svg>
-                            </span>
-                            <span className="reader-toolbar-btn-label">
-                              {tr('Архив', 'Archiv')}
-                            </span>
-                          </button>
-                          <button
-                            type="button"
-                            className={`reader-bookmark-btn reader-toolbar-btn reader-toolbar-btn-icon-only ${isCurrentReaderPageBookmarked ? 'is-active' : ''}`}
-                            onClick={() => {
-                              const mark = computeReaderProgressPercent();
-                              setReaderBookmarkPercent(mark);
-                              if (readerDocumentId) {
-                                syncReaderState({ bookmark_percent: Number(mark.toFixed(2)), progress_percent: Number(mark.toFixed(2)) });
-                              }
-                            }}
-                            disabled={!readerContent || !readerDocumentId}
-                            aria-label={tr('Поставить закладку', 'Lesezeichen setzen')}
-                            title={tr('Поставить закладку', 'Lesezeichen setzen')}
-                          >
-                            <span className="reader-toolbar-btn-icon" aria-hidden="true">
-                              <svg viewBox="0 0 18 18" fill="none">
-                                <path
-                                  d="M5.25 3.75h7.5a.75.75 0 0 1 .75.75v9.75L9 11.55l-4.5 2.7V4.5a.75.75 0 0 1 .75-.75Z"
-                                  stroke="currentColor"
-                                  strokeWidth="1.6"
-                                  strokeLinejoin="round"
-                                />
-                              </svg>
-                            </span>
-                          </button>
-                          <button
-                            type="button"
-                            className={`secondary-button reader-toolbar-btn reader-toolbar-btn-icon-only ${readerReadingMode === 'horizontal' ? 'is-active' : ''}`}
-                            onClick={() => {
-                              const nextMode = readerReadingMode === 'vertical' ? 'horizontal' : 'vertical';
-                              setReaderReadingMode(nextMode);
-                              if (readerDocumentId) {
-                                syncReaderState({ reading_mode: nextMode });
-                              }
-                            }}
-                            disabled={!readerContent}
-                            title={tr('Направление прокрутки', 'Scroll-Richtung')}
-                            aria-label={tr('Направление прокрутки', 'Scroll-Richtung')}
-                          >
-                            <span className="reader-toolbar-btn-icon" aria-hidden="true">
-                              {readerReadingMode === 'vertical' ? (
-                                <svg viewBox="0 0 18 18" fill="none">
-                                  <path
-                                    d="M9 3.5v11M9 3.5 6.9 5.6M9 3.5l2.1 2.1M9 14.5l-2.1-2.1M9 14.5l2.1-2.1"
-                                    stroke="currentColor"
-                                    strokeWidth="1.7"
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                  />
-                                </svg>
-                              ) : (
-                                <svg viewBox="0 0 18 18" fill="none">
-                                  <path
-                                    d="M3.5 9h11M3.5 9l2.1-2.1M3.5 9l2.1 2.1M14.5 9l-2.1-2.1M14.5 9l-2.1 2.1"
-                                    stroke="currentColor"
-                                    strokeWidth="1.7"
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                  />
-                                </svg>
-                              )}
-                            </span>
-                          </button>
-                          <button
-                            type="button"
-                            className="secondary-button reader-toolbar-btn reader-toolbar-btn-icon-only"
-                            onClick={() => setReaderSettingsOpen(true)}
-                            title={tr('Настройки чтения', 'Leseeinstellungen')}
-                            aria-label={tr('Настройки чтения', 'Leseeinstellungen')}
-                          >
-                            <span className="reader-toolbar-btn-icon" aria-hidden="true">
-                              <svg viewBox="0 0 18 18" fill="none">
-                                <path
-                                  d="M4.25 5.25h9.5M6.5 5.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm6.5 3.75h-8M10.75 9a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm3 3.75h-9.5M8.75 12.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Z"
-                                  stroke="currentColor"
-                                  strokeWidth="1.55"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                />
-                              </svg>
-                            </span>
-                          </button>
-                          <button
-                            type="button"
-                            className="secondary-button reader-topbar-collapse-btn reader-topbar-toggle-chip reader-toolbar-btn"
-                            onClick={() => {
-                              const next = !readerTopbarCollapsed;
-                              setReaderTopbarCollapsed(next);
-                              if (next) {
-                                setReaderSettingsOpen(false);
-                              }
-                            }}
-                            title={readerTopbarCollapsed
-                              ? tr('Развернуть панель', 'Leiste aufklappen')
-                              : tr('Свернуть панель', 'Leiste einklappen')}
-                          >
-                            <span className="reader-toolbar-btn-icon" aria-hidden="true">
-                              <svg viewBox="0 0 18 18" fill="none">
-                                <path
-                                  d="M4.5 11.25 9 6.75l4.5 4.5"
-                                  stroke="currentColor"
-                                  strokeWidth="1.7"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                />
-                              </svg>
-                            </span>
-                            <span className="reader-toolbar-btn-label">
-                              {tr('Свернуть', 'Einklappen')}
-                            </span>
-                          </button>
-                        </div>
-                      </div>
-                      )}
+                  readerShowPageJump={readerShowPageJump}             setReaderShowPageJump={setReaderShowPageJump}
+                  readerPageJumpInput={readerPageJumpInput}           setReaderPageJumpInput={setReaderPageJumpInput}
 
-                      {readerTopbarCollapsed && (
-                        <div className="reader-topbar-peek">
-                          <button
-                            type="button"
-                            className="secondary-button reader-topbar-peek-btn reader-topbar-toggle-chip reader-toolbar-btn"
-                            onClick={() => setReaderTopbarCollapsed(false)}
-                            title={tr('Показать панель чтения', 'Leseleiste anzeigen')}
-                          >
-                            <span className="reader-toolbar-btn-icon" aria-hidden="true">
-                              <svg viewBox="0 0 18 18" fill="none">
-                                <path
-                                  d="M4.5 6.75 9 11.25l4.5-4.5"
-                                  stroke="currentColor"
-                                  strokeWidth="1.7"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                />
-                              </svg>
-                            </span>
-                            <span className="reader-toolbar-btn-label">
-                              {tr('Развернуть', 'Aufklappen')}
-                            </span>
-                          </button>
-                        </div>
-                      )}
+                  readerAudioLoading={readerAudioLoading}
+                  readerAudioError={readerAudioError}
+                  readerAudioPreviewUrl={readerAudioPreviewUrl}
+                  readerAudioPreviewName={readerAudioPreviewName}
+                  downloadReaderAudio={downloadReaderAudio}
+                  closeReaderAudioPreview={closeReaderAudioPreview}
+                  readerAudioPremiumEnabled={readerAudioPremiumEnabled}
+                  readerAudioPremiumKnown={readerAudioPremiumKnown}
+                  onReaderAudioUpgrade={openReaderAudioPremiumPaywall}
 
-                      {readerContent && (
-                        <article
-                          ref={readerArticleRef}
-                          className={`reader-article ${readerReadingMode === 'horizontal' ? 'is-horizontal' : 'is-vertical'} ${readerPageCount > 0 ? 'has-pages' : ''}`}
-                          onClick={handleReaderStructuredClick}
-                          onMouseUp={handleReaderArticleMouseUp}
-                          onWheel={handleReaderPageWheel}
-                          onTouchStart={handleReaderPageTouchStart}
-                          onTouchMove={handleReaderArticleTouchMove}
-                          onTouchEnd={handleReaderArticleTouchEnd}
-                          onTouchCancel={handleReaderArticleTouchCancel}
-                        >
-                          {readerPageCount > 0 ? (
-                            <div className="reader-pages-layout">
-                              <div
-                                className="reader-page-sheet"
-                                style={{
-                                  '--reader-font-size': `${readerFontSize}px`,
-                                  '--reader-font-weight': readerFontWeight,
-                                }}
-                              >
-                                {isCurrentReaderPageBookmarked && (
-                                  <span className="reader-page-bookmark-indicator" aria-hidden="true" />
-                                )}
-                                <div className="reader-page-sheet-inner">
-                                  {renderReaderStructuredText()}
-                                </div>
-                                <div className="reader-page-num">
-                                  {tr('Стр.', 'S.')}{' '}{readerCurrentPage}{readerPageCount > 0 ? ` / ${readerPageCount}` : ''}
-                                </div>
-                              </div>
-                              <div
-                                className="reader-page-sheet reader-page-sheet-measure"
-                                aria-hidden="true"
-                                style={{
-                                  '--reader-font-size': `${readerFontSize}px`,
-                                  '--reader-font-weight': readerFontWeight,
-                                }}
-                              >
-                                <div ref={readerMeasureInnerRef} className="reader-page-sheet-inner" />
-                                <div className="reader-page-num">{tr('Стр.', 'S.')} 999 / 999</div>
-                              </div>
-                            </div>
-                          ) : (
-                            renderReaderStructuredText()
-                          )}
-                        </article>
-                      )}
+                  getReaderCoverUrl={getReaderCoverUrl}
+                  getReaderCoverInitials={getReaderCoverInitials}
+                  getReaderCoverGradient={getReaderCoverGradient}
+                  buildReaderArchiveMeta={buildReaderArchiveMeta}
 
-                      {readerSettingsOpen && (
-                        <div className="reader-settings-sheet-wrap" role="dialog" aria-modal="true">
-                          <button
-                            type="button"
-                            className="reader-settings-sheet-backdrop"
-                            aria-label={tr('Закрыть', 'Schliessen')}
-                            onClick={() => setReaderSettingsOpen(false)}
-                          />
-                          <div className="reader-settings-sheet">
-                            <div className="reader-settings-sheet-head">
-                              <strong>{tr('Настройки чтения', 'Leseeinstellungen')}</strong>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                {readerCanUseOriginalLayout && (
-                                  <button
-                                    type="button"
-                                    className="secondary-button"
-                                    onClick={() => {
-                                      setReaderFontSize(READER_DEFAULT_FONT_SIZE);
-                                      setReaderFontWeight(READER_DEFAULT_FONT_WEIGHT);
-                                      setReaderLayoutMode('original');
-                                    }}
-                                  >
-                                    {tr('Оригинал', 'Original')}
-                                  </button>
-                                )}
-                                <button
-                                  type="button"
-                                  className="secondary-button"
-                                  onClick={() => setReaderSettingsOpen(false)}
-                                >
-                                  ×
-                                </button>
-                              </div>
-                            </div>
-                            {readerCanUseOriginalLayout && (
-                              <div className="webapp-muted" style={{ fontSize: 12 }}>
-                                {readerLayoutMode === 'original'
-                                  ? tr(
-                                    'Сейчас открыт оригинальный режим: исходная разбивка страниц книги. Любое изменение шрифта переключит книгу в адаптивный режим.',
-                                    'Aktuell ist der Originalmodus aktiv: die urspruengliche Seitenteilung des Buches. Jede Schriftanpassung schaltet in den adaptiven Modus um.'
-                                  )
-                                  : tr(
-                                    'Сейчас открыт адаптивный режим: страницы пересчитаны под ваш шрифт и экран. Кнопка "Оригинал" вернёт исходную разбивку.',
-                                    'Aktuell ist der adaptive Modus aktiv: die Seiten wurden fuer deine Schrift und deinen Bildschirm neu berechnet. Mit "Original" kehrst du zur urspruenglichen Seitenteilung zurueck.'
-                                  )}
-                              </div>
-                            )}
-                            <label className="webapp-field">
-                              <span>{tr('Размер шрифта', 'Schriftgroesse')}</span>
-                              <input
-                                type="range"
-                                min="14"
-                                max="28"
-                                step="1"
-                                value={readerFontSize}
-                                onChange={(event) => {
-                                  setReaderLayoutMode('custom');
-                                  setReaderFontSize(Number(event.target.value));
-                                }}
-                              />
-                              <small className="webapp-muted">{readerFontSize}px</small>
-                            </label>
-                            <label className="webapp-field">
-                              <span>{tr('Жирность текста', 'Schriftstaerke')}</span>
-                              <input
-                                type="range"
-                                min="400"
-                                max="700"
-                                step="50"
-                                value={readerFontWeight}
-                                onChange={(event) => {
-                                  setReaderLayoutMode('custom');
-                                  setReaderFontWeight(Number(event.target.value));
-                                }}
-                              />
-                              <small className="webapp-muted">{readerFontWeight}</small>
-                            </label>
-                            <label className="webapp-field">
-                              <span>{tr('Чувствительность свайпа', 'Swipe-Empfindlichkeit')}</span>
-                              <select
-                                value={readerSwipeSensitivity}
-                                onChange={(event) => setReaderSwipeSensitivity(event.target.value)}
-                              >
-                                <option value="high">{tr('Высокая', 'Hoch')}</option>
-                                <option value="medium">{tr('Средняя', 'Mittel')}</option>
-                                <option value="low">{tr('Низкая', 'Niedrig')}</option>
-                              </select>
-                            </label>
-                            <div className="reader-immersive-indicator is-on">{tr('Immersive: ON', 'Immersive: ON')}</div>
-                          </div>
-                        </div>
-                      )}
-                    </>
-                  );
-                })()}
-                </section>
+                  READER_DEFAULT_FONT_SIZE={READER_DEFAULT_FONT_SIZE}
+                  READER_DEFAULT_FONT_WEIGHT={READER_DEFAULT_FONT_WEIGHT}
+
+                  readerColorTheme={readerColorTheme}
+                  applyReaderColorTheme={applyReaderColorTheme}
+
+                  audioElementRef={audioElementRef}
+                  readerAudioPreloadElementRef={readerAudioPreloadElementRef}
+                  readerEpubViewportRef={readerEpubViewportRef}
+                  readerAudioPlayActive={readerAudioPlayActive}
+                  readerAudioPlayLoading={readerAudioPlayLoading}
+                  readerAudioPlayError={readerAudioPlayError}
+                  readerAudioPlayData={readerAudioPlayData}
+                  readerAudioPlayPosition={readerAudioPlayPosition}
+                  readerAudioPaused={readerAudioPaused}
+                  readerAudioVoice={readerAudioVoice}           setReaderAudioVoice={setReaderAudioVoice}
+                  readerAudioRate={readerAudioRate}             setReaderAudioRate={setReaderAudioRate}
+                  readerAudioStartWid={readerAudioStartWid}
+                  readerAudioAwaitingWordTap={readerAudioAwaitingWordTap}
+                  onReaderAudioPlayBtn={handleReaderAudioPlayBtn}
+                  playReaderAudioPage={playReaderAudioPage}
+                  pauseReaderAudioPlay={pauseReaderAudioPlay}
+                  resumeReaderAudioPlay={resumeReaderAudioPlay}
+                  stopReaderAudioPlay={stopReaderAudioPlay}
+                  jumpReaderTocItem={jumpReaderTocItem}
+                  switchReaderLayoutMode={switchReaderLayoutMode}
+                />
               </PerfProfiler>
             )}
 
@@ -29832,7 +32273,7 @@ function AppInner() {
                           <div className="setup-options flashcard-queue-source-options">
                             <button
                               type="button"
-                              className={`option-pill flashcard-settings-pill ${flashcardQueueSource === 'system' ? 'is-active' : ''}`}
+                              className={`option-pill flashcard-settings-pill flashcard-queue-source-pill ${flashcardQueueSource === 'system' ? 'is-active' : ''}`}
                               onClick={() => {
                                 setFlashcardQueueSource('system');
                                 setFlashcardsError('');
@@ -29842,7 +32283,7 @@ function AppInner() {
                             </button>
                             <button
                               type="button"
-                              className={`option-pill flashcard-settings-pill ${flashcardQueueSource === 'manual' ? 'is-active' : ''}`}
+                              className={`option-pill flashcard-settings-pill flashcard-queue-source-pill ${flashcardQueueSource === 'manual' ? 'is-active' : ''}`}
                               onClick={() => {
                                 setFlashcardQueueSource('manual');
                                 setFlashcardsError('');
@@ -29998,8 +32439,9 @@ function AppInner() {
                           {!srsLoading && srsCard && (() => {
                             const direction = (srsCard?.source_lang || 'ru') === 'de' ? 'de-ru' : 'ru-de';
                             const cardTexts = getDictionarySourceTarget(srsCard, direction);
-                            const sourceText = cardTexts?.sourceText || '—';
-                            const targetText = cardTexts?.targetText || '—';
+                            const isCardReversed = (srsCard?.source_lang || 'ru') === 'de';
+                            const sourceText = isCardReversed ? (cardTexts?.targetText || '—') : (cardTexts?.sourceText || '—');
+                            const targetText = isCardReversed ? (cardTexts?.sourceText || '—') : (cardTexts?.targetText || '—');
                             const supplementalMeaningRows = getSavedEntrySupplementalMeaningRows(srsCard, targetText, 2);
                             const srsReplayTtsKey = `srs-replay-${srsCard?.id || srsCard?.entry_id || 'current'}`;
                             const srsReplayTtsLoading = isTtsPending(srsReplayTtsKey);
@@ -30143,8 +32585,9 @@ function AppInner() {
                             {(() => {
                               const entry = flashcards[flashcardPreviewIndex] || {};
                               const cardTexts = resolveFlashcardTexts(entry);
-                              const previewLearningText = cardTexts.targetText || cardTexts.sourceText || '—';
-                              const previewNativeText = cardTexts.sourceText || cardTexts.targetText || '—';
+                              const _previewReversed = String(entry?.source_lang || entry?.response_json?.source_lang || 'ru').trim().toLowerCase() === 'de';
+                              const previewLearningText = _previewReversed ? (cardTexts.sourceText || '—') : (cardTexts.targetText || cardTexts.sourceText || '—');
+                              const previewNativeText = _previewReversed ? (cardTexts.targetText || '—') : (cardTexts.sourceText || cardTexts.targetText || '—');
                               const previewQuizType = String(entry?.response_json?.quiz_type || '').trim();
                               const sentencePreviewRuHint = previewQuizType === 'sentence_gap_context'
                                 ? String(entry?.response_json?.translation_ru || entry?.translation_ru || '').trim()
@@ -30625,14 +33068,14 @@ function AppInner() {
                                   <div className="setup-options">
                                     <button
                                       type="button"
-                                      className={`option-pill flashcard-settings-pill ${flashcardQueueSource === 'system' ? 'is-active' : ''}`}
+                                      className={`option-pill flashcard-settings-pill flashcard-queue-source-pill ${flashcardQueueSource === 'system' ? 'is-active' : ''}`}
                                       onClick={() => setFlashcardQueueSource('system')}
                                     >
                                       {tr('Очередь системы', 'System-Warteschlange')}
                                     </button>
                                     <button
                                       type="button"
-                                      className={`option-pill flashcard-settings-pill ${flashcardQueueSource === 'manual' ? 'is-active' : ''}`}
+                                      className={`option-pill flashcard-settings-pill flashcard-queue-source-pill ${flashcardQueueSource === 'manual' ? 'is-active' : ''}`}
                                       onClick={() => setFlashcardQueueSource('manual')}
                                     >
                                       {tr('Текущая выборка', 'Aktuelle Auswahl')}
@@ -30683,14 +33126,14 @@ function AppInner() {
                                     <div className="setup-options">
                                       <button
                                         type="button"
-                                        className={`option-pill flashcard-settings-pill ${flashcardQueueSource === 'system' ? 'is-active' : ''}`}
+                                        className={`option-pill flashcard-settings-pill flashcard-queue-source-pill ${flashcardQueueSource === 'system' ? 'is-active' : ''}`}
                                         onClick={() => setFlashcardQueueSource('system')}
                                       >
                                         {tr('Очередь системы', 'System-Warteschlange')}
                                       </button>
                                       <button
                                         type="button"
-                                        className={`option-pill flashcard-settings-pill ${flashcardQueueSource === 'manual' ? 'is-active' : ''}`}
+                                        className={`option-pill flashcard-settings-pill flashcard-queue-source-pill ${flashcardQueueSource === 'manual' ? 'is-active' : ''}`}
                                         onClick={() => setFlashcardQueueSource('manual')}
                                       >
                                         {tr('Текущая выборка', 'Aktuelle Auswahl')}
@@ -30983,6 +33426,86 @@ function AppInner() {
                           <p>{String(assistantSessionAssessment?.recommended_next_focus || '')}</p>
                         </div>
                       )}
+                      {assistantSessionMistakes.length > 0 && !assistantSessionAssessment.is_short_transcript && (() => {
+                        const VM_VISIBLE = 7;
+                        const sevOrder = { high: 0, medium: 1, low: 2 };
+                        const catLabel = (cat) => ({
+                          ADJECTIVE_ENDINGS: tr('Окончания прилагательных', 'Adjektivendungen'),
+                          ARTICLES: tr('Артикли', 'Artikel'),
+                          CASES: tr('Падежи', 'Kasus'),
+                          CONJUNCTIONS: tr('Союзы', 'Konjunktionen'),
+                          INFINITIVE_CLAUSES: tr('Инфинитивные конструкции', 'Infinitivkonstruktionen'),
+                          KONJUNKTIV: tr('Конъюнктив', 'Konjunktiv'),
+                          LEXIS: tr('Лексика', 'Lexik'),
+                          MODAL_VERBS: tr('Модальные глаголы', 'Modalverben'),
+                          NEGATION: tr('Отрицание', 'Negation'),
+                          NOUN_GENDER: tr('Род существительных', 'Genus'),
+                          PASSIVE: tr('Пассив', 'Passiv'),
+                          PLURAL_FORM: tr('Мн. число', 'Pluralformen'),
+                          PREPOSITIONS: tr('Предлоги', 'Präpositionen'),
+                          PRONUNCIATION_STT: tr('Произношение / STT', 'Aussprache / STT'),
+                          REFLEXIVE_VERBS: tr('Возвратные глаголы', 'Reflexivverben'),
+                          RELATIVE_CLAUSES: tr('Придаточные', 'Relativsätze'),
+                          SEPARABLE_VERBS: tr('Глаголы с приставками', 'Trennbare Verben'),
+                          TENSES: tr('Времена', 'Zeitformen'),
+                          VERB_FORM: tr('Формы глагола', 'Verbformen'),
+                          WORD_ORDER: tr('Порядок слов', 'Wortstellung'),
+                        }[cat] || cat);
+                        const grammarMistakes = assistantSessionMistakes
+                          .filter(m => m.category !== 'PRONUNCIATION_STT')
+                          .slice()
+                          .sort((a, b) => (sevOrder[a.severity] ?? 1) - (sevOrder[b.severity] ?? 1));
+                        const sttMistakes = assistantSessionMistakes.filter(m => m.category === 'PRONUNCIATION_STT');
+                        const visible = grammarMistakes.slice(0, VM_VISIBLE);
+                        const hidden = grammarMistakes.slice(VM_VISIBLE);
+                        const renderCard = (m, idx) => (
+                          <div key={idx} className="vm-card">
+                            <div className="vm-card-header">
+                              <span className={`vm-severity-badge sev-${m.severity}`}>
+                                {m.severity === 'high' ? tr('высокий', 'hoch') : m.severity === 'medium' ? tr('средний', 'mittel') : tr('низкий', 'niedrig')}
+                              </span>
+                              <span className="vm-category-tag">{catLabel(m.category)}</span>
+                            </div>
+                            <div className="vm-quote">„{m.user_quote}"</div>
+                            <div className="vm-correction">
+                              <span className="vm-correction-arrow">→</span>
+                              <span>{m.corrected_form}</span>
+                            </div>
+                            {m.rule_explanation && <div className="vm-rule">{m.rule_explanation}</div>}
+                            {Array.isArray(m.alternatives) && m.alternatives.length > 0 && (
+                              <div className="vm-alternatives">
+                                {tr('Также возможно', 'Auch möglich')}: <span>{m.alternatives.join(' · ')}</span>
+                              </div>
+                            )}
+                            {typeof m.grammar_confidence === 'number' && m.grammar_confidence < 0.5 && (
+                              <div className="vm-low-conf">⚠ {tr('Низкая уверенность модели', 'Geringe Modellsicherheit')}</div>
+                            )}
+                          </div>
+                        );
+                        if (grammarMistakes.length === 0 && sttMistakes.length === 0) return null;
+                        return (
+                          <div className="vm-section">
+                            {grammarMistakes.length > 0 && (
+                              <>
+                                <div className="vm-section-label">🔍 {tr('Разбор ошибок', 'Fehleranalyse')}</div>
+                                {visible.map(renderCard)}
+                                {hidden.length > 0 && (
+                                  voiceMistakesExpanded
+                                    ? hidden.map((m, i) => renderCard(m, VM_VISIBLE + i))
+                                    : <button className="vm-hidden-toggle" onClick={() => setVoiceMistakesExpanded(true)}>
+                                        + {hidden.length} {tr('ещё', 'weitere')} …
+                                      </button>
+                                )}
+                              </>
+                            )}
+                            {sttMistakes.length > 0 && (
+                              <div className="vm-stt-warning">
+                                ⚠ {tr(`${sttMistakes.length} фрагм. с нечёткой транскрипцией — проверь произношение.`, `${sttMistakes.length} Segment(e) mit unklarer Transkription — Aussprache prüfen.`)}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
                       {!assistantSessionAssessment.is_short_transcript && (
                         <details className="voice-assistant-review-details">
                           <summary>📋 {tr('Подробный разбор', 'Detaillierte Analyse')}</summary>
@@ -32383,17 +34906,29 @@ function AppInner() {
                   {selectionText}
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: isInlineSelectionMenu ? '1fr' : '1fr 1fr', gap: 6 }}>
-                  {!isInlineSelectionMenu && (
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={() => handleQuickLookupDictionary(selectionText)}
-                    disabled={selectionLookupLoading || selectionInlineLookup.loading}
-                    style={{ minHeight: 32, padding: '6px 8px', fontSize: 12 }}
-                  >
-                    {selectionLookupLoading || selectionInlineLookup.loading ? tr('Quick...', 'Quick...') : 'Quick'}
-                  </button>
-                  )}
+                  {!isInlineSelectionMenu && (() => {
+                    const selTtsKey = 'selection-menu-play';
+                    const selTtsLoading = isTtsPending(selTtsKey);
+                    return (
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => {
+                        const { sourceLangHint } = resolveQuickTranslateParams(selectionText);
+                        void playTtsWithUi(selTtsKey, selectionText, sourceLangHint || 'de');
+                      }}
+                      disabled={selTtsLoading}
+                      style={{ minHeight: 32, padding: '6px 8px', fontSize: 12 }}
+                      aria-label={tr('Воспроизвести', 'Abspielen')}
+                      title={tr('Воспроизвести', 'Abspielen')}
+                    >
+                      {selTtsLoading
+                        ? <span className="tts-mini-spinner" aria-hidden="true" />
+                        : <span aria-hidden="true" style={{ fontSize: 14 }}>▶</span>
+                      }
+                    </button>
+                    );
+                  })()}
                   <button
                     type="button"
                     className="secondary-button"

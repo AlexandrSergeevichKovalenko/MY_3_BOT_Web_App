@@ -249,6 +249,71 @@ export async function countCachedVocab(userId) {
 }
 
 /**
+ * Return sync stats from the local cache for a user.
+ *
+ * @param {number} userId
+ * @param {number|null} folderId
+ * @returns {{ totalCount: number, folderCount: number, latestUpdatedAt: string|null }}
+ */
+export async function getCachedVocabSyncStats(userId, folderId = null) {
+  const db = await _openDB();
+  const tx = _tx(db, [STORE_VOCAB], 'readonly');
+  const idx = tx.objectStore(STORE_VOCAB).index('user_id');
+  const allItems = await _promisifyRequest(idx.getAll(IDBKeyRange.only(userId)));
+
+  let folderCount = 0;
+  let latestUpdatedAt = null;
+
+  for (const item of allItems) {
+    if (folderId != null && Number(item?.folder_id) === Number(folderId)) {
+      folderCount += 1;
+    }
+    const updatedAt = String(item?.updated_at || '').trim();
+    if (updatedAt && (!latestUpdatedAt || updatedAt > latestUpdatedAt)) {
+      latestUpdatedAt = updatedAt;
+    }
+  }
+
+  return {
+    totalCount: allItems.length,
+    folderCount,
+    latestUpdatedAt,
+  };
+}
+
+/**
+ * Reconcile one folder in local cache against the authoritative server ID set.
+ * Removes entries that still appear to belong to the folder locally but are not
+ * present on the server anymore.
+ *
+ * @param {number} userId
+ * @param {number} folderId
+ * @param {Array<number>} keepEntryIds
+ */
+export async function reconcileCachedFolderEntries(userId, folderId, keepEntryIds = []) {
+  const db = await _openDB();
+  const keepSet = new Set(
+    (Array.isArray(keepEntryIds) ? keepEntryIds : [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id) && id > 0)
+  );
+  const tx = _tx(db, [STORE_VOCAB], 'readwrite');
+  const idx = tx.objectStore(STORE_VOCAB).index('user_id');
+  const allItems = await _promisifyRequest(idx.getAll(IDBKeyRange.only(userId)));
+  const store = tx.objectStore(STORE_VOCAB);
+
+  for (const item of allItems) {
+    if (Number(item?.folder_id) !== Number(folderId)) continue;
+    const entryId = Number(item?.id);
+    if (!keepSet.has(entryId)) {
+      store.delete(entryId);
+    }
+  }
+
+  await _promisifyTx(tx);
+}
+
+/**
  * Delete a single entry from cache (mirrors a server-side delete).
  */
 export async function deleteCachedVocabEntry(entryId) {

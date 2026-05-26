@@ -124,6 +124,14 @@ def _normalize_tts_voice_name(voice: str | None, short_lang: str) -> str:
     return str(_TTS_VOICES.get(short_lang, _TTS_VOICES["de"])).strip()
 
 
+def _estimate_reader_page_tts_budget_chars(page_text: str) -> int:
+    """
+    Count billable chars for reader page synthesis using the exact normalized
+    page text that is sent into the TTS pipeline.
+    """
+    return max(0, len(str(page_text or "")))
+
+
 def _tts_object_key(short_lang: str, voice: str, cache_key: str) -> str:
     safe_lang = _sanitize_object_segment(short_lang, "de")
     safe_voice = _sanitize_object_segment(voice, "voice")
@@ -435,6 +443,133 @@ def _synthesize_mp3(
     out = io.BytesIO()
     combined.export(out, format="mp3", bitrate="192k")
     return out.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Per-page TTS with word-level timepoints (Reader Patch 2.4)
+# ---------------------------------------------------------------------------
+
+
+def synthesize_page_with_timings(
+    *,
+    page_text: str,
+    lang_code: str = "de-DE",
+    voice_name: str = "de-DE-Neural2-C",
+    speaking_rate: float = 1.0,
+) -> dict:
+    """
+    Synthesize one reader page with natural prosody plus word-level timings.
+
+    The SSML preserves the full original text and uses sparse marks at natural
+    timing spans instead of injecting a mark before every word. Word timings are
+    then interpolated inside each span so the frontend keeps highlighting and
+    seek-by-word without forcing robotic delivery.
+
+    Returns:
+        {
+            "audio_bytes": bytes,
+            "mime": "audio/mpeg",
+            "duration_ms": int,
+            "word_timings": [{"wid": "0", "word": "Als", "start_ms": 50,
+                               "end_ms": 280, "char_start": 0, "char_end": 3}, ...]
+        }
+    wid values are 0-based positional indices — the frontend maps them to
+    token.wid by position. char_start/char_end are byte offsets in page_text.
+    """
+    from backend.tts_ssml import (
+        segment_page_words,
+        chunk_text_with_words,
+        segment_timing_spans,
+        _build_ssml_from_spans,
+        parse_timepoints_for_spans,
+    )
+
+    try:
+        from google.cloud import texttospeech_v1beta1 as texttospeech
+    except Exception as exc:
+        raise RuntimeError(f"Google TTS не установлен: {exc}") from exc
+
+    words = segment_page_words(page_text)
+    if not words:
+        raise RuntimeError("Страница не содержит слов")
+
+    _enforce_google_tts_monthly_budget(_estimate_reader_page_tts_budget_chars(page_text))
+
+    key_path = prepare_google_creds_for_tts()
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
+    tts_client = texttospeech.TextToSpeechClient()
+    voice_params = texttospeech.VoiceSelectionParams(language_code=lang_code, name=voice_name)
+    audio_config = texttospeech.AudioConfig(
+        audio_encoding=texttospeech.AudioEncoding.MP3,
+        speaking_rate=float(speaking_rate),
+    )
+
+    # Split at natural boundaries while keeping SSML under the provider limit.
+    text_chunks = chunk_text_with_words(page_text, words)
+
+    combined = AudioSegment.silent(duration=0)
+    all_timings: list[dict] = []
+    mark_offset = 0
+    char_offset = 0  # char position of this chunk's start in page_text
+
+    for chunk_text, chunk_words in text_chunks:
+        if not chunk_words:
+            char_offset += len(chunk_text)
+            continue
+
+        timing_spans = segment_timing_spans(
+            chunk_text,
+            chunk_words,
+            text_char_offset=char_offset,
+        )
+        if not timing_spans:
+            char_offset += len(chunk_text)
+            continue
+
+        ssml_text, mark_index = _build_ssml_from_spans(
+            chunk_text,
+            timing_spans,
+            text_char_offset=char_offset,
+            mark_offset=mark_offset,
+        )
+        tts_request = texttospeech.SynthesizeSpeechRequest(
+            input=texttospeech.SynthesisInput(ssml=ssml_text),
+            voice=voice_params,
+            audio_config=audio_config,
+            enable_time_pointing=[
+                texttospeech.SynthesizeSpeechRequest.TimepointType.SSML_MARK
+            ],
+        )
+        response = tts_client.synthesize_speech(request=tts_request)
+        if not response.audio_content:
+            char_offset += len(chunk_text)
+            continue
+
+        segment = AudioSegment.from_file(io.BytesIO(response.audio_content), format="mp3")
+        chunk_duration_ms = len(segment)
+        time_offset_ms = len(combined)
+        chunk_timings = parse_timepoints_for_spans(
+            list(response.timepoints),
+            mark_index,
+            chunk_duration_ms=chunk_duration_ms,
+            time_offset_ms=time_offset_ms,
+        )
+        all_timings.extend(chunk_timings)
+        combined += segment
+        mark_offset += len(mark_index)
+        char_offset += len(chunk_text)
+
+    if len(combined) == 0:
+        raise RuntimeError("Google TTS вернул пустой аудиопоток")
+
+    out = io.BytesIO()
+    combined.export(out, format="mp3", bitrate="192k")
+    return {
+        "audio_bytes": out.getvalue(),
+        "mime": "audio/mpeg",
+        "duration_ms": len(combined),
+        "word_timings": all_timings,
+    }
 
 
 # ---------------------------------------------------------------------------

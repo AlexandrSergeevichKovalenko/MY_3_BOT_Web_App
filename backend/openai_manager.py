@@ -10,10 +10,9 @@ import contextvars
 #from openai import OpenAI
 import openai
 from openai import AsyncOpenAI
-import psycopg2
-from contextlib import contextmanager
 from dotenv import load_dotenv
 from pathlib import Path
+from backend.database import get_db_connection_context
 try:
     from backend.config_mistakes_data import (
         VALID_CATEGORIES as VALID_CATEGORIES_DE,
@@ -66,6 +65,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "image_quiz_sentence_fallback",
     "image_quiz_visual_screen",
     "image_quiz_blueprint",
+    "visual_riddle_blueprint",
     "tts_chunk_de",
     "translate_subtitles_ru",
     "translate_subtitles_multilang",
@@ -823,6 +823,11 @@ Help the learner deeply understand and “feel” the word, phrase, or sentence 
 
 Instructions:
 - Write 4–8 short sentences in Russian.
+- First validate the German input before explaining it.
+- If the German word, phrase, or sentence contains an error, start the answer with the corrected German variant in the first line.
+- Explicitly say that the original input contains an error and name the error type precisely: for example wrong article, wrong case, wrong gender, wrong adjective ending, wrong verb form, wrong word order, unnatural collocation, spelling mistake, or malformed phrase.
+- Then explain the corrected variant, not the incorrect one.
+- If the input is already correct, do not invent mistakes and proceed directly to the explanation.
 - If the input is a single word:
   • Break it into meaningful parts (prefix, root, suffix, compound elements).
   • For each part: explain its meaning, translate it into Russian, and explain its function.
@@ -885,6 +890,10 @@ Input JSON:
 }
 
 Task:
+- Validate target-language wording before explaining it.
+- If the studied word, phrase, or sentence contains an error in the language being studied, begin with the corrected variant.
+- Explicitly state that the original input contains an error and name the concrete error type.
+- Then explain the corrected variant. If the input is already correct, say nothing about errors.
 - Explain the internal logic of source_text and its relation to target_text.
 - Write 4-8 short sentences in source_language (learner native language).
 - Keep explanation practical and compact.
@@ -1028,28 +1037,44 @@ Rules:
 - Output ONLY valid JSON. No markdown fences. No extra commentary.
 """,
 "language_learning_private_question_detailed": """
-You are an expert German linguist and language teacher — precise, curious, and genuinely engaging.
+You are an expert linguist and language teacher — precise, curious, and genuinely engaging.
 Your job is to give the learner a deep, memorable understanding of exactly what they asked.
 
 Explanation language: source_language (use Russian when source_language is "ru").
 Examples language: target_language (use German when target_language is "de").
 Always write examples in target_language with a translation in source_language on the same line after " — ".
 
-════ SECTION SELECTION ════
+════ DETECT THE QUESTION TYPE ════
 
-For a SINGLE WORD question, use these sections (skip any that are not meaningful):
-  *🔤 [само слово с артиклем если есть]*
-  *📚 Грамматика* — часть речи, артикль (der/die/das), род, тип склонения, управление (welcher Fall?).
-  *🔬 Состав слова* — разбор на морфемы: приставка + корень + суффикс + окончание, смысл каждой части.
+1. COMPARISON — learner asks about differences between 2+ words/forms/constructions.
+2. SINGLE WORD — learner asks about one word, expression, or idiom.
+3. GRAMMAR / PHRASE / SENTENCE — learner asks about a rule, structure, or sentence.
+
+════ SECTIONS BY TYPE ════
+
+For COMPARISON questions, use:
+  *⚖️ [Слово/форма 1]* — значение, управление (какой падеж/предлог), типичный контекст. Пример с переводом.
+  *⚖️ [Слово/форма 2]* — то же самое. Пример с переводом.
+  (repeat for each word/form being compared)
+  *🔑 Главное отличие* — одна-две фразы: в чём принципиальная разница. Когда какой вариант выбрать.
+  *🧠 Запоминалка* — образный, неожиданный или этимологический приём, который помогает не путать их.
+  *💬 Примеры в контексте* — 2–3 предложения, которые показывают разницу в действии, каждое с переводом.
+
+For SINGLE WORD questions, use:
+  *🔤 [слово с артиклем если есть]*
+  *📚 Грамматика* — часть речи, артикль, управление (welcher Fall?), тип спряжения/склонения.
+  *🔬 Состав слова* — морфемы: приставка + корень + суффикс — смысл каждой части.
   *🌱 Происхождение* — одно интересное предложение об этимологии.
   *💬 Примеры* — 3–4 живых предложения в реальных ситуациях, каждое с переводом.
-  *🔄 Альтернативы* — синонимы или близкие слова с объяснением нюансов.
+  *🧠 Запоминалка* — образный или этимологический приём для запоминания.
+  *🔄 Альтернативы* — синонимы или близкие слова с объяснением нюансов (если есть).
 
-For a PHRASE, SENTENCE, or GRAMMAR CONSTRUCTION question, use:
-  *📐 Структура* — разбор каждого элемента: артикль, падеж, предлог, порядок слов — кратко и чётко.
-  *❓ Почему так?* — грамматическое правило объяснённое практически: почему этот падеж/предлог/порядок, а не другой.
+For GRAMMAR / PHRASE / SENTENCE questions, use:
+  *📐 Структура* — разбор каждого элемента: артикль, падеж, предлог, порядок слов.
+  *❓ Почему так?* — практическое объяснение правила: почему этот падеж/предлог/порядок.
   *🔁 Контраст* — что изменится если заменить один элемент (педагогическое сравнение).
   *💬 Примеры* — 3–4 предложения в разных жизненных контекстах, каждое с переводом.
+  *🧠 Запоминалка* — короткий приём, ассоциация или правило-подсказка для запоминания.
   *🔄 Альтернативы* — другие способы выразить то же самое (если есть значимые варианты).
 
 ════ STYLE RULES ════
@@ -1058,13 +1083,14 @@ For a PHRASE, SENTENCE, or GRAMMAR CONSTRUCTION question, use:
 - No filler phrases: no "Great question!", no lengthy intros, no summaries.
 - Use Telegram Markdown:
     *bold* — section headers and key terms
-    _italic_ — German words and example sentences
-    `code` — grammar labels (e.g. `Dativ`, `Akkusativ`, `Partizip II`)
-- Aim for 200–400 words. Complex grammar topics may go longer.
+    _italic_ — target-language words and example sentences
+    `code` — grammar labels (e.g. `Dativ`, `Akkusativ`, `Konjunktiv II`)
+- Aim for 250–500 words. Complex comparisons may go longer.
 - Never use markdown tables.
 - Do NOT use # headers — only *bold* for headings.
+- The *🧠 Запоминалка* section is MANDATORY in every answer — never skip it.
 - Answer off-topic questions with is_language_question=false (brief refusal only, no content).
-- If conversation_context is present, use it to resolve short follow-ups ("почему?", "примеры?") without inventing new facts.
+- If conversation_context is present, use it to resolve short follow-ups without inventing new facts.
 
 ════ INPUT / OUTPUT ════
 
@@ -1084,16 +1110,17 @@ Return STRICT JSON only with this schema:
   "is_language_question": true,
   "answer": "...",
   "suggested_rephrase": "...",
-  "save_source_text": "...",
-  "save_target_text": "..."
+  "save_variants": [
+    {"source_text": "...", "target_text": "..."},
+    {"source_text": "...", "target_text": "..."}
+  ]
 }
 
 Rules:
-- answer must be a Telegram Markdown string using *bold*, _italic_, `code`. Escape special chars that break Telegram Markdown (e.g. bare underscores inside words).
-- If is_language_question=false: answer briefly in source_language that only language questions are accepted; suggested_rephrase = one short valid example question; save fields = empty strings.
-- save_source_text: one practical phrase or example in source_language worth saving to the learner's dictionary (≤140 chars).
-- save_target_text: its direct translation in target_language (≤180 chars).
-- Never swap source and target languages in save fields.
+- answer must be a Telegram Markdown string using *bold*, _italic_, `code`. Escape special chars that break Telegram Markdown (e.g. bare underscores inside words like _an\_zweifeln_ → write _anzweifeln_).
+- If is_language_question=false: answer briefly in source_language that only language questions are accepted; suggested_rephrase = one short valid example question; save_variants = [].
+- save_variants: 1–2 items, each a practical phrase or sentence worth memorizing. source_text in source_language (≤140 chars), target_text in target_language (≤180 chars). For comparison questions, save one representative example per compared word/form if possible.
+- Never swap source and target languages in save_variants.
 - Output ONLY valid JSON. No markdown fences. No extra commentary.
 """,
 "enrich_word_multilang":"""
@@ -1831,6 +1858,14 @@ Correction rules:
 - If correction is needed, use the corrected German form for lookup.
 - Preserve the learner's original request via dedicated fields.
 - Do not aggressively rewrite uncertain input.
+- If the input is a noisy pedagogical grammar fragment such as
+  "erinnert... an + Akkusativ", "ist... ähnlich + Dativ",
+  "hat Ähnlichkeit mit + Dativ":
+  * treat "...", "…", "+", and case labels as teaching annotations, not literal translatable tokens
+  * normalize the result into a clean save-worthy dictionary expression
+  * prefer canonical construction form such as infinitive/base expression or standard pattern
+  * use government_patterns to capture the preposition/case explicitly
+  * do not leave raw noise like "..." in word_de or save_worthy_options
 
 Sentence handling:
 - If the input is a full sentence, translate the FULL sentence.
@@ -1915,6 +1950,7 @@ Output rules:
 - GERMAN HEADWORD NORMALIZATION:
   - If the looked-up word is a standalone noun, word_de must include the correct definite article in nominative: "der/die/das + noun". Never return a bare noun.
   - If the looked-up word is a standalone verb, word_de must be the infinitive.
+  - If the looked-up item is a grammatical construction fragment, word_de must be the clean canonical construction, not the noisy surface fragment.
 - If adjective: include comparative/superlative if useful and common collocations.
 - If phrase/expression: explain whether it is fixed, idiomatic, formal/informal, spoken/written.
 - memory_tip must help the learner remember the word vividly.
@@ -1928,7 +1964,7 @@ Output rules:
 - Output ONLY JSON.
 """,
 "dictionary_collocations": """
-You generate grammatically correct, natural German collocations or usage examples for a given word or phrase.
+You create vivid, memorable German phrases for a given word or phrase — phrases that place the word in a real everyday situation so the learner can feel and remember it.
 Input payload is JSON:
   direction: "ru-de" or "de-ru"
   word: the original word or phrase in the source language
@@ -1945,32 +1981,31 @@ Return STRICT JSON:
 
 Rules:
 - Exactly 3 items.
-- CRITICAL: Every item must be GENUINELY DISTINCT from the others. Different punctuation, capitalisation, or one-word swaps do NOT make items distinct.
-- ARTICLES: When the source side contains a German noun standing alone (not inside a longer phrase), ALWAYS include the correct definite article (der/die/das). Never output a bare noun without an article.
-- If "word" is a SHORT WORD or SHORT PHRASE (up to 4 words):
-  * Generate 3 short natural collocations (2–5 source words each).
-  * Respect the word's part of speech:
-    - Adjective → noun phrase with correct German declension (e.g. "ein neues Buch")
-    - Verb → realistic object/complement with correct German case (e.g. "die Frage beantworten")
-    - Noun → natural phrase with a typical verb (e.g. "eine Frage stellen"); if showing the noun in isolation, prepend the correct definite article (e.g. "der Tisch", "die Frage", "das Buch")
-    - Adverb/particle → pair with a verb phrase (e.g. "leider nicht kommen")
+- CRITICAL: Every item must be GENUINELY DISTINCT from the others — different situation, different context, different emotional tone. One-word swaps do NOT make items distinct.
+- VIVIDNESS: Each phrase must paint a mini-scene. Include a concrete subject (a person, a child, someone at work, at home) or a recognisable everyday situation. Avoid abstract grammar-exercise style. A learner should be able to picture exactly what is happening.
+  * Bad: "die Fibel lesen" — dry, no context
+  * Good: "Das Kind lernt mit der Fibel lesen" — you can see it
+  * Bad: "die Frage beantworten" — textbook style
+  * Good: "Er konnte die Frage kaum beantworten" — feels real
+- LENGTH: 4–8 source words. Long enough to carry a situation, short enough to save as a flashcard.
+- ARTICLES: German nouns must have the correct definite or indefinite article (der/die/das/ein/eine). Never output a bare German noun.
+- GRAMMAR: Correct German word order and case throughout.
+- If "word" is a SHORT WORD or PHRASE (up to 4 words):
+  * Generate 3 vivid situational phrases using the word in a natural everyday context.
+  * Cover varied situations: e.g. at home, at work/school, in conversation.
+  * Respect part of speech — noun, verb, adjective, adverb must appear in correct form.
 - If "word" is a FULL SENTENCE or long phrase (more than 4 words):
-  * Identify the KEY CONTENT WORD or CORE EXPRESSION in the phrase (the main verb, noun, particle, or idiomatic unit that carries the meaning).
-  * Generate 3 SHORT COLLOCATIONS (2–5 words each) of that key word — NOT repetitions or variants of the full input sentence.
-  * Each collocation must be a compact, standalone save-worthy phrase: the key word combined with a typical complement, preposition, or case partner.
-  * CRITICAL: Do NOT output the full input phrase or a near-identical variant with minor changes. The items must be shorter and structurally different from the input.
-  * Example: input "Nein, spricht nichts dagegen" → key word "dagegen" →
-    - "nichts dagegen haben" / "быть не против"
-    - "dagegen sein" / "быть против этого"
-    - "Einwände dagegen" / "возражения против"
-  * Example: input "Das hängt von den Umständen ab" → key: "abhängen von" →
-    - "von etwas abhängen" / "зависеть от чего-либо"
-    - "es kommt darauf an" / "это зависит от..."
-    - "unabhängig von etwas sein" / "быть независимым от"
+  * Extract the KEY WORD or CORE EXPRESSION (main verb, noun, or idiomatic unit).
+  * Generate 3 vivid phrases (4–8 words each) for that key word — NOT variants of the full input sentence.
+  * CRITICAL: Do NOT repeat or paraphrase the input. The output must be structurally different and shorter.
+  * Example: input "Das hängt von den Umständen ab" → key "abhängen von" →
+    - "Das Ergebnis hängt von dir ab" / "Результат зависит от тебя"
+    - "Es hängt vom Wetter ab" / "Это зависит от погоды"
+    - "Der Preis hängt davon ab" / "Цена зависит от этого"
 - Output ONLY JSON.
 """,
 "dictionary_collocations_multilang": """
-You generate grammatically correct, natural collocations or usage examples for a word or phrase in arbitrary language pairs.
+You create vivid, memorable phrases for a word or phrase in arbitrary language pairs — phrases that place the word in a real everyday situation so the learner can feel and remember it.
 Input JSON:
 {
   "source_language": "...",
@@ -1990,21 +2025,20 @@ Return STRICT JSON:
 
 Rules:
 - Exactly 3 items.
-- CRITICAL: Every item must be GENUINELY DISTINCT from the others. Different punctuation spacing, capitalisation, or one-word swaps do NOT make items distinct. Each item must use a clearly different noun, object, context, or sentence structure.
-- ARTICLES: When source_language is German and the source side contains a German noun standing alone (not inside a longer phrase), ALWAYS include the correct definite article (der/die/das). Never output a bare German noun without an article. Example: write "der Ersatzstift", NOT "Ersatzstift".
-- If "word_source" is a SHORT WORD or SHORT PHRASE (up to 4 words):
-  * Generate 3 short natural collocations (2–5 source words each).
-  * Respect the word's part of speech:
-    - Adjective → noun phrase with correct agreement/declension
-    - Verb → realistic object/complement in correct grammatical case
-    - Noun → natural phrase with a typical verb; if showing the noun in isolation, prepend the correct definite article
-    - Adverb/particle → combine with a verb or clause where it fits
+- CRITICAL: Every item must be GENUINELY DISTINCT — different situation, different emotional tone, different context. One-word swaps do NOT count as distinct.
+- VIVIDNESS: Each phrase must paint a mini-scene with a concrete subject or recognisable everyday situation. Avoid abstract grammar-exercise style. A learner should be able to picture what is happening.
+  * Bad: "die Frage beantworten" — dry
+  * Good: "Er konnte die Frage kaum beantworten" — vivid, feels real
+- LENGTH: 4–8 source words. Long enough to carry a situation, short enough to memorise.
+- ARTICLES: When source_language is German and the source contains a German noun, always include the correct article (der/die/das/ein/eine). Never output a bare German noun.
+- GRAMMAR: Correct grammar, word order, and case throughout.
+- If "word_source" is a SHORT WORD or PHRASE (up to 4 words):
+  * Generate 3 vivid situational phrases covering varied everyday contexts (home, work, conversation, emotions).
+  * The target side must be a natural, idiomatic translation — not a word-for-word gloss.
 - If "word_source" is a FULL SENTENCE or long phrase (more than 4 words):
-  * Identify the KEY CONTENT WORD or CORE EXPRESSION in the phrase (main verb, noun, particle, or idiomatic unit).
-  * Generate 3 SHORT COLLOCATIONS (2–5 words each) of that key word — NOT repetitions or variants of the full input sentence.
-  * Each collocation must be a compact, standalone save-worthy phrase: the key word with its typical complement, preposition, or case partner.
-  * CRITICAL: Do NOT output the full input phrase or a near-identical variant. Items must be shorter and structurally different from the input.
-  * Example: input "Nein, spricht nichts dagegen" → key "dagegen" → items: "nichts dagegen haben", "dagegen sein", "Einwände dagegen"
+  * Extract the KEY WORD or CORE EXPRESSION.
+  * Generate 3 vivid phrases (4–8 words) for that key word — NOT variants of the full input.
+  * CRITICAL: Do NOT repeat or paraphrase the input sentence.
 - Output ONLY JSON.
 """,
 "dictionary_assistant_multilang": """
@@ -2026,6 +2060,13 @@ Task:
 - If input is a full sentence, translate the FULL sentence literally and keep full-sentence mapping in word_source/word_target.
 - Never collapse sentence input to a single word/lemma.
 - Detect obvious typos only when confidence is high and normalize the lookup form.
+- If the input is a noisy pedagogical grammar fragment such as
+  "erinnert... an + Akkusativ", "ist... ähnlich + Dativ",
+  "hat Ähnlichkeit mit + Dativ":
+  * treat "...", "…", "+", and case labels as grammar annotations, not literal tokens to translate
+  * normalize word_source into a clean canonical save-worthy expression in source_language
+  * use government_patterns to preserve the preposition/case information explicitly
+  * do not leave raw noise like "..." in word_source or save_worthy_options
 
 Return STRICT JSON with keys:
 {
@@ -2119,6 +2160,7 @@ Rules:
 - Each meaning must include one short real example pair.
 - Provide 2–3 short natural usage_examples different from meaning examples.
 - Keep explanations compact but clear.
+- For noisy grammar-construction input, the base save_worthy_options item must use the normalized clean construction, not the raw fragment.
 - If noun: include article/gender, plural, genitive if useful, pronunciation and stress.
 - If verb: include separable/inseparable if relevant, up to 3 useful government patterns, and key forms.
 - GERMAN HEADWORD NORMALIZATION:
@@ -2551,6 +2593,8 @@ Input JSON:
 Task:
 - Produce one short natural sentence in answer_language that clearly and concretely uses the saved word/phrase meaning.
 - The sentence must describe a visualizable real-world scene.
+- The exact saved meaning must be directly visible in the scene, not merely inferred from warmth, mood, weather, consequences, or surrounding context.
+- Reject hidden systems, invisible causes, room atmosphere, and cases where a viewer would more naturally name another visible object instead of the target word.
 - Avoid abstract, metaphorical, idiomatic, ambiguous, or multi-scene situations.
 - Prefer one clause and 5-12 words.
 - If no good visual sentence can be produced safely, reject it.
@@ -2582,6 +2626,11 @@ Input JSON:
 Task:
 - Decide whether the sentence can be shown as one clear, concrete, unambiguous image AND whether the exact answer_text would still be the best and most natural label for that image.
 - Reject cases that are abstract, idiomatic, metaphorical, multi-step, internally ambiguous, visually weak, or where the image would naturally point to a different concrete label than answer_text.
+- Reject hidden infrastructure or invisible-cause concepts when the image would only show indirect evidence.
+- Reject scenes where the viewer would more naturally answer with a different visible noun such as a room, family, window, radiator, coat, table, or weather detail instead of answer_text.
+- Reject moral judgments, character traits, social evaluations, or internal qualities assigned to a person when the image only shows behavior that could also be labeled with a more concrete visible action.
+- Example: if the image shows a man waiting at a red light, reject labels like "der gesetzestreue Mann" because a viewer could also honestly answer with a concrete action such as waiting, standing, or crossing-related behavior.
+- Example: if answer_text is something like a heating system, and the scene only shows a cozy family in a warm room, reject it.
 - Be conservative: reject borderline cases.
 
 Return STRICT JSON:
@@ -2604,16 +2653,32 @@ Input JSON:
   "target_language": "...",
   "source_text": "...",
   "target_text": "...",
-  "source_sentence": "..."
+  "source_sentence": "...",
+  "visual_style_key": "...",
+  "visual_style_label": "...",
+  "visual_style_guidance": "...",
+  "available_visual_styles": [
+    {"key": "...", "label": "...", "guidance": "..."}
+  ]
 }
 
 Task:
 - Use source_sentence as the scene to be illustrated.
-- Produce a short image prompt describing one concrete scene.
+- Use the provided visual style. Do not invent a surreal, abstract, symbolic, or confusing style.
+- Produce a highly detailed image plan for one single concrete scene that is immediately understandable.
+- The final image must make target_text the single best and most natural label for the scene.
+- If target_text would not be the first natural label at a glance, the scene is invalid. Do not drift toward indirect hints or atmospheric cues.
+- Do not turn a concrete visible action into an abstract moral or personality label. If the viewer could naturally describe the same image with a simpler visible action, event, or object, then target_text is not valid for this image quiz.
+- Reject relation-only or comparison-only answers that depend on an absent reference person or hidden comparison, for example phrases like "anstelle von Heinz", "statt Heinz", "im Gegensatz zu ...", "anders als ...". If the viewer cannot verify the relation directly from one image, the target is invalid.
+- Avoid answers like "der gesetzestreue Mann", "die höfliche Frau", or similar person-trait labels unless the target itself is visually explicit and no simpler concrete action label would fit.
+- Produce one detailed image prompt describing the exact visible scene, composition, lighting, subjects, relevant objects, and action.
+- Favor educational clarity over artistic experimentation.
 - Produce exactly 4 answer options in answer_language.
 - One option must be the exact target_text answer for the shown scene. Do not replace it with a paraphrase, synonym, hypernym, or a more concrete alternative.
 - The other 3 must be plausible near-synonyms or semantically adjacent concepts — close enough to be tempting, but clearly wrong for this exact scene.
+- Wrong options must be genuinely wrong for the depicted scene, not merely less precise or based on a second plausible interpretation.
 - Keep options short: usually 1–5 words.
+- Keep all 4 options in the same answer format. Do not mix full sentences with short noun/prepositional phrases in one quiz.
 - Place the correct option at a RANDOM position: pick correct_option_index from 0, 1, 2, or 3 with roughly equal probability. NEVER default to 0 — vary the position each time.
 - Write question_de as a specific, scene-relevant question that tests the exact word/concept. Do NOT use the generic "Was zeigt das Bild?" — instead craft something like:
     * "Welche Situation ist hier dargestellt?"
@@ -2628,6 +2693,11 @@ Return STRICT JSON:
 {
   "source_sentence": "...",
   "image_prompt": "...",
+  "scene_core": "...",
+  "must_show": ["...", "..."],
+  "must_not_show": ["...", "..."],
+  "camera_framing": "...",
+  "key_disambiguator": "...",
   "question_de": "...",
   "answer_options": ["...", "...", "...", "..."],
   "correct_option_index": <integer 0–3, chosen randomly — NOT always 0>,
@@ -2641,8 +2711,180 @@ Rules:
 - Every answer option must be written only in answer_language.
 - If answer_language is "de", never use Russian or Cyrillic in answer_options.
 - question_de must be in German and specific to the depicted scene and the word being practised.
+- image_prompt must describe a single, highly detailed, visually explicit real-world scene.
+- scene_core must be a short summary of the one exact situation shown.
+- must_show should list the decisive visible details that make the answer unambiguous.
+- must_not_show should list distracting or misleading details to avoid.
+- camera_framing should tell the renderer how to frame the scene for clarity.
+- key_disambiguator should explicitly say what visible cue makes the correct answer right and the distractors wrong.
 - explanation must briefly say why the correct answer is right and why the three distractors are wrong or less precise.
+- Never fall back to a generic question like "Was zeigt das Bild?".
 - Output ONLY JSON.
+""",
+"visual_riddle_blueprint": """
+You are a visual rebus designer for a German language learning Telegram bot.
+
+A REBUS is a visual puzzle where the image itself encodes a German word or phrase. The learner must DECODE the image to find the answer — not guess from context, not choose a grammar rule, but read a visual code.
+
+You receive JSON:
+{
+  "quiz_type": "VISUAL_WORD_REBUS | SITUATIONAL_REBUS",
+  "difficulty": "A2 | B1 | B2",
+  "target_skill": "vocabulary | speaking_phrase | cultural_context",
+  "recent_generation_memory": {  // OPTIONAL
+    "recent_target_words": [...],
+    "recent_visual_themes": [...],
+    "recent_emotional_patterns": [...],
+    "recent_question_patterns": [...],
+    "recent_titles": [...]
+  }
+}
+
+===========================================================
+QUIZ TYPE DEFINITIONS
+===========================================================
+
+VISUAL_WORD_REBUS — the image directly encodes a German word using visual components.
+
+  Priority target: German compound nouns (Komposita). German is famous for them.
+  Show the compound components as SEPARATE, CLEARLY IDENTIFIABLE visual objects placed side by side or combined.
+
+  Examples of correct compound rebuses:
+  - "der Handschuh" (glove)  → left half: a human hand; right half: a shoe
+  - "das Schlüsselloch" (keyhole) → a key + a hole/opening
+  - "die Kühlbox" (cool box) → snow/ice crystals + a box
+  - "der Apfelbaum" (apple tree) → an apple + a tree
+  - "die Sonnenbrille" (sunglasses) → the sun + glasses (spectacles)
+  - "das Flugzeug" (airplane) → a bird/wings in flight + a mechanical tool/gear
+  - "die Waschmaschine" (washing machine) → hands washing + a machine/drum
+  - "das Taschenlampe" (flashlight) → a pocket/bag + a lamp/light
+
+  For non-compound words (verbs, adjectives), the image must show the action or state with zero ambiguity:
+  - "schlafen" (to sleep) → person in bed, eyes closed, dark room, clearly sleeping
+  - "laufen" (to run) → person in running pose, motion blur, outdoor path
+  - "kochen" (to cook) → person stirring a steaming pot on a stove
+
+  REBUS VALIDITY TEST for VISUAL_WORD_REBUS:
+  Before finalising, answer: "If someone who knows German looks at this image, will they immediately name THIS exact word and no other?" If no → redesign the image.
+
+SITUATIONAL_REBUS — the image depicts a very specific situation or scene that maps
+  unambiguously to a German word, fixed phrase, or idiom.
+
+  Target: German idiomatic expressions and situation-specific vocabulary.
+
+  Examples of correct situational rebuses:
+  - "Daumen drücken" (keep fingers crossed) → two hands with thumbs pressed inward
+  - "auf dem Sprung sein" (be in a hurry, about to leave) → person one foot out the door, coat on, bag in hand
+  - "die Nase voll haben" (be fed up) → person with exaggerated disgusted face, nose wrinkled, hands raised
+  - "Schwein haben" (to be lucky) → person stunned with a golden trophy falling into their lap
+  - "unter vier Augen" (in private, tête-à-tête) → two people very close, facing each other, empty room, no one else
+  - "schwimmen gehen" (to go swimming) → simple: person walking toward a pool in a swimsuit with towel
+
+  SITUATIONAL VALIDITY TEST:
+  Before finalising: "Does this scene map to exactly ONE German expression? Could someone unfamiliar with the idiom still see this scene and recognise it as a specific situation?" If the scene is too generic → add more specific visual details.
+
+===========================================================
+DIFFICULTY CALIBRATION
+===========================================================
+
+A2: Very frequent, concrete German nouns, common everyday verbs.
+    Compound nouns with universally recognisable components (Hund + Haus → Hundehaus).
+    Idiomatic expressions that are transparent or near-transparent in meaning.
+
+B1: Less frequent but everyday nouns, separable verbs, mild idioms.
+    Compounds where one component requires some vocabulary knowledge.
+    Situational rebuses for common fixed phrases (auf dem Weg sein, Bescheid geben).
+
+B2: Less common vocabulary, abstract compound nouns, well-known German idioms.
+    Compounds where both components require active vocabulary recall.
+    Situational rebuses for proper idioms (ins Fettnäpfchen treten, Haare auf den Zähnen haben).
+
+===========================================================
+ANSWER OPTIONS — CALIBRATION RULES
+===========================================================
+
+Generate exactly 4 options (A, B, C, D). Rules:
+
+1. All 4 options must be the SAME part of speech as the correct answer (noun → all nouns, verb → all verbs).
+2. All 4 options must belong to the SAME semantic or thematic field.
+3. Wrong options must be VISUALLY CONFUSABLE — they share at least one component with the image.
+   Example: correct = "der Handschuh" → wrong options: "der Handtuch" (Hand + towel), "der Fußschuh" (foot + shoe), "das Handgepäck" (hand + luggage).
+4. Wrong options must be REAL German words — no invented words.
+5. The correct answer must NOT be guessable without looking at the image. A learner who does not know the word cannot pick it from context alone.
+6. Place the correct answer at a RANDOM position (A/B/C/D). Do not always put it in A.
+
+===========================================================
+IMAGE PROMPT RULES
+===========================================================
+
+The image_prompt instructs DALL-E. Follow these rules exactly:
+
+1. Style: "Detailed illustration, soft watercolor style, warm pastel tones, no text, no labels, no letters, no numbers."
+2. For VISUAL_WORD_REBUS compounds: describe EACH component as a distinct visual object in its own visual zone. Use "on the left ... on the right ..." or "two objects side by side: ...".
+3. Every visual element must be unmistakable. Do not say "object" — name it precisely.
+4. Lighting and composition must make both components equally visible and clear.
+5. Minimum 80 characters. Never use markdown or code in image_prompt.
+6. FORBIDDEN in image_prompt: text, signs, labels, letters, numbers, speech bubbles, thought bubbles.
+
+===========================================================
+QUESTION TEXT RULES
+===========================================================
+
+question_text must be in German. It must:
+- For VISUAL_WORD_REBUS compounds: "Diese zwei Bilder ergeben zusammen ein deutsches Wort. Welches Wort ist das?"
+- For VISUAL_WORD_REBUS single objects: "Was zeigt dieses Bild auf Deutsch? Wähle das richtige Wort."
+- For VISUAL_WORD_REBUS actions: "Was macht diese Person? Wähle das passende deutsche Verb."
+- For SITUATIONAL_REBUS idioms: "Welcher deutsche Ausdruck beschreibt diese Situation genau?"
+- For SITUATIONAL_REBUS vocabulary: "Welches deutsche Wort passt genau zu dieser Situation?"
+- NEVER use generic questions like "Was zeigt das Bild?" alone — always specify what to find.
+
+===========================================================
+DIVERSITY RULES (always active)
+===========================================================
+
+- STRONGLY prefer novelty vs recent_generation_memory.
+- DO NOT reuse any word from recent_target_words.
+- DO NOT repeat a visual theme from recent_visual_themes.
+- Vary word categories: body, nature, home, food, city, work, travel, sports, culture, technology, animals.
+- Vary compound types: noun+noun, verb+noun, adjective+noun, preposition+noun.
+- Vary the emotional/visual register: funny, elegant, surprising, mundane, dramatic, cozy.
+
+===========================================================
+SELF-CHECK BEFORE OUTPUT (run internally, do not include in JSON)
+===========================================================
+
+1. Is the image unambiguous? Only ONE German word fits this image perfectly.
+2. Are all 4 answer options real German words of the same part of speech?
+3. Are the wrong options visually confusable (share a visual element with the image)?
+4. Is the question_text pointing precisely to the visual task?
+5. Is the correct answer placed at a non-predictable position (not always A)?
+6. Does image_prompt contain ZERO text, labels, or letters?
+
+===========================================================
+OUTPUT FORMAT
+===========================================================
+
+Return STRICT JSON only, no markdown, no code blocks:
+{
+  "quiz_type": "VISUAL_WORD_REBUS or SITUATIONAL_REBUS",
+  "difficulty": "A2 | B1 | B2",
+  "target_language": "German",
+  "target_skill": "vocabulary | speaking_phrase | cultural_context",
+  "target_word_or_phrase": "the exact German word or phrase being tested",
+  "title": "short catchy title in Russian, max 40 chars",
+  "telegram_caption": "short caption in Russian, max 80 chars, include emoji: 🟢 A2 / 🟡 B1 / 🔴 B2",
+  "question_text": "question in German",
+  "image_prompt": "detailed DALL-E image prompt, no text/labels, min 80 chars",
+  "answers": [
+    {"id": "A", "text": "German word or phrase", "is_correct": false},
+    {"id": "B", "text": "German word or phrase", "is_correct": true},
+    {"id": "C", "text": "German word or phrase", "is_correct": false},
+    {"id": "D", "text": "German word or phrase", "is_correct": false}
+  ],
+  "correct_answer_id": "B",
+  "short_explanation": "1-2 sentences in Russian: why this answer is correct and what the image showed",
+  "language_explanation": "1-2 sentences in Russian: meaning and usage of this German word/phrase"
+}
 """,
 "check_translation_multilang": """
 You are a strict translation evaluator.
@@ -3218,26 +3460,6 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 
-# --- Базовая функция для получения соединения с БД ---
-# Дублируем, так как openai_manager.py может быть импортирован раньше database.py,
-# или для обеспечения самодостаточности модуля.
-# В идеале, эту функцию get_db_connection_context стоит разместить в самом database.py
-# и импортировать оттуда. Для данного примера, пока оставим так.
-DATABASE_URL = os.getenv("DATABASE_URL_RAILWAY")
-if not DATABASE_URL:
-    logging.error("❌ Ошибка: DATABASE_URL не задан в .env-файле или переменных окружения!")
-    raise RuntimeError("DATABASE_URL не установлен.")
-
-@contextmanager
-def get_db_connection_context():
-    """Контекстный менеджер для соединения с базой данных PostgreSQL."""
-    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
-    try:
-        yield conn
-        conn.commit()
-    finally:
-        conn.close()
-
 # --- Инициализация глобального клиента OpenAI ---
 # Клиент OpenAI, который будет использоваться ВСЕМИ частями приложения.
 # Таймаут можно настроить здесь.
@@ -3413,6 +3635,124 @@ Rules:
 - The note fields must not repeat each other with the same wording.
 - Keep each text field compact and high-signal.
 - Return JSON only.
+""",
+    "voice_prose_from_mistakes": """
+You write concise prose notes for a German language learning session assessment.
+
+You will receive JSON with:
+- session_stats: user_turns, user_chars, total_turns, avg_user_chars_per_turn
+- grammar_summary: total_grammar_mistakes, top_categories, high_severity_count, stt_flagged_count
+- structured_mistakes: list of {category, subtype, severity, quote, correction}
+- scenario_title and scenario_topic
+- target_vocab_used and target_vocab_missed
+
+Your task: Write the four prose notes below. Grammar mistakes have already been
+evaluated separately — do NOT re-evaluate grammar and do NOT repeat or add grammar
+criticism that is not in structured_mistakes.
+
+Return STRICT JSON only:
+{
+  "summary": "string",
+  "fluency_note": "string",
+  "coherence_relevance_note": "string",
+  "lexical_range_note": "string",
+  "self_correction_note": "string",
+  "target_vocab_used": ["string"],
+  "target_vocab_missed": ["string"]
+}
+
+FIELD RULES:
+- summary: 1-2 factual sentences about what happened in the session (turns, topic, engagement).
+  Do not repeat grammar criticism — that is handled elsewhere.
+- fluency_note: comment on speaking flow based on avg_user_chars_per_turn and stt_flagged_count.
+  If stt_flagged_count > 0, mention speech clarity issues. Keep it short and evidence-based.
+- coherence_relevance_note: comment on topic engagement and response structure.
+  Use scenario_topic and structured_mistakes (e.g. many CONJUNCTIONS errors = weak clause linking).
+- lexical_range_note: use target_vocab_used, target_vocab_missed, and LEXIS mistakes.
+  Be specific about vocabulary breadth or gaps.
+- self_correction_note: if the same category appears multiple times, note the repeated pattern.
+  Avoid generic phrasing. If there is nothing to observe, say so directly.
+- target_vocab_used / target_vocab_missed: return them as-is from input. Do not invent new items.
+
+RULES:
+- Act like a demanding teacher. No praise filler, no "great job", no "keep practicing".
+- Base every sentence on the input data. Do not invent observations.
+- Do not re-evaluate grammar — the grammar fields are generated separately.
+- Keep each field compact: 1-3 sentences.
+- Return JSON only. No text before or after.
+""",
+    "voice_mistake_extraction": """
+You extract grammar mistakes from a German language learning voice session.
+
+You receive JSON with:
+- transcript: ordered speaker turns [{speaker, text}]
+- user_segments_only: list of only the user's spoken texts
+
+TASK: Find grammar mistakes in USER speech ONLY. Ignore assistant turns entirely.
+
+Return STRICT JSON only:
+{
+  "mistakes": [
+    {
+      "user_quote": "exact verbatim fragment from user speech",
+      "corrected_form": "minimal corrected German for this fragment only",
+      "rule_explanation": "concise grammar rule explanation, two sentences max",
+      "error_category": "CATEGORY_CODE",
+      "error_subtype": "SUBTYPE_CODE",
+      "severity": "low|medium|high",
+      "alternatives": ["natural German alternative for the same thought"],
+      "grammar_confidence": 0.95
+    }
+  ]
+}
+
+FIELD RULES:
+- user_quote: exact verbatim substring of user speech. No paraphrasing. No invented text.
+- corrected_form: fix only the quoted fragment. Do not rewrite the full sentence.
+- rule_explanation: one or two sentences. No textbook padding.
+- alternatives: 1-3 natural phrasings for the same thought. Empty list [] is valid.
+- grammar_confidence: 0.0-1.0. How certain you are this is a real grammar error.
+- severity: low=minor (comprehension unaffected), medium=clearly wrong, high=meaning impaired.
+
+CONSTRAINTS:
+- Do NOT flag assistant lines — only user speech produces mistakes.
+- Do NOT invent mistakes not clearly present in the transcript.
+- Do NOT generate summaries, CEFR levels, recommendations, or any prose.
+- Do NOT flag likely STT transcription artifacts as grammar mistakes — use PRONUNCIATION_STT instead.
+- Return JSON only. No text before or after the JSON object.
+
+SEVERITY REFERENCE:
+- low: article gender wrong, minor adjective ending — listener still understands fully
+- medium: wrong case, wrong tense, missing reflexive pronoun — comprehension slightly degraded
+- high: verb missing, word order breaks meaning, modal verb completely wrong — communication impaired
+
+VALID error_category codes (use exactly as written):
+ADJECTIVE_ENDINGS | ARTICLES | CASES | CONJUNCTIONS | INFINITIVE_CLAUSES |
+KONJUNKTIV | LEXIS | MODAL_VERBS | NEGATION | NOUN_GENDER | PASSIVE | PLURAL_FORM |
+PREPOSITIONS | PRONUNCIATION_STT | REFLEXIVE_VERBS | RELATIVE_CLAUSES |
+SEPARABLE_VERBS | TENSES | VERB_FORM | WORD_ORDER
+
+VALID error_subtype codes per category (pick exactly one):
+WORD_ORDER: WORD_ORDER_V2_MAIN_CLAUSE, WORD_ORDER_VERB_FINAL_SUBORDINATE, WORD_ORDER_INVERSION_MISSING, WORD_ORDER_AUXILIARY_POSITION, WORD_ORDER_MODAL_INFINITIVE, WORD_ORDER_OTHER
+VERB_FORM: VERB_FORM_IRREGULAR_STEM, VERB_FORM_PAST_PARTICIPLE, VERB_FORM_CONJUGATION_AGREEMENT, VERB_FORM_INFINITIVE_AS_FINITE, VERB_FORM_AUXILIARY_SELECTION, VERB_FORM_OTHER
+TENSES: TENSES_PERFEKT_PRAETERITUM, TENSES_PRAESENS_FOR_PAST, TENSES_FUTURE_CONSTRUCTION, TENSES_SEQUENCE_INCONSISTENCY, TENSES_PLUSQUAMPERFEKT, TENSES_OTHER
+CASES: CASES_NOM_FOR_ACC, CASES_ACC_FOR_NOM, CASES_ACC_FOR_DAT, CASES_DAT_FOR_ACC, CASES_GENITIVE_ERROR, CASES_AFTER_PREPOSITION, CASES_OTHER
+ARTICLES: ARTICLES_WRONG_GENDER, ARTICLES_WRONG_CASE_FORM, ARTICLES_MISSING, ARTICLES_INDEFINITE_FOR_DEFINITE, ARTICLES_DEFINITE_FOR_INDEFINITE, ARTICLES_KEIN_NICHT_CONFUSION, ARTICLES_OTHER
+ADJECTIVE_ENDINGS: ADJECTIVE_ENDINGS_WEAK_WRONG, ADJECTIVE_ENDINGS_STRONG_WRONG, ADJECTIVE_ENDINGS_MIXED_WRONG, ADJECTIVE_ENDINGS_CASE_AGREEMENT, ADJECTIVE_ENDINGS_GENDER_AGREEMENT, ADJECTIVE_ENDINGS_OTHER
+PREPOSITIONS: PREPOSITIONS_WRONG_FIXED, PREPOSITIONS_TWO_WAY_CASE, PREPOSITIONS_MISSING, PREPOSITIONS_EXTRA, PREPOSITIONS_OTHER
+MODAL_VERBS: MODAL_VERBS_CONJUGATION, MODAL_VERBS_INFINITIVE_WITH_ZU, MODAL_VERBS_WRONG_CHOICE, MODAL_VERBS_INFINITIVE_POSITION, MODAL_VERBS_OTHER
+SEPARABLE_VERBS: SEPARABLE_VERBS_PREFIX_NOT_SPLIT, SEPARABLE_VERBS_PREFIX_WRONG_POS, SEPARABLE_VERBS_FORM_WRONG, SEPARABLE_VERBS_OTHER
+REFLEXIVE_VERBS: REFLEXIVE_VERBS_PRONOUN_MISSING, REFLEXIVE_VERBS_PRONOUN_CASE, REFLEXIVE_VERBS_NOT_REFLEXIVE, REFLEXIVE_VERBS_OTHER
+KONJUNKTIV: KONJUNKTIV_FORM_WRONG, KONJUNKTIV_WUERDE_WRONG, KONJUNKTIV_INDICATIVE_USED, KONJUNKTIV_KONJUNKTIV1_ERROR, KONJUNKTIV_OTHER
+PASSIVE: PASSIVE_WERDEN_FORM, PASSIVE_PARTIZIP_WRONG, PASSIVE_ZUSTAND_VORGANG_CONFUSION, PASSIVE_WORD_ORDER_WRONG, PASSIVE_OTHER
+CONJUNCTIONS: CONJUNCTIONS_SUBORDINATING_WRONG, CONJUNCTIONS_WEIL_DENN, CONJUNCTIONS_COORDINATING_WRONG, CONJUNCTIONS_MISSING, CONJUNCTIONS_OTHER
+NOUN_GENDER: NOUN_GENDER_WRONG, NOUN_GENDER_OTHER
+PLURAL_FORM: PLURAL_FORM_WRONG_SUFFIX, PLURAL_FORM_SINGULAR_USED, PLURAL_FORM_PLURAL_USED, PLURAL_FORM_OTHER
+RELATIVE_CLAUSES: RELATIVE_CLAUSES_PRONOUN_GENDER, RELATIVE_CLAUSES_PRONOUN_CASE, RELATIVE_CLAUSES_VERB_POSITION, RELATIVE_CLAUSES_OTHER
+INFINITIVE_CLAUSES: INFINITIVE_CLAUSES_ZU_MISSING, INFINITIVE_CLAUSES_ZU_EXTRA, INFINITIVE_CLAUSES_UM_ZU_WRONG, INFINITIVE_CLAUSES_FORM_WRONG, INFINITIVE_CLAUSES_OTHER
+NEGATION: NEGATION_NICHT_KEIN_CONFUSION, NEGATION_POSITION_WRONG, NEGATION_OTHER
+LEXIS: LEXIS_WRONG_WORD_CHOICE, LEXIS_FALSE_FRIEND, LEXIS_CALQUE_FROM_L1, LEXIS_UNNATURAL_PHRASING, LEXIS_REGISTER_MISMATCH, LEXIS_OTHER
+PRONUNCIATION_STT: PRONUNCIATION_STT_LIKELY_MISREAD, PRONUNCIATION_STT_UNCLEAR, PRONUNCIATION_STT_OTHER
 """,
 })
 
@@ -4538,6 +4878,15 @@ async def run_image_quiz_blueprint(payload: dict) -> dict:
         system_instruction_key="image_quiz_blueprint",
         payload=payload or {},
         poll_delay_sec=1.2,
+    )
+
+
+async def run_visual_riddle_blueprint(payload: dict) -> dict:
+    return await _run_json_assistant_task(
+        task_name="visual_riddle_blueprint",
+        system_instruction_key="visual_riddle_blueprint",
+        payload=payload or {},
+        poll_delay_sec=1.5,
     )
 
 

@@ -23,7 +23,9 @@ from uuid import uuid4
 from calendar import monthrange
 from zoneinfo import ZoneInfo
 from typing import Any
+from urllib.parse import parse_qsl, urlparse
 from dotenv import load_dotenv
+from backend.observability import _log_flow_observation
 try:
     from backend.config_mistakes_data import (
         VALID_CATEGORIES as VALID_CATEGORIES_DE,
@@ -36,6 +38,31 @@ except Exception:
     )
 
 try:
+    from backend.voice_mistake_taxonomy import (
+        VALID_ERROR_CATEGORIES as VALID_VOICE_ERROR_CATEGORIES,
+        VALID_ERROR_SUBTYPES as VALID_VOICE_ERROR_SUBTYPES,
+        VALID_SUBTYPES_BY_CATEGORY as VALID_VOICE_SUBTYPES_BY_CATEGORY,
+        VALID_SEVERITIES as VALID_VOICE_SEVERITIES,
+        validate_category as validate_voice_category,
+        validate_subtype as validate_voice_subtype,
+        validate_severity as validate_voice_severity,
+        validate_confidence as validate_voice_confidence,
+        validate_alternatives as validate_voice_alternatives,
+    )
+except Exception:
+    from voice_mistake_taxonomy import (
+        VALID_ERROR_CATEGORIES as VALID_VOICE_ERROR_CATEGORIES,
+        VALID_ERROR_SUBTYPES as VALID_VOICE_ERROR_SUBTYPES,
+        VALID_SUBTYPES_BY_CATEGORY as VALID_VOICE_SUBTYPES_BY_CATEGORY,
+        VALID_SEVERITIES as VALID_VOICE_SEVERITIES,
+        validate_category as validate_voice_category,
+        validate_subtype as validate_voice_subtype,
+        validate_severity as validate_voice_severity,
+        validate_confidence as validate_voice_confidence,
+        validate_alternatives as validate_voice_alternatives,
+    )
+
+try:
     from backend.hotpath_cache import HotPathCacheManager as _HotPathCacheManager
 except Exception:
     from hotpath_cache import HotPathCacheManager as _HotPathCacheManager
@@ -45,7 +72,39 @@ _DAILY_PLAN_CACHE = _HotPathCacheManager(name="daily_plan", max_entries=5000)
 env_path = Path(__file__).parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
-DATABASE_URL = os.getenv("DATABASE_URL_RAILWAY") #
+DATABASE_URL_DIRECT = str(
+    os.getenv("DATABASE_URL_DIRECT_RAILWAY")
+    or os.getenv("DATABASE_URL_RAILWAY")
+    or ""
+).strip()
+DATABASE_URL_PGBOUNCER = str(
+    os.getenv("DATABASE_URL_PGBOUNCER_RAILWAY")
+    or os.getenv("DATABASE_URL_PGBOUNCER")
+    or ""
+).strip()
+
+
+def _normalize_db_connection_target(raw_value: str | None) -> str:
+    normalized = str(raw_value or "").strip().lower()
+    if normalized in {"pgbouncer", "pgbouncer_transaction", "transaction", "transaction_pool"}:
+        return "pgbouncer_transaction"
+    return "direct"
+
+
+DB_CONNECTION_TARGET = _normalize_db_connection_target(os.getenv("DB_CONNECTION_TARGET"))
+DATABASE_URL = DATABASE_URL_DIRECT
+DATABASE_URL_SOURCE = "DATABASE_URL_RAILWAY"
+DATABASE_URL_SELECTION_ERROR: str | None = None
+if DB_CONNECTION_TARGET == "pgbouncer_transaction":
+    if DATABASE_URL_PGBOUNCER:
+        DATABASE_URL = DATABASE_URL_PGBOUNCER
+        DATABASE_URL_SOURCE = "DATABASE_URL_PGBOUNCER"
+    else:
+        DATABASE_URL_SELECTION_ERROR = (
+            "DB_CONNECTION_TARGET=pgbouncer_transaction requires DATABASE_URL_PGBOUNCER or "
+            "DATABASE_URL_PGBOUNCER_RAILWAY"
+        )
+
 DB_CONNECT_TIMEOUT_SECONDS = int(os.getenv("DB_CONNECT_TIMEOUT_SECONDS", "12"))
 DB_CONNECT_RETRIES = max(1, int(os.getenv("DB_CONNECT_RETRIES", "3")))
 DB_CONNECT_RETRY_DELAY_SECONDS = float(os.getenv("DB_CONNECT_RETRY_DELAY_SECONDS", "0.6"))
@@ -56,6 +115,7 @@ DB_POOL_ACQUIRE_TIMEOUT_MS = max(0, int(os.getenv("DB_POOL_ACQUIRE_TIMEOUT_MS", 
 DB_POOL_ACQUIRE_RETRY_MS = max(10, int(os.getenv("DB_POOL_ACQUIRE_RETRY_MS", "50")))
 DB_POOL_LOG_SLOW_ACQUIRE_MS = max(0, int(os.getenv("DB_POOL_LOG_SLOW_ACQUIRE_MS", "100")))
 DB_POOL_ALLOW_DIRECT_FALLBACK = str(os.getenv("DB_POOL_ALLOW_DIRECT_FALLBACK", "0")).strip().lower() in {"1", "true", "yes", "on"}
+DB_CHECKOUT_HOLD_WARN_MS = max(0, int(os.getenv("DB_CHECKOUT_HOLD_WARN_MS", "1500")))
 BILLING_PLAN_CACHE_TTL_SEC = max(5, min(3600, int(os.getenv("BILLING_PLAN_CACHE_TTL_SEC", "300"))))
 READER_SESSION_AUTOCLOSE_MAX_SECONDS = max(
     300,
@@ -72,6 +132,14 @@ _DB_POOL: ThreadedConnectionPool | None = None
 _DB_ACQUIRE_LOCAL = threading.local()
 _BILLING_PLAN_CACHE_LOCK = threading.Lock()
 _BILLING_PLAN_CACHE: dict[str, tuple[float, dict | None]] = {}
+_STRICT_POOLED_DB_SERVICE_NAMES = {
+    "MY_3_BOT",
+    "BACKGROUND_JOBS",
+    "TRANSLATION_CHECK_WORKER",
+    "AUX_BACKGROUND_WORKER",
+    "SCHEDULER_SERVICE",
+    "AGENT_WORKER",
+}
 PHASE1_SHADOW_SCHEMA_MIGRATION_KEY = "2026_03_12_skill_shadow_phase1_schema"
 PHASE2_SHADOW_SCHEMA_MIGRATION_KEY = "2026_03_12_skill_shadow_phase2_schema"
 SKILL_MASTERY_GROUPS_SCHEMA_MIGRATION_KEY = "2026_03_12_skill_mastery_groups_schema"
@@ -223,6 +291,34 @@ def _normalize_image_quiz_options(options: list[str] | tuple[str, ...] | None) -
     return normalized
 
 
+def _normalize_vr_generation_status(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"pending", "blueprint_ready", "rendering", "ready", "failed"}:
+        return normalized
+    return "pending"
+
+
+def _normalize_vr_visual_status(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"unknown", "valid", "rejected"}:
+        return normalized
+    return "unknown"
+
+
+def _normalize_vr_dispatch_status(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"claimed", "sent", "failed"}:
+        return normalized
+    return "claimed"
+
+
+def _normalize_vr_answer_id(value: str | None) -> str:
+    normalized = str(value or "").strip().upper()
+    if normalized in {"A", "B", "C", "D"}:
+        return normalized
+    return "A"
+
+
 def _map_image_quiz_template_row(row: tuple | None) -> dict | None:
     if not row:
         return None
@@ -325,6 +421,96 @@ def _map_image_quiz_candidate_row(row: tuple | None) -> dict | None:
         "source_text": source_text,
         "target_text": target_text,
         "created_at": row[10].isoformat() if row[10] else None,
+    }
+
+
+def _map_vr_template_row(row: tuple | None) -> dict | None:
+    if not row:
+        return None
+    raw_answers = row[13]
+    if isinstance(raw_answers, str):
+        try:
+            raw_answers = json.loads(raw_answers)
+        except Exception:
+            raw_answers = []
+    raw_why_wrong = row[17]
+    if isinstance(raw_why_wrong, str):
+        try:
+            raw_why_wrong = json.loads(raw_why_wrong)
+        except Exception:
+            raw_why_wrong = {}
+    return {
+        "id": int(row[0]),
+        "user_id": int(row[1]) if row[1] is not None else None,
+        "quiz_type": str(row[2] or ""),
+        "difficulty": str(row[3] or ""),
+        "target_language": str(row[4] or "German"),
+        "target_skill": str(row[5] or ""),
+        "target_word_or_phrase": str(row[6] or "") or None,
+        "title": str(row[7] or "") or None,
+        "telegram_caption": str(row[8] or "") or None,
+        "question_text": str(row[9] or ""),
+        "image_prompt": str(row[10] or ""),
+        "image_object_key": str(row[11] or "") or None,
+        "image_url": str(row[12] or "") or None,
+        "answers": raw_answers if isinstance(raw_answers, list) else [],
+        "correct_answer_id": str(row[14] or "A"),
+        "short_explanation": str(row[15] or "") or None,
+        "language_explanation": str(row[16] or "") or None,
+        "why_wrong_answers": raw_why_wrong if isinstance(raw_why_wrong, dict) else {},
+        "generation_status": _normalize_vr_generation_status(row[18]),
+        "visual_status": _normalize_vr_visual_status(row[19]),
+        "failure_reason": str(row[20] or "") or None,
+        "use_count": int(row[21] or 0),
+        "last_used_at": row[22].isoformat() if row[22] else None,
+        "created_at": row[23].isoformat() if row[23] else None,
+        "updated_at": row[24].isoformat() if row[24] else None,
+    }
+
+
+def _map_vr_dispatch_row(row: tuple | None) -> dict | None:
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "template_id": int(row[1]),
+        "target_user_id": int(row[2]),
+        "chat_id": int(row[3]),
+        "delivery_date_local": row[4].isoformat() if row[4] else None,
+        "delivery_slot": str(row[5] or ""),
+        "status": _normalize_vr_dispatch_status(row[6]),
+        "telegram_message_id": int(row[7]) if row[7] is not None else None,
+        "failure_reason": str(row[8] or "") or None,
+        "claimed_at": row[9].isoformat() if row[9] else None,
+        "sent_at": row[10].isoformat() if row[10] else None,
+        "failed_at": row[11].isoformat() if row[11] else None,
+        "created_at": row[12].isoformat() if row[12] else None,
+    }
+
+
+def _map_vr_answer_row(row: tuple | None) -> dict | None:
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "dispatch_id": int(row[1]),
+        "user_id": int(row[2]),
+        "selected_answer_id": str(row[3] or "A"),
+        "is_correct": bool(row[4]),
+        "answered_at": row[5].isoformat() if row[5] else None,
+        "feedback_sent_at": row[6].isoformat() if row[6] else None,
+    }
+
+
+def _map_vr_slot_template_row(row: tuple | None) -> dict | None:
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "delivery_date_local": row[1].isoformat() if row[1] else None,
+        "delivery_slot": str(row[2] or ""),
+        "template_id": int(row[3]),
+        "created_at": row[4].isoformat() if row[4] else None,
     }
 
 
@@ -489,6 +675,82 @@ def _resolve_dictionary_source_target_texts(
         target_text = str(translation_de or payload.get("translation_de") or "").strip()
 
     return source_text, target_text
+
+
+def _apply_ru_de_dictionary_pair_alignment(
+    *,
+    source_lang: str,
+    target_lang: str,
+    german_text: str | None,
+    russian_text: str | None,
+    current_word_ru: str | None = None,
+    current_translation_de: str | None = None,
+    current_word_de: str | None = None,
+    current_translation_ru: str | None = None,
+    response_json: dict | None = None,
+) -> tuple[dict, str, str]:
+    payload = _coerce_json_object(response_json)
+    resolved_source_lang = _normalize_lang_code(source_lang)
+    resolved_target_lang = _normalize_lang_code(target_lang)
+
+    existing_source_text, existing_target_text = _resolve_dictionary_source_target_texts(
+        source_lang=resolved_source_lang,
+        target_lang=resolved_target_lang,
+        word_ru=current_word_ru,
+        translation_de=current_translation_de,
+        word_de=current_word_de,
+        translation_ru=current_translation_ru,
+        response_json=payload,
+    )
+
+    normalized_german = str(german_text or "").strip()
+    normalized_russian = str(russian_text or "").strip()
+
+    source_text = existing_source_text
+    target_text = existing_target_text
+
+    if resolved_source_lang == "de" and normalized_german:
+        source_text = normalized_german
+    if resolved_target_lang == "de" and normalized_german:
+        target_text = normalized_german
+    if resolved_source_lang == "ru" and normalized_russian:
+        source_text = normalized_russian
+    if resolved_target_lang == "ru" and normalized_russian:
+        target_text = normalized_russian
+
+    word_ru = str(current_word_ru or "").strip()
+    translation_de = str(current_translation_de or "").strip()
+    word_de = str(current_word_de or "").strip()
+    translation_ru = str(current_translation_ru or "").strip()
+
+    if resolved_source_lang == "ru" and source_text:
+        word_ru = source_text
+        translation_ru = source_text
+    if resolved_source_lang == "de" and source_text:
+        word_de = source_text
+        translation_de = source_text
+    if resolved_target_lang == "de" and target_text:
+        word_de = target_text
+        translation_de = target_text
+    if resolved_target_lang == "ru" and target_text:
+        word_ru = target_text
+        translation_ru = target_text
+
+    payload["source_text"] = source_text
+    payload["target_text"] = target_text
+    payload["source_lang"] = resolved_source_lang or source_lang
+    payload["target_lang"] = resolved_target_lang or target_lang
+    payload["word_ru"] = word_ru
+    payload["translation_de"] = translation_de
+    payload["word_de"] = word_de
+    payload["translation_ru"] = translation_ru
+
+    return {
+        "word_ru": word_ru,
+        "translation_de": translation_de,
+        "word_de": word_de,
+        "translation_ru": translation_ru,
+    }, source_text, target_text
 
 
 def _dedupe_webapp_dictionary_entry_after_insert(
@@ -712,7 +974,8 @@ def _create_or_attach_user_dictionary_entry_with_cursor(
                 source_lang = COALESCE(NULLIF(bt_3_webapp_dictionary_queries.source_lang, ''), EXCLUDED.source_lang),
                 target_lang = COALESCE(NULLIF(bt_3_webapp_dictionary_queries.target_lang, ''), EXCLUDED.target_lang),
                 canonical_entry_id = COALESCE(bt_3_webapp_dictionary_queries.canonical_entry_id, EXCLUDED.canonical_entry_id),
-                is_learned = COALESCE(bt_3_webapp_dictionary_queries.is_learned, FALSE) OR COALESCE(EXCLUDED.is_learned, FALSE)
+                is_learned = COALESCE(bt_3_webapp_dictionary_queries.is_learned, FALSE) OR COALESCE(EXCLUDED.is_learned, FALSE),
+                updated_at = NOW()
             RETURNING id, (xmax = 0) AS inserted;
             """,
             (
@@ -1249,6 +1512,17 @@ CLOUDFLARE_R2_STORAGE_MONTHLY_BASE_LIMIT_MB = max(0, _env_int("CLOUDFLARE_R2_STO
 CLOUDFLARE_R2_STORAGE_MONTHLY_BASE_LIMIT_GB = max(0, _env_int("CLOUDFLARE_R2_STORAGE_MONTHLY_BASE_LIMIT_GB", 10))
 STRIPE_MONTHLY_BASE_LIMIT_PAYMENTS = max(0, _env_int("STRIPE_MONTHLY_BASE_LIMIT_PAYMENTS", 0))
 READER_AUDIO_PRO_MONTHLY_LIMIT_CHARS = max(1, _env_int("READER_AUDIO_PRO_MONTHLY_LIMIT_CHARS", 10_000))
+
+def _reader_audio_unlimited_user_ids() -> frozenset[int]:
+    raw = os.getenv("READER_AUDIO_UNLIMITED_USER_IDS", "")
+    result = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if part.isdigit():
+            result.add(int(part))
+    return frozenset(result)
+
+READER_AUDIO_UNLIMITED_USER_IDS: frozenset[int] = _reader_audio_unlimited_user_ids()
 
 
 def convert_cost_to_eur(amount, currency: str | None) -> float:
@@ -2010,38 +2284,297 @@ else:
     # Для безопасности печатаем только хост, скрывая пароль
     print(f"✅ database.py успешно загрузил URL (хост: {DATABASE_URL.split('@')[-1].split(':')[0]})")
 
+
+def _db_policy_runtime_service_name() -> str:
+    return str(os.getenv("RAILWAY_SERVICE_NAME") or os.getenv("SERVICE_NAME") or "").strip()
+
+
+def _is_strict_pooled_db_runtime(service_name: str) -> bool:
+    normalized = str(service_name or "").strip()
+    if not normalized:
+        return False
+    return normalized.startswith("BACKEND_WEB") or normalized in _STRICT_POOLED_DB_SERVICE_NAMES
+
+
+def _safe_parse_database_url(dsn: str | None) -> dict[str, Any]:
+    raw_dsn = str(dsn or "").strip()
+    if not raw_dsn:
+        return {
+            "configured": False,
+            "host": None,
+            "port": None,
+            "scheme": None,
+            "sslmode": None,
+            "endpoint_kind": "missing",
+        }
+    try:
+        parsed = urlparse(raw_dsn)
+        query = dict(parse_qsl(parsed.query or "", keep_blank_values=True))
+        host = str(parsed.hostname or "").strip() or None
+        endpoint_kind = "custom"
+        if host and host.endswith(".proxy.rlwy.net"):
+            endpoint_kind = "railway_tcp_proxy"
+        elif host and host.endswith(".railway.internal"):
+            endpoint_kind = "railway_private_network"
+        elif host and host.endswith(".up.railway.app"):
+            endpoint_kind = "railway_public_http"
+        return {
+            "configured": True,
+            "host": host,
+            "port": int(parsed.port) if parsed.port else None,
+            "scheme": str(parsed.scheme or "").strip() or None,
+            "sslmode": str(query.get("sslmode") or "require").strip() or "require",
+            "endpoint_kind": endpoint_kind,
+        }
+    except Exception:
+        return {
+            "configured": True,
+            "host": None,
+            "port": None,
+            "scheme": None,
+            "sslmode": None,
+            "endpoint_kind": "unparseable",
+        }
+
+
+_DIRECT_DATABASE_URL_META = _safe_parse_database_url(DATABASE_URL_DIRECT)
+_PGBOUNCER_DATABASE_URL_META = _safe_parse_database_url(DATABASE_URL_PGBOUNCER)
+_ACTIVE_DATABASE_URL_META = _safe_parse_database_url(DATABASE_URL)
+DB_CONNECT_SSLMODE = str(_ACTIVE_DATABASE_URL_META.get("sslmode") or "require").strip() or "require"
+
+
+def _enforce_db_runtime_policy() -> None:
+    service_name = _db_policy_runtime_service_name()
+    production_service = _is_strict_pooled_db_runtime(service_name)
+    failure_reason = None
+    if DATABASE_URL_SELECTION_ERROR:
+        failure_reason = DATABASE_URL_SELECTION_ERROR
+    elif production_service:
+        if not DB_POOL_ENABLED:
+            failure_reason = "DB_POOL_ENABLED=0 is not allowed for strict pooled production services"
+        elif DB_POOL_ALLOW_DIRECT_FALLBACK:
+            failure_reason = "DB_POOL_ALLOW_DIRECT_FALLBACK=1 is not allowed for strict pooled production services"
+    _log_flow_observation(
+        "startup",
+        "db_policy_check",
+        event="db_policy_check",
+        service=service_name or "-",
+        db_pool_enabled=bool(DB_POOL_ENABLED),
+        db_pool_allow_direct_fallback=bool(DB_POOL_ALLOW_DIRECT_FALLBACK),
+        production_service=bool(production_service),
+        db_connection_target=DB_CONNECTION_TARGET,
+        db_connection_url_source=DATABASE_URL_SOURCE,
+        db_endpoint_kind=_ACTIVE_DATABASE_URL_META.get("endpoint_kind"),
+        db_endpoint_host=_ACTIVE_DATABASE_URL_META.get("host"),
+        db_endpoint_port=_ACTIVE_DATABASE_URL_META.get("port"),
+        db_endpoint_sslmode=_ACTIVE_DATABASE_URL_META.get("sslmode"),
+        db_direct_url_configured=bool(_DIRECT_DATABASE_URL_META.get("configured")),
+        db_pgbouncer_url_configured=bool(_PGBOUNCER_DATABASE_URL_META.get("configured")),
+        success=failure_reason is None,
+        failure_reason=failure_reason,
+    )
+    if failure_reason is not None:
+        raise RuntimeError(
+            f"Unsafe DB runtime policy for service={service_name or '-'}: {failure_reason}"
+        )
+
+
+_enforce_db_runtime_policy()
+
+
+def _env_int_or_none(name: str) -> int | None:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return None
+    try:
+        return int(str(raw_value).strip())
+    except Exception:
+        return None
+
+
+def _emit_db_pool_runtime_audit() -> None:
+    service_name = _db_policy_runtime_service_name()
+    strict_pooled_runtime = _is_strict_pooled_db_runtime(service_name)
+    web_concurrency = _env_int_or_none("WEB_CONCURRENCY")
+    gunicorn_threads = _env_int_or_none("GUNICORN_THREADS")
+    background_jobs_processes = _env_int_or_none("BACKGROUND_JOBS_PROCESSES")
+    background_jobs_threads = _env_int_or_none("BACKGROUND_JOBS_THREADS")
+    dramatiq_worker_threads = _env_int_or_none("DRAMATIQ_WORKER_THREADS")
+
+    process_hint = 1
+    thread_hint = 1
+    runtime_kind = "generic"
+    service_label = str(service_name or "").strip()
+    if service_label.startswith("BACKEND_WEB"):
+        runtime_kind = "gunicorn_gthread"
+        process_hint = max(1, int(web_concurrency or 1))
+        thread_hint = max(1, int(gunicorn_threads or 8))
+    elif service_label in {"BACKGROUND_JOBS", "AUX_BACKGROUND_WORKER"}:
+        runtime_kind = "dramatiq_worker"
+        process_hint = max(1, int(background_jobs_processes or 1))
+        thread_hint = max(1, int(dramatiq_worker_threads or background_jobs_threads or 8))
+    elif service_label == "TRANSLATION_CHECK_WORKER":
+        runtime_kind = "dramatiq_worker"
+        process_hint = 1
+        thread_hint = max(1, int(dramatiq_worker_threads or background_jobs_threads or 8))
+    elif service_label == "SCHEDULER_SERVICE":
+        runtime_kind = "scheduler_single_process"
+    elif service_label == "MY_3_BOT":
+        runtime_kind = "bot_single_process"
+    elif service_label == "AGENT_WORKER":
+        runtime_kind = "agent_single_process"
+
+    _log_flow_observation(
+        "startup",
+        "db_pool_runtime_audit",
+        event="db_pool_runtime_audit",
+        service=service_label or "-",
+        runtime_kind=runtime_kind,
+        strict_pooled_runtime=bool(strict_pooled_runtime),
+        db_pool_enabled=bool(DB_POOL_ENABLED),
+        db_pool_impl="psycopg2.ThreadedConnectionPool" if DB_POOL_ENABLED else "direct_connect_only",
+        db_pool_thread_safe=True,
+        db_pool_process_safe=False,
+        db_pool_minconn=int(DB_POOL_MINCONN),
+        db_pool_maxconn=int(DB_POOL_MAXCONN),
+        db_pool_acquire_timeout_ms=int(DB_POOL_ACQUIRE_TIMEOUT_MS),
+        db_pool_acquire_retry_ms=int(DB_POOL_ACQUIRE_RETRY_MS),
+        db_pool_log_slow_acquire_ms=int(DB_POOL_LOG_SLOW_ACQUIRE_MS),
+        db_checkout_hold_warn_ms=int(DB_CHECKOUT_HOLD_WARN_MS),
+        db_pool_allow_direct_fallback=bool(DB_POOL_ALLOW_DIRECT_FALLBACK),
+        db_direct_connect_possible=bool((not DB_POOL_ENABLED) or DB_POOL_ALLOW_DIRECT_FALLBACK),
+        db_connection_target=DB_CONNECTION_TARGET,
+        db_connection_url_source=DATABASE_URL_SOURCE,
+        db_endpoint_kind=_ACTIVE_DATABASE_URL_META.get("endpoint_kind"),
+        db_endpoint_host=_ACTIVE_DATABASE_URL_META.get("host"),
+        db_endpoint_port=_ACTIVE_DATABASE_URL_META.get("port"),
+        db_endpoint_sslmode=_ACTIVE_DATABASE_URL_META.get("sslmode"),
+        db_direct_url_configured=bool(_DIRECT_DATABASE_URL_META.get("configured")),
+        db_direct_endpoint_kind=_DIRECT_DATABASE_URL_META.get("endpoint_kind"),
+        db_direct_endpoint_host=_DIRECT_DATABASE_URL_META.get("host"),
+        db_pgbouncer_url_configured=bool(_PGBOUNCER_DATABASE_URL_META.get("configured")),
+        db_pgbouncer_endpoint_kind=_PGBOUNCER_DATABASE_URL_META.get("endpoint_kind"),
+        db_pgbouncer_endpoint_host=_PGBOUNCER_DATABASE_URL_META.get("host"),
+        db_target_config_error=DATABASE_URL_SELECTION_ERROR,
+        web_concurrency=web_concurrency,
+        gunicorn_threads=gunicorn_threads,
+        background_jobs_processes=background_jobs_processes,
+        background_jobs_threads=background_jobs_threads,
+        dramatiq_worker_threads=dramatiq_worker_threads,
+        runtime_process_hint=int(process_hint),
+        runtime_thread_hint=int(thread_hint),
+        runtime_concurrency_hint=int(max(1, process_hint * thread_hint)),
+        process_local_pool_ceiling=int(DB_POOL_MAXCONN),
+        theoretical_service_pool_ceiling=int(max(1, process_hint) * int(DB_POOL_MAXCONN)),
+    )
+
+
+_emit_db_pool_runtime_audit()
+
 @contextmanager
 def get_db_connection_context(): #
     conn = get_db_connection()
     force_close = False
+    transaction_started_at = time.perf_counter()
+    commit_duration_ms = 0
+    rollback_duration_ms = 0
+    transaction_outcome = "open"
     try:
         yield conn #
+        commit_started_at = time.perf_counter()
         conn.commit() #
+        commit_duration_ms = max(0, int((time.perf_counter() - commit_started_at) * 1000))
+        transaction_outcome = "committed"
     except Exception:
         try:
+            rollback_started_at = time.perf_counter()
             conn.rollback()
+            rollback_duration_ms = max(0, int((time.perf_counter() - rollback_started_at) * 1000))
+            transaction_outcome = "rolled_back"
         except Exception:
             force_close = True
+            transaction_outcome = "rollback_failed"
         raise
     finally:
+        transaction_duration_ms = max(0, int((time.perf_counter() - transaction_started_at) * 1000))
+        txn_observation = {
+            "transaction_duration_ms": transaction_duration_ms,
+            "transaction_commit_ms": commit_duration_ms,
+            "transaction_rollback_ms": rollback_duration_ms,
+            "transaction_outcome": transaction_outcome,
+        }
+        if isinstance(conn, (_PooledConnectionProxy, _DirectConnectionProxy)):
+            conn._txn_observation = txn_observation
         if isinstance(conn, _PooledConnectionProxy):
             conn.close(force_close=force_close)
         else:
             conn.close()
 
 
+def _db_runtime_service_name() -> str:
+    return str(os.getenv("RAILWAY_SERVICE_NAME") or os.getenv("SERVICE_NAME") or "").strip() or "-"
+
+
+def _db_runtime_base_fields(*, context_label: str | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "service": _db_runtime_service_name(),
+        "pid": os.getpid(),
+        "thread": threading.current_thread().name,
+    }
+    if context_label:
+        payload["context"] = str(context_label or "").strip() or "unknown"
+    return payload
+
+
+def _get_current_db_scope_context() -> dict[str, Any] | None:
+    scope = getattr(_DB_ACQUIRE_LOCAL, "scope", None)
+    return scope if isinstance(scope, dict) else None
+
+
+def note_db_provider_wait(wait_ms: int | float | None, *, provider_label: str | None = None) -> None:
+    scope = _get_current_db_scope_context()
+    if scope is None:
+        return
+    normalized_wait_ms = max(0, int(wait_ms or 0))
+    scope["provider_wait_ms_total"] = int(scope.get("provider_wait_ms_total") or 0) + normalized_wait_ms
+    scope["provider_wait_ms_max"] = max(int(scope.get("provider_wait_ms_max") or 0), normalized_wait_ms)
+    scope["provider_wait_count"] = int(scope.get("provider_wait_count") or 0) + 1
+    if provider_label:
+        labels = scope.setdefault("provider_labels", [])
+        if isinstance(labels, list):
+            labels.append(str(provider_label).strip() or "provider")
+    scoped_events = getattr(_DB_ACQUIRE_LOCAL, "events", None)
+    if isinstance(scoped_events, list):
+        event = {"event": "provider_wait", "wait_ms": normalized_wait_ms}
+        if provider_label:
+            event["provider_label"] = str(provider_label).strip() or "provider"
+        scoped_events.append(event)
+
+
 @contextmanager
 def db_acquire_scope(label: str):
     previous_label = getattr(_DB_ACQUIRE_LOCAL, "label", None)
     previous_events = getattr(_DB_ACQUIRE_LOCAL, "events", None)
+    previous_scope = getattr(_DB_ACQUIRE_LOCAL, "scope", None)
     scoped_events: list[dict[str, Any]] = []
-    _DB_ACQUIRE_LOCAL.label = str(label or "").strip() or "unknown"
+    normalized_label = str(label or "").strip() or "unknown"
+    _DB_ACQUIRE_LOCAL.label = normalized_label
     _DB_ACQUIRE_LOCAL.events = scoped_events
+    _DB_ACQUIRE_LOCAL.scope = {
+        "label": normalized_label,
+        "events": scoped_events,
+        "started_at_perf": time.perf_counter(),
+        "provider_wait_ms_total": 0,
+        "provider_wait_ms_max": 0,
+        "provider_wait_count": 0,
+        "provider_labels": [],
+    }
     try:
         yield scoped_events
     finally:
         _DB_ACQUIRE_LOCAL.label = previous_label
         _DB_ACQUIRE_LOCAL.events = previous_events
+        _DB_ACQUIRE_LOCAL.scope = previous_scope
 
 
 def summarize_db_acquire_events(events: list[dict[str, Any]] | None) -> dict[str, Any]:
@@ -2054,29 +2587,85 @@ def summarize_db_acquire_events(events: list[dict[str, Any]] | None) -> dict[str
             "db_pool_slow_acquire_count": 0,
             "db_pool_exhausted_count": 0,
             "db_pool_direct_fallback_count": 0,
+            "db_pool_direct_connect_count": 0,
+            "db_pool_acquire_timeout_count": 0,
             "db_pool_used_count_max": None,
+            "db_pool_active_checkout_count_max": None,
             "db_pool_available_count_min": None,
+            "db_pool_checkout_hold_ms_total": 0,
+            "db_pool_checkout_hold_ms_max": 0,
+            "db_pool_long_hold_count": 0,
+            "db_transaction_duration_ms_total": 0,
+            "db_transaction_duration_ms_max": 0,
+            "db_transaction_commit_ms_total": 0,
+            "db_transaction_commit_ms_max": 0,
+            "db_transaction_rollback_ms_total": 0,
+            "db_transaction_rollback_ms_max": 0,
+            "db_transaction_rollback_count": 0,
+            "db_provider_wait_ms_total": 0,
+            "db_provider_wait_ms_max": 0,
+            "db_provider_wait_count": 0,
+            "db_provider_wait_labels": [],
         }
-    wait_values = [int(item.get("wait_ms") or 0) for item in normalized_events]
+    acquire_events = [item for item in normalized_events if str(item.get("event") or "acquire") == "acquire"]
+    return_events = [item for item in normalized_events if str(item.get("event") or "") == "return"]
+    provider_events = [item for item in normalized_events if str(item.get("event") or "") == "provider_wait"]
+    wait_values = [int(item.get("wait_ms") or 0) for item in acquire_events]
     used_values = [
         int(item.get("pool_used_count"))
-        for item in normalized_events
+        for item in acquire_events
         if item.get("pool_used_count") is not None
     ]
     available_values = [
         int(item.get("pool_available_count"))
-        for item in normalized_events
+        for item in acquire_events
         if item.get("pool_available_count") is not None
     ]
+    hold_values = [int(item.get("checkout_hold_ms") or 0) for item in return_events]
+    transaction_duration_values = [int(item.get("transaction_duration_ms") or 0) for item in return_events]
+    transaction_commit_values = [int(item.get("transaction_commit_ms") or 0) for item in return_events]
+    transaction_rollback_values = [int(item.get("transaction_rollback_ms") or 0) for item in return_events]
+    provider_wait_values = [int(item.get("wait_ms") or 0) for item in provider_events]
+    provider_wait_labels: list[str] = []
+    seen_provider_wait_labels: set[str] = set()
+    for item in provider_events:
+        label = str(item.get("provider_label") or "").strip()
+        if not label or label in seen_provider_wait_labels:
+            continue
+        seen_provider_wait_labels.add(label)
+        provider_wait_labels.append(label)
     return {
-        "db_pool_acquire_count": len(normalized_events),
+        "db_pool_acquire_count": len(acquire_events),
         "db_pool_acquire_wait_ms_total": sum(wait_values),
         "db_pool_acquire_wait_ms_max": max(wait_values) if wait_values else 0,
-        "db_pool_slow_acquire_count": sum(1 for item in normalized_events if bool(item.get("slow_acquire"))),
-        "db_pool_exhausted_count": sum(1 for item in normalized_events if bool(item.get("pool_exhausted"))),
-        "db_pool_direct_fallback_count": sum(1 for item in normalized_events if bool(item.get("direct_fallback"))),
+        "db_pool_slow_acquire_count": sum(1 for item in acquire_events if bool(item.get("slow_acquire"))),
+        "db_pool_exhausted_count": sum(1 for item in acquire_events if bool(item.get("pool_exhausted"))),
+        "db_pool_direct_fallback_count": sum(
+            1 for item in acquire_events if str(item.get("connection_source") or "") == "fallback_direct"
+        ),
+        "db_pool_direct_connect_count": sum(
+            1 for item in acquire_events if str(item.get("connection_source") or "") == "direct"
+        ),
+        "db_pool_acquire_timeout_count": sum(1 for item in acquire_events if bool(item.get("timed_out"))),
         "db_pool_used_count_max": max(used_values) if used_values else None,
+        "db_pool_active_checkout_count_max": max(used_values) if used_values else None,
         "db_pool_available_count_min": min(available_values) if available_values else None,
+        "db_pool_checkout_hold_ms_total": sum(hold_values),
+        "db_pool_checkout_hold_ms_max": max(hold_values) if hold_values else 0,
+        "db_pool_long_hold_count": sum(1 for item in return_events if bool(item.get("long_hold"))),
+        "db_transaction_duration_ms_total": sum(transaction_duration_values),
+        "db_transaction_duration_ms_max": max(transaction_duration_values) if transaction_duration_values else 0,
+        "db_transaction_commit_ms_total": sum(transaction_commit_values),
+        "db_transaction_commit_ms_max": max(transaction_commit_values) if transaction_commit_values else 0,
+        "db_transaction_rollback_ms_total": sum(transaction_rollback_values),
+        "db_transaction_rollback_ms_max": max(transaction_rollback_values) if transaction_rollback_values else 0,
+        "db_transaction_rollback_count": sum(
+            1 for item in return_events if str(item.get("transaction_outcome") or "") == "rolled_back"
+        ),
+        "db_provider_wait_ms_total": sum(provider_wait_values),
+        "db_provider_wait_ms_max": max(provider_wait_values) if provider_wait_values else 0,
+        "db_provider_wait_count": len(provider_events),
+        "db_provider_wait_labels": provider_wait_labels,
     }
 
 
@@ -2087,7 +2676,7 @@ def _new_raw_db_connection():
         try:
             conn = psycopg2.connect(
                 DATABASE_URL,
-                sslmode='require',
+                sslmode=DB_CONNECT_SSLMODE,
                 connect_timeout=DB_CONNECT_TIMEOUT_SECONDS,
                 keepalives=1,
                 keepalives_idle=30,
@@ -2119,7 +2708,7 @@ def _get_or_init_db_pool() -> ThreadedConnectionPool | None:
                     DB_POOL_MINCONN,
                     DB_POOL_MAXCONN,
                     DATABASE_URL,
-                    sslmode='require',
+                    sslmode=DB_CONNECT_SSLMODE,
                     connect_timeout=DB_CONNECT_TIMEOUT_SECONDS,
                     keepalives=1,
                     keepalives_idle=30,
@@ -2155,44 +2744,102 @@ def _record_db_acquire_event(
     *,
     context_label: str,
     wait_ms: int,
-    used_pool: bool,
+    connection_source: str,
+    success: bool,
+    timed_out: bool,
     pool_exhausted: bool,
-    direct_fallback: bool,
     pool: ThreadedConnectionPool | None = None,
 ) -> None:
     slow_acquire = wait_ms >= DB_POOL_LOG_SLOW_ACQUIRE_MS if DB_POOL_LOG_SLOW_ACQUIRE_MS > 0 else False
     pool_used_count, pool_available_count = _capture_pool_state(pool)
     event = {
+        "event": "acquire",
         "context": context_label,
         "wait_ms": int(wait_ms),
-        "used_pool": bool(used_pool),
+        "connection_source": str(connection_source or "").strip() or "unknown",
+        "used_pool": str(connection_source or "").strip() == "pool",
         "pool_exhausted": bool(pool_exhausted),
-        "direct_fallback": bool(direct_fallback),
+        "direct_fallback": str(connection_source or "").strip() == "fallback_direct",
         "slow_acquire": bool(slow_acquire),
+        "timed_out": bool(timed_out),
+        "success": bool(success),
         "pool_used_count": pool_used_count,
         "pool_available_count": pool_available_count,
     }
     scoped_events = getattr(_DB_ACQUIRE_LOCAL, "events", None)
     if isinstance(scoped_events, list):
         scoped_events.append(event)
-    if bool(pool_exhausted) or bool(direct_fallback) or bool(slow_acquire):
-        logging.warning(
-            "db acquire: context=%s wait_ms=%s used_pool=%s pool_exhausted=%s direct_fallback=%s pool_used=%s pool_available=%s",
-            context_label,
-            int(wait_ms),
-            bool(used_pool),
-            bool(pool_exhausted),
-            bool(direct_fallback),
-            pool_used_count,
-            pool_available_count,
+    if bool(pool_exhausted) or bool(event["direct_fallback"]) or bool(slow_acquire) or bool(timed_out):
+        _log_flow_observation(
+            "db",
+            "acquire",
+            **_db_runtime_base_fields(context_label=context_label),
+            connection_source=event["connection_source"],
+            acquire_wait_ms=int(wait_ms),
+            exhausted=bool(pool_exhausted),
+            timed_out=bool(timed_out),
+            success=bool(success),
+            pool_used=pool_used_count,
+            pool_available=pool_available_count,
+        )
+
+
+def _record_db_checkout_return_event(
+    *,
+    context_label: str,
+    connection_source: str,
+    checkout_hold_ms: int,
+    pool: ThreadedConnectionPool | None = None,
+    long_hold: bool = False,
+    provider_call_in_scope: bool = False,
+    transaction_duration_ms: int = 0,
+    transaction_commit_ms: int = 0,
+    transaction_rollback_ms: int = 0,
+    transaction_outcome: str | None = None,
+) -> None:
+    pool_used_count, pool_available_count = _capture_pool_state(pool)
+    event = {
+        "event": "return",
+        "context": context_label,
+        "connection_source": str(connection_source or "").strip() or "unknown",
+        "checkout_hold_ms": int(max(0, int(checkout_hold_ms or 0))),
+        "long_hold": bool(long_hold),
+        "provider_call_in_scope": bool(provider_call_in_scope),
+        "transaction_duration_ms": int(max(0, int(transaction_duration_ms or 0))),
+        "transaction_commit_ms": int(max(0, int(transaction_commit_ms or 0))),
+        "transaction_rollback_ms": int(max(0, int(transaction_rollback_ms or 0))),
+        "transaction_outcome": str(transaction_outcome or "").strip() or "unknown",
+        "pool_used_count": pool_used_count,
+        "pool_available_count": pool_available_count,
+    }
+    scoped_events = getattr(_DB_ACQUIRE_LOCAL, "events", None)
+    if isinstance(scoped_events, list):
+        scoped_events.append(event)
+    if bool(long_hold):
+        _log_flow_observation(
+            "db",
+            "long_hold",
+            **_db_runtime_base_fields(context_label=context_label),
+            connection_source=event["connection_source"],
+            checkout_hold_ms=event["checkout_hold_ms"],
+            transaction_duration_ms=event["transaction_duration_ms"],
+            transaction_commit_ms=event["transaction_commit_ms"],
+            transaction_outcome=event["transaction_outcome"],
+            pool_used=pool_used_count,
+            pool_available=pool_available_count,
+            likely_path=context_label,
+            provider_call_in_scope=bool(provider_call_in_scope),
         )
 
 
 class _PooledConnectionProxy:
-    def __init__(self, conn, pool: ThreadedConnectionPool):
+    def __init__(self, conn, pool: ThreadedConnectionPool, *, context_label: str, acquired_at_perf: float):
         self._conn = conn
         self._pool = pool
         self._released = False
+        self._context_label = str(context_label or "").strip() or "unspecified"
+        self._acquired_at_perf = float(acquired_at_perf)
+        self._txn_observation: dict[str, Any] = {}
 
     def __getattr__(self, name):
         return getattr(self._conn, name)
@@ -2211,6 +2858,22 @@ class _PooledConnectionProxy:
         if self._released:
             return
         self._released = True
+        hold_ms = max(0, int((time.perf_counter() - self._acquired_at_perf) * 1000))
+        scope = _get_current_db_scope_context() or {}
+        provider_call_in_scope = bool(int(scope.get("provider_wait_ms_total") or 0) > 0)
+        txn_observation = self._txn_observation if isinstance(self._txn_observation, dict) else {}
+        _record_db_checkout_return_event(
+            context_label=self._context_label,
+            connection_source="pool",
+            checkout_hold_ms=hold_ms,
+            pool=self._pool,
+            long_hold=bool(DB_CHECKOUT_HOLD_WARN_MS > 0 and hold_ms >= DB_CHECKOUT_HOLD_WARN_MS),
+            provider_call_in_scope=provider_call_in_scope,
+            transaction_duration_ms=int(txn_observation.get("transaction_duration_ms") or 0),
+            transaction_commit_ms=int(txn_observation.get("transaction_commit_ms") or 0),
+            transaction_rollback_ms=int(txn_observation.get("transaction_rollback_ms") or 0),
+            transaction_outcome=str(txn_observation.get("transaction_outcome") or "").strip() or None,
+        )
         try:
             self._pool.putconn(self._conn, close=bool(force_close))
         except Exception:
@@ -2221,9 +2884,13 @@ class _PooledConnectionProxy:
 
 
 class _DirectConnectionProxy:
-    def __init__(self, conn):
+    def __init__(self, conn, *, context_label: str, connection_source: str, acquired_at_perf: float):
         self._conn = conn
         self._closed = False
+        self._context_label = str(context_label or "").strip() or "unspecified"
+        self._connection_source = str(connection_source or "").strip() or "direct"
+        self._acquired_at_perf = float(acquired_at_perf)
+        self._txn_observation: dict[str, Any] = {}
 
     def __getattr__(self, name):
         return getattr(self._conn, name)
@@ -2242,6 +2909,22 @@ class _DirectConnectionProxy:
         if self._closed:
             return
         self._closed = True
+        hold_ms = max(0, int((time.perf_counter() - self._acquired_at_perf) * 1000))
+        scope = _get_current_db_scope_context() or {}
+        provider_call_in_scope = bool(int(scope.get("provider_wait_ms_total") or 0) > 0)
+        txn_observation = self._txn_observation if isinstance(self._txn_observation, dict) else {}
+        _record_db_checkout_return_event(
+            context_label=self._context_label,
+            connection_source=self._connection_source,
+            checkout_hold_ms=hold_ms,
+            pool=None,
+            long_hold=bool(DB_CHECKOUT_HOLD_WARN_MS > 0 and hold_ms >= DB_CHECKOUT_HOLD_WARN_MS),
+            provider_call_in_scope=provider_call_in_scope,
+            transaction_duration_ms=int(txn_observation.get("transaction_duration_ms") or 0),
+            transaction_commit_ms=int(txn_observation.get("transaction_commit_ms") or 0),
+            transaction_rollback_ms=int(txn_observation.get("transaction_rollback_ms") or 0),
+            transaction_outcome=str(txn_observation.get("transaction_outcome") or "").strip() or None,
+        )
         self._conn.close()
 
 
@@ -2251,30 +2934,44 @@ def get_db_connection():
     if pool is None:
         started_at = time.perf_counter()
         conn = _new_raw_db_connection()
+        acquire_wait_ms = max(0, int((time.perf_counter() - started_at) * 1000))
         _record_db_acquire_event(
             context_label=context_label,
-            wait_ms=max(0, int((time.perf_counter() - started_at) * 1000)),
-            used_pool=False,
+            wait_ms=acquire_wait_ms,
+            connection_source="direct",
+            success=True,
+            timed_out=False,
             pool_exhausted=False,
-            direct_fallback=True,
             pool=None,
         )
-        return _DirectConnectionProxy(conn)
+        return _DirectConnectionProxy(
+            conn,
+            context_label=context_label,
+            connection_source="direct",
+            acquired_at_perf=time.perf_counter(),
+        )
     deadline = time.perf_counter() + (DB_POOL_ACQUIRE_TIMEOUT_MS / 1000.0)
     pool_exhausted = False
     acquire_started_at = time.perf_counter()
     while True:
         try:
             conn = pool.getconn()
+            acquired_at_perf = time.perf_counter()
             _record_db_acquire_event(
                 context_label=context_label,
-                wait_ms=max(0, int((time.perf_counter() - acquire_started_at) * 1000)),
-                used_pool=True,
+                wait_ms=max(0, int((acquired_at_perf - acquire_started_at) * 1000)),
+                connection_source="pool",
+                success=True,
+                timed_out=False,
                 pool_exhausted=pool_exhausted,
-                direct_fallback=False,
                 pool=pool,
             )
-            return _PooledConnectionProxy(conn, pool)
+            return _PooledConnectionProxy(
+                conn,
+                pool,
+                context_label=context_label,
+                acquired_at_perf=acquired_at_perf,
+            )
         except PoolError:
             pool_exhausted = True
             if time.perf_counter() >= deadline:
@@ -2286,12 +2983,27 @@ def get_db_connection():
         _record_db_acquire_event(
             context_label=context_label,
             wait_ms=wait_ms,
-            used_pool=False,
+            connection_source="fallback_direct",
+            success=True,
+            timed_out=True,
             pool_exhausted=True,
-            direct_fallback=True,
             pool=pool,
         )
-        return _DirectConnectionProxy(conn)
+        return _DirectConnectionProxy(
+            conn,
+            context_label=context_label,
+            connection_source="fallback_direct",
+            acquired_at_perf=time.perf_counter(),
+        )
+    _record_db_acquire_event(
+        context_label=context_label,
+        wait_ms=max(0, int((time.perf_counter() - acquire_started_at) * 1000)),
+        connection_source="pool",
+        success=False,
+        timed_out=True,
+        pool_exhausted=True,
+        pool=pool,
+    )
     raise RuntimeError(
         f"DB pool exhausted for context={context_label} after {max(0, int((time.perf_counter() - acquire_started_at) * 1000))}ms"
     )
@@ -2878,7 +3590,8 @@ def ensure_webapp_tables() -> None:
                     origin_process TEXT NOT NULL DEFAULT 'unknown',
                     origin_meta JSONB,
                     response_json JSONB,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
             """)
             cursor.execute("""
@@ -2935,6 +3648,23 @@ def ensure_webapp_tables() -> None:
                 ADD COLUMN IF NOT EXISTS canonical_entry_id BIGINT;
             """)
             cursor.execute("""
+                ALTER TABLE bt_3_webapp_dictionary_queries
+                ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;
+            """)
+            cursor.execute("""
+                UPDATE bt_3_webapp_dictionary_queries
+                SET updated_at = COALESCE(updated_at, created_at::timestamptz, NOW())
+                WHERE updated_at IS NULL;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_webapp_dictionary_queries
+                ALTER COLUMN updated_at SET DEFAULT NOW();
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_webapp_dictionary_queries
+                ALTER COLUMN updated_at SET NOT NULL;
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_dictionary_entries (
                     id BIGSERIAL PRIMARY KEY,
                     source_lang TEXT NOT NULL,
@@ -2983,12 +3713,31 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_webapp_dictionary_queries (user_id, folder_id);
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_telegram_dictionary_folder_preferences (
+                    user_id BIGINT NOT NULL,
+                    source_lang TEXT NOT NULL,
+                    target_lang TEXT NOT NULL,
+                    folder_id BIGINT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, source_lang, target_lang),
+                    FOREIGN KEY (folder_id) REFERENCES bt_3_dictionary_folders(id) ON DELETE SET NULL
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_telegram_dictionary_folder_preferences_user
+                ON bt_3_telegram_dictionary_folder_preferences (user_id, updated_at DESC);
+            """)
+            cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_user_pair_created
                 ON bt_3_webapp_dictionary_queries (user_id, source_lang, target_lang, created_at DESC);
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_user_origin_created
                 ON bt_3_webapp_dictionary_queries (user_id, origin_process, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_user_updated
+                ON bt_3_webapp_dictionary_queries (user_id, updated_at DESC);
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_manual_training_selection (
@@ -3961,6 +4710,49 @@ def ensure_webapp_tables() -> None:
                 );
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_telegram_quiz_followup_requests (
+                    request_key TEXT PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    source_text TEXT NOT NULL DEFAULT '',
+                    target_text TEXT NOT NULL DEFAULT '',
+                    source_lang TEXT NOT NULL DEFAULT '',
+                    target_lang TEXT NOT NULL DEFAULT '',
+                    awaiting_input BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    input_started_at TIMESTAMPTZ,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_tg_quiz_followup_requests_user_active
+                ON bt_3_telegram_quiz_followup_requests (
+                    user_id,
+                    awaiting_input,
+                    input_started_at DESC,
+                    created_at DESC
+                );
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_telegram_pending_input_states (
+                    state_key TEXT PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    state_type TEXT NOT NULL,
+                    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    expires_at TIMESTAMPTZ
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_tg_pending_input_states_user_active
+                ON bt_3_telegram_pending_input_states (
+                    user_id,
+                    state_type,
+                    expires_at,
+                    updated_at DESC
+                );
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_prepared_telegram_quizzes (
                     id BIGSERIAL PRIMARY KEY,
                     quiz_type TEXT NOT NULL,
@@ -4106,6 +4898,132 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_image_quiz_answers_user_time
                 ON bt_3_image_quiz_answers (user_id, answered_at DESC);
             """)
+            # ── Visual Riddles tables ─────────────────────────────────────────
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_visual_riddle_templates (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT,
+                    quiz_type TEXT NOT NULL,
+                    difficulty TEXT NOT NULL,
+                    target_language TEXT NOT NULL DEFAULT 'German',
+                    target_skill TEXT NOT NULL,
+                    target_word_or_phrase TEXT,
+                    title TEXT,
+                    telegram_caption TEXT,
+                    question_text TEXT NOT NULL DEFAULT '',
+                    image_prompt TEXT NOT NULL DEFAULT '',
+                    image_object_key TEXT,
+                    image_url TEXT,
+                    answers JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    correct_answer_id TEXT NOT NULL DEFAULT 'A',
+                    short_explanation TEXT,
+                    language_explanation TEXT,
+                    why_wrong_answers JSONB,
+                    generation_status TEXT NOT NULL DEFAULT 'pending',
+                    visual_status TEXT NOT NULL DEFAULT 'unknown',
+                    failure_reason TEXT,
+                    use_count INTEGER NOT NULL DEFAULT 0,
+                    last_used_at TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (quiz_type IN (
+                        'VISUAL_WORD_REBUS', 'SITUATIONAL_REBUS', 'GRAMMAR_PUZZLE',
+                        'DETECTIVE_PUZZLE', 'FIND_THE_MISTAKE', 'MEME_STYLE_RIDDLE',
+                        'ASSOCIATION_RIDDLE', 'MULTI_STEP_IMAGE_QUIZ'
+                    )),
+                    CHECK (difficulty IN ('A2', 'B1', 'B2')),
+                    CHECK (generation_status IN ('pending', 'blueprint_ready', 'rendering', 'ready', 'failed')),
+                    CHECK (visual_status IN ('unknown', 'valid', 'rejected')),
+                    CHECK (correct_answer_id IN ('A', 'B', 'C', 'D'))
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_vr_templates_ready_lookup
+                ON bt_3_visual_riddle_templates (
+                    generation_status,
+                    visual_status,
+                    last_used_at,
+                    created_at DESC
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_vr_templates_user_status
+                ON bt_3_visual_riddle_templates (user_id, generation_status, created_at DESC)
+                WHERE user_id IS NOT NULL;
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_vr_templates_quiz_type
+                ON bt_3_visual_riddle_templates (quiz_type, generation_status, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_visual_riddle_dispatches (
+                    id BIGSERIAL PRIMARY KEY,
+                    template_id BIGINT NOT NULL REFERENCES bt_3_visual_riddle_templates(id),
+                    target_user_id BIGINT NOT NULL,
+                    chat_id BIGINT NOT NULL,
+                    delivery_date_local DATE NOT NULL,
+                    delivery_slot TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'claimed',
+                    telegram_message_id BIGINT,
+                    failure_reason TEXT,
+                    claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    sent_at TIMESTAMPTZ,
+                    failed_at TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (status IN ('claimed', 'sent', 'failed')),
+                    UNIQUE (target_user_id, delivery_date_local, delivery_slot)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_vr_dispatches_target_time
+                ON bt_3_visual_riddle_dispatches (target_user_id, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_vr_dispatches_template_target
+                ON bt_3_visual_riddle_dispatches (template_id, target_user_id, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_visual_riddle_answers (
+                    id BIGSERIAL PRIMARY KEY,
+                    dispatch_id BIGINT NOT NULL REFERENCES bt_3_visual_riddle_dispatches(id),
+                    user_id BIGINT NOT NULL,
+                    selected_answer_id TEXT NOT NULL,
+                    is_correct BOOLEAN NOT NULL,
+                    answered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    feedback_sent_at TIMESTAMPTZ,
+                    CHECK (selected_answer_id IN ('A', 'B', 'C', 'D')),
+                    UNIQUE (dispatch_id, user_id)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_vr_answers_dispatch_time
+                ON bt_3_visual_riddle_answers (dispatch_id, answered_at DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_vr_answers_user_time
+                ON bt_3_visual_riddle_answers (user_id, answered_at DESC);
+            """)
+            # -- Visual Riddle Slot Templates (global per-slot assignment) --
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_visual_riddle_slot_templates (
+                    id              BIGSERIAL PRIMARY KEY,
+                    delivery_date_local DATE NOT NULL,
+                    delivery_slot   TEXT NOT NULL,
+                    template_id     BIGINT NOT NULL
+                                    REFERENCES bt_3_visual_riddle_templates(id),
+                    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CONSTRAINT uq_vr_slot UNIQUE (delivery_date_local, delivery_slot)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_vr_slot_templates_date_slot
+                ON bt_3_visual_riddle_slot_templates (delivery_date_local, delivery_slot);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_vr_slot_templates_template
+                ON bt_3_visual_riddle_slot_templates (template_id);
+            """)
+            # ─────────────────────────────────────────────────────────────────
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_dictionary_cache (
                     word_ru TEXT PRIMARY KEY,
@@ -4654,6 +5572,8 @@ def ensure_webapp_tables() -> None:
                     processing_error TEXT,
                     processing_started_at TIMESTAMPTZ,
                     processing_finished_at TIMESTAMPTZ,
+                    ingest_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    processing_attempts INTEGER NOT NULL DEFAULT 0,
                     is_archived BOOLEAN NOT NULL DEFAULT FALSE,
                     archived_at TIMESTAMPTZ,
                     last_opened_at TIMESTAMPTZ,
@@ -4691,6 +5611,14 @@ def ensure_webapp_tables() -> None:
                 ADD COLUMN IF NOT EXISTS processing_finished_at TIMESTAMPTZ;
             """)
             cursor.execute("""
+                ALTER TABLE bt_3_reader_library
+                ADD COLUMN IF NOT EXISTS ingest_payload JSONB NOT NULL DEFAULT '{}'::jsonb;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_reader_library
+                ADD COLUMN IF NOT EXISTS processing_attempts INTEGER NOT NULL DEFAULT 0;
+            """)
+            cursor.execute("""
                 UPDATE bt_3_reader_library
                 SET processing_status = 'ready'
                 WHERE processing_status IS NULL OR processing_status = '';
@@ -4698,6 +5626,33 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_reader_library_user_pair
                 ON bt_3_reader_library (user_id, source_lang, target_lang, updated_at DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_reader_audio_pages (
+                    id              BIGSERIAL PRIMARY KEY,
+                    user_id         BIGINT NOT NULL,
+                    document_id     BIGINT NOT NULL REFERENCES bt_3_reader_library(id) ON DELETE CASCADE,
+                    page_number     INTEGER NOT NULL,
+                    voice_name      TEXT NOT NULL,
+                    speaking_rate   NUMERIC(4,2) NOT NULL DEFAULT 1.00,
+                    text_hash       TEXT NOT NULL,
+                    audio_url       TEXT NOT NULL,
+                    audio_mime      TEXT NOT NULL DEFAULT 'audio/mpeg',
+                    audio_bytes_len INTEGER,
+                    duration_ms     INTEGER NOT NULL,
+                    word_timings    JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    last_played_at  TIMESTAMPTZ,
+                    UNIQUE (document_id, page_number, voice_name, speaking_rate, text_hash)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_reader_audio_pages_user
+                ON bt_3_reader_audio_pages (user_id);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_reader_audio_pages_doc_page
+                ON bt_3_reader_audio_pages (document_id, page_number);
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_agent_voice_sessions_user_active
@@ -5840,6 +6795,45 @@ def ensure_webapp_tables() -> None:
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
             """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_voice_session_mistakes (
+                    id BIGSERIAL PRIMARY KEY,
+                    session_id BIGINT NOT NULL REFERENCES bt_3_agent_voice_sessions(id) ON DELETE CASCADE,
+                    error_category TEXT NOT NULL,
+                    error_subtype TEXT NOT NULL,
+                    severity TEXT NOT NULL DEFAULT 'medium',
+                    user_quote TEXT NOT NULL,
+                    corrected_form TEXT NOT NULL,
+                    rule_explanation TEXT NOT NULL,
+                    alternatives JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    segment_id BIGINT,
+                    char_start INT,
+                    char_end INT,
+                    transcript_confidence REAL,
+                    grammar_confidence REAL,
+                    is_recurring BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (error_category IN (
+                        'ADJECTIVE_ENDINGS', 'ARTICLES', 'CASES', 'CONJUNCTIONS',
+                        'INFINITIVE_CLAUSES', 'KONJUNKTIV', 'LEXIS', 'MODAL_VERBS',
+                        'NEGATION', 'NOUN_GENDER', 'PASSIVE', 'PLURAL_FORM',
+                        'PREPOSITIONS', 'PRONUNCIATION_STT', 'REFLEXIVE_VERBS',
+                        'RELATIVE_CLAUSES', 'SEPARABLE_VERBS', 'TENSES',
+                        'VERB_FORM', 'WORD_ORDER'
+                    )),
+                    CHECK (severity IN ('low', 'medium', 'high')),
+                    CHECK (transcript_confidence IS NULL OR (transcript_confidence >= 0 AND transcript_confidence <= 1)),
+                    CHECK (grammar_confidence IS NULL OR (grammar_confidence >= 0 AND grammar_confidence <= 1))
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_voice_session_mistakes_session
+                ON bt_3_voice_session_mistakes (session_id, created_at ASC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_voice_session_mistakes_category
+                ON bt_3_voice_session_mistakes (error_category, session_id);
+            """)
             cursor.close()
             _run_dictionary_canonical_schema_migration(conn)
         missing_phase1_objects = get_missing_phase1_shadow_schema_objects()
@@ -6218,12 +7212,26 @@ def _get_skill_state_v2_snapshot_since_date(
     source_lang: str,
     target_lang: str,
     reset_date: date | None,
-) -> dict[str, dict[str, Any]]:
+    include_debug_meta: bool = False,
+) -> dict[str, dict[str, Any]] | tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     if reset_date is None:
-        return {}
+        empty_state: dict[str, dict[str, Any]] = {}
+        if include_debug_meta:
+            return empty_state, {
+                "query_count": 0,
+                "query_rows_count": 0,
+                "query_duration_ms": 0,
+                "aggregation_duration_ms": 0,
+                "python_under_checkout_ms": 0,
+                "checkout_spans_cpu_work": False,
+                "checkout_spans_aggregation": False,
+                "checkout_spans_serialization": False,
+            }
+        return empty_state
     normalized_source = str(source_lang or "ru").strip().lower() or "ru"
     normalized_target = str(target_lang or "de").strip().lower() or "de"
     start_dt = datetime.combine(reset_date, dt_time.min, tzinfo=timezone.utc)
+    query_started_perf = time.perf_counter()
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -6244,9 +7252,11 @@ def _get_skill_state_v2_snapshot_since_date(
                 (int(user_id), normalized_source, normalized_target, start_dt),
             )
             rows = cursor.fetchall() or []
+    query_duration_ms = int((time.perf_counter() - query_started_perf) * 1000)
 
     state_map: dict[str, dict[str, Any]] = {}
     tau_seconds = SKILL_STATE_V2_RECENT_TAU_DAYS * 24.0 * 60.0 * 60.0
+    aggregation_started_perf = time.perf_counter()
     for row in rows:
         skill_id = str(row[0] or "").strip()
         if not skill_id:
@@ -6294,6 +7304,17 @@ def _get_skill_state_v2_snapshot_since_date(
             item["last_practiced_at"] = last_practiced_at.isoformat()
         else:
             item["last_practiced_at"] = None
+    if include_debug_meta:
+        return state_map, {
+            "query_count": 1,
+            "query_rows_count": len(rows),
+            "query_duration_ms": query_duration_ms,
+            "aggregation_duration_ms": int((time.perf_counter() - aggregation_started_perf) * 1000),
+            "python_under_checkout_ms": 0,
+            "checkout_spans_cpu_work": False,
+            "checkout_spans_aggregation": False,
+            "checkout_spans_serialization": False,
+        }
     return state_map
 
 
@@ -10520,7 +11541,7 @@ def upsert_starter_dictionary_state(
                     import_finished_at,
                     updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (user_id) DO UPDATE
                 SET
                     decision_status = EXCLUDED.decision_status,
@@ -10603,6 +11624,103 @@ def count_dictionary_entries_for_language_pair(
     with get_db_connection_context() as conn:
         with conn.cursor() as own_cursor:
             return _count(own_cursor)
+
+
+def count_starter_dictionary_entries_for_language_pair(
+    user_id: int,
+    source_lang: str | None,
+    target_lang: str | None,
+    cursor=None,
+) -> int:
+    def _count(cur) -> int:
+        where_clause = """
+            WHERE user_id = %s
+              AND origin_meta ->> 'import_kind' = 'starter_dictionary_snapshot'
+        """
+        params: list = [int(user_id)]
+        language_filter_sql, language_params = _build_language_pair_filter(source_lang, target_lang)
+        if language_filter_sql:
+            where_clause += language_filter_sql
+            params.extend(language_params)
+        cur.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM bt_3_webapp_dictionary_queries
+            {where_clause};
+            """,
+            params,
+        )
+        row = cur.fetchone()
+        return int((row or [0])[0] or 0)
+
+    if cursor is not None:
+        return _count(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own_cursor:
+            return _count(own_cursor)
+
+
+def delete_starter_dictionary_snapshot(
+    *,
+    user_id: int,
+    source_lang: str | None,
+    target_lang: str | None,
+) -> dict:
+    safe_user_id = int(user_id)
+    deleted_count = 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            where_clause = """
+                WHERE user_id = %s
+                  AND origin_meta ->> 'import_kind' = 'starter_dictionary_snapshot'
+            """
+            params: list = [safe_user_id]
+            language_filter_sql, language_params = _build_language_pair_filter(source_lang, target_lang)
+            if language_filter_sql:
+                where_clause += language_filter_sql
+                params.extend(language_params)
+            cursor.execute(
+                f"""
+                WITH doomed AS (
+                    SELECT id
+                    FROM bt_3_webapp_dictionary_queries
+                    {where_clause}
+                )
+                DELETE FROM bt_3_card_srs_state
+                WHERE user_id = %s
+                  AND card_id IN (SELECT id FROM doomed);
+                """,
+                [*params, safe_user_id],
+            )
+            cursor.execute(
+                f"""
+                WITH doomed AS (
+                    SELECT id
+                    FROM bt_3_webapp_dictionary_queries
+                    {where_clause}
+                )
+                DELETE FROM bt_3_card_review_log
+                WHERE user_id = %s
+                  AND card_id IN (SELECT id FROM doomed);
+                """,
+                [*params, safe_user_id],
+            )
+            cursor.execute(
+                f"""
+                DELETE FROM bt_3_webapp_dictionary_queries
+                {where_clause}
+                RETURNING id;
+                """,
+                params,
+            )
+            deleted_rows = cursor.fetchall() or []
+            deleted_count = len(deleted_rows)
+    return {
+        "user_id": safe_user_id,
+        "source_lang": _normalize_lang_code(source_lang),
+        "target_lang": _normalize_lang_code(target_lang),
+        "deleted_count": int(deleted_count),
+    }
 
 
 def import_starter_dictionary_snapshot(
@@ -11418,6 +12536,48 @@ def record_telegram_quiz_attempt(
             )
 
 
+def is_telegram_quiz_word_mastered(
+    chat_id: int,
+    word_ru: str,
+    *,
+    accuracy_threshold: float = 0.5,
+) -> bool:
+    normalized_word = str(word_ru or "").strip()
+    if not normalized_word:
+        return False
+    safe_threshold = min(1.0, max(0.0, float(accuracy_threshold)))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH per_user_word AS (
+                    SELECT
+                        user_id,
+                        BOOL_OR(is_correct) AS user_has_correct
+                    FROM bt_3_telegram_quiz_attempts
+                    WHERE chat_id = %s
+                      AND word_ru = %s
+                    GROUP BY user_id
+                )
+                SELECT
+                    CASE
+                        WHEN COUNT(*) = 0 THEN FALSE
+                        ELSE (
+                            SUM(CASE WHEN user_has_correct THEN 1 ELSE 0 END)::float / COUNT(*)
+                        ) >= %s
+                    END AS mastered
+                FROM per_user_word;
+                """,
+                (
+                    int(chat_id),
+                    normalized_word,
+                    safe_threshold,
+                ),
+            )
+            row = cursor.fetchone()
+    return bool(row and row[0])
+
+
 def get_telegram_quiz_next_mode(chat_id: int) -> str:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -11784,6 +12944,365 @@ def upsert_dictionary_lookup_cache(
                     Json(response_json),
                 ),
             )
+
+
+def upsert_pending_telegram_quiz_followup_request(
+    *,
+    request_key: str,
+    user_id: int,
+    source_text: str,
+    target_text: str,
+    source_lang: str,
+    target_lang: str,
+) -> None:
+    request_key_value = str(request_key or "").strip()
+    if not request_key_value:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_telegram_quiz_followup_requests (
+                    request_key,
+                    user_id,
+                    source_text,
+                    target_text,
+                    source_lang,
+                    target_lang,
+                    awaiting_input,
+                    created_at,
+                    input_started_at,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, FALSE, NOW(), NULL, NOW())
+                ON CONFLICT (request_key) DO UPDATE
+                SET user_id = EXCLUDED.user_id,
+                    source_text = EXCLUDED.source_text,
+                    target_text = EXCLUDED.target_text,
+                    source_lang = EXCLUDED.source_lang,
+                    target_lang = EXCLUDED.target_lang,
+                    updated_at = NOW();
+                """,
+                (
+                    request_key_value,
+                    int(user_id),
+                    str(source_text or "").strip(),
+                    str(target_text or "").strip(),
+                    str(source_lang or "").strip().lower(),
+                    str(target_lang or "").strip().lower(),
+                ),
+            )
+
+
+def mark_pending_telegram_quiz_followup_input_started(
+    *,
+    request_key: str,
+    user_id: int,
+) -> None:
+    request_key_value = str(request_key or "").strip()
+    if not request_key_value:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_telegram_quiz_followup_requests
+                SET awaiting_input = TRUE,
+                    input_started_at = NOW(),
+                    updated_at = NOW()
+                WHERE request_key = %s
+                  AND user_id = %s;
+                """,
+                (request_key_value, int(user_id)),
+            )
+
+
+def clear_pending_telegram_quiz_followup_input(
+    *,
+    request_key: str,
+    user_id: int,
+) -> None:
+    request_key_value = str(request_key or "").strip()
+    if not request_key_value:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_telegram_quiz_followup_requests
+                SET awaiting_input = FALSE,
+                    updated_at = NOW()
+                WHERE request_key = %s
+                  AND user_id = %s;
+                """,
+                (request_key_value, int(user_id)),
+            )
+
+
+def _normalize_pending_telegram_quiz_followup_row(row) -> dict | None:
+    if not row:
+        return None
+    created_at = row[7]
+    input_started_at = row[8]
+    return {
+        "request_key": str(row[0] or "").strip(),
+        "user_id": int(row[1] or 0),
+        "source_text": str(row[2] or "").strip(),
+        "target_text": str(row[3] or "").strip(),
+        "source_lang": str(row[4] or "").strip().lower(),
+        "target_lang": str(row[5] or "").strip().lower(),
+        "awaiting_input": bool(row[6]),
+        "created_at": created_at,
+        "input_started_at": input_started_at,
+        "updated_at": row[9],
+        "started_at": (
+            input_started_at.timestamp()
+            if input_started_at is not None
+            else (created_at.timestamp() if created_at is not None else 0.0)
+        ),
+    }
+
+
+def get_pending_telegram_quiz_followup_request(request_key: str) -> dict | None:
+    request_key_value = str(request_key or "").strip()
+    if not request_key_value:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    request_key,
+                    user_id,
+                    source_text,
+                    target_text,
+                    source_lang,
+                    target_lang,
+                    awaiting_input,
+                    created_at,
+                    input_started_at,
+                    updated_at
+                FROM bt_3_telegram_quiz_followup_requests
+                WHERE request_key = %s
+                LIMIT 1;
+                """,
+                (request_key_value,),
+            )
+            row = cursor.fetchone()
+    return _normalize_pending_telegram_quiz_followup_row(row)
+
+
+def get_active_pending_telegram_quiz_followup_for_user(user_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    request_key,
+                    user_id,
+                    source_text,
+                    target_text,
+                    source_lang,
+                    target_lang,
+                    awaiting_input,
+                    created_at,
+                    input_started_at,
+                    updated_at
+                FROM bt_3_telegram_quiz_followup_requests
+                WHERE user_id = %s
+                  AND awaiting_input = TRUE
+                ORDER BY input_started_at DESC NULLS LAST, created_at DESC
+                LIMIT 1;
+                """,
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+    return _normalize_pending_telegram_quiz_followup_row(row)
+
+
+def purge_old_pending_telegram_quiz_followup_requests(*, older_than_seconds: int) -> int:
+    ttl_seconds = max(60, int(older_than_seconds or 0))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM bt_3_telegram_quiz_followup_requests
+                WHERE COALESCE(input_started_at, created_at) < NOW() - (%s * INTERVAL '1 second');
+                """,
+                (ttl_seconds,),
+            )
+            return int(cursor.rowcount or 0)
+
+
+def upsert_pending_telegram_input_state(
+    *,
+    state_key: str,
+    user_id: int,
+    state_type: str,
+    payload: dict | None = None,
+    ttl_seconds: int | None = None,
+) -> None:
+    state_key_value = str(state_key or "").strip()
+    state_type_value = str(state_type or "").strip().lower()
+    if not state_key_value or not state_type_value:
+        return
+    expires_at_clause = (
+        "NOW() + (%s * INTERVAL '1 second')"
+        if ttl_seconds is not None and int(ttl_seconds or 0) > 0
+        else "NULL"
+    )
+    params: list[Any] = [
+        state_key_value,
+        int(user_id),
+        state_type_value,
+        Json(payload if isinstance(payload, dict) else {}),
+    ]
+    if ttl_seconds is not None and int(ttl_seconds or 0) > 0:
+        params.append(max(1, int(ttl_seconds)))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                INSERT INTO bt_3_telegram_pending_input_states (
+                    state_key,
+                    user_id,
+                    state_type,
+                    payload,
+                    created_at,
+                    updated_at,
+                    expires_at
+                )
+                VALUES (%s, %s, %s, %s, NOW(), NOW(), {expires_at_clause})
+                ON CONFLICT (state_key) DO UPDATE
+                SET user_id = EXCLUDED.user_id,
+                    state_type = EXCLUDED.state_type,
+                    payload = EXCLUDED.payload,
+                    updated_at = NOW(),
+                    expires_at = EXCLUDED.expires_at;
+                """,
+                tuple(params),
+            )
+
+
+def delete_pending_telegram_input_state(
+    *,
+    state_key: str,
+    user_id: int | None = None,
+) -> None:
+    state_key_value = str(state_key or "").strip()
+    if not state_key_value:
+        return
+    query = """
+        DELETE FROM bt_3_telegram_pending_input_states
+        WHERE state_key = %s
+    """
+    params: list[Any] = [state_key_value]
+    if user_id is not None:
+        query += " AND user_id = %s"
+        params.append(int(user_id))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(query + ";", tuple(params))
+
+
+def _normalize_pending_telegram_input_state_row(row) -> dict | None:
+    if not row:
+        return None
+    payload = row[3]
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    created_at = row[4]
+    updated_at = row[5]
+    expires_at = row[6]
+    normalized = {
+        "state_key": str(row[0] or "").strip(),
+        "user_id": int(row[1] or 0),
+        "state_type": str(row[2] or "").strip().lower(),
+        "payload": payload,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "expires_at": expires_at,
+    }
+    normalized.update(payload)
+    normalized.setdefault(
+        "started_at",
+        created_at.timestamp() if created_at is not None else 0.0,
+    )
+    return normalized
+
+
+def get_pending_telegram_input_state(state_key: str) -> dict | None:
+    state_key_value = str(state_key or "").strip()
+    if not state_key_value:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    state_key,
+                    user_id,
+                    state_type,
+                    payload,
+                    created_at,
+                    updated_at,
+                    expires_at
+                FROM bt_3_telegram_pending_input_states
+                WHERE state_key = %s
+                  AND (expires_at IS NULL OR expires_at > NOW())
+                LIMIT 1;
+                """,
+                (state_key_value,),
+            )
+            row = cursor.fetchone()
+    return _normalize_pending_telegram_input_state_row(row)
+
+
+def get_active_pending_telegram_input_state_for_user(user_id: int, state_type: str) -> dict | None:
+    state_type_value = str(state_type or "").strip().lower()
+    if not state_type_value:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    state_key,
+                    user_id,
+                    state_type,
+                    payload,
+                    created_at,
+                    updated_at,
+                    expires_at
+                FROM bt_3_telegram_pending_input_states
+                WHERE user_id = %s
+                  AND state_type = %s
+                  AND (expires_at IS NULL OR expires_at > NOW())
+                ORDER BY updated_at DESC, created_at DESC
+                LIMIT 1;
+                """,
+                (int(user_id), state_type_value),
+            )
+            row = cursor.fetchone()
+    return _normalize_pending_telegram_input_state_row(row)
+
+
+def purge_expired_pending_telegram_input_states() -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM bt_3_telegram_pending_input_states
+                WHERE expires_at IS NOT NULL
+                  AND expires_at < NOW();
+                """
+            )
+            return int(cursor.rowcount or 0)
 
 
 def get_youtube_transcript_cache(video_id: str) -> dict | None:
@@ -13559,6 +15078,81 @@ def count_due_cards_reviewed_today(
             return _count(own_cursor)
 
 
+def count_card_review_response_seconds_today(
+    user_id: int,
+    *,
+    now_utc: datetime | None = None,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+    review_kind: str = "all",
+    tz_name: str = TRIAL_POLICY_TZ,
+    allowed_card_ids: list[int] | None = None,
+    cursor=None,
+) -> int:
+    now_utc = now_utc or datetime.now(timezone.utc)
+    tzinfo = _resolve_timezone(tz_name)
+    day_local = now_utc.astimezone(tzinfo).date()
+    day_start = datetime.combine(day_local, dt_time.min, tzinfo=tzinfo).astimezone(timezone.utc)
+    day_end = day_start + timedelta(days=1)
+    normalized_allowed_ids = _normalize_positive_bigint_list(allowed_card_ids)
+    if allowed_card_ids is not None and not normalized_allowed_ids:
+        return 0
+    normalized_review_kind = str(review_kind or "all").strip().lower() or "all"
+    if normalized_review_kind not in {"all", "due", "new"}:
+        normalized_review_kind = "all"
+
+    def _count(cur):
+        if normalized_allowed_ids:
+            language_filter_sql, language_params = "", []
+        else:
+            language_filter_sql, language_params = _build_language_pair_filter(
+                source_lang, target_lang, table_alias="q",
+            )
+        allowed_sql = " AND q.id = ANY(%s::bigint[])" if normalized_allowed_ids else ""
+        kind_sql = ""
+        kind_params: list[object] = []
+        if normalized_review_kind == "due":
+            kind_sql = " AND s.created_at < %s"
+            kind_params.append(day_start)
+        elif normalized_review_kind == "new":
+            kind_sql = " AND s.created_at >= %s AND s.created_at < %s"
+            kind_params.extend([day_start, day_end])
+        cur.execute(
+            f"""
+            SELECT COALESCE(SUM(GREATEST(COALESCE(rl.response_ms, 0), 0)), 0)
+            FROM bt_3_card_review_log rl
+            JOIN bt_3_card_srs_state s
+              ON s.user_id = rl.user_id AND s.card_id = rl.card_id
+            JOIN bt_3_webapp_dictionary_queries q
+              ON q.id = rl.card_id AND q.user_id = rl.user_id
+            WHERE rl.user_id = %s
+              AND rl.reviewed_at >= %s
+              AND rl.reviewed_at < %s
+              AND COALESCE(q.response_json->>'sentence_origin', '') <> 'gpt_seed'
+              {language_filter_sql}
+              {kind_sql}
+              {allowed_sql}
+            """,
+            [
+                int(user_id),
+                day_start,
+                day_end,
+                *language_params,
+                *kind_params,
+                *([normalized_allowed_ids] if normalized_allowed_ids else []),
+            ],
+        )
+        row = cur.fetchone()
+        total_ms = int(row[0] or 0) if row else 0
+        return max(0, total_ms // 1000)
+
+    if cursor is not None:
+        return _count(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own_cursor:
+            return _count(own_cursor)
+
+
 def reschedule_overdue_srs_cards(
     user_id: int,
     source_lang: str | None = None,
@@ -14062,6 +15656,148 @@ def get_or_create_dictionary_folder(
             }
 
 
+def get_telegram_dictionary_folder_preference(
+    user_id: int,
+    *,
+    source_lang: str,
+    target_lang: str,
+) -> dict | None:
+    normalized_source_lang = _normalize_lang_code(source_lang)
+    normalized_target_lang = _normalize_lang_code(target_lang)
+    if not normalized_source_lang or not normalized_target_lang:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    p.folder_id,
+                    f.name,
+                    f.color,
+                    f.icon,
+                    p.updated_at
+                FROM bt_3_telegram_dictionary_folder_preferences p
+                LEFT JOIN bt_3_dictionary_folders f
+                  ON f.id = p.folder_id AND f.user_id = p.user_id
+                WHERE p.user_id = %s
+                  AND p.source_lang = %s
+                  AND p.target_lang = %s
+                LIMIT 1;
+                """,
+                (int(user_id), normalized_source_lang, normalized_target_lang),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    folder_id = row[0]
+    if folder_id is None:
+        return {
+            "folder_id": None,
+            "name": "Без папки",
+            "color": None,
+            "icon": "📂",
+            "updated_at": row[4].isoformat() if row[4] else None,
+            "source_lang": normalized_source_lang,
+            "target_lang": normalized_target_lang,
+            "is_none": True,
+        }
+    return {
+        "folder_id": int(folder_id),
+        "name": str(row[1] or "").strip() or "GENERAL",
+        "color": row[2],
+        "icon": row[3] or "📁",
+        "updated_at": row[4].isoformat() if row[4] else None,
+        "source_lang": normalized_source_lang,
+        "target_lang": normalized_target_lang,
+        "is_none": False,
+    }
+
+
+def set_telegram_dictionary_folder_preference(
+    user_id: int,
+    *,
+    source_lang: str,
+    target_lang: str,
+    folder_id: int | None,
+) -> dict:
+    normalized_source_lang = _normalize_lang_code(source_lang)
+    normalized_target_lang = _normalize_lang_code(target_lang)
+    if not normalized_source_lang or not normalized_target_lang:
+        raise ValueError("source_lang и target_lang обязательны")
+
+    folder_payload = None
+    if folder_id is not None:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, name, color, icon, created_at
+                    FROM bt_3_dictionary_folders
+                    WHERE user_id = %s AND id = %s
+                    LIMIT 1;
+                    """,
+                    (int(user_id), int(folder_id)),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    raise ValueError("Папка не найдена")
+                folder_payload = {
+                    "folder_id": int(row[0]),
+                    "name": row[1],
+                    "color": row[2],
+                    "icon": row[3],
+                    "created_at": row[4].isoformat() if row[4] else None,
+                    "source_lang": normalized_source_lang,
+                    "target_lang": normalized_target_lang,
+                    "is_none": False,
+                }
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_telegram_dictionary_folder_preferences (
+                        user_id,
+                        source_lang,
+                        target_lang,
+                        folder_id,
+                        updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, NOW())
+                    ON CONFLICT (user_id, source_lang, target_lang) DO UPDATE
+                    SET folder_id = EXCLUDED.folder_id,
+                        updated_at = NOW();
+                    """,
+                    (int(user_id), normalized_source_lang, normalized_target_lang, int(folder_id)),
+                )
+        return folder_payload
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_telegram_dictionary_folder_preferences (
+                    user_id,
+                    source_lang,
+                    target_lang,
+                    folder_id,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, NULL, NOW())
+                ON CONFLICT (user_id, source_lang, target_lang) DO UPDATE
+                SET folder_id = NULL,
+                    updated_at = NOW();
+                """,
+                (int(user_id), normalized_source_lang, normalized_target_lang),
+            )
+    return {
+        "folder_id": None,
+        "name": "Без папки",
+        "color": None,
+        "icon": "📂",
+        "source_lang": normalized_source_lang,
+        "target_lang": normalized_target_lang,
+        "is_none": True,
+    }
+
+
 def rename_dictionary_folder(user_id: int, folder_id: int, name: str, icon: str | None = None, color: str | None = None) -> dict | None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -14128,7 +15864,12 @@ def delete_dictionary_folder(user_id: int, folder_id: int, delete_words: bool = 
                 )
             else:
                 cursor.execute(
-                    "UPDATE bt_3_webapp_dictionary_queries SET folder_id = NULL WHERE user_id = %s AND folder_id = %s",
+                    """
+                    UPDATE bt_3_webapp_dictionary_queries
+                    SET folder_id = NULL,
+                        updated_at = NOW()
+                    WHERE user_id = %s AND folder_id = %s
+                    """,
                     (int(user_id), int(folder_id)),
                 )
 
@@ -14146,6 +15887,7 @@ def list_user_vocabulary(
     sort: str = "date_desc",
     limit: int = 50,
     offset: int = 0,
+    updated_since=None,
 ) -> dict:
     """Return paginated vocabulary entries with SRS state for the library view."""
     conditions = ["q.user_id = %s"]
@@ -14164,6 +15906,9 @@ def list_user_vocabulary(
             " OR LOWER(q.translation_ru) LIKE %s OR LOWER(q.translation_de) LIKE %s)"
         )
         params.extend([needle, needle, needle, needle])
+    if updated_since is not None:
+        conditions.append("q.updated_at > %s")
+        params.append(updated_since)
 
     where_clause = " AND ".join(conditions)
 
@@ -14173,6 +15918,8 @@ def list_user_vocabulary(
         "alpha_asc": "COALESCE(NULLIF(q.word_de,''), q.word_ru) ASC",
         "alpha_desc": "COALESCE(NULLIF(q.word_de,''), q.word_ru) DESC",
         "srs_status": "COALESCE(s.due_at, 'epoch'::timestamptz) ASC",
+        "updated_desc": "q.updated_at DESC, q.id DESC",
+        "updated_asc": "q.updated_at ASC, q.id ASC",
     }
     order_clause = order_map.get(sort, "q.created_at DESC")
 
@@ -14196,6 +15943,7 @@ def list_user_vocabulary(
                     q.target_lang,
                     q.folder_id,
                     q.created_at,
+                    q.updated_at,
                     q.is_learned,
                     s.status        AS srs_status,
                     s.due_at        AS srs_due_at,
@@ -14230,7 +15978,7 @@ def list_user_vocabulary(
 
     items = []
     for row in rows:
-        response_json = _coerce_json_object(row[19])
+        response_json = _coerce_json_object(row[20])
         entry_source_lang = str(row[5] or "").strip().lower()
         entry_target_lang = str(row[6] or "").strip().lower()
         response_source_text = str(response_json.get("source_text") or "").strip()
@@ -14240,7 +15988,7 @@ def list_user_vocabulary(
             or row[3]
             or (response_source_text if entry_source_lang == "de" else "")
             or (response_target_text if entry_target_lang == "de" else "")
-            or row[20]
+            or row[21]
             or ""
         ).strip()
         dictionary_senses = response_json.get("dictionary_senses") if isinstance(response_json.get("dictionary_senses"), list) else []
@@ -14258,11 +16006,11 @@ def list_user_vocabulary(
             or row[4]
             or (response_source_text if entry_source_lang == "ru" else "")
             or (response_target_text if entry_target_lang == "ru" else "")
-            or row[21]
+            or row[22]
             or ""
         ).strip()
-        srs_due_at = row[11]
-        srs_status = row[10]
+        srs_due_at = row[12]
+        srs_status = row[11]
         now_utc = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
         if srs_status is None:
             srs_label = "none"
@@ -14283,19 +16031,20 @@ def list_user_vocabulary(
             "target_lang": row[6] or "",
             "folder_id": row[7],
             "created_at": row[8].isoformat() if row[8] else None,
-            "is_learned": bool(row[9]),
+            "updated_at": row[9].isoformat() if row[9] else None,
+            "is_learned": bool(row[10]),
             "srs_status": srs_status,
             "srs_label": srs_label,
-            "srs_reps": int(row[12]) if row[12] is not None else 0,
-            "srs_lapses": int(row[13]) if row[13] is not None else 0,
-            "srs_stability": float(row[14]) if row[14] is not None else 0.0,
-            "last_review_at": row[15].isoformat() if row[15] else None,
-            "folder_name": row[16] or None,
-            "folder_icon": row[17] or None,
-            "folder_color": row[18] or None,
+            "srs_reps": int(row[13]) if row[13] is not None else 0,
+            "srs_lapses": int(row[14]) if row[14] is not None else 0,
+            "srs_stability": float(row[15]) if row[15] is not None else 0.0,
+            "last_review_at": row[16].isoformat() if row[16] else None,
+            "folder_name": row[17] or None,
+            "folder_icon": row[18] or None,
+            "folder_color": row[19] or None,
             "response_json": response_json,
-            "display_word": german_display or row[20] or "",
-            "display_translation": native_display or row[21] or "",
+            "display_word": german_display or row[21] or "",
+            "display_translation": native_display or row[22] or "",
         })
 
     return {"items": items, "total": total, "limit": limit, "offset": offset}
@@ -14396,7 +16145,7 @@ def edit_vocabulary_entry(
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id, response_json
+                SELECT id, word_ru, translation_de, word_de, translation_ru, source_lang, target_lang, response_json
                 FROM bt_3_webapp_dictionary_queries
                 WHERE id = %s AND user_id = %s
                 """,
@@ -14405,7 +16154,13 @@ def edit_vocabulary_entry(
             existing_row = cursor.fetchone()
             if not existing_row:
                 return None
-            response_json = _coerce_json_object(existing_row[1])
+            current_word_ru = str(existing_row[1] or "").strip()
+            current_translation_de = str(existing_row[2] or "").strip()
+            current_word_de = str(existing_row[3] or "").strip()
+            current_translation_ru = str(existing_row[4] or "").strip()
+            source_lang = _normalize_lang_code(existing_row[5])
+            target_lang = _normalize_lang_code(existing_row[6])
+            response_json = _coerce_json_object(existing_row[7])
 
             set_parts = []
             params: list = []
@@ -14428,23 +16183,7 @@ def edit_vocabulary_entry(
                     else:
                         normalized_senses = [normalized_translation]
 
-            if word_de is not None:
-                set_parts.append("word_de = %s")
-                params.append(normalized_word)
-                set_parts.append("word_ru = %s")
-                params.append(normalized_word)
-                response_json["word_de"] = normalized_word
-                response_json["word_ru"] = normalized_word
-                response_json["source_text"] = normalized_word
-
             if translation_ru is not None and not normalized_senses:
-                set_parts.append("translation_ru = %s")
-                params.append(normalized_translation)
-                set_parts.append("translation_de = %s")
-                params.append(normalized_translation)
-                response_json["translation_ru"] = normalized_translation
-                response_json["translation_de"] = normalized_translation
-                response_json["target_text"] = normalized_translation
                 meanings = response_json.get("meanings")
                 if isinstance(meanings, dict) and isinstance(meanings.get("primary"), dict):
                     meanings["primary"]["value"] = normalized_translation
@@ -14461,13 +16200,6 @@ def edit_vocabulary_entry(
 
             if normalized_senses is not None and normalized_senses:
                 primary_value = normalized_senses[0]
-                set_parts.append("translation_ru = %s")
-                params.append(primary_value)
-                set_parts.append("translation_de = %s")
-                params.append(primary_value)
-                response_json["translation_ru"] = primary_value
-                response_json["translation_de"] = primary_value
-                response_json["target_text"] = primary_value
                 existing_primary = response_json.get("meanings", {}).get("primary") if isinstance(response_json.get("meanings"), dict) else {}
                 existing_secondary = response_json.get("meanings", {}).get("secondary") if isinstance(response_json.get("meanings", {}).get("secondary"), list) else []
                 existing_senses = response_json.get("dictionary_senses") if isinstance(response_json.get("dictionary_senses"), list) else []
@@ -14523,6 +16255,48 @@ def edit_vocabulary_entry(
                     "secondary": rebuilt_secondary,
                 }
 
+            should_update_texts = (
+                word_de is not None
+                or translation_ru is not None
+                or normalized_senses is not None
+            )
+            if should_update_texts:
+                effective_german = normalized_word if word_de is not None else current_word_de
+                if normalized_senses is not None and normalized_senses:
+                    effective_russian = normalized_senses[0]
+                elif translation_ru is not None:
+                    effective_russian = normalized_translation
+                else:
+                    effective_russian = current_translation_ru
+
+                aligned_columns, _source_text, _target_text = _apply_ru_de_dictionary_pair_alignment(
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    german_text=effective_german,
+                    russian_text=effective_russian,
+                    current_word_ru=current_word_ru,
+                    current_translation_de=current_translation_de,
+                    current_word_de=current_word_de,
+                    current_translation_ru=current_translation_ru,
+                    response_json=response_json,
+                )
+                set_parts.extend(
+                    [
+                        "word_ru = %s",
+                        "translation_de = %s",
+                        "word_de = %s",
+                        "translation_ru = %s",
+                    ]
+                )
+                params.extend(
+                    [
+                        aligned_columns["word_ru"],
+                        aligned_columns["translation_de"],
+                        aligned_columns["word_de"],
+                        aligned_columns["translation_ru"],
+                    ]
+                )
+
             if clear_folder:
                 set_parts.append("folder_id = NULL")
             elif folder_id is not None:
@@ -14537,12 +16311,13 @@ def edit_vocabulary_entry(
                 cursor.execute(
                     """
                     SELECT id, word_ru, translation_de, word_de, translation_ru,
-                           source_lang, target_lang, folder_id, created_at, is_learned, response_json
+                           source_lang, target_lang, folder_id, created_at, updated_at, is_learned, response_json
                     FROM bt_3_webapp_dictionary_queries WHERE id = %s
                     """,
                     (int(entry_id),),
                 )
             else:
+                set_parts.append("updated_at = NOW()")
                 params.append(int(entry_id))
                 params.append(int(user_id))
                 cursor.execute(
@@ -14551,7 +16326,7 @@ def edit_vocabulary_entry(
                     SET {', '.join(set_parts)}
                     WHERE id = %s AND user_id = %s
                     RETURNING id, word_ru, translation_de, word_de, translation_ru,
-                              source_lang, target_lang, folder_id, created_at, is_learned, response_json
+                              source_lang, target_lang, folder_id, created_at, updated_at, is_learned, response_json
                     """,
                     params,
                 )
@@ -14568,8 +16343,9 @@ def edit_vocabulary_entry(
                 "target_lang": row[6] or "",
                 "folder_id": row[7],
                 "created_at": row[8].isoformat() if row[8] else None,
-                "is_learned": bool(row[9]),
-                "response_json": _coerce_json_object(row[10]),
+                "updated_at": row[9].isoformat() if row[9] else None,
+                "is_learned": bool(row[10]),
+                "response_json": _coerce_json_object(row[11]),
             }
 
 
@@ -14590,7 +16366,8 @@ def bulk_assign_vocabulary_folder(
                 cursor.execute(
                     f"""
                     UPDATE bt_3_webapp_dictionary_queries
-                    SET folder_id = NULL
+                    SET folder_id = NULL,
+                        updated_at = NOW()
                     WHERE user_id = %s AND id IN ({placeholders})
                     """,
                     params,
@@ -14600,7 +16377,8 @@ def bulk_assign_vocabulary_folder(
                 cursor.execute(
                     f"""
                     UPDATE bt_3_webapp_dictionary_queries
-                    SET folder_id = %s
+                    SET folder_id = %s,
+                        updated_at = NOW()
                     WHERE user_id = %s AND id IN ({placeholders})
                     """,
                     params,
@@ -17230,6 +19008,189 @@ def set_voice_session_assessment_skill_bridge_status(
             return _voice_session_assessment_row_to_dict(cursor.fetchone())
 
 
+# ── Voice session mistakes ────────────────────────────────────────────────────
+
+
+def _voice_session_mistake_row_to_dict(row: tuple | None) -> dict | None:
+    if row is None:
+        return None
+    (
+        id_,
+        session_id,
+        error_category,
+        error_subtype,
+        severity,
+        user_quote,
+        corrected_form,
+        rule_explanation,
+        alternatives,
+        segment_id,
+        char_start,
+        char_end,
+        transcript_confidence,
+        grammar_confidence,
+        is_recurring,
+        created_at,
+    ) = row
+    return {
+        "id": id_,
+        "session_id": session_id,
+        "error_category": error_category,
+        "error_subtype": error_subtype,
+        "severity": severity,
+        "user_quote": user_quote,
+        "corrected_form": corrected_form,
+        "rule_explanation": rule_explanation,
+        "alternatives": alternatives if isinstance(alternatives, list) else [],
+        "segment_id": segment_id,
+        "char_start": char_start,
+        "char_end": char_end,
+        "transcript_confidence": float(transcript_confidence) if transcript_confidence is not None else None,
+        "grammar_confidence": float(grammar_confidence) if grammar_confidence is not None else None,
+        "is_recurring": is_recurring,
+        "created_at": created_at.isoformat() if created_at else None,
+    }
+
+
+def insert_voice_session_mistake(
+    *,
+    session_id: int,
+    error_category: str,
+    error_subtype: str,
+    severity: str,
+    user_quote: str,
+    corrected_form: str,
+    rule_explanation: str,
+    alternatives: list[str] | None = None,
+    segment_id: int | None = None,
+    char_start: int | None = None,
+    char_end: int | None = None,
+    transcript_confidence: float | None = None,
+    grammar_confidence: float | None = None,
+    is_recurring: bool = False,
+) -> dict:
+    """Insert one structured grammar mistake for a voice session.
+
+    All taxonomy fields are validated against voice_mistake_taxonomy before the
+    DB round-trip. Raises ValueError on any violation — never silently coerces.
+    Returns the inserted row as a dict.
+    """
+    validated_category = validate_voice_category(error_category)
+    validated_subtype = validate_voice_subtype(error_subtype, category=validated_category)
+    validated_severity = validate_voice_severity(severity)
+    validated_alternatives = validate_voice_alternatives(alternatives)
+
+    if transcript_confidence is not None:
+        transcript_confidence = validate_voice_confidence(
+            transcript_confidence, field_name="transcript_confidence"
+        )
+    if grammar_confidence is not None:
+        grammar_confidence = validate_voice_confidence(
+            grammar_confidence, field_name="grammar_confidence"
+        )
+
+    user_quote_s = str(user_quote or "").strip()
+    corrected_form_s = str(corrected_form or "").strip()
+    rule_explanation_s = str(rule_explanation or "").strip()
+    if not user_quote_s:
+        raise ValueError("insert_voice_session_mistake: user_quote must not be empty")
+    if not corrected_form_s:
+        raise ValueError("insert_voice_session_mistake: corrected_form must not be empty")
+    if not rule_explanation_s:
+        raise ValueError("insert_voice_session_mistake: rule_explanation must not be empty")
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_voice_session_mistakes (
+                    session_id,
+                    error_category,
+                    error_subtype,
+                    severity,
+                    user_quote,
+                    corrected_form,
+                    rule_explanation,
+                    alternatives,
+                    segment_id,
+                    char_start,
+                    char_end,
+                    transcript_confidence,
+                    grammar_confidence,
+                    is_recurring
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING
+                    id,
+                    session_id,
+                    error_category,
+                    error_subtype,
+                    severity,
+                    user_quote,
+                    corrected_form,
+                    rule_explanation,
+                    alternatives,
+                    segment_id,
+                    char_start,
+                    char_end,
+                    transcript_confidence,
+                    grammar_confidence,
+                    is_recurring,
+                    created_at;
+                """,
+                (
+                    int(session_id),
+                    validated_category,
+                    validated_subtype,
+                    validated_severity,
+                    user_quote_s,
+                    corrected_form_s,
+                    rule_explanation_s,
+                    Json(validated_alternatives),
+                    int(segment_id) if segment_id is not None else None,
+                    int(char_start) if char_start is not None else None,
+                    int(char_end) if char_end is not None else None,
+                    float(transcript_confidence) if transcript_confidence is not None else None,
+                    float(grammar_confidence) if grammar_confidence is not None else None,
+                    bool(is_recurring),
+                ),
+            )
+            return _voice_session_mistake_row_to_dict(cursor.fetchone())
+
+
+def fetch_voice_session_mistakes(*, session_id: int) -> list[dict]:
+    """Return all structured grammar mistakes for a voice session, ordered by insertion time."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    session_id,
+                    error_category,
+                    error_subtype,
+                    severity,
+                    user_quote,
+                    corrected_form,
+                    rule_explanation,
+                    alternatives,
+                    segment_id,
+                    char_start,
+                    char_end,
+                    transcript_confidence,
+                    grammar_confidence,
+                    is_recurring,
+                    created_at
+                FROM bt_3_voice_session_mistakes
+                WHERE session_id = %s
+                ORDER BY created_at ASC;
+                """,
+                (int(session_id),),
+            )
+            rows = cursor.fetchall()
+            return [_voice_session_mistake_row_to_dict(r) for r in rows]
+
+
 def finish_agent_voice_session(
     *,
     user_id: int,
@@ -17581,9 +19542,10 @@ def upsert_reader_library_document(
                     processing_status,
                     processing_error,
                     processing_started_at,
-                    processing_finished_at
+                    processing_finished_at,
+                    ingest_payload
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, NOW(), NOW(), 'ready', NULL, NOW(), NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, NOW(), NOW(), 'ready', NULL, NOW(), NOW(), '{}'::jsonb)
                 ON CONFLICT (user_id, source_lang, target_lang, text_hash) DO UPDATE
                 SET
                     title = EXCLUDED.title,
@@ -17598,6 +19560,11 @@ def upsert_reader_library_document(
                     processing_error = NULL,
                     processing_started_at = COALESCE(bt_3_reader_library.processing_started_at, NOW()),
                     processing_finished_at = NOW(),
+                    ingest_payload = CASE
+                        WHEN COALESCE(bt_3_reader_library.ingest_payload->>'upload_r2_object_key', '') <> ''
+                            THEN bt_3_reader_library.ingest_payload
+                        ELSE '{}'::jsonb
+                    END,
                     last_opened_at = NOW(),
                     updated_at = NOW()
                 RETURNING
@@ -17741,6 +19708,162 @@ def set_reader_library_document_processing_status(
     return _reader_library_row_to_dict(row, include_content=False)
 
 
+def set_reader_library_document_ingest_payload(
+    *,
+    user_id: int,
+    document_id: int,
+    source_lang: str,
+    target_lang: str,
+    ingest_payload: dict | None,
+) -> dict | None:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    resolved_payload = ingest_payload if isinstance(ingest_payload, dict) else {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_reader_library
+                SET
+                    ingest_payload = %s::jsonb,
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND user_id = %s
+                  AND source_lang = %s
+                  AND target_lang = %s
+                RETURNING
+                    id, user_id, source_lang, target_lang, title, source_type, source_url,
+                    text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
+                    processing_status, processing_error, processing_started_at, processing_finished_at,
+                    is_archived, archived_at, last_opened_at, created_at, updated_at;
+                """,
+                (
+                    json.dumps(resolved_payload, ensure_ascii=False),
+                    int(document_id),
+                    int(user_id),
+                    normalized_source,
+                    normalized_target,
+                ),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return _reader_library_row_to_dict(row, include_content=False)
+
+
+def get_reader_library_document_ingest_state(
+    *,
+    user_id: int,
+    document_id: int,
+    source_lang: str,
+    target_lang: str,
+) -> dict | None:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    title,
+                    source_type,
+                    source_url,
+                    processing_status,
+                    processing_error,
+                    processing_started_at,
+                    processing_finished_at,
+                    updated_at,
+                    created_at,
+                    ingest_payload,
+                    processing_attempts
+                FROM bt_3_reader_library
+                WHERE id = %s
+                  AND user_id = %s
+                  AND source_lang = %s
+                  AND target_lang = %s
+                LIMIT 1;
+                """,
+                (int(document_id), int(user_id), normalized_source, normalized_target),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "title": str(row[1] or "Untitled"),
+        "source_type": str(row[2] or "text"),
+        "source_url": row[3] if row[3] else None,
+        "processing_status": _normalize_reader_processing_status(row[4] or "ready"),
+        "processing_error": str(row[5] or "").strip() or None,
+        "processing_started_at": row[6].isoformat() if row[6] else None,
+        "processing_finished_at": row[7].isoformat() if row[7] else None,
+        "updated_at": row[8].isoformat() if row[8] else None,
+        "created_at": row[9].isoformat() if row[9] else None,
+        "ingest_payload": row[10] if isinstance(row[10], dict) else {},
+        "processing_attempts": max(0, int(row[11] or 0)),
+    }
+
+
+def claim_reader_library_document_processing(
+    *,
+    user_id: int,
+    document_id: int,
+    source_lang: str,
+    target_lang: str,
+    stale_after_seconds: int = 0,
+    include_failed: bool = False,
+) -> dict | None:
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    normalized_stale_after = max(0, int(stale_after_seconds or 0))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_reader_library
+                SET
+                    processing_status = 'processing',
+                    processing_error = NULL,
+                    processing_started_at = NOW(),
+                    processing_finished_at = NULL,
+                    processing_attempts = COALESCE(processing_attempts, 0) + 1,
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND user_id = %s
+                  AND source_lang = %s
+                  AND target_lang = %s
+                  AND (
+                    processing_status = 'pending'
+                    OR (%s AND processing_status = 'failed')
+                    OR (
+                        processing_status = 'processing'
+                        AND %s > 0
+                        AND COALESCE(processing_started_at, updated_at, created_at) <= NOW() - (%s * INTERVAL '1 second')
+                    )
+                  )
+                RETURNING
+                    id, user_id, source_lang, target_lang, title, source_type, source_url,
+                    text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
+                    processing_status, processing_error, processing_started_at, processing_finished_at,
+                    is_archived, archived_at, last_opened_at, created_at, updated_at;
+                """,
+                (
+                    int(document_id),
+                    int(user_id),
+                    normalized_source,
+                    normalized_target,
+                    bool(include_failed),
+                    normalized_stale_after,
+                    normalized_stale_after,
+                ),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return _reader_library_row_to_dict(row, include_content=False)
+
+
 def finalize_reader_library_document_processing(
     *,
     user_id: int,
@@ -17828,6 +19951,7 @@ def finalize_reader_library_document_processing(
                     processing_error = NULL,
                     processing_started_at = COALESCE(processing_started_at, NOW()),
                     processing_finished_at = NOW(),
+                    ingest_payload = '{}'::jsonb,
                     is_archived = FALSE,
                     archived_at = NULL,
                     last_opened_at = NOW(),
@@ -17942,6 +20066,41 @@ def get_reader_library_document(
                     (int(document_id),),
                 )
     return _reader_library_row_to_dict(row, include_content=include_content)
+
+
+def get_reader_library_document_pages_only(
+    *,
+    user_id: int,
+    document_id: int,
+    source_lang: str,
+    target_lang: str,
+) -> dict | None:
+    """Fetch content_pages (without content_text) for lazy page loading."""
+    normalized_source = str(source_lang or "ru").strip().lower() or "ru"
+    normalized_target = str(target_lang or "de").strip().lower() or "de"
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id, user_id, source_lang, target_lang, title, source_type, source_url,
+                    text_hash, total_chars, progress_percent, bookmark_percent, reading_mode,
+                    processing_status, processing_error, processing_started_at, processing_finished_at,
+                    is_archived, archived_at, last_opened_at, created_at, updated_at,
+                    '' AS content_text, content_pages
+                FROM bt_3_reader_library
+                WHERE id = %s
+                  AND user_id = %s
+                  AND source_lang = %s
+                  AND target_lang = %s
+                LIMIT 1;
+                """,
+                (int(document_id), int(user_id), normalized_source, normalized_target),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+    return _reader_library_row_to_dict(row, include_content=True)
 
 
 def update_reader_library_state(
@@ -18438,22 +20597,24 @@ def update_daily_plan_item_timer(
             if normalized_action == "start":
                 if next_status != "done":
                     next_status = "doing"
-                    next_running = True
-                    next_paused = False
-                    next_started_at = now_utc
+                next_running = True
+                next_paused = False
+                next_started_at = now_utc
             elif normalized_action == "resume":
                 if next_status != "done":
                     next_status = "doing"
-                    next_running = True
-                    next_started_at = now_utc
-                    next_paused = False
+                next_running = True
+                next_started_at = now_utc
+                next_paused = False
             elif normalized_action == "pause":
                 next_running = False
                 next_paused = next_status != "done"
                 next_started_at = None
             elif normalized_action == "sync":
                 if running is not None:
-                    if bool(running) and next_status != "done":
+                    if bool(running):
+                        if next_status != "done":
+                            next_status = "doing"
                         next_running = True
                         next_paused = False
                         next_started_at = now_utc
@@ -18470,9 +20631,6 @@ def update_daily_plan_item_timer(
 
             if not is_translation_task and goal_seconds > 0 and next_elapsed >= goal_seconds:
                 next_status = "done"
-                next_running = False
-                next_paused = False
-                next_started_at = None
             elif next_status != "done" and next_elapsed > 0 and next_status in {"todo", "skipped"}:
                 next_status = "doing"
 
@@ -21951,6 +24109,8 @@ def enforce_reader_audio_pro_monthly_limit(
     now_ts_utc: datetime | None = None,
     tz: str = TRIAL_POLICY_TZ,
 ) -> dict | None:
+    if int(user_id) in READER_AUDIO_UNLIMITED_USER_IDS:
+        return None
     used_units = float(
         get_user_action_month_usage(
             int(user_id),
@@ -21982,6 +24142,102 @@ def enforce_reader_audio_pro_monthly_limit(
             ),
         }
     return None
+
+
+def get_cached_reader_audio_page(
+    *,
+    document_id: int,
+    page_number: int,
+    voice_name: str,
+    speaking_rate: float,
+    text_hash: str,
+) -> dict | None:
+    """Return cached audio page row if exists, else None."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, audio_url, audio_mime, duration_ms, word_timings
+                    FROM bt_3_reader_audio_pages
+                    WHERE document_id = %s
+                      AND page_number = %s
+                      AND voice_name  = %s
+                      AND speaking_rate = %s
+                      AND text_hash   = %s
+                    LIMIT 1;
+                    """,
+                    (int(document_id), int(page_number), str(voice_name),
+                     float(speaking_rate), str(text_hash)),
+                )
+                row = cursor.fetchone()
+        if not row:
+            return None
+        row_id, audio_url, audio_mime, duration_ms, word_timings = row
+        # Update last_played_at lazily
+        try:
+            with get_db_connection_context() as conn2:
+                with conn2.cursor() as c2:
+                    c2.execute(
+                        "UPDATE bt_3_reader_audio_pages SET last_played_at = NOW() WHERE id = %s",
+                        (int(row_id),),
+                    )
+        except Exception:
+            pass
+        return {
+            "audio_url": str(audio_url or ""),
+            "mime": str(audio_mime or "audio/mpeg"),
+            "duration_ms": int(duration_ms or 0),
+            "word_timings": list(word_timings or []),
+        }
+    except Exception:
+        return None
+
+
+def save_reader_audio_page_cache(
+    *,
+    user_id: int,
+    document_id: int,
+    page_number: int,
+    voice_name: str,
+    speaking_rate: float,
+    text_hash: str,
+    audio_url: str,
+    audio_mime: str,
+    audio_bytes_len: int,
+    duration_ms: int,
+    word_timings: list,
+) -> None:
+    """Insert or update cached audio page record."""
+    import json as _json
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_reader_audio_pages
+                        (user_id, document_id, page_number, voice_name, speaking_rate,
+                         text_hash, audio_url, audio_mime, audio_bytes_len,
+                         duration_ms, word_timings, last_played_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, NOW())
+                    ON CONFLICT (document_id, page_number, voice_name, speaking_rate, text_hash)
+                    DO UPDATE SET
+                        audio_url      = EXCLUDED.audio_url,
+                        audio_bytes_len = EXCLUDED.audio_bytes_len,
+                        duration_ms    = EXCLUDED.duration_ms,
+                        word_timings   = EXCLUDED.word_timings,
+                        last_played_at = NOW();
+                    """,
+                    (
+                        int(user_id), int(document_id), int(page_number),
+                        str(voice_name), float(speaking_rate),
+                        str(text_hash), str(audio_url), str(audio_mime),
+                        int(audio_bytes_len), int(duration_ms),
+                        _json.dumps(list(word_timings or [])),
+                    ),
+                )
+    except Exception:
+        pass  # cache write failure is non-fatal
 
 
 def get_today_reminder_settings(user_id: int) -> dict:
@@ -22517,6 +24773,7 @@ def count_prepared_telegram_quizzes(
                     FROM bt_3_prepared_telegram_quizzes
                     WHERE source_lang = %s
                       AND target_lang = %s
+                      AND COALESCE(use_count, 0) = 0
                       AND quiz_type = %s;
                     """,
                     (
@@ -22531,7 +24788,8 @@ def count_prepared_telegram_quizzes(
                     SELECT COUNT(*)
                     FROM bt_3_prepared_telegram_quizzes
                     WHERE source_lang = %s
-                      AND target_lang = %s;
+                      AND target_lang = %s
+                      AND COALESCE(use_count, 0) = 0
                     """,
                     (
                         str(source_lang or "ru").strip().lower() or "ru",
@@ -22562,6 +24820,7 @@ def claim_prepared_telegram_quiz(
                     FROM bt_3_prepared_telegram_quizzes
                     WHERE source_lang = %s
                       AND target_lang = %s
+                      AND COALESCE(use_count, 0) = 0
                     ORDER BY
                         COALESCE(array_position(%s::text[], quiz_type), 2147483647),
                         COALESCE(last_used_at, to_timestamp(0)) ASC,
@@ -22569,11 +24828,8 @@ def claim_prepared_telegram_quiz(
                     LIMIT 1
                     FOR UPDATE SKIP LOCKED
                 )
-                UPDATE bt_3_prepared_telegram_quizzes q
-                SET
-                    last_used_at = NOW(),
-                    use_count = q.use_count + 1
-                FROM selected
+                DELETE FROM bt_3_prepared_telegram_quizzes AS q
+                USING selected
                 WHERE q.id = selected.id
                 RETURNING q.id, q.quiz_type, q.word_ru, q.payload, q.source_lang, q.target_lang, q.prepared_at, q.last_used_at, q.use_count;
                 """,
@@ -23232,11 +25488,34 @@ def claim_next_ready_image_quiz_template(
     source_lang: str,
     target_lang: str,
 ) -> dict | None:
-    return claim_next_ready_template(
-        int(user_id),
-        str(source_lang or "").strip().lower() or "ru",
-        str(target_lang or "").strip().lower() or "de",
-    )
+    from backend.image_quiz_utils import validate_ready_image_quiz_template
+
+    normalized_user_id = int(user_id)
+    normalized_source_lang = str(source_lang or "").strip().lower() or "ru"
+    normalized_target_lang = str(target_lang or "").strip().lower() or "de"
+
+    for _ in range(8):
+        template = claim_next_ready_template(
+            normalized_user_id,
+            normalized_source_lang,
+            normalized_target_lang,
+        )
+        if not template:
+            return None
+        validation_error = validate_ready_image_quiz_template(template)
+        if not validation_error:
+            return template
+        mark_image_quiz_template_failed(
+            int(template.get("id") or 0),
+            last_error=f"ready_template_invalid:{validation_error}",
+            visual_status="rejected",
+            provider_name="image_quiz_runtime_guard",
+            provider_meta={
+                "stage": "ready_claim_validation",
+                "validation_error": validation_error,
+            },
+        )
+    return None
 
 
 def claim_next_blueprint_ready_template(
@@ -23873,6 +26152,8 @@ def get_skill_mapping_for_error(
     error_category: str,
     error_subcategory: str | None,
     language_code: str | None = None,
+    cursor=None,
+    cache: dict[tuple[str, str, str], list[dict]] | None = None,
 ) -> list[dict]:
     category = str(error_category or "").strip()
     subcategory = str(error_subcategory or "").strip()
@@ -23881,41 +26162,169 @@ def get_skill_mapping_for_error(
         return []
     if _is_unclassified_error(category, subcategory):
         return []
+    cache_key = (lang, category, subcategory)
+    if cache is not None and cache_key in cache:
+        return [dict(item) for item in list(cache.get(cache_key) or [])]
 
-    with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT skill_id, weight
+    def _query(cur) -> list[dict]:
+        cur.execute(
+            """
+            SELECT skill_id, weight
+            FROM bt_3_error_skill_map
+            WHERE language_code = %s
+              AND error_category = %s
+              AND error_subcategory = %s
+            ORDER BY weight DESC, skill_id ASC;
+            """,
+            (lang, category, subcategory),
+        )
+        rows = cur.fetchall()
+        if rows:
+            return [{"skill_id": row[0], "weight": float(row[1] or 1.0)} for row in rows]
+
+        cur.execute(
+            """
+            SELECT skill_id, weight
+            FROM bt_3_error_skill_map
+            WHERE language_code = %s
+              AND error_category = %s
+              AND LOWER(COALESCE(error_subcategory, '')) NOT IN ('unclassified mistake', 'unclassified mistakes')
+            ORDER BY weight DESC, skill_id ASC
+            LIMIT 3;
+            """,
+            (lang, category),
+        )
+        fallback_rows = cur.fetchall()
+        if fallback_rows:
+            return [{"skill_id": row[0], "weight": float(row[1] or 1.0)} for row in fallback_rows]
+        return []
+
+    if cursor is not None:
+        result = _query(cursor)
+    else:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as own_cursor:
+                result = _query(own_cursor)
+    if cache is not None:
+        cache[cache_key] = [dict(item) for item in result]
+    return [dict(item) for item in result]
+
+
+def prefetch_skill_mappings_for_error_pairs_with_cursor(
+    cursor,
+    *,
+    error_pairs: list[tuple[str, str]],
+    language_code: str | None = None,
+    cache: dict[tuple[str, str, str], list[dict]] | None = None,
+) -> dict[str, int]:
+    lang = (language_code or "de").strip().lower() or "de"
+    unique_pairs: list[tuple[str, str]] = []
+    for raw_category, raw_subcategory in list(error_pairs or []):
+        category = str(raw_category or "").strip()
+        subcategory = str(raw_subcategory or "").strip()
+        if not category:
+            continue
+        cache_key = (lang, category, subcategory)
+        if _is_unclassified_error(category, subcategory):
+            if cache is not None and cache_key not in cache:
+                cache[cache_key] = []
+            continue
+        if cache is not None and cache_key in cache:
+            continue
+        unique_pairs.append((category, subcategory))
+    deduped_pairs = list(dict.fromkeys(unique_pairs))
+    if not deduped_pairs:
+        return {
+            "unique_pair_count": 0,
+            "batch_query_ms": 0,
+        }
+
+    batch_started_at = time.perf_counter()
+    values_sql = ",".join(
+        cursor.mogrify("(%s, %s)", (category, subcategory)).decode("utf-8")
+        for category, subcategory in deduped_pairs
+    )
+    cursor.execute(
+        f"""
+        WITH requested_pairs(error_category, error_subcategory) AS (
+            VALUES {values_sql}
+        )
+        SELECT
+            requested_pairs.error_category,
+            requested_pairs.error_subcategory,
+            mapped.skill_id,
+            mapped.weight
+        FROM requested_pairs
+        JOIN bt_3_error_skill_map AS mapped
+          ON mapped.language_code = %s
+         AND mapped.error_category = requested_pairs.error_category
+         AND mapped.error_subcategory = requested_pairs.error_subcategory
+        ORDER BY
+            requested_pairs.error_category ASC,
+            requested_pairs.error_subcategory ASC,
+            mapped.weight DESC,
+            mapped.skill_id ASC;
+        """,
+        (lang,),
+    )
+    exact_rows = cursor.fetchall() or []
+    exact_by_pair: dict[tuple[str, str], list[dict]] = {}
+    for category, subcategory, skill_id, weight in exact_rows:
+        pair_key = (str(category or "").strip(), str(subcategory or "").strip())
+        exact_by_pair.setdefault(pair_key, []).append(
+            {
+                "skill_id": str(skill_id or "").strip(),
+                "weight": float(weight or 1.0),
+            }
+        )
+
+    unresolved_pairs = [pair for pair in deduped_pairs if pair not in exact_by_pair]
+    fallback_by_category: dict[str, list[dict]] = {}
+    if unresolved_pairs:
+        fallback_categories = list(dict.fromkeys(category for category, _ in unresolved_pairs))
+        cursor.execute(
+            """
+            WITH ranked_fallback AS (
+                SELECT
+                    error_category,
+                    skill_id,
+                    weight,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY error_category
+                        ORDER BY weight DESC, skill_id ASC
+                    ) AS row_no
                 FROM bt_3_error_skill_map
                 WHERE language_code = %s
-                  AND error_category = %s
-                  AND error_subcategory = %s
-                ORDER BY weight DESC, skill_id ASC;
-                """,
-                (lang, category, subcategory),
-            )
-            rows = cursor.fetchall()
-            if rows:
-                return [{"skill_id": row[0], "weight": float(row[1] or 1.0)} for row in rows]
-
-            cursor.execute(
-                """
-                SELECT skill_id, weight
-                FROM bt_3_error_skill_map
-                WHERE language_code = %s
-                  AND error_category = %s
+                  AND error_category = ANY(%s)
                   AND LOWER(COALESCE(error_subcategory, '')) NOT IN ('unclassified mistake', 'unclassified mistakes')
-                ORDER BY weight DESC, skill_id ASC
-                LIMIT 3;
-                """,
-                (lang, category),
             )
-            fallback_rows = cursor.fetchall()
-            if fallback_rows:
-                return [{"skill_id": row[0], "weight": float(row[1] or 1.0)} for row in fallback_rows]
+            SELECT error_category, skill_id, weight
+            FROM ranked_fallback
+            WHERE row_no <= 3
+            ORDER BY error_category ASC, row_no ASC, skill_id ASC;
+            """,
+            (lang, fallback_categories),
+        )
+        fallback_rows = cursor.fetchall() or []
+        for category, skill_id, weight in fallback_rows:
+            normalized_category = str(category or "").strip()
+            fallback_by_category.setdefault(normalized_category, []).append(
+                {
+                    "skill_id": str(skill_id or "").strip(),
+                    "weight": float(weight or 1.0),
+                }
+            )
 
-    return []
+    if cache is not None:
+        for category, subcategory in deduped_pairs:
+            cache[(lang, category, subcategory)] = [
+                dict(item)
+                for item in list(exact_by_pair.get((category, subcategory)) or fallback_by_category.get(category) or [])
+            ]
+    return {
+        "unique_pair_count": int(len(deduped_pairs)),
+        "batch_query_ms": max(0, int((time.perf_counter() - batch_started_at) * 1000)),
+    }
 
 
 def _clamp_mastery(value: float) -> float:
@@ -24087,19 +26496,28 @@ def get_skill_progress_report(
     lookback_days: int = 7,
     source_lang: str | None = None,
     target_lang: str | None = None,
-) -> dict:
+    include_debug_meta: bool = False,
+) -> dict | tuple[dict, dict[str, Any]]:
     window_days = max(1, min(int(lookback_days), 30))
     now_utc = datetime.now(timezone.utc)
     normalized_source_lang = str(source_lang or "ru").strip().lower() or "ru"
     normalized_target_lang = str(target_lang or "de").strip().lower() or "de"
+    reset_lookup_started_perf = time.perf_counter()
     reset_date = get_user_progress_reset_date(
         user_id=int(user_id),
         source_lang=normalized_source_lang,
         target_lang=normalized_target_lang,
     )
+    reset_lookup_duration_ms = int((time.perf_counter() - reset_lookup_started_perf) * 1000)
+    report_query_duration_ms = 0
+    inline_state_query_duration_ms = 0
+    inline_state_python_decode_ms = 0
+    state_rows_count = 0
+    state_v2_meta: dict[str, Any] = {}
 
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
+            report_query_started_perf = time.perf_counter()
             cursor.execute(
                 """
                 WITH err_7d AS (
@@ -24179,8 +26597,10 @@ def get_skill_progress_report(
                 ),
             )
             rows = cursor.fetchall()
+            report_query_duration_ms = int((time.perf_counter() - report_query_started_perf) * 1000)
             state_map: dict[str, dict[str, Any]] = {}
             if reset_date is None:
+                inline_state_query_started_perf = time.perf_counter()
                 cursor.execute(
                     """
                     SELECT skill_id, mastery, total_events, last_practiced_at
@@ -24192,6 +26612,9 @@ def get_skill_progress_report(
                     (int(user_id), normalized_source_lang, normalized_target_lang),
                 )
                 state_rows = cursor.fetchall() or []
+                inline_state_query_duration_ms = int((time.perf_counter() - inline_state_query_started_perf) * 1000)
+                state_rows_count = len(state_rows)
+                inline_state_decode_started_perf = time.perf_counter()
                 for state_row in state_rows:
                     skill_id = str(state_row[0] or "").strip()
                     if not skill_id:
@@ -24201,16 +26624,19 @@ def get_skill_progress_report(
                         "total_events": int(state_row[2] or 0),
                         "last_practiced_at": state_row[3].isoformat() if hasattr(state_row[3], "isoformat") else None,
                     }
+                inline_state_python_decode_ms = int((time.perf_counter() - inline_state_decode_started_perf) * 1000)
             else:
-                state_map = _get_skill_state_v2_snapshot_since_date(
+                state_map, state_v2_meta = _get_skill_state_v2_snapshot_since_date(
                     user_id=int(user_id),
                     source_lang=normalized_source_lang,
                     target_lang=normalized_target_lang,
                     reset_date=reset_date,
+                    include_debug_meta=True,
                 )
 
     skills: list[dict] = []
     groups_map: dict[str, list[dict]] = {}
+    aggregation_started_perf = time.perf_counter()
     for row in rows:
         if not isinstance(row, (tuple, list)):
             continue
@@ -24286,13 +26712,34 @@ def get_skill_progress_report(
         {"group": group_name, "skills": groups_map[group_name]}
         for group_name in sorted(groups_map.keys())
     ]
-    return {
+    report_payload = {
         "updated_at": now_utc.isoformat(),
         "period_days": window_days,
         "top_weak": top_weak,
         "groups": groups,
         "total_skills": len(skills),
         "skills_with_data": len(skills_with_data),
+    }
+    if not include_debug_meta:
+        return report_payload
+    aggregation_duration_ms = int((time.perf_counter() - aggregation_started_perf) * 1000)
+    return report_payload, {
+        "used_reset_date": bool(reset_date is not None),
+        "reset_lookup_duration_ms": reset_lookup_duration_ms,
+        "report_query_duration_ms": report_query_duration_ms,
+        "report_query_rows_count": len(rows),
+        "inline_state_query_duration_ms": inline_state_query_duration_ms,
+        "inline_state_rows_count": state_rows_count,
+        "inline_state_python_decode_ms": inline_state_python_decode_ms,
+        "state_v2_query_duration_ms": int(state_v2_meta.get("query_duration_ms") or 0),
+        "state_v2_rows_count": int(state_v2_meta.get("query_rows_count") or 0),
+        "state_v2_aggregation_duration_ms": int(state_v2_meta.get("aggregation_duration_ms") or 0),
+        "post_query_aggregation_duration_ms": aggregation_duration_ms,
+        "query_count": 2 + (0 if reset_date is None else int(state_v2_meta.get("query_count") or 0)),
+        "python_under_checkout_ms": inline_state_python_decode_ms,
+        "checkout_spans_cpu_work": bool(inline_state_python_decode_ms > 0),
+        "checkout_spans_aggregation": False,
+        "checkout_spans_serialization": False,
     }
 
 
@@ -25453,3 +27900,956 @@ def get_user_story_rank(story_id: int, user_id: int) -> dict:
         "rank":               int(row[1]),
         "total_participants": int(row[2]),
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Visual Riddles — DB helper functions
+# ═══════════════════════════════════════════════════════════════════════
+
+_VR_TEMPLATE_RETURNING = """
+    id,
+    user_id,
+    quiz_type,
+    difficulty,
+    target_language,
+    target_skill,
+    target_word_or_phrase,
+    title,
+    telegram_caption,
+    question_text,
+    image_prompt,
+    image_object_key,
+    image_url,
+    answers,
+    correct_answer_id,
+    short_explanation,
+    language_explanation,
+    why_wrong_answers,
+    generation_status,
+    visual_status,
+    failure_reason,
+    use_count,
+    last_used_at,
+    created_at,
+    updated_at
+"""
+
+_VR_DISPATCH_RETURNING = """
+    id,
+    template_id,
+    target_user_id,
+    chat_id,
+    delivery_date_local,
+    delivery_slot,
+    status,
+    telegram_message_id,
+    failure_reason,
+    claimed_at,
+    sent_at,
+    failed_at,
+    created_at
+"""
+
+_VR_ANSWER_RETURNING = """
+    id,
+    dispatch_id,
+    user_id,
+    selected_answer_id,
+    is_correct,
+    answered_at,
+    feedback_sent_at
+"""
+
+
+def create_visual_riddle_template_pending(
+    *,
+    quiz_type: str,
+    difficulty: str,
+    target_skill: str,
+    question_text: str,
+    image_prompt: str,
+    answers: list,
+    correct_answer_id: str,
+    user_id: int | None = None,
+    target_language: str = "German",
+    target_word_or_phrase: str | None = None,
+    title: str | None = None,
+    telegram_caption: str | None = None,
+    short_explanation: str | None = None,
+    language_explanation: str | None = None,
+    why_wrong_answers: dict | None = None,
+) -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_visual_riddle_templates (
+                    user_id,
+                    quiz_type,
+                    difficulty,
+                    target_language,
+                    target_skill,
+                    target_word_or_phrase,
+                    title,
+                    telegram_caption,
+                    question_text,
+                    image_prompt,
+                    answers,
+                    correct_answer_id,
+                    short_explanation,
+                    language_explanation,
+                    why_wrong_answers,
+                    generation_status,
+                    visual_status,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s::jsonb, %s, %s, %s, %s::jsonb,
+                    'pending', 'unknown', NOW(), NOW()
+                )
+                RETURNING id;
+                """,
+                (
+                    int(user_id) if user_id is not None else None,
+                    str(quiz_type or "").strip(),
+                    str(difficulty or "").strip(),
+                    str(target_language or "German").strip() or "German",
+                    str(target_skill or "").strip(),
+                    str(target_word_or_phrase or "").strip() or None,
+                    str(title or "").strip() or None,
+                    str(telegram_caption or "").strip() or None,
+                    str(question_text or "").strip(),
+                    str(image_prompt or "").strip(),
+                    json.dumps(answers if isinstance(answers, list) else [], ensure_ascii=False),
+                    _normalize_vr_answer_id(correct_answer_id),
+                    str(short_explanation or "").strip() or None,
+                    str(language_explanation or "").strip() or None,
+                    json.dumps(why_wrong_answers if isinstance(why_wrong_answers, dict) else {}, ensure_ascii=False),
+                ),
+            )
+            row = cursor.fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def _update_vr_template(
+    template_id: int,
+    *,
+    generation_status: str | None = None,
+    visual_status: str | None = None,
+    image_prompt: str | None = None,
+    question_text: str | None = None,
+    answers: list | None = None,
+    correct_answer_id: str | None = None,
+    short_explanation: str | None = None,
+    language_explanation: str | None = None,
+    why_wrong_answers: dict | None = None,
+    image_object_key: str | None = None,
+    image_url: str | None = None,
+    failure_reason: str | None = None,
+) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                UPDATE bt_3_visual_riddle_templates
+                SET
+                    generation_status = COALESCE(%s, generation_status),
+                    visual_status = COALESCE(%s, visual_status),
+                    image_prompt = COALESCE(%s, image_prompt),
+                    question_text = COALESCE(%s, question_text),
+                    answers = CASE
+                        WHEN %s IS NULL THEN answers
+                        ELSE %s::jsonb
+                    END,
+                    correct_answer_id = COALESCE(%s, correct_answer_id),
+                    short_explanation = COALESCE(%s, short_explanation),
+                    language_explanation = COALESCE(%s, language_explanation),
+                    why_wrong_answers = CASE
+                        WHEN %s IS NULL THEN why_wrong_answers
+                        ELSE %s::jsonb
+                    END,
+                    image_object_key = COALESCE(%s, image_object_key),
+                    image_url = COALESCE(%s, image_url),
+                    failure_reason = CASE
+                        WHEN %s IS NULL THEN failure_reason
+                        ELSE %s
+                    END,
+                    updated_at = NOW()
+                WHERE id = %s
+                RETURNING {_VR_TEMPLATE_RETURNING};
+                """,
+                (
+                    _normalize_vr_generation_status(generation_status) if generation_status is not None else None,
+                    _normalize_vr_visual_status(visual_status) if visual_status is not None else None,
+                    str(image_prompt or "").strip() or None,
+                    str(question_text or "").strip() or None,
+                    json.dumps(answers, ensure_ascii=False) if answers is not None else None,
+                    json.dumps(answers, ensure_ascii=False) if answers is not None else None,
+                    _normalize_vr_answer_id(correct_answer_id) if correct_answer_id is not None else None,
+                    str(short_explanation or "").strip() or None,
+                    str(language_explanation or "").strip() or None,
+                    json.dumps(why_wrong_answers, ensure_ascii=False) if why_wrong_answers is not None else None,
+                    json.dumps(why_wrong_answers, ensure_ascii=False) if why_wrong_answers is not None else None,
+                    str(image_object_key or "").strip() or None,
+                    str(image_url or "").strip() or None,
+                    str(failure_reason or "").strip() if failure_reason is not None else None,
+                    str(failure_reason or "").strip() if failure_reason is not None else None,
+                    int(template_id),
+                ),
+            )
+            return _map_vr_template_row(cursor.fetchone())
+
+
+def store_visual_riddle_template_blueprint(
+    template_id: int,
+    *,
+    image_prompt: str,
+    question_text: str,
+    answers: list,
+    correct_answer_id: str,
+    short_explanation: str | None = None,
+    language_explanation: str | None = None,
+    why_wrong_answers: dict | None = None,
+) -> dict | None:
+    return _update_vr_template(
+        int(template_id),
+        generation_status="blueprint_ready",
+        visual_status="valid",
+        image_prompt=image_prompt,
+        question_text=question_text,
+        answers=answers,
+        correct_answer_id=correct_answer_id,
+        short_explanation=short_explanation,
+        language_explanation=language_explanation,
+        why_wrong_answers=why_wrong_answers,
+        failure_reason="",
+    )
+
+
+def mark_visual_riddle_template_rendering(template_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                UPDATE bt_3_visual_riddle_templates
+                SET
+                    generation_status = 'rendering',
+                    failure_reason = NULL,
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND generation_status = 'blueprint_ready'
+                RETURNING {_VR_TEMPLATE_RETURNING};
+                """,
+                (int(template_id),),
+            )
+            return _map_vr_template_row(cursor.fetchone())
+
+
+def mark_visual_riddle_template_ready(
+    template_id: int,
+    *,
+    image_object_key: str,
+    image_url: str,
+) -> dict | None:
+    return _update_vr_template(
+        int(template_id),
+        generation_status="ready",
+        visual_status="valid",
+        image_object_key=image_object_key,
+        image_url=image_url,
+        failure_reason="",
+    )
+
+
+def mark_visual_riddle_template_failed(
+    template_id: int,
+    *,
+    failure_reason: str | None = None,
+    visual_status: str | None = None,
+) -> dict | None:
+    return _update_vr_template(
+        int(template_id),
+        generation_status="failed",
+        visual_status=visual_status,
+        failure_reason=failure_reason,
+    )
+
+
+def claim_next_ready_visual_riddle_template(
+    *,
+    target_user_id: int,
+) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                WITH selected AS (
+                    SELECT t.id
+                    FROM bt_3_visual_riddle_templates t
+                    WHERE t.generation_status = 'ready'
+                      AND t.visual_status = 'valid'
+                      AND COALESCE(NULLIF(t.image_prompt, ''), '') <> ''
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM bt_3_visual_riddle_dispatches d
+                          WHERE d.template_id = t.id
+                            AND d.target_user_id = %s
+                      )
+                    ORDER BY
+                        COALESCE(t.last_used_at, to_timestamp(0)) ASC,
+                        t.created_at ASC,
+                        t.id ASC
+                    LIMIT 1
+                    FOR UPDATE SKIP LOCKED
+                )
+                SELECT
+                    t.id,
+                    t.user_id,
+                    t.quiz_type,
+                    t.difficulty,
+                    t.target_language,
+                    t.target_skill,
+                    t.target_word_or_phrase,
+                    t.title,
+                    t.telegram_caption,
+                    t.question_text,
+                    t.image_prompt,
+                    t.image_object_key,
+                    t.image_url,
+                    t.answers,
+                    t.correct_answer_id,
+                    t.short_explanation,
+                    t.language_explanation,
+                    t.why_wrong_answers,
+                    t.generation_status,
+                    t.visual_status,
+                    t.failure_reason,
+                    t.use_count,
+                    t.last_used_at,
+                    t.created_at,
+                    t.updated_at
+                FROM bt_3_visual_riddle_templates t
+                INNER JOIN selected ON t.id = selected.id;
+                """,
+                (int(target_user_id),),
+            )
+            return _map_vr_template_row(cursor.fetchone())
+
+
+def create_visual_riddle_dispatch(
+    *,
+    template_id: int,
+    target_user_id: int,
+    chat_id: int,
+    delivery_date_local,
+    delivery_slot: str,
+) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                INSERT INTO bt_3_visual_riddle_dispatches (
+                    template_id,
+                    target_user_id,
+                    chat_id,
+                    delivery_date_local,
+                    delivery_slot,
+                    status,
+                    claimed_at,
+                    created_at
+                )
+                VALUES (%s, %s, %s, %s, %s, 'claimed', NOW(), NOW())
+                ON CONFLICT (target_user_id, delivery_date_local, delivery_slot) DO NOTHING
+                RETURNING {_VR_DISPATCH_RETURNING};
+                """,
+                (
+                    int(template_id),
+                    int(target_user_id),
+                    int(chat_id),
+                    delivery_date_local,
+                    str(delivery_slot or "").strip(),
+                ),
+            )
+            row = cursor.fetchone()
+            if row:
+                return _map_vr_dispatch_row(row)
+            # Conflict: another dispatch already claimed this slot
+            cursor.execute(
+                f"""
+                SELECT {_VR_DISPATCH_RETURNING}
+                FROM bt_3_visual_riddle_dispatches
+                WHERE target_user_id = %s
+                  AND delivery_date_local = %s
+                  AND delivery_slot = %s
+                LIMIT 1;
+                """,
+                (int(target_user_id), delivery_date_local, str(delivery_slot or "").strip()),
+            )
+            return _map_vr_dispatch_row(cursor.fetchone())
+
+
+def mark_visual_riddle_dispatch_sent(
+    dispatch_id: int,
+    *,
+    telegram_message_id: int,
+    sent_at=None,
+) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                WITH updated AS (
+                    UPDATE bt_3_visual_riddle_dispatches
+                    SET
+                        status = 'sent',
+                        telegram_message_id = %s,
+                        sent_at = COALESCE(%s, NOW())
+                    WHERE id = %s
+                    RETURNING template_id, sent_at
+                )
+                UPDATE bt_3_visual_riddle_templates t
+                SET
+                    last_used_at = COALESCE((SELECT sent_at FROM updated), NOW()),
+                    use_count = t.use_count + 1,
+                    updated_at = NOW()
+                FROM updated
+                WHERE t.id = updated.template_id;
+                """,
+                (
+                    int(telegram_message_id),
+                    sent_at,
+                    int(dispatch_id),
+                ),
+            )
+            cursor.execute(
+                f"""
+                SELECT {_VR_DISPATCH_RETURNING}
+                FROM bt_3_visual_riddle_dispatches
+                WHERE id = %s
+                LIMIT 1;
+                """,
+                (int(dispatch_id),),
+            )
+            return _map_vr_dispatch_row(cursor.fetchone())
+
+
+def mark_visual_riddle_dispatch_failed(
+    dispatch_id: int,
+    *,
+    failure_reason: str | None = None,
+) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                UPDATE bt_3_visual_riddle_dispatches
+                SET
+                    status = 'failed',
+                    failure_reason = COALESCE(%s, failure_reason),
+                    failed_at = COALESCE(failed_at, NOW())
+                WHERE id = %s
+                RETURNING {_VR_DISPATCH_RETURNING};
+                """,
+                (
+                    str(failure_reason or "").strip() or None,
+                    int(dispatch_id),
+                ),
+            )
+            return _map_vr_dispatch_row(cursor.fetchone())
+
+
+def record_visual_riddle_answer(
+    *,
+    dispatch_id: int,
+    user_id: int,
+    selected_answer_id: str,
+    is_correct: bool,
+) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                INSERT INTO bt_3_visual_riddle_answers (
+                    dispatch_id,
+                    user_id,
+                    selected_answer_id,
+                    is_correct,
+                    answered_at
+                )
+                VALUES (%s, %s, %s, %s, NOW())
+                ON CONFLICT (dispatch_id, user_id) DO NOTHING
+                RETURNING {_VR_ANSWER_RETURNING};
+                """,
+                (
+                    int(dispatch_id),
+                    int(user_id),
+                    _normalize_vr_answer_id(selected_answer_id),
+                    bool(is_correct),
+                ),
+            )
+            row = cursor.fetchone()
+            if row:
+                answer = _map_vr_answer_row(row)
+                if answer is not None:
+                    answer["created"] = True
+                return answer
+            cursor.execute(
+                f"""
+                SELECT {_VR_ANSWER_RETURNING}
+                FROM bt_3_visual_riddle_answers
+                WHERE dispatch_id = %s
+                  AND user_id = %s
+                LIMIT 1;
+                """,
+                (int(dispatch_id), int(user_id)),
+            )
+            answer = _map_vr_answer_row(cursor.fetchone())
+            if answer is not None:
+                answer["created"] = False
+            return answer
+
+
+def mark_visual_riddle_answer_feedback_sent(
+    dispatch_id: int,
+    user_id: int,
+) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                UPDATE bt_3_visual_riddle_answers
+                SET
+                    feedback_sent_at = COALESCE(feedback_sent_at, NOW())
+                WHERE dispatch_id = %s
+                  AND user_id = %s
+                RETURNING {_VR_ANSWER_RETURNING};
+                """,
+                (int(dispatch_id), int(user_id)),
+            )
+            return _map_vr_answer_row(cursor.fetchone())
+
+
+def count_ready_visual_riddle_templates() -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM bt_3_visual_riddle_templates
+                WHERE generation_status = 'ready'
+                  AND visual_status = 'valid'
+                  AND image_object_key IS NOT NULL
+                  AND image_object_key <> '';
+                """
+            )
+            row = cursor.fetchone()
+            return int(row[0] or 0) if row else 0
+
+
+def count_pipeline_visual_riddle_templates() -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM bt_3_visual_riddle_templates
+                WHERE generation_status IN ('pending', 'blueprint_ready', 'rendering');
+                """
+            )
+            row = cursor.fetchone()
+            return int(row[0] or 0) if row else 0
+
+
+def claim_next_blueprint_ready_vr_template() -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                WITH selected AS (
+                    SELECT t.id AS selected_id
+                    FROM bt_3_visual_riddle_templates t
+                    WHERE t.generation_status = 'blueprint_ready'
+                      AND t.visual_status = 'valid'
+                      AND COALESCE(NULLIF(t.image_prompt, ''), '') <> ''
+                    ORDER BY
+                        COALESCE(t.created_at, NOW()) ASC,
+                        t.id ASC
+                    LIMIT 1
+                    FOR UPDATE SKIP LOCKED
+                )
+                UPDATE bt_3_visual_riddle_templates t
+                SET
+                    generation_status = 'rendering',
+                    failure_reason = NULL,
+                    updated_at = NOW()
+                FROM selected
+                WHERE t.id = selected.selected_id
+                RETURNING {_VR_TEMPLATE_RETURNING};
+                """
+            )
+            return _map_vr_template_row(cursor.fetchone())
+
+
+def fail_stale_rendering_vr_templates(
+    *,
+    stale_after_minutes: int,
+    limit: int = 25,
+) -> list[dict]:
+    safe_stale = max(5, int(stale_after_minutes or 45))
+    safe_limit = max(1, min(int(limit or 25), 200))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                WITH stale AS (
+                    SELECT t.id AS stale_id
+                    FROM bt_3_visual_riddle_templates t
+                    WHERE t.generation_status = 'rendering'
+                      AND t.updated_at <= NOW() - (%s || ' minutes')::interval
+                    ORDER BY t.updated_at ASC, t.id ASC
+                    LIMIT %s
+                    FOR UPDATE SKIP LOCKED
+                )
+                UPDATE bt_3_visual_riddle_templates t
+                SET
+                    generation_status = 'failed',
+                    failure_reason = %s,
+                    updated_at = NOW()
+                FROM stale
+                WHERE t.id = stale.stale_id
+                RETURNING {_VR_TEMPLATE_RETURNING};
+                """,
+                (
+                    str(safe_stale),
+                    safe_limit,
+                    f"stale_rendering_timeout:{safe_stale}m",
+                ),
+            )
+            return [_map_vr_template_row(row) for row in cursor.fetchall() or [] if row]
+
+
+def get_visual_riddle_template(template_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT {_VR_TEMPLATE_RETURNING}
+                FROM bt_3_visual_riddle_templates
+                WHERE id = %s
+                LIMIT 1;
+                """,
+                (int(template_id),),
+            )
+            return _map_vr_template_row(cursor.fetchone())
+
+
+def get_visual_riddle_dispatch(dispatch_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT {_VR_DISPATCH_RETURNING}
+                FROM bt_3_visual_riddle_dispatches
+                WHERE id = %s
+                LIMIT 1;
+                """,
+                (int(dispatch_id),),
+            )
+            return _map_vr_dispatch_row(cursor.fetchone())
+
+
+def claim_or_create_visual_riddle_slot_template(
+    *,
+    delivery_date_local,
+    delivery_slot: str,
+    recency_days: int = 7,
+) -> dict | None:
+    """Atomically assign (or retrieve the existing assignment of) a ready visual
+    riddle template to the given slot.
+
+    Multiple replicas calling this simultaneously are safe: the UNIQUE constraint
+    on (delivery_date_local, delivery_slot) plus ON CONFLICT DO NOTHING guarantee
+    only one assignment is ever written.  All replicas receive the same template_id.
+
+    Returns None when no ready template is available AND no prior assignment exists.
+    """
+    from datetime import timedelta as _td
+    safe_slot = str(delivery_slot or "").strip()
+    safe_recency = max(1, int(recency_days or 7))
+    recency_cutoff = delivery_date_local - _td(days=safe_recency)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH eligible AS (
+                    SELECT t.id AS template_id
+                    FROM bt_3_visual_riddle_templates t
+                    WHERE t.generation_status = 'ready'
+                      AND t.image_url IS NOT NULL AND t.image_url <> ''
+                      AND t.visual_status IN ('unknown', 'valid')
+                      AND NOT EXISTS (
+                          SELECT 1 FROM bt_3_visual_riddle_slot_templates s
+                          WHERE s.template_id = t.id
+                            AND s.delivery_date_local >= %s
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM bt_3_visual_riddle_slot_templates x
+                          WHERE x.delivery_date_local = %s AND x.delivery_slot = %s
+                      )
+                    ORDER BY t.use_count ASC, t.last_used_at ASC NULLS FIRST, t.id ASC
+                    LIMIT 1
+                    FOR UPDATE SKIP LOCKED
+                ),
+                upsert AS (
+                    INSERT INTO bt_3_visual_riddle_slot_templates
+                        (delivery_date_local, delivery_slot, template_id)
+                    SELECT %s, %s, template_id FROM eligible
+                    ON CONFLICT (delivery_date_local, delivery_slot) DO NOTHING
+                    RETURNING id, delivery_date_local, delivery_slot, template_id, created_at, TRUE AS created
+                )
+                SELECT id, delivery_date_local, delivery_slot, template_id, created_at, TRUE AS created
+                FROM upsert
+                UNION ALL
+                SELECT id, delivery_date_local, delivery_slot, template_id, created_at, FALSE AS created
+                FROM bt_3_visual_riddle_slot_templates
+                WHERE delivery_date_local = %s AND delivery_slot = %s
+                  AND NOT EXISTS (SELECT 1 FROM upsert)
+                LIMIT 1;
+                """,
+                (
+                    recency_cutoff,          # eligible: recency exclusion cutoff
+                    delivery_date_local,     # eligible: check slot not yet assigned
+                    safe_slot,
+                    delivery_date_local,     # upsert INSERT values
+                    safe_slot,
+                    delivery_date_local,     # fallback SELECT
+                    safe_slot,
+                ),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "id": int(row[0]),
+                "delivery_date_local": row[1].isoformat() if row[1] else None,
+                "delivery_slot": str(row[2] or ""),
+                "template_id": int(row[3]),
+                "created_at": row[4].isoformat() if row[4] else None,
+                "created": bool(row[5]),
+            }
+
+
+def list_exhausted_visual_riddle_r2_objects(
+    *,
+    limit: int = 200,
+    idle_days: int = 30,
+) -> list[dict]:
+    """Ready VR templates that have been dispatched at least once and have not
+    been used for idle_days.  Their R2 objects are safe to delete.
+    """
+    safe_limit = max(1, min(5000, int(limit or 200)))
+    safe_idle_days = max(1, int(idle_days or 30))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, image_object_key
+                FROM bt_3_visual_riddle_templates
+                WHERE generation_status = 'ready'
+                  AND image_object_key IS NOT NULL
+                  AND image_object_key <> ''
+                  AND use_count >= 1
+                  AND last_used_at < NOW() - (%s || ' days')::interval
+                ORDER BY last_used_at ASC
+                LIMIT %s;
+                """,
+                (str(safe_idle_days), safe_limit),
+            )
+            rows = cursor.fetchall() or []
+    return [{"template_id": int(r[0]), "object_key": str(r[1])} for r in rows]
+
+
+def list_orphaned_visual_riddle_r2_objects(
+    *,
+    limit: int = 200,
+    min_age_days: int = 90,
+) -> list[dict]:
+    """Ready VR templates with an R2 object but use_count=0 (never dispatched)
+    and older than min_age_days.  Safe to delete — they are stale pool entries.
+    """
+    safe_limit = max(1, min(5000, int(limit or 200)))
+    safe_min_age_days = max(7, int(min_age_days or 90))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, image_object_key
+                FROM bt_3_visual_riddle_templates
+                WHERE generation_status = 'ready'
+                  AND image_object_key IS NOT NULL
+                  AND image_object_key <> ''
+                  AND use_count = 0
+                  AND created_at < NOW() - (%s || ' days')::interval
+                ORDER BY created_at ASC
+                LIMIT %s;
+                """,
+                (str(safe_min_age_days), safe_limit),
+            )
+            rows = cursor.fetchall() or []
+    return [{"template_id": int(r[0]), "object_key": str(r[1])} for r in rows]
+
+
+def clear_visual_riddle_template_r2_ref(template_id: int) -> bool:
+    """Clear image_object_key and image_url on a VR template after its R2 object
+    has been deleted.  The template record and dispatch/answer history are kept.
+    Returns True if a row was updated.
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_visual_riddle_templates
+                SET image_object_key = NULL,
+                    image_url        = NULL,
+                    updated_at       = NOW()
+                WHERE id = %s
+                  AND image_object_key IS NOT NULL;
+                """,
+                (int(template_id),),
+            )
+            return (cursor.rowcount or 0) > 0
+
+
+def get_visual_riddle_pool_health_stats() -> dict:
+    """Return pool health counters for admin monitoring and automated health checks."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    COUNT(*) FILTER (
+                        WHERE generation_status = 'ready'
+                          AND image_url IS NOT NULL AND image_url <> ''
+                    ) AS ready,
+                    COUNT(*) FILTER (
+                        WHERE generation_status IN ('pending', 'blueprint_ready')
+                    ) AS pipeline,
+                    COUNT(*) FILTER (
+                        WHERE generation_status = 'rendering'
+                    ) AS rendering,
+                    COUNT(*) FILTER (
+                        WHERE generation_status = 'failed'
+                    ) AS failed,
+                    MAX(
+                        CASE WHEN generation_status = 'ready'
+                              AND image_url IS NOT NULL AND image_url <> ''
+                             THEN EXTRACT(EPOCH FROM (NOW() - created_at)) / 3600.0
+                        END
+                    ) AS oldest_ready_age_hours,
+                    MAX(updated_at) AS latest_generation_at
+                FROM bt_3_visual_riddle_templates;
+                """
+            )
+            row = cursor.fetchone() or (0, 0, 0, 0, None, None)
+            return {
+                "ready": int(row[0] or 0),
+                "pipeline": int(row[1] or 0),
+                "rendering": int(row[2] or 0),
+                "failed": int(row[3] or 0),
+                "oldest_ready_age_hours": float(row[4]) if row[4] is not None else None,
+                "latest_generation_at": row[5].isoformat() if row[5] else None,
+            }
+
+
+def list_recent_visual_riddle_slot_assignments(*, limit: int = 10) -> list[dict]:
+    """Return recent slot → template assignments, newest first."""
+    safe_limit = max(1, min(100, int(limit or 10)))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, delivery_date_local, delivery_slot, template_id, created_at
+                FROM bt_3_visual_riddle_slot_templates
+                ORDER BY created_at DESC
+                LIMIT %s;
+                """,
+                (safe_limit,),
+            )
+            rows = cursor.fetchall() or []
+    return [
+        {
+            "id": int(r[0]),
+            "delivery_date_local": r[1].isoformat() if r[1] else None,
+            "delivery_slot": str(r[2] or ""),
+            "template_id": int(r[3]),
+            "created_at": r[4].isoformat() if r[4] else None,
+        }
+        for r in rows
+    ]
+
+
+def get_recent_visual_riddle_generation_memory_rows(
+    *,
+    limit: int = 60,
+    lookback_days: int = 30,
+) -> list[dict]:
+    """Return recent ready VR template rows needed to build diversity memory.
+
+    Cheap: uses existing ready_lookup index; returns only the columns needed
+    for theme/emotion/word extraction — no large fields.
+    """
+    safe_limit = max(1, min(200, int(limit or 60)))
+    safe_days = max(1, int(lookback_days or 30))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT quiz_type, target_word_or_phrase, title, image_prompt, question_text
+                FROM bt_3_visual_riddle_templates
+                WHERE generation_status = 'ready'
+                  AND image_prompt IS NOT NULL AND image_prompt <> ''
+                  AND created_at > NOW() - (%s || ' days')::interval
+                ORDER BY created_at DESC
+                LIMIT %s;
+                """,
+                (str(safe_days), safe_limit),
+            )
+            rows = cursor.fetchall() or []
+    return [
+        {
+            "quiz_type": str(r[0] or ""),
+            "target_word_or_phrase": str(r[1] or "") or None,
+            "title": str(r[2] or "") or None,
+            "image_prompt": str(r[3] or ""),
+            "question_text": str(r[4] or ""),
+        }
+        for r in rows
+    ]
+
+
+def get_visual_riddle_quiz_type_distribution(*, lookback_count: int = 30) -> dict:
+    """Return {quiz_type: count} for the most recent N ready templates.
+
+    Used to adjust generation weights: penalise overused types, favour underused ones.
+    """
+    safe_count = max(10, min(200, int(lookback_count or 30)))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT quiz_type, COUNT(*) AS cnt
+                FROM (
+                    SELECT quiz_type
+                    FROM bt_3_visual_riddle_templates
+                    WHERE generation_status = 'ready'
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                ) sub
+                GROUP BY quiz_type;
+                """,
+                (safe_count,),
+            )
+            rows = cursor.fetchall() or []
+    return {str(r[0] or ""): int(r[1] or 0) for r in rows if r[0]}

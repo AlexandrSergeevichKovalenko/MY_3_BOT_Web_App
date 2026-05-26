@@ -4,6 +4,7 @@ from backend.image_quiz_utils import (
     build_image_quiz_feedback_alert,
     build_image_quiz_feedback_payload,
     normalize_image_quiz_option_text,
+    validate_ready_image_quiz_template,
 )
 
 
@@ -105,6 +106,66 @@ class ImageQuizUtilsTests(unittest.TestCase):
             normalize_image_quiz_option_text("  Ein   Schiff   legt   an  "),
             "Ein Schiff legt an",
         )
+
+    def test_validate_ready_template_rejects_non_visual_relation_answer(self):
+        error = validate_ready_image_quiz_template(
+            {
+                "source_lang": "ru",
+                "target_lang": "de",
+                "source_text": "вместо Хайнца",
+                "target_text": "Anstelle von Heinz",
+                "question_de": "Welche Situation ist hier dargestellt?",
+                "answer_options": [
+                    "Anna sitzt am Tisch.",
+                    "Heinz steht am Tisch.",
+                    "Anna und Heinz stehen zusammen am Tisch.",
+                    "Anstelle von Heinz",
+                ],
+                "correct_option_index": 3,
+            }
+        )
+
+        self.assertEqual(error, "non_visual_relation_answer")
+
+    def test_validate_ready_template_rejects_mixed_answer_shapes(self):
+        error = validate_ready_image_quiz_template(
+            {
+                "source_lang": "ru",
+                "target_lang": "de",
+                "source_text": "Анна стоит у стола",
+                "target_text": "Anna steht am Tisch.",
+                "question_de": "Welche Situation ist hier dargestellt?",
+                "answer_options": [
+                    "Anna steht am Tisch.",
+                    "Heinz sitzt am Tisch.",
+                    "Zusammen mit Heinz",
+                    "Anna und Heinz lachen.",
+                ],
+                "correct_option_index": 0,
+            }
+        )
+
+        self.assertEqual(error, "mixed_answer_shapes")
+
+    def test_validate_ready_template_rejects_generic_question(self):
+        error = validate_ready_image_quiz_template(
+            {
+                "source_lang": "ru",
+                "target_lang": "de",
+                "source_text": "корабль причаливает",
+                "target_text": "Ein Schiff legt an",
+                "question_de": "Was zeigt das Bild?",
+                "answer_options": [
+                    "Ein Schiff legt an",
+                    "Ein Schiff fährt davon",
+                    "Ein Schiff sinkt heute",
+                    "Ein Schiff wird repariert",
+                ],
+                "correct_option_index": 0,
+            }
+        )
+
+        self.assertEqual(error, "generic_question")
 
 
 if __name__ == "__main__":

@@ -17,6 +17,48 @@ async function getNgrokUrl() {
   }
 }
 
+function manualChunks(id) {
+  const normalizedId = String(id || '').replace(/\\/g, '/')
+
+  if (normalizedId.includes('/node_modules/')) {
+    if (
+      normalizedId.includes('/node_modules/react/')
+      || normalizedId.includes('/node_modules/react-dom/')
+      || normalizedId.includes('/node_modules/scheduler/')
+    ) {
+      return 'react-vendor'
+    }
+    if (
+      normalizedId.includes('/node_modules/echarts/')
+      || normalizedId.includes('/node_modules/zrender/')
+    ) {
+      return 'charts-vendor'
+    }
+    if (
+      normalizedId.includes('/node_modules/@livekit/')
+      || normalizedId.includes('/node_modules/livekit-client/')
+    ) {
+      return 'livekit-vendor'
+    }
+  }
+
+  if (normalizedId.includes('/src/components/ReaderSection.jsx')) {
+    return 'reader-feature'
+  }
+  if (normalizedId.includes('/src/components/BlocksTrainer.jsx')) {
+    return 'blocks-feature'
+  }
+  if (
+    normalizedId.includes('/src/components/HomeDashboardTiles.jsx')
+    || normalizedId.includes('/src/components/HomeMoreTiles.jsx')
+    || normalizedId.includes('/src/components/WeeklySummaryModal.jsx')
+  ) {
+    return 'home-feature'
+  }
+
+  return undefined
+}
+
 export default defineConfig(async () => {
   const ngrokUrl = await getNgrokUrl()
   console.log('🌍 NGROK URL FOUND:', ngrokUrl)
@@ -71,6 +113,14 @@ export default defineConfig(async () => {
           changeOrigin: true
         }
       }
+    },
+    build: {
+      chunkSizeWarningLimit: 800,
+      rollupOptions: {
+        output: {
+          manualChunks,
+        },
+      },
     }
   }
 })

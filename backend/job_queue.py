@@ -25,6 +25,15 @@ _REDIS_CLIENT = None
 _TTS_GENERATION_IN_FLIGHT_TTL_SEC = max(
     10, min(600, int((os.getenv("TTS_GENERATION_IN_FLIGHT_TTL_SEC") or "120").strip() or "120"))
 )
+_READER_AUDIO_PAGE_JOB_TTL_SEC = max(
+    300, int((os.getenv("READER_AUDIO_PAGE_JOB_TTL_SEC") or "3600").strip() or "3600")
+)
+_READER_AUDIO_PAGE_READY_TTL_SEC = max(
+    60, int((os.getenv("READER_AUDIO_PAGE_READY_TTL_SEC") or "900").strip() or "900")
+)
+_READER_AUDIO_PAGE_FAILED_TTL_SEC = max(
+    60, int((os.getenv("READER_AUDIO_PAGE_FAILED_TTL_SEC") or "300").strip() or "300")
+)
 _YOUTUBE_TRANSCRIPT_JOB_TTL_SEC = max(
     300, int((os.getenv("YOUTUBE_TRANSCRIPT_JOB_TTL_SEC") or "1800").strip())
 )
@@ -194,6 +203,9 @@ _PROJECTION_MATERIALIZATION_LIVE_QUEUE_NAME = str(
 _PROJECTION_MATERIALIZATION_BACKFILL_QUEUE_NAME = str(
     os.getenv("PROJECTION_MATERIALIZATION_BACKFILL_QUEUE_NAME") or "projection_materialization_backfill"
 ).strip() or "projection_materialization_backfill"
+_READER_INGEST_QUEUE_NAME = str(
+    os.getenv("READER_INGEST_QUEUE_NAME") or "reader_ingest"
+).strip() or "reader_ingest"
 
 
 def _env_flag_enabled(name: str, default: bool = False) -> bool:
@@ -252,8 +264,20 @@ def is_tts_generation_async_enabled() -> bool:
     return _env_flag_enabled("TTS_GENERATION_ASYNC_ENABLED", default=False) and bool(get_redis_url())
 
 
+def is_reader_audio_page_async_enabled() -> bool:
+    return _env_flag_enabled("READER_AUDIO_PAGE_ASYNC_ENABLED", default=True) and bool(get_redis_url())
+
+
 def _tts_in_flight_key(cache_key: str) -> str:
     return f"tts:in_flight:{str(cache_key or '').strip()}"
+
+
+def _reader_audio_page_job_key(job_key: str) -> str:
+    return f"reader_audio_page:job:{str(job_key or '').strip()}"
+
+
+def _reader_audio_page_in_flight_key(job_key: str) -> str:
+    return f"reader_audio_page:in_flight:{str(job_key or '').strip()}"
 
 
 def claim_tts_generation_in_flight(cache_key: str) -> bool:
@@ -285,6 +309,120 @@ def release_tts_generation_in_flight(cache_key: str) -> None:
         logging.warning("release_tts_generation_in_flight: Redis error cache_key=%s", safe_key, exc_info=True)
 
 
+def claim_reader_audio_page_in_flight(job_key: str) -> bool:
+    safe_key = str(job_key or "").strip()
+    if not safe_key:
+        return False
+    client = get_redis_client()
+    if client is None:
+        logging.warning("claim_reader_audio_page_in_flight: Redis unavailable, refusing async claim job_key=%s", safe_key)
+        return False
+    try:
+        claimed = client.set(_reader_audio_page_in_flight_key(safe_key), "1", nx=True, ex=int(_TTS_GENERATION_IN_FLIGHT_TTL_SEC))
+        return bool(claimed)
+    except Exception:
+        logging.warning("claim_reader_audio_page_in_flight: Redis error job_key=%s", safe_key, exc_info=True)
+        return False
+
+
+def release_reader_audio_page_in_flight(job_key: str) -> None:
+    safe_key = str(job_key or "").strip()
+    if not safe_key:
+        return
+    client = get_redis_client()
+    if client is None:
+        return
+    try:
+        client.delete(_reader_audio_page_in_flight_key(safe_key))
+    except Exception:
+        logging.warning("release_reader_audio_page_in_flight: Redis error job_key=%s", safe_key, exc_info=True)
+
+
+def get_reader_audio_page_job_status(job_key: str) -> dict | None:
+    safe_key = str(job_key or "").strip()
+    if not safe_key:
+        return None
+    client = get_redis_client()
+    if client is None:
+        return None
+    raw = client.get(_reader_audio_page_job_key(safe_key))
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def set_reader_audio_page_job_status(
+    job_key: str,
+    *,
+    status: str,
+    job_id: str | None = None,
+    error: str | None = None,
+    audio_url: str | None = None,
+    duration_ms: int | None = None,
+    source: str | None = None,
+) -> dict | None:
+    safe_key = str(job_key or "").strip()
+    if not safe_key:
+        return None
+    client = get_redis_client()
+    if client is None:
+        return None
+    payload = {
+        "status": str(status or "").strip() or "pending",
+        "job_id": str(job_id or "").strip() or None,
+        "error": str(error or "").strip() or None,
+        "audio_url": str(audio_url or "").strip() or None,
+        "duration_ms": int(duration_ms or 0) if duration_ms is not None else None,
+        "source": str(source or "").strip() or None,
+        "updated_at_ms": int(time.time() * 1000),
+    }
+    ttl = _READER_AUDIO_PAGE_JOB_TTL_SEC
+    if payload["status"] == "ready":
+        ttl = _READER_AUDIO_PAGE_READY_TTL_SEC
+    elif payload["status"] == "failed":
+        ttl = _READER_AUDIO_PAGE_FAILED_TTL_SEC
+    client.setex(_reader_audio_page_job_key(safe_key), ttl, json.dumps(payload, ensure_ascii=False))
+    return payload
+
+
+def enqueue_reader_audio_page_job(payload: dict) -> dict:
+    if not is_reader_audio_page_async_enabled():
+        return {"queued": False, "reason": "reader_audio_page_async_disabled"}
+    job_key = str((payload or {}).get("job_key") or "").strip()
+    if not job_key:
+        return {"queued": False, "reason": "missing_job_key"}
+    current = get_reader_audio_page_job_status(job_key)
+    if current and str(current.get("status") or "").strip().lower() in {"pending", "running"}:
+        return {"queued": False, "reason": "already_pending"}
+    if not claim_reader_audio_page_in_flight(job_key):
+        return {"queued": False, "reason": "duplicate_in_flight"}
+    set_reader_audio_page_job_status(job_key, status="pending")
+    try:
+        get_dramatiq_broker()
+        from backend.background_jobs import run_reader_audio_page_generation_actor
+
+        message = run_reader_audio_page_generation_actor.send(**{k: v for k, v in (payload or {}).items()})
+        payload_status = set_reader_audio_page_job_status(
+            job_key,
+            status="pending",
+            job_id=getattr(message, "message_id", None),
+        )
+        if payload_status:
+            payload_status["queued"] = True
+            payload_status["reason"] = "queued"
+            return payload_status
+        return {"status": "pending", "queued": True, "reason": "queued"}
+    except Exception:
+        release_reader_audio_page_in_flight(job_key)
+        logging.exception("enqueue_reader_audio_page_job failed job_key=%s", job_key)
+        set_reader_audio_page_job_status(job_key, status="failed", error="broker_error")
+        return {"queued": False, "reason": "broker_error"}
+
+
 def enqueue_tts_generation_job(payload: dict) -> dict:
     if not is_tts_generation_async_enabled():
         return {"queued": False, "reason": "tts_generation_async_disabled"}
@@ -302,6 +440,34 @@ def enqueue_tts_generation_job(payload: dict) -> dict:
     except Exception:
         release_tts_generation_in_flight(cache_key)
         logging.exception("enqueue_tts_generation_job failed cache_key=%s", cache_key)
+        return {"queued": False, "reason": "broker_error"}
+
+
+def enqueue_reader_library_ingest_job(payload: dict) -> dict:
+    if not can_enqueue_background_jobs():
+        return {"queued": False, "reason": "background_jobs_unavailable"}
+    safe_payload = dict(payload or {})
+    safe_document_id = int(safe_payload.get("document_id") or 0)
+    safe_user_id = int(safe_payload.get("user_id") or 0)
+    if safe_document_id <= 0 or safe_user_id <= 0:
+        return {"queued": False, "reason": "missing_document_identity"}
+    try:
+        get_dramatiq_broker()
+        from backend.background_jobs import run_reader_library_ingest_job
+
+        message = run_reader_library_ingest_job.send(**safe_payload)
+        return {
+            "queued": True,
+            "reason": "queued",
+            "message_id": str(getattr(message, "message_id", None) or "").strip() or None,
+            "queue_name": _READER_INGEST_QUEUE_NAME,
+        }
+    except Exception:
+        logging.exception(
+            "enqueue_reader_library_ingest_job failed document_id=%s user_id=%s",
+            safe_document_id,
+            safe_user_id,
+        )
         return {"queued": False, "reason": "broker_error"}
 
 
@@ -1586,6 +1752,36 @@ def enqueue_finish_daily_summary_job(
         return str(getattr(message, "message_id", None) or "").strip() or None
     except Exception:
         logging.exception("enqueue_finish_daily_summary_job failed user_id=%s", user_id)
+        raise
+
+
+def enqueue_shortcut_lookup_job(
+    *,
+    user_id: int,
+    text: str,
+    request_key: str | None = None,
+) -> str | None:
+    if not can_enqueue_background_jobs():
+        raise RuntimeError("background_jobs_unavailable")
+    safe_user_id = int(user_id or 0)
+    normalized_text = str(text or "").strip()
+    normalized_request_key = str(request_key or "").strip() or None
+    if safe_user_id <= 0:
+        raise ValueError("user_id is required")
+    if not normalized_text:
+        raise ValueError("text is required")
+    try:
+        get_dramatiq_broker()
+        from backend.background_jobs import run_shortcut_lookup_job
+
+        message = run_shortcut_lookup_job.send(
+            user_id=safe_user_id,
+            text=normalized_text,
+            request_key=normalized_request_key,
+        )
+        return str(getattr(message, "message_id", None) or "").strip() or None
+    except Exception:
+        logging.exception("enqueue_shortcut_lookup_job failed user_id=%s", safe_user_id)
         raise
 
 

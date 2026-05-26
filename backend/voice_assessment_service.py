@@ -1,7 +1,16 @@
-"""Minimal post-call assessment service for voice sessions.
+"""Post-call assessment service for voice sessions.
 
-This module turns the already stored transcript plus optional session context
-into one persisted qualitative assessment record per voice session.
+Assessment is now composed in two layers:
+
+  1. Deterministic aggregation layer (grammar_control_note, strict_feedback,
+     recommended_next_focus) — built from bt_3_voice_session_mistakes rows.
+     No LLM hallucination possible here: every claim is backed by an extracted
+     mistake with a verbatim user_quote.
+
+  2. Prose layer (summary, fluency_note, coherence_relevance_note,
+     lexical_range_note, self_correction_note) — one small LLM pass whose
+     input is the structured mistakes aggregate + session stats, NOT the raw
+     transcript.  The LLM is explicitly forbidden from evaluating grammar.
 """
 
 from __future__ import annotations
@@ -15,6 +24,7 @@ from dataclasses import dataclass, field
 try:
     from backend.database import (
         fetch_agent_voice_transcript_segments,
+        fetch_voice_session_mistakes,
         get_agent_voice_session_context,
         get_voice_session_assessment,
         upsert_voice_session_assessment,
@@ -23,6 +33,7 @@ try:
 except Exception:
     from database import (  # type: ignore
         fetch_agent_voice_transcript_segments,
+        fetch_voice_session_mistakes,
         get_agent_voice_session_context,
         get_voice_session_assessment,
         upsert_voice_session_assessment,
@@ -34,12 +45,10 @@ _SHORT_TRANSCRIPT_SEGMENT_THRESHOLD = 4
 _SHORT_TRANSCRIPT_CHAR_THRESHOLD = 220
 _MIN_USER_SEGMENT_RETRY_THRESHOLD = 2
 _MIN_USER_CHAR_RETRY_THRESHOLD = 40
-_ASSESSMENT_TRANSCRIPT_RETRY_DELAYS_SECONDS = (1.5, 3.0)
+_ASSESSMENT_TRANSCRIPT_RETRY_DELAYS_SECONDS = (2.0, 5.0, 8.0)
 _ASSESSMENT_TEXT_LIMITS = {
     "summary": 220,
-    "strict_feedback": 320,
     "lexical_range_note": 260,
-    "grammar_control_note": 260,
     "fluency_note": 260,
     "coherence_relevance_note": 260,
     "self_correction_note": 220,
@@ -69,6 +78,30 @@ _NOTE_FIELD_FALLBACKS = {
     "self_correction_note": "No structured self-correction note was returned.",
 }
 
+# Human-readable labels for the 20 taxonomy categories.
+_CATEGORY_LABELS: dict[str, str] = {
+    "ADJECTIVE_ENDINGS":  "Adjective Endings",
+    "ARTICLES":           "Articles",
+    "CASES":              "Cases",
+    "CONJUNCTIONS":       "Conjunctions",
+    "INFINITIVE_CLAUSES": "Infinitive Clauses",
+    "KONJUNKTIV":         "Konjunktiv",
+    "LEXIS":              "Lexical Choice",
+    "MODAL_VERBS":        "Modal Verbs",
+    "NEGATION":           "Negation",
+    "NOUN_GENDER":        "Noun Gender",
+    "PASSIVE":            "Passive",
+    "PLURAL_FORM":        "Plural Form",
+    "PREPOSITIONS":       "Prepositions",
+    "PRONUNCIATION_STT":  "Speech Clarity / STT",
+    "REFLEXIVE_VERBS":    "Reflexive Verbs",
+    "RELATIVE_CLAUSES":   "Relative Clauses",
+    "SEPARABLE_VERBS":    "Separable Verbs",
+    "TENSES":             "Tenses",
+    "VERB_FORM":          "Verb Form",
+    "WORD_ORDER":         "Word Order",
+}
+
 
 @dataclass(slots=True)
 class VoiceAssessment:
@@ -90,6 +123,9 @@ class VoiceAssessment:
     updated_at: str | None = None
 
 
+# ── Unchanged transcript helpers ──────────────────────────────────────────────
+
+
 def _summarize_transcript_material(segments: list[dict]) -> dict[str, int]:
     total_chars = 0
     assistant_segments = 0
@@ -107,7 +143,7 @@ def _summarize_transcript_material(segments: list[dict]) -> dict[str, int]:
         elif speaker == "assistant":
             assistant_segments += 1
     return {
-        "segment_count": len([segment for segment in segments if str(segment.get("text") or "").strip()]),
+        "segment_count": len([s for s in segments if str(s.get("text") or "").strip()]),
         "assistant_segments": assistant_segments,
         "user_segments": user_segments,
         "total_chars": total_chars,
@@ -117,7 +153,6 @@ def _summarize_transcript_material(segments: list[dict]) -> dict[str, int]:
 
 def _transcript_looks_premature(snapshot: dict[str, int]) -> tuple[bool, str]:
     segment_count = int(snapshot.get("segment_count") or 0)
-    assistant_segments = int(snapshot.get("assistant_segments") or 0)
     user_segments = int(snapshot.get("user_segments") or 0)
     total_chars = int(snapshot.get("total_chars") or 0)
     user_chars = int(snapshot.get("user_chars") or 0)
@@ -132,7 +167,7 @@ def _transcript_looks_premature(snapshot: dict[str, int]) -> tuple[bool, str]:
         return True, "very_low_user_material"
     if (
         total_chars < _MIN_USER_CHAR_RETRY_THRESHOLD
-        and assistant_segments > 0
+        and int(snapshot.get("assistant_segments") or 0) > 0
         and user_segments <= 1
     ):
         return True, "extremely_low_total_material"
@@ -142,13 +177,19 @@ def _transcript_looks_premature(snapshot: dict[str, int]) -> tuple[bool, str]:
 async def _load_transcript_segments_for_assessment(*, session_id: int) -> list[dict]:
     segments = fetch_agent_voice_transcript_segments(session_id=int(session_id))
     snapshot = _summarize_transcript_material(segments)
+    logging.info(
+        "Voice assessment transcript snapshot for session_id=%s: %s",
+        int(session_id),
+        snapshot,
+    )
     should_retry, reason = _transcript_looks_premature(snapshot)
     if not should_retry:
         return segments
 
     for delay_seconds in _ASSESSMENT_TRANSCRIPT_RETRY_DELAYS_SECONDS:
         logging.info(
-            "Voice assessment waiting for transcript settlement for session_id=%s reason=%s delay=%.1fs snapshot=%s",
+            "Voice assessment waiting for transcript settlement for session_id=%s "
+            "reason=%s delay=%.1fs snapshot=%s",
             int(session_id),
             reason,
             float(delay_seconds),
@@ -168,7 +209,10 @@ def _trim_sentence_boundary(text: str, *, limit: int) -> str:
     if len(normalized) <= limit:
         return normalized
     truncated = normalized[:limit].rstrip()
-    last_break = max(truncated.rfind("."), truncated.rfind("!"), truncated.rfind("?"), truncated.rfind(";"))
+    last_break = max(
+        truncated.rfind("."), truncated.rfind("!"),
+        truncated.rfind("?"), truncated.rfind(";"),
+    )
     if last_break >= int(limit * 0.55):
         return truncated[: last_break + 1].strip()
     return truncated.rstrip(" ,;:-") + "..."
@@ -240,11 +284,17 @@ def _target_item_used(item: str, transcript_text: str) -> bool:
     normalized_transcript = _normalize_text_for_match(str(transcript_text or ""))
     if not normalized_item or not normalized_transcript:
         return False
-    pattern = r"(?<!\w)" + r"\s+".join(re.escape(part) for part in normalized_item.split()) + r"(?!\w)"
+    pattern = (
+        r"(?<!\w)"
+        + r"\s+".join(re.escape(part) for part in normalized_item.split())
+        + r"(?!\w)"
+    )
     return re.search(pattern, normalized_transcript, flags=re.IGNORECASE) is not None
 
 
-def _compute_target_vocab_heuristics(*, transcript_text: str, prep_pack: dict | None) -> tuple[list[str], list[str]]:
+def _compute_target_vocab_heuristics(
+    *, transcript_text: str, prep_pack: dict | None
+) -> tuple[list[str], list[str]]:
     raw_targets = []
     if prep_pack:
         raw_targets.extend(list(prep_pack.get("target_vocab") or []))
@@ -324,112 +374,442 @@ def _build_short_transcript_fallback(
     )
 
 
-def _assessment_from_payload(*, session_id: int, payload: dict, fallback_used: list[str], fallback_missed: list[str]) -> VoiceAssessment:
-    note_values = _dedupe_low_signal_notes(
-        {
-            "lexical_range_note": _clean_assessment_text(
-                payload.get("lexical_range_note"),
-                fallback="Not enough structured lexical feedback was returned.",
-                field_name="lexical_range_note",
-            ),
-            "grammar_control_note": _clean_assessment_text(
-                payload.get("grammar_control_note"),
-                fallback="Not enough structured grammar feedback was returned.",
-                field_name="grammar_control_note",
-            ),
-            "fluency_note": _clean_assessment_text(
-                payload.get("fluency_note"),
-                fallback="Not enough structured fluency feedback was returned.",
-                field_name="fluency_note",
-            ),
-            "coherence_relevance_note": _clean_assessment_text(
-                payload.get("coherence_relevance_note"),
-                fallback="Not enough structured coherence feedback was returned.",
-                field_name="coherence_relevance_note",
-            ),
-            "self_correction_note": _clean_assessment_text(
-                payload.get("self_correction_note"),
-                fallback="No structured self-correction note was returned.",
-                field_name="self_correction_note",
-            ),
-        }
-    )
-    return VoiceAssessment(
-        session_id=int(session_id),
-        summary=_clean_assessment_text(
-            payload.get("summary"),
-            fallback="The session ended, but the assessment summary was incomplete.",
-            field_name="summary",
-        ),
-        strict_feedback=_clean_assessment_text(
-            payload.get("strict_feedback"),
-            fallback="The transcript does not yet contain enough precise critique, so the next session should force more complex speaking.",
-            field_name="strict_feedback",
-        ),
-        lexical_range_note=note_values["lexical_range_note"],
-        grammar_control_note=note_values["grammar_control_note"],
-        fluency_note=note_values["fluency_note"],
-        coherence_relevance_note=note_values["coherence_relevance_note"],
-        self_correction_note=note_values["self_correction_note"],
-        target_vocab_used=_normalize_string_list(payload.get("target_vocab_used")) or list(fallback_used),
-        target_vocab_missed=_normalize_string_list(payload.get("target_vocab_missed")) or list(fallback_missed),
-        recommended_next_focus=_clean_assessment_text(
-            payload.get("recommended_next_focus"),
-            fallback="Force one narrower speaking target in the next session instead of repeating the same easy task.",
-            field_name="recommended_next_focus",
-        ),
+# ── Deterministic aggregation layer ──────────────────────────────────────────
+
+
+def _cat_label(cat: str) -> str:
+    return _CATEGORY_LABELS.get(str(cat or ""), str(cat or "").replace("_", " ").title())
+
+
+def aggregate_voice_mistakes(mistakes: list[dict]) -> dict:
+    """Deterministic aggregation over structured mistake rows.
+
+    Returns:
+        total_count            — total rows including PRONUNCIATION_STT
+        grammar_mistake_count  — total minus PRONUNCIATION_STT
+        stt_count              — PRONUNCIATION_STT rows
+        by_category            — {category: count}
+        by_severity            — {severity: count} grammar only
+        high_confidence_count  — grammar_confidence >= 0.7
+        low_confidence_count   — grammar_confidence < 0.5 or None
+        top_categories         — up to 5 grammar cats, count desc
+        highest_severity_cat   — cat with highest weighted severity score
+        dominant_category      — most frequent grammar category
+        quotes_by_category     — {cat: [(quote, corrected), …]} max 3 per cat
+        stt_uncertain_ratio    — stt_count / max(total_count, 1)
+    """
+    total = len(mistakes)
+    by_category: dict[str, int] = {}
+    by_severity: dict[str, int] = {"low": 0, "medium": 0, "high": 0}
+    high_confidence_count = 0
+    low_confidence_count = 0
+    stt_count = 0
+    quotes_by_category: dict[str, list[tuple[str, str]]] = {}
+    severity_score_by_cat: dict[str, int] = {}
+
+    for m in mistakes:
+        cat = str(m.get("error_category") or "")
+        sev = str(m.get("severity") or "medium").lower()
+        gc = m.get("grammar_confidence")
+        quote = str(m.get("user_quote") or "").strip()
+        corrected = str(m.get("corrected_form") or "").strip()
+
+        by_category[cat] = by_category.get(cat, 0) + 1
+
+        if cat == "PRONUNCIATION_STT":
+            stt_count += 1
+        else:
+            sev_norm = sev if sev in ("low", "medium", "high") else "medium"
+            by_severity[sev_norm] = by_severity.get(sev_norm, 0) + 1
+            sev_weight = {"high": 3, "medium": 2, "low": 1}.get(sev_norm, 1)
+            severity_score_by_cat[cat] = severity_score_by_cat.get(cat, 0) + sev_weight
+
+        if gc is not None:
+            try:
+                gc_f = float(gc)
+                if gc_f >= 0.7:
+                    high_confidence_count += 1
+                elif gc_f < 0.5:
+                    low_confidence_count += 1
+            except (ValueError, TypeError):
+                low_confidence_count += 1
+        else:
+            low_confidence_count += 1
+
+        if cat != "PRONUNCIATION_STT" and quote and corrected:
+            if cat not in quotes_by_category:
+                quotes_by_category[cat] = []
+            if len(quotes_by_category[cat]) < 3:
+                quotes_by_category[cat].append((quote, corrected))
+
+    grammar_count = total - stt_count
+
+    top_categories = sorted(
+        [c for c in by_category if c != "PRONUNCIATION_STT"],
+        key=lambda c: (-by_category[c], c),
+    )[:5]
+
+    highest_severity_cat: str | None = None
+    if severity_score_by_cat:
+        highest_severity_cat = max(
+            severity_score_by_cat, key=lambda c: severity_score_by_cat[c]
+        )
+
+    dominant_category = top_categories[0] if top_categories else None
+
+    return {
+        "total_count": total,
+        "grammar_mistake_count": grammar_count,
+        "stt_count": stt_count,
+        "by_category": by_category,
+        "by_severity": by_severity,
+        "high_confidence_count": high_confidence_count,
+        "low_confidence_count": low_confidence_count,
+        "top_categories": top_categories,
+        "highest_severity_cat": highest_severity_cat,
+        "dominant_category": dominant_category,
+        "quotes_by_category": quotes_by_category,
+        "stt_uncertain_ratio": stt_count / max(total, 1),
+    }
+
+
+def build_grammar_control_note(aggregate: dict) -> str:
+    """Build grammar_control_note deterministically from aggregate.
+
+    Every claim maps directly to a row in bt_3_voice_session_mistakes.
+    No LLM involved.
+    """
+    grammar_count = int(aggregate.get("grammar_mistake_count") or 0)
+    stt_count = int(aggregate.get("stt_count") or 0)
+    by_category = dict(aggregate.get("by_category") or {})
+    by_severity = dict(aggregate.get("by_severity") or {})
+    top_categories = list(aggregate.get("top_categories") or [])
+    highest_sev_cat = aggregate.get("highest_severity_cat")
+    low_conf = int(aggregate.get("low_confidence_count") or 0)
+
+    if grammar_count == 0 and stt_count == 0:
+        logging.info("assessment_no_valid_mistakes — grammar_control_note=none_detected")
+        return "No grammar mistakes were detected in this session."
+
+    parts: list[str] = []
+
+    if grammar_count > 0:
+        parts.append(f"Grammar mistakes detected: {grammar_count}")
+        category_lines = []
+        for cat in top_categories[:4]:
+            count = by_category.get(cat, 0)
+            category_lines.append(
+                f"  • {_cat_label(cat)} — {count} {'mistake' if count == 1 else 'mistakes'}"
+            )
+        if category_lines:
+            parts.append("\n".join(category_lines))
+
+        high_sev = int(by_severity.get("high") or 0)
+        med_sev = int(by_severity.get("medium") or 0)
+        if high_sev > 0 and highest_sev_cat:
+            parts.append(
+                f"Most severe area: {_cat_label(highest_sev_cat)} "
+                f"({high_sev} high-severity {'mistake' if high_sev == 1 else 'mistakes'})."
+            )
+        elif med_sev > 0:
+            parts.append(
+                f"{med_sev} medium-severity {'mistake' if med_sev == 1 else 'mistakes'} "
+                "— comprehension affected in places."
+            )
+
+    if stt_count > 0:
+        parts.append(
+            f"{stt_count} {'segment' if stt_count == 1 else 'segments'} flagged as "
+            "unclear speech / STT uncertainty — not counted in grammar total."
+        )
+
+    if low_conf > 0:
+        parts.append(
+            f"{low_conf} {'mistake' if low_conf == 1 else 'mistakes'} had low extraction "
+            "confidence — may reflect transcription ambiguity rather than actual grammar errors."
+        )
+
+    return "\n\n".join(parts).strip()
+
+
+def build_strict_feedback(aggregate: dict, mistakes: list[dict]) -> str:
+    """Build strict_feedback with exact verbatim quotes and corrected forms.
+
+    Every quote in the output is a real user utterance from the transcript.
+    No LLM involved.
+    """
+    grammar_mistakes = [
+        m for m in mistakes
+        if str(m.get("error_category") or "") != "PRONUNCIATION_STT"
+    ]
+
+    if not grammar_mistakes:
+        return (
+            "No grammar mistakes requiring direct correction were identified in this session."
+        )
+
+    top_categories = list(aggregate.get("top_categories") or [])
+    quotes_by_category = dict(aggregate.get("quotes_by_category") or {})
+    dominant = aggregate.get("dominant_category")
+    by_category = dict(aggregate.get("by_category") or {})
+
+    parts: list[str] = []
+
+    if dominant:
+        dom_count = int(by_category.get(dominant, 0))
+        quotes = list(quotes_by_category.get(dominant, []))
+        lines = [
+            f"{_cat_label(dominant)} "
+            f"({dom_count} {'mistake' if dom_count == 1 else 'mistakes'}):"
+        ]
+        for quote, corrected in quotes[:2]:
+            lines.append(f'  ✗ "{quote}"')
+            lines.append(f'  ✓ "{corrected}"')
+        parts.append("\n".join(lines))
+
+    for cat in top_categories[1:3]:
+        count = int(by_category.get(cat, 0))
+        quotes = list(quotes_by_category.get(cat, []))
+        if not quotes:
+            continue
+        lines = [f"{_cat_label(cat)} ({count} {'mistake' if count == 1 else 'mistakes'}):"]
+        for quote, corrected in quotes[:1]:
+            lines.append(f'  ✗ "{quote}"')
+            lines.append(f'  ✓ "{corrected}"')
+        parts.append("\n".join(lines))
+
+    # Extra high-severity mistakes not already shown
+    shown_quotes: set[str] = {
+        q
+        for cat in top_categories[:3]
+        for q, _ in quotes_by_category.get(cat, [])[:2]
+    }
+    extra_high = [
+        m for m in grammar_mistakes
+        if str(m.get("severity") or "") == "high"
+        and str(m.get("user_quote") or "") not in shown_quotes
+    ][:2]
+    if extra_high:
+        lines = ["Additional high-severity issues:"]
+        for m in extra_high:
+            q = str(m.get("user_quote") or "")
+            c = str(m.get("corrected_form") or "")
+            if q and c:
+                lines.append(f'  ✗ "{q}" → "{c}"')
+        if len(lines) > 1:
+            parts.append("\n".join(lines))
+
+    return "\n\n".join(parts).strip()
+
+
+def _format_next_focus(category: str, count: int, dominant_severity: str) -> str:
+    label = _cat_label(category)
+    n = f"{count} {'mistake' if count == 1 else 'mistakes'}"
+    if dominant_severity == "high":
+        return (
+            f"Drill {label} — {n} with high severity. "
+            "This is your primary weakness this session."
+        )
+    return (
+        f"Practice {label} — {n} this session. "
+        "Make this your focused target for the next session."
     )
 
 
-async def _build_llm_assessment(
+def determine_next_focus(aggregate: dict, mistakes: list[dict]) -> str | None:
+    """Select recommended_next_focus deterministically.
+
+    Ranking (first match wins):
+      1. Grammar category with >= 1 high-severity mistake AND >= 2 total mistakes
+      2. Grammar category with highest severity score (high×3 + medium×2) AND >= 2 mistakes
+      3. Most frequent grammar category (any severity)
+    """
+    grammar_mistakes = [
+        m for m in mistakes
+        if str(m.get("error_category") or "") != "PRONUNCIATION_STT"
+    ]
+    if not grammar_mistakes:
+        return None
+
+    by_category = dict(aggregate.get("by_category") or {})
+    by_cat_severity: dict[str, dict[str, int]] = {}
+    for m in grammar_mistakes:
+        cat = str(m.get("error_category") or "")
+        sev = str(m.get("severity") or "medium").lower()
+        if cat not in by_cat_severity:
+            by_cat_severity[cat] = {"high": 0, "medium": 0, "low": 0}
+        if sev in by_cat_severity[cat]:
+            by_cat_severity[cat][sev] += 1
+
+    # Priority 1: high-severity AND repeated
+    high_repeated = sorted(
+        [
+            c for c, sevs in by_cat_severity.items()
+            if sevs.get("high", 0) >= 1 and by_category.get(c, 0) >= 2
+        ],
+        key=lambda c: (-by_category.get(c, 0), c),
+    )
+    if high_repeated:
+        cat = high_repeated[0]
+        logging.info(
+            "assessment_next_focus_selected category=%s severity=high count=%d",
+            cat, by_category[cat],
+        )
+        return _format_next_focus(cat, by_category[cat], "high")
+
+    # Priority 2: highest severity score AND repeated
+    scored = {
+        c: by_cat_severity[c].get("high", 0) * 3 + by_cat_severity[c].get("medium", 0) * 2
+        for c in by_cat_severity
+        if by_category.get(c, 0) >= 2
+    }
+    if scored:
+        top = max(scored, key=lambda c: (scored[c], -by_category.get(c, 0), c))
+        if scored[top] > 0:
+            dom_sev = "high" if by_cat_severity[top].get("high", 0) > 0 else "medium"
+            logging.info(
+                "assessment_next_focus_selected category=%s severity=%s score=%d",
+                top, dom_sev, scored[top],
+            )
+            return _format_next_focus(top, by_category[top], dom_sev)
+
+    # Priority 3: most frequent (frequency fallback)
+    dominant = aggregate.get("dominant_category")
+    if dominant:
+        dom_sev = "high" if by_cat_severity.get(dominant, {}).get("high", 0) > 0 else "medium"
+        logging.info(
+            "assessment_next_focus_selected category=%s severity=%s (frequency_fallback)",
+            dominant, dom_sev,
+        )
+        return _format_next_focus(dominant, by_category.get(dominant, 1), dom_sev)
+
+    return None
+
+
+# ── Prose layer (one small LLM pass, no raw transcript) ──────────────────────
+
+
+async def _build_prose_from_mistakes(
     *,
     session_id: int,
-    transcript_text: str,
+    aggregate: dict,
+    mistakes: list[dict],
+    transcript_stats: dict,
     session_context: dict | None,
     fallback_used: list[str],
     fallback_missed: list[str],
-    transcript_segments: list[dict],
-) -> VoiceAssessment | None:
-    payload = {
-        "session_context": {
-            "session": dict((session_context or {}).get("session") or {}),
-            "scenario": dict((session_context or {}).get("scenario") or {}),
-            "prep_pack": dict((session_context or {}).get("prep_pack") or {}),
+) -> dict:
+    """One small LLM call for summary + fluency + coherence + lexical + self_correction.
+
+    The LLM receives structured mistakes + session stats only — NOT the raw transcript.
+    If the call fails, static fallbacks are returned so the deterministic fields are
+    still persisted.
+    """
+    scenario = dict((session_context or {}).get("scenario") or {})
+
+    compact_mistakes = []
+    for m in mistakes[:20]:
+        if str(m.get("error_category") or "") == "PRONUNCIATION_STT":
+            continue
+        compact_mistakes.append({
+            "category": m.get("error_category"),
+            "subtype": m.get("error_subtype"),
+            "severity": m.get("severity"),
+            "quote": str(m.get("user_quote") or "")[:80],
+            "correction": str(m.get("corrected_form") or "")[:80],
+        })
+
+    payload = json.dumps(
+        {
+            "session_stats": {
+                "user_turns": int(transcript_stats.get("user_segments") or 0),
+                "user_chars": int(transcript_stats.get("user_chars") or 0),
+                "total_turns": int(transcript_stats.get("segment_count") or 0),
+                "avg_user_chars_per_turn": (
+                    int(transcript_stats.get("user_chars") or 0)
+                    // max(int(transcript_stats.get("user_segments") or 1), 1)
+                ),
+            },
+            "grammar_summary": {
+                "total_grammar_mistakes": int(aggregate.get("grammar_mistake_count") or 0),
+                "top_categories": list(aggregate.get("top_categories") or [])[:4],
+                "high_severity_count": int((aggregate.get("by_severity") or {}).get("high") or 0),
+                "stt_flagged_count": int(aggregate.get("stt_count") or 0),
+            },
+            "structured_mistakes": compact_mistakes,
+            "scenario_title": str(scenario.get("title") or ""),
+            "scenario_topic": str(scenario.get("topic") or ""),
+            "target_vocab_used": list(fallback_used)[:10],
+            "target_vocab_missed": list(fallback_missed)[:10],
         },
-        "transcript_stats": {
-            "segment_count": len(transcript_segments),
-            "character_count": len(transcript_text),
-        },
-        "transcript": transcript_text,
-    }
-    raw = await llm_execute(
-        task_name="voice_session_assessment",
-        system_instruction_key="voice_session_assessment",
-        user_message=json.dumps(payload, ensure_ascii=False),
-        poll_interval_seconds=1.0,
-        responses_timeout_seconds=25.0,
+        ensure_ascii=False,
     )
-    cleaned = str(raw or "").strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned).rstrip("`").strip()
+
     try:
+        raw = await llm_execute(
+            task_name="voice_prose_from_mistakes",
+            system_instruction_key="voice_prose_from_mistakes",
+            user_message=payload,
+            poll_interval_seconds=1.0,
+            responses_timeout_seconds=25.0,
+        )
+        cleaned = str(raw or "").strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned).rstrip("`").strip()
         parsed = json.loads(cleaned)
-    except Exception:
-        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-        if not match:
-            return None
-        try:
-            parsed = json.loads(match.group(0))
-        except Exception:
-            return None
-    if not isinstance(parsed, dict):
-        return None
-    return _assessment_from_payload(
-        session_id=int(session_id),
-        payload=parsed,
-        fallback_used=fallback_used,
-        fallback_missed=fallback_missed,
-    )
+        if not isinstance(parsed, dict):
+            raise ValueError("prose LLM returned non-dict")
+        return {
+            "summary": _clean_assessment_text(
+                parsed.get("summary"),
+                fallback="Session completed.",
+                field_name="summary",
+            ),
+            "lexical_range_note": _clean_assessment_text(
+                parsed.get("lexical_range_note"),
+                fallback=_NOTE_FIELD_FALLBACKS["lexical_range_note"],
+                field_name="lexical_range_note",
+            ),
+            "fluency_note": _clean_assessment_text(
+                parsed.get("fluency_note"),
+                fallback=_NOTE_FIELD_FALLBACKS["fluency_note"],
+                field_name="fluency_note",
+            ),
+            "coherence_relevance_note": _clean_assessment_text(
+                parsed.get("coherence_relevance_note"),
+                fallback=_NOTE_FIELD_FALLBACKS["coherence_relevance_note"],
+                field_name="coherence_relevance_note",
+            ),
+            "self_correction_note": _clean_assessment_text(
+                parsed.get("self_correction_note"),
+                fallback=_NOTE_FIELD_FALLBACKS["self_correction_note"],
+                field_name="self_correction_note",
+            ),
+            "target_vocab_used": (
+                _normalize_string_list(parsed.get("target_vocab_used")) or list(fallback_used)
+            ),
+            "target_vocab_missed": (
+                _normalize_string_list(parsed.get("target_vocab_missed")) or list(fallback_missed)
+            ),
+        }
+    except Exception as exc:
+        logging.warning(
+            "assessment_prose_llm_failed session_id=%s error=%s — using static fallback",
+            session_id,
+            exc,
+        )
+        return {
+            "summary": "Session completed. Grammar analysis processed from structured extraction.",
+            "lexical_range_note": _NOTE_FIELD_FALLBACKS["lexical_range_note"],
+            "fluency_note": _NOTE_FIELD_FALLBACKS["fluency_note"],
+            "coherence_relevance_note": _NOTE_FIELD_FALLBACKS["coherence_relevance_note"],
+            "self_correction_note": _NOTE_FIELD_FALLBACKS["self_correction_note"],
+            "target_vocab_used": list(fallback_used),
+            "target_vocab_missed": list(fallback_missed),
+        }
+
+
+# ── Assessment composition ────────────────────────────────────────────────────
 
 
 async def _build_voice_assessment_from_segments(
@@ -438,16 +818,33 @@ async def _build_voice_assessment_from_segments(
     transcript_segments: list[dict],
     session_context: dict | None = None,
 ) -> VoiceAssessment | None:
-    resolved_context = session_context if session_context is not None else get_agent_voice_session_context(int(session_id))
+    resolved_context = (
+        session_context
+        if session_context is not None
+        else get_agent_voice_session_context(int(session_id))
+    )
     transcript_text = _build_transcript_text(transcript_segments)
     prep_pack = dict((resolved_context or {}).get("prep_pack") or {})
-    source_lang = str((resolved_context or {}).get("session", {}).get("source_lang") or "ru").strip().lower() or "ru"
+    source_lang = (
+        str((resolved_context or {}).get("session", {}).get("source_lang") or "ru")
+        .strip()
+        .lower()
+        or "ru"
+    )
     fallback_used, fallback_missed = _compute_target_vocab_heuristics(
         transcript_text=transcript_text,
         prep_pack=prep_pack,
     )
+    transcript_stats = _summarize_transcript_material(transcript_segments)
 
+    # Short transcript guard (unchanged behavior)
     if not transcript_text:
+        logging.warning(
+            "Voice assessment fallback: session_id=%s has 0 transcript segments — "
+            "transcript is empty. This usually means session_id was not bound in the "
+            "agent (participant attributes missing or DB lookup failed).",
+            int(session_id),
+        )
         return _build_short_transcript_fallback(
             session_id=int(session_id),
             transcript_text="",
@@ -459,6 +856,15 @@ async def _build_voice_assessment_from_segments(
         len(transcript_segments) < _SHORT_TRANSCRIPT_SEGMENT_THRESHOLD
         or len(transcript_text) < _SHORT_TRANSCRIPT_CHAR_THRESHOLD
     ):
+        logging.warning(
+            "Voice assessment fallback: session_id=%s has only %d segments / %d chars "
+            "(thresholds: %d segments, %d chars). Transcript too short for analysis.",
+            int(session_id),
+            len(transcript_segments),
+            len(transcript_text),
+            _SHORT_TRANSCRIPT_SEGMENT_THRESHOLD,
+            _SHORT_TRANSCRIPT_CHAR_THRESHOLD,
+        )
         return _build_short_transcript_fallback(
             session_id=int(session_id),
             transcript_text=transcript_text,
@@ -466,37 +872,100 @@ async def _build_voice_assessment_from_segments(
             source_lang=source_lang,
         )
 
+    # ── Deterministic aggregation layer ──────────────────────────────────────
+    logging.info("assessment_aggregation_started session_id=%s", int(session_id))
+
     try:
-        assessment = await _build_llm_assessment(
-            session_id=int(session_id),
-            transcript_text=transcript_text,
-            session_context=resolved_context,
-            fallback_used=fallback_used,
-            fallback_missed=fallback_missed,
-            transcript_segments=transcript_segments,
+        all_mistakes = await asyncio.to_thread(
+            fetch_voice_session_mistakes, session_id=int(session_id)
         )
-        if assessment:
-            return assessment
     except Exception as exc:
         logging.warning(
-            "Voice assessment LLM pass failed for session_id=%s: %s",
+            "assessment_mistakes_fetch_failed session_id=%s error=%s — proceeding with empty",
             int(session_id),
             exc,
         )
+        all_mistakes = []
+
+    # Exclude mistakes with very low extraction confidence (< 0.5) to avoid
+    # surfacing STT-ambiguous noise in the feedback.
+    reliable_mistakes = [
+        m for m in all_mistakes
+        if m.get("grammar_confidence") is None
+        or float(m.get("grammar_confidence") or 0.0) >= 0.5
+    ]
+
+    aggregate = aggregate_voice_mistakes(reliable_mistakes)
+
+    if aggregate["stt_uncertain_ratio"] > 0.3:
+        logging.info(
+            "assessment_low_confidence_segments session_id=%s stt_count=%d total=%d ratio=%.2f",
+            int(session_id),
+            aggregate["stt_count"],
+            aggregate["total_count"],
+            aggregate["stt_uncertain_ratio"],
+        )
+
+    if aggregate["grammar_mistake_count"] == 0:
+        logging.info(
+            "assessment_no_valid_mistakes session_id=%s total_rows=%d",
+            int(session_id),
+            aggregate["total_count"],
+        )
+
+    # Deterministic grammar fields — no LLM, no hallucination
+    grammar_control_note = build_grammar_control_note(aggregate)
+    strict_feedback_text = build_strict_feedback(aggregate, reliable_mistakes)
+    next_focus = determine_next_focus(aggregate, reliable_mistakes)
+
+    logging.info(
+        "assessment_aggregation_completed session_id=%s "
+        "total=%d grammar=%d stt=%d high_conf=%d low_conf=%d",
+        int(session_id),
+        aggregate["total_count"],
+        aggregate["grammar_mistake_count"],
+        aggregate["stt_count"],
+        aggregate["high_confidence_count"],
+        aggregate["low_confidence_count"],
+    )
+
+    # ── Prose layer (small LLM call, no raw transcript) ───────────────────────
+    prose = await _build_prose_from_mistakes(
+        session_id=int(session_id),
+        aggregate=aggregate,
+        mistakes=reliable_mistakes,
+        transcript_stats=transcript_stats,
+        session_context=resolved_context,
+        fallback_used=fallback_used,
+        fallback_missed=fallback_missed,
+    )
 
     return VoiceAssessment(
         session_id=int(session_id),
-        summary="A full structured assessment could not be generated, but the session transcript was stored.",
-        strict_feedback="Use the stored transcript as review material and rerun the assessment path later if needed.",
-        lexical_range_note="Assessment generation fallback was used; lexical detail is limited.",
-        grammar_control_note="Assessment generation fallback was used; grammar detail is limited.",
-        fluency_note="Assessment generation fallback was used; fluency detail is limited.",
-        coherence_relevance_note="Assessment generation fallback was used; coherence detail is limited.",
-        self_correction_note="Assessment generation fallback was used; self-correction detail is limited.",
-        target_vocab_used=fallback_used,
-        target_vocab_missed=fallback_missed,
-        recommended_next_focus="Review the transcript manually or rerun assessment generation later.",
+        summary=prose.get("summary", "Session completed."),
+        strict_feedback=strict_feedback_text,
+        lexical_range_note=prose.get(
+            "lexical_range_note", _NOTE_FIELD_FALLBACKS["lexical_range_note"]
+        ),
+        grammar_control_note=grammar_control_note,
+        fluency_note=prose.get("fluency_note", _NOTE_FIELD_FALLBACKS["fluency_note"]),
+        coherence_relevance_note=prose.get(
+            "coherence_relevance_note", _NOTE_FIELD_FALLBACKS["coherence_relevance_note"]
+        ),
+        self_correction_note=prose.get(
+            "self_correction_note", _NOTE_FIELD_FALLBACKS["self_correction_note"]
+        ),
+        target_vocab_used=(
+            _normalize_string_list(prose.get("target_vocab_used")) or list(fallback_used)
+        ),
+        target_vocab_missed=(
+            _normalize_string_list(prose.get("target_vocab_missed")) or list(fallback_missed)
+        ),
+        recommended_next_focus=next_focus,
     )
+
+
+# ── Public API (unchanged signatures) ────────────────────────────────────────
 
 
 def get_stored_voice_assessment(*, session_id: int) -> VoiceAssessment | None:
@@ -523,13 +992,11 @@ def get_stored_voice_assessment(*, session_id: int) -> VoiceAssessment | None:
 
 def load_voice_assessment(*, session_id: int) -> VoiceAssessment | None:
     """Load one stored assessment for a completed voice session."""
-
     return get_stored_voice_assessment(session_id=int(session_id))
 
 
 async def build_voice_assessment(*, session_id: int) -> VoiceAssessment | None:
     """Build a minimal qualitative voice assessment from transcript plus context."""
-
     transcript_segments = fetch_agent_voice_transcript_segments(session_id=int(session_id))
     return await _build_voice_assessment_from_segments(
         session_id=int(session_id),
@@ -539,7 +1006,6 @@ async def build_voice_assessment(*, session_id: int) -> VoiceAssessment | None:
 
 def store_voice_assessment(assessment: VoiceAssessment) -> VoiceAssessment | None:
     """Persist one qualitative assessment row for a voice session."""
-
     payload = upsert_voice_session_assessment(
         session_id=int(assessment.session_id),
         summary=assessment.summary,
@@ -561,8 +1027,9 @@ def store_voice_assessment(assessment: VoiceAssessment) -> VoiceAssessment | Non
 
 async def build_and_store_voice_assessment(*, session_id: int) -> VoiceAssessment | None:
     """Build and persist a best-effort assessment for one completed voice session."""
-
-    transcript_segments = await _load_transcript_segments_for_assessment(session_id=int(session_id))
+    transcript_segments = await _load_transcript_segments_for_assessment(
+        session_id=int(session_id)
+    )
     assessment = await _build_voice_assessment_from_segments(
         session_id=int(session_id),
         transcript_segments=transcript_segments,
