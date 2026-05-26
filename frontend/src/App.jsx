@@ -15709,6 +15709,13 @@ function AppInner() {
 
   useEffect(() => {
     if (!isWebAppMode || !initData || !pageVisible || !startupPhase3Ready) return;
+    // Reset done-flags on section leave so re-entry always re-checks snapshot freshness.
+    if (activeHomeSubsectionKey !== 'home_skills') {
+      skillReportStartupRefreshDoneRef.current = false;
+    }
+    if (activeHomeSubsectionKey !== 'home_weekly_plan') {
+      weeklyPlanStartupRefreshDoneRef.current = false;
+    }
     if (activeHomeSubsectionKey === 'home_weekly_plan') {
       if (weeklyPlanLoadingRef.current || weeklyPlanStartupRefreshDoneRef.current) return;
       const snapshot = readWeeklyPlanSnapshot();

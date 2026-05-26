@@ -52,6 +52,7 @@ from backend.backend_server import (
     _youtube_search_videos_manual,
     _youtube_fill_view_counts,
     _sanitize_focus_topic,
+    _start_shortcut_lookup_enqueue_runner,
     get_or_create_tts_clip,
     chunk_sentence_llm_de,
     schedule_user_paid_subscription_cancel_at_period_end,
@@ -4015,11 +4016,29 @@ async def letsgo(update: Update, context: CallbackContext):
 
 
 # 🔹 **Функция, которая запоминает переводы, но не проверяет их**
+async def handle_forwarded_message_lookup(update: Update, context: CallbackContext) -> None:
+    """Forward any message to the bot in private chat → same LLM split as iOS Shortcut."""
+    if not update.message or not update.message.text:
+        return
+    if not (update.effective_chat and update.effective_chat.type == "private"):
+        return
+    text = update.message.text.strip()
+    if not text:
+        return
+    user_id = int(update.message.from_user.id)
+    await update.message.reply_text("🔍", quote=True)
+    _start_shortcut_lookup_enqueue_runner(user_id=user_id, text=text)
+
+
 async def handle_user_message(update: Update, context: CallbackContext):
     # ✅ Проверяем, содержит ли update.message данные
     if update.message is None or update.message.text is None:
         logging.warning("⚠️ update.message отсутствует или пустое.")
         return  # ⛔ Прерываем выполнение, если сообщение отсутствует
+
+    # Forwarded messages are handled by handle_forwarded_message_lookup (group=0)
+    if update.message.forward_origin is not None:
+        return
 
     user_id = update.message.from_user.id
     text = update.message.text.strip()
@@ -15069,6 +15088,8 @@ def main():
     application.add_handler(CallbackQueryHandler(request_access_from_button, pattern=r"^access:request$"))
     # 🔥 Логирование всех сообщений (группа -1, не блокирует цепочку)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message, block=False), group=-1)
+
+    application.add_handler(MessageHandler(filters.FORWARDED & filters.TEXT & ~filters.COMMAND, handle_forwarded_message_lookup, block=False), group=0)
 
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_message, block=False), group=1)  # ✅ Сохраняем переводы
     # Legacy ReplyKeyboard-based flow is disabled by default; keep handler for rollback via env.
