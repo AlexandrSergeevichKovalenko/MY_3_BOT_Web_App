@@ -34091,18 +34091,26 @@ def _shortcut_normalize_unit_text(text: str) -> str:
     return cleaned.strip()
 
 
-def _shortcut_dedup_check(user_id: int, text: str) -> bool:
-    """Return True if this (user_id, text) was already processed within 90 s — caller should skip.
-    Uses Redis SET NX so it works across all Railway worker processes."""
-    redis_key = "shortcut_dedup:" + hashlib.sha1(f"{user_id}:{text}".encode()).hexdigest()
+def _shortcut_dedup_key(user_id: int, text: str) -> str:
+    return "shortcut_dedup:" + hashlib.sha1(f"{user_id}:{text}".encode()).hexdigest()
+
+
+def _shortcut_dedup_reserve(redis_key: str) -> bool:
+    """Return True when this key is already reserved by a recent request."""
     try:
         client = get_redis_client()
-        # SET NX EX: set only if key absent, expire after 90 s — atomic cross-process lock
         acquired = client.set(redis_key, "1", nx=True, ex=90)
-        return acquired is None  # None → key already existed → duplicate
+        return acquired is None
     except Exception as exc:
         logging.warning("shortcut_dedup: Redis unavailable, skipping dedup: %s", exc)
-        return False  # fail open — better a duplicate than a lost request
+        return False
+
+
+def _shortcut_dedup_release(redis_key: str) -> None:
+    try:
+        get_redis_client().delete(redis_key)
+    except Exception as exc:
+        logging.warning("shortcut_dedup release failed: %s", exc)
 
 
 def _shortcut_validate_coverage(blocks: list[tuple[str, str]], original: str) -> bool:
@@ -34370,7 +34378,8 @@ def shortcut_dictionary_lookup():
     if not is_telegram_user_allowed(user_id):
         return jsonify({"error": "Пользователь не имеет доступа"}), 403
 
-    if _shortcut_dedup_check(user_id, text):
+    dedup_key = _shortcut_dedup_key(user_id, text)
+    if _shortcut_dedup_reserve(dedup_key):
         logging.info("shortcut_lookup: duplicate request suppressed user_id=%s", user_id)
         return jsonify({"ok": True, "blocks_sent": 0, "duplicate": True}), 200
 
