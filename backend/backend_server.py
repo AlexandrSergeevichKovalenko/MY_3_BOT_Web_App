@@ -33955,41 +33955,50 @@ You are an expert linguist working inside a language-learning application.
 
 PURPOSE:
 The user copied vocabulary learning material and wants to save useful items \
-to their personal dictionary. You must extract only clean learnable units: \
+to their personal dictionary. You must extract ALL clean learnable units: \
 single words, fixed phrases, grammatical constructions, and complete natural \
-sentences. Each extracted unit will be translated and saved as a vocabulary card.
+sentences. Each extracted unit becomes its own separate vocabulary card.
 
 THE CORE QUESTION FOR EVERY PIECE OF TEXT:
 "Would a language learner want to translate this and save it to their dictionary?"
-If YES → it becomes a block. If NO → silently discard it.
+If YES → it becomes its own block. If NO → silently discard it.
 
 WHAT TO EXTRACT — LEARNABLE UNITS ONLY:
-  A) A standalone word or lemma being taught: "erfinden", "herausfinden", \
+  A) A standalone word, lemma, or fixed phrase being taught: "erfinden", \
      "sich abfinden mit", "je … desto …". One block per word/phrase. \
-     Do NOT attach example sentences to the word — they are separate blocks.
-  B) A complete natural sentence that demonstrates a word in real use: \
-     "Er hat eine neue Methode erfunden." — one block per sentence.
+     NEVER attach an example sentence to the word/phrase in the same block.
+  B) A complete natural sentence that demonstrates a word or phrase in real use: \
+     "Er hat eine neue Methode erfunden." — one block per sentence. \
+     !! CRITICAL RULE: A sentence is ALWAYS extracted as a separate block, \
+     even when it contains a phrase or word that was already extracted as its own \
+     block. A sentence and the phrase inside it are DIFFERENT learning units — \
+     the phrase teaches the vocabulary item; the sentence teaches real-world usage. \
+     NEVER skip a sentence just because it contains an already-extracted phrase.
   C) A ✗/✓ correction pair — both the wrong and correct form together as ONE block.
   D) A pedagogical grammar-construction fragment such as \
-     "erinnert... an + Akkusativ", "ist... ähnlich + Dativ", \
-     "hat Ähnlichkeit mit + Dativ" IF it is genuinely worth saving. \
-     Keep it as a learnable unit, but remove raw ellipsis and obvious teaching noise.
+     "erinnert... an + Akkusativ", "ist... ähnlich + Dativ" IF worth saving. \
+     Keep it as a learnable unit, remove raw ellipsis and obvious teaching noise.
+
+ONE BLOCK PER ATOMIC UNIT — SPLIT WITHIN LINES WHEN NEEDED:
+When a single input line contains BOTH a phrase/word AND an example sentence \
+(common formats: "sich abfinden mit — Man muss sich damit abfinden.", or \
+"das Wort: Er hat das Wort erfunden."), produce TWO separate blocks: \
+one for the phrase and one for the sentence. \
+Never bundle a phrase together with its example sentence into one block. \
+A line with 3 distinct learnable units → 3 blocks. \
+A line with 1 learnable unit → 1 block. Let the content decide, not the line count.
 
 WHAT TO DISCARD — NOT LEARNABLE UNITS:
   • Section titles and topic headers.
   • Explanations ABOUT the unit instead of the unit itself.
   • Translation glosses in another language, e.g. "(Мне уже пора)".
   • Dialogue commentary around the unit if the unit itself can stand alone.
-  • Morphological breakdowns in parentheses: "(er- fügt den Aspekt hinzu: …)", \
-    "(aus = out + drücken = press → to express)". These explain word structure but \
-    are NOT independently translatable or storable as vocabulary.
-  • Etymological or prefix/suffix analyses: notes about what a root means in Latin, \
-    what a prefix historically meant.
-  • Metalinguistic commentary: notes ABOUT the language rather than IN the language, \
-    valency tables, case government descriptions written as annotations.
+  • Morphological breakdowns in parentheses: "(er- fügt den Aspekt hinzu: …)". \
+    These explain word structure but are NOT independently storable vocabulary.
+  • Etymological or prefix/suffix analyses.
+  • Metalinguistic commentary and valency tables written as annotations.
   • Parenthetical glosses and quoted explanations.
-  • Any fragment that, translated in isolation, would produce a meaningless result \
-    with no dictionary value.
+  • Any fragment that, translated in isolation, would produce a meaningless result.
 
 BOTH FIELDS PER BLOCK:
   "term"    — canonical form: bare infinitive for verbs, nominative singular for \
@@ -34002,22 +34011,16 @@ STRICT CLEANUP RULES:
 — Keep only the actual learnable unit.
 — In normal cases, "term" and "content" should be identical or nearly identical.
 — If the input contains teaching shorthand like "...", "…" or case labels such as \
-  "+ Akkusativ" / "+ Dativ", keep the grammar signal but normalize the text into a \
-  clean readable lookup unit.
-
-MULTI-LINE INPUT RULE:
-When the input contains multiple non-empty lines, treat each line as a separate \
-candidate. Each line that passes the learner-value test becomes its own block. \
-Never merge several input lines into a single block. \
-A 5-line input of learnable items must produce 5 separate blocks.
+  "+ Akkusativ" / "+ Dativ", keep the grammar signal but normalize the text.
 
 SELF-CHECK BEFORE OUTPUTTING:
 — Every extracted block passes the "would I save this to a dictionary?" test
 — No block is a morphological annotation or parenthetical comment about word structure
-— No block mixes a bare word with its example sentences
+— No block mixes a bare word/phrase with its example sentences (they must be separate)
 — No block contains translations, glosses, or explanatory prose
-— All genuinely learnable words, phrases, and sentences from the input are represented
-— If the input had N non-empty lines, the output has N blocks (one per line)
+— Every complete German sentence in the input is represented as its own block
+— No sentence was skipped because it contains an already-extracted phrase
+— All genuinely learnable words, phrases, and sentences from the input are present
 
 Return ONLY valid json — no markdown, no explanation:
 {"blocks": [{"term": "unit 1", "content": "clean unit 1"}, ...]}"""
@@ -34025,7 +34028,7 @@ Return ONLY valid json — no markdown, no explanation:
 _SHORTCUT_SPLIT_PROMPT_FALLBACK = """\
 You are a senior computational linguist specialising in second-language acquisition.
 
-The text contains vocabulary learning material. Your task: extract only the clean \
+The text contains vocabulary learning material. Your task: extract ALL clean \
 units that a learner would want to translate and save to their personal dictionary. \
 Each result block becomes one dictionary card.
 
@@ -34034,7 +34037,9 @@ For every piece of text in the input ask: \
 "Is this something a language learner would want to translate and save?" \
   KEEP — standalone vocabulary words and lemmas being taught
   KEEP — fixed phrases and grammatical constructions worth memorising
-  KEEP — complete natural sentences demonstrating real word usage
+  KEEP — complete natural sentences demonstrating real word usage \
+    !! A sentence that contains an already-extracted phrase is ALWAYS kept — \
+    it is a different type of learning unit (usage in context) and must NOT be skipped.
   DISCARD — morphological/etymological notes in parentheses, e.g. \
     "(er- fügt den Bedeutungsaspekt hinzu: etwas schaffen, das es vorher nicht gab.)" \
     These are metalinguistic explanations about word structure, not learnable items.
@@ -34047,10 +34052,17 @@ For every piece of text in the input ask: \
 STEP 2 — ONE BLOCK PER ATOMIC UNIT (from what survived Step 1):
   TYPE W — a word or fixed phrase taught in isolation → one block, just that item.
   TYPE S — one complete natural sentence → one block, just that sentence.
-  Never bundle a TYPE W together with its TYPE S examples — they are always separate.
+  CRITICAL: Never bundle a TYPE W together with its TYPE S examples — always separate.
   Exception: a ✗/✓ correction pair stays together as one block.
-  Pedagogical grammar fragments like "ist... ähnlich + Dativ" may stay as TYPE W
+  Pedagogical grammar fragments like "ist... ähnlich + Dativ" may stay as TYPE W \
   if they are worth saving, but remove raw ellipsis and keep only the clean construction.
+
+  SPLITTING WITHIN A SINGLE LINE:
+  When one input line contains both a phrase (TYPE W) and an example sentence (TYPE S), \
+  e.g. "sich abfinden mit — Man muss sich damit abfinden." or \
+  "das Wort: Er hat das neue Wort erfunden." — produce TWO separate blocks. \
+  The number of blocks must reflect the number of distinct learnable units, \
+  not the number of input lines.
 
 STEP 3 — FILL BOTH FIELDS:
   "term"    — canonical form: bare infinitive / nominative / full sentence as appropriate.
@@ -34067,11 +34079,11 @@ STEP 3A — CLEAN THE UNIT:
 STEP 4 — VALIDATE:
 • Every block has genuine dictionary value — a learner would save it
 • No block is a morphological note or parenthetical metalinguistic comment
-• No block mixes a bare word with complete sentences
+• No block mixes a bare word/phrase together with complete sentences
 • No ✗/✓ pair is split
 • No block contains commentary, glosses, or translations
-• If the input had N non-empty lines, the output must have N blocks — one per line; \
-  never collapse multiple input lines into a single block
+• Every complete German sentence from the input appears as its own TYPE S block
+• No sentence was silently dropped because it contains an already-extracted phrase
 
 Output ONLY valid json: {"blocks": [{"term": "...", "content": "..."}, ...]}"""
 
@@ -34254,7 +34266,7 @@ def _run_shortcut_lookup_delivery(*, user_id: int, text: str) -> int:
     if not blocks:
         return 0
 
-    shortcut_max_blocks = 10
+    shortcut_max_blocks = 20
     if len(blocks) > shortcut_max_blocks:
         blocks = blocks[:shortcut_max_blocks]
 
