@@ -3218,6 +3218,9 @@ const TranslationsSection = React.memo(function TranslationsSection({
 }) {
   const [focusSheetOpen, setFocusSheetOpen] = React.useState(false);
 
+  const hasSelectedTranslationLevel = ['a1', 'a2', 'b1', 'b2', 'c1', 'c2']
+    .includes(String(selectedLevel || '').trim().toLowerCase());
+
   const progressiveReadyCount = Math.max(
     sentences.length,
     Number(translationProgressiveFill?.readyCount || 0),
@@ -9325,6 +9328,18 @@ function AppInner() {
         const updatedPrimarySense = Array.isArray(updatedResponseJson.dictionary_senses)
           ? String(updatedResponseJson.dictionary_senses.find((entry) => entry && typeof entry === 'object' && String(entry.value || '').trim())?.value || '').trim()
           : '';
+        const applyUpdatedCardFields = (entry = {}) => ({
+          ...entry,
+          word_de: updated.word_de,
+          word_ru: updated.word_ru,
+          translation_ru: updated.translation_ru,
+          translation_de: updated.translation_de,
+          response_json: updatedResponseJson,
+          target_text: updated.translation_de || updated.translation_ru || entry.target_text,
+          source_text: updated.word_de || updated.word_ru || entry.source_text,
+          display_word: updated.word_de || updated.word_ru || entry.display_word,
+          display_translation: updatedPrimarySense || updated.translation_ru || updated.translation_de || entry.display_translation,
+        });
         setVocabItems((prev) => prev.map((it) => it.id === updated.id
           ? {
               ...it,
@@ -9338,6 +9353,18 @@ function AppInner() {
               display_translation: updatedPrimarySense || updated.translation_ru || updated.translation_de || it.display_translation,
             }
           : it));
+        setFlashcards((prev) => prev.map((item) => (Number(item?.id) === Number(updated.id)
+          ? applyUpdatedCardFields(item)
+          : item)));
+        setFlashcardPool((prev) => prev.map((item) => (Number(item?.id) === Number(updated.id)
+          ? applyUpdatedCardFields(item)
+          : item)));
+        setSrsCard((prev) => {
+          if (!prev || Number(prev?.id) !== Number(updated.id)) return prev;
+          const next = applyUpdatedCardFields(prev);
+          srsCardRef.current = next;
+          return next;
+        });
         const userId = webappUser?.id ? Number(webappUser.id) : null;
         if (userId && isOfflineCacheAvailable()) {
           updateCachedVocabEntry(userId, updated).catch(() => {});
