@@ -11101,6 +11101,46 @@ def get_dictionary_entry_by_id(entry_id: int) -> dict | None:
             row = cursor.fetchone()
             if not row:
                 return None
+
+            if (
+                normalized_word
+                and previous_word_de
+                and previous_word_de.lower() != normalized_word.lower()
+            ):
+                try:
+                    cursor.execute(
+                        """
+                        UPDATE bt_3_webapp_dictionary_queries
+                        SET word_de = %s,
+                            word_ru = %s,
+                            response_json = jsonb_set(
+                                jsonb_set(
+                                    jsonb_set(response_json, '{word_de}', to_jsonb(%s::text), true),
+                                    '{word_ru}', to_jsonb(%s::text), true
+                                ),
+                                '{source_text}', to_jsonb(%s::text), true
+                            ),
+                            updated_at = NOW()
+                        WHERE user_id = %s
+                          AND id <> %s
+                          AND lower(trim(coalesce(word_de, ''))) = lower(trim(%s))
+                          AND lower(trim(coalesce(word_ru, ''))) = lower(trim(%s))
+                        """,
+                        (
+                            normalized_word,
+                            normalized_word,
+                            normalized_word,
+                            normalized_word,
+                            normalized_word,
+                            int(user_id),
+                            int(entry_id),
+                            previous_word_de,
+                            previous_word_ru or previous_word_de,
+                        ),
+                    )
+                except Exception:
+                    pass
+
             return {
                 "id": row[0],
                 "word_ru": row[1],
@@ -14586,7 +14626,7 @@ def edit_vocabulary_entry(
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id, response_json
+                SELECT id, response_json, word_de, word_ru
                 FROM bt_3_webapp_dictionary_queries
                 WHERE id = %s AND user_id = %s
                 """,
@@ -14596,6 +14636,9 @@ def edit_vocabulary_entry(
             if not existing_row:
                 return None
             response_json = _coerce_json_object(existing_row[1])
+
+            previous_word_de = str(existing_row[2] or '').strip()
+            previous_word_ru = str(existing_row[3] or '').strip()
 
             set_parts = []
             params: list = []
