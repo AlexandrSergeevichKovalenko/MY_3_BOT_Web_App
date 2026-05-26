@@ -3218,9 +3218,6 @@ const TranslationsSection = React.memo(function TranslationsSection({
 }) {
   const [focusSheetOpen, setFocusSheetOpen] = React.useState(false);
 
-  const hasSelectedTranslationLevel = ['a1', 'a2', 'b1', 'b2', 'c1', 'c2']
-    .includes(String(selectedLevel || '').trim().toLowerCase());
-
   const progressiveReadyCount = Math.max(
     sentences.length,
     Number(translationProgressiveFill?.readyCount || 0),
