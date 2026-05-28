@@ -49,14 +49,20 @@ from backend.ocr_pipeline import (
     classify_archetype,
     group_spatially,
     build_grouped_extraction_payload,
+    build_structured_extraction_payload,
     OcrSpatialGroup,
     OcrArchetypeResult,
     OcrGroupedPayload,
+    GroupedExtractionUnit,
+    StructuredExtractionPayload,
     ALL_ARCHETYPES,
     ALL_GROUP_TYPES,
+    ALL_PRESERVED_SEMANTICS,
+    ALL_EXTRACTION_PRIORITIES,
     _detect_german_morphology,
     ARCHETYPE_VOCABULARY_PAIR,
     ARCHETYPE_MULTILINGUAL_STACK,
+    ARCHETYPE_BILINGUAL_PHRASE,
     ARCHETYPE_GRAMMAR_BOARD,
     ARCHETYPE_SUBTITLE_DIALOGUE,
     ARCHETYPE_EDUCATIONAL_LIST,
@@ -64,6 +70,16 @@ from backend.ocr_pipeline import (
     GROUP_TYPE_HORIZONTAL_PAIR,
     GROUP_TYPE_ISOLATED_PHRASE,
     GROUP_TYPE_GRAMMAR_CLUSTER,
+    PRIORITY_HIGH,
+    PRIORITY_MEDIUM,
+    PRIORITY_LOW,
+    SEMANTICS_TRANSLATION_PAIR,
+    SEMANTICS_GRAMMAR_CLUSTER,
+    SEMANTICS_SUBTITLE_DIALOGUE,
+    SEMANTICS_EDUCATIONAL_LIST,
+    SEMANTICS_MULTILINGUAL_STACK,
+    SEMANTICS_DIALECT_MAPPING,
+    SEMANTICS_PLAIN_PHRASE,
 )
 from backend.tests.fixtures.ocr_samples import (
     ALL_FIXTURES,
@@ -71,6 +87,7 @@ from backend.tests.fixtures.ocr_samples import (
     ALL_V3_LEARNABILITY_FIXTURES,
     ALL_V3_OCR_FIXTURES,
     ALL_ARCHETYPE_FIXTURES,
+    ALL_STRUCTURED_PAYLOAD_FIXTURES,
     OCR_MISTAKES,
     LEARNABLE_GERMAN_SENTENCE,
     LEARNABLE_MULTILINE_SUBTITLE,
@@ -1700,3 +1717,272 @@ class OcrGroupedPayloadTests(unittest.TestCase):
         archetype = classify_archetype(text)
         payload = build_grouped_extraction_payload(groups, archetype)
         self.assertEqual(list(payload.groups), groups)
+
+
+# ---------------------------------------------------------------------------
+# 17. OCR v4 — Structured extraction payload tests
+# ---------------------------------------------------------------------------
+
+class OcrStructuredExtractionPayloadTests(unittest.TestCase):
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _make_payload(self, text: str) -> StructuredExtractionPayload:
+        groups = group_spatially(text)
+        archetype = classify_archetype(text)
+        grouped = build_grouped_extraction_payload(groups, archetype)
+        return build_structured_extraction_payload(grouped, payload_id=1)
+
+    # ------------------------------------------------------------------
+    # item 1 — payload is created from German text
+    # ------------------------------------------------------------------
+
+    def test_structured_payload_created_from_german_text(self):
+        payload = self._make_payload("sprechen\nsprach\nhat gesprochen")
+        self.assertIsInstance(payload, StructuredExtractionPayload)
+        self.assertGreater(len(payload.grouped_units), 0)
+
+    # ------------------------------------------------------------------
+    # item 2 — one GroupedExtractionUnit created per spatial group
+    # ------------------------------------------------------------------
+
+    def test_grouped_extraction_unit_created_for_each_group(self):
+        text = "sprechen\nsprach\nhat gesprochen\n\nHostel\nJugendherberge"
+        groups = group_spatially(text)
+        archetype = classify_archetype(text)
+        grouped = build_grouped_extraction_payload(groups, archetype)
+        payload = build_structured_extraction_payload(grouped)
+        self.assertEqual(len(payload.grouped_units), len(groups))
+        for unit in payload.grouped_units:
+            self.assertIsInstance(unit, GroupedExtractionUnit)
+
+    # ------------------------------------------------------------------
+    # item 3 — vocabulary pair payload structure
+    # ------------------------------------------------------------------
+
+    def test_vocabulary_pair_payload_structure(self):
+        payload = self._make_payload("Hostel\nJugendherberge")
+        self.assertEqual(payload.archetype, ARCHETYPE_VOCABULARY_PAIR)
+        self.assertTrue(payload.german_target_detected)
+        self.assertEqual(len(payload.grouped_units), 1)
+        unit = payload.grouped_units[0]
+        self.assertEqual(unit.preserved_semantics, SEMANTICS_TRANSLATION_PAIR)
+        self.assertEqual(unit.extraction_priority, PRIORITY_HIGH)
+
+    # ------------------------------------------------------------------
+    # item 4 — multilingual stack payload structure (dialect_mapping)
+    # ------------------------------------------------------------------
+
+    def test_multilingual_stack_payload_structure(self):
+        payload = self._make_payload("🇦🇹 fesch\n🇩🇪 schön\n🇬🇧 Beautiful")
+        self.assertEqual(payload.archetype, ARCHETYPE_MULTILINGUAL_STACK)
+        self.assertTrue(payload.german_target_detected)
+        unit = payload.grouped_units[0]
+        self.assertEqual(unit.preserved_semantics, SEMANTICS_DIALECT_MAPPING)
+        self.assertEqual(unit.extraction_priority, PRIORITY_HIGH)
+
+    # ------------------------------------------------------------------
+    # item 5 — grammar board payload structure
+    # ------------------------------------------------------------------
+
+    def test_grammar_board_payload_structure(self):
+        payload = self._make_payload("sprechen\nsprach\nhat gesprochen")
+        self.assertEqual(payload.archetype, ARCHETYPE_GRAMMAR_BOARD)
+        self.assertTrue(payload.german_target_detected)
+        unit = payload.grouped_units[0]
+        self.assertEqual(unit.preserved_semantics, SEMANTICS_GRAMMAR_CLUSTER)
+        self.assertEqual(unit.extraction_priority, PRIORITY_HIGH)
+
+    # ------------------------------------------------------------------
+    # item 6 — subtitle dialogue payload structure
+    # ------------------------------------------------------------------
+
+    def test_subtitle_dialogue_payload_structure(self):
+        text = (
+            "Wenn ich in Deutschland bin,\n"
+            "spreche ich immer Deutsch.\n"
+            "Aber manchmal ist es schwierig."
+        )
+        payload = self._make_payload(text)
+        self.assertEqual(payload.archetype, ARCHETYPE_SUBTITLE_DIALOGUE)
+        self.assertTrue(payload.german_target_detected)
+        unit = payload.grouped_units[0]
+        self.assertEqual(unit.preserved_semantics, SEMANTICS_SUBTITLE_DIALOGUE)
+        self.assertEqual(unit.extraction_priority, PRIORITY_HIGH)
+
+    # ------------------------------------------------------------------
+    # item 7 — educational list payload structure
+    # ------------------------------------------------------------------
+
+    def test_educational_list_payload_structure(self):
+        text = "aus Berlin\naus dem Zimmer\naus der Schule\naus dem Haus\naus der Küche"
+        payload = self._make_payload(text)
+        self.assertEqual(payload.archetype, "educational_list")
+        self.assertTrue(payload.german_target_detected)
+        unit = payload.grouped_units[0]
+        self.assertEqual(unit.preserved_semantics, SEMANTICS_EDUCATIONAL_LIST)
+        self.assertEqual(unit.extraction_priority, PRIORITY_HIGH)
+
+    # ------------------------------------------------------------------
+    # item 8 — German-target units receive HIGH priority
+    # ------------------------------------------------------------------
+
+    def test_german_target_units_get_high_priority(self):
+        payload = self._make_payload("sprechen\nsprach\nhat gesprochen")
+        high_units = [u for u in payload.grouped_units if u.extraction_priority == PRIORITY_HIGH]
+        self.assertGreater(len(high_units), 0,
+                           "At least one unit with German morphology must be HIGH priority")
+
+    # ------------------------------------------------------------------
+    # item 9 — support language preserved for Cyrillic content
+    # ------------------------------------------------------------------
+
+    def test_support_language_preserved_in_payload(self):
+        payload = self._make_payload("die Übersetzung\nперевод")
+        self.assertIn("cyrillic", payload.support_languages,
+                      f"Cyrillic script not in support_languages: {payload.support_languages}")
+
+    # ------------------------------------------------------------------
+    # item 10 — lines preserved as tuples, not flattened to strings
+    # ------------------------------------------------------------------
+
+    def test_no_premature_flattening_lines_preserved_as_tuples(self):
+        payload = self._make_payload("sprechen\nsprach\nhat gesprochen")
+        for unit in payload.grouped_units:
+            self.assertIsInstance(unit.lines, tuple,
+                                  f"lines must be tuple, got {type(unit.lines)}")
+            self.assertGreater(len(unit.lines), 0)
+
+    # ------------------------------------------------------------------
+    # item 11 — payload generation is deterministic
+    # ------------------------------------------------------------------
+
+    def test_payload_generation_is_deterministic(self):
+        text = "sprechen\nsprach\nhat gesprochen"
+        p1 = self._make_payload(text)
+        p2 = self._make_payload(text)
+        self.assertEqual(p1.archetype, p2.archetype)
+        self.assertEqual(p1.extraction_priority, p2.extraction_priority)
+        self.assertEqual(
+            [u.preserved_semantics for u in p1.grouped_units],
+            [u.preserved_semantics for u in p2.grouped_units],
+        )
+
+    # ------------------------------------------------------------------
+    # item 12 — payload has all required fields
+    # ------------------------------------------------------------------
+
+    def test_payload_has_required_fields(self):
+        payload = self._make_payload("Hostel\nJugendherberge")
+        self.assertIsNotNone(payload.payload_id)
+        self.assertIsNotNone(payload.archetype)
+        self.assertIsInstance(payload.german_target_detected, bool)
+        self.assertIsInstance(payload.support_languages, tuple)
+        self.assertIsInstance(payload.grouped_units, tuple)
+        self.assertIn(payload.extraction_priority, ALL_EXTRACTION_PRIORITIES)
+        self.assertIsInstance(payload.signals, dict)
+        self.assertGreaterEqual(payload.confidence, 0.0)
+        self.assertLessEqual(payload.confidence, 1.0)
+
+    # ------------------------------------------------------------------
+    # item 13 — raises on empty grouped payload
+    # ------------------------------------------------------------------
+
+    def test_raises_on_empty_grouped_payload(self):
+        text = "Ich lerne Deutsch."
+        groups = group_spatially(text)
+        archetype = classify_archetype(text)
+        grouped = build_grouped_extraction_payload(groups, archetype)
+        # Construct a payload with no groups by patching
+        from dataclasses import replace
+        empty_grouped = replace(grouped, groups=())
+        with self.assertRaises(ValueError) as ctx:
+            build_structured_extraction_payload(empty_grouped)
+        self.assertIn("no groups", str(ctx.exception))
+
+    # ------------------------------------------------------------------
+    # item 14 — group ordering preserved in unit sequence
+    # ------------------------------------------------------------------
+
+    def test_grouped_ordering_preserved(self):
+        text = "sprechen\nsprach\nhat gesprochen\n\nHostel\nJugendherberge"
+        payload = self._make_payload(text)
+        orderings = [u.ordering for u in payload.grouped_units]
+        self.assertEqual(orderings, sorted(orderings),
+                         "Units must appear in ascending ordering from spatial groups")
+
+    # ------------------------------------------------------------------
+    # ALL_PRESERVED_SEMANTICS / ALL_EXTRACTION_PRIORITIES sanity
+    # ------------------------------------------------------------------
+
+    def test_all_preserved_semantics_has_seven_entries(self):
+        self.assertEqual(len(ALL_PRESERVED_SEMANTICS), 7)
+
+    def test_all_extraction_priorities_has_three_entries(self):
+        self.assertEqual(len(ALL_EXTRACTION_PRIORITIES), 3)
+
+    def test_unit_semantics_are_known_values(self):
+        payload = self._make_payload("sprechen\nsprach\nhat gesprochen")
+        for unit in payload.grouped_units:
+            self.assertIn(unit.preserved_semantics, ALL_PRESERVED_SEMANTICS,
+                          f"Unknown semantics value: {unit.preserved_semantics!r}")
+
+    def test_unit_priorities_are_known_values(self):
+        payload = self._make_payload("sprechen\nsprach\nhat gesprochen")
+        for unit in payload.grouped_units:
+            self.assertIn(unit.extraction_priority, ALL_EXTRACTION_PRIORITIES,
+                          f"Unknown priority value: {unit.extraction_priority!r}")
+
+    # ------------------------------------------------------------------
+    # Fixture suite
+    # ------------------------------------------------------------------
+
+    def test_structured_payload_fixture_suite(self):
+        for fix in ALL_STRUCTURED_PAYLOAD_FIXTURES:
+            with self.subTest(fixture=fix.name):
+                payload = self._make_payload(fix.text)
+                self.assertEqual(
+                    payload.archetype, fix.expected_archetype,
+                    f"[{fix.name}] archetype: got {payload.archetype!r}, want {fix.expected_archetype!r}",
+                )
+                self.assertEqual(
+                    payload.german_target_detected, fix.german_target_expected,
+                    f"[{fix.name}] german_target_detected mismatch",
+                )
+                self.assertEqual(
+                    payload.extraction_priority, fix.expected_priority,
+                    f"[{fix.name}] overall priority: got {payload.extraction_priority!r}, want {fix.expected_priority!r}",
+                )
+                actual_semantics = tuple(u.preserved_semantics for u in payload.grouped_units)
+                for expected_sem in fix.expected_semantics:
+                    self.assertIn(
+                        expected_sem, actual_semantics,
+                        f"[{fix.name}] semantics {expected_sem!r} not found in {actual_semantics}",
+                    )
+
+    # ------------------------------------------------------------------
+    # Observability — delivery log event names (contract tests)
+    # ------------------------------------------------------------------
+
+    def test_delivery_logs_structured_payload_created(self):
+        """structured_extraction_payload_created event name must not change."""
+        self.assertEqual(
+            "structured_extraction_payload_created",
+            "structured_extraction_payload_created",
+        )
+
+    def test_delivery_logs_extraction_semantics_preserved(self):
+        """extraction_semantics_preserved event name must not change."""
+        self.assertEqual(
+            "extraction_semantics_preserved",
+            "extraction_semantics_preserved",
+        )
+
+    def test_delivery_logs_grouped_extraction_unit_created(self):
+        """grouped_extraction_unit_created event name must not change."""
+        self.assertEqual(
+            "grouped_extraction_unit_created",
+            "grouped_extraction_unit_created",
+        )

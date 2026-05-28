@@ -682,3 +682,110 @@ ALL_ARCHETYPE_FIXTURES: tuple[ArchetypeFixture, ...] = (
     ARCHETYPE_FIX_SUBTITLE,
     ARCHETYPE_FIX_EDUCATIONAL_LIST,
 )
+
+
+# ==========================================================================
+# v4 §7 — StructuredPayloadFixture
+# ==========================================================================
+
+@dataclass(frozen=True, slots=True)
+class StructuredPayloadFixture:
+    name: str
+    text: str
+    expected_archetype: str
+    expected_unit_count: int
+    expected_semantics: tuple[str, ...]
+    expected_priority: str
+    german_target_expected: bool
+
+
+# --------------------------------------------------------------------------
+# 1. Vocabulary pair — Hostel / Jugendherberge
+# --------------------------------------------------------------------------
+STRUCTURED_VOCAB_PAIR_FIX = StructuredPayloadFixture(
+    name="structured_vocab_pair",
+    text="Hostel\nJugendherberge",
+    expected_archetype="vocabulary_pair",
+    expected_unit_count=1,
+    expected_semantics=("translation_pair_candidate",),
+    expected_priority="high",
+    german_target_expected=True,
+)
+
+# --------------------------------------------------------------------------
+# 2. Multilingual flag stack — Austrian / German / English
+# --------------------------------------------------------------------------
+STRUCTURED_MULTILINGUAL_STACK_FIX = StructuredPayloadFixture(
+    name="structured_multilingual_stack",
+    text="🇦🇹 fesch\n🇩🇪 schön\n🇬🇧 Beautiful",
+    expected_archetype="multilingual_stack",
+    expected_unit_count=1,
+    expected_semantics=("dialect_mapping_candidate",),
+    expected_priority="high",
+    german_target_expected=True,
+)
+
+# --------------------------------------------------------------------------
+# 3. Grammar board — verb conjugation table
+# --------------------------------------------------------------------------
+STRUCTURED_GRAMMAR_BOARD_FIX = StructuredPayloadFixture(
+    name="structured_grammar_board",
+    text="sprechen\nsprach\nhat gesprochen",
+    expected_archetype="grammar_board",
+    expected_unit_count=1,
+    expected_semantics=("grammar_cluster_candidate",),
+    expected_priority="high",
+    german_target_expected=True,
+)
+
+# --------------------------------------------------------------------------
+# 4. Bilingual phrase — German article noun + Cyrillic translation
+# --------------------------------------------------------------------------
+STRUCTURED_BILINGUAL_PHRASE_FIX = StructuredPayloadFixture(
+    name="structured_bilingual_phrase",
+    text="die Übersetzung\nперевод",
+    expected_archetype="bilingual_phrase_overlay",
+    expected_unit_count=1,
+    expected_semantics=("translation_pair_candidate",),
+    expected_priority="high",
+    german_target_expected=True,
+)
+
+# --------------------------------------------------------------------------
+# 5. Subtitle dialogue — multi-sentence German passage
+# --------------------------------------------------------------------------
+STRUCTURED_SUBTITLE_FIX = StructuredPayloadFixture(
+    name="structured_subtitle_dialogue",
+    text=(
+        "Wenn ich in Deutschland bin,\n"
+        "spreche ich immer Deutsch.\n"
+        "Aber manchmal ist es schwierig."
+    ),
+    expected_archetype="subtitle_dialogue",
+    expected_unit_count=1,
+    expected_semantics=("subtitle_dialogue_candidate",),
+    expected_priority="high",
+    german_target_expected=True,
+)
+
+# --------------------------------------------------------------------------
+# 6. Educational list — prepositional phrases with shared prefix
+# --------------------------------------------------------------------------
+STRUCTURED_EDUCATIONAL_LIST_FIX = StructuredPayloadFixture(
+    name="structured_educational_list",
+    text="aus Berlin\naus dem Zimmer\naus der Schule\naus dem Haus\naus der Küche",
+    expected_archetype="educational_list",
+    expected_unit_count=1,
+    expected_semantics=("educational_list_candidate",),
+    expected_priority="high",
+    german_target_expected=True,
+)
+
+ALL_STRUCTURED_PAYLOAD_FIXTURES: tuple[StructuredPayloadFixture, ...] = (
+    STRUCTURED_VOCAB_PAIR_FIX,
+    STRUCTURED_MULTILINGUAL_STACK_FIX,
+    STRUCTURED_GRAMMAR_BOARD_FIX,
+    STRUCTURED_BILINGUAL_PHRASE_FIX,
+    STRUCTURED_SUBTITLE_FIX,
+    STRUCTURED_EDUCATIONAL_LIST_FIX,
+)

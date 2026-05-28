@@ -1487,8 +1487,11 @@ def _score_group_educational_list(
     mode_fw  = max(set(first_words), key=first_words.count) if first_words else ""
     mode_cnt = first_words.count(mode_fw)
     if mode_cnt >= 3 and mode_fw:
-        sigs["common_prefix"] = mode_cnt / len(lines)
-        return 0.78, sigs
+        prefix_density = mode_cnt / len(lines)
+        sigs["common_prefix"] = prefix_density
+        # Strong prefix gives educational_list a clear edge over grammar_cluster
+        # (which caps at 0.78 without partizip_perfekt).
+        return min(0.83, 0.63 + mode_cnt * 0.06), sigs
 
     return 0.40, sigs
 
@@ -1610,4 +1613,250 @@ def build_grouped_extraction_payload(
         groups=tuple(groups),
         candidate_count=len(groups),
         german_group_count=german_group_count,
+    )
+
+
+# ============================================================================
+# OCR Pipeline v4 — Structured Extraction Preparation
+# ============================================================================
+#
+# Builds typed, archetype-aware extraction payload BEFORE the LLM extraction step.
+# Each spatial group becomes a GroupedExtractionUnit with:
+#   - preserved_semantics: typed structural annotation (no hallucination)
+#   - extraction_priority: high/medium/low (German-target prioritized)
+#   - source_metadata: spatial group signals passed through verbatim
+#
+# Contract:
+#   - build_structured_extraction_payload raises on empty grouped_payload.groups
+#   - No fallback to flat text join
+#   - No semantic inference — only structural annotation from observable signals
+#   - Deterministic: same input → same output
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+# v4: Preserved semantics constants
+# ---------------------------------------------------------------------------
+
+SEMANTICS_TRANSLATION_PAIR   = "translation_pair_candidate"
+SEMANTICS_GRAMMAR_CLUSTER    = "grammar_cluster_candidate"
+SEMANTICS_SUBTITLE_DIALOGUE  = "subtitle_dialogue_candidate"
+SEMANTICS_EDUCATIONAL_LIST   = "educational_list_candidate"
+SEMANTICS_MULTILINGUAL_STACK = "multilingual_stack_candidate"
+SEMANTICS_DIALECT_MAPPING    = "dialect_mapping_candidate"
+SEMANTICS_PLAIN_PHRASE       = "plain_phrase"
+
+ALL_PRESERVED_SEMANTICS: tuple[str, ...] = (
+    SEMANTICS_TRANSLATION_PAIR,
+    SEMANTICS_GRAMMAR_CLUSTER,
+    SEMANTICS_SUBTITLE_DIALOGUE,
+    SEMANTICS_EDUCATIONAL_LIST,
+    SEMANTICS_MULTILINGUAL_STACK,
+    SEMANTICS_DIALECT_MAPPING,
+    SEMANTICS_PLAIN_PHRASE,
+)
+
+# ---------------------------------------------------------------------------
+# v4: Extraction priority constants
+# ---------------------------------------------------------------------------
+
+PRIORITY_HIGH   = "high"
+PRIORITY_MEDIUM = "medium"
+PRIORITY_LOW    = "low"
+
+ALL_EXTRACTION_PRIORITIES: tuple[str, ...] = (
+    PRIORITY_HIGH,
+    PRIORITY_MEDIUM,
+    PRIORITY_LOW,
+)
+
+# ---------------------------------------------------------------------------
+# v4: Result types
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class GroupedExtractionUnit:
+    """
+    One spatial group prepared for archetype-aware extraction.
+    Lines are preserved verbatim — no filtering, no joining, no hallucination.
+    preserved_semantics is a typed structural annotation of what this group IS,
+    not a semantic inference of its meaning.
+    """
+    unit_id: int
+    group_type: str            # one of GROUP_TYPE_* constants
+    lines: tuple[str, ...]
+    ordering: int              # 0-based position among all units
+    preserved_semantics: str   # one of SEMANTICS_* constants
+    confidence: float
+    extraction_priority: str   # one of PRIORITY_* constants
+    source_metadata: dict[str, float]
+
+
+@dataclass(frozen=True, slots=True)
+class StructuredExtractionPayload:
+    """
+    Complete archetype-aware extraction payload.
+    Replaces the flat text blob that was previously sent directly to split_blocks.
+    German-learning content is always the primary semantic target.
+    Support languages (Cyrillic etc.) are preserved as metadata, not discarded.
+    """
+    payload_id: int
+    archetype: str
+    german_target_detected: bool
+    support_languages: tuple[str, ...]  # non-Latin scripts present in content
+    grouped_units: tuple[GroupedExtractionUnit, ...]
+    extraction_priority: str            # highest priority across all units
+    signals: dict[str, float]          # archetype-level signals
+    confidence: float
+
+# ---------------------------------------------------------------------------
+# v4: Internal — group semantics resolution
+# ---------------------------------------------------------------------------
+
+_GROUP_SEMANTICS_MAP: dict[str, str] = {
+    GROUP_TYPE_HORIZONTAL_PAIR:            SEMANTICS_TRANSLATION_PAIR,
+    GROUP_TYPE_VERTICAL_TRANSLATION_STACK: SEMANTICS_MULTILINGUAL_STACK,
+    GROUP_TYPE_GRAMMAR_CLUSTER:            SEMANTICS_GRAMMAR_CLUSTER,
+    GROUP_TYPE_SUBTITLE_CLUSTER:           SEMANTICS_SUBTITLE_DIALOGUE,
+    GROUP_TYPE_EDUCATIONAL_LIST_CLUSTER:   SEMANTICS_EDUCATIONAL_LIST,
+    GROUP_TYPE_ISOLATED_PHRASE:            SEMANTICS_PLAIN_PHRASE,
+    GROUP_TYPE_UNKNOWN_CLUSTER:            SEMANTICS_PLAIN_PHRASE,
+}
+
+
+def _resolve_group_semantics(
+    grp: OcrSpatialGroup,
+    archetype_result: OcrArchetypeResult,
+) -> str:
+    """
+    Map a spatial group to its preserved_semantics annotation.
+    Archetype-level context overrides the default group-type mapping when
+    the overall layout provides a stronger structural signal than the group alone.
+    """
+    # bilingual_phrase archetype: both stacks and horizontal pairs are translation pairs
+    if archetype_result.archetype == ARCHETYPE_BILINGUAL_PHRASE:
+        if grp.group_type in (GROUP_TYPE_HORIZONTAL_PAIR, GROUP_TYPE_VERTICAL_TRANSLATION_STACK):
+            return SEMANTICS_TRANSLATION_PAIR
+
+    # multilingual_stack archetype with German + vertical stack: Austrian dialect mapping
+    if (
+        archetype_result.archetype == ARCHETYPE_MULTILINGUAL_STACK
+        and grp.group_type == GROUP_TYPE_VERTICAL_TRANSLATION_STACK
+        and grp.german_target_detected
+    ):
+        return SEMANTICS_DIALECT_MAPPING
+
+    return _GROUP_SEMANTICS_MAP.get(grp.group_type, SEMANTICS_PLAIN_PHRASE)
+
+
+# ---------------------------------------------------------------------------
+# v4: Internal — unit extraction priority
+# ---------------------------------------------------------------------------
+
+_HIGH_PRIORITY_ARCHETYPES: frozenset[str] = frozenset({
+    ARCHETYPE_GRAMMAR_BOARD,
+    ARCHETYPE_VOCABULARY_PAIR,
+    ARCHETYPE_BILINGUAL_PHRASE,
+    ARCHETYPE_EDUCATIONAL_LIST,
+    ARCHETYPE_MULTILINGUAL_STACK,  # Austrian dialect stacks are primary German content
+})
+
+_PRIORITY_RANK: dict[str, int] = {
+    PRIORITY_HIGH: 2,
+    PRIORITY_MEDIUM: 1,
+    PRIORITY_LOW: 0,
+}
+
+
+def _compute_unit_priority(
+    grp: OcrSpatialGroup,
+    archetype_result: OcrArchetypeResult,
+) -> str:
+    """
+    Assign extraction priority to a spatial group unit.
+
+    HIGH:   German grammar structures / vocabulary pairs / Austrian dialect stacks /
+            subtitle dialogue with German / bilingual phrase overlays
+    MEDIUM: aligned translations without German morphology / support explanations /
+            educational list items
+    LOW:    non-German groups / unknown clusters / isolated phrases without German
+
+    German content is always the primary semantic target.
+    Support translations (Cyrillic etc.) are MEDIUM — preserved, never silently dropped.
+    """
+    if grp.german_target_detected:
+        if grp.group_type in (GROUP_TYPE_GRAMMAR_CLUSTER, GROUP_TYPE_HORIZONTAL_PAIR):
+            return PRIORITY_HIGH
+        if archetype_result.archetype in _HIGH_PRIORITY_ARCHETYPES:
+            return PRIORITY_HIGH
+        if grp.group_type == GROUP_TYPE_SUBTITLE_CLUSTER:
+            return PRIORITY_HIGH
+        return PRIORITY_MEDIUM
+
+    # Support content: aligned translations and lists without confirmed German morphology
+    if grp.group_type in (
+        GROUP_TYPE_VERTICAL_TRANSLATION_STACK,
+        GROUP_TYPE_EDUCATIONAL_LIST_CLUSTER,
+    ):
+        return PRIORITY_MEDIUM
+
+    return PRIORITY_LOW
+
+
+# ---------------------------------------------------------------------------
+# v4: Public — build_structured_extraction_payload
+# ---------------------------------------------------------------------------
+
+def build_structured_extraction_payload(
+    grouped_payload: OcrGroupedPayload,
+    payload_id: int = 0,
+) -> StructuredExtractionPayload:
+    """
+    Build a typed, archetype-aware structured extraction payload from spatial groups.
+
+    Raises ValueError if grouped_payload has no groups — no flat fallback.
+    Every unit preserves group ordering, lines, type, and semantics annotation.
+    Support languages (non-Latin scripts) are collected and preserved as metadata.
+    """
+    if not grouped_payload.groups:
+        raise ValueError(
+            "build_structured_extraction_payload: grouped_payload has no groups — "
+            "structured extraction requires non-empty spatial groups"
+        )
+
+    archetype_result = grouped_payload.archetype_result
+
+    support_langs: set[str] = set()
+    for grp in grouped_payload.groups:
+        for script in _detect_scripts("\n".join(grp.lines)):
+            if script != "latin":
+                support_langs.add(script)
+
+    units: list[GroupedExtractionUnit] = []
+    for grp in grouped_payload.groups:
+        units.append(GroupedExtractionUnit(
+            unit_id=grp.group_id,
+            group_type=grp.group_type,
+            lines=grp.lines,
+            ordering=grp.ordering,
+            preserved_semantics=_resolve_group_semantics(grp, archetype_result),
+            confidence=grp.confidence,
+            extraction_priority=_compute_unit_priority(grp, archetype_result),
+            source_metadata=dict(grp.signals),
+        ))
+
+    overall_priority = max(
+        (u.extraction_priority for u in units),
+        key=lambda p: _PRIORITY_RANK.get(p, 0),
+        default=PRIORITY_LOW,
+    )
+
+    return StructuredExtractionPayload(
+        payload_id=payload_id,
+        archetype=archetype_result.archetype,
+        german_target_detected=archetype_result.german_target_count > 0,
+        support_languages=tuple(sorted(support_langs)),
+        grouped_units=tuple(units),
+        extraction_priority=overall_priority,
+        signals=dict(archetype_result.signals),
+        confidence=archetype_result.confidence,
     )

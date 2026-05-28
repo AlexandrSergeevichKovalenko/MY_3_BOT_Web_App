@@ -232,6 +232,8 @@ from backend.ocr_pipeline import (
     classify_archetype,
     group_spatially,
     build_grouped_extraction_payload,
+    build_structured_extraction_payload,
+    PRIORITY_HIGH,
 )
 from pydub import AudioSegment
 try:
@@ -35106,15 +35108,6 @@ def _run_shortcut_lookup_delivery(
                 _grouped_payload.candidate_count, _grouped_payload.german_group_count,
                 _archetype_result.archetype,
             )
-            logging.info(
-                "ocr_layout_semantics_preserved user_id=%s ingest_key=%s "
-                "archetype=%s grouping_count=%d german_target_detected=%s "
-                "candidate_count=%d routing_decision=pending",
-                safe_user_id, normalized_ingest_key,
-                _archetype_result.archetype, len(_groups),
-                _archetype_result.german_target_count > 0,
-                len(_groups),
-            )
             for _grp in _grouped_payload.groups:
                 logging.info(
                     "ocr_spatial_group_created user_id=%s group_id=%d "
@@ -35123,9 +35116,46 @@ def _run_shortcut_lookup_delivery(
                     safe_user_id, _grp.group_id, _grp.group_type,
                     len(_grp.lines), _grp.confidence, _grp.german_target_detected,
                 )
+
+            # OCR v4 — structured extraction payload
+            _structured_payload = build_structured_extraction_payload(
+                _grouped_payload, payload_id=safe_user_id
+            )
+            logging.info(
+                "structured_extraction_payload_created user_id=%s ingest_key=%s "
+                "payload_id=%d archetype=%s unit_count=%d german_target=%s "
+                "overall_priority=%s confidence=%.3f support_language_count=%d",
+                safe_user_id, normalized_ingest_key,
+                _structured_payload.payload_id, _structured_payload.archetype,
+                len(_structured_payload.grouped_units),
+                _structured_payload.german_target_detected,
+                _structured_payload.extraction_priority,
+                _structured_payload.confidence,
+                len(_structured_payload.support_languages),
+            )
+            for _unit in _structured_payload.grouped_units:
+                logging.info(
+                    "grouped_extraction_unit_created user_id=%s unit_id=%d "
+                    "group_type=%s preserved_semantics=%s extraction_priority=%s "
+                    "line_count=%d confidence=%.3f",
+                    safe_user_id, _unit.unit_id, _unit.group_type,
+                    _unit.preserved_semantics, _unit.extraction_priority,
+                    len(_unit.lines), _unit.confidence,
+                )
+            logging.info(
+                "extraction_semantics_preserved user_id=%s ingest_key=%s "
+                "archetype=%s german_target_count=%d support_language_count=%d "
+                "high_priority_units=%d total_units=%d",
+                safe_user_id, normalized_ingest_key,
+                _archetype_result.archetype, _archetype_result.german_target_count,
+                len(_structured_payload.support_languages),
+                sum(1 for _u in _structured_payload.grouped_units
+                    if _u.extraction_priority == PRIORITY_HIGH),
+                len(_structured_payload.grouped_units),
+            )
         except ValueError as _grp_exc:
             logging.error(
-                "ocr_grouped_payload_error user_id=%s ingest_key=%s error=%s",
+                "extraction_payload_contract_violation user_id=%s ingest_key=%s error=%s",
                 safe_user_id, normalized_ingest_key, _grp_exc,
             )
 
