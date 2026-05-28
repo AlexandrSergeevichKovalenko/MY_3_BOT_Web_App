@@ -287,3 +287,147 @@ ALL_FIXTURES: tuple[OcrFixture, ...] = (
     INSTAGRAM_STORY_MIXED,
     TIKTOK_WHITESPACE_NOISE,
 )
+
+
+# =============================================================================
+# v2 Learnability fixtures — already-cleaned text (after OCR pipeline v1)
+# scored at the candidate level.
+# =============================================================================
+
+@dataclass(frozen=True, slots=True)
+class LearnabilityFixture:
+    name: str
+    text: str            # already-cleaned text (output of OCR pipeline v1)
+    expected_label: str  # "likely_learnable" | "likely_noise" | "uncertain"
+    score_min: float     # minimum acceptable score
+    score_max: float     # maximum acceptable score
+
+
+# --------------------------------------------------------------------------
+# 1. Obvious garbage — pure numeric / engagement residual
+# --------------------------------------------------------------------------
+NOISE_PURE_NUMERIC = LearnabilityFixture(
+    name="noise_pure_numeric",
+    text="89",
+    expected_label="likely_noise",
+    score_min=-1.0, score_max=-0.21,
+)
+
+NOISE_EMOJI_ONLY = LearnabilityFixture(
+    name="noise_emoji_only",
+    text="😂😂😂😂",
+    expected_label="likely_noise",
+    score_min=-1.0, score_max=-0.21,
+)
+
+NOISE_ENGAGEMENT_RESIDUAL = LearnabilityFixture(
+    name="noise_engagement_residual",
+    text="1.2K likes",
+    expected_label="likely_noise",
+    score_min=-1.0, score_max=-0.21,
+)
+
+NOISE_SINGLE_CTA = LearnabilityFixture(
+    name="noise_single_cta",
+    text="Follow",
+    expected_label="likely_noise",
+    score_min=-1.0, score_max=-0.21,
+)
+
+NOISE_DOUBLE_CTA = LearnabilityFixture(
+    name="noise_double_cta",
+    text="Follow\nSubscribe",
+    expected_label="likely_noise",
+    score_min=-1.0, score_max=-0.21,
+)
+
+# --------------------------------------------------------------------------
+# 2. Borderline subtitle fragments — expected uncertain
+# --------------------------------------------------------------------------
+UNCERTAIN_SHORT_SENTENCE = LearnabilityFixture(
+    name="uncertain_short_sentence",
+    text="Okay!",
+    expected_label="uncertain",
+    score_min=-0.19, score_max=0.19,
+)
+
+UNCERTAIN_MIXED_NUMBER_TEXT = LearnabilityFixture(
+    name="uncertain_mixed_number_text",
+    text="3:42 Ich lerne",
+    expected_label="uncertain",
+    score_min=-0.19, score_max=0.19,
+)
+
+UNCERTAIN_REACTION_MEME = LearnabilityFixture(
+    name="uncertain_reaction_meme",
+    text="😂😂 so funny lol 😂😂",
+    expected_label="uncertain",
+    score_min=-0.19, score_max=0.19,
+)
+
+# --------------------------------------------------------------------------
+# 3. Clearly learnable — normal German phrases and sentences
+# --------------------------------------------------------------------------
+LEARNABLE_GERMAN_SENTENCE = LearnabilityFixture(
+    name="learnable_german_sentence",
+    text="Das ist ein guter Tag.",
+    expected_label="likely_learnable",
+    score_min=0.2, score_max=1.0,
+)
+
+LEARNABLE_GERMAN_VERB_SENTENCE = LearnabilityFixture(
+    name="learnable_german_verb_sentence",
+    text="Ich möchte Deutsch lernen.",
+    expected_label="likely_learnable",
+    score_min=0.2, score_max=1.0,
+)
+
+LEARNABLE_MULTILINE_SUBTITLE = LearnabilityFixture(
+    name="learnable_multiline_subtitle",
+    text="Wenn ich in Deutschland bin,\nspreche ich immer Deutsch.",
+    expected_label="likely_learnable",
+    score_min=0.2, score_max=1.0,
+)
+
+LEARNABLE_RUSSIAN_PHRASE = LearnabilityFixture(
+    name="learnable_russian_phrase",
+    text="Привет, как дела? Всё хорошо.",
+    expected_label="likely_learnable",
+    score_min=0.2, score_max=1.0,
+)
+
+LEARNABLE_PEDAGOGICAL = LearnabilityFixture(
+    name="learnable_pedagogical",
+    text="aufgeben — to give up, to abandon",
+    expected_label="likely_learnable",
+    score_min=0.2, score_max=1.0,
+)
+
+LEARNABLE_DENSE_SUBTITLES = LearnabilityFixture(
+    name="learnable_dense_subtitles",
+    text=(
+        "Ich lerne jeden Tag neue Wörter.\n"
+        "Das macht mir viel Freude.\n"
+        "Deutsch ist eine schöne Sprache."
+    ),
+    expected_label="likely_learnable",
+    score_min=0.2, score_max=1.0,
+)
+
+
+ALL_LEARNABILITY_FIXTURES: tuple[LearnabilityFixture, ...] = (
+    NOISE_PURE_NUMERIC,
+    NOISE_EMOJI_ONLY,
+    NOISE_ENGAGEMENT_RESIDUAL,
+    NOISE_SINGLE_CTA,
+    NOISE_DOUBLE_CTA,
+    UNCERTAIN_SHORT_SENTENCE,
+    UNCERTAIN_MIXED_NUMBER_TEXT,
+    UNCERTAIN_REACTION_MEME,
+    LEARNABLE_GERMAN_SENTENCE,
+    LEARNABLE_GERMAN_VERB_SENTENCE,
+    LEARNABLE_MULTILINE_SUBTITLE,
+    LEARNABLE_RUSSIAN_PHRASE,
+    LEARNABLE_PEDAGOGICAL,
+    LEARNABLE_DENSE_SUBTITLES,
+)

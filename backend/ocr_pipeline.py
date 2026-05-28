@@ -400,3 +400,350 @@ ALL_RULE_LISTS: tuple[list[_CleanupRule], ...] = (
     _STRUCTURAL_RULES,
     _OCR_ARTIFACT_RULES,
 )
+
+
+# ============================================================================
+# OCR Intelligence Pipeline — v2: Semantic Learnability Filtering
+# ============================================================================
+#
+# Runs AFTER OCR pipeline v1 (whitespace + structural cleanup).
+# Segments cleaned text into candidate units and scores each for learnability
+# BEFORE the expensive LLM vocabulary extraction step.
+#
+# Flow:
+#   cleaned_text
+#       → segment_candidates()   → list[OcrCandidate]
+#       → route_candidates()     → (routing, pass_list, noise_list)
+#       → caller: skip LLM if routing=="skip_all_noise"; else filter noise and extract
+# ============================================================================
+
+
+# ---------------------------------------------------------------------------
+# v2 public types
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class OcrCandidate:
+    """One logical unit extracted from cleaned OCR text."""
+    text: str
+    line_count: int
+    token_estimate: int          # rough: len(text) // 4, min 1
+    detected_languages: tuple[str, ...]
+    char_offset: int             # byte offset in original cleaned text (debugging)
+
+
+@dataclass(frozen=True, slots=True)
+class LearnabilityScore:
+    """
+    Learnability classification for one OcrCandidate.
+
+    label     — "likely_learnable" | "likely_noise" | "uncertain"
+    score     — weighted sum of signals, clamped to [-1.0, +1.0]
+    breakdown — {dimension: contribution} for every dimension that fired
+    """
+    label: str
+    score: float
+    breakdown: dict[str, float]
+
+
+# ---------------------------------------------------------------------------
+# Scoring thresholds — explicit constants, referenced by tests
+# ---------------------------------------------------------------------------
+
+# score >= _LEARNABLE_THRESHOLD → "likely_learnable"
+# score <= _NOISE_THRESHOLD     → "likely_noise"
+# otherwise                     → "uncertain"
+LEARNABLE_THRESHOLD: float = 0.2
+NOISE_THRESHOLD: float = -0.2
+
+
+# ---------------------------------------------------------------------------
+# Known vocabulary for residual-noise detection
+# ---------------------------------------------------------------------------
+
+_ENGAGEMENT_RESIDUAL_WORDS: frozenset[str] = frozenset({
+    "likes", "views", "followers", "subscribers", "shares", "comments",
+    "лайков", "просмотров", "подписчиков", "комментариев",
+})
+
+_ISOLATED_CTA_WORDS: frozenset[str] = frozenset({
+    "follow", "subscribe", "подписаться", "like", "comment", "share",
+    "поделиться", "нравится", "repost", "репост",
+})
+
+
+# ---------------------------------------------------------------------------
+# Internal: emoji character counter (reuses v1 ranges)
+# ---------------------------------------------------------------------------
+
+def _count_emoji_chars(text: str) -> int:
+    return sum(
+        1 for c in text
+        if "\U00002600" <= c <= "\U000027BF"
+        or "\U0001F000" <= c <= "\U0001FFFF"
+        or "\U0001FA00" <= c <= "\U0001FAFF"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Scoring: _compute_signals
+# ---------------------------------------------------------------------------
+
+def _compute_signals(candidate: OcrCandidate) -> dict[str, float]:
+    """
+    Compute per-dimension scoring signals for one candidate.
+
+    Each dimension contributes at most one entry to the returned dict.
+    Only dimensions with a non-zero contribution are included.
+    """
+    text = candidate.text
+    total = len(text)
+
+    if total == 0:
+        return {"text_length": -0.8}
+
+    alpha = sum(1 for c in text if c.isalpha())
+
+    # Hard override: no alphabetic characters — pure numeric/emoji/symbol content.
+    if alpha == 0:
+        return {"no_alphabetic_chars": -1.0}
+
+    digits  = sum(1 for c in text if c.isdigit())
+    emoji   = _count_emoji_chars(text)
+    symbols = sum(1 for c in text if not c.isalpha() and not c.isdigit() and not c.isspace())
+
+    alpha_ratio   = alpha   / total
+    numeric_ratio = digits  / total
+    emoji_ratio   = emoji   / total
+    symbol_ratio  = symbols / total
+
+    tokens = text.split()
+    meaningful = [t for t in tokens if len(t) >= 3 and any(c.isalpha() for c in t)]
+
+    signals: dict[str, float] = {}
+
+    # ---- text_length ----
+    if total < 3:
+        signals["text_length"] = -0.8
+    elif total < 6:
+        signals["text_length"] = -0.3
+    elif 15 <= total <= 300:
+        signals["text_length"] = 0.15
+    elif 5 <= total < 15:
+        signals["text_length"] = 0.05
+
+    # ---- alpha_ratio ----
+    if alpha_ratio >= 0.7:
+        signals["alpha_ratio"] = 0.2
+    elif alpha_ratio >= 0.55:
+        signals["alpha_ratio"] = 0.1
+    elif alpha_ratio < 0.3:
+        signals["alpha_ratio"] = -0.3
+    elif alpha_ratio < 0.5:
+        signals["alpha_ratio"] = -0.1
+
+    # ---- emoji_ratio ----
+    if emoji_ratio > 0.3:
+        signals["emoji_ratio"] = -0.6
+    elif emoji_ratio > 0.15:
+        signals["emoji_ratio"] = -0.2
+
+    # ---- numeric_ratio ----
+    if numeric_ratio > 0.4:
+        signals["numeric_ratio"] = -0.4
+    elif numeric_ratio > 0.25:
+        signals["numeric_ratio"] = -0.15
+
+    # ---- symbol_density ----
+    if symbol_ratio > 0.25:
+        signals["symbol_density"] = -0.3
+    elif symbol_ratio > 0.15:
+        signals["symbol_density"] = -0.1
+
+    # ---- all_caps_label ----
+    # ALL-UPPERCASE short strings are typically UI labels, not learnable content.
+    alpha_only = "".join(c for c in text if c.isalpha())
+    if alpha_only and alpha_only == alpha_only.upper() and len(tokens) <= 4 and total <= 30:
+        signals["all_caps_label"] = -0.5
+
+    # ---- engagement_residual ----
+    text_lower = text.lower()
+    if any(w in text_lower for w in _ENGAGEMENT_RESIDUAL_WORDS):
+        signals["engagement_residual"] = -0.5
+
+    # ---- isolated_cta ----
+    stripped_lower = text.strip().lower()
+    if stripped_lower in _ISOLATED_CTA_WORDS:
+        # Entire text is a single CTA word.
+        signals["isolated_cta"] = -0.6
+    elif tokens and len(tokens) <= 3 and all(t.lower() in _ISOLATED_CTA_WORDS for t in tokens):
+        # Up to 3 tokens, all recognised CTA words — strong noise.
+        signals["isolated_cta"] = -0.9
+
+    # ---- url_pattern ----
+    if re.search(r"https?://|www\.", text, re.IGNORECASE):
+        signals["url_pattern"] = -0.5
+
+    # ---- timestamp_pattern ----
+    # Inline video timestamps (e.g. "3:42") are noise residuals, not learnable.
+    if re.search(r"(?<!\w)\d{1,2}:\d{2}(?!\w)", text):
+        signals["timestamp_pattern"] = -0.2
+
+    # ---- sentence_punct ----
+    # Require punctuation that is genuinely sentence-terminal: ! or ?, or a period
+    # NOT surrounded by digits (to exclude decimal points like "1.2K").
+    if re.search(r"[!?]|(?<!\d)\.(?!\d)", text):
+        signals["sentence_punct"] = 0.2
+
+    # ---- pedagogical_marker ----
+    # Definition separators (→ — –) or explicit grammar case labels.
+    if re.search(r"[→—–]|[:=](?!\d)", text) or re.search(
+        r"\b(?:Akkusativ|Dativ|Nominativ|Genitiv)\b", text, re.IGNORECASE
+    ):
+        signals["pedagogical_marker"] = 0.25
+
+    # ---- verb_structure ----
+    # German infinitives end in -en, -ieren, -eln, -ern.
+    if re.search(r"\b[A-Za-zÄÖÜäöüß]{3,}(?:ieren|eln|ern|en)\b", text, re.UNICODE):
+        signals["verb_structure"] = 0.15
+
+    # ---- noun_capitalization ----
+    # German nouns are capitalised; ≥2 such words is a strong signal for real German text.
+    if len(re.findall(r"\b[A-ZÄÖÜ][a-zäöüß]{2,}\b", text)) >= 2:
+        signals["noun_capitalization"] = 0.1
+
+    # ---- token_count ----
+    if len(meaningful) >= 3:
+        signals["token_count"] = 0.15
+    elif len(meaningful) >= 2:
+        signals["token_count"] = 0.07
+
+    return signals
+
+
+# ---------------------------------------------------------------------------
+# Public: score_learnability
+# ---------------------------------------------------------------------------
+
+def score_learnability(candidate: OcrCandidate) -> LearnabilityScore:
+    """
+    Score one OcrCandidate for learnability.
+
+    Returns LearnabilityScore with:
+      label     — "likely_learnable" | "likely_noise" | "uncertain"
+      score     — sum of fired signals, clamped to [-1.0, +1.0]
+      breakdown — per-dimension contributions (only fired dimensions)
+    """
+    breakdown = _compute_signals(candidate)
+    raw = sum(breakdown.values())
+    score = max(-1.0, min(1.0, raw))
+
+    if score >= LEARNABLE_THRESHOLD:
+        label = "likely_learnable"
+    elif score <= NOISE_THRESHOLD:
+        label = "likely_noise"
+    else:
+        label = "uncertain"
+
+    logging.debug(
+        "ocr_candidate_scored label=%s score=%.3f breakdown=%s text_preview=%r",
+        label, score, breakdown, candidate.text[:40],
+    )
+    return LearnabilityScore(label=label, score=round(score, 4), breakdown=breakdown)
+
+
+# ---------------------------------------------------------------------------
+# Public: segment_candidates
+# ---------------------------------------------------------------------------
+
+def segment_candidates(text: str) -> list[OcrCandidate]:
+    """
+    Split cleaned OCR text into ordered candidate units.
+
+    Blank lines (2+ consecutive newlines) create hard segment boundaries.
+    Consecutive non-blank lines within a paragraph are kept together to
+    preserve multiline subtitle coherence.
+
+    Returns at least one candidate even when no blank lines are found.
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+
+    paragraphs = re.split(r"\n{2,}", raw)
+    candidates: list[OcrCandidate] = []
+    search_from = 0
+
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+        char_offset = raw.find(para, search_from)
+        if char_offset < 0:
+            char_offset = search_from
+        lines = [ln for ln in para.splitlines() if ln.strip()]
+        detected = _detect_scripts(para)
+        cand = OcrCandidate(
+            text=para,
+            line_count=len(lines),
+            token_estimate=max(1, len(para) // 4),
+            detected_languages=detected,
+            char_offset=char_offset,
+        )
+        logging.debug(
+            "ocr_candidate_created line_count=%d token_estimate=%d "
+            "detected_languages=%s text_preview=%r",
+            cand.line_count, cand.token_estimate,
+            ",".join(detected) or "none", para[:40],
+        )
+        candidates.append(cand)
+        search_from = char_offset + len(para)
+
+    if not candidates:
+        return [OcrCandidate(
+            text=raw,
+            line_count=len([ln for ln in raw.splitlines() if ln.strip()]),
+            token_estimate=max(1, len(raw) // 4),
+            detected_languages=_detect_scripts(raw),
+            char_offset=0,
+        )]
+    return candidates
+
+
+# ---------------------------------------------------------------------------
+# Public: route_candidates
+# ---------------------------------------------------------------------------
+
+def route_candidates(
+    candidates: list[OcrCandidate],
+) -> tuple[
+    str,
+    list[tuple[OcrCandidate, LearnabilityScore]],
+    list[tuple[OcrCandidate, LearnabilityScore]],
+]:
+    """
+    Score every candidate and split into pass and noise lists.
+
+    Returns:
+      routing  — "skip_all_noise" if every candidate is noise, else "proceed"
+      pass_list  — [(candidate, score), ...] for non-noise candidates
+      noise_list — [(candidate, score), ...] for likely_noise candidates
+    """
+    pass_list:  list[tuple[OcrCandidate, LearnabilityScore]] = []
+    noise_list: list[tuple[OcrCandidate, LearnabilityScore]] = []
+
+    for cand in candidates:
+        lscore = score_learnability(cand)
+        if lscore.label == "likely_noise":
+            logging.info(
+                "ocr_candidate_skipped_noise candidate_length=%d token_estimate=%d "
+                "score=%.3f breakdown=%s text_preview=%r",
+                len(cand.text), cand.token_estimate,
+                lscore.score, lscore.breakdown, cand.text[:60],
+            )
+            noise_list.append((cand, lscore))
+        else:
+            pass_list.append((cand, lscore))
+
+    routing = "skip_all_noise" if not pass_list else "proceed"
+    return routing, pass_list, noise_list

@@ -1,7 +1,7 @@
 """
-Tests for backend/ocr_pipeline.py — OCR Intelligence Pipeline v1.
+Tests for backend/ocr_pipeline.py — OCR Intelligence Pipeline v1 + v2.
 
-Coverage:
+v1 Coverage:
   - Rule metadata: unique names, stage ordering
   - Stage 1: whitespace normalization (deterministic, idempotent)
   - Stage 2: structural cleanup — Instagram/TikTok noise removal
@@ -11,6 +11,14 @@ Coverage:
   - Fixture suite: all 10 real-world fixtures pass must_keep / must_drop
   - Safety: no catastrophic deletion of learnable content
   - Backend integration: pipeline wired into _start_shortcut_lookup_enqueue_runner
+
+v2 Coverage:
+  - Candidate segmentation: blank-line boundaries, multiline preservation
+  - Learnability scoring: signal breakdown, determinism, thresholds
+  - Classification: noise / uncertain / learnable against fixture suite
+  - Route decisions: skip_all_noise vs proceed
+  - No catastrophic filtering of real learnable content
+  - Delivery routing: noise payload → skip LLM; learnable → LLM called
 """
 from __future__ import annotations
 
@@ -19,15 +27,30 @@ from unittest.mock import MagicMock, patch
 
 from backend.ocr_pipeline import (
     ALL_RULE_LISTS,
+    LEARNABLE_THRESHOLD,
+    NOISE_THRESHOLD,
+    OcrCandidate,
     OcrPipelineResult,
     OcrStageMetric,
+    LearnabilityScore,
     _STRUCTURAL_RULES,
     _WHITESPACE_RULES,
     _OCR_ARTIFACT_RULES,
     _detect_scripts,
+    route_candidates,
     run_ocr_pipeline,
+    score_learnability,
+    segment_candidates,
 )
-from backend.tests.fixtures.ocr_samples import ALL_FIXTURES, OCR_MISTAKES
+from backend.tests.fixtures.ocr_samples import (
+    ALL_FIXTURES,
+    ALL_LEARNABILITY_FIXTURES,
+    OCR_MISTAKES,
+    LEARNABLE_GERMAN_SENTENCE,
+    LEARNABLE_MULTILINE_SUBTITLE,
+    NOISE_SINGLE_CTA,
+    NOISE_PURE_NUMERIC,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -456,3 +479,334 @@ class OcrPipelineBackendIntegrationTests(unittest.TestCase):
         self.assertNotIn("@germanlinguist", stored)
         self.assertNotIn("#deutsch", stored)
         self.assertIn("Das Wort bedeutet Freude.", stored)
+
+
+# ===========================================================================
+# v2 Tests — Candidate Segmentation
+# ===========================================================================
+
+class OcrCandidateSegmentationTests(unittest.TestCase):
+
+    def test_segmentation_stable_same_output_every_call(self):
+        text = "Das ist ein Test.\n\nNoch ein Satz."
+        c1 = segment_candidates(text)
+        c2 = segment_candidates(text)
+        self.assertEqual([c.text for c in c1], [c.text for c in c2])
+
+    def test_blank_line_creates_two_candidates(self):
+        text = "Erster Absatz.\n\nZweiter Absatz."
+        candidates = segment_candidates(text)
+        self.assertEqual(len(candidates), 2)
+        self.assertIn("Erster Absatz.", candidates[0].text)
+        self.assertIn("Zweiter Absatz.", candidates[1].text)
+
+    def test_multiline_subtitle_preserved_as_one_candidate(self):
+        text = (
+            "Wenn ich in Deutschland bin,\n"
+            "spreche ich immer Deutsch.\n"
+            "Aber manchmal ist es schwierig."
+        )
+        candidates = segment_candidates(text)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].line_count, 3)
+        self.assertIn("spreche ich immer Deutsch.", candidates[0].text)
+
+    def test_empty_text_returns_empty_list(self):
+        self.assertEqual(segment_candidates(""), [])
+        self.assertEqual(segment_candidates("   "), [])
+
+    def test_single_line_is_one_candidate(self):
+        candidates = segment_candidates("Das ist ein Satz.")
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].line_count, 1)
+
+    def test_candidate_token_estimate_is_positive(self):
+        candidates = segment_candidates("Das ist ein guter Tag.")
+        self.assertGreater(candidates[0].token_estimate, 0)
+
+    def test_candidate_detected_languages_present(self):
+        candidates = segment_candidates("Das ist Deutsch. Это русский.")
+        langs = candidates[0].detected_languages
+        self.assertIn("latin", langs)
+        self.assertIn("cyrillic", langs)
+
+    def test_char_offset_is_non_negative(self):
+        for c in segment_candidates("Hallo.\n\nWelt."):
+            self.assertGreaterEqual(c.char_offset, 0)
+
+    def test_multiple_blank_lines_still_two_candidates(self):
+        candidates = segment_candidates("Alpha.\n\n\n\nBeta.")
+        self.assertEqual(len(candidates), 2)
+
+    def test_ocrcandidate_instances_returned(self):
+        for c in segment_candidates("Guten Morgen!\n\nGuten Abend!"):
+            self.assertIsInstance(c, OcrCandidate)
+
+
+# ===========================================================================
+# v2 Tests — Learnability Scoring
+# ===========================================================================
+
+class OcrLearnabilityScoringTests(unittest.TestCase):
+
+    def _candidate(self, text: str) -> OcrCandidate:
+        cands = segment_candidates(text)
+        return cands[0] if cands else OcrCandidate(
+            text=text, line_count=1,
+            token_estimate=max(1, len(text) // 4),
+            detected_languages=_detect_scripts(text),
+            char_offset=0,
+        )
+
+    def test_scoring_is_deterministic(self):
+        cand = self._candidate("Das ist ein guter Tag.")
+        s1 = score_learnability(cand)
+        s2 = score_learnability(cand)
+        self.assertEqual(s1.score, s2.score)
+        self.assertEqual(s1.label, s2.label)
+
+    def test_score_clamped_to_minus_one_plus_one(self):
+        for text in ["😂😂😂😂😂😂😂", "Das ist ein sehr langer guter Satz mit vielen Wörtern."]:
+            cand = self._candidate(text)
+            s = score_learnability(cand)
+            self.assertGreaterEqual(s.score, -1.0)
+            self.assertLessEqual(s.score, 1.0)
+
+    def test_score_breakdown_is_dict(self):
+        cand = self._candidate("Ich lerne Deutsch.")
+        s = score_learnability(cand)
+        self.assertIsInstance(s.breakdown, dict)
+
+    def test_breakdown_only_contains_fired_signals(self):
+        cand = self._candidate("Ich lerne Deutsch.")
+        s = score_learnability(cand)
+        # Every entry in breakdown must be non-zero
+        for k, v in s.breakdown.items():
+            self.assertNotEqual(v, 0.0, f"Signal {k!r} is zero in breakdown")
+
+    def test_thresholds_are_explicit_constants(self):
+        self.assertIsInstance(LEARNABLE_THRESHOLD, float)
+        self.assertIsInstance(NOISE_THRESHOLD, float)
+        self.assertGreater(LEARNABLE_THRESHOLD, NOISE_THRESHOLD)
+
+    def test_learnable_score_result_is_learnabilityscore(self):
+        cand = self._candidate("Das ist gut.")
+        self.assertIsInstance(score_learnability(cand), LearnabilityScore)
+
+    def test_no_alphabetic_chars_hard_noise_override(self):
+        for text in ["89", "3:42", "12345"]:
+            cand = self._candidate(text)
+            s = score_learnability(cand)
+            self.assertEqual(s.label, "likely_noise",
+                             f"{text!r} should be noise, got {s.label} (score={s.score})")
+            self.assertIn("no_alphabetic_chars", s.breakdown)
+
+    def test_german_sentence_punct_fires_positive(self):
+        cand = self._candidate("Ich lerne Deutsch.")
+        s = score_learnability(cand)
+        self.assertIn("sentence_punct", s.breakdown)
+        self.assertGreater(s.breakdown["sentence_punct"], 0)
+
+    def test_pedagogical_marker_fires_for_arrow(self):
+        cand = self._candidate("aufgeben — to give up")
+        s = score_learnability(cand)
+        self.assertIn("pedagogical_marker", s.breakdown)
+        self.assertGreater(s.breakdown["pedagogical_marker"], 0)
+
+    def test_verb_structure_fires_for_infinitive(self):
+        cand = self._candidate("Ich möchte Deutsch lernen.")
+        s = score_learnability(cand)
+        self.assertIn("verb_structure", s.breakdown)
+
+    def test_cta_signal_fires_for_follow(self):
+        cand = self._candidate("Follow")
+        s = score_learnability(cand)
+        self.assertIn("isolated_cta", s.breakdown)
+        self.assertLess(s.breakdown["isolated_cta"], 0)
+
+    def test_engagement_residual_fires_for_likes(self):
+        cand = self._candidate("1.2K likes")
+        s = score_learnability(cand)
+        self.assertIn("engagement_residual", s.breakdown)
+
+    def test_all_caps_label_fires_for_shout(self):
+        cand = self._candidate("FOLLOW NOW")
+        s = score_learnability(cand)
+        self.assertIn("all_caps_label", s.breakdown)
+        self.assertLess(s.breakdown["all_caps_label"], 0)
+
+
+# ===========================================================================
+# v2 Tests — Classification against fixture suite
+# ===========================================================================
+
+class OcrLearnabilityClassificationTests(unittest.TestCase):
+
+    def _candidate(self, text: str) -> OcrCandidate:
+        cands = segment_candidates(text)
+        return cands[0] if cands else OcrCandidate(
+            text=text, line_count=1,
+            token_estimate=max(1, len(text) // 4),
+            detected_languages=_detect_scripts(text),
+            char_offset=0,
+        )
+
+    def test_all_learnability_fixtures_pass(self):
+        for fix in ALL_LEARNABILITY_FIXTURES:
+            with self.subTest(fixture=fix.name):
+                cand = self._candidate(fix.text)
+                s = score_learnability(cand)
+                self.assertEqual(
+                    s.label, fix.expected_label,
+                    f"[{fix.name}] expected {fix.expected_label!r}, "
+                    f"got {s.label!r} (score={s.score:.3f}, breakdown={s.breakdown})"
+                )
+                self.assertGreaterEqual(s.score, fix.score_min,
+                    f"[{fix.name}] score {s.score:.3f} below min {fix.score_min}")
+                self.assertLessEqual(s.score, fix.score_max,
+                    f"[{fix.name}] score {s.score:.3f} above max {fix.score_max}")
+
+    def test_clean_german_text_not_catastrophically_filtered(self):
+        text = (
+            "Das ist ein guter Tag.\n"
+            "Ich lerne Deutsch seit zwei Jahren.\n"
+            "Die Sprache ist schön, aber schwer."
+        )
+        cands = segment_candidates(text)
+        self.assertGreater(len(cands), 0)
+        routing, pass_list, noise_list = route_candidates(cands)
+        self.assertEqual(routing, "proceed",
+                         "Clean German text should not be routed as all-noise")
+        self.assertEqual(len(noise_list), 0,
+                         "No candidate in clean German text should be noise")
+
+    def test_multiline_learnable_subtitle_not_filtered(self):
+        text = LEARNABLE_MULTILINE_SUBTITLE.text
+        cands = segment_candidates(text)
+        routing, pass_list, noise_list = route_candidates(cands)
+        self.assertEqual(routing, "proceed")
+        self.assertEqual(len(noise_list), 0)
+
+    def test_pure_cta_list_produces_noise_routing(self):
+        text = "Follow\nSubscribe"
+        cands = segment_candidates(text)
+        routing, pass_list, noise_list = route_candidates(cands)
+        self.assertEqual(routing, "skip_all_noise")
+
+    def test_pure_numeric_input_routes_as_all_noise(self):
+        cands = segment_candidates("89\n1234")
+        _, pass_list, _ = route_candidates(cands)
+        self.assertEqual(len(pass_list), 0)
+
+
+# ===========================================================================
+# v2 Tests — Routing behaviour
+# ===========================================================================
+
+class OcrRoutingTests(unittest.TestCase):
+
+    def test_route_candidates_returns_three_tuple(self):
+        cands = segment_candidates("Ich lerne Deutsch.")
+        result = route_candidates(cands)
+        self.assertIsInstance(result, tuple)
+        self.assertEqual(len(result), 3)
+
+    def test_routing_proceed_for_learnable_text(self):
+        cands = segment_candidates(LEARNABLE_GERMAN_SENTENCE.text)
+        routing, pass_list, noise_list = route_candidates(cands)
+        self.assertEqual(routing, "proceed")
+        self.assertGreater(len(pass_list), 0)
+
+    def test_routing_skip_all_noise_for_pure_noise(self):
+        cands = segment_candidates("Follow")
+        routing, pass_list, noise_list = route_candidates(cands)
+        self.assertEqual(routing, "skip_all_noise")
+        self.assertEqual(len(pass_list), 0)
+        self.assertEqual(len(noise_list), 1)
+
+    def test_routing_pass_list_preserves_order(self):
+        text = "Erste Zeile.\n\nZweite Zeile.\n\nDritte Zeile."
+        cands = segment_candidates(text)
+        _, pass_list, _ = route_candidates(cands)
+        texts = [c.text for c, _ in pass_list]
+        self.assertEqual(texts, sorted(texts, key=lambda t: text.find(t)))
+
+    def test_mixed_payload_partial_noise_still_proceeds(self):
+        # One learnable paragraph + one CTA
+        text = "Ich lerne Deutsch.\n\nFollow"
+        cands = segment_candidates(text)
+        routing, pass_list, noise_list = route_candidates(cands)
+        self.assertEqual(routing, "proceed")
+        self.assertEqual(len(pass_list), 1)
+        self.assertEqual(len(noise_list), 1)
+
+    def test_routing_empty_candidates_gives_skip(self):
+        routing, pass_list, noise_list = route_candidates([])
+        self.assertEqual(routing, "skip_all_noise")
+        self.assertEqual(pass_list, [])
+        self.assertEqual(noise_list, [])
+
+    def test_routing_pass_list_items_are_tuples_of_candidate_and_score(self):
+        cands = segment_candidates("Das ist gut.")
+        _, pass_list, _ = route_candidates(cands)
+        for item in pass_list:
+            self.assertIsInstance(item[0], OcrCandidate)
+            self.assertIsInstance(item[1], LearnabilityScore)
+
+
+# ===========================================================================
+# v2 Tests — Delivery integration
+# ===========================================================================
+
+class OcrV2DeliveryIntegrationTests(unittest.TestCase):
+    """Verify that v2 routing is wired into _run_shortcut_lookup_delivery."""
+
+    def test_all_noise_payload_skips_llm_and_returns_zero(self):
+        """If all candidates are noise, _shortcut_split_blocks must NOT be called."""
+        import backend.backend_server as server
+
+        # A payload that consists entirely of a single CTA word — will be routed as noise.
+        noise_text = "Follow"
+
+        with patch("backend.backend_server._shortcut_split_blocks") as mock_split:
+            sent = server._run_shortcut_lookup_delivery(
+                user_id=42,
+                text=noise_text,
+            )
+        self.assertEqual(sent, 0)
+        mock_split.assert_not_called()
+
+    def test_learnable_payload_calls_llm_extraction(self):
+        """When at least one candidate passes, _shortcut_split_blocks must be called."""
+        import backend.backend_server as server
+
+        learnable_text = "Ich lerne Deutsch. Das ist sehr wichtig."
+
+        with patch("backend.backend_server._shortcut_split_blocks", return_value=[]) as mock_split:
+            server._run_shortcut_lookup_delivery(
+                user_id=42,
+                text=learnable_text,
+            )
+        mock_split.assert_called_once()
+
+    def test_filtered_text_excludes_noise_candidates(self):
+        """The text passed to _shortcut_split_blocks must not contain noise candidates."""
+        import backend.backend_server as server
+
+        # Two blank-line-separated paragraphs: one learnable, one noise
+        mixed_text = "Ich lerne Deutsch.\n\nFollow"
+
+        captured_texts: list[str] = []
+
+        def capture_split(text: str):
+            captured_texts.append(text)
+            return []
+
+        with patch("backend.backend_server._shortcut_split_blocks", side_effect=capture_split):
+            server._run_shortcut_lookup_delivery(user_id=42, text=mixed_text)
+
+        self.assertEqual(len(captured_texts), 1)
+        # The noise candidate "Follow" must not be in the extraction input
+        self.assertNotIn("Follow", captured_texts[0])
+        # The learnable candidate must be present
+        self.assertIn("Ich lerne Deutsch.", captured_texts[0])

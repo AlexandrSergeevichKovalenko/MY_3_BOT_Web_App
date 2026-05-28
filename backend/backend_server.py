@@ -224,7 +224,7 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     pyttsx3 = None
 from backend.utils import prepare_google_creds_for_tts
-from backend.ocr_pipeline import run_ocr_pipeline
+from backend.ocr_pipeline import run_ocr_pipeline, segment_candidates, route_candidates
 from pydub import AudioSegment
 try:
     from apscheduler.schedulers.background import BackgroundScheduler
@@ -13890,27 +13890,114 @@ def _extract_text_from_pdf_bytes(data: bytes) -> str:
     return text
 
 
-def _extract_pdf_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
+def _extract_pdf_content_with_pdftotext(data: bytes) -> tuple[str, list[dict]]:
     if not data:
         return "", []
-    if PdfReader is None:
-        raise RuntimeError("PDF extraction is unavailable: install pypdf")
-    reader = PdfReader(BytesIO(data))
-    chunks: list[str] = []
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_pdf:
+        tmp_pdf.write(data)
+        tmp_pdf_path = tmp_pdf.name
+    try:
+        completed = subprocess.run(
+            [
+                "pdftotext",
+                "-layout",
+                "-enc",
+                "UTF-8",
+                "-f",
+                "1",
+                "-l",
+                "250",
+                tmp_pdf_path,
+                "-",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=90,
+            check=False,
+        )
+    except FileNotFoundError:
+        logging.warning("reader pdf pdftotext fallback unavailable: binary not found")
+        return "", []
+    except subprocess.TimeoutExpired:
+        logging.warning("reader pdf pdftotext fallback timed out")
+        return "", []
+    finally:
+        try:
+            os.remove(tmp_pdf_path)
+        except Exception:
+            pass
+
+    if completed.returncode != 0:
+        stderr = str(completed.stderr or "").strip()
+        logging.warning(
+            "reader pdf pdftotext fallback failed returncode=%s stderr=%s",
+            completed.returncode,
+            stderr[:500],
+        )
+        return "", []
+
+    raw_text = str(completed.stdout or "")
+    if not raw_text.strip():
+        return "", []
+
     pages: list[dict] = []
-    for idx, page in enumerate(reader.pages):
+    chunks: list[str] = []
+    for idx, page_text in enumerate(raw_text.split("\f")):
         if idx >= 250:
             break
-        try:
-            page_text = page.extract_text() or ""
-        except Exception:
-            page_text = ""
         normalized = _normalize_pdf_extracted_page_text(page_text, max_chars=50000)
         if not normalized:
             continue
         chunks.append(normalized)
         pages.append({"page_number": idx + 1, "text": normalized})
     return _normalize_reader_text("\n\n".join(chunks)), pages
+
+
+def _extract_pdf_content_from_bytes(data: bytes) -> tuple[str, list[dict]]:
+    if not data:
+        return "", []
+    if PdfReader is None:
+        fallback_text, fallback_pages = _extract_pdf_content_with_pdftotext(data)
+        if fallback_text:
+            return fallback_text, fallback_pages
+        raise RuntimeError("PDF extraction is unavailable: install pypdf or poppler-utils")
+    chunks: list[str] = []
+    pages: list[dict] = []
+    try:
+        reader = PdfReader(BytesIO(data))
+        if getattr(reader, "is_encrypted", False):
+            try:
+                reader.decrypt("")
+            except Exception:
+                logging.info("reader pdf empty-password decrypt failed; continuing extraction")
+        for idx, page in enumerate(reader.pages):
+            if idx >= 250:
+                break
+            try:
+                page_text = page.extract_text() or ""
+            except Exception:
+                page_text = ""
+            normalized = _normalize_pdf_extracted_page_text(page_text, max_chars=50000)
+            if not normalized:
+                continue
+            chunks.append(normalized)
+            pages.append({"page_number": idx + 1, "text": normalized})
+    except Exception as exc:
+        logging.warning("reader pdf pypdf extraction failed; trying pdftotext fallback: %s", exc)
+
+    normalized_text = _normalize_reader_text("\n\n".join(chunks))
+    if normalized_text:
+        return normalized_text, pages
+
+    fallback_text, fallback_pages = _extract_pdf_content_with_pdftotext(data)
+    if fallback_text:
+        logging.info(
+            "reader pdf pdftotext fallback recovered text chars=%s pages=%s",
+            len(fallback_text),
+            len(fallback_pages),
+        )
+        return fallback_text, fallback_pages
+    return "", []
 
 
 def _load_ebooklib_runtime() -> tuple[Any, Any]:
@@ -34989,7 +35076,36 @@ def _run_shortcut_lookup_delivery(
         source=normalized_source,
     )
 
-    blocks = _shortcut_split_blocks(normalized_text)
+    # OCR v2 — segment, score, and route before expensive LLM extraction.
+    _candidates = segment_candidates(normalized_text)
+    _routing, _pass, _noise = route_candidates(_candidates)
+
+    for _cand, _lscore in _noise:
+        logging.info(
+            "ocr_candidate_skipped_noise user_id=%s candidate_length=%d "
+            "score=%.3f breakdown=%s",
+            safe_user_id, len(_cand.text), _lscore.score, _lscore.breakdown,
+        )
+
+    if _routing == "skip_all_noise":
+        logging.info(
+            "shortcut_delivery_skipped user_id=%s reason=all_noise candidates=%d",
+            safe_user_id, len(_candidates),
+        )
+        return 0
+
+    for _cand, _lscore in _pass:
+        logging.info(
+            "ocr_candidate_sent_to_extraction user_id=%s candidate_length=%d "
+            "token_estimate=%d score=%.3f label=%s detected_languages=%s",
+            safe_user_id, len(_cand.text), _cand.token_estimate,
+            _lscore.score, _lscore.label, ",".join(_cand.detected_languages) or "none",
+        )
+
+    # Reassemble only the pass candidates for LLM extraction.
+    extraction_text = "\n\n".join(c.text for c, _ in _pass) or normalized_text
+
+    blocks = _shortcut_split_blocks(extraction_text)
     if not blocks:
         return 0
 
@@ -35031,14 +35147,12 @@ def _start_shortcut_lookup_enqueue_runner(
     user_id: int,
     text: str,
     source: str | None = None,
-) -> tuple[str, int | None, bool, str | None]:
+) -> tuple[str, int | None, bool, str | None, str | None]:
     """
-    Returns (request_key, ingest_id, is_duplicate, dup_status).
+    Returns (request_key, ingest_id, is_duplicate, durable_status, job_id).
 
-    is_duplicate=True means the DB already has an active row for this payload
-    (status in queued/processing/delivered). The caller must NOT re-enqueue.
-    dup_status is the current DB status when is_duplicate=True, None otherwise.
-    Use dup_status in {'queued', 'processing'} to detect in-recovery duplicates.
+    is_duplicate=True means the DB already has a row for this payload. The
+    caller must NOT re-enqueue or resend Telegram prompts for duplicate rows.
 
     Raises if the durable DB write fails — caller must not proceed with enqueue.
     """
@@ -35059,9 +35173,12 @@ def _start_shortcut_lookup_enqueue_runner(
     )
     ingest_id: int = upsert_result["ingest_id"]
     is_new: bool = upsert_result["is_new"]
-    current_status: str = upsert_result["status"]
+    current_status: str = str(upsert_result["status"] or "").strip()
+    current_job_id = upsert_result.get("job_id")
+    if not current_status:
+        raise RuntimeError("shortcut_ingest_request_upsert returned missing status")
 
-    if not is_new and current_status in _SHORTCUT_INGEST_ACTIVE_STATUSES:
+    if not is_new:
         logging.info(
             "shortcut_ingest_duplicate suppressed user_id=%s ingest_id=%s status=%s dup_count=%s",
             safe_user_id,
@@ -35069,57 +35186,68 @@ def _start_shortcut_lookup_enqueue_runner(
             current_status,
             upsert_result["duplicate_count"],
         )
-        return request_key, ingest_id, True, current_status
+        return (
+            request_key,
+            ingest_id,
+            True,
+            current_status,
+            str(current_job_id).strip() if current_job_id else None,
+        )
 
-    def _worker() -> None:
+    try:
+        job_id = enqueue_shortcut_lookup_job(
+            user_id=safe_user_id,
+            text=normalized_text,
+            request_key=request_key,
+            source=normalized_source,
+            ingest_key=ingest_key,
+            ingest_id=ingest_id,
+        )
+    except Exception:
+        logging.exception(
+            "shortcut_lookup enqueue failed user_id=%s request_key=%s ingest_id=%s",
+            safe_user_id,
+            request_key,
+            ingest_id,
+        )
         try:
-            job_id = enqueue_shortcut_lookup_job(
-                user_id=safe_user_id,
-                text=normalized_text,
-                request_key=request_key,
-                source=normalized_source,
-                ingest_key=ingest_key,
-                ingest_id=ingest_id,
-            )
             shortcut_ingest_request_set_status(
                 ingest_id=ingest_id,
-                status="queued",
-                job_id=job_id,
-            )
-            logging.info(
-                "shortcut_lookup enqueue accepted user_id=%s request_key=%s ingest_id=%s job_id=%s",
-                safe_user_id,
-                request_key,
-                ingest_id,
-                job_id,
+                status="failed",
+                error_code="enqueue_failed",
+                error_message="Failed to enqueue shortcut_lookup job",
             )
         except Exception:
             logging.exception(
-                "shortcut_lookup enqueue failed user_id=%s request_key=%s ingest_id=%s",
+                "shortcut_ingest set failed status error user_id=%s ingest_id=%s",
                 safe_user_id,
-                request_key,
                 ingest_id,
             )
-            try:
-                shortcut_ingest_request_set_status(
-                    ingest_id=ingest_id,
-                    status="failed",
-                    error_code="enqueue_failed",
-                    error_message="Failed to enqueue shortcut_lookup job",
-                )
-            except Exception:
-                logging.exception(
-                    "shortcut_ingest set failed status error user_id=%s ingest_id=%s",
-                    safe_user_id,
-                    ingest_id,
-                )
-
-    threading.Thread(
-        target=_worker,
-        name=f"shortcut-lookup-enqueue-{request_key}",
-        daemon=True,
-    ).start()
-    return request_key, ingest_id, False, None
+        raise
+    try:
+        shortcut_ingest_request_set_status(
+            ingest_id=ingest_id,
+            status="queued",
+            job_id=job_id,
+        )
+    except Exception:
+        logging.exception(
+            "shortcut_lookup queued status write failed after enqueue "
+            "user_id=%s request_key=%s ingest_id=%s job_id=%s",
+            safe_user_id,
+            request_key,
+            ingest_id,
+            job_id,
+        )
+        raise
+    logging.info(
+        "shortcut_lookup enqueue accepted user_id=%s request_key=%s ingest_id=%s job_id=%s",
+        safe_user_id,
+        request_key,
+        ingest_id,
+        job_id,
+    )
+    return request_key, ingest_id, False, "queued", str(job_id or "").strip() or None
 
 
 @app.route("/api/shortcut/lookup", methods=["POST"])
@@ -35203,25 +35331,11 @@ def shortcut_dictionary_lookup():
     if limit_payload:
         return jsonify(limit_payload), int(limit_status or 503)
 
-    dedup_key = _shortcut_dedup_key(user_id, text, source="shortcut")
-    if _shortcut_dedup_reserve(dedup_key):
-        logging.info("shortcut_lookup: redis duplicate suppressed user_id=%s", user_id)
-        return jsonify(
-            {
-                "ok": True,
-                "accepted": False,
-                "queued": False,
-                "duplicate": True,
-                "completed": False,
-                "message": "Этот Shortcut-запрос уже принят в обработку.",
-            }
-        ), 200
-
     if not can_enqueue_background_jobs():
         return jsonify({"error": "Shortcut processing is temporarily unavailable"}), 503
 
     try:
-        request_key, ingest_id, is_duplicate, dup_status = _start_shortcut_lookup_enqueue_runner(
+        request_key, ingest_id, is_duplicate, durable_status, job_id = _start_shortcut_lookup_enqueue_runner(
             user_id=user_id,
             text=text,
             source="shortcut",
@@ -35231,25 +35345,34 @@ def shortcut_dictionary_lookup():
             "shortcut_lookup: ingest upsert failed user_id=%s — request rejected",
             user_id,
         )
-        return jsonify({"error": "Ingest idempotency write failed. Request not accepted."}), 503
+        return jsonify(
+            {
+                "ok": False,
+                "error": "shortcut_ingest_idempotency_unavailable",
+                "message": "Shortcut ingest idempotency write failed. Request was not queued.",
+            }
+        ), 503
 
     if is_duplicate:
-        in_recovery = dup_status in {"queued", "processing"}
+        in_recovery = durable_status in {"queued", "processing"}
+        completed = durable_status == "delivered"
         logging.info(
             "shortcut_lookup: db duplicate suppressed user_id=%s ingest_id=%s dup_status=%s in_recovery=%s",
             user_id,
             ingest_id,
-            dup_status,
+            durable_status,
             in_recovery,
         )
         return jsonify(
             {
                 "ok": True,
-                "accepted": False,
+                "accepted": True,
                 "queued": False,
                 "duplicate": True,
-                "completed": False,
+                "completed": completed,
                 "ingest_id": ingest_id,
+                "job_id": job_id,
+                "status": durable_status,
                 "in_recovery": in_recovery,
                 "message": "Этот Shortcut-запрос уже принят в обработку.",
             }
@@ -35263,7 +35386,8 @@ def shortcut_dictionary_lookup():
             "completed": False,
             "duplicate": False,
             "ingest_id": ingest_id,
-            "job_id": str(request_key or "").strip() or None,
+            "job_id": job_id,
+            "status": durable_status,
         }
     )
 
@@ -47669,8 +47793,28 @@ def send_translation_focus_pool_report_now():
     if token != required_token:
         return jsonify({"error": "Неверный токен"}), 401
 
-    force = str(payload.get("force") or "1").strip().lower() in {"1", "true", "yes", "on"}
+    force = str(payload.get("force") if "force" in payload else "1").strip().lower() in {"1", "true", "yes", "on"}
+    refill_first_raw = payload.get("refill_first") if "refill_first" in payload else ("1" if force else "0")
+    refill_first = str(refill_first_raw).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    refill_result = None
+    if refill_first:
+        refill_result = _dispatch_translation_focus_pool_refill(
+            force=bool(force),
+            tz_name=TRANSLATION_FOCUS_POOL_REFILL_TZ,
+        )
+        logging.info(
+            "Manual translation focus pool report refill completed force=%s result=%s",
+            bool(force),
+            refill_result,
+        )
     result = _send_translation_focus_pool_admin_report(force=force)
+    if refill_result is not None and isinstance(result, dict):
+        result = {**result, "refill_result": refill_result}
     return jsonify(result)
 
 
