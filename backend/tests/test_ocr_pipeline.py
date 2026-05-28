@@ -46,12 +46,31 @@ from backend.ocr_pipeline import (
     run_ocr_pipeline,
     score_learnability,
     segment_candidates,
+    classify_archetype,
+    group_spatially,
+    build_grouped_extraction_payload,
+    OcrSpatialGroup,
+    OcrArchetypeResult,
+    OcrGroupedPayload,
+    ALL_ARCHETYPES,
+    ALL_GROUP_TYPES,
+    _detect_german_morphology,
+    ARCHETYPE_VOCABULARY_PAIR,
+    ARCHETYPE_MULTILINGUAL_STACK,
+    ARCHETYPE_GRAMMAR_BOARD,
+    ARCHETYPE_SUBTITLE_DIALOGUE,
+    ARCHETYPE_EDUCATIONAL_LIST,
+    ARCHETYPE_UNKNOWN_MIXED,
+    GROUP_TYPE_HORIZONTAL_PAIR,
+    GROUP_TYPE_ISOLATED_PHRASE,
+    GROUP_TYPE_GRAMMAR_CLUSTER,
 )
 from backend.tests.fixtures.ocr_samples import (
     ALL_FIXTURES,
     ALL_LEARNABILITY_FIXTURES,
     ALL_V3_LEARNABILITY_FIXTURES,
     ALL_V3_OCR_FIXTURES,
+    ALL_ARCHETYPE_FIXTURES,
     OCR_MISTAKES,
     LEARNABLE_GERMAN_SENTENCE,
     LEARNABLE_MULTILINE_SUBTITLE,
@@ -1394,3 +1413,290 @@ class OcrContextAnnotationTests(unittest.TestCase):
                     else:
                         self.assertNotIn(must_drop, result.cleaned_text,
                                          f"[{fix.name}] must_drop {must_drop!r} found")
+
+
+# ---------------------------------------------------------------------------
+# 13. OCR v3 §4 — German morphology detection tests (items 11, 13)
+# ---------------------------------------------------------------------------
+
+class OcrGermanMorphologyTests(unittest.TestCase):
+
+    def test_umlaut_signal_fires(self):
+        sigs = _detect_german_morphology("Das ist schön.")
+        self.assertIn("umlaut_present", sigs)
+        self.assertGreater(sigs["umlaut_present"], 0)
+
+    def test_infinitive_ieren_signal_fires(self):
+        sigs = _detect_german_morphology("Ich möchte studieren.")
+        self.assertIn("infinitive_ieren", sigs)
+        self.assertGreater(sigs["infinitive_ieren"], 0)
+
+    def test_partizip_perfekt_signal_fires(self):
+        sigs = _detect_german_morphology("Er hat gesprochen.")
+        self.assertIn("partizip_perfekt", sigs)
+
+    def test_noun_capitalization_signal_fires(self):
+        sigs = _detect_german_morphology("Der Hund und die Katze spielen.")
+        self.assertIn("noun_capitalization", sigs)
+        self.assertGreater(sigs["noun_capitalization"], 0)
+
+    def test_austrian_dialect_detected(self):  # item 11
+        sigs = _detect_german_morphology("Das ist leiwand, oida!")
+        self.assertIn("austrian_dialect", sigs)
+        self.assertEqual(sigs["austrian_dialect"], 1.0)
+
+    def test_austrian_servus_detected(self):  # item 11
+        sigs = _detect_german_morphology("Servus, wie geht's?")
+        self.assertIn("austrian_dialect", sigs)
+
+    def test_separable_verb_prefix_signal_fires(self):
+        sigs = _detect_german_morphology("Er geht aufgeben.")
+        self.assertIn("separable_verb_prefix", sigs)
+
+    def test_compound_noun_signal_fires(self):
+        sigs = _detect_german_morphology("Die Jugendherberge ist günstig.")
+        self.assertIn("compound_noun", sigs)
+
+    def test_empty_text_returns_empty_dict(self):
+        self.assertEqual(_detect_german_morphology(""), {})
+        self.assertEqual(_detect_german_morphology("   "), {})
+
+    def test_pure_english_no_umlaut_or_partizip(self):
+        sigs = _detect_german_morphology("Hello world, how are you today?")
+        self.assertNotIn("umlaut_present", sigs)
+        self.assertNotIn("partizip_perfekt", sigs)
+        self.assertNotIn("austrian_dialect", sigs)
+
+    def test_signal_values_in_range(self):  # item 13
+        sigs = _detect_german_morphology(
+            "Er hat studiert und arbeitet in der Jugendherberge."
+        )
+        for k, v in sigs.items():
+            self.assertGreaterEqual(v, 0.0, f"signal {k!r} is negative")
+            self.assertLessEqual(v, 1.0, f"signal {k!r} exceeds 1.0")
+
+
+# ---------------------------------------------------------------------------
+# 14. OCR v3 §4 — Archetype detection tests (items 1–5, 8–10, 12)
+# ---------------------------------------------------------------------------
+
+class OcrArchetypeDetectionTests(unittest.TestCase):
+
+    def test_vocabulary_pair_archetype_detected(self):  # item 1
+        result = classify_archetype("Hostel ↔ Jugendherberge")
+        self.assertEqual(result.archetype, ARCHETYPE_VOCABULARY_PAIR)
+
+    def test_multilingual_stack_archetype_detected(self):  # item 2
+        text = "🇦🇹 fesch\n🇩🇪 schön\n🇬🇧 Beautiful"
+        result = classify_archetype(text)
+        self.assertEqual(result.archetype, ARCHETYPE_MULTILINGUAL_STACK)
+
+    def test_grammar_board_archetype_detected(self):  # item 3
+        result = classify_archetype("sprechen\nsprach\nhat gesprochen")
+        self.assertEqual(result.archetype, ARCHETYPE_GRAMMAR_BOARD)
+
+    def test_subtitle_dialogue_archetype_detected(self):  # item 4
+        text = (
+            "Wenn ich in Deutschland bin,\n"
+            "spreche ich immer Deutsch.\n"
+            "Aber manchmal ist es schwierig."
+        )
+        result = classify_archetype(text)
+        self.assertEqual(result.archetype, ARCHETYPE_SUBTITLE_DIALOGUE)
+
+    def test_educational_list_archetype_detected(self):  # item 5
+        text = "aus Berlin\naus dem Zimmer\naus der Schule\naus dem Haus\naus der Küche"
+        result = classify_archetype(text)
+        self.assertEqual(result.archetype, ARCHETYPE_EDUCATIONAL_LIST)
+
+    def test_archetype_classification_deterministic(self):  # item 8
+        text = "Hostel ↔ Jugendherberge"
+        r1 = classify_archetype(text)
+        r2 = classify_archetype(text)
+        self.assertEqual(r1.archetype, r2.archetype)
+        self.assertEqual(r1.confidence, r2.confidence)
+        self.assertEqual(r1.german_target_count, r2.german_target_count)
+
+    def test_unknown_mixed_for_random_content(self):  # item 9
+        result = classify_archetype("abc xyz")
+        self.assertEqual(result.archetype, ARCHETYPE_UNKNOWN_MIXED)
+
+    def test_unknown_mixed_for_empty_input(self):  # item 9
+        result = classify_archetype("")
+        self.assertEqual(result.archetype, ARCHETYPE_UNKNOWN_MIXED)
+        self.assertEqual(result.confidence, 0.0)
+
+    def test_german_target_count_nonzero_for_german_text(self):  # item 10
+        result = classify_archetype("Die Übersetzung ist korrekt.")
+        self.assertGreater(result.german_target_count, 0)
+
+    def test_english_is_latin_no_support_language(self):  # item 12
+        result = classify_archetype("Hello world, how are you?")
+        self.assertEqual(
+            result.support_language_count, 0,
+            "English-only text uses Latin script — support_language_count must be 0",
+        )
+
+    def test_cyrillic_counted_as_support_language(self):
+        result = classify_archetype("Das Wort bedeutet: слово")
+        self.assertGreater(result.support_language_count, 0)
+
+    def test_all_archetypes_constant_has_seven_entries(self):
+        self.assertEqual(len(ALL_ARCHETYPES), 7)
+
+    def test_result_is_ocrarchetyperesult(self):
+        result = classify_archetype("Test")
+        self.assertIsInstance(result, OcrArchetypeResult)
+
+    def test_confidence_in_range(self):
+        for text in [
+            "Hostel ↔ Jugendherberge",
+            "Hello",
+            "🇦🇹 fesch\n🇩🇪 schön\n🇬🇧 Beautiful",
+        ]:
+            with self.subTest(text=text[:30]):
+                result = classify_archetype(text)
+                self.assertGreaterEqual(result.confidence, 0.0)
+                self.assertLessEqual(result.confidence, 1.0)
+
+    def test_archetype_fixture_suite(self):
+        for fix in ALL_ARCHETYPE_FIXTURES:
+            with self.subTest(fixture=fix.name):
+                result = classify_archetype(fix.text)
+                self.assertEqual(
+                    result.archetype, fix.expected_archetype,
+                    f"[{fix.name}] expected {fix.expected_archetype!r}, "
+                    f"got {result.archetype!r} (confidence={result.confidence:.3f})",
+                )
+                self.assertGreaterEqual(
+                    result.confidence, fix.confidence_min,
+                    f"[{fix.name}] confidence {result.confidence:.3f} < min {fix.confidence_min}",
+                )
+                self.assertGreaterEqual(
+                    result.german_target_count, fix.german_target_count_min,
+                    f"[{fix.name}] german_target_count {result.german_target_count} "
+                    f"< min {fix.german_target_count_min}",
+                )
+
+
+# ---------------------------------------------------------------------------
+# 15. OCR v3 §4 — Spatial grouping tests (items 6, 7, 14)
+# ---------------------------------------------------------------------------
+
+class OcrSpatialGroupingTests(unittest.TestCase):
+
+    def test_empty_text_returns_empty_list(self):
+        self.assertEqual(group_spatially(""), [])
+        self.assertEqual(group_spatially("   "), [])
+
+    def test_single_block_returns_one_group(self):
+        groups = group_spatially("Das ist ein Test.")
+        self.assertEqual(len(groups), 1)
+
+    def test_blank_line_splits_into_two_groups(self):  # item 6
+        groups = group_spatially("Erste Gruppe.\n\nZweite Gruppe.")
+        self.assertEqual(len(groups), 2)
+
+    def test_group_line_order_preserved(self):  # item 6
+        text = "Zeile 1\nZeile 2\nZeile 3"
+        groups = group_spatially(text)
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(list(groups[0].lines), ["Zeile 1", "Zeile 2", "Zeile 3"])
+
+    def test_no_premature_flattening_multi_block(self):  # item 7
+        text = "Block A\n\nBlock B\n\nBlock C"
+        groups = group_spatially(text)
+        self.assertEqual(len(groups), 3,
+                         "three blank-separated blocks must remain 3 groups, not flattened")
+
+    def test_conjugation_group_classified_as_grammar_cluster(self):  # item 14
+        text = "sprechen\nsprach\nhat gesprochen"
+        groups = group_spatially(text)
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(
+            groups[0].group_type, GROUP_TYPE_GRAMMAR_CLUSTER,
+            f"conjugation table should be grammar_cluster, got {groups[0].group_type!r}",
+        )
+
+    def test_vocab_pair_lines_preserved(self):  # item 6
+        groups = group_spatially("Hostel\nJugendherberge")
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0].group_type, GROUP_TYPE_HORIZONTAL_PAIR)
+        self.assertIn("Hostel", groups[0].lines)
+        self.assertIn("Jugendherberge", groups[0].lines)
+
+    def test_single_line_is_isolated_phrase(self):
+        groups = group_spatially("Das ist gut.")
+        self.assertEqual(groups[0].group_type, GROUP_TYPE_ISOLATED_PHRASE)
+
+    def test_all_group_types_constant_has_seven_entries(self):
+        self.assertEqual(len(ALL_GROUP_TYPES), 7)
+
+    def test_group_ordering_sequential(self):
+        text = "Gruppe 1\n\nGruppe 2\n\nGruppe 3"
+        groups = group_spatially(text)
+        for i, g in enumerate(groups):
+            self.assertEqual(g.ordering, i)
+
+    def test_german_detected_in_german_group(self):  # item 10 analog
+        groups = group_spatially("Die Übersetzung ist korrekt.")
+        self.assertTrue(groups[0].german_target_detected)
+
+    def test_group_spatially_deterministic(self):  # item 8 analog
+        text = "sprechen\nsprach\nhat gesprochen"
+        g1 = group_spatially(text)
+        g2 = group_spatially(text)
+        self.assertEqual([g.group_type for g in g1], [g.group_type for g in g2])
+
+    def test_groups_are_ocrspatialgroupinstances(self):
+        for g in group_spatially("Das ist ein Test."):
+            self.assertIsInstance(g, OcrSpatialGroup)
+
+
+# ---------------------------------------------------------------------------
+# 16. OCR v3 §4 — Grouped payload tests
+# ---------------------------------------------------------------------------
+
+class OcrGroupedPayloadTests(unittest.TestCase):
+
+    def test_raises_on_empty_groups(self):
+        archetype_result = classify_archetype("Test")
+        with self.assertRaises(ValueError) as ctx:
+            build_grouped_extraction_payload([], archetype_result)
+        self.assertIn("empty", str(ctx.exception))
+
+    def test_payload_candidate_count_equals_group_count(self):
+        text = "sprechen\nsprach\nhat gesprochen\n\nHostel\nJugendherberge"
+        groups = group_spatially(text)
+        archetype = classify_archetype(text)
+        payload = build_grouped_extraction_payload(groups, archetype)
+        self.assertEqual(payload.candidate_count, len(groups))
+
+    def test_german_group_count_correct(self):
+        text = "die Übersetzung\nперевод"
+        groups = group_spatially(text)
+        archetype = classify_archetype(text)
+        payload = build_grouped_extraction_payload(groups, archetype)
+        self.assertGreaterEqual(payload.german_group_count, 1)
+
+    def test_archetype_result_preserved_in_payload(self):
+        text = "sprechen\nsprach\nhat gesprochen"
+        groups = group_spatially(text)
+        archetype = classify_archetype(text)
+        payload = build_grouped_extraction_payload(groups, archetype)
+        self.assertIs(payload.archetype_result, archetype)
+
+    def test_payload_is_ocrgroupedpayload(self):
+        text = "Ich lerne Deutsch."
+        groups = group_spatially(text)
+        archetype = classify_archetype(text)
+        payload = build_grouped_extraction_payload(groups, archetype)
+        self.assertIsInstance(payload, OcrGroupedPayload)
+        self.assertIsInstance(payload.groups, tuple)
+
+    def test_payload_groups_match_input_order(self):
+        text = "sprechen\nsprach\nhat gesprochen"
+        groups = group_spatially(text)
+        archetype = classify_archetype(text)
+        payload = build_grouped_extraction_payload(groups, archetype)
+        self.assertEqual(list(payload.groups), groups)

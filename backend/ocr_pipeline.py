@@ -965,3 +965,649 @@ def annotate_context(candidates: list[OcrCandidate]) -> list[OcrContextSignal]:
             ))
 
     return result
+
+
+# ============================================================================
+# OCR Pipeline v3 — §4: Educational Layout Archetype Detection
+#                        & Spatial Grouping Preservation
+# ============================================================================
+#
+# Detects the educational layout archetype of cleaned OCR text and groups
+# lines into spatial/semantic units BEFORE extraction.
+#
+# Primary target: German learning content.
+# German morphology signals get priority weight in every heuristic.
+# English/Russian/Ukrainian appear only as translation metadata / support.
+#
+# Flow (called from delivery after v1 cleanup, before LLM extraction):
+#   cleaned_text
+#       → classify_archetype()             → OcrArchetypeResult
+#       → group_spatially()                → list[OcrSpatialGroup]
+#       → build_grouped_extraction_payload → OcrGroupedPayload
+#       → observability logs
+#       → (archetype-specific extraction routing — future slice)
+#
+# Contract:
+#   - Both classify_archetype and group_spatially are pure functions.
+#   - No LLM, no network, no side effects.
+#   - No hallucinated pairings — only structure that is directly observable.
+#   - build_grouped_extraction_payload raises on empty groups (no flat fallback).
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+# v3 §4: Constants
+# ---------------------------------------------------------------------------
+
+ARCHETYPE_VOCABULARY_PAIR       = "vocabulary_pair"
+ARCHETYPE_MULTILINGUAL_STACK    = "multilingual_stack"
+ARCHETYPE_BILINGUAL_PHRASE      = "bilingual_phrase_overlay"
+ARCHETYPE_GRAMMAR_BOARD         = "grammar_board"
+ARCHETYPE_SUBTITLE_DIALOGUE     = "subtitle_dialogue"
+ARCHETYPE_EDUCATIONAL_LIST      = "educational_list"
+ARCHETYPE_UNKNOWN_MIXED         = "unknown_mixed"
+
+GROUP_TYPE_HORIZONTAL_PAIR              = "horizontal_pair"
+GROUP_TYPE_VERTICAL_TRANSLATION_STACK   = "vertical_translation_stack"
+GROUP_TYPE_GRAMMAR_CLUSTER              = "grammar_cluster"
+GROUP_TYPE_SUBTITLE_CLUSTER             = "subtitle_cluster"
+GROUP_TYPE_EDUCATIONAL_LIST_CLUSTER     = "educational_list_cluster"
+GROUP_TYPE_ISOLATED_PHRASE              = "isolated_phrase"
+GROUP_TYPE_UNKNOWN_CLUSTER              = "unknown_cluster"
+
+ALL_ARCHETYPES: tuple[str, ...] = (
+    ARCHETYPE_VOCABULARY_PAIR,
+    ARCHETYPE_MULTILINGUAL_STACK,
+    ARCHETYPE_BILINGUAL_PHRASE,
+    ARCHETYPE_GRAMMAR_BOARD,
+    ARCHETYPE_SUBTITLE_DIALOGUE,
+    ARCHETYPE_EDUCATIONAL_LIST,
+    ARCHETYPE_UNKNOWN_MIXED,
+)
+
+ALL_GROUP_TYPES: tuple[str, ...] = (
+    GROUP_TYPE_HORIZONTAL_PAIR,
+    GROUP_TYPE_VERTICAL_TRANSLATION_STACK,
+    GROUP_TYPE_GRAMMAR_CLUSTER,
+    GROUP_TYPE_SUBTITLE_CLUSTER,
+    GROUP_TYPE_EDUCATIONAL_LIST_CLUSTER,
+    GROUP_TYPE_ISOLATED_PHRASE,
+    GROUP_TYPE_UNKNOWN_CLUSTER,
+)
+
+
+# ---------------------------------------------------------------------------
+# v3 §4: Result types
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class OcrSpatialGroup:
+    """
+    A semantically coherent group of lines from OCR text.
+    Preserves observable layout structure — does not filter or reorder.
+    """
+    group_id: int
+    group_type: str             # one of GROUP_TYPE_* constants
+    lines: tuple[str, ...]
+    ordering: int               # 0-based position among all groups
+    confidence: float           # 0.0..1.0
+    signals: dict[str, float]   # named signals that drove classification
+    german_target_detected: bool
+
+
+@dataclass(frozen=True, slots=True)
+class OcrArchetypeResult:
+    """
+    Result of educational layout archetype classification.
+    German content is always the primary extraction target;
+    other languages are support metadata.
+    """
+    archetype: str              # one of ARCHETYPE_* constants
+    confidence: float           # 0.0..1.0
+    signals: dict[str, float]
+    german_target_count: int    # distinct German morphology signals detected
+    support_language_count: int # non-Latin scripts present (Cyrillic etc.)
+
+
+@dataclass(frozen=True, slots=True)
+class OcrGroupedPayload:
+    """
+    Archetype + spatial groups combined for extraction routing.
+    No fallback to flat text — extraction must use grouped structure.
+    """
+    archetype_result: OcrArchetypeResult
+    groups: tuple[OcrSpatialGroup, ...]
+    candidate_count: int
+    german_group_count: int
+
+
+# ---------------------------------------------------------------------------
+# v3 §4: German morphology detector
+# ---------------------------------------------------------------------------
+
+_FLAG_EMOJI_RE = re.compile(r"[\U0001F1E6-\U0001F1FF]{2}")
+
+_AUSTRIAN_DIALECT_TERMS: frozenset[str] = frozenset({
+    "fesch", "oida", "gfrast", "baba", "griaß", "servus", "pfoah",
+    "leiwand", "pfiat", "heast", "jo", "na",
+})
+
+
+def _detect_german_morphology(text: str) -> dict[str, float]:
+    """
+    Detect German-specific morphological signals.
+
+    Returns a dict of signal_name → strength (0.0..1.0).
+    Empty dict means no German morphology detected.
+    German content is the primary extraction target; signals here give it
+    priority weight in archetype and grouping classification.
+    """
+    sigs: dict[str, float] = {}
+    if not text.strip():
+        return sigs
+
+    text_lower = text.lower()
+
+    # Umlaut presence — near-unique to German
+    umlaut_count = sum(1 for c in text if c in "äöüÄÖÜß")
+    if umlaut_count > 0:
+        sigs["umlaut_present"] = min(1.0, umlaut_count * 0.25)
+
+    # -ieren infinitive is almost exclusively German
+    if re.search(r"\b\w{3,}ieren\b", text_lower):
+        sigs["infinitive_ieren"] = 0.9
+    elif re.search(r"\b[a-zäöüß]{3,}en\b", text_lower):
+        sigs["infinitive_en"] = 0.5
+
+    # Partizip Perfekt: auxiliary + ge- form
+    if re.search(r"\b(?:ist|hat|sind|haben|bin|habe)\s+ge\w{3,}", text_lower):
+        sigs["partizip_perfekt"] = 0.95
+    elif re.search(r"\bge[a-zäöüß]{3,}(?:en|t)\b", text_lower):
+        sigs["ge_participle"] = 0.7
+
+    # German noun capitalization (≥2 mid-sentence capitalized words)
+    cap_words = re.findall(r"(?<![.!?\n])\s+([A-ZÄÖÜ][a-zäöüß]{2,})\b", text)
+    if len(cap_words) >= 2:
+        sigs["noun_capitalization"] = 0.6
+    elif len(cap_words) == 1:
+        sigs["noun_capitalization_single"] = 0.3
+
+    # Austrian dialect vocabulary
+    words_lower = re.findall(r"\b[a-zäöüß]+\b", text_lower)
+    if any(w in _AUSTRIAN_DIALECT_TERMS for w in words_lower):
+        sigs["austrian_dialect"] = 1.0
+
+    # Separable verb prefixes (common German-specific morphology)
+    if re.search(
+        r"\b(?:ab|an|auf|aus|bei|durch|ein|fort|hin|los|mit|nach|vor|weg|zu|zurück)\w{3,}\b",
+        text_lower,
+    ):
+        sigs["separable_verb_prefix"] = 0.45
+
+    # Long compound nouns (Donaudampfschifffahrtsgesellschaft style)
+    if re.search(r"\b[A-ZÄÖÜ][a-zäöüß]{10,}\b", text):
+        sigs["compound_noun"] = 0.5
+
+    return sigs
+
+
+# ---------------------------------------------------------------------------
+# v3 §4: Archetype scoring functions (operate on ALL non-empty lines)
+# ---------------------------------------------------------------------------
+
+def _score_archetype_vocabulary_pair(
+    lines: list[str],
+) -> tuple[float, dict[str, float]]:
+    sigs: dict[str, float] = {}
+    if not lines:
+        return 0.0, sigs
+
+    arrow_lines = [l for l in lines if "↔" in l]
+    if arrow_lines:
+        sigs["bidirectional_arrow_count"] = float(len(arrow_lines))
+        return min(1.0, 0.75 + len(arrow_lines) * 0.1), sigs
+
+    pipe_lines = [l for l in lines if " | " in l]
+    if pipe_lines:
+        sigs["pipe_separator_count"] = float(len(pipe_lines))
+        return 0.8, sigs
+
+    if len(lines) == 2:
+        t0, t1 = lines[0].split(), lines[1].split()
+        if len(t0) <= 3 and len(t1) <= 3:
+            g0 = bool(_detect_german_morphology(lines[0]))
+            g1 = bool(_detect_german_morphology(lines[1]))
+            if g0 != g1:
+                sigs["bilingual_short_pair"] = 0.65
+                return 0.65, sigs
+            sigs["short_aligned_lines"] = 0.35
+            return 0.35, sigs
+
+    return 0.05, sigs
+
+
+def _score_archetype_multilingual_stack(
+    lines: list[str],
+) -> tuple[float, dict[str, float]]:
+    sigs: dict[str, float] = {}
+    if len(lines) < 2:
+        return 0.0, sigs
+
+    flag_count = sum(1 for l in lines if _FLAG_EMOJI_RE.search(l))
+    if flag_count >= 3:
+        sigs["flag_emoji_stack"] = float(flag_count)
+        return 0.95, sigs
+    if flag_count == 2:
+        sigs["flag_emoji_pair"] = 2.0
+        return 0.85, sigs
+
+    return 0.05, sigs
+
+
+def _score_archetype_bilingual_phrase(
+    lines: list[str],
+) -> tuple[float, dict[str, float]]:
+    sigs: dict[str, float] = {}
+    if len(lines) < 2 or len(lines) > 5:
+        return 0.0, sigs
+
+    german_idx = [i for i, l in enumerate(lines) if _detect_german_morphology(l)]
+    cyrillic_idx = [i for i, l in enumerate(lines) if "cyrillic" in _detect_scripts(l)]
+
+    if german_idx and cyrillic_idx:
+        sigs["german_cyrillic_pair"] = 1.0
+        sigs["german_line_count"] = float(len(german_idx))
+        return 0.90, sigs
+
+    all_scripts: set[str] = set()
+    for l in lines:
+        all_scripts.update(_detect_scripts(l))
+    if "cyrillic" in all_scripts and "latin" in all_scripts:
+        sigs["cyrillic_latin_mix"] = 0.6
+        return 0.55, sigs
+
+    return 0.05, sigs
+
+
+def _score_archetype_grammar_board(
+    lines: list[str],
+) -> tuple[float, dict[str, float]]:
+    sigs: dict[str, float] = {}
+    if len(lines) < 2:
+        return 0.0, sigs
+
+    text = "\n".join(lines)
+    if re.search(r"\b(?:ist|hat|sind|haben|bin|habe)\s+ge\w{3,}", text, re.IGNORECASE):
+        sigs["partizip_perfekt"] = 1.0
+        return 0.92, sigs
+
+    german_count = sum(1 for l in lines if _detect_german_morphology(l))
+    short_count  = sum(1 for l in lines if len(l.split()) <= 4)
+
+    if german_count >= 2 and short_count >= 2 and len(lines) <= 6:
+        sigs["multi_german_short_lines"] = german_count / len(lines)
+        return min(0.80, 0.40 + german_count * 0.15), sigs
+
+    return 0.05, sigs
+
+
+def _score_archetype_subtitle_dialogue(
+    lines: list[str],
+) -> tuple[float, dict[str, float]]:
+    sigs: dict[str, float] = {}
+    long_lines = [l for l in lines if len(l.split()) >= 5]
+    if len(long_lines) < 2:
+        return 0.0, sigs
+
+    sigs["long_sentence_count"] = float(len(long_lines))
+    script_sets = [frozenset(_detect_scripts(l)) for l in lines if l.strip()]
+    if script_sets and len(set(script_sets)) <= 2:
+        sigs["consistent_script"] = 0.8
+        return min(0.85, 0.50 + len(long_lines) * 0.07), sigs
+
+    return 0.45, sigs
+
+
+def _score_archetype_educational_list(
+    lines: list[str],
+) -> tuple[float, dict[str, float]]:
+    sigs: dict[str, float] = {}
+    if len(lines) < 3:
+        return 0.0, sigs
+
+    short_lines = [l for l in lines if 1 <= len(l.split()) <= 5]
+    if len(short_lines) < 3:
+        return 0.0, sigs
+
+    sigs["short_list_density"] = len(short_lines) / len(lines)
+
+    first_words = [l.split()[0].lower() if l.split() else "" for l in lines]
+    mode_fw  = max(set(first_words), key=first_words.count) if first_words else ""
+    mode_cnt = first_words.count(mode_fw)
+    if mode_cnt >= 3 and mode_fw:
+        sigs["common_prefix"] = mode_cnt / len(lines)
+        return min(0.88, 0.60 + mode_cnt * 0.05), sigs
+
+    german_count = sum(1 for l in lines if _detect_german_morphology(l))
+    if german_count >= max(3, len(lines) // 2):
+        sigs["german_list_items"] = german_count / len(lines)
+        return 0.60, sigs
+
+    return 0.30, sigs
+
+
+# ---------------------------------------------------------------------------
+# v3 §4: Public — classify_archetype
+# ---------------------------------------------------------------------------
+
+def classify_archetype(text: str) -> OcrArchetypeResult:
+    """
+    Classify the educational layout archetype of cleaned OCR text.
+
+    Deterministic, pure, no LLM. Returns ARCHETYPE_UNKNOWN_MIXED when
+    no archetype reaches 0.30 confidence.
+
+    German morphology is the primary priority signal — when German content
+    is detected, archetype confidence is boosted to reflect German-target
+    semantics.
+    """
+    if not text.strip():
+        return OcrArchetypeResult(
+            archetype=ARCHETYPE_UNKNOWN_MIXED,
+            confidence=0.0,
+            signals={},
+            german_target_count=0,
+            support_language_count=0,
+        )
+
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+
+    german_sigs   = _detect_german_morphology(text)
+    german_target_count = len(german_sigs)
+
+    all_scripts = set(_detect_scripts(text))
+    # Support languages = non-Latin scripts (Latin covers German + English + French etc.)
+    support_language_count = len(all_scripts - {"latin"})
+
+    scorers = [
+        (ARCHETYPE_VOCABULARY_PAIR,    _score_archetype_vocabulary_pair),
+        (ARCHETYPE_MULTILINGUAL_STACK, _score_archetype_multilingual_stack),
+        (ARCHETYPE_BILINGUAL_PHRASE,   _score_archetype_bilingual_phrase),
+        (ARCHETYPE_GRAMMAR_BOARD,      _score_archetype_grammar_board),
+        (ARCHETYPE_SUBTITLE_DIALOGUE,  _score_archetype_subtitle_dialogue),
+        (ARCHETYPE_EDUCATIONAL_LIST,   _score_archetype_educational_list),
+    ]
+
+    best_archetype = ARCHETYPE_UNKNOWN_MIXED
+    best_score     = 0.0
+    best_sigs: dict[str, float] = {}
+
+    for name, scorer in scorers:
+        score, sigs = scorer(lines)
+        if score > best_score:
+            best_score     = score
+            best_archetype = name
+            best_sigs      = sigs
+
+    if best_score < 0.30:
+        best_archetype = ARCHETYPE_UNKNOWN_MIXED
+
+    # German morphology corroboration: slight boost when German is present
+    if german_target_count >= 2 and best_archetype != ARCHETYPE_UNKNOWN_MIXED:
+        best_sigs = dict(best_sigs)
+        best_sigs["german_morphology_corroboration"] = min(1.0, german_target_count * 0.15)
+        best_score = min(1.0, best_score + 0.05)
+
+    return OcrArchetypeResult(
+        archetype=best_archetype,
+        confidence=round(best_score, 4),
+        signals=dict(best_sigs),
+        german_target_count=german_target_count,
+        support_language_count=support_language_count,
+    )
+
+
+# ---------------------------------------------------------------------------
+# v3 §4: Group scoring helpers (operate on one blank-line-separated block)
+# ---------------------------------------------------------------------------
+
+def _score_group_horizontal_pair(
+    lines: list[str],
+) -> tuple[float, dict[str, float]]:
+    sigs: dict[str, float] = {}
+    if not 2 <= len(lines) <= 4:
+        return 0.0, sigs
+
+    for line in lines:
+        if "↔" in line:
+            sigs["bidirectional_arrow"] = 1.0
+            return 0.95, sigs
+        if " | " in line:
+            sigs["pipe_separator"] = 0.9
+            return 0.88, sigs
+
+    if len(lines) == 2:
+        t0, t1 = lines[0].split(), lines[1].split()
+        if len(t0) <= 3 and len(t1) <= 3:
+            g0 = bool(_detect_german_morphology(lines[0]))
+            g1 = bool(_detect_german_morphology(lines[1]))
+            if g0 != g1:
+                sigs["bilingual_short_pair"] = 0.70
+                return 0.70, sigs
+            sigs["short_aligned_lines"] = 0.38
+            return 0.38, sigs
+
+    return 0.0, sigs
+
+
+def _score_group_translation_stack(
+    lines: list[str],
+) -> tuple[float, dict[str, float]]:
+    sigs: dict[str, float] = {}
+    if not 2 <= len(lines) <= 6:
+        return 0.0, sigs
+
+    flag_count = sum(1 for l in lines if _FLAG_EMOJI_RE.search(l))
+    if flag_count >= 2:
+        sigs["flag_emoji_stack"] = float(flag_count)
+        return min(0.95, 0.80 + flag_count * 0.05), sigs
+
+    script_changes = 0
+    for i in range(len(lines) - 1):
+        sa = set(_detect_scripts(lines[i]))
+        sb = set(_detect_scripts(lines[i + 1]))
+        if sa != sb:
+            script_changes += 1
+
+    if script_changes >= 1:
+        sigs["script_change_count"] = float(script_changes)
+        german_present = any(_detect_german_morphology(l) for l in lines)
+        if german_present:
+            sigs["german_target_in_stack"] = 0.9
+            return 0.80, sigs
+        return 0.55, sigs
+
+    return 0.0, sigs
+
+
+def _score_group_grammar_cluster(
+    lines: list[str],
+) -> tuple[float, dict[str, float]]:
+    sigs: dict[str, float] = {}
+    if not 2 <= len(lines) <= 6:
+        return 0.0, sigs
+
+    text = "\n".join(lines)
+    if re.search(r"\b(?:ist|hat|sind|haben|bin|habe)\s+ge\w{3,}", text, re.IGNORECASE):
+        sigs["partizip_perfekt"] = 1.0
+        return 0.93, sigs
+
+    german_count = sum(1 for l in lines if _detect_german_morphology(l))
+    short_count  = sum(1 for l in lines if len(l.split()) <= 4)
+
+    if german_count >= 2 and short_count >= 2:
+        sigs["german_morphology_short_lines"] = german_count / len(lines)
+        return min(0.78, 0.45 + german_count * 0.12), sigs
+
+    return 0.0, sigs
+
+
+def _score_group_subtitle_cluster(
+    lines: list[str],
+) -> tuple[float, dict[str, float]]:
+    sigs: dict[str, float] = {}
+    long_count = sum(1 for l in lines if len(l.split()) >= 5)
+    if long_count < 2:
+        return 0.0, sigs
+
+    sigs["long_line_count"] = float(long_count)
+    all_scripts_set: set[str] = set()
+    for l in lines:
+        all_scripts_set.update(_detect_scripts(l))
+    if len(all_scripts_set) <= 2:
+        sigs["consistent_script"] = 0.8
+        return min(0.82, 0.50 + long_count * 0.08), sigs
+
+    return 0.45, sigs
+
+
+def _score_group_educational_list(
+    lines: list[str],
+) -> tuple[float, dict[str, float]]:
+    sigs: dict[str, float] = {}
+    if len(lines) < 3:
+        return 0.0, sigs
+
+    short_count = sum(1 for l in lines if 1 <= len(l.split()) <= 5)
+    if short_count < 3:
+        return 0.0, sigs
+
+    sigs["short_list_density"] = short_count / len(lines)
+
+    first_words = [l.split()[0].lower() if l.split() else "" for l in lines]
+    mode_fw  = max(set(first_words), key=first_words.count) if first_words else ""
+    mode_cnt = first_words.count(mode_fw)
+    if mode_cnt >= 3 and mode_fw:
+        sigs["common_prefix"] = mode_cnt / len(lines)
+        return 0.78, sigs
+
+    return 0.40, sigs
+
+
+# ---------------------------------------------------------------------------
+# v3 §4: Internal — classify one block into a spatial group
+# ---------------------------------------------------------------------------
+
+def _classify_block_as_group(
+    lines: list[str],
+    group_id: int,
+) -> OcrSpatialGroup:
+    german_sigs    = _detect_german_morphology("\n".join(lines))
+    german_detected = bool(german_sigs)
+
+    if not lines:
+        return OcrSpatialGroup(
+            group_id=group_id, group_type=GROUP_TYPE_UNKNOWN_CLUSTER,
+            lines=(), ordering=group_id, confidence=0.0,
+            signals={}, german_target_detected=False,
+        )
+
+    if len(lines) == 1:
+        all_sigs = {f"german_{k}": v for k, v in german_sigs.items()}
+        return OcrSpatialGroup(
+            group_id=group_id, group_type=GROUP_TYPE_ISOLATED_PHRASE,
+            lines=(lines[0],), ordering=group_id, confidence=0.70,
+            signals=all_sigs, german_target_detected=german_detected,
+        )
+
+    scorer_results: list[tuple[str, float, dict[str, float]]] = [
+        (GROUP_TYPE_HORIZONTAL_PAIR,            *_score_group_horizontal_pair(lines)),
+        (GROUP_TYPE_VERTICAL_TRANSLATION_STACK, *_score_group_translation_stack(lines)),
+        (GROUP_TYPE_GRAMMAR_CLUSTER,            *_score_group_grammar_cluster(lines)),
+        (GROUP_TYPE_SUBTITLE_CLUSTER,           *_score_group_subtitle_cluster(lines)),
+        (GROUP_TYPE_EDUCATIONAL_LIST_CLUSTER,   *_score_group_educational_list(lines)),
+    ]
+
+    best_type, best_score, best_sigs = max(scorer_results, key=lambda x: x[1])
+
+    if best_score < 0.35:
+        best_type  = GROUP_TYPE_UNKNOWN_CLUSTER
+        best_score = 0.0
+        best_sigs  = {}
+
+    all_sigs = dict(best_sigs)
+    all_sigs.update({f"german_{k}": v for k, v in german_sigs.items()})
+
+    return OcrSpatialGroup(
+        group_id=group_id,
+        group_type=best_type,
+        lines=tuple(lines),
+        ordering=group_id,
+        confidence=round(best_score, 4),
+        signals=all_sigs,
+        german_target_detected=german_detected,
+    )
+
+
+# ---------------------------------------------------------------------------
+# v3 §4: Public — group_spatially
+# ---------------------------------------------------------------------------
+
+def group_spatially(text: str) -> list[OcrSpatialGroup]:
+    """
+    Segment cleaned OCR text into spatial/semantic groups.
+
+    Uses blank-line boundaries (same as segment_candidates) then classifies
+    each block's group type deterministically.
+
+    Does not filter, correct, or reorder content.
+    Preserves original line ordering within every group.
+    Returns empty list for empty or whitespace-only input.
+    """
+    if not text.strip():
+        return []
+
+    raw_blocks = re.split(r"\n[ \t]*\n", text.strip())
+    groups: list[OcrSpatialGroup] = []
+    group_id = 0
+
+    for block in raw_blocks:
+        block = block.strip()
+        if not block:
+            continue
+        lines = [l.strip() for l in block.split("\n") if l.strip()]
+        if not lines:
+            continue
+        groups.append(_classify_block_as_group(lines, group_id))
+        group_id += 1
+
+    return groups
+
+
+# ---------------------------------------------------------------------------
+# v3 §4: Public — build_grouped_extraction_payload
+# ---------------------------------------------------------------------------
+
+def build_grouped_extraction_payload(
+    groups: list[OcrSpatialGroup],
+    archetype_result: OcrArchetypeResult,
+) -> OcrGroupedPayload:
+    """
+    Combine spatial groups and archetype result into an extraction-ready payload.
+
+    Raises ValueError if groups is empty — no fallback to flat text.
+    Callers must ensure group_spatially produced results before calling this.
+    """
+    if not groups:
+        raise ValueError(
+            "build_grouped_extraction_payload: groups is empty — "
+            "grouped extraction requires non-empty spatial groups"
+        )
+
+    german_group_count = sum(1 for g in groups if g.german_target_detected)
+
+    return OcrGroupedPayload(
+        archetype_result=archetype_result,
+        groups=tuple(groups),
+        candidate_count=len(groups),
+        german_group_count=german_group_count,
+    )

@@ -229,6 +229,9 @@ from backend.ocr_pipeline import (
     segment_candidates,
     route_candidates,
     build_extraction_text,
+    classify_archetype,
+    group_spatially,
+    build_grouped_extraction_payload,
 )
 from pydub import AudioSegment
 try:
@@ -35080,6 +35083,51 @@ def _run_shortcut_lookup_delivery(
         normalized_text,
         source=normalized_source,
     )
+
+    # OCR v3 — archetype detection + spatial grouping (before v2 routing).
+    _archetype_result = classify_archetype(normalized_text)
+    _groups = group_spatially(normalized_text)
+
+    logging.info(
+        "ocr_archetype_detected user_id=%s ingest_key=%s archetype=%s "
+        "confidence=%.3f german_target_count=%d support_language_count=%d",
+        safe_user_id, normalized_ingest_key,
+        _archetype_result.archetype, _archetype_result.confidence,
+        _archetype_result.german_target_count, _archetype_result.support_language_count,
+    )
+
+    if _groups:
+        try:
+            _grouped_payload = build_grouped_extraction_payload(_groups, _archetype_result)
+            logging.info(
+                "ocr_grouping_preserved user_id=%s ingest_key=%s "
+                "group_count=%d german_group_count=%d archetype=%s",
+                safe_user_id, normalized_ingest_key,
+                _grouped_payload.candidate_count, _grouped_payload.german_group_count,
+                _archetype_result.archetype,
+            )
+            logging.info(
+                "ocr_layout_semantics_preserved user_id=%s ingest_key=%s "
+                "archetype=%s grouping_count=%d german_target_detected=%s "
+                "candidate_count=%d routing_decision=pending",
+                safe_user_id, normalized_ingest_key,
+                _archetype_result.archetype, len(_groups),
+                _archetype_result.german_target_count > 0,
+                len(_groups),
+            )
+            for _grp in _grouped_payload.groups:
+                logging.info(
+                    "ocr_spatial_group_created user_id=%s group_id=%d "
+                    "group_type=%s line_count=%d confidence=%.3f "
+                    "german_target_detected=%s",
+                    safe_user_id, _grp.group_id, _grp.group_type,
+                    len(_grp.lines), _grp.confidence, _grp.german_target_detected,
+                )
+        except ValueError as _grp_exc:
+            logging.error(
+                "ocr_grouped_payload_error user_id=%s ingest_key=%s error=%s",
+                safe_user_id, normalized_ingest_key, _grp_exc,
+            )
 
     # OCR v2 — segment, score, and route before expensive LLM extraction.
     _candidates = segment_candidates(normalized_text)

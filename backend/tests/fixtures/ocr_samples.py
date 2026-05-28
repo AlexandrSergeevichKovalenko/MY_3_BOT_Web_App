@@ -588,3 +588,97 @@ ALL_V3_OCR_FIXTURES: tuple[OcrFixture, ...] = (
     NUMERIC_ORPHAN_LINES,
     CONTEXT_QUESTION_ANSWER,
 )
+
+
+# =============================================================================
+# v3 §4 Archetype fixtures — educational layout archetype classification
+# =============================================================================
+
+@dataclass(frozen=True, slots=True)
+class ArchetypeFixture:
+    name: str
+    text: str
+    expected_archetype: str
+    confidence_min: float
+    german_target_count_min: int
+
+
+# --------------------------------------------------------------------------
+# 1. Vocabulary pair — bidirectional arrow (Hostel ↔ Jugendherberge)
+# --------------------------------------------------------------------------
+ARCHETYPE_FIX_VOCAB_PAIR = ArchetypeFixture(
+    name="vocab_pair_bidirectional",
+    text="Hostel ↔ Jugendherberge",
+    expected_archetype="vocabulary_pair",
+    confidence_min=0.80,
+    german_target_count_min=2,
+)
+
+# --------------------------------------------------------------------------
+# 2. Multilingual flag stack — three flag-annotated translations
+# --------------------------------------------------------------------------
+ARCHETYPE_FIX_MULTILINGUAL_STACK = ArchetypeFixture(
+    name="multilingual_flag_stack",
+    text="🇦🇹 fesch\n🇩🇪 schön\n🇬🇧 Beautiful",
+    expected_archetype="multilingual_stack",
+    confidence_min=0.90,
+    german_target_count_min=2,
+)
+
+# --------------------------------------------------------------------------
+# 3. Bilingual phrase — German noun + Cyrillic translation
+# --------------------------------------------------------------------------
+ARCHETYPE_FIX_BILINGUAL_PHRASE = ArchetypeFixture(
+    name="bilingual_phrase_de_ru",
+    text="die Übersetzung\nперевод",
+    expected_archetype="bilingual_phrase_overlay",
+    confidence_min=0.85,
+    german_target_count_min=2,
+)
+
+# --------------------------------------------------------------------------
+# 4. Grammar board — verb conjugation with Partizip Perfekt
+# --------------------------------------------------------------------------
+ARCHETYPE_FIX_GRAMMAR_BOARD = ArchetypeFixture(
+    name="grammar_board_partizip",
+    text="sprechen\nsprach\nhat gesprochen",
+    expected_archetype="grammar_board",
+    confidence_min=0.85,
+    german_target_count_min=2,
+)
+
+# --------------------------------------------------------------------------
+# 5. Subtitle dialogue — multi-sentence German content
+# --------------------------------------------------------------------------
+ARCHETYPE_FIX_SUBTITLE = ArchetypeFixture(
+    name="subtitle_dialogue_de",
+    text=(
+        "Wenn ich in Deutschland bin,\n"
+        "spreche ich immer Deutsch.\n"
+        "Aber manchmal ist es schwierig."
+    ),
+    expected_archetype="subtitle_dialogue",
+    confidence_min=0.60,
+    german_target_count_min=2,
+)
+
+# --------------------------------------------------------------------------
+# 6. Educational list — prepositional phrases with shared prefix
+# --------------------------------------------------------------------------
+ARCHETYPE_FIX_EDUCATIONAL_LIST = ArchetypeFixture(
+    name="educational_list_preposition",
+    text="aus Berlin\naus dem Zimmer\naus der Schule\naus dem Haus\naus der Küche",
+    expected_archetype="educational_list",
+    confidence_min=0.85,
+    german_target_count_min=2,
+)
+
+
+ALL_ARCHETYPE_FIXTURES: tuple[ArchetypeFixture, ...] = (
+    ARCHETYPE_FIX_VOCAB_PAIR,
+    ARCHETYPE_FIX_MULTILINGUAL_STACK,
+    ARCHETYPE_FIX_BILINGUAL_PHRASE,
+    ARCHETYPE_FIX_GRAMMAR_BOARD,
+    ARCHETYPE_FIX_SUBTITLE,
+    ARCHETYPE_FIX_EDUCATIONAL_LIST,
+)
