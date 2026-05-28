@@ -312,6 +312,8 @@ from backend.database import (
     get_latest_daily_sentences,
     save_webapp_dictionary_query,
     save_webapp_dictionary_query_returning_id,
+    save_webapp_dictionary_query_returning_result,
+    save_webapp_dictionary_query_returning_result_with_cursor,
     save_webapp_translation,
     get_dictionary_cache,
     upsert_dictionary_cache,
@@ -369,6 +371,7 @@ from backend.database import (
     upsert_card_srs_state,
     get_dictionary_entry_for_user,
     insert_card_review_log,
+    get_card_review_log_by_review_id,
     record_telegram_system_message,
     get_pending_telegram_system_messages,
     mark_telegram_system_message_deleted,
@@ -435,6 +438,10 @@ from backend.database import (
     resolve_entitlement,
     enforce_daily_cost_cap,
     enforce_feature_limit,
+    build_free_limit_error,
+    get_free_feature_limit_metadata,
+    get_free_feature_usage_today,
+    increment_free_feature_usage,
     enforce_reader_audio_pro_monthly_limit,
     READER_AUDIO_UNLIMITED_USER_IDS,
     get_today_cost_eur,
@@ -542,6 +549,12 @@ from backend.database import (
     build_translation_session_minutes_sql,
     sync_translation_session_activity,
 )
+from backend.free_usage_lifecycle import (
+    FreeUsageLifecycleAbort,
+    begin_free_usage_lifecycle_tx,
+    finish_free_usage_lifecycle_success_tx,
+    run_free_usage_lifecycle,
+)
 from backend.database import (
     lookup_base_dictionary_entry,
     upsert_base_dictionary_entry,
@@ -552,6 +565,9 @@ from backend.database import (
     get_user_story_rank,
     vote_story,
     vote_translation,
+    shortcut_ingest_request_upsert,
+    shortcut_ingest_request_set_status,
+    _SHORTCUT_INGEST_ACTIVE_STATUSES,
 )
 from backend.r2_storage import (
     r2_exists,
@@ -2549,6 +2565,87 @@ _BILLING_GUARD_SKIP_PATHS = {
     "/api/web/auth/telegram",
     "/api/web/auth/config",
 }
+_PAID_FEATURE_ROUTE_PATTERNS: dict[str, tuple[str, ...]] = {
+    "skills": (
+        "/api/progress/skills",
+        "/api/progress/skills/",
+    ),
+    "today": (
+        "/api/today",
+        "/api/today/",
+    ),
+    "weekly_plan": (
+        "/api/progress/weekly-plan",
+        "/api/progress/weekly-plan/",
+    ),
+}
+_PAID_FEATURE_GATE_REGISTRY: dict[str, dict[str, Any]] = {
+    "skills": {
+        "feature_key": "skills",
+        "feature_title": "Карта навыков",
+        "route_patterns": _PAID_FEATURE_ROUTE_PATTERNS["skills"],
+        "entitlement_requirement": "paid_or_trial",
+    },
+    "today": {
+        "feature_key": "today",
+        "feature_title": "Задачи на день",
+        "route_patterns": _PAID_FEATURE_ROUTE_PATTERNS["today"],
+        "entitlement_requirement": "paid_or_trial",
+    },
+    "weekly_plan": {
+        "feature_key": "weekly_plan",
+        "feature_title": "План на неделю",
+        "route_patterns": _PAID_FEATURE_ROUTE_PATTERNS["weekly_plan"],
+        "entitlement_requirement": "paid_or_trial",
+    },
+}
+
+
+def _paid_feature_pattern_matches(path: str, pattern: str) -> bool:
+    normalized_path = str(path or "").strip()
+    normalized_pattern = str(pattern or "").strip()
+    if not normalized_path or not normalized_pattern:
+        return False
+    if normalized_pattern.endswith("/"):
+        return normalized_path.startswith(normalized_pattern)
+    return normalized_path == normalized_pattern
+
+
+def _expected_paid_feature_for_path(path: str) -> str | None:
+    normalized_path = str(path or "").strip()
+    for feature_key, patterns in _PAID_FEATURE_ROUTE_PATTERNS.items():
+        if any(_paid_feature_pattern_matches(normalized_path, pattern) for pattern in patterns):
+            return feature_key
+    return None
+
+
+def _paid_feature_registry_entry_for_path(
+    path: str,
+    *,
+    registry: dict[str, dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    normalized_path = str(path or "").strip()
+    lookup_registry = _PAID_FEATURE_GATE_REGISTRY if registry is None else registry
+    for feature_key, entry in lookup_registry.items():
+        patterns = tuple(entry.get("route_patterns") or ())
+        if any(_paid_feature_pattern_matches(normalized_path, pattern) for pattern in patterns):
+            normalized_entry = dict(entry)
+            normalized_entry["feature_key"] = str(normalized_entry.get("feature_key") or feature_key).strip()
+            return normalized_entry, None
+    expected_feature = _expected_paid_feature_for_path(normalized_path)
+    if expected_feature:
+        logging.error(
+            "paid_feature_registry_missing user_id=%s feature=%s effective_mode=%s used=%s limit=%s decision=%s route=%s",
+            getattr(g, "telegram_user_id", None) if has_request_context() else None,
+            expected_feature,
+            "unknown",
+            None,
+            None,
+            "block",
+            normalized_path,
+        )
+        return None, expected_feature
+    return None, None
 
 
 def _is_webapp_allowlist_bypass_enabled() -> bool:
@@ -2853,6 +2950,66 @@ def enforce_webapp_single_instance():
         return jsonify(_build_webapp_instance_conflict_payload(active_lease)), 409
 
     g.webapp_instance_id = instance_id
+    return None
+
+
+@app.before_request
+def enforce_paid_feature_guards():
+    path = request.path or ""
+    rule, missing_feature = _paid_feature_registry_entry_for_path(path)
+    if missing_feature:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "paid_feature_registry_missing",
+                "feature": missing_feature,
+                "feature_title": missing_feature,
+                "message": "Paid feature registry entry is missing.",
+            }
+        ), 503
+    if not rule:
+        return None
+    user_id = _extract_guard_user_id_for_path(path)
+    if user_id is None:
+        logging.error(
+            "paid_feature_gate_decision user_id=%s feature=%s effective_mode=%s decision=%s route=%s error=%s",
+            "unknown",
+            rule["feature_key"],
+            "unknown",
+            "error",
+            path,
+            "auth_required",
+        )
+        return jsonify(
+            {
+                "ok": False,
+                "error": "auth_required",
+                "feature": rule["feature_key"],
+                "feature_title": rule["feature_title"],
+                "message": "Не удалось определить пользователя для проверки доступа.",
+            }
+        ), 400
+    logging.info(
+        "paid_feature_registry_match user_id=%s feature=%s effective_mode=%s used=%s limit=%s decision=%s route=%s",
+        int(user_id),
+        rule["feature_key"],
+        "unknown",
+        None,
+        None,
+        "match",
+        path,
+    )
+    payload, status = _block_free_paid_feature(
+        user_id=int(user_id),
+        feature=rule["feature_key"],
+        feature_title=rule["feature_title"],
+        flow="paid_feature_gate",
+        stage="paid_feature_gate_decision",
+        request_id=_extract_observability_request_id(),
+        correlation_id=_build_observability_correlation_id(prefix="paid_feature_gate"),
+    )
+    if payload:
+        return jsonify(payload), int(status or 402)
     return None
 
 
@@ -4911,6 +5068,383 @@ def _build_upgrade_payload(plan_code: str = "pro") -> dict:
     }
 
 
+def _build_paid_feature_required_error(
+    *,
+    feature: str,
+    feature_title: str,
+    entitlement: dict | None = None,
+) -> dict:
+    entitlement_payload = dict(entitlement or {})
+    return {
+        "ok": False,
+        "error": "paid_feature_required",
+        "feature": str(feature or "").strip(),
+        "feature_title": str(feature_title or "").strip() or str(feature or "").strip(),
+        "effective_mode": str(entitlement_payload.get("effective_mode") or "free").strip().lower() or "free",
+        "reset_at": entitlement_payload.get("reset_at"),
+        "message": "Эта функция доступна по подписке.",
+        "upgrade": _build_upgrade_payload("pro"),
+    }
+
+
+def _build_entitlement_resolution_error(
+    *,
+    feature: str,
+    feature_title: str,
+    exc: Exception,
+) -> dict:
+    return {
+        "ok": False,
+        "error": "entitlement_resolution_failed",
+        "feature": str(feature or "").strip(),
+        "feature_title": str(feature_title or "").strip() or str(feature or "").strip(),
+        "message": "Не удалось проверить доступ к функции.",
+        "detail": exc.__class__.__name__,
+    }
+
+
+def _block_free_paid_feature(
+    *,
+    user_id: int,
+    feature: str,
+    feature_title: str,
+    flow: str,
+    stage: str,
+    request_id: str | None = None,
+    correlation_id: str | None = None,
+) -> tuple[dict | None, int | None]:
+    route = request.path if has_request_context() else ""
+    try:
+        entitlement, _subscription = _resolve_user_entitlement(
+            user_id=int(user_id),
+            now_ts_utc=datetime.now(timezone.utc),
+            tz="Europe/Vienna",
+        )
+    except Exception as exc:
+        logging.error(
+            "paid_feature_gate_decision user_id=%s feature=%s effective_mode=%s decision=%s route=%s error=%s",
+            int(user_id),
+            feature,
+            "unknown",
+            "error",
+            route,
+            exc.__class__.__name__,
+        )
+        _log_flow_observation(
+            flow,
+            stage,
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            feature=feature,
+            effective_mode="unknown",
+            decision="error",
+            route=route,
+            final_status="error",
+            error_code="entitlement_resolution_failed",
+            http_status=503,
+        )
+        return _build_entitlement_resolution_error(
+            feature=feature,
+            feature_title=feature_title,
+            exc=exc,
+        ), 503
+    effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
+    if effective_mode not in {"free", "trial", "pro"}:
+        error = ValueError(f"Unsupported effective_mode: {effective_mode!r}")
+        logging.error(
+            "paid_feature_gate_decision user_id=%s feature=%s effective_mode=%s decision=%s route=%s error=%s",
+            int(user_id),
+            feature,
+            effective_mode,
+            "error",
+            route,
+            error.__class__.__name__,
+        )
+        _log_flow_observation(
+            flow,
+            stage,
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            feature=feature,
+            effective_mode=effective_mode,
+            decision="error",
+            route=route,
+            final_status="error",
+            error_code="invalid_effective_mode",
+            http_status=503,
+        )
+        return _build_entitlement_resolution_error(
+            feature=feature,
+            feature_title=feature_title,
+            exc=error,
+        ), 503
+    if effective_mode != "free":
+        logging.info(
+            "paid_feature_gate_decision user_id=%s feature=%s effective_mode=%s decision=%s route=%s",
+            int(user_id),
+            feature,
+            effective_mode,
+            "allow",
+            route,
+        )
+        _log_flow_observation(
+            flow,
+            stage,
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            feature=feature,
+            effective_mode=effective_mode,
+            decision="allow",
+            route=route,
+            final_status="allowed",
+            http_status=200,
+        )
+        return None, None
+    payload = _build_paid_feature_required_error(
+        feature=feature,
+        feature_title=feature_title,
+        entitlement=entitlement,
+    )
+    logging.info(
+        "paid_feature_gate_decision user_id=%s feature=%s effective_mode=%s decision=%s route=%s",
+        int(user_id),
+        feature,
+        effective_mode,
+        "block",
+        route,
+    )
+    _log_flow_observation(
+        flow,
+        stage,
+        request_id=request_id,
+        correlation_id=correlation_id,
+        user_id=int(user_id),
+        feature=feature,
+        effective_mode=effective_mode,
+        decision="block",
+        route=route,
+        final_status="blocked",
+        error_code="paid_feature_required",
+        http_status=402,
+    )
+    return payload, 402
+
+
+def _build_free_usage_state_error(*, feature: str, feature_title: str, exc: Exception) -> dict:
+    return {
+        "ok": False,
+        "error": "free_usage_state_unavailable",
+        "feature": str(feature or "").strip(),
+        "feature_title": str(feature_title or "").strip() or str(feature or "").strip(),
+        "message": "Не удалось проверить лимит бесплатного тарифа.",
+        "detail": exc.__class__.__name__,
+    }
+
+
+def _resolve_free_usage_entitlement(
+    *,
+    user_id: int,
+    feature: str,
+    feature_title: str,
+    route: str,
+) -> tuple[dict | None, dict | None, int | None]:
+    try:
+        entitlement, _subscription = _resolve_user_entitlement(
+            user_id=int(user_id),
+            now_ts_utc=datetime.now(timezone.utc),
+            tz="Europe/Vienna",
+        )
+    except Exception as exc:
+        logging.error(
+            "free_usage_check user_id=%s feature=%s effective_mode=%s used=%s limit=%s decision=%s route=%s error=%s",
+            int(user_id),
+            feature,
+            "unknown",
+            None,
+            None,
+            "error",
+            route,
+            exc.__class__.__name__,
+        )
+        return None, _build_free_usage_state_error(feature=feature, feature_title=feature_title, exc=exc), 503
+    effective_mode = str(entitlement.get("effective_mode") or "").strip().lower()
+    if effective_mode not in {"free", "trial", "pro"}:
+        exc = ValueError(f"Unsupported effective_mode: {effective_mode!r}")
+        logging.error(
+            "free_usage_check user_id=%s feature=%s effective_mode=%s used=%s limit=%s decision=%s route=%s error=%s",
+            int(user_id),
+            feature,
+            effective_mode or "unknown",
+            None,
+            None,
+            "error",
+            route,
+            exc.__class__.__name__,
+        )
+        return None, _build_free_usage_state_error(feature=feature, feature_title=feature_title, exc=exc), 503
+    return entitlement, None, None
+
+
+def _check_free_daily_usage_limit(
+    *,
+    user_id: int,
+    feature: str,
+    route: str,
+    requested_units: float = 1.0,
+) -> tuple[dict | None, dict | None, int | None]:
+    feature_key = str(feature or "").strip().lower()
+    try:
+        meta = get_free_feature_limit_metadata(feature_key)
+        if not meta:
+            raise ValueError(f"Missing free feature metadata for {feature_key!r}")
+    except Exception as exc:
+        logging.error(
+            "free_usage_check user_id=%s feature=%s effective_mode=%s used=%s limit=%s decision=%s route=%s error=%s",
+            int(user_id),
+            feature_key,
+            "unknown",
+            None,
+            None,
+            "error",
+            route,
+            exc.__class__.__name__,
+        )
+        return None, _build_free_usage_state_error(feature=feature_key, feature_title=feature_key, exc=exc), 503
+    feature_title = str(meta.get("title") or feature_key).strip()
+    entitlement, error_payload, error_status = _resolve_free_usage_entitlement(
+        user_id=int(user_id),
+        feature=feature_key,
+        feature_title=feature_title,
+        route=route,
+    )
+    if error_payload:
+        return None, error_payload, error_status
+    effective_mode = str(entitlement.get("effective_mode") or "").strip().lower()
+    limit_value = float(meta.get("free_limit"))
+    if effective_mode != "free":
+        logging.info(
+            "free_usage_check user_id=%s feature=%s effective_mode=%s used=%s limit=%s decision=%s route=%s",
+            int(user_id),
+            feature_key,
+            effective_mode,
+            None,
+            int(limit_value) if limit_value.is_integer() else limit_value,
+            "allow",
+            route,
+        )
+        return {"effective_mode": effective_mode, "feature_title": feature_title, "skip_increment": True}, None, None
+    try:
+        used = float(get_free_feature_usage_today(int(user_id), feature_key, tz="Europe/Vienna"))
+    except Exception as exc:
+        logging.error(
+            "free_usage_check user_id=%s feature=%s effective_mode=%s used=%s limit=%s decision=%s route=%s error=%s",
+            int(user_id),
+            feature_key,
+            effective_mode,
+            None,
+            int(limit_value) if limit_value.is_integer() else limit_value,
+            "error",
+            route,
+            exc.__class__.__name__,
+        )
+        return None, _build_free_usage_state_error(feature=feature_key, feature_title=feature_title, exc=exc), 503
+    requested = max(0.0, float(requested_units or 0.0))
+    if used + requested > limit_value:
+        logging.info(
+            "free_usage_block user_id=%s feature=%s effective_mode=%s used=%s limit=%s decision=%s route=%s",
+            int(user_id),
+            feature_key,
+            effective_mode,
+            int(used) if used.is_integer() else used,
+            int(limit_value) if limit_value.is_integer() else limit_value,
+            "block",
+            route,
+        )
+        return None, build_free_limit_error(
+            feature_key,
+            used=used,
+            limit=limit_value,
+            reset_at=entitlement.get("reset_at"),
+            tz="Europe/Vienna",
+        ), 429
+    logging.info(
+        "free_usage_check user_id=%s feature=%s effective_mode=%s used=%s limit=%s decision=%s route=%s",
+        int(user_id),
+        feature_key,
+        effective_mode,
+        int(used) if used.is_integer() else used,
+        int(limit_value) if limit_value.is_integer() else limit_value,
+        "allow",
+        route,
+    )
+    return {
+        "effective_mode": effective_mode,
+        "feature_title": feature_title,
+        "used": used,
+        "limit": limit_value,
+        "skip_increment": False,
+    }, None, None
+
+
+def _increment_free_daily_usage(
+    *,
+    user_id: int,
+    feature: str,
+    usage_state: dict | None,
+    route: str,
+    idempotency_seed: str,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+    metadata: dict | None = None,
+) -> tuple[dict | None, int | None]:
+    state = dict(usage_state or {})
+    effective_mode = str(state.get("effective_mode") or "").strip().lower()
+    feature_key = str(feature or "").strip().lower()
+    feature_title = str(state.get("feature_title") or feature_key).strip()
+    if effective_mode != "free":
+        return None, None
+    try:
+        event = increment_free_feature_usage(
+            user_id=int(user_id),
+            feature_key=feature_key,
+            idempotency_key=f"free_usage:{feature_key}:{int(user_id)}:{idempotency_seed}",
+            source_lang=source_lang,
+            target_lang=target_lang,
+            metadata={
+                "route": route,
+                **(metadata if isinstance(metadata, dict) else {}),
+            },
+        )
+    except Exception as exc:
+        logging.error(
+            "free_usage_increment user_id=%s feature=%s effective_mode=%s used=%s limit=%s decision=%s route=%s error=%s",
+            int(user_id),
+            feature_key,
+            effective_mode,
+            state.get("used"),
+            state.get("limit"),
+            "error",
+            route,
+            exc.__class__.__name__,
+        )
+        return _build_free_usage_state_error(feature=feature_key, feature_title=feature_title, exc=exc), 503
+    used_after = float(state.get("used") or 0.0) + float(event.get("units_value") or 1.0)
+    logging.info(
+        "free_usage_increment user_id=%s feature=%s effective_mode=%s used=%s limit=%s decision=%s route=%s",
+        int(user_id),
+        feature_key,
+        effective_mode,
+        int(used_after) if used_after.is_integer() else used_after,
+        state.get("limit"),
+        "increment",
+        route,
+    )
+    return None, None
+
+
 def _check_flashcards_words_daily_limit(
     *,
     user_id: int,
@@ -6868,6 +7402,20 @@ def _save_dictionary_entry_with_schema_retry(**kwargs) -> None:
         )
         ensure_webapp_tables()
     return save_webapp_dictionary_query_returning_id(**kwargs)
+
+
+def _save_dictionary_entry_with_insert_status_schema_retry(**kwargs) -> dict[str, Any]:
+    try:
+        return save_webapp_dictionary_query_returning_result(**kwargs)
+    except Exception as exc:
+        if not _is_missing_dictionary_schema_error(exc):
+            raise
+        logging.warning(
+            "Dictionary save hit missing schema; running ensure_webapp_tables and retrying once: error=%s",
+            exc,
+        )
+        ensure_webapp_tables()
+    return save_webapp_dictionary_query_returning_result(**kwargs)
 
 
 def _align_dictionary_legacy_ru_de_columns(
@@ -26936,6 +27484,13 @@ def lookup_webapp_dictionary():
                     }
                 )
 
+        openai_usage_state, openai_limit_payload, openai_limit_status = _check_free_daily_usage_limit(
+            user_id=user_id_for_log,
+            feature="dictionary_openai_explanation_daily",
+            route="/api/webapp/dictionary",
+        )
+        if openai_limit_payload:
+            return jsonify(openai_limit_payload), int(openai_limit_status or 429)
         try:
             core_payload = _run_dictionary_core_lookup_sync(
                 word=word_ru,
@@ -27001,6 +27556,18 @@ def lookup_webapp_dictionary():
                     "lookup_status": "enriching",
                 },
             )
+            increment_payload, increment_status = _increment_free_daily_usage(
+                user_id=user_id_for_log,
+                feature="dictionary_openai_explanation_daily",
+                usage_state=openai_usage_state,
+                route="/api/webapp/dictionary",
+                idempotency_seed=f"openai_core:{lookup_id}",
+                source_lang=source_lang,
+                target_lang=target_lang,
+                metadata={"word": word_ru, "direction": direction, "lookup_status": "enriching"},
+            )
+            if increment_payload:
+                return jsonify(increment_payload), int(increment_status or 503)
             response = jsonify(
                 {
                     "ok": True,
@@ -27099,6 +27666,18 @@ def lookup_webapp_dictionary():
             "lookup_lang": lookup_lang or None,
         },
     )
+    increment_payload, increment_status = _increment_free_daily_usage(
+        user_id=user_id_for_log,
+        feature="dictionary_openai_explanation_daily",
+        usage_state=locals().get("openai_usage_state"),
+        route="/api/webapp/dictionary",
+        idempotency_seed=f"openai_full:{user_id}:{source_lang}:{target_lang}:{word_ru.lower()}:{direction}:{time.time_ns()}",
+        source_lang=source_lang,
+        target_lang=target_lang,
+        metadata={"word": word_ru, "direction": direction, "lookup_status": "ready"},
+    )
+    if increment_payload:
+        return jsonify(increment_payload), int(increment_status or 503)
     response = jsonify(
         {
             "ok": True,
@@ -32104,7 +32683,6 @@ def get_skill_progress():
             http_status=status,
         )
         return jsonify({"error": error}), status
-
     raw_period = str(request.args.get("period") or "7d").strip().lower()
     lookback_days = 7
     if raw_period.endswith("d"):
@@ -32209,7 +32787,6 @@ def sync_skill_progress():
             http_status=status,
         )
         return jsonify({"error": error}), status
-
     payload = request.get_json(silent=True) or {}
     raw_period = str(request.args.get("period") or (payload.get("period") if isinstance(payload, dict) else "") or "7d").strip().lower()
     lookback_days = 7
@@ -32820,7 +33397,6 @@ def start_skill_practice(skill_id: str):
     if error:
         status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
         return jsonify({"error": error}), status
-
     payload = request.get_json(silent=True) or {}
     level = str(payload.get("level") or "b1").strip().lower() or "b1"
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
@@ -33661,18 +34237,6 @@ def save_webapp_dictionary_entry():
             translation_de = _sanitize_bilingual_dictionary_target(source_text, translation_de or target_text, target_lang) or target_text
             word_de = _sanitize_bilingual_dictionary_target(source_text, word_de or target_text, target_lang) or target_text
 
-    if folder_id is None:
-        try:
-            default_folder = get_or_create_dictionary_folder(
-                user_id=user_id,
-                name="GENERAL",
-                color="#7d8590",
-                icon="📁",
-            )
-            folder_id = default_folder.get("id")
-        except Exception:
-            folder_id = None
-
     origin_process = str(payload_origin_process or "webapp_dictionary_save").strip().lower() or "webapp_dictionary_save"
     origin_meta = payload_origin_meta if isinstance(payload_origin_meta, dict) else {}
     if "endpoint" not in origin_meta:
@@ -33680,49 +34244,151 @@ def save_webapp_dictionary_entry():
     if payload_direction and "direction" not in origin_meta:
         origin_meta["direction"] = str(payload_direction)
 
+    save_effective_mode = "unknown"
+    entry_id = 0
+    entry_inserted = False
+
     try:
-        resolved_word_ru = word_ru or response_json.get("word_ru")
-        resolved_word_de = word_de or response_json.get("word_de")
-        resolved_translation_de = translation_de or response_json.get("translation_de")
-        resolved_translation_ru = translation_ru or response_json.get("translation_ru")
-        response_json = _prepare_dictionary_response_json_for_save(
-            response_json=response_json if isinstance(response_json, dict) else {},
-            source_text=source_text or resolved_word_ru or resolved_word_de or "",
-            target_text=target_text or resolved_translation_de or resolved_translation_ru or resolved_word_de or "",
-            source_lang=source_lang,
-            target_lang=target_lang,
-            word_ru=resolved_word_ru,
-            word_de=resolved_word_de,
-            translation_de=resolved_translation_de,
-            translation_ru=resolved_translation_ru,
-        )
-        resolved_word_ru = str(response_json.get("word_ru") or resolved_word_ru or "").strip()
-        resolved_word_de = str(response_json.get("word_de") or resolved_word_de or "").strip()
-        resolved_translation_de = str(response_json.get("translation_de") or resolved_translation_de or "").strip()
-        resolved_translation_ru = str(response_json.get("translation_ru") or resolved_translation_ru or "").strip()
-        entry_id = _save_dictionary_entry_with_schema_retry(
-            user_id=user_id,
-            word_ru=resolved_word_ru if resolved_word_ru else None,
-            translation_de=resolved_translation_de,
-            word_de=resolved_word_de if resolved_word_de else None,
-            translation_ru=resolved_translation_ru,
-            response_json=response_json,
-            folder_id=int(folder_id) if folder_id is not None else None,
-            source_lang=source_lang,
-            target_lang=target_lang,
-            origin_process=origin_process,
-            origin_meta=origin_meta,
-        )
-        _start_saved_dictionary_entry_enrichment(
-            entry_id=int(entry_id or 0),
-            response_json=response_json,
-            source_lang=source_lang,
-            target_lang=target_lang,
-            source_text_hint=source_text,
-            target_text_hint=target_text,
-        )
+        with db_acquire_scope("dictionary_save"), get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                save_usage_state, limit_payload, limit_status = begin_free_usage_lifecycle_tx(
+                    cursor=cursor,
+                    lifecycle_key="dictionary_save_new_item",
+                    user_id=int(user_id),
+                    route="/api/webapp/dictionary/save",
+                    requested_units=1.0,
+                )
+                save_effective_mode = str((save_usage_state or {}).get("effective_mode") or "unknown").strip().lower()
+                logging.info(
+                    "dictionary_save_limit_check user_id=%s feature=%s effective_mode=%s decision=%s item_id=%s route=%s",
+                    int(user_id),
+                    "dictionary_lookup_save_daily",
+                    save_effective_mode,
+                    "block" if limit_payload else "allow",
+                    None,
+                    "/api/webapp/dictionary/save",
+                )
+                if limit_payload:
+                    if str(limit_payload.get("error") or "") != "free_limit_exceeded":
+                        raise FreeUsageLifecycleAbort(limit_payload, int(limit_status or 503))
+                    return jsonify(limit_payload), int(limit_status or 429)
+
+                resolved_folder_id = folder_id
+                if resolved_folder_id is None:
+                    default_folder = get_or_create_dictionary_folder(
+                        user_id=user_id,
+                        name="GENERAL",
+                        color="#7d8590",
+                        icon="📁",
+                        cursor=cursor,
+                    )
+                    resolved_folder_id = default_folder.get("id")
+
+                resolved_word_ru = word_ru or response_json.get("word_ru")
+                resolved_word_de = word_de or response_json.get("word_de")
+                resolved_translation_de = translation_de or response_json.get("translation_de")
+                resolved_translation_ru = translation_ru or response_json.get("translation_ru")
+                response_json = _prepare_dictionary_response_json_for_save(
+                    response_json=response_json if isinstance(response_json, dict) else {},
+                    source_text=source_text or resolved_word_ru or resolved_word_de or "",
+                    target_text=target_text or resolved_translation_de or resolved_translation_ru or resolved_word_de or "",
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    word_ru=resolved_word_ru,
+                    word_de=resolved_word_de,
+                    translation_de=resolved_translation_de,
+                    translation_ru=resolved_translation_ru,
+                )
+                resolved_word_ru = str(response_json.get("word_ru") or resolved_word_ru or "").strip()
+                resolved_word_de = str(response_json.get("word_de") or resolved_word_de or "").strip()
+                resolved_translation_de = str(response_json.get("translation_de") or resolved_translation_de or "").strip()
+                resolved_translation_ru = str(response_json.get("translation_ru") or resolved_translation_ru or "").strip()
+                logging.info(
+                    "free_usage_lifecycle_execute user_id=%s feature=%s effective_mode=%s operation_kind=%s decision=%s route=%s object_id=%s session_id=%s",
+                    int(user_id),
+                    "dictionary_lookup_save_daily",
+                    save_effective_mode,
+                    str((save_usage_state or {}).get("operation_kind") or "count_new_dictionary_item"),
+                    "execute",
+                    "/api/webapp/dictionary/save",
+                    None,
+                    None,
+                )
+                save_result = save_webapp_dictionary_query_returning_result_with_cursor(
+                    cursor,
+                    user_id=user_id,
+                    word_ru=resolved_word_ru if resolved_word_ru else None,
+                    translation_de=resolved_translation_de,
+                    word_de=resolved_word_de if resolved_word_de else None,
+                    translation_ru=resolved_translation_ru,
+                    response_json=response_json,
+                    folder_id=int(resolved_folder_id) if resolved_folder_id is not None else None,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    origin_process=origin_process,
+                    origin_meta=origin_meta,
+                )
+                entry_id = int((save_result or {}).get("entry_id") or 0)
+                entry_inserted = bool((save_result or {}).get("inserted"))
+                if not entry_id:
+                    raise RuntimeError("Dictionary save returned no entry_id")
+                if entry_inserted:
+                    finish_free_usage_lifecycle_success_tx(
+                        cursor=cursor,
+                        user_id=int(user_id),
+                        usage_state=save_usage_state,
+                        route="/api/webapp/dictionary/save",
+                        idempotency_seed=f"save:{int(entry_id)}",
+                        object_id=int(entry_id),
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        metadata={
+                            "entry_id": int(entry_id),
+                            "origin_process": origin_process,
+                            "endpoint": "/api/webapp/dictionary/save",
+                        },
+                    )
+                else:
+                    logging.info(
+                        "free_usage_lifecycle_skip user_id=%s feature=%s effective_mode=%s operation_kind=%s decision=%s route=%s object_id=%s session_id=%s",
+                        int(user_id),
+                        "dictionary_lookup_save_daily",
+                        save_effective_mode,
+                        str((save_usage_state or {}).get("operation_kind") or "count_new_dictionary_item"),
+                        "skip_duplicate_dictionary_item",
+                        "/api/webapp/dictionary/save",
+                        int(entry_id),
+                        None,
+                    )
+    except FreeUsageLifecycleAbort as exc:
+        return jsonify(exc.payload), int(exc.status or 503)
     except Exception as exc:
+        logging.info(
+            "dictionary_save_no_increment_failed user_id=%s feature=%s effective_mode=%s decision=%s item_id=%s route=%s",
+            int(user_id),
+            "dictionary_lookup_save_daily",
+            save_effective_mode,
+            "no_increment",
+            None,
+            "/api/webapp/dictionary/save",
+        )
+        if _is_missing_dictionary_schema_error(exc):
+            return jsonify({
+                "ok": False,
+                "error": "dictionary_schema_unavailable",
+                "message": "Не удалось атомарно сохранить словарь: схема словаря недоступна.",
+                "detail": exc.__class__.__name__,
+            }), 503
         return jsonify({"error": f"Ошибка сохранения словаря: {exc}"}), 500
+
+    _start_saved_dictionary_entry_enrichment(
+        entry_id=int(entry_id or 0),
+        response_json=response_json,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        source_text_hint=source_text,
+        target_text_hint=target_text,
+    )
 
     try:
         _enqueue_dictionary_entry_tts_prewarm(
@@ -33742,10 +34408,32 @@ def save_webapp_dictionary_entry():
         )
         _record_tts_admin_monitor_event("enqueue", "error", source="/api/webapp/dictionary/save", count=1)
 
+    if entry_inserted and save_effective_mode == "free":
+        logging.info(
+            "dictionary_save_limit_increment user_id=%s feature=%s effective_mode=%s decision=%s item_id=%s route=%s",
+            int(user_id),
+            "dictionary_lookup_save_daily",
+            save_effective_mode,
+            "increment",
+            int(entry_id or 0) if entry_id else None,
+            "/api/webapp/dictionary/save",
+        )
+    elif not entry_inserted:
+        logging.info(
+            "dictionary_save_no_increment_existing_item user_id=%s feature=%s effective_mode=%s decision=%s item_id=%s route=%s",
+            int(user_id),
+            "dictionary_lookup_save_daily",
+            save_effective_mode,
+            "no_increment",
+            int(entry_id or 0) if entry_id else None,
+            "/api/webapp/dictionary/save",
+        )
+
     return jsonify(
         {
             "ok": True,
             "entry_id": int(entry_id or 0),
+            "created": bool(entry_inserted),
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
@@ -34103,8 +34791,34 @@ def _shortcut_normalize_unit_text(text: str) -> str:
     return cleaned.strip()
 
 
-def _shortcut_dedup_key(user_id: int, text: str) -> str:
-    return "shortcut_dedup:" + hashlib.sha1(f"{user_id}:{text}".encode()).hexdigest()
+def _shortcut_ingest_source(source: str | None) -> str:
+    normalized = str(source or "").strip().lower()
+    return normalized if normalized in {"shortcut", "telegram_forwarded"} else "telegram_forwarded"
+
+
+def _shortcut_ingest_key(user_id: int, text: str, *, source: str | None = None) -> str:
+    normalized_text = re.sub(r"\s+", " ", str(text or "").strip())
+    normalized_source = _shortcut_ingest_source(source)
+    return hashlib.sha1(f"{int(user_id)}:{normalized_source}:{normalized_text}".encode("utf-8")).hexdigest()[:24]
+
+
+def _shortcut_callback_request_key(
+    *,
+    user_id: int,
+    ingest_key: str,
+    lookup_text: str,
+    index: int,
+    source: str | None = None,
+) -> str:
+    prefix = "sc" if _shortcut_ingest_source(source) == "shortcut" else "tg"
+    digest = hashlib.sha1(
+        f"{int(user_id)}:{ingest_key}:{int(index)}:{str(lookup_text or '').strip()}".encode("utf-8")
+    ).hexdigest()[:18]
+    return f"{prefix}{digest}"
+
+
+def _shortcut_dedup_key(user_id: int, text: str, *, source: str | None = None) -> str:
+    return "shortcut_dedup:" + _shortcut_ingest_key(user_id, text, source=source)
 
 
 def _shortcut_dedup_reserve(redis_key: str) -> bool:
@@ -34256,11 +34970,23 @@ def _shortcut_build_pair_keyboard_rows(request_key: str) -> list[list[dict]]:
     return rows
 
 
-def _run_shortcut_lookup_delivery(*, user_id: int, text: str) -> int:
+def _run_shortcut_lookup_delivery(
+    *,
+    user_id: int,
+    text: str,
+    source: str | None = None,
+    ingest_key: str | None = None,
+) -> int:
     normalized_text = str(text or "").strip()
     safe_user_id = int(user_id or 0)
     if safe_user_id <= 0 or not normalized_text:
         return 0
+    normalized_source = _shortcut_ingest_source(source)
+    normalized_ingest_key = str(ingest_key or "").strip() or _shortcut_ingest_key(
+        safe_user_id,
+        normalized_text,
+        source=normalized_source,
+    )
 
     blocks = _shortcut_split_blocks(normalized_text)
     if not blocks:
@@ -34271,13 +34997,17 @@ def _run_shortcut_lookup_delivery(*, user_id: int, text: str) -> int:
         blocks = blocks[:shortcut_max_blocks]
 
     sent = 0
-    for term, content in blocks:
+    for index, (term, content) in enumerate(blocks):
         lookup_text = str(term or content or "").strip()
         if not lookup_text:
             continue
-        request_key = hashlib.sha1(
-            f"{safe_user_id}:{lookup_text}:{time.time()}:{sent}".encode("utf-8")
-        ).hexdigest()[:20]
+        request_key = _shortcut_callback_request_key(
+            user_id=safe_user_id,
+            ingest_key=normalized_ingest_key,
+            lookup_text=lookup_text,
+            index=index,
+            source=normalized_source,
+        )
         message_text = f"Запрос: {lookup_text}\n\nВыберите языковую пару для перевода:"
 
         try:
@@ -34295,38 +35025,99 @@ def _run_shortcut_lookup_delivery(*, user_id: int, text: str) -> int:
     return sent
 
 
-def _start_shortcut_lookup_enqueue_runner(*, user_id: int, text: str) -> str:
+def _start_shortcut_lookup_enqueue_runner(
+    *,
+    user_id: int,
+    text: str,
+    source: str | None = None,
+) -> tuple[str, int | None, bool, str | None]:
+    """
+    Returns (request_key, ingest_id, is_duplicate, dup_status).
+
+    is_duplicate=True means the DB already has an active row for this payload
+    (status in queued/processing/delivered). The caller must NOT re-enqueue.
+    dup_status is the current DB status when is_duplicate=True, None otherwise.
+    Use dup_status in {'queued', 'processing'} to detect in-recovery duplicates.
+
+    Raises if the durable DB write fails — caller must not proceed with enqueue.
+    """
     safe_user_id = int(user_id or 0)
     normalized_text = str(text or "").strip()
-    request_key = hashlib.sha1(
-        f"shortcut-enqueue:{safe_user_id}:{normalized_text}:{time.time_ns()}".encode("utf-8")
-    ).hexdigest()[:20]
+    normalized_source = _shortcut_ingest_source(source)
+    ingest_key = _shortcut_ingest_key(safe_user_id, normalized_text, source=normalized_source)
+    request_key = ingest_key[:20]
+    text_preview = normalized_text[:200]
+
+    upsert_result = shortcut_ingest_request_upsert(
+        user_id=safe_user_id,
+        source=normalized_source,
+        ingest_key=ingest_key,
+        text_preview=text_preview,
+        normalized_text_full=normalized_text,
+    )
+    ingest_id: int = upsert_result["ingest_id"]
+    is_new: bool = upsert_result["is_new"]
+    current_status: str = upsert_result["status"]
+
+    if not is_new and current_status in _SHORTCUT_INGEST_ACTIVE_STATUSES:
+        logging.info(
+            "shortcut_ingest_duplicate suppressed user_id=%s ingest_id=%s status=%s dup_count=%s",
+            safe_user_id,
+            ingest_id,
+            current_status,
+            upsert_result["duplicate_count"],
+        )
+        return request_key, ingest_id, True, current_status
 
     def _worker() -> None:
         try:
-            enqueue_shortcut_lookup_job(
+            job_id = enqueue_shortcut_lookup_job(
                 user_id=safe_user_id,
                 text=normalized_text,
                 request_key=request_key,
+                source=normalized_source,
+                ingest_key=ingest_key,
+                ingest_id=ingest_id,
+            )
+            shortcut_ingest_request_set_status(
+                ingest_id=ingest_id,
+                status="queued",
+                job_id=job_id,
             )
             logging.info(
-                "shortcut_lookup enqueue accepted user_id=%s request_key=%s",
+                "shortcut_lookup enqueue accepted user_id=%s request_key=%s ingest_id=%s job_id=%s",
                 safe_user_id,
                 request_key,
+                ingest_id,
+                job_id,
             )
         except Exception:
             logging.exception(
-                "shortcut_lookup enqueue failed user_id=%s request_key=%s",
+                "shortcut_lookup enqueue failed user_id=%s request_key=%s ingest_id=%s",
                 safe_user_id,
                 request_key,
+                ingest_id,
             )
+            try:
+                shortcut_ingest_request_set_status(
+                    ingest_id=ingest_id,
+                    status="failed",
+                    error_code="enqueue_failed",
+                    error_message="Failed to enqueue shortcut_lookup job",
+                )
+            except Exception:
+                logging.exception(
+                    "shortcut_ingest set failed status error user_id=%s ingest_id=%s",
+                    safe_user_id,
+                    ingest_id,
+                )
 
     threading.Thread(
         target=_worker,
         name=f"shortcut-lookup-enqueue-{request_key}",
         daemon=True,
     ).start()
-    return request_key
+    return request_key, ingest_id, False, None
 
 
 @app.route("/api/shortcut/lookup", methods=["POST"])
@@ -34390,25 +35181,86 @@ def shortcut_dictionary_lookup():
     if not is_telegram_user_allowed(user_id):
         return jsonify({"error": "Пользователь не имеет доступа"}), 403
 
-    dedup_key = _shortcut_dedup_key(user_id, text)
+    limit_state, limit_payload, limit_status = _check_free_daily_usage_limit(
+        user_id=int(user_id),
+        feature="shortcut_ingest_save_daily",
+        route="/api/shortcut/lookup",
+        requested_units=1.0,
+    )
+    effective_mode = str((limit_state or {}).get("effective_mode") or "unknown").strip().lower()
+    logging.info(
+        "shortcut_ingest_precheck user_id=%s feature=%s effective_mode=%s used=%s limit=%s decision=%s route=%s",
+        int(user_id),
+        "shortcut_ingest_save_daily",
+        effective_mode,
+        (limit_state or {}).get("used"),
+        (limit_state or {}).get("limit"),
+        "block" if limit_payload else "allow",
+        "/api/shortcut/lookup",
+    )
+    if limit_payload:
+        return jsonify(limit_payload), int(limit_status or 503)
+
+    dedup_key = _shortcut_dedup_key(user_id, text, source="shortcut")
     if _shortcut_dedup_reserve(dedup_key):
-        logging.info("shortcut_lookup: duplicate request suppressed user_id=%s", user_id)
-        return jsonify({"ok": True, "blocks_sent": 0, "duplicate": True}), 200
+        logging.info("shortcut_lookup: redis duplicate suppressed user_id=%s", user_id)
+        return jsonify(
+            {
+                "ok": True,
+                "accepted": False,
+                "queued": False,
+                "duplicate": True,
+                "completed": False,
+                "message": "Этот Shortcut-запрос уже принят в обработку.",
+            }
+        ), 200
 
     if not can_enqueue_background_jobs():
         return jsonify({"error": "Shortcut processing is temporarily unavailable"}), 503
 
-    request_key = _start_shortcut_lookup_enqueue_runner(
-        user_id=user_id,
-        text=text,
-    )
+    try:
+        request_key, ingest_id, is_duplicate, dup_status = _start_shortcut_lookup_enqueue_runner(
+            user_id=user_id,
+            text=text,
+            source="shortcut",
+        )
+    except Exception:
+        logging.exception(
+            "shortcut_lookup: ingest upsert failed user_id=%s — request rejected",
+            user_id,
+        )
+        return jsonify({"error": "Ingest idempotency write failed. Request not accepted."}), 503
+
+    if is_duplicate:
+        in_recovery = dup_status in {"queued", "processing"}
+        logging.info(
+            "shortcut_lookup: db duplicate suppressed user_id=%s ingest_id=%s dup_status=%s in_recovery=%s",
+            user_id,
+            ingest_id,
+            dup_status,
+            in_recovery,
+        )
+        return jsonify(
+            {
+                "ok": True,
+                "accepted": False,
+                "queued": False,
+                "duplicate": True,
+                "completed": False,
+                "ingest_id": ingest_id,
+                "in_recovery": in_recovery,
+                "message": "Этот Shortcut-запрос уже принят в обработку.",
+            }
+        ), 200
 
     return jsonify(
         {
             "ok": True,
             "accepted": True,
             "queued": True,
+            "completed": False,
             "duplicate": False,
+            "ingest_id": ingest_id,
             "job_id": str(request_key or "").strip() or None,
         }
     )
@@ -35331,13 +36183,6 @@ def get_next_srs_card():
             target_lang=target_lang,
             queue_source=queue_source,
         )
-        fsrs_limit_state = _check_flashcards_words_daily_limit(
-            user_id=int(user_id),
-            mode="fsrs",
-            requested_words=1,
-        )
-        if fsrs_limit_state.get("error"):
-            return jsonify(fsrs_limit_state.get("error")), 429
         now_utc = datetime.now(timezone.utc)
         with db_acquire_scope("srs_next"), get_db_connection_context() as conn:
             with conn.cursor() as cursor:
@@ -35366,17 +36211,6 @@ def get_next_srs_card():
         raise
     finally:
         if not had_error:
-            try:
-                if isinstance(payload_next, dict) and payload_next.get("card"):
-                    _log_flashcards_words_served(
-                        user_id=int(user_id),
-                        mode="fsrs",
-                        served_words=1,
-                        source_lang=source_lang,
-                        target_lang=target_lang,
-                    )
-            except Exception:
-                pass
             log_profile(int(user_id) if user_id else None, queue_source, error_text=None)
 
 
@@ -35439,19 +36273,6 @@ def get_srs_prefetch_cards():
             due_count = max(0, int(queue_info.get("due_count") or 0))
             new_remaining_today = max(0, int(queue_info.get("new_remaining_today") or 0))
             max_items = max(1, min(20, due_count + new_remaining_today))
-            limit_check_started_perf = time.perf_counter()
-            fsrs_limit_state = _check_flashcards_words_daily_limit(
-                user_id=int(user_id),
-                mode="fsrs",
-                requested_words=max_items,
-            )
-            limit_check_duration_ms = _elapsed_ms_since(limit_check_started_perf)
-            if fsrs_limit_state.get("error"):
-                final_status = "error"
-                error_code = str((fsrs_limit_state.get("error") or {}).get("error_code") or "flashcards_daily_words_limit_exceeded")
-                http_status = 429
-                return jsonify(fsrs_limit_state.get("error")), 429
-            max_items = max(1, min(max_items, int(fsrs_limit_state.get("allowed_words") or max_items)))
             list_cards_started_perf = time.perf_counter()
             cards, _selection = _list_srs_queue_cards(
                 user_id=int(user_id),
@@ -35533,6 +36354,11 @@ def get_srs_prefetch_cards():
     )
 
 
+def _fsrs_review_lock_parts(user_id: int, review_id: str) -> tuple[int, int]:
+    digest = hashlib.sha256(f"{int(user_id)}:{str(review_id or '').strip()}".encode("utf-8")).digest()
+    return int(user_id) % 2147483647, int.from_bytes(digest[:4], "big") % 2147483647
+
+
 @app.route("/api/cards/review", methods=["POST"])
 def review_srs_card():
     started_at = time.perf_counter()
@@ -35580,6 +36406,7 @@ def review_srs_card():
     rating_raw = payload.get("rating")
     response_ms = payload.get("response_ms")
     queue_source = _normalize_flashcards_queue_source(payload.get("queue_source"))
+    review_id = str(payload.get("review_id") or "").strip()
     mark("parsed")
 
     if not init_data:
@@ -35588,6 +36415,26 @@ def review_srs_card():
         return jsonify({"error": "card_id обязателен"}), 400
     if rating_raw is None:
         return jsonify({"error": "rating обязателен"}), 400
+    if not review_id:
+        logging.error(
+            "free_usage_lifecycle_error user_id=%s feature=%s effective_mode=%s operation_kind=%s decision=%s route=%s object_id=%s session_id=%s error=%s",
+            None,
+            "fsrs_card_review_daily",
+            "unknown",
+            "count_successful_fsrs_review",
+            "error",
+            "/api/cards/review",
+            card_id,
+            None,
+            "MissingReviewId",
+        )
+        return jsonify({
+            "ok": False,
+            "error": "review_id_required",
+            "feature": "fsrs_card_review_daily",
+            "feature_title": "Тренировка карточек",
+            "message": "Не удалось сохранить повторение: отсутствует review_id.",
+        }), 400
 
     user_id, _username = _extract_webapp_user_from_init_data(init_data)
     if not user_id:
@@ -35601,10 +36448,16 @@ def review_srs_card():
     reviewed_at = datetime.now(timezone.utc)
     card_id = int(card_id)
     payload_next = None
+    persisted = None
+    review_log_id = None
+    review_inserted = False
+    duplicate_review = False
 
     try:
         with db_acquire_scope("srs_review"), get_db_connection_context() as conn:
             with conn.cursor() as cursor:
+                lock_part_a, lock_part_b = _fsrs_review_lock_parts(int(user_id), review_id)
+                cursor.execute("SELECT pg_advisory_xact_lock(%s, %s);", (lock_part_a, lock_part_b))
                 manual_selected_card_ids = _resolve_flashcards_manual_selection(
                     user_id=int(user_id),
                     source_lang=source_lang,
@@ -35615,7 +36468,77 @@ def review_srs_card():
                 card = get_dictionary_entry_for_user(user_id=user_id, card_id=card_id, cursor=cursor)
                 if not card:
                     return jsonify({"error": "Карточка не найдена"}), 404
+                existing_review = get_card_review_log_by_review_id(
+                    user_id=int(user_id),
+                    review_id=review_id,
+                    cursor=cursor,
+                )
+                if existing_review:
+                    usage_state, limit_payload, limit_status = begin_free_usage_lifecycle_tx(
+                        cursor=cursor,
+                        lifecycle_key="fsrs_card_review",
+                        user_id=int(user_id),
+                        route="/api/cards/review",
+                        object_id=int(card_id),
+                        requested_units=0.0,
+                    )
+                    if limit_payload:
+                        if str(limit_payload.get("error") or "") != "free_limit_exceeded":
+                            raise FreeUsageLifecycleAbort(limit_payload, int(limit_status or 503))
+                        log_profile(int(user_id), int(card_id), queue_source, error_text=str(limit_payload.get("error")))
+                        return jsonify(limit_payload), int(limit_status or 503)
+                    duplicate_review = True
+                    current_persisted = get_card_srs_state(user_id=user_id, card_id=card_id, cursor=cursor) or {}
+                    payload_next = _build_next_srs_payload(
+                        user_id=int(user_id),
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        now_utc=datetime.now(timezone.utc),
+                        queue_source=queue_source,
+                        allowed_card_ids=manual_selected_card_ids,
+                        include_queue_info=False,
+                        cursor=cursor,
+                    )
+                    mark("build_next")
+                    persisted = current_persisted
+                    review_log_id = int(existing_review.get("id") or 0) or None
+                    logging.info(
+                        "free_usage_lifecycle_skip user_id=%s feature=%s effective_mode=%s operation_kind=%s decision=%s route=%s object_id=%s session_id=%s",
+                        int(user_id),
+                        "fsrs_card_review_daily",
+                        str((usage_state or {}).get("effective_mode") or "unknown"),
+                        str((usage_state or {}).get("operation_kind") or "count_successful_fsrs_review"),
+                        "skip_duplicate_review",
+                        "/api/cards/review",
+                        int(card_id),
+                        None,
+                    )
+                    raise StopIteration
 
+                usage_state, limit_payload, limit_status = begin_free_usage_lifecycle_tx(
+                    cursor=cursor,
+                    lifecycle_key="fsrs_card_review",
+                    user_id=int(user_id),
+                    route="/api/cards/review",
+                    object_id=int(card_id),
+                    requested_units=1.0,
+                )
+                if limit_payload:
+                    if str(limit_payload.get("error") or "") != "free_limit_exceeded":
+                        raise FreeUsageLifecycleAbort(limit_payload, int(limit_status or 503))
+                    log_profile(int(user_id), int(card_id), queue_source, error_text=str(limit_payload.get("error")))
+                    return jsonify(limit_payload), int(limit_status or 429)
+                logging.info(
+                    "free_usage_lifecycle_execute user_id=%s feature=%s effective_mode=%s operation_kind=%s decision=%s route=%s object_id=%s session_id=%s",
+                    int(user_id),
+                    "fsrs_card_review_daily",
+                    str((usage_state or {}).get("effective_mode") or "unknown"),
+                    str((usage_state or {}).get("operation_kind") or "count_successful_fsrs_review"),
+                    "execute",
+                    "/api/cards/review",
+                    int(card_id),
+                    None,
+                )
                 current_state = get_card_srs_state(user_id=user_id, card_id=card_id, cursor=cursor)
                 if not current_state:
                     current_state = {
@@ -35653,9 +36576,10 @@ def review_srs_card():
                     cursor=cursor,
                 )
 
-                insert_card_review_log(
+                review_log_result = insert_card_review_log(
                     user_id=user_id,
                     card_id=card_id,
+                    review_id=review_id,
                     reviewed_at=reviewed_at,
                     rating=canonical_rating,
                     response_ms=int(response_ms) if response_ms is not None else None,
@@ -35668,7 +36592,39 @@ def review_srs_card():
                     interval_days_after=scheduled.interval_days,
                     cursor=cursor,
                 )
+                review_inserted = bool((review_log_result or {}).get("inserted"))
+                review_log_id = int((review_log_result or {}).get("review_log_id") or 0) or None
+                if not review_inserted:
+                    duplicate_review = True
+                    logging.info(
+                        "free_usage_lifecycle_skip user_id=%s feature=%s effective_mode=%s operation_kind=%s decision=%s route=%s object_id=%s session_id=%s",
+                        int(user_id),
+                        "fsrs_card_review_daily",
+                        str((usage_state or {}).get("effective_mode") or "unknown"),
+                        str((usage_state or {}).get("operation_kind") or "count_successful_fsrs_review"),
+                        "skip_duplicate_review",
+                        "/api/cards/review",
+                        int(card_id),
+                        None,
+                    )
+                    raise StopIteration
                 mark("db_write")
+                finish_free_usage_lifecycle_success_tx(
+                    cursor=cursor,
+                    user_id=int(user_id),
+                    usage_state=usage_state,
+                    route="/api/cards/review",
+                    idempotency_seed=f"review:{review_id}",
+                    object_id=int(card_id),
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    metadata={
+                        "card_id": int(card_id),
+                        "review_id": review_id,
+                        "review_log_id": review_log_id,
+                        "queue_source": queue_source,
+                    },
+                )
                 payload_next = _build_next_srs_payload(
                     user_id=int(user_id),
                     source_lang=source_lang,
@@ -35680,6 +36636,11 @@ def review_srs_card():
                     cursor=cursor,
                 )
                 mark("build_next")
+    except StopIteration:
+        pass
+    except FreeUsageLifecycleAbort as exc:
+        log_profile(int(user_id) if user_id else None, int(card_id) if card_id else None, queue_source, error_text=str(exc.payload.get("error")))
+        return jsonify(exc.payload), int(exc.status or 503)
     except ValueError as exc:
         log_profile(int(user_id) if user_id else None, int(card_id) if card_id else None, queue_source, error_text=str(exc))
         return jsonify({"error": str(exc)}), 400
@@ -35687,8 +36648,8 @@ def review_srs_card():
         log_profile(int(user_id) if user_id else None, int(card_id) if card_id else None, queue_source, error_text=str(exc))
         return jsonify({"error": f"Ошибка review: {exc}"}), 500
 
-    interval_days = int(persisted.get("interval_days") or 0)
-    due_at = persisted.get("due_at")
+    interval_days = int((persisted or {}).get("interval_days") or 0)
+    due_at = (persisted or {}).get("due_at")
     try:
         _mark_today_plan_snapshot_stale(
             user_id=int(user_id),
@@ -35709,6 +36670,8 @@ def review_srs_card():
             "message": "Review saved",
             "next": payload_next,
             "queue_source": queue_source,
+            "review_id": review_id,
+            "duplicate": bool(duplicate_review),
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
@@ -41414,7 +42377,9 @@ def start_webapp_translation():
 
             if isinstance(result, dict) and result.get("error"):
                 error_code = str(result.get("error") or "").strip().lower()
-                status_code = 429 if error_code in {"feature_limit_exceeded", "cost_cap_exceeded"} else 500
+                status_code = 429 if error_code in {"feature_limit_exceeded", "cost_cap_exceeded", "free_limit_exceeded"} else 500
+                if error_code == "free_usage_state_unavailable":
+                    status_code = 503
                 start_phase_metrics = dict(result.get("phase_metrics") or {})
                 _log_start_route_observation(
                     user_id=int(user_id),
@@ -41446,8 +42411,8 @@ def start_webapp_translation():
                     http_status=status_code,
                     **summarize_db_acquire_events(db_acquire_events),
                 )
-                if error_code in {"feature_limit_exceeded", "cost_cap_exceeded"}:
-                    return jsonify(result), 429
+                if error_code in {"feature_limit_exceeded", "cost_cap_exceeded", "free_limit_exceeded", "free_usage_state_unavailable"}:
+                    return jsonify(result), status_code
                 return jsonify({"error": result["error"]}), 500
 
             build_payload_started_perf = time.perf_counter()

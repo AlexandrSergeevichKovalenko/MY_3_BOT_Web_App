@@ -45,6 +45,38 @@ _IMAGE_QUIZ_RENDERING_STALE_MINUTES = max(
     5,
     int((os.getenv("IMAGE_QUIZ_RENDERING_STALE_MINUTES") or "45").strip() or "45"),
 )
+def _shortcut_cfg_int(key: str, default: int, minimum: int) -> int:
+    """Parse a recovery-config env var.  Logs a warning on invalid input and
+    returns the default; never raises so a bad env value cannot crash the worker."""
+    raw = str(os.getenv(key) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except (ValueError, TypeError):
+        logging.warning(
+            "shortcut_ingest_config: %s=%r is not a valid integer — using default %s",
+            key, raw, default,
+        )
+        return default
+    if value < minimum:
+        logging.warning(
+            "shortcut_ingest_config: %s=%s is below minimum %s — clamping to %s",
+            key, value, minimum, minimum,
+        )
+        return minimum
+    return value
+
+
+_SHORTCUT_INGEST_STALE_QUEUED_MINUTES: int = _shortcut_cfg_int(
+    "SHORTCUT_INGEST_STALE_QUEUED_MINUTES", default=15, minimum=5,
+)
+_SHORTCUT_INGEST_STALE_PROCESSING_MINUTES: int = _shortcut_cfg_int(
+    "SHORTCUT_INGEST_STALE_PROCESSING_MINUTES", default=30, minimum=5,
+)
+_SHORTCUT_INGEST_MAX_RECOVERY_ATTEMPTS: int = _shortcut_cfg_int(
+    "SHORTCUT_INGEST_MAX_RECOVERY_ATTEMPTS", default=3, minimum=1,
+)
 _IMAGE_QUIZ_VISUAL_STYLES = (
     {
         "key": "clean_editorial",
@@ -1231,10 +1263,16 @@ def run_shortcut_lookup_job(
     user_id: int,
     text: str,
     request_key: str | None = None,
+    source: str | None = None,
+    ingest_key: str | None = None,
+    ingest_id: int | None = None,
 ) -> None:
     safe_user_id = int(user_id or 0)
     normalized_text = str(text or "").strip()
     normalized_request_key = str(request_key or "").strip() or None
+    normalized_source = str(source or "").strip().lower() or None
+    normalized_ingest_key = str(ingest_key or "").strip() or None
+    normalized_ingest_id = int(ingest_id) if ingest_id is not None else None
     if safe_user_id <= 0 or not normalized_text:
         logging.warning(
             "shortcut_lookup_job skipped invalid_payload user_id=%s request_key=%s has_text=%s",
@@ -1244,12 +1282,123 @@ def run_shortcut_lookup_job(
         )
         return
     started_at = time.perf_counter()
+
+    # Guard: load durable ingest row, resolve delivery text, check status.
+    worker_id = f"w{os.getpid()}t{int(time.time() * 1000)}"
+    # Default delivery text is the queue-carried text (legacy / no ingest_id path).
+    delivery_text = normalized_text
+    if normalized_ingest_id is not None:
+        try:
+            from backend.database import shortcut_ingest_request_set_status
+            from backend.database import shortcut_ingest_request_get_by_id
+
+            row = shortcut_ingest_request_get_by_id(ingest_id=normalized_ingest_id)
+            if row is None:
+                logging.error(
+                    "shortcut_lookup_job row_not_found ingest_id=%s user_id=%s — aborting",
+                    normalized_ingest_id, safe_user_id,
+                )
+                return
+
+            if row.get("status") == "delivered":
+                logging.info(
+                    "shortcut_lookup_job skipped already_delivered "
+                    "user_id=%s ingest_id=%s",
+                    safe_user_id,
+                    normalized_ingest_id,
+                )
+                return
+
+            # Resolve delivery text: prefer durable DB payload, fall back to queue text.
+            db_full_text = row.get("normalized_text_full")
+            db_sha256 = row.get("normalized_text_sha256") or ""
+
+            if db_full_text:
+                computed_sha256 = hashlib.sha256(db_full_text.encode("utf-8")).hexdigest()
+                if db_sha256 and computed_sha256 != db_sha256:
+                    logging.error(
+                        "shortcut_ingest_payload_integrity_failed ingest_id=%s user_id=%s "
+                        "stored_sha256_prefix=%s computed_sha256_prefix=%s worker_id=%s",
+                        normalized_ingest_id, safe_user_id,
+                        db_sha256[:8], computed_sha256[:8], worker_id,
+                    )
+                    try:
+                        shortcut_ingest_request_set_status(
+                            ingest_id=normalized_ingest_id,
+                            status="failed",
+                            error_code="payload_integrity_failed",
+                            error_message=(
+                                "SHA-256 of stored normalized_text_full "
+                                "does not match recorded hash"
+                            ),
+                        )
+                    except Exception:
+                        logging.exception(
+                            "shortcut_lookup_job set integrity_failed status failed "
+                            "ingest_id=%s",
+                            normalized_ingest_id,
+                        )
+                    return
+                logging.info(
+                    "shortcut_ingest_payload_integrity_ok ingest_id=%s user_id=%s "
+                    "payload_size_bytes=%s sha256_prefix=%s worker_id=%s",
+                    normalized_ingest_id, safe_user_id,
+                    row.get("normalized_text_size_bytes", 0), computed_sha256[:8], worker_id,
+                )
+                logging.info(
+                    "shortcut_ingest_payload_loaded ingest_id=%s user_id=%s "
+                    "payload_size_bytes=%s sha256_prefix=%s worker_id=%s",
+                    normalized_ingest_id, safe_user_id,
+                    row.get("normalized_text_size_bytes", 0), computed_sha256[:8], worker_id,
+                )
+                delivery_text = db_full_text
+            elif normalized_text:
+                # Legacy pre-migration row: normalized_text_full not stored.
+                logging.warning(
+                    "shortcut_ingest_payload_missing_legacy_fallback ingest_id=%s user_id=%s "
+                    "queue_text_len=%s worker_id=%s",
+                    normalized_ingest_id, safe_user_id, len(normalized_text), worker_id,
+                )
+                delivery_text = normalized_text
+            else:
+                logging.error(
+                    "shortcut_lookup_job payload_missing ingest_id=%s user_id=%s — aborting",
+                    normalized_ingest_id, safe_user_id,
+                )
+                try:
+                    shortcut_ingest_request_set_status(
+                        ingest_id=normalized_ingest_id,
+                        status="failed",
+                        error_code="payload_missing",
+                        error_message=(
+                            "No durable payload in DB and no text in queue message"
+                        ),
+                    )
+                except Exception:
+                    pass
+                return
+
+            shortcut_ingest_request_set_status(
+                ingest_id=normalized_ingest_id,
+                status="processing",
+                worker_id=worker_id,
+            )
+        except Exception:
+            logging.exception(
+                "shortcut_lookup_job status transition to processing failed "
+                "user_id=%s ingest_id=%s — proceeding anyway",
+                safe_user_id,
+                normalized_ingest_id,
+            )
+
     try:
         from backend.backend_server import _run_shortcut_lookup_delivery
 
         sent = _run_shortcut_lookup_delivery(
             user_id=safe_user_id,
-            text=normalized_text,
+            text=delivery_text,
+            source=normalized_source,
+            ingest_key=normalized_ingest_key,
         )
         logging.info(
             "shortcut_lookup_job completed user_id=%s request_key=%s sent=%s total_ms=%s",
@@ -1258,6 +1407,20 @@ def run_shortcut_lookup_job(
             int(sent or 0),
             int((time.perf_counter() - started_at) * 1000),
         )
+        if normalized_ingest_id is not None:
+            try:
+                from backend.database import shortcut_ingest_request_set_status
+                shortcut_ingest_request_set_status(
+                    ingest_id=normalized_ingest_id,
+                    status="delivered",
+                    sent_prompt_count=int(sent or 0),
+                )
+            except Exception:
+                logging.exception(
+                    "shortcut_lookup_job set delivered failed user_id=%s ingest_id=%s",
+                    safe_user_id,
+                    normalized_ingest_id,
+                )
     except Exception:
         logging.exception(
             "shortcut_lookup_job failed user_id=%s request_key=%s total_ms=%s",
@@ -1265,7 +1428,99 @@ def run_shortcut_lookup_job(
             normalized_request_key,
             int((time.perf_counter() - started_at) * 1000),
         )
+        if normalized_ingest_id is not None:
+            try:
+                from backend.database import shortcut_ingest_request_set_status
+                shortcut_ingest_request_set_status(
+                    ingest_id=normalized_ingest_id,
+                    status="failed",
+                    error_code="delivery_failed",
+                    error_message="Worker exception during Telegram prompt delivery",
+                )
+            except Exception:
+                logging.exception(
+                    "shortcut_lookup_job set failed status failed user_id=%s ingest_id=%s",
+                    safe_user_id,
+                    normalized_ingest_id,
+                )
         raise
+
+
+@dramatiq.actor(max_retries=0, queue_name="shortcut_lookup")
+def recover_stale_shortcut_ingests() -> None:
+    """Claim stale queued/processing ingest rows and re-enqueue them.
+
+    Runs as a scheduled actor. Claims rows that have been stuck for longer
+    than the configured thresholds, increments their recovery_attempt_count,
+    and submits fresh Dramatiq messages. Rows that have already hit
+    max_recovery_attempts are left alone (they require manual inspection).
+    """
+    from backend.database import shortcut_ingest_request_claim_stale
+    from backend.job_queue import enqueue_shortcut_lookup_job
+
+    logging.info(
+        "shortcut_recovery_actor_started queue=shortcut_lookup "
+        "stale_queued_minutes=%s stale_processing_minutes=%s max_recovery_attempts=%s",
+        _SHORTCUT_INGEST_STALE_QUEUED_MINUTES,
+        _SHORTCUT_INGEST_STALE_PROCESSING_MINUTES,
+        _SHORTCUT_INGEST_MAX_RECOVERY_ATTEMPTS,
+    )
+
+    claimed = shortcut_ingest_request_claim_stale(
+        stale_queued_minutes=_SHORTCUT_INGEST_STALE_QUEUED_MINUTES,
+        stale_processing_minutes=_SHORTCUT_INGEST_STALE_PROCESSING_MINUTES,
+        max_recovery_attempts=_SHORTCUT_INGEST_MAX_RECOVERY_ATTEMPTS,
+    )
+
+    logging.info(
+        "shortcut_recovery_claimed count=%s stale_queued_minutes=%s "
+        "stale_processing_minutes=%s max_recovery_attempts=%s",
+        len(claimed),
+        _SHORTCUT_INGEST_STALE_QUEUED_MINUTES,
+        _SHORTCUT_INGEST_STALE_PROCESSING_MINUTES,
+        _SHORTCUT_INGEST_MAX_RECOVERY_ATTEMPTS,
+    )
+
+    if not claimed:
+        logging.info(
+            "shortcut_recovery_actor_finished queue=shortcut_lookup claimed=0 recovered=0 enqueue_failed=0"
+        )
+        return
+
+    recovered = 0
+    enqueue_failed = 0
+    for row in claimed:
+        try:
+            enqueue_shortcut_lookup_job(
+                user_id=row["user_id"],
+                text=row["text_preview"],
+                source=row["source"],
+                ingest_key=row["ingest_key"],
+                ingest_id=row["ingest_id"],
+            )
+            recovered += 1
+            logging.info(
+                "shortcut_recovery_requeued ingest_id=%s user_id=%s "
+                "recovery_attempt=%s queue=shortcut_lookup",
+                row["ingest_id"],
+                row["user_id"],
+                row["recovery_attempt_count"],
+            )
+        except Exception:
+            enqueue_failed += 1
+            logging.exception(
+                "shortcut_recovery_enqueue_failed ingest_id=%s user_id=%s queue=shortcut_lookup",
+                row["ingest_id"],
+                row["user_id"],
+            )
+
+    logging.info(
+        "shortcut_recovery_actor_finished queue=shortcut_lookup "
+        "claimed=%s recovered=%s enqueue_failed=%s",
+        len(claimed),
+        recovered,
+        enqueue_failed,
+    )
 
 
 def _run_projection_materialization_job_impl(

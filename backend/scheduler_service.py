@@ -42,6 +42,8 @@ Timing env vars (all optional, defaults match original _start_audio_scheduler):
   TRANSLATION_CHECK_WORKER_SCHEDULE_ENABLED, ...START_TIMES/STOP_TIMES/TIMEZONE/IDLE_STOP_GRACE_MINUTES
   BACKGROUND_JOBS_RESOURCE_SCHEDULE_ENABLED, ...START_TIMES/STOP_TIMES/TIMEZONE/RECONCILE_MINUTES/DAY_PROFILE/NIGHT_PROFILE
   AUX_BACKGROUND_WORKER_RESOURCE_SCHEDULE_ENABLED, ...START_TIMES/STOP_TIMES/TIMEZONE/RECONCILE_MINUTES/DAY_PROFILE/NIGHT_PROFILE
+  SHORTCUT_INGEST_RECOVERY_ENABLED (default 1), SHORTCUT_INGEST_RECOVERY_INTERVAL_MINUTES (default 10)
+    — interval recovery sweep for stale shortcut ingest rows; dispatches to shortcut_lookup queue
 """
 
 import logging
@@ -93,6 +95,7 @@ from backend.background_jobs import (  # noqa: E402
     run_agent_worker_schedule_control_actor,
     run_translation_check_worker_schedule_control_actor,
     run_service_resource_schedule_control_actor,
+    recover_stale_shortcut_ingests,
 )
 
 # ---------------------------------------------------------------------------
@@ -249,6 +252,10 @@ def _dispatch_tts_prewarm() -> None:
 
 def _dispatch_tts_generation_recovery() -> None:
     run_tts_generation_recovery_actor.send()
+
+
+def _dispatch_shortcut_ingest_recovery() -> None:
+    recover_stale_shortcut_ingests.send()
 
 
 def _dispatch_tts_prewarm_quota_control() -> None:
@@ -558,6 +565,22 @@ def _build_scheduler():
             max_instances=1,
             coalesce=True,
             misfire_grace_time=120,
+        )
+
+    # -- Shortcut ingest recovery (interval) --
+    if _enabled("SHORTCUT_INGEST_RECOVERY_ENABLED", "1"):
+        recovery_interval = max(1, _int_env("SHORTCUT_INGEST_RECOVERY_INTERVAL_MINUTES", 10))
+        scheduler.add_job(
+            _dispatch_shortcut_ingest_recovery,
+            "interval",
+            minutes=recovery_interval,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=120,
+        )
+        logging.info(
+            "scheduler_service: shortcut_ingest_recovery enabled interval_minutes=%s queue=shortcut_lookup",
+            recovery_interval,
         )
 
     # -- TTS prewarm quota control --

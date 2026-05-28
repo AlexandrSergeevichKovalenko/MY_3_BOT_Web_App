@@ -1036,8 +1036,8 @@ def _create_or_attach_user_dictionary_entry_with_cursor(
     return int(row[0]) if row and row[0] is not None else 0, True
 
 
-def _save_webapp_dictionary_query_returning_id_with_conn(
-    conn,
+def _save_webapp_dictionary_query_returning_id_with_cursor(
+    cursor,
     *,
     user_id: int,
     word_ru: str | None,
@@ -1063,33 +1063,64 @@ def _save_webapp_dictionary_query_returning_id_with_conn(
         translation_ru=translation_ru,
         response_json=normalized_response_json,
     )
-    with conn.cursor() as cursor:
-        canonical_entry_id = None
-        if source_text and target_text and normalized_source_lang and normalized_target_lang:
-            canonical_entry_id = _upsert_dictionary_canonical_entry_with_cursor(
-                cursor,
-                source_lang=normalized_source_lang,
-                target_lang=normalized_target_lang,
-                source_text=source_text,
-                target_text=target_text,
-                word_ru=word_ru,
-                translation_de=translation_de,
-                word_de=word_de,
-                translation_ru=translation_ru,
-                response_json=normalized_response_json,
-            )
-        return _create_or_attach_user_dictionary_entry_with_cursor(
+    canonical_entry_id = None
+    if source_text and target_text and normalized_source_lang and normalized_target_lang:
+        canonical_entry_id = _upsert_dictionary_canonical_entry_with_cursor(
             cursor,
-            user_id=int(user_id),
+            source_lang=normalized_source_lang,
+            target_lang=normalized_target_lang,
+            source_text=source_text,
+            target_text=target_text,
             word_ru=word_ru,
             translation_de=translation_de,
             word_de=word_de,
             translation_ru=translation_ru,
             response_json=normalized_response_json,
+        )
+    return _create_or_attach_user_dictionary_entry_with_cursor(
+        cursor,
+        user_id=int(user_id),
+        word_ru=word_ru,
+        translation_de=translation_de,
+        word_de=word_de,
+        translation_ru=translation_ru,
+        response_json=normalized_response_json,
+        folder_id=folder_id,
+        source_lang=normalized_source_lang,
+        target_lang=normalized_target_lang,
+        canonical_entry_id=canonical_entry_id,
+        origin_process=origin_process,
+        origin_meta=origin_meta,
+    )
+
+
+def _save_webapp_dictionary_query_returning_id_with_conn(
+    conn,
+    *,
+    user_id: int,
+    word_ru: str | None,
+    translation_de: str | None,
+    word_de: str | None,
+    translation_ru: str | None,
+    response_json: dict,
+    folder_id: int | None = None,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+    origin_process: str | None = None,
+    origin_meta: dict | None = None,
+) -> tuple[int, bool]:
+    with conn.cursor() as cursor:
+        return _save_webapp_dictionary_query_returning_id_with_cursor(
+            cursor,
+            user_id=user_id,
+            word_ru=word_ru,
+            translation_de=translation_de,
+            word_de=word_de,
+            translation_ru=translation_ru,
+            response_json=response_json,
             folder_id=folder_id,
-            source_lang=normalized_source_lang,
-            target_lang=normalized_target_lang,
-            canonical_entry_id=canonical_entry_id,
+            source_lang=source_lang,
+            target_lang=target_lang,
             origin_process=origin_process,
             origin_meta=origin_meta,
         )
@@ -5455,6 +5486,7 @@ def ensure_webapp_tables() -> None:
                     id BIGSERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL,
                     card_id BIGINT NOT NULL,
+                    review_id TEXT,
                     reviewed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     rating SMALLINT NOT NULL,
                     response_ms INTEGER,
@@ -5468,8 +5500,17 @@ def ensure_webapp_tables() -> None:
                 );
             """)
             cursor.execute("""
+                ALTER TABLE bt_3_card_review_log
+                    ADD COLUMN IF NOT EXISTS review_id TEXT;
+            """)
+            cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_card_review_log_user_reviewed_desc
                 ON bt_3_card_review_log (user_id, reviewed_at DESC);
+            """)
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_3_card_review_log_user_review_id
+                ON bt_3_card_review_log (user_id, review_id)
+                WHERE review_id IS NOT NULL;
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_card_review_log_user_card_reviewed_desc
@@ -6833,6 +6874,53 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_voice_session_mistakes_category
                 ON bt_3_voice_session_mistakes (error_category, session_id);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_shortcut_ingest_requests (
+                    id               BIGSERIAL PRIMARY KEY,
+                    user_id          BIGINT NOT NULL,
+                    source           TEXT NOT NULL DEFAULT 'shortcut',
+                    ingest_key       TEXT NOT NULL,
+                    text_preview     TEXT NOT NULL DEFAULT '',
+                    status           TEXT NOT NULL DEFAULT 'queued'
+                                     CHECK (status IN ('queued','processing','delivered','failed')),
+                    job_id           TEXT,
+                    accepted_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    completed_at     TIMESTAMPTZ,
+                    last_seen_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    duplicate_count  INT NOT NULL DEFAULT 0,
+                    sent_prompt_count INT NOT NULL DEFAULT 0,
+                    saved_new_count  INT NOT NULL DEFAULT 0,
+                    error_code       TEXT,
+                    error_message    TEXT,
+                    CONSTRAINT bt_3_shortcut_ingest_requests_uq
+                        UNIQUE (user_id, source, ingest_key)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_shortcut_ingest_user
+                ON bt_3_shortcut_ingest_requests (user_id, accepted_at DESC);
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_shortcut_ingest_requests
+                    ADD COLUMN IF NOT EXISTS queued_at               TIMESTAMPTZ,
+                    ADD COLUMN IF NOT EXISTS processing_started_at   TIMESTAMPTZ,
+                    ADD COLUMN IF NOT EXISTS last_worker_heartbeat_at TIMESTAMPTZ,
+                    ADD COLUMN IF NOT EXISTS recovery_attempt_count  INT NOT NULL DEFAULT 0,
+                    ADD COLUMN IF NOT EXISTS recovered_from_ingest_id BIGINT,
+                    ADD COLUMN IF NOT EXISTS worker_id               TEXT,
+                    ADD COLUMN IF NOT EXISTS enqueue_attempt_count   INT NOT NULL DEFAULT 0;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_shortcut_ingest_requests
+                    ADD COLUMN IF NOT EXISTS normalized_text_full       TEXT,
+                    ADD COLUMN IF NOT EXISTS normalized_text_sha256     TEXT NOT NULL DEFAULT '',
+                    ADD COLUMN IF NOT EXISTS normalized_text_size_bytes INT  NOT NULL DEFAULT 0;
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_shortcut_ingest_stale
+                ON bt_3_shortcut_ingest_requests (status, accepted_at ASC)
+                WHERE status IN ('queued', 'processing');
             """)
             cursor.close()
             _run_dictionary_canonical_schema_migration(conn)
@@ -11304,6 +11392,77 @@ def save_webapp_dictionary_query_returning_id(
     return inserted_id if inserted_id > 0 else 0
 
 
+def save_webapp_dictionary_query_returning_result(
+    user_id: int,
+    word_ru: str | None,
+    translation_de: str | None,
+    word_de: str | None,
+    translation_ru: str | None,
+    response_json: dict,
+    folder_id: int | None = None,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+    origin_process: str | None = None,
+    origin_meta: dict | None = None,
+) -> dict[str, Any]:
+    with get_db_connection_context() as conn:
+        entry_id, inserted = _save_webapp_dictionary_query_returning_id_with_conn(
+            conn,
+            user_id=int(user_id),
+            word_ru=word_ru,
+            translation_de=translation_de,
+            word_de=word_de,
+            translation_ru=translation_ru,
+            response_json=response_json,
+            folder_id=folder_id,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            origin_process=origin_process,
+            origin_meta=origin_meta,
+        )
+    return {
+        "entry_id": int(entry_id or 0),
+        "inserted": bool(inserted),
+    }
+
+
+def save_webapp_dictionary_query_returning_result_with_cursor(
+    cursor,
+    *,
+    user_id: int,
+    word_ru: str | None,
+    translation_de: str | None,
+    word_de: str | None,
+    translation_ru: str | None,
+    response_json: dict,
+    folder_id: int | None = None,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+    origin_process: str | None = None,
+    origin_meta: dict | None = None,
+) -> dict[str, Any]:
+    if cursor is None:
+        raise ValueError("cursor is required for cursor-owned dictionary save")
+    entry_id, inserted = _save_webapp_dictionary_query_returning_id_with_cursor(
+        cursor,
+        user_id=int(user_id),
+        word_ru=word_ru,
+        translation_de=translation_de,
+        word_de=word_de,
+        translation_ru=translation_ru,
+        response_json=response_json,
+        folder_id=folder_id,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        origin_process=origin_process,
+        origin_meta=origin_meta,
+    )
+    return {
+        "entry_id": int(entry_id or 0),
+        "inserted": bool(inserted),
+    }
+
+
 def get_webapp_dictionary_entries(
     user_id: int,
     limit: int = 100,
@@ -15514,6 +15673,7 @@ def insert_card_review_log(
     *,
     user_id: int,
     card_id: int,
+    review_id: str | None = None,
     reviewed_at: datetime,
     rating: int,
     response_ms: int | None,
@@ -15525,8 +15685,51 @@ def insert_card_review_log(
     difficulty_after: float | None,
     interval_days_after: int | None,
     cursor=None,
-) -> None:
+) -> dict[str, Any]:
     def _insert(cur):
+        clean_review_id = str(review_id or "").strip() or None
+        if clean_review_id:
+            cur.execute(
+                """
+                INSERT INTO bt_3_card_review_log (
+                    user_id,
+                    card_id,
+                    review_id,
+                    reviewed_at,
+                    rating,
+                    response_ms,
+                    scheduled_due_before,
+                    scheduled_due_after,
+                    stability_before,
+                    difficulty_before,
+                    stability_after,
+                    difficulty_after,
+                    interval_days_after
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (user_id, review_id) WHERE review_id IS NOT NULL DO NOTHING
+                RETURNING id;
+                """,
+                (
+                    int(user_id),
+                    int(card_id),
+                    clean_review_id,
+                    reviewed_at,
+                    int(rating),
+                    int(response_ms) if response_ms is not None else None,
+                    scheduled_due_before,
+                    scheduled_due_after,
+                    float(stability_before) if stability_before is not None else None,
+                    float(difficulty_before) if difficulty_before is not None else None,
+                    float(stability_after) if stability_after is not None else None,
+                    float(difficulty_after) if difficulty_after is not None else None,
+                    int(interval_days_after) if interval_days_after is not None else None,
+                ),
+            )
+            row = cur.fetchone()
+            if not row:
+                return {"inserted": False, "review_log_id": None}
+            return {"inserted": True, "review_log_id": int(row[0])}
         cur.execute(
             """
             INSERT INTO bt_3_card_review_log (
@@ -15543,7 +15746,8 @@ def insert_card_review_log(
                 difficulty_after,
                 interval_days_after
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id;
             """,
             (
                 int(user_id),
@@ -15560,12 +15764,48 @@ def insert_card_review_log(
                 int(interval_days_after) if interval_days_after is not None else None,
             ),
         )
+        row = cur.fetchone()
+        return {"inserted": True, "review_log_id": int(row[0]) if row else None}
     if cursor is not None:
-        _insert(cursor)
-        return
+        return _insert(cursor)
     with get_db_connection_context() as conn:
         with conn.cursor() as own_cursor:
-            _insert(own_cursor)
+            return _insert(own_cursor)
+
+
+def get_card_review_log_by_review_id(*, user_id: int, review_id: str, cursor=None) -> dict[str, Any] | None:
+    clean_review_id = str(review_id or "").strip()
+    if not clean_review_id:
+        return None
+
+    def _get(cur):
+        cur.execute(
+            """
+            SELECT id, user_id, card_id, review_id, reviewed_at, rating, response_ms
+            FROM bt_3_card_review_log
+            WHERE user_id = %s AND review_id = %s
+            LIMIT 1;
+            """,
+            (int(user_id), clean_review_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": int(row[0]),
+            "user_id": int(row[1]),
+            "card_id": int(row[2]),
+            "review_id": row[3],
+            "reviewed_at": row[4],
+            "rating": row[5],
+            "response_ms": row[6],
+        }
+
+    if cursor is not None:
+        return _get(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own_cursor:
+            return _get(own_cursor)
 
 
 def create_dictionary_folder(
@@ -15618,36 +15858,21 @@ def get_or_create_dictionary_folder(
     name: str,
     color: str,
     icon: str,
+    *,
+    cursor=None,
 ) -> dict:
-    with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT id, name, color, icon, created_at
-                FROM bt_3_dictionary_folders
-                WHERE user_id = %s AND name = %s
-                LIMIT 1;
-                """,
-                (user_id, name),
-            )
-            row = cursor.fetchone()
-            if row:
-                return {
-                    "id": row[0],
-                    "name": row[1],
-                    "color": row[2],
-                    "icon": row[3],
-                    "created_at": row[4].isoformat() if row[4] else None,
-                }
-            cursor.execute(
-                """
-                INSERT INTO bt_3_dictionary_folders (user_id, name, color, icon)
-                VALUES (%s, %s, %s, %s)
-                RETURNING id, name, color, icon, created_at;
-                """,
-                (user_id, name, color, icon),
-            )
-            row = cursor.fetchone()
+    def _get_or_create(cur):
+        cur.execute(
+            """
+            SELECT id, name, color, icon, created_at
+            FROM bt_3_dictionary_folders
+            WHERE user_id = %s AND name = %s
+            LIMIT 1;
+            """,
+            (user_id, name),
+        )
+        row = cur.fetchone()
+        if row:
             return {
                 "id": row[0],
                 "name": row[1],
@@ -15655,6 +15880,28 @@ def get_or_create_dictionary_folder(
                 "icon": row[3],
                 "created_at": row[4].isoformat() if row[4] else None,
             }
+        cur.execute(
+            """
+            INSERT INTO bt_3_dictionary_folders (user_id, name, color, icon)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id, name, color, icon, created_at;
+            """,
+            (user_id, name, color, icon),
+        )
+        row = cur.fetchone()
+        return {
+            "id": row[0],
+            "name": row[1],
+            "color": row[2],
+            "icon": row[3],
+            "created_at": row[4].isoformat() if row[4] else None,
+        }
+
+    if cursor is not None:
+        return _get_or_create(cursor)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as own_cursor:
+            return _get_or_create(own_cursor)
 
 
 def get_telegram_dictionary_folder_preference(
@@ -21867,6 +22114,7 @@ def log_billing_event(
     metadata: dict | None = None,
     event_time: datetime | None = None,
     cost_amount: float | None = None,
+    cursor=None,
 ) -> dict | None:
     key = str(idempotency_key or "").strip()
     if not key:
@@ -21888,6 +22136,9 @@ def log_billing_event(
     resolved_snapshot_id = int(price_snapshot_id) if price_snapshot_id else None
     resolved_currency = currency_value
     resolved_cost = float(cost_amount) if cost_amount is not None else None
+
+    if cursor is not None and (resolved_snapshot_id or (price_provider and price_sku and price_unit)):
+        raise ValueError("Transaction-aware billing event logging requires pre-resolved pricing")
 
     if resolved_snapshot_id:
         with get_db_connection_context() as conn:
@@ -21926,65 +22177,72 @@ def log_billing_event(
     resolved_currency = _normalize_billing_currency(resolved_currency)
     metadata_payload = Json(metadata_value)
 
-    with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
+    def _insert(cur):
+        cur.execute(
+            """
+            INSERT INTO bt_3_billing_events (
+                idempotency_key,
+                user_id,
+                source_lang,
+                target_lang,
+                action_type,
+                provider,
+                units_type,
+                units_value,
+                price_snapshot_id,
+                cost_amount,
+                currency,
+                status,
+                metadata,
+                event_time
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (idempotency_key) DO NOTHING
+            RETURNING
+                id, idempotency_key, user_id, source_lang, target_lang, action_type, provider,
+                units_type, units_value, price_snapshot_id, cost_amount, currency, status,
+                metadata, event_time, created_at;
+            """,
+            (
+                key,
+                int(user_id) if user_id is not None else None,
+                str(source_lang or "").strip().lower() or None,
+                str(target_lang or "").strip().lower() or None,
+                action_value,
+                provider_value,
+                unit_type_value,
+                units_value_number,
+                resolved_snapshot_id,
+                resolved_cost,
+                resolved_currency,
+                status_value,
+                metadata_payload,
+                event_time_value,
+            ),
+        )
+        row_value = cur.fetchone()
+        if not row_value:
+            cur.execute(
                 """
-                INSERT INTO bt_3_billing_events (
-                    idempotency_key,
-                    user_id,
-                    source_lang,
-                    target_lang,
-                    action_type,
-                    provider,
-                    units_type,
-                    units_value,
-                    price_snapshot_id,
-                    cost_amount,
-                    currency,
-                    status,
-                    metadata,
-                    event_time
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (idempotency_key) DO NOTHING
-                RETURNING
+                SELECT
                     id, idempotency_key, user_id, source_lang, target_lang, action_type, provider,
                     units_type, units_value, price_snapshot_id, cost_amount, currency, status,
-                    metadata, event_time, created_at;
+                    metadata, event_time, created_at
+                FROM bt_3_billing_events
+                WHERE idempotency_key = %s
+                LIMIT 1;
                 """,
-                (
-                    key,
-                    int(user_id) if user_id is not None else None,
-                    str(source_lang or "").strip().lower() or None,
-                    str(target_lang or "").strip().lower() or None,
-                    action_value,
-                    provider_value,
-                    unit_type_value,
-                    units_value_number,
-                    resolved_snapshot_id,
-                    resolved_cost,
-                    resolved_currency,
-                    status_value,
-                    metadata_payload,
-                    event_time_value,
-                ),
+                (key,),
             )
-            row = cursor.fetchone()
-            if not row:
-                cursor.execute(
-                    """
-                    SELECT
-                        id, idempotency_key, user_id, source_lang, target_lang, action_type, provider,
-                        units_type, units_value, price_snapshot_id, cost_amount, currency, status,
-                        metadata, event_time, created_at
-                    FROM bt_3_billing_events
-                    WHERE idempotency_key = %s
-                    LIMIT 1;
-                    """,
-                    (key,),
-                )
-                row = cursor.fetchone()
+            row_value = cur.fetchone()
+        return row_value
+
+    if cursor is not None:
+        row = _insert(cursor)
+    else:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as own_cursor:
+                row = _insert(own_cursor)
     return _billing_event_row_to_dict(row) if row else None
 
 
@@ -23205,10 +23463,41 @@ def list_billing_plans(*, include_inactive: bool = False) -> list[dict]:
     ]
 
 
-def get_billing_plan(plan_code: str) -> dict | None:
+def get_billing_plan(plan_code: str, *, cursor=None) -> dict | None:
     code = str(plan_code or "").strip().lower()
     if not code:
         return None
+    if cursor is not None:
+        cursor.execute(
+            """
+            SELECT
+                plan_code,
+                name,
+                is_paid,
+                stripe_price_id,
+                daily_cost_cap_eur,
+                trial_days,
+                is_active,
+                created_at,
+                updated_at
+            FROM plans
+            WHERE plan_code = %s
+            LIMIT 1;
+            """,
+            (code,),
+        )
+        row = cursor.fetchone()
+        return {
+            "plan_code": str(row[0] or ""),
+            "name": str(row[1] or ""),
+            "is_paid": bool(row[2]),
+            "stripe_price_id": str(row[3] or "") or None,
+            "daily_cost_cap_eur": float(row[4]) if row[4] is not None else None,
+            "trial_days": int(row[5] or 0),
+            "is_active": bool(row[6]),
+            "created_at": row[7].isoformat() if row[7] else None,
+            "updated_at": row[8].isoformat() if row[8] else None,
+        } if row else None
     now_ts = time.time()
     with _BILLING_PLAN_CACHE_LOCK:
         cached = _BILLING_PLAN_CACHE.get(code)
@@ -23271,8 +23560,29 @@ def _subscription_row_to_dict(row) -> dict:
     }
 
 
-def get_user_subscription(user_id: int) -> dict | None:
+def get_user_subscription(user_id: int, *, cursor=None) -> dict | None:
     user_id_value = int(user_id)
+    if cursor is not None:
+        cursor.execute(
+            """
+            SELECT
+                user_id,
+                plan_code,
+                status,
+                trial_ends_at,
+                current_period_end,
+                stripe_customer_id,
+                stripe_subscription_id,
+                created_at,
+                updated_at
+            FROM user_subscriptions
+            WHERE user_id = %s
+            LIMIT 1;
+            """,
+            (user_id_value,),
+        )
+        row = cursor.fetchone()
+        return _subscription_row_to_dict(row) if row else None
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -23370,7 +23680,6 @@ def get_or_create_user_subscription(
 ) -> dict:
     """Race-safe create-or-get via INSERT .. ON CONFLICT DO NOTHING + SELECT."""
     user_id_value = int(user_id)
-    trial_ends_at = _compute_trial_ends_at(now_ts, trial_days=TRIAL_POLICY_DAYS, tz_name=tz)
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -23382,7 +23691,7 @@ def get_or_create_user_subscription(
                     trial_ends_at,
                     updated_at
                 )
-                VALUES (%s, 'free', 'trialing', %s, NOW())
+                VALUES (%s, 'free', 'inactive', NULL, NOW())
                 ON CONFLICT (user_id) DO NOTHING
                 RETURNING
                     user_id,
@@ -23395,7 +23704,7 @@ def get_or_create_user_subscription(
                     created_at,
                     updated_at;
                 """,
-                (user_id_value, trial_ends_at),
+                (user_id_value,),
             )
             row = cursor.fetchone()
             if not row:
@@ -23435,14 +23744,14 @@ def bind_stripe_customer_to_user(user_id: int, stripe_customer_id: str, db_conn=
                 cursor.execute(
                     """
                     INSERT INTO user_subscriptions (
-                        user_id,
-                        plan_code,
-                        status,
-                        trial_ends_at,
-                        stripe_customer_id,
-                        updated_at
+                    user_id,
+                    plan_code,
+                    status,
+                    trial_ends_at,
+                    stripe_customer_id,
+                    updated_at
                     )
-                    VALUES (%s, 'free', 'trialing', %s, %s, NOW())
+                    VALUES (%s, 'free', 'inactive', NULL, %s, NOW())
                     ON CONFLICT (user_id) DO UPDATE
                     SET
                         stripe_customer_id = EXCLUDED.stripe_customer_id,
@@ -23460,7 +23769,6 @@ def bind_stripe_customer_to_user(user_id: int, stripe_customer_id: str, db_conn=
                     """,
                     (
                         user_id_value,
-                        _compute_trial_ends_at(datetime.now(timezone.utc), trial_days=TRIAL_POLICY_DAYS, tz_name=TRIAL_POLICY_TZ),
                         customer_id_value,
                     ),
                 )
@@ -23477,7 +23785,7 @@ def bind_stripe_customer_to_user(user_id: int, stripe_customer_id: str, db_conn=
                     stripe_customer_id,
                     updated_at
                 )
-                VALUES (%s, 'free', 'trialing', %s, %s, NOW())
+                VALUES (%s, 'free', 'inactive', NULL, %s, NOW())
                 ON CONFLICT (user_id) DO UPDATE
                 SET
                     stripe_customer_id = EXCLUDED.stripe_customer_id,
@@ -23495,7 +23803,6 @@ def bind_stripe_customer_to_user(user_id: int, stripe_customer_id: str, db_conn=
                 """,
                 (
                     user_id_value,
-                    _compute_trial_ends_at(datetime.now(timezone.utc), trial_days=TRIAL_POLICY_DAYS, tz_name=TRIAL_POLICY_TZ),
                     customer_id_value,
                 ),
             )
@@ -23783,14 +24090,175 @@ def _next_local_month_start_iso(now_ts_utc: datetime | None = None, tz: str = TR
     return next_month_local.isoformat()
 
 
+FREE_FEATURE_LIMITS: dict[str, dict[str, Any]] = {
+    "translation_daily_sets": {
+        "title": "Переводы",
+        "free_limit": 1,
+        "reset_policy": "daily_europe_vienna",
+    },
+    "dictionary_lookup_save_daily": {
+        "title": "Словарь",
+        "free_limit": 20,
+        "reset_policy": "daily_europe_vienna",
+    },
+    "dictionary_openai_explanation_daily": {
+        "title": "OpenAI-объяснения в словаре",
+        "free_limit": 5,
+        "reset_policy": "daily_europe_vienna",
+    },
+    "fsrs_card_review_daily": {
+        "title": "Тренировка карточек",
+        "free_limit": 20,
+        "reset_policy": "daily_europe_vienna",
+    },
+    "shortcut_ingest_save_daily": {
+        "title": "Shortcut сохранение слов",
+        "free_limit": 20,
+        "reset_policy": "daily_europe_vienna",
+    },
+    "ask_gpt_daily": {
+        "title": "Спросить GPT",
+        "free_limit": 5,
+        "reset_policy": "daily_europe_vienna",
+    },
+}
+
+
+def get_free_feature_limit_metadata(feature_key: str) -> dict[str, Any] | None:
+    feature = str(feature_key or "").strip().lower()
+    if not feature:
+        return None
+    meta = FREE_FEATURE_LIMITS.get(feature)
+    return dict(meta) if isinstance(meta, dict) else None
+
+
+def get_free_feature_usage_today(
+    user_id: int,
+    feature_key: str,
+    *,
+    now_ts_utc: datetime | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+    cursor=None,
+) -> float:
+    feature = str(feature_key or "").strip().lower()
+    if not get_free_feature_limit_metadata(feature):
+        logging.error("free_usage_metadata_missing user_id=%s feature=%s", int(user_id), feature)
+        raise ValueError(f"Missing free feature metadata for {feature!r}")
+    tz_name = str(tz or TRIAL_POLICY_TZ).strip() or TRIAL_POLICY_TZ
+    day_local = _to_aware_datetime(now_ts_utc).astimezone(_resolve_timezone(tz_name)).date()
+    def _get(cur):
+        cur.execute(
+            """
+            SELECT COALESCE(SUM(units_value), 0)
+            FROM bt_3_billing_events
+            WHERE user_id = %s
+              AND action_type = %s
+              AND units_type = 'requests'
+              AND status IN ('estimated', 'final')
+              AND (event_time AT TIME ZONE %s)::date = %s;
+            """,
+            (int(user_id), feature, tz_name, day_local),
+        )
+        return cur.fetchone()
+
+    if cursor is not None:
+        row = _get(cursor)
+    else:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as own_cursor:
+                row = _get(own_cursor)
+    return float((row or [0])[0] or 0.0)
+
+
+def increment_free_feature_usage(
+    *,
+    user_id: int,
+    feature_key: str,
+    idempotency_key: str,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+    metadata: dict | None = None,
+    event_time: datetime | None = None,
+    cursor=None,
+) -> dict:
+    feature = str(feature_key or "").strip().lower()
+    if not get_free_feature_limit_metadata(feature):
+        logging.error("free_usage_metadata_missing user_id=%s feature=%s", int(user_id), feature)
+        raise ValueError(f"Missing free feature metadata for {feature!r}")
+    item = log_billing_event(
+        idempotency_key=str(idempotency_key or "").strip(),
+        user_id=int(user_id),
+        action_type=feature,
+        provider="app_internal",
+        units_type="requests",
+        units_value=1.0,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        status="estimated",
+        metadata=metadata if isinstance(metadata, dict) else {},
+        event_time=event_time,
+        cursor=cursor,
+    )
+    if not item:
+        logging.error("free_usage_increment_missing user_id=%s feature=%s", int(user_id), feature)
+        raise RuntimeError(f"Failed to increment free feature usage for {feature!r}")
+    return item
+
+
+def build_free_limit_error(
+    feature_key: str,
+    *,
+    used: float | int,
+    limit: float | int | None = None,
+    reset_at: str | None = None,
+    now_ts_utc: datetime | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+) -> dict:
+    feature = str(feature_key or "").strip().lower()
+    meta = get_free_feature_limit_metadata(feature)
+    if not meta:
+        logging.error(
+            "free_limit_error_metadata_missing feature=%s",
+            feature,
+        )
+        raise ValueError(f"Missing free feature metadata for {feature!r}")
+    title = str(meta.get("title") or feature or "услуга").strip()
+    limit_value = meta.get("free_limit") if limit is None else limit
+    try:
+        limit_float = float(limit_value)
+        limit_out: int | float = int(limit_float) if limit_float.is_integer() else limit_float
+    except Exception:
+        limit_out = 0
+    try:
+        used_float = float(used)
+        used_out: int | float = int(used_float) if used_float.is_integer() else used_float
+    except Exception:
+        used_out = 0
+    reset_value = str(reset_at or "").strip() or _next_local_midnight_iso(now_ts_utc, tz=tz)
+    return {
+        "ok": False,
+        "error": "free_limit_exceeded",
+        "feature": feature,
+        "feature_title": title,
+        "limit": limit_out,
+        "used": used_out,
+        "reset_at": reset_value,
+        "message": (
+            f"На бесплатном тарифе лимит для услуги '{title}' на сегодня закончился. "
+            "Лимит обновится завтра в 00:00 по Вене."
+        ),
+    }
+
+
 def resolve_entitlement(
     user_id: int,
     now_ts_utc: datetime | None = None,
     tz: str = TRIAL_POLICY_TZ,
     subscription: dict | None = None,
+    cursor=None,
 ) -> dict:
     now_utc = _to_aware_datetime(now_ts_utc)
-    subscription_row = dict(subscription) if isinstance(subscription, dict) else get_user_subscription(int(user_id))
+    subscription_row = dict(subscription) if isinstance(subscription, dict) else get_user_subscription(int(user_id), cursor=cursor)
     if not subscription_row:
         subscription = {
             "user_id": int(user_id),
@@ -23808,10 +24276,10 @@ def resolve_entitlement(
 
     plan_code = str(subscription.get("plan_code") or "free").strip().lower() or "free"
     status = _normalize_subscription_status(subscription.get("status"))
-    current_plan = get_billing_plan(plan_code) or {}
+    current_plan = get_billing_plan(plan_code, cursor=cursor) or {}
     if not current_plan and plan_code != "free":
         plan_code = "free"
-        current_plan = get_billing_plan("free") or {}
+        current_plan = get_billing_plan("free", cursor=cursor) or {}
 
     trial_ends_at_value = subscription.get("trial_ends_at")
     trial_ends_at_dt = None
@@ -23822,15 +24290,20 @@ def resolve_entitlement(
         except Exception:
             trial_ends_at_dt = None
 
+    source_of_entitlement = "free_default"
     if bool(current_plan.get("is_paid")) and status in {"active", "trialing"}:
         effective_mode = "pro"
+        source_of_entitlement = "paid_subscription"
     elif status == "trialing" and trial_ends_at_dt is not None and now_utc < trial_ends_at_dt:
         effective_mode = "trial"
+        source_of_entitlement = "explicit_trial_subscription"
     else:
         effective_mode = "free"
+        if status == "trialing":
+            source_of_entitlement = "expired_or_invalid_trial"
 
-    free_plan = get_billing_plan("free") or {}
-    pro_plan = current_plan if bool(current_plan.get("is_paid")) else (get_billing_plan("pro") or {})
+    free_plan = get_billing_plan("free", cursor=cursor) or {}
+    pro_plan = current_plan if bool(current_plan.get("is_paid")) else (get_billing_plan("pro", cursor=cursor) or {})
     if effective_mode == "pro":
         cap_eur = pro_plan.get("daily_cost_cap_eur")
     elif effective_mode == "trial":
@@ -23841,6 +24314,13 @@ def resolve_entitlement(
             fallback = _env_decimal("FREE_DAILY_COST_CAP_EUR", "0.50")
             cap_eur = float(fallback) if fallback is not None else None
 
+    logging.info(
+        "entitlement_resolved user_id=%s effective_mode=%s source_of_entitlement=%s",
+        int(user_id),
+        effective_mode,
+        source_of_entitlement,
+    )
+
     return {
         "user_id": int(user_id),
         "plan_code": plan_code,
@@ -23848,6 +24328,7 @@ def resolve_entitlement(
         "status": status,
         "trial_ends_at": trial_ends_at_dt.isoformat() if trial_ends_at_dt else None,
         "effective_mode": effective_mode,
+        "source_of_entitlement": source_of_entitlement,
         "cap_eur": float(cap_eur) if cap_eur is not None else None,
         "reset_at": _next_local_midnight_iso(now_utc, tz=tz),
     }
@@ -28855,3 +29336,396 @@ def get_visual_riddle_quiz_type_distribution(*, lookback_count: int = 30) -> dic
             )
             rows = cursor.fetchall() or []
     return {str(r[0] or ""): int(r[1] or 0) for r in rows if r[0]}
+
+
+_SHORTCUT_INGEST_ACTIVE_STATUSES: frozenset[str] = frozenset({"queued", "processing", "delivered"})
+
+_SHORTCUT_INGEST_VALID_TRANSITIONS: frozenset[tuple[str, str]] = frozenset({
+    ("queued", "processing"),
+    ("processing", "delivered"),
+    ("processing", "failed"),
+    ("failed", "queued"),
+})
+
+
+def _shortcut_db_cfg_int(key: str, default: int, minimum: int) -> int:
+    """Parse a DB-layer config env var.  Logs a warning on invalid input and
+    returns the default; never raises so a bad env value cannot crash the server."""
+    raw = str(os.getenv(key) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except (ValueError, TypeError):
+        logging.warning(
+            "shortcut_db_config: %s=%r is not a valid integer — using default %s",
+            key, raw, default,
+        )
+        return default
+    if value < minimum:
+        logging.warning(
+            "shortcut_db_config: %s=%s is below minimum %s — clamping to %s",
+            key, value, minimum, minimum,
+        )
+        return minimum
+    return value
+
+
+_SHORTCUT_INGEST_MAX_TEXT_BYTES: int = _shortcut_db_cfg_int(
+    "SHORTCUT_INGEST_MAX_TEXT_BYTES", default=50000, minimum=1000,
+)
+_SHORTCUT_INGEST_RETENTION_DAYS: int = _shortcut_db_cfg_int(
+    "SHORTCUT_INGEST_RETENTION_DAYS", default=30, minimum=7,
+)
+
+
+def validate_shortcut_ingest_transition(from_status: str, to_status: str) -> None:
+    if (from_status, to_status) not in _SHORTCUT_INGEST_VALID_TRANSITIONS:
+        raise ValueError(
+            f"Illegal shortcut ingest transition: {from_status!r} -> {to_status!r}"
+        )
+
+
+def shortcut_ingest_request_upsert(
+    *,
+    user_id: int,
+    source: str,
+    ingest_key: str,
+    text_preview: str,
+    normalized_text_full: str,
+) -> dict:
+    """
+    Insert a new shortcut ingest row, or on conflict update last_seen_at and
+    increment duplicate_count.
+
+    Returns:
+        {
+            'ingest_id':       int,
+            'is_new':          bool,   # True only for the very first insert
+            'status':          str,
+            'job_id':          str | None,
+            'duplicate_count': int,
+        }
+
+    Raises on any DB error — the caller MUST NOT enqueue if this raises.
+    Raises ValueError if normalized_text_full exceeds _SHORTCUT_INGEST_MAX_TEXT_BYTES.
+    Idempotency is enforced by UNIQUE(user_id, source, ingest_key).
+    """
+    safe_user_id = int(user_id)
+    safe_source = str(source or "").strip()[:64] or "shortcut"
+    safe_key = str(ingest_key or "").strip()[:64]
+    safe_preview = str(text_preview or "").strip()[:500]
+    if not safe_key:
+        raise ValueError("ingest_key is required")
+
+    # Validate and compute full-payload fields
+    full_text = str(normalized_text_full or "")
+    encoded = full_text.encode("utf-8")
+    size_bytes = len(encoded)
+    if size_bytes > _SHORTCUT_INGEST_MAX_TEXT_BYTES:
+        logging.warning(
+            "shortcut_ingest_payload_too_large user_id=%s source=%s "
+            "size_bytes=%s max_bytes=%s",
+            safe_user_id, safe_source, size_bytes, _SHORTCUT_INGEST_MAX_TEXT_BYTES,
+        )
+        raise ValueError(
+            f"shortcut_ingest_payload_too_large: {size_bytes} > {_SHORTCUT_INGEST_MAX_TEXT_BYTES}"
+        )
+    sha256 = hashlib.sha256(encoded).hexdigest()
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_shortcut_ingest_requests
+                    (user_id, source, ingest_key, text_preview,
+                     normalized_text_full, normalized_text_sha256, normalized_text_size_bytes)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (user_id, source, ingest_key) DO UPDATE SET
+                    last_seen_at    = NOW(),
+                    duplicate_count = bt_3_shortcut_ingest_requests.duplicate_count + 1
+                RETURNING id, status, job_id, duplicate_count
+                """,
+                (safe_user_id, safe_source, safe_key, safe_preview,
+                 full_text, sha256, size_bytes),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    if not row:
+        raise RuntimeError("shortcut_ingest_request_upsert: no row returned")
+    ingest_id, status, job_id, duplicate_count = row
+    if int(duplicate_count) == 0:
+        logging.info(
+            "shortcut_ingest_payload_persisted ingest_id=%s user_id=%s "
+            "payload_size_bytes=%s sha256_prefix=%s",
+            int(ingest_id), safe_user_id, size_bytes, sha256[:8],
+        )
+    return {
+        "ingest_id": int(ingest_id),
+        "is_new": int(duplicate_count) == 0,
+        "status": str(status or "queued"),
+        "job_id": str(job_id).strip() if job_id else None,
+        "duplicate_count": int(duplicate_count or 0),
+    }
+
+
+def shortcut_ingest_request_set_status(
+    *,
+    ingest_id: int,
+    status: str,
+    job_id: str | None = None,
+    sent_prompt_count: int | None = None,
+    error_code: str | None = None,
+    error_message: str | None = None,
+    worker_id: str | None = None,
+) -> None:
+    """
+    Update the status of a shortcut ingest row.
+    Sets completed_at=NOW() when transitioning to 'delivered'.
+    Sets processing_started_at and last_worker_heartbeat_at when transitioning to 'processing'.
+    Updates last_worker_heartbeat_at on any terminal transition (processing/delivered/failed).
+    Raises RuntimeError if the row is not found.
+    Raises ValueError for invalid status.
+    """
+    _valid = {"queued", "processing", "delivered", "failed"}
+    if status not in _valid:
+        raise ValueError(f"Invalid shortcut ingest status: {status!r}")
+    safe_id = int(ingest_id)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_shortcut_ingest_requests SET
+                    status                   = %s,
+                    job_id                   = COALESCE(%s, job_id),
+                    sent_prompt_count        = COALESCE(%s, sent_prompt_count),
+                    error_code               = COALESCE(%s, error_code),
+                    error_message            = COALESCE(%s, error_message),
+                    worker_id                = COALESCE(%s, worker_id),
+                    completed_at             = CASE WHEN %s = 'delivered' THEN NOW()
+                                                    ELSE completed_at END,
+                    processing_started_at    = CASE WHEN %s = 'processing'
+                                                    THEN COALESCE(processing_started_at, NOW())
+                                                    ELSE processing_started_at END,
+                    last_worker_heartbeat_at = CASE WHEN %s IN ('processing', 'delivered', 'failed')
+                                                    THEN NOW()
+                                                    ELSE last_worker_heartbeat_at END,
+                    queued_at                = CASE WHEN %s = 'queued'
+                                                    THEN COALESCE(queued_at, NOW())
+                                                    ELSE queued_at END,
+                    last_seen_at             = NOW()
+                WHERE id = %s
+                RETURNING id
+                """,
+                (
+                    status,
+                    str(job_id).strip() if job_id else None,
+                    int(sent_prompt_count) if sent_prompt_count is not None else None,
+                    str(error_code).strip()[:128] if error_code else None,
+                    str(error_message).strip()[:2048] if error_message else None,
+                    str(worker_id).strip()[:64] if worker_id else None,
+                    status,  # completed_at CASE
+                    status,  # processing_started_at CASE
+                    status,  # last_worker_heartbeat_at CASE
+                    status,  # queued_at CASE
+                    safe_id,
+                ),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    if not row:
+        raise RuntimeError(
+            f"shortcut_ingest_request_set_status: row id={safe_id} not found"
+        )
+
+
+def shortcut_ingest_request_get_by_key(
+    *,
+    user_id: int,
+    source: str,
+    ingest_key: str,
+) -> dict | None:
+    """Fetch a shortcut ingest row by natural key. Returns None if not found."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, status, job_id, duplicate_count, sent_prompt_count,
+                       accepted_at, completed_at, error_code,
+                       queued_at, processing_started_at, last_worker_heartbeat_at,
+                       recovery_attempt_count, worker_id, enqueue_attempt_count,
+                       normalized_text_full, normalized_text_sha256, normalized_text_size_bytes
+                FROM bt_3_shortcut_ingest_requests
+                WHERE user_id = %s AND source = %s AND ingest_key = %s
+                """,
+                (
+                    int(user_id),
+                    str(source or "").strip(),
+                    str(ingest_key or "").strip(),
+                ),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    (ingest_id, status, job_id, dup_count, sent_count, accepted_at, completed_at,
+     error_code, queued_at, processing_started_at, last_heartbeat, recovery_count,
+     worker_id, enqueue_count,
+     normalized_text_full, normalized_text_sha256, normalized_text_size_bytes) = row
+    return {
+        "ingest_id": int(ingest_id),
+        "status": str(status or ""),
+        "job_id": str(job_id).strip() if job_id else None,
+        "duplicate_count": int(dup_count or 0),
+        "sent_prompt_count": int(sent_count or 0),
+        "accepted_at": accepted_at,
+        "completed_at": completed_at,
+        "error_code": str(error_code).strip() if error_code else None,
+        "queued_at": queued_at,
+        "processing_started_at": processing_started_at,
+        "last_worker_heartbeat_at": last_heartbeat,
+        "recovery_attempt_count": int(recovery_count or 0),
+        "worker_id": str(worker_id).strip() if worker_id else None,
+        "enqueue_attempt_count": int(enqueue_count or 0),
+        "normalized_text_full": normalized_text_full,
+        "normalized_text_sha256": str(normalized_text_sha256 or ""),
+        "normalized_text_size_bytes": int(normalized_text_size_bytes or 0),
+    }
+
+
+def shortcut_ingest_request_get_by_id(*, ingest_id: int) -> dict | None:
+    """Fetch a shortcut ingest row by primary key. Returns None if not found."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, status, job_id, duplicate_count, sent_prompt_count,
+                       accepted_at, completed_at, error_code,
+                       queued_at, processing_started_at, last_worker_heartbeat_at,
+                       recovery_attempt_count, worker_id, enqueue_attempt_count,
+                       normalized_text_full, normalized_text_sha256, normalized_text_size_bytes
+                FROM bt_3_shortcut_ingest_requests
+                WHERE id = %s
+                """,
+                (int(ingest_id),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    (row_id, status, job_id, dup_count, sent_count, accepted_at, completed_at,
+     error_code, queued_at, processing_started_at, last_heartbeat, recovery_count,
+     worker_id, enqueue_count,
+     normalized_text_full, normalized_text_sha256, normalized_text_size_bytes) = row
+    return {
+        "ingest_id": int(row_id),
+        "status": str(status or ""),
+        "job_id": str(job_id).strip() if job_id else None,
+        "duplicate_count": int(dup_count or 0),
+        "sent_prompt_count": int(sent_count or 0),
+        "accepted_at": accepted_at,
+        "completed_at": completed_at,
+        "error_code": str(error_code).strip() if error_code else None,
+        "queued_at": queued_at,
+        "processing_started_at": processing_started_at,
+        "last_worker_heartbeat_at": last_heartbeat,
+        "recovery_attempt_count": int(recovery_count or 0),
+        "worker_id": str(worker_id).strip() if worker_id else None,
+        "enqueue_attempt_count": int(enqueue_count or 0),
+        "normalized_text_full": normalized_text_full,
+        "normalized_text_sha256": str(normalized_text_sha256 or ""),
+        "normalized_text_size_bytes": int(normalized_text_size_bytes or 0),
+    }
+
+
+def shortcut_ingest_request_update_heartbeat(*, ingest_id: int) -> bool:
+    """Refresh last_worker_heartbeat_at for an in-flight processing row.
+    Returns True if the row was updated, False if not found or not in processing status."""
+    safe_id = int(ingest_id)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_shortcut_ingest_requests
+                SET last_worker_heartbeat_at = NOW(), last_seen_at = NOW()
+                WHERE id = %s AND status = 'processing'
+                RETURNING id
+                """,
+                (safe_id,),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return row is not None
+
+
+def shortcut_ingest_request_claim_stale(
+    *,
+    stale_queued_minutes: int,
+    stale_processing_minutes: int,
+    max_recovery_attempts: int,
+    max_claims: int = 10,
+) -> list[dict]:
+    """Atomically claim stale queued/processing rows for recovery.
+
+    Uses SELECT FOR UPDATE SKIP LOCKED inside a CTE to avoid concurrent
+    recovery races.  Sets each claimed row back to status='queued',
+    increments recovery_attempt_count, and clears job_id so the caller
+    can re-enqueue fresh.
+
+    Rows whose recovery_attempt_count >= max_recovery_attempts are skipped.
+    Returns the list of claimed rows ready for re-enqueue.
+    """
+    safe_stale_queued = max(1, int(stale_queued_minutes))
+    safe_stale_processing = max(1, int(stale_processing_minutes))
+    safe_max_recovery = max(1, int(max_recovery_attempts))
+    safe_max_claims = max(1, min(int(max_claims), 50))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH stale AS (
+                    SELECT id
+                    FROM bt_3_shortcut_ingest_requests
+                    WHERE (
+                        (status = 'queued'
+                         AND accepted_at < NOW() - %s * INTERVAL '1 minute')
+                        OR
+                        (status = 'processing' AND (
+                            last_worker_heartbeat_at IS NULL
+                            OR last_worker_heartbeat_at < NOW() - %s * INTERVAL '1 minute'
+                        ))
+                    )
+                    AND recovery_attempt_count < %s
+                    ORDER BY accepted_at ASC
+                    LIMIT %s
+                    FOR UPDATE SKIP LOCKED
+                ),
+                updated AS (
+                    UPDATE bt_3_shortcut_ingest_requests r
+                    SET
+                        status                 = 'queued',
+                        recovery_attempt_count = r.recovery_attempt_count + 1,
+                        job_id                 = NULL,
+                        queued_at              = NOW(),
+                        last_seen_at           = NOW()
+                    FROM stale
+                    WHERE r.id = stale.id
+                    RETURNING r.id, r.user_id, r.source, r.ingest_key, r.text_preview,
+                              r.recovery_attempt_count
+                )
+                SELECT id, user_id, source, ingest_key, text_preview, recovery_attempt_count
+                FROM updated
+                """,
+                (safe_stale_queued, safe_stale_processing, safe_max_recovery, safe_max_claims),
+            )
+            rows = cursor.fetchall() or []
+        conn.commit()
+    return [
+        {
+            "ingest_id": int(r[0]),
+            "user_id": int(r[1]),
+            "source": str(r[2] or "shortcut"),
+            "ingest_key": str(r[3] or ""),
+            "text_preview": str(r[4] or ""),
+            "recovery_attempt_count": int(r[5] or 0),
+        }
+        for r in rows
+    ]
