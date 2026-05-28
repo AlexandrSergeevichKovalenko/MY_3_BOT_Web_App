@@ -1,19 +1,23 @@
 """
-OCR Intelligence Pipeline — v1
+OCR Intelligence Pipeline — v1 / v2 / v3
 
 Centralized text cleaning for Shortcut/Reels/TikTok screenshot ingestion.
 Runs BEFORE payload is stored to the durable ingest DB row and BEFORE
 the LLM vocabulary extraction step.
 
 Pipeline stages (ordered, each emits a structured log line):
-  1. whitespace_normalization  — normalize Unicode whitespace, collapse runs
-  2. structural_cleanup        — remove social-media UI noise (usernames,
-                                  engagement counters, CTAs, hashtags,
-                                  isolated emoji lines, timestamps)
-  3. ocr_artifact_cleanup      — fix OCR misreads (mangled German quotes,
-                                  excessive punctuation runs)
-  4. language_detection        — detect Unicode scripts present (read-only,
-                                  no mutations)
+  1. whitespace_normalization      — normalize Unicode whitespace, collapse runs
+  2. structural_cleanup            — remove social-media UI noise (usernames,
+                                      engagement counters, CTAs, hashtags,
+                                      isolated emoji lines, timestamps,
+                                      bare numeric orphan lines)
+  3. ocr_artifact_cleanup          — fix OCR misreads (mangled German quotes,
+                                      excessive punctuation runs)
+  4. self_ingestion_suppression    — strip lines that are our own bot-generated
+                                      UI wrappers (query labels, section headers,
+                                      dividers) before candidate segmentation
+  5. language_detection            — detect Unicode scripts present (read-only,
+                                      no mutations)
 
 Contract:
   - run_ocr_pipeline() is a pure function: no DB, no network, no side effects.
@@ -219,6 +223,14 @@ _STRUCTURAL_RULES: list[_CleanupRule] = [
         re.compile(r"^\d{1,2}:\d{2}(?::\d{2})?\s*$", re.MULTILINE),
         "",
     ),
+    # Lines containing only a bare number (1–5 digits, optionally parenthesized).
+    # These are OCR artefacts: engagement positions, list indices, partially visible
+    # counters.  "3 neue Wörter" is safe — the alpha chars prevent a match.
+    _CleanupRule(
+        "isolated_number_line",
+        re.compile(r"(?m)^[ \t]*\(?[ \t]*\d{1,5}[ \t]*\)?[ \t]*$"),
+        "",
+    ),
 ]
 
 
@@ -358,7 +370,23 @@ def run_ocr_pipeline(raw_text: str, *, source: str = "unknown") -> OcrPipelineRe
         dt, cb, ca, fired,
     )
 
-    # Stage 4: language detection (read-only)
+    # Stage 4: self-ingestion suppression
+    t0 = time.monotonic()
+    cb = len(text)
+    text, sup_names = _apply_self_ingestion_suppression(text)
+    text = _collapse_blank_lines(text)
+    ca = len(text)
+    dt = (time.monotonic() - t0) * 1000
+    sup_count = len(sup_names)
+    total_fired += sup_count
+    stages.append(OcrStageMetric("self_ingestion_suppression", round(dt, 2), cb, ca, sup_count))
+    logging.info(
+        "ocr_pipeline_stage stage=self_ingestion_suppression "
+        "duration_ms=%.1f chars_before=%d chars_after=%d suppressed_lines=%d patterns=%s",
+        dt, cb, ca, sup_count, ",".join(sup_names) or "none",
+    )
+
+    # Stage 5: language detection (read-only)
     t0 = time.monotonic()
     detected = _detect_scripts(text)
     dt = (time.monotonic() - t0) * 1000
@@ -400,6 +428,95 @@ ALL_RULE_LISTS: tuple[list[_CleanupRule], ...] = (
     _STRUCTURAL_RULES,
     _OCR_ARTIFACT_RULES,
 )
+
+
+# ============================================================================
+# OCR Pipeline v3 — §1: Self-Ingestion Suppression
+# ============================================================================
+#
+# Users sometimes screenshot Telegram conversations that include messages our
+# own bot sent.  The OCR then re-ingests our transport wrappers (query labels,
+# card section headers, dividers) as if they were learnable content.
+#
+# This layer strips those lines BEFORE candidate segmentation so they never
+# reach the learnability scorer or the LLM extraction step.
+#
+# Vocabulary is centralized here — no scattered regex fragments elsewhere.
+# Every suppressed line is observable via the self_ingestion_suppression stage
+# metric and structured log entries.
+# ============================================================================
+
+class _SelfIngestionPattern(NamedTuple):
+    name: str
+    pattern: re.Pattern
+
+
+_SELF_INGESTION_PATTERNS: tuple[_SelfIngestionPattern, ...] = (
+    # "Запрос: <word>" — shortcut query delivery wrapper (bot → user)
+    _SelfIngestionPattern(
+        "query_wrapper_ru",
+        re.compile(r"^\s*Запрос:\s*\S", re.IGNORECASE),
+    ),
+    # "Выберите языковую пару для перевода:" — translation pair selector prompt
+    _SelfIngestionPattern(
+        "language_pair_selector_ru",
+        re.compile(r"Выберите языковую пару для перевода", re.IGNORECASE),
+    ),
+    # "🧠 Feel the Word" — vocabulary card section header
+    _SelfIngestionPattern(
+        "feel_the_word_header",
+        re.compile(r"Feel the Word"),
+    ),
+    # "✨ Слово и перевод" — vocabulary card word/translation section
+    _SelfIngestionPattern(
+        "bot_word_translation_header",
+        re.compile(r"✨\s*Слово и перевод"),
+    ),
+    # "📚 Разбор" — vocabulary card breakdown section (emoji prefix required to
+    # avoid false positives on the standalone Russian word "разбор")
+    _SelfIngestionPattern(
+        "bot_breakdown_section",
+        re.compile(r"📚\s*Разбор"),
+    ),
+    # "━━━━" — horizontal divider used in bot card formatting
+    _SelfIngestionPattern(
+        "bot_horizontal_divider",
+        re.compile(r"^\s*━{3,}\s*$"),
+    ),
+    # "🌐 DE → RU" — language pair indicator line
+    _SelfIngestionPattern(
+        "bot_language_pair_label",
+        re.compile(r"🌐\s*[A-Z]{2,3}\s*→\s*[A-Z]{2,3}"),
+    ),
+    # "Оцени ответ кнопкой ниже" — rating prompt line
+    _SelfIngestionPattern(
+        "bot_rate_answer_prompt_ru",
+        re.compile(r"Оцени ответ кнопкой ниже", re.IGNORECASE),
+    ),
+)
+
+
+def _apply_self_ingestion_suppression(text: str) -> tuple[str, list[str]]:
+    """
+    Strip lines that match known bot-generated wrapper vocabulary.
+
+    Returns (cleaned_text, fired_pattern_names).
+    fired_pattern_names contains one entry per suppressed line (duplicates allowed).
+    """
+    fired: list[str] = []
+    lines = text.split("\n")
+    kept: list[str] = []
+    for line in lines:
+        matched_name: str | None = None
+        for pat in _SELF_INGESTION_PATTERNS:
+            if pat.pattern.search(line):
+                matched_name = pat.name
+                break
+        if matched_name is not None:
+            fired.append(matched_name)
+        else:
+            kept.append(line)
+    return "\n".join(kept), fired
 
 
 # ============================================================================
@@ -502,13 +619,17 @@ def _compute_signals(candidate: OcrCandidate) -> dict[str, float]:
     if total == 0:
         return {"text_length": -0.8}
 
-    alpha = sum(1 for c in text if c.isalpha())
+    alpha  = sum(1 for c in text if c.isalpha())
+    digits = sum(1 for c in text if c.isdigit())
 
-    # Hard override: no alphabetic characters — pure numeric/emoji/symbol content.
+    # Hard override: no alphabetic characters at all.
     if alpha == 0:
+        # Distinguish numeric orphan fragments from emoji/symbol noise so
+        # observability logs carry the right category name.
+        non_numeric = re.sub(r'[\s\d(),.+-]', '', text)
+        if not non_numeric:
+            return {"numeric_orphan": -1.0}
         return {"no_alphabetic_chars": -1.0}
-
-    digits  = sum(1 for c in text if c.isdigit())
     emoji   = _count_emoji_chars(text)
     symbols = sum(1 for c in text if not c.isalpha() and not c.isdigit() and not c.isspace())
 
@@ -588,6 +709,15 @@ def _compute_signals(candidate: OcrCandidate) -> dict[str, float]:
     # Inline video timestamps (e.g. "3:42") are noise residuals, not learnable.
     if re.search(r"(?<!\w)\d{1,2}:\d{2}(?!\w)", text):
         signals["timestamp_pattern"] = -0.2
+
+    # ---- underscore_artifact ----
+    # Tokens with internal underscores (e.g. "frau_deuen") are typically OCR
+    # corruption artefacts — subtitle boundary merges or partial username fragments.
+    # Only fires when at least 2 alpha chars flank each side of the underscore.
+    # Weight -0.55: strong enough to push an otherwise learnable sentence into
+    # "uncertain" territory, signalling reduced extraction confidence.
+    if re.search(r"\b[A-Za-zÄÖÜäöüßА-ЯЁа-яёЇїІіЄєҐґ]{2,}_[A-Za-zÄÖÜäöüßА-ЯЁа-яёЇїІіЄєҐґ]{2,}\b", text, re.UNICODE):
+        signals["underscore_artifact"] = -0.55
 
     # ---- sentence_punct ----
     # Require punctuation that is genuinely sentence-terminal: ! or ?, or a period
@@ -769,3 +899,69 @@ def build_extraction_text(
             "routing contract violation: 'proceed' routing requires non-empty pass_list"
         )
     return "\n\n".join(c.text for c, _ in pass_list)
+
+
+# ============================================================================
+# OCR Pipeline v3 — §3: Context Reconstruction Scaffold
+# ============================================================================
+#
+# Advisory relationship signals between adjacent candidates.
+# Does NOT filter or modify candidates — purely informational.
+# Designed to support future context-aware reconstruction: question/answer
+# pairing, language transition detection, subtitle continuation grouping.
+#
+# Usage:
+#   candidates = segment_candidates(text)
+#   signals = annotate_context(candidates)
+#   # signals is a list of OcrContextSignal; empty = no relationships found
+# ============================================================================
+
+@dataclass(frozen=True, slots=True)
+class OcrContextSignal:
+    """
+    Advisory relationship signal between two adjacent OCR candidates.
+    candidate_index refers to the left/source candidate in the pair.
+    """
+    candidate_index: int
+    signal_type: str   # "question_before_answer" | "language_transition_pair"
+    detail: str        # human-readable description for logging/debugging
+
+
+def annotate_context(candidates: list[OcrCandidate]) -> list[OcrContextSignal]:
+    """
+    Detect advisory relationship signals between adjacent candidates.
+
+    Returns a list of OcrContextSignal; empty means no relationships found.
+    Does not modify candidates, does not filter, does not route.
+    """
+    result: list[OcrContextSignal] = []
+    for i in range(len(candidates) - 1):
+        left  = candidates[i]
+        right = candidates[i + 1]
+
+        left_langs  = frozenset(left.detected_languages)
+        right_langs = frozenset(right.detected_languages)
+
+        # Question/answer adjacency: left ends with "?" and right is a different language
+        if left.text.rstrip().endswith("?") and left_langs != right_langs:
+            result.append(OcrContextSignal(
+                candidate_index=i,
+                signal_type="question_before_answer",
+                detail=(
+                    f"candidate[{i}] ends with '?' in {sorted(left_langs)}; "
+                    f"candidate[{i+1}] is in {sorted(right_langs)}"
+                ),
+            ))
+
+        # Language transition pair: adjacent candidates in different scripts
+        if left_langs and right_langs and left_langs != right_langs:
+            result.append(OcrContextSignal(
+                candidate_index=i,
+                signal_type="language_transition_pair",
+                detail=(
+                    f"candidate[{i}] scripts={sorted(left_langs)}; "
+                    f"candidate[{i+1}] scripts={sorted(right_langs)}"
+                ),
+            ))
+
+    return result

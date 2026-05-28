@@ -431,3 +431,160 @@ ALL_LEARNABILITY_FIXTURES: tuple[LearnabilityFixture, ...] = (
     LEARNABLE_PEDAGOGICAL,
     LEARNABLE_DENSE_SUBTITLES,
 )
+
+
+# =============================================================================
+# v3 fixtures — production-like payloads: self-ingestion, corruption, context
+# =============================================================================
+
+# --------------------------------------------------------------------------
+# 11. Telegram bot screenshot — recursive ingestion with our own wrappers
+# --------------------------------------------------------------------------
+TELEGRAM_SELF_INGESTION = OcrFixture(
+    name="telegram_self_ingestion",
+    raw=(
+        "Запрос: aufgeben\n"
+        "\n"
+        "Выберите языковую пару для перевода:\n"
+        "🧠 Feel the Word\n"
+        "🌐 DE → RU\n"
+        "━━━━━━━━━━━━\n"
+        "✨ Слово и перевод\n"
+        "• aufgeben\n"
+        "• → сдаться\n"
+        "━━━━━━━━━━━━\n"
+        "📚 Разбор\n"
+        "aufgeben bedeutet aufhören oder weitergeben.\n"
+        "Оцени ответ кнопкой ниже:\n"
+    ),
+    must_keep=(
+        "aufgeben",
+        "aufhören",
+        "weitergeben",
+        "сдаться",
+    ),
+    must_drop=(
+        "Запрос:",
+        "Выберите языковую пару для перевода",
+        "Feel the Word",
+        "Слово и перевод",
+        "━━━━━━━━━━━━",
+        "Оцени ответ кнопкой ниже",
+    ),
+)
+
+
+# --------------------------------------------------------------------------
+# 12. OCR corruption — underscore-joined tokens and mangled words
+# --------------------------------------------------------------------------
+OCR_CORRUPTION_TOKENS = OcrFixture(
+    name="ocr_corruption_tokens",
+    raw=(
+        "Ich habe frau_deuen getroffen.\n"
+        "Das wort_buch liegt auf dem Tisch.\n"
+        "Er ist sehr gut_möglich.\n"
+    ),
+    must_keep=(
+        "Ich habe",
+        "getroffen",
+        "Das",
+        "liegt auf dem Tisch",
+    ),
+    must_drop=(),   # underscore tokens are detected but not hard-removed (v1 pass-through)
+)
+
+
+# --------------------------------------------------------------------------
+# 13. Numeric orphan lines — bare numbers scattered through OCR output
+# --------------------------------------------------------------------------
+NUMERIC_ORPHAN_LINES = OcrFixture(
+    name="numeric_orphan_lines",
+    raw=(
+        "Ich lerne täglich neue Vokabeln.\n"
+        "1\n"
+        "Das macht mir viel Freude.\n"
+        "477\n"
+        "(21)\n"
+        "Deutsch ist eine schöne Sprache.\n"
+        "5\n"
+    ),
+    must_keep=(
+        "Ich lerne täglich neue Vokabeln.",
+        "Das macht mir viel Freude.",
+        "Deutsch ist eine schöne Sprache.",
+    ),
+    must_drop=(
+        "\n1\n",
+        "\n477\n",
+        "\n5\n",
+    ),
+)
+
+
+# --------------------------------------------------------------------------
+# 14. Context reconstruction — question + answer across language boundary
+# --------------------------------------------------------------------------
+CONTEXT_QUESTION_ANSWER = OcrFixture(
+    name="context_question_answer",
+    raw=(
+        "Що означає це слово?\n"
+        "\n"
+        "Das ist ja eine Abzocke?\n"
+        "\n"
+        "Ich lerne Deutsch jeden Tag.\n"
+    ),
+    must_keep=(
+        "Що означає це слово",
+        "Das ist ja eine Abzocke",
+        "Ich lerne Deutsch jeden Tag.",
+    ),
+    must_drop=(),
+)
+
+
+# --------------------------------------------------------------------------
+# Learnability: OCR corruption token reduces confidence
+# --------------------------------------------------------------------------
+UNCERTAIN_UNDERSCORE_TOKEN = LearnabilityFixture(
+    name="uncertain_underscore_token",
+    text="frau_deuen lernt Deutsch.",
+    expected_label="uncertain",
+    score_min=-0.19, score_max=0.19,
+)
+
+LEARNABLE_WITH_CORRUPTION_CONTEXT = LearnabilityFixture(
+    name="learnable_with_corruption_context",
+    text="Ich lerne Deutsch jeden Tag sehr intensiv.",
+    expected_label="likely_learnable",
+    score_min=0.2, score_max=1.0,
+)
+
+NOISE_NUMERIC_ORPHAN_SINGLE = LearnabilityFixture(
+    name="noise_numeric_orphan_single",
+    text="477",
+    expected_label="likely_noise",
+    score_min=-1.0, score_max=-0.21,
+)
+
+NOISE_NUMERIC_ORPHAN_PARENTHESIZED = LearnabilityFixture(
+    name="noise_numeric_orphan_parenthesized",
+    text="(21)",
+    expected_label="likely_noise",
+    score_min=-1.0, score_max=-0.21,
+)
+
+
+ALL_V3_LEARNABILITY_FIXTURES: tuple[LearnabilityFixture, ...] = (
+    UNCERTAIN_UNDERSCORE_TOKEN,
+    LEARNABLE_WITH_CORRUPTION_CONTEXT,
+    NOISE_NUMERIC_ORPHAN_SINGLE,
+    NOISE_NUMERIC_ORPHAN_PARENTHESIZED,
+)
+
+
+ALL_V3_OCR_FIXTURES: tuple[OcrFixture, ...] = (
+    TELEGRAM_SELF_INGESTION,
+    OCR_CORRUPTION_TOKENS,
+    NUMERIC_ORPHAN_LINES,
+    CONTEXT_QUESTION_ANSWER,
+)

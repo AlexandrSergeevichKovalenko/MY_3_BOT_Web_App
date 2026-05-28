@@ -30,13 +30,17 @@ from backend.ocr_pipeline import (
     LEARNABLE_THRESHOLD,
     NOISE_THRESHOLD,
     OcrCandidate,
+    OcrContextSignal,
     OcrPipelineResult,
     OcrStageMetric,
     LearnabilityScore,
+    _SELF_INGESTION_PATTERNS,
     _STRUCTURAL_RULES,
     _WHITESPACE_RULES,
     _OCR_ARTIFACT_RULES,
+    _apply_self_ingestion_suppression,
     _detect_scripts,
+    annotate_context,
     build_extraction_text,
     route_candidates,
     run_ocr_pipeline,
@@ -46,11 +50,18 @@ from backend.ocr_pipeline import (
 from backend.tests.fixtures.ocr_samples import (
     ALL_FIXTURES,
     ALL_LEARNABILITY_FIXTURES,
+    ALL_V3_LEARNABILITY_FIXTURES,
+    ALL_V3_OCR_FIXTURES,
     OCR_MISTAKES,
     LEARNABLE_GERMAN_SENTENCE,
     LEARNABLE_MULTILINE_SUBTITLE,
     NOISE_SINGLE_CTA,
     NOISE_PURE_NUMERIC,
+    TELEGRAM_SELF_INGESTION,
+    OCR_CORRUPTION_TOKENS,
+    NUMERIC_ORPHAN_LINES,
+    CONTEXT_QUESTION_ANSWER,
+    UNCERTAIN_UNDERSCORE_TOKEN,
 )
 
 
@@ -66,9 +77,9 @@ class OcrPipelineRuleMetadataTests(unittest.TestCase):
                          "Duplicate rule names found: " + str(
                              [n for n in all_names if all_names.count(n) > 1]))
 
-    def test_stage_ordering_is_four_stages(self):
+    def test_stage_ordering_is_five_stages(self):
         result = run_ocr_pipeline("Hello Welt", source="test")
-        self.assertEqual(len(result.stage_metrics), 4)
+        self.assertEqual(len(result.stage_metrics), 5)
 
     def test_stage_names_in_correct_order(self):
         result = run_ocr_pipeline("Hello Welt", source="test")
@@ -76,6 +87,7 @@ class OcrPipelineRuleMetadataTests(unittest.TestCase):
             "whitespace_normalization",
             "structural_cleanup",
             "ocr_artifact_cleanup",
+            "self_ingestion_suppression",
             "language_detection",
         ]
         actual = [s.stage for s in result.stage_metrics]
@@ -595,12 +607,20 @@ class OcrLearnabilityScoringTests(unittest.TestCase):
         self.assertIsInstance(score_learnability(cand), LearnabilityScore)
 
     def test_no_alphabetic_chars_hard_noise_override(self):
-        for text in ["89", "3:42", "12345"]:
+        # Emoji/symbol-only → no_alphabetic_chars; numeric → numeric_orphan.
+        # Both produce likely_noise.
+        for text, expected_key in [
+            ("😂😂😂😂", "no_alphabetic_chars"),
+            ("3:42",    "no_alphabetic_chars"),  # has colon → not pure numeric
+            ("89",      "numeric_orphan"),
+            ("12345",   "numeric_orphan"),
+        ]:
             cand = self._candidate(text)
             s = score_learnability(cand)
             self.assertEqual(s.label, "likely_noise",
                              f"{text!r} should be noise, got {s.label} (score={s.score})")
-            self.assertIn("no_alphabetic_chars", s.breakdown)
+            self.assertIn(expected_key, s.breakdown,
+                          f"{text!r}: expected breakdown key {expected_key!r}, got {s.breakdown}")
 
     def test_german_sentence_punct_fires_positive(self):
         cand = self._candidate("Ich lerne Deutsch.")
@@ -1038,3 +1058,339 @@ class OcrRoutingContractTests(unittest.TestCase):
         self.assertEqual(len(captured), 1)
         self.assertNotIn("1.5K likes", captured[0])
         self.assertIn("Ich möchte Deutsch lernen.", captured[0])
+
+
+# ---------------------------------------------------------------------------
+# 10. OCR v3 — self-ingestion suppression tests
+# ---------------------------------------------------------------------------
+
+class OcrSelfIngestionTests(unittest.TestCase):
+    """
+    Verify that bot-generated wrapper vocabulary is stripped before candidate
+    segmentation and that the suppression is observable.
+    """
+
+    # ------------------------------------------------------------------
+    # Pattern metadata
+    # ------------------------------------------------------------------
+
+    def test_all_self_ingestion_patterns_have_unique_names(self):
+        names = [p.name for p in _SELF_INGESTION_PATTERNS]
+        self.assertEqual(len(names), len(set(names)), "duplicate self-ingestion pattern names")
+
+    def test_all_self_ingestion_patterns_have_compiled_regex(self):
+        import re as re_mod
+        for pat in _SELF_INGESTION_PATTERNS:
+            self.assertIsInstance(
+                pat.pattern, re_mod.Pattern,
+                f"pattern {pat.name!r} is not a compiled regex",
+            )
+
+    # ------------------------------------------------------------------
+    # _apply_self_ingestion_suppression unit tests
+    # ------------------------------------------------------------------
+
+    def test_query_wrapper_suppressed(self):
+        text, fired = _apply_self_ingestion_suppression("Запрос: aufgeben")
+        self.assertEqual(text.strip(), "")
+        self.assertIn("query_wrapper_ru", fired)
+
+    def test_language_pair_selector_suppressed(self):
+        text, fired = _apply_self_ingestion_suppression(
+            "Выберите языковую пару для перевода:"
+        )
+        self.assertEqual(text.strip(), "")
+        self.assertIn("language_pair_selector_ru", fired)
+
+    def test_feel_the_word_header_suppressed(self):
+        _, fired = _apply_self_ingestion_suppression("🧠 Feel the Word")
+        self.assertIn("feel_the_word_header", fired)
+
+    def test_horizontal_divider_suppressed(self):
+        _, fired = _apply_self_ingestion_suppression("━━━━━━━━━━━━")
+        self.assertIn("bot_horizontal_divider", fired)
+
+    def test_language_pair_label_suppressed(self):
+        _, fired = _apply_self_ingestion_suppression("🌐 DE → RU")
+        self.assertIn("bot_language_pair_label", fired)
+
+    def test_rate_answer_prompt_suppressed(self):
+        _, fired = _apply_self_ingestion_suppression("Оцени ответ кнопкой ниже:")
+        self.assertIn("bot_rate_answer_prompt_ru", fired)
+
+    def test_learnable_content_not_suppressed(self):
+        """Real German learnable content must pass through unsuppressed."""
+        text = "aufgeben bedeutet aufhören oder weitergeben."
+        cleaned, fired = _apply_self_ingestion_suppression(text)
+        self.assertEqual(cleaned, text)
+        self.assertEqual(fired, [])
+
+    def test_mixed_input_preserves_learnable_removes_wrapper(self):
+        raw = "Запрос: aufgeben\naufgeben bedeutet aufhören."
+        cleaned, fired = _apply_self_ingestion_suppression(raw)
+        self.assertIn("aufgeben bedeutet aufhören.", cleaned)
+        self.assertNotIn("Запрос:", cleaned)
+        self.assertIn("query_wrapper_ru", fired)
+
+    def test_multiple_wrappers_all_fired(self):
+        raw = "\n".join([
+            "Запрос: lernen",
+            "Выберите языковую пару для перевода:",
+            "━━━━━━━━━━━━",
+            "Ich lerne Deutsch.",
+        ])
+        _, fired = _apply_self_ingestion_suppression(raw)
+        self.assertIn("query_wrapper_ru", fired)
+        self.assertIn("language_pair_selector_ru", fired)
+        self.assertIn("bot_horizontal_divider", fired)
+
+    def test_suppression_count_matches_removed_lines(self):
+        raw = "Запрос: lernen\n━━━━━━━━━━━━\nIch lerne Deutsch."
+        _, fired = _apply_self_ingestion_suppression(raw)
+        self.assertEqual(len(fired), 2)
+
+    # ------------------------------------------------------------------
+    # Pipeline integration: stage appears in result
+    # ------------------------------------------------------------------
+
+    def test_self_ingestion_stage_in_pipeline_result(self):
+        result = run_ocr_pipeline("Запрос: lernen\nIch lerne Deutsch.", source="test")
+        stage_names = [s.stage for s in result.stage_metrics]
+        self.assertIn("self_ingestion_suppression", stage_names)
+
+    def test_telegram_self_ingestion_fixture_passes(self):
+        result = run_ocr_pipeline(TELEGRAM_SELF_INGESTION.raw, source="test")
+        for must_keep in TELEGRAM_SELF_INGESTION.must_keep:
+            self.assertIn(must_keep, result.cleaned_text,
+                          f"must_keep {must_keep!r} missing from cleaned output")
+        for must_drop in TELEGRAM_SELF_INGESTION.must_drop:
+            self.assertNotIn(must_drop, result.cleaned_text,
+                             f"must_drop {must_drop!r} found in cleaned output")
+
+    def test_suppression_logged_at_stage_level(self):
+        with self.assertLogs(level="INFO") as log_cm:
+            run_ocr_pipeline("Запрос: lernen\nIch lerne Deutsch.", source="test")
+        stage_logs = [
+            line for line in log_cm.output
+            if "self_ingestion_suppression" in line
+        ]
+        self.assertTrue(stage_logs, "expected self_ingestion_suppression stage log")
+
+    def test_clean_payload_has_zero_suppressed_lines(self):
+        result = run_ocr_pipeline(
+            "Ich lerne Deutsch.\nDas ist sehr wichtig.", source="test"
+        )
+        sup_stage = next(
+            (s for s in result.stage_metrics if s.stage == "self_ingestion_suppression"),
+            None,
+        )
+        self.assertIsNotNone(sup_stage)
+        self.assertEqual(sup_stage.rules_fired, 0)
+
+
+# ---------------------------------------------------------------------------
+# 11. OCR v3 — corruption detection tests
+# ---------------------------------------------------------------------------
+
+class OcrCorruptionDetectionTests(unittest.TestCase):
+    """
+    Verify OCR corruption signals: underscore_artifact, numeric_orphan.
+    """
+
+    def _candidate(self, text: str) -> OcrCandidate:
+        return segment_candidates(text)[0] if text.strip() else OcrCandidate(
+            text=text, line_count=1, token_estimate=0,
+            detected_languages=[], char_offset=0,
+        )
+
+    # ------------------------------------------------------------------
+    # underscore_artifact signal
+    # ------------------------------------------------------------------
+
+    def test_underscore_artifact_fires_for_merged_word(self):
+        """frau_deuen should trigger underscore_artifact."""
+        cand = self._candidate("frau_deuen lernt Deutsch.")
+        s = score_learnability(cand)
+        self.assertIn("underscore_artifact", s.breakdown,
+                      f"underscore_artifact not in breakdown: {s.breakdown}")
+        self.assertLess(s.breakdown["underscore_artifact"], 0)
+
+    def test_underscore_artifact_fires_for_wort_buch(self):
+        cand = self._candidate("Das wort_buch liegt auf dem Tisch.")
+        s = score_learnability(cand)
+        self.assertIn("underscore_artifact", s.breakdown)
+
+    def test_underscore_artifact_reduces_score(self):
+        clean = self._candidate("Ich lerne Deutsch.")
+        corrupted = self._candidate("Ich lerne deutsch_lernen.")
+        clean_score = score_learnability(clean).score
+        corrupted_score = score_learnability(corrupted).score
+        self.assertLess(corrupted_score, clean_score,
+                        "corruption should reduce learnability score")
+
+    def test_underscore_artifact_not_fired_for_clean_text(self):
+        cand = self._candidate("Ich lerne jeden Tag Deutsch.")
+        s = score_learnability(cand)
+        self.assertNotIn("underscore_artifact", s.breakdown)
+
+    def test_ocr_corruption_fixture_passes(self):
+        result = run_ocr_pipeline(OCR_CORRUPTION_TOKENS.raw, source="test")
+        for must_keep in OCR_CORRUPTION_TOKENS.must_keep:
+            self.assertIn(must_keep, result.cleaned_text,
+                          f"must_keep {must_keep!r} missing from cleaned output")
+
+    # ------------------------------------------------------------------
+    # numeric_orphan signal
+    # ------------------------------------------------------------------
+
+    def test_numeric_orphan_fires_for_bare_number(self):
+        cand = self._candidate("477")
+        s = score_learnability(cand)
+        self.assertIn("numeric_orphan", s.breakdown)
+        self.assertEqual(s.score, -1.0)
+        self.assertEqual(s.label, "likely_noise")
+
+    def test_numeric_orphan_fires_for_parenthesized_number(self):
+        cand = self._candidate("(21)")
+        s = score_learnability(cand)
+        self.assertIn("numeric_orphan", s.breakdown)
+        self.assertEqual(s.label, "likely_noise")
+
+    def test_no_alphabetic_chars_fires_for_emoji_only(self):
+        cand = self._candidate("😂😂😂😂")
+        s = score_learnability(cand)
+        self.assertIn("no_alphabetic_chars", s.breakdown)
+        self.assertNotIn("numeric_orphan", s.breakdown)
+
+    def test_no_alphabetic_chars_fires_for_colon_timestamp(self):
+        """3:42 has a colon so is NOT a pure numeric orphan."""
+        cand = self._candidate("3:42")
+        s = score_learnability(cand)
+        self.assertIn("no_alphabetic_chars", s.breakdown)
+        self.assertNotIn("numeric_orphan", s.breakdown)
+
+    def test_numeric_orphan_lines_removed_by_v1_structural_rule(self):
+        result = run_ocr_pipeline(NUMERIC_ORPHAN_LINES.raw, source="test")
+        for must_keep in NUMERIC_ORPHAN_LINES.must_keep:
+            self.assertIn(must_keep, result.cleaned_text,
+                          f"must_keep {must_keep!r} missing from cleaned output")
+        # Standalone numeric lines should be absent after v1 cleanup
+        for orphan in ("1", "477", "5"):
+            # The number must not appear as a standalone line
+            import re as _re
+            self.assertIsNone(
+                _re.search(rf"(?m)^[ \t]*\(?{orphan}\)?[ \t]*$", result.cleaned_text),
+                f"numeric orphan {orphan!r} survived structural cleanup",
+            )
+
+    def test_v3_learnability_fixtures_pass(self):
+        for fix in ALL_V3_LEARNABILITY_FIXTURES:
+            with self.subTest(fixture=fix.name):
+                cand = self._candidate(fix.text)
+                s = score_learnability(cand)
+                self.assertEqual(
+                    s.label, fix.expected_label,
+                    f"[{fix.name}] expected {fix.expected_label!r}, "
+                    f"got {s.label!r} (score={s.score:.3f}, breakdown={s.breakdown})",
+                )
+                self.assertGreaterEqual(
+                    s.score, fix.score_min,
+                    f"[{fix.name}] score {s.score:.3f} < min {fix.score_min}",
+                )
+                self.assertLessEqual(
+                    s.score, fix.score_max,
+                    f"[{fix.name}] score {s.score:.3f} > max {fix.score_max}",
+                )
+
+
+# ---------------------------------------------------------------------------
+# 12. OCR v3 — context annotation tests
+# ---------------------------------------------------------------------------
+
+class OcrContextAnnotationTests(unittest.TestCase):
+    """
+    Verify the context reconstruction scaffold: annotate_context returns
+    advisory signals without modifying or filtering candidates.
+    """
+
+    def test_annotate_context_returns_list(self):
+        candidates = segment_candidates("Ich lerne Deutsch.")
+        signals = annotate_context(candidates)
+        self.assertIsInstance(signals, list)
+
+    def test_empty_candidates_returns_empty(self):
+        self.assertEqual(annotate_context([]), [])
+
+    def test_single_candidate_returns_empty(self):
+        candidates = segment_candidates("Ich lerne Deutsch.")
+        self.assertEqual(annotate_context(candidates), [])
+
+    def test_language_transition_detected(self):
+        # Ukrainian question + German answer → different scripts
+        text = "Що означає це слово?\n\nDas bedeutet 'Wort'."
+        candidates = segment_candidates(text)
+        signals = annotate_context(candidates)
+        signal_types = [s.signal_type for s in signals]
+        self.assertIn("language_transition_pair", signal_types)
+
+    def test_question_before_answer_detected(self):
+        text = "Що означає це слово?\n\nDas bedeutet 'Wort'."
+        candidates = segment_candidates(text)
+        signals = annotate_context(candidates)
+        signal_types = [s.signal_type for s in signals]
+        self.assertIn("question_before_answer", signal_types)
+
+    def test_same_language_pair_no_transition(self):
+        text = "Ich lerne Deutsch.\n\nDas ist sehr gut."
+        candidates = segment_candidates(text)
+        signals = annotate_context(candidates)
+        transitions = [s for s in signals if s.signal_type == "language_transition_pair"]
+        self.assertEqual(transitions, [],
+                         "same-language adjacent candidates should not trigger transition")
+
+    def test_annotate_does_not_modify_candidates(self):
+        """annotate_context must be pure — candidates unchanged."""
+        text = "Що означає це слово?\n\nIch lerne Deutsch."
+        candidates_before = segment_candidates(text)
+        texts_before = [c.text for c in candidates_before]
+        annotate_context(candidates_before)
+        texts_after = [c.text for c in candidates_before]
+        self.assertEqual(texts_before, texts_after)
+
+    def test_signal_has_required_fields(self):
+        text = "Що означає?\n\nIch lerne Deutsch."
+        candidates = segment_candidates(text)
+        signals = annotate_context(candidates)
+        for sig in signals:
+            self.assertIsInstance(sig, OcrContextSignal)
+            self.assertIsInstance(sig.candidate_index, int)
+            self.assertIsInstance(sig.signal_type, str)
+            self.assertIsInstance(sig.detail, str)
+            self.assertTrue(sig.signal_type)
+
+    def test_context_question_answer_fixture(self):
+        result = run_ocr_pipeline(CONTEXT_QUESTION_ANSWER.raw, source="test")
+        for must_keep in CONTEXT_QUESTION_ANSWER.must_keep:
+            self.assertIn(must_keep, result.cleaned_text,
+                          f"must_keep {must_keep!r} missing from cleaned output")
+
+    def test_all_v3_ocr_fixtures_pass(self):
+        for fix in ALL_V3_OCR_FIXTURES:
+            with self.subTest(fixture=fix.name):
+                result = run_ocr_pipeline(fix.raw, source="test")
+                for must_keep in fix.must_keep:
+                    self.assertIn(must_keep, result.cleaned_text,
+                                  f"[{fix.name}] must_keep {must_keep!r} missing")
+                for must_drop in fix.must_drop:
+                    if must_drop.startswith("\n"):
+                        # must_drop with newline markers: check it's not present as standalone line
+                        import re as _re
+                        fragment = must_drop.strip()
+                        self.assertIsNone(
+                            _re.search(rf"(?m)^[ \t]*\(?{_re.escape(fragment)}\)?[ \t]*$",
+                                       result.cleaned_text),
+                            f"[{fix.name}] numeric orphan {fragment!r} survived cleanup",
+                        )
+                    else:
+                        self.assertNotIn(must_drop, result.cleaned_text,
+                                         f"[{fix.name}] must_drop {must_drop!r} found")
