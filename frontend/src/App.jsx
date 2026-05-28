@@ -1,11 +1,48 @@
 import React, { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import './components/reader-redesign.css';
-import BlocksTrainer from './components/BlocksTrainer';
-import HomeDashboardTiles from './components/HomeDashboardTiles';
-import ReaderSection from './components/ReaderSection';
-import HomeMoreTiles from './components/HomeMoreTiles';
-import WeeklySummaryModal from './components/WeeklySummaryModal';
+import {
+  emitStartupPhase,
+  emitEntitlementResolved,
+  emitFreeCoreBootReady,
+  emitFreeCoreReady,
+  emitHeavyModuleLoaded,
+  emitHeavyModuleSkipped,
+  emitLazyChunkLoaded,
+} from './startup/startupObservability';
+
+// True lazy imports — chunks download only when component is first rendered.
+// Free users never render these sections so the vendor chunks stay unloaded.
+const BlocksTrainer = lazy(() =>
+  import('./components/BlocksTrainer').then((m) => {
+    emitLazyChunkLoaded('blocks-feature');
+    return m;
+  })
+);
+const HomeDashboardTiles = lazy(() =>
+  import('./components/HomeDashboardTiles').then((m) => {
+    emitLazyChunkLoaded('home-feature');
+    return m;
+  })
+);
+const ReaderSection = lazy(() =>
+  import('./components/ReaderSection').then((m) => {
+    emitLazyChunkLoaded('reader-feature');
+    return m;
+  })
+);
+const HomeMoreTiles = lazy(() =>
+  import('./components/HomeMoreTiles').then((m) => {
+    emitLazyChunkLoaded('home-more-feature');
+    return m;
+  })
+);
+const WeeklySummaryModal = lazy(() =>
+  import('./components/WeeklySummaryModal').then((m) => {
+    emitLazyChunkLoaded('weekly-summary-feature');
+    return m;
+  })
+);
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
 import { buildWeeklySummaryHeroFacts, buildWeeklySummaryVisitConfig } from './utils/weeklySummary';
 import { detectAppMode } from './utils/appMode';
@@ -7441,6 +7478,18 @@ function AppInner() {
           `Funktionslimit erreicht (${feature}): ${used} / ${limit} ${unit}. Reset: ${resetAt}`
         );
       }
+      if (errorCode === 'free_limit_exceeded') {
+        const message = String(payload.message || '').trim();
+        if (message) return message;
+        const featureTitle = String(payload.feature_title || payload.feature || '').trim();
+        const used = Number(payload.used || 0);
+        const limit = Number(payload.limit || 0);
+        const resetAt = String(payload.reset_at || '').trim();
+        return tr(
+          `На бесплатном тарифе лимит для услуги '${featureTitle}' на сегодня закончился. Использовано: ${used} / ${limit}. Сброс: ${resetAt}`,
+          `Free-Limit fuer '${featureTitle}' ist heute erreicht. Verbraucht: ${used} / ${limit}. Reset: ${resetAt}`
+        );
+      }
       return '';
     };
     try {
@@ -9011,6 +9060,7 @@ function AppInner() {
           body: JSON.stringify({
             initData,
             card_id:      review.card_id,
+            review_id:    review.review_id || `offline:${userId}:${review.card_id}:${review._id}`,
             rating:       review.rating,
             response_ms:  review.response_ms,
             queue_source: review.queue_source,
@@ -9589,6 +9639,12 @@ function AppInner() {
 
   const loadTodayPlan = async (options = {}) => {
     if (!initData) return;
+    if (isLightweightFreeMode) {
+      logStartupHeavyBlockSkipped('today');
+      setTodayPlanLoadedOnce(true);
+      setTodayPlanLoading(false);
+      return;
+    }
     const requestId = beginAsyncGuard(todayPlanRequestIdRef);
     const tone = options?.manual ? 'manual' : 'snapshot';
     const syncFacts = Boolean(options?.syncFacts);
@@ -9666,6 +9722,12 @@ function AppInner() {
 
   const loadSkillReport = async (options = {}) => {
     if (!initData) return;
+    if (isLightweightFreeMode) {
+      logStartupHeavyBlockSkipped('skills');
+      setSkillReportLoadedOnce(true);
+      setSkillReportLoading(false);
+      return;
+    }
     const requestId = beginAsyncGuard(skillReportRequestIdRef);
     const tone = options?.manual ? 'manual' : 'snapshot';
     const syncFacts = Boolean(options?.syncFacts);
@@ -9731,6 +9793,11 @@ function AppInner() {
 
   const loadWeeklyPlan = async (options = {}) => {
     if (!initData) return;
+    if (isLightweightFreeMode) {
+      logStartupHeavyBlockSkipped('weekly_plan');
+      setWeeklyPlanLoading(false);
+      return;
+    }
     const requestId = beginAsyncGuard(weeklyPlanRequestIdRef);
     const tone = options?.manual ? 'manual' : 'snapshot';
     const syncFacts = Boolean(options?.syncFacts);
@@ -11094,6 +11161,7 @@ function AppInner() {
             body: JSON.stringify({
               initData,
               card_id: job.cardId,
+              review_id: job.reviewId,
               rating: job.rating,
               response_ms: job.responseMs,
               queue_source: resolvedQueueSource,
@@ -11107,6 +11175,7 @@ function AppInner() {
               body: JSON.stringify({
                 initData,
                 card_id: job.cardId,
+                review_id: job.reviewId,
                 rating: job.rating,
                 response_ms: job.responseMs,
                 queue_source: resolvedQueueSource,
@@ -11114,7 +11183,9 @@ function AppInner() {
             }, FSRS_REVIEW_TIMEOUT_MS);
           }
           if (!response.ok) {
-            throw new Error(await readApiError(response, 'Ошибка SRS review', 'Fehler bei SRS-Review'));
+            const reviewError = new Error(await readApiError(response, 'Ошибка SRS review', 'Fehler bei SRS-Review'));
+            reviewError.apiStatus = response.status;
+            throw reviewError;
           }
           srsReviewBufferRef.current.shift();
         } catch (error) {
@@ -11122,6 +11193,10 @@ function AppInner() {
           const friendly = normalizeNetworkErrorMessage(error, 'Не удалось сохранить оценку.', 'Bewertung konnte nicht gespeichert werden.');
           setSrsError(friendly);
           setWebappError(`${tr('Ошибка SRS review', 'Fehler bei SRS-Review')}: ${friendly}`);
+          if (Number(error?.apiStatus) === 429) {
+            clearSrsReviewRetryTimer();
+            break;
+          }
           clearSrsReviewRetryTimer();
           const delayMs = Math.min(15000, 1200 * (2 ** Math.max(0, job.attempt - 1)));
           srsReviewRetryTimerRef.current = window.setTimeout(() => {
@@ -11158,6 +11233,7 @@ function AppInner() {
     const responseMs = Math.max(0, Date.now() - startedAt);
     if (ratingValue === 'EASY' && srsEasyLocked) return;
     if (ratingValue === 'GOOD' && srsGoodLocked) return;
+    const reviewId = `fsrs:${webappUser?.id || 'u'}:${cardId}:${startedAt}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
 
     // ── Offline path ─────────────────────────────────────────────────────────
     const srsUserId = webappUser?.id ? Number(webappUser.id) : null;
@@ -11170,6 +11246,7 @@ function AppInner() {
         const resolvedQueueSource = flashcardQueueSource === 'manual' ? 'manual' : 'system';
         await addPendingReview(srsUserId, {
           card_id:      cardId,
+          review_id:    reviewId,
           rating:       ratingValue,
           response_ms:  responseMs,
           queue_source: resolvedQueueSource,
@@ -11204,7 +11281,8 @@ function AppInner() {
       setSrsSubmitting(true);
       setSrsSubmittingRating(ratingValue);
       const resolvedQueueSource = flashcardQueueSource === 'manual' ? 'manual' : 'system';
-      const optimisticCard = takeFromSrsPrefetchQueue();
+      const effectiveBillingMode = String(billingStatus?.effective_mode || '').trim().toLowerCase();
+      const optimisticCard = ['pro', 'trial'].includes(effectiveBillingMode) ? takeFromSrsPrefetchQueue() : null;
       setSrsRevealAnswer(false);
       setSrsRevealStartedAt(0);
       setSrsRevealElapsedSec(0);
@@ -11218,6 +11296,7 @@ function AppInner() {
         });
         srsReviewBufferRef.current.push({
           cardId,
+          reviewId,
           rating: ratingValue,
           responseMs,
           attempt: 0,
@@ -11236,6 +11315,7 @@ function AppInner() {
         body: JSON.stringify({
           initData,
           card_id: cardId,
+          review_id: reviewId,
           rating: ratingValue,
           response_ms: responseMs,
           queue_source: resolvedQueueSource,
@@ -11249,6 +11329,7 @@ function AppInner() {
           body: JSON.stringify({
             initData,
             card_id: cardId,
+            review_id: reviewId,
             rating: ratingValue,
             response_ms: responseMs,
             queue_source: resolvedQueueSource,
@@ -11256,7 +11337,9 @@ function AppInner() {
         }, FSRS_REVIEW_TIMEOUT_MS);
       }
       if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка SRS review', 'Fehler bei SRS-Review'));
+        const reviewError = new Error(await readApiError(response, 'Ошибка SRS review', 'Fehler bei SRS-Review'));
+        reviewError.apiStatus = response.status;
+        throw reviewError;
       }
       const data = await response.json();
       if (data?.next && typeof data.next === 'object') {
@@ -11268,10 +11351,12 @@ function AppInner() {
       const friendly = normalizeNetworkErrorMessage(error, 'Не удалось сохранить оценку.', 'Bewertung konnte nicht gespeichert werden.');
       setSrsError(friendly);
       setWebappError(`${tr('Ошибка SRS review', 'Fehler bei SRS-Review')}: ${friendly}`);
-      try {
-        await loadSrsNextCard();
-      } catch (_) {
-        // noop: preserve original review error message
+      if (Number(error?.apiStatus) !== 429) {
+        try {
+          await loadSrsNextCard();
+        } catch (_) {
+          // noop: preserve original review error message
+        }
       }
     } finally {
       setSrsSubmitting(false);
@@ -13521,7 +13606,44 @@ function AppInner() {
     }, 80);
   };
 
+  const billingEffectiveMode = String(billingStatus?.effective_mode || '').trim().toLowerCase();
+  const startupEffectiveMode = billingEffectiveMode || 'free';
+  const isLightweightFreeMode = startupEffectiveMode === 'free';
+  const lockedFreeStartupSections = useMemo(
+    () => new Set(isLightweightFreeMode ? ['home_today', 'home_skills', 'home_weekly_plan'] : []),
+    [isLightweightFreeMode],
+  );
+
+  function logStartupHeavyBlockSkipped(feature) {
+    console.info('startup_heavy_block_skipped', {
+      feature,
+      effective_mode: startupEffectiveMode,
+    });
+  }
+
+  function openLockedFreeFeature(featureTitle = '') {
+    const title = String(featureTitle || '').trim() || tr('эта функция', 'diese Funktion');
+    showInlineToast(
+      tr(
+        `Функция «${title}» доступна по подписке.`,
+        `Die Funktion "${title}" ist mit Abo verfuegbar.`,
+      ),
+      4200,
+    );
+    openSingleSectionAndScroll('subscription', billingRef);
+  }
+
   const openSingleSectionAndScroll = (key, ref) => {
+    if (isLightweightFreeMode && ['home_today', 'home_skills', 'home_weekly_plan'].includes(key)) {
+      const titles = {
+        home_today: tr('Задачи на день', 'Tagesaufgaben'),
+        home_skills: tr('Карта навыков', 'Skill-Map'),
+        home_weekly_plan: tr('План на неделю', 'Wochenplan'),
+      };
+      logStartupHeavyBlockSkipped(key);
+      openLockedFreeFeature(titles[key]);
+      return;
+    }
     if (key === 'flashcards') {
       setFlashcardsVisible(true);
       setFlashcardsOnly(false);
@@ -13540,7 +13662,6 @@ function AppInner() {
     }, 80);
   };
 
-  const billingEffectiveMode = String(billingStatus?.effective_mode || '').trim().toLowerCase();
   const readerAudioPremiumKnown = Boolean(billingStatus && typeof billingStatus === 'object');
   const readerAudioPremiumEnabled = ['pro', 'trial'].includes(billingEffectiveMode);
 
@@ -15462,6 +15583,36 @@ function AppInner() {
   }, [initData, isWebAppMode]);
 
   useEffect(() => {
+    if (!isWebAppMode || !initData || !startupPhase2Ready || billingStatusLoading || billingStatus) {
+      return;
+    }
+    void loadBillingStatus();
+  }, [initData, isWebAppMode, startupPhase2Ready, billingStatusLoading, billingStatus]);
+
+  // Emit entitlement_resolved once billing status is known.
+  useEffect(() => {
+    if (!billingStatus) return;
+    emitEntitlementResolved(startupEffectiveMode, { user_id: stableWebappUserId || undefined });
+    if (isLightweightFreeMode) {
+      emitFreeCoreBootReady({ effective_mode: startupEffectiveMode });
+    }
+  }, [billingStatus]); // intentionally narrow: fire once per billing status load
+
+  // Emit startup phase timings.
+  useEffect(() => {
+    if (!startupPhase2Ready) return;
+    emitStartupPhase('phase2', { effective_mode: startupEffectiveMode, is_webapp: isWebAppMode });
+  }, [startupPhase2Ready]); // intentionally narrow
+
+  useEffect(() => {
+    if (!startupPhase3Ready) return;
+    emitStartupPhase('phase3', { effective_mode: startupEffectiveMode, is_webapp: isWebAppMode });
+    if (!isLightweightFreeMode) {
+      emitFreeCoreReady({ effective_mode: startupEffectiveMode });
+    }
+  }, [startupPhase3Ready]); // intentionally narrow
+
+  useEffect(() => {
     if (isWebAppMode && initData) {
       return;
     }
@@ -15692,6 +15843,7 @@ function AppInner() {
     pageVisible,
     readTodayPlanSnapshot,
     startupPhase2Ready,
+    startupEffectiveMode,
   ]);
 
   const loadWeeklyPlanRef = useRef(loadWeeklyPlan);
@@ -15756,6 +15908,7 @@ function AppInner() {
     readSkillReportSnapshot,
     readWeeklyPlanSnapshot,
     startupPhase3Ready,
+    startupEffectiveMode,
   ]);
 
   useEffect(() => {
@@ -15938,6 +16091,7 @@ function AppInner() {
     languageProfile?.native_language,
     loadStarterDictionaryStatus,
     planAnalyticsPeriod,
+    startupEffectiveMode,
     startupPhase2Ready,
     startupPhase3Ready,
   ]);
@@ -15995,12 +16149,19 @@ function AppInner() {
   }, [flashcardsOnly, selectedSections]);
 
   useEffect(() => {
+    if (isLightweightFreeMode) {
+      if (selectedSections.has('assistant') || appMode === 'lesson') {
+        emitHeavyModuleSkipped('livekit', 'free_mode', { effective_mode: startupEffectiveMode });
+      }
+      return;
+    }
     if (appMode === 'lesson' || selectedSections.has('assistant') || assistantToken || token) {
+      emitHeavyModuleLoaded('livekit', { trigger: appMode === 'lesson' ? 'lesson_mode' : 'assistant_open', effective_mode: startupEffectiveMode });
       void loadLiveKitRuntime().catch(() => {
         // ignore lazy prefetch failures
       });
     }
-  }, [appMode, assistantToken, selectedSections, token]);
+  }, [appMode, assistantToken, isLightweightFreeMode, selectedSections, startupEffectiveMode, token]);
 
   useEffect(() => {
     const shouldTrackReader = Boolean(readerTrackingVisible && !readerTimerPaused);
@@ -19813,14 +19974,7 @@ function AppInner() {
         body: JSON.stringify({ initData, word: normalized, lookup_lang: lookupLangHint || undefined }),
       });
       if (!response.ok) {
-        let message = await response.text();
-        try {
-          const data = JSON.parse(message);
-          message = data.error || message;
-        } catch (error) {
-          // ignore parsing errors
-        }
-        throw new Error(message);
+        throw new Error(await readApiError(response, 'Ошибка словаря', 'Woerterbuchfehler'));
       }
       const data = await response.json();
       const detectedDirection = data.direction || resolveDictionaryDirection(data.item);
@@ -19850,18 +20004,6 @@ function AppInner() {
         scrollToDictionary();
       }
 
-      // Show success immediately after lookup — save runs in background
-      if (inlineMode) {
-        setSelectionInlineLookup((prev) => ({
-          ...prev,
-          translation: prev.translation ? `${prev.translation} • ${tr('Сохранено ✅', 'Gespeichert ✅')}` : tr('Сохранено ✅', 'Gespeichert ✅'),
-        }));
-        if (isYoutubeInline) {
-          showInlineToast(`${tr('Сохранено в папку', 'In Ordner gespeichert')}: ${autoFolder?.name || 'YouTube'}`);
-        }
-      } else {
-        setDictionarySaved(tr('Добавлено в словарь ✅', 'Zum Woerterbuch hinzugefuegt ✅'));
-      }
       clearSelection();
       setDictionaryLoading(false);
 
@@ -19903,17 +20045,21 @@ function AppInner() {
             }),
           });
           if (!saveResponse.ok) {
-            let message = await saveResponse.text();
-            try {
-              const payload = JSON.parse(message);
-              message = payload.error || message;
-            } catch (_error) {
-              // ignore parsing errors
-            }
-            throw new Error(message);
+            throw new Error(await readApiError(saveResponse, 'Ошибка сохранения', 'Speicherfehler'));
           }
           const savePayload = await saveResponse.json();
           setDictionaryLanguagePair(resolveLanguagePairForUI(savePayload.language_pair));
+          if (inlineMode) {
+            setSelectionInlineLookup((prev) => ({
+              ...prev,
+              translation: prev.translation ? `${prev.translation} • ${tr('Сохранено ✅', 'Gespeichert ✅')}` : tr('Сохранено ✅', 'Gespeichert ✅'),
+            }));
+            if (isYoutubeInline) {
+              showInlineToast(`${tr('Сохранено в папку', 'In Ordner gespeichert')}: ${autoFolder?.name || 'YouTube'}`);
+            }
+          } else {
+            setDictionarySaved(tr('Добавлено в словарь ✅', 'Zum Woerterbuch hinzugefuegt ✅'));
+          }
         } catch (error) {
           setDictionaryError(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${error.message}`);
           showInlineToast(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${error.message}`);
@@ -19951,14 +20097,7 @@ function AppInner() {
         body: JSON.stringify({ initData, word: normalized, lookup_lang: lookupParams.sourceLangHint || undefined }),
       });
       if (!response.ok) {
-        let message = await response.text();
-        try {
-          const data = JSON.parse(message);
-          message = data.error || message;
-        } catch (_error) {
-          // ignore parsing errors
-        }
-        throw new Error(message);
+        throw new Error(await readApiError(response, 'Ошибка словаря', 'Woerterbuchfehler'));
       }
       const data = await response.json();
       setDictionaryResult(data.item || null);
@@ -23300,6 +23439,7 @@ function AppInner() {
         body: JSON.stringify({
           initData,
           card_id: entryId,
+          review_id: `flashcards:${webappUser?.id || 'u'}:${entryId}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
           rating: resolvedRating,
           response_ms: typeof meta.timeSpentMs === 'number' ? Math.max(0, Math.round(meta.timeSpentMs)) : null,
           queue_source: flashcardQueueSource === 'manual' ? 'manual' : 'system',
@@ -23406,8 +23546,10 @@ function AppInner() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ initData, word: q }),
       });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Ошибка словаря', 'Woerterbuchfehler'));
+      }
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Fehler');
       setYoutubeDictResult(data.item ? {
         ...data.item,
         direction: data.direction || '',
@@ -23465,15 +23607,16 @@ function AppInner() {
           },
         }),
       });
-      if (saveResponse.ok) {
-        const saveData = await saveResponse.json();
-        setYoutubeDictSaved(true);
-        const entryId = Number(saveData?.entry_id || 0);
-        if (entryId > 0) setYoutubeDictSavedEntryId(entryId);
-        return entryId;
+      if (!saveResponse.ok) {
+        throw new Error(await readApiError(saveResponse, 'Ошибка сохранения', 'Speicherfehler'));
       }
-    } catch (_err) {
-      // ignore save errors silently
+      const saveData = await saveResponse.json();
+      setYoutubeDictSaved(true);
+      const entryId = Number(saveData?.entry_id || 0);
+      if (entryId > 0) setYoutubeDictSavedEntryId(entryId);
+      return entryId;
+    } catch (err) {
+      setYoutubeDictError(String(err.message || 'Fehler'));
     }
     return 0;
   };
@@ -25409,14 +25552,7 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        let message = await response.text();
-        try {
-          const data = JSON.parse(message);
-          message = data.error || message;
-        } catch (error) {
-          // ignore parsing errors
-        }
-        throw new Error(message);
+        throw new Error(await readApiError(response, 'Ошибка словаря', 'Woerterbuchfehler'));
       }
       const data = await response.json();
       setDictionaryResult(data.item || null);
@@ -25733,7 +25869,7 @@ function AppInner() {
         }),
       });
       if (!response.ok) {
-        throw new Error(await response.text());
+        throw new Error(await readApiError(response, 'Ошибка связок', 'Kollokationsfehler'));
       }
       const data = await response.json();
       setDictionaryLanguagePair(resolveLanguagePairForUI(data.language_pair));
@@ -25824,14 +25960,7 @@ function AppInner() {
             }),
           });
           if (!response.ok) {
-            let message = await response.text();
-            try {
-              const data = JSON.parse(message);
-              message = data.error || message;
-            } catch (_error) {
-              // ignore parsing errors
-            }
-            throw new Error(message);
+            throw new Error(await readApiError(response, 'Ошибка сохранения', 'Speicherfehler'));
           }
           const payload = await response.json();
           setDictionaryLanguagePair(resolveLanguagePairForUI(payload.language_pair));
@@ -28808,6 +28937,7 @@ function AppInner() {
 
             {weeklySummaryVisitConfig && !onboardingOpen && weeklySummaryModalOpen && (
               <PerfProfiler id="modal.weeklySummary">
+                <Suspense fallback={null}>
                 <WeeklySummaryModal
                   isOpen={weeklySummaryModalOpen}
                   title={weeklySummaryVisitConfig.title}
@@ -28961,6 +29091,7 @@ function AppInner() {
                   )}
                 </section>
                 </WeeklySummaryModal>
+                </Suspense>
               </PerfProfiler>
             )}
 
@@ -29211,6 +29342,7 @@ function AppInner() {
             )}
 
             {isHomeScreen && initData && (
+              <Suspense fallback={null}>
               <HomeDashboardTiles
                 tr={tr}
                 uiLang={uiLang}
@@ -29221,6 +29353,16 @@ function AppInner() {
                 openSection={openSingleSectionAndScroll}
                 onOpenMore={openMoreFunctionsPanel}
                 canViewEconomics={canViewEconomics}
+                lockedSectionKeys={lockedFreeStartupSections}
+                onLockedSection={(sectionKey) => {
+                  const titles = {
+                    home_today: tr('Задачи на день', 'Tagesaufgaben'),
+                    home_skills: tr('Карта навыков', 'Skill-Map'),
+                    home_weekly_plan: tr('План на неделю', 'Wochenplan'),
+                  };
+                  logStartupHeavyBlockSkipped(sectionKey);
+                  openLockedFreeFeature(titles[sectionKey]);
+                }}
                 refs={{
                   translationsRef,
                   flashcardsRef,
@@ -29240,15 +29382,27 @@ function AppInner() {
                   economicsRef,
                 }}
               />
+              </Suspense>
             )}
 
             {activeHomeSubsectionKey === 'home_more' && initData && (
+              <Suspense fallback={null}>
               <HomeMoreTiles
                 tr={tr}
                 uiLang={uiLang}
                 openSection={openSingleSectionAndScroll}
                 canViewEconomics={canViewEconomics}
                 isSkillTrainingReady={isSkillTrainingReady}
+                lockedSectionKeys={lockedFreeStartupSections}
+                onLockedSection={(sectionKey) => {
+                  const titles = {
+                    home_today: tr('Задачи на день', 'Tagesaufgaben'),
+                    home_skills: tr('Карта навыков', 'Skill-Map'),
+                    home_weekly_plan: tr('План на неделю', 'Wochenplan'),
+                  };
+                  logStartupHeavyBlockSkipped(sectionKey);
+                  openLockedFreeFeature(titles[sectionKey]);
+                }}
                 refs={{
                   homeMoreRef,
                   todayRef: homeTodayPlanRef,
@@ -29261,6 +29415,7 @@ function AppInner() {
                   skillTrainingRef,
                 }}
               />
+              </Suspense>
             )}
 
             {activeHomeSubsectionKey && activeHomeSubsectionKey !== 'home_more' && initData && (
@@ -32055,6 +32210,7 @@ function AppInner() {
 
             {!flashcardsOnly && isSectionVisible('reader') && (
               <PerfProfiler id="section.reader">
+                <Suspense fallback={null}>
                 <ReaderSection
                   tr={tr}
                   handleBillingUpgrade={handleBillingUpgrade}
@@ -32185,6 +32341,7 @@ function AppInner() {
                   jumpReaderTocItem={jumpReaderTocItem}
                   switchReaderLayoutMode={switchReaderLayoutMode}
                 />
+                </Suspense>
               </PerfProfiler>
             )}
 
@@ -32820,6 +32977,7 @@ function AppInner() {
                                           {flashcardIndex + 1} / {flashcards.length}
                                         </span>
                                       </div>
+                                      <Suspense fallback={null}>
                                       <BlocksTrainer
                                         key={`blocks-${entry.id || 'na'}-${flashcardIndex}`}
                                         card={entry}
@@ -32863,6 +33021,7 @@ function AppInner() {
                                         }}
                                         onNext={() => advanceFlashcard()}
                                       />
+                                      </Suspense>
                                     </div>
                                   );
                                 }

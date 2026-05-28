@@ -121,6 +121,10 @@ export default defineConfig(async () => {
           manualChunks,
         },
       },
-    }
+    },
+    test: {
+      environment: 'node',
+      include: ['src/tests/**/*.test.js'],
+    },
   }
 })
