@@ -224,6 +224,7 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     pyttsx3 = None
 from backend.utils import prepare_google_creds_for_tts
+from backend.ocr_pipeline import run_ocr_pipeline
 from pydub import AudioSegment
 try:
     from apscheduler.schedulers.background import BackgroundScheduler
@@ -35042,8 +35043,9 @@ def _start_shortcut_lookup_enqueue_runner(
     Raises if the durable DB write fails — caller must not proceed with enqueue.
     """
     safe_user_id = int(user_id or 0)
-    normalized_text = str(text or "").strip()
     normalized_source = _shortcut_ingest_source(source)
+    _pipeline = run_ocr_pipeline(str(text or ""), source=normalized_source)
+    normalized_text = _pipeline.cleaned_text
     ingest_key = _shortcut_ingest_key(safe_user_id, normalized_text, source=normalized_source)
     request_key = ingest_key[:20]
     text_preview = normalized_text[:200]
