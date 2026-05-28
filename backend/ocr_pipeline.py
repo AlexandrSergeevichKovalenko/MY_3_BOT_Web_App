@@ -747,3 +747,25 @@ def route_candidates(
 
     routing = "skip_all_noise" if not pass_list else "proceed"
     return routing, pass_list, noise_list
+
+
+# ---------------------------------------------------------------------------
+# Public: build_extraction_text
+# ---------------------------------------------------------------------------
+
+def build_extraction_text(
+    pass_list: list[tuple[OcrCandidate, LearnabilityScore]],
+) -> str:
+    """
+    Assemble extraction text from explicitly-routed pass candidates.
+
+    Raises ValueError if pass_list is empty — callers must not invoke this
+    function after a skip_all_noise routing decision.  Passing an empty list
+    here means the caller bypassed the routing contract.
+    """
+    if not pass_list:
+        raise ValueError(
+            "build_extraction_text: pass_list is empty — "
+            "routing contract violation: 'proceed' routing requires non-empty pass_list"
+        )
+    return "\n\n".join(c.text for c, _ in pass_list)

@@ -224,7 +224,12 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     pyttsx3 = None
 from backend.utils import prepare_google_creds_for_tts
-from backend.ocr_pipeline import run_ocr_pipeline, segment_candidates, route_candidates
+from backend.ocr_pipeline import (
+    run_ocr_pipeline,
+    segment_candidates,
+    route_candidates,
+    build_extraction_text,
+)
 from pydub import AudioSegment
 try:
     from apscheduler.schedulers.background import BackgroundScheduler
@@ -35089,10 +35094,30 @@ def _run_shortcut_lookup_delivery(
 
     if _routing == "skip_all_noise":
         logging.info(
-            "shortcut_delivery_skipped user_id=%s reason=all_noise candidates=%d",
+            "shortcut_delivery_skipped user_id=%s reason=all_noise "
+            "candidate_count=%d",
             safe_user_id, len(_candidates),
         )
         return 0
+
+    # Hard contract: proceed routing MUST have a non-empty pass list.
+    # An empty pass list here means route_candidates returned an inconsistent
+    # state.  Do not fall back to normalized_text — fail explicitly.
+    if not _pass:
+        logging.error(
+            "ocr_routing_contract_violation user_id=%s ingest_key=%s "
+            "routing_decision=%s candidate_count=%d pass_count=0 noise_count=%d",
+            safe_user_id, normalized_ingest_key, _routing,
+            len(_candidates), len(_noise),
+        )
+        return 0
+
+    logging.info(
+        "ocr_routing_contract_ok user_id=%s ingest_key=%s routing_decision=%s "
+        "candidate_count=%d pass_count=%d noise_count=%d",
+        safe_user_id, normalized_ingest_key, _routing,
+        len(_candidates), len(_pass), len(_noise),
+    )
 
     for _cand, _lscore in _pass:
         logging.info(
@@ -35102,8 +35127,20 @@ def _run_shortcut_lookup_delivery(
             _lscore.score, _lscore.label, ",".join(_cand.detected_languages) or "none",
         )
 
-    # Reassemble only the pass candidates for LLM extraction.
-    extraction_text = "\n\n".join(c.text for c, _ in _pass) or normalized_text
+    # Build extraction text exclusively from approved pass candidates.
+    # build_extraction_text raises ValueError on empty list — belt-and-suspenders
+    # for any future refactor that might violate the routing invariant.
+    extraction_text = build_extraction_text(_pass)
+
+    logging.info(
+        "ocr_extraction_payload_built user_id=%s ingest_key=%s "
+        "extraction_text_size=%d token_estimate_total=%d "
+        "pass_count=%d noise_count=%d routing_decision=%s",
+        safe_user_id, normalized_ingest_key,
+        len(extraction_text),
+        sum(c.token_estimate for c, _ in _pass),
+        len(_pass), len(_noise), _routing,
+    )
 
     blocks = _shortcut_split_blocks(extraction_text)
     if not blocks:

@@ -37,6 +37,7 @@ from backend.ocr_pipeline import (
     _WHITESPACE_RULES,
     _OCR_ARTIFACT_RULES,
     _detect_scripts,
+    build_extraction_text,
     route_candidates,
     run_ocr_pipeline,
     score_learnability,
@@ -810,3 +811,230 @@ class OcrV2DeliveryIntegrationTests(unittest.TestCase):
         self.assertNotIn("Follow", captured_texts[0])
         # The learnable candidate must be present
         self.assertIn("Ich lerne Deutsch.", captured_texts[0])
+
+
+# ---------------------------------------------------------------------------
+# 9. OCR v2 routing contract hardening tests
+# ---------------------------------------------------------------------------
+
+class OcrRoutingContractTests(unittest.TestCase):
+    """
+    Verify the explicit routing contract:
+      - skip_all_noise  → no LLM call, return 0
+      - proceed         → pass_list non-empty, extraction built exclusively from pass
+      - proceed + empty pass (inconsistent state) → return 0, no LLM call
+      - no 'or normalized_text' fallback anywhere in the delivery path
+    """
+
+    # ------------------------------------------------------------------
+    # build_extraction_text unit tests
+    # ------------------------------------------------------------------
+
+    def test_build_extraction_text_raises_on_empty_pass_list(self):
+        """build_extraction_text must raise ValueError for empty input."""
+        with self.assertRaises(ValueError) as ctx:
+            build_extraction_text([])
+        self.assertIn("routing contract violation", str(ctx.exception))
+
+    def test_build_extraction_text_joins_candidate_texts(self):
+        """build_extraction_text produces double-newline-joined text."""
+        cand_a = segment_candidates("Ich lerne Deutsch.")[0]
+        cand_b = segment_candidates("Das ist gut.")[0]
+        score_a = score_learnability(cand_a)
+        score_b = score_learnability(cand_b)
+        result = build_extraction_text([(cand_a, score_a), (cand_b, score_b)])
+        self.assertIn("Ich lerne Deutsch.", result)
+        self.assertIn("Das ist gut.", result)
+        self.assertIn("\n\n", result)
+
+    def test_build_extraction_text_single_candidate_no_separator(self):
+        """Single candidate produces no joining separator."""
+        cand = segment_candidates("Ich lerne Deutsch.")[0]
+        score = score_learnability(cand)
+        result = build_extraction_text([(cand, score)])
+        self.assertNotIn("\n\n", result)
+        self.assertEqual(result, "Ich lerne Deutsch.")
+
+    # ------------------------------------------------------------------
+    # Routing contract violation: proceed + empty pass
+    # ------------------------------------------------------------------
+
+    def test_contract_violation_returns_zero(self):
+        """Simulated proceed+empty-pass routing must return 0 without calling split_blocks."""
+        import backend.backend_server as server
+
+        # Force route_candidates to return an inconsistent state:
+        # routing="proceed" but pass_list empty — should never happen in prod
+        # but the contract check must catch it.
+        def bad_route(candidates):
+            return "proceed", [], []
+
+        learnable_text = "Ich lerne Deutsch. Das ist sehr wichtig."
+
+        with patch("backend.backend_server.route_candidates", side_effect=bad_route):
+            with patch("backend.backend_server._shortcut_split_blocks") as mock_split:
+                result = server._run_shortcut_lookup_delivery(
+                    user_id=42,
+                    text=learnable_text,
+                )
+
+        self.assertEqual(result, 0)
+        mock_split.assert_not_called()
+
+    def test_contract_violation_logs_error(self):
+        """A routing contract violation must emit ocr_routing_contract_violation at ERROR level."""
+        import logging
+        import backend.backend_server as server
+
+        def bad_route(candidates):
+            return "proceed", [], []
+
+        learnable_text = "Ich lerne Deutsch."
+
+        with patch("backend.backend_server.route_candidates", side_effect=bad_route):
+            with patch("backend.backend_server._shortcut_split_blocks"):
+                with self.assertLogs(level=logging.ERROR) as log_cm:
+                    server._run_shortcut_lookup_delivery(
+                        user_id=99,
+                        text=learnable_text,
+                    )
+
+        violation_logs = [
+            line for line in log_cm.output
+            if "ocr_routing_contract_violation" in line
+        ]
+        self.assertTrue(violation_logs, "expected ocr_routing_contract_violation log entry")
+
+    # ------------------------------------------------------------------
+    # No fallback to normalized_text in source
+    # ------------------------------------------------------------------
+
+    def test_no_or_normalized_text_fallback_in_delivery_source(self):
+        """The delivery function source must not contain 'or normalized_text' after extraction."""
+        import inspect
+        import backend.backend_server as server
+
+        source = inspect.getsource(server._run_shortcut_lookup_delivery)
+        # The unsafe fallback pattern must not exist in the function body.
+        self.assertNotIn(
+            "or normalized_text",
+            source,
+            "Found unsafe 'or normalized_text' fallback in _run_shortcut_lookup_delivery",
+        )
+
+    # ------------------------------------------------------------------
+    # Contract-ok path observability
+    # ------------------------------------------------------------------
+
+    def test_contract_ok_logged_for_valid_proceed(self):
+        """A valid proceed routing emits ocr_routing_contract_ok at INFO level."""
+        import backend.backend_server as server
+
+        learnable_text = "Ich lerne Deutsch. Das ist sehr wichtig."
+
+        with patch("backend.backend_server._shortcut_split_blocks", return_value=[]):
+            with self.assertLogs(level="INFO") as log_cm:
+                server._run_shortcut_lookup_delivery(
+                    user_id=42,
+                    text=learnable_text,
+                )
+
+        contract_ok_logs = [
+            line for line in log_cm.output
+            if "ocr_routing_contract_ok" in line
+        ]
+        self.assertTrue(contract_ok_logs, "expected ocr_routing_contract_ok log entry")
+
+    def test_extraction_payload_built_logged(self):
+        """ocr_extraction_payload_built must be logged after assembling extraction text."""
+        import backend.backend_server as server
+
+        learnable_text = "Ich lerne Deutsch."
+
+        with patch("backend.backend_server._shortcut_split_blocks", return_value=[]):
+            with self.assertLogs(level="INFO") as log_cm:
+                server._run_shortcut_lookup_delivery(
+                    user_id=42,
+                    text=learnable_text,
+                )
+
+        payload_logs = [
+            line for line in log_cm.output
+            if "ocr_extraction_payload_built" in line
+        ]
+        self.assertTrue(payload_logs, "expected ocr_extraction_payload_built log entry")
+
+    # ------------------------------------------------------------------
+    # Extraction text content guarantees
+    # ------------------------------------------------------------------
+
+    def test_extraction_text_built_only_from_pass_candidates(self):
+        """Noise candidates must never appear in the text sent to split_blocks."""
+        import backend.backend_server as server
+
+        # Blank-line-separated: one learnable, one pure noise (CTA word)
+        mixed = "Wenn ich in Deutschland bin, spreche ich Deutsch.\n\nFollow"
+
+        captured: list[str] = []
+
+        def capture(text: str):
+            captured.append(text)
+            return []
+
+        with patch("backend.backend_server._shortcut_split_blocks", side_effect=capture):
+            server._run_shortcut_lookup_delivery(user_id=1, text=mixed)
+
+        self.assertEqual(len(captured), 1)
+        self.assertNotIn("Follow", captured[0])
+        self.assertIn("Deutschland", captured[0])
+
+    def test_every_pass_candidate_has_breakdown(self):
+        """Each candidate in route_candidates pass list has a non-empty breakdown dict."""
+        text = (
+            "Ich lerne Deutsch.\n\n"
+            "Das ist sehr wichtig.\n\n"
+            "Follow"
+        )
+        candidates = segment_candidates(text)
+        _, pass_list, _ = route_candidates(candidates)
+
+        self.assertTrue(pass_list, "expected non-empty pass list for this input")
+        for cand, lscore in pass_list:
+            self.assertIsInstance(lscore.breakdown, dict)
+            self.assertTrue(
+                lscore.breakdown,
+                f"pass candidate has empty breakdown: {cand.text!r}",
+            )
+
+    def test_skip_all_noise_never_calls_split_blocks(self):
+        """Pure noise payload must not call _shortcut_split_blocks at all."""
+        import backend.backend_server as server
+
+        with patch("backend.backend_server._shortcut_split_blocks") as mock_split:
+            result = server._run_shortcut_lookup_delivery(
+                user_id=5,
+                text="Follow\n\nSubscribe\n\n89",
+            )
+
+        self.assertEqual(result, 0)
+        mock_split.assert_not_called()
+
+    def test_mixed_payload_sends_only_useful_candidates_to_llm(self):
+        """Mixed payload routes proceed and extraction_text contains only non-noise text."""
+        import backend.backend_server as server
+
+        # Learnable: multi-word German; Noise: engagement residual
+        mixed = "Ich möchte Deutsch lernen.\n\n1.5K likes"
+
+        captured: list[str] = []
+
+        def capture(text: str):
+            captured.append(text)
+            return []
+
+        with patch("backend.backend_server._shortcut_split_blocks", side_effect=capture):
+            server._run_shortcut_lookup_delivery(user_id=7, text=mixed)
+
+        self.assertEqual(len(captured), 1)
+        self.assertNotIn("1.5K likes", captured[0])
+        self.assertIn("Ich möchte Deutsch lernen.", captured[0])
