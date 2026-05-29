@@ -8833,8 +8833,6 @@ function AppInner() {
       }
       if (payload?.open_section !== false) {
         openSingleSectionAndScroll('youtube', youtubeRef);
-      } else {
-        ensureSectionVisible('youtube');
       }
     } else if (
       normalizedCommand !== 'request_video_empty_state'
