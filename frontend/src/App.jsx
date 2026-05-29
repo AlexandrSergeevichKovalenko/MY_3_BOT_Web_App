@@ -14,6 +14,12 @@ import { EconomicsProvider } from './providers/EconomicsProvider';
 import { EconomicsSection } from './components/EconomicsSection';
 import { AnalyticsProvider, AnalyticsContext } from './providers/AnalyticsProvider';
 import { AnalyticsSection } from './components/AnalyticsSection';
+import { usePlanningController } from './providers/PlanningProvider';
+import { PlanningContext } from './providers/PlanningProvider';
+import PlanningSection from './components/PlanningSection';
+import { YouTubeProvider } from './providers/YouTubeProvider';
+import { YouTubePlaybackProvider, useYouTubePlaybackController } from './providers/YouTubePlaybackProvider';
+import YouTubeSection from './components/YouTubeSection';
 
 // True lazy imports — chunks download only when component is first rendered.
 // Free users never render these sections so the vendor chunks stay unloaded.
@@ -4005,831 +4011,6 @@ const TranslationsSection = React.memo(function TranslationsSection({
   );
 });
 
-const HomeScreenSection = React.memo(function HomeScreenSection({
-  tr,
-  uiLang,
-  sectionRefs = {},
-  visiblePanels = {},
-  planAnalyticsPeriod,
-  setPlanAnalyticsPeriod,
-  planAnalyticsLoading,
-  weeklyPlan,
-  weeklyPlanCollapsed,
-  setWeeklyPlanCollapsed,
-  weeklyPlanDraft,
-  setWeeklyPlanDraft,
-  weeklyPlanSaving,
-  weeklyPlanLoading,
-  weeklyPlanError,
-  weeklyPlanSnapshotTone,
-  refreshWeeklyPlan,
-  planAnalyticsMetrics,
-  planAnalyticsRange,
-  planAnalyticsError,
-  weeklyMetricExpanded,
-  setWeeklyMetricExpanded,
-  saveWeeklyPlan,
-  todayPlan,
-  todayPlanLoadedOnce,
-  todayPlanLoading,
-  todayPlanError,
-  todayPlanSnapshotTone,
-  todayItemLoading,
-  todayTimerNowMs,
-  regenerateTodayPlan,
-  loadTodayPlan,
-  startTodayTask,
-  submitTodayVideoFeedback,
-  getTodayItemDisplayElapsedSeconds,
-  getTodayItemElapsedSeconds,
-  getTodayItemProgressPercent,
-  getTodayTranslationProgress,
-  getTodayItemTitle,
-  formatCompactTimer,
-  skillReport,
-  skillReportLoadedOnce,
-  skillReportLoading,
-  skillReportError,
-  skillReportSnapshotTone,
-  skillPracticeLoading,
-  loadSkillReport,
-  startSkillPractice,
-  resumeSkillPractice,
-  skillTrainingStatusMap,
-  getStoredSkillTrainingSnapshot,
-}) {
-  const {
-    weeklyPlanRef = null,
-    todayRef = null,
-    skillsRef = null,
-  } = sectionRefs || {};
-  const showWeeklyPlanPanel = visiblePanels.weeklyPlan !== false;
-  const showTodayPlanPanel = visiblePanels.todayPlan !== false;
-  const showSkillReportPanel = visiblePanels.skillReport !== false;
-
-  useAppPerfRenderProbe('HomeScreenSection', {
-    weeklyPlanLoading: Boolean(weeklyPlanLoading),
-    weeklyPlanHasData: Boolean(weeklyPlan?.week),
-    todayPlanLoading: Boolean(todayPlanLoading),
-    todayPlanItems: Array.isArray(todayPlan?.items) ? todayPlan.items.length : 0,
-    skillReportLoading: Boolean(skillReportLoading),
-    skillGroups: Array.isArray(skillReport?.groups) ? skillReport.groups.length : 0,
-    planAnalyticsPeriod: String(planAnalyticsPeriod || 'week'),
-  });
-
-  const ringPalette = ['#ff5d7a', '#ff9d57', '#ffd84d', '#46dca0', '#53c7ff', '#7c9dff'];
-  const ringSize = 264;
-  const ringCenter = ringSize / 2;
-  const ringStartRadius = 118;
-  const ringStep = 14;
-  const weeklyPlanUsesDeferredAnalytics = planAnalyticsPeriod !== 'week';
-  const hasPlanAnalyticsMetrics = Object.keys(planAnalyticsMetrics || {}).length > 0;
-  const useLivePlanAnalyticsMetrics = hasPlanAnalyticsMetrics && !planAnalyticsError;
-  const weeklyMetrics = weeklyPlanUsesDeferredAnalytics
-    ? (useLivePlanAnalyticsMetrics ? planAnalyticsMetrics : {})
-    : (useLivePlanAnalyticsMetrics ? planAnalyticsMetrics : (weeklyPlan?.metrics || {}));
-  const hasWeeklyPlanSnapshot = Boolean(
-    weeklyPlan?.week
-    || (weeklyPlan?.metrics && Object.keys(weeklyPlan.metrics).length > 0)
-  );
-  const hasTodayPlanItems = Array.isArray(todayPlan?.items) && todayPlan.items.length > 0;
-  const hasTodayPlanSnapshot = Boolean(
-    todayPlan?.date
-    || Number(todayPlan?.total_minutes || 0) > 0
-    || hasTodayPlanItems
-  );
-  const showTodayPlanSkeleton = (
-    (!todayPlanLoadedOnce && !todayPlanError && !hasTodayPlanSnapshot)
-    || (todayPlanLoading && !hasTodayPlanSnapshot)
-  );
-  const weeklyMetricRows = useMemo(() => ([
-    {
-      key: 'translations',
-      title: tr('Переводы', 'Übersetzungen'),
-      unit: tr('шт', 'Stk'),
-      data: weeklyMetrics.translations || {},
-    },
-    {
-      key: 'learned_words',
-      title: tr('Слова SRS', 'Vokabeln SRS'),
-      unit: tr('слов', 'Wörter'),
-      data: weeklyMetrics.learned_words || {},
-    },
-    {
-      key: 'agent_minutes',
-      title: tr('Разговор', 'Gespräch'),
-      unit: tr('мин', 'Min'),
-      data: weeklyMetrics.agent_minutes || {},
-    },
-    {
-      key: 'reading_minutes',
-      title: tr('Чтение', 'Lesen'),
-      unit: tr('мин', 'Min'),
-      data: weeklyMetrics.reading_minutes || {},
-    },
-  ]), [tr, weeklyMetrics]);
-  const hasWeeklyMetricRows = weeklyMetricRows.some((item) => Object.keys(item.data || {}).length > 0);
-  const canRenderWeeklyMetrics = weeklyPlanUsesDeferredAnalytics
-    ? useLivePlanAnalyticsMetrics
-    : (useLivePlanAnalyticsMetrics || hasWeeklyMetricRows);
-  const showWeeklyPlanSkeleton = !weeklyPlanError && !canRenderWeeklyMetrics;
-  const uiLocale = uiLang === 'de' ? 'de-DE' : 'ru-RU';
-  const weeklyPlanUpdatedLabel = formatSnapshotDateTime(weeklyPlan?.snapshot_saved_at, uiLocale);
-  const todayPlanUpdatedLabel = formatSnapshotDateTime(todayPlan?.snapshot_saved_at, uiLocale);
-  const skillReportUpdatedLabel = formatSnapshotDateTime(skillReport?.snapshot_saved_at, uiLocale);
-  const weeklyPlanSnapshotLabel = weeklyPlanUpdatedLabel
-    ? tr(`Данные на ${weeklyPlanUpdatedLabel}`, `Stand: ${weeklyPlanUpdatedLabel}`)
-    : tr('Данные обновятся при первом запросе', 'Daten werden beim ersten Abruf geladen');
-  const todayPlanSnapshotLabel = todayPlanUpdatedLabel
-    ? tr(`Данные на ${todayPlanUpdatedLabel}`, `Stand: ${todayPlanUpdatedLabel}`)
-    : tr('Данные обновятся при первом запросе', 'Daten werden beim ersten Abruf geladen');
-  const skillReportSnapshotLabel = skillReportUpdatedLabel
-    ? tr(`Данные на ${skillReportUpdatedLabel}`, `Stand: ${skillReportUpdatedLabel}`)
-    : tr('Данные обновятся при первом запросе', 'Daten werden beim ersten Abruf geladen');
-  const weeklyWeekLabel = (weeklyPlanUsesDeferredAnalytics || useLivePlanAnalyticsMetrics)
-    ? (
-      planAnalyticsRange?.start_date && planAnalyticsRange?.end_date
-        ? `${planAnalyticsRange.start_date} — ${planAnalyticsRange.end_date}`
-        : ''
-    )
-    : (
-      weeklyPlan?.week?.start_date && weeklyPlan?.week?.end_date
-        ? `${weeklyPlan.week.start_date} — ${weeklyPlan.week.end_date}`
-        : ''
-    );
-  const periodDaysElapsed = Math.max(
-    0,
-    Number(
-      (weeklyPlanUsesDeferredAnalytics || useLivePlanAnalyticsMetrics)
-        ? (planAnalyticsRange?.days_elapsed ?? 0)
-        : (weeklyPlan?.week?.days_elapsed ?? 0)
-    ) || 0
-  );
-  const periodDaysTotal = Math.max(
-    1,
-    Number(
-      (weeklyPlanUsesDeferredAnalytics || useLivePlanAnalyticsMetrics)
-        ? (planAnalyticsRange?.days_total ?? 7)
-        : (weeklyPlan?.week?.days_total ?? 7)
-    ) || 1
-  );
-  const expectedProgressPercent = Math.max(0, Math.min(100, (periodDaysElapsed / periodDaysTotal) * 100));
-  const planPeriodLabel = {
-    week: tr('Неделя', 'Woche'),
-    month: tr('Месяц', 'Monat'),
-    quarter: tr('Квартал', 'Quartal'),
-    'half-year': tr('Полугодие', 'Halbjahr'),
-    year: tr('Год', 'Jahr'),
-  }[planAnalyticsPeriod] || tr('Неделя', 'Woche');
-  const weeklyMetricToneClass = (key) => {
-    if (key === 'translations') return 'is-translations';
-    if (key === 'learned_words') return 'is-words';
-    if (key === 'agent_minutes') return 'is-agent';
-    if (key === 'reading_minutes') return 'is-reading';
-    return '';
-  };
-  const formatWeeklyValue = (value, digits = 0) => {
-    const num = Number(value || 0);
-    if (!Number.isFinite(num)) return '0';
-    if (digits <= 0) return String(Math.round(num));
-    return num.toFixed(digits);
-  };
-  const uniqueSkills = useMemo(() => {
-    const flat = (Array.isArray(skillReport?.groups) ? skillReport.groups : [])
-      .flatMap((group) => (Array.isArray(group?.skills) ? group.skills : []));
-    const byId = new Map();
-    for (const skill of flat) {
-      const id = String(skill?.skill_id || '').trim();
-      if (!id || byId.has(id)) continue;
-      byId.set(id, skill);
-    }
-    return Array.from(byId.values());
-  }, [skillReport?.groups]);
-  const getDisplaySkillName = useCallback(
-    (skillLike) => getLocalizedSkillDisplayName(skillLike, uiLang),
-    [uiLang],
-  );
-  const ringSkills = useMemo(() => {
-    const skilledWithData = uniqueSkills.filter((item) => Boolean(item?.has_data) && item?.mastery !== null && item?.mastery !== undefined);
-    const weakestSkills = [...skilledWithData]
-      .sort((a, b) => (Number(a?.mastery || 0) - Number(b?.mastery || 0)) || (Number(b?.errors_7d || 0) - Number(a?.errors_7d || 0)))
-      .slice(0, 3)
-      .map((item) => ({ ...item, ring_type: 'weak' }));
-    const strongestSkills = [...skilledWithData]
-      .sort((a, b) => (Number(b?.mastery || 0) - Number(a?.mastery || 0)) || (Number(a?.errors_7d || 0) - Number(b?.errors_7d || 0)))
-      .filter((item) => !weakestSkills.some((weak) => String(weak?.skill_id || '') === String(item?.skill_id || '')))
-      .slice(0, 3)
-      .map((item) => ({ ...item, ring_type: 'best' }));
-    return [...weakestSkills, ...strongestSkills];
-  }, [uniqueSkills]);
-  const hasSkillReportSnapshot = Boolean(
-    (Array.isArray(skillReport?.groups) && skillReport.groups.length > 0)
-    || Number(skillReport?.total_skills || 0) > 0
-    || ringSkills.length > 0
-  );
-  const showSkillReportSkeleton = (
-    (!skillReportLoadedOnce && !skillReportError && !hasSkillReportSnapshot)
-    || (skillReportLoading && !hasSkillReportSnapshot)
-  );
-  const getSkillTrainingStatus = useCallback((skillId) => {
-    const normalized = String(skillId || '').trim();
-    if (!normalized) return null;
-    const value = skillTrainingStatusMap?.[normalized];
-    if (!value || typeof value !== 'object') return null;
-    return {
-      state: String(value?.state || '').trim().toLowerCase(),
-      is_complete: Boolean(value?.is_complete),
-      opened_count: Number(value?.opened_count || 0),
-      required_count: Number(value?.required_count || 0),
-      practice_submitted: Boolean(value?.practice_submitted),
-    };
-  }, [skillTrainingStatusMap]);
-
-  const [weeklyMetricModalKey, setWeeklyMetricModalKey] = useState(null);
-
-  return (
-    <PerfProfiler id="section.home">
-      <>
-        {showWeeklyPlanPanel && (
-        <section className="weekly-plan-panel" ref={weeklyPlanRef}>
-          <div className="weekly-plan-head">
-            <div className="home-panel-head-main">
-              <div className="home-panel-head-copy">
-                <div className="home-panel-title-row">
-                  <h2>{tr('План на неделю', 'Wochenplan')}</h2>
-                  <div className="home-panel-head-actions">
-                    <button
-                      type="button"
-                      className="home-panel-action-btn"
-                      onClick={() => loadWeeklyPlan({ manual: true, syncFacts: true })}
-                      disabled={weeklyPlanLoading || planAnalyticsLoading}
-                      title={tr('Актуализировать данные', 'Daten aktualisieren')}
-                      aria-label={tr('Актуализировать данные', 'Daten aktualisieren')}
-                    >
-                      <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="14" height="14" aria-hidden="true" className={(weeklyPlanLoading || planAnalyticsLoading) ? 'is-spinning' : ''}>
-                        <path d="M16 2v4h-4"/><path d="M2 11a7 7 0 0 0 12.9 2.9L16 6"/><path d="M2 16v-4h4"/><path d="M16 7a7 7 0 0 0-12.9-2.9L2 12"/>
-                      </svg>
-                      {tr('Обновить', 'Aktualisieren')}
-                    </button>
-                    <button
-                      type="button"
-                      className="home-panel-action-btn"
-                      onClick={() => setWeeklyPlanCollapsed((prev) => !prev)}
-                      title={weeklyPlanCollapsed ? tr('Развернуть', 'Aufklappen') : tr('Свернуть', 'Einklappen')}
-                      aria-label={weeklyPlanCollapsed ? tr('Развернуть', 'Aufklappen') : tr('Свернуть', 'Einklappen')}
-                      aria-pressed={!weeklyPlanCollapsed}
-                    >
-                      <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" width="14" height="14" aria-hidden="true" style={{ transform: weeklyPlanCollapsed ? 'rotate(0deg)' : 'rotate(180deg)', transition: 'transform 0.2s ease' }}>
-                        <polyline points="4 7 9 12 14 7"/>
-                      </svg>
-                      {weeklyPlanCollapsed ? tr('Развернуть', 'Aufklappen') : tr('Свернуть', 'Einklappen')}
-                    </button>
-                  </div>
-                </div>
-                <small className={`home-panel-snapshot-meta is-${weeklyPlanSnapshotTone === 'manual' ? 'fresh' : 'stale'}`}>{weeklyPlanSnapshotLabel}</small>
-              </div>
-            </div>
-            <div className="weekly-plan-head-toolbar">
-              <select
-                className="weekly-plan-period-select-inline"
-                value={planAnalyticsPeriod}
-                onChange={(event) => setPlanAnalyticsPeriod(event.target.value)}
-                disabled={planAnalyticsLoading}
-              >
-                <option value="week">{tr('Неделя', 'Woche')}</option>
-                <option value="month">{tr('Месяц', 'Monat')}</option>
-                <option value="quarter">{tr('Квартал', 'Quartal')}</option>
-                <option value="half-year">{tr('Полугодие', 'Halbjahr')}</option>
-                <option value="year">{tr('Год', 'Jahr')}</option>
-              </select>
-              {weeklyWeekLabel && (
-                <span className="weekly-plan-period">{weeklyWeekLabel}</span>
-              )}
-            </div>
-          </div>
-
-          {!weeklyPlanCollapsed && (
-            <div className="weekly-plan-form">
-              <label className="webapp-field">
-                <span>{tr('Количество переводов', 'Anzahl Uebersetzungen')}</span>
-                <input
-                  type="number"
-                  min="0"
-                  inputMode="numeric"
-                  value={weeklyPlanDraft.translations_goal}
-                  onChange={(event) => setWeeklyPlanDraft((prev) => ({ ...prev, translations_goal: event.target.value }))}
-                  disabled={weeklyPlanSaving}
-                  placeholder="0"
-                />
-              </label>
-              <label className="webapp-field">
-                <span>{tr('Количество выученных слов', 'Anzahl gelernter Woerter')}</span>
-                <input
-                  type="number"
-                  min="0"
-                  inputMode="numeric"
-                  value={weeklyPlanDraft.learned_words_goal}
-                  onChange={(event) => setWeeklyPlanDraft((prev) => ({ ...prev, learned_words_goal: event.target.value }))}
-                  disabled={weeklyPlanSaving}
-                  placeholder="0"
-                />
-              </label>
-              <label className="webapp-field">
-                <span>{tr('Минуты разговора с агентом', 'Gesprächsminuten mit Assistent')}</span>
-                <input
-                  type="number"
-                  min="0"
-                  inputMode="numeric"
-                  value={weeklyPlanDraft.agent_minutes_goal}
-                  onChange={(event) => setWeeklyPlanDraft((prev) => ({ ...prev, agent_minutes_goal: event.target.value }))}
-                  disabled={weeklyPlanSaving}
-                  placeholder="0"
-                />
-              </label>
-              <label className="webapp-field">
-                <span>{tr('Минуты чтения', 'Leseminuten')}</span>
-                <input
-                  type="number"
-                  min="0"
-                  inputMode="numeric"
-                  value={weeklyPlanDraft.reading_minutes_goal}
-                  onChange={(event) => setWeeklyPlanDraft((prev) => ({ ...prev, reading_minutes_goal: event.target.value }))}
-                  disabled={weeklyPlanSaving}
-                  placeholder="0"
-                />
-              </label>
-              <button
-                type="button"
-                className="primary-button weekly-plan-save-btn"
-                onClick={saveWeeklyPlan}
-                disabled={weeklyPlanSaving || weeklyPlanLoading}
-              >
-                {weeklyPlanSaving ? tr('Сохраняем...', 'Speichern...') : tr('Сохранить план', 'Plan speichern')}
-              </button>
-            </div>
-          )}
-
-          {weeklyPlanLoading && !hasWeeklyPlanSnapshot && (
-            <div className="webapp-muted">{tr('Считаем недельные показатели...', 'Wochenwerte werden berechnet...')}</div>
-          )}
-          {weeklyPlanLoading && hasWeeklyPlanSnapshot && (
-            <div className="webapp-muted">{tr('Обновляем недельный план в фоне...', 'Wochenplan wird im Hintergrund aktualisiert...')}</div>
-          )}
-          {weeklyPlanError && <div className="webapp-error">{weeklyPlanError}</div>}
-          {weeklyPlanUsesDeferredAnalytics && planAnalyticsLoading && (
-            <div className="webapp-muted">{tr('Считаем показатели плана...', 'Planwerte werden berechnet...')}</div>
-          )}
-          {weeklyPlanUsesDeferredAnalytics && planAnalyticsError && <div className="webapp-error">{planAnalyticsError}</div>}
-
-          {showWeeklyPlanSkeleton && (
-            <div className="weekly-plan-metrics weekly-plan-metrics-grid" aria-hidden="true">
-              {weeklyMetricRows.map((item) => (
-                <article className={`weekly-plan-metric-card ${weeklyMetricToneClass(item.key)}`} key={`weekly-skeleton-${item.key}`} style={{ opacity: 0.72 }}>
-                  <div className="weekly-plan-metric-compact-top">
-                    <h4>{item.title}</h4>
-                    <div className="weekly-plan-progress-ring" style={{ background: 'radial-gradient(circle at center, rgba(8, 16, 34, 0.96) 56%, transparent 57%), conic-gradient(rgba(94, 117, 159, 0.35) 0% 100%)' }}>
-                      <span>…</span>
-                    </div>
-                  </div>
-                  <div className="weekly-plan-values-compact">
-                    <span>{tr('Факт', 'Ist')}: <strong>…</strong></span>
-                    <span>{tr('План', 'Plan')}: <strong>…</strong></span>
-                  </div>
-                </article>
-              ))}
-            </div>
-          )}
-
-          {canRenderWeeklyMetrics && (
-            <div className="weekly-plan-metrics weekly-plan-metrics-grid">
-              {weeklyMetricRows.map((item) => {
-                const goal = Number(item.data?.goal || 0);
-                const actual = Number(item.data?.actual || 0);
-                const completion = Number(item.data?.completion_percent || 0);
-                const completionClamped = Math.max(0, Math.min(100, completion));
-                const ringExpected = expectedProgressPercent;
-                const deficit = Math.max(0, ringExpected - completionClamped);
-                const ahead = Math.max(0, completionClamped - ringExpected);
-                const expectedPart = Math.min(completionClamped, ringExpected);
-                let ringGradient = '';
-                if (deficit > 0.01) {
-                  ringGradient = `conic-gradient(#7bf1b3 0% ${expectedPart}%, #ff6b6b ${expectedPart}% ${ringExpected}%, rgba(94, 117, 159, 0.35) ${ringExpected}% 100%)`;
-                } else if (ahead > 0.01) {
-                  ringGradient = `conic-gradient(#7bf1b3 0% ${ringExpected}%, #60a5fa ${ringExpected}% ${completionClamped}%, rgba(94, 117, 159, 0.35) ${completionClamped}% 100%)`;
-                } else {
-                  ringGradient = `conic-gradient(#7bf1b3 0% ${completionClamped}%, rgba(94, 117, 159, 0.35) ${completionClamped}% 100%)`;
-                }
-                const completionRingStyle = {
-                  background: `radial-gradient(circle at center, rgba(8, 16, 34, 0.96) 56%, transparent 57%), ${ringGradient}`,
-                };
-                return (
-                  <article
-                    className={`weekly-plan-metric-card ${weeklyMetricToneClass(item.key)}`}
-                    key={item.key}
-                    onClick={() => setWeeklyMetricModalKey(item.key)}
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setWeeklyMetricModalKey(item.key); }}
-                  >
-                    <div className="weekly-plan-metric-compact-top">
-                      <h4>{item.title}</h4>
-                      <div className="weekly-plan-progress-ring" style={completionRingStyle} title={`${tr('Факт', 'Ist')}: ${Math.round(completionClamped)}% • ${tr('Должно быть к текущему дню', 'Soll bis heute sein')}: ${Math.round(ringExpected)}%`}>
-                        <span>{Math.round(completionClamped)}%</span>
-                      </div>
-                    </div>
-                    <div className="weekly-plan-values-compact">
-                      <span>{tr('Факт', 'Ist')}: <strong>{formatWeeklyValue(actual)} {item.unit}</strong></span>
-                      <span>{tr('План', 'Plan')}: <strong>{formatWeeklyValue(goal)} {item.unit}</strong></span>
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
-          )}
-          {weeklyMetricModalKey && (() => {
-            const modalItem = weeklyMetricRows.find((r) => r.key === weeklyMetricModalKey);
-            if (!modalItem) return null;
-            const mGoal = Number(modalItem.data?.goal || 0);
-            const mActual = Number(modalItem.data?.actual || 0);
-            const mForecast = Number(modalItem.data?.forecast || 0);
-            const mForecastDelta = Number(modalItem.data?.forecast_delta_vs_goal || 0);
-            const mForecastClass = mForecastDelta >= 0 ? 'is-good' : 'is-bad';
-            const mCompletion = Number(modalItem.data?.completion_percent || 0);
-            const mClamped = Math.max(0, Math.min(100, mCompletion));
-            const mExpected = expectedProgressPercent;
-            const mDeficit = Math.max(0, mExpected - mClamped);
-            const mAhead = Math.max(0, mClamped - mExpected);
-            const mExpectedPart = Math.min(mClamped, mExpected);
-            let mGradient = '';
-            if (mDeficit > 0.01) {
-              mGradient = `conic-gradient(#7bf1b3 0% ${mExpectedPart}%, #ff6b6b ${mExpectedPart}% ${mExpected}%, rgba(94, 117, 159, 0.35) ${mExpected}% 100%)`;
-            } else if (mAhead > 0.01) {
-              mGradient = `conic-gradient(#7bf1b3 0% ${mExpected}%, #60a5fa ${mExpected}% ${mClamped}%, rgba(94, 117, 159, 0.35) ${mClamped}% 100%)`;
-            } else {
-              mGradient = `conic-gradient(#7bf1b3 0% ${mClamped}%, rgba(94, 117, 159, 0.35) ${mClamped}% 100%)`;
-            }
-            const mRingStyle = { background: `radial-gradient(circle at center, rgba(8, 16, 34, 0.96) 56%, transparent 57%), ${mGradient}` };
-            return (
-              <div
-                className="weekly-metric-modal-overlay"
-                onClick={() => setWeeklyMetricModalKey(null)}
-                role="dialog"
-                aria-modal="true"
-              >
-                <div className="weekly-metric-modal" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    type="button"
-                    className="weekly-metric-modal-close"
-                    onClick={() => setWeeklyMetricModalKey(null)}
-                    aria-label={tr('Закрыть', 'Schließen')}
-                  >✕</button>
-                  <div className="weekly-metric-modal-head">
-                    <div className="weekly-plan-progress-ring" style={mRingStyle}>
-                      <span>{Math.round(mClamped)}%</span>
-                    </div>
-                    <h3>{modalItem.title}</h3>
-                  </div>
-                  <div className="weekly-plan-values">
-                    <div>
-                      <span>{tr('План', 'Plan')}</span>
-                      <strong>{formatWeeklyValue(mGoal)} {modalItem.unit}</strong>
-                    </div>
-                    <div>
-                      <span>{tr('Факт', 'Ist')}</span>
-                      <strong>{formatWeeklyValue(mActual)} {modalItem.unit}</strong>
-                    </div>
-                    <div>
-                      <span>{tr('Прогноз', 'Prognose')}</span>
-                      <strong>{formatWeeklyValue(mForecast, 1)} {modalItem.unit}</strong>
-                    </div>
-                    <div className={mForecastClass}>
-                      <span>{tr('Abw. Prognose', 'Abw. Prognose')}</span>
-                      <strong>{mForecastDelta >= 0 ? '+' : ''}{formatWeeklyValue(mForecastDelta, 1)} {modalItem.unit}</strong>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            );
-          })()}
-        </section>
-        )}
-
-        {showTodayPlanPanel && (
-        <section className="today-plan-panel" ref={todayRef}>
-          <div className="today-plan-head">
-            <div className="home-panel-head-main">
-              <div className="today-plan-title-wrap">
-                <div className="home-panel-title-row">
-                  <h2>{tr('Задачи на сегодня', 'Aufgaben fuer heute')}</h2>
-                  <div className="home-panel-head-actions today-plan-head-actions">
-                    <button
-                      type="button"
-                      className="home-panel-action-btn is-accent"
-                      onClick={regenerateTodayPlan}
-                      disabled={todayPlanLoading}
-                      title={tr('Пересобрать план', 'Plan neu erstellen')}
-                      aria-label={tr('Пересобрать план', 'Plan neu erstellen')}
-                    >
-                      <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="14" height="14" aria-hidden="true">
-                        <path d="M9 1v4m0 0 2-2m-2 2L7 3"/><circle cx="9" cy="9" r="6"/><path d="M9 6v3l2 2"/>
-                      </svg>
-                      {tr('Новый план', 'Neu erstellen')}
-                    </button>
-                    <button
-                      type="button"
-                      className="home-panel-action-btn"
-                      onClick={() => loadTodayPlan({ manual: true, syncFacts: true })}
-                      disabled={todayPlanLoading}
-                      title={tr('Синхронизировать выполнение', 'Fortschritt synchronisieren')}
-                      aria-label={tr('Синхронизировать выполнение', 'Fortschritt synchronisieren')}
-                    >
-                      <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="14" height="14" aria-hidden="true" className={todayPlanLoading ? 'is-spinning' : ''}>
-                        <path d="M16 2v4h-4"/><path d="M2 11a7 7 0 0 0 12.9 2.9L16 6"/><path d="M2 16v-4h4"/><path d="M16 7a7 7 0 0 0-12.9-2.9L2 12"/>
-                      </svg>
-                      {tr('Синхронизировать', 'Synchronisieren')}
-                    </button>
-                  </div>
-                </div>
-                <p>{tr('Короткий персональный маршрут на день', 'Dein kurzer persoenlicher Plan fuer heute')}</p>
-                <small className={`home-panel-snapshot-meta is-${todayPlanSnapshotTone === 'manual' ? 'fresh' : 'stale'}`}>{todayPlanSnapshotLabel}</small>
-              </div>
-            </div>
-          </div>
-          {showTodayPlanSkeleton && (
-            <div className="today-plan-skeleton" aria-hidden="true">
-              {[0, 1, 2].map((index) => (
-                <div className="today-plan-skeleton-card" key={`today-plan-skeleton-${index}`}>
-                  <div className="today-plan-skeleton-main">
-                    <span className="home-panel-skeleton home-panel-skeleton-line is-title" />
-                    <div className="today-plan-skeleton-meta">
-                      <span className="home-panel-skeleton home-panel-skeleton-line is-meta" />
-                      <span className="home-panel-skeleton home-panel-skeleton-line is-meta is-short" />
-                      <span className="home-panel-skeleton home-panel-skeleton-line is-meta is-short" />
-                    </div>
-                  </div>
-                  <div className="today-plan-skeleton-actions">
-                    <span className="home-panel-skeleton home-panel-skeleton-pill is-compact" />
-                    <span className="home-panel-skeleton home-panel-skeleton-pill is-badge" />
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-          {todayPlanLoading && hasTodayPlanSnapshot && (
-            <div className="webapp-muted">{tr('Синхронизируем выполнение в фоне...', 'Fortschritt wird im Hintergrund synchronisiert...')}</div>
-          )}
-          {todayPlanError && <div className="webapp-error">{todayPlanError}</div>}
-          {!showTodayPlanSkeleton && !todayPlanLoading && !todayPlanError && !hasTodayPlanItems && (
-            <div className="webapp-muted">{tr('План на сегодня пуст.', 'Tagesplan ist leer.')}</div>
-          )}
-          {!showTodayPlanSkeleton && !todayPlanError && hasTodayPlanItems && (
-            <div className="today-plan-items">
-              {todayPlan.items.map((item) => {
-                const loadingAction = todayItemLoading[item.id];
-                const taskType = String(item?.task_type || '').toLowerCase();
-                const isTranslationTask = taskType === 'translation';
-                const isVideoTask = taskType === 'video' || taskType === 'youtube';
-                const elapsedSeconds = getTodayItemDisplayElapsedSeconds(item, todayTimerNowMs);
-                const progressPercent = getTodayItemProgressPercent(item, todayTimerNowMs);
-                const translationProgress = isTranslationTask ? getTodayTranslationProgress(item) : null;
-                const doneByProgress = progressPercent >= 100;
-                const done = String(item?.status || '').toLowerCase() === 'done' || doneByProgress;
-                const itemStatusClass = done ? 'done' : (item.status || 'todo');
-                const payload = item?.payload && typeof item.payload === 'object' ? item.payload : {};
-                const videoTopic = getLocalizedSkillTopicLabel({
-                  skill_id: payload?.skill_id,
-                  skill_title: payload?.skill_title,
-                  sub_category: payload?.sub_category,
-                  main_category: payload?.main_category,
-                }, uiLang);
-                const videoLikes = Number(payload?.video_likes || 0);
-                const videoDislikes = Number(payload?.video_dislikes || 0);
-                const videoScore = Number(payload?.video_score || 0);
-                const userVote = Number(payload?.video_user_vote || 0);
-                const progressBadgeTitle = done
-                  ? tr('Задача выполнена', 'Aufgabe erledigt')
-                  : (
-                    isTranslationTask
-                      ? `${translationProgress?.completedCount || 0}/${translationProgress?.targetCount || 0}`
-                      : `${Math.round(progressPercent)}%`
-                  );
-                const progressBadgeText = done
-                  ? '✅'
-                  : (
-                    isTranslationTask
-                      ? `⭕ ${translationProgress?.completedCount || 0}/${translationProgress?.targetCount || 0}`
-                      : `⭕ ${Math.round(progressPercent)}%`
-                  );
-                return (
-                  <div className={`today-plan-item is-${itemStatusClass}`} key={item.id}>
-                    <div className="today-plan-item-row">
-                      <div className="today-plan-item-title">{getTodayItemTitle(item)}</div>
-                      <div className={`today-plan-item-actions ${isVideoTask ? 'is-video-task' : ''}`}>
-                        <button
-                          type="button"
-                          className={`secondary-button today-plan-start-btn ${isVideoTask ? 'today-video-start-btn' : ''}`}
-                          onClick={() => startTodayTask(item)}
-                          disabled={Boolean(loadingAction) || (!isVideoTask && done)}
-                        >
-                          {loadingAction === 'start' ? tr('Старт...', 'Start...') : tr('Начать', 'Starten')}
-                        </button>
-                        <div className={`today-task-progress-badge ${isVideoTask ? 'today-video-progress-badge' : ''} ${done ? 'is-done' : ''}`} title={progressBadgeTitle}>
-                          {progressBadgeText}
-                        </div>
-                        {isVideoTask && (
-                          <>
-                            <button
-                              type="button"
-                              className={`secondary-button today-video-vote ${userVote === 1 ? 'is-active' : ''}`}
-                              onClick={() => submitTodayVideoFeedback(item, 'like')}
-                              disabled={Boolean(loadingAction)}
-                              title={tr('Лайк: видео полезно по теме', 'Like: Video passt zum Thema')}
-                            >
-                              {loadingAction === 'vote_like' ? '…' : '👍'}
-                            </button>
-                            <button
-                              type="button"
-                              className={`secondary-button today-video-vote ${userVote === -1 ? 'is-active is-negative' : ''}`}
-                              onClick={() => submitTodayVideoFeedback(item, 'dislike')}
-                              disabled={Boolean(loadingAction)}
-                              title={tr('Дизлайк: видео не по теме', 'Dislike: Video passt nicht zum Thema')}
-                            >
-                              {loadingAction === 'vote_dislike' ? '…' : '👎'}
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                    <div className="today-plan-item-meta">
-                      {!isVideoTask && <span>{item.estimated_minutes || 0} {tr('мин', 'Min')}</span>}
-                      <span>{done ? 'DONE' : String(item.status || 'todo').toUpperCase()}</span>
-                      <span>⏱ {formatCompactTimer(elapsedSeconds)}</span>
-                    </div>
-                    {isVideoTask && (
-                      <div className="today-video-hint">
-                        <div className="today-video-topic-line">
-                          <span>{tr('Тема для тренировки:', 'Thema fuer Training:')}</span>{' '}
-                          <span className="today-video-topic-value">{videoTopic || tr('не определена', 'nicht definiert')}</span>
-                        </div>
-                        {tr(
-                          'Если видео полезно по теме - поставьте 👍. Если не по теме - 👎.',
-                          'Wenn das Video zum Thema passt - 👍. Wenn nicht - 👎.'
-                        )}
-                        {' '}
-                        <span>{tr('Рейтинг', 'Bewertung')}: {videoLikes}/{videoDislikes} ({videoScore >= 0 ? '+' : ''}{videoScore})</span>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </section>
-        )}
-
-        {showSkillReportPanel && (
-        <section className="skill-report-panel" ref={skillsRef}>
-          <div className="skill-report-head">
-            <div className="home-panel-head-main">
-              <div className="home-panel-head-copy">
-                <div className="home-panel-title-row">
-                  <h3>{tr('Карта навыков', 'Skill-Ringe')}</h3>
-                  <div className="home-panel-head-actions">
-                    <button
-                      type="button"
-                      className="home-panel-action-btn"
-                      onClick={() => loadSkillReport({ manual: true, syncFacts: true })}
-                      disabled={skillReportLoading}
-                      title={tr('Актуализировать данные', 'Daten aktualisieren')}
-                      aria-label={tr('Актуализировать данные', 'Daten aktualisieren')}
-                    >
-                      <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="14" height="14" aria-hidden="true" className={skillReportLoading ? 'is-spinning' : ''}>
-                        <path d="M16 2v4h-4"/><path d="M2 11a7 7 0 0 0 12.9 2.9L16 6"/><path d="M2 16v-4h4"/><path d="M16 7a7 7 0 0 0-12.9-2.9L2 12"/>
-                      </svg>
-                      {tr('Обновить', 'Aktualisieren')}
-                    </button>
-                  </div>
-                </div>
-                <small className={`home-panel-snapshot-meta is-${skillReportSnapshotTone === 'manual' ? 'fresh' : 'stale'}`}>{skillReportSnapshotLabel}</small>
-              </div>
-            </div>
-          </div>
-          {showSkillReportSkeleton && (
-            <div className="skill-rings-layout skill-rings-layout-skeleton" aria-hidden="true">
-              <div className="skill-rings-canvas skill-rings-canvas-skeleton">
-                <div className="skill-rings-canvas-placeholder">
-                  <span className="skill-rings-circle-skeleton is-outer" />
-                  <span className="skill-rings-circle-skeleton is-middle" />
-                  <span className="skill-rings-circle-skeleton is-inner" />
-                </div>
-                <div className="skill-rings-center">
-                  <span className="home-panel-skeleton home-panel-skeleton-line is-label" />
-                  <span className="home-panel-skeleton home-panel-skeleton-line is-value" />
-                  <span className="home-panel-skeleton home-panel-skeleton-line is-subtle" />
-                </div>
-              </div>
-              <div className="skill-rings-grid">
-                {[0, 1, 2, 3, 4, 5].map((index) => (
-                  <div className="skill-rings-grid-item-skeleton home-panel-skeleton" key={`skill-rings-skeleton-${index}`} />
-                ))}
-              </div>
-            </div>
-          )}
-          {skillReportLoading && hasSkillReportSnapshot && (
-            <div className="webapp-muted">{tr('Обновляем карту навыков...', 'Skill-Karte wird aktualisiert...')}</div>
-          )}
-          {skillReportError && <div className="webapp-error">{skillReportError}</div>}
-          {!showSkillReportSkeleton && !skillReportError && (
-            <div className="skill-rings-layout">
-              <div className="skill-rings-canvas">
-                <svg width={ringSize} height={ringSize} viewBox={`0 0 ${ringSize} ${ringSize}`} role="img" aria-label="Skill rings">
-                  {ringSkills.map((skill, index) => {
-                    const radius = ringStartRadius - index * ringStep;
-                    const circumference = 2 * Math.PI * radius;
-                    const progress = Math.max(0, Math.min(1, Number(skill?.mastery || 0) / 100));
-                    const offset = circumference * (1 - progress);
-                    const color = ringPalette[index % ringPalette.length];
-                    return (
-                      <g key={skill.skill_id}>
-                        <circle
-                          cx={ringCenter}
-                          cy={ringCenter}
-                          r={radius}
-                          fill="none"
-                          stroke="rgba(143, 167, 206, 0.22)"
-                          strokeWidth="10"
-                        />
-                        <circle
-                          cx={ringCenter}
-                          cy={ringCenter}
-                          r={radius}
-                          fill="none"
-                          stroke={color}
-                          strokeWidth="10"
-                          strokeLinecap="round"
-                          strokeDasharray={`${circumference} ${circumference}`}
-                          strokeDashoffset={offset}
-                          transform={`rotate(-90 ${ringCenter} ${ringCenter})`}
-                        />
-                      </g>
-                    );
-                  })}
-                </svg>
-                <div className="skill-rings-center">
-                  <div className="skill-rings-center-title">{tr('Фокус', 'Fokus')}</div>
-                  <div className="skill-rings-center-value">{ringSkills.length}</div>
-                  <div className="skill-rings-center-sub">{tr('3 слабых + 3 сильных', '3 schwache + 3 starke')}</div>
-                </div>
-              </div>
-              <div className="skill-rings-grid">
-                {ringSkills.map((skill, index) => {
-                  const color = ringPalette[index % ringPalette.length];
-                  const trainingStatus = getSkillTrainingStatus(skill?.skill_id);
-                  const isSkillComplete = Boolean(trainingStatus?.is_complete);
-                  const showSkillInProgress = Boolean(trainingStatus && !isSkillComplete);
-                  const canResumeSkillTraining = Boolean(getStoredSkillTrainingSnapshot(skill?.skill_id));
-                  const isSkillBusy = Boolean(skillPracticeLoading[String(skill.skill_id || '')]);
-                  const masteryDisplay = skill?.mastery !== null && skill?.mastery !== undefined
-                    ? `${Math.round(Number(skill.mastery || 0))}%`
-                    : '—';
-                  return (
-                    <button
-                      type="button"
-                      className={`skill-rings-grid-item ${skill.ring_type === 'weak' ? 'is-weak' : 'is-strong'} ${isSkillComplete ? 'is-complete' : ''} ${isSkillBusy ? 'is-busy' : ''}`}
-                      key={`grid-${skill.skill_id}`}
-                      onClick={() => canResumeSkillTraining
-                        ? resumeSkillPractice(skill)
-                        : startSkillPractice(skill, { forceRefresh: false })
-                      }
-                      disabled={isSkillBusy}
-                    >
-                      <div className="skill-rings-grid-item-top">
-                        <span className="skill-rings-dot" style={{ backgroundColor: color }} />
-                        {isSkillComplete && <span className="skill-grid-badge is-complete">✅</span>}
-                        {showSkillInProgress && <span className="skill-grid-badge is-progress">▶</span>}
-                        {isSkillBusy && <span className="skill-grid-badge is-loading">…</span>}
-                      </div>
-                      <div className="skill-rings-grid-name">{getDisplaySkillName(skill)}</div>
-                      <div className="skill-rings-grid-stats">
-                        <span className="skill-grid-score">{masteryDisplay}</span>
-                        <span className="skill-grid-errors">{Number(skill.errors_7d || 0)}F</span>
-                      </div>
-                    </button>
-                  );
-                })}
-                {ringSkills.length === 0 && (
-                  <div className="webapp-muted skill-rings-empty">{tr('Пока нет данных по навыкам.', 'Noch keine Skill-Daten.')}</div>
-                )}
-              </div>
-            </div>
-          )}
-        </section>
-        )}
-      </>
-    </PerfProfiler>
-  );
-});
-
 function AppInner() {
   const GERMAN_ONLY_MODE = true;
   const GERMAN_ONLY_PROFILE = { native_language: 'ru', learning_language: 'de' };
@@ -4992,26 +4173,15 @@ function AppInner() {
   const [dictionaryShareLoading, setDictionaryShareLoading] = useState(false);
   const [dictionaryPdfUrl, setDictionaryPdfUrl] = useState('');
   const [dictionaryPdfName, setDictionaryPdfName] = useState('dictionary.pdf');
-  const [youtubeInput, setYoutubeInput] = useState('');
-  const [youtubeId, setYoutubeId] = useState('');
-  const [youtubeError, setYoutubeError] = useState('');
-  const [youtubeEmptyState, setYoutubeEmptyState] = useState(null);
-  const [youtubeSearchLoading, setYoutubeSearchLoading] = useState(false);
-  const [youtubeSearchResults, setYoutubeSearchResults] = useState([]);
-  const [youtubeSearchError, setYoutubeSearchError] = useState('');
-  const [youtubeRecommendationLoading, setYoutubeRecommendationLoading] = useState(false);
+  const [youtubePendingCommand, setYoutubePendingCommand] = useState(null);
   const [videoExpanded, setVideoExpanded] = useState(false);
   const [youtubeTranscript, setYoutubeTranscript] = useState([]);
   const [youtubeTranscriptError, setYoutubeTranscriptError] = useState('');
   const [youtubeTranscriptLoading, setYoutubeTranscriptLoading] = useState(false);
-  const [youtubePlayerReady, setYoutubePlayerReady] = useState(false);
-  const [youtubeCurrentTime, setYoutubeCurrentTime] = useState(0);
   const [youtubeTranslations, setYoutubeTranslations] = useState({});
   const [youtubeTranslationEnabled, setYoutubeTranslationEnabled] = useState(false);
   const [youtubeOverlayEnabled, setYoutubeOverlayEnabled] = useState(false);
   const [youtubeAppFullscreen, setYoutubeAppFullscreen] = useState(false);
-  const [youtubeIsPaused, setYoutubeIsPaused] = useState(false);
-  const [youtubePlaybackStarted, setYoutubePlaybackStarted] = useState(false);
   const [youtubeForceShowPanel, setYoutubeForceShowPanel] = useState(false);
   const [youtubeManualOverride, setYoutubeManualOverride] = useState(false);
   const [youtubeTranscriptHasTiming, setYoutubeTranscriptHasTiming] = useState(true);
@@ -5021,7 +4191,6 @@ function AppInner() {
   const [moviesError, setMoviesError] = useState('');
   const [moviesCollapsed, setMoviesCollapsed] = useState(false);
   const [moviesLanguageFilter, setMoviesLanguageFilter] = useState('all');
-  const [showManualTranscript, setShowManualTranscript] = useState(false);
   const [youtubeSettingsOpen, setYoutubeSettingsOpen] = useState(false);
   const [youtubeDictOpen, setYoutubeDictOpen] = useState(false);
   const [youtubeDictQuery, setYoutubeDictQuery] = useState('');
@@ -5032,7 +4201,6 @@ function AppInner() {
   const [youtubeDictSavedEntryId, setYoutubeDictSavedEntryId] = useState(0);
   const [youtubeDictFeelLoading, setYoutubeDictFeelLoading] = useState(false);
   const [youtubeDictFeelStatus, setYoutubeDictFeelStatus] = useState('');
-  const [manualTranscript, setManualTranscript] = useState('');
   const translationResultCardRefsRef = useRef(new Map());
   const [readerInput, setReaderInput] = useState('');
   const [readerSelectedFile, setReaderSelectedFile] = useState(null);
@@ -5227,11 +4395,6 @@ function AppInner() {
   const [srsQueueInfo, setSrsQueueInfo] = useState({ due_count: 0, new_remaining_today: 0, due_count_total: 0, due_reviewed_today: 0, due_limit_today: 30 });
   const [srsPreview, setSrsPreview] = useState(null);
   const [srsPrefetchQueue, setSrsPrefetchQueue] = useState([]);
-  const [todayPlan, setTodayPlan] = useState(null);
-  const [todayPlanLoadedOnce, setTodayPlanLoadedOnce] = useState(false);
-  const [todayPlanLoading, setTodayPlanLoading] = useState(false);
-  const [todayPlanError, setTodayPlanError] = useState('');
-  const [todayPlanSnapshotTone, setTodayPlanSnapshotTone] = useState('snapshot');
   const [todayTranslationRecommendation, setTodayTranslationRecommendation] = useState(null);
   const [todayTestSending, setTodayTestSending] = useState(false);
   const [todayItemLoading, setTodayItemLoading] = useState({});
@@ -5247,11 +4410,6 @@ function AppInner() {
   const [translationPrivateGrammarTextOptIn, setTranslationPrivateGrammarTextOptIn] = useState(false);
   const [translationAudioGrammarOptIn, setTranslationAudioGrammarOptIn] = useState({});
   const [translationAudioGrammarSaving, setTranslationAudioGrammarSaving] = useState({});
-  const [skillReport, setSkillReport] = useState(null);
-  const [skillReportLoadedOnce, setSkillReportLoadedOnce] = useState(false);
-  const [skillReportLoading, setSkillReportLoading] = useState(false);
-  const [skillReportError, setSkillReportError] = useState('');
-  const [skillReportSnapshotTone, setSkillReportSnapshotTone] = useState('snapshot');
   const [skillPracticeLoading, setSkillPracticeLoading] = useState({});
   const [skillTrainingLoading, setSkillTrainingLoading] = useState(false);
   const [skillTrainingError, setSkillTrainingError] = useState('');
@@ -5261,26 +4419,8 @@ function AppInner() {
   const [skillTrainingFeedback, setSkillTrainingFeedback] = useState(null);
   const [skillTrainingVideoLoading, setSkillTrainingVideoLoading] = useState(false);
   const [skillTrainingDraftMap, setSkillTrainingDraftMap] = useState({});
-  const [weeklyPlan, setWeeklyPlan] = useState(null);
-  const [weeklyPlanLoading, setWeeklyPlanLoading] = useState(false);
-  const [weeklyPlanSaving, setWeeklyPlanSaving] = useState(false);
-  const [weeklyPlanError, setWeeklyPlanError] = useState('');
-  const [weeklyPlanSnapshotTone, setWeeklyPlanSnapshotTone] = useState('snapshot');
-  const [weeklyPlanDraft, setWeeklyPlanDraft] = useState({ translations_goal: '', learned_words_goal: '', agent_minutes_goal: '', reading_minutes_goal: '' });
-  const [weeklyPlanCollapsed, setWeeklyPlanCollapsed] = useState(false);
   const [startupPhase2Ready, setStartupPhase2Ready] = useState(false);
   const [startupPhase3Ready, setStartupPhase3Ready] = useState(false);
-  const [planAnalyticsPeriod, setPlanAnalyticsPeriod] = useState('week');
-  const [planAnalyticsMetrics, setPlanAnalyticsMetrics] = useState({});
-  const [planAnalyticsRange, setPlanAnalyticsRange] = useState(null);
-  const [planAnalyticsLoading, setPlanAnalyticsLoading] = useState(false);
-  const [planAnalyticsError, setPlanAnalyticsError] = useState('');
-  const [weeklyMetricExpanded, setWeeklyMetricExpanded] = useState({
-    translations: false,
-    learned_words: false,
-    agent_minutes: false,
-    reading_minutes: false,
-  });
   const [srsLoading, setSrsLoading] = useState(false);
   const [srsRescheduling, setSrsRescheduling] = useState(false);
   const [srsSubmitting, setSrsSubmitting] = useState(false);
@@ -5712,7 +4852,7 @@ function AppInner() {
   const youtubePlayerShellRef = useRef(null);
   const youtubeTimeIntervalRef = useRef(null);
   const youtubeCurrentTimeRef = useRef(0);
-  const youtubeInputDraftRef = useRef('');
+  const youtubeInputValueRef = useRef('');
   const youtubeResumeAppliedForVideoRef = useRef('');
   const youtubeResumeLastSavedSecondRef = useRef(-1);
   const youtubeResumeLastSyncedSecondRef = useRef(-1);
@@ -5788,6 +4928,8 @@ function AppInner() {
   const singleInstanceOwnsLockRef = useRef(false);
   const singleInstanceHeartbeatRef = useRef(null);
   const singleInstanceDeactivateInFlightRef = useRef(false);
+  const planningApiRef = useRef(null);
+  const getWebappLanguagePairHintRef = useRef(() => null);
   const singleInstanceStopTtsRef = useRef(null);
   const singleInstancePauseTimersRef = useRef(null);
   const inlineToastTimeoutRef = useRef(null);
@@ -5796,9 +4938,6 @@ function AppInner() {
   const translationBootstrapPromiseRef = useRef(null);
   const translationBootstrapReadyRef = useRef('');
   const onAppResumeTranslationCheckRef = useRef(null);
-  const todayPlanRequestIdRef = useRef(0);
-  const skillReportRequestIdRef = useRef(0);
-  const weeklyPlanRequestIdRef = useRef(0);
   const languageProfileRequestIdRef = useRef(0);
   const starterDictionaryStatusRequestIdRef = useRef(0);
 
@@ -5877,9 +5016,6 @@ function AppInner() {
   const startupPhase3TimerRef = useRef(null);
   const startupSequenceTokenRef = useRef(0);
   const startupLoadedLanguagePairRef = useRef('');
-  const todayPlanStartupRefreshDoneRef = useRef(false);
-  const skillReportStartupRefreshDoneRef = useRef(false);
-  const weeklyPlanStartupRefreshDoneRef = useRef(false);
   const assetBaseUrl = import.meta.env.BASE_URL || '/';
   const heroMascotSrc = `${assetBaseUrl}hero_original.webp`;
   const heroStickerSrc = `${assetBaseUrl}hero_sticker.webp`;
@@ -5942,7 +5078,7 @@ function AppInner() {
     const stableId = String(webappUser?.id || getInitDataUserId(initData) || 'anon').trim() || 'anon';
     return `webapp_onboarding_seen_${stableId}`;
   }, [webappUser?.id, initData]);
-  const youtubeResumeStorageKey = useMemo(() => {
+  const youtubeResumeStorageKeyBase = useMemo(() => {
     const stableId = String(webappUser?.id || getInitDataUserId(initData) || 'anon').trim() || 'anon';
     return `webapp_youtube_resume_${stableId}`;
   }, [webappUser?.id, initData]);
@@ -5962,6 +5098,29 @@ function AppInner() {
     'У вас уже есть незавершённая сессия. Сначала завершите её кнопкой «Завершить» или переведите оставшиеся предложения. Все показанные, но не переведённые предложения ухудшат вашу статистику и итоговый балл.',
     'Du hast bereits eine unvollstaendige Session. Beende sie zuerst mit „Abschliessen“ oder uebersetze die restlichen Saetze. Alle gezeigten, aber nicht uebersetzten Saetze verschlechtern deine Statistik und deinen Gesamtscore.'
   );
+  const {
+    youtubeId,
+    setYoutubeId,
+    youtubePlayerReady,
+    setYoutubePlayerReady,
+    youtubeCurrentTime,
+    setYoutubeCurrentTime,
+    youtubeIsPaused,
+    setYoutubeIsPaused,
+    youtubePlaybackStarted,
+    setYoutubePlaybackStarted,
+    youtubeResumeStorageKey,
+    writeYoutubeResumeToLocalCache,
+    persistYoutubeResumeState,
+    syncYoutubeResumeState,
+  } = useYouTubePlaybackController({
+    initData,
+    resumeStorageKey: youtubeResumeStorageKeyBase,
+    youtubeInputValueRef,
+    youtubeCurrentTimeRef,
+    safeStorageSet,
+    extractYoutubeId,
+  });
   const flushTranslationDraftAndroidDebugSummary = useCallback((reason = 'timer') => {
     if (!androidTranslationDraftDebugConfig.enabled) {
       return;
@@ -6079,7 +5238,6 @@ function AppInner() {
     srsCardId: Number(srsCard?.id || srsCard?.entry_id || 0),
     srsRevealAnswer: Boolean(srsRevealAnswer),
     srsRevealElapsedSec: Number(srsRevealElapsedSec || 0),
-    todayPlanPresent: Boolean(todayPlan),
     todayTimerNowSec: Math.floor(Number(todayTimerNowMs || 0) / 1000),
     weeklySummaryModalOpen: Boolean(weeklySummaryModalOpen),
     analyticsLoading: Boolean(analyticsLoading),
@@ -6327,12 +5485,6 @@ function AppInner() {
       }
     };
   }, []);
-  const writeYoutubeResumeToLocalCache = useCallback((payload) => {
-    if (!payload || typeof payload !== 'object') return;
-    const serialized = JSON.stringify(payload);
-    safeStorageSet(youtubeResumeStorageKey, serialized);
-    safeStorageSet('webapp_youtube', serialized);
-  }, [youtubeResumeStorageKey]);
   const buildTranslationDraftPayload = useCallback((draftMap) => {
     const sentenceIds = Array.from(translationDraftSentenceIdsRef.current);
     if (!sentenceIds.length) return [];
@@ -6495,48 +5647,6 @@ function AppInner() {
       return null;
     }
   }, [initData, translationDraftScopeKey]);
-  const persistYoutubeResumeState = useCallback((timeValue) => {
-    const trimmed = String(youtubeInput || '').trim();
-    const resolvedId = String(youtubeId || extractYoutubeId(trimmed) || '').trim();
-    if (!trimmed || !resolvedId) return;
-    const sourceTime = timeValue ?? youtubeCurrentTimeRef.current;
-    const safeTime = Math.max(0, Math.floor(Number(sourceTime || 0)));
-    writeYoutubeResumeToLocalCache({
-      input: trimmed,
-      id: resolvedId,
-      currentTime: safeTime,
-      updatedAt: Date.now(),
-    });
-  }, [writeYoutubeResumeToLocalCache, youtubeId, youtubeInput]);
-  const syncYoutubeResumeState = useCallback(async (timeValue, options = {}) => {
-    const trimmed = String(youtubeInput || '').trim();
-    const resolvedId = String(youtubeId || extractYoutubeId(trimmed) || '').trim();
-    if (!trimmed || !resolvedId || !initData) return;
-    const sourceTime = timeValue ?? youtubeCurrentTimeRef.current;
-    const safeTime = Math.max(0, Math.floor(Number(sourceTime || 0)));
-    persistYoutubeResumeState(safeTime);
-    try {
-      await fetch('/api/webapp/youtube/state', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData,
-          videoId: resolvedId,
-          input: trimmed,
-          current_time_seconds: safeTime,
-        }),
-        keepalive: Boolean(options?.keepalive),
-      });
-    } catch (_error) {
-      // ignore sync errors; local cache already has the latest position
-    }
-  }, [initData, persistYoutubeResumeState, youtubeId, youtubeInput]);
-  const commitYoutubeInputDraft = useCallback((nextValue = youtubeInputDraftRef.current) => {
-    const normalized = String(nextValue ?? '');
-    youtubeInputDraftRef.current = normalized;
-    setYoutubeInput((previous) => (previous === normalized ? previous : normalized));
-    return normalized;
-  }, []);
   const normalizeSkillTrainingSnapshot = (value) => {
     if (!value || typeof value !== 'object') return null;
     const pack = value?.package && typeof value.package === 'object' ? value.package : null;
@@ -7512,18 +6622,87 @@ function AppInner() {
   }, [initData, telegramApp, webappUser?.id]);
   const canViewEconomics = stableWebappUserId === '117649764';
   const currentLocalDateKey = getLocalDateKey();
+  const billingEffectiveMode = String(billingStatus?.effective_mode || '').trim().toLowerCase();
+  const startupEffectiveMode = billingEffectiveMode || 'free';
+  const isLightweightFreeMode = startupEffectiveMode === 'free';
+  const lockedFreeStartupSections = useMemo(
+    () => new Set(isLightweightFreeMode ? ['home_today', 'home_skills', 'home_weekly_plan'] : []),
+    [isLightweightFreeMode],
+  );
+  const HOME_SUBSECTION_KEYS = useMemo(() => new Set(['home_today', 'home_weekly_plan', 'home_skills', 'home_more']), []);
+  const isHomeScreen = !flashcardsOnly && selectedSections.size === 0;
+  const activeHomeSubsectionKey = useMemo(() => {
+    if (flashcardsOnly || selectedSections.size !== 1) return '';
+    const [key] = Array.from(selectedSections);
+    return HOME_SUBSECTION_KEYS.has(key) ? key : '';
+  }, [HOME_SUBSECTION_KEYS, flashcardsOnly, selectedSections]);
+  const isHomeRouteActive = isHomeScreen || Boolean(activeHomeSubsectionKey);
+  const planning = usePlanningController({
+    initData,
+    isWebAppMode,
+    isLightweightFreeMode,
+    startupEffectiveMode,
+    stableWebappUserId,
+    getWebappLanguagePairHint: () => getWebappLanguagePairHintRef.current(),
+    fetchGetWithRetry,
+    readApiError,
+    normalizeNetworkErrorMessage,
+    tr,
+    startupPhase2Ready,
+    startupPhase3Ready,
+    pageVisible,
+    isHomeRouteActive,
+    homeSnapshotResumeTick,
+    activeHomeSubsectionKey,
+    planningApiRef,
+  });
+  useEffect(() => {
+    if (!isLightweightFreeMode) return;
+    console.info('provider_skipped_free_mode', {
+      provider_name: 'planning',
+      effective_mode: startupEffectiveMode,
+    });
+  }, [isLightweightFreeMode, startupEffectiveMode]);
+  const {
+    todayPlan, setTodayPlan,
+    todayPlanLoadedOnce, setTodayPlanLoadedOnce,
+    todayPlanLoading, setTodayPlanLoading,
+    todayPlanError, setTodayPlanError,
+    todayPlanSnapshotTone, setTodayPlanSnapshotTone,
+    skillReport,
+    skillReportLoadedOnce,
+    skillReportLoading,
+    skillReportError, setSkillReportError,
+    skillReportSnapshotTone,
+    weeklyPlan, setWeeklyPlan,
+    weeklyPlanLoading,
+    weeklyPlanSaving, setWeeklyPlanSaving,
+    weeklyPlanError, setWeeklyPlanError,
+    weeklyPlanSnapshotTone, setWeeklyPlanSnapshotTone,
+    weeklyPlanDraft, setWeeklyPlanDraft,
+    weeklyPlanCollapsed, setWeeklyPlanCollapsed,
+    weeklyMetricExpanded, setWeeklyMetricExpanded,
+    planAnalyticsPeriod, setPlanAnalyticsPeriod,
+    planAnalyticsMetrics,
+    planAnalyticsRange,
+    planAnalyticsLoading,
+    planAnalyticsError,
+    loadTodayPlan,
+    loadSkillReport,
+    loadWeeklyPlan,
+    loadPlanAnalytics,
+    buildWeeklyPlanDraftFromPlan,
+    persistWeeklyPlanSnapshot,
+    persistTodayPlanSnapshot,
+    weeklyMetricRows,
+    formatWeeklyValue,
+    homeSkillTrainingStatusMap,
+    weeklyPlanUsesDeferredAnalytics,
+    useLivePlanAnalyticsMetrics,
+  } = planning;
   const skillTrainingStorageKey = useMemo(() => {
     return `skill_training_sessions_${stableWebappUserId}_${getLocalDateKey()}`;
   }, [stableWebappUserId]);
-  const weeklyPlanSnapshotStorageKey = useMemo(() => {
-    return `weekly_plan_snapshot_${stableWebappUserId}`;
-  }, [stableWebappUserId]);
-  const todayPlanSnapshotStorageKey = useMemo(() => {
-    return `today_plan_snapshot_${stableWebappUserId}_${currentLocalDateKey}`;
-  }, [currentLocalDateKey, stableWebappUserId]);
-  const skillReportSnapshotStorageKey = useMemo(() => {
-    return `skill_report_snapshot_${stableWebappUserId}_${currentLocalDateKey}`;
-  }, [currentLocalDateKey, stableWebappUserId]);
   const skillTrainingLegacyStorageKeys = useMemo(() => {
     const dateKey = getLocalDateKey();
     const candidates = [
@@ -9283,389 +8462,7 @@ function AppInner() {
     }
   }, [folderDeleteItem, initData, fetchWithTimeout, vocabFolderFilter, loadVocabLibrary]);
 
-  const buildWeeklyPlanDraftFromPlan = useCallback((plan) => ({
-    translations_goal: String(Number(plan?.plan?.translations_goal || 0)),
-    learned_words_goal: String(Number(plan?.plan?.learned_words_goal || 0)),
-    agent_minutes_goal: String(Number(plan?.plan?.agent_minutes_goal || 0)),
-    reading_minutes_goal: String(Number(plan?.plan?.reading_minutes_goal || 0)),
-  }), []);
 
-  const persistWeeklyPlanSnapshot = useCallback((plan) => {
-    if (!isWebAppMode || !plan) return;
-    const payload = {
-      saved_at: new Date().toISOString(),
-      plan,
-      draft: buildWeeklyPlanDraftFromPlan(plan),
-    };
-    safeStorageSet(weeklyPlanSnapshotStorageKey, JSON.stringify(payload));
-  }, [buildWeeklyPlanDraftFromPlan, isWebAppMode, weeklyPlanSnapshotStorageKey]);
-
-  const readWeeklyPlanSnapshot = useCallback(() => {
-    if (!isWebAppMode) return null;
-    const raw = safeStorageGet(weeklyPlanSnapshotStorageKey);
-    if (!raw) return null;
-    try {
-      const parsed = JSON.parse(raw);
-      const plan = parsed?.plan && typeof parsed.plan === 'object' ? parsed.plan : null;
-      const draft = parsed?.draft && typeof parsed.draft === 'object' ? parsed.draft : null;
-      const startDate = String(plan?.week?.start_date || '').trim();
-      const endDate = String(plan?.week?.end_date || '').trim();
-      const todayKey = getLocalDateKey();
-      if (!plan || !startDate || !endDate || todayKey < startDate || todayKey > endDate) {
-        return null;
-      }
-      return {
-        plan: {
-          ...plan,
-          snapshot_saved_at: String(parsed?.saved_at || plan?.snapshot_saved_at || '').trim() || null,
-        },
-        draft: draft || buildWeeklyPlanDraftFromPlan(plan),
-      };
-    } catch (_error) {
-      return null;
-    }
-  }, [isWebAppMode, weeklyPlanSnapshotStorageKey]);
-
-  const normalizeTodayPlanSnapshot = useCallback((payload) => {
-    if (!payload || typeof payload !== 'object') return null;
-    return {
-      date: payload?.date || null,
-      total_minutes: Number(payload?.total_minutes || 0),
-      items: Array.isArray(payload?.items) ? payload.items : [],
-    };
-  }, []);
-
-  const persistTodayPlanSnapshot = useCallback((plan) => {
-    if (!isWebAppMode || !plan) return;
-    const normalized = normalizeTodayPlanSnapshot(plan);
-    if (!normalized) return;
-    safeStorageSet(todayPlanSnapshotStorageKey, JSON.stringify({
-      saved_at: new Date().toISOString(),
-      date_key: currentLocalDateKey,
-      plan: normalized,
-    }));
-  }, [currentLocalDateKey, isWebAppMode, normalizeTodayPlanSnapshot, todayPlanSnapshotStorageKey]);
-
-  const readTodayPlanSnapshot = useCallback(() => {
-    if (!isWebAppMode) return null;
-    const raw = safeStorageGet(todayPlanSnapshotStorageKey);
-    if (!raw) return null;
-    try {
-      const parsed = JSON.parse(raw);
-      const snapshotDateKey = String(parsed?.date_key || '').trim();
-      if (snapshotDateKey && snapshotDateKey !== currentLocalDateKey) {
-        return null;
-      }
-      const plan = normalizeTodayPlanSnapshot(parsed?.plan);
-      if (!plan) return null;
-      if (String(plan?.date || '').trim() && String(plan.date).trim() !== currentLocalDateKey) {
-        return null;
-      }
-      return {
-        ...plan,
-        snapshot_saved_at: String(parsed?.saved_at || plan?.snapshot_saved_at || '').trim() || null,
-      };
-    } catch (_error) {
-      return null;
-    }
-  }, [currentLocalDateKey, isWebAppMode, normalizeTodayPlanSnapshot, todayPlanSnapshotStorageKey]);
-
-  const normalizeSkillReportSnapshot = useCallback((payload) => {
-    if (!payload || typeof payload !== 'object') return null;
-    return {
-      updated_at: payload?.updated_at || null,
-      top_weak: Array.isArray(payload?.top_weak) ? payload.top_weak : [],
-      groups: Array.isArray(payload?.groups) ? payload.groups : [],
-      total_skills: Number(payload?.total_skills || 0),
-      skill_training_status: payload?.skill_training_status && typeof payload.skill_training_status === 'object'
-        ? payload.skill_training_status
-        : {},
-    };
-  }, []);
-
-  const persistSkillReportSnapshot = useCallback((report) => {
-    if (!isWebAppMode || !report) return;
-    const normalized = normalizeSkillReportSnapshot(report);
-    if (!normalized) return;
-    safeStorageSet(skillReportSnapshotStorageKey, JSON.stringify({
-      saved_at: new Date().toISOString(),
-      date_key: currentLocalDateKey,
-      report: normalized,
-    }));
-  }, [currentLocalDateKey, isWebAppMode, normalizeSkillReportSnapshot, skillReportSnapshotStorageKey]);
-
-  const readSkillReportSnapshot = useCallback(() => {
-    if (!isWebAppMode) return null;
-    const raw = safeStorageGet(skillReportSnapshotStorageKey);
-    if (!raw) return null;
-    try {
-      const parsed = JSON.parse(raw);
-      const snapshotDateKey = String(parsed?.date_key || '').trim();
-      if (snapshotDateKey && snapshotDateKey !== currentLocalDateKey) {
-        return null;
-      }
-      const report = normalizeSkillReportSnapshot(parsed?.report);
-      if (!report) return null;
-      return {
-        ...report,
-        snapshot_saved_at: String(parsed?.saved_at || report?.snapshot_saved_at || '').trim() || null,
-      };
-    } catch (_error) {
-      return null;
-    }
-  }, [currentLocalDateKey, isWebAppMode, normalizeSkillReportSnapshot, skillReportSnapshotStorageKey]);
-
-  const loadTodayPlan = async (options = {}) => {
-    if (!initData) return;
-    if (isLightweightFreeMode) {
-      logStartupHeavyBlockSkipped('today');
-      setTodayPlanLoadedOnce(true);
-      setTodayPlanLoading(false);
-      return;
-    }
-    const requestId = beginAsyncGuard(todayPlanRequestIdRef);
-    const tone = options?.manual ? 'manual' : 'snapshot';
-    const syncFacts = Boolean(options?.syncFacts);
-    try {
-      setTodayPlanLoading(true);
-      setTodayPlanError('');
-      const pairHint = getWebappLanguagePairHint();
-      const query = new URLSearchParams({ initData });
-      if (pairHint?.source_lang) query.set('source_lang', pairHint.source_lang);
-      if (pairHint?.target_lang) query.set('target_lang', pairHint.target_lang);
-      const response = syncFacts
-        ? await fetch('/api/today/sync', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            initData,
-            language_pair: pairHint || undefined,
-          }),
-        })
-        : await fetchGetWithRetry(`/api/today?${query.toString()}`, 45000);
-      if (!response.ok) {
-        throw new Error(await readApiError(
-          response,
-          syncFacts ? 'Ошибка синхронизации выполнения' : 'Ошибка загрузки плана на сегодня',
-          syncFacts ? 'Fehler bei der Fortschritt-Synchronisierung' : 'Fehler beim Laden des Tagesplans'
-        ));
-      }
-      const data = await response.json();
-      if (!isAsyncGuardCurrent(todayPlanRequestIdRef, requestId)) {
-        return;
-      }
-      const nextPlan = {
-        date: data?.date || null,
-        total_minutes: data?.total_minutes || 0,
-        items: Array.isArray(data?.items) ? data.items : [],
-        snapshot_saved_at: new Date().toISOString(),
-      };
-      setTodayPlan((prevPlan) => {
-        const prevItems = Array.isArray(prevPlan?.items) ? prevPlan.items : [];
-        const prevById = Object.fromEntries(prevItems.map((it) => [String(it?.id ?? ''), it]));
-        const mergedItems = nextPlan.items.map((newItem) => {
-          const newPayload = newItem?.payload && typeof newItem.payload === 'object' ? newItem.payload : null;
-          const hasTimerData = newPayload !== null && (
-            newPayload.timer_running !== undefined || newPayload.timer_seconds !== undefined
-          );
-          if (!hasTimerData) {
-            const prevItem = prevById[String(newItem?.id ?? '')];
-            if (prevItem?.payload && typeof prevItem.payload === 'object') {
-              return { ...newItem, payload: prevItem.payload };
-            }
-          }
-          return newItem;
-        });
-        return { ...nextPlan, items: mergedItems };
-      });
-      setTodayPlanSnapshotTone(tone);
-      persistTodayPlanSnapshot(nextPlan);
-    } catch (error) {
-      const friendly = normalizeNetworkErrorMessage(
-        error,
-        syncFacts ? 'Не удалось синхронизировать выполнение на сегодня.' : 'Не удалось загрузить задачи на сегодня.',
-        syncFacts ? 'Fortschritt fuer heute konnte nicht synchronisiert werden.' : 'Tagesaufgaben konnten nicht geladen werden.'
-      );
-      if (!isAsyncGuardCurrent(todayPlanRequestIdRef, requestId)) {
-        return;
-      }
-      setTodayPlanError(friendly);
-    } finally {
-      if (isAsyncGuardCurrent(todayPlanRequestIdRef, requestId)) {
-        setTodayPlanLoadedOnce(true);
-        setTodayPlanLoading(false);
-      }
-    }
-  };
-
-  const loadSkillReport = async (options = {}) => {
-    if (!initData) return;
-    if (isLightweightFreeMode) {
-      logStartupHeavyBlockSkipped('skills');
-      setSkillReportLoadedOnce(true);
-      setSkillReportLoading(false);
-      return;
-    }
-    const requestId = beginAsyncGuard(skillReportRequestIdRef);
-    const tone = options?.manual ? 'manual' : 'snapshot';
-    const syncFacts = Boolean(options?.syncFacts);
-    try {
-      setSkillReportLoading(true);
-      setSkillReportError('');
-      const pairHint = getWebappLanguagePairHint();
-      const query = new URLSearchParams({ period: '7d', initData });
-      if (pairHint?.source_lang) query.set('source_lang', pairHint.source_lang);
-      if (pairHint?.target_lang) query.set('target_lang', pairHint.target_lang);
-      const response = syncFacts
-        ? await fetch('/api/progress/skills/sync', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            initData,
-            period: '7d',
-            language_pair: pairHint || undefined,
-          }),
-        })
-        : await fetchGetWithRetry(`/api/progress/skills?${query.toString()}`, 45000);
-      if (!response.ok) {
-        throw new Error(await readApiError(
-          response,
-          syncFacts ? 'Ошибка синхронизации навыков' : 'Ошибка загрузки отчета по навыкам',
-          syncFacts ? 'Fehler bei der Skill-Synchronisierung' : 'Fehler beim Laden des Skills-Reports'
-        ));
-      }
-      const data = await response.json();
-      if (!isAsyncGuardCurrent(skillReportRequestIdRef, requestId)) {
-        return;
-      }
-      const nextReport = {
-        updated_at: data?.updated_at || null,
-        top_weak: Array.isArray(data?.top_weak) ? data.top_weak : [],
-        groups: Array.isArray(data?.groups) ? data.groups : [],
-        total_skills: Number(data?.total_skills || 0),
-        skill_training_status: data?.skill_training_status && typeof data.skill_training_status === 'object'
-          ? data.skill_training_status
-          : {},
-        snapshot_saved_at: new Date().toISOString(),
-      };
-      setSkillReport(nextReport);
-      setSkillReportSnapshotTone(tone);
-      persistSkillReportSnapshot(nextReport);
-    } catch (error) {
-      const friendly = normalizeNetworkErrorMessage(
-        error,
-        syncFacts ? 'Не удалось синхронизировать прогресс навыков.' : 'Не удалось загрузить прогресс навыков.',
-        syncFacts ? 'Skill-Fortschritt konnte nicht synchronisiert werden.' : 'Skill-Fortschritt konnte nicht geladen werden.'
-      );
-      if (!isAsyncGuardCurrent(skillReportRequestIdRef, requestId)) {
-        return;
-      }
-      setSkillReportError(friendly);
-    } finally {
-      if (isAsyncGuardCurrent(skillReportRequestIdRef, requestId)) {
-        setSkillReportLoadedOnce(true);
-        setSkillReportLoading(false);
-      }
-    }
-  };
-
-  const loadWeeklyPlan = async (options = {}) => {
-    if (!initData) return;
-    if (isLightweightFreeMode) {
-      logStartupHeavyBlockSkipped('weekly_plan');
-      setWeeklyPlanLoading(false);
-      return;
-    }
-    const requestId = beginAsyncGuard(weeklyPlanRequestIdRef);
-    const tone = options?.manual ? 'manual' : 'snapshot';
-    const syncFacts = Boolean(options?.syncFacts);
-    const silent = Boolean(options?.silent);
-    try {
-      if (!silent) {
-        setWeeklyPlanLoading(true);
-      }
-      setWeeklyPlanError('');
-      const response = syncFacts
-        ? await fetch('/api/progress/weekly-plan/sync', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ initData }),
-        })
-        : await fetchGetWithRetry(`/api/progress/weekly-plan?initData=${encodeURIComponent(initData)}`, 45000);
-      if (!response.ok) {
-        throw new Error(await readApiError(
-          response,
-          syncFacts ? 'Ошибка синхронизации недельного плана' : 'Ошибка загрузки недельного плана',
-          syncFacts ? 'Fehler bei der Wochenplan-Synchronisierung' : 'Fehler beim Laden des Wochenplans'
-        ));
-      }
-      const data = await response.json();
-      if (!isAsyncGuardCurrent(weeklyPlanRequestIdRef, requestId)) {
-        return;
-      }
-      const snapshotPending = Boolean(data?.snapshot_pending);
-      const cachedSnapshotPlan = readWeeklyPlanSnapshot()?.plan || null;
-      const preservedPlan = weeklyPlan || cachedSnapshotPlan || null;
-      const plan = {
-        week: data?.week || preservedPlan?.week || null,
-        plan: data?.plan || preservedPlan?.plan || { translations_goal: 0, learned_words_goal: 0, agent_minutes_goal: 0, reading_minutes_goal: 0 },
-        metrics: snapshotPending
-          ? (preservedPlan?.metrics || data?.metrics || {})
-          : (data?.metrics || {}),
-        snapshot_saved_at: snapshotPending
-          ? String(preservedPlan?.snapshot_saved_at || '').trim() || new Date().toISOString()
-          : new Date().toISOString(),
-        snapshot_pending: snapshotPending,
-      };
-      setWeeklyPlan(plan);
-      setWeeklyPlanSnapshotTone(tone);
-      setWeeklyPlanDraft(buildWeeklyPlanDraftFromPlan(plan));
-      if (!snapshotPending) {
-        persistWeeklyPlanSnapshot(plan);
-      }
-    } catch (error) {
-      const friendly = normalizeNetworkErrorMessage(
-        error,
-        syncFacts ? 'Не удалось синхронизировать недельный план.' : 'Не удалось загрузить недельный план.',
-        syncFacts ? 'Wochenplan konnte nicht synchronisiert werden.' : 'Wochenplan konnte nicht geladen werden.'
-      );
-      if (!isAsyncGuardCurrent(weeklyPlanRequestIdRef, requestId)) {
-        return;
-      }
-      setWeeklyPlanError(friendly);
-    } finally {
-      if (isAsyncGuardCurrent(weeklyPlanRequestIdRef, requestId)) {
-        if (!silent) {
-          setWeeklyPlanLoading(false);
-        }
-      }
-    }
-  };
-
-  const loadPlanAnalytics = async (periodOverride) => {
-    if (!initData) return;
-    const period = periodOverride || planAnalyticsPeriod;
-    try {
-      setPlanAnalyticsLoading(true);
-      setPlanAnalyticsError('');
-      const response = await fetchGetWithRetry(`/api/progress/plan-analytics?initData=${encodeURIComponent(initData)}&period=${encodeURIComponent(period)}`, 45000);
-      if (!response.ok) {
-        throw new Error(await readApiError(response, 'Ошибка загрузки аналитики планов', 'Fehler beim Laden der Plan-Analytik'));
-      }
-      const data = await response.json();
-      setPlanAnalyticsMetrics(data?.metrics || {});
-      setPlanAnalyticsRange(data?.range || null);
-    } catch (error) {
-      const friendly = normalizeNetworkErrorMessage(
-        error,
-        'Не удалось загрузить аналитику планов.',
-        'Plan-Analytik konnte nicht geladen werden.'
-      );
-      setPlanAnalyticsError(friendly);
-    } finally {
-      setPlanAnalyticsLoading(false);
-    }
-  };
 
   const loadWeeklySummaryHero = useCallback(async () => {
     if (!initData || !weeklySummaryVisitConfig) {
@@ -9970,16 +8767,74 @@ function AppInner() {
     }
   };
 
+  const executeYoutubeCommand = useCallback((commandName, payload = {}) => {
+    const normalizedCommand = String(commandName || '').trim();
+    const sourceFeature = String(payload?.source_feature || '').trim();
+    if (!normalizedCommand) {
+      throw new Error('YouTube command bridge requires command_name');
+    }
+    if (!sourceFeature) {
+      throw new Error(`YouTube command bridge requires source_feature for ${normalizedCommand}`);
+    }
+    const requestId = `ytcmd_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+    const command = {
+      ...payload,
+      source_feature: sourceFeature,
+      command_name: normalizedCommand,
+      request_id: requestId,
+    };
+    if (normalizedCommand === 'request_video_task_start') {
+      setYoutubeBackSection(String(payload?.back_section || '').trim());
+      setYoutubeForceShowPanel(false);
+      openSingleSectionAndScroll('youtube', youtubeRef);
+    } else if (normalizedCommand === 'request_video_selection') {
+      const videoUrl = String(payload?.video_url || '').trim();
+      const videoId = String(payload?.video_id || '').trim();
+      if (!videoUrl && !videoId) {
+        throw new Error('request_video_selection requires video_url or video_id');
+      }
+      if (payload?.back_section !== undefined) {
+        setYoutubeBackSection(String(payload.back_section || '').trim());
+      }
+      if (payload?.force_show_panel !== undefined) {
+        setYoutubeForceShowPanel(Boolean(payload.force_show_panel));
+      }
+      if (payload?.open_section !== false) {
+        openSingleSectionAndScroll('youtube', youtubeRef);
+      } else {
+        ensureSectionVisible('youtube');
+      }
+    } else if (
+      normalizedCommand !== 'request_video_empty_state'
+      && normalizedCommand !== 'request_video_error'
+      && normalizedCommand !== 'finish_video_recommendation'
+    ) {
+      throw new Error(`Unknown YouTube command: ${normalizedCommand}`);
+    }
+    setYoutubePendingCommand(command);
+    return { ok: true, request_id: requestId };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const youtubeCommands = useMemo(() => ({
+    requestVideoTaskStart: (payload) => executeYoutubeCommand('request_video_task_start', payload),
+    requestVideoSelection: (payload) => executeYoutubeCommand('request_video_selection', payload),
+    requestVideoEmptyState: (payload) => executeYoutubeCommand('request_video_empty_state', payload),
+    requestVideoError: (payload) => executeYoutubeCommand('request_video_error', payload),
+    finishVideoRecommendation: (payload) => executeYoutubeCommand('finish_video_recommendation', payload),
+  }), [executeYoutubeCommand]);
+
   const openSkillTrainingVideo = () => {
     const video = skillTrainingData?.video && typeof skillTrainingData.video === 'object' ? skillTrainingData.video : null;
     const videoUrl = String(video?.video_url || '').trim();
     const videoId = String(video?.video_id || '').trim();
     if (!videoUrl && !videoId) return;
-    setYoutubeEmptyState(null);
-    setYoutubeInput(videoUrl || `https://youtu.be/${videoId}`);
-    setYoutubeForceShowPanel(true);
-    setYoutubeBackSection('skill_training');
-    openSingleSectionAndScroll('youtube', youtubeRef);
+    youtubeCommands.requestVideoSelection({
+      source_feature: 'skill_training',
+      video_url: videoUrl,
+      video_id: videoId,
+      force_show_panel: true,
+      back_section: 'skill_training',
+    });
   };
 
   const finishSkillTraining = () => {
@@ -10621,21 +9476,12 @@ function AppInner() {
       const initialVideoId = String(initialPayload.video_id || '').trim();
       const backCandidate = Array.from(selectedSections).find((key) => key && key !== 'youtube') || '';
 
-      setYoutubeBackSection(backCandidate);
-      setYoutubeForceShowPanel(false);
-      setYoutubeSearchResults([]);
-      setYoutubeSearchError('');
-      setYoutubeError('');
-      setYoutubeEmptyState(null);
-      setYoutubeRecommendationLoading(true);
-      if (initialVideoUrl) {
-        setYoutubeInput(initialVideoUrl);
-      } else if (initialVideoId) {
-        setYoutubeInput(`https://youtu.be/${initialVideoId}`);
-      } else {
-        setYoutubeInput('');
-      }
-      openSingleSectionAndScroll('youtube', youtubeRef);
+      youtubeCommands.requestVideoTaskStart({
+        source_feature: 'today',
+        back_section: backCandidate,
+        video_url: initialVideoUrl,
+        video_id: initialVideoId,
+      });
 
       void (async () => {
         try {
@@ -10703,32 +9549,40 @@ function AppInner() {
             }
           }
 
-          if (videoUrl) {
-            setYoutubeError('');
-            setYoutubeEmptyState(null);
-            setYoutubeInput(videoUrl);
-          } else if (videoId) {
-            setYoutubeError('');
-            setYoutubeEmptyState(null);
-            setYoutubeInput(`https://youtu.be/${videoId}`);
+          if (videoUrl || videoId) {
+            youtubeCommands.requestVideoSelection({
+              source_feature: 'today',
+              video_url: videoUrl,
+              video_id: videoId,
+              open_section: false,
+            });
           } else if (nextYoutubeEmptyState) {
-            setYoutubeError('');
-            setYoutubeEmptyState(nextYoutubeEmptyState);
+            youtubeCommands.requestVideoEmptyState({
+              source_feature: 'today',
+              empty_state: nextYoutubeEmptyState,
+            });
           } else {
-            setYoutubeError(tr('Видео по текущему слабому навыку не найдено. Попробуйте обновить план.', 'Kein passendes Video fuer den aktuellen schwachen Skill gefunden. Bitte Plan aktualisieren.'));
+            youtubeCommands.requestVideoError({
+              source_feature: 'today',
+              message: tr('Видео по текущему слабому навыку не найдено. Попробуйте обновить план.', 'Kein passendes Video fuer den aktuellen schwachen Skill gefunden. Bitte Plan aktualisieren.'),
+            });
           }
         } catch (error) {
           console.warn('today video recommendation failed', error);
-          setYoutubeEmptyState(null);
           if (!initialVideoUrl && !initialVideoId) {
-            setYoutubeError(normalizeNetworkErrorMessage(
-              error,
-              'Не удалось подобрать видео по текущей теме.',
-              'Passendes Video zum aktuellen Thema konnte nicht geladen werden.'
-            ));
+            youtubeCommands.requestVideoError({
+              source_feature: 'today',
+              message: normalizeNetworkErrorMessage(
+                error,
+                'Не удалось подобрать видео по текущей теме.',
+                'Passendes Video zum aktuellen Thema konnte nicht geladen werden.'
+              ),
+            });
           }
         } finally {
-          setYoutubeRecommendationLoading(false);
+          youtubeCommands.finishVideoRecommendation({
+            source_feature: 'today',
+          });
         }
       })();
       return;
@@ -11552,20 +10406,12 @@ function AppInner() {
     }
     return selectedSections.has(key);
   };
-  const HOME_SUBSECTION_KEYS = new Set(['home_today', 'home_weekly_plan', 'home_skills', 'home_more']);
   const youtubeSectionVisible = isSectionVisible('youtube');
   const dictionarySectionVisible = isSectionVisible('dictionary');
   const readerSectionVisible = !flashcardsOnly && isSectionVisible('reader');
   const supportSectionVisible = !flashcardsOnly && isSectionVisible('support');
   const isSkillTrainingReady = Boolean(skillTrainingData?.package);
 
-  const isHomeScreen = !flashcardsOnly && selectedSections.size === 0;
-  const activeHomeSubsectionKey = useMemo(() => {
-    if (flashcardsOnly || selectedSections.size !== 1) return '';
-    const [key] = Array.from(selectedSections);
-    return HOME_SUBSECTION_KEYS.has(key) ? key : '';
-  }, [flashcardsOnly, selectedSections]);
-  const isHomeRouteActive = isHomeScreen || Boolean(activeHomeSubsectionKey);
   const isGuideScreen = !flashcardsOnly && selectedSections.size === 1 && selectedSections.has('guide');
   const showHomeGuideQuickCard = isHomeScreen && !guideQuickCardDismissed;
   /* Legacy guide/onboarding copy removed from runtime path.
@@ -12796,9 +11642,6 @@ function AppInner() {
     : youtubeSubtitlesReady
       ? tr('Субтитры: готово', 'Untertitel: Bereit')
       : tr('Субтитры: не загружены', 'Untertitel: Nicht geladen');
-  const youtubeRecommendationStatusLabel = youtubeRecommendationLoading
-    ? tr('Подбираем видео по вашей теме...', 'Wir suchen ein passendes Video fuer dein Thema...')
-    : '';
   const showHero = false;
   const isFocusedSection = (key) => !flashcardsOnly && selectedSections.size === 1 && selectedSections.has(key);
   const currentSingleSectionRouteKey = useMemo(() => {
@@ -12823,43 +11666,10 @@ function AppInner() {
     }
     return { weeklyPlan: true, todayPlan: true, skillReport: true };
   }, [activeHomeSubsectionKey]);
-  const weeklyPlanUsesDeferredAnalytics = planAnalyticsPeriod !== 'week';
-  const hasPlanAnalyticsMetrics = Object.keys(planAnalyticsMetrics || {}).length > 0;
-  const useLivePlanAnalyticsMetrics = hasPlanAnalyticsMetrics && !planAnalyticsError;
-  const weeklyMetrics = weeklyPlanUsesDeferredAnalytics
-    ? (useLivePlanAnalyticsMetrics ? planAnalyticsMetrics : {})
-    : (useLivePlanAnalyticsMetrics ? planAnalyticsMetrics : (weeklyPlan?.metrics || {}));
   const hasWeeklyPlanSnapshot = Boolean(
     weeklyPlan?.week
     || (weeklyPlan?.metrics && Object.keys(weeklyPlan.metrics).length > 0)
   );
-  const weeklyMetricRows = [
-    {
-      key: 'translations',
-      title: tr('Переводы предложений', 'Satz-Uebersetzungen'),
-      unit: tr('шт', 'Stk'),
-      data: weeklyMetrics.translations || {},
-    },
-    {
-      key: 'learned_words',
-      title: tr('Выученные слова (Space Repetition)', 'Gelernte Woerter (Space Repetition)'),
-      unit: tr('слов', 'Woerter'),
-      data: weeklyMetrics.learned_words || {},
-    },
-    {
-      key: 'agent_minutes',
-      title: tr('Минуты разговора с агентом', 'Gesprächsminuten mit Assistent'),
-      unit: tr('мин', 'Min'),
-      data: weeklyMetrics.agent_minutes || {},
-    },
-    {
-      key: 'reading_minutes',
-      title: tr('Чтение (минуты)', 'Lesen (Minuten)'),
-      unit: tr('мин', 'Min'),
-      data: weeklyMetrics.reading_minutes || {},
-    },
-  ];
-  const hasWeeklyMetricRows = weeklyMetricRows.some((item) => Object.keys(item.data || {}).length > 0);
   const canRenderWeeklyMetrics = weeklyPlanUsesDeferredAnalytics
     ? useLivePlanAnalyticsMetrics
     : (useLivePlanAnalyticsMetrics || hasWeeklyMetricRows);
@@ -12906,12 +11716,6 @@ function AppInner() {
     if (key === 'reading_minutes') return 'is-reading';
     return '';
   };
-  const formatWeeklyValue = (value, digits = 0) => {
-    const num = Number(value || 0);
-    if (!Number.isFinite(num)) return '0';
-    if (digits <= 0) return String(Math.round(num));
-    return num.toFixed(digits);
-  };
   const weeklyPlanCollapseStorageKey = useMemo(() => {
     const uid = webappUser?.id ? String(webappUser.id) : 'anon';
     return `weekly_plan_collapsed_${uid}`;
@@ -12926,12 +11730,6 @@ function AppInner() {
     const uid = webappUser?.id ? String(webappUser.id) : 'anon';
     return `weekly_metric_expanded_${uid}`;
   }, [webappUser]);
-  const homeSkillTrainingStatusMap = useMemo(
-    () => (skillReport?.skill_training_status && typeof skillReport.skill_training_status === 'object'
-      ? skillReport.skill_training_status
-      : {}),
-    [skillReport]
-  );
 
   const toggleSection = (key) => {
     if (key === 'economics' && !canViewEconomics) return;
@@ -12976,14 +11774,6 @@ function AppInner() {
       scrollToRef(ref, { center: key === 'flashcards', block: 'start' });
     }, 80);
   };
-
-  const billingEffectiveMode = String(billingStatus?.effective_mode || '').trim().toLowerCase();
-  const startupEffectiveMode = billingEffectiveMode || 'free';
-  const isLightweightFreeMode = startupEffectiveMode === 'free';
-  const lockedFreeStartupSections = useMemo(
-    () => new Set(isLightweightFreeMode ? ['home_today', 'home_skills', 'home_weekly_plan'] : []),
-    [isLightweightFreeMode],
-  );
 
   function logStartupHeavyBlockSkipped(feature) {
     console.info('startup_heavy_block_skipped', {
@@ -14945,9 +13735,6 @@ function AppInner() {
 
   useEffect(() => {
     invalidateAsyncGuards(
-      todayPlanRequestIdRef,
-      skillReportRequestIdRef,
-      weeklyPlanRequestIdRef,
       languageProfileRequestIdRef,
       starterDictionaryStatusRequestIdRef,
     );
@@ -15001,14 +13788,6 @@ function AppInner() {
       startupPhase3TimerRef.current = null;
     }
     startupLoadedLanguagePairRef.current = '';
-    todayPlanStartupRefreshDoneRef.current = false;
-    skillReportStartupRefreshDoneRef.current = false;
-    weeklyPlanStartupRefreshDoneRef.current = false;
-    setTodayPlanLoadedOnce(false);
-    setSkillReportLoadedOnce(false);
-    setTodayPlanSnapshotTone('snapshot');
-    setSkillReportSnapshotTone('snapshot');
-    setWeeklyPlanSnapshotTone('snapshot');
     setStartupPhase2Ready(false);
     setStartupPhase3Ready(false);
     setStarterDictionaryOffer(null);
@@ -15086,38 +13865,8 @@ function AppInner() {
     };
   }, [isWebAppMode, initData]);
 
-  useEffect(() => {
-    if (!isWebAppMode || !initData || weeklyPlan) {
-      return;
-    }
-    const snapshot = readWeeklyPlanSnapshot();
-    if (!snapshot?.plan) return;
-    setWeeklyPlan(snapshot.plan);
-    setWeeklyPlanSnapshotTone('snapshot');
-    setWeeklyPlanDraft(snapshot.draft || buildWeeklyPlanDraftFromPlan(snapshot.plan));
-  }, [buildWeeklyPlanDraftFromPlan, initData, isWebAppMode, readWeeklyPlanSnapshot, weeklyPlan]);
 
-  useEffect(() => {
-    if (!isWebAppMode || !initData || todayPlan) {
-      return;
-    }
-    const snapshot = readTodayPlanSnapshot();
-    if (!snapshot) return;
-    setTodayPlan(snapshot);
-    setTodayPlanSnapshotTone('snapshot');
-    setTodayPlanLoadedOnce(true);
-  }, [initData, isWebAppMode, readTodayPlanSnapshot, todayPlan]);
 
-  useEffect(() => {
-    if (!isWebAppMode || !initData || skillReport) {
-      return;
-    }
-    const snapshot = readSkillReportSnapshot();
-    if (!snapshot) return;
-    setSkillReport(snapshot);
-    setSkillReportSnapshotTone('snapshot');
-    setSkillReportLoadedOnce(true);
-  }, [initData, isWebAppMode, readSkillReportSnapshot, skillReport]);
 
   // In GERMAN_ONLY_MODE auto-save the fixed profile so the gate never appears.
   useEffect(() => {
@@ -15145,142 +13894,11 @@ function AppInner() {
     return undefined;
   }, [initData]);
 
-  useEffect(() => {
-    if (!isWebAppMode || !initData) {
-      setTodayPlan(null);
-      setTodayPlanLoadedOnce(false);
-      setTodayPlanError('');
-      return;
-    }
-  }, [isWebAppMode, initData]);
 
-  useEffect(() => {
-    if (!isWebAppMode || !initData) {
-      setSkillReport(null);
-      setSkillReportLoadedOnce(false);
-      setSkillReportError('');
-      return;
-    }
-  }, [isWebAppMode, initData, startupPhase2Ready]);
 
-  useEffect(() => {
-    if (!isWebAppMode || !initData) {
-      todayPlanStartupRefreshDoneRef.current = false;
-      skillReportStartupRefreshDoneRef.current = false;
-      weeklyPlanStartupRefreshDoneRef.current = false;
-      return;
-    }
-    if (!pageVisible) {
-      todayPlanStartupRefreshDoneRef.current = false;
-      skillReportStartupRefreshDoneRef.current = false;
-      weeklyPlanStartupRefreshDoneRef.current = false;
-    }
-  }, [initData, isWebAppMode, pageVisible]);
 
-  useEffect(() => {
-    const shouldHydrateTodayPanel = Boolean(isHomeRouteActive);
-    if (
-      !isWebAppMode
-      || !initData
-      || !pageVisible
-      || !startupPhase2Ready
-      || !shouldHydrateTodayPanel
-      || todayPlanStartupRefreshDoneRef.current
-    ) {
-      return undefined;
-    }
-    const snapshot = readTodayPlanSnapshot();
-    const shouldRefresh = (
-      !snapshot
-      || isSnapshotRefreshDue(snapshot?.snapshot_saved_at, TODAY_PLAN_AUTO_REFRESH_MAX_AGE_MS)
-      || !(snapshot?.items?.length > 0)
-    );
-    if (!shouldRefresh) {
-      todayPlanStartupRefreshDoneRef.current = true;
-      return undefined;
-    }
-    const delayMs = snapshot ? 1600 : 350;
-    const timerId = window.setTimeout(() => {
-      todayPlanStartupRefreshDoneRef.current = true;
-      void loadTodayPlan({ syncFacts: true });
-    }, delayMs);
-    return () => window.clearTimeout(timerId);
-  }, [
-    homeSnapshotResumeTick,
-    initData,
-    isHomeRouteActive,
-    isWebAppMode,
-    loadTodayPlan,
-    pageVisible,
-    readTodayPlanSnapshot,
-    startupPhase2Ready,
-    startupEffectiveMode,
-  ]);
 
-  const loadWeeklyPlanRef = useRef(loadWeeklyPlan);
-  loadWeeklyPlanRef.current = loadWeeklyPlan;
-  const loadSkillReportRef = useRef(loadSkillReport);
-  loadSkillReportRef.current = loadSkillReport;
-  const weeklyPlanRef2 = useRef(weeklyPlan);
-  weeklyPlanRef2.current = weeklyPlan;
-  const skillReportRef2 = useRef(skillReport);
-  skillReportRef2.current = skillReport;
-  const weeklyPlanLoadingRef = useRef(weeklyPlanLoading);
-  weeklyPlanLoadingRef.current = weeklyPlanLoading;
-  const skillReportLoadingRef = useRef(skillReportLoading);
-  skillReportLoadingRef.current = skillReportLoading;
 
-  useEffect(() => {
-    if (!isWebAppMode || !initData || !pageVisible || !startupPhase3Ready) return;
-    // Reset done-flags on section leave so re-entry always re-checks snapshot freshness.
-    if (activeHomeSubsectionKey !== 'home_skills') {
-      skillReportStartupRefreshDoneRef.current = false;
-    }
-    if (activeHomeSubsectionKey !== 'home_weekly_plan') {
-      weeklyPlanStartupRefreshDoneRef.current = false;
-    }
-    if (activeHomeSubsectionKey === 'home_weekly_plan') {
-      if (weeklyPlanLoadingRef.current || weeklyPlanStartupRefreshDoneRef.current) return;
-      const snapshot = readWeeklyPlanSnapshot();
-      const shouldRefresh = !snapshot || isSnapshotRefreshDue(snapshot?.snapshot_saved_at);
-      if (!shouldRefresh) {
-        weeklyPlanStartupRefreshDoneRef.current = true;
-        return;
-      }
-      const delayMs = snapshot ? 1200 : 250;
-      const timerId = window.setTimeout(() => {
-        weeklyPlanStartupRefreshDoneRef.current = true;
-        void loadWeeklyPlanRef.current();
-      }, delayMs);
-      return () => window.clearTimeout(timerId);
-    }
-    if (activeHomeSubsectionKey === 'home_skills') {
-      if (skillReportLoadingRef.current || skillReportStartupRefreshDoneRef.current) return;
-      const snapshot = readSkillReportSnapshot();
-      const shouldRefresh = !snapshot || isSnapshotRefreshDue(snapshot?.snapshot_saved_at);
-      if (!shouldRefresh) {
-        skillReportStartupRefreshDoneRef.current = true;
-        return;
-      }
-      const delayMs = snapshot ? 1200 : 250;
-      const timerId = window.setTimeout(() => {
-        skillReportStartupRefreshDoneRef.current = true;
-        void loadSkillReportRef.current();
-      }, delayMs);
-      return () => window.clearTimeout(timerId);
-    }
-    return undefined;
-  }, [
-    activeHomeSubsectionKey,
-    homeSnapshotResumeTick,
-    initData,
-    isWebAppMode,
-    pageVisible,
-    readSkillReportSnapshot,
-    readWeeklyPlanSnapshot,
-    startupPhase3Ready,
-    startupEffectiveMode,
-  ]);
 
   useEffect(() => {
     if (!isWebAppMode) {
@@ -15415,11 +14033,6 @@ function AppInner() {
     if (!isWebAppMode || !initData || !startupPhase3Ready || !readerSectionVisible) return;
     void loadReaderLibrary();
   }, [initData, isWebAppMode, readerIncludeArchived, readerSectionVisible, startupPhase3Ready]);
-
-  useEffect(() => {
-    if (!isWebAppMode || !initData || !startupPhase3Ready || planAnalyticsPeriod === 'week') return;
-    void loadPlanAnalytics(planAnalyticsPeriod);
-  }, [planAnalyticsPeriod, isWebAppMode, initData, startupPhase3Ready]);
 
   useEffect(() => {
     if (!isWebAppMode || !initData || !startupPhase3Ready) return;
@@ -17056,11 +15669,6 @@ function AppInner() {
   }, [flashcardsOnly, selectedSections, translationProgressiveFill, sentences]);
 
   useEffect(() => {
-    const resetHomeSnapshotStartupRefresh = () => {
-      todayPlanStartupRefreshDoneRef.current = false;
-      skillReportStartupRefreshDoneRef.current = false;
-      weeklyPlanStartupRefreshDoneRef.current = false;
-    };
     const updatePageVisibility = (visible) => {
       const nextVisible = Boolean(visible);
       pageVisibleRef.current = nextVisible;
@@ -17068,7 +15676,6 @@ function AppInner() {
       return nextVisible;
     };
     const markHomeSnapshotForeground = () => {
-      resetHomeSnapshotStartupRefresh();
       setHomeSnapshotResumeTick((value) => value + 1);
 
       // If the app was last hidden on a different calendar day and the hide happened
@@ -17180,7 +15787,11 @@ function AppInner() {
       try {
         const parsed = JSON.parse(stored);
         if (parsed?.input) {
-          setYoutubeInput(parsed.input);
+          youtubeCommands.requestVideoSelection({
+            source_feature: 'youtube_resume',
+            video_url: parsed.input,
+            open_section: false,
+          });
         }
         if (parsed?.id) {
           setYoutubeId(parsed.id);
@@ -17208,13 +15819,23 @@ function AppInner() {
         const savedInput = String(state?.input_text || '').trim();
         const savedTime = Math.max(0, Number(state?.current_time_seconds || 0));
         if (!savedId) return;
+        console.info('youtube_resume_state_loaded', {
+          provider_name: 'youtube_playback',
+          source: 'server',
+          youtube_id_present: true,
+          current_time_seconds: savedTime,
+        });
         writeYoutubeResumeToLocalCache({
           input: savedInput || `https://youtu.be/${savedId}`,
           id: savedId,
           currentTime: savedTime,
           updatedAt: Date.now(),
         });
-        setYoutubeInput(savedInput || `https://youtu.be/${savedId}`);
+        youtubeCommands.requestVideoSelection({
+          source_feature: 'youtube_resume',
+          video_url: savedInput || `https://youtu.be/${savedId}`,
+          open_section: false,
+        });
         setYoutubeId(savedId);
       })
       .catch(() => {
@@ -17223,11 +15844,7 @@ function AppInner() {
     return () => {
       cancelled = true;
     };
-  }, [initData, writeYoutubeResumeToLocalCache, youtubeResumeStorageKey]);
-
-  useEffect(() => {
-    youtubeInputDraftRef.current = String(youtubeInput || '');
-  }, [youtubeInput]);
+  }, [initData, writeYoutubeResumeToLocalCache, youtubeCommands, youtubeResumeStorageKey]);
 
   const buildTranslationResultFromCheckItem = (item) => {
     if (!item || typeof item !== 'object') return null;
@@ -18582,6 +17199,7 @@ function AppInner() {
     return { source_lang: source, target_lang: target };
   };
   const getWebappLanguagePairHint = () => buildWebappLanguagePairHint(resolveLanguagePairForUI(dictionaryLanguagePair));
+  getWebappLanguagePairHintRef.current = getWebappLanguagePairHint;
   const getDictionaryDirectionLabel = () => {
     const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
     const source = String(pair.source_lang || '').toUpperCase();
@@ -23494,163 +22112,6 @@ function AppInner() {
     );
   };
 
-  const parseTranscriptInput = (value) => {
-    const lines = value
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .filter((line) => !/^\d+$/.test(line))
-      .filter((line) => !/^\d{2}:\d{2}:\d{2}/.test(line))
-      .filter((line) => !/^\d{2}:\d{2}/.test(line))
-      .filter((line) => !/-->/.test(line))
-      .filter((line) => !/^WEBVTT/i.test(line));
-    return lines.map((line, index) => ({
-      text: line,
-      start: index,
-      duration: 0,
-    }));
-  };
-
-  const parseTimedTranscript = (value) => {
-    const lines = value.split(/\r?\n/);
-    const items = [];
-    let currentStart = null;
-    let buffer = [];
-    const flush = () => {
-      if (currentStart !== null && buffer.length) {
-        items.push({ start: currentStart, text: buffer.join(' ').trim() });
-      }
-      buffer = [];
-    };
-    const timeToSeconds = (stamp) => {
-      const clean = stamp.replace(',', '.');
-      const parts = clean.split(':').map(Number);
-      if (parts.some((p) => Number.isNaN(p))) return null;
-      if (parts.length === 3) {
-        return parts[0] * 3600 + parts[1] * 60 + parts[2];
-      }
-      if (parts.length === 2) {
-        return parts[0] * 60 + parts[1];
-      }
-      return null;
-    };
-    let hasTiming = false;
-    for (const rawLine of lines) {
-      const line = rawLine.trim();
-      if (!line) {
-        flush();
-        currentStart = null;
-        continue;
-      }
-      if (/^WEBVTT/i.test(line) || /^\d+$/.test(line)) {
-        continue;
-      }
-      if (line.includes('-->')) {
-        flush();
-        const startPart = line.split('-->')[0].trim();
-        const seconds = timeToSeconds(startPart);
-        if (seconds !== null) {
-          currentStart = seconds;
-          hasTiming = true;
-        } else {
-          currentStart = null;
-        }
-        continue;
-      }
-      buffer.push(line);
-    }
-    flush();
-    return { items, hasTiming };
-  };
-
-  const parseSimpleTimestampTranscript = (value) => {
-    const lines = value.split(/\r?\n/).map((line) => line.trim());
-    const items = [];
-    let hasTiming = false;
-    for (let i = 0; i < lines.length; i += 1) {
-      const line = lines[i];
-      if (!line) continue;
-      if (/^\d{1,2}:\d{2}$/.test(line)) {
-        const parts = line.split(':').map(Number);
-        if (parts.length === 2 && !parts.some((p) => Number.isNaN(p))) {
-          const start = parts[0] * 60 + parts[1];
-          const text = (lines[i + 1] || '').trim();
-          if (text) {
-            items.push({ start, text });
-            hasTiming = true;
-          }
-        }
-      }
-    }
-    return { items, hasTiming };
-  };
-
-  const detectTranscriptLanguage = (items) => {
-    const sample = items.map((item) => String(item?.text || '')).join(' ');
-    if (!sample) return null;
-    const hasCyrillic = /[А-Яа-яЁё]/.test(sample);
-    const hasLatin = /[A-Za-z]/.test(sample);
-    if (hasCyrillic && !hasLatin) return 'ru';
-    if (hasLatin && !hasCyrillic) return 'de';
-    if (hasCyrillic && hasLatin) return 'en';
-    return null;
-  };
-
-  const saveManualTranscriptToDb = async (items) => {
-    if (!initData || !youtubeId || !items?.length) return;
-    try {
-      const language = detectTranscriptLanguage(items);
-      const response = await fetch('/api/webapp/youtube/manual', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, videoId: youtubeId, items, language }),
-      });
-      if (!response.ok) {
-        throw new Error(await response.text());
-      }
-      setMovies([]);
-    } catch (error) {
-      setYoutubeTranscriptError(`${tr('Ошибка сохранения субтитров', 'Fehler beim Speichern der Untertitel')}: ${error.message}`);
-    }
-  };
-
-  const handleManualTranscript = async () => {
-    const raw = manualTranscript.trim();
-    if (!raw) {
-      setYoutubeManualOverride(false);
-      setYoutubeTranscript([]);
-      setYoutubeTranscriptHasTiming(true);
-      return;
-    }
-    const parsed = parseTimedTranscript(raw);
-    if (parsed.items.length) {
-      setYoutubeTranscript(parsed.items);
-      setYoutubeTranscriptHasTiming(parsed.hasTiming);
-      setYoutubeManualOverride(true);
-      setYoutubeTranscriptError('');
-      setShowManualTranscript(false);
-      await saveManualTranscriptToDb(parsed.items);
-      return;
-    }
-    const simple = parseSimpleTimestampTranscript(raw);
-    if (simple.items.length) {
-      setYoutubeTranscript(simple.items);
-      setYoutubeTranscriptHasTiming(simple.hasTiming);
-      setYoutubeManualOverride(true);
-      setYoutubeTranscriptError('');
-      setShowManualTranscript(false);
-      await saveManualTranscriptToDb(simple.items);
-      return;
-    }
-    const fallback = parseTranscriptInput(raw);
-    setYoutubeTranscript(fallback);
-    setYoutubeTranscriptHasTiming(false);
-    setYoutubeManualOverride(true);
-    setYoutubeTranscriptError('');
-    setShowManualTranscript(false);
-    await saveManualTranscriptToDb(fallback);
-  };
-
   const handleFinishTranslation = async () => {
     if (translationFinishInFlightRef.current) {
       return;
@@ -25522,7 +23983,7 @@ function AppInner() {
     (folder) => String(folder.id) === dictionaryFolderId
   );
 
-  const extractYoutubeId = (value) => {
+  function extractYoutubeId(value) {
     if (!value) return '';
     const trimmed = value.trim();
     if (/^[a-zA-Z0-9_-]{11}$/.test(trimmed)) {
@@ -25539,191 +24000,50 @@ function AppInner() {
       if (match) return match[1];
     }
     return '';
-  };
+  }
 
-  useEffect(() => {
-    const trimmed = youtubeInput.trim();
-    if (!trimmed) {
-      setYoutubeId('');
-      setYoutubeError('');
-      setYoutubeSearchError('');
-      setYoutubeSearchResults([]);
-      safeStorageRemove(youtubeResumeStorageKey);
-      safeStorageRemove('webapp_youtube');
-      youtubeResumeAppliedForVideoRef.current = '';
-      youtubeResumeLastSavedSecondRef.current = -1;
-      youtubeResumeLastSyncedSecondRef.current = -1;
-      return;
-    }
-    const id = extractYoutubeId(trimmed);
-    if (id) {
-      setYoutubeId(id);
-      setYoutubeError('');
-      setYoutubeEmptyState(null);
-      const existingRaw = safeStorageGet(youtubeResumeStorageKey) || safeStorageGet('webapp_youtube');
-      let existingTime = 0;
-      try {
-        const parsed = existingRaw ? JSON.parse(existingRaw) : null;
-        if (parsed?.id === id) {
-          existingTime = Math.max(0, Number(parsed?.currentTime || 0));
-        }
-      } catch (_error) {
-        existingTime = 0;
-      }
-      writeYoutubeResumeToLocalCache({
-        input: trimmed,
-        id,
-        currentTime: existingTime,
-        updatedAt: Date.now(),
-      });
-    } else if (/(youtube\.com|youtu\.be|^https?:\/\/)/i.test(trimmed)) {
-      setYoutubeError(tr('Не удалось распознать ссылку или ID видео.', 'Video-Link oder ID konnte nicht erkannt werden.'));
-      setYoutubeId('');
-    } else {
-      setYoutubeError('');
-      setYoutubeId('');
-    }
-  }, [tr, writeYoutubeResumeToLocalCache, youtubeInput, youtubeResumeStorageKey]);
+  const handleYoutubeInputChanged = useCallback((nextInput) => {
+    youtubeInputValueRef.current = String(nextInput || '');
+  }, []);
 
-  const searchYoutubeVideos = async (overrideQuery = null) => {
-    const committedInput = commitYoutubeInputDraft(
-      overrideQuery == null ? youtubeInputDraftRef.current : overrideQuery
-    );
-    const query = committedInput.trim();
-    if (!query) return;
-    if (!initData) {
-      setYoutubeSearchError(initDataMissingMsg);
-      return;
-    }
+  const handleYoutubeInputCleared = useCallback(() => {
+    youtubeInputValueRef.current = '';
+    safeStorageRemove(youtubeResumeStorageKey);
+    safeStorageRemove('webapp_youtube');
+    youtubeResumeAppliedForVideoRef.current = '';
+    youtubeResumeLastSavedSecondRef.current = -1;
+    youtubeResumeLastSyncedSecondRef.current = -1;
+  }, [youtubeResumeStorageKey]);
 
-    const directId = extractYoutubeId(query);
-    if (directId) {
-      setYoutubeSearchError('');
-      setYoutubeSearchResults([]);
-      return;
+  const handleYoutubeVideoResolved = useCallback(({ input, id }) => {
+    const trimmed = String(input || '').trim();
+    const resolvedId = String(id || '').trim();
+    if (!trimmed || !resolvedId) {
+      throw new Error('handleYoutubeVideoResolved requires input and id');
     }
-
-    setYoutubeSearchLoading(true);
-    setYoutubeSearchError('');
+    const existingRaw = safeStorageGet(youtubeResumeStorageKey) || safeStorageGet('webapp_youtube');
+    let existingTime = 0;
     try {
-      const response = await fetch('/api/webapp/youtube/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData,
-          query,
-          limit: 8,
-          language_pair: getWebappLanguagePairHint() || undefined,
-        }),
-      });
-      if (!response.ok) {
-        let message = await response.text();
-        try {
-          const data = JSON.parse(message);
-          message = data.error || message;
-        } catch (error) {
-          // ignore parsing errors
-        }
-        throw new Error(message);
+      const parsed = existingRaw ? JSON.parse(existingRaw) : null;
+      if (parsed?.id === resolvedId) {
+        existingTime = Math.max(0, Number(parsed?.currentTime || 0));
       }
-      const data = await response.json();
-      const items = Array.isArray(data.items) ? data.items : [];
-      setYoutubeSearchResults(items);
-      if (!items.length) {
-        setYoutubeSearchError(tr('По вашему запросу ничего не найдено.', 'Keine Ergebnisse fuer diese Suche.'));
-      }
-    } catch (error) {
-      setYoutubeSearchResults([]);
-      setYoutubeSearchError(`${tr('Ошибка поиска YouTube', 'YouTube-Suchfehler')}: ${error.message}`);
-    } finally {
-      setYoutubeSearchLoading(false);
+    } catch (_error) {
+      existingTime = 0;
     }
-  };
-
-  const applyYoutubeTranscriptPayload = (data) => {
-    const items = data?.items || [];
-    setYoutubeTranscript(items);
-    setYoutubeTranslations(data?.translations || {});
-    const hasTiming = items.some((item) => Number(item?.start) > 0);
-    setYoutubeTranscriptHasTiming(hasTiming);
-    setManualTranscript('');
-  };
-
-  const pollYoutubeTranscriptStatus = async ({ videoId, lang }) => {
-    const maxAttempts = 25;
-    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      await new Promise((resolve) => window.setTimeout(resolve, attempt === 0 ? 800 : 1200));
-      const response = await fetch('/api/webapp/youtube/transcript/status', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData,
-          videoId,
-          lang,
-        }),
-      });
-      if (response.status === 202) {
-        continue;
-      }
-      if (!response.ok) {
-        let message = await response.text();
-        try {
-          const data = JSON.parse(message);
-          message = data.error || message;
-        } catch (_error) {
-          // ignore parsing errors
-        }
-        throw new Error(message);
-      }
-      return await response.json();
-    }
-    throw new Error(tr('Субтитры всё ещё подготавливаются. Попробуйте ещё раз.', 'Untertitel werden noch vorbereitet. Bitte erneut versuchen.'));
-  };
-
-  const fetchTranscript = async () => {
-    if (!youtubeId) return;
-    if (!initData) {
-      setYoutubeTranscriptError(initDataMissingMsg);
-      return;
-    }
-    if (youtubeManualOverride) return;
-    setYoutubeTranscriptLoading(true);
-    setYoutubeTranscriptError('');
-    try {
-      const requestedLang = normalizeLangCode(languageProfile?.learning_language) || 'de';
-      const response = await fetch('/api/webapp/youtube/transcript', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData,
-          videoId: youtubeId,
-          lang: requestedLang,
-        }),
-      });
-      if (response.status === 202) {
-        const data = await pollYoutubeTranscriptStatus({ videoId: youtubeId, lang: requestedLang });
-        applyYoutubeTranscriptPayload(data);
-        return;
-      }
-      if (!response.ok) {
-        let message = await response.text();
-        try {
-          const data = JSON.parse(message);
-          message = data.error || message;
-        } catch (error) {
-          // ignore parsing errors
-        }
-        throw new Error(message);
-      }
-      const data = await response.json();
-      applyYoutubeTranscriptPayload(data);
-    } catch (error) {
-      setYoutubeTranscript([]);
-      setYoutubeTranscriptError(`${tr('Авто-субтитры недоступны', 'Auto-Untertitel nicht verfuegbar')}: ${error.message}`);
-    } finally {
-      setYoutubeTranscriptLoading(false);
-    }
-  };
+    console.info('youtube_resume_state_loaded', {
+      provider_name: 'youtube_playback',
+      source: 'local_cache',
+      youtube_id_present: true,
+      current_time_seconds: existingTime,
+    });
+    writeYoutubeResumeToLocalCache({
+      input: trimmed,
+      id: resolvedId,
+      currentTime: existingTime,
+      updatedAt: Date.now(),
+    });
+  }, [writeYoutubeResumeToLocalCache, youtubeResumeStorageKey]);
 
   useEffect(() => {
     if (!youtubeId || !initData) {
@@ -27721,64 +26041,37 @@ function AppInner() {
               </Suspense>
             )}
 
-            {activeHomeSubsectionKey && activeHomeSubsectionKey !== 'home_more' && initData && (
-              <HomeScreenSection
-                tr={tr}
-                uiLang={uiLang}
-                sectionRefs={{
-                  todayRef: homeTodayPlanRef,
-                  weeklyPlanRef: homeWeeklyPlanRef,
-                  skillsRef: homeSkillsRef,
-                }}
-                visiblePanels={activeHomeSectionVisibility}
-                planAnalyticsPeriod={planAnalyticsPeriod}
-                setPlanAnalyticsPeriod={setPlanAnalyticsPeriod}
-                planAnalyticsLoading={planAnalyticsLoading}
-                weeklyPlan={weeklyPlan}
-                weeklyPlanCollapsed={weeklyPlanCollapsed}
-                setWeeklyPlanCollapsed={setWeeklyPlanCollapsed}
-                weeklyPlanDraft={weeklyPlanDraft}
-                setWeeklyPlanDraft={setWeeklyPlanDraft}
-                weeklyPlanSaving={weeklyPlanSaving}
-                weeklyPlanLoading={weeklyPlanLoading}
-                weeklyPlanError={weeklyPlanError}
-                refreshWeeklyPlan={refreshWeeklyPlanStable}
-                planAnalyticsMetrics={planAnalyticsMetrics}
-                planAnalyticsRange={planAnalyticsRange}
-                planAnalyticsError={planAnalyticsError}
-                weeklyMetricExpanded={weeklyMetricExpanded}
-                setWeeklyMetricExpanded={setWeeklyMetricExpanded}
-                saveWeeklyPlan={saveWeeklyPlanStable}
-                todayPlan={todayPlan}
-                todayPlanLoadedOnce={todayPlanLoadedOnce}
-                todayPlanLoading={todayPlanLoading}
-                todayPlanError={todayPlanError}
-                todayPlanSnapshotTone={todayPlanSnapshotTone}
-                todayItemLoading={todayItemLoading}
-                todayTimerNowMs={todayTimerNowMs}
-                regenerateTodayPlan={regenerateTodayPlanStable}
-                loadTodayPlan={loadTodayPlanStable}
-                startTodayTask={startTodayTaskStable}
-                submitTodayVideoFeedback={submitTodayVideoFeedbackStable}
-                getTodayItemDisplayElapsedSeconds={getTodayItemDisplayElapsedSecondsStable}
-                getTodayItemElapsedSeconds={getTodayItemElapsedSecondsStable}
-                getTodayItemProgressPercent={getTodayItemProgressPercentStable}
-                getTodayTranslationProgress={getTodayTranslationProgressStable}
-                getTodayItemTitle={getTodayItemTitleStable}
-                formatCompactTimer={formatCompactTimerStable}
-                skillReport={skillReport}
-                skillReportLoadedOnce={skillReportLoadedOnce}
-                skillReportLoading={skillReportLoading}
-                skillReportError={skillReportError}
-                skillReportSnapshotTone={skillReportSnapshotTone}
-                skillPracticeLoading={skillPracticeLoading}
-                loadSkillReport={loadSkillReportStable}
-                startSkillPractice={startSkillPracticeStable}
-                resumeSkillPractice={resumeSkillPracticeStable}
-                skillTrainingStatusMap={homeSkillTrainingStatusMap}
-                getStoredSkillTrainingSnapshot={getStoredSkillTrainingSnapshot}
-                weeklyPlanSnapshotTone={weeklyPlanSnapshotTone}
-              />
+            {!isLightweightFreeMode && activeHomeSubsectionKey && activeHomeSubsectionKey !== 'home_more' && initData && (
+              <PlanningContext.Provider value={planning}>
+                <PlanningSection
+                  tr={tr}
+                  uiLang={uiLang}
+                  sectionRefs={{
+                    todayRef: homeTodayPlanRef,
+                    weeklyPlanRef: homeWeeklyPlanRef,
+                    skillsRef: homeSkillsRef,
+                  }}
+                  visiblePanels={activeHomeSectionVisibility}
+                  todayItemLoading={todayItemLoading}
+                  todayTimerNowMs={todayTimerNowMs}
+                  saveWeeklyPlan={saveWeeklyPlanStable}
+                  regenerateTodayPlan={regenerateTodayPlanStable}
+                  startTodayTask={startTodayTaskStable}
+                  submitTodayVideoFeedback={submitTodayVideoFeedbackStable}
+                  getTodayItemDisplayElapsedSeconds={getTodayItemDisplayElapsedSecondsStable}
+                  getTodayItemProgressPercent={getTodayItemProgressPercentStable}
+                  getTodayTranslationProgress={getTodayTranslationProgressStable}
+                  getTodayItemTitle={getTodayItemTitleStable}
+                  formatCompactTimer={formatCompactTimerStable}
+                  skillPracticeLoading={skillPracticeLoading}
+                  startSkillPractice={startSkillPracticeStable}
+                  resumeSkillPractice={resumeSkillPracticeStable}
+                  getStoredSkillTrainingSnapshot={getStoredSkillTrainingSnapshot}
+                  getLocalizedSkillDisplayName={getLocalizedSkillDisplayName}
+                  getLocalizedSkillTopicLabel={getLocalizedSkillTopicLabel}
+                  PerfProfilerComponent={PerfProfiler}
+                />
+              </PlanningContext.Provider>
             )}
 
             {!flashcardsOnly && isSectionVisible('guide') && (
@@ -28483,8 +26776,80 @@ function AppInner() {
 
             {!flashcardsOnly && (isSectionVisible('youtube') || isSectionVisible('dictionary')) && (
               <div className={`webapp-video-dictionary ${videoExpanded ? 'is-split' : ''}`}>
-                {isSectionVisible('youtube') && (
-                  <PerfProfiler id="section.youtube">
+                {!isLightweightFreeMode && isSectionVisible('youtube') && (
+                  <YouTubePlaybackProvider
+                    isLightweightFreeMode={isLightweightFreeMode}
+                    startupEffectiveMode={startupEffectiveMode}
+                    youtubeId={youtubeId}
+                    youtubePlayerReady={youtubePlayerReady}
+                    youtubeCurrentTime={youtubeCurrentTime}
+                    youtubeIsPaused={youtubeIsPaused}
+                    youtubePlaybackStarted={youtubePlaybackStarted}
+                    youtubeTranscriptLength={youtubeTranscript.length}
+                    youtubeResumeStorageKey={youtubeResumeStorageKey}
+                    persistYoutubeResumeState={persistYoutubeResumeState}
+                    syncYoutubeResumeState={syncYoutubeResumeState}
+                    refsOwnedByApp={true}
+                    value={{
+                      scaffold: 'playback-boundary',
+                    }}
+                  >
+                  <YouTubeProvider
+                    isLightweightFreeMode={isLightweightFreeMode}
+                    startupEffectiveMode={startupEffectiveMode}
+                    initData={initData}
+                    initDataMissingMsg={initDataMissingMsg}
+                    youtubeId={youtubeId}
+                    languageProfile={languageProfile}
+                    normalizeLangCode={normalizeLangCode}
+                    extractYoutubeId={extractYoutubeId}
+                    getWebappLanguagePairHint={getWebappLanguagePairHint}
+                    tr={tr}
+                    setYoutubeId={setYoutubeId}
+                    setYoutubeTranscript={setYoutubeTranscript}
+                    setYoutubeTranslations={setYoutubeTranslations}
+                    setYoutubeManualOverride={setYoutubeManualOverride}
+                    setYoutubeTranscriptError={setYoutubeTranscriptError}
+                    setYoutubeTranscriptLoading={setYoutubeTranscriptLoading}
+                    setYoutubeTranscriptHasTiming={setYoutubeTranscriptHasTiming}
+                    onYoutubeInputChanged={handleYoutubeInputChanged}
+                    onYoutubeInputCleared={handleYoutubeInputCleared}
+                    onYoutubeVideoResolved={handleYoutubeVideoResolved}
+                    onManualTranscriptSaved={() => setMovies([])}
+                    pendingCommand={youtubePendingCommand}
+                    onPendingCommandHandled={(requestId) => {
+                      setYoutubePendingCommand((current) => (
+                        String(current?.request_id || '') === String(requestId || '') ? null : current
+                      ));
+                    }}
+                    value={{
+                      commands: youtubeCommands,
+                      render: ({ context: youtubeContext }) => {
+                        const {
+                          youtubeInput,
+                          youtubeError,
+                          youtubeEmptyState,
+                          youtubeSearchLoading,
+                          youtubeSearchResults,
+                          youtubeSearchError,
+                          youtubeRecommendationLoading,
+                          setYoutubeInputDraft,
+                          commitYoutubeInputDraft,
+                          searchYoutubeVideos,
+                          selectYoutubeSearchResult,
+                          showManualTranscript,
+                          setShowManualTranscript,
+                          manualTranscript,
+                          setManualTranscript,
+                          handleManualTranscript,
+                          resetManualTranscriptToAuto,
+                          fetchTranscript,
+                        } = youtubeContext;
+                        const youtubeRecommendationStatusLabel = youtubeRecommendationLoading
+                          ? tr('Подбираем видео по вашей теме...', 'Wir suchen ein passendes Video fuer dein Thema...')
+                          : '';
+                        return (
+                        <PerfProfiler id="section.youtube">
                     <section
                       className={`webapp-video youtube-player-first ${youtubeLearningMode ? 'is-learning' : 'is-setup'} ${youtubeAppFullscreen ? 'is-app-fullscreen-active' : ''}`}
                       ref={youtubeRef}
@@ -28548,7 +26913,7 @@ function AppInner() {
                             <button
                               type="button"
                               className="youtube-command-action"
-                              onClick={() => fetchTranscript()}
+                              onClick={() => fetchTranscript(youtubeManualOverride)}
                               disabled={youtubeLoadDisabled}
                             >
                               {youtubeTranscriptLoading
@@ -28605,12 +26970,7 @@ function AppInner() {
                                 <button
                                   type="button"
                                   className="secondary-button"
-                                  onClick={() => {
-                                    setYoutubeManualOverride(false);
-                                    setManualTranscript('');
-                                    setYoutubeTranscriptHasTiming(true);
-                                    setShowManualTranscript(false);
-                                  }}
+                                  onClick={resetManualTranscriptToAuto}
                                 >
                                   {tr('Вернуться к авто', 'Back to auto')}
                                 </button>
@@ -28658,7 +27018,7 @@ function AppInner() {
                           <button
                             type="button"
                             className="youtube-status-action-btn youtube-status-load-btn"
-                            onClick={() => fetchTranscript()}
+                            onClick={() => fetchTranscript(youtubeManualOverride)}
                             disabled={youtubeLoadDisabled}
                           >
                             {youtubeTranscriptLoading
@@ -28721,12 +27081,7 @@ function AppInner() {
                                 <button
                                   type="button"
                                   className="secondary-button"
-                                  onClick={() => {
-                                    setYoutubeManualOverride(false);
-                                    setManualTranscript('');
-                                    setYoutubeTranscriptHasTiming(true);
-                                    setShowManualTranscript(false);
-                                  }}
+                                  onClick={resetManualTranscriptToAuto}
                                 >
                                   {tr('Сбросить', 'Reset')}
                                 </button>
@@ -28841,7 +27196,7 @@ function AppInner() {
                           placeholder={tr('https://youtu.be/VIDEO_ID или Deutsch Grammatik B1', 'https://youtu.be/VIDEO_ID oder Deutsch Grammatik B1')}
                           clearLabel={tr('Очистить', 'Loeschen')}
                           onDraftChange={(nextValue) => {
-                            youtubeInputDraftRef.current = String(nextValue ?? '');
+                            setYoutubeInputDraft(nextValue);
                           }}
                           onCommit={commitYoutubeInputDraft}
                           onSubmit={searchYoutubeVideos}
@@ -28875,9 +27230,7 @@ function AppInner() {
                                 key={item.video_id}
                                 className="youtube-search-item"
                                 onClick={() => {
-                                  setYoutubeInput(item.video_url || `https://youtu.be/${item.video_id}`);
-                                  setYoutubeSearchResults([]);
-                                  setYoutubeSearchError('');
+                                  selectYoutubeSearchResult(item);
                                 }}
                               >
                                 <img
@@ -29049,7 +27402,7 @@ function AppInner() {
                             <button
                               type="button"
                               className="youtube-settings-row"
-                              onClick={() => fetchTranscript()}
+                              onClick={() => fetchTranscript(youtubeManualOverride)}
                               disabled={youtubeLoadDisabled}
                             >
                               <span>{youtubeSubtitlesReady ? tr('Перезагрузить субтитры', 'Reload subtitles') : tr('Загрузить оригинальные субтитры', 'Load original subtitles')}</span>
@@ -29076,12 +27429,7 @@ function AppInner() {
                                   <button
                                     type="button"
                                     className="secondary-button"
-                                    onClick={() => {
-                                      setYoutubeManualOverride(false);
-                                      setManualTranscript('');
-                                      setYoutubeTranscriptHasTiming(true);
-                                      setShowManualTranscript(false);
-                                    }}
+                                    onClick={resetManualTranscriptToAuto}
                                   >
                                     {tr('Вернуться к авто', 'Back to auto')}
                                   </button>
@@ -29228,7 +27576,14 @@ function AppInner() {
                       </div>
                     )}
                     </section>
-                  </PerfProfiler>
+                        </PerfProfiler>
+                        );
+                      },
+                    }}
+                  >
+                    <YouTubeSection />
+                  </YouTubeProvider>
+                  </YouTubePlaybackProvider>
                 )}
 
                 {isSectionVisible('dictionary') && (
@@ -30689,9 +29044,11 @@ function AppInner() {
                         key={item.video_id}
                         className="movie-card"
                         onClick={() => {
-                          setYoutubeInput(`https://youtu.be/${item.video_id}`);
+                          youtubeCommands.requestVideoSelection({
+                            source_feature: 'movies',
+                            video_id: item.video_id,
+                          });
                           setMoviesCollapsed(true);
-                          ensureSectionVisible('youtube');
                           setTimeout(() => scrollToRef(youtubeRef, { block: 'start' }), 120);
                         }}
                       >
