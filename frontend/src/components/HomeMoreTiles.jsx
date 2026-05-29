@@ -1,7 +1,7 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import './HomeDashboardTiles.css';
 
-function MoreTile({ def, label, onClick }) {
+function MoreTile({ def, label, onClick, locked = false }) {
   const [state, setState] = useState('idle');
   const isDisabled = Boolean(def.disabled);
 
@@ -24,7 +24,7 @@ function MoreTile({ def, label, onClick }) {
   return (
     <button
       type="button"
-      className={`hdt-tile ${def.cls} ${isDisabled ? 'hdt-disabled' : ''} ${state === 'pressed' ? 'hdt-pressed' : ''} ${state === 'pop' ? 'hdt-pop' : ''}`}
+      className={`hdt-tile ${def.cls} ${(isDisabled || locked) ? 'hdt-disabled' : ''} ${state === 'pressed' ? 'hdt-pressed' : ''} ${state === 'pop' ? 'hdt-pop' : ''}`}
       onPointerDown={handleDown}
       onPointerUp={handleUp}
       onPointerLeave={handleLeave}
@@ -49,6 +49,8 @@ export default function HomeMoreTiles({
   openSection,
   canViewEconomics = false,
   isSkillTrainingReady = false,
+  lockedSectionKeys = new Set(),
+  onLockedSection = null,
   refs = {},
 }) {
   const currentUiLang = uiLang === 'de' ? 'de' : 'ru';
@@ -70,8 +72,12 @@ export default function HomeMoreTiles({
 
   const handleTile = useCallback((def) => {
     if (def.disabled) return;
+    if (lockedSectionKeys?.has?.(def.sectionKey)) {
+      onLockedSection?.(def.sectionKey);
+      return;
+    }
     openSection?.(def.sectionKey, refs[def.refKey] || null);
-  }, [openSection, refs]);
+  }, [lockedSectionKeys, onLockedSection, openSection, refs]);
 
   return (
     <div className="hdt-root" ref={refs.homeMoreRef || null}>
@@ -96,6 +102,7 @@ export default function HomeMoreTiles({
               def={def}
               label={label}
               onClick={() => handleTile(def)}
+              locked={lockedSectionKeys?.has?.(def.sectionKey)}
             />
           );
         })}

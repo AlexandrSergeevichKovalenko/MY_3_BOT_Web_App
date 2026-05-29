@@ -457,14 +457,15 @@ export async function countSrsQueue(userId) {
  * Record a review that was made offline (to be synced later).
  *
  * @param {number} userId
- * @param {{ card_id, rating, response_ms, queue_source }} review
+ * @param {{ card_id, rating, response_ms, queue_source, review_id }} review
  */
-export async function addPendingReview(userId, { card_id, rating, response_ms, queue_source }) {
+export async function addPendingReview(userId, { card_id, rating, response_ms, queue_source, review_id }) {
   const db = await _openDB();
   const tx = _tx(db, [STORE_SRS_PENDING], 'readwrite');
   tx.objectStore(STORE_SRS_PENDING).add({
     user_id:      userId,
     card_id:      String(card_id),
+    review_id:    review_id || `offline:${userId}:${card_id}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
     rating,
     response_ms:  Number(response_ms) || 0,
     queue_source: queue_source || 'system',

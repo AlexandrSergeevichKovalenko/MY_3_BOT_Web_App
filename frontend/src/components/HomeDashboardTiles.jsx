@@ -110,7 +110,7 @@ function getWeeklyPlanSummary(weeklyPlan) {
   };
 }
 
-function DashTile({ def, label, badge, onClick, showBadge = true }) {
+function DashTile({ def, label, badge, onClick, showBadge = true, locked = false }) {
   const [state, setState] = useState('idle');
 
   const handleDown = useCallback(() => setState('pressed'), []);
@@ -126,7 +126,7 @@ function DashTile({ def, label, badge, onClick, showBadge = true }) {
   return (
     <button
       type="button"
-      className={`hdt-tile ${def.cls} ${state === 'pressed' ? 'hdt-pressed' : ''} ${state === 'pop' ? 'hdt-pop' : ''}`}
+      className={`hdt-tile ${def.cls} ${locked ? 'hdt-disabled' : ''} ${state === 'pressed' ? 'hdt-pressed' : ''} ${state === 'pop' ? 'hdt-pop' : ''}`}
       onPointerDown={handleDown}
       onPointerUp={handleUp}
       onPointerLeave={handleLeave}
@@ -238,6 +238,8 @@ export default function HomeDashboardTiles({
   showMetrics = true,
   showQuickAccess = true,
   canViewEconomics = false,
+  lockedSectionKeys = new Set(),
+  onLockedSection = null,
 }) {
   const currentUiLang = uiLang === 'de' ? 'de' : 'ru';
   const badges = {
@@ -247,6 +249,10 @@ export default function HomeDashboardTiles({
 
   const handleTile = useCallback((def) => {
     const ref = refs[def.refKey] || null;
+    if (lockedSectionKeys?.has?.(def.sectionKey)) {
+      onLockedSection?.(def.sectionKey);
+      return;
+    }
     if (def.sectionKey && openSection) {
       openSection(def.sectionKey, ref);
       return;
@@ -254,7 +260,7 @@ export default function HomeDashboardTiles({
     if (ref?.current) {
       ref.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
-  }, [openSection, refs]);
+  }, [lockedSectionKeys, onLockedSection, openSection, refs]);
 
   return (
     <div className="hdt-root">
@@ -287,6 +293,7 @@ export default function HomeDashboardTiles({
                   badge={badges[def.key] || null}
                   onClick={() => handleTile(def)}
                   showBadge={showBadges}
+                  locked={lockedSectionKeys?.has?.(def.sectionKey)}
                 />
                 <DashTile
                   def={MOVIES_DEF}
@@ -294,6 +301,7 @@ export default function HomeDashboardTiles({
                   badge={null}
                   onClick={() => handleTile(MOVIES_DEF)}
                   showBadge={showBadges}
+                  locked={lockedSectionKeys?.has?.(MOVIES_DEF.sectionKey)}
                 />
               </div>
             );
@@ -306,6 +314,7 @@ export default function HomeDashboardTiles({
               badge={badges[def.key] || null}
               onClick={() => handleTile(def)}
               showBadge={showBadges}
+              locked={lockedSectionKeys?.has?.(def.sectionKey)}
             />
           );
         })}
