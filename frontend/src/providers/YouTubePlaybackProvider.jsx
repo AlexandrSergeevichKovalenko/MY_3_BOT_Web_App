@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 export const YouTubePlaybackContext = createContext(null);
 
@@ -13,24 +13,42 @@ export const YOUTUBE_PLAYBACK_PROVIDER_SCAFFOLD = {
   provider_name: 'youtube_playback',
   refs_owned_by_app: true,
   scaffold_only: false,
-  state_removed: 5,
-  refs_removed: 0,
-  effects_removed: 0,
+  state_removed: 8,
+  refs_removed: 3,
+  effects_removed: 9,
 };
 
 export function useYouTubePlaybackController({
+  isLightweightFreeMode,
+  startupEffectiveMode,
   initData,
   resumeStorageKey,
   youtubeInputValueRef,
-  youtubeCurrentTimeRef,
+  youtubePlayerRef,
+  youtubeSubtitlesRef,
+  youtubeSectionVisible,
+  youtubeTranscriptLength,
+  youtubeTranslationEnabled,
   safeStorageSet,
+  safeStorageGet,
   extractYoutubeId,
+  setYoutubeForceShowPanel,
+  onYoutubePlaybackStarted,
 }) {
+  if (typeof isLightweightFreeMode !== 'boolean') {
+    throw new Error('useYouTubePlaybackController requires isLightweightFreeMode');
+  }
+  if (!startupEffectiveMode) {
+    throw new Error('useYouTubePlaybackController requires startupEffectiveMode');
+  }
   if (!youtubeInputValueRef || typeof youtubeInputValueRef !== 'object') {
     throw new Error('useYouTubePlaybackController requires youtubeInputValueRef');
   }
-  if (!youtubeCurrentTimeRef || typeof youtubeCurrentTimeRef !== 'object') {
-    throw new Error('useYouTubePlaybackController requires youtubeCurrentTimeRef');
+  if (!youtubePlayerRef || typeof youtubePlayerRef !== 'object') {
+    throw new Error('useYouTubePlaybackController requires youtubePlayerRef');
+  }
+  if (!youtubeSubtitlesRef || typeof youtubeSubtitlesRef !== 'object') {
+    throw new Error('useYouTubePlaybackController requires youtubeSubtitlesRef');
   }
   if (!resumeStorageKey) {
     throw new Error('useYouTubePlaybackController requires resumeStorageKey');
@@ -38,8 +56,17 @@ export function useYouTubePlaybackController({
   if (typeof safeStorageSet !== 'function') {
     throw new Error('useYouTubePlaybackController requires safeStorageSet');
   }
+  if (typeof safeStorageGet !== 'function') {
+    throw new Error('useYouTubePlaybackController requires safeStorageGet');
+  }
   if (typeof extractYoutubeId !== 'function') {
     throw new Error('useYouTubePlaybackController requires extractYoutubeId');
+  }
+  if (typeof setYoutubeForceShowPanel !== 'function') {
+    throw new Error('useYouTubePlaybackController requires setYoutubeForceShowPanel');
+  }
+  if (typeof onYoutubePlaybackStarted !== 'function') {
+    throw new Error('useYouTubePlaybackController requires onYoutubePlaybackStarted');
   }
 
   const [youtubeId, setYoutubeId] = useState('');
@@ -47,6 +74,14 @@ export function useYouTubePlaybackController({
   const [youtubeCurrentTime, setYoutubeCurrentTime] = useState(0);
   const [youtubeIsPaused, setYoutubeIsPaused] = useState(false);
   const [youtubePlaybackStarted, setYoutubePlaybackStarted] = useState(false);
+  const [youtubeOverlayEnabled, setYoutubeOverlayEnabled] = useState(false);
+  const [youtubeAppFullscreen, setYoutubeAppFullscreen] = useState(false);
+  const [youtubeTranscriptHasTiming, setYoutubeTranscriptHasTiming] = useState(true);
+  const youtubeCurrentTimeRef = useRef(0);
+  const youtubeTimeIntervalRef = useRef(null);
+  const youtubeResumeAppliedForVideoRef = useRef('');
+  const youtubeResumeLastSavedSecondRef = useRef(-1);
+  const youtubeResumeLastSyncedSecondRef = useRef(-1);
 
   const writeYoutubeResumeToLocalCache = useCallback((payload) => {
     if (!payload || typeof payload !== 'object') return;
@@ -110,20 +145,34 @@ export function useYouTubePlaybackController({
     youtubeInputValueRef,
   ]);
 
+  const resetYoutubeResumeTracking = useCallback(() => {
+    youtubeResumeAppliedForVideoRef.current = '';
+    youtubeResumeLastSavedSecondRef.current = -1;
+    youtubeResumeLastSyncedSecondRef.current = -1;
+  }, []);
+
   useEffect(() => {
+    if (isLightweightFreeMode) {
+      console.info('provider_skipped_free_mode', {
+        provider_name: 'youtube_playback_lifecycle',
+        effective_mode: startupEffectiveMode,
+      });
+      return;
+    }
     console.info('youtube_playback_state_initialized', {
       provider_name: 'youtube_playback',
       youtube_id_present: Boolean(youtubeId),
     });
     console.info('frontend_provider_extracted', {
-      provider_name: 'youtube_playback',
-      state_removed: 5,
-      refs_removed: 0,
-      effects_removed: 0,
+      provider_name: 'youtube_playback_lifecycle',
+      state_removed: 8,
+      refs_removed: 3,
+      effects_removed: 9,
     });
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isLightweightFreeMode, startupEffectiveMode, youtubeId]);
 
   useEffect(() => {
+    if (isLightweightFreeMode) return;
     console.info('youtube_playback_state_updated', {
       provider_name: 'youtube_playback',
       youtube_id_present: Boolean(youtubeId),
@@ -132,7 +181,360 @@ export function useYouTubePlaybackController({
       paused: Boolean(youtubeIsPaused),
       current_time_bucket: Math.floor(Number(youtubeCurrentTime || 0)),
     });
-  }, [youtubeCurrentTime, youtubeId, youtubeIsPaused, youtubePlaybackStarted, youtubePlayerReady]);
+  }, [isLightweightFreeMode, youtubeCurrentTime, youtubeId, youtubeIsPaused, youtubePlaybackStarted, youtubePlayerReady]);
+
+  useEffect(() => {
+    if (isLightweightFreeMode) return;
+    youtubeCurrentTimeRef.current = Number(youtubeCurrentTime || 0);
+  }, [isLightweightFreeMode, youtubeCurrentTime]);
+
+  useEffect(() => {
+    if (isLightweightFreeMode) return;
+    resetYoutubeResumeTracking();
+  }, [isLightweightFreeMode, resetYoutubeResumeTracking, youtubeId]);
+
+  useEffect(() => {
+    if (isLightweightFreeMode) return;
+    const currentSecond = Math.max(0, Math.floor(Number(youtubeCurrentTime || 0)));
+    if (youtubeId && currentSecond >= 0 && currentSecond % 3 === 0 && youtubeResumeLastSavedSecondRef.current !== currentSecond) {
+      youtubeResumeLastSavedSecondRef.current = currentSecond;
+      persistYoutubeResumeState(currentSecond);
+    }
+    if (youtubeId && currentSecond >= 0 && currentSecond % 9 === 0 && youtubeResumeLastSyncedSecondRef.current !== currentSecond) {
+      youtubeResumeLastSyncedSecondRef.current = currentSecond;
+      void syncYoutubeResumeState(currentSecond);
+    }
+
+    if (!youtubeSectionVisible && youtubeId) {
+      void syncYoutubeResumeState();
+    }
+  }, [isLightweightFreeMode, persistYoutubeResumeState, syncYoutubeResumeState, youtubeCurrentTime, youtubeId, youtubeSectionVisible]);
+
+  useEffect(() => {
+    if (isLightweightFreeMode) return undefined;
+    const onPageHide = () => {
+      void syncYoutubeResumeState(undefined, { keepalive: true });
+    };
+    window.addEventListener('pagehide', onPageHide);
+    return () => {
+      window.removeEventListener('pagehide', onPageHide);
+    };
+  }, [isLightweightFreeMode, syncYoutubeResumeState]);
+
+  useEffect(() => {
+    if (isLightweightFreeMode) return undefined;
+    if (!youtubeId) {
+      setYoutubePlayerReady(false);
+      setYoutubeCurrentTime(0);
+      setYoutubePlaybackStarted(false);
+      setYoutubeIsPaused(true);
+      setYoutubeForceShowPanel(false);
+      youtubeResumeAppliedForVideoRef.current = '';
+      if (youtubeTimeIntervalRef.current) {
+        clearInterval(youtubeTimeIntervalRef.current);
+        youtubeTimeIntervalRef.current = null;
+        console.info('youtube_playback_polling_stopped', {
+          provider_name: 'youtube_playback_lifecycle',
+          youtube_id_present: false,
+        });
+      }
+      if (youtubePlayerRef.current && youtubePlayerRef.current.destroy) {
+        youtubePlayerRef.current.destroy();
+        youtubePlayerRef.current = null;
+      }
+      return undefined;
+    }
+    if (!youtubeSectionVisible) {
+      setYoutubeIsPaused(true);
+      if (youtubeTimeIntervalRef.current) {
+        clearInterval(youtubeTimeIntervalRef.current);
+        youtubeTimeIntervalRef.current = null;
+        console.info('youtube_playback_polling_stopped', {
+          provider_name: 'youtube_playback_lifecycle',
+          youtube_id_present: true,
+        });
+      }
+      return undefined;
+    }
+
+    const ensureApiReady = () => new Promise((resolve) => {
+      if (window.YT && window.YT.Player) {
+        resolve();
+        return;
+      }
+      const existing = document.querySelector('script[data-youtube-iframe]');
+      if (existing) {
+        const handler = () => resolve();
+        window.onYouTubeIframeAPIReady = handler;
+        return;
+      }
+      const script = document.createElement('script');
+      script.src = 'https://www.youtube.com/iframe_api';
+      script.async = true;
+      script.dataset.youtubeIframe = '1';
+      window.onYouTubeIframeAPIReady = () => resolve();
+      document.body.appendChild(script);
+      console.info('youtube_player_initialized', {
+        provider_name: 'youtube_playback_lifecycle',
+        youtube_id_present: true,
+      });
+    });
+
+    let cancelled = false;
+    ensureApiReady().then(() => {
+      if (cancelled) return;
+      if (!window.YT || !window.YT.Player) return;
+      const hostNode = document.getElementById('youtube-player');
+      if (!hostNode) return;
+      if (youtubePlayerRef.current && youtubePlayerRef.current.destroy) {
+        youtubePlayerRef.current.destroy();
+      }
+      youtubePlayerRef.current = new window.YT.Player(hostNode, {
+        videoId: youtubeId,
+        playerVars: {
+          rel: 0,
+          modestbranding: 1,
+          fs: 0,
+          disablekb: 1,
+          playsinline: 1,
+        },
+        events: {
+          onReady: () => {
+            setYoutubePlayerReady(true);
+            setYoutubeIsPaused(true);
+            setYoutubePlaybackStarted(false);
+            console.info('youtube_player_ready', {
+              provider_name: 'youtube_playback_lifecycle',
+              youtube_id_present: true,
+            });
+            try {
+              const stored = safeStorageGet(resumeStorageKey) || safeStorageGet('webapp_youtube');
+              if (stored) {
+                const parsed = JSON.parse(stored);
+                const savedId = String(parsed?.id || '').trim();
+                const savedTime = Math.max(0, Number(parsed?.currentTime || 0));
+                if (
+                  savedId === youtubeId
+                  && savedTime >= 2
+                  && youtubeResumeAppliedForVideoRef.current !== youtubeId
+                ) {
+                  youtubePlayerRef.current?.seekTo?.(savedTime, true);
+                  setYoutubeCurrentTime(savedTime);
+                  youtubeResumeAppliedForVideoRef.current = youtubeId;
+                }
+              }
+            } catch (_error) {
+              // ignore
+            }
+            if (youtubeTimeIntervalRef.current) {
+              clearInterval(youtubeTimeIntervalRef.current);
+            }
+            youtubeTimeIntervalRef.current = setInterval(() => {
+              try {
+                const time = youtubePlayerRef.current?.getCurrentTime?.();
+                if (typeof time === 'number' && !Number.isNaN(time)) {
+                  setYoutubeCurrentTime(time);
+                }
+              } catch (_error) {
+                // ignore
+              }
+            }, 400);
+            console.info('youtube_playback_polling_started', {
+              provider_name: 'youtube_playback_lifecycle',
+              youtube_id_present: true,
+            });
+          },
+          onStateChange: (stateEvent) => {
+            const state = stateEvent?.data;
+            if (state === 2) {
+              setYoutubeIsPaused(true);
+              console.info('youtube_playback_paused', {
+                provider_name: 'youtube_playback_lifecycle',
+                youtube_id_present: true,
+              });
+              try {
+                const time = youtubePlayerRef.current?.getCurrentTime?.();
+                if (typeof time === 'number' && !Number.isNaN(time)) {
+                  setYoutubeCurrentTime(time);
+                  void syncYoutubeResumeState(time);
+                }
+              } catch (_error) {
+                // ignore
+              }
+            } else if (state === 1) {
+              onYoutubePlaybackStarted();
+              setYoutubeIsPaused(false);
+              setYoutubePlaybackStarted(true);
+              setYoutubeForceShowPanel(false);
+              console.info('youtube_playback_started', {
+                provider_name: 'youtube_playback_lifecycle',
+                youtube_id_present: true,
+              });
+              console.info('youtube_playback_resumed', {
+                provider_name: 'youtube_playback_lifecycle',
+                youtube_id_present: true,
+              });
+            } else if (state === 3) {
+              setYoutubeIsPaused(false);
+              console.info('youtube_playback_resumed', {
+                provider_name: 'youtube_playback_lifecycle',
+                youtube_id_present: true,
+              });
+            } else if (state === 0 || state === 5 || state === -1) {
+              setYoutubeIsPaused(true);
+            }
+          },
+        },
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      if (youtubeTimeIntervalRef.current) {
+        clearInterval(youtubeTimeIntervalRef.current);
+        youtubeTimeIntervalRef.current = null;
+        console.info('youtube_playback_polling_stopped', {
+          provider_name: 'youtube_playback_lifecycle',
+          youtube_id_present: Boolean(youtubeId),
+        });
+      }
+    };
+  }, [
+    resumeStorageKey,
+    onYoutubePlaybackStarted,
+    safeStorageGet,
+    setYoutubeForceShowPanel,
+    syncYoutubeResumeState,
+    isLightweightFreeMode,
+    youtubeId,
+    youtubePlayerRef,
+    youtubeSectionVisible,
+  ]);
+
+  useEffect(() => {
+    if (isLightweightFreeMode) return undefined;
+    if (!youtubePlayerReady || !youtubeId || !initData || !youtubePlayerRef.current?.seekTo) return undefined;
+    let cancelled = false;
+    fetch('/api/webapp/youtube/state', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData, videoId: youtubeId }),
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await response.text());
+        return response.json();
+      })
+      .then((data) => {
+        if (cancelled) return;
+        const state = data?.state;
+        const savedId = String(state?.video_id || '').trim();
+        const savedTime = Math.max(0, Number(state?.current_time_seconds || 0));
+        if (savedId !== youtubeId || savedTime < 2) return;
+        const localRaw = safeStorageGet(resumeStorageKey) || safeStorageGet('webapp_youtube');
+        let localTime = 0;
+        try {
+          const parsed = localRaw ? JSON.parse(localRaw) : null;
+          if (String(parsed?.id || '').trim() === youtubeId) {
+            localTime = Math.max(0, Number(parsed?.currentTime || 0));
+          }
+        } catch (_error) {
+          localTime = 0;
+        }
+        writeYoutubeResumeToLocalCache({
+          input: String(state?.input_text || '').trim() || `https://youtu.be/${youtubeId}`,
+          id: youtubeId,
+          currentTime: Math.max(localTime, savedTime),
+          updatedAt: Date.now(),
+        });
+        if (savedTime > (youtubeCurrentTimeRef.current + 1)) {
+          youtubePlayerRef.current?.seekTo?.(savedTime, true);
+          setYoutubeCurrentTime(savedTime);
+          youtubeResumeAppliedForVideoRef.current = youtubeId;
+        }
+      })
+      .catch(() => {
+        // ignore server resume lookup errors
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    initData,
+    isLightweightFreeMode,
+    resumeStorageKey,
+    safeStorageGet,
+    writeYoutubeResumeToLocalCache,
+    youtubeId,
+    youtubePlayerReady,
+    youtubePlayerRef,
+  ]);
+
+  useEffect(() => {
+    if (isLightweightFreeMode) return;
+    if (youtubeTranscriptLength > 0 && youtubeSubtitlesRef.current) {
+      youtubeSubtitlesRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [isLightweightFreeMode, youtubeSubtitlesRef, youtubeTranscriptLength]);
+
+  useEffect(() => {
+    if (isLightweightFreeMode) return undefined;
+    if (!youtubeAppFullscreen) return undefined;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [isLightweightFreeMode, youtubeAppFullscreen]);
+
+  useEffect(() => {
+    if (isLightweightFreeMode) return;
+    if (!youtubeAppFullscreen) {
+      setYoutubeIsPaused(false);
+    }
+  }, [isLightweightFreeMode, youtubeAppFullscreen]);
+
+  useEffect(() => {
+    if (isLightweightFreeMode) return;
+    if (!youtubeSubtitlesRef.current) return;
+    const listEl = youtubeSubtitlesRef.current.querySelector('.webapp-subtitles-list');
+    const activeEl = youtubeSubtitlesRef.current.querySelector('.webapp-subtitles-list .is-active');
+    if (listEl && activeEl) {
+      const listRect = listEl.getBoundingClientRect();
+      const activeRect = activeEl.getBoundingClientRect();
+      const offset = activeRect.top - listRect.top - listRect.height / 2 + activeRect.height / 2;
+      listEl.scrollTop += offset;
+    }
+  }, [isLightweightFreeMode, youtubeCurrentTime, youtubeSubtitlesRef, youtubeTranscriptLength]);
+
+  useEffect(() => {
+    if (isLightweightFreeMode) return undefined;
+    if (!youtubeSectionVisible) return undefined;
+    if (!youtubeSubtitlesRef.current || !youtubeTranscriptLength) return undefined;
+    const raf = requestAnimationFrame(() => {
+      const listEl = youtubeSubtitlesRef.current?.querySelector('.webapp-subtitles-list');
+      const activeEl = youtubeSubtitlesRef.current?.querySelector('.webapp-subtitles-list .is-active');
+      if (listEl && activeEl) {
+        const listRect = listEl.getBoundingClientRect();
+        const activeRect = activeEl.getBoundingClientRect();
+        const offset = activeRect.top - listRect.top - listRect.height / 2 + activeRect.height / 2;
+        listEl.scrollTop += offset;
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [isLightweightFreeMode, youtubeOverlayEnabled, youtubeSectionVisible, youtubeSubtitlesRef, youtubeTranscriptLength, youtubeTranslationEnabled]);
+
+  useEffect(() => {
+    if (isLightweightFreeMode) return;
+    const translationListRef = document.querySelector('.webapp-subtitles.is-translation .webapp-subtitles-list');
+    if (!translationListRef) return;
+    const activeEl = translationListRef.querySelector('.is-active');
+    if (activeEl) {
+      const listRect = translationListRef.getBoundingClientRect();
+      const activeRect = activeEl.getBoundingClientRect();
+      const offset = activeRect.top - listRect.top - listRect.height / 2 + activeRect.height / 2;
+      translationListRef.scrollTop += offset;
+    }
+  }, [isLightweightFreeMode, youtubeCurrentTime, youtubeTranscriptLength, youtubeTranslationEnabled]);
 
   return {
     youtubeId,
@@ -145,7 +547,15 @@ export function useYouTubePlaybackController({
     setYoutubeIsPaused,
     youtubePlaybackStarted,
     setYoutubePlaybackStarted,
+    youtubeOverlayEnabled,
+    setYoutubeOverlayEnabled,
+    youtubeAppFullscreen,
+    setYoutubeAppFullscreen,
+    youtubeTranscriptHasTiming,
+    setYoutubeTranscriptHasTiming,
     youtubeResumeStorageKey: resumeStorageKey,
+    youtubeCurrentTimeRef,
+    resetYoutubeResumeTracking,
     writeYoutubeResumeToLocalCache,
     persistYoutubeResumeState,
     syncYoutubeResumeState,
@@ -160,6 +570,9 @@ export function YouTubePlaybackProvider({
   youtubeCurrentTime,
   youtubeIsPaused,
   youtubePlaybackStarted,
+  youtubeOverlayEnabled,
+  youtubeAppFullscreen,
+  youtubeTranscriptHasTiming,
   youtubeTranscriptLength,
   youtubeResumeStorageKey,
   persistYoutubeResumeState,
@@ -191,6 +604,9 @@ export function YouTubePlaybackProvider({
     youtubeCurrentTime: Number(requirePlaybackValue('youtubeCurrentTime', youtubeCurrentTime) || 0),
     youtubeIsPaused: Boolean(requirePlaybackValue('youtubeIsPaused', youtubeIsPaused)),
     youtubePlaybackStarted: Boolean(requirePlaybackValue('youtubePlaybackStarted', youtubePlaybackStarted)),
+    youtubeOverlayEnabled: Boolean(requirePlaybackValue('youtubeOverlayEnabled', youtubeOverlayEnabled)),
+    youtubeAppFullscreen: Boolean(requirePlaybackValue('youtubeAppFullscreen', youtubeAppFullscreen)),
+    youtubeTranscriptHasTiming: Boolean(requirePlaybackValue('youtubeTranscriptHasTiming', youtubeTranscriptHasTiming)),
     youtubeTranscriptLength: Number(requirePlaybackValue('youtubeTranscriptLength', youtubeTranscriptLength) || 0),
     youtubeResumeStorageKey: requirePlaybackValue('youtubeResumeStorageKey', youtubeResumeStorageKey),
     persistYoutubeResumeState: requirePlaybackValue('persistYoutubeResumeState', persistYoutubeResumeState),
@@ -204,6 +620,9 @@ export function YouTubePlaybackProvider({
     youtubeCurrentTime,
     youtubeIsPaused,
     youtubePlaybackStarted,
+    youtubeOverlayEnabled,
+    youtubeAppFullscreen,
+    youtubeTranscriptHasTiming,
     youtubePlayerReady,
     youtubeResumeStorageKey,
     youtubeTranscriptLength,

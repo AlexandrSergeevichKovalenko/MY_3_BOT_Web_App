@@ -18,6 +18,9 @@ function providerProps(overrides = {}) {
     youtubeCurrentTime: 12,
     youtubeIsPaused: false,
     youtubePlaybackStarted: true,
+    youtubeOverlayEnabled: true,
+    youtubeAppFullscreen: false,
+    youtubeTranscriptHasTiming: true,
     youtubeTranscriptLength: 3,
     youtubeResumeStorageKey: 'webapp_youtube_resume_test',
     persistYoutubeResumeState: vi.fn(),
@@ -38,6 +41,7 @@ function PlaybackProbe() {
       context.youtubeId,
       String(context.youtubePlayerReady),
       String(context.youtubePlaybackStarted),
+      String(context.youtubeOverlayEnabled),
       String(context.refsOwnedByApp),
     ].join('|'),
   );
@@ -70,7 +74,7 @@ describe('YouTubePlaybackProvider scaffold', () => {
       providerProps(),
       React.createElement(PlaybackProbe),
     ));
-    expect(html).toContain('playback|abc123def45|true|true|true');
+    expect(html).toContain('playback|abc123def45|true|true|true|true');
   });
 
   it('fails explicitly when required values are missing', () => {
@@ -96,7 +100,9 @@ describe('YouTubePlaybackProvider scaffold', () => {
       provider_name: 'youtube_playback',
       refs_owned_by_app: true,
       scaffold_only: false,
-      state_removed: 5,
+      state_removed: 8,
+      refs_removed: 3,
+      effects_removed: 9,
     }));
   });
 
@@ -110,20 +116,21 @@ describe('YouTubePlaybackProvider scaffold', () => {
     expect(appSource).toContain('useYouTubePlaybackController');
   });
 
-  it('App.jsx still owns playback refs and player lifecycle', () => {
+  it('App.jsx keeps cross-feature refs but no longer owns moved lifecycle refs', () => {
     const appSource = fs.readFileSync(path.resolve(process.cwd(), 'src/App.jsx'), 'utf8');
     expect(appSource).toContain('const youtubePlayerRef = useRef(null)');
-    expect(appSource).toContain('const youtubeTimeIntervalRef = useRef(null)');
+    expect(appSource).not.toContain('const youtubeTimeIntervalRef = useRef(null)');
+    expect(appSource).not.toContain('const youtubeCurrentTimeRef = useRef(0)');
+    expect(appSource).not.toContain('youtubeResumeAppliedForVideoRef');
     expect(appSource).toContain('const youtubeTodayTimerSyncInFlightRef = useRef(false)');
-    expect(appSource).toContain('youtubePlayerRef.current = new window.YT.Player');
   });
 
-  it('App.jsx wraps YouTube section with playback scaffold without moving player lifecycle', () => {
+  it('App.jsx wraps YouTube section with playback provider without owning player lifecycle', () => {
     const appSource = fs.readFileSync(path.resolve(process.cwd(), 'src/App.jsx'), 'utf8');
     expect(appSource).toContain('<YouTubePlaybackProvider');
     expect(appSource).toContain('refsOwnedByApp={true}');
-    expect(appSource).toContain('new window.YT.Player');
-    expect(appSource).toContain('youtubePlayerRef.current = new window.YT.Player');
+    expect(appSource).not.toContain('new window.YT.Player');
+    expect(appSource).not.toContain('youtubePlayerRef.current = new window.YT.Player');
   });
 
   it('playback controller owns state and resume callbacks', () => {
@@ -132,9 +139,13 @@ describe('YouTubePlaybackProvider scaffold', () => {
     expect(providerSource).toContain('const [youtubeId, setYoutubeId] = useState');
     expect(providerSource).toContain('const [youtubePlayerReady, setYoutubePlayerReady] = useState');
     expect(providerSource).toContain('const [youtubeCurrentTime, setYoutubeCurrentTime] = useState');
+    expect(providerSource).toContain('const youtubeTimeIntervalRef = useRef(null)');
+    expect(providerSource).toContain('youtubePlayerRef.current = new window.YT.Player');
     expect(providerSource).toContain('const persistYoutubeResumeState = useCallback');
     expect(providerSource).toContain('const syncYoutubeResumeState = useCallback');
     expect(providerSource).toContain('youtube_resume_state_saved');
     expect(providerSource).toContain('youtube_playback_state_initialized');
+    expect(providerSource).toContain('youtube_playback_polling_started');
+    expect(providerSource).toContain('youtube_player_ready');
   });
 });

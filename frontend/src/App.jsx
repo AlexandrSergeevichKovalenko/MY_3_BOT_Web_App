@@ -19,7 +19,9 @@ import { PlanningContext } from './providers/PlanningProvider';
 import PlanningSection from './components/PlanningSection';
 import { YouTubeProvider } from './providers/YouTubeProvider';
 import { YouTubePlaybackProvider, useYouTubePlaybackController } from './providers/YouTubePlaybackProvider';
+import { YouTubeMoviesProvider } from './providers/YouTubeMoviesProvider';
 import YouTubeSection from './components/YouTubeSection';
+import YouTubeMoviesSection from './components/YouTubeMoviesSection';
 
 // True lazy imports — chunks download only when component is first rendered.
 // Free users never render these sections so the vendor chunks stay unloaded.
@@ -4180,17 +4182,9 @@ function AppInner() {
   const [youtubeTranscriptLoading, setYoutubeTranscriptLoading] = useState(false);
   const [youtubeTranslations, setYoutubeTranslations] = useState({});
   const [youtubeTranslationEnabled, setYoutubeTranslationEnabled] = useState(false);
-  const [youtubeOverlayEnabled, setYoutubeOverlayEnabled] = useState(false);
-  const [youtubeAppFullscreen, setYoutubeAppFullscreen] = useState(false);
   const [youtubeForceShowPanel, setYoutubeForceShowPanel] = useState(false);
   const [youtubeManualOverride, setYoutubeManualOverride] = useState(false);
-  const [youtubeTranscriptHasTiming, setYoutubeTranscriptHasTiming] = useState(true);
   const [youtubeBackSection, setYoutubeBackSection] = useState('');
-  const [movies, setMovies] = useState([]);
-  const [moviesLoading, setMoviesLoading] = useState(false);
-  const [moviesError, setMoviesError] = useState('');
-  const [moviesCollapsed, setMoviesCollapsed] = useState(false);
-  const [moviesLanguageFilter, setMoviesLanguageFilter] = useState('all');
   const [youtubeSettingsOpen, setYoutubeSettingsOpen] = useState(false);
   const [youtubeDictOpen, setYoutubeDictOpen] = useState(false);
   const [youtubeDictQuery, setYoutubeDictQuery] = useState('');
@@ -4846,16 +4840,13 @@ function AppInner() {
   const translationsRef = useRef(null);
   const youtubeRef = useRef(null);
   const moviesRef = useRef(null);
+  const youtubeMoviesCatalogTitleByIdRef = useRef(new Map());
+  const youtubeMoviesInvalidateCatalogRef = useRef(null);
   const youtubeSubtitlesRef = useRef(null);
   const youtubePlayerRef = useRef(null);
   const youtubePausedBySelectionRef = useRef(false);
   const youtubePlayerShellRef = useRef(null);
-  const youtubeTimeIntervalRef = useRef(null);
-  const youtubeCurrentTimeRef = useRef(0);
   const youtubeInputValueRef = useRef('');
-  const youtubeResumeAppliedForVideoRef = useRef('');
-  const youtubeResumeLastSavedSecondRef = useRef(-1);
-  const youtubeResumeLastSyncedSecondRef = useRef(-1);
   const youtubePhraseGestureRef = useRef(null);
   const youtubeDragSelectionMetaRef = useRef(null);
   const youtubeSuppressWordTapRef = useRef(0);
@@ -5098,28 +5089,47 @@ function AppInner() {
     'У вас уже есть незавершённая сессия. Сначала завершите её кнопкой «Завершить» или переведите оставшиеся предложения. Все показанные, но не переведённые предложения ухудшат вашу статистику и итоговый балл.',
     'Du hast bereits eine unvollstaendige Session. Beende sie zuerst mit „Abschliessen“ oder uebersetze die restlichen Saetze. Alle gezeigten, aber nicht uebersetzten Saetze verschlechtern deine Statistik und deinen Gesamtscore.'
   );
+  const youtubePlaybackSectionVisible = !flashcardsOnly && selectedSections.has('youtube');
+  const handleYoutubePlaybackStartedLifecycle = useCallback(() => {
+    youtubePausedBySelectionRef.current = false;
+  }, []);
   const {
     youtubeId,
     setYoutubeId,
     youtubePlayerReady,
-    setYoutubePlayerReady,
     youtubeCurrentTime,
     setYoutubeCurrentTime,
     youtubeIsPaused,
     setYoutubeIsPaused,
     youtubePlaybackStarted,
     setYoutubePlaybackStarted,
+    youtubeOverlayEnabled,
+    setYoutubeOverlayEnabled,
+    youtubeAppFullscreen,
+    setYoutubeAppFullscreen,
+    youtubeTranscriptHasTiming,
+    setYoutubeTranscriptHasTiming,
     youtubeResumeStorageKey,
     writeYoutubeResumeToLocalCache,
     persistYoutubeResumeState,
     syncYoutubeResumeState,
+    resetYoutubeResumeTracking,
   } = useYouTubePlaybackController({
+    isLightweightFreeMode,
+    startupEffectiveMode,
     initData,
     resumeStorageKey: youtubeResumeStorageKeyBase,
     youtubeInputValueRef,
-    youtubeCurrentTimeRef,
+    youtubePlayerRef,
+    youtubeSubtitlesRef,
+    youtubeSectionVisible: youtubePlaybackSectionVisible,
+    youtubeTranscriptLength: youtubeTranscript.length,
+    youtubeTranslationEnabled,
     safeStorageSet,
+    safeStorageGet,
     extractYoutubeId,
+    setYoutubeForceShowPanel,
+    onYoutubePlaybackStarted: handleYoutubePlaybackStartedLifecycle,
   });
   const flushTranslationDraftAndroidDebugSummary = useCallback((reason = 'timer') => {
     if (!androidTranslationDraftDebugConfig.enabled) {
@@ -5240,8 +5250,6 @@ function AppInner() {
     srsRevealElapsedSec: Number(srsRevealElapsedSec || 0),
     todayTimerNowSec: Math.floor(Number(todayTimerNowMs || 0) / 1000),
     weeklySummaryModalOpen: Boolean(weeklySummaryModalOpen),
-    analyticsLoading: Boolean(analyticsLoading),
-    analyticsHasSummary: Boolean(analyticsSummary),
     supportLoading: Boolean(supportLoading),
     supportDraftLength: String(supportDraft || '').length,
     supportMessagesLength: supportMessages.length,
@@ -8823,6 +8831,40 @@ function AppInner() {
     finishVideoRecommendation: (payload) => executeYoutubeCommand('finish_video_recommendation', payload),
   }), [executeYoutubeCommand]);
 
+  const registerYoutubeMoviesInvalidateCatalog = useCallback((handler) => {
+    if (handler !== null && typeof handler !== 'function') {
+      throw new Error('registerYoutubeMoviesInvalidateCatalog requires function or null');
+    }
+    youtubeMoviesInvalidateCatalogRef.current = handler;
+  }, []);
+
+  const handleYoutubeMoviesCatalogUpdated = useCallback((items) => {
+    if (!Array.isArray(items)) {
+      throw new Error('handleYoutubeMoviesCatalogUpdated requires items array');
+    }
+    const next = new Map();
+    items.forEach((item) => {
+      const videoId = String(item?.video_id || '').trim();
+      const title = String(item?.title || '').trim();
+      if (videoId && title) {
+        next.set(videoId, title);
+      }
+    });
+    youtubeMoviesCatalogTitleByIdRef.current = next;
+  }, []);
+
+  const handleYoutubeMovieSelected = useCallback((item) => {
+    const videoId = String(item?.video_id || '').trim();
+    if (!videoId) {
+      throw new Error('handleYoutubeMovieSelected requires item.video_id');
+    }
+    youtubeCommands.requestVideoSelection({
+      source_feature: 'movies',
+      video_id: videoId,
+    });
+    setTimeout(() => scrollToRef(youtubeRef, { block: 'start' }), 120);
+  }, [scrollToRef, youtubeCommands]);
+
   const openSkillTrainingVideo = () => {
     const video = skillTrainingData?.video && typeof skillTrainingData.video === 'object' ? skillTrainingData.video : null;
     const videoUrl = String(video?.video_url || '').trim();
@@ -11814,9 +11856,6 @@ function AppInner() {
       setFlashcardPreviewActive(false);
       setFlashcardExitSummary(false);
     }
-    if (key === 'movies') {
-      setMoviesCollapsed(false);
-    }
     setSelectedSections(new Set([key]));
     setTimeout(() => {
       scrollToRef(ref, { center: key === 'flashcards', block: 'start' });
@@ -12015,12 +12054,10 @@ function AppInner() {
       next.push('skill_training');
     }
     setSelectedSections(new Set(next));
-    setMoviesCollapsed(false);
   };
 
   const hideAllSections = () => {
     setSelectedSections(new Set());
-    setMoviesCollapsed(false);
   };
 
   const dismissWeeklySummaryModal = useCallback(() => {
@@ -12070,9 +12107,6 @@ function AppInner() {
       setFlashcardSettingsModalMode(null);
       setFlashcardSessionActive(false);
       setFlashcardExitSummary(false);
-    }
-    if (key === 'movies') {
-      setMoviesCollapsed(false);
     }
     if (!menuMultiSelect) {
       setMenuOpen(false);
@@ -17036,7 +17070,7 @@ function AppInner() {
       youtubePlayerRef.current?.getVideoData?.()?.title || ''
     );
     const fromCatalog = normalizeSelectionText(
-      movies.find((item) => item.video_id === youtubeId)?.title || ''
+      youtubeMoviesCatalogTitleByIdRef.current.get(String(youtubeId || '').trim()) || ''
     );
     const rawTitle = fromPlayer || fromCatalog;
     if (!rawTitle) {
@@ -17177,7 +17211,6 @@ function AppInner() {
     }
     return { sourceText: source, targetText: target };
   };
-  const getMovieLanguageCode = (item) => normalizeLangCode(item?.language || '').slice(0, 2) || 'unknown';
   const resolveLanguagePairForUI = (pair) => {
     if (GERMAN_ONLY_MODE) {
       return { ...GERMAN_ONLY_PAIR };
@@ -17242,17 +17275,6 @@ function AppInner() {
     const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
     return String(pair.source_lang || languageProfile?.native_language || 'ru').toUpperCase();
   };
-  const movieLanguageOptions = useMemo(() => {
-    const set = new Set();
-    movies.forEach((item) => set.add(getMovieLanguageCode(item)));
-    return Array.from(set)
-      .filter(Boolean)
-      .sort();
-  }, [movies]);
-  const moviesFiltered = useMemo(() => {
-    if (moviesLanguageFilter === 'all') return movies;
-    return movies.filter((item) => getMovieLanguageCode(item) === moviesLanguageFilter);
-  }, [movies, moviesLanguageFilter]);
   function getDictionarySourceTarget(item, direction = dictionaryDirection) {
     if (!item) return { sourceText: '', targetText: '' };
     const directionParts = String(direction || '').trim().toLowerCase().split('-', 2);
@@ -24010,10 +24032,8 @@ function AppInner() {
     youtubeInputValueRef.current = '';
     safeStorageRemove(youtubeResumeStorageKey);
     safeStorageRemove('webapp_youtube');
-    youtubeResumeAppliedForVideoRef.current = '';
-    youtubeResumeLastSavedSecondRef.current = -1;
-    youtubeResumeLastSyncedSecondRef.current = -1;
-  }, [youtubeResumeStorageKey]);
+    resetYoutubeResumeTracking();
+  }, [resetYoutubeResumeTracking, youtubeResumeStorageKey]);
 
   const handleYoutubeVideoResolved = useCallback(({ input, id }) => {
     const trimmed = String(input || '').trim();
@@ -24064,284 +24084,6 @@ function AppInner() {
   }, [youtubeSectionVisible]);
 
   useEffect(() => {
-    if (!isWebAppMode || flashcardsOnly || !initData) return;
-    if (!isSectionVisible('movies')) return;
-    if (movies.length > 0) return;
-    let cancelled = false;
-    setMoviesLoading(true);
-    setMoviesError('');
-    fetch('/api/webapp/youtube/catalog', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ initData, limit: 60 }),
-    })
-      .then(async (res) => {
-        if (!res.ok) throw new Error(await res.text());
-        return res.json();
-      })
-      .then((data) => {
-        if (cancelled) return;
-        setMovies(Array.isArray(data.items) ? data.items : []);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setMoviesError(`${tr('Ошибка каталога', 'Katalogfehler')}: ${err.message}`);
-      })
-      .finally(() => {
-        if (!cancelled) setMoviesLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [isWebAppMode, flashcardsOnly, initData, selectedSections, movies.length]);
-
-  useEffect(() => {
-    const learning = normalizeLangCode(languageProfile?.learning_language);
-    if (!learning) return;
-    if (movieLanguageOptions.includes(learning)) {
-      setMoviesLanguageFilter(learning);
-    } else {
-      setMoviesLanguageFilter('all');
-    }
-  }, [languageProfile?.learning_language, movieLanguageOptions]);
-
-  useEffect(() => {
-    youtubeCurrentTimeRef.current = Number(youtubeCurrentTime || 0);
-  }, [youtubeCurrentTime]);
-
-  useEffect(() => {
-    youtubeResumeLastSavedSecondRef.current = -1;
-    youtubeResumeLastSyncedSecondRef.current = -1;
-    youtubeResumeAppliedForVideoRef.current = '';
-  }, [youtubeId]);
-
-  useEffect(() => {
-    const currentSecond = Math.max(0, Math.floor(Number(youtubeCurrentTime || 0)));
-    if (youtubeId && currentSecond >= 0 && currentSecond % 3 === 0 && youtubeResumeLastSavedSecondRef.current !== currentSecond) {
-      youtubeResumeLastSavedSecondRef.current = currentSecond;
-      persistYoutubeResumeState(currentSecond);
-    }
-    if (youtubeId && currentSecond >= 0 && currentSecond % 9 === 0 && youtubeResumeLastSyncedSecondRef.current !== currentSecond) {
-      youtubeResumeLastSyncedSecondRef.current = currentSecond;
-      void syncYoutubeResumeState(currentSecond);
-    }
-
-    if (!youtubeSectionVisible && youtubeId) {
-      void syncYoutubeResumeState();
-    }
-  }, [persistYoutubeResumeState, syncYoutubeResumeState, youtubeCurrentTime, youtubeId, youtubeSectionVisible]);
-
-  useEffect(() => {
-    const onPageHide = () => {
-      void syncYoutubeResumeState(undefined, { keepalive: true });
-    };
-    window.addEventListener('pagehide', onPageHide);
-    return () => {
-      window.removeEventListener('pagehide', onPageHide);
-    };
-  }, [syncYoutubeResumeState]);
-
-  useEffect(() => {
-    if (!youtubeId) {
-      setYoutubePlayerReady(false);
-      setYoutubeCurrentTime(0);
-      setYoutubePlaybackStarted(false);
-      setYoutubeIsPaused(true);
-      setYoutubeForceShowPanel(false);
-      youtubeResumeAppliedForVideoRef.current = '';
-      if (youtubeTimeIntervalRef.current) {
-        clearInterval(youtubeTimeIntervalRef.current);
-        youtubeTimeIntervalRef.current = null;
-      }
-      if (youtubePlayerRef.current && youtubePlayerRef.current.destroy) {
-        youtubePlayerRef.current.destroy();
-        youtubePlayerRef.current = null;
-      }
-      return;
-    }
-    if (!youtubeSectionVisible) {
-      setYoutubeIsPaused(true);
-      if (youtubeTimeIntervalRef.current) {
-        clearInterval(youtubeTimeIntervalRef.current);
-        youtubeTimeIntervalRef.current = null;
-      }
-      return;
-    }
-
-    const ensureApiReady = () => new Promise((resolve) => {
-      if (window.YT && window.YT.Player) {
-        resolve();
-        return;
-      }
-      const existing = document.querySelector('script[data-youtube-iframe]');
-      if (existing) {
-        const handler = () => resolve();
-        window.onYouTubeIframeAPIReady = handler;
-        return;
-      }
-      const script = document.createElement('script');
-      script.src = 'https://www.youtube.com/iframe_api';
-      script.async = true;
-      script.dataset.youtubeIframe = '1';
-      window.onYouTubeIframeAPIReady = () => resolve();
-      document.body.appendChild(script);
-    });
-
-    ensureApiReady().then(() => {
-      if (!window.YT || !window.YT.Player) return;
-      const hostNode = document.getElementById('youtube-player');
-      if (!hostNode) return;
-      if (youtubePlayerRef.current && youtubePlayerRef.current.destroy) {
-        youtubePlayerRef.current.destroy();
-      }
-      youtubePlayerRef.current = new window.YT.Player(hostNode, {
-        videoId: youtubeId,
-        playerVars: {
-          rel: 0,
-          modestbranding: 1,
-          fs: 0,
-          disablekb: 1,
-          playsinline: 1,
-        },
-        events: {
-          onReady: () => {
-            setYoutubePlayerReady(true);
-            setYoutubeIsPaused(true);
-            setYoutubePlaybackStarted(false);
-            try {
-              const stored = safeStorageGet(youtubeResumeStorageKey) || safeStorageGet('webapp_youtube');
-              if (stored) {
-                const parsed = JSON.parse(stored);
-                const savedId = String(parsed?.id || '').trim();
-                const savedTime = Math.max(0, Number(parsed?.currentTime || 0));
-                if (
-                  savedId === youtubeId
-                  && savedTime >= 2
-                  && youtubeResumeAppliedForVideoRef.current !== youtubeId
-                ) {
-                  youtubePlayerRef.current?.seekTo?.(savedTime, true);
-                  setYoutubeCurrentTime(savedTime);
-                  youtubeResumeAppliedForVideoRef.current = youtubeId;
-                }
-              }
-            } catch (_error) {
-              // ignore
-            }
-            if (youtubeTimeIntervalRef.current) {
-              clearInterval(youtubeTimeIntervalRef.current);
-            }
-            youtubeTimeIntervalRef.current = setInterval(() => {
-              try {
-                const time = youtubePlayerRef.current?.getCurrentTime?.();
-                if (typeof time === 'number' && !Number.isNaN(time)) {
-                  setYoutubeCurrentTime(time);
-                }
-              } catch (error) {
-                // ignore
-              }
-            }, 400);
-          },
-          onStateChange: (stateEvent) => {
-            const state = stateEvent?.data;
-            // YT.PlayerState.PAUSED === 2
-            if (state === 2) {
-              setYoutubeIsPaused(true);
-              try {
-                const time = youtubePlayerRef.current?.getCurrentTime?.();
-                if (typeof time === 'number' && !Number.isNaN(time)) {
-                  setYoutubeCurrentTime(time);
-                  void syncYoutubeResumeState(time);
-                }
-              } catch (error) {
-                // ignore
-              }
-            } else if (state === 1) {
-              youtubePausedBySelectionRef.current = false;
-              setYoutubeIsPaused(false);
-              setYoutubePlaybackStarted(true);
-              setYoutubeForceShowPanel(false);
-            } else if (state === 3) {
-              setYoutubeIsPaused(false);
-            } else if (state === 0 || state === 5 || state === -1) {
-              setYoutubeIsPaused(true);
-            }
-          },
-        },
-      });
-    });
-
-    return () => {
-      if (youtubeTimeIntervalRef.current) {
-        clearInterval(youtubeTimeIntervalRef.current);
-        youtubeTimeIntervalRef.current = null;
-      }
-    };
-  }, [persistYoutubeResumeState, syncYoutubeResumeState, youtubeId, youtubeResumeStorageKey, youtubeSectionVisible]);
-
-  useEffect(() => {
-    if (!youtubePlayerReady || !youtubeId || !initData || !youtubePlayerRef.current?.seekTo) return;
-    let cancelled = false;
-    fetch('/api/webapp/youtube/state', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ initData, videoId: youtubeId }),
-    })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(await response.text());
-        return response.json();
-      })
-      .then((data) => {
-        if (cancelled) return;
-        const state = data?.state;
-        const savedId = String(state?.video_id || '').trim();
-        const savedTime = Math.max(0, Number(state?.current_time_seconds || 0));
-        if (savedId !== youtubeId || savedTime < 2) return;
-        const localRaw = safeStorageGet(youtubeResumeStorageKey) || safeStorageGet('webapp_youtube');
-        let localTime = 0;
-        try {
-          const parsed = localRaw ? JSON.parse(localRaw) : null;
-          if (String(parsed?.id || '').trim() === youtubeId) {
-            localTime = Math.max(0, Number(parsed?.currentTime || 0));
-          }
-        } catch (_error) {
-          localTime = 0;
-        }
-        writeYoutubeResumeToLocalCache({
-          input: String(state?.input_text || '').trim() || `https://youtu.be/${youtubeId}`,
-          id: youtubeId,
-          currentTime: Math.max(localTime, savedTime),
-          updatedAt: Date.now(),
-        });
-        if (savedTime > (youtubeCurrentTimeRef.current + 1)) {
-          youtubePlayerRef.current?.seekTo?.(savedTime, true);
-          setYoutubeCurrentTime(savedTime);
-          youtubeResumeAppliedForVideoRef.current = youtubeId;
-        }
-      })
-      .catch(() => {
-        // ignore server resume lookup errors
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [initData, writeYoutubeResumeToLocalCache, youtubeId, youtubePlayerReady, youtubeResumeStorageKey]);
-
-  useEffect(() => {
-    if (youtubeTranscript.length > 0 && youtubeSubtitlesRef.current) {
-      youtubeSubtitlesRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-  }, [youtubeTranscript.length]);
-
-  useEffect(() => {
-    if (!youtubeAppFullscreen) return undefined;
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = prevOverflow;
-    };
-  }, [youtubeAppFullscreen]);
-
-  useEffect(() => {
     if (youtubeAppFullscreen) return;
     clearSelection();
   }, [youtubeAppFullscreen]);
@@ -24385,58 +24127,12 @@ function AppInner() {
     };
   }, [selectionGptOpen]);
 
-  useEffect(() => {
-    if (!youtubeAppFullscreen) {
-      setYoutubeIsPaused(false);
-    }
-  }, [youtubeAppFullscreen]);
-
   useEffect(() => () => {
     if (inlineToastTimeoutRef.current) {
       clearTimeout(inlineToastTimeoutRef.current);
       inlineToastTimeoutRef.current = null;
     }
   }, []);
-
-  useEffect(() => {
-    if (!youtubeSubtitlesRef.current) return;
-    const listEl = youtubeSubtitlesRef.current.querySelector('.webapp-subtitles-list');
-    const activeEl = youtubeSubtitlesRef.current.querySelector('.webapp-subtitles-list .is-active');
-    if (listEl && activeEl) {
-      const listRect = listEl.getBoundingClientRect();
-      const activeRect = activeEl.getBoundingClientRect();
-      const offset = activeRect.top - listRect.top - listRect.height / 2 + activeRect.height / 2;
-      listEl.scrollTop += offset;
-    }
-  }, [youtubeCurrentTime, youtubeTranscript.length]);
-
-  useEffect(() => {
-    if (!youtubeSectionVisible) return;
-    if (!youtubeSubtitlesRef.current || !youtubeTranscript.length) return;
-    const raf = requestAnimationFrame(() => {
-      const listEl = youtubeSubtitlesRef.current?.querySelector('.webapp-subtitles-list');
-      const activeEl = youtubeSubtitlesRef.current?.querySelector('.webapp-subtitles-list .is-active');
-      if (listEl && activeEl) {
-        const listRect = listEl.getBoundingClientRect();
-        const activeRect = activeEl.getBoundingClientRect();
-        const offset = activeRect.top - listRect.top - listRect.height / 2 + activeRect.height / 2;
-        listEl.scrollTop += offset;
-      }
-    });
-    return () => cancelAnimationFrame(raf);
-  }, [youtubeSectionVisible, youtubeTranscript.length, youtubeTranslationEnabled, youtubeOverlayEnabled]);
-
-  useEffect(() => {
-    const translationListRef = document.querySelector('.webapp-subtitles.is-translation .webapp-subtitles-list');
-    if (!translationListRef) return;
-    const activeEl = translationListRef.querySelector('.is-active');
-    if (activeEl) {
-      const listRect = translationListRef.getBoundingClientRect();
-      const activeRect = activeEl.getBoundingClientRect();
-      const offset = activeRect.top - listRect.top - listRect.height / 2 + activeRect.height / 2;
-      translationListRef.scrollTop += offset;
-    }
-  }, [youtubeCurrentTime, youtubeTranscript.length, youtubeTranslationEnabled]);
 
   useEffect(() => {
     if (!youtubeTranslationEnabled) return;
@@ -26785,6 +26481,9 @@ function AppInner() {
                     youtubeCurrentTime={youtubeCurrentTime}
                     youtubeIsPaused={youtubeIsPaused}
                     youtubePlaybackStarted={youtubePlaybackStarted}
+                    youtubeOverlayEnabled={youtubeOverlayEnabled}
+                    youtubeAppFullscreen={youtubeAppFullscreen}
+                    youtubeTranscriptHasTiming={youtubeTranscriptHasTiming}
                     youtubeTranscriptLength={youtubeTranscript.length}
                     youtubeResumeStorageKey={youtubeResumeStorageKey}
                     persistYoutubeResumeState={persistYoutubeResumeState}
@@ -26815,7 +26514,12 @@ function AppInner() {
                     onYoutubeInputChanged={handleYoutubeInputChanged}
                     onYoutubeInputCleared={handleYoutubeInputCleared}
                     onYoutubeVideoResolved={handleYoutubeVideoResolved}
-                    onManualTranscriptSaved={() => setMovies([])}
+                    onManualTranscriptSaved={() => {
+                      const invalidateCatalog = youtubeMoviesInvalidateCatalogRef.current;
+                      if (typeof invalidateCatalog === 'function') {
+                        invalidateCatalog();
+                      }
+                    }}
                     pendingCommand={youtubePendingCommand}
                     onPendingCommandHandled={(requestId) => {
                       setYoutubePendingCommand((current) => (
@@ -29003,74 +28707,26 @@ function AppInner() {
               </PerfProfiler>
             )}
 
-            {!flashcardsOnly && isSectionVisible('movies') && !moviesCollapsed && (
-              <section className="webapp-movies" ref={moviesRef}>
-                <div className="webapp-section-title webapp-section-title-with-logo">
-                  <h2>{tr('Фильмы', 'Filme')}</h2>
-                  <p>{tr('Видео с доступными субтитрами, сохранённые в каталоге.', 'Videos mit verfuegbaren Untertiteln im Katalog.')}</p>
-                  <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
-                </div>
-                {moviesLoading && <div className="webapp-muted">{tr('Загружаем каталог...', 'Katalog wird geladen...')}</div>}
-                {moviesError && <div className="webapp-error">{moviesError}</div>}
-                {!moviesLoading && !moviesError && movies.length === 0 && (
-                  <div className="webapp-muted">{tr('Пока нет сохранённых видео.', 'Noch keine gespeicherten Videos.')}</div>
-                )}
-                {!moviesLoading && movieLanguageOptions.length > 0 && (
-                  <div className="movies-language-filter">
-                    <button
-                      type="button"
-                      className={`movies-filter-chip ${moviesLanguageFilter === 'all' ? 'is-active' : ''}`}
-                      onClick={() => setMoviesLanguageFilter('all')}
-                    >
-                      {tr('Все', 'Alle')}
-                    </button>
-                    {movieLanguageOptions.map((code) => (
-                      <button
-                        type="button"
-                        key={code}
-                        className={`movies-filter-chip ${moviesLanguageFilter === code ? 'is-active' : ''}`}
-                        onClick={() => setMoviesLanguageFilter(code)}
-                      >
-                        {code.toUpperCase()}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {!moviesLoading && moviesFiltered.length > 0 && (
-                  <div className="movies-grid">
-                    {moviesFiltered.map((item) => (
-                      <button
-                        type="button"
-                        key={item.video_id}
-                        className="movie-card"
-                        onClick={() => {
-                          youtubeCommands.requestVideoSelection({
-                            source_feature: 'movies',
-                            video_id: item.video_id,
-                          });
-                          setMoviesCollapsed(true);
-                          setTimeout(() => scrollToRef(youtubeRef, { block: 'start' }), 120);
-                        }}
-                      >
-                        <div className="movie-thumb">
-                          <img src={item.thumbnail} alt={item.title} loading="lazy" />
-                        </div>
-                        <div className="movie-meta">
-                          <div className="movie-title">{item.title}</div>
-                          <div className="movie-subtitle">
-                            {item.author ? `${item.author} • ` : ''}
-                            {(item.language ? `${String(item.language).toUpperCase()} • ` : '')}
-                            {item.items_count ? `${item.items_count} ${tr('строк', 'Zeilen')}` : tr('Субтитры', 'Untertitel')}
-                          </div>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {!moviesLoading && movies.length > 0 && moviesFiltered.length === 0 && (
-                  <div className="webapp-muted">{tr('Для выбранного языка пока нет фильмов.', 'Fuer die gewaehlt Sprache gibt es noch keine Videos.')}</div>
-                )}
-              </section>
+            {!flashcardsOnly && isSectionVisible('movies') && (
+              <YouTubeMoviesProvider
+                isLightweightFreeMode={isLightweightFreeMode}
+                startupEffectiveMode={startupEffectiveMode}
+                isWebAppMode={isWebAppMode}
+                initData={initData}
+                initDataMissingMsg={initDataMissingMsg}
+                languageProfile={languageProfile}
+                normalizeLangCode={normalizeLangCode}
+                tr={tr}
+                onMovieSelected={handleYoutubeMovieSelected}
+                onCatalogUpdated={handleYoutubeMoviesCatalogUpdated}
+                registerInvalidateCatalog={registerYoutubeMoviesInvalidateCatalog}
+              >
+                <YouTubeMoviesSection
+                  moviesRef={moviesRef}
+                  heroStickerSrc={heroStickerSrc}
+                  tr={tr}
+                />
+              </YouTubeMoviesProvider>
             )}
 
             {isSectionVisible('flashcards') && (
