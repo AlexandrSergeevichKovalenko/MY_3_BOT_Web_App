@@ -8877,6 +8877,19 @@ function AppInner() {
     youtubeMoviesCatalogTitleByIdRef.current = next;
   }, []);
 
+  const scrollToRef = useCallback((ref, options = {}) => {
+    if (!ref?.current) return;
+    const { center = false, block = 'start' } = options;
+    if (center) {
+      const rect = ref.current.getBoundingClientRect();
+      const absoluteTop = window.scrollY + rect.top;
+      const target = absoluteTop - (window.innerHeight - rect.height) / 2;
+      window.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
+      return;
+    }
+    ref.current.scrollIntoView({ behavior: 'smooth', block });
+  }, []);
+
   const handleYoutubeMovieSelected = useCallback((item) => {
     const videoId = String(item?.video_id || '').trim();
     if (!videoId) {
@@ -11729,19 +11742,6 @@ function AppInner() {
       next.add(key);
       return next;
     });
-  }, []);
-
-  const scrollToRef = useCallback((ref, options = {}) => {
-    if (!ref?.current) return;
-    const { center = false, block = 'start' } = options;
-    if (center) {
-      const rect = ref.current.getBoundingClientRect();
-      const absoluteTop = window.scrollY + rect.top;
-      const target = absoluteTop - (window.innerHeight - rect.height) / 2;
-      window.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
-      return;
-    }
-    ref.current.scrollIntoView({ behavior: 'smooth', block });
   }, []);
 
   const openSectionAndScroll = (key, ref) => {
