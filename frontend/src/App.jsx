@@ -22,6 +22,7 @@ import { YouTubePlaybackProvider, useYouTubePlaybackController } from './provide
 import { YouTubeMoviesProvider } from './providers/YouTubeMoviesProvider';
 import YouTubeSection from './components/YouTubeSection';
 import YouTubeMoviesSection from './components/YouTubeMoviesSection';
+import { useReaderDocumentController, ReaderDocumentProvider } from './providers/ReaderDocumentProvider';
 
 // True lazy imports — chunks download only when component is first rendered.
 // Free users never render these sections so the vendor chunks stay unloaded.
@@ -4198,56 +4199,86 @@ function AppInner() {
   const translationResultCardRefsRef = useRef(new Map());
   const [readerInput, setReaderInput] = useState('');
   const [readerSelectedFile, setReaderSelectedFile] = useState(null);
-  const [readerLoading, setReaderLoading] = useState(false);
-  const [readerOpeningDocumentId, setReaderOpeningDocumentId] = useState(0);
-  const [readerError, setReaderError] = useState('');
-  const [readerErrorCode, setReaderErrorCode] = useState('');
-  const [readerContent, setReaderContent] = useState('');
-  const [readerTitle, setReaderTitle] = useState('');
-  const [readerSourceType, setReaderSourceType] = useState('');
-  const [readerSourceUrl, setReaderSourceUrl] = useState('');
-  const [readerDetectedLanguage, setReaderDetectedLanguage] = useState('');
-  const [readerDocumentId, setReaderDocumentId] = useState(null);
+  const readerDocument = useReaderDocumentController({
+    defaultFontSize: READER_DEFAULT_FONT_SIZE,
+    defaultFontWeight: READER_DEFAULT_FONT_WEIGHT,
+    normalizeLangCode,
+    normalizeReaderPaginationText,
+    normalizeReaderVisiblePageText,
+    normalizeReaderEpubHref,
+    segmentText,
+  });
+  const {
+    readerLoading, setReaderLoading,
+    readerOpeningDocumentId, setReaderOpeningDocumentId,
+    readerError, setReaderError,
+    readerErrorCode, setReaderErrorCode,
+    readerContent, setReaderContent,
+    readerTitle, setReaderTitle,
+    readerSourceType, setReaderSourceType,
+    readerSourceUrl, setReaderSourceUrl,
+    readerDetectedLanguage, setReaderDetectedLanguage,
+    readerDocumentId, setReaderDocumentId,
+    readerPages, setReaderPages,
+    readerDynamicPages, setReaderDynamicPages,
+    readerCurrentPage, setReaderCurrentPage,
+    readerOriginalEpubLoading, setReaderOriginalEpubLoading,
+    readerOriginalEpubError, setReaderOriginalEpubError,
+    readerOriginalTocHref, setReaderOriginalTocHref,
+    readerOriginalTocTitle, setReaderOriginalTocTitle,
+    readerOriginalCoverUrl, setReaderOriginalCoverUrl,
+    readerOriginalCoverVisible, setReaderOriginalCoverVisible,
+    readerShowToc, setReaderShowToc,
+    readerTocItems, setReaderTocItems,
+    readerShowPageJump, setReaderShowPageJump,
+    readerPageJumpInput, setReaderPageJumpInput,
+    readerProgressPercent, setReaderProgressPercent,
+    readerBookmarkPercent, setReaderBookmarkPercent,
+    readerReadingMode, setReaderReadingMode,
+    readerSwipeSensitivity, setReaderSwipeSensitivity,
+    readerImmersive, setReaderImmersive,
+    readerSettingsOpen, setReaderSettingsOpen,
+    readerTopbarCollapsed, setReaderTopbarCollapsed,
+    readerPaginationLayoutTick, setReaderPaginationLayoutTick,
+    readerFontSize, setReaderFontSize,
+    readerFontWeight, setReaderFontWeight,
+    readerColorTheme, setReaderColorTheme,
+    readerLayoutMode, setReaderLayoutMode,
+    readerHasContent,
+    readerCanonicalText,
+    readerUsesOriginalEpubLayout,
+    readerCanUseOriginalLayout,
+    readerUsesCustomLayout,
+    readerDisplayPages,
+    getReaderDisplayPageText,
+    readerPageCount,
+    readerVisibleText,
+    readerResolvedOriginalTocTitle,
+    readerSegmentationHash,
+    readerSegmentationLang,
+    readerSentencesModel,
+    readerSentenceMap,
+    readerWordMap,
+    readerBookmarkPage,
+    isCurrentReaderPageBookmarked,
+  } = readerDocument;
   const [readerDocuments, setReaderDocuments] = useState([]);
   const [readerLibraryLoading, setReaderLibraryLoading] = useState(false);
   const [readerLibraryError, setReaderLibraryError] = useState('');
   const [readerIncludeArchived, setReaderIncludeArchived] = useState(false);
-  const [readerPages, setReaderPages] = useState([]);
-  const [readerDynamicPages, setReaderDynamicPages] = useState([]);
-  const [readerCurrentPage, setReaderCurrentPage] = useState(1);
-  const [readerOriginalEpubLoading, setReaderOriginalEpubLoading] = useState(false);
-  const [readerOriginalEpubError, setReaderOriginalEpubError] = useState('');
-  const [readerOriginalTocHref, setReaderOriginalTocHref] = useState('');
-  const [readerOriginalTocTitle, setReaderOriginalTocTitle] = useState('');
-  const [readerOriginalCoverUrl, setReaderOriginalCoverUrl] = useState('');
-  const [readerOriginalCoverVisible, setReaderOriginalCoverVisible] = useState(false);
-  const [readerShowToc, setReaderShowToc] = useState(false);
-  const [readerTocItems, setReaderTocItems] = useState([]);
-  const [readerShowPageJump, setReaderShowPageJump] = useState(false);
-  const [readerPageJumpInput, setReaderPageJumpInput] = useState('');
   const [readerAudioFromPage, setReaderAudioFromPage] = useState('');
   const [readerAudioToPage, setReaderAudioToPage] = useState('');
   const [readerAudioLoading, setReaderAudioLoading] = useState(false);
   const [readerAudioError, setReaderAudioError] = useState('');
   const [readerAudioPreviewUrl, setReaderAudioPreviewUrl] = useState('');
   const [readerAudioPreviewName, setReaderAudioPreviewName] = useState('');
-  const [readerProgressPercent, setReaderProgressPercent] = useState(0);
-  const [readerBookmarkPercent, setReaderBookmarkPercent] = useState(0);
-  const [readerReadingMode, setReaderReadingMode] = useState('vertical');
   const [readerSessionStartedAt, setReaderSessionStartedAt] = useState('');
   const [readerLiveSeconds, setReaderLiveSeconds] = useState(0);
   const [readerAccumulatedSeconds, setReaderAccumulatedSeconds] = useState(0);
   const [readerTimerPaused, setReaderTimerPaused] = useState(false);
-  const [readerSwipeSensitivity, setReaderSwipeSensitivity] = useState('medium');
-  const [readerImmersive, setReaderImmersive] = useState(false);
   const [readerArchiveOpen, setReaderArchiveOpen] = useState(false);
-  const [readerSettingsOpen, setReaderSettingsOpen] = useState(false);
-  const [readerTopbarCollapsed, setReaderTopbarCollapsed] = useState(false);
-  const [readerPaginationLayoutTick, setReaderPaginationLayoutTick] = useState(0);
   const [readerLibrarySearch, setReaderLibrarySearch] = useState('');
   const [readerAddOpen, setReaderAddOpen] = useState(false);
-  const [readerFontSize, setReaderFontSize] = useState(READER_DEFAULT_FONT_SIZE);
-  const [readerFontWeight, setReaderFontWeight] = useState(READER_DEFAULT_FONT_WEIGHT);
 
   // ── Reader audio-sync state (Patch 2.4) ────────────────────────────────
   const [readerAudioPlayActive, setReaderAudioPlayActive] = useState(false);
@@ -4276,12 +4307,6 @@ function AppInner() {
   const readerAudioCurrentPageCharOffsetRef = useRef(0);
   const readerAudioWindowMetaRef = useRef(null);
 
-  const [readerColorTheme, setReaderColorTheme] = useState(() => {
-    try {
-      const v = localStorage.getItem('reader_color_theme');
-      return (v === 'sepia' || v === 'cream') ? v : 'dark';
-    } catch { return 'dark'; }
-  });
   const destroyReaderOriginalEpub = useCallback(() => {
     if (readerEpubRelocationSaveTimeoutRef.current) {
       window.clearTimeout(readerEpubRelocationSaveTimeoutRef.current);
@@ -4317,7 +4342,6 @@ function AppInner() {
     setReaderColorTheme(next);
     try { localStorage.setItem('reader_color_theme', next); } catch {}
   };
-  const [readerLayoutMode, setReaderLayoutMode] = useState('custom');
   const [readerDragSelectionMeta, setReaderDragSelectionMeta] = useState(null);
   const [youtubeDragSelectionMeta, setYoutubeDragSelectionMeta] = useState(null);
   const [selectionText, setSelectionText] = useState('');
@@ -4764,6 +4788,9 @@ function AppInner() {
   const [billingStatusLoading, setBillingStatusLoading] = useState(false);
   const [billingStatusError, setBillingStatusError] = useState('');
   const [billingStatus, setBillingStatus] = useState(null);
+  const billingEffectiveMode = String(billingStatus?.effective_mode || '').trim().toLowerCase();
+  const startupEffectiveMode = billingEffectiveMode || 'free';
+  const isLightweightFreeMode = startupEffectiveMode === 'free';
   const [billingPlansLoading, setBillingPlansLoading] = useState(false);
   const [billingPlansError, setBillingPlansError] = useState('');
   const [billingPlans, setBillingPlans] = useState([]);
@@ -6630,9 +6657,6 @@ function AppInner() {
   }, [initData, telegramApp, webappUser?.id]);
   const canViewEconomics = stableWebappUserId === '117649764';
   const currentLocalDateKey = getLocalDateKey();
-  const billingEffectiveMode = String(billingStatus?.effective_mode || '').trim().toLowerCase();
-  const startupEffectiveMode = billingEffectiveMode || 'free';
-  const isLightweightFreeMode = startupEffectiveMode === 'free';
   const lockedFreeStartupSections = useMemo(
     () => new Set(isLightweightFreeMode ? ['home_today', 'home_skills', 'home_weekly_plan'] : []),
     [isLightweightFreeMode],
@@ -11398,40 +11422,6 @@ function AppInner() {
   const isTranslationResultSelectionMenu = String(selectionType || '').startsWith('translation_result_');
   const isInlineSelectionMenu = isYoutubeSelectionMenu || isTranslationResultSelectionMenu;
   const isLightTheme = themeMode === 'light';
-  const readerHasContent = Boolean(String(readerContent || '').trim());
-  const readerCanonicalText = useMemo(
-    () => normalizeReaderPaginationText(readerContent),
-    [readerContent]
-  );
-  const readerUsesOriginalEpubLayout = readerSourceType === 'epub' && readerLayoutMode === 'original';
-  const readerCanUseOriginalLayout = readerSourceType === 'epub'
-    || (readerSourceType === 'pdf' && Array.isArray(readerPages) && readerPages.length > 0);
-  const readerUsesCustomLayout = !readerCanUseOriginalLayout || readerLayoutMode === 'custom';
-  const readerDisplayPages = useMemo(() => {
-    if (readerUsesOriginalEpubLayout) {
-      return [];
-    }
-    if (readerUsesCustomLayout && Array.isArray(readerDynamicPages) && readerDynamicPages.length > 0) {
-      return readerDynamicPages
-        .map((item, index) => ({
-          page_number: Number(item?.page_number || index + 1),
-          text: String(item?.text || '').trim(),
-        }));
-    }
-    if (Array.isArray(readerPages) && readerPages.length > 0) {
-      return readerPages.map((item, index) => ({
-        page_number: Number(item?.page_number || index + 1),
-        text: item ? String(item?.text || '').trim() : '',
-      }));
-    }
-    if (!readerCanonicalText) return [];
-    return [{ page_number: 1, text: readerCanonicalText }];
-  }, [readerCanonicalText, readerDynamicPages, readerPages, readerUsesCustomLayout, readerUsesOriginalEpubLayout]);
-  const getReaderDisplayPageText = useCallback((page) => {
-    const pageIndex = Math.max(0, Number(page || 1) - 1);
-    return normalizeReaderVisiblePageText(String(readerDisplayPages[pageIndex]?.text || ''));
-  }, [readerDisplayPages]);
-  const readerPageCount = readerDisplayPages.length;
   const buildReaderAudioWindow = useCallback((startPage, maxPages = 3) => {
     const safeStartPage = Math.max(1, Math.min(readerPageCount || 1, Number(startPage || 1) || 1));
     const segments = [];
@@ -11480,57 +11470,6 @@ function AppInner() {
     && readerImmersive
     && readerTopbarCollapsed
     && !readerArchiveOpen;
-  const readerVisibleText = useMemo(() => {
-    if (readerUsesOriginalEpubLayout) {
-      return '';
-    }
-    if (readerPageCount > 0) {
-      return getReaderDisplayPageText(readerCurrentPage);
-    }
-    return normalizeReaderVisiblePageText(String(readerContent || ''));
-  }, [getReaderDisplayPageText, readerPageCount, readerCurrentPage, readerContent, readerUsesOriginalEpubLayout]);
-  const readerResolvedOriginalTocTitle = useMemo(() => {
-    const currentHref = normalizeReaderEpubHref(readerOriginalTocHref);
-    if (!currentHref) return String(readerOriginalTocTitle || '').trim();
-    const matched = (Array.isArray(readerTocItems) ? readerTocItems : []).find((item) => (
-      normalizeReaderEpubHref(item?.href || item?.cfi || '') === currentHref
-    ));
-    return String(matched?.title || readerOriginalTocTitle || '').trim();
-  }, [readerOriginalTocHref, readerOriginalTocTitle, readerTocItems]);
-  const readerSegmentationHash = useMemo(() => {
-    const value = String(readerVisibleText || '');
-    let hash = 0;
-    for (let index = 0; index < value.length; index += 1) {
-      hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0;
-    }
-    return `${String(readerDocumentId || 'no-doc')}:${value.length}:${hash}`;
-  }, [readerVisibleText, readerDocumentId]);
-  const readerSegmentationLang = useMemo(
-    () => normalizeLangCode(readerDetectedLanguage || '') || 'de',
-    [readerDetectedLanguage]
-  );
-  const readerSentencesModel = useMemo(
-    () => segmentText(readerVisibleText, readerSegmentationLang),
-    [readerVisibleText, readerSegmentationLang, readerSegmentationHash]
-  );
-  const readerSentenceMap = useMemo(() => {
-    const map = new Map();
-    readerSentencesModel.forEach((sentence) => {
-      map.set(sentence.sid, sentence);
-    });
-    return map;
-  }, [readerSentencesModel]);
-  const readerWordMap = useMemo(() => {
-    const map = new Map();
-    readerSentencesModel.forEach((sentence) => {
-      sentence.tokens
-        .filter((token) => token.kind === 'word' && token.wid)
-        .forEach((token) => {
-          map.set(token.wid, { ...token, sid: sentence.sid });
-        });
-    });
-    return map;
-  }, [readerSentencesModel]);
   const selectedSentenceIds = useMemo(() => {
     const ids = new Set(Array.isArray(selectedMeta?.sids) ? selectedMeta.sids : []);
     if (Array.isArray(readerDragSelectionMeta?.sids)) {
@@ -11560,11 +11499,6 @@ function AppInner() {
     }
     return ids;
   }, [youtubeDragSelectionMeta]);
-  const readerBookmarkPage = readerPageCount > 0
-    ? Math.max(1, Math.min(readerPageCount, Math.round((Math.max(0, Math.min(100, Number(readerBookmarkPercent || 0))) / 100) * readerPageCount) || 1))
-    : 0;
-  const isCurrentReaderPageBookmarked = readerPageCount > 0 && readerBookmarkPage === Math.max(1, Math.min(readerPageCount, Number(readerCurrentPage || 1)));
-
   // ── Audio-sync: positional-index ↔ frontend wid maps ───────────────────
   const readerAudioWidMap = useMemo(() => {
     const map = new Map();
@@ -28573,6 +28507,7 @@ function AppInner() {
             {!flashcardsOnly && isSectionVisible('reader') && (
               <PerfProfiler id="section.reader">
                 <Suspense fallback={null}>
+                <ReaderDocumentProvider value={readerDocument}>
                 <ReaderSection
                   tr={tr}
                   handleBillingUpgrade={handleBillingUpgrade}
@@ -28703,6 +28638,7 @@ function AppInner() {
                   jumpReaderTocItem={jumpReaderTocItem}
                   switchReaderLayoutMode={switchReaderLayoutMode}
                 />
+                </ReaderDocumentProvider>
                 </Suspense>
               </PerfProfiler>
             )}
