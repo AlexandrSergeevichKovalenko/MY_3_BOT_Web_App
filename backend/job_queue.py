@@ -1760,12 +1760,18 @@ def enqueue_shortcut_lookup_job(
     user_id: int,
     text: str,
     request_key: str | None = None,
+    source: str | None = None,
+    ingest_key: str | None = None,
+    ingest_id: int | None = None,
 ) -> str | None:
     if not can_enqueue_background_jobs():
         raise RuntimeError("background_jobs_unavailable")
     safe_user_id = int(user_id or 0)
     normalized_text = str(text or "").strip()
     normalized_request_key = str(request_key or "").strip() or None
+    normalized_source = str(source or "").strip().lower() or None
+    normalized_ingest_key = str(ingest_key or "").strip() or None
+    normalized_ingest_id = int(ingest_id) if ingest_id is not None else None
     if safe_user_id <= 0:
         raise ValueError("user_id is required")
     if not normalized_text:
@@ -1778,6 +1784,9 @@ def enqueue_shortcut_lookup_job(
             user_id=safe_user_id,
             text=normalized_text,
             request_key=normalized_request_key,
+            source=normalized_source,
+            ingest_key=normalized_ingest_key,
+            ingest_id=normalized_ingest_id,
         )
         return str(getattr(message, "message_id", None) or "").strip() or None
     except Exception:

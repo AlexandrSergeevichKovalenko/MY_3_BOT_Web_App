@@ -1386,11 +1386,13 @@ def run_shortcut_lookup_job(
         except Exception:
             logging.exception(
                 "shortcut_lookup_job status transition to processing failed "
-                "user_id=%s ingest_id=%s — proceeding anyway",
+                "user_id=%s ingest_id=%s — aborting before Telegram prompt delivery",
                 safe_user_id,
                 normalized_ingest_id,
             )
+            raise
 
+    delivery_completed = False
     try:
         from backend.backend_server import _run_shortcut_lookup_delivery
 
@@ -1400,6 +1402,7 @@ def run_shortcut_lookup_job(
             source=normalized_source,
             ingest_key=normalized_ingest_key,
         )
+        delivery_completed = True
         logging.info(
             "shortcut_lookup_job completed user_id=%s request_key=%s sent=%s total_ms=%s",
             safe_user_id,
@@ -1421,7 +1424,18 @@ def run_shortcut_lookup_job(
                     safe_user_id,
                     normalized_ingest_id,
                 )
+                raise
     except Exception:
+        if delivery_completed:
+            logging.exception(
+                "shortcut_lookup_job durable delivered update failed after prompt delivery "
+                "user_id=%s request_key=%s ingest_id=%s total_ms=%s",
+                safe_user_id,
+                normalized_request_key,
+                normalized_ingest_id,
+                int((time.perf_counter() - started_at) * 1000),
+            )
+            raise
         logging.exception(
             "shortcut_lookup_job failed user_id=%s request_key=%s total_ms=%s",
             safe_user_id,
@@ -2269,6 +2283,23 @@ _VR_ALLOWED_QUIZ_TYPES = frozenset({
 _VR_ALLOWED_DIFFICULTIES = frozenset({"A2", "B1", "B2"})
 _VR_ALLOWED_ANSWER_IDS = frozenset({"A", "B", "C", "D"})
 
+_VR_WRONG_STATEMENT_QUESTION_PATTERN = re.compile(
+    r"\b("
+    r"falsch|fehlerhaft|inkorrekt|ungrammatisch|grammatisch\s+falsch|"
+    r"nicht\s+korrekt|welche\s+aussage|welcher\s+satz"
+    r")\b",
+    re.IGNORECASE,
+)
+_VR_QUOTED_STATEMENT_ANSWER_PATTERN = re.compile(
+    r"[:\"'„“”«»]|\b(sagt|sagen|aussage|satz|kollege|kollegin|frau|mann)\b",
+    re.IGNORECASE,
+)
+_VR_OPTION_LETTER_EXPLANATION_PATTERN = re.compile(
+    r"\b(?:option|variante|antwort|вариант|ответ)\s*[ABCDАБВГ]\b|"
+    r"\b[ABCD]\s*(?:ist|war|is|was|ошиб|верн|прав)",
+    re.IGNORECASE,
+)
+
 _VR_NSFW_PATTERN = re.compile(
     r"\b(nude|naked|sex|porn|explicit|violence|gore|blood|kill|murder|"
     r"terror|terrorist|bomb|weapon|gun|pistol|rifle|suicide)\b",
@@ -2588,10 +2619,14 @@ def validate_visual_riddle_blueprint(payload: dict) -> dict:
         raise ValueError("blueprint_missing_question_text")
     if "```" in question_text:
         raise ValueError("blueprint_question_text_has_code_block")
+    if _VR_WRONG_STATEMENT_QUESTION_PATTERN.search(question_text):
+        raise ValueError("blueprint_wrong_statement_task_unsupported")
 
     short_explanation = _normalize_space(payload.get("short_explanation"))
     if not short_explanation:
         raise ValueError("blueprint_missing_short_explanation")
+    if _VR_OPTION_LETTER_EXPLANATION_PATTERN.search(short_explanation):
+        raise ValueError("blueprint_short_explanation_mentions_option_letter")
 
     raw_answers = payload.get("answers")
     if not isinstance(raw_answers, list):
@@ -2615,6 +2650,8 @@ def validate_visual_riddle_blueprint(payload: dict) -> dict:
         answer_text = _normalize_space(item.get("text"))
         if not answer_text:
             raise ValueError(f"blueprint_empty_answer_text:{answer_id}")
+        if _VR_QUOTED_STATEMENT_ANSWER_PATTERN.search(answer_text):
+            raise ValueError(f"blueprint_answer_is_statement_not_answer:id={answer_id}")
         is_correct = bool(item.get("is_correct"))
         if is_correct:
             correct_ids.append(answer_id)

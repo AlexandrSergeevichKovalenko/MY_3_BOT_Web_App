@@ -34,7 +34,7 @@ class ShortcutIngestIdempotencyTests(unittest.TestCase):
     # ------------------------------------------------------------------ #
 
     def test_first_payload_creates_ingest_row_and_enqueues(self):
-        upsert_result = {"ingest_id": 42, "is_new": True, "status": "queued",
+        upsert_result = {"ingest_id": 42, "is_new": True, "status": "accepted",
                          "job_id": None, "duplicate_count": 0}
         with ExitStack() as stack:
             upsert_mock = stack.enter_context(
@@ -61,6 +61,8 @@ class ShortcutIngestIdempotencyTests(unittest.TestCase):
         self.assertTrue(payload["queued"])
         self.assertFalse(payload["duplicate"])
         self.assertEqual(payload["ingest_id"], 42)
+        self.assertEqual(payload["job_id"], "jid1")
+        self.assertEqual(payload["status"], "queued")
         upsert_mock.assert_called_once()
         call_kwargs = upsert_mock.call_args.kwargs
         self.assertEqual(call_kwargs["user_id"], 117649764)
@@ -92,9 +94,12 @@ class ShortcutIngestIdempotencyTests(unittest.TestCase):
 
         payload = response.get_json()
         self.assertEqual(response.status_code, 200)
-        self.assertFalse(payload["accepted"])
+        self.assertTrue(payload["accepted"])
         self.assertTrue(payload["duplicate"])
+        self.assertTrue(payload["completed"])
         self.assertEqual(payload["ingest_id"], 42)
+        self.assertEqual(payload["job_id"], "jid1")
+        self.assertEqual(payload["status"], "delivered")
         enqueue_mock.assert_not_called()
 
     # ------------------------------------------------------------------ #
@@ -129,6 +134,8 @@ class ShortcutIngestIdempotencyTests(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(response.status_code, 200)
         self.assertTrue(payload["duplicate"])
+        self.assertTrue(payload["completed"])
+        self.assertEqual(payload["status"], "delivered")
         enqueue_mock.assert_not_called()
 
     # ------------------------------------------------------------------ #
@@ -154,7 +161,36 @@ class ShortcutIngestIdempotencyTests(unittest.TestCase):
                 headers={"Authorization": "Bearer secret"},
             )
 
-        self.assertTrue(response.get_json()["duplicate"])
+        payload = response.get_json()
+        self.assertTrue(payload["duplicate"])
+        self.assertTrue(payload["accepted"])
+        self.assertFalse(payload["completed"])
+        self.assertEqual(payload["status"], "processing")
+        enqueue_mock.assert_not_called()
+
+    def test_duplicate_failed_status_still_does_not_enqueue(self):
+        upsert_result = {"ingest_id": 56, "is_new": False, "status": "failed",
+                         "job_id": "jid3", "duplicate_count": 2}
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch.object(server, "shortcut_ingest_request_upsert", return_value=upsert_result)
+            )
+            enqueue_mock = stack.enter_context(
+                patch.object(server, "enqueue_shortcut_lookup_job")
+            )
+            for p in _route_patches():
+                stack.enter_context(p)
+
+            response = self.client.post(
+                "/api/shortcut/lookup",
+                json={"text": "sich abfinden mit", "user_id": 117649764},
+                headers={"Authorization": "Bearer secret"},
+            )
+
+        payload = response.get_json()
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(payload["duplicate"])
+        self.assertEqual(payload["status"], "failed")
         enqueue_mock.assert_not_called()
 
     # ------------------------------------------------------------------ #
@@ -271,7 +307,8 @@ class ShortcutIngestIdempotencyTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 503)
-        self.assertIn("error", response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload["error"], "shortcut_ingest_idempotency_unavailable")
         enqueue_mock.assert_not_called()
 
     # ------------------------------------------------------------------ #
@@ -309,6 +346,84 @@ class ShortcutIngestIdempotencyTests(unittest.TestCase):
         delivery_mock.assert_not_called()
         for c in set_status_mock.call_args_list:
             self.assertNotEqual(c.kwargs.get("status"), "delivered")
+
+    def test_worker_processing_transition_failure_does_not_send_prompts(self):
+        import backend.database as db_module
+
+        row = {"ingest_id": 42, "status": "queued", "job_id": "j1",
+               "duplicate_count": 0, "sent_prompt_count": 0,
+               "accepted_at": None, "completed_at": None, "error_code": None,
+               "normalized_text_full": None, "normalized_text_sha256": "",
+               "normalized_text_size_bytes": 0}
+
+        def _set_status(*, status, **_kw):
+            if status == "processing":
+                raise RuntimeError("status write failed")
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch.object(db_module, "shortcut_ingest_request_get_by_id",
+                             return_value=row)
+            )
+            stack.enter_context(
+                patch.object(db_module, "shortcut_ingest_request_set_status",
+                             side_effect=_set_status)
+            )
+            delivery_mock = stack.enter_context(
+                patch("backend.backend_server._run_shortcut_lookup_delivery")
+            )
+            with self.assertRaises(RuntimeError):
+                jobs.run_shortcut_lookup_job(
+                    user_id=117649764,
+                    text="sich abfinden mit",
+                    source="shortcut",
+                    ingest_key="abc123",
+                    ingest_id=42,
+                )
+
+        delivery_mock.assert_not_called()
+
+    def test_worker_delivered_status_failure_raises_after_prompt_send(self):
+        import backend.database as db_module
+
+        row = {"ingest_id": 42, "status": "queued", "job_id": "j1",
+               "duplicate_count": 0, "sent_prompt_count": 0,
+               "accepted_at": None, "completed_at": None, "error_code": None,
+               "normalized_text_full": None, "normalized_text_sha256": "",
+               "normalized_text_size_bytes": 0}
+        set_status_calls = []
+
+        def _set_status(*, status, **_kw):
+            set_status_calls.append(status)
+            if status == "delivered":
+                raise RuntimeError("delivered status write failed")
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch.object(db_module, "shortcut_ingest_request_get_by_id",
+                             return_value=row)
+            )
+            stack.enter_context(
+                patch.object(db_module, "shortcut_ingest_request_set_status",
+                             side_effect=_set_status)
+            )
+            delivery_mock = stack.enter_context(
+                patch("backend.backend_server._run_shortcut_lookup_delivery",
+                      return_value=2)
+            )
+            with self.assertRaises(RuntimeError):
+                jobs.run_shortcut_lookup_job(
+                    user_id=117649764,
+                    text="sich abfinden mit",
+                    source="shortcut",
+                    ingest_key="abc123",
+                    ingest_id=42,
+                )
+
+        delivery_mock.assert_called_once()
+        self.assertIn("processing", set_status_calls)
+        self.assertIn("delivered", set_status_calls)
+        self.assertNotIn("failed", set_status_calls)
 
 
 if __name__ == "__main__":

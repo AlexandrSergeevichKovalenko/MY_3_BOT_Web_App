@@ -1,4 +1,5 @@
 import re
+from unittest.mock import Mock, patch
 import unittest
 
 import backend.backend_server as server
@@ -15,7 +16,7 @@ class ReaderPdfNormalizationTests(unittest.TestCase):
 
         self.assertEqual(len(normalized), 2)
         self.assertIn("Geleitwort von Frank Hoepfel", normalized[0]["text"])
-        self.assertIn("........", normalized[0]["text"])
+        self.assertIn(". . .", normalized[0]["text"])
         self.assertIn("1.1 Definition", normalized[1]["text"])
         self.assertNotIn("\n\n\n", normalized[1]["text"])
 
@@ -65,6 +66,40 @@ wenn sie nur durch das PDF-Layout getrennt wurde.
             "Das gilt auch fuer eine zweite Zeile, wenn sie nur durch das PDF-Layout getrennt wurde.",
             normalized,
         )
+
+    def test_pdf_extraction_uses_pdftotext_when_pypdf_extracts_no_text(self):
+        fake_reader = Mock()
+        fake_page = Mock()
+        fake_page.extract_text.return_value = ""
+        fake_reader.pages = [fake_page]
+        completed = Mock(
+            returncode=0,
+            stdout="Erste Seite mit Text\fZweite Seite mit Text",
+            stderr="",
+        )
+
+        with patch.object(server, "PdfReader", return_value=fake_reader), \
+             patch.object(server.subprocess, "run", return_value=completed) as run_mock:
+            text, pages = server._extract_pdf_content_from_bytes(b"%PDF fake")
+
+        self.assertIn("Erste Seite mit Text", text)
+        self.assertIn("Zweite Seite mit Text", text)
+        self.assertEqual(len(pages), 2)
+        run_mock.assert_called_once()
+
+    def test_pdf_extraction_tries_pdftotext_when_pypdf_reader_fails(self):
+        completed = Mock(
+            returncode=0,
+            stdout="Fallback Seite",
+            stderr="",
+        )
+
+        with patch.object(server, "PdfReader", side_effect=RuntimeError("broken xref")), \
+             patch.object(server.subprocess, "run", return_value=completed):
+            text, pages = server._extract_pdf_content_from_bytes(b"%PDF fake")
+
+        self.assertEqual(text, "Fallback Seite")
+        self.assertEqual(pages, [{"page_number": 1, "text": "Fallback Seite"}])
 
 
 if __name__ == "__main__":

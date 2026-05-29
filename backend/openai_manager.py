@@ -2575,10 +2575,35 @@ You create one Telegram quiz question for Russian-speaking learners of German at
 The question must be in Russian and must include the Russian word/phrase from the payload.
 Answer options must be in German. Provide exactly 4 options with one correct answer.
 Make the question tricky and high-level. Use one of these formats:
-1) Choose the most accurate German translation of the Russian phrase.
-2) Fill the blank in a German sentence with the target word/phrase; distractors must be near-synonyms.
+1) Choose the correct German translation of the Russian phrase.
+   For this format, the 3 wrong options MUST be minimally changed versions of
+   the intended German answer with a real, visible German error:
+   - wrong case after a preposition (e.g. trotz dem instead of trotz des),
+   - wrong adjective/participle ending,
+   - wrong article/gender/case,
+   - wrong verb form,
+   - wrong word order,
+   - wrong required preposition or fixed collocation.
+   The wrong options must NOT be correct paraphrases, stylistic alternatives,
+   synonyms, or different but acceptable translations. If an option is
+   grammatical and preserves the Russian meaning, it must be treated as correct
+   and therefore must NOT be used as a distractor.
+   Example of forbidden distractor behavior:
+   RU: "Несмотря на дату, указанную в подтверждении"
+   Correct: "Trotz des in der Bestätigung genannten Datums"
+   Forbidden wrong option: "Ungeachtet des Datums, das in der Bestätigung aufgeführt wurde"
+   because it is also grammatical and semantically acceptable.
+   Good wrong options:
+   "Trotz dem in der Bestätigung genannten Datum",
+   "Trotz des in der Bestätigung genannte Datums",
+   "Trotz des Datum, das in der Bestätigung genannt wurde".
+2) Fill the blank in a German sentence with the target word/phrase; distractors must be near-synonyms only when exactly one option fits the visible grammar, case, collocation, and meaning.
 3) Word order test: ask where to place the target word/phrase in a German sentence (options are full sentences).
 Ensure the correct answer is fully correct in meaning, register, collocation, and word order.
+Before returning, internally audit every wrong option:
+- It must contain exactly one clear reason why it is wrong.
+- It must not be defensible as a correct alternative translation.
+- The difference from the correct answer should be small and didactic, not a completely different wording.
 Use the provided usage_examples for context if available.
 Return STRICT JSON with keys: question, options (array of strings), correct_option_id (0-based int), quiz_type.
 """,
@@ -2817,6 +2842,9 @@ Generate exactly 4 options (A, B, C, D). Rules:
 4. Wrong options must be REAL German words — no invented words.
 5. The correct answer must NOT be guessable without looking at the image. A learner who does not know the word cannot pick it from context alone.
 6. Place the correct answer at a RANDOM position (A/B/C/D). Do not always put it in A.
+7. Answers must be the possible German word/phrase itself. Do NOT make options into quoted statements, speaker descriptions, or "which sentence is wrong" choices.
+8. Do NOT create quizzes where the task is to find the incorrect/grammatically wrong sentence. There must be exactly one correct German word/phrase and three clearly wrong distractor words/phrases.
+9. The explanation must not refer to option letters A/B/C/D, because options are shuffled before sending. Refer to the answer text/meaning instead.
 
 ===========================================================
 IMAGE PROMPT RULES
@@ -2842,6 +2870,7 @@ question_text must be in German. It must:
 - For SITUATIONAL_REBUS idioms: "Welcher deutsche Ausdruck beschreibt diese Situation genau?"
 - For SITUATIONAL_REBUS vocabulary: "Welches deutsche Wort passt genau zu dieser Situation?"
 - NEVER use generic questions like "Was zeigt das Bild?" alone — always specify what to find.
+- NEVER ask "Welche Aussage ist falsch/fehlerhaft?" or any task where the learner chooses an incorrect statement.
 
 ===========================================================
 DIVERSITY RULES (always active)
@@ -2887,7 +2916,7 @@ Return STRICT JSON only, no markdown, no code blocks:
     {"id": "D", "text": "German word or phrase", "is_correct": false}
   ],
   "correct_answer_id": "B",
-  "short_explanation": "1-2 sentences in Russian: why this answer is correct and what the image showed",
+  "short_explanation": "1-2 sentences in Russian: why the correct answer text is correct and what the image showed. Do not mention A/B/C/D or option letters.",
   "language_explanation": "1-2 sentences in Russian: meaning and usage of this German word/phrase"
 }
 """,

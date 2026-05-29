@@ -20,7 +20,6 @@ Covers:
   16. stale_queued_beyond_max_attempts_skipped
   17. scheduler_dispatch_function_exists_and_is_callable
 """
-import threading
 import unittest
 from contextlib import ExitStack
 from unittest.mock import MagicMock, call, patch
@@ -53,21 +52,14 @@ class ShortcutIngestRecoveryTests(unittest.TestCase):
 
     def test_enqueue_failure_after_db_row(self):
         """DB upsert succeeds (new row), but Dramatiq enqueue raises.
-        The background thread must call set_status('failed', ...) and must
-        NOT call set_status('queued').
-
-        The assertion waits inside the ExitStack context so patches remain
-        active while the daemon thread is running.
+        The route must fail explicitly and call set_status('failed', ...).
         """
-        upsert_result = {"ingest_id": 10, "is_new": True, "status": "queued",
+        upsert_result = {"ingest_id": 10, "is_new": True, "status": "accepted",
                          "job_id": None, "duplicate_count": 0}
-        failed_event = threading.Event()
         set_status_calls = []
 
         def _mock_set_status(**kwargs):
             set_status_calls.append(kwargs)
-            if kwargs.get("status") == "failed":
-                failed_event.set()
 
         with ExitStack() as stack:
             stack.enter_context(
@@ -90,16 +82,10 @@ class ShortcutIngestRecoveryTests(unittest.TestCase):
                 headers={"Authorization": "Bearer secret"},
             )
 
-            # Route should have accepted the request (DB write was fine)
-            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.status_code, 503)
             payload = response.get_json()
-            self.assertTrue(payload["accepted"])
-            self.assertTrue(payload["queued"])
+            self.assertEqual(payload["error"], "shortcut_ingest_idempotency_unavailable")
 
-            # Wait for the daemon thread INSIDE the with block while patches are still active
-            notified = failed_event.wait(timeout=3.0)
-
-        self.assertTrue(notified, "set_status('failed') was never called after enqueue failure")
         statuses = [c["status"] for c in set_status_calls]
         self.assertIn("failed", statuses)
         self.assertNotIn("queued", statuses)
@@ -179,7 +165,6 @@ class ShortcutIngestRecoveryTests(unittest.TestCase):
     def test_illegal_transition_raises(self):
         illegal_pairs = [
             ("queued", "delivered"),
-            ("queued", "failed"),
             ("delivered", "queued"),
             ("delivered", "processing"),
             ("delivered", "failed"),
@@ -261,7 +246,7 @@ class ShortcutIngestRecoveryTests(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(response.status_code, 200)
         self.assertTrue(payload["duplicate"])
-        self.assertFalse(payload["accepted"])
+        self.assertTrue(payload["accepted"])
         self.assertTrue(payload.get("in_recovery"), "in_recovery should be True for processing status")
         enqueue_mock.assert_not_called()
 
@@ -357,40 +342,32 @@ class ShortcutIngestRecoveryIntegrationTests(unittest.TestCase):
     """Tests that verify scheduler/runtime wiring, not just actor logic."""
 
     # ------------------------------------------------------------------ #
-    # Test 10: 'accepted' is an HTTP response field, not a DB status      #
+    # Test 10: shortcut ingest status machine includes accepted           #
     # ------------------------------------------------------------------ #
 
-    def test_accepted_is_not_a_db_status_only_http_response_field(self):
-        """'accepted' is an HTTP response body field (accepted=True/False), not a DB
-        status value.  Verify this via the module-level constants — they are the
-        authoritative in-process representation of the valid status set.
-
-        DB CHECK constraint: ('queued','processing','delivered','failed')
-        Valid transitions: queued->processing, processing->delivered,
-                           processing->failed, failed->queued
-        'accepted' appears nowhere in the status machine.
-        'accepted_at' is a timestamp column name, not a status value.
+    def test_accepted_is_a_durable_db_status_before_queueing(self):
+        """'accepted' is the durable DB status between idempotency insert and
+        successful queue enqueue. Failed remains non-active so recovery can
+        explicitly requeue only when intended.
         """
         from backend.database import (
             _SHORTCUT_INGEST_ACTIVE_STATUSES,
             _SHORTCUT_INGEST_VALID_TRANSITIONS,
         )
 
-        self.assertNotIn("accepted", _SHORTCUT_INGEST_ACTIVE_STATUSES,
-                         "'accepted' must not be an active DB status")
+        self.assertIn("accepted", _SHORTCUT_INGEST_ACTIVE_STATUSES)
 
         all_statuses = {s for pair in _SHORTCUT_INGEST_VALID_TRANSITIONS for s in pair}
-        self.assertNotIn("accepted", all_statuses,
-                         "'accepted' must not appear in any valid transition")
+        self.assertIn("accepted", all_statuses)
 
-        # Exact set of active statuses (queued/processing/delivered → re-enqueue guard)
         self.assertEqual(
             _SHORTCUT_INGEST_ACTIVE_STATUSES,
-            frozenset({"queued", "processing", "delivered"}),
+            frozenset({"accepted", "queued", "processing", "delivered"}),
         )
 
-        # 'failed' is a valid non-active terminal status (recovery resets to queued)
         self.assertNotIn("failed", _SHORTCUT_INGEST_ACTIVE_STATUSES)
+        self.assertIn(("accepted", "queued"), _SHORTCUT_INGEST_VALID_TRANSITIONS)
+        self.assertIn(("accepted", "failed"), _SHORTCUT_INGEST_VALID_TRANSITIONS)
         self.assertIn(("processing", "failed"), _SHORTCUT_INGEST_VALID_TRANSITIONS)
         self.assertIn(("failed", "queued"), _SHORTCUT_INGEST_VALID_TRANSITIONS)
 

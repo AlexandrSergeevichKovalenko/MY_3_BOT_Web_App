@@ -1,3 +1,2 @@
 [phases.setup]
-aptPkgs = ["ffmpeg", "espeak-ng", "libespeak-ng1"]
-
+aptPkgs = ["ffmpeg", "poppler-utils", "espeak-ng", "libespeak-ng1"]

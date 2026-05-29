@@ -208,6 +208,52 @@ class TranslationFocusPoolRefillTests(unittest.TestCase):
         self.assertEqual(calls[0], ("refill", False, "Europe/Vienna"))
         self.assertEqual(calls[1], ("report", False))
 
+    def test_manual_admin_report_force_runs_refill_before_report(self):
+        calls = []
+
+        def fake_refill(*, force=False, tz_name=None):
+            calls.append(("refill", bool(force), tz_name))
+            return {"ok": True, "generated": 4, "upserted": 4}
+
+        def fake_report(*, force=False):
+            calls.append(("report", bool(force)))
+            return {"ok": True, "sent": True}
+
+        with server.app.test_client() as client, \
+             patch.object(server.os, "getenv", side_effect=lambda key, default=None: "token" if key == "AUDIO_DISPATCH_TOKEN" else default), \
+             patch.object(server, "TRANSLATION_FOCUS_POOL_REFILL_TZ", "Europe/Vienna"), \
+             patch.object(server, "_dispatch_translation_focus_pool_refill", side_effect=fake_refill), \
+             patch.object(server, "_send_translation_focus_pool_admin_report", side_effect=fake_report):
+            response = client.post(
+                "/api/admin/send-translation-focus-pool-report",
+                json={"token": "token", "force": True},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(calls[0], ("refill", True, "Europe/Vienna"))
+        self.assertEqual(calls[1], ("report", True))
+        self.assertEqual(response.get_json()["refill_result"]["upserted"], 4)
+
+    def test_manual_admin_report_can_skip_refill(self):
+        calls = []
+
+        def fake_report(*, force=False):
+            calls.append(("report", bool(force)))
+            return {"ok": True, "sent": True}
+
+        with server.app.test_client() as client, \
+             patch.object(server.os, "getenv", side_effect=lambda key, default=None: "token" if key == "AUDIO_DISPATCH_TOKEN" else default), \
+             patch.object(server, "_dispatch_translation_focus_pool_refill") as refill_mock, \
+             patch.object(server, "_send_translation_focus_pool_admin_report", side_effect=fake_report):
+            response = client.post(
+                "/api/admin/send-translation-focus-pool-report",
+                json={"token": "token", "force": True, "refill_first": False},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        refill_mock.assert_not_called()
+        self.assertEqual(calls, [("report", True)])
+
 
 if __name__ == "__main__":
     unittest.main()

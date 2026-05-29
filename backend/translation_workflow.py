@@ -8,7 +8,7 @@ import json
 import time
 import threading
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
 
@@ -46,9 +46,9 @@ from backend.database import (
     get_skill_mapping_for_error,
     prefetch_skill_mappings_for_error_pairs_with_cursor,
     build_translation_session_minutes_sql,
-    enforce_feature_limit,
     save_story_arena_score,
 )
+from backend.free_usage_lifecycle import begin_free_usage_lifecycle, finish_free_usage_lifecycle_success
 from backend.observability import _log_flow_observation, _sanitize_observability_id
 from backend.job_queue import (
     clear_active_translation_session_state,
@@ -82,6 +82,48 @@ TRANSLATION_SENTENCE_LLM_GLOBAL_CONCURRENCY = max(
     min(32, int((os.getenv("TRANSLATION_SENTENCE_LLM_GLOBAL_CONCURRENCY") or "4").strip() or "4")),
 )
 _TRANSLATION_SENTENCE_LLM_SEMAPHORE = threading.BoundedSemaphore(TRANSLATION_SENTENCE_LLM_GLOBAL_CONCURRENCY)
+
+
+def _translation_daily_usage_state_error(*, exc: Exception) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": "free_usage_state_unavailable",
+        "feature": "translation_daily_sets",
+        "feature_title": "Переводы",
+        "message": "Не удалось проверить лимит бесплатного тарифа.",
+        "detail": exc.__class__.__name__,
+    }
+
+
+def _check_translation_daily_session_limit(*, user_id: int, route: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    state, payload, _status = begin_free_usage_lifecycle(
+        lifecycle_key="translation_session_create",
+        user_id=int(user_id),
+        route=route,
+    )
+    return state, payload
+
+
+def _increment_translation_daily_session_usage(
+    *,
+    user_id: int,
+    usage_state: dict[str, Any] | None,
+    session_id: int,
+    route: str,
+    source_lang: str,
+    target_lang: str,
+) -> dict[str, Any] | None:
+    payload, _status = finish_free_usage_lifecycle_success(
+        user_id=int(user_id),
+        usage_state=usage_state,
+        route=route,
+        idempotency_seed=f"session:{int(session_id)}",
+        session_id=int(session_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        metadata={"route": route, "session_id": int(session_id)},
+    )
+    return payload
 
 
 def _elapsed_perf_ms(started_at_perf: float) -> int:
@@ -5206,6 +5248,16 @@ async def start_translation_session_webapp(
             workflow_expected_total = 7
             workflow_remaining_count = max(0, 7 - int(session_state["stored_count"]))
             workflow_background_fill_required = bool(int(session_state["stored_count"]) < 7)
+            logging.info(
+                "translation_daily_limit_no_increment_existing_session user_id=%s effective_mode=%s used=%s limit=%s decision=%s session_id=%s route=%s",
+                int(user_id),
+                "unknown",
+                None,
+                None,
+                "no_increment",
+                active_session_id,
+                route_path,
+            )
             return {
                 "session_id": active_session_id,
                 "created": False,
@@ -5329,21 +5381,6 @@ async def start_translation_session_webapp(
                         )
                         clear_translation_session_state(active_session_id)
                         clear_translation_session_card(int(user_id))
-
-                    feature_limit_started_at = time.perf_counter()
-                    translation_limit_error = enforce_feature_limit(
-                        user_id=int(user_id),
-                        feature_code="translation_daily_sets",
-                        requested_units=1.0,
-                        tz="Europe/Vienna",
-                    )
-                    phase_metrics["feature_limit_ms"] = int((time.perf_counter() - feature_limit_started_at) * 1000)
-                    if translation_limit_error:
-                        workflow_result_status = str(translation_limit_error.get("error") or "workflow_error").strip().lower() or "workflow_error"
-                        workflow_created = False
-                        workflow_blocked = False
-                        translation_limit_error["phase_metrics"] = dict(phase_metrics)
-                        return translation_limit_error
 
                     if _is_legacy_ru_de_pair(source_lang, target_lang):
                         recent_keys_started_at = time.perf_counter()
@@ -5511,6 +5548,19 @@ async def start_translation_session_webapp(
                         clear_translation_session_state(active_session_id)
                         clear_translation_session_card(int(user_id))
 
+                    feature_limit_started_at = time.perf_counter()
+                    translation_usage_state, translation_limit_error = _check_translation_daily_session_limit(
+                        user_id=int(user_id),
+                        route=route_path or "/api/webapp/start",
+                    )
+                    phase_metrics["feature_limit_ms"] = int((time.perf_counter() - feature_limit_started_at) * 1000)
+                    if translation_limit_error:
+                        workflow_result_status = str(translation_limit_error.get("error") or "workflow_error").strip().lower() or "workflow_error"
+                        workflow_created = False
+                        workflow_blocked = False
+                        translation_limit_error["phase_metrics"] = dict(phase_metrics)
+                        return translation_limit_error
+
                     session_id = int(hashlib.md5(f"{user_id}{datetime.now()}".encode()).hexdigest(), 16) % (10**12)
                     session_insert_started_at = time.perf_counter()
                     cursor.execute(
@@ -5645,6 +5695,21 @@ async def start_translation_session_webapp(
                 finally:
                     cursor.close()
             phase_metrics["checkout_write_ms"] = int((time.perf_counter() - write_checkout_started_at) * 1000)
+
+            translation_increment_error = _increment_translation_daily_session_usage(
+                user_id=int(user_id),
+                usage_state=locals().get("translation_usage_state"),
+                session_id=int(session_id),
+                route=route_path or "/api/webapp/start",
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+            if translation_increment_error:
+                workflow_result_status = str(translation_increment_error.get("error") or "workflow_error").strip().lower() or "workflow_error"
+                workflow_created = True
+                workflow_blocked = False
+                translation_increment_error["phase_metrics"] = dict(phase_metrics)
+                return translation_increment_error
 
             _remember_active_translation_session_pointer(
                 user_id=int(user_id),

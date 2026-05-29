@@ -125,9 +125,11 @@ from backend.database import (
     update_webapp_dictionary_entry,
     apply_flashcard_feel_feedback,
     create_flashcard_feel_feedback_token,
+    get_db_connection_context,
     get_dictionary_cache,
     upsert_dictionary_cache,
     save_webapp_dictionary_query,
+    save_webapp_dictionary_query_returning_result_with_cursor,
     create_support_message,
     get_dictionary_folders,
     get_or_create_dictionary_folder,
@@ -185,6 +187,7 @@ from backend.database import (
     create_visual_riddle_dispatch,
     mark_visual_riddle_dispatch_sent,
     mark_visual_riddle_dispatch_failed,
+    mark_visual_riddle_template_failed,
     get_visual_riddle_dispatch,
     get_visual_riddle_template,
     record_visual_riddle_answer,
@@ -192,6 +195,11 @@ from backend.database import (
     claim_or_create_visual_riddle_slot_template,
     count_ready_visual_riddle_templates,
     list_recent_visual_riddle_slot_assignments,
+)
+from backend.free_usage_lifecycle import (
+    FreeUsageLifecycleAbort,
+    begin_free_usage_lifecycle_tx,
+    finish_free_usage_lifecycle_success_tx,
 )
 from backend.job_queue import (
     can_enqueue_background_jobs,
@@ -4627,13 +4635,61 @@ def _build_dictionary_pair_keyboard(request_key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def _store_pending_dictionary_lookup_request(user_id: int, text: str) -> str:
-    key = hashlib.sha1(
-        f"{user_id}:{text}:{datetime.utcnow().isoformat()}".encode("utf-8")
-    ).hexdigest()[:20]
+def _is_shortcut_ingest_request_key(value: str | None) -> bool:
+    return str(value or "").strip().lower().startswith("sc")
+
+
+def _dictionary_origin_from_request_key(request_key: str | None) -> tuple[str, dict]:
+    normalized_key = str(request_key or "").strip()
+    if _is_shortcut_ingest_request_key(normalized_key):
+        return "shortcut_ingest", {
+            "source": "shortcut",
+            "flow": "shortcut_ingest",
+            "request_key": normalized_key,
+        }
+    return "bot_private_save", {
+        "source": "private_bot",
+        "flow": "dictionary_select",
+        "request_key": normalized_key,
+    }
+
+
+def _dictionary_is_shortcut_origin(payload: dict | None) -> bool:
+    data = payload if isinstance(payload, dict) else {}
+    origin_process = str(data.get("origin_process") or "").strip().lower()
+    origin_meta = data.get("origin_meta") if isinstance(data.get("origin_meta"), dict) else {}
+    return origin_process == "shortcut_ingest" or str(origin_meta.get("source") or "").strip().lower() == "shortcut"
+
+
+def _dictionary_pending_key(*, user_id: int, seed: str, prefix: str = "", source: str | None = None) -> str:
+    digest = hashlib.sha1(f"{int(user_id)}:{seed}:{datetime.utcnow().isoformat()}".encode("utf-8")).hexdigest()
+    if str(source or "").strip().lower() == "shortcut":
+        return "sc" + digest[:18]
+    clean_prefix = str(prefix or "").strip()[:2]
+    return (clean_prefix + digest)[:20]
+
+
+def _store_pending_dictionary_lookup_request(
+    user_id: int,
+    text: str,
+    *,
+    request_key: str | None = None,
+    origin_process: str | None = None,
+    origin_meta: dict | None = None,
+) -> str:
+    key = str(request_key or "").strip() or _dictionary_pending_key(
+        user_id=int(user_id),
+        seed=str(text or "").strip(),
+    )
+    resolved_origin_process = str(origin_process or "").strip()
+    resolved_origin_meta = origin_meta if isinstance(origin_meta, dict) else {}
+    if not resolved_origin_process:
+        resolved_origin_process, resolved_origin_meta = _dictionary_origin_from_request_key(key)
     pending_dictionary_lookup_requests[key] = {
         "user_id": int(user_id),
         "text": (text or "").strip(),
+        "origin_process": resolved_origin_process,
+        "origin_meta": dict(resolved_origin_meta),
     }
     if len(pending_dictionary_lookup_requests) > 500:
         oldest_key = next(iter(pending_dictionary_lookup_requests))
@@ -4756,6 +4812,7 @@ def _rebuild_dictionary_save_options_payload_from_message(query, option_key: str
     reply_markup = getattr(message, "reply_markup", None)
     card_key = _extract_card_key_from_reply_markup(reply_markup)
     question_request_key = _extract_dictionary_question_key_from_reply_markup(reply_markup)
+    origin_process, origin_meta = _dictionary_origin_from_request_key(option_key or card_key)
     lookup = {
         "word_source": str(options[0].get("source") or "").strip(),
         "word_target": str(options[0].get("target") or "").strip(),
@@ -4784,6 +4841,8 @@ def _rebuild_dictionary_save_options_payload_from_message(query, option_key: str
         "folder_is_none": bool(folder_payload.get("is_none")),
         "message_chat_id": int(message.chat_id) if getattr(message, "chat_id", None) is not None else None,
         "message_id": int(message.message_id) if getattr(message, "message_id", None) is not None else None,
+        "origin_process": origin_process,
+        "origin_meta": origin_meta,
     }
     pending_dictionary_save_options[option_key] = payload
     if card_key and card_key not in pending_dictionary_cards:
@@ -4801,6 +4860,8 @@ def _rebuild_dictionary_save_options_payload_from_message(query, option_key: str
             "folder_name": str(folder_payload.get("name") or "").strip(),
             "folder_icon": str(folder_payload.get("icon") or "").strip(),
             "folder_is_none": bool(folder_payload.get("is_none")),
+            "origin_process": origin_process,
+            "origin_meta": origin_meta,
         }
     return payload
 
@@ -5543,11 +5604,16 @@ def _store_pending_dictionary_card(
     source_text: str,
     lookup: dict,
     original_query: str = "",
+    origin_process: str | None = None,
+    origin_meta: dict | None = None,
 ) -> str:
     direction = f"{source_lang}-{target_lang}"
-    key = hashlib.sha1(
-        f"{user_id}:{direction}:{source_text}:{datetime.utcnow().isoformat()}".encode("utf-8")
-    ).hexdigest()[:20]
+    meta = origin_meta if isinstance(origin_meta, dict) else {}
+    key = _dictionary_pending_key(
+        user_id=int(user_id),
+        seed=f"{direction}:{source_text}",
+        source=str(meta.get("source") or "").strip().lower(),
+    )
     pending_dictionary_cards[key] = {
         "user_id": user_id,
         "direction": direction,
@@ -5556,6 +5622,8 @@ def _store_pending_dictionary_card(
         "source_text": source_text,
         "lookup": lookup,
         "original_query": (original_query or source_text or "").strip(),
+        "origin_process": str(origin_process or "bot_private_save").strip() or "bot_private_save",
+        "origin_meta": dict(meta),
         "saved": False,
     }
     if len(pending_dictionary_cards) > 500:
@@ -5614,11 +5682,16 @@ def _store_pending_dictionary_save_options(
     question_request_key: str = "",
     keyboard_mode: str = "full",
     folder_payload: dict | None = None,
+    origin_process: str | None = None,
+    origin_meta: dict | None = None,
 ) -> str:
     direction = f"{source_lang}-{target_lang}"
-    key = hashlib.sha1(
-        f"{user_id}:{card_key}:{datetime.utcnow().isoformat()}".encode("utf-8")
-    ).hexdigest()[:20]
+    meta = origin_meta if isinstance(origin_meta, dict) else {}
+    key = _dictionary_pending_key(
+        user_id=int(user_id),
+        seed=f"{card_key}:{direction}",
+        source=str(meta.get("source") or "").strip().lower(),
+    )
     resolved_folder_payload = folder_payload if isinstance(folder_payload, dict) else _resolve_private_dictionary_save_folder(
         user_id=int(user_id),
         source_lang=source_lang,
@@ -5639,6 +5712,8 @@ def _store_pending_dictionary_save_options(
         "folder_name": str(resolved_folder_payload.get("name") or "").strip(),
         "folder_icon": str(resolved_folder_payload.get("icon") or "").strip(),
         "folder_is_none": bool(resolved_folder_payload.get("is_none")),
+        "origin_process": str(origin_process or "bot_private_save").strip() or "bot_private_save",
+        "origin_meta": dict(meta),
     }
     if len(pending_dictionary_save_options) > 500:
         oldest_key = next(iter(pending_dictionary_save_options))
@@ -6437,6 +6512,8 @@ async def _send_dictionary_lookup_result(
     lookup_input: str,
     source_lang: str,
     target_lang: str,
+    origin_process: str | None = None,
+    origin_meta: dict | None = None,
 ) -> None:
     lookup_input = (lookup_input or "").strip()
     try:
@@ -6446,6 +6523,8 @@ async def _send_dictionary_lookup_result(
             source_lang=source_lang,
             target_lang=target_lang,
             max_options=3,
+            origin_process=origin_process,
+            origin_meta=origin_meta,
         )
     except Exception as exc:
         logging.exception(
@@ -6500,6 +6579,8 @@ async def _prepare_dictionary_lookup_response(
     source_lang: str,
     target_lang: str,
     max_options: int = 3,
+    origin_process: str | None = None,
+    origin_meta: dict | None = None,
 ) -> dict:
     normalized_lookup_input = _normalize_dictionary_lookup_input(lookup_input)
     lookup = await _run_dictionary_lookup_for_pair(
@@ -6519,6 +6600,8 @@ async def _prepare_dictionary_lookup_response(
         source_text,
         lookup,
         original_query=lookup_input,
+        origin_process=origin_process,
+        origin_meta=origin_meta,
     )
     question_request_key = _store_pending_quiz_question_request(
         user_id=int(user_id),
@@ -6566,6 +6649,8 @@ async def _prepare_dictionary_lookup_response(
         question_request_key=question_request_key,
         keyboard_mode="full",
         folder_payload=folder_payload,
+        origin_process=origin_process,
+        origin_meta=origin_meta,
     )
     card_payload = pending_dictionary_cards.get(card_key)
     if isinstance(card_payload, dict):
@@ -6592,6 +6677,8 @@ async def _send_dictionary_lookup_quick_result(
     lookup_input: str,
     source_lang: str,
     target_lang: str,
+    origin_process: str | None = None,
+    origin_meta: dict | None = None,
 ) -> None:
     lookup_input = (lookup_input or "").strip()
     try:
@@ -6601,6 +6688,8 @@ async def _send_dictionary_lookup_quick_result(
             source_lang=source_lang,
             target_lang=target_lang,
             max_options=2,
+            origin_process=origin_process,
+            origin_meta=origin_meta,
         )
     except Exception as exc:
         logging.exception(
@@ -6666,6 +6755,8 @@ async def _process_dictionary_pair_selection(
     source_lang: str,
     target_lang: str,
     response_mode: str = "full",
+    origin_process: str | None = None,
+    origin_meta: dict | None = None,
 ) -> None:
     try:
         normalized_mode = str(response_mode or "full").strip().lower()
@@ -6677,6 +6768,8 @@ async def _process_dictionary_pair_selection(
                 lookup_input=lookup_input,
                 source_lang=source_lang,
                 target_lang=target_lang,
+                origin_process=origin_process,
+                origin_meta=origin_meta,
             )
         else:
             await _send_dictionary_lookup_result(
@@ -6686,6 +6779,8 @@ async def _process_dictionary_pair_selection(
                 lookup_input=lookup_input,
                 source_lang=source_lang,
                 target_lang=target_lang,
+                origin_process=origin_process,
+                origin_meta=origin_meta,
             )
     except Exception as exc:
         logging.exception(
@@ -6742,9 +6837,12 @@ async def handle_dictionary_pair_callback(update: Update, context: CallbackConte
         if not reconstructed_lookup_input:
             await query.answer("Запрос устарел. Отправьте слово ещё раз.", show_alert=True)
             return
+        origin_process, origin_meta = _dictionary_origin_from_request_key(request_key)
         payload = {
             "user_id": int(user.id),
             "text": reconstructed_lookup_input,
+            "origin_process": origin_process,
+            "origin_meta": origin_meta,
         }
         pending_dictionary_lookup_requests[request_key] = payload
 
@@ -6812,6 +6910,11 @@ async def handle_dictionary_mode_callback(update: Update, context: CallbackConte
         await query.answer("Запрос пустой. Отправьте слово снова.", show_alert=True)
         return
 
+    origin_process = str(payload.get("origin_process") or "").strip()
+    origin_meta = payload.get("origin_meta") if isinstance(payload.get("origin_meta"), dict) else {}
+    if not origin_process:
+        origin_process, origin_meta = _dictionary_origin_from_request_key(request_key)
+
     if request_key in pending_dictionary_lookup_inflight:
         await query.answer("Этот запрос уже обрабатывается. Подождите немного.", show_alert=True)
         return
@@ -6834,6 +6937,8 @@ async def handle_dictionary_mode_callback(update: Update, context: CallbackConte
             source_lang=source_lang,
             target_lang=target_lang,
             response_mode=response_mode,
+            origin_process=origin_process,
+            origin_meta=origin_meta,
         )
     )
 
@@ -7653,6 +7758,152 @@ async def handle_dictionary_save_option_callback(update: Update, context: Callba
     await query.message.reply_text(f"✅ Сохранён вариант: {source} -> {target}")
 
 
+def _format_free_limit_message(payload: dict | None, fallback: str) -> str:
+    data = payload if isinstance(payload, dict) else {}
+    message = str(data.get("message") or "").strip()
+    if message:
+        return message
+    return fallback
+
+
+def _save_shortcut_dictionary_option_for_user(
+    *,
+    payload: dict,
+    user_id: int,
+    word_ru: str | None,
+    word_de: str | None,
+    translation_de: str | None,
+    translation_ru: str | None,
+    response_json: dict,
+    source_lang: str,
+    target_lang: str,
+) -> tuple[bool, str]:
+    origin_meta = payload.get("origin_meta") if isinstance(payload.get("origin_meta"), dict) else {}
+    origin_meta = {
+        **origin_meta,
+        "source": "shortcut",
+        "flow": "shortcut_ingest",
+    }
+    route = "bot:shortcut_ingest_dictionary_save"
+    effective_mode = "unknown"
+    entry_id = 0
+    inserted = False
+    try:
+        with db_acquire_scope("shortcut_ingest_dictionary_save"), get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                usage_state, limit_payload, limit_status = begin_free_usage_lifecycle_tx(
+                    cursor=cursor,
+                    lifecycle_key="shortcut_ingest_save",
+                    user_id=int(user_id),
+                    route=route,
+                    requested_units=1.0,
+                )
+                effective_mode = str((usage_state or {}).get("effective_mode") or "unknown").strip().lower()
+                logging.info(
+                    "shortcut_ingest_save_limit_check user_id=%s feature=%s effective_mode=%s used=%s limit=%s decision=%s route=%s",
+                    int(user_id),
+                    "shortcut_ingest_save_daily",
+                    effective_mode,
+                    (usage_state or {}).get("used"),
+                    (usage_state or {}).get("limit"),
+                    "block" if limit_payload else "allow",
+                    route,
+                )
+                if limit_payload:
+                    if str(limit_payload.get("error") or "") != "free_limit_exceeded":
+                        raise FreeUsageLifecycleAbort(limit_payload, int(limit_status or 503))
+                    return False, _format_free_limit_message(
+                        limit_payload,
+                        "На бесплатном тарифе лимит Shortcut сохранений на сегодня закончился.",
+                    )
+
+                folder_id = payload.get("folder_id")
+                if folder_id is None and not bool(payload.get("folder_is_none")):
+                    default_folder = get_or_create_dictionary_folder(
+                        user_id=int(user_id),
+                        name="GENERAL",
+                        color="#7d8590",
+                        icon="📁",
+                        cursor=cursor,
+                    )
+                    folder_id = default_folder.get("id")
+
+                save_result = save_webapp_dictionary_query_returning_result_with_cursor(
+                    cursor,
+                    user_id=int(user_id),
+                    word_ru=word_ru,
+                    translation_de=translation_de,
+                    word_de=word_de,
+                    translation_ru=translation_ru,
+                    response_json=response_json,
+                    folder_id=int(folder_id) if folder_id is not None else None,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    origin_process="shortcut_ingest",
+                    origin_meta=origin_meta,
+                )
+                entry_id = int((save_result or {}).get("entry_id") or 0)
+                inserted = bool((save_result or {}).get("inserted"))
+                if not entry_id:
+                    raise RuntimeError("Shortcut dictionary save returned no entry_id")
+                if inserted:
+                    finish_free_usage_lifecycle_success_tx(
+                        cursor=cursor,
+                        user_id=int(user_id),
+                        usage_state=usage_state,
+                        route=route,
+                        idempotency_seed=f"shortcut:{int(user_id)}:{int(entry_id)}",
+                        object_id=int(entry_id),
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        metadata={
+                            "entry_id": int(entry_id),
+                            "origin_process": "shortcut_ingest",
+                            "source": "shortcut",
+                            "flow": "shortcut_ingest",
+                        },
+                    )
+                else:
+                    logging.info(
+                        "shortcut_ingest_save_no_increment_existing_item user_id=%s feature=%s effective_mode=%s decision=%s item_id=%s route=%s",
+                        int(user_id),
+                        "shortcut_ingest_save_daily",
+                        effective_mode,
+                        "no_increment",
+                        int(entry_id),
+                        route,
+                    )
+    except FreeUsageLifecycleAbort as exc:
+        logging.error(
+            "shortcut_ingest_save_limit_error user_id=%s feature=%s effective_mode=%s decision=%s item_id=%s route=%s error=%s",
+            int(user_id),
+            "shortcut_ingest_save_daily",
+            effective_mode,
+            "error",
+            entry_id or None,
+            route,
+            exc.payload.get("error"),
+        )
+        return False, _format_free_limit_message(exc.payload, "Не удалось проверить лимит Shortcut сохранений.")
+    except Exception as exc:
+        logging.exception("❌ Ошибка Shortcut сохранения выбранного варианта user_id=%s: %s", int(user_id), exc)
+        return False, "Ошибка сохранения. Попробуйте позже."
+
+    if inserted and effective_mode == "free":
+        logging.info(
+            "shortcut_ingest_save_limit_increment user_id=%s feature=%s effective_mode=%s used=%s limit=%s decision=%s item_id=%s route=%s",
+            int(user_id),
+            "shortcut_ingest_save_daily",
+            effective_mode,
+            None,
+            None,
+            "increment",
+            int(entry_id),
+            route,
+        )
+    return True, "ok"
+
+
 def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) -> tuple[bool, str]:
     source = (chosen.get("source") or "").strip()
     target = (chosen.get("target") or "").strip()
@@ -7704,6 +7955,19 @@ def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) 
         response_json["translation_de"] = translation_de
     if translation_ru:
         response_json["translation_ru"] = translation_ru
+
+    if _dictionary_is_shortcut_origin(payload):
+        return _save_shortcut_dictionary_option_for_user(
+            payload=payload,
+            user_id=int(user_id),
+            word_ru=word_ru,
+            word_de=word_de,
+            translation_de=translation_de,
+            translation_ru=translation_ru,
+            response_json=response_json,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
 
     try:
         try:
@@ -12084,7 +12348,10 @@ async def _send_quiz_result_private(
             de_text = _normalize_quiz_option_for_private_message(correct_text)
 
     fallback_ru = quiz_data.get("word_ru") or ""
-    ru_text = await _translate_quiz_text_to_ru(de_text, fallback_ru=fallback_ru)
+    if quiz_type == "anagram" and str(fallback_ru or "").strip():
+        ru_text = str(fallback_ru or "").strip()
+    else:
+        ru_text = await _translate_quiz_text_to_ru(de_text, fallback_ru=fallback_ru)
 
     selected_display = _normalize_quiz_option_for_private_message(selected_text or "")
     status_line = "✅ Верно" if is_correct else "❌ Неверно"
@@ -13796,6 +14063,20 @@ def _build_visual_riddle_caption(template: dict, shuffled_answers: list[dict]) -
     return "\n".join(lines)
 
 
+_VR_UNSAFE_EXPLANATION_OPTION_REF_RE = re.compile(
+    r"\b(?:option|variante|antwort|вариант|ответ)\s*[ABCDАБВГ]\b|"
+    r"\b[ABCD]\s*(?:ist|war|is|was|ошиб|верн|прав)",
+    re.IGNORECASE,
+)
+
+
+def _is_visual_riddle_explanation_display_safe(value: str | None) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    return not _VR_UNSAFE_EXPLANATION_OPTION_REF_RE.search(text)
+
+
 async def send_visual_riddle_template_to_chat(
     context: CallbackContext,
     *,
@@ -13829,6 +14110,30 @@ async def send_visual_riddle_template_to_chat(
             "vr_send: template not ready template_id=%s status=%s chat_id=%s",
             template_id, gen_status, chat_id,
         )
+        return False
+
+    try:
+        from backend.background_jobs import validate_visual_riddle_blueprint
+
+        validate_visual_riddle_blueprint(template)
+    except Exception as exc:
+        reason = f"visual_riddle_runtime_validation_failed:{exc}"
+        logging.warning(
+            "visual_riddle_runtime_validation_failed template_id=%s chat_id=%s user_id=%s reason=%s",
+            template_id,
+            chat_id,
+            target_user_id,
+            reason,
+        )
+        try:
+            await asyncio.to_thread(
+                mark_visual_riddle_template_failed,
+                int(template_id),
+                failure_reason=reason[:500],
+                visual_status="invalid",
+            )
+        except Exception:
+            logging.warning("vr_send: could not mark invalid template failed template_id=%s", template_id, exc_info=True)
         return False
 
     image_url = str(template.get("image_url") or "").strip()
@@ -14003,7 +14308,19 @@ async def handle_visual_riddle_callback(update: Update, context: CallbackContext
     feedback_already_sent = bool(answer_record.get("feedback_sent_at"))
     stored_is_correct = bool(answer_record.get("is_correct")) if answer_record.get("is_correct") is not None else bool(is_correct)
 
-    short_explanation = str(template.get("short_explanation") or "").strip()
+    raw_short_explanation = str(template.get("short_explanation") or "").strip()
+    short_explanation = (
+        raw_short_explanation
+        if _is_visual_riddle_explanation_display_safe(raw_short_explanation)
+        else ""
+    )
+    if raw_short_explanation and not short_explanation:
+        logging.warning(
+            "visual_riddle_unsafe_explanation_suppressed dispatch_id=%s template_id=%s user_id=%s",
+            dispatch_id,
+            dispatch.get("template_id"),
+            int(user.id),
+        )
     correct_text = str(next(
         (a.get("text", "") for a in answers if str(a.get("id") or "").strip().upper() == correct_answer_id),
         "",

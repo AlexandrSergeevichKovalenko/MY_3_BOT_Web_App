@@ -117,9 +117,8 @@ class ShortcutLookupSplitTests(unittest.TestCase):
                  "used": 0,
                  "limit": 20,
              }, None, None)), \
-             patch.object(server, "_shortcut_dedup_reserve", return_value=False), \
              patch.object(server, "can_enqueue_background_jobs", return_value=True), \
-             patch.object(server, "_start_shortcut_lookup_enqueue_runner", return_value=("job123", 1, False, None)) as enqueue_mock:
+             patch.object(server, "_start_shortcut_lookup_enqueue_runner", return_value=("req123", 1, False, "queued", "job123")) as enqueue_mock:
             response = self.client.post(
                 "/api/shortcut/lookup",
                 json={"text": "noisy input", "user_id": 117649764},
@@ -206,9 +205,8 @@ class ShortcutLookupSplitTests(unittest.TestCase):
                  "effective_mode": "pro",
                  "skip_increment": True,
              }, None, None)), \
-             patch.object(server, "_shortcut_dedup_reserve", return_value=False), \
              patch.object(server, "can_enqueue_background_jobs", return_value=True), \
-             patch.object(server, "_start_shortcut_lookup_enqueue_runner", return_value=("job123", 1, False, None)):
+             patch.object(server, "_start_shortcut_lookup_enqueue_runner", return_value=("req123", 1, False, "queued", "job123")):
             response = self.client.post(
                 "/api/shortcut/lookup",
                 json={"text": "noisy input", "user_id": 117649764},
@@ -226,8 +224,8 @@ class ShortcutLookupSplitTests(unittest.TestCase):
                  "used": 0,
                  "limit": 20,
              }, None, None)), \
-             patch.object(server, "_shortcut_dedup_reserve", return_value=True), \
-             patch.object(server, "_start_shortcut_lookup_enqueue_runner") as enqueue_mock:
+             patch.object(server, "can_enqueue_background_jobs", return_value=True), \
+             patch.object(server, "_start_shortcut_lookup_enqueue_runner", return_value=("req123", 1, True, "processing", "job123")) as enqueue_mock:
             response = self.client.post(
                 "/api/shortcut/lookup",
                 json={"text": "noisy input", "user_id": 117649764},
@@ -236,10 +234,12 @@ class ShortcutLookupSplitTests(unittest.TestCase):
 
         payload = response.get_json()
         self.assertEqual(response.status_code, 200)
-        self.assertFalse(payload["accepted"])
+        self.assertTrue(payload["accepted"])
         self.assertFalse(payload["queued"])
         self.assertFalse(payload["completed"])
-        enqueue_mock.assert_not_called()
+        self.assertTrue(payload["duplicate"])
+        self.assertEqual(payload["status"], "processing")
+        enqueue_mock.assert_called_once()
 
     def test_shortcut_pure_extraction_without_save_does_not_increment(self):
         with patch.object(

@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from psycopg2.extras import Json
 
-from backend.database import _billing_period_bounds, _get_feature_usage_today, _get_product_active_users_count, _prorate_fixed_cost_amount, enforce_feature_limit, get_global_billing_summary, log_billing_event
+from backend.database import _billing_period_bounds, _get_feature_usage_today, _get_product_active_users_count, _prorate_fixed_cost_amount, build_free_limit_error, enforce_feature_limit, get_free_feature_limit_metadata, get_free_feature_usage_today, get_global_billing_summary, log_billing_event, resolve_entitlement
 
 
 class _DummyCursor:
@@ -295,6 +295,125 @@ class BillingEconomicsTests(unittest.TestCase):
                     )
 
         self.assertIsNone(result)
+
+    def test_default_missing_subscription_resolves_free(self):
+        with patch("backend.database.get_user_subscription", return_value=None), \
+             patch("backend.database.get_billing_plan", side_effect=lambda code, **_kwargs: {
+                 "plan_code": code,
+                 "name": code.title(),
+                 "is_paid": code == "pro",
+                 "daily_cost_cap_eur": None,
+             }):
+            result = resolve_entitlement(
+                user_id=77,
+                now_ts_utc=datetime(2026, 5, 27, 10, 0, tzinfo=timezone.utc),
+                tz="Europe/Vienna",
+            )
+
+        self.assertEqual(result["effective_mode"], "free")
+        self.assertEqual(result["source_of_entitlement"], "free_default")
+
+    def test_paid_subscription_still_resolves_pro(self):
+        subscription = {
+            "plan_code": "pro",
+            "status": "active",
+            "trial_ends_at": None,
+        }
+        with patch("backend.database.get_billing_plan", side_effect=lambda code, **_kwargs: {
+            "plan_code": code,
+            "name": code.title(),
+            "is_paid": code == "pro",
+            "daily_cost_cap_eur": None,
+        }):
+            result = resolve_entitlement(
+                user_id=77,
+                now_ts_utc=datetime(2026, 5, 27, 10, 0, tzinfo=timezone.utc),
+                tz="Europe/Vienna",
+                subscription=subscription,
+            )
+
+        self.assertEqual(result["effective_mode"], "pro")
+        self.assertEqual(result["source_of_entitlement"], "paid_subscription")
+
+    def test_explicit_trial_subscription_still_resolves_trial(self):
+        subscription = {
+            "plan_code": "free",
+            "status": "trialing",
+            "trial_ends_at": "2026-05-28T00:00:00+00:00",
+        }
+        with patch("backend.database.get_billing_plan", side_effect=lambda code, **_kwargs: {
+            "plan_code": code,
+            "name": code.title(),
+            "is_paid": code == "pro",
+            "daily_cost_cap_eur": None,
+        }):
+            result = resolve_entitlement(
+                user_id=77,
+                now_ts_utc=datetime(2026, 5, 27, 10, 0, tzinfo=timezone.utc),
+                tz="Europe/Vienna",
+                subscription=subscription,
+            )
+
+        self.assertEqual(result["effective_mode"], "trial")
+        self.assertEqual(result["source_of_entitlement"], "explicit_trial_subscription")
+
+    def test_free_limit_error_builder_uses_metadata_and_vienna_reset(self):
+        meta = get_free_feature_limit_metadata("ask_gpt_daily")
+        result = build_free_limit_error(
+            "ask_gpt_daily",
+            used=5,
+            now_ts_utc=datetime(2026, 5, 27, 10, 0, tzinfo=timezone.utc),
+            tz="Europe/Vienna",
+        )
+
+        self.assertEqual(meta["free_limit"], 5)
+        self.assertEqual(result["ok"], False)
+        self.assertEqual(result["error"], "free_limit_exceeded")
+        self.assertEqual(result["feature"], "ask_gpt_daily")
+        self.assertEqual(result["feature_title"], "Спросить GPT")
+        self.assertEqual(result["limit"], 5)
+        self.assertEqual(result["used"], 5)
+        self.assertEqual(result["reset_at"], "2026-05-28T00:00:00+02:00")
+
+    def test_free_limit_error_builder_rejects_missing_metadata(self):
+        with self.assertRaises(ValueError):
+            build_free_limit_error(
+                "unknown_feature_daily",
+                used=1,
+                now_ts_utc=datetime(2026, 5, 27, 10, 0, tzinfo=timezone.utc),
+                tz="Europe/Vienna",
+            )
+
+    def test_free_feature_usage_today_uses_vienna_day_boundary(self):
+        cursor = _DummyCursor([
+            (4,),
+        ])
+
+        with patch("backend.database.get_db_connection_context", _db_context(cursor)):
+            usage = get_free_feature_usage_today(
+                user_id=77,
+                feature_key="dictionary_lookup_save_daily",
+                now_ts_utc=datetime(2026, 5, 27, 22, 30, tzinfo=timezone.utc),
+                tz="Europe/Vienna",
+            )
+
+        self.assertEqual(usage, 4.0)
+        self.assertEqual(len(cursor.executed), 1)
+        query, params = cursor.executed[0]
+        self.assertIn("event_time AT TIME ZONE", query)
+        self.assertEqual(params[0], 77)
+        self.assertEqual(params[1], "dictionary_lookup_save_daily")
+        self.assertEqual(params[2], "Europe/Vienna")
+        self.assertEqual(params[3], date(2026, 5, 28))
+
+    def test_free_feature_usage_today_rejects_missing_metadata(self):
+        with self.assertRaises(ValueError):
+            get_free_feature_usage_today(
+                user_id=77,
+                feature_key="unknown_feature_daily",
+                now_ts_utc=datetime(2026, 5, 27, 10, 0, tzinfo=timezone.utc),
+                tz="Europe/Vienna",
+            )
 
 
 if __name__ == "__main__":

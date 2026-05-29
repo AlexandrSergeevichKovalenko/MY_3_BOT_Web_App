@@ -6879,11 +6879,11 @@ def ensure_webapp_tables() -> None:
                 CREATE TABLE IF NOT EXISTS bt_3_shortcut_ingest_requests (
                     id               BIGSERIAL PRIMARY KEY,
                     user_id          BIGINT NOT NULL,
-                    source           TEXT NOT NULL DEFAULT 'shortcut',
+                    source           TEXT NOT NULL,
                     ingest_key       TEXT NOT NULL,
                     text_preview     TEXT NOT NULL DEFAULT '',
-                    status           TEXT NOT NULL DEFAULT 'queued'
-                                     CHECK (status IN ('queued','processing','delivered','failed')),
+                    status           TEXT NOT NULL DEFAULT 'accepted'
+                                     CHECK (status IN ('accepted','queued','processing','delivered','failed')),
                     job_id           TEXT,
                     accepted_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     completed_at     TIMESTAMPTZ,
@@ -6900,6 +6900,19 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_shortcut_ingest_user
                 ON bt_3_shortcut_ingest_requests (user_id, accepted_at DESC);
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_shortcut_ingest_requests
+                    DROP CONSTRAINT IF EXISTS bt_3_shortcut_ingest_requests_status_check;
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_shortcut_ingest_requests
+                    ADD CONSTRAINT bt_3_shortcut_ingest_requests_status_check
+                    CHECK (status IN ('accepted','queued','processing','delivered','failed'));
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_shortcut_ingest_requests
+                    ALTER COLUMN status SET DEFAULT 'accepted';
             """)
             cursor.execute("""
                 ALTER TABLE bt_3_shortcut_ingest_requests
@@ -29338,10 +29351,13 @@ def get_visual_riddle_quiz_type_distribution(*, lookback_count: int = 30) -> dic
     return {str(r[0] or ""): int(r[1] or 0) for r in rows if r[0]}
 
 
-_SHORTCUT_INGEST_ACTIVE_STATUSES: frozenset[str] = frozenset({"queued", "processing", "delivered"})
+_SHORTCUT_INGEST_ACTIVE_STATUSES: frozenset[str] = frozenset({"accepted", "queued", "processing", "delivered"})
 
 _SHORTCUT_INGEST_VALID_TRANSITIONS: frozenset[tuple[str, str]] = frozenset({
+    ("accepted", "queued"),
+    ("accepted", "failed"),
     ("queued", "processing"),
+    ("queued", "failed"),
     ("processing", "delivered"),
     ("processing", "failed"),
     ("failed", "queued"),
@@ -29412,9 +29428,11 @@ def shortcut_ingest_request_upsert(
     Idempotency is enforced by UNIQUE(user_id, source, ingest_key).
     """
     safe_user_id = int(user_id)
-    safe_source = str(source or "").strip()[:64] or "shortcut"
+    safe_source = str(source or "").strip()[:64]
     safe_key = str(ingest_key or "").strip()[:64]
     safe_preview = str(text_preview or "").strip()[:500]
+    if not safe_source:
+        raise ValueError("source is required")
     if not safe_key:
         raise ValueError("ingest_key is required")
 
@@ -29454,6 +29472,9 @@ def shortcut_ingest_request_upsert(
     if not row:
         raise RuntimeError("shortcut_ingest_request_upsert: no row returned")
     ingest_id, status, job_id, duplicate_count = row
+    normalized_status = str(status or "").strip()
+    if not normalized_status:
+        raise RuntimeError("shortcut_ingest_request_upsert: missing durable status")
     if int(duplicate_count) == 0:
         logging.info(
             "shortcut_ingest_payload_persisted ingest_id=%s user_id=%s "
@@ -29463,7 +29484,7 @@ def shortcut_ingest_request_upsert(
     return {
         "ingest_id": int(ingest_id),
         "is_new": int(duplicate_count) == 0,
-        "status": str(status or "queued"),
+        "status": normalized_status,
         "job_id": str(job_id).strip() if job_id else None,
         "duplicate_count": int(duplicate_count or 0),
     }
@@ -29487,7 +29508,7 @@ def shortcut_ingest_request_set_status(
     Raises RuntimeError if the row is not found.
     Raises ValueError for invalid status.
     """
-    _valid = {"queued", "processing", "delivered", "failed"}
+    _valid = {"accepted", "queued", "processing", "delivered", "failed"}
     if status not in _valid:
         raise ValueError(f"Invalid shortcut ingest status: {status!r}")
     safe_id = int(ingest_id)
