@@ -11659,6 +11659,7 @@ function AppInner() {
     weeklyPlan?.week
     || (weeklyPlan?.metrics && Object.keys(weeklyPlan.metrics).length > 0)
   );
+  const hasWeeklyMetricRows = weeklyMetricRows.some((item) => Object.keys(item?.data || {}).length > 0);
   const canRenderWeeklyMetrics = weeklyPlanUsesDeferredAnalytics
     ? useLivePlanAnalyticsMetrics
     : (useLivePlanAnalyticsMetrics || hasWeeklyMetricRows);
