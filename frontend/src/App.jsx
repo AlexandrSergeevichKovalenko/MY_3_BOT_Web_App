@@ -2340,16 +2340,11 @@ function resolveExternalThemeMode(telegramApp) {
     || telegramApp?.themeParams?.color_scheme
     || ''
   ).trim().toLowerCase();
+  // Inside Telegram WebApp — respect Telegram's own light/dark setting.
   if (telegramScheme === 'light' || telegramScheme === 'dark') {
     return telegramScheme;
   }
-  if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
-    try {
-      return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-    } catch (_error) {
-      return 'dark';
-    }
-  }
+  // In browser (no Telegram context) — always dark so the design matches the app.
   return 'dark';
 }
 
