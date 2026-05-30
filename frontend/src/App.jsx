@@ -8776,13 +8776,13 @@ function AppInner() {
           ? Math.max(0, Math.trunc(Number(incomingQueue.due_count_total)))
           : Math.max(0, Math.trunc(Number(prev?.due_count_total || 0))),
         due_reviewed_today: Number.isFinite(Number(incomingQueue?.due_reviewed_today))
-          ? Math.max(0, Math.trunc(Number(incomingQueue.due_reviewed_today)))
+          ? Math.max(Math.max(0, Math.trunc(Number(incomingQueue.due_reviewed_today))), Math.max(0, Math.trunc(Number(prev?.due_reviewed_today || 0))))
           : Math.max(0, Math.trunc(Number(prev?.due_reviewed_today || 0))),
         due_limit_today: Number.isFinite(Number(incomingQueue?.due_limit_today))
           ? Math.max(1, Math.trunc(Number(incomingQueue.due_limit_today)))
           : Math.max(1, Math.trunc(Number(prev?.due_limit_today || 30))),
         introduced_today: Number.isFinite(Number(incomingQueue?.introduced_today))
-          ? Math.max(0, Math.trunc(Number(incomingQueue.introduced_today)))
+          ? Math.max(Math.max(0, Math.trunc(Number(incomingQueue.introduced_today))), Math.max(0, Math.trunc(Number(prev?.introduced_today || 0))))
           : Math.max(0, Math.trunc(Number(prev?.introduced_today || 0))),
       }));
     }
@@ -8794,7 +8794,8 @@ function AppInner() {
     srsShownAtRef.current = Date.now();
   }, [getSrsCardId, updateSrsPrefetchQueue, stopTtsPlayback]);
 
-  const decrementSrsQueueInfoLocal = () => {
+  const decrementSrsQueueInfoLocal = (ratingValue) => {
+    const isAgain = String(ratingValue || '').toUpperCase() === 'AGAIN';
     setSrsQueueInfo((prev) => {
       const dueCount = Math.max(0, Math.trunc(Number(prev?.due_count || 0)));
       const newRemaining = Math.max(0, Math.trunc(Number(prev?.new_remaining_today || 0)));
@@ -8802,17 +8803,12 @@ function AppInner() {
       const dueReviewedToday = Math.max(0, Math.trunc(Number(prev?.due_reviewed_today || 0)));
       const dueLimitToday = Math.max(1, Math.trunc(Number(prev?.due_limit_today || 30)));
       const introducedToday = Math.max(0, Math.trunc(Number(prev?.introduced_today || 0)));
-      // Only decrement the queue counters optimistically. Do NOT increment
-      // due_reviewed_today or introduced_today here — those are set by the server
-      // on the next card load. Incrementing them optimistically caused the counter
-      // to jump forward (counting new cards and re-reviews) then snap backward
-      // when the server sent the real DISTINCT non-new count.
       if (dueCount > 0) {
         return {
           due_count: dueCount - 1,
           new_remaining_today: newRemaining,
           due_count_total: Math.max(0, dueCountTotal - 1),
-          due_reviewed_today: dueReviewedToday,
+          due_reviewed_today: isAgain ? dueReviewedToday : dueReviewedToday + 1,
           due_limit_today: dueLimitToday,
           introduced_today: introducedToday,
         };
@@ -8824,7 +8820,7 @@ function AppInner() {
           due_count_total: dueCountTotal,
           due_reviewed_today: dueReviewedToday,
           due_limit_today: dueLimitToday,
-          introduced_today: introducedToday,
+          introduced_today: isAgain ? introducedToday : introducedToday + 1,
         };
       }
       return { due_count: dueCount, new_remaining_today: newRemaining, due_count_total: dueCountTotal, due_reviewed_today: dueReviewedToday, due_limit_today: dueLimitToday, introduced_today: introducedToday };
@@ -10316,8 +10312,6 @@ function AppInner() {
   const getTodayItemElapsedSeconds = (item, nowMs = Date.now()) => {
     const payload = getTodayItemTimerPayload(item);
     const baseSeconds = getTodayItemStoredElapsedSeconds(item);
-    const isDone = String(item?.status || '').toLowerCase() === 'done';
-    if (isDone) return baseSeconds;
     const timerRunning = Boolean(payload?.timer_running);
     const startedAtRaw = String(payload?.timer_started_at || '').trim();
     if (!timerRunning || !startedAtRaw) return baseSeconds;
@@ -11226,7 +11220,7 @@ function AppInner() {
           queue_source: resolvedQueueSource,
         });
         setSrsOfflinePendingCount((c) => c + 1);
-        decrementSrsQueueInfoLocal();
+        decrementSrsQueueInfoLocal(ratingValue);
         setSrsRevealAnswer(false);
         setSrsRevealStartedAt(0);
         setSrsRevealElapsedSec(0);
@@ -32599,25 +32593,25 @@ function AppInner() {
                                     <div className="fsrs-rating-grid">
                                       <div className="fsrs-rate-cell">
                                         <button type="button" className="fsrs-rate-btn again" onClick={() => submitSrsReview('AGAIN')} disabled={srsSubmitting}>
-                                          <span>Again</span>
+                                          <span>{tr('Снова', 'Nochmal')}</span>
                                         </button>
                                         <small className="fsrs-rate-hint">{getSrsRatingHint('AGAIN')}</small>
                                       </div>
                                       <div className="fsrs-rate-cell">
                                         <button type="button" className="fsrs-rate-btn hard" onClick={() => submitSrsReview('HARD')} disabled={srsSubmitting}>
-                                          <span>Hard</span>
+                                          <span>{tr('Трудно', 'Schwer')}</span>
                                         </button>
                                         <small className="fsrs-rate-hint">{getSrsRatingHint('HARD')}</small>
                                       </div>
                                       <div className="fsrs-rate-cell">
                                         <button type="button" className="fsrs-rate-btn good" onClick={() => submitSrsReview('GOOD')} disabled={srsSubmitting || srsGoodLocked}>
-                                          <span>Good</span>
+                                          <span>{tr('Хорошо', 'Gut')}</span>
                                         </button>
                                         <small className="fsrs-rate-hint">{getSrsRatingHint('GOOD')}</small>
                                       </div>
                                       <div className="fsrs-rate-cell">
                                         <button type="button" className="fsrs-rate-btn easy" onClick={() => submitSrsReview('EASY')} disabled={srsSubmitting || srsEasyLocked}>
-                                          <span>Easy</span>
+                                          <span>{tr('Легко', 'Leicht')}</span>
                                         </button>
                                         <small className="fsrs-rate-hint">{getSrsRatingHint('EASY')}</small>
                                       </div>
