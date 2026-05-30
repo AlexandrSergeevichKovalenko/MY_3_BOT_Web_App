@@ -1378,6 +1378,15 @@ def run_shortcut_lookup_job(
                     pass
                 return
 
+        except Exception:
+            logging.exception(
+                "shortcut_lookup_job row load or text resolution failed "
+                "user_id=%s ingest_id=%s — aborting before Telegram prompt delivery",
+                safe_user_id,
+                normalized_ingest_id,
+            )
+            raise
+        try:
             shortcut_ingest_request_set_status(
                 ingest_id=normalized_ingest_id,
                 status="processing",
@@ -1385,12 +1394,11 @@ def run_shortcut_lookup_job(
             )
         except Exception:
             logging.exception(
-                "shortcut_lookup_job status transition to processing failed "
-                "user_id=%s ingest_id=%s — aborting before Telegram prompt delivery",
+                "shortcut_lookup_job processing status update failed "
+                "user_id=%s ingest_id=%s — continuing with delivery",
                 safe_user_id,
                 normalized_ingest_id,
             )
-            raise
 
     delivery_completed = False
     try:

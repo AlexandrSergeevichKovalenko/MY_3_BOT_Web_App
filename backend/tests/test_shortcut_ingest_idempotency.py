@@ -347,7 +347,9 @@ class ShortcutIngestIdempotencyTests(unittest.TestCase):
         for c in set_status_mock.call_args_list:
             self.assertNotEqual(c.kwargs.get("status"), "delivered")
 
-    def test_worker_processing_transition_failure_does_not_send_prompts(self):
+    def test_worker_processing_transition_failure_still_sends_prompts(self):
+        """A DB failure when updating status to 'processing' must NOT block delivery.
+        The job logs a warning and continues — availability > strict status bookkeeping."""
         import backend.database as db_module
 
         row = {"ingest_id": 42, "status": "queued", "job_id": "j1",
@@ -370,18 +372,18 @@ class ShortcutIngestIdempotencyTests(unittest.TestCase):
                              side_effect=_set_status)
             )
             delivery_mock = stack.enter_context(
-                patch("backend.backend_server._run_shortcut_lookup_delivery")
+                patch("backend.backend_server._run_shortcut_lookup_delivery",
+                      return_value=1)
             )
-            with self.assertRaises(RuntimeError):
-                jobs.run_shortcut_lookup_job(
-                    user_id=117649764,
-                    text="sich abfinden mit",
-                    source="shortcut",
-                    ingest_key="abc123",
-                    ingest_id=42,
-                )
+            jobs.run_shortcut_lookup_job(
+                user_id=117649764,
+                text="sich abfinden mit",
+                source="shortcut",
+                ingest_key="abc123",
+                ingest_id=42,
+            )
 
-        delivery_mock.assert_not_called()
+        delivery_mock.assert_called_once()
 
     def test_worker_delivered_status_failure_raises_after_prompt_send(self):
         import backend.database as db_module
