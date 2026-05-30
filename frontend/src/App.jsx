@@ -5334,7 +5334,7 @@ function AppInner() {
   const [flashcardPreviewIndex, setFlashcardPreviewIndex] = useState(0);
   const [srsCard, setSrsCard] = useState(null);
   const [srsState, setSrsState] = useState(null);
-  const [srsQueueInfo, setSrsQueueInfo] = useState({ due_count: 0, new_remaining_today: 0, due_count_total: 0, due_reviewed_today: 0, due_limit_today: 30 });
+  const [srsQueueInfo, setSrsQueueInfo] = useState({ due_count: 0, new_remaining_today: 0, due_count_total: 0, due_reviewed_today: 0, due_limit_today: 30, introduced_today: 0 });
   const [srsPreview, setSrsPreview] = useState(null);
   const [srsPrefetchQueue, setSrsPrefetchQueue] = useState([]);
   const [todayPlan, setTodayPlan] = useState(null);
@@ -8780,6 +8780,9 @@ function AppInner() {
         due_limit_today: Number.isFinite(Number(incomingQueue?.due_limit_today))
           ? Math.max(1, Math.trunc(Number(incomingQueue.due_limit_today)))
           : Math.max(1, Math.trunc(Number(prev?.due_limit_today || 30))),
+        introduced_today: Number.isFinite(Number(incomingQueue?.introduced_today))
+          ? Math.max(0, Math.trunc(Number(incomingQueue.introduced_today)))
+          : Math.max(0, Math.trunc(Number(prev?.introduced_today || 0))),
       }));
     }
     const activeCardId = getSrsCardId(nextCard);
@@ -8797,13 +8800,20 @@ function AppInner() {
       const dueCountTotal = Math.max(0, Math.trunc(Number(prev?.due_count_total || 0)));
       const dueReviewedToday = Math.max(0, Math.trunc(Number(prev?.due_reviewed_today || 0)));
       const dueLimitToday = Math.max(1, Math.trunc(Number(prev?.due_limit_today || 30)));
+      const introducedToday = Math.max(0, Math.trunc(Number(prev?.introduced_today || 0)));
+      // Only decrement the queue counters optimistically. Do NOT increment
+      // due_reviewed_today or introduced_today here — those are set by the server
+      // on the next card load. Incrementing them optimistically caused the counter
+      // to jump forward (counting new cards and re-reviews) then snap backward
+      // when the server sent the real DISTINCT non-new count.
       if (dueCount > 0) {
         return {
           due_count: dueCount - 1,
           new_remaining_today: newRemaining,
           due_count_total: Math.max(0, dueCountTotal - 1),
-          due_reviewed_today: Math.min(dueReviewedToday + 1, dueLimitToday),
+          due_reviewed_today: dueReviewedToday,
           due_limit_today: dueLimitToday,
+          introduced_today: introducedToday,
         };
       }
       if (newRemaining > 0) {
@@ -8811,11 +8821,12 @@ function AppInner() {
           due_count: dueCount,
           new_remaining_today: newRemaining - 1,
           due_count_total: dueCountTotal,
-          due_reviewed_today: Math.min(dueReviewedToday + 1, dueLimitToday),
+          due_reviewed_today: dueReviewedToday,
           due_limit_today: dueLimitToday,
+          introduced_today: introducedToday,
         };
       }
-      return { due_count: dueCount, new_remaining_today: newRemaining, due_count_total: dueCountTotal, due_reviewed_today: dueReviewedToday, due_limit_today: dueLimitToday };
+      return { due_count: dueCount, new_remaining_today: newRemaining, due_count_total: dueCountTotal, due_reviewed_today: dueReviewedToday, due_limit_today: dueLimitToday, introduced_today: introducedToday };
     });
   };
 
@@ -8975,6 +8986,9 @@ function AppInner() {
             due_limit_today: Number.isFinite(Number(queueInfo?.due_limit_today))
               ? Math.max(1, Math.trunc(Number(queueInfo.due_limit_today)))
               : Math.max(1, Math.trunc(Number(prev?.due_limit_today || 30))),
+            introduced_today: Number.isFinite(Number(queueInfo?.introduced_today))
+              ? Math.max(0, Math.trunc(Number(queueInfo.introduced_today)))
+              : Math.max(0, Math.trunc(Number(prev?.introduced_today || 0))),
           }));
         }
       }
@@ -9086,6 +9100,7 @@ function AppInner() {
           due_count_total: Math.max(0, Math.trunc(Number(queueInfo.due_count_total || 0))),
           due_reviewed_today: Math.max(0, Math.trunc(Number(queueInfo.due_reviewed_today || 0))),
           due_limit_today: Math.max(1, Math.trunc(Number(queueInfo.due_limit_today || 30))),
+          introduced_today: Math.max(0, Math.trunc(Number(queueInfo.introduced_today || 0))),
         }));
       }
     } catch (error) {
@@ -10492,7 +10507,18 @@ function AppInner() {
           if (!prev || !Array.isArray(prev.items)) return prev;
           return {
             ...prev,
-            items: prev.items.map((entry) => (entry.id === updated.id ? { ...entry, ...updated } : entry)),
+            items: prev.items.map((entry) => {
+              if (entry.id !== updated.id) return entry;
+              const merged = { ...entry, ...updated };
+              // Server clock may be ahead of client clock, making timer_started_at
+              // appear to be in the future. Replace it with client time so the live
+              // portion (Date.now() - timer_started_at) is never negative.
+              const mergedPayload = merged.payload && typeof merged.payload === 'object' ? merged.payload : {};
+              if (mergedPayload.timer_running && mergedPayload.timer_started_at) {
+                return { ...merged, payload: { ...mergedPayload, timer_started_at: new Date().toISOString() } };
+              }
+              return merged;
+            }),
           };
         });
       }
@@ -32365,7 +32391,7 @@ function AppInner() {
                           <div className="fsrs-study-header">
                             <div className="fsrs-study-title">Space Repetition</div>
                             <div className="fsrs-study-queue">
-                              {tr('Сегодня', 'Heute')}: {srsQueueInfo?.due_reviewed_today ?? 0}/{srsQueueInfo?.due_limit_today ?? 30} · {tr('Очередь', 'Warteschlange')}: {srsQueueInfo?.due_count_total ?? srsQueueInfo?.due_count ?? 0}
+                              {tr('Сегодня', 'Heute')}: {(srsQueueInfo?.due_reviewed_today ?? 0) + (srsQueueInfo?.introduced_today ?? 0)}/{(srsQueueInfo?.due_limit_today ?? 30) + (srsQueueInfo?.introduced_today ?? 0) + (srsQueueInfo?.new_remaining_today ?? 0)} · {tr('Очередь', 'Warteschlange')}: {srsQueueInfo?.due_count_total ?? srsQueueInfo?.due_count ?? 0}
                             </div>
                             {(!isOnline || srsOfflinePendingCount > 0) && (
                               <div className={`srs-offline-badge ${!isOnline ? 'is-offline' : 'is-syncing'}`}>
@@ -33103,7 +33129,7 @@ function AppInner() {
                                 <div className="setup-group">
                                   <div className="setup-label">{tr('Card Queue', 'Card Queue')}</div>
                                   <div className="flashcard-settings-queue">
-                                    <span>{tr('Сегодня', 'Heute')}: {srsQueueInfo?.due_reviewed_today ?? 0}/{srsQueueInfo?.due_limit_today ?? 30}</span>
+                                    <span>{tr('Сегодня', 'Heute')}: {(srsQueueInfo?.due_reviewed_today ?? 0) + (srsQueueInfo?.introduced_today ?? 0)}/{(srsQueueInfo?.due_limit_today ?? 30) + (srsQueueInfo?.introduced_today ?? 0) + (srsQueueInfo?.new_remaining_today ?? 0)}</span>
                                     <span>{tr('Очередь', 'Warteschlange')}: {srsQueueInfo?.due_count_total ?? srsQueueInfo?.due_count ?? 0}</span>
                                     <span>{tr('Новые', 'Neu')}: {srsQueueInfo?.new_remaining_today ?? 0}</span>
                                   </div>

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fsrs import Card, Rating, Scheduler, State
+
+# Learning steps: Again=10min, Good=1day (Hard≈12h by FSRS formula: (step0+step1)/2)
+_LEARNING_STEPS = [timedelta(minutes=10), timedelta(days=1)]
 
 MATURE_INTERVAL_DAYS = 21
 
@@ -111,7 +114,7 @@ def schedule_review(
         reviewed_at = reviewed_at.replace(tzinfo=timezone.utc)
 
     rating_enum, rating_value = normalize_rating(rating)
-    scheduler = Scheduler()
+    scheduler = Scheduler(learning_steps=_LEARNING_STEPS)
     card = _build_fsrs_card(current_state, reviewed_at)
 
     # FSRS official scheduler computes due/state/stability/difficulty.

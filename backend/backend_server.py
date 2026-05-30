@@ -7483,6 +7483,7 @@ def _compute_srs_queue_info(
         "due_reviewed_today": int(due_reviewed_today),
         "due_limit_today": int(due_limit_today),
         "new_remaining_today": int(new_remaining_today),
+        "introduced_today": int(introduced_today),
         "available_new_total": int(1 if has_new_candidates else 0),
     }
 
@@ -7951,6 +7952,7 @@ def _build_next_srs_payload(
             "due_count_total": int(queue_info.get("due_count_total") or 0),
             "due_reviewed_today": int(queue_info.get("due_reviewed_today") or 0),
             "due_limit_today": int(queue_info.get("due_limit_today") or 30),
+            "introduced_today": int(queue_info.get("introduced_today") or 0),
         }
 
     if not card_payload:
@@ -45193,12 +45195,15 @@ def _normalize_stale_today_plan_timers(
             normalized_items.append(item)
             continue
 
-        stored_elapsed = max(0, int(payload.get("timer_seconds") or 0))
+        # Do NOT pass elapsed_seconds — let update_daily_plan_item_timer compute
+        # the live elapsed from (timer_seconds + time_since_timer_started_at).
+        # Passing stored_elapsed here would discard all time accumulated since the
+        # last sync, which is exactly what causes the "timer resets to earlier value"
+        # bug when syncs were missed (network issues, background throttling, etc.).
         paused_item = update_daily_plan_item_timer(
             user_id=int(user_id),
             item_id=int(item.get("id") or 0),
             action="pause",
-            elapsed_seconds=stored_elapsed,
             running=False,
             event_at=now_utc,
         ) or item
