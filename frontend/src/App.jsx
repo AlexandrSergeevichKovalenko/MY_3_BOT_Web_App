@@ -10586,10 +10586,10 @@ function AppInner() {
     if (Number.isFinite(previewSeconds) && previewSeconds >= 0) {
       return formatSrsIntervalHint(previewSeconds);
     }
-    if (ratingKey === 'AGAIN') return tr('1 мин', '1 Min');
-    if (ratingKey === 'HARD') return tr('5 мин', '5 Min');
-    if (ratingKey === 'GOOD') return tr('3 дн', '3 Tg');
-    if (ratingKey === 'EASY') return tr('7 дн', '7 Tg');
+    if (ratingKey === 'AGAIN') return tr('10 мин', '10 Min');
+    if (ratingKey === 'HARD') return tr('30 мин', '30 Min');
+    if (ratingKey === 'GOOD') return tr('1 день', '1 Tag');
+    if (ratingKey === 'EASY') return tr('8 дн', '8 Tg');
     return '';
   };
 
