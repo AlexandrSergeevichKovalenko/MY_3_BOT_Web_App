@@ -13668,11 +13668,11 @@ function AppInner() {
 
   const jumpToDictionaryFromSentence = useCallback(() => {
     setLastLookupScrollY(window.scrollY);
-    ensureSectionVisible('dictionary');
+    setSelectedSections(new Set(['dictionary']));
     setTimeout(() => {
       scrollToRef(dictionaryRef, { block: 'start' });
-    }, 120);
-  }, [ensureSectionVisible, scrollToRef]);
+    }, 80);
+  }, [scrollToRef]);
 
   const openFlashcardsSetup = (ref) => {
     stopTtsPlayback();
@@ -19990,12 +19990,7 @@ function AppInner() {
       setDictionaryResult(data.item || null);
       setDictionaryDirection(data.direction || resolveDictionaryDirection(data.item));
       setDictionaryLanguagePair(resolveLanguagePairForUI(data.language_pair));
-      setSelectedSections((prev) => {
-        const next = new Set(prev);
-        next.add('dictionary');
-        return next;
-      });
-      ensureSectionVisible('dictionary');
+      setSelectedSections(new Set(['dictionary']));
       setTimeout(() => {
         scrollToDictionary();
       }, 90);
