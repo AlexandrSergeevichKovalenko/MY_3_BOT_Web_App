@@ -12084,7 +12084,13 @@ async def _send_quiz_result_private(
             de_text = _normalize_quiz_option_for_private_message(correct_text)
 
     fallback_ru = quiz_data.get("word_ru") or ""
-    ru_text = await _translate_quiz_text_to_ru(de_text, fallback_ru=fallback_ru)
+    # For prefix/word_order quizzes, word_ru IS the Russian meaning shown in the question.
+    # Use it directly to avoid mistranslation of the German infinitive.
+    _fallback_has_cyrillic = bool(re.search(r"[А-Яа-яЁё]", fallback_ru)) if fallback_ru else False
+    if _fallback_has_cyrillic:
+        ru_text = fallback_ru
+    else:
+        ru_text = await _translate_quiz_text_to_ru(de_text, fallback_ru=fallback_ru)
 
     selected_display = _normalize_quiz_option_for_private_message(selected_text or "")
     status_line = "✅ Верно" if is_correct else "❌ Неверно"
