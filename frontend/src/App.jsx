@@ -32821,7 +32821,11 @@ function AppInner() {
                                   ? (String(responseJson?.sentence_with_gap || '').trim() || cardTexts.sourceText || '—')
                                   : (cardTexts.sourceText || '—');
                                 const normalizedQuestionWord = String(questionWord || '').replace(/\s+/g, ' ').trim();
-                                const sentenceTranslation = String(responseJson?.translation_ru || '').trim();
+                                const sentenceTranslationRaw = String(responseJson?.translation_ru || '').trim();
+                                const sentenceTranslationDashIdx = sentenceTranslationRaw.indexOf(' — ');
+                                const sentenceTranslation = (isSentenceTrainingMode || isSentenceGapQuiz) && sentenceTranslationDashIdx !== -1
+                                  ? sentenceTranslationRaw.slice(sentenceTranslationDashIdx + 3).trim()
+                                  : sentenceTranslationRaw;
                                 const context = !(isSentenceTrainingMode || isSentenceGapQuiz) && Array.isArray(responseJson.usage_examples)
                                   ? responseJson.usage_examples[0]
                                   : '';
