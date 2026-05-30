@@ -6021,6 +6021,7 @@ function AppInner() {
   const readerOpenInFlightRef = useRef(0);
   const readerPageLoadInFlightRef = useRef(new Set());
   const todayTimerCompletionLockRef = useRef(new Set());
+  const todayPlanRef = useRef(null);
   const globalTimerAutoPauseInFlightRef = useRef(false);
   const globalTimerAutoResumeInFlightRef = useRef(false);
   const sectionVisibilitySnapshotRef = useRef(null);
@@ -11049,15 +11050,22 @@ function AppInner() {
     return item?.title || tr('Задача', 'Aufgabe');
   };
 
+  // Keep todayPlanRef in sync so the timer interval can read latest plan without
+  // being recreated on every plan update (which caused intermittent timer freezes).
   useEffect(() => {
-    const items = Array.isArray(todayPlan?.items) ? todayPlan.items : [];
-    const hasRunning = items.some((item) => isTodayItemTimerRunning(item));
-    if (!hasRunning) return undefined;
+    todayPlanRef.current = todayPlan;
+  }, [todayPlan]);
+
+  // Run the 1-second tick once on mount. Reads from todayPlanRef so it never
+  // needs to be torn down and recreated when the plan syncs every 5 seconds.
+  useEffect(() => {
     const intervalId = window.setInterval(() => {
-      setTodayTimerNowMs(Date.now());
+      const items = Array.isArray(todayPlanRef.current?.items) ? todayPlanRef.current.items : [];
+      const hasRunning = items.some((item) => Boolean(item?.payload?.timer_running));
+      if (hasRunning) setTodayTimerNowMs(Date.now());
     }, 1000);
     return () => window.clearInterval(intervalId);
-  }, [todayPlan]);
+  }, []);
 
   useEffect(() => {
     const items = Array.isArray(todayPlan?.items) ? todayPlan.items : [];
@@ -11141,6 +11149,23 @@ function AppInner() {
           }
           if (!response.ok) {
             throw new Error(await readApiError(response, 'Ошибка SRS review', 'Fehler bei SRS-Review'));
+          }
+          const reviewData = await response.json().catch(() => null);
+          const reviewedQueueInfo = reviewData?.next?.queue_info;
+          if (reviewedQueueInfo && typeof reviewedQueueInfo === 'object') {
+            const nextReviewedToday = Number(reviewedQueueInfo?.due_reviewed_today);
+            const nextIntroducedToday = Number(reviewedQueueInfo?.introduced_today);
+            if (Number.isFinite(nextReviewedToday) || Number.isFinite(nextIntroducedToday)) {
+              setSrsQueueInfo((prev) => ({
+                ...prev,
+                due_reviewed_today: Number.isFinite(nextReviewedToday)
+                  ? Math.max(prev?.due_reviewed_today ?? 0, Math.max(0, Math.trunc(nextReviewedToday)))
+                  : (prev?.due_reviewed_today ?? 0),
+                introduced_today: Number.isFinite(nextIntroducedToday)
+                  ? Math.max(prev?.introduced_today ?? 0, Math.max(0, Math.trunc(nextIntroducedToday)))
+                  : (prev?.introduced_today ?? 0),
+              }));
+            }
           }
           srsReviewBufferRef.current.shift();
         } catch (error) {
@@ -17171,6 +17196,8 @@ function AppInner() {
       return Math.round(backoffBase + jitterMs);
     };
     let attempts = 0;
+    let idleRetries = 0;
+    const MAX_IDLE_RETRIES = 8;
     while (translationProgressiveFillPollTokenRef.current === pollToken) {
       if (attempts > 0) {
         await new Promise((resolve) => window.setTimeout(resolve, getProgressiveFillPollDelayMs(attempts)));
@@ -17203,7 +17230,21 @@ function AppInner() {
         });
         return;
       }
-      const shouldContinue = ['pending', 'running'].includes(generationStatus) && readyCount < expectedTotal && attempts < 72;
+      // When the backend returns 'idle' with fewer sentences than expected, it has
+      // already enqueued a restart job — but there's a race where the Redis write
+      // lands after our immediate re-read, so we get 'idle' back. Keep polling for
+      // up to MAX_IDLE_RETRIES more cycles to let the restarted job become visible.
+      const isIdleIncomplete = generationStatus === 'idle' && readyCount < expectedTotal;
+      if (isIdleIncomplete) {
+        idleRetries += 1;
+      } else {
+        idleRetries = 0;
+      }
+      const shouldContinue = (
+        (['pending', 'running'].includes(generationStatus) || (isIdleIncomplete && idleRetries <= MAX_IDLE_RETRIES))
+        && readyCount < expectedTotal
+        && attempts < 72
+      );
       setTranslationProgressiveFill({
         active: shouldContinue,
         sessionId: String(sessionId || '').trim() || null,

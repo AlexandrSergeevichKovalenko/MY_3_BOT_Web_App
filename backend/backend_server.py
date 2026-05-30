@@ -7904,6 +7904,7 @@ def _build_next_srs_payload(
                 "lapses": int(srs_payload.get("lapses") or 0),
                 "stability": float(srs_payload.get("stability") or 0.0),
                 "difficulty": float(srs_payload.get("difficulty") or 0.0),
+                "step": int(srs_payload.get("step") or 0),
             }
     else:
         if include_queue_info:
@@ -35652,6 +35653,7 @@ def review_srs_card():
                     lapses=scheduled.lapses,
                     stability=scheduled.stability,
                     difficulty=scheduled.difficulty,
+                    step=scheduled.step,
                     cursor=cursor,
                 )
 

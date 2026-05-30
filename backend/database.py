@@ -5451,6 +5451,10 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_card_srs_state (user_id, status);
             """)
             cursor.execute("""
+                ALTER TABLE bt_3_card_srs_state
+                ADD COLUMN IF NOT EXISTS step INTEGER NOT NULL DEFAULT 0;
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_card_review_log (
                     id BIGSERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL,
@@ -14740,7 +14744,8 @@ def get_card_srs_state(user_id: int, card_id: int, cursor=None) -> dict | None:
                 stability,
                 difficulty,
                 created_at,
-                updated_at
+                updated_at,
+                step
             FROM bt_3_card_srs_state
             WHERE user_id = %s AND card_id = %s
             LIMIT 1;
@@ -14764,6 +14769,7 @@ def get_card_srs_state(user_id: int, card_id: int, cursor=None) -> dict | None:
             "difficulty": float(row[10] or 0.0),
             "created_at": row[11],
             "updated_at": row[12],
+            "step": int(row[13] or 0),
         }
     if cursor is not None:
         return _fetch(cursor)
@@ -14783,6 +14789,7 @@ def upsert_card_srs_state(
     lapses: int,
     stability: float,
     difficulty: float,
+    step: int = 0,
     cursor=None,
 ) -> dict:
     def _upsert(cur):
@@ -14799,10 +14806,11 @@ def upsert_card_srs_state(
                 lapses,
                 stability,
                 difficulty,
+                step,
                 created_at,
                 updated_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
             ON CONFLICT (user_id, card_id) DO UPDATE
             SET status = EXCLUDED.status,
                 due_at = EXCLUDED.due_at,
@@ -14812,6 +14820,7 @@ def upsert_card_srs_state(
                 lapses = EXCLUDED.lapses,
                 stability = EXCLUDED.stability,
                 difficulty = EXCLUDED.difficulty,
+                step = EXCLUDED.step,
                 updated_at = NOW()
             RETURNING
                 id,
@@ -14826,7 +14835,8 @@ def upsert_card_srs_state(
                 stability,
                 difficulty,
                 created_at,
-                updated_at;
+                updated_at,
+                step;
             """,
             (
                 int(user_id),
@@ -14839,6 +14849,7 @@ def upsert_card_srs_state(
                 int(lapses),
                 float(stability),
                 float(difficulty),
+                int(step),
             ),
         )
         row = cur.fetchone()
@@ -14856,6 +14867,7 @@ def upsert_card_srs_state(
             "difficulty": float(row[10] or 0.0),
             "created_at": row[11],
             "updated_at": row[12],
+            "step": int(row[13] or 0),
         }
     if cursor is not None:
         return _upsert(cursor)
@@ -15238,7 +15250,8 @@ def get_next_due_srs_card(
                 q.translation_de,
                 q.word_de,
                 q.translation_ru,
-                q.response_json
+                q.response_json,
+                s.step
             FROM bt_3_card_srs_state s
             JOIN bt_3_webapp_dictionary_queries q
               ON q.id = s.card_id
@@ -15275,6 +15288,7 @@ def get_next_due_srs_card(
                 "lapses": int(row[6] or 0),
                 "stability": float(row[7] or 0.0),
                 "difficulty": float(row[8] or 0.0),
+                "step": int(row[14] or 0),
             },
         }
     if cursor is not None:
