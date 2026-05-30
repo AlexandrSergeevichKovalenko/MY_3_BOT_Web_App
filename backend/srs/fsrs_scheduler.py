@@ -22,6 +22,7 @@ class ScheduledResult:
     lapses: int
     stability: float
     difficulty: float
+    step: int = 0
 
 
 def normalize_rating(raw_rating: int | str) -> tuple[Rating, int]:
@@ -138,5 +139,6 @@ def schedule_review(
         lapses=int(getattr(reviewed_card, "lapses", 0) or 0),
         stability=float(getattr(reviewed_card, "stability", 0.0) or 0.0),
         difficulty=float(getattr(reviewed_card, "difficulty", 0.0) or 0.0),
+        step=int(getattr(reviewed_card, "step", 0) or 0),
     )
     return result, rating_value

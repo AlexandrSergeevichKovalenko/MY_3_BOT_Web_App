@@ -35653,6 +35653,7 @@ def review_srs_card():
                     lapses=scheduled.lapses,
                     stability=scheduled.stability,
                     difficulty=scheduled.difficulty,
+                    step=scheduled.step,
                     cursor=cursor,
                 )
 
