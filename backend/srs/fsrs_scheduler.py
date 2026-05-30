@@ -6,8 +6,8 @@ from typing import Any
 
 from fsrs import Card, Rating, Scheduler, State
 
-# Learning steps: Again=10min, Hard≈35min, Good@step0=1h, Good@step1=1d, Easy→graduate~2d
-_LEARNING_STEPS = [timedelta(minutes=10), timedelta(hours=1), timedelta(days=1)]
+# Learning steps: Again=10min, Hard=20min@step0/30min@step1, Good=30min@step0/1day@step1
+_LEARNING_STEPS = [timedelta(minutes=10), timedelta(minutes=30), timedelta(days=1)]
 
 MATURE_INTERVAL_DAYS = 21
 
