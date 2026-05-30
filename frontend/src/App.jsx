@@ -11228,7 +11228,7 @@ function AppInner() {
       setSrsRevealAnswer(false);
       setSrsRevealStartedAt(0);
       setSrsRevealElapsedSec(0);
-      decrementSrsQueueInfoLocal();
+      decrementSrsQueueInfoLocal(ratingValue);
       if (optimisticCard) {
         applySrsPayload({
           card: optimisticCard,
@@ -11248,6 +11248,14 @@ function AppInner() {
         }
         return;
       }
+
+      // No prefetch available: clear card and show loading spinner immediately
+      // so the old card's front text doesn't flash while waiting for network.
+      srsCardRef.current = null;
+      setSrsCard(null);
+      setSrsState(null);
+      setSrsPreview(null);
+      setSrsLoading(true);
 
       const FSRS_REVIEW_TIMEOUT_MS = 60000;
       let response = await fetchWithTimeout('/api/cards/review', {
@@ -11296,6 +11304,7 @@ function AppInner() {
     } finally {
       setSrsSubmitting(false);
       setSrsSubmittingRating(null);
+      setSrsLoading(false);
     }
   };
 
