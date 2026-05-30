@@ -137,4 +137,34 @@ describe('ReaderLibraryProvider', () => {
     expect(appSource).toContain('const [readerAudioPlayActive, setReaderAudioPlayActive] = useState');
     expect(appSource).toContain('const [readerLiveSeconds, setReaderLiveSeconds] = useState');
   });
+
+  // ── Regression: readerArchiveOpen must be forwarded into provider value ──
+  // Commit c3223141 introduced ReaderLibraryProvider but omitted readerArchiveOpen
+  // from the value object, causing validateReaderLibraryValue() to throw on every
+  // library open.  This test pins the fix so it can never silently regress.
+  it('ReaderSection.jsx value object includes readerArchiveOpen (regression guard)', () => {
+    const src = fs.readFileSync(path.resolve(process.cwd(), 'src/components/ReaderSection.jsx'), 'utf8');
+    // The value object passed to <ReaderLibraryProvider value={{...}}> must include readerArchiveOpen.
+    // A simple substring check is intentionally broad — it would catch any form of the assignment.
+    expect(src).toContain('readerArchiveOpen,');
+  });
+
+  it('renders archive title when readerArchiveOpen is true', () => {
+    const html = renderToStaticMarkup(React.createElement(
+      ReaderLibraryProvider,
+      { value: libraryValue({ readerArchiveOpen: true }) },
+      React.createElement(ReaderLibrarySection),
+    ));
+    expect(html).toContain('Архив');
+    expect(html).not.toContain('Моя библиотека');
+  });
+
+  it('renders library title when readerArchiveOpen is false', () => {
+    const html = renderToStaticMarkup(React.createElement(
+      ReaderLibraryProvider,
+      { value: libraryValue({ readerArchiveOpen: false }) },
+      React.createElement(ReaderLibrarySection),
+    ));
+    expect(html).toContain('Моя библиотека');
+  });
 });

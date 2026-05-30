@@ -195,6 +195,7 @@ export default function ReaderSection(props) {
                 readerLibraryLoading,
                 readerLibraryError,
                 loadReaderLibrary,
+                readerArchiveOpen,
                 readerAddOpen,
                 setReaderAddOpen,
                 readerOpeningDocumentId,
