@@ -88,7 +88,7 @@ import html
 import multiprocessing
 import inspect
 from typing import Any
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from zoneinfo import ZoneInfo
 from datetime import timedelta, date
 from calendar import monthrange
@@ -34198,6 +34198,30 @@ def _shortcut_rate_limit_key(*parts: str) -> str:
     return "shortcut:rate:" + ":".join(safe_parts)
 
 
+_SHORTCUT_FAST_PATH_TIMEOUT_SECONDS = max(
+    1,
+    int((os.getenv("SHORTCUT_FAST_PATH_TIMEOUT_SECONDS") or "4").strip() or "4"),
+)
+_SHORTCUT_FAST_PATH_EXECUTOR = ThreadPoolExecutor(
+    max_workers=4,
+    thread_name_prefix="shortcut-fast-path",
+)
+
+
+def _shortcut_run_with_timeout(stage: str, fn):
+    future = _SHORTCUT_FAST_PATH_EXECUTOR.submit(fn)
+    try:
+        return future.result(timeout=_SHORTCUT_FAST_PATH_TIMEOUT_SECONDS)
+    except FuturesTimeoutError as exc:
+        future.cancel()
+        logging.warning(
+            "shortcut fast path timeout stage=%s timeout_seconds=%s",
+            stage,
+            _SHORTCUT_FAST_PATH_TIMEOUT_SECONDS,
+        )
+        raise TimeoutError(stage) from exc
+
+
 def _shortcut_rate_limit_check(*, key: str, limit: int, window_seconds: int) -> tuple[bool, int]:
     client = get_redis_client()
     if client is None:
@@ -34261,10 +34285,13 @@ def _shortcut_enforce_pairing_code_issuance_limit(*, user_id: int) -> tuple[bool
         _shortcut_rate_limit_identity(str(int(user_id))),
     )
     try:
-        allowed, retry_after = _shortcut_rate_limit_check(
-            key=key,
-            limit=_SHORTCUT_PAIRING_CODE_ISSUANCE_LIMIT,
-            window_seconds=_SHORTCUT_PAIRING_CODE_ISSUANCE_WINDOW_SECONDS,
+        allowed, retry_after = _shortcut_run_with_timeout(
+            "pairing_code_issuance",
+            lambda: _shortcut_rate_limit_check(
+                key=key,
+                limit=_SHORTCUT_PAIRING_CODE_ISSUANCE_LIMIT,
+                window_seconds=_SHORTCUT_PAIRING_CODE_ISSUANCE_WINDOW_SECONDS,
+            ),
         )
     except Exception:
         return False, (jsonify({"error": "shortcut_rate_limit_unavailable"}), 503)
@@ -34284,10 +34311,13 @@ def _shortcut_enforce_link_ip_limit() -> tuple[bool, tuple[Any, int] | None]:
         _shortcut_rate_limit_identity(request_ip),
     )
     try:
-        allowed, retry_after = _shortcut_rate_limit_check(
-            key=key,
-            limit=_SHORTCUT_LINK_IP_LIMIT,
-            window_seconds=_SHORTCUT_LINK_IP_WINDOW_SECONDS,
+        allowed, retry_after = _shortcut_run_with_timeout(
+            "link_ip_limit",
+            lambda: _shortcut_rate_limit_check(
+                key=key,
+                limit=_SHORTCUT_LINK_IP_LIMIT,
+                window_seconds=_SHORTCUT_LINK_IP_WINDOW_SECONDS,
+            ),
         )
     except Exception:
         return False, (jsonify({"error": "shortcut_rate_limit_unavailable"}), 503)
@@ -34302,7 +34332,10 @@ def _shortcut_enforce_link_ip_limit() -> tuple[bool, tuple[Any, int] | None]:
 def _shortcut_enforce_link_pairing_code_limit(*, pairing_code: str) -> tuple[bool, tuple[Any, int] | None]:
     key = _shortcut_link_pairing_code_rate_limit_key(pairing_code)
     try:
-        current, ttl = _shortcut_rate_limit_current_count(key=key)
+        current, ttl = _shortcut_run_with_timeout(
+            "link_pairing_code_limit",
+            lambda: _shortcut_rate_limit_current_count(key=key),
+        )
     except Exception:
         return False, (jsonify({"error": "shortcut_rate_limit_unavailable"}), 503)
     if current >= _SHORTCUT_LINK_PAIRING_CODE_LIMIT:
@@ -34499,6 +34532,8 @@ def _shortcut_lookup_request_payload(body: dict) -> tuple[str, str]:
 
 def _shortcut_lookup_from_install_token(*, install_token: str, text: str) -> tuple[dict, int]:
     installation = resolve_shortcut_install_token(install_token=install_token)
+    if isinstance(installation, dict) and str(installation.get("status") or "").strip().lower() == "schema_unavailable":
+        return {"error": "Shortcut processing is temporarily unavailable"}, 503
     if not installation:
         return {"error": "invalid_install_token"}, 401
 
@@ -34672,7 +34707,12 @@ def shortcut_create_pairing_code():
         except Exception:
             return jsonify({"error": "ttl_seconds должен быть числом"}), 400
 
-    result = create_shortcut_pairing_code(user_id=user_id, ttl_seconds=ttl_seconds)
+    try:
+        result = create_shortcut_pairing_code(user_id=user_id, ttl_seconds=ttl_seconds)
+    except Exception as exc:
+        if "shortcut schema unavailable" in str(exc).strip().lower():
+            return jsonify({"error": "Shortcut processing is temporarily unavailable"}), 503
+        raise
     return jsonify(_build_shortcut_pairing_code_response(result)), 200
 
 
@@ -34744,6 +34784,20 @@ def shortcut_link_installation():
         correlation_id=request_id,
     )
     status = str(result.get("status") or "").strip().lower()
+    if status == "schema_unavailable":
+        _log_flow_observation(
+            "shortcut_link",
+            "SHORTCUT_LINK_RESPONSE_SENT",
+            request_id=request_id,
+            correlation_id=request_id,
+            remote_ip=remote_ip,
+            pairing_code_present=True,
+            final_status="error",
+            error_code="shortcut_schema_unavailable",
+            http_status=503,
+            duration_ms=max(0, int((time.perf_counter() - route_started_perf) * 1000)),
+        )
+        return jsonify({"error": "Shortcut processing is temporarily unavailable"}), 503
     if status == "invalid":
         _shortcut_record_link_pairing_code_failure(pairing_code=pairing_code)
         _log_flow_observation(

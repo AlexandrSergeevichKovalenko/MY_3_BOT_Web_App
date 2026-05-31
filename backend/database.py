@@ -16,6 +16,7 @@ import secrets
 import random
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone, date, timedelta, time as dt_time
 from pathlib import Path
@@ -13382,6 +13383,34 @@ def _normalize_shortcut_pairing_code(raw_code: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", str(raw_code or "").strip().upper())
 
 
+_SHORTCUT_SCHEMA_BOOTSTRAP_TIMEOUT_SECONDS = max(
+    1,
+    int((os.getenv("SHORTCUT_SCHEMA_BOOTSTRAP_TIMEOUT_SECONDS") or "4").strip() or "4"),
+)
+_SHORTCUT_SCHEMA_BOOTSTRAP_EXECUTOR = ThreadPoolExecutor(
+    max_workers=2,
+    thread_name_prefix="shortcut-schema-bootstrap",
+)
+
+
+def _ensure_webapp_tables_fast() -> bool:
+    if _ENSURE_WEBAPP_TABLES_DONE:
+        return True
+    future = _SHORTCUT_SCHEMA_BOOTSTRAP_EXECUTOR.submit(ensure_webapp_tables)
+    try:
+        future.result(timeout=_SHORTCUT_SCHEMA_BOOTSTRAP_TIMEOUT_SECONDS)
+        return True
+    except FuturesTimeoutError:
+        logging.warning(
+            "shortcut schema bootstrap timed out after %ss",
+            _SHORTCUT_SCHEMA_BOOTSTRAP_TIMEOUT_SECONDS,
+        )
+        return False
+    except Exception:
+        logging.exception("shortcut schema bootstrap failed")
+        return False
+
+
 def _shortcut_pairing_code_hash(raw_code: str) -> str:
     return hashlib.sha256(_normalize_shortcut_pairing_code(raw_code).encode("utf-8")).hexdigest()
 
@@ -13400,7 +13429,8 @@ def create_shortcut_pairing_code(
     user_id: int,
     ttl_seconds: int | None = None,
 ) -> dict:
-    ensure_webapp_tables()
+    if not _ensure_webapp_tables_fast():
+        raise RuntimeError("shortcut schema unavailable")
     ttl = max(60, int(ttl_seconds or SHORTCUT_PAIRING_CODE_TTL_SECONDS))
     safe_user_id = int(user_id)
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)
@@ -13475,7 +13505,8 @@ def link_shortcut_installation(
     remote_ip: str | None = None,
     correlation_id: str | None = None,
 ) -> dict:
-    ensure_webapp_tables()
+    if not _ensure_webapp_tables_fast():
+        return {"status": "schema_unavailable"}
     normalized_code = _normalize_shortcut_pairing_code(pairing_code)
     if len(normalized_code) != SHORTCUT_PAIRING_CODE_LENGTH:
         return {"status": "invalid"}
@@ -13625,7 +13656,8 @@ def link_shortcut_installation(
 
 
 def resolve_shortcut_install_token(*, install_token: str) -> dict | None:
-    ensure_webapp_tables()
+    if not _ensure_webapp_tables_fast():
+        return {"status": "schema_unavailable"}
     normalized_token = str(install_token or "").strip()
     if not normalized_token:
         return None

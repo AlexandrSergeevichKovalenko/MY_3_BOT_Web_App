@@ -121,6 +121,47 @@ class ShortcutRateLimitAndCleanupTests(unittest.TestCase):
         self.assertEqual(responses[5].headers.get("Retry-After"), "600")
         self.assertEqual(link_mock.call_count, 5)
 
+    def test_link_endpoint_returns_503_when_schema_bootstrap_is_unavailable(self):
+        with patch.object(server, "_shortcut_request_ip", return_value="test-ip"), \
+             patch.object(server, "get_redis_client", return_value=self.redis), \
+             patch.object(server, "link_shortcut_installation", return_value={"status": "schema_unavailable"}):
+            response = self.client.post("/api/shortcut/link", json={"pairing_code": "A7F4K2"})
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json()["error"], "Shortcut processing is temporarily unavailable")
+
+    def test_pairing_code_endpoint_returns_503_when_schema_bootstrap_is_unavailable(self):
+        with patch.dict(os.environ, {"SHORTCUT_BOT_SECRET": "adminsecret"}, clear=False), \
+             patch.object(server, "get_redis_client", return_value=self.redis), \
+             patch.object(server, "is_telegram_user_allowed", return_value=True), \
+             patch.object(
+                 server,
+                 "create_shortcut_pairing_code",
+                 side_effect=RuntimeError("shortcut schema unavailable"),
+             ):
+            response = self.client.post(
+                "/api/shortcut/pairing-code",
+                json={"user_id": 117649764},
+                headers={"Authorization": "Bearer adminsecret"},
+            )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json()["error"], "Shortcut processing is temporarily unavailable")
+
+    def test_lookup_endpoint_returns_503_when_schema_bootstrap_is_unavailable(self):
+        with patch.object(
+            server,
+            "resolve_shortcut_install_token",
+            return_value={"status": "schema_unavailable"},
+        ):
+            response = self.client.post(
+                "/api/shortcut/lookup",
+                json={"install_token": "install-token-value", "text": "hallo"},
+            )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json()["error"], "Shortcut processing is temporarily unavailable")
+
     def test_shortcut_pairing_code_cleanup_job_calls_purge(self):
         with patch.object(
             server,
