@@ -1793,7 +1793,7 @@ def _language_tutor_pair_for_user(user_id: int) -> tuple[str, str]:
 
 def _build_private_language_tutor_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [[LANGUAGE_TUTOR_BUTTON_TEXT]],
+        [[LANGUAGE_TUTOR_BUTTON_TEXT, SHORTCUT_CONNECT_BUTTON_TEXT]],
         resize_keyboard=True,
         is_persistent=True,
     )
