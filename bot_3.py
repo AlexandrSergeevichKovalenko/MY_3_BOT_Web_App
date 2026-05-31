@@ -1403,13 +1403,22 @@ async def handle_shortcut_connect_callback(update: Update, context: CallbackCont
         await query.answer("Генерирую pairing code...", show_alert=False)
     except Exception:
         pass
+
+    if query.message:
+        try:
+            await query.message.reply_text("⏳ Генерирую pairing code...")
+        except Exception:
+            pass
+
     async def _reply(text: str) -> None:
         if query.message:
             await query.message.reply_text(text)
         else:
             await context.bot.send_message(chat_id=int(user.id), text=text)
-
-    await _deliver_shortcut_connect_flow(int(user.id), _reply)
+    try:
+        context.application.create_task(_deliver_shortcut_connect_flow(int(user.id), _reply))
+    except Exception:
+        await _deliver_shortcut_connect_flow(int(user.id), _reply)
 
 
 async def debug_message_handler(update: Update, context: CallbackContext):
@@ -3679,10 +3688,15 @@ async def handle_button_click(update: Update, context: CallbackContext):
         else:
             await update.message.reply_text("Не удалось получить имя бота.")
     elif text == SHORTCUT_CONNECT_BUTTON_TEXT:
+        await update.message.reply_text("⏳ Генерирую pairing code...")
+
         async def _reply(shortcut_text: str) -> None:
             await update.message.reply_text(shortcut_text)
 
-        await _deliver_shortcut_connect_flow(int(update.effective_user.id), _reply)
+        try:
+            context.application.create_task(_deliver_shortcut_connect_flow(int(update.effective_user.id), _reply))
+        except Exception:
+            await _deliver_shortcut_connect_flow(int(update.effective_user.id), _reply)
     elif text == LANGUAGE_TUTOR_BUTTON_TEXT:
         if update.effective_chat and update.effective_chat.type != "private":
             await update.message.reply_text("Вопрос для GPT отправьте в личку с ботом.")

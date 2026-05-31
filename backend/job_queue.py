@@ -230,7 +230,14 @@ def get_redis_client():
     redis_url = get_redis_url()
     if not redis_url or redis is None:
         return None
-    _REDIS_CLIENT = redis.Redis.from_url(redis_url, decode_responses=True)
+    _REDIS_CLIENT = redis.Redis.from_url(
+        redis_url,
+        decode_responses=True,
+        socket_connect_timeout=max(1, int(os.getenv("REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS", "3"))),
+        socket_timeout=max(1, int(os.getenv("REDIS_SOCKET_TIMEOUT_SECONDS", "3"))),
+        retry_on_timeout=False,
+        health_check_interval=max(0, int(os.getenv("REDIS_HEALTH_CHECK_INTERVAL_SECONDS", "30"))),
+    )
     return _REDIS_CLIENT
 
 
