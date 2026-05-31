@@ -3901,11 +3901,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
                             */}
                           </>
                         )}
-                        <div
-                          className="webapp-result-text"
-                          onMouseUp={handleSelection}
-                          onTouchEnd={handleSelection}
-                        >
+                        <div className="webapp-result-text">
                           {renderFeedback(item.feedback)}
                         </div>
                         {correctTextForTts && (
