@@ -37,6 +37,7 @@ import {
 } from './offline/baseDictCache';
 
 import './styles/topbar-redesign.css';
+import './styles/home-browser-redesign.css';
 
 // URL вашего сервера LiveKit
 const livekitUrl = "wss://implemrntingvoicetobot-vhsnc86g.livekit.cloud";

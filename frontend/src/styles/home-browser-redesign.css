@@ -1,0 +1,327 @@
+/* ============================================================
+   home-browser-redesign.css
+   Премиальная раскладка ГЛАВНОГО экрана для ШИРОКИХ экранов
+   (браузер + планшет). Телефон (<700px) НЕ затрагивается.
+   Тёмная тема = Вариант B «Midnight», светлая = Вариант A «Studio».
+   Переиспользует существующие классы. Ничего не удаляет.
+   Импортировать ПОСЛЕДНИМ (после App.css / topbar-redesign.css /
+   HomeDashboardTiles.css), чтобы каскад выигрывал.
+   ============================================================ */
+
+@media (min-width: 700px) {
+
+  /* ---- акцент по существующим цветовым классам плиток ---- */
+  .hdt-blue    { --acc:#4F5BD5; }
+  .hdt-violet  { --acc:#7C5CFC; }
+  .hdt-emerald { --acc:#1FA67A; }
+  .hdt-cyan    { --acc:#0E9AB0; }
+  .hdt-red     { --acc:#E0483D; }
+  .hdt-indigo  { --acc:#2F6BD8; }
+  .hdt-green   { --acc:#3F9D52; }
+  .hdt-amber   { --acc:#D99A2B; }
+  .hdt-rose    { --acc:#DB5475; }
+
+  /* ============ ФОН СТРАНИЦЫ + ШРИФТ ============ */
+  .webapp-page {
+    background: #0C0C10 !important;
+    background-image:
+      radial-gradient(680px 420px at 84% -8%, rgba(124,92,252,0.16), transparent 60%),
+      radial-gradient(620px 440px at 6% 108%, rgba(31,166,122,0.10), transparent 60%) !important;
+    font-family: 'Onest', -apple-system, system-ui, sans-serif !important;
+  }
+  .webapp-page.is-theme-light {
+    background: #F4F3EF !important;
+    background-image: radial-gradient(circle at 88% -5%, rgba(124,92,252,0.07), transparent 42%) !important;
+    font-family: 'Manrope', -apple-system, system-ui, sans-serif !important;
+  }
+  .webapp-page,
+  .webapp-page * { font-family: inherit; }
+
+  /* ============ КОНТЕЙНЕР ============ */
+  .webapp-main {
+    max-width: 1180px !important;
+    margin: 0 auto !important;
+    padding: 0 36px 44px !important;
+    box-sizing: border-box;
+  }
+
+  /* ============ ТОПБАР — одна строка ============ */
+  .webapp-topbar {
+    flex-direction: row !important;
+    align-items: center !important;
+    gap: 18px !important;
+    background: transparent !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    border: 0 !important;
+    padding: 26px 0 14px !important;
+    position: static !important;
+  }
+  .topbar-row-main {
+    flex: 1 1 auto !important;
+    padding-bottom: 0 !important;
+    gap: 13px !important;
+    order: 0;
+  }
+  .topbar-leading-spacer { display: none !important; }
+
+  /* бренд слева; подпись остаётся через ::after */
+  .topbar-title {
+    flex: 0 0 auto !important;
+    max-width: none !important;
+    overflow: visible !important;
+    text-overflow: clip !important;
+    font-size: 19px !important;
+    font-weight: 800 !important;
+    letter-spacing: -0.02em !important;
+    color: #EDECE6 !important;
+  }
+  .topbar-title::after {
+    font-size: 10.5px !important;
+    letter-spacing: 0.16em !important;
+    margin-top: 3px !important;
+  }
+  .is-theme-light .topbar-title { color: #16150F !important; }
+
+  /* аватар-кнопку (профиль) переносим вправо, в конец строки */
+  .topbar-profile { order: 5; margin-left: 8px; }
+  .topbar-avatar { width: 40px !important; height: 40px !important; border-radius: 13px !important; }
+  .topbar-avatar .avatar-placeholder { border-radius: 13px !important; }
+
+  /* ряд контролов встаёт справа на той же линии */
+  .topbar-row-controls {
+    width: auto !important;
+    padding-bottom: 0 !important;
+    order: 4;
+  }
+  .topbar-controls { width: auto !important; gap: 8px !important; }
+
+  /* язык-пара не растягивается на всю ширину на десктопе */
+  .language-pair-button { flex: 0 0 auto !important; }
+
+  /* ============ СТРОКА BROWSER-ANMELDUNG → тонкая сессия-плашка ============ */
+  .webapp-browser-auth {
+    margin: 4px 0 0 !important;
+    border-radius: 13px !important;
+    background: rgba(255,255,255,0.05) !important;
+    border: 1px solid rgba(255,255,255,0.08) !important;
+    padding: 0 !important;
+  }
+  .is-theme-light .webapp-browser-auth {
+    background: #FBFAF7 !important;
+    border-color: #E8E6DE !important;
+  }
+  .webapp-browser-auth-head {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    padding: 11px 18px !important;
+    gap: 12px;
+  }
+  .webapp-browser-auth-head strong {
+    font-size: 12.5px !important;
+    font-weight: 600 !important;
+    color: rgba(237,236,230,0.6) !important;
+  }
+  .is-theme-light .webapp-browser-auth-head strong { color: #6B675C !important; }
+
+  /* ============ КАРТОЧКА «HEUTE» ============ */
+  .hdt-today-card {
+    margin: 22px 0 0 !important;
+    border-radius: 20px !important;
+    padding: 0 !important;
+    background: rgba(255,255,255,0.05) !important;
+    border: 1px solid rgba(255,255,255,0.08) !important;
+  }
+  .is-theme-light .hdt-today-card {
+    background: #FBFAF7 !important;
+    border-color: #E8E6DE !important;
+  }
+  .hdt-today-inner { background: transparent !important; padding: 20px 24px !important; }
+  .is-theme-light .hdt-today-inner { background: transparent !important; }
+  .hdt-today-row1 { margin-bottom: 16px !important; }
+  .hdt-today-label { font-size: 17px !important; font-weight: 800 !important; color: #EDECE6 !important; }
+  .is-theme-light .hdt-today-label { color: #16150F !important; }
+  .hdt-today-date { font-size: 13px !important; color: rgba(237,236,230,0.4) !important; }
+  .is-theme-light .hdt-today-date { color: #9A968A !important; }
+
+  .hdt-metrics { gap: 14px !important; }
+  .hdt-metric {
+    padding: 16px !important;
+    border-radius: 14px !important;
+    gap: 7px !important;
+    background: rgba(255,255,255,0.05) !important;
+    border: 1px solid rgba(255,255,255,0.07) !important;
+  }
+  .is-theme-light .hdt-metric { background: #fff !important; border-color: #ECEAE2 !important; }
+  .hdt-metric-icon { width: 32px !important; height: 32px !important; border-radius: 10px !important; font-size: 16px !important; }
+  .hdt-metric-val { font-size: 22px !important; color: #EDECE6 !important; }
+  .is-theme-light .hdt-metric-val { color: #16150F !important; }
+  .hdt-metric-lbl { font-size: 12px !important; color: rgba(237,236,230,0.45) !important; }
+  .is-theme-light .hdt-metric-lbl { color: #8A8678 !important; }
+
+  /* ============ ЗАГОЛОВОК «BEREICHE» ============ */
+  .hdt-section-head { padding: 30px 2px 14px !important; }
+  .hdt-section-label { font-size: 13px !important; letter-spacing: 0.14em !important; color: #EDECE6 !important; }
+  .is-theme-light .hdt-section-label { color: #16150F !important; }
+  .hdt-section-hint { font-size: 12px !important; color: rgba(237,236,230,0.35) !important; opacity: 1 !important; }
+  .is-theme-light .hdt-section-hint { color: #A8A498 !important; }
+
+  /* ============ СЕТКА РАЗДЕЛОВ ============ */
+  .hdt-grid {
+    grid-template-columns: repeat(5, 1fr) !important;
+    gap: 14px !important;
+    padding: 0 !important;
+  }
+  /* пара YouTube+Filme распадается на две равные плитки */
+  .hdt-tile-pair { display: contents !important; }
+
+  /* плитка: плоская карточка вместо градиента */
+  .hdt-tile, .hdt-tile-pair .hdt-tile {
+    aspect-ratio: auto !important;
+    min-height: 150px !important;
+    border-radius: 18px !important;
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    justify-content: space-between !important;
+    gap: 0 !important;
+    padding: 18px 16px 16px !important;
+    background: rgba(255,255,255,0.05) !important;
+    border: 1px solid rgba(255,255,255,0.08) !important;
+    box-shadow: none !important;
+    overflow: hidden !important;
+    animation: none !important;
+    transition: transform .16s, border-color .16s !important;
+  }
+  .is-theme-light .hdt-tile,
+  .is-theme-light .hdt-tile-pair .hdt-tile {
+    background: #FBFAF7 !important;
+    border-color: #E8E6DE !important;
+    box-shadow: 0 6px 18px rgba(40,38,30,0.03) !important;
+  }
+  .hdt-tile:hover { transform: translateY(-3px) !important; border-color: rgba(255,255,255,0.18) !important; }
+  .is-theme-light .hdt-tile:hover { border-color: #D6D3C8 !important; box-shadow: 0 14px 30px rgba(40,38,30,0.09) !important; }
+
+  /* убрать глянец и shimmer */
+  .hdt-tile::before { display: none !important; }
+  .hdt-tile::after {
+    content: '' !important;
+    position: absolute !important;
+    left: 16px !important; bottom: 0 !important;
+    top: auto !important; right: auto !important;
+    width: 26px !important; height: 3px !important;
+    inset: auto !important;
+    border-radius: 99px 99px 0 0 !important;
+    background: var(--acc, #888) !important;
+    transform: none !important;
+    animation: none !important;
+    opacity: 1 !important;
+  }
+  .hdt-tile:hover::after { animation: none !important; transform: none !important; }
+
+  /* мягкое свечение в углу (только тёмная тема) */
+  .webapp-page:not(.is-theme-light) .hdt-tile .hdt-icon::after {
+    content: '';
+    position: absolute;
+    top: -34px; right: -34px;
+    width: 96px; height: 96px; border-radius: 50%;
+    background: var(--acc, #888);
+    opacity: 0.42; filter: blur(36px);
+    pointer-events: none; z-index: 0;
+  }
+
+  /* эмодзи → чип с тинтом акцента */
+  .hdt-icon {
+    position: relative;
+    width: 46px !important; height: 46px !important;
+    display: flex !important; align-items: center; justify-content: center;
+    border-radius: 13px !important;
+    font-size: 23px !important;
+    filter: none !important;
+    background: color-mix(in srgb, var(--acc, #888) 16%, transparent) !important;
+  }
+  .webapp-page:not(.is-theme-light) .hdt-icon {
+    background: color-mix(in srgb, var(--acc, #888) 26%, transparent) !important;
+    border: 1px solid rgba(255,255,255,0.08) !important;
+  }
+  .hdt-tile-pair .hdt-icon { font-size: 23px !important; }
+
+  /* подпись слева, без тени, читаемый размер */
+  .hdt-label, .hdt-tile-pair .hdt-label {
+    position: relative; z-index: 1;
+    font-size: 13.5px !important;
+    font-weight: 600 !important;
+    text-align: left !important;
+    line-height: 1.25 !important;
+    padding: 0 !important;
+    text-shadow: none !important;
+    color: rgba(237,236,230,0.92) !important;
+  }
+  .is-theme-light .hdt-label { color: #16150F !important; font-weight: 700 !important; }
+
+  /* бейдж → плотный акцентный */
+  .hdt-badge {
+    top: 14px !important; right: 14px !important;
+    background: var(--acc, #555) !important;
+    border: 1px solid rgba(255,255,255,0.18) !important;
+    backdrop-filter: none !important;
+    font-size: 11px !important;
+    padding: 3px 9px !important;
+    animation: none !important;
+    color: #fff !important;
+  }
+  .is-theme-light .hdt-badge { border-color: transparent !important; }
+  .hdt-badge.hdt-badge-done { background: #2FA56A !important; }
+
+  /* ============ НИЖНИЕ БЛОКИ (Abonnement / Kosten) ============ */
+  .hdt-quick-row { margin: 16px 0 0 !important; gap: 14px !important; }
+  .hdt-quick-block {
+    display: grid !important;
+    grid-template-columns: auto 1fr !important;
+    grid-template-rows: auto auto !important;
+    column-gap: 14px !important; row-gap: 2px !important;
+    align-items: center !important;
+    justify-items: start !important;
+    text-align: left !important;
+    padding: 18px 22px !important;
+    border-radius: 18px !important;
+    background: rgba(255,255,255,0.05) !important;
+    border: 1px solid rgba(255,255,255,0.08) !important;
+    box-shadow: none !important;
+    transition: transform .16s, border-color .16s !important;
+  }
+  .is-theme-light .hdt-quick-block { background: #FBFAF7 !important; border-color: #E8E6DE !important; }
+  .hdt-quick-block:hover { transform: translateY(-2px); border-color: rgba(255,255,255,0.18) !important; }
+  .is-theme-light .hdt-quick-block:hover { border-color: #D6D3C8 !important; box-shadow: 0 12px 26px rgba(40,38,30,0.07) !important; }
+  .hdt-quick-block-sub  { --acc:#4F5BD5; }
+  .hdt-quick-block-eco  { --acc:#3F9D52; }
+  .hdt-quick-block-icon {
+    grid-row: 1 / span 2 !important;
+    width: 44px !important; height: 44px !important;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 13px !important;
+    font-size: 21px !important;
+    background: color-mix(in srgb, var(--acc, #4F5BD5) 18%, transparent) !important;
+  }
+  .hdt-quick-block-title {
+    grid-column: 2 !important;
+    font-size: 15px !important; font-weight: 800 !important;
+    color: #EDECE6 !important; text-align: left !important;
+  }
+  .is-theme-light .hdt-quick-block-title { color: #16150F !important; }
+  .hdt-quick-block-sub-lbl {
+    grid-column: 2 !important;
+    font-size: 12px !important; font-weight: 600 !important;
+    color: rgba(237,236,230,0.4) !important; text-align: left !important;
+  }
+  .is-theme-light .hdt-quick-block-sub-lbl { color: #A8A498 !important; }
+
+  /* ============ ПЛАНШЕТ: чуть уже контейнер ============ */
+  .webapp-page.is-telegram-tablet .webapp-main { max-width: 980px !important; }
+  .webapp-page.is-telegram-tablet .hdt-grid { grid-template-columns: repeat(4, 1fr) !important; }
+}
+
+/* На очень широких — комфортные 5 колонок и крупнее контейнер */
+@media (min-width: 1280px) {
+  .webapp-main { max-width: 1180px !important; }
+}
