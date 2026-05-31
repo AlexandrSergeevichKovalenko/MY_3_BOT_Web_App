@@ -34513,6 +34513,40 @@ def _build_shortcut_onboarding_text(*, pairing_code: str, expires_at: datetime |
     )
 
 
+def _build_shortcut_onboarding_code_text(*, pairing_code: str, expires_at: datetime | None = None) -> str:
+    safe_code = str(pairing_code or "").strip().upper()
+    expiry_note = "Код действует 10 минут и одноразовый."
+    if expires_at is not None:
+        try:
+            local_expires_at = expires_at.astimezone(ZoneInfo("Europe/Vienna"))
+            expiry_note = f"Код действует до {local_expires_at.strftime('%H:%M')} по Vienna time и одноразовый."
+        except Exception:
+            pass
+    return (
+        "📱 Connect Shortcut\n\n"
+        f"Скопируйте только код: {safe_code}\n"
+        f"{expiry_note}"
+    )
+
+
+def _build_shortcut_onboarding_instructions() -> str:
+    return (
+        "Что сделать на iPhone:\n"
+        "1. Откройте приложение Команды.\n"
+        "2. Нажмите плюс и создайте новую команду.\n"
+        "3. Добавьте действие Ask for Input и используйте код привязки.\n"
+        "4. Добавьте действие Get Contents of URL и отправьте POST на /api/shortcut/link.\n"
+        "5. Тело запроса: {\"pairing_code\": \"ВАШ_КОД\"}.\n"
+        "6. Сохраните install_token, который вернет сервер, в локальный файл или другой постоянный storage внутри Shortcut.\n"
+        "7. На следующих запусках читайте install_token из этого хранилища и отправляйте его в /api/shortcut/lookup вместе с текстом.\n\n"
+        "Куда привязать запуск:\n"
+        "• Если у iPhone есть Action Button: Settings -> Action Button -> Shortcut -> выберите эту команду.\n"
+        "• Если Action Button нет: Settings -> Accessibility -> Touch -> Back Tap -> Double Tap -> выберите эту команду.\n"
+        "• На совместимых моделях Back Tap тоже можно использовать вместо Action Button, если так удобнее.\n\n"
+        "Если код истечет или вы закрыли окно, нажмите Connect Shortcut еще раз и получите новый."
+    )
+
+
 def _build_shortcut_pairing_code_response(pairing_result: dict) -> dict:
     return {
         "ok": True,

@@ -43,8 +43,9 @@ from backend.analytics import fetch_user_summary, get_period_bounds
 _BOT_BACKEND_SERVER_IMPORT_STARTED_AT = pytime.perf_counter()
 from backend.backend_server import (
     GoogleTTSBudgetBlockedError,
+    _build_shortcut_onboarding_code_text,
+    _build_shortcut_onboarding_instructions,
     _build_tts_prewarm_quota_control_text,
-    _build_shortcut_onboarding_text,
     _shortcut_enforce_pairing_code_issuance_limit,
     _build_video_search_queries,
     _get_user_language_pair,
@@ -1426,11 +1427,12 @@ async def _deliver_shortcut_connect_flow(user_id: int, reply_text: Callable[[str
         return
 
     await reply_text(
-        _build_shortcut_onboarding_text(
+        _build_shortcut_onboarding_code_text(
             pairing_code=str(result.get("pairing_code") or "").strip(),
             expires_at=result.get("expires_at"),
         )
     )
+    await reply_text(_build_shortcut_onboarding_instructions())
 
 
 async def handle_shortcut_connect_callback(update: Update, context: CallbackContext):
