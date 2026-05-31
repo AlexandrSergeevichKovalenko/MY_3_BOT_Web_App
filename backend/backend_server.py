@@ -34671,6 +34671,7 @@ def shortcut_create_pairing_code():
         or (os.getenv("ADMIN_TOKEN") or "").strip()
         or (os.getenv("AUDIO_DISPATCH_TOKEN") or "").strip()
         or (os.getenv("TELEGRAM_Deutsch_BOT_TOKEN") or "").strip()
+        or (os.getenv("SHORTCUT_SECRET") or "").strip()
     )
     if not admin_secret:
         return jsonify({"error": "Shortcut pairing endpoint не настроен (admin secret not set)"}), 503

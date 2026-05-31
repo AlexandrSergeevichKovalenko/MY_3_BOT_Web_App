@@ -1362,12 +1362,13 @@ async def _send_shortcut_connect_prompt(update: Update, context: CallbackContext
 
 async def _deliver_shortcut_connect_flow(user_id: int, reply_text: Callable[[str], Any]) -> None:
     base_url = get_public_web_url()
-    admin_secret = _shortcut_admin_secret()
+    admin_secret, admin_secret_source = _shortcut_admin_secret()
     if not base_url or not admin_secret:
         logging.error(
-            "shortcut pairing unavailable base_url=%s secret_present=%s app_base_url=%s backend_web_url=%s",
+            "shortcut pairing unavailable base_url=%s secret_present=%s secret_source=%s app_base_url=%s backend_web_url=%s",
             bool(base_url),
             bool(admin_secret),
+            admin_secret_source or "-",
             bool((os.getenv("APP_BASE_URL") or "").strip()),
             bool((os.getenv("BACKEND_WEB_URL") or "").strip()),
         )
@@ -1376,6 +1377,12 @@ async def _deliver_shortcut_connect_flow(user_id: int, reply_text: Callable[[str
 
     try:
         def _request_pairing_code() -> dict:
+            logging.info(
+                "shortcut pairing request start user_id=%s base_url=%s secret_source=%s",
+                int(user_id),
+                base_url,
+                admin_secret_source or "-",
+            )
             response = requests.post(
                 f"{base_url.rstrip('/')}/api/shortcut/pairing-code",
                 headers={
@@ -1391,9 +1398,25 @@ async def _deliver_shortcut_connect_flow(user_id: int, reply_text: Callable[[str
                 payload = {"error": response.text[:500]}
             if response.status_code != 200:
                 error_text = str(payload.get("error") or "").strip()
+                logging.error(
+                    "shortcut pairing request failed user_id=%s base_url=%s secret_source=%s http_status=%s error=%s body=%s",
+                    int(user_id),
+                    base_url,
+                    admin_secret_source or "-",
+                    response.status_code,
+                    error_text or "-",
+                    json.dumps(payload, ensure_ascii=False)[:500],
+                )
                 raise RuntimeError(
                     f"shortcut pairing code request failed http={response.status_code} error={error_text}"
                 )
+            logging.info(
+                "shortcut pairing request success user_id=%s base_url=%s secret_source=%s http_status=%s",
+                int(user_id),
+                base_url,
+                admin_secret_source or "-",
+                response.status_code,
+            )
             return payload
 
         result = await asyncio.to_thread(_request_pairing_code)
@@ -1499,12 +1522,18 @@ def get_webapp_url():
     return f"{base_url}/webapp"
 
 
-def _shortcut_admin_secret() -> str:
-    for env_name in ("SHORTCUT_BOT_SECRET", "ADMIN_TOKEN", "AUDIO_DISPATCH_TOKEN", "TELEGRAM_Deutsch_BOT_TOKEN"):
+def _shortcut_admin_secret() -> tuple[str, str]:
+    for env_name in (
+        "TELEGRAM_Deutsch_BOT_TOKEN",
+        "SHORTCUT_BOT_SECRET",
+        "ADMIN_TOKEN",
+        "AUDIO_DISPATCH_TOKEN",
+        "SHORTCUT_SECRET",
+    ):
         value = (os.getenv(env_name) or "").strip()
         if value:
-            return value
-    return ""
+            return value, env_name
+    return "", ""
 
 
 def get_webapp_deeplink(path: str = "review", bot_username: str | None = None) -> str:
