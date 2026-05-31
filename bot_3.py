@@ -1361,19 +1361,40 @@ async def _send_shortcut_connect_prompt(update: Update, context: CallbackContext
 
 
 async def _deliver_shortcut_connect_flow(user_id: int, reply_text: Callable[[str], Any]) -> None:
-    allowed, limiter_response = _shortcut_enforce_pairing_code_issuance_limit(user_id=int(user_id))
-    if not allowed:
-        status_code = int(limiter_response[1]) if limiter_response and len(limiter_response) > 1 else 429
-        message_text = (
-            "Слишком много попыток подключения. Попробуйте позже."
-            if status_code == 429
-            else "Подключение временно недоступно. Попробуйте позже."
+    base_url = get_public_web_url()
+    admin_secret = (os.getenv("SHORTCUT_BOT_SECRET") or "").strip()
+    if not base_url or not admin_secret:
+        logging.error(
+            "shortcut pairing unavailable base_url=%s secret_present=%s",
+            bool(base_url),
+            bool(admin_secret),
         )
-        await reply_text(message_text)
+        await reply_text("Подключение временно недоступно. Попробуйте позже.")
         return
 
     try:
-        result = await asyncio.to_thread(create_shortcut_pairing_code, user_id=int(user_id))
+        def _request_pairing_code() -> dict:
+            response = requests.post(
+                f"{base_url.rstrip('/')}/api/shortcut/pairing-code",
+                headers={
+                    "Authorization": f"Bearer {admin_secret}",
+                    "Content-Type": "application/json",
+                },
+                json={"user_id": int(user_id)},
+                timeout=12,
+            )
+            try:
+                payload = response.json()
+            except Exception:
+                payload = {"error": response.text[:500]}
+            if response.status_code != 200:
+                error_text = str(payload.get("error") or "").strip()
+                raise RuntimeError(
+                    f"shortcut pairing code request failed http={response.status_code} error={error_text}"
+                )
+            return payload
+
+        result = await asyncio.to_thread(_request_pairing_code)
     except Exception as exc:
         logging.exception("shortcut connect failed user_id=%s: %s", int(user_id), exc)
         await reply_text("Не удалось создать pairing code. Попробуйте еще раз.")
