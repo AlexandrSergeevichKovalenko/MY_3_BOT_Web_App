@@ -1524,11 +1524,11 @@ def get_webapp_url():
 
 def _shortcut_admin_secret() -> tuple[str, str]:
     for env_name in (
-        "TELEGRAM_Deutsch_BOT_TOKEN",
         "SHORTCUT_BOT_SECRET",
+        "SHORTCUT_SECRET",
         "ADMIN_TOKEN",
         "AUDIO_DISPATCH_TOKEN",
-        "SHORTCUT_SECRET",
+        "TELEGRAM_Deutsch_BOT_TOKEN",
     ):
         value = (os.getenv(env_name) or "").strip()
         if value:
