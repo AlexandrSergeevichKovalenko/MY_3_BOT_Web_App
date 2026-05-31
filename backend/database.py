@@ -13387,6 +13387,8 @@ _SHORTCUT_SCHEMA_BOOTSTRAP_LOCK = threading.Lock()
 _SHORTCUT_SCHEMA_READY = False
 SHORTCUT_DB_LOCK_TIMEOUT_MS = max(100, int(os.getenv("SHORTCUT_DB_LOCK_TIMEOUT_MS", "2000")))
 SHORTCUT_DB_STATEMENT_TIMEOUT_MS = max(250, int(os.getenv("SHORTCUT_DB_STATEMENT_TIMEOUT_MS", "3000")))
+SHORTCUT_INSTALL_TOKEN_CACHE_TTL_SEC = max(300, int(os.getenv("SHORTCUT_INSTALL_TOKEN_CACHE_TTL_SEC", "2592000")))
+SHORTCUT_INSTALL_TOKEN_CACHE_PREFIX = str(os.getenv("SHORTCUT_INSTALL_TOKEN_CACHE_PREFIX", "shortcut_installation:")).strip() or "shortcut_installation:"
 
 
 def _apply_shortcut_db_timeouts(cursor) -> None:
@@ -13394,6 +13396,88 @@ def _apply_shortcut_db_timeouts(cursor) -> None:
     statement_timeout = max(lock_timeout + 100, int(SHORTCUT_DB_STATEMENT_TIMEOUT_MS))
     cursor.execute("SET LOCAL lock_timeout = %s;", (f"{lock_timeout}ms",))
     cursor.execute("SET LOCAL statement_timeout = %s;", (f"{statement_timeout}ms",))
+
+
+def _get_shortcut_install_token_cache_key(token_hash: str) -> str:
+    normalized_hash = str(token_hash or "").strip()
+    return f"{SHORTCUT_INSTALL_TOKEN_CACHE_PREFIX}{normalized_hash}"
+
+
+def _get_shortcut_install_token_cache_client():
+    try:
+        from backend.job_queue import get_redis_client
+
+        return get_redis_client()
+    except Exception:
+        return None
+
+
+def _shortcut_cache_encode_installation(row_payload: dict) -> str:
+    return json.dumps(row_payload, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+def _shortcut_cache_decode_installation(payload: str | None) -> dict | None:
+    if not payload:
+        return None
+    try:
+        raw = json.loads(payload)
+    except Exception:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    return raw
+
+
+def _shortcut_cache_get_installation(token_hash: str) -> dict | None:
+    client = _get_shortcut_install_token_cache_client()
+    if client is None:
+        return None
+    try:
+        cached = client.get(_get_shortcut_install_token_cache_key(token_hash))
+    except Exception as exc:
+        logging.warning("shortcut install token cache get failed: %s", exc)
+        return None
+    return _shortcut_cache_decode_installation(cached)
+
+
+def _shortcut_cache_set_installation(token_hash: str, payload: dict) -> None:
+    client = _get_shortcut_install_token_cache_client()
+    if client is None:
+        return
+    try:
+        client.setex(
+            _get_shortcut_install_token_cache_key(token_hash),
+            SHORTCUT_INSTALL_TOKEN_CACHE_TTL_SEC,
+            _shortcut_cache_encode_installation(payload),
+        )
+    except Exception as exc:
+        logging.warning("shortcut install token cache set failed: %s", exc)
+
+
+def _shortcut_cache_delete_installation(token_hash: str) -> None:
+    client = _get_shortcut_install_token_cache_client()
+    if client is None:
+        return
+    try:
+        client.delete(_get_shortcut_install_token_cache_key(token_hash))
+    except Exception as exc:
+        logging.warning("shortcut install token cache delete failed: %s", exc)
+
+
+def _shortcut_cache_build_installation_payload(
+    *,
+    installation_id: int,
+    user_id: int,
+    source_pairing_code_id: int | None,
+) -> dict:
+    payload = {
+        "installation_id": int(installation_id),
+        "user_id": int(user_id),
+        "is_active": True,
+    }
+    if source_pairing_code_id is not None:
+        payload["source_pairing_code_id"] = int(source_pairing_code_id)
+    return payload
 
 
 def ensure_shortcut_tables() -> None:
@@ -13677,6 +13761,14 @@ def link_shortcut_installation(
                     (installation_id, pairing_code_id),
                 )
                 conn.commit()
+                _shortcut_cache_set_installation(
+                    install_token_hash,
+                    _shortcut_cache_build_installation_payload(
+                        installation_id=installation_id,
+                        user_id=user_id,
+                        source_pairing_code_id=pairing_code_id,
+                    ),
+                )
                 _log_flow_observation(
                     "shortcut_link",
                     "SHORTCUT_LINK_INSTALLATION_CREATE_FINISH",
@@ -13711,17 +13803,71 @@ def link_shortcut_installation(
         return {"status": "schema_unavailable"}
 
 
-def resolve_shortcut_install_token(*, install_token: str) -> dict | None:
-    if not _SHORTCUT_SCHEMA_READY:
-        return {"status": "schema_unavailable"}
+def resolve_shortcut_install_token(
+    *,
+    install_token: str,
+    request_id: str | None = None,
+    remote_ip: str | None = None,
+) -> dict | None:
     normalized_token = str(install_token or "").strip()
     if not normalized_token:
         return None
     token_hash = _shortcut_install_token_hash(normalized_token)
+    cached_installation = _shortcut_cache_get_installation(token_hash)
+    if cached_installation:
+        installation_id = int(cached_installation.get("installation_id") or 0)
+        user_id = int(cached_installation.get("user_id") or 0)
+        if installation_id > 0 and user_id > 0:
+            _log_flow_observation(
+                "shortcut_lookup",
+                "SHORTCUT_LOOKUP_CACHE_HIT",
+                request_id=request_id,
+                correlation_id=request_id,
+                remote_ip=remote_ip,
+                install_token_present=True,
+                installation_id=installation_id,
+                user_id=user_id,
+            )
+            return {
+                "installation_id": installation_id,
+                "user_id": user_id,
+                "source_pairing_code_id": int(cached_installation.get("source_pairing_code_id") or 0) or None,
+                "created_at": None,
+                "last_used_at": None,
+                "revoked_at": None,
+                "is_active": True,
+            }
+    _log_flow_observation(
+        "shortcut_lookup",
+        "SHORTCUT_LOOKUP_CACHE_MISS",
+        request_id=request_id,
+        correlation_id=request_id,
+        remote_ip=remote_ip,
+        install_token_present=True,
+    )
+    if not _SHORTCUT_SCHEMA_READY:
+        _log_flow_observation(
+            "shortcut_lookup",
+            "SHORTCUT_LOOKUP_SCHEMA_UNAVAILABLE",
+            request_id=request_id,
+            correlation_id=request_id,
+            remote_ip=remote_ip,
+            install_token_present=True,
+        )
+        return {"status": "schema_unavailable"}
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
                 _apply_shortcut_db_timeouts(cursor)
+                db_lookup_started_perf = time.perf_counter()
+                _log_flow_observation(
+                    "shortcut_lookup",
+                    "SHORTCUT_LOOKUP_DB_START",
+                    request_id=request_id,
+                    correlation_id=request_id,
+                    remote_ip=remote_ip,
+                    install_token_present=True,
+                )
                 cursor.execute(
                     """
                     SELECT
@@ -13747,10 +13893,21 @@ def resolve_shortcut_install_token(*, install_token: str) -> dict | None:
                 if revoked_at is not None or not is_active:
                     return None
                 conn.commit()
+                _log_flow_observation(
+                    "shortcut_lookup",
+                    "SHORTCUT_LOOKUP_DB_FINISH",
+                    request_id=request_id,
+                    correlation_id=request_id,
+                    remote_ip=remote_ip,
+                    install_token_present=True,
+                    installation_id=installation_id,
+                    user_id=user_id,
+                    db_duration_ms=max(0, int((time.perf_counter() - db_lookup_started_perf) * 1000)),
+                )
     except Psycopg2Error as exc:
         logging.warning("shortcut install token resolve db error: %s", exc)
         return {"status": "schema_unavailable"}
-    return {
+    resolved = {
         "installation_id": installation_id,
         "user_id": user_id,
         "source_pairing_code_id": int(row[2]) if row[2] is not None else None,
@@ -13759,6 +13916,15 @@ def resolve_shortcut_install_token(*, install_token: str) -> dict | None:
         "revoked_at": revoked_at,
         "is_active": is_active,
     }
+    _shortcut_cache_set_installation(
+        token_hash,
+        _shortcut_cache_build_installation_payload(
+            installation_id=installation_id,
+            user_id=user_id,
+            source_pairing_code_id=int(row[2]) if row[2] is not None else None,
+        ),
+    )
+    return resolved
 
 
 def get_shortcut_installations_for_user(user_id: int, *, active_only: bool = True) -> list[dict]:
@@ -13821,6 +13987,8 @@ def revoke_shortcut_installation(*, install_token: str, reason: str | None = Non
             )
             row = cursor.fetchone()
             conn.commit()
+    if row:
+        _shortcut_cache_delete_installation(token_hash)
     return bool(row)
 
 

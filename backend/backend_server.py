@@ -34571,7 +34571,11 @@ def _shortcut_lookup_from_install_token(*, install_token: str, text: str, reques
         install_token_present=True,
         text_present=bool(text),
     )
-    installation = resolve_shortcut_install_token(install_token=install_token)
+    installation = resolve_shortcut_install_token(
+        install_token=install_token,
+        request_id=request_id,
+        remote_ip=remote_ip,
+    )
     _log_flow_observation(
         "shortcut_lookup",
         "SHORTCUT_LOOKUP_RESOLVE_FINISH",
