@@ -13746,21 +13746,6 @@ def resolve_shortcut_install_token(*, install_token: str) -> dict | None:
                 is_active = bool(row[6])
                 if revoked_at is not None or not is_active:
                     return None
-                cursor.execute(
-                    """
-                    UPDATE bt_3_shortcut_installations
-                    SET last_used_at = NOW(),
-                        updated_at = NOW()
-                    WHERE id = %s
-                      AND is_active = TRUE
-                      AND revoked_at IS NULL
-                    RETURNING last_used_at;
-                    """,
-                    (installation_id,),
-                )
-                updated_row = cursor.fetchone()
-                if not updated_row:
-                    return None
                 conn.commit()
     except Psycopg2Error as exc:
         logging.warning("shortcut install token resolve db error: %s", exc)
@@ -13770,7 +13755,7 @@ def resolve_shortcut_install_token(*, install_token: str) -> dict | None:
         "user_id": user_id,
         "source_pairing_code_id": int(row[2]) if row[2] is not None else None,
         "created_at": row[3],
-        "last_used_at": updated_row[0] if updated_row else row[4],
+        "last_used_at": row[4],
         "revoked_at": revoked_at,
         "is_active": is_active,
     }
