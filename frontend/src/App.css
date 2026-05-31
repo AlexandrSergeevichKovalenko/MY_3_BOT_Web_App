@@ -5294,6 +5294,7 @@ body {
   font-size: inherit;
   font-weight: inherit;
   line-height: inherit;
+  touch-action: manipulation;
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;
@@ -23823,4 +23824,3 @@ body {
   border-color: rgba(13,148,136,0.3);
   color: #0b5f5a;
 }
-

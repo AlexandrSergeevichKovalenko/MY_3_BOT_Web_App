@@ -4091,8 +4091,6 @@ const TranslationsSection = React.memo(function TranslationsSection({
                   <div key={item.id ?? index} className="webapp-result-card">
                     <div
                       className="webapp-result-text tr-history-result-text"
-                      onMouseUp={handleSelection}
-                      onTouchEnd={handleSelection}
                     >
                       {renderFeedback(buildHistoryFeedback(item))}
                     </div>
@@ -15429,31 +15427,10 @@ function AppInner() {
         const starterOffer = normalizeStarterDictionaryOffer(data?.starter_dictionary);
         setStarterDictionaryOffer(starterOffer);
         setStarterDictionaryPromptOpen(Boolean(starterOffer?.should_prompt));
-        const bootstrapTranslationSessionId = String(data?.translation_session?.session_id || '').trim();
-        if (String(data?.translation_session?.type || '').trim().toLowerCase() === 'regular' && bootstrapTranslationSessionId) {
-          // Do not auto-navigate to translations if the app was hidden overnight.
-          // A stale Redis session card can survive across days (24h TTL), so we
-          // guard against it here as a second layer on top of the backend DB check.
-          const lastHideTs = Number(safeStorageGet('app_last_hide_ts') || 0);
-          const MIN_HIDE_MS_FOR_DAY_NAV_BLOCK = 4 * 60 * 60 * 1000;
-          let suppressTranslationNav = false;
-          if (lastHideTs) {
-            const todayStr = new Date().toISOString().slice(0, 10);
-            const lastHideDateStr = new Date(lastHideTs).toISOString().slice(0, 10);
-            const hiddenForMs = Date.now() - lastHideTs;
-            if (lastHideDateStr !== todayStr && hiddenForMs >= MIN_HIDE_MS_FOR_DAY_NAV_BLOCK) {
-              suppressTranslationNav = true;
-            }
-          }
-          if (!suppressTranslationNav) {
-            setSelectedSections((prev) => {
-              if (flashcardsOnly || prev.size > 0) {
-                return prev;
-              }
-              return new Set(['translations']);
-            });
-          }
-        }
+        // Keep the cold-start landing view on the home dashboard.
+        // Translations should hydrate only after the user explicitly opens that section
+        // or via an intentional deep link/start_param. This avoids paying the sentence
+        // bootstrap cost on every app launch.
       } catch (error) {
         if (cancelled || !isAsyncGuardCurrent(bootstrapRequestIdRef, requestId)) {
           return;
