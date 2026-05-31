@@ -13642,7 +13642,25 @@ def link_shortcut_installation(
 
     code_hash = _shortcut_pairing_code_hash(normalized_code)
     try:
+        db_acquire_started_perf = time.perf_counter()
+        _log_flow_observation(
+            "shortcut_link",
+            "SHORTCUT_LINK_DB_ACQUIRE_START",
+            request_id=request_id or correlation_id,
+            correlation_id=correlation_id or request_id,
+            remote_ip=remote_ip,
+            pairing_code_present=True,
+        )
         with get_db_connection_context() as conn:
+            _log_flow_observation(
+                "shortcut_link",
+                "SHORTCUT_LINK_DB_ACQUIRE_FINISH",
+                request_id=request_id or correlation_id,
+                correlation_id=correlation_id or request_id,
+                remote_ip=remote_ip,
+                pairing_code_present=True,
+                db_acquire_duration_ms=max(0, int((time.perf_counter() - db_acquire_started_perf) * 1000)),
+            )
             with conn.cursor() as cursor:
                 _apply_shortcut_db_timeouts(cursor)
                 lookup_started_perf = time.perf_counter()
@@ -13771,6 +13789,17 @@ def link_shortcut_installation(
                 )
                 _log_flow_observation(
                     "shortcut_link",
+                    "SHORTCUT_LINK_CACHE_WRITE",
+                    request_id=request_id or correlation_id,
+                    correlation_id=correlation_id or request_id,
+                    remote_ip=remote_ip,
+                    pairing_code_present=True,
+                    pairing_code_id=pairing_code_id,
+                    user_id=user_id,
+                    installation_id=installation_id,
+                )
+                _log_flow_observation(
+                    "shortcut_link",
                     "SHORTCUT_LINK_INSTALLATION_CREATE_FINISH",
                     request_id=request_id or correlation_id,
                     correlation_id=correlation_id or request_id,
@@ -13856,7 +13885,25 @@ def resolve_shortcut_install_token(
         )
         return {"status": "schema_unavailable"}
     try:
+        db_acquire_started_perf = time.perf_counter()
+        _log_flow_observation(
+            "shortcut_lookup",
+            "SHORTCUT_LOOKUP_DB_ACQUIRE_START",
+            request_id=request_id,
+            correlation_id=request_id,
+            remote_ip=remote_ip,
+            install_token_present=True,
+        )
         with get_db_connection_context() as conn:
+            _log_flow_observation(
+                "shortcut_lookup",
+                "SHORTCUT_LOOKUP_DB_ACQUIRE_FINISH",
+                request_id=request_id,
+                correlation_id=request_id,
+                remote_ip=remote_ip,
+                install_token_present=True,
+                db_acquire_duration_ms=max(0, int((time.perf_counter() - db_acquire_started_perf) * 1000)),
+            )
             with conn.cursor() as cursor:
                 _apply_shortcut_db_timeouts(cursor)
                 db_lookup_started_perf = time.perf_counter()
@@ -13923,6 +13970,16 @@ def resolve_shortcut_install_token(
             user_id=user_id,
             source_pairing_code_id=int(row[2]) if row[2] is not None else None,
         ),
+    )
+    _log_flow_observation(
+        "shortcut_lookup",
+        "SHORTCUT_LOOKUP_CACHE_WRITE",
+        request_id=request_id,
+        correlation_id=request_id,
+        remote_ip=remote_ip,
+        install_token_present=True,
+        installation_id=installation_id,
+        user_id=user_id,
     )
     return resolved
 
