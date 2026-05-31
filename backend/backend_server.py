@@ -298,6 +298,12 @@ from backend.openai_manager import (
 from backend.database import (
     is_telegram_user_allowed,
     ensure_webapp_tables,
+    create_shortcut_pairing_code,
+    link_shortcut_installation,
+    resolve_shortcut_install_token,
+    get_shortcut_installations_for_user,
+    revoke_shortcut_installation,
+    purge_expired_shortcut_pairing_codes,
     get_missing_phase1_shadow_schema_objects,
     claim_skill_state_v2_dirty_keys,
     process_skill_state_v2_dirty_key,
@@ -33941,6 +33947,51 @@ _SHORTCUT_LANGUAGE_PAIRS = [
     ("ru", "es"), ("es", "ru"),
     ("ru", "it"), ("it", "ru"),
 ]
+_SHORTCUT_PAIRING_CODE_ISSUANCE_LIMIT = max(
+    1,
+    int((os.getenv("SHORTCUT_PAIRING_CODE_ISSUANCE_LIMIT") or "3").strip() or "3"),
+)
+_SHORTCUT_PAIRING_CODE_ISSUANCE_WINDOW_SECONDS = max(
+    60,
+    int((os.getenv("SHORTCUT_PAIRING_CODE_ISSUANCE_WINDOW_SECONDS") or "600").strip() or "600"),
+)
+_SHORTCUT_LINK_IP_LIMIT = max(
+    1,
+    int((os.getenv("SHORTCUT_LINK_IP_LIMIT") or "10").strip() or "10"),
+)
+_SHORTCUT_LINK_IP_WINDOW_SECONDS = max(
+    60,
+    int((os.getenv("SHORTCUT_LINK_IP_WINDOW_SECONDS") or "600").strip() or "600"),
+)
+_SHORTCUT_LINK_PAIRING_CODE_LIMIT = max(
+    1,
+    int((os.getenv("SHORTCUT_LINK_PAIRING_CODE_LIMIT") or "5").strip() or "5"),
+)
+_SHORTCUT_LINK_PAIRING_CODE_WINDOW_SECONDS = max(
+    60,
+    int((os.getenv("SHORTCUT_LINK_PAIRING_CODE_WINDOW_SECONDS") or "600").strip() or "600"),
+)
+_SHORTCUT_RATE_LIMIT_RETRY_AFTER_SECONDS = max(
+    60,
+    int((os.getenv("SHORTCUT_RATE_LIMIT_RETRY_AFTER_SECONDS") or "600").strip() or "600"),
+)
+_SHORTCUT_PAIRING_CODE_CLEANUP_AFTER_EXPIRED_SECONDS = max(
+    3600,
+    int((os.getenv("SHORTCUT_PAIRING_CODE_CLEANUP_AFTER_EXPIRED_SECONDS") or "86400").strip() or "86400"),
+)
+_SHORTCUT_PAIRING_CODE_CLEANUP_AFTER_CONSUMED_SECONDS = max(
+    _SHORTCUT_PAIRING_CODE_CLEANUP_AFTER_EXPIRED_SECONDS,
+    int((os.getenv("SHORTCUT_PAIRING_CODE_CLEANUP_AFTER_CONSUMED_SECONDS") or "2592000").strip() or "2592000"),
+)
+
+_SHORTCUT_RATE_LIMIT_LUA = """
+local current = redis.call('INCR', KEYS[1])
+if current == 1 then
+  redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+local ttl = redis.call('TTL', KEYS[1])
+return {current, ttl}
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -34128,6 +34179,158 @@ def _shortcut_dedup_release(redis_key: str) -> None:
         logging.warning("shortcut_dedup release failed: %s", exc)
 
 
+def _shortcut_request_ip() -> str:
+    forwarded_for = (request.headers.get("X-Forwarded-For") or "").strip()
+    if forwarded_for:
+        first_ip = forwarded_for.split(",")[0].strip()
+        if first_ip:
+            return first_ip
+    real_ip = (request.headers.get("X-Real-IP") or request.remote_addr or "").strip()
+    return real_ip or "unknown"
+
+
+def _shortcut_rate_limit_identity(raw_value: str) -> str:
+    return hashlib.sha1(str(raw_value or "").strip().encode("utf-8")).hexdigest()
+
+
+def _shortcut_rate_limit_key(*parts: str) -> str:
+    safe_parts = [str(part or "").strip() for part in parts if str(part or "").strip()]
+    return "shortcut:rate:" + ":".join(safe_parts)
+
+
+def _shortcut_rate_limit_check(*, key: str, limit: int, window_seconds: int) -> tuple[bool, int]:
+    client = get_redis_client()
+    if client is None:
+        raise RuntimeError("shortcut rate limit redis unavailable")
+    try:
+        current, ttl = client.eval(_SHORTCUT_RATE_LIMIT_LUA, 1, key, int(window_seconds))
+        current_int = int(current or 0)
+        ttl_int = int(ttl or 0)
+        retry_after = ttl_int if ttl_int > 0 else int(window_seconds)
+        if current_int <= int(limit):
+            return True, max(1, retry_after)
+        return False, max(1, retry_after)
+    except Exception:
+        logging.exception("shortcut rate limit redis error key=%s", key)
+        raise
+
+
+def _shortcut_rate_limit_current_count(*, key: str) -> tuple[int, int]:
+    client = get_redis_client()
+    if client is None:
+        raise RuntimeError("shortcut rate limit redis unavailable")
+    try:
+        current = int(client.get(key) or 0)
+        ttl = int(client.ttl(key) or 0)
+        return current, ttl
+    except Exception:
+        logging.exception("shortcut rate limit redis read error key=%s", key)
+        raise
+
+
+def _shortcut_rate_limit_record_failure(*, key: str, window_seconds: int) -> tuple[int, int]:
+    client = get_redis_client()
+    if client is None:
+        raise RuntimeError("shortcut rate limit redis unavailable")
+    try:
+        current = int(client.incr(key))
+        if current == 1:
+            client.expire(key, int(window_seconds))
+        ttl = int(client.ttl(key) or 0)
+        return current, ttl
+    except Exception:
+        logging.exception("shortcut rate limit redis write error key=%s", key)
+        raise
+
+
+def _shortcut_rate_limited_response(*, error: str, retry_after_seconds: int) -> tuple[Any, int]:
+    response = jsonify(
+        {
+            "error": error,
+            "retry_after_seconds": int(retry_after_seconds),
+        }
+    )
+    response.headers["Retry-After"] = str(int(retry_after_seconds))
+    return response, 429
+
+
+def _shortcut_enforce_pairing_code_issuance_limit(*, user_id: int) -> tuple[bool, tuple[Any, int] | None]:
+    key = _shortcut_rate_limit_key(
+        "pairing-code",
+        "user",
+        _shortcut_rate_limit_identity(str(int(user_id))),
+    )
+    try:
+        allowed, retry_after = _shortcut_rate_limit_check(
+            key=key,
+            limit=_SHORTCUT_PAIRING_CODE_ISSUANCE_LIMIT,
+            window_seconds=_SHORTCUT_PAIRING_CODE_ISSUANCE_WINDOW_SECONDS,
+        )
+    except Exception:
+        return False, (jsonify({"error": "shortcut_rate_limit_unavailable"}), 503)
+    if allowed:
+        return True, None
+    return False, _shortcut_rate_limited_response(
+        error="shortcut_rate_limited",
+        retry_after_seconds=retry_after or _SHORTCUT_RATE_LIMIT_RETRY_AFTER_SECONDS,
+    )
+
+
+def _shortcut_enforce_link_ip_limit() -> tuple[bool, tuple[Any, int] | None]:
+    request_ip = _shortcut_request_ip()
+    key = _shortcut_rate_limit_key(
+        "link",
+        "ip",
+        _shortcut_rate_limit_identity(request_ip),
+    )
+    try:
+        allowed, retry_after = _shortcut_rate_limit_check(
+            key=key,
+            limit=_SHORTCUT_LINK_IP_LIMIT,
+            window_seconds=_SHORTCUT_LINK_IP_WINDOW_SECONDS,
+        )
+    except Exception:
+        return False, (jsonify({"error": "shortcut_rate_limit_unavailable"}), 503)
+    if allowed:
+        return True, None
+    return False, _shortcut_rate_limited_response(
+        error="shortcut_rate_limited",
+        retry_after_seconds=retry_after or _SHORTCUT_RATE_LIMIT_RETRY_AFTER_SECONDS,
+    )
+
+
+def _shortcut_enforce_link_pairing_code_limit(*, pairing_code: str) -> tuple[bool, tuple[Any, int] | None]:
+    key = _shortcut_link_pairing_code_rate_limit_key(pairing_code)
+    try:
+        current, ttl = _shortcut_rate_limit_current_count(key=key)
+    except Exception:
+        return False, (jsonify({"error": "shortcut_rate_limit_unavailable"}), 503)
+    if current >= _SHORTCUT_LINK_PAIRING_CODE_LIMIT:
+        retry_after = ttl if ttl > 0 else _SHORTCUT_RATE_LIMIT_RETRY_AFTER_SECONDS
+        return False, _shortcut_rate_limited_response(
+            error="pairing_code_rate_limited",
+            retry_after_seconds=retry_after,
+        )
+    return True, None
+
+
+def _shortcut_link_pairing_code_rate_limit_key(pairing_code: str) -> str:
+    normalized_code = re.sub(r"[^A-Z0-9]", "", str(pairing_code or "").strip().upper())
+    return _shortcut_rate_limit_key(
+        "link",
+        "code",
+        _shortcut_rate_limit_identity(normalized_code or str(pairing_code or "").strip().upper()),
+    )
+
+
+def _shortcut_record_link_pairing_code_failure(*, pairing_code: str) -> None:
+    key = _shortcut_link_pairing_code_rate_limit_key(pairing_code)
+    _shortcut_rate_limit_record_failure(
+        key=key,
+        window_seconds=_SHORTCUT_LINK_PAIRING_CODE_WINDOW_SECONDS,
+    )
+
+
 def _shortcut_validate_coverage(blocks: list[tuple[str, str]], original: str) -> bool:
     """Verify extraction is not trivially empty after dropping commentary-heavy material."""
     if not blocks:
@@ -34245,6 +34448,99 @@ def _shortcut_split_blocks(text: str) -> list[tuple[str, str]]:
     if multiline:
         return _line_split_fallback()
     return [(text.strip(), text.strip())]
+
+
+def _build_shortcut_onboarding_text(*, pairing_code: str, expires_at: datetime | None = None) -> str:
+    safe_code = str(pairing_code or "").strip().upper()
+    expiry_note = "Код действует 10 минут и одноразовый."
+    if expires_at is not None:
+        try:
+            local_expires_at = expires_at.astimezone(ZoneInfo("Europe/Vienna"))
+            expiry_note = f"Код действует до {local_expires_at.strftime('%H:%M')} по Vienna time и одноразовый."
+        except Exception:
+            pass
+    return (
+        "📱 Connect Shortcut\n\n"
+        f"Код привязки: {safe_code}\n"
+        f"{expiry_note}\n\n"
+        "Что сделать на iPhone:\n"
+        "1. Откройте приложение Команды.\n"
+        "2. Нажмите плюс и создайте новую команду.\n"
+        "3. Добавьте действие Ask for Input и используйте код привязки.\n"
+        "4. Добавьте действие Get Contents of URL и отправьте POST на /api/shortcut/link.\n"
+        "5. Тело запроса: {\"pairing_code\": \"ВАШ_КОД\"}.\n"
+        "6. Сохраните install_token, который вернет сервер, в локальный файл или другой постоянный storage внутри Shortcut.\n"
+        "7. На следующих запусках читайте install_token из этого хранилища и отправляйте его в /api/shortcut/lookup вместе с текстом.\n\n"
+        "Куда привязать запуск:\n"
+        "• Если у iPhone есть Action Button: Settings -> Action Button -> Shortcut -> выберите эту команду.\n"
+        "• Если Action Button нет: Settings -> Accessibility -> Touch -> Back Tap -> Double Tap -> выберите эту команду.\n"
+        "• На совместимых моделях Back Tap тоже можно использовать вместо Action Button, если так удобнее.\n\n"
+        "Если код истечет или вы закрыли окно, нажмите Connect Shortcut еще раз и получите новый."
+    )
+
+
+def _build_shortcut_pairing_code_response(pairing_result: dict) -> dict:
+    return {
+        "ok": True,
+        "pairing_code_id": int(pairing_result.get("pairing_code_id") or 0),
+        "user_id": int(pairing_result.get("user_id") or 0),
+        "pairing_code": str(pairing_result.get("pairing_code") or "").strip(),
+        "created_at": pairing_result.get("created_at"),
+        "expires_at": pairing_result.get("expires_at"),
+        "expires_in": int(pairing_result.get("expires_in") or 0),
+    }
+
+
+def _shortcut_lookup_request_payload(body: dict) -> tuple[str, str]:
+    text = str(body.get("text") or "").strip()
+    install_token = str(body.get("install_token") or "").strip()
+    return text, install_token
+
+
+def _shortcut_lookup_from_install_token(*, install_token: str, text: str) -> tuple[dict, int]:
+    installation = resolve_shortcut_install_token(install_token=install_token)
+    if not installation:
+        return {"error": "invalid_install_token"}, 401
+
+    user_id = int(installation.get("user_id") or 0)
+    installation_id = int(installation.get("installation_id") or 0)
+    if user_id <= 0 or installation_id <= 0:
+        return {"error": "invalid_install_token"}, 401
+
+    if not is_telegram_user_allowed(user_id):
+        return {"error": "Пользователь не имеет доступа"}, 403
+
+    if not text:
+        return {"error": "text обязателен"}, 400
+
+    dedup_key = _shortcut_dedup_key(user_id, text)
+    if _shortcut_dedup_reserve(dedup_key):
+        logging.info(
+            "shortcut_lookup: duplicate request suppressed installation_id=%s user_id=%s",
+            installation_id,
+            user_id,
+        )
+        return {"ok": True, "blocks_sent": 0, "duplicate": True}, 200
+
+    if not can_enqueue_background_jobs():
+        return {"error": "Shortcut processing is temporarily unavailable"}, 503
+
+    request_key = _start_shortcut_lookup_enqueue_runner(
+        user_id=user_id,
+        text=text,
+    )
+    return (
+        {
+            "ok": True,
+            "accepted": True,
+            "queued": True,
+            "duplicate": False,
+            "job_id": str(request_key or "").strip() or None,
+        },
+        200,
+    )
+
+
 def _shortcut_build_pair_keyboard_rows(request_key: str) -> list[list[dict]]:
     rows: list[list[dict]] = []
     row: list[dict] = []
@@ -34332,89 +34628,101 @@ def _start_shortcut_lookup_enqueue_runner(*, user_id: int, text: str) -> str:
     return request_key
 
 
-@app.route("/api/shortcut/lookup", methods=["POST"])
-def shortcut_dictionary_lookup():
-    """
-    iPhone Shortcuts endpoint — receives text, splits it into clean learnable
-    units, and sends each unit as a separate Telegram private message with the
-    language pair keyboard under it.
-
-    Auth: one of
-      - Authorization: Bearer <SHORTCUT_SECRET>
-      - X-Shortcut-Secret: <SHORTCUT_SECRET>
-      - body.shortcut_secret / body.secret
-    Body: {"text": "...", "user_id": 117649764}
-    """
-    shortcut_secret = (os.getenv("SHORTCUT_SECRET") or "").strip()
-    if not shortcut_secret:
-        return jsonify({"error": "Shortcut endpoint не настроен (SHORTCUT_SECRET не задан)"}), 503
+@app.route("/api/shortcut/pairing-code", methods=["POST"])
+def shortcut_create_pairing_code():
+    body = request.get_json(silent=True) or {}
+    admin_secret = (os.getenv("SHORTCUT_BOT_SECRET") or "").strip()
+    if not admin_secret:
+        return jsonify({"error": "Shortcut pairing endpoint не настроен (SHORTCUT_BOT_SECRET не задан)"}), 503
 
     auth_header = (request.headers.get("Authorization") or "").strip()
-    header_shortcut_secret = (request.headers.get("X-Shortcut-Secret") or "").strip()
-
-    body = request.get_json(silent=True) or {}
+    header_secret = (request.headers.get("X-Shortcut-Bot-Secret") or "").strip()
     provided_secret = ""
     if auth_header.lower().startswith("bearer "):
         provided_secret = auth_header[7:].strip()
-    elif header_shortcut_secret:
-        provided_secret = header_shortcut_secret
+    elif header_secret:
+        provided_secret = header_secret
     else:
-        provided_secret = str(body.get("shortcut_secret") or body.get("secret") or "").strip()
+        provided_secret = str(body.get("secret") or body.get("token") or "").strip()
 
     if not provided_secret:
-        return (
-            jsonify(
-                {
-                    "error": (
-                        "Требуется один из способов аутентификации: "
-                        "Authorization: Bearer <SHORTCUT_SECRET>, "
-                        "X-Shortcut-Secret: <SHORTCUT_SECRET> "
-                        "или body.shortcut_secret"
-                    )
-                }
-            ),
-            401,
-        )
-    if not hmac.compare_digest(provided_secret, shortcut_secret):
-        return jsonify({"error": "Неверный секрет"}), 401
+        return jsonify({"error": "shortcut admin secret required"}), 401
+    if not hmac.compare_digest(provided_secret, admin_secret):
+        return jsonify({"error": "invalid shortcut admin secret"}), 401
 
-    text = (body.get("text") or "").strip()
     raw_user_id = body.get("user_id")
-
-    if not text:
-        return jsonify({"error": "text обязателен"}), 400
-    if raw_user_id is None:
+    if raw_user_id is None or str(raw_user_id).strip() == "":
         return jsonify({"error": "user_id обязателен"}), 400
     try:
-        user_id = int(raw_user_id)
-    except (ValueError, TypeError):
+        user_id = int(str(raw_user_id).strip())
+    except Exception:
         return jsonify({"error": "user_id должен быть числом"}), 400
-
     if not is_telegram_user_allowed(user_id):
         return jsonify({"error": "Пользователь не имеет доступа"}), 403
 
-    dedup_key = _shortcut_dedup_key(user_id, text)
-    if _shortcut_dedup_reserve(dedup_key):
-        logging.info("shortcut_lookup: duplicate request suppressed user_id=%s", user_id)
-        return jsonify({"ok": True, "blocks_sent": 0, "duplicate": True}), 200
+    allowed, limiter_response = _shortcut_enforce_pairing_code_issuance_limit(user_id=user_id)
+    if not allowed:
+        return limiter_response
 
-    if not can_enqueue_background_jobs():
-        return jsonify({"error": "Shortcut processing is temporarily unavailable"}), 503
+    ttl_raw = body.get("ttl_seconds")
+    ttl_seconds = None
+    if ttl_raw is not None and str(ttl_raw).strip() != "":
+        try:
+            ttl_seconds = max(60, int(str(ttl_raw).strip()))
+        except Exception:
+            return jsonify({"error": "ttl_seconds должен быть числом"}), 400
 
-    request_key = _start_shortcut_lookup_enqueue_runner(
-        user_id=user_id,
-        text=text,
-    )
+    result = create_shortcut_pairing_code(user_id=user_id, ttl_seconds=ttl_seconds)
+    return jsonify(_build_shortcut_pairing_code_response(result)), 200
+
+
+@app.route("/api/shortcut/link", methods=["POST"])
+def shortcut_link_installation():
+    body = request.get_json(silent=True) or {}
+    allowed, limiter_response = _shortcut_enforce_link_ip_limit()
+    if not allowed:
+        return limiter_response
+    pairing_code = str(body.get("pairing_code") or "").strip()
+    if not pairing_code:
+        return jsonify({"error": "pairing_code обязателен"}), 400
+
+    allowed, limiter_response = _shortcut_enforce_link_pairing_code_limit(pairing_code=pairing_code)
+    if not allowed:
+        return limiter_response
+
+    result = link_shortcut_installation(pairing_code=pairing_code)
+    status = str(result.get("status") or "").strip().lower()
+    if status == "invalid":
+        _shortcut_record_link_pairing_code_failure(pairing_code=pairing_code)
+        return jsonify({"error": "invalid_pairing_code"}), 400
+    if status == "used":
+        _shortcut_record_link_pairing_code_failure(pairing_code=pairing_code)
+        return jsonify({"error": "pairing_code_already_used"}), 409
+    if status == "expired":
+        _shortcut_record_link_pairing_code_failure(pairing_code=pairing_code)
+        return jsonify({"error": "pairing_code_expired"}), 410
+    if status != "linked":
+        return jsonify({"error": "pairing_link_failed"}), 500
 
     return jsonify(
         {
             "ok": True,
-            "accepted": True,
-            "queued": True,
-            "duplicate": False,
-            "job_id": str(request_key or "").strip() or None,
+            "installation_id": int(result.get("installation_id") or 0),
+            "install_token": str(result.get("install_token") or "").strip(),
+            "created_at": result.get("created_at"),
+            "expires_at": result.get("expires_at"),
         }
-    )
+    ), 200
+
+
+@app.route("/api/shortcut/lookup", methods=["POST"])
+def shortcut_dictionary_lookup():
+    body = request.get_json(silent=True) or {}
+    text, install_token = _shortcut_lookup_request_payload(body)
+    if not install_token:
+        return jsonify({"error": "install_token обязателен"}), 400
+    result, status = _shortcut_lookup_from_install_token(install_token=install_token, text=text)
+    return jsonify(result), status
 
 
 @app.route("/api/internal/bot-private/dictionary/save", methods=["POST"])
@@ -45546,6 +45854,23 @@ def _run_system_message_cleanup_job() -> None:
     )
 
 
+def _run_shortcut_pairing_code_cleanup_job() -> None:
+    try:
+        result = purge_expired_shortcut_pairing_codes(
+            expired_retention_seconds=_SHORTCUT_PAIRING_CODE_CLEANUP_AFTER_EXPIRED_SECONDS,
+            consumed_retention_seconds=_SHORTCUT_PAIRING_CODE_CLEANUP_AFTER_CONSUMED_SECONDS,
+        )
+        logging.info(
+            "✅ Shortcut pairing-code cleanup finished: expired_deleted=%s consumed_deleted=%s expired_retention_sec=%s consumed_retention_sec=%s",
+            int(result.get("expired_deleted") or 0),
+            int(result.get("consumed_deleted") or 0),
+            int(result.get("expired_retention_seconds") or 0),
+            int(result.get("consumed_retention_seconds") or 0),
+        )
+    except Exception:
+        logging.exception("❌ Shortcut pairing-code cleanup failed")
+
+
 def _run_tts_r2_cache_cleanup_job() -> None:
     enabled = (os.getenv("TTS_R2_CACHE_CLEANUP_ENABLED") or "1").strip().lower()
     if enabled not in ("1", "true", "yes", "on"):
@@ -46076,6 +46401,19 @@ def _start_audio_scheduler() -> None:
             max_instances=1,
             coalesce=True,
             misfire_grace_time=300,
+        )
+    shortcut_cleanup_enabled = (os.getenv("SHORTCUT_PAIRING_CODE_CLEANUP_ENABLED") or "1").strip().lower()
+    if shortcut_cleanup_enabled in ("1", "true", "yes", "on"):
+        shortcut_cleanup_hour = int((os.getenv("SHORTCUT_PAIRING_CODE_CLEANUP_HOUR") or "3").strip())
+        shortcut_cleanup_minute = int((os.getenv("SHORTCUT_PAIRING_CODE_CLEANUP_MINUTE") or "15").strip())
+        _audio_scheduler.add_job(
+            _run_shortcut_pairing_code_cleanup_job,
+            "cron",
+            hour=shortcut_cleanup_hour,
+            minute=shortcut_cleanup_minute,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
         )
     feel_cleanup_enabled = (os.getenv("FLASHCARD_FEEL_CLEANUP_ENABLED") or "1").strip().lower()
     if feel_cleanup_enabled in ("1", "true", "yes", "on"):

@@ -44,6 +44,8 @@ _BOT_BACKEND_SERVER_IMPORT_STARTED_AT = pytime.perf_counter()
 from backend.backend_server import (
     GoogleTTSBudgetBlockedError,
     _build_tts_prewarm_quota_control_text,
+    _build_shortcut_onboarding_text,
+    _shortcut_enforce_pairing_code_issuance_limit,
     _build_video_search_queries,
     _get_user_language_pair,
     _is_youtube_short_like,
@@ -161,6 +163,7 @@ from backend.database import (
     get_pending_telegram_quiz_followup_request,
     get_active_pending_telegram_quiz_followup_for_user,
     purge_old_pending_telegram_quiz_followup_requests,
+    create_shortcut_pairing_code,
     upsert_pending_telegram_input_state,
     delete_pending_telegram_input_state,
     get_pending_telegram_input_state,
@@ -1337,6 +1340,75 @@ async def send_main_menu(update: Update, context: CallbackContext):
 
     # 2️⃣ Отправляем новое меню (только в личке)
     #await update.message.reply_text("Используйте кнопки:", reply_markup=reply_markup)
+
+def _build_shortcut_connect_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("📱 Connect Shortcut", callback_data="shortcut:connect")]]
+    )
+
+
+async def _send_shortcut_connect_prompt(update: Update, context: CallbackContext) -> None:
+    if not update.effective_message:
+        return
+    await update.effective_message.reply_text(
+        "Подключите iPhone Shortcut один раз. После привязки запуск будет работать автоматически.",
+        reply_markup=_build_shortcut_connect_keyboard(),
+    )
+
+
+async def handle_shortcut_connect_callback(update: Update, context: CallbackContext):
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user:
+        return
+    if not is_telegram_user_allowed(int(user.id)):
+        try:
+            await query.answer("Shortcut доступен только после выдачи доступа.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    try:
+        await query.answer("Генерирую pairing code...", show_alert=False)
+    except Exception:
+        pass
+
+    allowed, limiter_response = _shortcut_enforce_pairing_code_issuance_limit(user_id=int(user.id))
+    if not allowed:
+        status_code = int(limiter_response[1]) if limiter_response and len(limiter_response) > 1 else 429
+        message_text = (
+            "Слишком много попыток подключения. Попробуйте позже."
+            if status_code == 429
+            else "Подключение временно недоступно. Попробуйте позже."
+        )
+        if query.message:
+            await query.message.reply_text(message_text)
+        else:
+            await context.bot.send_message(
+                chat_id=int(user.id),
+                text=message_text,
+            )
+        return
+
+    try:
+        result = await asyncio.to_thread(create_shortcut_pairing_code, user_id=int(user.id))
+    except Exception as exc:
+        logging.exception("shortcut connect failed user_id=%s: %s", int(user.id), exc)
+        if query.message:
+            await query.message.reply_text("Не удалось создать pairing code. Попробуйте еще раз.")
+        else:
+            await context.bot.send_message(chat_id=int(user.id), text="Не удалось создать pairing code. Попробуйте еще раз.")
+        return
+
+    message_text = _build_shortcut_onboarding_text(
+        pairing_code=str(result.get("pairing_code") or "").strip(),
+        expires_at=result.get("expires_at"),
+    )
+    if query.message:
+        await query.message.reply_text(message_text)
+    else:
+        await context.bot.send_message(chat_id=int(user.id), text=message_text)
+
 
 async def debug_message_handler(update: Update, context: CallbackContext):
     print(f"🔹 Получено сообщение (DEBUG): {update.message.text}")
@@ -3697,6 +3769,8 @@ async def start(update: Update, context: CallbackContext):
         return
 
     context.user_data.setdefault("service_message_ids", [])  # Инициализируем список
+    if update.effective_chat and update.effective_chat.type == "private":
+        await _send_shortcut_connect_prompt(update, context)
     await send_main_menu(update, context)
 
 async def log_message(update: Update, context: CallbackContext):
@@ -15092,6 +15166,7 @@ def main():
     application.add_handler(CommandHandler("admin_riddle_send", admin_riddle_send_command))
     application.add_handler(CommandHandler("admin_riddle_health", admin_visual_riddle_health_command))
     application.add_handler(CallbackQueryHandler(request_access_from_button, pattern=r"^access:request$"))
+    application.add_handler(CallbackQueryHandler(handle_shortcut_connect_callback, pattern=r"^shortcut:connect$"))
     # 🔥 Логирование всех сообщений (группа -1, не блокирует цепочку)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message, block=False), group=-1)
 
