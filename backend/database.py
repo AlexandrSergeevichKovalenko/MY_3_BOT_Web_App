@@ -1,5 +1,6 @@
 import psycopg2
 from psycopg2 import Binary
+from psycopg2 import Error as Psycopg2Error
 from psycopg2 import OperationalError
 from psycopg2 import sql
 from psycopg2.extras import Json, execute_values
@@ -13384,6 +13385,15 @@ def _normalize_shortcut_pairing_code(raw_code: str) -> str:
 
 _SHORTCUT_SCHEMA_BOOTSTRAP_LOCK = threading.Lock()
 _SHORTCUT_SCHEMA_READY = False
+SHORTCUT_DB_LOCK_TIMEOUT_MS = max(100, int(os.getenv("SHORTCUT_DB_LOCK_TIMEOUT_MS", "2000")))
+SHORTCUT_DB_STATEMENT_TIMEOUT_MS = max(250, int(os.getenv("SHORTCUT_DB_STATEMENT_TIMEOUT_MS", "3000")))
+
+
+def _apply_shortcut_db_timeouts(cursor) -> None:
+    lock_timeout = max(100, int(SHORTCUT_DB_LOCK_TIMEOUT_MS))
+    statement_timeout = max(lock_timeout + 100, int(SHORTCUT_DB_STATEMENT_TIMEOUT_MS))
+    cursor.execute("SET LOCAL lock_timeout = %s;", (f"{lock_timeout}ms",))
+    cursor.execute("SET LOCAL statement_timeout = %s;", (f"{statement_timeout}ms",))
 
 
 def ensure_shortcut_tables() -> None:
@@ -13472,6 +13482,7 @@ def create_shortcut_pairing_code(
 
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
+            _apply_shortcut_db_timeouts(cursor)
             for _ in range(12):
                 pairing_code = _generate_shortcut_pairing_code()
                 pairing_code_hash = _shortcut_pairing_code_hash(pairing_code)
@@ -13546,194 +13557,214 @@ def link_shortcut_installation(
         return {"status": "invalid"}
 
     code_hash = _shortcut_pairing_code_hash(normalized_code)
-    with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            lookup_started_perf = time.perf_counter()
-            _log_flow_observation(
-                "shortcut_link",
-                "SHORTCUT_LINK_PAIRING_LOOKUP_START",
-                request_id=request_id or correlation_id,
-                correlation_id=correlation_id or request_id,
-                remote_ip=remote_ip,
-                pairing_code_present=True,
-            )
-            cursor.execute(
-                """
-                SELECT
-                    id,
-                    user_id,
-                    expires_at,
-                    consumed_at,
-                    consumed_installation_id,
-                    is_active
-                FROM bt_3_shortcut_pairing_codes
-                WHERE pairing_code_hash = %s
-                FOR UPDATE;
-                """,
-                (code_hash,),
-            )
-            row = cursor.fetchone()
-            _log_flow_observation(
-                "shortcut_link",
-                "SHORTCUT_LINK_PAIRING_LOOKUP_FINISH",
-                request_id=request_id or correlation_id,
-                correlation_id=correlation_id or request_id,
-                remote_ip=remote_ip,
-                pairing_code_present=True,
-                lookup_duration_ms=max(0, int((time.perf_counter() - lookup_started_perf) * 1000)),
-                pairing_code_found=bool(row),
-            )
-            if not row:
-                return {"status": "invalid"}
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                _apply_shortcut_db_timeouts(cursor)
+                lookup_started_perf = time.perf_counter()
+                _log_flow_observation(
+                    "shortcut_link",
+                    "SHORTCUT_LINK_PAIRING_LOOKUP_START",
+                    request_id=request_id or correlation_id,
+                    correlation_id=correlation_id or request_id,
+                    remote_ip=remote_ip,
+                    pairing_code_present=True,
+                )
+                cursor.execute(
+                    """
+                    SELECT
+                        id,
+                        user_id,
+                        expires_at,
+                        consumed_at,
+                        consumed_installation_id,
+                        is_active
+                    FROM bt_3_shortcut_pairing_codes
+                    WHERE pairing_code_hash = %s
+                    FOR UPDATE;
+                    """,
+                    (code_hash,),
+                )
+                row = cursor.fetchone()
+                _log_flow_observation(
+                    "shortcut_link",
+                    "SHORTCUT_LINK_PAIRING_LOOKUP_FINISH",
+                    request_id=request_id or correlation_id,
+                    correlation_id=correlation_id or request_id,
+                    remote_ip=remote_ip,
+                    pairing_code_present=True,
+                    lookup_duration_ms=max(0, int((time.perf_counter() - lookup_started_perf) * 1000)),
+                    pairing_code_found=bool(row),
+                )
+                if not row:
+                    return {"status": "invalid"}
 
-            pairing_code_id = int(row[0])
-            user_id = int(row[1])
-            expires_at = row[2]
-            consumed_at = row[3]
-            consumed_installation_id = row[4]
-            is_active = bool(row[5])
+                pairing_code_id = int(row[0])
+                user_id = int(row[1])
+                expires_at = row[2]
+                consumed_at = row[3]
+                consumed_installation_id = row[4]
+                is_active = bool(row[5])
 
-            if consumed_at is not None or not is_active:
-                return {
-                    "status": "used",
-                    "pairing_code_id": pairing_code_id,
-                    "user_id": user_id,
-                    "consumed_installation_id": int(consumed_installation_id) if consumed_installation_id is not None else None,
-                }
+                if consumed_at is not None or not is_active:
+                    return {
+                        "status": "used",
+                        "pairing_code_id": pairing_code_id,
+                        "user_id": user_id,
+                        "consumed_installation_id": int(consumed_installation_id) if consumed_installation_id is not None else None,
+                    }
 
-            now_utc = datetime.now(timezone.utc)
-            if expires_at is not None and expires_at <= now_utc:
+                now_utc = datetime.now(timezone.utc)
+                if expires_at is not None and expires_at <= now_utc:
+                    cursor.execute(
+                        """
+                        UPDATE bt_3_shortcut_pairing_codes
+                        SET is_active = FALSE,
+                            revoked_at = NOW(),
+                            updated_at = NOW()
+                        WHERE id = %s;
+                        """,
+                        (pairing_code_id,),
+                    )
+                    conn.commit()
+                    return {
+                        "status": "expired",
+                        "pairing_code_id": pairing_code_id,
+                        "user_id": user_id,
+                    }
+
+                install_token = secrets.token_urlsafe(SHORTCUT_INSTALL_TOKEN_BYTES)
+                install_token_hash = _shortcut_install_token_hash(install_token)
+                installation_started_perf = time.perf_counter()
+                _log_flow_observation(
+                    "shortcut_link",
+                    "SHORTCUT_LINK_INSTALLATION_CREATE_START",
+                    request_id=request_id or correlation_id,
+                    correlation_id=correlation_id or request_id,
+                    remote_ip=remote_ip,
+                    pairing_code_present=True,
+                    pairing_code_id=pairing_code_id,
+                    user_id=user_id,
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_shortcut_installations (
+                        user_id,
+                        install_token_hash,
+                        source_pairing_code_id,
+                        created_at,
+                        is_active,
+                        updated_at
+                    )
+                    VALUES (%s, %s, %s, NOW(), TRUE, NOW())
+                    RETURNING id, created_at, last_used_at, revoked_at, is_active;
+                    """,
+                    (user_id, install_token_hash, pairing_code_id),
+                )
+                installation_row = cursor.fetchone()
+                installation_id = int(installation_row[0])
+
                 cursor.execute(
                     """
                     UPDATE bt_3_shortcut_pairing_codes
-                    SET is_active = FALSE,
+                    SET consumed_at = NOW(),
+                        consumed_installation_id = %s,
+                        is_active = FALSE,
                         revoked_at = NOW(),
                         updated_at = NOW()
                     WHERE id = %s;
                     """,
-                    (pairing_code_id,),
+                    (installation_id, pairing_code_id),
                 )
                 conn.commit()
-                return {
-                    "status": "expired",
-                    "pairing_code_id": pairing_code_id,
-                    "user_id": user_id,
-                }
-
-            install_token = secrets.token_urlsafe(SHORTCUT_INSTALL_TOKEN_BYTES)
-            install_token_hash = _shortcut_install_token_hash(install_token)
-            installation_started_perf = time.perf_counter()
-            _log_flow_observation(
-                "shortcut_link",
-                "SHORTCUT_LINK_INSTALLATION_CREATE_START",
-                request_id=request_id or correlation_id,
-                correlation_id=correlation_id or request_id,
-                remote_ip=remote_ip,
-                pairing_code_present=True,
-                pairing_code_id=pairing_code_id,
-                user_id=user_id,
-            )
-            cursor.execute(
-                """
-                INSERT INTO bt_3_shortcut_installations (
-                    user_id,
-                    install_token_hash,
-                    source_pairing_code_id,
-                    created_at,
-                    is_active,
-                    updated_at
+                _log_flow_observation(
+                    "shortcut_link",
+                    "SHORTCUT_LINK_INSTALLATION_CREATE_FINISH",
+                    request_id=request_id or correlation_id,
+                    correlation_id=correlation_id or request_id,
+                    remote_ip=remote_ip,
+                    pairing_code_present=True,
+                    pairing_code_id=pairing_code_id,
+                    user_id=user_id,
+                    installation_id=installation_id,
+                    install_duration_ms=max(0, int((time.perf_counter() - installation_started_perf) * 1000)),
                 )
-                VALUES (%s, %s, %s, NOW(), TRUE, NOW())
-                RETURNING id, created_at, last_used_at, revoked_at, is_active;
-                """,
-                (user_id, install_token_hash, pairing_code_id),
-            )
-            installation_row = cursor.fetchone()
-            installation_id = int(installation_row[0])
-
-            cursor.execute(
-                """
-                UPDATE bt_3_shortcut_pairing_codes
-                SET consumed_at = NOW(),
-                    consumed_installation_id = %s,
-                    is_active = FALSE,
-                    revoked_at = NOW(),
-                    updated_at = NOW()
-                WHERE id = %s;
-                """,
-                (installation_id, pairing_code_id),
-            )
-            conn.commit()
-            _log_flow_observation(
-                "shortcut_link",
-                "SHORTCUT_LINK_INSTALLATION_CREATE_FINISH",
-                request_id=request_id or correlation_id,
-                correlation_id=correlation_id or request_id,
-                remote_ip=remote_ip,
-                pairing_code_present=True,
-                pairing_code_id=pairing_code_id,
-                user_id=user_id,
-                installation_id=installation_id,
-                install_duration_ms=max(0, int((time.perf_counter() - installation_started_perf) * 1000)),
-            )
-            return {
-                "status": "linked",
-                "pairing_code_id": pairing_code_id,
-                "installation_id": installation_id,
-                "user_id": user_id,
-                "install_token": install_token,
-                "created_at": installation_row[1],
-                "last_used_at": installation_row[2],
-                "is_active": bool(installation_row[4]),
-                "expires_at": expires_at,
-            }
+                return {
+                    "status": "linked",
+                    "pairing_code_id": pairing_code_id,
+                    "installation_id": installation_id,
+                    "user_id": user_id,
+                    "install_token": install_token,
+                    "created_at": installation_row[1],
+                    "last_used_at": installation_row[2],
+                    "is_active": bool(installation_row[4]),
+                    "expires_at": expires_at,
+                }
+    except Psycopg2Error as exc:
+        logging.warning(
+            "shortcut link db error request_id=%s correlation_id=%s remote_ip=%s: %s",
+            request_id or correlation_id,
+            correlation_id or request_id,
+            remote_ip,
+            exc,
+        )
+        return {"status": "schema_unavailable"}
 
 
 def resolve_shortcut_install_token(*, install_token: str) -> dict | None:
-    ensure_shortcut_tables()
+    if not _SHORTCUT_SCHEMA_READY:
+        return {"status": "schema_unavailable"}
     normalized_token = str(install_token or "").strip()
     if not normalized_token:
         return None
     token_hash = _shortcut_install_token_hash(normalized_token)
-    with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT
-                    id,
-                    user_id,
-                    source_pairing_code_id,
-                    created_at,
-                    last_used_at,
-                    revoked_at,
-                    is_active
-                FROM bt_3_shortcut_installations
-                WHERE install_token_hash = %s
-                FOR UPDATE;
-                """,
-                (token_hash,),
-            )
-            row = cursor.fetchone()
-            if not row:
-                return None
-            installation_id = int(row[0])
-            user_id = int(row[1])
-            revoked_at = row[5]
-            is_active = bool(row[6])
-            if revoked_at is not None or not is_active:
-                return None
-            cursor.execute(
-                """
-                UPDATE bt_3_shortcut_installations
-                SET last_used_at = NOW(),
-                    updated_at = NOW()
-                WHERE id = %s
-                RETURNING last_used_at;
-                """,
-                (installation_id,),
-            )
-            updated_row = cursor.fetchone()
-            conn.commit()
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                _apply_shortcut_db_timeouts(cursor)
+                cursor.execute(
+                    """
+                    SELECT
+                        id,
+                        user_id,
+                        source_pairing_code_id,
+                        created_at,
+                        last_used_at,
+                        revoked_at,
+                        is_active
+                    FROM bt_3_shortcut_installations
+                    WHERE install_token_hash = %s;
+                    """,
+                    (token_hash,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                installation_id = int(row[0])
+                user_id = int(row[1])
+                revoked_at = row[5]
+                is_active = bool(row[6])
+                if revoked_at is not None or not is_active:
+                    return None
+                cursor.execute(
+                    """
+                    UPDATE bt_3_shortcut_installations
+                    SET last_used_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = %s
+                      AND is_active = TRUE
+                      AND revoked_at IS NULL
+                    RETURNING last_used_at;
+                    """,
+                    (installation_id,),
+                )
+                updated_row = cursor.fetchone()
+                if not updated_row:
+                    return None
+                conn.commit()
+    except Psycopg2Error as exc:
+        logging.warning("shortcut install token resolve db error: %s", exc)
+        return {"status": "schema_unavailable"}
     return {
         "installation_id": installation_id,
         "user_id": user_id,

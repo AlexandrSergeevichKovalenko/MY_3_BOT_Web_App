@@ -34560,8 +34560,29 @@ def _shortcut_lookup_request_payload(body: dict) -> tuple[str, str]:
     return text, install_token
 
 
-def _shortcut_lookup_from_install_token(*, install_token: str, text: str) -> tuple[dict, int]:
+def _shortcut_lookup_from_install_token(*, install_token: str, text: str, request_id: str | None = None, remote_ip: str | None = None) -> tuple[dict, int]:
+    resolve_started_perf = time.perf_counter()
+    _log_flow_observation(
+        "shortcut_lookup",
+        "SHORTCUT_LOOKUP_RESOLVE_START",
+        request_id=request_id,
+        correlation_id=request_id,
+        remote_ip=remote_ip,
+        install_token_present=True,
+        text_present=bool(text),
+    )
     installation = resolve_shortcut_install_token(install_token=install_token)
+    _log_flow_observation(
+        "shortcut_lookup",
+        "SHORTCUT_LOOKUP_RESOLVE_FINISH",
+        request_id=request_id,
+        correlation_id=request_id,
+        remote_ip=remote_ip,
+        install_token_present=True,
+        text_present=bool(text),
+        resolve_duration_ms=max(0, int((time.perf_counter() - resolve_started_perf) * 1000)),
+        installation_found=bool(installation and isinstance(installation, dict) and int(installation.get("installation_id") or 0) > 0),
+    )
     if isinstance(installation, dict) and str(installation.get("status") or "").strip().lower() == "schema_unavailable":
         return {"error": "Shortcut processing is temporarily unavailable"}, 503
     if not installation:
@@ -34590,9 +34611,34 @@ def _shortcut_lookup_from_install_token(*, install_token: str, text: str) -> tup
     if not can_enqueue_background_jobs():
         return {"error": "Shortcut processing is temporarily unavailable"}, 503
 
+    enqueue_started_perf = time.perf_counter()
+    _log_flow_observation(
+        "shortcut_lookup",
+        "SHORTCUT_LOOKUP_ENQUEUE_START",
+        request_id=request_id,
+        correlation_id=request_id,
+        remote_ip=remote_ip,
+        install_token_present=True,
+        text_present=bool(text),
+        user_id=user_id,
+        installation_id=installation_id,
+    )
     request_key = _start_shortcut_lookup_enqueue_runner(
         user_id=user_id,
         text=text,
+    )
+    _log_flow_observation(
+        "shortcut_lookup",
+        "SHORTCUT_LOOKUP_ENQUEUE_FINISH",
+        request_id=request_id,
+        correlation_id=request_id,
+        remote_ip=remote_ip,
+        install_token_present=True,
+        text_present=bool(text),
+        user_id=user_id,
+        installation_id=installation_id,
+        enqueue_duration_ms=max(0, int((time.perf_counter() - enqueue_started_perf) * 1000)),
+        request_key=request_key,
     )
     return (
         {
@@ -34919,11 +34965,49 @@ def shortcut_link_installation():
 
 @app.route("/api/shortcut/lookup", methods=["POST"])
 def shortcut_dictionary_lookup():
+    route_started_perf = time.perf_counter()
     body = request.get_json(silent=True) or {}
     text, install_token = _shortcut_lookup_request_payload(body)
+    request_id = _build_observability_correlation_id(payload=body, prefix="shortcut_lookup")
+    remote_ip = _shortcut_request_ip()
+    _log_flow_observation(
+        "shortcut_lookup",
+        "SHORTCUT_LOOKUP_REQUEST_RECEIVED",
+        request_id=request_id,
+        correlation_id=request_id,
+        remote_ip=remote_ip,
+        install_token_present=bool(install_token),
+        text_present=bool(text),
+    )
     if not install_token:
+        _log_flow_observation(
+            "shortcut_lookup",
+            "SHORTCUT_LOOKUP_RESPONSE_SENT",
+            request_id=request_id,
+            correlation_id=request_id,
+            remote_ip=remote_ip,
+            install_token_present=False,
+            text_present=bool(text),
+            final_status="error",
+            error_code="install_token_obligatory",
+            http_status=400,
+            duration_ms=max(0, int((time.perf_counter() - route_started_perf) * 1000)),
+        )
         return jsonify({"error": "install_token обязателен"}), 400
-    result, status = _shortcut_lookup_from_install_token(install_token=install_token, text=text)
+    result, status = _shortcut_lookup_from_install_token(install_token=install_token, text=text, request_id=request_id, remote_ip=remote_ip)
+    _log_flow_observation(
+        "shortcut_lookup",
+        "SHORTCUT_LOOKUP_RESPONSE_SENT",
+        request_id=request_id,
+        correlation_id=request_id,
+        remote_ip=remote_ip,
+        install_token_present=True,
+        text_present=bool(text),
+        final_status="success" if int(status) == 200 else "error",
+        error_code=str(result.get("error") or "").strip() or None,
+        http_status=int(status),
+        duration_ms=max(0, int((time.perf_counter() - route_started_perf) * 1000)),
+    )
     return jsonify(result), status
 
 
