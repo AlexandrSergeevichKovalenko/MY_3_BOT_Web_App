@@ -12855,11 +12855,17 @@ def _merge_sentence_quiz_into_entry(entry: dict, quiz_payload: dict, *, sentence
         cache = response_json.get("sentence_gap_v2")
         if isinstance(cache, dict) and isinstance(cache.get("payload"), dict):
             payload = {**cache.get("payload"), **payload}
+    target_text = _normalize_space(
+        payload.get("correct_word")
+        or payload.get("correct_infinitive")
+        or item.get("target_text")
+        or ""
+    )
     merged = {
         **response_json,
         **payload,
         "source_text": payload.get("sentence_with_gap") or "",
-        "target_text": payload.get("correct_word") or "",
+        "target_text": target_text,
         "sentence_origin": sentence_origin,
     }
     item["response_json"] = merged
@@ -12952,26 +12958,15 @@ def _ensure_sentence_gpt_seed_entries(
         full_sentence = _normalize_space(quiz.get("correct_full_sentence"))
         if not full_sentence or full_sentence.lower() in existing_sentences:
             continue
-        payload = {
-            "quiz_type": "sentence_gap_context",
-            "sentence_with_gap": _normalize_space(quiz.get("sentence_with_gap")),
-            "correct_full_sentence": full_sentence,
-            "translation_ru": _normalize_space(quiz.get("translation_ru")),
-            "options": [str(opt or "").strip() for opt in (quiz.get("options") or [])][:4],
-            "correct_index": int(quiz.get("correct_index") or 1),
-            "correct_word": _normalize_space(quiz.get("correct_infinitive")),
-            "focus_type": "separable_verb",
-            "prefix": _normalize_space(quiz.get("prefix")),
-        }
         try:
-            payload = _validate_sentence_context_quiz(payload)
+            payload = _validate_separable_prefix_quiz_item(dict(quiz or {}))
         except Exception as exc:
             logging.warning("Invalid GPT seed sentence item skipped: %s", exc)
             continue
         response_json = {
             **payload,
             "source_text": payload["sentence_with_gap"],
-            "target_text": payload["correct_word"],
+            "target_text": payload["correct_infinitive"],
             "source_lang": source_lang,
             "target_lang": target_lang,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
@@ -12981,8 +12976,8 @@ def _ensure_sentence_gpt_seed_entries(
             entry_id = save_webapp_dictionary_query_returning_id(
                 user_id=int(user_id),
                 word_ru=payload["translation_ru"] or payload["sentence_with_gap"],
-                translation_de=payload["correct_word"],
-                word_de=payload["correct_word"],
+                translation_de=payload["correct_infinitive"],
+                word_de=payload["correct_infinitive"],
                 translation_ru=payload["translation_ru"],
                 response_json=response_json,
                 folder_id=None,
@@ -13003,12 +12998,12 @@ def _ensure_sentence_gpt_seed_entries(
             {
                 "id": entry_id,
                 "word_ru": payload["sentence_with_gap"],
-                "translation_de": payload["correct_word"],
-                "word_de": payload["correct_word"],
+                "translation_de": payload["correct_infinitive"],
+                "word_de": payload["correct_infinitive"],
                 "translation_ru": payload["translation_ru"],
                 "response_json": response_json,
                 "source_text": payload["sentence_with_gap"],
-                "target_text": payload["correct_word"],
+                "target_text": payload["correct_infinitive"],
                 "source_lang": source_lang,
                 "target_lang": target_lang,
             }
