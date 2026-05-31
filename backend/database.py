@@ -13468,7 +13468,13 @@ def create_shortcut_pairing_code(
     raise RuntimeError("failed_to_issue_shortcut_pairing_code")
 
 
-def link_shortcut_installation(*, pairing_code: str) -> dict:
+def link_shortcut_installation(
+    *,
+    pairing_code: str,
+    request_id: str | None = None,
+    remote_ip: str | None = None,
+    correlation_id: str | None = None,
+) -> dict:
     ensure_webapp_tables()
     normalized_code = _normalize_shortcut_pairing_code(pairing_code)
     if len(normalized_code) != SHORTCUT_PAIRING_CODE_LENGTH:
@@ -13477,6 +13483,15 @@ def link_shortcut_installation(*, pairing_code: str) -> dict:
     code_hash = _shortcut_pairing_code_hash(normalized_code)
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
+            lookup_started_perf = time.perf_counter()
+            _log_flow_observation(
+                "shortcut_link",
+                "SHORTCUT_LINK_PAIRING_LOOKUP_START",
+                request_id=request_id or correlation_id,
+                correlation_id=correlation_id or request_id,
+                remote_ip=remote_ip,
+                pairing_code_present=True,
+            )
             cursor.execute(
                 """
                 SELECT
@@ -13493,6 +13508,16 @@ def link_shortcut_installation(*, pairing_code: str) -> dict:
                 (code_hash,),
             )
             row = cursor.fetchone()
+            _log_flow_observation(
+                "shortcut_link",
+                "SHORTCUT_LINK_PAIRING_LOOKUP_FINISH",
+                request_id=request_id or correlation_id,
+                correlation_id=correlation_id or request_id,
+                remote_ip=remote_ip,
+                pairing_code_present=True,
+                lookup_duration_ms=max(0, int((time.perf_counter() - lookup_started_perf) * 1000)),
+                pairing_code_found=bool(row),
+            )
             if not row:
                 return {"status": "invalid"}
 
@@ -13532,6 +13557,17 @@ def link_shortcut_installation(*, pairing_code: str) -> dict:
 
             install_token = secrets.token_urlsafe(SHORTCUT_INSTALL_TOKEN_BYTES)
             install_token_hash = _shortcut_install_token_hash(install_token)
+            installation_started_perf = time.perf_counter()
+            _log_flow_observation(
+                "shortcut_link",
+                "SHORTCUT_LINK_INSTALLATION_CREATE_START",
+                request_id=request_id or correlation_id,
+                correlation_id=correlation_id or request_id,
+                remote_ip=remote_ip,
+                pairing_code_present=True,
+                pairing_code_id=pairing_code_id,
+                user_id=user_id,
+            )
             cursor.execute(
                 """
                 INSERT INTO bt_3_shortcut_installations (
@@ -13563,6 +13599,18 @@ def link_shortcut_installation(*, pairing_code: str) -> dict:
                 (installation_id, pairing_code_id),
             )
             conn.commit()
+            _log_flow_observation(
+                "shortcut_link",
+                "SHORTCUT_LINK_INSTALLATION_CREATE_FINISH",
+                request_id=request_id or correlation_id,
+                correlation_id=correlation_id or request_id,
+                remote_ip=remote_ip,
+                pairing_code_present=True,
+                pairing_code_id=pairing_code_id,
+                user_id=user_id,
+                installation_id=installation_id,
+                install_duration_ms=max(0, int((time.perf_counter() - installation_started_perf) * 1000)),
+            )
             return {
                 "status": "linked",
                 "pairing_code_id": pairing_code_id,

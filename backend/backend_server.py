@@ -34679,32 +34679,132 @@ def shortcut_create_pairing_code():
 @app.route("/api/shortcut/link", methods=["POST"])
 def shortcut_link_installation():
     body = request.get_json(silent=True) or {}
+    route_started_perf = time.perf_counter()
+    request_id = _build_observability_correlation_id(payload=body, prefix="shortcut_link")
+    remote_ip = _shortcut_request_ip()
+    pairing_code_present = bool(str(body.get("pairing_code") or "").strip())
+    _log_flow_observation(
+        "shortcut_link",
+        "SHORTCUT_LINK_REQUEST_RECEIVED",
+        request_id=request_id,
+        correlation_id=request_id,
+        remote_ip=remote_ip,
+        pairing_code_present=pairing_code_present,
+    )
     allowed, limiter_response = _shortcut_enforce_link_ip_limit()
     if not allowed:
+        _log_flow_observation(
+            "shortcut_link",
+            "SHORTCUT_LINK_RESPONSE_SENT",
+            request_id=request_id,
+            correlation_id=request_id,
+            remote_ip=remote_ip,
+            pairing_code_present=pairing_code_present,
+            final_status="rate_limited",
+            http_status=429,
+            duration_ms=max(0, int((time.perf_counter() - route_started_perf) * 1000)),
+        )
         return limiter_response
     pairing_code = str(body.get("pairing_code") or "").strip()
     if not pairing_code:
+        _log_flow_observation(
+            "shortcut_link",
+            "SHORTCUT_LINK_RESPONSE_SENT",
+            request_id=request_id,
+            correlation_id=request_id,
+            remote_ip=remote_ip,
+            pairing_code_present=False,
+            final_status="error",
+            error_code="pairing_code_obligatory",
+            http_status=400,
+            duration_ms=max(0, int((time.perf_counter() - route_started_perf) * 1000)),
+        )
         return jsonify({"error": "pairing_code обязателен"}), 400
 
     allowed, limiter_response = _shortcut_enforce_link_pairing_code_limit(pairing_code=pairing_code)
     if not allowed:
+        _log_flow_observation(
+            "shortcut_link",
+            "SHORTCUT_LINK_RESPONSE_SENT",
+            request_id=request_id,
+            correlation_id=request_id,
+            remote_ip=remote_ip,
+            pairing_code_present=True,
+            final_status="rate_limited",
+            error_code="pairing_code_rate_limited",
+            http_status=429,
+            duration_ms=max(0, int((time.perf_counter() - route_started_perf) * 1000)),
+        )
         return limiter_response
 
-    result = link_shortcut_installation(pairing_code=pairing_code)
+    result = link_shortcut_installation(
+        pairing_code=pairing_code,
+        request_id=request_id,
+        remote_ip=remote_ip,
+        correlation_id=request_id,
+    )
     status = str(result.get("status") or "").strip().lower()
     if status == "invalid":
         _shortcut_record_link_pairing_code_failure(pairing_code=pairing_code)
+        _log_flow_observation(
+            "shortcut_link",
+            "SHORTCUT_LINK_RESPONSE_SENT",
+            request_id=request_id,
+            correlation_id=request_id,
+            remote_ip=remote_ip,
+            pairing_code_present=True,
+            final_status="error",
+            error_code="invalid_pairing_code",
+            http_status=400,
+            duration_ms=max(0, int((time.perf_counter() - route_started_perf) * 1000)),
+        )
         return jsonify({"error": "invalid_pairing_code"}), 400
     if status == "used":
         _shortcut_record_link_pairing_code_failure(pairing_code=pairing_code)
+        _log_flow_observation(
+            "shortcut_link",
+            "SHORTCUT_LINK_RESPONSE_SENT",
+            request_id=request_id,
+            correlation_id=request_id,
+            remote_ip=remote_ip,
+            pairing_code_present=True,
+            final_status="error",
+            error_code="pairing_code_already_used",
+            http_status=409,
+            duration_ms=max(0, int((time.perf_counter() - route_started_perf) * 1000)),
+        )
         return jsonify({"error": "pairing_code_already_used"}), 409
     if status == "expired":
         _shortcut_record_link_pairing_code_failure(pairing_code=pairing_code)
+        _log_flow_observation(
+            "shortcut_link",
+            "SHORTCUT_LINK_RESPONSE_SENT",
+            request_id=request_id,
+            correlation_id=request_id,
+            remote_ip=remote_ip,
+            pairing_code_present=True,
+            final_status="error",
+            error_code="pairing_code_expired",
+            http_status=410,
+            duration_ms=max(0, int((time.perf_counter() - route_started_perf) * 1000)),
+        )
         return jsonify({"error": "pairing_code_expired"}), 410
     if status != "linked":
+        _log_flow_observation(
+            "shortcut_link",
+            "SHORTCUT_LINK_RESPONSE_SENT",
+            request_id=request_id,
+            correlation_id=request_id,
+            remote_ip=remote_ip,
+            pairing_code_present=True,
+            final_status="error",
+            error_code="pairing_link_failed",
+            http_status=500,
+            duration_ms=max(0, int((time.perf_counter() - route_started_perf) * 1000)),
+        )
         return jsonify({"error": "pairing_link_failed"}), 500
 
-    return jsonify(
+    response = jsonify(
         {
             "ok": True,
             "installation_id": int(result.get("installation_id") or 0),
@@ -34712,7 +34812,19 @@ def shortcut_link_installation():
             "created_at": result.get("created_at"),
             "expires_at": result.get("expires_at"),
         }
-    ), 200
+    )
+    _log_flow_observation(
+        "shortcut_link",
+        "SHORTCUT_LINK_RESPONSE_SENT",
+        request_id=request_id,
+        correlation_id=request_id,
+        remote_ip=remote_ip,
+        pairing_code_present=True,
+        final_status="success",
+        http_status=200,
+        duration_ms=max(0, int((time.perf_counter() - route_started_perf) * 1000)),
+    )
+    return response, 200
 
 
 @app.route("/api/shortcut/lookup", methods=["POST"])
