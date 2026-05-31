@@ -404,6 +404,7 @@ PENDING_INPUT_STATE_CLEANUP_INTERVAL_MINUTES = max(
     int((os.getenv("PENDING_INPUT_STATE_CLEANUP_INTERVAL_MINUTES") or "15").strip() or "15"),
 )
 LANGUAGE_TUTOR_BUTTON_TEXT = "💬 Спросить у GPT"
+SHORTCUT_CONNECT_BUTTON_TEXT = "📱 Connect Shortcut"
 TTS_PREWARM_QUOTA_MIN = max(50, min(10000, int((os.getenv("TTS_PREWARM_PER_USER_CHAR_LIMIT_MIN") or "200").strip() or "200")))
 TTS_PREWARM_QUOTA_MAX = max(
     TTS_PREWARM_QUOTA_MIN,
@@ -1310,7 +1311,7 @@ async def send_main_menu(update: Update, context: CallbackContext):
         ["📜 Проверить перевод", "🟡 Посмотреть свою статистику"],
         ["🎙 Начать урок", "👥 Групповой звонок"],
         ["💬 Перейти в личку"],
-        [LANGUAGE_TUTOR_BUTTON_TEXT],
+        [LANGUAGE_TUTOR_BUTTON_TEXT, SHORTCUT_CONNECT_BUTTON_TEXT],
     ]
     
     # создаем в словаре клю service_message_ids Список для хранения всех id Сообщений, Для того чтобы потом можно было их удалить после выполнения перевода
@@ -1336,14 +1337,17 @@ async def send_main_menu(update: Update, context: CallbackContext):
         return
 
     # 1️⃣ Удаляем старую клавиатуру
-    await update.message.reply_text("⏳ Обновляем меню...", reply_markup=ReplyKeyboardMarkup([[]], resize_keyboard=True))
+    await update.message.reply_text(
+        "⏳ Обновляем меню...",
+        reply_markup=reply_markup,
+    )
 
     # 2️⃣ Отправляем новое меню (только в личке)
     #await update.message.reply_text("Используйте кнопки:", reply_markup=reply_markup)
 
 def _build_shortcut_connect_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("📱 Connect Shortcut", callback_data="shortcut:connect")]]
+        [[InlineKeyboardButton(SHORTCUT_CONNECT_BUTTON_TEXT, callback_data="shortcut:connect")]]
     )
 
 
@@ -1353,6 +1357,33 @@ async def _send_shortcut_connect_prompt(update: Update, context: CallbackContext
     await update.effective_message.reply_text(
         "Подключите iPhone Shortcut один раз. После привязки запуск будет работать автоматически.",
         reply_markup=_build_shortcut_connect_keyboard(),
+    )
+
+
+async def _deliver_shortcut_connect_flow(user_id: int, reply_text: Callable[[str], Any]) -> None:
+    allowed, limiter_response = _shortcut_enforce_pairing_code_issuance_limit(user_id=int(user_id))
+    if not allowed:
+        status_code = int(limiter_response[1]) if limiter_response and len(limiter_response) > 1 else 429
+        message_text = (
+            "Слишком много попыток подключения. Попробуйте позже."
+            if status_code == 429
+            else "Подключение временно недоступно. Попробуйте позже."
+        )
+        await reply_text(message_text)
+        return
+
+    try:
+        result = await asyncio.to_thread(create_shortcut_pairing_code, user_id=int(user_id))
+    except Exception as exc:
+        logging.exception("shortcut connect failed user_id=%s: %s", int(user_id), exc)
+        await reply_text("Не удалось создать pairing code. Попробуйте еще раз.")
+        return
+
+    await reply_text(
+        _build_shortcut_onboarding_text(
+            pairing_code=str(result.get("pairing_code") or "").strip(),
+            expires_at=result.get("expires_at"),
+        )
     )
 
 
@@ -1372,42 +1403,13 @@ async def handle_shortcut_connect_callback(update: Update, context: CallbackCont
         await query.answer("Генерирую pairing code...", show_alert=False)
     except Exception:
         pass
-
-    allowed, limiter_response = _shortcut_enforce_pairing_code_issuance_limit(user_id=int(user.id))
-    if not allowed:
-        status_code = int(limiter_response[1]) if limiter_response and len(limiter_response) > 1 else 429
-        message_text = (
-            "Слишком много попыток подключения. Попробуйте позже."
-            if status_code == 429
-            else "Подключение временно недоступно. Попробуйте позже."
-        )
+    async def _reply(text: str) -> None:
         if query.message:
-            await query.message.reply_text(message_text)
+            await query.message.reply_text(text)
         else:
-            await context.bot.send_message(
-                chat_id=int(user.id),
-                text=message_text,
-            )
-        return
+            await context.bot.send_message(chat_id=int(user.id), text=text)
 
-    try:
-        result = await asyncio.to_thread(create_shortcut_pairing_code, user_id=int(user.id))
-    except Exception as exc:
-        logging.exception("shortcut connect failed user_id=%s: %s", int(user.id), exc)
-        if query.message:
-            await query.message.reply_text("Не удалось создать pairing code. Попробуйте еще раз.")
-        else:
-            await context.bot.send_message(chat_id=int(user.id), text="Не удалось создать pairing code. Попробуйте еще раз.")
-        return
-
-    message_text = _build_shortcut_onboarding_text(
-        pairing_code=str(result.get("pairing_code") or "").strip(),
-        expires_at=result.get("expires_at"),
-    )
-    if query.message:
-        await query.message.reply_text(message_text)
-    else:
-        await context.bot.send_message(chat_id=int(user.id), text=message_text)
+    await _deliver_shortcut_connect_flow(int(user.id), _reply)
 
 
 async def debug_message_handler(update: Update, context: CallbackContext):
@@ -3633,7 +3635,10 @@ async def handle_tts_prewarm_quota_callback(update: Update, context: CallbackCon
 
 async def handle_button_click(update: Update, context: CallbackContext):
     """Обрабатывает нажатия на кнопки главного меню."""
-    if not ENABLE_LEGACY_REPLY_KEYBOARD:
+    if not ENABLE_LEGACY_REPLY_KEYBOARD and (
+        not update.message
+        or (update.message.text or "").strip() != SHORTCUT_CONNECT_BUTTON_TEXT
+    ):
         return
     
     print("🛠 handle_button_click() вызван!")  # Логируем сам вызов функции
@@ -3673,6 +3678,11 @@ async def handle_button_click(update: Update, context: CallbackContext):
             )
         else:
             await update.message.reply_text("Не удалось получить имя бота.")
+    elif text == SHORTCUT_CONNECT_BUTTON_TEXT:
+        async def _reply(shortcut_text: str) -> None:
+            await update.message.reply_text(shortcut_text)
+
+        await _deliver_shortcut_connect_flow(int(update.effective_user.id), _reply)
     elif text == LANGUAGE_TUTOR_BUTTON_TEXT:
         if update.effective_chat and update.effective_chat.type != "private":
             await update.message.reply_text("Вопрос для GPT отправьте в личку с ботом.")
@@ -3770,8 +3780,7 @@ async def start(update: Update, context: CallbackContext):
 
     context.user_data.setdefault("service_message_ids", [])  # Инициализируем список
     if update.effective_chat and update.effective_chat.type == "private":
-        await _send_shortcut_connect_prompt(update, context)
-    await send_main_menu(update, context)
+        await send_main_menu(update, context)
 
 async def log_message(update: Update, context: CallbackContext):
     """логируются (сохраняются) все сообщения пользователей в базе данных"""
@@ -4645,6 +4654,7 @@ def _is_menu_button_text(text: str) -> bool:
         "📜 Проверить перевод",
         "💬 Перейти в личку",
         "🎙 Начать урок",
+        SHORTCUT_CONNECT_BUTTON_TEXT,
         LANGUAGE_TUTOR_BUTTON_TEXT,
     }
 

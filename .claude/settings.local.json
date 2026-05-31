@@ -115,7 +115,8 @@
       "Bash(printenv)",
       "Bash(railway variable *)",
       "Bash(npm test *)",
-      "Bash(npx vitest *)"
+      "Bash(npx vitest *)",
+      "Bash(grep -v \"def \\\\|#\\\\|import\\\\|:\\\\s*$\")"
     ]
   }
 }
