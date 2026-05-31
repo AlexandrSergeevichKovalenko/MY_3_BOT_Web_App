@@ -16,7 +16,6 @@ import secrets
 import random
 import re
 import threading
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone, date, timedelta, time as dt_time
 from pathlib import Path
@@ -13383,32 +13382,69 @@ def _normalize_shortcut_pairing_code(raw_code: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", str(raw_code or "").strip().upper())
 
 
-_SHORTCUT_SCHEMA_BOOTSTRAP_TIMEOUT_SECONDS = max(
-    1,
-    int((os.getenv("SHORTCUT_SCHEMA_BOOTSTRAP_TIMEOUT_SECONDS") or "4").strip() or "4"),
-)
-_SHORTCUT_SCHEMA_BOOTSTRAP_EXECUTOR = ThreadPoolExecutor(
-    max_workers=2,
-    thread_name_prefix="shortcut-schema-bootstrap",
-)
+_SHORTCUT_SCHEMA_BOOTSTRAP_LOCK = threading.Lock()
+_SHORTCUT_SCHEMA_READY = False
 
 
-def _ensure_webapp_tables_fast() -> bool:
-    if _ENSURE_WEBAPP_TABLES_DONE:
-        return True
-    future = _SHORTCUT_SCHEMA_BOOTSTRAP_EXECUTOR.submit(ensure_webapp_tables)
-    try:
-        future.result(timeout=_SHORTCUT_SCHEMA_BOOTSTRAP_TIMEOUT_SECONDS)
-        return True
-    except FuturesTimeoutError:
-        logging.warning(
-            "shortcut schema bootstrap timed out after %ss",
-            _SHORTCUT_SCHEMA_BOOTSTRAP_TIMEOUT_SECONDS,
-        )
-        return False
-    except Exception:
-        logging.exception("shortcut schema bootstrap failed")
-        return False
+def ensure_shortcut_tables() -> None:
+    global _SHORTCUT_SCHEMA_READY
+    if _SHORTCUT_SCHEMA_READY:
+        return
+    with _SHORTCUT_SCHEMA_BOOTSTRAP_LOCK:
+        if _SHORTCUT_SCHEMA_READY:
+            return
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_xact_lock(%s);", (94081018,))
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS bt_3_shortcut_pairing_codes (
+                        id BIGSERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        pairing_code_hash TEXT NOT NULL UNIQUE,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        expires_at TIMESTAMPTZ NOT NULL,
+                        consumed_at TIMESTAMPTZ,
+                        consumed_installation_id BIGINT,
+                        revoked_at TIMESTAMPTZ,
+                        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                """)
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_bt_3_shortcut_pairing_codes_user_active
+                    ON bt_3_shortcut_pairing_codes (user_id, is_active, expires_at DESC, created_at DESC);
+                """)
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_bt_3_shortcut_pairing_codes_expiry
+                    ON bt_3_shortcut_pairing_codes (expires_at ASC, created_at DESC);
+                """)
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_bt_3_shortcut_pairing_codes_consumed_at
+                    ON bt_3_shortcut_pairing_codes (consumed_at ASC, created_at DESC);
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS bt_3_shortcut_installations (
+                        id BIGSERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        install_token_hash TEXT NOT NULL UNIQUE,
+                        source_pairing_code_id BIGINT,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        last_used_at TIMESTAMPTZ,
+                        revoked_at TIMESTAMPTZ,
+                        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                """)
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_bt_3_shortcut_installations_user_active
+                    ON bt_3_shortcut_installations (user_id, is_active, created_at DESC);
+                """)
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_bt_3_shortcut_installations_last_used
+                    ON bt_3_shortcut_installations (last_used_at DESC NULLS LAST, created_at DESC);
+                """)
+                conn.commit()
+        _SHORTCUT_SCHEMA_READY = True
 
 
 def _shortcut_pairing_code_hash(raw_code: str) -> str:
@@ -13429,8 +13465,7 @@ def create_shortcut_pairing_code(
     user_id: int,
     ttl_seconds: int | None = None,
 ) -> dict:
-    if not _ensure_webapp_tables_fast():
-        raise RuntimeError("shortcut schema unavailable")
+    ensure_shortcut_tables()
     ttl = max(60, int(ttl_seconds or SHORTCUT_PAIRING_CODE_TTL_SECONDS))
     safe_user_id = int(user_id)
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)
@@ -13505,8 +13540,7 @@ def link_shortcut_installation(
     remote_ip: str | None = None,
     correlation_id: str | None = None,
 ) -> dict:
-    if not _ensure_webapp_tables_fast():
-        return {"status": "schema_unavailable"}
+    ensure_shortcut_tables()
     normalized_code = _normalize_shortcut_pairing_code(pairing_code)
     if len(normalized_code) != SHORTCUT_PAIRING_CODE_LENGTH:
         return {"status": "invalid"}
@@ -13656,8 +13690,7 @@ def link_shortcut_installation(
 
 
 def resolve_shortcut_install_token(*, install_token: str) -> dict | None:
-    if not _ensure_webapp_tables_fast():
-        return {"status": "schema_unavailable"}
+    ensure_shortcut_tables()
     normalized_token = str(install_token or "").strip()
     if not normalized_token:
         return None
@@ -13713,7 +13746,7 @@ def resolve_shortcut_install_token(*, install_token: str) -> dict | None:
 
 
 def get_shortcut_installations_for_user(user_id: int, *, active_only: bool = True) -> list[dict]:
-    ensure_webapp_tables()
+    ensure_shortcut_tables()
     query = """
         SELECT
             id,
@@ -13751,7 +13784,7 @@ def get_shortcut_installations_for_user(user_id: int, *, active_only: bool = Tru
 
 
 def revoke_shortcut_installation(*, install_token: str, reason: str | None = None) -> bool:
-    ensure_webapp_tables()
+    ensure_shortcut_tables()
     normalized_token = str(install_token or "").strip()
     if not normalized_token:
         return False
@@ -13780,7 +13813,7 @@ def purge_expired_shortcut_pairing_codes(
     expired_retention_seconds: int | None = None,
     consumed_retention_seconds: int | None = None,
 ) -> dict:
-    ensure_webapp_tables()
+    ensure_shortcut_tables()
     expired_retention = max(
         3600,
         int(expired_retention_seconds or SHORTCUT_PAIRING_CODE_CLEANUP_AFTER_EXPIRED_SECONDS),

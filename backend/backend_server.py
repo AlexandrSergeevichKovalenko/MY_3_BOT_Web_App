@@ -108,6 +108,7 @@ from backend.database import (
     db_acquire_scope,
     summarize_db_acquire_events,
     _emit_db_pool_runtime_audit,
+    ensure_shortcut_tables,
 )
 from backend.hotpath_cache import HotPathCacheManager
 from backend.job_queue import (
@@ -48491,6 +48492,17 @@ try:
         )
     except Exception as exc:
         logging.warning("Phase1 projection schema ensure at startup failed: %s", exc)
+
+    try:
+        _run_startup_phase(
+            "ensure_shortcut_schema",
+            ensure_shortcut_tables,
+            enabled=True,
+            category="schema_bootstrap",
+            required_before_first_request=False,
+        )
+    except Exception as exc:
+        logging.warning("Shortcut schema ensure at startup failed: %s", exc)
 
     billing_startup_enabled = _startup_enabled_from_env("BILLING_OPENAI_SNAPSHOT_SYNC_ON_STARTUP", "0")
     try:
