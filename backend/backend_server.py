@@ -34666,9 +34666,14 @@ def _start_shortcut_lookup_enqueue_runner(*, user_id: int, text: str) -> str:
 @app.route("/api/shortcut/pairing-code", methods=["POST"])
 def shortcut_create_pairing_code():
     body = request.get_json(silent=True) or {}
-    admin_secret = (os.getenv("SHORTCUT_BOT_SECRET") or "").strip()
+    admin_secret = (
+        (os.getenv("SHORTCUT_BOT_SECRET") or "").strip()
+        or (os.getenv("ADMIN_TOKEN") or "").strip()
+        or (os.getenv("AUDIO_DISPATCH_TOKEN") or "").strip()
+        or (os.getenv("TELEGRAM_Deutsch_BOT_TOKEN") or "").strip()
+    )
     if not admin_secret:
-        return jsonify({"error": "Shortcut pairing endpoint не настроен (SHORTCUT_BOT_SECRET не задан)"}), 503
+        return jsonify({"error": "Shortcut pairing endpoint не настроен (admin secret not set)"}), 503
 
     auth_header = (request.headers.get("Authorization") or "").strip()
     header_secret = (request.headers.get("X-Shortcut-Bot-Secret") or "").strip()

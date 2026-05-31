@@ -1362,12 +1362,14 @@ async def _send_shortcut_connect_prompt(update: Update, context: CallbackContext
 
 async def _deliver_shortcut_connect_flow(user_id: int, reply_text: Callable[[str], Any]) -> None:
     base_url = get_public_web_url()
-    admin_secret = (os.getenv("SHORTCUT_BOT_SECRET") or "").strip()
+    admin_secret = _shortcut_admin_secret()
     if not base_url or not admin_secret:
         logging.error(
-            "shortcut pairing unavailable base_url=%s secret_present=%s",
+            "shortcut pairing unavailable base_url=%s secret_present=%s app_base_url=%s backend_web_url=%s",
             bool(base_url),
             bool(admin_secret),
+            bool((os.getenv("APP_BASE_URL") or "").strip()),
+            bool((os.getenv("BACKEND_WEB_URL") or "").strip()),
         )
         await reply_text("Подключение временно недоступно. Попробуйте позже.")
         return
@@ -1475,6 +1477,14 @@ def get_public_web_url():
             return cleaned_url[: -len("/webapp")]
         return cleaned_url
 
+    app_base_url = (os.getenv("APP_BASE_URL") or "").strip().rstrip("/")
+    if app_base_url:
+        return app_base_url
+
+    backend_web_url = (os.getenv("BACKEND_WEB_URL") or "").strip().rstrip("/")
+    if backend_web_url:
+        return backend_web_url
+
     # 2) Локально (по желанию): fallback
     ngrok_url = get_ngrok_url()
     if ngrok_url:
@@ -1487,6 +1497,14 @@ def get_webapp_url():
     if base_url.endswith("/webapp"):
         return base_url
     return f"{base_url}/webapp"
+
+
+def _shortcut_admin_secret() -> str:
+    for env_name in ("SHORTCUT_BOT_SECRET", "ADMIN_TOKEN", "AUDIO_DISPATCH_TOKEN", "TELEGRAM_Deutsch_BOT_TOKEN"):
+        value = (os.getenv(env_name) or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def get_webapp_deeplink(path: str = "review", bot_username: str | None = None) -> str:
