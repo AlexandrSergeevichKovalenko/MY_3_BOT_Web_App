@@ -7243,13 +7243,24 @@ async def _run_dictionary_batch_fast_for_user(
     processed = 0
     for request_key in request_keys:
         payload = pending_dictionary_lookup_requests.get(request_key)
+        logging.info(
+            "batch_fast: checking key=%s payload_present=%s payload_uid=%s user_id=%s inflight=%s",
+            request_key,
+            payload is not None,
+            int((payload or {}).get("user_id", 0)) if payload else "N/A",
+            int(user_id),
+            request_key in pending_dictionary_lookup_inflight,
+        )
         if not payload or int((payload or {}).get("user_id", 0)) != int(user_id):
+            logging.warning("batch_fast: SKIP key=%s — payload missing or uid mismatch", request_key)
             continue
         if request_key in pending_dictionary_lookup_inflight:
+            logging.warning("batch_fast: SKIP key=%s — already inflight", request_key)
             continue
 
         lookup_input = str(payload.get("text") or "").strip()
         if not lookup_input:
+            logging.warning("batch_fast: SKIP key=%s — empty text", request_key)
             pending_dictionary_lookup_requests.pop(request_key, None)
             continue
 
