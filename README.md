@@ -40,7 +40,7 @@
 
 ### Какие процессы запускаются отдельно
 
-- `BACKEND_WEB` -> Flask/Gunicorn API из `backend/backend_server.py`
+- `BACKEND_WEB` -> Flask/Gunicorn API из `backend/web_service.py` -> `backend/backend_server.py`
 - Telegram bot process -> `bot_3.py`
 - `BACKGROUND_JOBS` -> Dramatiq worker на `backend.background_jobs`
 - `TRANSLATION_CHECK_WORKER` -> отдельный Dramatiq worker на `backend.run_dramatiq_worker`
@@ -174,7 +174,7 @@ flowchart LR
 
 ### Docker / Procfile карта
 
-- `Procfile`: `web: gunicorn ... backend.backend_server:app`
+- `Procfile`: `web: gunicorn ... backend.web_service:app`, `worker: python -m backend.background_jobs`, `translation_check_worker: python -m backend.run_dramatiq_worker`, `scheduler: python -m backend.scheduler_service`
 - `Dockerfile.backend`: строит frontend (`frontend/dist`), затем запускает `backend.backend_server:app`
 - `Dockerfile.bot`: запускает `python bot_3.py`
 - `Dockerfile.jobs`: generic Dramatiq worker на `backend.background_jobs`
