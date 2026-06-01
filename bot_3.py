@@ -444,7 +444,7 @@ USER_REMOVAL_WEEKLY_REPORT_HOUR = max(0, min(23, int((os.getenv("USER_REMOVAL_WE
 USER_REMOVAL_WEEKLY_REPORT_MINUTE = max(0, min(59, int((os.getenv("USER_REMOVAL_WEEKLY_REPORT_MINUTE") or "12").strip() or "12")))
 SYSTEM_MESSAGE_CLEANUP_EXCLUDE_TYPES = [
     item.strip().lower()
-    for item in (os.getenv("SYSTEM_MESSAGE_CLEANUP_EXCLUDE_TYPES") or "feel_word").split(",")
+    for item in (os.getenv("SYSTEM_MESSAGE_CLEANUP_EXCLUDE_TYPES") or "").split(",")
     if item.strip()
 ]
 ENABLE_LEGACY_REPLY_KEYBOARD = (os.getenv("ENABLE_LEGACY_REPLY_KEYBOARD") or "0").strip().lower() in {"1", "true", "yes", "on"}

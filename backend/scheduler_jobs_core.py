@@ -128,7 +128,7 @@ def run_system_message_cleanup_job() -> None:
     max_days_back = int((os.getenv("SYSTEM_MESSAGE_CLEANUP_MAX_DAYS_BACK") or "2").strip())
     excluded_types = [
         item.strip().lower()
-        for item in (os.getenv("SYSTEM_MESSAGE_CLEANUP_EXCLUDE_TYPES") or "feel_word").split(",")
+        for item in (os.getenv("SYSTEM_MESSAGE_CLEANUP_EXCLUDE_TYPES") or "").split(",")
         if item.strip()
     ]
     try:
