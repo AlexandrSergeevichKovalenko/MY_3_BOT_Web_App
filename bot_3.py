@@ -14815,11 +14815,13 @@ async def admin_visual_riddle_health_command(update: Update, context: CallbackCo
     await message.reply_text("\n".join(lines))
 
 
-async def _run_semantic_retag_backfill(admin_chat_id: int) -> None:
+async def _run_semantic_retag_backfill(admin_chat_id: int, max_entries: int | None = None) -> None:
     processed = 0
     failed = 0
     batch_size = 10  # 10 words per GPT call
     while True:
+        if max_entries is not None and (processed + failed) >= max_entries:
+            break
         try:
             entries = await asyncio.to_thread(get_entries_without_semantic_tag, None, batch_size)
         except Exception:
@@ -14895,6 +14897,15 @@ async def admin_retag_command(update: Update, context: CallbackContext) -> None:
         return
     await message.reply_text("⏳ Запускаю перетегирование словаря в фоне. Пришлю отчёт когда закончу.")
     asyncio.create_task(_run_semantic_retag_backfill(admin_chat_id=int(message.chat_id)))
+
+
+async def _nightly_semantic_backfill_job(context: CallbackContext) -> None:
+    """Nightly cron: tag up to 100 untagged vocabulary entries (10 GPT calls max)."""
+    admin_ids = list(get_admin_telegram_ids())
+    if not admin_ids:
+        return
+    admin_chat_id = int(admin_ids[0])
+    await _run_semantic_retag_backfill(admin_chat_id=admin_chat_id, max_entries=100)
 
 
 async def _send_image_quiz_for_target(
@@ -16075,6 +16086,14 @@ def main():
     
         scheduler.add_job(lambda: submit_async(send_daily_summary), "cron", hour=20, minute=52)
         scheduler.add_job(lambda: submit_async(send_weekly_summary), "cron", day_of_week="sun", hour=20, minute=55)
+
+        # Nightly semantic tag backfill: up to 100 entries (10 GPT calls) at 03:10
+        scheduler.add_job(
+            lambda: submit_async(_nightly_semantic_backfill_job),
+            "cron",
+            hour=3,
+            minute=10,
+        )
 
         for hour in [7,12,16]:
             scheduler.add_job(lambda: submit_async(send_progress_report), "cron", hour=hour, minute=5)
