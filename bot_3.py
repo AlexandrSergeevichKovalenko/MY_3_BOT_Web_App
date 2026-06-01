@@ -87,6 +87,7 @@ from backend.openai_manager import (
     run_translate_subtitles_ru,
     run_translate_subtitles_multilang,
     run_text_vocab_extract,
+    run_auto_categorize,
 )
 from backend.image_quiz_utils import (
     build_image_quiz_feedback_alert,
@@ -132,6 +133,9 @@ from backend.database import (
     get_dictionary_cache,
     upsert_dictionary_cache,
     save_webapp_dictionary_query,
+    save_webapp_dictionary_query_returning_id,
+    update_entry_semantic_tag_and_folder,
+    get_entries_without_semantic_tag,
     create_support_message,
     get_dictionary_folders,
     get_or_create_dictionary_folder,
@@ -7694,7 +7698,7 @@ async def handle_quiz_question_save_callback(update: Update, context: CallbackCo
     saved_lines: list[str] = []
     for idx in selected_idxs:
         chosen = options[idx]
-        save_ok, save_msg = _save_dictionary_option_for_user(
+        save_ok, save_msg, entry_id = _save_dictionary_option_for_user(
             payload=save_payload,
             chosen=chosen,
             user_id=int(user.id),
@@ -7705,6 +7709,13 @@ async def handle_quiz_question_save_callback(update: Update, context: CallbackCo
         source_text = str(chosen.get("source") or "").strip()
         target_text = str(chosen.get("target") or "").strip()
         saved_lines.append(f"• {source_text} -> {target_text}")
+        if entry_id and entry_id > 0:
+            asyncio.create_task(_auto_tag_saved_entry(
+                user_id=int(user.id), entry_id=entry_id,
+                source_text=source_text, target_text=target_text,
+                source_lang=str(save_payload.get("source_lang") or "").strip().lower(),
+                target_lang=str(save_payload.get("target_lang") or "").strip().lower(),
+            ))
 
     if not saved_lines:
         await query.answer("Не удалось сохранить выбранные варианты.", show_alert=True)
@@ -7937,10 +7948,18 @@ async def handle_dictionary_save_option_callback(update: Update, context: Callba
         return
 
     chosen = options[option_idx]
-    save_ok, save_msg = _save_dictionary_option_for_user(payload=payload, chosen=chosen, user_id=int(user.id))
+    save_ok, save_msg, entry_id = _save_dictionary_option_for_user(payload=payload, chosen=chosen, user_id=int(user.id))
     if not save_ok:
         await query.answer(save_msg or "Ошибка сохранения. Попробуйте позже.", show_alert=True)
         return
+    if entry_id and entry_id > 0:
+        asyncio.create_task(_auto_tag_saved_entry(
+            user_id=int(user.id), entry_id=entry_id,
+            source_text=str(chosen.get("source") or "").strip(),
+            target_text=str(chosen.get("target") or "").strip(),
+            source_lang=str(payload.get("source_lang") or "").strip().lower(),
+            target_lang=str(payload.get("target_lang") or "").strip().lower(),
+        ))
 
     card_key = payload.get("card_key")
     card_payload = pending_dictionary_cards.get(card_key or "")
@@ -7959,7 +7978,97 @@ async def handle_dictionary_save_option_callback(update: Update, context: Callba
     await query.message.reply_text(f"✅ Сохранён вариант: {source} -> {target}")
 
 
-def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) -> tuple[bool, str]:
+_TAG_FOLDER_META: dict[str, tuple[str, str]] = {
+    "Работа":       ("🏢", "#4F5BD5"),
+    "Учёба":        ("📚", "#7C5CFC"),
+    "Здоровье":     ("🏥", "#E0483D"),
+    "Путешествия":  ("✈️", "#0E9AB0"),
+    "Быт":          ("🏠", "#D99A2B"),
+    "Еда":          ("🍽️", "#3F9D52"),
+    "Спорт":        ("⚽", "#1FA67A"),
+    "Технологии":   ("💻", "#2F6BD8"),
+    "Деньги":       ("💰", "#D99A2B"),
+    "Семья":        ("👨‍👩‍👧", "#DB5475"),
+    "Транспорт":    ("🚗", "#0E9AB0"),
+    "Природа":      ("🌿", "#3F9D52"),
+    "Культура":     ("🎭", "#7C5CFC"),
+    "Общение":      ("💬", "#4F5BD5"),
+    "Покупки":      ("🛍️", "#DB5475"),
+    "Жильё":        ("🏡", "#D99A2B"),
+    "Право":        ("⚖️", "#2F6BD8"),
+    "Эмоции":       ("❤️", "#E0483D"),
+    "Прочее":       ("📂", "#888888"),
+}
+
+
+async def _auto_tag_saved_entry(
+    user_id: int,
+    entry_id: int,
+    source_text: str,
+    target_text: str,
+    source_lang: str,
+    target_lang: str,
+) -> None:
+    try:
+        if source_lang == "de":
+            word_de, word_ru = source_text, target_text
+        elif target_lang == "de":
+            word_de, word_ru = target_text, source_text
+        else:
+            return  # only tag DE/RU pairs
+
+        if not word_de:
+            return
+
+        folders = await asyncio.to_thread(get_dictionary_folders, user_id)
+        folder_names = [str(f.get("name") or "").strip() for f in folders if f.get("name")]
+
+        result = await run_auto_categorize({
+            "word_de": word_de,
+            "word_ru": word_ru or "",
+            "existing_folders": folder_names,
+        })
+
+        tag = str(result.get("tag") or "").strip()
+        matched_folder_name = str(result.get("matched_folder") or "").strip() or None
+
+        if not tag:
+            return
+
+        folder_id = None
+        if matched_folder_name:
+            for f in folders:
+                if str(f.get("name") or "").strip() == matched_folder_name:
+                    folder_id = int(f.get("id") or 0) or None
+                    break
+
+        if folder_id is None:
+            meta = _TAG_FOLDER_META.get(tag, ("📂", "#5ddcff"))
+            new_folder = await asyncio.to_thread(
+                get_or_create_dictionary_folder,
+                user_id=user_id,
+                name=tag,
+                color=meta[1],
+                icon=meta[0],
+            )
+            folder_id = int(new_folder.get("id") or 0) or None
+
+        if entry_id and entry_id > 0:
+            await asyncio.to_thread(
+                update_entry_semantic_tag_and_folder,
+                entry_id=entry_id,
+                user_id=user_id,
+                semantic_tag=tag,
+                folder_id=folder_id,
+            )
+    except Exception:
+        logging.warning(
+            "_auto_tag_saved_entry failed user_id=%s entry_id=%s",
+            user_id, entry_id, exc_info=True,
+        )
+
+
+def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) -> tuple[bool, str, int]:
     source = (chosen.get("source") or "").strip()
     target = (chosen.get("target") or "").strip()
     source_lang = str(payload.get("source_lang") or "").strip().lower()
@@ -7969,7 +8078,7 @@ def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) 
     lookup = payload.get("lookup") or {}
 
     if not source or not target:
-        return False, "Вариант неполный, выберите другой."
+        return False, "Вариант неполный, выберите другой.", 0
 
     response_json = dict(lookup) if isinstance(lookup, dict) else {}
     response_json["word_source"] = source
@@ -8022,7 +8131,7 @@ def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) 
         except Exception:
             folder_id = None
 
-        save_webapp_dictionary_query(
+        entry_id = save_webapp_dictionary_query_returning_id(
             user_id=user_id,
             word_ru=word_ru,
             translation_de=translation_de,
@@ -8040,8 +8149,8 @@ def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) 
         )
     except Exception as exc:
         logging.exception(f"❌ Ошибка сохранения выбранного варианта user_id={user_id}: {exc}")
-        return False, "Ошибка сохранения. Попробуйте позже."
-    return True, "ok"
+        return False, "Ошибка сохранения. Попробуйте позже.", 0
+    return True, "ok", int(entry_id or 0)
 
 
 async def handle_dictionary_select_toggle_callback(update: Update, context: CallbackContext) -> None:
@@ -8169,11 +8278,18 @@ async def handle_dictionary_save_confirm_callback(update: Update, context: Callb
         if idx < 0 or idx >= len(options):
             continue
         chosen = options[idx]
-        save_ok, save_msg = _save_dictionary_option_for_user(payload=payload, chosen=chosen, user_id=int(user.id))
+        save_ok, save_msg, entry_id = _save_dictionary_option_for_user(payload=payload, chosen=chosen, user_id=int(user.id))
         if save_ok:
             source = (chosen.get("source") or "").strip()
             target = (chosen.get("target") or "").strip()
             saved_lines.append(f"• {source} -> {target}")
+            if entry_id and entry_id > 0:
+                asyncio.create_task(_auto_tag_saved_entry(
+                    user_id=int(user.id), entry_id=entry_id,
+                    source_text=source, target_text=target,
+                    source_lang=str(payload.get("source_lang") or "").strip().lower(),
+                    target_lang=str(payload.get("target_lang") or "").strip().lower(),
+                ))
         else:
             logging.warning("Dictionary multi-save skipped idx=%s: %s", idx, save_msg)
 
@@ -8238,13 +8354,20 @@ async def handle_dictionary_quick_save_callback(update: Update, context: Callbac
     saved_lines: list[str] = []
     for idx in selected_idxs:
         chosen = options[idx]
-        save_ok, save_msg = _save_dictionary_option_for_user(payload=payload, chosen=chosen, user_id=int(user.id))
+        save_ok, save_msg, entry_id = _save_dictionary_option_for_user(payload=payload, chosen=chosen, user_id=int(user.id))
         if not save_ok:
             logging.warning("Quick dictionary save skipped idx=%s: %s", idx, save_msg)
             continue
         source = (chosen.get("source") or "").strip()
         target = (chosen.get("target") or "").strip()
         saved_lines.append(f"• {source} -> {target}")
+        if entry_id and entry_id > 0:
+            asyncio.create_task(_auto_tag_saved_entry(
+                user_id=int(user.id), entry_id=entry_id,
+                source_text=source, target_text=target,
+                source_lang=str(payload.get("source_lang") or "").strip().lower(),
+                target_lang=str(payload.get("target_lang") or "").strip().lower(),
+            ))
 
     if not saved_lines:
         await query.answer("Не удалось сохранить выбранные варианты.", show_alert=True)
@@ -14467,6 +14590,68 @@ async def admin_visual_riddle_health_command(update: Update, context: CallbackCo
     await message.reply_text("\n".join(lines))
 
 
+async def _run_semantic_retag_backfill(admin_chat_id: int) -> None:
+    processed = 0
+    failed = 0
+    batch_size = 8
+    while True:
+        try:
+            entries = await asyncio.to_thread(get_entries_without_semantic_tag, None, batch_size)
+        except Exception:
+            logging.exception("retag backfill: failed to fetch batch")
+            break
+        if not entries:
+            break
+        for entry in entries:
+            try:
+                entry_id = int(entry.get("id") or 0)
+                uid = int(entry.get("user_id") or 0)
+                if not entry_id or not uid:
+                    continue
+                src_lang = str(entry.get("source_lang") or "").strip().lower()
+                tgt_lang = str(entry.get("target_lang") or "").strip().lower()
+                src_text = str(entry.get("word_de") if src_lang == "de" else entry.get("word_ru") or "").strip()
+                tgt_text = str(entry.get("word_ru") if src_lang == "de" else entry.get("word_de") or "").strip()
+                if not src_text:
+                    await asyncio.to_thread(
+                        update_entry_semantic_tag_and_folder,
+                        entry_id, uid, "Прочее", None,
+                    )
+                    processed += 1
+                    continue
+                await _auto_tag_saved_entry(
+                    user_id=uid, entry_id=entry_id,
+                    source_text=src_text, target_text=tgt_text,
+                    source_lang=src_lang, target_lang=tgt_lang,
+                )
+                processed += 1
+            except Exception:
+                failed += 1
+                logging.warning("retag backfill entry failed id=%s", entry.get("id"), exc_info=True)
+            await asyncio.sleep(0.4)
+        await asyncio.sleep(1.0)
+    try:
+        bot = application.bot
+        await bot.send_message(
+            chat_id=admin_chat_id,
+            text=f"✅ Перетегирование завершено. Обработано: {processed}, ошибок: {failed}.",
+        )
+    except Exception:
+        logging.warning("retag backfill: failed to notify admin", exc_info=True)
+
+
+async def admin_retag_command(update: Update, context: CallbackContext) -> None:
+    message = update.message
+    if not message:
+        return
+    user = message.from_user
+    if not user or not _is_admin_user(int(user.id)):
+        await message.reply_text("Allowed admins only.")
+        return
+    await message.reply_text("⏳ Запускаю перетегирование словаря в фоне. Пришлю отчёт когда закончу.")
+    asyncio.create_task(_run_semantic_retag_backfill(admin_chat_id=int(message.chat_id)))
+
+
 async def _send_image_quiz_for_target(
     context: CallbackContext,
     *,
@@ -15397,6 +15582,7 @@ def main():
     application.add_handler(CommandHandler("test_image_quiz_fallback", test_image_quiz_fallback_command))
     application.add_handler(CommandHandler("admin_riddle_send", admin_riddle_send_command))
     application.add_handler(CommandHandler("admin_riddle_health", admin_visual_riddle_health_command))
+    application.add_handler(CommandHandler("admin_retag", admin_retag_command))
     application.add_handler(CallbackQueryHandler(request_access_from_button, pattern=r"^access:request$"))
     application.add_handler(CallbackQueryHandler(handle_shortcut_connect_callback, pattern=r"^shortcut:connect$"))
     # 🔥 Логирование всех сообщений (группа -1, не блокирует цепочку)

@@ -955,8 +955,13 @@ Rules:
 - The items must reflect characteristic real usage of studied_text.
 - target_text must be the direct natural translation of source_text in target_language.
 - Prefer finished, everyday, learner-useful options over abstract or clumsy wording.
-- source_text should usually be at most 140 characters.
-- target_text should usually be at most 180 characters.
+- Prefer a natural collocation over a generic example sentence when the studied_text is a word or fixed expression.
+- If the learner asks for "combination", "example", or "how to use it", choose the most idiomatic short collocation that native speakers actually use.
+- Never output broken fragments, dictionary-style fragments, or artificial textbook phrases.
+- Avoid trivial toy examples unless they are the only natural option.
+- source_text should usually be 5-12 words and at most 140 characters.
+- target_text should usually be at most 180 characters and sound fully natural in target_language.
+- If possible, make at least one save_variant a compact collocation and one a short full sentence that shows the collocation in context.
 - If there is only 1 genuinely good item, return 1 item.
 - If there is no good save candidate, return an empty array for save_variants.
 - Never swap source and target languages.
@@ -1033,8 +1038,13 @@ Rules:
 - target_text must be the direct natural translation of source_text in target_language.
 - For on-topic questions, prefer returning 2 learner-useful save_variants whenever you can extract them from the answer.
 - Prefer characteristic real usage over awkward or generic filler.
-- source_text should usually be at most 140 characters.
-- target_text should usually be at most 180 characters.
+- Prefer a natural collocation over a generic example sentence when the studied_text is a word or fixed expression.
+- If the learner asks for "combination", "example", or "how to use it", choose the most idiomatic short collocation that native speakers actually use.
+- Never output broken fragments, dictionary-style fragments, or artificial textbook phrases.
+- Avoid trivial toy examples unless they are the only natural option.
+- source_text should usually be 5-12 words and at most 140 characters.
+- target_text should usually be at most 180 characters and sound fully natural in target_language.
+- If possible, make at least one save_variant a compact collocation and one a short full sentence that shows the collocation in context.
 - If there is only 1 genuinely good item, return 1 item.
 - If there is no good save candidate, return an empty array for save_variants.
 - Never swap source and target languages.
@@ -1125,6 +1135,11 @@ Rules:
 - answer must be a Telegram Markdown string using *bold*, _italic_, `code`. Escape special chars that break Telegram Markdown (e.g. bare underscores inside words like _an\_zweifeln_ → write _anzweifeln_).
 - If is_language_question=false: answer briefly in source_language that only language questions are accepted; suggested_rephrase = one short valid example question; save_variants = [].
 - save_variants: 1–2 items, each a practical phrase or sentence worth memorizing. source_text in source_language (≤140 chars), target_text in target_language (≤180 chars). For comparison questions, save one representative example per compared word/form if possible.
+- Prefer natural collocations and characteristic real usage over generic textbook examples.
+- If the question asks for a combination, phrase, or example, make the source_text a compact collocation or short sentence that native speakers would actually say.
+- Never output broken fragments, literal translations, or awkward artificial phrases.
+- Avoid trivial filler such as "ich mache das", "das ist gut" unless it is genuinely the best natural example.
+- If possible, make one save_variant a compact collocation and the other a short sentence that uses it in a realistic context.
 - Never swap source and target languages in save_variants.
 - Output ONLY valid JSON. No markdown fences. No extra commentary.
 """,
@@ -5098,6 +5113,27 @@ async def run_translation_explanation_multilang(
 
 
 system_message.update({
+    "auto_categorize": """
+You are a vocabulary categorizer for a German language learning app.
+
+Given a German–Russian word or phrase pair, assign it to exactly ONE category from this fixed list:
+Работа, Учёба, Здоровье, Путешествия, Быт, Еда, Спорт, Технологии, Деньги, Семья, Транспорт, Природа, Культура, Общение, Покупки, Жильё, Право, Эмоции, Прочее
+
+Also, you receive the user's existing folder names. If any folder is semantically equivalent to the assigned category (same concept, different wording — e.g. "Работа" ≈ "Офис" ≈ "Beruf" ≈ "Job"; "Здоровье" ≈ "Медицина" ≈ "Arzt"), return that folder name verbatim as "matched_folder". If no folder matches well enough, return null.
+
+Input JSON:
+{
+  "word_de": "...",
+  "word_ru": "...",
+  "existing_folders": ["...", "..."]
+}
+
+Return STRICT JSON only, no markdown, no extra text:
+{
+  "tag": "<one category from the fixed list>",
+  "matched_folder": "<one of existing_folders verbatim, or null>"
+}
+""",
     "text_vocab_extract": """
 You are a German vocabulary extraction assistant for language learners.
 
@@ -5125,6 +5161,15 @@ Return STRICT JSON only, no markdown, no explanation:
 }
 """,
 })
+
+
+async def run_auto_categorize(payload: dict) -> dict:
+    return await _run_json_assistant_task(
+        task_name="auto_categorize",
+        system_instruction_key="auto_categorize",
+        payload=payload or {},
+        poll_delay_sec=1.0,
+    )
 
 
 async def run_text_vocab_extract(payload: dict) -> dict:

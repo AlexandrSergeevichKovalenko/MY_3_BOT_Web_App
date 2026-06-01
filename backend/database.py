@@ -3692,6 +3692,10 @@ def ensure_webapp_tables() -> None:
                 ALTER COLUMN updated_at SET NOT NULL;
             """)
             cursor.execute("""
+                ALTER TABLE bt_3_webapp_dictionary_queries
+                ADD COLUMN IF NOT EXISTS semantic_tag TEXT;
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_dictionary_entries (
                     id BIGSERIAL PRIMARY KEY,
                     source_lang TEXT NOT NULL,
@@ -16533,6 +16537,67 @@ def get_or_create_dictionary_folder(
                 "icon": row[3],
                 "created_at": row[4].isoformat() if row[4] else None,
             }
+
+
+def update_entry_semantic_tag_and_folder(
+    entry_id: int,
+    user_id: int,
+    semantic_tag: str,
+    folder_id: int | None,
+) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_webapp_dictionary_queries
+                SET semantic_tag = %s, folder_id = %s, updated_at = NOW()
+                WHERE id = %s AND user_id = %s;
+                """,
+                (semantic_tag or None, folder_id, int(entry_id), int(user_id)),
+            )
+
+
+def get_entries_without_semantic_tag(
+    user_id: int | None = None,
+    batch_limit: int = 20,
+) -> list[dict]:
+    safe_limit = max(1, min(int(batch_limit or 20), 200))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if user_id is not None:
+                cursor.execute(
+                    """
+                    SELECT id, user_id, word_de, word_ru, source_lang, target_lang
+                    FROM bt_3_webapp_dictionary_queries
+                    WHERE user_id = %s AND semantic_tag IS NULL
+                    ORDER BY id ASC
+                    LIMIT %s;
+                    """,
+                    (int(user_id), safe_limit),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT id, user_id, word_de, word_ru, source_lang, target_lang
+                    FROM bt_3_webapp_dictionary_queries
+                    WHERE semantic_tag IS NULL
+                    ORDER BY id ASC
+                    LIMIT %s;
+                    """,
+                    (safe_limit,),
+                )
+            rows = cursor.fetchall() or []
+            return [
+                {
+                    "id": int(row[0]),
+                    "user_id": int(row[1]),
+                    "word_de": row[2],
+                    "word_ru": row[3],
+                    "source_lang": row[4],
+                    "target_lang": row[5],
+                }
+                for row in rows
+            ]
 
 
 def get_telegram_dictionary_folder_preference(
