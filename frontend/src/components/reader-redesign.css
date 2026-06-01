@@ -379,6 +379,8 @@
   color: var(--rd-text);
   font-size: 13px;
   font-family: inherit;
+  appearance: none;
+  -webkit-appearance: none;
   transition: border-color .15s, background .15s;
 }
 
@@ -2795,10 +2797,9 @@
 }
 
 .webapp-reader[data-reader-theme="dark"] .reader-lib-header-title {
-  background: linear-gradient(135deg, #fff 0%, #a4b3d6 100%) !important;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
+  color: #e8eeff !important;
+  background: none !important;
+  -webkit-text-fill-color: unset !important;
 }
 
 .webapp-reader[data-reader-theme="dark"] .reader-topbar,
