@@ -5017,6 +5017,62 @@ def _build_dictionary_pair_keyboard(request_key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+_DICT_PENDING_REDIS_TTL_SEC = 900  # 15 min — survives redeploys
+
+
+def _dict_pending_redis_key(user_id: int) -> str:
+    return f"dict_pending_user:{user_id}"
+
+
+def _sync_pending_to_redis(user_id: int) -> None:
+    try:
+        from backend.job_queue import get_redis_client
+        client = get_redis_client()
+        if client is None:
+            return
+        entries = [
+            {"key": k, **v}
+            for k, v in pending_dictionary_lookup_requests.items()
+            if int((v or {}).get("user_id", 0)) == int(user_id)
+        ]
+        client.setex(
+            _dict_pending_redis_key(user_id),
+            _DICT_PENDING_REDIS_TTL_SEC,
+            json.dumps(entries, ensure_ascii=False),
+        )
+    except Exception:
+        logging.debug("dict_pending: redis sync write failed user_id=%s", user_id, exc_info=True)
+
+
+def _restore_pending_from_redis(user_id: int) -> None:
+    try:
+        from backend.job_queue import get_redis_client
+        client = get_redis_client()
+        if client is None:
+            return
+        raw = client.get(_dict_pending_redis_key(user_id))
+        if not raw:
+            return
+        entries = json.loads(raw)
+        if not isinstance(entries, list):
+            return
+        restored = 0
+        for entry in entries:
+            k = entry.get("key")
+            if k and k not in pending_dictionary_lookup_requests:
+                pending_dictionary_lookup_requests[k] = {
+                    "user_id": int(entry.get("user_id", user_id)),
+                    "text": str(entry.get("text") or "").strip(),
+                    "chat_id": entry.get("chat_id"),
+                    "message_id": entry.get("message_id"),
+                }
+                restored += 1
+        if restored:
+            logging.info("dict_pending: restored %d request(s) from Redis for user_id=%s", restored, user_id)
+    except Exception:
+        logging.debug("dict_pending: redis restore failed user_id=%s", user_id, exc_info=True)
+
+
 def _store_pending_dictionary_lookup_request(
     user_id: int,
     text: str,
@@ -5036,16 +5092,26 @@ def _store_pending_dictionary_lookup_request(
     if len(pending_dictionary_lookup_requests) > 500:
         oldest_key = next(iter(pending_dictionary_lookup_requests))
         pending_dictionary_lookup_requests.pop(oldest_key, None)
+    _sync_pending_to_redis(int(user_id))
     return key
 
 
 def _list_pending_dictionary_lookup_request_keys_for_user(user_id: int) -> list[str]:
     target_user_id = int(user_id)
-    return [
+    in_memory = [
         key
         for key, payload in pending_dictionary_lookup_requests.items()
         if int((payload or {}).get("user_id", 0)) == target_user_id
     ]
+    if not in_memory:
+        # Survive redeploys: restore from Redis and retry
+        _restore_pending_from_redis(target_user_id)
+        in_memory = [
+            key
+            for key, payload in pending_dictionary_lookup_requests.items()
+            if int((payload or {}).get("user_id", 0)) == target_user_id
+        ]
+    return in_memory
 
 
 def _build_dictionary_pair_selection_text(source_text: str) -> str:
@@ -7118,8 +7184,11 @@ async def _process_dictionary_pair_selection(
         except Exception:
             logging.debug("Failed to send dictionary pair error message", exc_info=True)
     finally:
+        uid = int((pending_dictionary_lookup_requests.get(request_key) or {}).get("user_id", 0))
         pending_dictionary_lookup_requests.pop(request_key, None)
         pending_dictionary_lookup_inflight.discard(request_key)
+        if uid:
+            _sync_pending_to_redis(uid)
 
 
 async def _run_dictionary_batch_fast_for_user(
