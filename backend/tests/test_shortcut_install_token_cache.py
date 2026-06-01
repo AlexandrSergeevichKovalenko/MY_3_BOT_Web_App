@@ -53,13 +53,37 @@ class _FakeConnection:
 
 def _db_context(connection):
     @contextmanager
-    def _context():
+    def _context(*args, **kwargs):
         yield connection
 
     return _context
 
 
 class ShortcutInstallTokenCacheTests(unittest.TestCase):
+    def test_shortcut_link_uses_shortcut_specific_db_acquire_timeout(self):
+        future_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+        cursor = _FakeCursor(
+            fetchone_results=[
+                (7, 117649764, future_expiry, None, None, True),
+                (11, datetime.now(timezone.utc), None, None, True),
+            ]
+        )
+        connection = _FakeConnection(cursor)
+        db_context_factory = _db_context(connection)
+
+        with patch("backend.database.ensure_shortcut_tables", return_value=None), patch(
+            "backend.database._shortcut_cache_set_installation"
+        ), patch("backend.database.get_db_connection_context") as db_context_mock, patch(
+            "backend.database.secrets.token_urlsafe", return_value="install-token-value"
+        ):
+            db_context_mock.return_value = db_context_factory()
+            result = database.link_shortcut_installation(pairing_code="MAB3VV")
+
+        self.assertEqual(result["status"], "linked")
+        db_context_mock.assert_called_once_with(
+            acquire_timeout_ms=database.SHORTCUT_DB_POOL_ACQUIRE_TIMEOUT_MS
+        )
+
     def test_resolve_shortcut_install_token_prefers_cache(self):
         cached_payload = {
             "installation_id": 11,

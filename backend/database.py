@@ -127,6 +127,10 @@ SHORTCUT_PAIRING_CODE_TTL_SECONDS = max(
     300,
     int(os.getenv("SHORTCUT_PAIRING_CODE_TTL_SECONDS", "86400")),
 )
+SHORTCUT_DB_POOL_ACQUIRE_TIMEOUT_MS = max(
+    250,
+    int(os.getenv("SHORTCUT_DB_POOL_ACQUIRE_TIMEOUT_MS", "800")),
+)
 SHORTCUT_PAIRING_CODE_CLEANUP_AFTER_EXPIRED_SECONDS = max(
     3600,
     int(os.getenv("SHORTCUT_PAIRING_CODE_CLEANUP_AFTER_EXPIRED_SECONDS", "86400")),
@@ -2494,8 +2498,8 @@ def _emit_db_pool_runtime_audit() -> None:
 _emit_db_pool_runtime_audit()
 
 @contextmanager
-def get_db_connection_context(): #
-    conn = get_db_connection()
+def get_db_connection_context(*, acquire_timeout_ms: int | None = None): #
+    conn = get_db_connection(acquire_timeout_ms=acquire_timeout_ms)
     force_close = False
     transaction_started_at = time.perf_counter()
     commit_duration_ms = 0
@@ -2950,7 +2954,7 @@ class _DirectConnectionProxy:
         self._conn.close()
 
 
-def get_db_connection():
+def get_db_connection(*, acquire_timeout_ms: int | None = None):
     pool = _get_or_init_db_pool()
     context_label = str(getattr(_DB_ACQUIRE_LOCAL, "label", "") or "unspecified").strip() or "unspecified"
     if pool is None:
@@ -2972,7 +2976,8 @@ def get_db_connection():
             connection_source="direct",
             acquired_at_perf=time.perf_counter(),
         )
-    deadline = time.perf_counter() + (DB_POOL_ACQUIRE_TIMEOUT_MS / 1000.0)
+    effective_acquire_timeout_ms = DB_POOL_ACQUIRE_TIMEOUT_MS if acquire_timeout_ms is None else max(0, int(acquire_timeout_ms))
+    deadline = time.perf_counter() + (effective_acquire_timeout_ms / 1000.0)
     pool_exhausted = False
     acquire_started_at = time.perf_counter()
     while True:
@@ -13564,67 +13569,72 @@ def create_shortcut_pairing_code(
     safe_user_id = int(user_id)
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)
 
-    with get_db_connection_context() as conn:
-        with conn.cursor() as cursor:
-            _apply_shortcut_db_timeouts(cursor)
-            for _ in range(12):
-                pairing_code = _generate_shortcut_pairing_code()
-                pairing_code_hash = _shortcut_pairing_code_hash(pairing_code)
-                try:
-                    cursor.execute(
-                        """
-                        UPDATE bt_3_shortcut_pairing_codes
-                        SET is_active = FALSE,
-                            revoked_at = NOW(),
-                            updated_at = NOW()
-                        WHERE user_id = %s
-                          AND is_active = TRUE
-                          AND consumed_at IS NULL;
-                        """,
-                        (safe_user_id,),
-                    )
-                    cursor.execute(
-                        """
-                        INSERT INTO bt_3_shortcut_pairing_codes (
-                            user_id,
-                            pairing_code_hash,
-                            created_at,
-                            expires_at,
-                            is_active,
-                            updated_at
-                        )
-                        VALUES (%s, %s, NOW(), %s, TRUE, NOW())
-                        RETURNING id, created_at, expires_at;
-                        """,
-                        (safe_user_id, pairing_code_hash, expires_at),
-                    )
-                    row = cursor.fetchone()
-                    conn.commit()
-                    return {
-                        "pairing_code_id": int(row[0]),
-                        "user_id": safe_user_id,
-                        "pairing_code": pairing_code,
-                        "created_at": row[1],
-                        "expires_at": row[2],
-                        "expires_in": ttl,
-                    }
-                except Exception:
-                    conn.rollback()
+    try:
+        with get_db_connection_context(acquire_timeout_ms=SHORTCUT_DB_POOL_ACQUIRE_TIMEOUT_MS) as conn:
+            with conn.cursor() as cursor:
+                _apply_shortcut_db_timeouts(cursor)
+                for _ in range(12):
+                    pairing_code = _generate_shortcut_pairing_code()
+                    pairing_code_hash = _shortcut_pairing_code_hash(pairing_code)
                     try:
                         cursor.execute(
                             """
-                            SELECT 1
-                            FROM bt_3_shortcut_pairing_codes
-                            WHERE pairing_code_hash = %s
-                            LIMIT 1;
+                            UPDATE bt_3_shortcut_pairing_codes
+                            SET is_active = FALSE,
+                                revoked_at = NOW(),
+                                updated_at = NOW()
+                            WHERE user_id = %s
+                              AND is_active = TRUE
+                              AND consumed_at IS NULL;
                             """,
-                            (pairing_code_hash,),
+                            (safe_user_id,),
                         )
-                        if cursor.fetchone():
-                            continue
+                        cursor.execute(
+                            """
+                            INSERT INTO bt_3_shortcut_pairing_codes (
+                                user_id,
+                                pairing_code_hash,
+                                created_at,
+                                expires_at,
+                                is_active,
+                                updated_at
+                            )
+                            VALUES (%s, %s, NOW(), %s, TRUE, NOW())
+                            RETURNING id, created_at, expires_at;
+                            """,
+                            (safe_user_id, pairing_code_hash, expires_at),
+                        )
+                        row = cursor.fetchone()
+                        conn.commit()
+                        return {
+                            "pairing_code_id": int(row[0]),
+                            "user_id": safe_user_id,
+                            "pairing_code": pairing_code,
+                            "created_at": row[1],
+                            "expires_at": row[2],
+                            "expires_in": ttl,
+                        }
                     except Exception:
-                        pass
-                    raise
+                        conn.rollback()
+                        try:
+                            cursor.execute(
+                                """
+                                SELECT 1
+                                FROM bt_3_shortcut_pairing_codes
+                                WHERE pairing_code_hash = %s
+                                LIMIT 1;
+                                """,
+                                (pairing_code_hash,),
+                            )
+                            if cursor.fetchone():
+                                continue
+                        except Exception:
+                            pass
+                        raise
+    except RuntimeError as exc:
+        if "DB pool exhausted" in str(exc):
+            return {"status": "schema_unavailable"}
+        raise
     raise RuntimeError("failed_to_issue_shortcut_pairing_code")
 
 
@@ -13651,7 +13661,7 @@ def link_shortcut_installation(
             remote_ip=remote_ip,
             pairing_code_present=True,
         )
-        with get_db_connection_context() as conn:
+        with get_db_connection_context(acquire_timeout_ms=SHORTCUT_DB_POOL_ACQUIRE_TIMEOUT_MS) as conn:
             _log_flow_observation(
                 "shortcut_link",
                 "SHORTCUT_LINK_DB_ACQUIRE_FINISH",
@@ -13821,7 +13831,7 @@ def link_shortcut_installation(
                     "is_active": bool(installation_row[4]),
                     "expires_at": expires_at,
                 }
-    except Psycopg2Error as exc:
+    except (Psycopg2Error, RuntimeError) as exc:
         logging.warning(
             "shortcut link db error request_id=%s correlation_id=%s remote_ip=%s: %s",
             request_id or correlation_id,
@@ -13829,6 +13839,8 @@ def link_shortcut_installation(
             remote_ip,
             exc,
         )
+        if isinstance(exc, RuntimeError) and "DB pool exhausted" not in str(exc):
+            raise
         return {"status": "schema_unavailable"}
 
 
@@ -13894,7 +13906,7 @@ def resolve_shortcut_install_token(
             remote_ip=remote_ip,
             install_token_present=True,
         )
-        with get_db_connection_context() as conn:
+        with get_db_connection_context(acquire_timeout_ms=SHORTCUT_DB_POOL_ACQUIRE_TIMEOUT_MS) as conn:
             _log_flow_observation(
                 "shortcut_lookup",
                 "SHORTCUT_LOOKUP_DB_ACQUIRE_FINISH",
@@ -13951,8 +13963,10 @@ def resolve_shortcut_install_token(
                     user_id=user_id,
                     db_duration_ms=max(0, int((time.perf_counter() - db_lookup_started_perf) * 1000)),
                 )
-    except Psycopg2Error as exc:
+    except (Psycopg2Error, RuntimeError) as exc:
         logging.warning("shortcut install token resolve db error: %s", exc)
+        if isinstance(exc, RuntimeError) and "DB pool exhausted" not in str(exc):
+            raise
         return {"status": "schema_unavailable"}
     resolved = {
         "installation_id": installation_id,
