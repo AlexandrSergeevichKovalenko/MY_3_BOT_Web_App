@@ -35415,6 +35415,32 @@ def _shortcut_build_pair_keyboard_rows(request_key: str) -> list[list[dict]]:
     return rows
 
 
+_SHORTCUT_PENDING_REDIS_TTL = 900  # 15 min — matches bot_3.py TTL
+
+
+def _shortcut_pending_redis_key(user_id: int) -> str:
+    return f"dict_pending_shortcut:{user_id}"
+
+
+def _shortcut_append_pending_to_redis(user_id: int, request_key: str, lookup_text: str) -> None:
+    """Append a shortcut lookup entry to Redis so bot_3.py can find it for batch processing."""
+    try:
+        client = get_redis_client()
+        if client is None:
+            return
+        redis_key = _shortcut_pending_redis_key(user_id)
+        raw = client.get(redis_key)
+        entries = json.loads(raw) if raw else []
+        if not isinstance(entries, list):
+            entries = []
+        entries.append({"key": request_key, "user_id": user_id, "text": lookup_text})
+        client.setex(redis_key, _SHORTCUT_PENDING_REDIS_TTL, json.dumps(entries, ensure_ascii=False))
+    except Exception:
+        logging.debug(
+            "shortcut_pending: redis append failed user_id=%s key=%s", user_id, request_key, exc_info=True
+        )
+
+
 def _run_shortcut_lookup_delivery(*, user_id: int, text: str) -> int:
     normalized_text = str(text or "").strip()
     safe_user_id = int(user_id or 0)
@@ -35446,6 +35472,7 @@ def _run_shortcut_lookup_delivery(*, user_id: int, text: str) -> int:
                 reply_markup={"inline_keyboard": _shortcut_build_pair_keyboard_rows(request_key)},
             )
             sent += 1
+            _shortcut_append_pending_to_redis(safe_user_id, request_key, lookup_text)
         except Exception as exc:
             logging.warning("shortcut_lookup send failed user_id=%s block=%s: %s", safe_user_id, sent, exc)
 

@@ -5050,23 +5050,39 @@ def _restore_pending_from_redis(user_id: int) -> None:
         client = get_redis_client()
         if client is None:
             return
-        raw = client.get(_dict_pending_redis_key(user_id))
-        if not raw:
-            return
-        entries = json.loads(raw)
-        if not isinstance(entries, list):
-            return
+
+        def _absorb_entries(raw_bytes, source_key: str) -> int:
+            if not raw_bytes:
+                return 0
+            entries = json.loads(raw_bytes)
+            if not isinstance(entries, list):
+                return 0
+            count = 0
+            for entry in entries:
+                k = entry.get("key")
+                if k and k not in pending_dictionary_lookup_requests:
+                    pending_dictionary_lookup_requests[k] = {
+                        "user_id": int(entry.get("user_id", user_id)),
+                        "text": str(entry.get("text") or "").strip(),
+                        "chat_id": entry.get("chat_id"),
+                        "message_id": entry.get("message_id"),
+                    }
+                    count += 1
+            return count
+
         restored = 0
-        for entry in entries:
-            k = entry.get("key")
-            if k and k not in pending_dictionary_lookup_requests:
-                pending_dictionary_lookup_requests[k] = {
-                    "user_id": int(entry.get("user_id", user_id)),
-                    "text": str(entry.get("text") or "").strip(),
-                    "chat_id": entry.get("chat_id"),
-                    "message_id": entry.get("message_id"),
-                }
-                restored += 1
+
+        # Read from bot_3.py-native pending key
+        restored += _absorb_entries(client.get(_dict_pending_redis_key(user_id)), "bot_pending")
+
+        # Read from shortcut pending key (written by backend_server.py) then clear it
+        shortcut_key = f"dict_pending_shortcut:{user_id}"
+        raw_shortcut = client.get(shortcut_key)
+        shortcut_count = _absorb_entries(raw_shortcut, "shortcut_pending")
+        if shortcut_count:
+            client.delete(shortcut_key)
+        restored += shortcut_count
+
         if restored:
             logging.info("dict_pending: restored %d request(s) from Redis for user_id=%s", restored, user_id)
     except Exception:
