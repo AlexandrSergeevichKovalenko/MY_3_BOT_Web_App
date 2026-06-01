@@ -14936,12 +14936,12 @@ async def admin_retag_command(update: Update, context: CallbackContext) -> None:
 
 
 async def _nightly_semantic_backfill_job(context: CallbackContext) -> None:
-    """Nightly cron: tag up to 100 untagged vocabulary entries (10 GPT calls max)."""
+    """Nightly cron: tag up to 300 untagged vocabulary entries (30 GPT calls max)."""
     admin_ids = list(get_admin_telegram_ids())
     if not admin_ids:
         return
     admin_chat_id = int(admin_ids[0])
-    await _run_semantic_retag_backfill(admin_chat_id=admin_chat_id, max_entries=100)
+    await _run_semantic_retag_backfill(admin_chat_id=admin_chat_id, max_entries=300)
 
 
 async def _send_image_quiz_for_target(
