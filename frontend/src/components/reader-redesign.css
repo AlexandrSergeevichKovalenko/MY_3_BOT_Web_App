@@ -79,11 +79,9 @@
 
 /* Fix gradient text title — background-clip:text uses hardcoded colors */
 .webapp-page.is-theme-light .webapp-reader .reader-lib-header-title {
-  background: none;
-  -webkit-background-clip: unset;
-  background-clip: unset;
-  -webkit-text-fill-color: #1a1208;
-  color: #1a1208;
+  color: #1a1208 !important;
+  background: none !important;
+  -webkit-text-fill-color: unset !important;
 }
 
 /* Fix hardcoded rgba(0,0,0,...) dark overlays in the add form */
@@ -141,10 +139,9 @@
   font-size: 24px;
   font-weight: 800;
   letter-spacing: -0.025em;
-  background: linear-gradient(135deg, #fff 0%, #a4b3d6 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
+  color: #F0F4FF;
+  background: none;
+  -webkit-text-fill-color: unset;
   line-height: 1.1;
 }
 
@@ -376,7 +373,7 @@
   flex: 1;
   height: 38px;
   padding: 0 14px;
-  border-radius: 11px;
+  border-radius: 19px;
   border: 1px solid var(--rd-border);
   background: var(--rd-surface);
   color: var(--rd-text);
@@ -398,10 +395,10 @@
 .webapp-reader .reader-lib-archive-toggle {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   height: 38px;
-  padding: 0 12px;
-  border-radius: 11px;
+  padding: 0 13px;
+  border-radius: 19px;
   border: 1px solid var(--rd-border);
   background: var(--rd-surface);
   color: var(--rd-text-muted);
@@ -409,12 +406,31 @@
   font-weight: 600;
   cursor: pointer;
   user-select: none;
+  white-space: nowrap;
+  transition: background .15s, border-color .15s, color .15s;
 }
 
-.webapp-reader .reader-lib-archive-toggle input {
+/* Custom checkbox indicator — hide native, show dot */
+.webapp-reader .reader-lib-archive-toggle input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
   width: 14px;
   height: 14px;
-  accent-color: var(--rd-accent);
+  border-radius: 50%;
+  border: 1.5px solid var(--rd-border-hi);
+  background: transparent;
+  flex-shrink: 0;
+  transition: background .15s, border-color .15s;
+}
+
+.webapp-reader .reader-lib-archive-toggle input[type="checkbox"]:checked {
+  background: var(--rd-accent);
+  border-color: var(--rd-accent);
+}
+
+.webapp-reader .reader-lib-archive-toggle:has(input:checked) {
+  border-color: var(--rd-accent);
+  color: var(--rd-accent);
 }
 
 
@@ -2680,13 +2696,12 @@
    ║  defaults to dark-theme vars (white). Override for visibility.          ║
    ╚═══════════════════════════════════════════════════════════════════════╝ */
 
-/* Header title gradient */
+/* Header title — plain color, no background-clip (unreliable in iOS WebView) */
 .webapp-reader[data-reader-theme="sepia"] .reader-lib-header-title,
 .webapp-reader[data-reader-theme="cream"] .reader-lib-header-title {
-  background: linear-gradient(135deg, var(--rd-paper-text) 0%, var(--rd-paper-muted) 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
+  color: var(--rd-paper-text) !important;
+  background: none !important;
+  -webkit-text-fill-color: unset !important;
 }
 
 /* Library card titles and meta */
