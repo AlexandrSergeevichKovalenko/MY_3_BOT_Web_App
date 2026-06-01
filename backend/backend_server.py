@@ -34202,6 +34202,10 @@ _SHORTCUT_FAST_PATH_EXECUTOR = ThreadPoolExecutor(
     max_workers=4,
     thread_name_prefix="shortcut-fast-path",
 )
+_SHORTCUT_ENQUEUE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=2,
+    thread_name_prefix="shortcut-enqueue",
+)
 
 
 def _shortcut_run_with_timeout(stage: str, fn):
@@ -34735,11 +34739,7 @@ def _start_shortcut_lookup_enqueue_runner(*, user_id: int, text: str) -> str:
                 request_key,
             )
 
-    threading.Thread(
-        target=_worker,
-        name=f"shortcut-lookup-enqueue-{request_key}",
-        daemon=True,
-    ).start()
+    _SHORTCUT_ENQUEUE_EXECUTOR.submit(_worker)
     return request_key
 
 
