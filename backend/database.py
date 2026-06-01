@@ -10371,6 +10371,60 @@ def _map_translation_check_item_row(row) -> dict | None:
     }
 
 
+def insert_translation_check_items(
+    *,
+    session_id: int,
+    items: list[dict] | None,
+) -> int:
+    normalized_items = items if isinstance(items, list) else []
+    if not normalized_items:
+        return 0
+
+    item_rows: list[tuple[int, int, int | None, int | None, int | None, str, str]] = []
+    for index, item in enumerate(normalized_items):
+        if not isinstance(item, dict):
+            continue
+        item_rows.append(
+            (
+                int(session_id),
+                int(item.get("item_order", index)),
+                int(item["sentence_number"]) if item.get("sentence_number") is not None else None,
+                int(item["id_for_mistake_table"]) if item.get("id_for_mistake_table") is not None else None,
+                int(item["source_sentence_id"]) if item.get("source_sentence_id") is not None else None,
+                str(item.get("original_text") or "").strip(),
+                str(item.get("translation") or item.get("user_translation") or "").strip(),
+            )
+        )
+
+    if not item_rows:
+        return 0
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            execute_values(
+                cursor,
+                """
+                INSERT INTO bt_3_translation_check_items (
+                    check_session_id,
+                    item_order,
+                    sentence_number,
+                    sentence_id_for_mistake_table,
+                    source_daily_sentence_id,
+                    original_text,
+                    user_translation,
+                    status,
+                    created_at,
+                    updated_at
+                )
+                VALUES %s
+                """,
+                item_rows,
+                template="(%s, %s, %s, %s, %s, %s, %s, 'pending', NOW(), NOW())",
+                page_size=200,
+            )
+    return len(item_rows)
+
+
 def create_translation_check_session(
     *,
     user_id: int,
@@ -10378,13 +10432,15 @@ def create_translation_check_session(
     source_session_id: str | None,
     source_lang: str | None,
     target_lang: str | None,
-    items: list[dict],
+    items: list[dict] | None,
+    total_items: int | None = None,
     send_private_grammar_text: bool = False,
     original_text_bundle: str | None = None,
     user_translation_bundle: str | None = None,
+    materialize_items: bool = True,
 ) -> dict | None:
     normalized_items = items if isinstance(items, list) else []
-    total_items = len(normalized_items)
+    normalized_total_items = max(0, int(total_items)) if total_items is not None else len(normalized_items)
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -10419,7 +10475,7 @@ def create_translation_check_session(
                     str(source_session_id or "").strip() or None,
                     str(source_lang or "").strip().lower() or None,
                     str(target_lang or "").strip().lower() or None,
-                    max(0, int(total_items)),
+                    normalized_total_items,
                     bool(send_private_grammar_text),
                     str(original_text_bundle or "").strip() or None,
                     str(user_translation_bundle or "").strip() or None,
@@ -10430,43 +10486,41 @@ def create_translation_check_session(
                 return None
             session_id = int(session_row[0])
 
-            if normalized_items:
-                item_rows: list[tuple[int, int, int | None, int | None, int | None, str, str]] = []
-                for index, item in enumerate(normalized_items):
-                    item_rows.append(
-                        (
-                            session_id,
-                            int(item.get("item_order", index)),
-                            int(item["sentence_number"]) if item.get("sentence_number") is not None else None,
-                            int(item["id_for_mistake_table"]) if item.get("id_for_mistake_table") is not None else None,
-                            int(item["source_sentence_id"]) if item.get("source_sentence_id") is not None else None,
-                            str(item.get("original_text") or "").strip(),
-                            str(item.get("translation") or item.get("user_translation") or "").strip(),
-                        )
-                    )
-                execute_values(
-                    cursor,
-                    """
-                    INSERT INTO bt_3_translation_check_items (
-                        check_session_id,
-                        item_order,
-                        sentence_number,
-                        sentence_id_for_mistake_table,
-                        source_daily_sentence_id,
-                        original_text,
-                        user_translation,
-                        status,
-                        created_at,
-                        updated_at
-                    )
-                    VALUES %s
-                    """,
-                    item_rows,
-                    template="(%s, %s, %s, %s, %s, %s, %s, 'pending', NOW(), NOW())",
-                    page_size=200,
-                )
+    if materialize_items and normalized_items:
+        insert_translation_check_items(session_id=session_id, items=normalized_items)
 
     return get_translation_check_session(session_id=session_id, user_id=int(user_id))
+
+
+def update_translation_check_session_total_items(
+    *,
+    session_id: int,
+    total_items: int,
+) -> dict | None:
+    normalized_total_items = max(0, int(total_items))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_translation_check_sessions
+                SET
+                    total_items = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                RETURNING
+                    id, user_id, username, source_session_id, source_lang, target_lang,
+                    status, total_items, completed_items, failed_items, send_private_grammar_text,
+                    original_text_bundle, user_translation_bundle, last_error, started_at,
+                    finished_at, created_at, updated_at, summary_json,
+                    completion_side_effects_started_at, completion_side_effects_done_at;
+                """,
+                (
+                    normalized_total_items,
+                    int(session_id),
+                ),
+            )
+            row = cursor.fetchone()
+    return _map_translation_check_session_row(row)
 
 
 def get_translation_check_session(*, session_id: int, user_id: int | None = None) -> dict | None:

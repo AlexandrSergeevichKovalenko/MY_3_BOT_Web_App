@@ -139,6 +139,7 @@ from backend.job_queue import (
     get_translation_check_status_card,
     get_translation_check_terminal_summary,
     get_translation_check_poll_hint_state,
+    get_translation_check_staging_payload,
     get_translation_check_start_idempotency_ttl_sec,
     get_translation_check_state,
     get_translation_check_dispatch_state,
@@ -163,6 +164,8 @@ from backend.job_queue import (
     set_translation_check_terminal_summary,
     set_translation_check_completion_state,
     set_translation_check_dispatch_state,
+    set_translation_check_staging_payload,
+    clear_translation_check_staging_payload,
     set_translation_check_poll_hint_state,
     set_translation_check_state,
     set_session_presence_card,
@@ -524,6 +527,7 @@ from backend.database import (
     archive_reader_library_document,
     delete_reader_library_document,
     create_translation_check_session,
+    insert_translation_check_items,
     get_translation_check_session,
     get_translation_check_session_with_items,
     get_translation_check_session_status,
@@ -533,6 +537,7 @@ from backend.database import (
     get_latest_translation_check_session_status,
     get_latest_translation_check_session_with_items,
     update_translation_check_session_status,
+    update_translation_check_session_total_items,
     claim_translation_check_session_runner,
     touch_translation_check_session_heartbeat,
     complete_translation_check_session,
@@ -21926,6 +21931,425 @@ def _get_matching_active_translation_check_session(
     return session, items
 
 
+def _hydrate_translation_check_session_items_from_stage(
+    *,
+    session_id: int,
+    session: dict[str, Any],
+    request_id: str | None = None,
+    correlation_id: str | None = None,
+) -> list[dict[str, Any]] | None:
+    existing_items = list_translation_check_items(session_id=int(session_id))
+    if existing_items:
+        return existing_items
+
+    stage_payload = get_translation_check_staging_payload(int(session_id))
+    if not isinstance(stage_payload, dict):
+        return None
+
+    raw_translations = stage_payload.get("translations") or []
+    if not isinstance(raw_translations, list) or not raw_translations:
+        logging.warning(
+            "Translation check staging payload missing translations: session=%s request_id=%s correlation_id=%s",
+            int(session_id),
+            request_id,
+            correlation_id,
+        )
+        return None
+
+    source_session_id = str(
+        session.get("source_session_id")
+        or stage_payload.get("source_session_id")
+        or stage_payload.get("requested_source_session_id")
+        or ""
+    ).strip() or None
+    source_lang = str(session.get("source_lang") or stage_payload.get("source_lang") or "ru").strip().lower() or "ru"
+    target_lang = str(session.get("target_lang") or stage_payload.get("target_lang") or "de").strip().lower() or "de"
+    user_id = int(session.get("user_id") or stage_payload.get("user_id") or 0)
+    allowed_by_mistake_id: dict[int, int] = {}
+    if user_id > 0:
+        try:
+            _source_session_id, allowed_by_mistake_id = _load_user_translation_sentence_map(
+                int(user_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                source_session_id=source_session_id,
+            )
+        except Exception:
+            logging.warning(
+                "Translation check staged hydration map lookup failed: session=%s request_id=%s correlation_id=%s",
+                int(session_id),
+                request_id,
+                correlation_id,
+                exc_info=True,
+            )
+
+    normalized_items = _normalize_translation_check_entries(
+        raw_translations,
+        allowed_by_mistake_id=allowed_by_mistake_id,
+    )
+    if not normalized_items:
+        return None
+
+    inserted_count = insert_translation_check_items(
+        session_id=int(session_id),
+        items=normalized_items,
+    )
+    if inserted_count <= 0:
+        return None
+
+    if len(normalized_items) != int(session.get("total_items") or 0):
+        updated_session = update_translation_check_session_total_items(
+            session_id=int(session_id),
+            total_items=len(normalized_items),
+        )
+        if isinstance(updated_session, dict):
+            session = updated_session
+
+    clear_translation_check_staging_payload(int(session_id))
+    return list_translation_check_items(session_id=int(session_id))
+
+
+def _start_webapp_translation_check_queue_first(
+    *,
+    payload: dict[str, Any],
+    request_id: str | None,
+    correlation_id: str,
+    started_perf: float,
+    init_data: str,
+    translations: list[dict[str, Any]],
+    send_private_grammar_text: bool,
+    original_text: str | None,
+    user_translation: str | None,
+    user_id: int,
+    username: str | None,
+) -> tuple[Any, int]:
+    requested_source_session_id = str(payload.get("session_id") or "").strip() or None
+    source_lang, target_lang, _profile, language_pair_lookup_mode = _get_user_language_pair_for_webapp_request(
+        int(user_id),
+        payload=payload,
+    )
+    existing_lookup_started_perf = time.perf_counter()
+    existing_session, existing_items = _get_matching_active_translation_check_session(
+        user_id=int(user_id),
+        source_session_id=requested_source_session_id,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        normalized_items=translations,
+    )
+    existing_lookup_duration_ms = _elapsed_ms_since(existing_lookup_started_perf)
+    if existing_session:
+        session_id = int(existing_session["id"])
+        set_translation_check_state(
+            session_id,
+            _build_translation_check_state_payload(existing_session) or {},
+            terminal=str(existing_session.get("status") or "").strip().lower() in {"done", "failed", "canceled"},
+        )
+        set_translation_check_completion_state(
+            session_id,
+            _build_translation_check_completion_state_payload(
+                terminal_ready=str(existing_session.get("status") or "").strip().lower() in {"done", "failed", "canceled"},
+                completion_done=bool(existing_session.get("completion_side_effects_done_at")),
+                summary_available=bool(existing_session.get("summary_json")),
+            ),
+        )
+        set_translation_check_poll_hint_state(
+            session_id,
+            _build_translation_check_poll_hint_payload(str(existing_session.get("status") or "").strip().lower()),
+        )
+        _write_translation_check_read_models(
+            existing_session,
+            pending_items_override=max(
+                0,
+                len(existing_items)
+                - int(existing_session.get("completed_items") or 0)
+                - int(existing_session.get("failed_items") or 0),
+            ),
+            summary_payload=(
+                dict(existing_session.get("summary_json") or {})
+                if isinstance(existing_session.get("summary_json"), dict) and existing_session.get("summary_json")
+                else None
+            ),
+        )
+        response_payload = _build_translation_check_payload(
+            session=existing_session,
+            items=existing_items,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            include_items=False,
+        )
+        _log_flow_observation(
+            "translation_check",
+            "check_start_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            session_id=session_id,
+            check_id=session_id,
+            source_session_id=requested_source_session_id,
+            items_requested=len(translations),
+            requested_source_session_id=requested_source_session_id,
+            items_total=len(existing_items),
+            db_lookup_duration_ms=existing_lookup_duration_ms,
+            existing_session_lookup_duration_ms=existing_lookup_duration_ms,
+            language_pair_lookup_mode=language_pair_lookup_mode,
+            response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+            final_status="reused",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=200,
+        )
+        return jsonify(response_payload), 200
+
+    create_session_started_perf = time.perf_counter()
+    session = create_translation_check_session(
+        user_id=int(user_id),
+        username=username,
+        source_session_id=requested_source_session_id,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        items=[],
+        total_items=len(translations),
+        send_private_grammar_text=send_private_grammar_text,
+        original_text_bundle=original_text,
+        user_translation_bundle=user_translation,
+        materialize_items=False,
+    )
+    create_session_duration_ms = _elapsed_ms_since(create_session_started_perf)
+    if not session:
+        _log_flow_observation(
+            "translation_check",
+            "check_start_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            items_requested=len(translations),
+            items_total=len(translations),
+            requested_source_session_id=requested_source_session_id,
+            source_session_id=requested_source_session_id,
+            existing_session_lookup_duration_ms=existing_lookup_duration_ms,
+            db_update_duration_ms=create_session_duration_ms,
+            language_pair_lookup_mode=language_pair_lookup_mode,
+            final_status="error",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=500,
+        )
+        return jsonify({"error": "Не удалось создать сессию проверки перевода."}), 500
+
+    session_id = int(session["id"])
+    stage_started_perf = time.perf_counter()
+    stage_payload = set_translation_check_staging_payload(
+        session_id,
+        {
+            "user_id": int(user_id),
+            "username": username,
+            "source_session_id": requested_source_session_id,
+            "source_lang": source_lang,
+            "target_lang": target_lang,
+            "translations": translations,
+            "send_private_grammar_text": bool(send_private_grammar_text),
+            "original_text_bundle": original_text,
+            "user_translation_bundle": user_translation,
+            "requested_source_session_id": requested_source_session_id,
+        },
+    )
+    stage_duration_ms = _elapsed_ms_since(stage_started_perf)
+    if not stage_payload:
+        failed_session = update_translation_check_session_status(
+            session_id=session_id,
+            status="failed",
+            last_error="translation_check_staging_failed",
+            finished=True,
+        )
+        if failed_session:
+            set_translation_check_state(
+                session_id,
+                _build_translation_check_state_payload(failed_session, terminal_ready=True) or {},
+                terminal=True,
+            )
+            set_translation_check_completion_state(
+                session_id,
+                _build_translation_check_completion_state_payload(
+                    terminal_ready=True,
+                    completion_done=bool(failed_session.get("completion_side_effects_done_at")),
+                    summary_available=bool(failed_session.get("summary_json")),
+                ),
+            )
+            set_translation_check_poll_hint_state(
+                session_id,
+                _build_translation_check_poll_hint_payload("failed"),
+            )
+            _write_translation_check_read_models(
+                failed_session,
+                pending_items_override=0,
+                running_items_override=0,
+            )
+        return jsonify(
+            {
+                "error": "Не удалось подготовить запрос проверки перевода.",
+                "code": "translation_check_staging_failed",
+            }
+        ), 503
+
+    set_translation_check_state(
+        session_id,
+        _build_translation_check_state_payload(session) or {},
+        terminal=False,
+    )
+    set_translation_check_dispatch_state(
+        session_id,
+        _build_translation_check_dispatch_state_payload(
+            dispatch_status="queued",
+            runtime_status="queued",
+        ),
+    )
+    set_translation_check_completion_state(
+        session_id,
+        _build_translation_check_completion_state_payload(
+            terminal_ready=False,
+            completion_job_enqueued=False,
+            completion_done=False,
+            summary_available=False,
+        ),
+    )
+    set_translation_check_poll_hint_state(
+        session_id,
+        _build_translation_check_poll_hint_payload("queued"),
+    )
+    _write_translation_check_read_models(
+        session,
+        pending_items_override=int(session.get("total_items") or 0),
+        running_items_override=0,
+    )
+    accepted_at_ms = _to_epoch_ms()
+    _remember_translation_check_accepted_at(session_id, accepted_at_ms)
+    runner_dispatch_started_perf = time.perf_counter()
+    try:
+        dispatch_result = _dispatch_translation_check_runner_async(
+            session_id,
+            correlation_id=correlation_id,
+            request_id=request_id,
+            accepted_at_ms=accepted_at_ms,
+        )
+        dispatch_job_id = str((dispatch_result or {}).get("job_id") or "").strip()
+        runtime_after_dispatch = get_translation_check_session_runtime(session_id=int(session_id)) or {}
+        runtime_dispatched_job_id = str(runtime_after_dispatch.get("dispatched_job_id") or "").strip()
+        runtime_worker_job_id = str(runtime_after_dispatch.get("worker_job_id") or "").strip()
+        if not (dispatch_job_id or runtime_dispatched_job_id or runtime_worker_job_id):
+            raise RuntimeError("translation_check_dispatch_missing_job_id")
+    except Exception as exc:
+        runner_dispatch_duration_ms = _elapsed_ms_since(runner_dispatch_started_perf)
+        clear_translation_check_staging_payload(session_id)
+        logging.exception(
+            "Translation check dispatch failed in queue-first check_start: session=%s error=%s",
+            session_id,
+            exc,
+        )
+        failed_session = update_translation_check_session_status(
+            session_id=session_id,
+            status="failed",
+            last_error=f"translation_check_dispatch_failed:{exc}",
+            finished=True,
+        )
+        if failed_session:
+            set_translation_check_state(
+                session_id,
+                _build_translation_check_state_payload(failed_session, terminal_ready=True) or {},
+                terminal=True,
+            )
+            set_translation_check_dispatch_state(
+                session_id,
+                _build_translation_check_dispatch_state_payload(
+                    dispatch_status="failed",
+                    runtime_status="failed",
+                ),
+            )
+            set_translation_check_completion_state(
+                session_id,
+                _build_translation_check_completion_state_payload(
+                    terminal_ready=True,
+                    completion_done=bool(failed_session.get("completion_side_effects_done_at")),
+                    summary_available=bool(failed_session.get("summary_json")),
+                ),
+            )
+            set_translation_check_poll_hint_state(
+                session_id,
+                _build_translation_check_poll_hint_payload("failed"),
+            )
+            _write_translation_check_read_models(
+                failed_session,
+                pending_items_override=0,
+                running_items_override=0,
+                summary_payload=(
+                    dict(failed_session.get("summary_json") or {})
+                    if isinstance(failed_session.get("summary_json"), dict) and failed_session.get("summary_json")
+                    else None
+                ),
+            )
+        set_translation_check_job_status(
+            session_id,
+            status="failed",
+            error=f"translation_check_dispatch_failed:{exc}",
+        )
+        _log_flow_observation(
+            "translation_check",
+            "check_start_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            session_id=session_id,
+            check_id=session_id,
+            source_session_id=requested_source_session_id,
+            items_requested=len(translations),
+            items_total=int(session.get("total_items") or 0),
+            start_accepted_ts_ms=accepted_at_ms,
+            existing_session_lookup_duration_ms=existing_lookup_duration_ms,
+            db_update_duration_ms=create_session_duration_ms,
+            staging_duration_ms=stage_duration_ms,
+            runner_dispatch_duration_ms=runner_dispatch_duration_ms,
+            language_pair_lookup_mode=language_pair_lookup_mode,
+            final_status="error",
+            error_code="translation_check_dispatch_failed",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=503,
+        )
+        return jsonify(
+            {
+                "error": "Не удалось запустить фоновую проверку перевода.",
+                "code": "translation_check_dispatch_failed",
+            }
+        ), 503
+    runner_dispatch_duration_ms = _elapsed_ms_since(runner_dispatch_started_perf)
+    response_payload = _build_translation_check_payload(
+        session=session,
+        items=[],
+        source_lang=source_lang,
+        target_lang=target_lang,
+        include_items=False,
+    )
+    _log_flow_observation(
+        "translation_check",
+        "check_start_completed",
+        request_id=request_id,
+        correlation_id=correlation_id,
+        user_id=int(user_id),
+        session_id=session_id,
+        check_id=session_id,
+        source_session_id=requested_source_session_id,
+        items_requested=len(translations),
+        items_total=int(session.get("total_items") or 0),
+        start_accepted_ts_ms=accepted_at_ms,
+        existing_session_lookup_duration_ms=existing_lookup_duration_ms,
+        db_update_duration_ms=create_session_duration_ms,
+        staging_duration_ms=stage_duration_ms,
+        runner_dispatch_duration_ms=runner_dispatch_duration_ms,
+        language_pair_lookup_mode=language_pair_lookup_mode,
+        response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
+        final_status="accepted",
+        duration_ms=_elapsed_ms_since(started_perf),
+        http_status=200,
+    )
+    return jsonify(response_payload), 200
+
+
 def _queue_private_grammar_explanation_for_result(
     *,
     user_id: int,
@@ -22357,6 +22781,92 @@ def _run_translation_check_session(
 
         items_lookup_started_perf = time.perf_counter()
         items = list_translation_check_items(session_id=int(session_id))
+        if not items:
+            hydration_started_perf = time.perf_counter()
+            hydrated_items = _hydrate_translation_check_session_items_from_stage(
+                session_id=int(session_id),
+                session=session,
+                request_id=resolved_request_id,
+                correlation_id=resolved_correlation_id,
+            )
+            hydration_duration_ms = _elapsed_ms_since(hydration_started_perf)
+            if hydrated_items:
+                items = hydrated_items
+                logging.info(
+                    "translation_check staged payload hydrated session=%s request_id=%s correlation_id=%s items=%s duration_ms=%s",
+                    int(session_id),
+                    resolved_request_id,
+                    resolved_correlation_id,
+                    len(items),
+                    hydration_duration_ms,
+                )
+            else:
+                items_lookup_duration_ms = _elapsed_ms_since(items_lookup_started_perf)
+                failed_session = complete_translation_check_session(
+                    session_id=int(session_id),
+                    worker_job_id=worker_job_id,
+                    status="failed",
+                    last_error="Пустая сессия проверки перевода.",
+                )
+                if failed_session:
+                    set_translation_check_state(
+                        int(session_id),
+                        _build_translation_check_state_payload(failed_session, terminal_ready=True) or {},
+                        terminal=True,
+                    )
+                    set_translation_check_dispatch_state(
+                        int(session_id),
+                        dispatch_state_payload := _build_translation_check_dispatch_state_payload(
+                            dispatch_status="failed",
+                            existing_payload=dispatch_state_payload,
+                            worker_job_id=worker_job_id,
+                            runtime_status="failed",
+                            last_heartbeat_ms=_to_epoch_ms(),
+                        ),
+                    )
+                    _log_translation_check_dispatch_transition(
+                        "failed",
+                        session_id=int(session_id),
+                        worker_job_id=worker_job_id,
+                        message_id=dispatch_state_payload.get("message_id"),
+                        queue_name=dispatch_state_payload.get("queue_name") or _TRANSLATION_CHECK_QUEUE_NAME,
+                        correlation_id=resolved_correlation_id,
+                        request_id=resolved_request_id,
+                        dispatch_generation=dispatch_state_payload.get("dispatch_generation"),
+                        redispatch_count=dispatch_state_payload.get("redispatch_count"),
+                        last_force_dispatch_at_ms=dispatch_state_payload.get("last_force_dispatch_at_ms"),
+                    )
+                    set_translation_check_completion_state(
+                        int(session_id),
+                        _build_translation_check_completion_state_payload(
+                            terminal_ready=True,
+                            completion_done=bool(failed_session.get("completion_side_effects_done_at")),
+                            summary_available=bool(failed_session.get("summary_json")),
+                        ),
+                    )
+                    set_translation_check_poll_hint_state(
+                        int(session_id),
+                        _build_translation_check_poll_hint_payload("failed"),
+                    )
+                    _write_translation_check_read_models(failed_session)
+                terminal_outcome = "error"
+                _log_flow_observation(
+                    "translation_check",
+                    "runner_finished",
+                    request_id=resolved_request_id,
+                    correlation_id=resolved_correlation_id,
+                    user_id=session_user_id,
+                    session_id=int(session_id),
+                    check_id=int(session_id),
+                    items_total=0,
+                    runner_start_delay_ms=runner_start_delay_ms,
+                    items_lookup_duration_ms=items_lookup_duration_ms,
+                    db_update_duration_ms=0,
+                    terminal_outcome=terminal_outcome,
+                    error_code="translation_check_payload_missing",
+                    duration_ms=_elapsed_ms_since(runner_started_perf),
+                )
+                return
         items_lookup_duration_ms = _elapsed_ms_since(items_lookup_started_perf)
         if not items:
             session_status_update_started_perf = time.perf_counter()
@@ -23113,6 +23623,21 @@ def start_webapp_translation_check():
             http_status=400,
         )
         return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    if is_translation_check_async_enabled():
+        return _start_webapp_translation_check_queue_first(
+            payload=payload,
+            request_id=request_id,
+            correlation_id=correlation_id,
+            started_perf=started_perf,
+            init_data=init_data,
+            translations=translations,
+            send_private_grammar_text=send_private_grammar_text,
+            original_text=original_text,
+            user_translation=user_translation,
+            user_id=int(user_id),
+            username=username,
+        )
 
     source_lang, target_lang, _profile, language_pair_lookup_mode = _get_user_language_pair_for_webapp_request(
         int(user_id),

@@ -72,6 +72,10 @@ _TRANSLATION_CHECK_COMPLETION_ENQUEUE_TTL_SEC = max(
     30,
     int((os.getenv("TRANSLATION_CHECK_COMPLETION_ENQUEUE_TTL_SEC") or "120").strip() or "120"),
 )
+_TRANSLATION_CHECK_STAGING_TTL_SEC = max(
+    300,
+    int((os.getenv("TRANSLATION_CHECK_STAGING_TTL_SEC") or "21600").strip() or "21600"),
+)
 _ACTIVE_TRANSLATION_SESSION_STATE_TTL_SEC = max(
     60,
     min(
@@ -1567,6 +1571,26 @@ def enqueue_translation_check_job(
 
 def _translation_check_completion_enqueue_key(session_id: int) -> str:
     return translation_check_completion_enqueue_idempotency_key(int(session_id))
+
+
+def _translation_check_staging_key(session_id: int) -> str:
+    return f"translation:staging:{int(session_id)}"
+
+
+def get_translation_check_staging_payload(session_id: int) -> dict[str, Any] | None:
+    return _load_json_payload(_translation_check_staging_key(int(session_id)))
+
+
+def set_translation_check_staging_payload(session_id: int, payload: dict[str, Any]) -> dict[str, Any] | None:
+    return _store_json_payload(
+        _translation_check_staging_key(int(session_id)),
+        payload,
+        ttl_sec=_TRANSLATION_CHECK_STAGING_TTL_SEC,
+    )
+
+
+def clear_translation_check_staging_payload(session_id: int) -> None:
+    _delete_json_payload(_translation_check_staging_key(int(session_id)))
 
 
 def enqueue_translation_check_completion_job(
