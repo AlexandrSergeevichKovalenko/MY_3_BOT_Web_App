@@ -35427,17 +35427,22 @@ def _shortcut_append_pending_to_redis(user_id: int, request_key: str, lookup_tex
     try:
         client = get_redis_client()
         if client is None:
+            logging.warning("shortcut_pending: redis client is None, cannot store pending user_id=%s key=%s", user_id, request_key)
             return
         redis_key = _shortcut_pending_redis_key(user_id)
         raw = client.get(redis_key)
-        entries = json.loads(raw) if raw else []
-        if not isinstance(entries, list):
-            entries = []
-        entries.append({"key": request_key, "user_id": user_id, "text": lookup_text})
-        client.setex(redis_key, _SHORTCUT_PENDING_REDIS_TTL, json.dumps(entries, ensure_ascii=False))
+        existing = json.loads(raw) if raw else []
+        if not isinstance(existing, list):
+            existing = []
+        existing.append({"key": request_key, "user_id": user_id, "text": lookup_text})
+        client.setex(redis_key, _SHORTCUT_PENDING_REDIS_TTL, json.dumps(existing, ensure_ascii=False))
+        logging.info(
+            "shortcut_pending: stored user_id=%s key=%s word=%r total_pending=%d redis_key=%s",
+            user_id, request_key, lookup_text[:30], len(existing), redis_key,
+        )
     except Exception:
-        logging.debug(
-            "shortcut_pending: redis append failed user_id=%s key=%s", user_id, request_key, exc_info=True
+        logging.warning(
+            "shortcut_pending: redis append FAILED user_id=%s key=%s", user_id, request_key, exc_info=True
         )
 
 
