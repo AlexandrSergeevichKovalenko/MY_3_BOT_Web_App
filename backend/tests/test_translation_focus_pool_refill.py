@@ -126,8 +126,13 @@ class TranslationFocusPoolRefillTests(unittest.TestCase):
     def test_inventory_deficit_can_trigger_daytime_refill_without_background_fill(self):
         fake_redis = _FakeRedis()
         fake_thread = Mock()
+        log_calls = []
 
-        with patch.object(server, "_get_translation_focus_pool_payload_by_key", return_value={"key": "focus_1", "kind": "preset"}), \
+        def fake_log_flow_observation(flow, stage, **fields):
+            log_calls.append((flow, stage, fields))
+
+        with patch.object(server, "_log_flow_observation", side_effect=fake_log_flow_observation), \
+             patch.object(server, "_get_translation_focus_pool_payload_by_key", return_value={"key": "focus_1", "kind": "preset"}), \
              patch.object(server, "_build_translation_focus_pool_bucket_targets", return_value=({("focus_1", "b1"): 12}, {("focus_1", "b1"): 24})), \
              patch.object(server, "get_redis_client", return_value=fake_redis), \
              patch.object(server, "can_enqueue_background_jobs", return_value=False), \
@@ -145,6 +150,45 @@ class TranslationFocusPoolRefillTests(unittest.TestCase):
         self.assertEqual(result["trigger_reason"], "inventory_deficit")
         self.assertEqual(len(fake_redis.set_calls), 1)
         fake_thread.start.assert_called_once()
+        trigger_stages = [stage for flow, stage, _fields in log_calls if flow == "translation_focus_pool_refill"]
+        self.assertIn("trigger_evaluated", trigger_stages)
+        self.assertIn("trigger_enqueue_start", trigger_stages)
+        self.assertIn("trigger_finish", trigger_stages)
+
+    def test_refill_dispatch_emits_stage_logs(self):
+        log_calls = []
+
+        def fake_log_flow_observation(flow, stage, **fields):
+            log_calls.append((flow, stage, fields))
+
+        async def fake_prewarm(**_kwargs):
+            return {
+                "ok": True,
+                "focuses": 1,
+                "levels": 1,
+                "generated": 1,
+                "upserted": 1,
+                "bucket_results": [{"focus_key": "focus_1", "level": "b1"}],
+                "elapsed_ms": 11,
+            }
+
+        with patch.object(server, "_log_flow_observation", side_effect=fake_log_flow_observation), \
+             patch.object(server, "TRANSLATION_FOCUS_POOL_PREWARM_ENABLED", True), \
+             patch.object(server, "_should_run_sentence_prewarm_now", return_value=True), \
+             patch.object(server, "_list_translation_focus_pool_refill_candidates", return_value=[{"key": "focus_1", "kind": "preset"}]), \
+             patch.object(server, "_build_translation_focus_pool_bucket_targets", return_value=({("focus_1", "b1"): 8}, {("focus_1", "b1"): 12})), \
+             patch.object(server, "_upsert_translation_focus_pool_daily_snapshot_from_inventory", return_value=1), \
+             patch.object(server, "prewarm_shared_translation_sentence_pool", side_effect=fake_prewarm):
+            result = server._dispatch_translation_focus_pool_refill(force=True, tz_name="Europe/Vienna")
+
+        self.assertTrue(result["ok"])
+        stages = [stage for flow, stage, _fields in log_calls if flow == "translation_focus_pool_refill"]
+        self.assertIn("dispatch_start", stages)
+        self.assertIn("candidate_selection", stages)
+        self.assertIn("target_buckets_computed", stages)
+        self.assertIn("generation_finished", stages)
+        self.assertIn("snapshot_persisted", stages)
+        self.assertIn("dispatch_finish", stages)
 
     def test_prewarm_budget_consumes_upserted_inventory_growth(self):
         fake_conn = _FakeConnection()
@@ -164,8 +208,13 @@ class TranslationFocusPoolRefillTests(unittest.TestCase):
                 {"sentence": "Satz drei."},
             ],
         ])
+        log_calls = []
 
-        with patch.object(workflow, "db_acquire_scope", self._fake_db_scope), \
+        def fake_log_flow_observation(flow, stage, **fields):
+            log_calls.append((flow, stage, fields))
+
+        with patch.object(workflow, "_log_flow_observation", side_effect=fake_log_flow_observation), \
+             patch.object(workflow, "db_acquire_scope", self._fake_db_scope), \
              patch.object(workflow, "get_db_connection", return_value=fake_conn), \
              patch.object(workflow, "_load_skill_catalog_with_cursor", return_value=[]), \
              patch.object(workflow, "_count_shared_sentence_pool_entries_with_cursor", side_effect=[0, 1, 2]), \
@@ -187,6 +236,13 @@ class TranslationFocusPoolRefillTests(unittest.TestCase):
         self.assertEqual(result["upserted"], 2)
         self.assertEqual(result["bucket_results"][0]["ready_after"], 2)
         self.assertEqual(result["bucket_results"][0]["generation_attempts"], 2)
+        workflow_stages = [stage for flow, stage, _fields in log_calls if flow == "translation_focus_pool_refill"]
+        self.assertIn("start", workflow_stages)
+        self.assertIn("bucket_start", workflow_stages)
+        self.assertIn("bucket_generation_attempt", workflow_stages)
+        self.assertIn("bucket_generation_result", workflow_stages)
+        self.assertIn("bucket_finish", workflow_stages)
+        self.assertIn("finish", workflow_stages)
 
     def test_admin_report_scheduler_runs_refill_before_report(self):
         calls = []

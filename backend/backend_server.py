@@ -18269,12 +18269,30 @@ def _maybe_trigger_translation_focus_pool_deficit_refill(
     readiness_diagnostics: dict[str, Any] | None,
     background_fill_required: bool,
 ) -> dict[str, Any]:
+    started_perf = time.perf_counter()
     normalized_focus_key = str(focus_key or "").strip()
     normalized_level = str(level or "").strip().lower()
+    diagnostics = dict(readiness_diagnostics or {})
     if not normalized_focus_key or not normalized_level:
+        _log_translation_focus_pool_refill_stage(
+            "trigger_finish",
+            duration_ms=_elapsed_ms_since(started_perf),
+            triggered=False,
+            reason="not_applicable",
+            focus_key=normalized_focus_key or None,
+            level=normalized_level or None,
+        )
         return {"ok": True, "triggered": False, "reason": "not_applicable"}
     focus_payload = _get_translation_focus_pool_payload_by_key(normalized_focus_key)
     if not focus_payload:
+        _log_translation_focus_pool_refill_stage(
+            "trigger_finish",
+            duration_ms=_elapsed_ms_since(started_perf),
+            triggered=False,
+            reason="no_shared_pool_bucket",
+            focus_key=normalized_focus_key,
+            level=normalized_level,
+        )
         return {"ok": True, "triggered": False, "reason": "no_shared_pool_bucket"}
     low_watermark_by_bucket, _target_ready_by_bucket = _build_translation_focus_pool_bucket_targets(
         [focus_payload],
@@ -18282,13 +18300,32 @@ def _maybe_trigger_translation_focus_pool_deficit_refill(
     )
     bucket_key = (normalized_focus_key, normalized_level)
     low_watermark = int(low_watermark_by_bucket.get(bucket_key) or TRANSLATION_FOCUS_POOL_PREWARM_TARGET_PER_BUCKET)
-    diagnostics = dict(readiness_diagnostics or {})
     has_inventory_signal = "pool_ready_before" in diagnostics
     try:
         pool_ready_before = int(diagnostics.get("pool_ready_before") or 0)
     except Exception:
         pool_ready_before = 0
+    _log_translation_focus_pool_refill_stage(
+        "trigger_evaluated",
+        source_lang=str(source_lang or "").strip().lower() or "ru",
+        target_lang=str(target_lang or "").strip().lower() or "de",
+        focus_key=normalized_focus_key or None,
+        level=normalized_level or None,
+        background_fill_required=bool(background_fill_required),
+        has_inventory_signal=bool(has_inventory_signal),
+        pool_ready_before=int(pool_ready_before),
+        low_watermark=int(low_watermark),
+    )
     if not background_fill_required and not has_inventory_signal:
+        _log_translation_focus_pool_refill_stage(
+            "trigger_finish",
+            duration_ms=_elapsed_ms_since(started_perf),
+            triggered=False,
+            reason="inventory_signal_missing",
+            focus_key=normalized_focus_key,
+            level=normalized_level,
+            low_watermark=low_watermark,
+        )
         return {
             "ok": True,
             "triggered": False,
@@ -18296,6 +18333,16 @@ def _maybe_trigger_translation_focus_pool_deficit_refill(
             "low_watermark": low_watermark,
         }
     if int(pool_ready_before) >= int(low_watermark):
+        _log_translation_focus_pool_refill_stage(
+            "trigger_finish",
+            duration_ms=_elapsed_ms_since(started_perf),
+            triggered=False,
+            reason="above_low_watermark",
+            focus_key=normalized_focus_key,
+            level=normalized_level,
+            pool_ready_before=pool_ready_before,
+            low_watermark=low_watermark,
+        )
         return {
             "ok": True,
             "triggered": False,
@@ -18305,6 +18352,16 @@ def _maybe_trigger_translation_focus_pool_deficit_refill(
         }
     client = get_redis_client()
     if client is None:
+        _log_translation_focus_pool_refill_stage(
+            "trigger_finish",
+            duration_ms=_elapsed_ms_since(started_perf),
+            triggered=False,
+            reason="redis_unavailable",
+            focus_key=normalized_focus_key,
+            level=normalized_level,
+            pool_ready_before=pool_ready_before,
+            low_watermark=low_watermark,
+        )
         return {"ok": True, "triggered": False, "reason": "redis_unavailable"}
     claim_key = _translation_focus_pool_deficit_refill_key(
         source_lang=source_lang,
@@ -18323,10 +18380,39 @@ def _maybe_trigger_translation_focus_pool_deficit_refill(
         )
     except Exception:
         logging.exception("Failed to claim translation focus pool deficit refill cooldown focus_key=%s level=%s", normalized_focus_key, normalized_level)
+        _log_translation_focus_pool_refill_stage(
+            "trigger_finish",
+            duration_ms=_elapsed_ms_since(started_perf),
+            triggered=False,
+            reason="redis_error",
+            focus_key=normalized_focus_key,
+            level=normalized_level,
+            pool_ready_before=pool_ready_before,
+            low_watermark=low_watermark,
+        )
         return {"ok": False, "triggered": False, "reason": "redis_error"}
     if not claimed:
+        _log_translation_focus_pool_refill_stage(
+            "trigger_finish",
+            duration_ms=_elapsed_ms_since(started_perf),
+            triggered=False,
+            reason="cooldown_active",
+            focus_key=normalized_focus_key,
+            level=normalized_level,
+            pool_ready_before=pool_ready_before,
+            low_watermark=low_watermark,
+        )
         return {"ok": True, "triggered": False, "reason": "cooldown_active"}
     try:
+        enqueue_mode = "background_job" if can_enqueue_background_jobs() else "thread_fallback"
+        _log_translation_focus_pool_refill_stage(
+            "trigger_enqueue_start",
+            focus_key=normalized_focus_key,
+            level=normalized_level,
+            pool_ready_before=pool_ready_before,
+            low_watermark=low_watermark,
+            enqueue_mode=enqueue_mode,
+        )
         if can_enqueue_background_jobs():
             enqueue_translation_focus_pool_refill_job(
                 force=True,
@@ -18338,6 +18424,18 @@ def _maybe_trigger_translation_focus_pool_deficit_refill(
                 kwargs={"force": True, "tz_name": TRANSLATION_FOCUS_POOL_REFILL_TZ},
                 daemon=True,
             ).start()
+        _log_translation_focus_pool_refill_stage(
+            "trigger_finish",
+            duration_ms=_elapsed_ms_since(started_perf),
+            triggered=True,
+            reason="background_fill_required" if background_fill_required else "inventory_deficit",
+            trigger_reason="background_fill_required" if background_fill_required else "inventory_deficit",
+            focus_key=normalized_focus_key,
+            level=normalized_level,
+            pool_ready_before=pool_ready_before,
+            low_watermark=low_watermark,
+            enqueue_mode=enqueue_mode,
+        )
         return {
             "ok": True,
             "triggered": True,
@@ -18349,6 +18447,16 @@ def _maybe_trigger_translation_focus_pool_deficit_refill(
         }
     except Exception:
         logging.exception("Failed to enqueue translation focus pool deficit refill focus_key=%s level=%s", normalized_focus_key, normalized_level)
+        _log_translation_focus_pool_refill_stage(
+            "trigger_finish",
+            duration_ms=_elapsed_ms_since(started_perf),
+            triggered=False,
+            reason="enqueue_failed",
+            focus_key=normalized_focus_key,
+            level=normalized_level,
+            pool_ready_before=pool_ready_before,
+            low_watermark=low_watermark,
+        )
         try:
             client.delete(claim_key)
         except Exception:
@@ -18546,7 +18654,15 @@ def _upsert_translation_focus_pool_daily_snapshot_from_inventory(
 
 
 def _dispatch_translation_focus_pool_refill(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFAULT_TZ) -> dict:
+    started_perf = time.perf_counter()
     snapshot_date = _get_local_today_date(tz_name)
+    _log_translation_focus_pool_refill_stage(
+        "dispatch_start",
+        force=bool(force),
+        tz_name=str(tz_name or "").strip() or TODAY_PLAN_DEFAULT_TZ,
+        snapshot_date=snapshot_date.isoformat(),
+        prewarm_enabled=bool(TRANSLATION_FOCUS_POOL_PREWARM_ENABLED),
+    )
 
     def _persist_daily_snapshot() -> None:
         try:
@@ -18560,22 +18676,63 @@ def _dispatch_translation_focus_pool_refill(*, force: bool = False, tz_name: str
                 snapshot_date.isoformat(),
                 int(upserted or 0),
             )
+            _log_translation_focus_pool_refill_stage(
+                "snapshot_persisted",
+                snapshot_date=snapshot_date.isoformat(),
+                rows=int(upserted or 0),
+            )
         except Exception:
             logging.exception(
                 "Translation focus pool daily snapshot upsert failed snapshot_date=%s",
                 snapshot_date.isoformat(),
             )
+            _log_translation_focus_pool_refill_stage(
+                "snapshot_persist_failed",
+                snapshot_date=snapshot_date.isoformat(),
+            )
 
     if not (TRANSLATION_FOCUS_POOL_PREWARM_ENABLED or force):
         _persist_daily_snapshot()
+        _log_translation_focus_pool_refill_stage(
+            "dispatch_finish",
+            duration_ms=_elapsed_ms_since(started_perf),
+            skipped=True,
+            reason="disabled",
+            generated=0,
+            upserted=0,
+            focuses=0,
+        )
         return {"ok": True, "skipped": True, "reason": "disabled", "generated": 0, "upserted": 0, "focuses": 0}
     if not force and not _should_run_sentence_prewarm_now(tz_name):
         _persist_daily_snapshot()
+        _log_translation_focus_pool_refill_stage(
+            "dispatch_finish",
+            duration_ms=_elapsed_ms_since(started_perf),
+            skipped=True,
+            reason="outside_offpeak_window",
+            generated=0,
+            upserted=0,
+            focuses=0,
+        )
         return {"ok": True, "skipped": True, "reason": "outside_offpeak_window", "generated": 0, "upserted": 0, "focuses": 0}
     try:
         focus_candidates = _list_translation_focus_pool_refill_candidates()
+        _log_translation_focus_pool_refill_stage(
+            "candidate_selection",
+            focus_count=len(focus_candidates),
+            focus_keys=[str(item.get("key") or "").strip() for item in list(focus_candidates or []) if str(item.get("key") or "").strip()],
+        )
         if not focus_candidates:
             _persist_daily_snapshot()
+            _log_translation_focus_pool_refill_stage(
+                "dispatch_finish",
+                duration_ms=_elapsed_ms_since(started_perf),
+                skipped=True,
+                reason="no_focus_candidates",
+                generated=0,
+                upserted=0,
+                focuses=0,
+            )
             return {
                 "ok": True,
                 "skipped": True,
@@ -18588,6 +18745,13 @@ def _dispatch_translation_focus_pool_refill(*, force: bool = False, tz_name: str
             focus_candidates,
             levels=TRANSLATION_FOCUS_POOL_PREWARM_LEVELS,
         )
+        _log_translation_focus_pool_refill_stage(
+            "target_buckets_computed",
+            focus_count=len(focus_candidates),
+            low_watermark_bucket_count=len(low_watermark_by_bucket),
+            target_bucket_count=len(target_ready_by_bucket),
+        )
+        generation_started_perf = time.perf_counter()
         focus_pool_result = asyncio.run(
             prewarm_shared_translation_sentence_pool(
                 focuses=focus_candidates,
@@ -18600,12 +18764,39 @@ def _dispatch_translation_focus_pool_refill(*, force: bool = False, tz_name: str
                 max_generate_per_bucket=TRANSLATION_FOCUS_POOL_PREWARM_MAX_GENERATE_PER_BUCKET,
             )
         )
+        _log_translation_focus_pool_refill_stage(
+            "generation_finished",
+            duration_ms=_elapsed_ms_since(generation_started_perf),
+            generated=int(focus_pool_result.get("generated") or 0),
+            upserted=int(focus_pool_result.get("upserted") or 0),
+            focuses=int(focus_pool_result.get("focuses") or 0),
+            bucket_result_count=len(list(focus_pool_result.get("bucket_results") or [])),
+        )
         focus_pool_result["skipped"] = False
         _persist_daily_snapshot()
+        _log_translation_focus_pool_refill_stage(
+            "dispatch_finish",
+            duration_ms=_elapsed_ms_since(started_perf),
+            skipped=False,
+            generated=int(focus_pool_result.get("generated") or 0),
+            upserted=int(focus_pool_result.get("upserted") or 0),
+            focuses=int(focus_pool_result.get("focuses") or 0),
+            bucket_result_count=len(list(focus_pool_result.get("bucket_results") or [])),
+        )
         return focus_pool_result
     except Exception:
         logging.exception("Translation focus pool refill failed")
         _persist_daily_snapshot()
+        _log_translation_focus_pool_refill_stage(
+            "dispatch_finish",
+            duration_ms=_elapsed_ms_since(started_perf),
+            skipped=False,
+            ok=False,
+            reason="exception",
+            generated=0,
+            upserted=0,
+            focuses=0,
+        )
         return {
             "ok": False,
             "skipped": False,
@@ -19158,6 +19349,17 @@ def _log_translation_focus_pool_admin_report_stage(stage: str, **fields: Any) ->
         if value is not None:
             payload[key] = value
     _log_startup_structured(payload)
+
+
+def _log_translation_focus_pool_refill_stage(stage: str, **fields: Any) -> None:
+    _log_flow_observation(
+        "translation_focus_pool_refill",
+        str(stage or "").strip() or "unknown",
+        service=_startup_service_name(),
+        pid=os.getpid(),
+        worker=_startup_worker_info(),
+        **fields,
+    )
 
 
 def _send_translation_focus_pool_admin_report(*, force: bool = False) -> dict[str, Any]:

@@ -1469,6 +1469,13 @@ def run_translation_focus_pool_refill_job(
 ) -> None:
     started_at = time.perf_counter()
     normalized_tz_name = str(tz_name or "").strip() or None
+    logging.info(
+        "translation_focus_pool_refill_job start request_id=%s correlation_id=%s tz_name=%s force=%s",
+        request_id,
+        correlation_id,
+        normalized_tz_name,
+        bool(force),
+    )
     try:
         from backend.backend_server import _dispatch_translation_focus_pool_refill, TODAY_PLAN_DEFAULT_TZ
 

@@ -2866,7 +2866,33 @@ async def prewarm_shared_translation_sentence_pool(
         for level in (levels or ["b1", "b2", "c1"])
         if str(level or "").strip()
     ] or ["b1", "b2", "c1"]
+    _log_flow_observation(
+        "translation_focus_pool_refill",
+        "start",
+        source_lang=source_lang,
+        target_lang=target_lang,
+        focus_count=int(len(candidate_focuses)),
+        level_count=int(len(normalized_levels)),
+        target_ready_per_bucket=int(target_ready_per_bucket),
+        max_generate_per_bucket=int(max_generate_per_bucket),
+        has_min_ready_by_bucket=bool(min_ready_by_bucket),
+        has_target_ready_by_bucket=bool(target_ready_by_bucket),
+    )
     if not candidate_focuses:
+        _log_flow_observation(
+            "translation_focus_pool_refill",
+            "finish",
+            source_lang=source_lang,
+            target_lang=target_lang,
+            focus_count=0,
+            level_count=int(len(normalized_levels)),
+            generated=0,
+            upserted=0,
+            bucket_result_count=0,
+            reason="no_candidate_focuses",
+            elapsed_ms=0,
+            provider_wait_ms_total=0,
+        )
         return {
             "ok": True,
             "focuses": 0,
@@ -2977,9 +3003,52 @@ async def prewarm_shared_translation_sentence_pool(
                         level_key=level_key,
                         include_skill_catalog=(skill_catalog is None),
                     )
+                    _log_flow_observation(
+                        "translation_focus_pool_refill",
+                        "bucket_start",
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        focus_key=focus_key,
+                        level=level_key,
+                        ready_before=int(ready_before),
+                        min_ready=int(min_ready_for_bucket),
+                        target_ready=int(target_ready_for_bucket),
+                        existing_sentence_key_count=int(len(existing_sentence_keys or [])),
+                        skill_catalog_loaded=bool(loaded_skill_catalog is not None),
+                        bucket_budget=int(max_generate_per_bucket),
+                    )
                     if skill_catalog is None:
                         skill_catalog = loaded_skill_catalog or []
                     if ready_before >= int(target_ready_for_bucket):
+                        _log_flow_observation(
+                            "translation_focus_pool_refill",
+                            "bucket_skip_already_ready",
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                            focus_key=focus_key,
+                            level=level_key,
+                            ready_before=int(ready_before),
+                            target_ready=int(target_ready_for_bucket),
+                            min_ready=int(min_ready_for_bucket),
+                        )
+                        _log_flow_observation(
+                            "translation_focus_pool_refill",
+                            "bucket_finish",
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                            focus_key=focus_key,
+                            level=level_key,
+                            ready_before=int(ready_before),
+                            ready_after=int(ready_before),
+                            generated=0,
+                            upserted=0,
+                            requested=0,
+                            generation_attempts=0,
+                            min_ready=int(min_ready_for_bucket),
+                            target_ready=int(target_ready_for_bucket),
+                            demand_score=int(focus.get("_demand_score") or 0),
+                            finish_reason="already_ready",
+                        )
                         bucket_results.append(
                             {
                                 "focus_key": focus_key,
@@ -3005,6 +3074,19 @@ async def prewarm_shared_translation_sentence_pool(
                         needed = max(1, int(target_ready_for_bucket) - int(ready_after))
                         requested_count = max(1, min(int(remaining_budget), int(needed)))
                         requested_total += int(requested_count)
+                        _log_flow_observation(
+                            "translation_focus_pool_refill",
+                            "bucket_generation_attempt",
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                            focus_key=focus_key,
+                            level=level_key,
+                            attempt=int(generation_attempts),
+                            requested_count=int(requested_count),
+                            remaining_budget_before=int(remaining_budget),
+                            ready_before=int(ready_after),
+                            target_ready=int(target_ready_for_bucket),
+                        )
                         provider_started_at = time.perf_counter()
                         generated_entries = await _generate_legacy_sentence_entries_with_profiles(
                             topic=str(focus.get("prompt_topic") or focus.get("label") or "Grammar practice").strip(),
@@ -3022,6 +3104,37 @@ async def prewarm_shared_translation_sentence_pool(
                             excluded_sentence_keys=existing_sentence_keys,
                         )
                         if not filtered_entries:
+                            _log_flow_observation(
+                                "translation_focus_pool_refill",
+                                "bucket_generation_filtered_empty",
+                                source_lang=source_lang,
+                                target_lang=target_lang,
+                                focus_key=focus_key,
+                                level=level_key,
+                                attempt=int(generation_attempts),
+                                requested_count=int(requested_count),
+                                provider_wait_ms=int(provider_wait_ms),
+                                ready_before=int(ready_after),
+                                target_ready=int(target_ready_for_bucket),
+                            )
+                            _log_flow_observation(
+                                "translation_focus_pool_refill",
+                                "bucket_finish",
+                                source_lang=source_lang,
+                                target_lang=target_lang,
+                                focus_key=focus_key,
+                                level=level_key,
+                                ready_before=int(ready_before),
+                                ready_after=int(ready_after),
+                                generated=int(generated_for_bucket),
+                                upserted=int(upserted_for_bucket),
+                                requested=int(requested_total),
+                                generation_attempts=int(generation_attempts),
+                                min_ready=int(min_ready_for_bucket),
+                                target_ready=int(target_ready_for_bucket),
+                                demand_score=int(focus.get("_demand_score") or 0),
+                                finish_reason="filtered_empty",
+                            )
                             break
                         upserted, next_ready_after = _write_generated_bucket_entries(
                             focus=focus,
@@ -3037,12 +3150,76 @@ async def prewarm_shared_translation_sentence_pool(
                             if str((entry or {}).get("sentence") or "").strip()
                         )
                         if int(next_ready_after) <= int(ready_after):
+                            _log_flow_observation(
+                                "translation_focus_pool_refill",
+                                "bucket_no_progress",
+                                source_lang=source_lang,
+                                target_lang=target_lang,
+                                focus_key=focus_key,
+                                level=level_key,
+                                attempt=int(generation_attempts),
+                                ready_before=int(ready_after),
+                                ready_after=int(next_ready_after),
+                                generated=int(generated_for_bucket),
+                                upserted=int(upserted_for_bucket),
+                                provider_wait_ms_total=int(provider_wait_ms_total),
+                            )
+                            _log_flow_observation(
+                                "translation_focus_pool_refill",
+                                "bucket_finish",
+                                source_lang=source_lang,
+                                target_lang=target_lang,
+                                focus_key=focus_key,
+                                level=level_key,
+                                ready_before=int(ready_before),
+                                ready_after=int(next_ready_after),
+                                generated=int(generated_for_bucket),
+                                upserted=int(upserted_for_bucket),
+                                requested=int(requested_total),
+                                generation_attempts=int(generation_attempts),
+                                min_ready=int(min_ready_for_bucket),
+                                target_ready=int(target_ready_for_bucket),
+                                demand_score=int(focus.get("_demand_score") or 0),
+                                finish_reason="no_progress",
+                            )
                             break
                         ready_after = int(next_ready_after)
+                        _log_flow_observation(
+                            "translation_focus_pool_refill",
+                            "bucket_generation_result",
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                            focus_key=focus_key,
+                            level=level_key,
+                            attempt=int(generation_attempts),
+                            requested_count=int(requested_count),
+                            generated_count=int(len(filtered_entries)),
+                            upserted=int(upserted),
+                            ready_after=int(ready_after),
+                            remaining_budget_after=int(remaining_budget),
+                            provider_wait_ms=int(provider_wait_ms),
+                        )
                         if generation_attempts >= 3 and ready_after < int(target_ready_for_bucket):
                             break
                     generated_total += int(generated_for_bucket)
                     upserted_total += int(upserted_for_bucket)
+                    _log_flow_observation(
+                        "translation_focus_pool_refill",
+                        "bucket_finish",
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        focus_key=focus_key,
+                        level=level_key,
+                        ready_before=int(ready_before),
+                        ready_after=int(ready_after),
+                        generated=int(generated_for_bucket),
+                        upserted=int(upserted_for_bucket),
+                        requested=int(requested_total),
+                        generation_attempts=int(generation_attempts),
+                        min_ready=int(min_ready_for_bucket),
+                        target_ready=int(target_ready_for_bucket),
+                        demand_score=int(focus.get("_demand_score") or 0),
+                    )
                     bucket_results.append(
                         {
                             "focus_key": focus_key,
@@ -3058,7 +3235,7 @@ async def prewarm_shared_translation_sentence_pool(
                             "demand_score": int(focus.get("_demand_score") or 0),
                         }
                     )
-            return {
+            result = {
                 "ok": True,
                 "focuses": int(len(candidate_focuses)),
                 "levels": int(len(normalized_levels)),
@@ -3067,6 +3244,20 @@ async def prewarm_shared_translation_sentence_pool(
                 "bucket_results": bucket_results,
                 "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
             }
+            _log_flow_observation(
+                "translation_focus_pool_refill",
+                "finish",
+                source_lang=source_lang,
+                target_lang=target_lang,
+                focus_count=int(len(candidate_focuses)),
+                level_count=int(len(normalized_levels)),
+                generated=int(generated_total),
+                upserted=int(upserted_total),
+                bucket_result_count=int(len(bucket_results)),
+                elapsed_ms=int(result.get("elapsed_ms") or 0),
+                provider_wait_ms_total=int(provider_wait_ms_total),
+            )
+            return result
         finally:
             db_summary = summarize_db_acquire_events(db_acquire_events)
             _log_flow_observation(
