@@ -3773,9 +3773,10 @@ async def handle_tts_prewarm_quota_callback(update: Update, context: CallbackCon
 
 async def handle_button_click(update: Update, context: CallbackContext):
     """Обрабатывает нажатия на кнопки главного меню."""
+    _allowed_without_legacy_keyboard = {SHORTCUT_CONNECT_BUTTON_TEXT, DICTIONARY_BATCH_FAST_BUTTON_TEXT}
     if not ENABLE_LEGACY_REPLY_KEYBOARD and (
         not update.message
-        or (update.message.text or "").strip() != SHORTCUT_CONNECT_BUTTON_TEXT
+        or (update.message.text or "").strip() not in _allowed_without_legacy_keyboard
     ):
         return
     
