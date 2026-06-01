@@ -1317,8 +1317,8 @@ async def send_main_menu(update: Update, context: CallbackContext):
             bot_username = bot_info.username
         webapp_url = get_webapp_deeplink(bot_username=bot_username)
         await update.message.reply_text(
-            "✅ Используйте mini app для переводов, аналитики, словаря и карточек.\n"
-            f"Открыть: {webapp_url}",
+            _build_private_start_onboarding_text() + "\n\n"
+            f"Полная версия в mini app: {webapp_url}",
             disable_web_page_preview=True,
             reply_markup=_build_private_language_tutor_reply_keyboard()
             if update.effective_chat and update.effective_chat.type == "private"
@@ -1376,7 +1376,7 @@ async def _send_shortcut_connect_prompt(update: Update, context: CallbackContext
     if not update.effective_message:
         return
     await update.effective_message.reply_text(
-        "Подключите iPhone Shortcut один раз. После привязки запуск будет работать автоматически.",
+        "Подключите Shortcut один раз. Потом он будет запускаться автоматически, а код привязки понадобится только при первом запуске.",
         reply_markup=_build_shortcut_connect_keyboard(),
     )
 
@@ -1898,6 +1898,42 @@ def _build_private_language_tutor_reply_keyboard() -> ReplyKeyboardMarkup:
         ],
         resize_keyboard=True,
         is_persistent=True,
+    )
+
+
+def _format_shortcut_pairing_code_ttl_note() -> str:
+    ttl_seconds = max(60, int(SHORTCUT_PAIRING_CODE_TTL_SECONDS or 0))
+    ttl_hours = max(1, ttl_seconds // 3600)
+
+    last_two = ttl_hours % 100
+    last_one = ttl_hours % 10
+    if 11 <= last_two <= 14:
+        hour_word = "часов"
+    elif last_one == 1:
+        hour_word = "час"
+    elif last_one in (2, 3, 4):
+        hour_word = "часа"
+    else:
+        hour_word = "часов"
+
+    return f"Код действует {ttl_hours} {hour_word} и одноразовый."
+
+
+def _build_private_start_onboarding_text() -> str:
+    return (
+        "✅ Здесь можно быстро работать с немецким текстом.\n\n"
+        "Что умеет бот:\n"
+        "• перевести одно слово или фразу прямо в чате;\n"
+        "• разобрать грамматику и задать вопрос;\n"
+        "• сохранить слова в словарь;\n"
+        "• принять пересланный немецкий текст;\n"
+        "• помочь со скриншотами, рилсами и любым немецким контентом через Shortcut.\n\n"
+        "Что делать дальше:\n"
+        "1. Нажмите «📱 Connect Shortcut» и подключите Shortcut один раз.\n"
+        "2. Привяжите его к кнопке действия или к двойному касанию задней панели.\n"
+        "3. После этого просто отправляйте слова сюда в личку или запускайте Shortcut на немецком контенте.\n"
+        "4. Код нужен только при первом запуске. Потом он больше не понадобится.\n\n"
+        "Если слов много, нажмите «🇩🇪➡️🇷🇺 Быстрый перевод», чтобы применить один и тот же режим ко всей текущей очереди."
     )
 
 

@@ -109,6 +109,7 @@ from backend.database import (
     summarize_db_acquire_events,
     _emit_db_pool_runtime_audit,
     ensure_shortcut_tables,
+    SHORTCUT_PAIRING_CODE_TTL_SECONDS,
 )
 from backend.hotpath_cache import HotPathCacheManager
 from backend.job_queue import (
@@ -35010,7 +35011,12 @@ def _shortcut_split_blocks(text: str) -> list[tuple[str, str]]:
 
 def _build_shortcut_onboarding_text(*, pairing_code: str, expires_at: datetime | None = None) -> str:
     safe_code = str(pairing_code or "").strip().upper()
-    expiry_note = "Код действует 10 минут и одноразовый."
+    ttl_seconds = max(60, int(SHORTCUT_PAIRING_CODE_TTL_SECONDS or 0))
+    ttl_hours = max(1, ttl_seconds // 3600)
+    if ttl_hours == 24 and ttl_seconds % 3600 == 0:
+        expiry_note = "Код действует 24 часа и одноразовый."
+    else:
+        expiry_note = f"Код действует {ttl_hours} часов и одноразовый."
     if expires_at is not None:
         try:
             local_expires_at = expires_at.astimezone(ZoneInfo("Europe/Vienna"))
@@ -35019,27 +35025,32 @@ def _build_shortcut_onboarding_text(*, pairing_code: str, expires_at: datetime |
             pass
     return (
         "📱 Connect Shortcut\n\n"
-        f"Код привязки: {safe_code}\n"
+        "Код привязки:\n"
+        f"{safe_code}\n\n"
         f"{expiry_note}\n\n"
-        "Что сделать на iPhone:\n"
-        "1. Откройте приложение Команды.\n"
-        "2. Нажмите плюс и создайте новую команду.\n"
-        "3. Добавьте действие Ask for Input и используйте код привязки.\n"
-        "4. Добавьте действие Get Contents of URL и отправьте POST на /api/shortcut/link.\n"
-        "5. Тело запроса: {\"pairing_code\": \"ВАШ_КОД\"}.\n"
-        "6. Сохраните install_token, который вернет сервер, в локальный файл или другой постоянный storage внутри Shortcut.\n"
-        "7. На следующих запусках читайте install_token из этого хранилища и отправляйте его в /api/shortcut/lookup вместе с текстом.\n\n"
-        "Куда привязать запуск:\n"
-        "• Если у iPhone есть Action Button: Settings -> Action Button -> Shortcut -> выберите эту команду.\n"
-        "• Если Action Button нет: Settings -> Accessibility -> Touch -> Back Tap -> Double Tap -> выберите эту команду.\n"
-        "• На совместимых моделях Back Tap тоже можно использовать вместо Action Button, если так удобнее.\n\n"
-        "Если код истечет или вы закрыли окно, нажмите Connect Shortcut еще раз и получите новый."
+        "Что делать дальше:\n"
+        "1. Откройте приложение «Команды» на iPhone.\n"
+        "2. Добавьте Shortcut, который будет запускаться с кнопки действия или двойного касания задней панели.\n"
+        "3. Запустите Shortcut один раз и вставьте код из этого сообщения.\n"
+        "4. После первого запуска код больше не нужен.\n"
+        "5. Потом просто откройте любой немецкий рилс, пост, скриншот или сообщение и запустите Shortcut.\n"
+        "6. Бот сам сохранит слова и переводы в ваш словарь.\n\n"
+        "Где включить запуск на iPhone:\n"
+        "• Если у вас iPhone 15 Pro или новее: Настройки -> Кнопка действия -> Команда -> выберите этот Shortcut.\n"
+        "• Если кнопки действия нет: Настройки -> Универсальный доступ -> Касание -> Касание задней панели -> Двойное касание -> выберите этот Shortcut.\n"
+        "• На поддерживаемых iPhone можно использовать и кнопку действия, и заднюю панель — что удобнее.\n\n"
+        "Если код истечет, нажмите Connect Shortcut еще раз и получите новый."
     )
 
 
 def _build_shortcut_onboarding_code_text(*, pairing_code: str, expires_at: datetime | None = None) -> str:
     safe_code = str(pairing_code or "").strip().upper()
-    expiry_note = "Код действует 10 минут и одноразовый."
+    ttl_seconds = max(60, int(SHORTCUT_PAIRING_CODE_TTL_SECONDS or 0))
+    ttl_hours = max(1, ttl_seconds // 3600)
+    if ttl_hours == 24 and ttl_seconds % 3600 == 0:
+        expiry_note = "Код действует 24 часа и одноразовый."
+    else:
+        expiry_note = f"Код действует {ttl_hours} часов и одноразовый."
     if expires_at is not None:
         try:
             local_expires_at = expires_at.astimezone(ZoneInfo("Europe/Vienna"))
@@ -35048,26 +35059,28 @@ def _build_shortcut_onboarding_code_text(*, pairing_code: str, expires_at: datet
             pass
     return (
         "📱 Connect Shortcut\n\n"
-        f"Скопируйте только код: {safe_code}\n"
+        "Скопируйте только код ниже:\n"
+        f"{safe_code}\n\n"
         f"{expiry_note}"
     )
 
 
 def _build_shortcut_onboarding_instructions() -> str:
     return (
-        "Что сделать на iPhone:\n"
-        "1. Откройте приложение Команды.\n"
-        "2. Нажмите плюс и создайте новую команду.\n"
-        "3. Добавьте действие Ask for Input и используйте код привязки.\n"
-        "4. Добавьте действие Get Contents of URL и отправьте POST на /api/shortcut/link.\n"
-        "5. Тело запроса: {\"pairing_code\": \"ВАШ_КОД\"}.\n"
-        "6. Сохраните install_token, который вернет сервер, в локальный файл или другой постоянный storage внутри Shortcut.\n"
-        "7. На следующих запусках читайте install_token из этого хранилища и отправляйте его в /api/shortcut/lookup вместе с текстом.\n\n"
-        "Куда привязать запуск:\n"
-        "• Если у iPhone есть Action Button: Settings -> Action Button -> Shortcut -> выберите эту команду.\n"
-        "• Если Action Button нет: Settings -> Accessibility -> Touch -> Back Tap -> Double Tap -> выберите эту команду.\n"
-        "• На совместимых моделях Back Tap тоже можно использовать вместо Action Button, если так удобнее.\n\n"
-        "Если код истечет или вы закрыли окно, нажмите Connect Shortcut еще раз и получите новый."
+        "Как пользоваться:\n"
+        "1. Один раз подключите Shortcut по кнопке Connect Shortcut.\n"
+        "2. Привяжите его к кнопке действия или к двойному касанию задней панели.\n"
+        "3. Откройте любой немецкий рилс, пост, сообщение или скриншот.\n"
+        "4. Запустите Shortcut.\n"
+        "5. Код нужен только при первом запуске.\n"
+        "6. После этого код больше не нужен — дальше всё будет запускаться автоматически.\n\n"
+        "Что умеет бот:\n"
+        "• Можно просто написать ему слово или фразу.\n"
+        "• Можно переслать сюда немецкий текст из другого чата.\n"
+        "• Можно сделать скрин и запустить Shortcut.\n"
+        "• Можно нажать «💬 Спросить у GPT» и задать вопрос по грамматике.\n"
+        "• Можно сохранить слова в словарь одним нажатием.\n"
+        "• Если слов много, нажмите «🇩🇪➡️🇷🇺 Быстрый перевод» — это применит один и тот же режим ко всей текущей очереди.\n"
     )
 
 
