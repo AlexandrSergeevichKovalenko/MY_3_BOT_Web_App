@@ -35471,13 +35471,15 @@ def _run_shortcut_lookup_delivery(*, user_id: int, text: str) -> int:
         message_text = f"Запрос: {lookup_text}\n\nВыберите языковую пару для перевода:"
 
         try:
+            # Write to Redis BEFORE sending so bot finds the entry even if user
+            # presses "Быстрый перевод" immediately after seeing the message.
+            _shortcut_append_pending_to_redis(safe_user_id, request_key, lookup_text)
             _send_private_message(
                 safe_user_id,
                 message_text,
                 reply_markup={"inline_keyboard": _shortcut_build_pair_keyboard_rows(request_key)},
             )
             sent += 1
-            _shortcut_append_pending_to_redis(safe_user_id, request_key, lookup_text)
         except Exception as exc:
             logging.warning("shortcut_lookup send failed user_id=%s block=%s: %s", safe_user_id, sent, exc)
 

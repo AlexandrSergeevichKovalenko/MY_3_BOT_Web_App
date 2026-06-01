@@ -3841,6 +3841,12 @@ async def handle_button_click(update: Update, context: CallbackContext):
                 "или отправьте слова заново через Shortcut и сразу нажмите эту кнопку."
             )
             return
+        # Snapshot payloads NOW while they are in memory — avoids race where
+        # the async task reads the dict after it may have changed.
+        pending_snapshot = {
+            k: dict(pending_dictionary_lookup_requests.get(k) or {})
+            for k in pending_keys
+        }
         await update.message.reply_text(
             f"🚀 Запускаю быстрый перевод DE → RU для {len(pending_keys)} текущих запросов."
         )
@@ -3850,6 +3856,7 @@ async def handle_button_click(update: Update, context: CallbackContext):
                     context,
                     user_id=user_id,
                     chat_id=int(update.effective_chat.id),
+                    pending_snapshot=pending_snapshot,
                 )
             )
         except Exception:
@@ -3857,6 +3864,7 @@ async def handle_button_click(update: Update, context: CallbackContext):
                 context,
                 user_id=user_id,
                 chat_id=int(update.effective_chat.id),
+                pending_snapshot=pending_snapshot,
             )
     elif text == LANGUAGE_TUTOR_BUTTON_TEXT:
         if update.effective_chat and update.effective_chat.type != "private":
@@ -7228,8 +7236,15 @@ async def _run_dictionary_batch_fast_for_user(
     *,
     user_id: int,
     chat_id: int,
+    pending_snapshot: dict | None = None,
 ) -> None:
-    request_keys = _list_pending_dictionary_lookup_request_keys_for_user(user_id)
+    # Use pre-collected snapshot from the button handler (avoids double-lookup race).
+    # Fall back to live lookup only when called without snapshot (legacy path).
+    if pending_snapshot is not None:
+        request_keys = [k for k, v in pending_snapshot.items() if v]
+    else:
+        request_keys = _list_pending_dictionary_lookup_request_keys_for_user(user_id)
+
     if not request_keys:
         try:
             await context.bot.send_message(
@@ -7242,7 +7257,11 @@ async def _run_dictionary_batch_fast_for_user(
 
     processed = 0
     for request_key in request_keys:
-        payload = pending_dictionary_lookup_requests.get(request_key)
+        # Use snapshot payload; fall back to live dict only if snapshot not present
+        if pending_snapshot is not None:
+            payload = pending_snapshot.get(request_key) or pending_dictionary_lookup_requests.get(request_key)
+        else:
+            payload = pending_dictionary_lookup_requests.get(request_key)
         logging.info(
             "batch_fast: checking key=%s payload_present=%s payload_uid=%s user_id=%s inflight=%s",
             request_key,
