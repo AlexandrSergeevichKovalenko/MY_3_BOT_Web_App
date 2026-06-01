@@ -3834,7 +3834,12 @@ async def handle_button_click(update: Update, context: CallbackContext):
         user_id = int(update.effective_user.id)
         pending_keys = _list_pending_dictionary_lookup_request_keys_for_user(user_id)
         if not pending_keys:
-            await update.message.reply_text("Сейчас нет ожидающих запросов для быстрого перевода.")
+            await update.message.reply_text(
+                "Сейчас нет ожидающих запросов для быстрого перевода.\n\n"
+                "Слова попадают в список только если они отправлены через Shortcut или набраны в чате после последнего обновления бота. "
+                "Если слова уже висят в чате — нажмите языковую пару под каждым из них вручную, "
+                "или отправьте слова заново через Shortcut и сразу нажмите эту кнопку."
+            )
             return
         await update.message.reply_text(
             f"🚀 Запускаю быстрый перевод DE → RU для {len(pending_keys)} текущих запросов."
@@ -5017,7 +5022,7 @@ def _build_dictionary_pair_keyboard(request_key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-_DICT_PENDING_REDIS_TTL_SEC = 900  # 15 min — survives redeploys
+_DICT_PENDING_REDIS_TTL_SEC = 28800  # 8 hours — user may send words in morning, batch-translate evening
 
 
 def _dict_pending_redis_key(user_id: int) -> str:

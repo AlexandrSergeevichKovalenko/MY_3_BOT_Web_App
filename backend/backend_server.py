@@ -35415,7 +35415,7 @@ def _shortcut_build_pair_keyboard_rows(request_key: str) -> list[list[dict]]:
     return rows
 
 
-_SHORTCUT_PENDING_REDIS_TTL = 900  # 15 min — matches bot_3.py TTL
+_SHORTCUT_PENDING_REDIS_TTL = 28800  # 8 hours — user may send words in morning, batch-translate evening
 
 
 def _shortcut_pending_redis_key(user_id: int) -> str:
