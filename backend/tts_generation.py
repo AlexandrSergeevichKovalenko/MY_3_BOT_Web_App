@@ -48,7 +48,7 @@ from backend.utils import prepare_google_creds_for_tts
 # ---------------------------------------------------------------------------
 
 _TTS_VOICES = {
-    "de": "de-DE-Neural2-C",
+    "de": "de-DE-Polyglot-1",
     "ru": "ru-RU-Wavenet-B",
     "en": "en-US-Wavenet-D",
     "es": "es-ES-Standard-A",
@@ -325,7 +325,7 @@ def _enforce_google_tts_monthly_budget(requested_chars: int) -> dict:
 def _synthesize_mp3(
     text: str,
     language: str = "de-DE",
-    voice: str = "de-DE-Neural2-C",
+    voice: str = "de-DE-Polyglot-1",
     speed: float = 0.9,
 ) -> bytes:
     normalized_text = str(text or "").strip()
@@ -454,7 +454,7 @@ def synthesize_page_with_timings(
     *,
     page_text: str,
     lang_code: str = "de-DE",
-    voice_name: str = "de-DE-Neural2-C",
+    voice_name: str = "de-DE-Polyglot-1",
     speaking_rate: float = 1.0,
 ) -> dict:
     """

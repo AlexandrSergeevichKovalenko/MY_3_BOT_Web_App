@@ -116,7 +116,9 @@
       "Bash(railway variable *)",
       "Bash(npm test *)",
       "Bash(npx vitest *)",
-      "Bash(grep -v \"def \\\\|#\\\\|import\\\\|:\\\\s*$\")"
+      "Bash(grep -v \"def \\\\|#\\\\|import\\\\|:\\\\s*$\")",
+      "Bash(grep -n \"_is_dictionary_lookup_candidate\\\\|_is_menu_button_text\\\\|LANGUAGE_TUTOR_BUTTON_TEXT\\\\|else:\\\\s*$\" /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/bot_3.py)",
+      "Bash(echo \"exit: $?\")"
     ]
   }
 }
