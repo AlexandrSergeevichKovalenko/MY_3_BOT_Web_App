@@ -6543,7 +6543,7 @@ body {
 /* ── 3-tab selection toolbar ─────────────────────────────────────────── */
 .vocab-sel-tabs {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 7px;
 }
 .vocab-sel-tab {
@@ -6598,6 +6598,15 @@ body {
 .vocab-sel-tab.is-move:hover:not(:disabled) {
   background: linear-gradient(135deg, rgba(16,185,129,0.32), rgba(52,211,153,0.18));
   color: #a7f3d0;
+}
+.vocab-sel-tab.is-delete {
+  border-color: rgba(248,113,113,0.42);
+  background: linear-gradient(135deg, rgba(239,68,68,0.22), rgba(248,113,113,0.1));
+  color: #fca5a5;
+}
+.vocab-sel-tab.is-delete:hover:not(:disabled) {
+  background: linear-gradient(135deg, rgba(239,68,68,0.32), rgba(248,113,113,0.18));
+  color: #fecaca;
 }
 .vocab-sel-tab:disabled {
   opacity: 0.42;

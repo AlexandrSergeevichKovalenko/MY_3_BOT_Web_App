@@ -17075,6 +17075,47 @@ def delete_vocabulary_entry(user_id: int, entry_id: int) -> bool:
     return True
 
 
+def bulk_delete_vocabulary_entries(user_id: int, entry_ids: list[int]) -> int:
+    """Delete multiple dictionary entries and their SRS state. Returns deleted count."""
+    safe_ids: list[int] = []
+    for entry_id in list(entry_ids or []):
+        try:
+            normalized_entry_id = int(entry_id)
+        except (TypeError, ValueError):
+            continue
+        if normalized_entry_id > 0:
+            safe_ids.append(normalized_entry_id)
+    if not safe_ids:
+        return 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id
+                FROM bt_3_webapp_dictionary_queries
+                WHERE user_id = %s
+                  AND id = ANY(%s);
+                """,
+                (int(user_id), safe_ids),
+            )
+            found_ids = [int(row[0]) for row in cursor.fetchall() or []]
+            if not found_ids:
+                return 0
+            cursor.execute(
+                "DELETE FROM bt_3_card_srs_state WHERE user_id = %s AND card_id = ANY(%s)",
+                (int(user_id), found_ids),
+            )
+            cursor.execute(
+                "DELETE FROM bt_3_card_review_log WHERE user_id = %s AND card_id = ANY(%s)",
+                (int(user_id), found_ids),
+            )
+            cursor.execute(
+                "DELETE FROM bt_3_webapp_dictionary_queries WHERE user_id = %s AND id = ANY(%s)",
+                (int(user_id), found_ids),
+            )
+    return len(found_ids)
+
+
 def edit_vocabulary_entry(
     user_id: int,
     entry_id: int,

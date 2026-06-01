@@ -348,6 +348,7 @@ from backend.database import (
     delete_vocabulary_entry,
     edit_vocabulary_entry,
     bulk_assign_vocabulary_folder,
+    bulk_delete_vocabulary_entries,
     rename_dictionary_folder,
     delete_dictionary_folder,
     create_flashcard_feel_feedback_token,
@@ -36226,6 +36227,35 @@ def webapp_vocabulary_bulk_assign_folder():
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
     return jsonify({"ok": True, "updated": updated_count})
+
+
+@app.route("/api/webapp/vocabulary/bulk-delete", methods=["POST"])
+def webapp_vocabulary_bulk_delete():
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    entry_ids = payload.get("entry_ids")
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not isinstance(entry_ids, list) or not entry_ids:
+        return jsonify({"error": "entry_ids обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_id = (parsed.get("user") or {}).get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует"}), 400
+    try:
+        safe_ids = [int(eid) for eid in entry_ids[:500]]
+    except (TypeError, ValueError):
+        return jsonify({"error": "entry_ids должны быть числами"}), 400
+    try:
+        deleted_count = bulk_delete_vocabulary_entries(
+            user_id=user_id,
+            entry_ids=safe_ids,
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    return jsonify({"ok": True, "deleted": deleted_count})
 
 
 @app.route("/api/webapp/vocabulary/folders/rename", methods=["POST"])

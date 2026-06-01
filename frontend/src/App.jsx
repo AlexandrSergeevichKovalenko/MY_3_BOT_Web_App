@@ -5687,6 +5687,9 @@ function AppInner() {
   const [vocabMoveModalOpen, setVocabMoveModalOpen] = useState(false);
   const [vocabMoveLoading, setVocabMoveLoading] = useState(false);
   const [vocabMoveError, setVocabMoveError] = useState('');
+  const [vocabBulkDeleteModalOpen, setVocabBulkDeleteModalOpen] = useState(false);
+  const [vocabBulkDeleteLoading, setVocabBulkDeleteLoading] = useState(false);
+  const [vocabBulkDeleteError, setVocabBulkDeleteError] = useState('');
   const [vocabEditItem, setVocabEditItem] = useState(null);
   const [vocabEditWord, setVocabEditWord] = useState('');
   const [vocabEditTrans, setVocabEditTrans] = useState('');
@@ -22594,6 +22597,39 @@ function AppInner() {
     }
   }, [fetchWithTimeout, initData, initDataMissingMsg, manualTrainingSelectionIds, normalizeNetworkErrorMessage, readApiError, loadVocabLibrary]);
 
+  const deleteSelectedWords = useCallback(async () => {
+    if (!initData) { setVocabBulkDeleteError(initDataMissingMsg); return; }
+    if (manualTrainingSelectionIds.length === 0) return;
+    setVocabBulkDeleteLoading(true);
+    setVocabBulkDeleteError('');
+    try {
+      const response = await fetchWithTimeout('/api/webapp/vocabulary/bulk-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData,
+          entry_ids: manualTrainingSelectionIds,
+        }),
+      }, 15000);
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Не удалось удалить слова.', 'Wörter konnten nicht gelöscht werden.'));
+      }
+      const data = await response.json().catch(() => ({}));
+      const deletedIds = new Set(manualTrainingSelectionIds.map((id) => Number(id)).filter(Boolean));
+      setVocabItems((prev) => prev.filter((it) => !deletedIds.has(Number(it.id))));
+      setVocabTotal((prev) => Math.max(0, prev - (Number(data.deleted) || deletedIds.size)));
+      setManualTrainingSelectionIds([]);
+      setVocabBulkDeleteModalOpen(false);
+      setVocabExpandedId(null);
+      void loadVocabLibrary({ reset: true });
+    } catch (error) {
+      const friendly = normalizeNetworkErrorMessage(error, 'Не удалось удалить слова.', 'Wörter konnten nicht gelöscht werden.');
+      setVocabBulkDeleteError(friendly);
+    } finally {
+      setVocabBulkDeleteLoading(false);
+    }
+  }, [fetchWithTimeout, initData, initDataMissingMsg, loadVocabLibrary, manualTrainingSelectionIds, normalizeNetworkErrorMessage, readApiError]);
+
   const manualTrainingSelectionCount = manualTrainingSelectionIds.length;
 
   const toggleManualTrainingSelectionCard = useCallback((cardId) => {
@@ -30760,6 +30796,15 @@ function AppInner() {
                                 <span className="vocab-sel-tab-icon">→</span>
                                 <span>{tr('Переместить', 'Verschieben')}</span>
                               </button>
+                              <button
+                                type="button"
+                                className="vocab-sel-tab is-delete"
+                                onClick={() => { setVocabBulkDeleteError(''); setVocabBulkDeleteModalOpen(true); }}
+                                disabled={manualTrainingSelectionSaving || manualTrainingSelectionCount <= 0}
+                              >
+                                <span className="vocab-sel-tab-icon">🗑</span>
+                                <span>{tr('Удалить', 'Löschen')}</span>
+                              </button>
                             </div>
                           </div>
                           {manualTrainingSelectionError && (
@@ -30818,6 +30863,42 @@ function AppInner() {
                                 {vocabMoveError && (
                                   <div className="webapp-error">{vocabMoveError}</div>
                                 )}
+                              </div>
+                            </div>
+                          )}
+                          {vocabBulkDeleteModalOpen && (
+                            <div
+                              className="vocab-delete-overlay"
+                              role="dialog"
+                              aria-modal="true"
+                              onClick={() => setVocabBulkDeleteModalOpen(false)}
+                            >
+                              <div className="vocab-delete-card" onClick={(e) => e.stopPropagation()}>
+                                <div className="vocab-delete-icon">🗑️</div>
+                                <div className="vocab-delete-title">{tr('Удалить выбранные слова?', 'Ausgewählte Wörter löschen?')}</div>
+                                <div className="vocab-delete-word">
+                                  {tr(`Выбрано ${manualTrainingSelectionCount} слов`, `${manualTrainingSelectionCount} Wörter ausgewählt`)}
+                                </div>
+                                <div className="vocab-delete-sub">
+                                  {tr(
+                                    'Слова будут удалены из словаря и очереди повторения. Это действие нельзя отменить.',
+                                    'Die Wörter werden aus dem Wörterbuch und der Wiederholungsliste gelöscht. Dies kann nicht rückgängig gemacht werden.'
+                                  )}
+                                </div>
+                                <div className="vocab-delete-actions">
+                                  <button type="button" className="vocab-del-cancel" onClick={() => setVocabBulkDeleteModalOpen(false)}>
+                                    {tr('Отмена', 'Abbrechen')}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="vocab-del-confirm"
+                                    disabled={vocabBulkDeleteLoading}
+                                    onClick={() => void deleteSelectedWords()}
+                                  >
+                                    {vocabBulkDeleteLoading ? '…' : tr('Удалить', 'Löschen')}
+                                  </button>
+                                </div>
+                                {vocabBulkDeleteError && <div className="webapp-error" style={{ marginTop: 12 }}>{vocabBulkDeleteError}</div>}
                               </div>
                             </div>
                           )}
