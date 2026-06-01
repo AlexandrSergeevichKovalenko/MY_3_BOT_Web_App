@@ -86,6 +86,7 @@ from backend.openai_manager import (
     run_quiz_followup_question,
     run_translate_subtitles_ru,
     run_translate_subtitles_multilang,
+    run_text_vocab_extract,
 )
 from backend.image_quiz_utils import (
     build_image_quiz_feedback_alert,
@@ -260,6 +261,7 @@ pending_dictionary_save_options = {}
 pending_dictionary_folder_create = {}
 pending_dictionary_lookup_requests = {}
 pending_dictionary_lookup_inflight = set()
+pending_text_analysis = {}
 pending_feel_requests_inflight = set()
 pending_tts_listen_requests_inflight = set()
 pending_quiz_phrase_requests_inflight = set()
@@ -4197,6 +4199,139 @@ async def handle_forwarded_message_lookup(update: Update, context: CallbackConte
     _start_shortcut_lookup_enqueue_runner(user_id=user_id, text=text)
 
 
+_GERMAN_COMMON_WORDS_RE = re.compile(
+    r'\b(?:der|die|das|und|ist|sind|war|waren|nicht|ich|du|er|sie|wir|ihr|mit|von|zu|auf|an|in|für|um|aus|bei|nach|vor|über|unter|auch|aber|noch|dann|wenn|weil|dass|als|oder|so|wird|wurde|haben|sein|werden|kann|einer|einem|einen|eines|diese|dieser|dieses|dem|den|des|ein|eine|einen|mich|mir|dich|dir|uns|euch|sich|hat|hatte|habe|haben|bin|bist|es|man|wie)\b',
+    re.IGNORECASE,
+)
+
+
+def _is_german_text_for_analysis(text: str) -> bool:
+    """Return True when text is long enough and contains German content worth vocabulary extraction."""
+    if not text or len(text) < 100 or text.startswith("/"):
+        return False
+    sentence_endings = len(re.findall(r'[.!?]', text))
+    if sentence_endings < 2:
+        return False
+    has_umlauts = bool(re.search(r'[äöüßÄÖÜ]', text))
+    has_german_words = len(_GERMAN_COMMON_WORDS_RE.findall(text)) >= 4
+    return has_umlauts or has_german_words
+
+
+async def _handle_text_analysis_prompt(message, user_id: int, text: str) -> None:
+    pending_text_analysis[user_id] = {
+        "text": text,
+        "started_at": pytime.time(),
+    }
+    if len(pending_text_analysis) > 200:
+        oldest_key = next(iter(pending_text_analysis))
+        pending_text_analysis.pop(oldest_key, None)
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("A2", callback_data="text_level:A2"),
+        InlineKeyboardButton("B1", callback_data="text_level:B1"),
+        InlineKeyboardButton("B2", callback_data="text_level:B2"),
+        InlineKeyboardButton("C1", callback_data="text_level:C1"),
+        InlineKeyboardButton("C2", callback_data="text_level:C2"),
+    ]])
+    await message.reply_text(
+        "🇩🇪 Вижу немецкий текст. Выберите уровень — извлеку полезный словарный запас:",
+        reply_markup=keyboard,
+    )
+
+
+async def handle_text_level_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    data = str(query.data or "").strip()
+    parts = data.split(":", 1)
+    if len(parts) != 2:
+        await query.answer("Неверный формат.", show_alert=True)
+        return
+    level = parts[1].strip().upper()
+    if level not in {"A2", "B1", "B2", "C1", "C2"}:
+        await query.answer("Неизвестный уровень.", show_alert=True)
+        return
+
+    user = query.from_user
+    if not user:
+        await query.answer()
+        return
+    user_id = int(user.id)
+
+    pending = pending_text_analysis.pop(user_id, None)
+    if not pending:
+        await query.answer("Текст устарел. Отправьте его снова.", show_alert=True)
+        return
+
+    text = str(pending.get("text") or "").strip()
+    if not text:
+        await query.answer("Текст не найден.", show_alert=True)
+        return
+
+    await query.answer()
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    await query.message.reply_text(f"⏳ Извлекаю словарный запас уровня {level}...")
+
+    try:
+        result = await run_text_vocab_extract({"text": text, "level": level})
+        items = result.get("items") or []
+        items = [
+            item for item in items
+            if isinstance(item, dict) and str(item.get("de") or "").strip() and str(item.get("ru") or "").strip()
+        ]
+    except Exception:
+        logging.exception("text_vocab_extract failed user_id=%s level=%s", user_id, level)
+        await query.message.reply_text("Не удалось проанализировать текст. Попробуйте позже.")
+        return
+
+    if not items:
+        await query.message.reply_text("Не нашёл подходящих слов для сохранения.")
+        return
+
+    lines = [f"📚 <b>Уровень {level}</b> — {len(items)} единиц\n"]
+    for idx, item in enumerate(items, start=1):
+        lines.append(f"{idx}. <b>{html.escape(str(item.get('de') or ''))}</b> — {html.escape(str(item.get('ru') or ''))}")
+    await query.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+    try:
+        folder_payload = _resolve_private_dictionary_save_folder(
+            user_id=user_id, source_lang="de", target_lang="ru"
+        )
+    except Exception:
+        folder_payload = {}
+
+    for item in items[:12]:
+        de_word = str(item.get("de") or "").strip()
+        ru_word = str(item.get("ru") or "").strip()
+        if not de_word or not ru_word:
+            continue
+        try:
+            lookup = {"word_source": de_word, "word_target": ru_word, "source_lang": "de", "target_lang": "ru"}
+            card_key = _store_pending_dictionary_card(user_id, "de", "ru", de_word, lookup)
+            option_key = _store_pending_dictionary_save_options(
+                user_id=user_id,
+                card_key=card_key,
+                options=[{"source": de_word, "target": ru_word}],
+                lookup=lookup,
+                source_lang="de",
+                target_lang="ru",
+                question_request_key="",
+                keyboard_mode="quick",
+                folder_payload=folder_payload,
+            )
+            card_text = f"🔹 <b>{html.escape(de_word)}</b> — {html.escape(ru_word)}"
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("💾 Сохранить", callback_data=f"dictquicksave:{option_key}:0")
+            ]])
+            await query.message.reply_text(card_text, parse_mode="HTML", reply_markup=keyboard)
+        except Exception:
+            logging.warning("text_vocab_extract save card failed user_id=%s item=%s", user_id, de_word, exc_info=True)
+
+
 async def handle_user_message(update: Update, context: CallbackContext):
     # ✅ Проверяем, содержит ли update.message данные
     if update.message is None or update.message.text is None:
@@ -4720,6 +4855,9 @@ async def handle_user_message(update: Update, context: CallbackContext):
             return
         if _is_menu_button_text(text):
             await handle_button_click(update, context)
+            return
+        if update.effective_chat and update.effective_chat.type == "private" and _is_german_text_for_analysis(text):
+            await _handle_text_analysis_prompt(update.message, int(user_id), text)
             return
         if update.effective_chat and update.effective_chat.type == "private" and _is_dictionary_lookup_candidate(text):
             await _handle_private_dictionary_lookup(update, context, text)
@@ -15302,6 +15440,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_language_tutor_detail_callback, pattern=r"^langgpt:detail$"))
     application.add_handler(CallbackQueryHandler(handle_image_quiz_callback, pattern=r"^iq:\d+:\d+$"))
     application.add_handler(CallbackQueryHandler(handle_visual_riddle_callback, pattern=r"^vr:\d+:\d+$"))
+    application.add_handler(CallbackQueryHandler(handle_text_level_callback, pattern=r"^text_level:"))
 
     application.add_handler(CommandHandler("translate", check_user_translation))  # ✅ Проверка переводов
 

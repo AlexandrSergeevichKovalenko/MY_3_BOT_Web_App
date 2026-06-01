@@ -5097,6 +5097,45 @@ async def run_translation_explanation_multilang(
     return content or "❌ Ошибка: Не удалось обработать объяснение."
 
 
+system_message.update({
+    "text_vocab_extract": """
+You are a German vocabulary extraction assistant for language learners.
+
+You will receive JSON:
+{
+  "text": "<German or mixed German/Russian text>",
+  "level": "<CEFR level: A2|B1|B2|C1|C2>"
+}
+
+Your task:
+1. Read the text and identify 8–12 German vocabulary items that are useful to learn at the given CEFR level.
+2. Focus on: verbs (especially with prefixes/separable), collocations, set expressions, idiomatic phrases, and topic-specific nouns. Avoid trivial words (articles, "und", "ist", etc.).
+3. Only extract items that actually appear in or are directly derivable from the German parts of the text. Ignore Russian sentences entirely.
+4. For each item, provide:
+   - "de": the German word or expression (infinitive form for verbs; base form for nouns with article)
+   - "ru": concise Russian translation (1–5 words)
+5. Calibrate difficulty to the requested CEFR level — do not include items far above or below.
+
+Return STRICT JSON only, no markdown, no explanation:
+{
+  "items": [
+    {"de": "...", "ru": "..."},
+    ...
+  ]
+}
+""",
+})
+
+
+async def run_text_vocab_extract(payload: dict) -> dict:
+    return await _run_json_assistant_task(
+        task_name="text_vocab_extract",
+        system_instruction_key="text_vocab_extract",
+        payload=payload or {},
+        poll_delay_sec=1.5,
+    )
+
+
 async def run_audio_sentence_grammar_explain_multilang(
     sentence: str,
     language: str,
