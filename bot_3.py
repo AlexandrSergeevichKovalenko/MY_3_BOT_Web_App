@@ -11497,7 +11497,7 @@ def prepare_google_creds_file():
 
 
 async def mistakes_to_voice(username, sentence_pairs):
-    german_voice = "de-DE-Neural2-C"
+    german_voice = "de-DE-Polyglot-1"
 
     audio_segments = []
 
