@@ -87,7 +87,7 @@ from backend.openai_manager import (
     run_translate_subtitles_ru,
     run_translate_subtitles_multilang,
     run_text_vocab_extract,
-    run_auto_categorize,
+    run_auto_categorize_batch,
 )
 from backend.image_quiz_utils import (
     build_image_quiz_feedback_alert,
@@ -271,6 +271,19 @@ pending_tts_listen_requests_inflight = set()
 pending_quiz_phrase_requests_inflight = set()
 scheduled_quiz_delivery_suppress_until = {}
 recent_message_activity_logged = {}
+
+
+class _ReplyTextAdapter:
+    def __init__(self, bot, chat_id: int, reply_to_message_id: int | None = None):
+        self._bot = bot
+        self.chat_id = int(chat_id)
+        self.reply_to_message_id = int(reply_to_message_id) if reply_to_message_id else None
+
+    async def reply_text(self, text: str, **kwargs):
+        kwargs = dict(kwargs or {})
+        if self.reply_to_message_id is not None and "reply_to_message_id" not in kwargs:
+            kwargs["reply_to_message_id"] = self.reply_to_message_id
+        return await self._bot.send_message(chat_id=self.chat_id, text=text, **kwargs)
 SYNTHETIC_TELEGRAM_USER_ID_MIN = max(
     1,
     int((os.getenv("SYNTHETIC_TELEGRAM_USER_ID_MIN") or "9100000001").strip() or "9100000001"),
@@ -412,6 +425,7 @@ PENDING_INPUT_STATE_CLEANUP_INTERVAL_MINUTES = max(
 )
 LANGUAGE_TUTOR_BUTTON_TEXT = "💬 Спросить у GPT"
 SHORTCUT_CONNECT_BUTTON_TEXT = "📱 Connect Shortcut"
+DICTIONARY_BATCH_FAST_BUTTON_TEXT = "🇩🇪➡️🇷🇺 Быстрый перевод"
 TTS_PREWARM_QUOTA_MIN = max(50, min(10000, int((os.getenv("TTS_PREWARM_PER_USER_CHAR_LIMIT_MIN") or "200").strip() or "200")))
 TTS_PREWARM_QUOTA_MAX = max(
     TTS_PREWARM_QUOTA_MIN,
@@ -1878,7 +1892,10 @@ def _language_tutor_pair_for_user(user_id: int) -> tuple[str, str]:
 
 def _build_private_language_tutor_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [[LANGUAGE_TUTOR_BUTTON_TEXT, SHORTCUT_CONNECT_BUTTON_TEXT]],
+        [
+            [LANGUAGE_TUTOR_BUTTON_TEXT, SHORTCUT_CONNECT_BUTTON_TEXT],
+            [DICTIONARY_BATCH_FAST_BUTTON_TEXT],
+        ],
         resize_keyboard=True,
         is_persistent=True,
     )
@@ -3773,6 +3790,32 @@ async def handle_button_click(update: Update, context: CallbackContext):
             context.application.create_task(_deliver_shortcut_connect_flow(int(update.effective_user.id), _reply))
         except Exception:
             await _deliver_shortcut_connect_flow(int(update.effective_user.id), _reply)
+    elif text == DICTIONARY_BATCH_FAST_BUTTON_TEXT:
+        if update.effective_chat and update.effective_chat.type != "private":
+            await update.message.reply_text("Эта кнопка доступна только в личке с ботом.")
+            return
+        user_id = int(update.effective_user.id)
+        pending_keys = _list_pending_dictionary_lookup_request_keys_for_user(user_id)
+        if not pending_keys:
+            await update.message.reply_text("Сейчас нет ожидающих запросов для быстрого перевода.")
+            return
+        await update.message.reply_text(
+            f"🚀 Запускаю быстрый перевод DE → RU для {len(pending_keys)} текущих запросов."
+        )
+        try:
+            context.application.create_task(
+                _run_dictionary_batch_fast_for_user(
+                    context,
+                    user_id=user_id,
+                    chat_id=int(update.effective_chat.id),
+                )
+            )
+        except Exception:
+            await _run_dictionary_batch_fast_for_user(
+                context,
+                user_id=user_id,
+                chat_id=int(update.effective_chat.id),
+            )
     elif text == LANGUAGE_TUTOR_BUTTON_TEXT:
         if update.effective_chat and update.effective_chat.type != "private":
             await update.message.reply_text("Вопрос для GPT отправьте в личку с ботом.")
@@ -4937,18 +4980,35 @@ def _build_dictionary_pair_keyboard(request_key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def _store_pending_dictionary_lookup_request(user_id: int, text: str) -> str:
+def _store_pending_dictionary_lookup_request(
+    user_id: int,
+    text: str,
+    *,
+    chat_id: int | None = None,
+    message_id: int | None = None,
+) -> str:
     key = hashlib.sha1(
         f"{user_id}:{text}:{datetime.utcnow().isoformat()}".encode("utf-8")
     ).hexdigest()[:20]
     pending_dictionary_lookup_requests[key] = {
         "user_id": int(user_id),
         "text": (text or "").strip(),
+        "chat_id": int(chat_id) if chat_id is not None else None,
+        "message_id": int(message_id) if message_id is not None else None,
     }
     if len(pending_dictionary_lookup_requests) > 500:
         oldest_key = next(iter(pending_dictionary_lookup_requests))
         pending_dictionary_lookup_requests.pop(oldest_key, None)
     return key
+
+
+def _list_pending_dictionary_lookup_request_keys_for_user(user_id: int) -> list[str]:
+    target_user_id = int(user_id)
+    return [
+        key
+        for key, payload in pending_dictionary_lookup_requests.items()
+        if int((payload or {}).get("user_id", 0)) == target_user_id
+    ]
 
 
 def _build_dictionary_pair_selection_text(source_text: str) -> str:
@@ -6957,12 +7017,21 @@ async def _handle_private_dictionary_lookup(update: Update, context: CallbackCon
     if not lookup_input:
         await update.message.reply_text("Пустой запрос. Отправьте слово или короткую фразу.")
         return
-    request_key = _store_pending_dictionary_lookup_request(int(update.message.from_user.id), lookup_input)
+    request_key = _store_pending_dictionary_lookup_request(
+        int(update.message.from_user.id),
+        lookup_input,
+        chat_id=int(update.message.chat_id),
+    )
     keyboard = _build_dictionary_pair_keyboard(request_key)
     msg = await update.message.reply_text(
         _build_dictionary_pair_selection_text(lookup_input),
         reply_markup=keyboard,
     )
+    payload = pending_dictionary_lookup_requests.get(request_key)
+    if isinstance(payload, dict):
+        payload["message_id"] = int(msg.message_id)
+        payload["chat_id"] = int(msg.chat_id)
+        pending_dictionary_lookup_requests[request_key] = payload
     add_service_msg_id(context, msg.message_id)
 
 
@@ -7014,6 +7083,88 @@ async def _process_dictionary_pair_selection(
     finally:
         pending_dictionary_lookup_requests.pop(request_key, None)
         pending_dictionary_lookup_inflight.discard(request_key)
+
+
+async def _run_dictionary_batch_fast_for_user(
+    context: CallbackContext,
+    *,
+    user_id: int,
+    chat_id: int,
+) -> None:
+    request_keys = _list_pending_dictionary_lookup_request_keys_for_user(user_id)
+    if not request_keys:
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="Сейчас нет ожидающих запросов для быстрого перевода.",
+            )
+        except Exception:
+            logging.debug("Failed to send empty batch notice", exc_info=True)
+        return
+
+    processed = 0
+    for request_key in request_keys:
+        payload = pending_dictionary_lookup_requests.get(request_key)
+        if not payload or int((payload or {}).get("user_id", 0)) != int(user_id):
+            continue
+        if request_key in pending_dictionary_lookup_inflight:
+            continue
+
+        lookup_input = str(payload.get("text") or "").strip()
+        if not lookup_input:
+            pending_dictionary_lookup_requests.pop(request_key, None)
+            continue
+
+        original_message_id = payload.get("message_id")
+        try:
+            if original_message_id is not None:
+                try:
+                    await context.bot.edit_message_reply_markup(
+                        chat_id=chat_id,
+                        message_id=int(original_message_id),
+                        reply_markup=None,
+                    )
+                except Exception:
+                    logging.debug(
+                        "Failed to clear pending dictionary reply markup chat_id=%s message_id=%s",
+                        chat_id,
+                        original_message_id,
+                        exc_info=True,
+                    )
+
+            pending_dictionary_lookup_inflight.add(request_key)
+            reply_message = _ReplyTextAdapter(
+                context.bot,
+                chat_id=chat_id,
+                reply_to_message_id=int(original_message_id) if original_message_id else None,
+            )
+            await _process_dictionary_pair_selection(
+                context=context,
+                message=reply_message,
+                request_key=request_key,
+                user_id=int(user_id),
+                lookup_input=lookup_input,
+                source_lang="de",
+                target_lang="ru",
+                response_mode="quick",
+            )
+            processed += 1
+        except Exception:
+            logging.exception(
+                "❌ Bulk fast dictionary translation failed user_id=%s request_key=%s",
+                int(user_id),
+                request_key,
+            )
+            pending_dictionary_lookup_inflight.discard(request_key)
+
+    if processed <= 0:
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="Не нашёл запросов для быстрого перевода.",
+            )
+        except Exception:
+            logging.debug("Failed to send no-processed batch notice", exc_info=True)
 
 
 async def handle_dictionary_pair_callback(update: Update, context: CallbackContext) -> None:
@@ -7698,7 +7849,7 @@ async def handle_quiz_question_save_callback(update: Update, context: CallbackCo
     saved_lines: list[str] = []
     for idx in selected_idxs:
         chosen = options[idx]
-        save_ok, save_msg, entry_id = _save_dictionary_option_for_user(
+        save_ok, save_msg, entry_id, already_tagged = _save_dictionary_option_for_user(
             payload=save_payload,
             chosen=chosen,
             user_id=int(user.id),
@@ -7709,7 +7860,7 @@ async def handle_quiz_question_save_callback(update: Update, context: CallbackCo
         source_text = str(chosen.get("source") or "").strip()
         target_text = str(chosen.get("target") or "").strip()
         saved_lines.append(f"• {source_text} -> {target_text}")
-        if entry_id and entry_id > 0:
+        if entry_id and entry_id > 0 and not already_tagged:
             asyncio.create_task(_auto_tag_saved_entry(
                 user_id=int(user.id), entry_id=entry_id,
                 source_text=source_text, target_text=target_text,
@@ -7948,11 +8099,11 @@ async def handle_dictionary_save_option_callback(update: Update, context: Callba
         return
 
     chosen = options[option_idx]
-    save_ok, save_msg, entry_id = _save_dictionary_option_for_user(payload=payload, chosen=chosen, user_id=int(user.id))
+    save_ok, save_msg, entry_id, already_tagged = _save_dictionary_option_for_user(payload=payload, chosen=chosen, user_id=int(user.id))
     if not save_ok:
         await query.answer(save_msg or "Ошибка сохранения. Попробуйте позже.", show_alert=True)
         return
-    if entry_id and entry_id > 0:
+    if entry_id and entry_id > 0 and not already_tagged:
         asyncio.create_task(_auto_tag_saved_entry(
             user_id=int(user.id), entry_id=entry_id,
             source_text=str(chosen.get("source") or "").strip(),
@@ -8000,6 +8151,72 @@ _TAG_FOLDER_META: dict[str, tuple[str, str]] = {
     "Прочее":       ("📂", "#888888"),
 }
 
+# Local synonym sets for folder matching — no GPT needed
+_TAG_SYNONYMS: dict[str, set[str]] = {
+    "Работа":      {"работа", "офис", "beruf", "job", "karriere", "büro", "arbeit", "служба"},
+    "Учёба":       {"учёба", "учеба", "образование", "bildung", "schule", "studium", "lernen", "университет", "школа"},
+    "Здоровье":    {"здоровье", "медицина", "врач", "больница", "gesundheit", "arzt", "klinik", "krankenhaus"},
+    "Путешествия": {"путешествия", "путешествие", "reisen", "reise", "travel", "urlaub", "туризм"},
+    "Быт":         {"быт", "alltag", "haushalt", "повседневное"},
+    "Еда":         {"еда", "питание", "essen", "food", "kochen", "кухня", "ресторан", "lebensmittel"},
+    "Спорт":       {"спорт", "sport", "fitness", "тренировка", "фитнес"},
+    "Технологии":  {"технологии", "технология", "it", "internet", "компьютер", "computer", "digital"},
+    "Деньги":      {"деньги", "финансы", "geld", "finanzen", "finance", "банк", "bank", "экономика"},
+    "Семья":       {"семья", "familie", "family", "дети", "родители"},
+    "Транспорт":   {"транспорт", "verkehr", "transport", "автомобиль", "машина", "auto"},
+    "Природа":     {"природа", "natur", "nature", "окружающая среда", "umwelt"},
+    "Культура":    {"культура", "kultur", "culture", "искусство", "kunst", "музыка", "musik"},
+    "Общение":     {"общение", "коммуникация", "kommunikation", "communication"},
+    "Покупки":     {"покупки", "покупка", "einkaufen", "shopping", "магазин", "laden"},
+    "Жильё":       {"жильё", "жилье", "wohnen", "wohnung", "квартира", "housing"},
+    "Право":       {"право", "закон", "recht", "gesetz", "law", "государство"},
+    "Эмоции":      {"эмоции", "чувства", "emotion", "gefühle", "feelings"},
+    "Прочее":      {"прочее", "other", "sonstiges", "разное"},
+}
+
+
+def _match_folder_for_tag(tag: str, folders: list[dict]) -> int | None:
+    """Find an existing folder matching the semantic tag. Pure string matching, no GPT."""
+    synonyms = (_TAG_SYNONYMS.get(tag) or set()) | {tag.strip().lower()}
+    for f in folders:
+        name = str(f.get("name") or "").strip().lower()
+        if name in synonyms:
+            fid = int(f.get("id") or 0)
+            return fid if fid > 0 else None
+    return None
+
+
+def _apply_semantic_tag_sync(
+    user_id: int,
+    entry_id: int,
+    tag: str,
+) -> None:
+    """Find or create the semantic folder, then update the DB entry. All sync, no GPT."""
+    try:
+        folders = get_dictionary_folders(user_id)
+        folder_id = _match_folder_for_tag(tag, folders)
+        if folder_id is None:
+            meta = _TAG_FOLDER_META.get(tag, ("📂", "#5ddcff"))
+            new_folder = get_or_create_dictionary_folder(
+                user_id=user_id,
+                name=tag,
+                color=meta[1],
+                icon=meta[0],
+            )
+            folder_id = int(new_folder.get("id") or 0) or None
+        if entry_id and entry_id > 0:
+            update_entry_semantic_tag_and_folder(
+                entry_id=entry_id,
+                user_id=user_id,
+                semantic_tag=tag,
+                folder_id=folder_id,
+            )
+    except Exception:
+        logging.warning(
+            "_apply_semantic_tag_sync failed user_id=%s entry_id=%s tag=%s",
+            user_id, entry_id, tag, exc_info=True,
+        )
+
 
 async def _auto_tag_saved_entry(
     user_id: int,
@@ -8009,58 +8226,30 @@ async def _auto_tag_saved_entry(
     source_lang: str,
     target_lang: str,
 ) -> None:
+    """Fallback: used when lookup didn't return semantic_category (quiz/tutor saves).
+    Makes a GPT call to get the tag, then calls _apply_semantic_tag_sync."""
     try:
         if source_lang == "de":
             word_de, word_ru = source_text, target_text
         elif target_lang == "de":
             word_de, word_ru = target_text, source_text
         else:
-            return  # only tag DE/RU pairs
+            return
 
         if not word_de:
             return
 
-        folders = await asyncio.to_thread(get_dictionary_folders, user_id)
-        folder_names = [str(f.get("name") or "").strip() for f in folders if f.get("name")]
-
-        result = await run_auto_categorize({
-            "word_de": word_de,
-            "word_ru": word_ru or "",
-            "existing_folders": folder_names,
-        })
-
-        tag = str(result.get("tag") or "").strip()
-        matched_folder_name = str(result.get("matched_folder") or "").strip() or None
+        results = await run_auto_categorize_batch([{"id": entry_id, "de": word_de, "ru": word_ru or ""}])
+        tag = ""
+        for r in results:
+            if int(r.get("id") or 0) == entry_id:
+                tag = str(r.get("tag") or "").strip()
+                break
 
         if not tag:
             return
 
-        folder_id = None
-        if matched_folder_name:
-            for f in folders:
-                if str(f.get("name") or "").strip() == matched_folder_name:
-                    folder_id = int(f.get("id") or 0) or None
-                    break
-
-        if folder_id is None:
-            meta = _TAG_FOLDER_META.get(tag, ("📂", "#5ddcff"))
-            new_folder = await asyncio.to_thread(
-                get_or_create_dictionary_folder,
-                user_id=user_id,
-                name=tag,
-                color=meta[1],
-                icon=meta[0],
-            )
-            folder_id = int(new_folder.get("id") or 0) or None
-
-        if entry_id and entry_id > 0:
-            await asyncio.to_thread(
-                update_entry_semantic_tag_and_folder,
-                entry_id=entry_id,
-                user_id=user_id,
-                semantic_tag=tag,
-                folder_id=folder_id,
-            )
+        await asyncio.to_thread(_apply_semantic_tag_sync, user_id, entry_id, tag)
     except Exception:
         logging.warning(
             "_auto_tag_saved_entry failed user_id=%s entry_id=%s",
@@ -8068,7 +8257,9 @@ async def _auto_tag_saved_entry(
         )
 
 
-def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) -> tuple[bool, str, int]:
+def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) -> tuple[bool, str, int, bool]:
+    """Returns (ok, msg, entry_id, already_tagged).
+    already_tagged=True means semantic_category came from the lookup (no extra GPT needed)."""
     source = (chosen.get("source") or "").strip()
     target = (chosen.get("target") or "").strip()
     source_lang = str(payload.get("source_lang") or "").strip().lower()
@@ -8078,7 +8269,7 @@ def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) 
     lookup = payload.get("lookup") or {}
 
     if not source or not target:
-        return False, "Вариант неполный, выберите другой.", 0
+        return False, "Вариант неполный, выберите другой.", 0, False
 
     response_json = dict(lookup) if isinstance(lookup, dict) else {}
     response_json["word_source"] = source
@@ -8120,16 +8311,40 @@ def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) 
     if translation_ru:
         response_json["translation_ru"] = translation_ru
 
+    # Extract semantic category from the existing GPT lookup response — zero extra cost.
+    semantic_tag = str(lookup.get("semantic_category") or "").strip()
+    _VALID_TAGS = set(_TAG_FOLDER_META.keys())
+    if semantic_tag not in _VALID_TAGS:
+        semantic_tag = ""
+
     try:
-        try:
-            folder_pref = _resolve_private_dictionary_save_folder(
-                user_id=int(user_id),
-                source_lang=source_lang,
-                target_lang=target_lang,
-            )
-            folder_id = folder_pref.get("folder_id")
-        except Exception:
-            folder_id = None
+        # If we have a tag, route to the semantic folder instead of user's default.
+        if semantic_tag:
+            try:
+                folders = get_dictionary_folders(int(user_id))
+                folder_id = _match_folder_for_tag(semantic_tag, folders)
+                if folder_id is None:
+                    meta = _TAG_FOLDER_META.get(semantic_tag, ("📂", "#5ddcff"))
+                    new_folder = get_or_create_dictionary_folder(
+                        user_id=int(user_id),
+                        name=semantic_tag,
+                        color=meta[1],
+                        icon=meta[0],
+                    )
+                    folder_id = int(new_folder.get("id") or 0) or None
+            except Exception:
+                logging.warning("semantic folder resolve failed user_id=%s tag=%s", user_id, semantic_tag, exc_info=True)
+                folder_id = None
+        else:
+            try:
+                folder_pref = _resolve_private_dictionary_save_folder(
+                    user_id=int(user_id),
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                )
+                folder_id = folder_pref.get("folder_id")
+            except Exception:
+                folder_id = None
 
         entry_id = save_webapp_dictionary_query_returning_id(
             user_id=user_id,
@@ -8147,10 +8362,20 @@ def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) 
                 "source": "private_bot",
             },
         )
+        if semantic_tag and entry_id and entry_id > 0:
+            try:
+                update_entry_semantic_tag_and_folder(
+                    entry_id=int(entry_id),
+                    user_id=int(user_id),
+                    semantic_tag=semantic_tag,
+                    folder_id=int(folder_id) if folder_id is not None else None,
+                )
+            except Exception:
+                logging.warning("semantic_tag update failed entry_id=%s", entry_id, exc_info=True)
     except Exception as exc:
         logging.exception(f"❌ Ошибка сохранения выбранного варианта user_id={user_id}: {exc}")
-        return False, "Ошибка сохранения. Попробуйте позже.", 0
-    return True, "ok", int(entry_id or 0)
+        return False, "Ошибка сохранения. Попробуйте позже.", 0, False
+    return True, "ok", int(entry_id or 0), bool(semantic_tag)
 
 
 async def handle_dictionary_select_toggle_callback(update: Update, context: CallbackContext) -> None:
@@ -8278,7 +8503,7 @@ async def handle_dictionary_save_confirm_callback(update: Update, context: Callb
         if idx < 0 or idx >= len(options):
             continue
         chosen = options[idx]
-        save_ok, save_msg, entry_id = _save_dictionary_option_for_user(payload=payload, chosen=chosen, user_id=int(user.id))
+        save_ok, save_msg, entry_id, already_tagged = _save_dictionary_option_for_user(payload=payload, chosen=chosen, user_id=int(user.id))
         if save_ok:
             source = (chosen.get("source") or "").strip()
             target = (chosen.get("target") or "").strip()
@@ -8354,14 +8579,14 @@ async def handle_dictionary_quick_save_callback(update: Update, context: Callbac
     saved_lines: list[str] = []
     for idx in selected_idxs:
         chosen = options[idx]
-        save_ok, save_msg, entry_id = _save_dictionary_option_for_user(payload=payload, chosen=chosen, user_id=int(user.id))
+        save_ok, save_msg, entry_id, already_tagged = _save_dictionary_option_for_user(payload=payload, chosen=chosen, user_id=int(user.id))
         if not save_ok:
             logging.warning("Quick dictionary save skipped idx=%s: %s", idx, save_msg)
             continue
         source = (chosen.get("source") or "").strip()
         target = (chosen.get("target") or "").strip()
         saved_lines.append(f"• {source} -> {target}")
-        if entry_id and entry_id > 0:
+        if entry_id and entry_id > 0 and not already_tagged:
             asyncio.create_task(_auto_tag_saved_entry(
                 user_id=int(user.id), entry_id=entry_id,
                 source_text=source, target_text=target,
@@ -14593,7 +14818,7 @@ async def admin_visual_riddle_health_command(update: Update, context: CallbackCo
 async def _run_semantic_retag_backfill(admin_chat_id: int) -> None:
     processed = 0
     failed = 0
-    batch_size = 8
+    batch_size = 10  # 10 words per GPT call
     while True:
         try:
             entries = await asyncio.to_thread(get_entries_without_semantic_tag, None, batch_size)
@@ -14602,34 +14827,54 @@ async def _run_semantic_retag_backfill(admin_chat_id: int) -> None:
             break
         if not entries:
             break
+
+        # Build GPT batch (skip entries with no German word)
+        gpt_items = []
+        fallback_entries = []
         for entry in entries:
+            entry_id = int(entry.get("id") or 0)
+            uid = int(entry.get("user_id") or 0)
+            if not entry_id or not uid:
+                continue
+            word_de = str(entry.get("word_de") or "").strip()
+            word_ru = str(entry.get("word_ru") or "").strip()
+            if not word_de:
+                # No German word — tag as Прочее immediately
+                fallback_entries.append((entry_id, uid))
+            else:
+                gpt_items.append({"id": entry_id, "_uid": uid, "de": word_de, "ru": word_ru})
+
+        # Immediately tag entries without German word
+        for entry_id, uid in fallback_entries:
             try:
-                entry_id = int(entry.get("id") or 0)
-                uid = int(entry.get("user_id") or 0)
-                if not entry_id or not uid:
-                    continue
-                src_lang = str(entry.get("source_lang") or "").strip().lower()
-                tgt_lang = str(entry.get("target_lang") or "").strip().lower()
-                src_text = str(entry.get("word_de") if src_lang == "de" else entry.get("word_ru") or "").strip()
-                tgt_text = str(entry.get("word_ru") if src_lang == "de" else entry.get("word_de") or "").strip()
-                if not src_text:
-                    await asyncio.to_thread(
-                        update_entry_semantic_tag_and_folder,
-                        entry_id, uid, "Прочее", None,
-                    )
-                    processed += 1
-                    continue
-                await _auto_tag_saved_entry(
-                    user_id=uid, entry_id=entry_id,
-                    source_text=src_text, target_text=tgt_text,
-                    source_lang=src_lang, target_lang=tgt_lang,
-                )
+                await asyncio.to_thread(update_entry_semantic_tag_and_folder, entry_id, uid, "Прочее", None)
                 processed += 1
             except Exception:
                 failed += 1
-                logging.warning("retag backfill entry failed id=%s", entry.get("id"), exc_info=True)
-            await asyncio.sleep(0.4)
-        await asyncio.sleep(1.0)
+
+        # One GPT call for the whole batch
+        if gpt_items:
+            try:
+                payload_for_gpt = [{"id": item["id"], "de": item["de"], "ru": item["ru"]} for item in gpt_items]
+                uid_map = {item["id"]: item["_uid"] for item in gpt_items}
+                results = await run_auto_categorize_batch(payload_for_gpt)
+                tag_map = {int(r.get("id") or 0): str(r.get("tag") or "").strip() for r in results if r.get("id")}
+                for item in gpt_items:
+                    eid = item["id"]
+                    uid = uid_map[eid]
+                    tag = tag_map.get(eid) or "Прочее"
+                    try:
+                        await asyncio.to_thread(_apply_semantic_tag_sync, uid, eid, tag)
+                        processed += 1
+                    except Exception:
+                        failed += 1
+                        logging.warning("retag backfill apply failed id=%s", eid, exc_info=True)
+            except Exception:
+                failed += len(gpt_items)
+                logging.exception("retag backfill GPT batch failed")
+
+        await asyncio.sleep(1.5)  # rate-limit between batches
+
     try:
         bot = application.bot
         await bot.send_message(

@@ -1957,6 +1957,7 @@ Return STRICT JSON with these fields:
   "save_worthy_options": [
     {"source": "...", "target": "...", "kind": "base|collocation|phrase"}
   ],
+  "semantic_category": "one of: Работа, Учёба, Здоровье, Путешествия, Быт, Еда, Спорт, Технологии, Деньги, Семья, Транспорт, Природа, Культура, Общение, Покупки, Жильё, Право, Эмоции, Прочее",
   "raw_text": "string|null"
 }
 
@@ -1981,6 +1982,7 @@ Output rules:
 - save_worthy_options must be realistic and worth saving.
 - ARTICLES in save_worthy_options: if the "source" side of an item is a German noun standing alone (not inside a phrase), ALWAYS prepend the correct definite article (der/die/das). Never output a bare noun. Example: write "der Ersatzstift", NOT "Ersatzstift".
 - Do not overload with obscure meanings.
+- semantic_category: pick the single best-matching category from the fixed list above.
 - Output ONLY JSON.
 """,
 "dictionary_collocations": """
@@ -2156,11 +2158,13 @@ Return STRICT JSON with keys:
   "save_worthy_options": [
     {"source": "...", "target": "...", "kind": "base|collocation|phrase"}
   ],
+  "semantic_category": "one of: Работа, Учёба, Здоровье, Путешествия, Быт, Еда, Спорт, Технологии, Деньги, Семья, Транспорт, Природа, Культура, Общение, Покупки, Жильё, Право, Эмоции, Прочее",
   "raw_text": "<optional short note>"
 }
 
 Rules:
 - Output ONLY JSON.
+- semantic_category: pick the single best-matching category from the fixed list above.
 - All explanatory note fields must be written in the learner-facing explanation language.
 - Use source_language as the explanation language by default, except when target_language is clearly the learner language from the input context.
 - All explanatory fields must be written consistently in that explanation language:
@@ -5113,25 +5117,26 @@ async def run_translation_explanation_multilang(
 
 
 system_message.update({
-    "auto_categorize": """
+    "auto_categorize_batch": """
 You are a vocabulary categorizer for a German language learning app.
 
-Given a German–Russian word or phrase pair, assign it to exactly ONE category from this fixed list:
+You receive a batch of German–Russian word pairs and must assign each to exactly ONE category from this fixed list:
 Работа, Учёба, Здоровье, Путешествия, Быт, Еда, Спорт, Технологии, Деньги, Семья, Транспорт, Природа, Культура, Общение, Покупки, Жильё, Право, Эмоции, Прочее
-
-Also, you receive the user's existing folder names. If any folder is semantically equivalent to the assigned category (same concept, different wording — e.g. "Работа" ≈ "Офис" ≈ "Beruf" ≈ "Job"; "Здоровье" ≈ "Медицина" ≈ "Arzt"), return that folder name verbatim as "matched_folder". If no folder matches well enough, return null.
 
 Input JSON:
 {
-  "word_de": "...",
-  "word_ru": "...",
-  "existing_folders": ["...", "..."]
+  "items": [
+    {"id": 1, "de": "arbeiten", "ru": "работать"},
+    {"id": 2, "de": "die Schule", "ru": "школа"}
+  ]
 }
 
 Return STRICT JSON only, no markdown, no extra text:
 {
-  "tag": "<one category from the fixed list>",
-  "matched_folder": "<one of existing_folders verbatim, or null>"
+  "results": [
+    {"id": 1, "tag": "Работа"},
+    {"id": 2, "tag": "Учёба"}
+  ]
 }
 """,
     "text_vocab_extract": """
@@ -5163,13 +5168,14 @@ Return STRICT JSON only, no markdown, no explanation:
 })
 
 
-async def run_auto_categorize(payload: dict) -> dict:
-    return await _run_json_assistant_task(
-        task_name="auto_categorize",
-        system_instruction_key="auto_categorize",
-        payload=payload or {},
+async def run_auto_categorize_batch(items: list[dict]) -> list[dict]:
+    result = await _run_json_assistant_task(
+        task_name="auto_categorize_batch",
+        system_instruction_key="auto_categorize_batch",
+        payload={"items": items or []},
         poll_delay_sec=1.0,
     )
+    return result.get("results") or []
 
 
 async def run_text_vocab_extract(payload: dict) -> dict:
