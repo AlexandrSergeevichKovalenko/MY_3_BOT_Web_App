@@ -6476,13 +6476,13 @@ body {
 }
 .vocab-selection-toolbar {
   margin: 0 0 12px;
-  padding: 12px 14px;
-  border-radius: 14px;
+  padding: 14px 16px 13px;
+  border-radius: 20px;
   border: 1.5px solid rgba(99,102,241,0.55);
   background: linear-gradient(135deg, rgba(79,70,229,0.26), rgba(99,102,241,0.14));
   box-shadow: 0 0 0 1px rgba(99,102,241,0.18) inset, 0 4px 16px rgba(79,70,229,0.18);
   display: grid;
-  gap: 10px;
+  gap: 12px;
 }
 .vocab-selection-toolbar-main {
   display: flex;
@@ -6552,19 +6552,21 @@ body {
   align-items: center;
   justify-content: center;
   gap: 3px;
-  padding: 8px 5px 7px;
-  border-radius: 13px;
+  min-height: 56px;
+  padding: 9px 6px 8px;
+  border-radius: 18px;
   border: 1.5px solid rgba(148,163,184,0.2);
   background: rgba(15,23,42,0.38);
   color: #94a3b8;
-  font-size: 10px;
-  line-height: 1.05;
+  font-size: 11px;
+  line-height: 1.1;
   font-weight: 600;
   letter-spacing: 0;
   cursor: pointer;
   transition: border-color 140ms ease, background 140ms ease, color 140ms ease, transform 80ms ease;
   -webkit-tap-highlight-color: transparent;
   min-width: 0;
+  box-sizing: border-box;
 }
 .vocab-sel-tab:active:not(:disabled) {
   transform: scale(0.95);
@@ -6587,8 +6589,8 @@ body {
     gap: 6px;
   }
   .vocab-sel-tab {
-    font-size: 9px;
-    padding: 7px 4px 6px;
+    font-size: 10px;
+    padding: 8px 5px 7px;
   }
   .vocab-sel-tab-icon {
     font-size: 14px;
@@ -6861,15 +6863,23 @@ body {
 }
 .vocab-search-input {
   width: 100%;
-  background: rgba(255,255,255,0.05);
-  border: 1px solid rgba(255,255,255,0.09);
-  border-radius: 11px;
-  padding: 9px 36px 9px 12px;
+  height: 46px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 20px;
+  padding: 0 42px 0 14px;
   color: #F8FAFC;
   font-size: 14px;
+  line-height: 1.15;
   outline: none;
+  box-sizing: border-box;
+  -webkit-appearance: none;
+  appearance: none;
+  -webkit-text-fill-color: currentColor;
+  caret-color: #F8FAFC;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
 }
-.vocab-search-input::placeholder { color: #475569; }
+.vocab-search-input::placeholder { color: #94a3b8; opacity: 1; }
 .vocab-search-clear {
   position: absolute;
   right: 10px;
@@ -7686,11 +7696,12 @@ body {
   color: #3730A3;
 }
 .webapp-page.is-theme-light .vocab-search-input {
-  background: rgba(0,0,0,0.04);
-  border-color: rgba(0,0,0,0.1);
+  background: rgba(255,255,255,0.72);
+  border-color: rgba(0,0,0,0.12);
   color: #1f1a14;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.58), 0 1px 2px rgba(111,78,37,0.04);
 }
-.webapp-page.is-theme-light .vocab-search-input::placeholder { color: #a08870; }
+.webapp-page.is-theme-light .vocab-search-input::placeholder { color: #8a745e; opacity: 1; }
 .webapp-page.is-theme-light .vocab-search-clear { color: #a08870; }
 .webapp-page.is-theme-light .vocab-group-label { color: #a08870; }
 .webapp-page.is-theme-light .vocab-loading,
