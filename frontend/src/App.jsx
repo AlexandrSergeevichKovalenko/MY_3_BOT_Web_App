@@ -5208,6 +5208,11 @@ function AppInner() {
   const readerEpubRelocationSaveTimeoutRef = useRef(null);
   const readerEpubLoadTokenRef = useRef(0);
   const audioRafRef = useRef(0);
+  // Ping-pong audio elements: activeEl plays, bufEl preloads next page.
+  // Swap on seamless page transition to avoid the load() latency on iOS.
+  const readerAudioActiveElRef = useRef(null); // lazily set to audioElementRef.current
+  const readerAudioBufElRef = useRef(null);    // lazily set to readerAudioPreloadElementRef.current
+  const [readerAudioElGen, setReaderAudioElGen] = useState(0); // bumped on swap to re-trigger effects
   const readerAudioPlayingForPageRef = useRef(null);
   const readerAudioRequestTokenRef = useRef(0);
   const readerAudioPrefetchTimeoutRef = useRef(null);
@@ -21676,7 +21681,12 @@ function AppInner() {
       };
       const preloadReaderAudioUrl = (requestKey, audioUrl) => {
         if (!requestKey || !audioUrl) return;
-        const preloadEl = readerAudioPreloadElementRef.current;
+        // Lazy-initialize ping-pong refs from DOM elements
+        if (!readerAudioActiveElRef.current) {
+          readerAudioActiveElRef.current = audioElementRef.current;
+          readerAudioBufElRef.current = readerAudioPreloadElementRef.current;
+        }
+        const preloadEl = readerAudioBufElRef.current;
         if (!preloadEl) return;
         const currentKey = String(preloadEl.dataset.readerAudioKey || '');
         const currentUrl = String(preloadEl.currentSrc || preloadEl.src || '');
@@ -21849,72 +21859,115 @@ function AppInner() {
       setReaderAudioPlayData(data);
       setReaderAudioPaused(false);
       setReaderAudioPlayActive(true);
-      if (audioElementRef.current) {
-        const el = audioElementRef.current;
+      if (audioElementRef.current || readerAudioPreloadElementRef.current) {
+        // Lazy-initialize ping-pong refs
+        if (!readerAudioActiveElRef.current) {
+          readerAudioActiveElRef.current = audioElementRef.current;
+          readerAudioBufElRef.current = readerAudioPreloadElementRef.current;
+        }
         const currentRequestKey = buildPageAudioRequestKey(playbackWindow.startPage, voice, readerAudioRate, visiblePageText);
-        const preloadEl = readerAudioPreloadElementRef.current;
-        const preloadedKey = String(preloadEl?.dataset?.readerAudioKey || '');
-        const preloadedUrl = String(preloadEl?.currentSrc || preloadEl?.src || '');
-        delete el.dataset.readerPrimeToken;
-        delete el.dataset.readerPrimeSrc;
-        el.muted = false;
-        if (!Number.isFinite(el.volume) || el.volume <= 0) el.volume = 1;
-        el.src = data.audio_url;
-        if (preloadedKey === currentRequestKey && preloadedUrl === data.audio_url) {
-          el.preload = 'auto';
-        }
-        el.playbackRate = readerAudioRate;
-        let startMs = 0;
-        if (startWid) {
-          // Use DOM-captured charStart first, fall back to map lookup.
-          const localCharStart = (Number.isFinite(charStartOverride) && charStartOverride >= 0)
-            ? charStartOverride
-            : readerAudioWidToCharStart.get(startWid);
-          const charStart = localCharStart == null ? null : Number(localCharStart) + initialCharOffset;
-          const timings = data.word_timings || [];
-          let timing = null;
-          console.log('[ReaderAudio] seek: charStart=', charStart, 'timings=', timings.length, 'first_char_start=', timings[0]?.char_start);
-          if (charStart != null && timings.length > 0 && timings[0].char_start != null) {
-            // Containment first: find the word spanning charStart
-            timing = timings.find((w) => charStart >= Number(w.char_start) && charStart <= Number(w.char_end))
-              || timings.find((w) => Number(w.char_start) >= charStart)
-              || timings.find((w) => charStart <= Number(w.char_end));
+        const activeEl = readerAudioActiveElRef.current;
+        const bufEl = readerAudioBufElRef.current;
+        const bufKey = String(bufEl?.dataset?.readerAudioKey || '');
+        const bufUrl = String(bufEl?.currentSrc || bufEl?.src || '');
+
+        // SEAMLESS PATH: buf element already has this page's audio buffered and no seeking needed.
+        // Swap roles and play directly — zero load() latency.
+        const canSeamless = (
+          !startWid
+          && bufEl != null
+          && bufKey === currentRequestKey
+          && bufUrl === data.audio_url
+          && bufEl.readyState >= 3 // HAVE_FUTURE_DATA: enough buffered to start
+        );
+
+        if (canSeamless) {
+          console.log('[ReaderAudio] seamless ping-pong swap for page=', page, 'bufReadyState=', bufEl.readyState);
+          // Swap active/buf elements
+          readerAudioActiveElRef.current = bufEl;
+          readerAudioBufElRef.current = activeEl;
+          setReaderAudioElGen((g) => g + 1); // re-trigger effects to re-attach event listeners
+          if (!Number.isFinite(bufEl.volume) || bufEl.volume <= 0) bufEl.volume = 1;
+          bufEl.muted = false;
+          bufEl.playbackRate = readerAudioRate;
+          setReaderAudioPlayPosition(0);
+          try {
+            await bufEl.play();
+          } catch (err) {
+            console.warn('[ReaderAudio] seamless play() failed:', err?.message || err);
+            throw new Error(String(err?.message || '').trim() || 'Reader audio playback failed to start');
           }
-          if (!timing) {
-            const posIdx = readerAudioWidReverseMap.get(startWid);
-            console.log('[ReaderAudio] char seek missed, trying posIdx=', posIdx, 'charStart=', charStart);
-            if (posIdx !== undefined) {
-              timing = timings.find((w) => String(w.wid) === posIdx);
+          // Clear old active element so it's ready to be reused as buf for page N+2
+          if (activeEl) {
+            activeEl.pause();
+            activeEl.removeAttribute('src');
+            activeEl.load();
+            delete activeEl.dataset.readerAudioKey;
+          }
+        } else {
+          // NORMAL PATH: load audio from URL (first page or buf not ready)
+          const el = activeEl;
+          delete el.dataset.readerPrimeToken;
+          delete el.dataset.readerPrimeSrc;
+          el.muted = false;
+          if (!Number.isFinite(el.volume) || el.volume <= 0) el.volume = 1;
+          el.src = data.audio_url;
+          if (bufKey === currentRequestKey && bufUrl === data.audio_url) {
+            el.preload = 'auto';
+          }
+          el.playbackRate = readerAudioRate;
+          let startMs = 0;
+          if (startWid) {
+            // Use DOM-captured charStart first, fall back to map lookup.
+            const localCharStart = (Number.isFinite(charStartOverride) && charStartOverride >= 0)
+              ? charStartOverride
+              : readerAudioWidToCharStart.get(startWid);
+            const charStart = localCharStart == null ? null : Number(localCharStart) + initialCharOffset;
+            const timings = data.word_timings || [];
+            let timing = null;
+            console.log('[ReaderAudio] seek: charStart=', charStart, 'timings=', timings.length, 'first_char_start=', timings[0]?.char_start);
+            if (charStart != null && timings.length > 0 && timings[0].char_start != null) {
+              // Containment first: find the word spanning charStart
+              timing = timings.find((w) => charStart >= Number(w.char_start) && charStart <= Number(w.char_end))
+                || timings.find((w) => Number(w.char_start) >= charStart)
+                || timings.find((w) => charStart <= Number(w.char_end));
             }
+            if (!timing) {
+              const posIdx = readerAudioWidReverseMap.get(startWid);
+              console.log('[ReaderAudio] char seek missed, trying posIdx=', posIdx, 'charStart=', charStart);
+              if (posIdx !== undefined) {
+                timing = timings.find((w) => String(w.wid) === posIdx);
+              }
+            }
+            console.log('[ReaderAudio] timing found=', timing, 'startMs=', timing?.start_ms);
+            if (timing) startMs = timing.start_ms;
           }
-          console.log('[ReaderAudio] timing found=', timing, 'startMs=', timing?.start_ms);
-          if (timing) startMs = timing.start_ms;
-        }
-        console.log('[ReaderAudio] audio starting at startMs=', startMs);
-        setReaderAudioPlayPosition(startMs);
-        // Explicit load() so iOS fires loadedmetadata after src change.
-        el.load();
-        if (startMs > 0) {
-          // iOS Safari ignores currentTime set before loadedmetadata fires.
-          // Wait for metadata, then seek, then play.
-          await new Promise((resolve) => {
-            if (!audioElementRef.current) { resolve(); return; }
-            const doSeek = () => {
-              if (audioElementRef.current) audioElementRef.current.currentTime = startMs / 1000;
-              resolve();
-            };
-            if (audioElementRef.current.readyState >= 1) { doSeek(); }
-            else { audioElementRef.current.addEventListener('loadedmetadata', doSeek, { once: true }); }
-          });
-        }
-        try {
-          await audioElementRef.current?.play();
-        } catch (err) {
-          console.warn('[ReaderAudio] play() failed:', err?.message || err);
-          throw new Error(
-            String(err?.message || '').trim()
-              || 'Reader audio playback failed to start'
-          );
+          console.log('[ReaderAudio] audio starting at startMs=', startMs);
+          setReaderAudioPlayPosition(startMs);
+          // Explicit load() so iOS fires loadedmetadata after src change.
+          el.load();
+          if (startMs > 0) {
+            // iOS Safari ignores currentTime set before loadedmetadata fires.
+            // Wait for metadata, then seek, then play.
+            await new Promise((resolve) => {
+              if (!el) { resolve(); return; }
+              const doSeek = () => {
+                if (el) el.currentTime = startMs / 1000;
+                resolve();
+              };
+              if (el.readyState >= 1) { doSeek(); }
+              else { el.addEventListener('loadedmetadata', doSeek, { once: true }); }
+            });
+          }
+          try {
+            await el.play();
+          } catch (err) {
+            console.warn('[ReaderAudio] play() failed:', err?.message || err);
+            throw new Error(
+              String(err?.message || '').trim()
+                || 'Reader audio playback failed to start'
+            );
+          }
         }
       }
     } catch (e) {
@@ -21948,12 +22001,12 @@ function AppInner() {
   ]);
 
   const pauseReaderAudioPlay = useCallback(() => {
-    audioElementRef.current?.pause();
+    (readerAudioActiveElRef.current || audioElementRef.current)?.pause();
     setReaderAudioPaused(true);
   }, []);
 
   const resumeReaderAudioPlay = useCallback(() => {
-    audioElementRef.current?.play().catch(() => {});
+    (readerAudioActiveElRef.current || audioElementRef.current)?.play().catch(() => {});
     setReaderAudioPaused(false);
   }, []);
 
@@ -21998,6 +22051,7 @@ function AppInner() {
       window.clearTimeout(readerAudioPrefetchTimeoutRef.current);
       readerAudioPrefetchTimeoutRef.current = null;
     }
+    // Stop both audio elements regardless of current active/buf assignment
     if (audioElementRef.current) {
       audioElementRef.current.pause();
       audioElementRef.current.src = '';
@@ -22008,6 +22062,9 @@ function AppInner() {
       readerAudioPreloadElementRef.current.load?.();
       delete readerAudioPreloadElementRef.current.dataset.readerAudioKey;
     }
+    // Reset ping-pong refs so they are re-initialized on next play
+    readerAudioActiveElRef.current = null;
+    readerAudioBufElRef.current = null;
     cancelAnimationFrame(audioRafRef.current);
     readerAudioPlayingForPageRef.current = null;
     readerAudioWindowMetaRef.current = null;
@@ -22025,7 +22082,8 @@ function AppInner() {
   }, []);
 
   const seekReaderAudioToWid = useCallback((wid) => {
-    if (!readerAudioPlayData || !audioElementRef.current) return;
+    const seekEl = readerAudioActiveElRef.current || audioElementRef.current;
+    if (!readerAudioPlayData || !seekEl) return;
     const timings = readerAudioPlayData.word_timings || [];
     let timing = null;
     // Prefer char_start matching.
@@ -22047,7 +22105,7 @@ function AppInner() {
     }
     console.log('[AUDIO_SEEK] result timing=', timing, '→ seekTo', timing?.start_ms, 'ms');
     if (!timing) return;
-    audioElementRef.current.currentTime = timing.start_ms / 1000;
+    seekEl.currentTime = timing.start_ms / 1000;
     setReaderAudioPlayPosition(timing.start_ms);
   }, [readerAudioPlayData, readerAudioWidReverseMap, readerAudioWidToCharStart]);
 
@@ -22055,7 +22113,7 @@ function AppInner() {
   useEffect(() => {
     if (!readerAudioPlayActive) return undefined;
     const tick = () => {
-      const audio = audioElementRef.current;
+      const audio = readerAudioActiveElRef.current || audioElementRef.current;
       if (audio && !audio.paused) {
         setReaderAudioPlayPosition(audio.currentTime * 1000);
       }
@@ -22063,12 +22121,14 @@ function AppInner() {
     };
     audioRafRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(audioRafRef.current);
-  }, [readerAudioPlayActive]);
+  // readerAudioElGen triggers re-run after ping-pong swap so RAF reads from the new active element
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readerAudioPlayActive, readerAudioElGen]);
 
   // Windowed audio page sync: keep the visible page aligned with the page
   // segment currently speaking inside a multi-page clip.
   useEffect(() => {
-    const audio = audioElementRef.current;
+    const audio = readerAudioActiveElRef.current || audioElementRef.current;
     if (!audio || !readerAudioPlayActive) return undefined;
     const syncVisiblePageFromAudio = () => {
       const windowMeta = readerAudioWindowMetaRef.current;
@@ -22096,11 +22156,13 @@ function AppInner() {
     };
     audio.addEventListener('timeupdate', syncVisiblePageFromAudio);
     return () => audio.removeEventListener('timeupdate', syncVisiblePageFromAudio);
-  }, [readerAudioPlayActive]);
+  // readerAudioElGen triggers re-run after ping-pong swap so listener re-attaches to new active el
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readerAudioPlayActive, readerAudioElGen]);
 
   // Auto-next-page: advance from the page that was actually playing (not the display page)
   useEffect(() => {
-    const audio = audioElementRef.current;
+    const audio = readerAudioActiveElRef.current || audioElementRef.current;
     if (!audio || !readerAudioPlayActive) return undefined;
     const onEnded = () => {
       const windowMeta = readerAudioWindowMetaRef.current;
@@ -22124,7 +22186,9 @@ function AppInner() {
     };
     audio.addEventListener('ended', onEnded);
     return () => audio.removeEventListener('ended', onEnded);
-  }, [readerAudioPlayActive, readerPageCount, playReaderAudioPage, stopReaderAudioPlay]);
+  // readerAudioElGen triggers re-run after ping-pong swap so listener re-attaches to new active el
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readerAudioPlayActive, readerPageCount, playReaderAudioPage, stopReaderAudioPlay, readerAudioElGen]);
 
   // Stop audio when leaving reader or changing document
   useEffect(() => {

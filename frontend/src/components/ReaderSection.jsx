@@ -992,7 +992,7 @@ export default function ReaderSection(props) {
 
             {/* ── Hidden audio element ────────────────────────────── */}
             <audio ref={audioElementRef} preload="metadata" playsInline style={{ display: 'none' }} />
-            <audio ref={readerAudioPreloadElementRef} preload="none" playsInline style={{ display: 'none' }} />
+            <audio ref={readerAudioPreloadElementRef} preload="auto" playsInline style={{ display: 'none' }} />
 
             {/* ── Audio mini-player bar ────────────────────────────── */}
             {readerAudioPlayActive && (
