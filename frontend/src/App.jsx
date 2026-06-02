@@ -3655,6 +3655,9 @@ const TranslationsSection = React.memo(function TranslationsSection({
 
             {hasActiveTranslationSentences && (
               <>
+                {webappError && !webappLoading && (
+                  <div className="webapp-error webapp-error-inline">{webappError}</div>
+                )}
                 <button
                   className={`primary-button translation-check-cta ${sentences.length === 0 && !webappLoading ? 'is-disabled-empty' : ''}`}
                   type="submit"
@@ -17955,6 +17958,13 @@ function AppInner() {
           });
         }
         void loadTodayPlan();
+        if (nextState.status === 'failed' || nextState.status === 'canceled') {
+          const lastError = data?.check_session?.last_error || '';
+          throw new Error(tr(
+            `Проверка перевода завершилась с ошибкой. Попробуйте ещё раз.${lastError ? ` (${lastError})` : ''}`,
+            `Übersetzungsprüfung fehlgeschlagen. Bitte erneut versuchen.${lastError ? ` (${lastError})` : ''}`
+          ));
+        }
         return data;
       }
     }
