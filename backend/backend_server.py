@@ -22349,13 +22349,49 @@ def _start_webapp_translation_check_queue_first(
         int(user_id),
         payload=payload,
     )
+    map_load_started_perf = time.perf_counter()
+    source_session_id, allowed_by_mistake_id = _load_user_translation_sentence_map(
+        int(user_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        source_session_id=requested_source_session_id,
+    )
+    map_load_duration_ms = _elapsed_ms_since(map_load_started_perf)
+    normalize_started_perf = time.perf_counter()
+    normalized_items = _normalize_translation_check_entries(
+        translations,
+        allowed_by_mistake_id=allowed_by_mistake_id,
+    )
+    normalize_duration_ms = _elapsed_ms_since(normalize_started_perf)
+    if not normalized_items:
+        _log_flow_observation(
+            "translation_check",
+            "check_start_completed",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            items_requested=len(translations),
+            items_normalized=0,
+            requested_source_session_id=requested_source_session_id,
+            source_session_id=source_session_id,
+            sentence_map_size=len(allowed_by_mistake_id),
+            db_lookup_duration_ms=map_load_duration_ms,
+            normalize_duration_ms=normalize_duration_ms,
+            language_pair_lookup_mode=language_pair_lookup_mode,
+            final_status="error",
+            error_code="translation_check_no_valid_items",
+            duration_ms=_elapsed_ms_since(started_perf),
+            http_status=400,
+        )
+        return jsonify({"error": "Нет переводов для проверки. Обновите предложения и попробуйте снова."}), 400
+
     existing_lookup_started_perf = time.perf_counter()
     existing_session, existing_items = _get_matching_active_translation_check_session(
         user_id=int(user_id),
-        source_session_id=requested_source_session_id,
+        source_session_id=source_session_id,
         source_lang=source_lang,
         target_lang=target_lang,
-        normalized_items=translations,
+        normalized_items=normalized_items,
     )
     existing_lookup_duration_ms = _elapsed_ms_since(existing_lookup_started_perf)
     if existing_session:
@@ -22408,9 +22444,12 @@ def _start_webapp_translation_check_queue_first(
             check_id=session_id,
             source_session_id=requested_source_session_id,
             items_requested=len(translations),
+            items_normalized=len(normalized_items),
             requested_source_session_id=requested_source_session_id,
+            resolved_source_session_id=source_session_id,
             items_total=len(existing_items),
-            db_lookup_duration_ms=existing_lookup_duration_ms,
+            db_lookup_duration_ms=map_load_duration_ms,
+            normalize_duration_ms=normalize_duration_ms,
             existing_session_lookup_duration_ms=existing_lookup_duration_ms,
             language_pair_lookup_mode=language_pair_lookup_mode,
             response_size_bytes=_estimate_json_payload_size_bytes(response_payload),
@@ -22424,15 +22463,15 @@ def _start_webapp_translation_check_queue_first(
     session = create_translation_check_session(
         user_id=int(user_id),
         username=username,
-        source_session_id=requested_source_session_id,
+        source_session_id=source_session_id,
         source_lang=source_lang,
         target_lang=target_lang,
-        items=[],
-        total_items=len(translations),
+        items=normalized_items,
+        total_items=len(normalized_items),
         send_private_grammar_text=send_private_grammar_text,
         original_text_bundle=original_text,
         user_translation_bundle=user_translation,
-        materialize_items=False,
+        materialize_items=True,
     )
     create_session_duration_ms = _elapsed_ms_since(create_session_started_perf)
     if not session:
@@ -22443,10 +22482,13 @@ def _start_webapp_translation_check_queue_first(
             correlation_id=correlation_id,
             user_id=int(user_id),
             items_requested=len(translations),
-            items_total=len(translations),
+            items_normalized=len(normalized_items),
+            items_total=len(normalized_items),
             requested_source_session_id=requested_source_session_id,
-            source_session_id=requested_source_session_id,
+            source_session_id=source_session_id,
             existing_session_lookup_duration_ms=existing_lookup_duration_ms,
+            db_lookup_duration_ms=map_load_duration_ms,
+            normalize_duration_ms=normalize_duration_ms,
             db_update_duration_ms=create_session_duration_ms,
             language_pair_lookup_mode=language_pair_lookup_mode,
             final_status="error",
@@ -22463,9 +22505,10 @@ def _start_webapp_translation_check_queue_first(
             "user_id": int(user_id),
             "username": username,
             "source_session_id": requested_source_session_id,
+            "resolved_source_session_id": source_session_id,
             "source_lang": source_lang,
             "target_lang": target_lang,
-            "translations": translations,
+            "translations": normalized_items,
             "send_private_grammar_text": bool(send_private_grammar_text),
             "original_text_bundle": original_text,
             "user_translation_bundle": user_translation,
@@ -22474,41 +22517,24 @@ def _start_webapp_translation_check_queue_first(
     )
     stage_duration_ms = _elapsed_ms_since(stage_started_perf)
     if not stage_payload:
-        failed_session = update_translation_check_session_status(
-            session_id=session_id,
-            status="failed",
-            last_error="translation_check_staging_failed",
-            finished=True,
+        logging.warning(
+            "Translation check staging payload write failed after DB item materialization: session=%s request_id=%s correlation_id=%s items=%s",
+            session_id,
+            request_id,
+            correlation_id,
+            len(normalized_items),
         )
-        if failed_session:
-            set_translation_check_state(
-                session_id,
-                _build_translation_check_state_payload(failed_session, terminal_ready=True) or {},
-                terminal=True,
-            )
-            set_translation_check_completion_state(
-                session_id,
-                _build_translation_check_completion_state_payload(
-                    terminal_ready=True,
-                    completion_done=bool(failed_session.get("completion_side_effects_done_at")),
-                    summary_available=bool(failed_session.get("summary_json")),
-                ),
-            )
-            set_translation_check_poll_hint_state(
-                session_id,
-                _build_translation_check_poll_hint_payload("failed"),
-            )
-            _write_translation_check_read_models(
-                failed_session,
-                pending_items_override=0,
-                running_items_override=0,
-            )
-        return jsonify(
-            {
-                "error": "Не удалось подготовить запрос проверки перевода.",
-                "code": "translation_check_staging_failed",
-            }
-        ), 503
+        _log_flow_observation(
+            "translation_check",
+            "check_start_staging_failed_but_db_items_ready",
+            request_id=request_id,
+            correlation_id=correlation_id,
+            user_id=int(user_id),
+            session_id=session_id,
+            check_id=session_id,
+            items_normalized=len(normalized_items),
+            staging_duration_ms=stage_duration_ms,
+        )
 
     set_translation_check_state(
         session_id,
@@ -22618,11 +22644,14 @@ def _start_webapp_translation_check_queue_first(
             user_id=int(user_id),
             session_id=session_id,
             check_id=session_id,
-            source_session_id=requested_source_session_id,
+            source_session_id=source_session_id,
             items_requested=len(translations),
+            items_normalized=len(normalized_items),
             items_total=int(session.get("total_items") or 0),
             start_accepted_ts_ms=accepted_at_ms,
             existing_session_lookup_duration_ms=existing_lookup_duration_ms,
+            db_lookup_duration_ms=map_load_duration_ms,
+            normalize_duration_ms=normalize_duration_ms,
             db_update_duration_ms=create_session_duration_ms,
             staging_duration_ms=stage_duration_ms,
             runner_dispatch_duration_ms=runner_dispatch_duration_ms,
@@ -22641,7 +22670,7 @@ def _start_webapp_translation_check_queue_first(
     runner_dispatch_duration_ms = _elapsed_ms_since(runner_dispatch_started_perf)
     response_payload = _build_translation_check_payload(
         session=session,
-        items=[],
+        items=normalized_items,
         source_lang=source_lang,
         target_lang=target_lang,
         include_items=False,
@@ -22654,11 +22683,14 @@ def _start_webapp_translation_check_queue_first(
         user_id=int(user_id),
         session_id=session_id,
         check_id=session_id,
-        source_session_id=requested_source_session_id,
+        source_session_id=source_session_id,
         items_requested=len(translations),
+        items_normalized=len(normalized_items),
         items_total=int(session.get("total_items") or 0),
         start_accepted_ts_ms=accepted_at_ms,
         existing_session_lookup_duration_ms=existing_lookup_duration_ms,
+        db_lookup_duration_ms=map_load_duration_ms,
+        normalize_duration_ms=normalize_duration_ms,
         db_update_duration_ms=create_session_duration_ms,
         staging_duration_ms=stage_duration_ms,
         runner_dispatch_duration_ms=runner_dispatch_duration_ms,
@@ -35473,6 +35505,18 @@ def _shortcut_lookup_from_install_token(*, install_token: str, text: str, reques
             user_id,
         )
         return {"ok": True, "blocks_sent": 0, "duplicate": True}, 200
+
+    # Write raw text to Redis immediately so bot_3.py can find it even before
+    # BACKGROUND_JOBS processes the Dramatiq job (avoids the "no pending" race condition).
+    try:
+        from backend.job_queue import get_redis_client as _grc_sc
+        _sc_raw_client = _grc_sc()
+        if _sc_raw_client is not None:
+            _sc_raw_key = f"dict_pending_shortcut_raw:{user_id}"
+            _sc_raw_client.setex(_sc_raw_key, 28800, text)
+            logging.info("shortcut_lookup: raw text written key=%s len=%d", _sc_raw_key, len(text))
+    except Exception:
+        logging.warning("shortcut_lookup: raw Redis write failed user_id=%s", user_id, exc_info=True)
 
     if not can_enqueue_background_jobs():
         return {"error": "Shortcut processing is temporarily unavailable"}, 503

@@ -5154,6 +5154,33 @@ def _restore_pending_from_redis(user_id: int) -> None:
             client.delete(shortcut_key)
         restored += shortcut_count
 
+        # Also check the raw-text key written by BACKEND_WEB immediately on shortcut arrival.
+        # This covers the race where BACKGROUND_JOBS hasn't processed the Dramatiq job yet.
+        raw_text_key = f"dict_pending_shortcut_raw:{user_id}"
+        raw_text_bytes = client.get(raw_text_key)
+        logging.info("dict_pending: raw_text_key=%s has_raw=%s", raw_text_key, bool(raw_text_bytes))
+        if raw_text_bytes:
+            try:
+                raw_text_str = raw_text_bytes.decode("utf-8") if isinstance(raw_text_bytes, bytes) else str(raw_text_bytes)
+                lines = [ln.strip() for ln in raw_text_str.split("\n") if ln.strip()]
+                raw_count = 0
+                for line in lines:
+                    k = hashlib.sha1(f"raw:{user_id}:{line}".encode("utf-8")).hexdigest()[:20]
+                    if k not in pending_dictionary_lookup_requests:
+                        pending_dictionary_lookup_requests[k] = {
+                            "user_id": int(user_id),
+                            "text": line,
+                            "chat_id": None,
+                            "message_id": None,
+                        }
+                        raw_count += 1
+                logging.info("dict_pending: absorbed %d entries from raw key %s", raw_count, raw_text_key)
+                if raw_count and _sync_pending_to_redis(user_id):
+                    client.delete(raw_text_key)
+                restored += raw_count
+            except Exception:
+                logging.warning("dict_pending: raw text parse error key=%s", raw_text_key, exc_info=True)
+
         logging.info("dict_pending: restore complete user_id=%s total_restored=%d", user_id, restored)
     except Exception:
         logging.warning("dict_pending: redis restore FAILED user_id=%s", user_id, exc_info=True)
