@@ -341,6 +341,8 @@ from backend.database import (
     create_dictionary_folder,
     get_dictionary_folders,
     get_or_create_dictionary_folder,
+    get_or_create_dictionary_semantic_folder,
+    normalize_dictionary_semantic_tag,
     update_webapp_dictionary_entry,
     get_dictionary_entry_by_id,
     list_user_vocabulary,
@@ -7206,6 +7208,28 @@ def _prepare_dictionary_response_json_for_save(
         target_lang=target_lang,
     )
     return payload
+
+
+def _resolve_dictionary_semantic_folder_for_save(user_id: int, response_json: dict | None) -> tuple[str, int | None]:
+    payload = response_json if isinstance(response_json, dict) else {}
+    semantic_tag = normalize_dictionary_semantic_tag(
+        payload.get("semantic_category")
+        or payload.get("semantic_tag")
+    )
+    if not semantic_tag:
+        return "", None
+    try:
+        folder = get_or_create_dictionary_semantic_folder(int(user_id), semantic_tag)
+        folder_id = int(folder.get("id") or 0) if isinstance(folder, dict) else 0
+        return semantic_tag, folder_id if folder_id > 0 else None
+    except Exception:
+        logging.warning(
+            "Dictionary semantic folder resolve failed: user_id=%s semantic_tag=%s",
+            int(user_id),
+            semantic_tag,
+            exc_info=True,
+        )
+        return "", None
 
 
 def _normalize_dictionary_enrich_payload(enrich: dict | None) -> dict:
@@ -34583,6 +34607,11 @@ def save_webapp_dictionary_entry():
         resolved_word_de = str(response_json.get("word_de") or resolved_word_de or "").strip()
         resolved_translation_de = str(response_json.get("translation_de") or resolved_translation_de or "").strip()
         resolved_translation_ru = str(response_json.get("translation_ru") or resolved_translation_ru or "").strip()
+        semantic_tag, semantic_folder_id = _resolve_dictionary_semantic_folder_for_save(int(user_id), response_json)
+        if semantic_tag:
+            response_json["semantic_category"] = semantic_tag
+            if semantic_folder_id is not None:
+                folder_id = semantic_folder_id
         entry_id = _save_dictionary_entry_with_schema_retry(
             user_id=user_id,
             word_ru=resolved_word_ru if resolved_word_ru else None,
@@ -34595,6 +34624,7 @@ def save_webapp_dictionary_entry():
             target_lang=target_lang,
             origin_process=origin_process,
             origin_meta=origin_meta,
+            semantic_tag=semantic_tag or None,
         )
         _start_saved_dictionary_entry_enrichment(
             entry_id=int(entry_id or 0),
@@ -34762,6 +34792,11 @@ def save_mobile_dictionary_entry():
         resolved_word_de = str(response_json.get("word_de") or resolved_word_de or "").strip()
         resolved_translation_de = str(response_json.get("translation_de") or resolved_translation_de or "").strip()
         resolved_translation_ru = str(response_json.get("translation_ru") or resolved_translation_ru or "").strip()
+        semantic_tag, semantic_folder_id = _resolve_dictionary_semantic_folder_for_save(int(user_id), response_json)
+        if semantic_tag:
+            response_json["semantic_category"] = semantic_tag
+            if semantic_folder_id is not None:
+                folder_id = semantic_folder_id
 
         entry_id = _save_dictionary_entry_with_schema_retry(
             user_id=user_id,
@@ -34775,6 +34810,7 @@ def save_mobile_dictionary_entry():
             target_lang=target_lang,
             origin_process=origin_process,
             origin_meta=origin_meta,
+            semantic_tag=semantic_tag or None,
         )
         _start_saved_dictionary_entry_enrichment(
             entry_id=int(entry_id or 0),

@@ -15071,10 +15071,15 @@ async def _run_semantic_retag_backfill(admin_chat_id: int, max_entries: int | No
         # Build GPT batch (skip entries with no German word)
         gpt_items = []
         fallback_entries = []
+        already_tagged_entries = []
         for entry in entries:
             entry_id = int(entry.get("id") or 0)
             uid = int(entry.get("user_id") or 0)
             if not entry_id or not uid:
+                continue
+            semantic_tag = str(entry.get("semantic_tag") or "").strip()
+            if semantic_tag:
+                already_tagged_entries.append((entry_id, uid, semantic_tag))
                 continue
             word_de = str(entry.get("word_de") or "").strip()
             word_ru = str(entry.get("word_ru") or "").strip()
@@ -15087,7 +15092,15 @@ async def _run_semantic_retag_backfill(admin_chat_id: int, max_entries: int | No
         # Immediately tag entries without German word
         for entry_id, uid in fallback_entries:
             try:
-                await asyncio.to_thread(update_entry_semantic_tag_and_folder, entry_id, uid, "Прочее", None)
+                await asyncio.to_thread(_apply_semantic_tag_sync, uid, entry_id, "Прочее")
+                processed += 1
+            except Exception:
+                failed += 1
+
+        # Move already-tagged but folderless entries into the matching semantic folder.
+        for entry_id, uid, semantic_tag in already_tagged_entries:
+            try:
+                await asyncio.to_thread(_apply_semantic_tag_sync, uid, entry_id, semantic_tag)
                 processed += 1
             except Exception:
                 failed += 1

@@ -71,6 +71,61 @@ except Exception:
 
 _DAILY_PLAN_CACHE = _HotPathCacheManager(name="daily_plan", max_entries=5000)
 
+DICTIONARY_SEMANTIC_FOLDER_META: dict[str, tuple[str, str]] = {
+    "Работа": ("💼", "#4D8DFF"),
+    "Учёба": ("🎓", "#8A63D2"),
+    "Здоровье": ("🩺", "#2FBF71"),
+    "Путешествия": ("✈️", "#00A8A8"),
+    "Быт": ("🏠", "#B07D3C"),
+    "Еда": ("🍽️", "#F28C28"),
+    "Спорт": ("🏃", "#2F80ED"),
+    "Технологии": ("💻", "#5865F2"),
+    "Деньги": ("💰", "#27AE60"),
+    "Семья": ("👨‍👩‍👧‍👦", "#E17055"),
+    "Транспорт": ("🚗", "#607D8B"),
+    "Природа": ("🌿", "#43A047"),
+    "Культура": ("🎭", "#9B51E0"),
+    "Общение": ("💬", "#00B894"),
+    "Покупки": ("🛒", "#F2994A"),
+    "Жильё": ("🏡", "#795548"),
+    "Право": ("⚖️", "#2F6BD8"),
+    "Эмоции": ("❤️", "#E0483D"),
+    "Прочее": ("📂", "#888888"),
+}
+
+_DICTIONARY_SEMANTIC_FOLDER_SYNONYMS: dict[str, set[str]] = {
+    "Работа": {"работа", "офис", "beruf", "job", "karriere", "büro", "arbeit", "служба"},
+    "Учёба": {"учёба", "учеба", "образование", "bildung", "schule", "studium", "lernen", "университет", "школа"},
+    "Здоровье": {"здоровье", "медицина", "врач", "больница", "gesundheit", "arzt", "klinik", "krankenhaus"},
+    "Путешествия": {"путешествия", "путешествие", "reisen", "reise", "travel", "urlaub", "туризм"},
+    "Быт": {"быт", "alltag", "haushalt", "повседневное"},
+    "Еда": {"еда", "питание", "essen", "food", "kochen", "кухня", "ресторан", "lebensmittel"},
+    "Спорт": {"спорт", "sport", "fitness", "тренировка", "фитнес"},
+    "Технологии": {"технологии", "технология", "it", "internet", "компьютер", "computer", "digital"},
+    "Деньги": {"деньги", "финансы", "geld", "finanzen", "finance", "банк", "bank", "экономика"},
+    "Семья": {"семья", "familie", "family", "дети", "родители"},
+    "Транспорт": {"транспорт", "verkehr", "transport", "автомобиль", "машина", "auto"},
+    "Природа": {"природа", "natur", "nature", "окружающая среда", "umwelt"},
+    "Культура": {"культура", "kultur", "culture", "искусство", "kunst", "музыка", "musik"},
+    "Общение": {"общение", "коммуникация", "kommunikation", "communication"},
+    "Покупки": {"покупки", "покупка", "einkaufen", "shopping", "магазин", "laden"},
+    "Жильё": {"жильё", "жилье", "wohnen", "wohnung", "квартира", "housing"},
+    "Право": {"право", "закон", "recht", "gesetz", "law", "государство"},
+    "Эмоции": {"эмоции", "чувства", "emotion", "gefühle", "feelings"},
+    "Прочее": {"прочее", "other", "sonstiges", "разное"},
+}
+
+
+def normalize_dictionary_semantic_tag(value: object) -> str:
+    tag = str(value or "").strip()
+    if tag in DICTIONARY_SEMANTIC_FOLDER_META:
+        return tag
+    lowered = tag.casefold()
+    for canonical, synonyms in _DICTIONARY_SEMANTIC_FOLDER_SYNONYMS.items():
+        if lowered == canonical.casefold() or lowered in {item.casefold() for item in synonyms}:
+            return canonical
+    return ""
+
 env_path = Path(__file__).parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
@@ -963,12 +1018,14 @@ def _create_or_attach_user_dictionary_entry_with_cursor(
     canonical_entry_id: int | None = None,
     origin_process: str | None = None,
     origin_meta: dict | None = None,
+    semantic_tag: str | None = None,
 ) -> tuple[int, bool]:
     normalized_origin = _normalize_dictionary_origin_process(origin_process)
     normalized_meta = _coerce_json_object(origin_meta)
     normalized_response_json = _coerce_json_object(response_json)
     normalized_source_lang = _normalize_lang_code(source_lang)
     normalized_target_lang = _normalize_lang_code(target_lang)
+    normalized_semantic_tag = normalize_dictionary_semantic_tag(semantic_tag)
     if canonical_entry_id:
         cursor.execute(
             """
@@ -984,14 +1041,16 @@ def _create_or_attach_user_dictionary_entry_with_cursor(
                 canonical_entry_id,
                 origin_process,
                 origin_meta,
+                semantic_tag,
                 response_json
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (user_id, canonical_entry_id) WHERE canonical_entry_id IS NOT NULL
             DO UPDATE SET
                 folder_id = COALESCE(EXCLUDED.folder_id, bt_3_webapp_dictionary_queries.folder_id),
                 origin_process = EXCLUDED.origin_process,
                 origin_meta = COALESCE(EXCLUDED.origin_meta, bt_3_webapp_dictionary_queries.origin_meta),
+                semantic_tag = COALESCE(EXCLUDED.semantic_tag, bt_3_webapp_dictionary_queries.semantic_tag),
                 response_json = COALESCE(bt_3_webapp_dictionary_queries.response_json, EXCLUDED.response_json),
                 word_ru = COALESCE(NULLIF(bt_3_webapp_dictionary_queries.word_ru, ''), EXCLUDED.word_ru),
                 translation_de = COALESCE(NULLIF(bt_3_webapp_dictionary_queries.translation_de, ''), EXCLUDED.translation_de),
@@ -1016,6 +1075,7 @@ def _create_or_attach_user_dictionary_entry_with_cursor(
                 int(canonical_entry_id),
                 normalized_origin,
                 Json(normalized_meta) if normalized_meta else None,
+                normalized_semantic_tag or None,
                 Json(normalized_response_json),
             ),
         )
@@ -1039,9 +1099,10 @@ def _create_or_attach_user_dictionary_entry_with_cursor(
             canonical_entry_id,
             origin_process,
             origin_meta,
+            semantic_tag,
             response_json
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s)
         RETURNING id;
         """,
         (
@@ -1055,6 +1116,7 @@ def _create_or_attach_user_dictionary_entry_with_cursor(
             normalized_target_lang,
             normalized_origin,
             Json(normalized_meta) if normalized_meta else None,
+            normalized_semantic_tag or None,
             Json(normalized_response_json),
         ),
     )
@@ -1076,6 +1138,7 @@ def _save_webapp_dictionary_query_returning_id_with_conn(
     target_lang: str | None = None,
     origin_process: str | None = None,
     origin_meta: dict | None = None,
+    semantic_tag: str | None = None,
 ) -> tuple[int, bool]:
     normalized_response_json = _coerce_json_object(response_json)
     normalized_source_lang = _normalize_lang_code(source_lang)
@@ -1118,6 +1181,7 @@ def _save_webapp_dictionary_query_returning_id_with_conn(
             canonical_entry_id=canonical_entry_id,
             origin_process=origin_process,
             origin_meta=origin_meta,
+            semantic_tag=semantic_tag,
         )
 
 
@@ -11393,6 +11457,7 @@ def save_webapp_dictionary_query(
     target_lang: str | None = None,
     origin_process: str | None = None,
     origin_meta: dict | None = None,
+    semantic_tag: str | None = None,
 ) -> None:
     save_webapp_dictionary_query_returning_id(
         user_id=user_id,
@@ -11406,6 +11471,7 @@ def save_webapp_dictionary_query(
         target_lang=target_lang,
         origin_process=origin_process,
         origin_meta=origin_meta,
+        semantic_tag=semantic_tag,
     )
 
 
@@ -11421,6 +11487,7 @@ def save_webapp_dictionary_query_returning_id(
     target_lang: str | None = None,
     origin_process: str | None = None,
     origin_meta: dict | None = None,
+    semantic_tag: str | None = None,
 ) -> int:
     with get_db_connection_context() as conn:
         inserted_id, _inserted = _save_webapp_dictionary_query_returning_id_with_conn(
@@ -11436,6 +11503,7 @@ def save_webapp_dictionary_query_returning_id(
             target_lang=target_lang,
             origin_process=origin_process,
             origin_meta=origin_meta,
+            semantic_tag=semantic_tag,
         )
     return inserted_id if inserted_id > 0 else 0
 
@@ -11947,7 +12015,8 @@ def import_starter_dictionary_snapshot(
                     translation_ru,
                     source_lang,
                     target_lang,
-                    response_json
+                    response_json,
+                    semantic_tag
                 FROM bt_3_webapp_dictionary_queries
                 {source_where}
                 ORDER BY created_at ASC, id ASC
@@ -11963,6 +12032,11 @@ def import_starter_dictionary_snapshot(
                 row_source_lang = _normalize_lang_code(row[5]) or pair_source
                 row_target_lang = _normalize_lang_code(row[6]) or pair_target
                 response_payload = _coerce_json_object(row[7])
+                semantic_tag = normalize_dictionary_semantic_tag(
+                    row[8]
+                    or response_payload.get("semantic_category")
+                    or response_payload.get("semantic_tag")
+                )
                 source_text, target_text = _resolve_dictionary_source_target_texts(
                     source_lang=row_source_lang,
                     target_lang=row_target_lang,
@@ -12009,6 +12083,8 @@ def import_starter_dictionary_snapshot(
                 merged_response["target_text"] = target_text
                 merged_response["source_lang"] = pair_source
                 merged_response["target_lang"] = pair_target
+                if semantic_tag:
+                    merged_response["semantic_category"] = semantic_tag
                 pair_payload = merged_response.get("language_pair")
                 if not isinstance(pair_payload, dict):
                     pair_payload = {}
@@ -12025,6 +12101,7 @@ def import_starter_dictionary_snapshot(
                         "word_de": resolved_word_de,
                         "translation_ru": resolved_translation_ru,
                         "response_json": merged_response,
+                        "semantic_tag": semantic_tag,
                     }
                 )
 
@@ -12071,11 +12148,33 @@ def import_starter_dictionary_snapshot(
 
             skipped_existing_count = 0
             inserted_count = 0
+            semantic_foldered_count = 0
             import_started_at = datetime.now(timezone.utc)
             for item in candidates:
                 if item["key"] in existing_keys:
                     skipped_existing_count += 1
                     continue
+                item_semantic_tag = normalize_dictionary_semantic_tag(item.get("semantic_tag"))
+                item_persisted_semantic_tag = ""
+                item_folder_id = int(folder_id) if folder_id is not None else None
+                if item_semantic_tag:
+                    try:
+                        semantic_folder = _get_or_create_dictionary_semantic_folder_with_cursor(
+                            cursor,
+                            int(target_user),
+                            item_semantic_tag,
+                        )
+                        if semantic_folder and semantic_folder.get("id") is not None:
+                            item_folder_id = int(semantic_folder["id"])
+                            item_persisted_semantic_tag = item_semantic_tag
+                    except Exception:
+                        logging.warning(
+                            "starter dictionary semantic folder resolve failed target_user=%s source_entry_id=%s tag=%s",
+                            int(target_user),
+                            item.get("source_entry_id"),
+                            item_semantic_tag,
+                            exc_info=True,
+                        )
                 origin_meta = {
                     "import_kind": "starter_dictionary_snapshot",
                     "import_source_user_id": source_user,
@@ -12083,6 +12182,7 @@ def import_starter_dictionary_snapshot(
                     "template_version": resolved_template_version,
                     "source_lang": pair_source,
                     "target_lang": pair_target,
+                    "semantic_tag": item_persisted_semantic_tag or None,
                 }
                 _entry_id, inserted = _save_webapp_dictionary_query_returning_id_with_conn(
                     conn,
@@ -12092,14 +12192,17 @@ def import_starter_dictionary_snapshot(
                     word_de=item["word_de"],
                     translation_ru=item["translation_ru"],
                     response_json=item["response_json"],
-                    folder_id=int(folder_id) if folder_id is not None else None,
+                    folder_id=item_folder_id,
                     source_lang=pair_source,
                     target_lang=pair_target,
                     origin_process="import",
                     origin_meta=origin_meta,
+                    semantic_tag=item_persisted_semantic_tag or None,
                 )
                 if inserted:
                     inserted_count += 1
+                    if item_persisted_semantic_tag:
+                        semantic_foldered_count += 1
                 else:
                     skipped_existing_count += 1
                 existing_keys.add(item["key"])
@@ -12114,6 +12217,7 @@ def import_starter_dictionary_snapshot(
         "candidates_count": len(candidates),
         "inserted_count": inserted_count,
         "skipped_existing_count": skipped_existing_count,
+        "semantic_foldered_count": semantic_foldered_count,
         "folder": folder_payload,
         "template_version": resolved_template_version,
         "imported_at": import_started_at.isoformat(),
@@ -16539,6 +16643,82 @@ def get_or_create_dictionary_folder(
             }
 
 
+def _match_dictionary_semantic_folder_id_with_cursor(cursor, user_id: int, semantic_tag: str) -> int | None:
+    normalized_tag = normalize_dictionary_semantic_tag(semantic_tag)
+    if not normalized_tag:
+        return None
+    synonyms = {
+        normalized_tag.casefold(),
+        *{item.casefold() for item in _DICTIONARY_SEMANTIC_FOLDER_SYNONYMS.get(normalized_tag, set())},
+    }
+    cursor.execute(
+        """
+        SELECT id, name
+        FROM bt_3_dictionary_folders
+        WHERE user_id = %s;
+        """,
+        (int(user_id),),
+    )
+    for row in cursor.fetchall() or []:
+        folder_name = str(row[1] or "").strip().casefold()
+        if folder_name in synonyms:
+            folder_id = int(row[0] or 0)
+            return folder_id if folder_id > 0 else None
+    return None
+
+
+def _get_or_create_dictionary_semantic_folder_with_cursor(cursor, user_id: int, semantic_tag: str) -> dict | None:
+    normalized_tag = normalize_dictionary_semantic_tag(semantic_tag)
+    if not normalized_tag:
+        return None
+    folder_id = _match_dictionary_semantic_folder_id_with_cursor(cursor, int(user_id), normalized_tag)
+    if folder_id is not None:
+        cursor.execute(
+            """
+            SELECT id, name, color, icon, created_at
+            FROM bt_3_dictionary_folders
+            WHERE id = %s AND user_id = %s
+            LIMIT 1;
+            """,
+            (int(folder_id), int(user_id)),
+        )
+        row = cursor.fetchone()
+        if row:
+            return {
+                "id": int(row[0]),
+                "name": row[1],
+                "color": row[2],
+                "icon": row[3],
+                "created_at": row[4].isoformat() if row[4] else None,
+            }
+    icon, color = DICTIONARY_SEMANTIC_FOLDER_META.get(normalized_tag, ("📂", "#888888"))
+    cursor.execute(
+        """
+        INSERT INTO bt_3_dictionary_folders (user_id, name, color, icon)
+        VALUES (%s, %s, %s, %s)
+        RETURNING id, name, color, icon, created_at;
+        """,
+        (int(user_id), normalized_tag, color, icon),
+    )
+    row = cursor.fetchone()
+    return {
+        "id": int(row[0]),
+        "name": row[1],
+        "color": row[2],
+        "icon": row[3],
+        "created_at": row[4].isoformat() if row[4] else None,
+    }
+
+
+def get_or_create_dictionary_semantic_folder(user_id: int, semantic_tag: str) -> dict | None:
+    normalized_tag = normalize_dictionary_semantic_tag(semantic_tag)
+    if not normalized_tag:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            return _get_or_create_dictionary_semantic_folder_with_cursor(cursor, int(user_id), normalized_tag)
+
+
 def update_entry_semantic_tag_and_folder(
     entry_id: int,
     user_id: int,
@@ -16567,10 +16747,12 @@ def get_entries_without_semantic_tag(
             if user_id is not None:
                 cursor.execute(
                     """
-                    SELECT id, user_id, word_de, word_ru, source_lang, target_lang
+                    SELECT id, user_id, word_de, word_ru, source_lang, target_lang, semantic_tag, folder_id
                     FROM bt_3_webapp_dictionary_queries
-                    WHERE user_id = %s AND semantic_tag IS NULL
-                    ORDER BY id ASC
+                    WHERE user_id = %s AND (semantic_tag IS NULL OR folder_id IS NULL)
+                    ORDER BY
+                        CASE WHEN semantic_tag IS NOT NULL AND folder_id IS NULL THEN 0 ELSE 1 END,
+                        id ASC
                     LIMIT %s;
                     """,
                     (int(user_id), safe_limit),
@@ -16578,10 +16760,12 @@ def get_entries_without_semantic_tag(
             else:
                 cursor.execute(
                     """
-                    SELECT id, user_id, word_de, word_ru, source_lang, target_lang
+                    SELECT id, user_id, word_de, word_ru, source_lang, target_lang, semantic_tag, folder_id
                     FROM bt_3_webapp_dictionary_queries
-                    WHERE semantic_tag IS NULL
-                    ORDER BY id ASC
+                    WHERE semantic_tag IS NULL OR folder_id IS NULL
+                    ORDER BY
+                        CASE WHEN semantic_tag IS NOT NULL AND folder_id IS NULL THEN 0 ELSE 1 END,
+                        id ASC
                     LIMIT %s;
                     """,
                     (safe_limit,),
@@ -16595,6 +16779,8 @@ def get_entries_without_semantic_tag(
                     "word_ru": row[3],
                     "source_lang": row[4],
                     "target_lang": row[5],
+                    "semantic_tag": row[6],
+                    "folder_id": row[7],
                 }
                 for row in rows
             ]
