@@ -17959,10 +17959,9 @@ function AppInner() {
         }
         void loadTodayPlan();
         if (nextState.status === 'failed' || nextState.status === 'canceled') {
-          const lastError = data?.check_session?.last_error || '';
           throw new Error(tr(
-            `Проверка перевода завершилась с ошибкой. Попробуйте ещё раз.${lastError ? ` (${lastError})` : ''}`,
-            `Übersetzungsprüfung fehlgeschlagen. Bitte erneut versuchen.${lastError ? ` (${lastError})` : ''}`
+            'Проверка перевода не завершилась. Попробуйте ещё раз.',
+            'Übersetzungsprüfung wurde nicht abgeschlossen. Bitte erneut versuchen.'
           ));
         }
         return data;
