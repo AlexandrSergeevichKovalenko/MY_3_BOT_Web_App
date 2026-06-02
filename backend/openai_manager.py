@@ -1986,7 +1986,8 @@ Output rules:
 - Output ONLY JSON.
 """,
 "dictionary_collocations": """
-You create vivid, memorable German phrases for a given word or phrase — phrases that place the word in a real everyday situation so the learner can feel and remember it.
+You are a German collocation expert. Your task: for a given word, return the 3 most useful, high-frequency collocations that native German speakers actually use in real life — in conversation, news, workplace, or at home. The learner must be able to use these phrases tomorrow in a real situation.
+
 Input payload is JSON:
   direction: "ru-de" or "de-ru"
   word: the original word or phrase in the source language
@@ -2003,31 +2004,38 @@ Return STRICT JSON:
 
 Rules:
 - Exactly 3 items.
-- CRITICAL: Every item must be GENUINELY DISTINCT from the others — different situation, different context, different emotional tone. One-word swaps do NOT make items distinct.
-- VIVIDNESS: Each phrase must paint a mini-scene. Include a concrete subject (a person, a child, someone at work, at home) or a recognisable everyday situation. Avoid abstract grammar-exercise style. A learner should be able to picture exactly what is happening.
-  * Bad: "die Fibel lesen" — dry, no context
-  * Good: "Das Kind lernt mit der Fibel lesen" — you can see it
-  * Bad: "die Frage beantworten" — textbook style
-  * Good: "Er konnte die Frage kaum beantworten" — feels real
-- LENGTH: 4–8 source words. Long enough to carry a situation, short enough to save as a flashcard.
-- ARTICLES: German nouns must have the correct definite or indefinite article (der/die/das/ein/eine). Never output a bare German noun.
+
+- #1 PRIORITY — REAL FREQUENCY: Every phrase must be a collocation that Germans actually say. Ask yourself: "Would a native speaker say this naturally?" If not, replace it.
+  * Good — Trümmer: "Das Gebäude liegt in Trümmern" (fixed expression, heard in news/everyday)
+  * Good — Trümmer: "Er räumte die Trümmer weg" (concrete, practical action)
+  * Good — Trümmer: "Sein Leben lag in Trümmern" (common figurative use)
+  * BAD — Trümmer: "Das Kind spielt zwischen den Trümmern" — invented, never said in real life, useless to learn
+  * Good — Termin: "Ich habe einen Termin beim Arzt" (most common usage)
+  * Good — Termin: "Den Termin absagen" (fixed expression)
+  * BAD — Termin: "Der Mann hat einen wichtigen Termin" — too vague, no real context
+
+- #2 PRIORITY — THREE DIFFERENT COLLOCATION PATTERNS: Each item must use a STRUCTURALLY DIFFERENT pattern — different verb, different syntactic role, different domain. Changing only the subject ("das Kind" → "die Kinder") is NOT distinct and is forbidden.
+  * Aim for: (1) a fixed expression or idiom, (2) a common everyday action, (3) a figurative or journalistic use — if natural for the word.
+
+- #3 — NO INVENTED SCENARIOS: Do not place the word in a fictional situation just to create a "vivid scene". Learners waste time on sentences they will never hear or say. Prefer corpus-style collocations — phrases that appear frequently in real German texts.
+
+- LENGTH: 4–8 source words per item.
+- ARTICLES: German nouns must always have the correct article (der/die/das/ein/eine). Never output a bare German noun.
 - GRAMMAR: Correct German word order and case throughout.
-- If "word" is a SHORT WORD or PHRASE (up to 4 words):
-  * Generate 3 vivid situational phrases using the word in a natural everyday context.
-  * Cover varied situations: e.g. at home, at work/school, in conversation.
-  * Respect part of speech — noun, verb, adjective, adverb must appear in correct form.
+
 - If "word" is a FULL SENTENCE or long phrase (more than 4 words):
   * Extract the KEY WORD or CORE EXPRESSION (main verb, noun, or idiomatic unit).
-  * Generate 3 vivid phrases (4–8 words each) for that key word — NOT variants of the full input sentence.
-  * CRITICAL: Do NOT repeat or paraphrase the input. The output must be structurally different and shorter.
+  * Apply the rules above to that key word. Do NOT paraphrase the input sentence.
   * Example: input "Das hängt von den Umständen ab" → key "abhängen von" →
     - "Das Ergebnis hängt von dir ab" / "Результат зависит от тебя"
     - "Es hängt vom Wetter ab" / "Это зависит от погоды"
     - "Der Preis hängt davon ab" / "Цена зависит от этого"
+
 - Output ONLY JSON.
 """,
 "dictionary_collocations_multilang": """
-You create vivid, memorable phrases for a word or phrase in arbitrary language pairs — phrases that place the word in a real everyday situation so the learner can feel and remember it.
+You are a collocation expert for any language pair. Your task: for a given word, return the 3 most useful, high-frequency collocations that native speakers actually use in real life — in conversation, news, workplace, or at home. The learner must be able to use these phrases tomorrow in a real situation.
+
 Input JSON:
 {
   "source_language": "...",
@@ -2047,20 +2055,29 @@ Return STRICT JSON:
 
 Rules:
 - Exactly 3 items.
-- CRITICAL: Every item must be GENUINELY DISTINCT — different situation, different emotional tone, different context. One-word swaps do NOT count as distinct.
-- VIVIDNESS: Each phrase must paint a mini-scene with a concrete subject or recognisable everyday situation. Avoid abstract grammar-exercise style. A learner should be able to picture what is happening.
-  * Bad: "die Frage beantworten" — dry
-  * Good: "Er konnte die Frage kaum beantworten" — vivid, feels real
-- LENGTH: 4–8 source words. Long enough to carry a situation, short enough to memorise.
-- ARTICLES: When source_language is German and the source contains a German noun, always include the correct article (der/die/das/ein/eine). Never output a bare German noun.
+
+- #1 PRIORITY — REAL FREQUENCY: Every phrase must be a collocation that native speakers actually say. Ask yourself: "Would a native speaker say this naturally?" If not, replace it.
+  * Good — Trümmer: "Das Gebäude liegt in Trümmern" (fixed expression, used in news)
+  * Good — Trümmer: "Er räumte die Trümmer weg" (practical, common action)
+  * Good — Trümmer: "Sein Leben lag in Trümmern" (common figurative use)
+  * BAD — Trümmer: "Das Kind spielt zwischen den Trümmern" — invented, never said in real life, useless
+  * Good — Termin: "Ich habe einen Termin beim Arzt" (most common usage)
+  * BAD — Termin: "Der Mann hat einen wichtigen Termin" — too vague, no real-life context
+
+- #2 PRIORITY — THREE DIFFERENT COLLOCATION PATTERNS: Each item must use a STRUCTURALLY DIFFERENT pattern — different verb, different domain, different syntactic role. Changing only the subject is NOT distinct and is forbidden.
+  * Aim for: (1) a fixed expression or idiom, (2) a common everyday action, (3) a figurative or extended use — if natural for the word.
+
+- #3 — NO INVENTED SCENARIOS: Do not place the word in a fictional situation just to create drama. Prefer corpus-style collocations — phrases that appear frequently in real texts and speech.
+
+- LENGTH: 4–8 source words per item.
+- ARTICLES: When source_language is German, always include the correct article for German nouns. Never output a bare German noun.
 - GRAMMAR: Correct grammar, word order, and case throughout.
-- If "word_source" is a SHORT WORD or PHRASE (up to 4 words):
-  * Generate 3 vivid situational phrases covering varied everyday contexts (home, work, conversation, emotions).
-  * The target side must be a natural, idiomatic translation — not a word-for-word gloss.
+- TARGET SIDE: The translation must be a natural, idiomatic phrase in the target language — not a word-for-word gloss.
+
 - If "word_source" is a FULL SENTENCE or long phrase (more than 4 words):
   * Extract the KEY WORD or CORE EXPRESSION.
-  * Generate 3 vivid phrases (4–8 words) for that key word — NOT variants of the full input.
-  * CRITICAL: Do NOT repeat or paraphrase the input sentence.
+  * Apply the rules above to that key word. Do NOT paraphrase the input sentence.
+
 - Output ONLY JSON.
 """,
 "dictionary_assistant_multilang": """
