@@ -3834,11 +3834,35 @@ async def handle_button_click(update: Update, context: CallbackContext):
         user_id = int(update.effective_user.id)
         pending_keys = _list_pending_dictionary_lookup_request_keys_for_user(user_id)
         if not pending_keys:
+            _debug_lines: list[str] = []
+            try:
+                from backend.job_queue import get_redis_client as _grc
+                _rc = _grc()
+                if _rc is None:
+                    _debug_lines.append("Redis: client=None (нет REDIS_URL в окружении бота)")
+                else:
+                    _bot_key = f"dict_pending_user:{user_id}"
+                    _sc_key = f"dict_pending_shortcut:{user_id}"
+                    _bot_raw = _rc.get(_bot_key)
+                    _sc_raw = _rc.get(_sc_key)
+                    _debug_lines.append(f"Redis OK. bot_key={_bot_key!r} → {len(_bot_raw) if _bot_raw else 'empty'}")
+                    _debug_lines.append(f"shortcut_key={_sc_key!r} → {len(_sc_raw) if _sc_raw else 'empty'}")
+                    if _sc_raw:
+                        import json as _j
+                        try:
+                            _entries = _j.loads(_sc_raw)
+                            _debug_lines.append(f"shortcut entries: {len(_entries)} шт")
+                        except Exception as _pe:
+                            _debug_lines.append(f"shortcut parse error: {_pe}")
+            except Exception as _de:
+                _debug_lines.append(f"debug error: {_de}")
+            _debug_str = "\n\n🔍 DEBUG:\n" + "\n".join(_debug_lines) if _debug_lines else ""
             await update.message.reply_text(
                 "Сейчас нет ожидающих запросов для быстрого перевода.\n\n"
                 "Слова попадают в список только если они отправлены через Shortcut или набраны в чате после последнего обновления бота. "
                 "Если слова уже висят в чате — нажмите языковую пару под каждым из них вручную, "
                 "или отправьте слова заново через Shortcut и сразу нажмите эту кнопку."
+                + _debug_str
             )
             return
         # Snapshot payloads NOW while they are in memory — avoids race where
