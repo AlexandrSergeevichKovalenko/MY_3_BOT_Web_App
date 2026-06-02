@@ -5083,17 +5083,28 @@ def _dict_pending_redis_key(user_id: int) -> str:
     return f"dict_pending_user:{user_id}"
 
 
+def _dict_pending_redis_hash_key(user_id: int) -> str:
+    return f"dict_pending_user_hash:{user_id}"
+
+
 def _sync_pending_to_redis(user_id: int) -> bool:
     try:
         from backend.job_queue import get_redis_client
         client = get_redis_client()
         if client is None:
             return False
+        hash_key = _dict_pending_redis_hash_key(user_id)
         entries = [
             {"key": k, **v}
             for k, v in pending_dictionary_lookup_requests.items()
             if int((v or {}).get("user_id", 0)) == int(user_id)
         ]
+        for entry in entries:
+            key = str(entry.get("key") or "").strip()
+            if key:
+                client.hset(hash_key, key, json.dumps(entry, ensure_ascii=False))
+        if entries:
+            client.expire(hash_key, _DICT_PENDING_REDIS_TTL_SEC)
         client.setex(
             _dict_pending_redis_key(user_id),
             _DICT_PENDING_REDIS_TTL_SEC,
@@ -5141,6 +5152,25 @@ def _restore_pending_from_redis(user_id: int) -> None:
 
         restored = 0
 
+        hash_key = _dict_pending_redis_hash_key(user_id)
+        try:
+            raw_hash = client.hgetall(hash_key) or {}
+        except Exception:
+            raw_hash = {}
+            logging.warning("dict_pending: hash read failed key=%s", hash_key, exc_info=True)
+        hash_entries: list[dict] = []
+        if isinstance(raw_hash, dict):
+            for _field, raw_value in raw_hash.items():
+                try:
+                    raw_str = raw_value.decode("utf-8") if isinstance(raw_value, bytes) else str(raw_value)
+                    entry = json.loads(raw_str)
+                    if isinstance(entry, dict):
+                        hash_entries.append(entry)
+                except Exception:
+                    logging.warning("dict_pending: hash entry parse failed key=%s field=%r", hash_key, _field)
+        logging.info("dict_pending: hash_key=%s entries=%d", hash_key, len(hash_entries))
+        restored += _absorb_entries(json.dumps(hash_entries, ensure_ascii=False), hash_key)
+
         bot_key = _dict_pending_redis_key(user_id)
         raw_bot = client.get(bot_key)
         logging.info("dict_pending: restore start user_id=%s bot_key=%s has_bot=%s", user_id, bot_key, bool(raw_bot))
@@ -5156,6 +5186,34 @@ def _restore_pending_from_redis(user_id: int) -> None:
 
         # Also check the raw-text key written by BACKEND_WEB immediately on shortcut arrival.
         # This covers the race where BACKGROUND_JOBS hasn't processed the Dramatiq job yet.
+        raw_text_list_key = f"dict_pending_shortcut_raw_list:{user_id}"
+        try:
+            raw_list_values = client.lrange(raw_text_list_key, 0, -1) or []
+        except Exception:
+            raw_list_values = []
+            logging.warning("dict_pending: raw text list read failed key=%s", raw_text_list_key, exc_info=True)
+        raw_list_count = 0
+        for raw_item in raw_list_values:
+            try:
+                raw_item_str = raw_item.decode("utf-8") if isinstance(raw_item, bytes) else str(raw_item)
+                lines = [ln.strip() for ln in raw_item_str.split("\n") if ln.strip()]
+                for line in lines:
+                    k = hashlib.sha1(f"rawlist:{user_id}:{line}".encode("utf-8")).hexdigest()[:20]
+                    if k not in pending_dictionary_lookup_requests:
+                        pending_dictionary_lookup_requests[k] = {
+                            "user_id": int(user_id),
+                            "text": line,
+                            "chat_id": None,
+                            "message_id": None,
+                        }
+                        raw_list_count += 1
+            except Exception:
+                logging.warning("dict_pending: raw text list item parse error key=%s", raw_text_list_key, exc_info=True)
+        logging.info("dict_pending: absorbed %d entries from raw list key %s", raw_list_count, raw_text_list_key)
+        if raw_list_count and _sync_pending_to_redis(user_id):
+            client.delete(raw_text_list_key)
+        restored += raw_list_count
+
         raw_text_key = f"dict_pending_shortcut_raw:{user_id}"
         raw_text_bytes = client.get(raw_text_key)
         logging.info("dict_pending: raw_text_key=%s has_raw=%s", raw_text_key, bool(raw_text_bytes))
@@ -5184,6 +5242,44 @@ def _restore_pending_from_redis(user_id: int) -> None:
         logging.info("dict_pending: restore complete user_id=%s total_restored=%d", user_id, restored)
     except Exception:
         logging.warning("dict_pending: redis restore FAILED user_id=%s", user_id, exc_info=True)
+
+
+def _remove_pending_from_redis(user_id: int, request_key: str) -> None:
+    key = str(request_key or "").strip()
+    if not key:
+        return
+    try:
+        from backend.job_queue import get_redis_client
+        client = get_redis_client()
+        if client is None:
+            return
+        try:
+            client.hdel(_dict_pending_redis_hash_key(user_id), key)
+        except Exception:
+            logging.debug("dict_pending: hash hdel failed user_id=%s key=%s", user_id, key, exc_info=True)
+
+        def _remove_from_json_list(redis_key: str) -> None:
+            raw = client.get(redis_key)
+            if not raw:
+                return
+            try:
+                entries = json.loads(raw)
+            except Exception:
+                return
+            if not isinstance(entries, list):
+                return
+            filtered = [entry for entry in entries if str((entry or {}).get("key") or "") != key]
+            if len(filtered) == len(entries):
+                return
+            if filtered:
+                client.setex(redis_key, _DICT_PENDING_REDIS_TTL_SEC, json.dumps(filtered, ensure_ascii=False))
+            else:
+                client.delete(redis_key)
+
+        _remove_from_json_list(_dict_pending_redis_key(user_id))
+        _remove_from_json_list(f"dict_pending_shortcut:{user_id}")
+    except Exception:
+        logging.debug("dict_pending: redis remove failed user_id=%s key=%s", user_id, key, exc_info=True)
 
 
 def _store_pending_dictionary_lookup_request(
@@ -7245,6 +7341,7 @@ async def _handle_private_dictionary_lookup(update: Update, context: CallbackCon
         payload["message_id"] = int(msg.message_id)
         payload["chat_id"] = int(msg.chat_id)
         pending_dictionary_lookup_requests[request_key] = payload
+        _sync_pending_to_redis(int(update.message.from_user.id))
     add_service_msg_id(context, msg.message_id)
 
 
@@ -7298,6 +7395,7 @@ async def _process_dictionary_pair_selection(
         pending_dictionary_lookup_requests.pop(request_key, None)
         pending_dictionary_lookup_inflight.discard(request_key)
         if uid:
+            _remove_pending_from_redis(uid, request_key)
             _sync_pending_to_redis(uid)
 
 
@@ -7350,6 +7448,7 @@ async def _run_dictionary_batch_fast_for_user(
         lookup_input = str(payload.get("text") or "").strip()
         if not lookup_input:
             logging.warning("batch_fast: SKIP key=%s — empty text", request_key)
+            _remove_pending_from_redis(int(user_id), request_key)
             pending_dictionary_lookup_requests.pop(request_key, None)
             continue
 

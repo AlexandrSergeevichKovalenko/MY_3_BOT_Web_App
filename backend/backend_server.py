@@ -35550,6 +35550,9 @@ def _shortcut_lookup_from_install_token(*, install_token: str, text: str, reques
         if _sc_raw_client is not None:
             _sc_raw_key = f"dict_pending_shortcut_raw:{user_id}"
             _sc_raw_client.setex(_sc_raw_key, 28800, text)
+            _sc_raw_list_key = f"dict_pending_shortcut_raw_list:{user_id}"
+            _sc_raw_client.rpush(_sc_raw_list_key, text)
+            _sc_raw_client.expire(_sc_raw_list_key, 28800)
             logging.info("shortcut_lookup: raw text written key=%s len=%d", _sc_raw_key, len(text))
     except Exception:
         logging.warning("shortcut_lookup: raw Redis write failed user_id=%s", user_id, exc_info=True)
@@ -35619,6 +35622,10 @@ def _shortcut_pending_redis_key(user_id: int) -> str:
     return f"dict_pending_shortcut:{user_id}"
 
 
+def _shortcut_pending_hash_redis_key(user_id: int) -> str:
+    return f"dict_pending_user_hash:{user_id}"
+
+
 def _shortcut_append_pending_to_redis(user_id: int, request_key: str, lookup_text: str) -> None:
     """Append a shortcut lookup entry to Redis so bot_3.py can find it for batch processing."""
     try:
@@ -35626,6 +35633,17 @@ def _shortcut_append_pending_to_redis(user_id: int, request_key: str, lookup_tex
         if client is None:
             logging.warning("shortcut_pending: redis client is None, cannot store pending user_id=%s key=%s", user_id, request_key)
             return
+        hash_key = _shortcut_pending_hash_redis_key(user_id)
+        hash_payload = {
+            "key": request_key,
+            "user_id": int(user_id),
+            "text": str(lookup_text or "").strip(),
+            "chat_id": int(user_id),
+            "message_id": None,
+            "source": "shortcut_delivery",
+        }
+        client.hset(hash_key, request_key, json.dumps(hash_payload, ensure_ascii=False))
+        client.expire(hash_key, _SHORTCUT_PENDING_REDIS_TTL)
         redis_key = _shortcut_pending_redis_key(user_id)
         raw = client.get(redis_key)
         existing = json.loads(raw) if raw else []

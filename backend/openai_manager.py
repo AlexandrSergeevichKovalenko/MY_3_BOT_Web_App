@@ -1854,10 +1854,13 @@ Output rules:
 - If phrase/expression: explain whether it is idiomatic, fixed, formal/informal, spoken/written.
 - memory_tip must help the learner feel and remember the word vividly.
 - save_worthy_options must contain exactly 3 practical items whenever possible:
-  1) the base word or expression,
-  2) one common collocation,
-  3) one high-frequency useful phrase.
-- save_worthy_options must be natural and worth saving, not random.
+  1) EXACT TRANSLATION CARD: the most accurate, natural translation of the user's original input. If the input is a full sentence, keep it a full sentence and preserve the core meaning completely.
+  2) REAL-LIFE SPEECH CARD: a short, high-frequency collocation or complete everyday sentence built around the same core meaning. It must sound like something a native speaker would actually say tomorrow.
+  3) OPTIONAL EXTRA: another genuinely useful collocation/phrase only if it adds a different real usage pattern.
+- save_worthy_options must be natural, frequent, conversational, and worth saving, not random.
+- The second save_worthy_options item must never lose the key semantic idea from the original input. If the input is about retirement/Rente, the second item must still contain that idea; if it is about a doctor/Arzt, the second item must still contain that idea.
+- Avoid dry generic paraphrases such as "does not go to work anymore" when the original meaning is more specific such as "retired".
+- Prefer concise living phrases over textbook abstractions.
 - ARTICLES in save_worthy_options: if the "source" side of an item is a German noun standing alone (not inside a phrase), ALWAYS prepend the correct definite article (der/die/das). Never output a bare noun. Example: write "der Ersatzstift", NOT "Ersatzstift".
 - Do not invent obscure meanings unless clearly relevant.
 - Output ONLY JSON.
@@ -1986,7 +1989,7 @@ Output rules:
 - Output ONLY JSON.
 """,
 "dictionary_collocations": """
-You are a German collocation expert. Your task: for a given word, return the 3 most useful, high-frequency collocations that native German speakers actually use in real life — in conversation, news, workplace, or at home. The learner must be able to use these phrases tomorrow in a real situation.
+You are a German quick-save phrase expert. Your task: for a given word, phrase, or sentence, return the most useful save-worthy variants that a learner can trust and use tomorrow in real speech.
 
 Input payload is JSON:
   direction: "ru-de" or "de-ru"
@@ -2005,7 +2008,27 @@ Return STRICT JSON:
 Rules:
 - Exactly 3 items.
 
-- #1 PRIORITY — REAL FREQUENCY: Every phrase must be a collocation that Germans actually say. Ask yourself: "Would a native speaker say this naturally?" If not, replace it.
+- #1 ITEM — EXACT TRANSLATION CARD:
+  The first item must be the most accurate, natural translation of the original input.
+  If the original input is a full sentence, keep it a full sentence.
+  Do not reduce sentence input to only a lemma or generic collocation.
+
+- #2 ITEM — REAL-LIFE SPEECH CARD:
+  The second item must be the single best short, conversational, high-frequency phrase or complete sentence built around the SAME CORE MEANING.
+  It should sound like something a native speaker would actually say in everyday life.
+  It may be a more natural paraphrase, but it must not weaken or remove the key idea.
+  Example: for "Франц ушел на пенсию" / "Franz ist in Rente gegangen", good #2:
+    "Franz ist jetzt in Rente" / "Франц теперь на пенсии"
+    or "Franz genießt jetzt seine Rente" / "Франц теперь наслаждается пенсией"
+  Bad #2:
+    "Franz geht nicht mehr zur Arbeit" / "Франц больше не ходит на работу"
+    because it loses the specific retirement/Rente meaning.
+
+- #3 ITEM — OPTIONAL DISTINCT REAL USAGE:
+  The third item may be another useful collocation/phrase only if it adds a genuinely different common usage pattern.
+  If a third item would be weak, repetitive, or artificial, still return the best available practical variant rather than invented filler.
+
+- REAL FREQUENCY: Every phrase must be something Germans actually say. Ask yourself: "Would a native speaker say this naturally?" If not, replace it.
   * Good — Trümmer: "Das Gebäude liegt in Trümmern" (fixed expression, heard in news/everyday)
   * Good — Trümmer: "Er räumte die Trümmer weg" (concrete, practical action)
   * Good — Trümmer: "Sein Leben lag in Trümmern" (common figurative use)
@@ -2014,27 +2037,24 @@ Rules:
   * Good — Termin: "Den Termin absagen" (fixed expression)
   * BAD — Termin: "Der Mann hat einen wichtigen Termin" — too vague, no real context
 
-- #2 PRIORITY — THREE DIFFERENT COLLOCATION PATTERNS: Each item must use a STRUCTURALLY DIFFERENT pattern — different verb, different syntactic role, different domain. Changing only the subject ("das Kind" → "die Kinder") is NOT distinct and is forbidden.
+- DIFFERENT USAGE PATTERNS: When possible, items must use structurally different patterns — different verb, different syntactic role, different domain. Changing only the subject ("das Kind" → "die Kinder") is NOT distinct and is forbidden.
   * Aim for: (1) a fixed expression or idiom, (2) a common everyday action, (3) a figurative or journalistic use — if natural for the word.
 
-- #3 — NO INVENTED SCENARIOS: Do not place the word in a fictional situation just to create a "vivid scene". Learners waste time on sentences they will never hear or say. Prefer corpus-style collocations — phrases that appear frequently in real German texts.
+- NO INVENTED SCENARIOS: Do not place the word in a fictional situation just to create a "vivid scene". Learners waste time on sentences they will never hear or say. Prefer corpus-style phrases that appear frequently in real German texts.
 
-- LENGTH: 4–8 source words per item.
+- LENGTH: Prefer 3–9 source words per item. Full-sentence inputs may remain slightly longer if needed for exact translation.
 - ARTICLES: German nouns must always have the correct article (der/die/das/ein/eine). Never output a bare German noun.
 - GRAMMAR: Correct German word order and case throughout.
 
 - If "word" is a FULL SENTENCE or long phrase (more than 4 words):
-  * Extract the KEY WORD or CORE EXPRESSION (main verb, noun, or idiomatic unit).
-  * Apply the rules above to that key word. Do NOT paraphrase the input sentence.
-  * Example: input "Das hängt von den Umständen ab" → key "abhängen von" →
-    - "Das Ergebnis hängt von dir ab" / "Результат зависит от тебя"
-    - "Es hängt vom Wetter ab" / "Это зависит от погоды"
-    - "Der Preis hängt davon ab" / "Цена зависит от этого"
+  * #1 must translate the whole sentence.
+  * #2 must keep the same core meaning in a shorter, more reusable real-life phrase/sentence.
+  * Do NOT replace the specific meaning with a weaker generic statement.
 
 - Output ONLY JSON.
 """,
 "dictionary_collocations_multilang": """
-You are a collocation expert for any language pair. Your task: for a given word, return the 3 most useful, high-frequency collocations that native speakers actually use in real life — in conversation, news, workplace, or at home. The learner must be able to use these phrases tomorrow in a real situation.
+You are a quick-save phrase expert for any language pair. Your task: for a given word, phrase, or sentence, return the most useful save-worthy variants that a learner can trust and use tomorrow in real speech.
 
 Input JSON:
 {
@@ -2056,7 +2076,27 @@ Return STRICT JSON:
 Rules:
 - Exactly 3 items.
 
-- #1 PRIORITY — REAL FREQUENCY: Every phrase must be a collocation that native speakers actually say. Ask yourself: "Would a native speaker say this naturally?" If not, replace it.
+- #1 ITEM — EXACT TRANSLATION CARD:
+  The first item must be the most accurate, natural translation of the original input.
+  If the original input is a full sentence, keep it a full sentence.
+  Do not reduce sentence input to only a lemma or generic collocation.
+
+- #2 ITEM — REAL-LIFE SPEECH CARD:
+  The second item must be the single best short, conversational, high-frequency phrase or complete sentence built around the SAME CORE MEANING.
+  It should sound like something a native speaker would actually say in everyday life.
+  It may be a more natural paraphrase, but it must not weaken or remove the key idea.
+  Example: for "Франц ушел на пенсию" / "Franz ist in Rente gegangen", good #2:
+    "Franz ist jetzt in Rente" / "Франц теперь на пенсии"
+    or "Franz genießt jetzt seine Rente" / "Франц теперь наслаждается пенсией"
+  Bad #2:
+    "Franz geht nicht mehr zur Arbeit" / "Франц больше не ходит на работу"
+    because it loses the specific retirement/Rente meaning.
+
+- #3 ITEM — OPTIONAL DISTINCT REAL USAGE:
+  The third item may be another useful collocation/phrase only if it adds a genuinely different common usage pattern.
+  If a third item would be weak, repetitive, or artificial, still return the best available practical variant rather than invented filler.
+
+- REAL FREQUENCY: Every phrase must be something native speakers actually say. Ask yourself: "Would a native speaker say this naturally?" If not, replace it.
   * Good — Trümmer: "Das Gebäude liegt in Trümmern" (fixed expression, used in news)
   * Good — Trümmer: "Er räumte die Trümmer weg" (practical, common action)
   * Good — Trümmer: "Sein Leben lag in Trümmern" (common figurative use)
@@ -2064,19 +2104,20 @@ Rules:
   * Good — Termin: "Ich habe einen Termin beim Arzt" (most common usage)
   * BAD — Termin: "Der Mann hat einen wichtigen Termin" — too vague, no real-life context
 
-- #2 PRIORITY — THREE DIFFERENT COLLOCATION PATTERNS: Each item must use a STRUCTURALLY DIFFERENT pattern — different verb, different domain, different syntactic role. Changing only the subject is NOT distinct and is forbidden.
+- DIFFERENT USAGE PATTERNS: When possible, items must use structurally different patterns — different verb, different domain, different syntactic role. Changing only the subject is NOT distinct and is forbidden.
   * Aim for: (1) a fixed expression or idiom, (2) a common everyday action, (3) a figurative or extended use — if natural for the word.
 
-- #3 — NO INVENTED SCENARIOS: Do not place the word in a fictional situation just to create drama. Prefer corpus-style collocations — phrases that appear frequently in real texts and speech.
+- NO INVENTED SCENARIOS: Do not place the word in a fictional situation just to create drama. Prefer corpus-style phrases that appear frequently in real texts and speech.
 
-- LENGTH: 4–8 source words per item.
+- LENGTH: Prefer 3–9 source words per item. Full-sentence inputs may remain slightly longer if needed for exact translation.
 - ARTICLES: When source_language is German, always include the correct article for German nouns. Never output a bare German noun.
 - GRAMMAR: Correct grammar, word order, and case throughout.
 - TARGET SIDE: The translation must be a natural, idiomatic phrase in the target language — not a word-for-word gloss.
 
 - If "word_source" is a FULL SENTENCE or long phrase (more than 4 words):
-  * Extract the KEY WORD or CORE EXPRESSION.
-  * Apply the rules above to that key word. Do NOT paraphrase the input sentence.
+  * #1 must translate the whole sentence.
+  * #2 must keep the same core meaning in a shorter, more reusable real-life phrase/sentence.
+  * Do NOT replace the specific meaning with a weaker generic statement.
 
 - Output ONLY JSON.
 """,
@@ -2211,10 +2252,13 @@ Rules:
 - If phrase/expression: explain whether it is fixed, idiomatic, formal/informal, spoken/written.
 - real_life_usage must explain where native speakers actually use it.
 - save_worthy_options must contain exactly 3 practical items whenever possible:
-  1) base word/expression,
-  2) one common collocation,
-  3) one useful high-frequency phrase.
-- save_worthy_options must be natural, frequent, and worth saving.
+  1) EXACT TRANSLATION CARD: the most accurate, natural translation of the user's original input. If the input is a full sentence, keep it a full sentence and preserve the core meaning completely.
+  2) REAL-LIFE SPEECH CARD: a short, high-frequency collocation or complete everyday sentence built around the same core meaning. It must sound like something a native speaker would actually say tomorrow.
+  3) OPTIONAL EXTRA: another genuinely useful collocation/phrase only if it adds a different real usage pattern.
+- save_worthy_options must be natural, frequent, conversational, and worth saving.
+- The second save_worthy_options item must preserve the key semantic idea from the original input. Do not replace a specific idea with a weaker generic paraphrase.
+- Avoid dry generic paraphrases. Example: for "Франц ушел на пенсию", prefer "Franz ist jetzt in Rente" or "Franz genießt jetzt seine Rente", not "Franz geht nicht mehr zur Arbeit".
+- Prefer concise living phrases over textbook abstractions.
 - Etymology, usage_note and memory_tip must help learner FEEL structure and origin.
 - If information is unknown, use null.
 """,
@@ -2255,6 +2299,10 @@ Return STRICT JSON with keys:
   "usage_examples": [
     {"source": "...", "target": "..."}
   ],
+  "save_worthy_options": [
+    {"source": "...", "target": "...", "kind": "base|collocation|phrase"},
+    {"source": "...", "target": "...", "kind": "base|collocation|phrase"}
+  ],
   "raw_text": "<optional very short practical note>"
 }
 
@@ -2263,6 +2311,10 @@ Rules:
 - Keep everything compact.
 - Return at most 2 translation variants.
 - Return at most 1 usage example.
+- Return exactly 2 save_worthy_options whenever possible:
+  1) EXACT TRANSLATION CARD: the most accurate, natural translation of the user's original input. If the input is a sentence, keep it a complete sentence.
+  2) REAL-LIFE SPEECH CARD: a short, high-frequency collocation or complete everyday sentence with the same core meaning. It must be conversational and something a native speaker would actually say.
+- The second save_worthy_options item must not weaken or drop the key idea from the original. For "Франц ушел на пенсию", do not output "Franz geht nicht mehr zur Arbeit"; keep the retirement/Rente idea.
 - GERMAN HEADWORD NORMALIZATION:
   - If the main German word is a standalone noun, word_source/word_target must include the correct definite article in nominative: "der/die/das + noun".
   - If the main German word is a standalone verb, normalize it to the infinitive.

@@ -1,4 +1,5 @@
 import unittest
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -8,6 +9,8 @@ import bot_3
 class _FakeRedis:
     def __init__(self):
         self.values = {}
+        self.hashes = {}
+        self.lists = {}
         self.deleted = []
 
     def get(self, key):
@@ -16,9 +19,33 @@ class _FakeRedis:
     def setex(self, key, ttl, value):
         self.values[key] = value
 
+    def expire(self, key, ttl):
+        return True
+
+    def hset(self, key, field, value):
+        self.hashes.setdefault(key, {})[field] = value
+
+    def hgetall(self, key):
+        return dict(self.hashes.get(key, {}))
+
+    def hdel(self, key, field):
+        if key in self.hashes:
+            self.hashes[key].pop(field, None)
+
+    def rpush(self, key, value):
+        self.lists.setdefault(key, []).append(value)
+
+    def lrange(self, key, start, end):
+        values = list(self.lists.get(key, []))
+        if end == -1:
+            return values[start:]
+        return values[start:end + 1]
+
     def delete(self, key):
         self.deleted.append(key)
         self.values.pop(key, None)
+        self.hashes.pop(key, None)
+        self.lists.pop(key, None)
 
 
 class PrivateDictionaryBatchFastButtonTests(unittest.TestCase):
@@ -90,6 +117,20 @@ class PrivateDictionaryBatchFastButtonTests(unittest.TestCase):
             self.assertEqual(
                 bot_3._list_pending_dictionary_lookup_request_keys_for_user(11),
                 ["k1", "sc2"],
+            )
+
+    def test_listing_restores_all_hash_pending_entries(self):
+        redis = _FakeRedis()
+        redis.hashes["dict_pending_user_hash:11"] = {
+            "h1": json.dumps({"key": "h1", "user_id": 11, "text": "eins"}, ensure_ascii=False),
+            "h2": json.dumps({"key": "h2", "user_id": 11, "text": "zwei"}, ensure_ascii=False),
+            "h3": json.dumps({"key": "h3", "user_id": 11, "text": "drei"}, ensure_ascii=False),
+        }
+
+        with patch("backend.job_queue.get_redis_client", return_value=redis):
+            self.assertEqual(
+                bot_3._list_pending_dictionary_lookup_request_keys_for_user(11),
+                ["h1", "h2", "h3"],
             )
 
 

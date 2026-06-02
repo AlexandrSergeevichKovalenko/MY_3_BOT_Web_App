@@ -32324,7 +32324,7 @@ function AppInner() {
                           <div className="fsrs-study-header">
                             <div className="fsrs-study-title">Space Repetition</div>
                             <div className="fsrs-study-queue">
-                              {tr('Сегодня', 'Heute')}: {(srsQueueInfo?.due_reviewed_today ?? 0) + (srsQueueInfo?.introduced_today ?? 0)}/{(srsQueueInfo?.due_limit_today ?? 30) + (srsQueueInfo?.introduced_today ?? 0) + (srsQueueInfo?.new_remaining_today ?? 0)} · {tr('Очередь', 'Warteschlange')}: {srsQueueInfo?.due_count_total ?? srsQueueInfo?.due_count ?? 0}
+                              {tr('Сегодня', 'Heute')}: {(srsQueueInfo?.due_reviewed_today ?? 0) + (srsQueueInfo?.introduced_today ?? 0)}/{(srsQueueInfo?.due_limit_today ?? 30) + (srsQueueInfo?.introduced_today ?? 0) + (srsQueueInfo?.new_remaining_today ?? 0)} · {tr('Ждут повторения', 'Warten auf Wiederholung')}: {srsQueueInfo?.due_count_total ?? srsQueueInfo?.due_count ?? 0}
                             </div>
                             {(!isOnline || srsOfflinePendingCount > 0) && (
                               <div className={`srs-offline-badge ${!isOnline ? 'is-offline' : 'is-syncing'}`}>
@@ -33067,7 +33067,7 @@ function AppInner() {
                                   <div className="setup-label">{tr('Card Queue', 'Card Queue')}</div>
                                   <div className="flashcard-settings-queue">
                                     <span>{tr('Сегодня', 'Heute')}: {(srsQueueInfo?.due_reviewed_today ?? 0) + (srsQueueInfo?.introduced_today ?? 0)}/{(srsQueueInfo?.due_limit_today ?? 30) + (srsQueueInfo?.introduced_today ?? 0) + (srsQueueInfo?.new_remaining_today ?? 0)}</span>
-                                    <span>{tr('Очередь', 'Warteschlange')}: {srsQueueInfo?.due_count_total ?? srsQueueInfo?.due_count ?? 0}</span>
+                                    <span>{tr('Ждут повторения', 'Warten auf Wiederholung')}: {srsQueueInfo?.due_count_total ?? srsQueueInfo?.due_count ?? 0}</span>
                                     <span>{tr('Новые', 'Neu')}: {srsQueueInfo?.new_remaining_today ?? 0}</span>
                                   </div>
                                   <button type="button" className="flashcard-settings-update-btn" onClick={() => void loadSrsNextCard()}>
