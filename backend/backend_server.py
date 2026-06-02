@@ -17921,14 +17921,31 @@ def _list_translation_focus_pool_prewarm_candidates(
 
 
 def _list_translation_focus_pool_refill_candidates() -> list[dict[str, Any]]:
+    started_perf = time.perf_counter()
     pool_payloads = _all_translation_focus_pool_payloads()
     if not pool_payloads:
+        _log_translation_focus_pool_refill_stage(
+            "candidate_planning_finish",
+            reason="no_pool_payloads",
+            duration_ms=_elapsed_ms_since(started_perf),
+        )
         return []
 
     focus_payloads = [dict(payload or {}) for payload in pool_payloads.values() if isinstance(payload, dict)]
     low_watermark_by_bucket, target_ready_by_bucket = _build_translation_focus_pool_bucket_targets(
         focus_payloads,
         levels=TRANSLATION_FOCUS_POOL_PREWARM_LEVELS,
+    )
+    _log_translation_focus_pool_refill_stage(
+        "candidate_planning_start",
+        focus_payload_count=len(pool_payloads),
+        configured_levels=list(TRANSLATION_FOCUS_POOL_PREWARM_LEVELS or []),
+        low_watermark_bucket_count=len(low_watermark_by_bucket),
+        target_bucket_count=len(target_ready_by_bucket),
+        preset_limit=int(TRANSLATION_FOCUS_POOL_PREWARM_PRESET_LIMIT),
+        hot_level_limit=int(TRANSLATION_FOCUS_POOL_PREWARM_HOT_LEVEL_LIMIT),
+        target_per_bucket=int(TRANSLATION_FOCUS_POOL_PREWARM_TARGET_PER_BUCKET),
+        max_generate_per_bucket=int(TRANSLATION_FOCUS_POOL_PREWARM_MAX_GENERATE_PER_BUCKET),
     )
     current_rows = get_translation_focus_pool_bucket_counts(
         source_lang="ru",
@@ -17942,6 +17959,14 @@ def _list_translation_focus_pool_refill_candidates() -> list[dict[str, Any]]:
         for row in list(current_rows or [])
         if str(row.get("focus_key") or "").strip() and str(row.get("level") or "").strip()
     }
+    _log_translation_focus_pool_refill_stage(
+        "candidate_inventory_loaded",
+        inventory_row_count=len(list(current_rows or [])),
+        inventory_bucket_count=len(current_ready_by_bucket),
+        min_ready=min(current_ready_by_bucket.values()) if current_ready_by_bucket else 0,
+        max_ready=max(current_ready_by_bucket.values()) if current_ready_by_bucket else 0,
+        total_ready=sum(int(value or 0) for value in current_ready_by_bucket.values()),
+    )
 
     demand_scores: Counter[str] = Counter()
     bucket_demand_scores: Counter[tuple[str, str]] = Counter()
@@ -17971,8 +17996,19 @@ def _list_translation_focus_pool_refill_candidates() -> list[dict[str, Any]]:
             demand_scores[focus_key] += demand_score
             if level:
                 bucket_demand_scores[(focus_key, level)] += demand_score
+        _log_translation_focus_pool_refill_stage(
+            "candidate_readiness_loaded",
+            readiness_row_count=len(list(readiness_rows or [])),
+            demand_focus_count=len(demand_scores),
+            demand_bucket_count=len(bucket_demand_scores),
+            top_demand_focuses=[
+                {"focus_key": key, "score": int(score)}
+                for key, score in demand_scores.most_common(10)
+            ],
+        )
     except Exception:
         logging.exception("Failed to load translation readiness rollup for refill candidates")
+        _log_translation_focus_pool_refill_stage("candidate_readiness_failed")
 
     deficit_by_focus: Counter[str] = Counter()
     max_bucket_deficit_by_focus: Counter[str] = Counter()
@@ -18002,7 +18038,40 @@ def _list_translation_focus_pool_refill_candidates() -> list[dict[str, Any]]:
             )
         )
 
+    underfilled_bucket_details = [
+        {
+            "focus_key": focus_key,
+            "level": level,
+            "current_ready": int(current_ready_by_bucket.get((focus_key, level)) or 0),
+            "low_watermark": int(low_watermark_by_bucket.get((focus_key, level)) or 0),
+            "target_ready": int(target_ready_by_bucket.get((focus_key, level)) or 0),
+            "deficit": int(deficit),
+            "demand_score": int(bucket_demand_scores.get((focus_key, level)) or 0),
+        }
+        for focus_key, levels in underfilled_levels_by_focus.items()
+        for level, deficit, _demand in list(levels or [])
+    ]
+    underfilled_bucket_details.sort(
+        key=lambda item: (
+            -int(item.get("deficit") or 0),
+            -int(item.get("demand_score") or 0),
+            str(item.get("focus_key") or ""),
+            str(item.get("level") or ""),
+        )
+    )
+    _log_translation_focus_pool_refill_stage(
+        "candidate_deficits_computed",
+        underfilled_focus_count=len(underfilled_focus_keys),
+        underfilled_bucket_count=len(underfilled_bucket_details),
+        total_deficit=sum(int(item.get("deficit") or 0) for item in underfilled_bucket_details),
+        top_underfilled_buckets=underfilled_bucket_details[:30],
+    )
     if not underfilled_focus_keys:
+        _log_translation_focus_pool_refill_stage(
+            "candidate_no_underfilled_buckets",
+            duration_ms=_elapsed_ms_since(started_perf),
+            fallback_limit=int(TRANSLATION_FOCUS_POOL_PREWARM_PRESET_LIMIT),
+        )
         return _list_translation_focus_pool_prewarm_candidates(
             limit=TRANSLATION_FOCUS_POOL_PREWARM_PRESET_LIMIT,
             lookback_days=TRANSLATION_FOCUS_POOL_PREWARM_LOOKBACK_DAYS,
@@ -18049,6 +18118,21 @@ def _list_translation_focus_pool_refill_candidates() -> list[dict[str, Any]]:
                 if str(level_value or "").strip()
             ]
         candidates.append(payload)
+    _log_translation_focus_pool_refill_stage(
+        "candidate_planning_finish",
+        duration_ms=_elapsed_ms_since(started_perf),
+        candidate_count=len(candidates),
+        candidates=[
+            {
+                "focus_key": str((item or {}).get("key") or "").strip(),
+                "label": str((item or {}).get("label") or "").strip(),
+                "levels": list((item or {}).get("_pool_levels") or []),
+                "demand_score": int((item or {}).get("_demand_score") or 0),
+                "deficit_score": int((item or {}).get("_deficit_score") or 0),
+            }
+            for item in list(candidates or [])
+        ],
+    )
     return candidates
 
 
@@ -18657,12 +18741,33 @@ def _upsert_translation_focus_pool_daily_snapshot_from_inventory(
 def _dispatch_translation_focus_pool_refill(*, force: bool = False, tz_name: str = TODAY_PLAN_DEFAULT_TZ) -> dict:
     started_perf = time.perf_counter()
     snapshot_date = _get_local_today_date(tz_name)
+    normalized_tz_name = str(tz_name or "").strip() or TODAY_PLAN_DEFAULT_TZ
+    try:
+        local_now = datetime.now(ZoneInfo(normalized_tz_name))
+        local_now_iso = local_now.isoformat()
+        local_hour = int(local_now.hour)
+    except Exception:
+        local_now_iso = datetime.utcnow().isoformat()
+        local_hour = -1
+    offpeak_allowed = bool(_should_run_sentence_prewarm_now(normalized_tz_name))
     _log_translation_focus_pool_refill_stage(
         "dispatch_start",
         force=bool(force),
-        tz_name=str(tz_name or "").strip() or TODAY_PLAN_DEFAULT_TZ,
+        tz_name=normalized_tz_name,
+        local_now=local_now_iso,
+        local_hour=local_hour,
         snapshot_date=snapshot_date.isoformat(),
         prewarm_enabled=bool(TRANSLATION_FOCUS_POOL_PREWARM_ENABLED),
+        refill_enabled=bool(TRANSLATION_FOCUS_POOL_REFILL_ENABLED),
+        offpeak_allowed=bool(offpeak_allowed),
+        sentence_prewarm_allow_daytime=bool(SENTENCE_PREWARM_ALLOW_DAYTIME),
+        configured_refill_hour=int(TRANSLATION_FOCUS_POOL_REFILL_HOUR),
+        configured_refill_minute=int(TRANSLATION_FOCUS_POOL_REFILL_MINUTE),
+        target_per_bucket=int(TRANSLATION_FOCUS_POOL_PREWARM_TARGET_PER_BUCKET),
+        base_target_per_bucket=int(TRANSLATION_FOCUS_POOL_PREWARM_BASE_TARGET_PER_BUCKET),
+        forecast_target_cap=int(TRANSLATION_FOCUS_POOL_PREWARM_FORECAST_TARGET_CAP),
+        max_generate_per_bucket=int(TRANSLATION_FOCUS_POOL_PREWARM_MAX_GENERATE_PER_BUCKET),
+        levels=list(TRANSLATION_FOCUS_POOL_PREWARM_LEVELS or []),
     )
 
     def _persist_daily_snapshot() -> None:
@@ -18704,13 +18809,16 @@ def _dispatch_translation_focus_pool_refill(*, force: bool = False, tz_name: str
             focuses=0,
         )
         return {"ok": True, "skipped": True, "reason": "disabled", "generated": 0, "upserted": 0, "focuses": 0}
-    if not force and not _should_run_sentence_prewarm_now(tz_name):
+    if not force and not offpeak_allowed:
         _persist_daily_snapshot()
         _log_translation_focus_pool_refill_stage(
             "dispatch_finish",
             duration_ms=_elapsed_ms_since(started_perf),
             skipped=True,
             reason="outside_offpeak_window",
+            tz_name=normalized_tz_name,
+            local_now=local_now_iso,
+            local_hour=local_hour,
             generated=0,
             upserted=0,
             focuses=0,
@@ -18751,6 +18859,15 @@ def _dispatch_translation_focus_pool_refill(*, force: bool = False, tz_name: str
             focus_count=len(focus_candidates),
             low_watermark_bucket_count=len(low_watermark_by_bucket),
             target_bucket_count=len(target_ready_by_bucket),
+            bucket_targets=[
+                {
+                    "focus_key": focus_key,
+                    "level": level,
+                    "low_watermark": int(low_watermark_by_bucket.get((focus_key, level)) or 0),
+                    "target_ready": int(target_ready_by_bucket.get((focus_key, level)) or 0),
+                }
+                for focus_key, level in sorted(target_ready_by_bucket.keys())
+            ],
         )
         generation_started_perf = time.perf_counter()
         focus_pool_result = asyncio.run(

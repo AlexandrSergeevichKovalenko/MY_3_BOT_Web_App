@@ -561,13 +561,31 @@ def enqueue_translation_focus_pool_refill_job(
         get_dramatiq_broker()
         from backend.background_jobs import run_translation_focus_pool_refill_job
 
+        enqueue_started_perf = time.perf_counter()
+        logging.info(
+            "translation_focus_pool_refill enqueue_start force=%s tz_name=%s request_id=%s correlation_id=%s",
+            bool(force),
+            str(tz_name or "").strip() or None,
+            request_id,
+            correlation_id,
+        )
         message = run_translation_focus_pool_refill_job.send(
             force=bool(force),
             tz_name=str(tz_name or "").strip() or None,
             request_id=str(request_id or "").strip() or None,
             correlation_id=str(correlation_id or "").strip() or None,
         )
-        return str(getattr(message, "message_id", None) or "").strip() or None
+        message_id = str(getattr(message, "message_id", None) or "").strip() or None
+        logging.info(
+            "translation_focus_pool_refill enqueue_finish force=%s tz_name=%s request_id=%s correlation_id=%s message_id=%s duration_ms=%s",
+            bool(force),
+            str(tz_name or "").strip() or None,
+            request_id,
+            correlation_id,
+            message_id,
+            int((time.perf_counter() - enqueue_started_perf) * 1000),
+        )
+        return message_id
     except Exception:
         logging.exception("enqueue_translation_focus_pool_refill_job failed")
         raise

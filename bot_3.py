@@ -1565,6 +1565,28 @@ def get_webapp_deeplink(path: str = "review", bot_username: str | None = None) -
     return f"{get_webapp_url()}/{path}"
 
 
+async def _resolve_bot_username(context: CallbackContext) -> str:
+    username = str(getattr(getattr(context, "bot", None), "username", None) or os.getenv("TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@")
+    if username:
+        return username
+    try:
+        bot_info = await context.bot.get_me()
+        return str(getattr(bot_info, "username", "") or "").strip().lstrip("@")
+    except Exception:
+        logging.debug("Failed to resolve bot username", exc_info=True)
+        return ""
+
+
+async def _build_open_private_chat_keyboard(context: CallbackContext, *, start: str = "quiz") -> InlineKeyboardMarkup | None:
+    username = await _resolve_bot_username(context)
+    if not username:
+        return None
+    clean_start = re.sub(r"[^A-Za-z0-9_-]", "", str(start or "").strip()) or "start"
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("💬 Открыть личку с ботом", url=f"https://t.me/{username}?start={clean_start}")]]
+    )
+
+
 def _mobile_b64encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode("utf-8").rstrip("=")
 
@@ -5061,12 +5083,12 @@ def _dict_pending_redis_key(user_id: int) -> str:
     return f"dict_pending_user:{user_id}"
 
 
-def _sync_pending_to_redis(user_id: int) -> None:
+def _sync_pending_to_redis(user_id: int) -> bool:
     try:
         from backend.job_queue import get_redis_client
         client = get_redis_client()
         if client is None:
-            return
+            return False
         entries = [
             {"key": k, **v}
             for k, v in pending_dictionary_lookup_requests.items()
@@ -5077,8 +5099,10 @@ def _sync_pending_to_redis(user_id: int) -> None:
             _DICT_PENDING_REDIS_TTL_SEC,
             json.dumps(entries, ensure_ascii=False),
         )
+        return True
     except Exception:
         logging.debug("dict_pending: redis sync write failed user_id=%s", user_id, exc_info=True)
+        return False
 
 
 def _restore_pending_from_redis(user_id: int) -> None:
@@ -5126,7 +5150,7 @@ def _restore_pending_from_redis(user_id: int) -> None:
         raw_shortcut = client.get(shortcut_key)
         logging.info("dict_pending: shortcut_key=%s has_shortcut=%s", shortcut_key, bool(raw_shortcut))
         shortcut_count = _absorb_entries(raw_shortcut, shortcut_key)
-        if shortcut_count:
+        if shortcut_count and _sync_pending_to_redis(user_id):
             client.delete(shortcut_key)
         restored += shortcut_count
 
@@ -5160,20 +5184,15 @@ def _store_pending_dictionary_lookup_request(
 
 def _list_pending_dictionary_lookup_request_keys_for_user(user_id: int) -> list[str]:
     target_user_id = int(user_id)
+    # Always merge Redis first. A user can have direct Telegram entries already
+    # in memory and fresh Shortcut entries waiting in Redis at the same time.
+    _restore_pending_from_redis(target_user_id)
     in_memory = [
         key
         for key, payload in pending_dictionary_lookup_requests.items()
         if int((payload or {}).get("user_id", 0)) == target_user_id
     ]
     logging.info("dict_pending: list_keys user_id=%s in_memory_before_restore=%d", target_user_id, len(in_memory))
-    if not in_memory:
-        # Survive redeploys: restore from Redis and retry
-        _restore_pending_from_redis(target_user_id)
-        in_memory = [
-            key
-            for key, payload in pending_dictionary_lookup_requests.items()
-            if int((payload or {}).get("user_id", 0)) == target_user_id
-        ]
     logging.info("dict_pending: list_keys user_id=%s result=%d", target_user_id, len(in_memory))
     return in_memory
 
@@ -15759,8 +15778,9 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
             logging.warning(f"⚠️ Не удалось отправить freeform-инструкцию в личку user_id={poll_answer.user.id}: {exc}")
             await context.bot.send_message(
                 chat_id=quiz_data["chat_id"],
-                text=f"{poll_answer.user.first_name}, откройте личку с ботом (/start), чтобы получить результат квиза.",
+                text=f"{poll_answer.user.first_name}, откройте личку с ботом по кнопке ниже, чтобы получить результат квиза.",
                 reply_to_message_id=quiz_data["message_id"],
+                reply_markup=await _build_open_private_chat_keyboard(context, start="quiz"),
             )
         return
 
@@ -15802,8 +15822,9 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not sent_private:
         await context.bot.send_message(
             chat_id=quiz_data["chat_id"],
-            text=f"{poll_answer.user.first_name}, откройте личку с ботом (/start), чтобы получать результаты квизов приватно.",
+            text=f"{poll_answer.user.first_name}, откройте личку с ботом по кнопке ниже, чтобы получать результаты квизов приватно.",
             reply_to_message_id=quiz_data["message_id"],
+            reply_markup=await _build_open_private_chat_keyboard(context, start="quiz"),
         )
 
 
@@ -15940,8 +15961,9 @@ async def handle_image_quiz_callback(update: Update, context: CallbackContext) -
         if int(dispatch.get("chat_id") or 0) != int(user.id):
             await context.bot.send_message(
                 chat_id=int(dispatch.get("chat_id") or 0),
-                text=f"{user.first_name}, откройте личку с ботом (/start), чтобы получить результат image quiz.",
+                text=f"{user.first_name}, откройте личку с ботом по кнопке ниже, чтобы получить результат image quiz.",
                 reply_to_message_id=int(dispatch.get("message_id") or 0) or None,
+                reply_markup=await _build_open_private_chat_keyboard(context, start="quiz"),
             )
     except Exception:
         logging.warning(

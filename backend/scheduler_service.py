@@ -50,6 +50,7 @@ import signal
 import sys
 import time
 from datetime import time as dt_time
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import dramatiq
@@ -261,7 +262,27 @@ def _dispatch_sentence_prewarm() -> None:
 
 def _dispatch_translation_focus_pool_refill() -> None:
     tz_name = str(os.getenv("TRANSLATION_FOCUS_POOL_REFILL_TZ") or "UTC").strip() or "UTC"
-    run_translation_focus_pool_refill_job.send(force=False, tz_name=tz_name)
+    request_id = f"translation_pool_refill_sched_{uuid4().hex[:16]}"
+    logging.info(
+        "scheduler_service: translation_focus_pool_refill enqueue_start request_id=%s tz_name=%s enabled_env=%r hour_env=%r minute_env=%r",
+        request_id,
+        tz_name,
+        os.getenv("TRANSLATION_FOCUS_POOL_REFILL_ENABLED"),
+        os.getenv("TRANSLATION_FOCUS_POOL_REFILL_HOUR"),
+        os.getenv("TRANSLATION_FOCUS_POOL_REFILL_MINUTE"),
+    )
+    message = run_translation_focus_pool_refill_job.send(
+        force=False,
+        tz_name=tz_name,
+        request_id=request_id,
+        correlation_id=request_id,
+    )
+    logging.info(
+        "scheduler_service: translation_focus_pool_refill enqueue_finish request_id=%s message_id=%s tz_name=%s",
+        request_id,
+        str(getattr(message, "message_id", None) or "").strip() or None,
+        tz_name,
+    )
 
 
 def _dispatch_translation_focus_pool_admin_report() -> None:
