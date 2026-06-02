@@ -8109,12 +8109,18 @@ body {
   font-weight: 700;
   color: #edf3ff;
   letter-spacing: 0.01em;
+  white-space: nowrap;
+  flex: 0 0 auto;
 }
 
 .fsrs-study-queue {
   font-size: 13px;
   line-height: 1.2;
   color: rgba(214, 228, 255, 0.78);
+  text-align: right;
+  white-space: nowrap;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .srs-offline-badge {
@@ -8514,7 +8520,7 @@ body {
   }
 
   .fsrs-study-title {
-    font-size: 22px;
+    font-size: 20px;
   }
 
   .fsrs-error-state {
@@ -8544,7 +8550,7 @@ body {
   }
 
   .fsrs-study-queue {
-    font-size: 12px;
+    font-size: 11px;
   }
 
   .fsrs-study-card {

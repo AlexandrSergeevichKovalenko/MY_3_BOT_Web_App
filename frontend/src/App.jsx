@@ -21699,6 +21699,20 @@ function AppInner() {
         }
         preloadEl.preload = 'auto';
         preloadEl.load();
+        // iOS Safari warm-start: a brief muted play+pause forces the browser to
+        // actually fill the audio buffer. Without this, iOS may hold readyState
+        // at 1 (HAVE_METADATA) indefinitely for a background audio element.
+        preloadEl.muted = true;
+        const warmPromise = preloadEl.play();
+        if (warmPromise !== undefined) {
+          warmPromise
+            .then(() => {
+              preloadEl.pause();
+              preloadEl.currentTime = 0;
+              preloadEl.muted = false;
+            })
+            .catch(() => { preloadEl.muted = false; });
+        }
       };
       const loadReaderAudioPageData = async ({
         targetPage,
@@ -21871,18 +21885,23 @@ function AppInner() {
         const bufKey = String(bufEl?.dataset?.readerAudioKey || '');
         const bufUrl = String(bufEl?.currentSrc || bufEl?.src || '');
 
-        // SEAMLESS PATH: buf element already has this page's audio buffered and no seeking needed.
-        // Swap roles and play directly — zero load() latency.
+        // SEAMLESS PATH: buf element has this page's audio buffered and no seeking needed.
+        // Swap roles and play directly — zero load() latency on iOS.
         const canSeamless = (
           !startWid
           && bufEl != null
           && bufKey === currentRequestKey
           && bufUrl === data.audio_url
-          && bufEl.readyState >= 3 // HAVE_FUTURE_DATA: enough buffered to start
+          && bufEl.readyState >= 2 // HAVE_CURRENT_DATA: at least position-0 data present
         );
+        console.log('[ReaderAudio] seamless check page=', page,
+          'keyMatch=', bufKey === currentRequestKey,
+          'urlMatch=', bufUrl === data.audio_url,
+          'bufReadyState=', bufEl?.readyState, '(need>=2)',
+          'hasStartWid=', !!startWid);
 
         if (canSeamless) {
-          console.log('[ReaderAudio] seamless ping-pong swap for page=', page, 'bufReadyState=', bufEl.readyState);
+          console.log('[ReaderAudio] seamless ping-pong swap → page=', page);
           // Swap active/buf elements
           readerAudioActiveElRef.current = bufEl;
           readerAudioBufElRef.current = activeEl;
@@ -21890,6 +21909,7 @@ function AppInner() {
           if (!Number.isFinite(bufEl.volume) || bufEl.volume <= 0) bufEl.volume = 1;
           bufEl.muted = false;
           bufEl.playbackRate = readerAudioRate;
+          bufEl.currentTime = 0; // ensure start from beginning (warm-start may have drifted)
           setReaderAudioPlayPosition(0);
           try {
             await bufEl.play();
@@ -32324,7 +32344,7 @@ function AppInner() {
                           <div className="fsrs-study-header">
                             <div className="fsrs-study-title">Space Repetition</div>
                             <div className="fsrs-study-queue">
-                              {tr('Сегодня', 'Heute')}: {(srsQueueInfo?.due_reviewed_today ?? 0) + (srsQueueInfo?.introduced_today ?? 0)}/{(srsQueueInfo?.due_limit_today ?? 30) + (srsQueueInfo?.introduced_today ?? 0) + (srsQueueInfo?.new_remaining_today ?? 0)} · {tr('Ждут повторения', 'Warten auf Wiederholung')}: {srsQueueInfo?.due_count_total ?? srsQueueInfo?.due_count ?? 0}
+                              {tr('Сегодня', 'Heute')}: {(srsQueueInfo?.due_reviewed_today ?? 0) + (srsQueueInfo?.introduced_today ?? 0)}/{(srsQueueInfo?.due_limit_today ?? 30) + (srsQueueInfo?.introduced_today ?? 0) + (srsQueueInfo?.new_remaining_today ?? 0)} · {tr('К повторению', 'Zu wiederholen')}: {srsQueueInfo?.due_count_total ?? srsQueueInfo?.due_count ?? 0}
                             </div>
                             {(!isOnline || srsOfflinePendingCount > 0) && (
                               <div className={`srs-offline-badge ${!isOnline ? 'is-offline' : 'is-syncing'}`}>
@@ -33067,7 +33087,7 @@ function AppInner() {
                                   <div className="setup-label">{tr('Card Queue', 'Card Queue')}</div>
                                   <div className="flashcard-settings-queue">
                                     <span>{tr('Сегодня', 'Heute')}: {(srsQueueInfo?.due_reviewed_today ?? 0) + (srsQueueInfo?.introduced_today ?? 0)}/{(srsQueueInfo?.due_limit_today ?? 30) + (srsQueueInfo?.introduced_today ?? 0) + (srsQueueInfo?.new_remaining_today ?? 0)}</span>
-                                    <span>{tr('Ждут повторения', 'Warten auf Wiederholung')}: {srsQueueInfo?.due_count_total ?? srsQueueInfo?.due_count ?? 0}</span>
+                                    <span>{tr('К повторению', 'Zu wiederholen')}: {srsQueueInfo?.due_count_total ?? srsQueueInfo?.due_count ?? 0}</span>
                                     <span>{tr('Новые', 'Neu')}: {srsQueueInfo?.new_remaining_today ?? 0}</span>
                                   </div>
                                   <button type="button" className="flashcard-settings-update-btn" onClick={() => void loadSrsNextCard()}>
