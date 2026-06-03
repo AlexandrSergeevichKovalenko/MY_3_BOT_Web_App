@@ -15386,6 +15386,423 @@ async def admin_visual_riddle_health_command(update: Update, context: CallbackCo
     await message.reply_text("\n".join(lines))
 
 
+# ─────────────────────────────────────────────────────────────
+#  REBUS (Komposita) — send, callback, scheduler
+# ─────────────────────────────────────────────────────────────
+
+_REBUS_OPTION_LABELS = ["A", "B", "C", "D"]
+
+
+def _shuffle_rebus_options(
+    compound_word: str,
+    wrong_options: list,
+    dispatch_id: int,
+) -> tuple[list[str], str]:
+    """Deterministically shuffle 4 answer options using dispatch_id as seed."""
+    import random as _random
+    options = [str(compound_word)] + [str(w) for w in list(wrong_options)[:3]]
+    while len(options) < 4:
+        options.append("—")
+    _random.Random(dispatch_id).shuffle(options)
+    correct_idx = options.index(str(compound_word))
+    correct_label = _REBUS_OPTION_LABELS[correct_idx] if correct_idx < len(_REBUS_OPTION_LABELS) else "A"
+    return options, correct_label
+
+
+def _build_rebus_caption(compound_entry: dict, shuffled_options: list[str]) -> str:
+    parts = list(compound_entry.get("parts") or [])
+    part_words = " + ".join(str(p.get("word", "?")) for p in parts)
+    lines = [
+        "🧩 *Deutsches Rätsel* — Was ergibt das zusammen?",
+        "",
+        f"_{part_words} = ?_",
+        "",
+    ]
+    for i, label in enumerate(_REBUS_OPTION_LABELS):
+        if i < len(shuffled_options):
+            lines.append(f"*{label})* {shuffled_options[i]}")
+    lines += ["", "Wähle die richtige Antwort! 👇"]
+    return "\n".join(lines)
+
+
+def _build_rebus_keyboard(dispatch_id: int, shuffled_options: list[str]) -> InlineKeyboardMarkup:
+    row1, row2 = [], []
+    for i, label in enumerate(_REBUS_OPTION_LABELS):
+        if i >= len(shuffled_options):
+            break
+        btn = InlineKeyboardButton(
+            text=f"{label}) {shuffled_options[i]}",
+            callback_data=f"rb:{dispatch_id}:{label}",
+        )
+        (row1 if i < 2 else row2).append(btn)
+    return InlineKeyboardMarkup([r for r in [row1, row2] if r])
+
+
+async def send_rebus_to_chat(
+    context: CallbackContext,
+    *,
+    compound_entry: dict,
+    image_url: str,
+    slot_date,
+    slot_hour: int,
+    chat_id: int,
+    target_user_id: int,
+) -> bool:
+    """Send one rebus card to a chat. Returns True on success."""
+    compound_id = str(compound_entry.get("compound_id") or compound_entry.get("id") or "")
+    compound_word = str(compound_entry.get("compound_word") or "")
+    wrong_options = list(compound_entry.get("wrong_options") or [])
+
+    try:
+        dispatch_id = await asyncio.to_thread(
+            record_rebus_dispatch,
+            slot_date=slot_date,
+            slot_hour=int(slot_hour),
+            compound_id=compound_id,
+            target_user_id=int(target_user_id),
+            chat_id=int(chat_id),
+            telegram_message_id=None,
+            status="sent",
+        )
+    except Exception:
+        logging.warning(
+            "rebus_send: dispatch insert failed compound_id=%s chat_id=%s slot=%s/%s",
+            compound_id, chat_id, slot_date, slot_hour, exc_info=True,
+        )
+        return False
+
+    if dispatch_id is None:
+        logging.info(
+            "rebus_send: duplicate suppressed compound_id=%s chat_id=%s slot=%s/%s",
+            compound_id, chat_id, slot_date, slot_hour,
+        )
+        return False
+
+    shuffled_options, _correct = _shuffle_rebus_options(compound_word, wrong_options, dispatch_id)
+    caption = _build_rebus_caption(compound_entry, shuffled_options)
+    keyboard = _build_rebus_keyboard(dispatch_id, shuffled_options)
+
+    logging.info(
+        "rebus_send_begin dispatch_id=%s compound_id=%s chat_id=%s slot=%s/%s",
+        dispatch_id, compound_id, chat_id, slot_date, slot_hour,
+    )
+
+    if _rebuses_dry_run():
+        logging.info("rebus_dry_run_skipped dispatch_id=%s chat_id=%s", dispatch_id, chat_id)
+        return True
+
+    try:
+        photo_message = await context.bot.send_photo(
+            chat_id=int(chat_id),
+            photo=image_url,
+            caption=caption,
+            reply_markup=keyboard,
+            parse_mode="Markdown",
+        )
+    except Exception as exc:
+        logging.warning(
+            "rebus_send_failed dispatch_id=%s chat_id=%s: %s",
+            dispatch_id, chat_id, exc,
+        )
+        return False
+
+    try:
+        await asyncio.to_thread(
+            update_rebus_dispatch_telegram_id,
+            dispatch_id,
+            telegram_message_id=int(photo_message.message_id),
+        )
+    except Exception:
+        logging.warning(
+            "rebus_send: could not update telegram_message_id dispatch_id=%s", dispatch_id, exc_info=True,
+        )
+
+    logging.info(
+        "rebus_send_ok dispatch_id=%s compound_id=%s chat_id=%s user_id=%s",
+        dispatch_id, compound_id, chat_id, target_user_id,
+    )
+    return True
+
+
+async def _send_scheduled_rebuses(context: CallbackContext) -> None:
+    if not _rebuses_enabled():
+        logging.info("rebus_slot_triggered enabled=False — skipping")
+        return
+
+    slot_now = _get_quiz_schedule_now()
+    slot_date = slot_now.date()
+    slot_hour = int(slot_now.hour)
+
+    logging.info("rebus_slot_triggered slot=%s/%s", slot_date, slot_hour)
+
+    # Resolve compound for this slot (idempotent across process restarts)
+    try:
+        compound_id = await asyncio.to_thread(get_rebus_slot, slot_date=slot_date, slot_hour=slot_hour)
+    except Exception:
+        logging.warning("rebus_slot: failed to check existing assignment", exc_info=True)
+        compound_id = None
+
+    if not compound_id:
+        try:
+            compound_entry_pick = await asyncio.to_thread(
+                pick_next_rebus, cooldown_days=REBUS_COOLDOWN_DAYS
+            )
+        except Exception:
+            logging.warning("rebus_slot: pick_next_rebus failed", exc_info=True)
+            compound_entry_pick = None
+
+        if not compound_entry_pick:
+            logging.warning("rebus_slot: pool exhausted slot=%s/%s", slot_date, slot_hour)
+            return
+
+        compound_id = str(compound_entry_pick.get("compound_id") or compound_entry_pick.get("id") or "")
+        try:
+            await asyncio.to_thread(
+                assign_rebus_slot, slot_date=slot_date, slot_hour=slot_hour, compound_id=compound_id
+            )
+        except Exception:
+            logging.warning("rebus_slot: assign_rebus_slot failed compound_id=%s", compound_id, exc_info=True)
+
+    try:
+        compound_entry = await asyncio.to_thread(get_rebus_bank_entry, compound_id)
+    except Exception:
+        logging.warning("rebus_slot: get_rebus_bank_entry failed compound_id=%s", compound_id, exc_info=True)
+        compound_entry = None
+
+    if not compound_entry or str(compound_entry.get("composed_status") or "") != "ready":
+        logging.warning(
+            "rebus_slot: compound not ready compound_id=%s status=%s",
+            compound_id, compound_entry.get("composed_status") if compound_entry else "none",
+        )
+        return
+
+    object_key = str(compound_entry.get("composed_image_object_key") or "")
+    if not object_key:
+        logging.warning("rebus_slot: no composed image key compound_id=%s", compound_id)
+        return
+
+    try:
+        image_url = r2_public_url(object_key)
+    except Exception:
+        logging.warning("rebus_slot: r2_public_url failed key=%s", object_key, exc_info=True)
+        return
+
+    delivery_targets = await _collect_quiz_delivery_user_targets(context)
+    if not delivery_targets:
+        logging.info("rebus_slot: no delivery targets slot=%s/%s compound_id=%s", slot_date, slot_hour, compound_id)
+        return
+
+    sent = 0
+    for target in delivery_targets:
+        target_chat_id = int(target.get("chat_id") or 0)
+        if target_chat_id == 0:
+            continue
+        ok = await send_rebus_to_chat(
+            context,
+            compound_entry=compound_entry,
+            image_url=image_url,
+            slot_date=slot_date,
+            slot_hour=slot_hour,
+            chat_id=target_chat_id,
+            target_user_id=target_chat_id,
+        )
+        if ok:
+            sent += 1
+
+    if sent > 0:
+        try:
+            await asyncio.to_thread(mark_rebus_sent, compound_id)
+        except Exception:
+            logging.warning("rebus_slot: mark_rebus_sent failed compound_id=%s", compound_id, exc_info=True)
+
+    logging.info(
+        "rebus_slot_done slot=%s/%s compound_id=%s sent=%s",
+        slot_date, slot_hour, compound_id, sent,
+    )
+
+    # Trigger pool top-up if running low
+    try:
+        available = await asyncio.to_thread(count_available_rebuses, cooldown_days=REBUS_COOLDOWN_DAYS)
+        if available < REBUS_POOL_TOPUP_TRIGGER:
+            logging.info(
+                "rebus_pool_low available=%s trigger=%s — scheduling top-up",
+                available, REBUS_POOL_TOPUP_TRIGGER,
+            )
+            from backend.rebus_generator import prepare_rebus_pool
+            await asyncio.to_thread(prepare_rebus_pool, target_ready=REBUS_POOL_TARGET, max_attempts=40)
+    except Exception:
+        logging.warning("rebus_slot: pool top-up check failed", exc_info=True)
+
+
+async def handle_rebus_answer_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user:
+        return
+    raw_data = str(query.data or "").strip()
+    match = re.match(r"^rb:(\d+):([A-D])$", raw_data)
+    if not match:
+        await query.answer("Rebus unavailable")
+        return
+
+    dispatch_id = int(match.group(1))
+    selected_label = match.group(2).upper()
+
+    try:
+        dispatch = await asyncio.to_thread(get_rebus_dispatch_by_id, dispatch_id)
+    except Exception:
+        logging.warning("rebus_callback: failed to load dispatch id=%s", dispatch_id, exc_info=True)
+        dispatch = None
+    if not dispatch:
+        await query.answer("Rebus nicht gefunden.")
+        return
+
+    compound_id = str(dispatch.get("compound_id") or "")
+    try:
+        compound_entry = await asyncio.to_thread(get_rebus_bank_entry, compound_id)
+    except Exception:
+        logging.warning("rebus_callback: get_rebus_bank_entry failed compound_id=%s", compound_id, exc_info=True)
+        compound_entry = None
+    if not compound_entry:
+        await query.answer("Rebus nicht gefunden.")
+        return
+
+    compound_word = str(compound_entry.get("compound_word") or "")
+    wrong_options = list(compound_entry.get("wrong_options") or [])
+    shuffled_options, correct_label = _shuffle_rebus_options(compound_word, wrong_options, dispatch_id)
+
+    is_correct = selected_label == correct_label
+    meaning_ru = str(compound_entry.get("meaning_ru") or "")
+    explanation_ru = str(compound_entry.get("explanation_ru") or "")
+
+    try:
+        await asyncio.to_thread(
+            record_rebus_answer,
+            dispatch_id=dispatch_id,
+            user_id=int(user.id),
+            selected_option=selected_label,
+            is_correct=bool(is_correct),
+        )
+    except Exception:
+        logging.warning(
+            "rebus_callback: record_rebus_answer failed dispatch_id=%s user_id=%s",
+            dispatch_id, int(user.id), exc_info=True,
+        )
+
+    if is_correct:
+        icon = "✅"
+        verdict = f"Richtig! Das Wort ist *{compound_word}*."
+    else:
+        icon = "❌"
+        verdict = f"Falsch. Richtig: *{compound_word}*."
+
+    detail = f" ({meaning_ru})" if meaning_ru else ""
+    extra = f"\n\n{explanation_ru}" if explanation_ru else ""
+    alert_text = f"{icon} {verdict}{detail}{extra}"
+
+    try:
+        await query.answer(alert_text[:200], show_alert=True)
+    except Exception:
+        logging.warning(
+            "rebus_callback: answer alert failed dispatch_id=%s user_id=%s",
+            dispatch_id, int(user.id), exc_info=True,
+        )
+
+    try:
+        await asyncio.to_thread(
+            mark_rebus_answer_feedback_sent,
+            dispatch_id=dispatch_id,
+            user_id=int(user.id),
+        )
+    except Exception:
+        logging.warning(
+            "rebus_callback: mark_feedback_sent failed dispatch_id=%s user_id=%s",
+            dispatch_id, int(user.id), exc_info=True,
+        )
+
+
+async def prepare_rebus_pool_job(context: CallbackContext) -> None:
+    """Startup + periodic: sync bank from code and fill composed image pool."""
+    try:
+        from backend.rebus_generator import prepare_rebus_pool
+        result = await asyncio.to_thread(prepare_rebus_pool, target_ready=REBUS_POOL_TARGET, max_attempts=40)
+        logging.info("rebus_pool_job done: %s", result)
+    except Exception:
+        logging.warning("rebus_pool_job failed", exc_info=True)
+
+
+async def admin_rebus_send_command(update: Update, context: CallbackContext) -> None:
+    """Send a rebus to this chat immediately (admin test command)."""
+    user = update.effective_user
+    chat = update.effective_chat
+    message = update.effective_message
+    if not user or not chat or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+
+    status_msg = await message.reply_text("Preparing rebus...")
+
+    try:
+        compound_entry = await asyncio.to_thread(pick_next_rebus, cooldown_days=0)
+    except Exception as exc:
+        await status_msg.edit_text(f"pick_next_rebus failed: {exc}")
+        return
+
+    if not compound_entry:
+        await status_msg.edit_text("No ready rebus found. Run /admin_rebus_pool first.")
+        return
+
+    if str(compound_entry.get("composed_status") or "") != "ready":
+        await status_msg.edit_text(
+            f"Compound not composed yet: {compound_entry.get('compound_word')} "
+            f"status={compound_entry.get('composed_status')}"
+        )
+        return
+
+    object_key = str(compound_entry.get("composed_image_object_key") or "")
+    try:
+        image_url = r2_public_url(object_key)
+    except Exception as exc:
+        await status_msg.edit_text(f"r2_public_url failed: {exc}")
+        return
+
+    import datetime as _dt
+    slot_now = _get_quiz_schedule_now()
+    ok = await send_rebus_to_chat(
+        context,
+        compound_entry=compound_entry,
+        image_url=image_url,
+        slot_date=slot_now.date(),
+        slot_hour=int(slot_now.hour) * 100 + int(slot_now.second),  # unique test slot
+        chat_id=int(chat.id),
+        target_user_id=int(user.id),
+    )
+    if ok:
+        await status_msg.delete()
+    else:
+        await status_msg.edit_text("Rebus send failed — check logs.")
+
+
+async def admin_rebus_pool_command(update: Update, context: CallbackContext) -> None:
+    """Trigger rebus pool preparation (admin command)."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    status_msg = await message.reply_text("Preparing rebus pool...")
+    try:
+        from backend.rebus_generator import prepare_rebus_pool
+        result = await asyncio.to_thread(prepare_rebus_pool, target_ready=REBUS_POOL_TARGET, max_attempts=40)
+        await status_msg.edit_text(f"Rebus pool done:\n{result}")
+    except Exception as exc:
+        await status_msg.edit_text(f"Error: {exc}")
+
+
 async def _run_semantic_retag_backfill(admin_chat_id: int, max_entries: int | None = None) -> None:
     processed = 0
     failed = 0
@@ -16469,9 +16886,12 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_language_tutor_detail_callback, pattern=r"^langgpt:detail$"))
     application.add_handler(CallbackQueryHandler(handle_image_quiz_callback, pattern=r"^iq:\d+:\d+$"))
     application.add_handler(CallbackQueryHandler(handle_visual_riddle_callback, pattern=r"^vr:\d+:\d+$"))
+    application.add_handler(CallbackQueryHandler(handle_rebus_answer_callback, pattern=r"^rb:\d+:[A-D]$"))
     application.add_handler(CallbackQueryHandler(handle_text_level_callback, pattern=r"^text_level:"))
 
     application.add_handler(CommandHandler("translate", check_user_translation))  # ✅ Проверка переводов
+    application.add_handler(CommandHandler("admin_rebus_send", admin_rebus_send_command))
+    application.add_handler(CommandHandler("admin_rebus_pool", admin_rebus_pool_command))
 
 
     application.add_handler(CallbackQueryHandler(topic_selected)) #Он ждет любые нажатия на inline-кнопки.
@@ -16494,6 +16914,7 @@ def main():
                 application.job_queue.run_once(prepare_scheduled_quiz_pool, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS),
                 application.job_queue.run_once(prepare_image_quiz_pool, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 20),
                 application.job_queue.run_once(_startup_visual_riddle_pool_check, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 40),
+                application.job_queue.run_once(prepare_rebus_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 70),
             ),
             enabled=True,
             category="housekeeping",
@@ -16652,6 +17073,29 @@ def main():
             hour=VISUAL_RIDDLE_POOL_TOPUP_HOUR,
             minute=VISUAL_RIDDLE_POOL_TOPUP_MINUTE,
             timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Rebus (Komposita) hourly slots: 8:30–20:30 Europe/Vienna --
+        for _rb_hour, _rb_minute in sorted(REBUS_SLOT_TIMES):
+            scheduler.add_job(
+                lambda: submit_async(_send_scheduled_rebuses, CallbackContext(application=application)),
+                "cron",
+                hour=_rb_hour,
+                minute=_rb_minute,
+                timezone=QUIZ_SCHEDULE_TZ_NAME,
+            )
+        # -- Rebus pool daily top-up (07:45) --
+        scheduler.add_job(
+            lambda: submit_async(prepare_rebus_pool_job, CallbackContext(application=application)),
+            "cron",
+            hour=7,
+            minute=45,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        logging.info(
+            "rebus_scheduler_slots_registered slots=%s tz=%s enabled=%s",
+            sorted(REBUS_SLOT_TIMES),
+            QUIZ_SCHEDULE_TZ_NAME,
+            _rebuses_enabled(),
         )
 
     # scheduler.add_job(
