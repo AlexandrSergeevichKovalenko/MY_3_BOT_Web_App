@@ -10776,8 +10776,19 @@ function AppInner() {
   };
 
   const toggleTodaySectionTaskTimer = async (sectionKey) => {
+    const isFlashcardsTimer = String(sectionKey || '').toLowerCase() === 'flashcards';
     const item = getTodayTaskForSection(sectionKey);
-    if (!item) return;
+    if (!item) {
+      // Flashcards timer runs independently — toggle the standalone daily timer.
+      if (isFlashcardsTimer) {
+        if (flashcardsDailyTimerActive) {
+          pauseFlashcardsDailyTimer('pause');
+        } else {
+          startFlashcardsDailyTimer();
+        }
+      }
+      return;
+    }
     const nowElapsed = getTodayItemElapsedSeconds(item, Date.now());
     if (isTodayItemTimerRunning(item)) {
       await syncTodayItemTimer(item, 'pause', { elapsedSeconds: nowElapsed, running: false });
@@ -10792,18 +10803,19 @@ function AppInner() {
   };
 
   const renderTodaySectionTaskHud = (sectionKey, options = {}) => {
+    const isFlashcardsTimer = String(sectionKey || '').toLowerCase() === 'flashcards';
     const item = getTodayTaskForSection(sectionKey);
-    if (!item) return null;
+    // Flashcard timer is tracked independently of the daily plan, so show it even without a task item.
+    if (!item && !isFlashcardsTimer) return null;
     const inline = Boolean(options?.inline);
     // ignoreProgress: always show timer button even when daily goal is met.
     // Without this, progress >= 100 replaces the timer with ✅ which hides it mid-session.
     const ignoreProgress = Boolean(options?.ignoreProgress);
-    const isFlashcardsTimer = String(sectionKey || '').toLowerCase() === 'flashcards';
     const elapsed = isFlashcardsTimer
       ? getFlashcardsDailyDisplayElapsedSeconds(todayTimerNowMs)
       : getTodayItemDisplayElapsedSeconds(item, todayTimerNowMs);
-    const progress = getTodayItemProgressPercent(item, todayTimerNowMs);
-    const done = String(item?.status || '').toLowerCase() === 'done' || (!ignoreProgress && progress >= 100);
+    const progress = item ? getTodayItemProgressPercent(item, todayTimerNowMs) : 0;
+    const done = item && (String(item?.status || '').toLowerCase() === 'done' || (!ignoreProgress && progress >= 100));
     const running = isFlashcardsTimer ? flashcardsDailyTimerActive : isTodayItemTimerRunning(item);
     return (
       <div className={`today-section-task-hud ${inline ? 'is-inline' : ''}`.trim()}>
