@@ -26350,24 +26350,38 @@ function AppInner() {
           if (!event.target.closest('.translation-dict-widget-handle')) return;
           beginDrag(event.clientX, event.clientY);
           event.preventDefault();
+          const handleMouseMove = (e) => moveDrag(e.clientX, e.clientY);
+          const handleMouseUp = () => {
+            endDrag();
+            window.removeEventListener('mousemove', handleMouseMove);
+            window.removeEventListener('mouseup', handleMouseUp);
+          };
+          window.addEventListener('mousemove', handleMouseMove);
+          window.addEventListener('mouseup', handleMouseUp);
         }}
         onTouchStart={(event) => {
           if (!event.target.closest('.translation-dict-widget-handle')) return;
           const touch = event.touches[0];
-          if (touch) beginDrag(touch.clientX, touch.clientY);
+          if (!touch) return;
+          beginDrag(touch.clientX, touch.clientY);
+          const handleTouchMove = (e) => {
+            e.preventDefault();
+            const t = e.touches[0];
+            if (t) moveDrag(t.clientX, t.clientY);
+          };
+          const handleTouchEnd = () => {
+            endDrag();
+            window.removeEventListener('touchmove', handleTouchMove);
+            window.removeEventListener('touchend', handleTouchEnd);
+            window.removeEventListener('touchcancel', handleTouchEnd);
+          };
+          window.addEventListener('touchmove', handleTouchMove, { passive: false });
+          window.addEventListener('touchend', handleTouchEnd);
+          window.addEventListener('touchcancel', handleTouchEnd);
         }}
       >
         <div
           className="translation-dict-widget-handle"
-          onMouseMove={(event) => moveDrag(event.clientX, event.clientY)}
-          onMouseUp={endDrag}
-          onMouseLeave={endDrag}
-          onTouchMove={(event) => {
-            const touch = event.touches[0];
-            if (touch) moveDrag(touch.clientX, touch.clientY);
-          }}
-          onTouchEnd={endDrag}
-          onTouchCancel={endDrag}
         >
           <div className="yt-dict-drag-dots" aria-hidden="true">
             {[0, 1, 2, 3, 4, 5].map((item) => <span key={item} />)}
@@ -31175,6 +31189,20 @@ function AppInner() {
                           const rect = el.getBoundingClientRect();
                           youtubeDictDragRef.current = { dragging: true, startX: e.clientX, startY: e.clientY, startLeft: rect.left, startTop: rect.top };
                           e.preventDefault();
+                          const handleMM = (ev) => {
+                            const d = youtubeDictDragRef.current;
+                            if (!d.dragging) return;
+                            el.style.left = `${d.startLeft + ev.clientX - d.startX}px`;
+                            el.style.top = `${d.startTop + ev.clientY - d.startY}px`;
+                            el.style.bottom = 'auto'; el.style.transform = 'none';
+                          };
+                          const handleMU = () => {
+                            youtubeDictDragRef.current.dragging = false;
+                            window.removeEventListener('mousemove', handleMM);
+                            window.removeEventListener('mouseup', handleMU);
+                          };
+                          window.addEventListener('mousemove', handleMM);
+                          window.addEventListener('mouseup', handleMU);
                         }}
                         onTouchStart={(e) => {
                           const el = youtubeDictWidgetRef.current;
@@ -31183,38 +31211,31 @@ function AppInner() {
                           if (!handle) return;
                           const rect = el.getBoundingClientRect();
                           const t = e.touches[0];
+                          if (!t) return;
                           youtubeDictDragRef.current = { dragging: true, startX: t.clientX, startY: t.clientY, startLeft: rect.left, startTop: rect.top };
+                          const handleTM = (ev) => {
+                            ev.preventDefault();
+                            const d = youtubeDictDragRef.current;
+                            if (!d.dragging) return;
+                            const touch = ev.touches[0];
+                            if (!touch) return;
+                            el.style.left = `${d.startLeft + touch.clientX - d.startX}px`;
+                            el.style.top = `${d.startTop + touch.clientY - d.startY}px`;
+                            el.style.bottom = 'auto'; el.style.transform = 'none';
+                          };
+                          const handleTE = () => {
+                            youtubeDictDragRef.current.dragging = false;
+                            window.removeEventListener('touchmove', handleTM);
+                            window.removeEventListener('touchend', handleTE);
+                            window.removeEventListener('touchcancel', handleTE);
+                          };
+                          window.addEventListener('touchmove', handleTM, { passive: false });
+                          window.addEventListener('touchend', handleTE);
+                          window.addEventListener('touchcancel', handleTE);
                         }}
                       >
                         <div
                           className="yt-dict-widget-handle"
-                          onMouseMove={(e) => {
-                            const d = youtubeDictDragRef.current;
-                            if (!d.dragging) return;
-                            const el = youtubeDictWidgetRef.current;
-                            if (!el) return;
-                            const dx = e.clientX - d.startX;
-                            const dy = e.clientY - d.startY;
-                            el.style.left = `${d.startLeft + dx}px`;
-                            el.style.top = `${d.startTop + dy}px`;
-                            el.style.bottom = 'auto';
-                            el.style.transform = 'none';
-                          }}
-                          onMouseUp={() => { youtubeDictDragRef.current.dragging = false; }}
-                          onTouchMove={(e) => {
-                            const d = youtubeDictDragRef.current;
-                            if (!d.dragging) return;
-                            const el = youtubeDictWidgetRef.current;
-                            if (!el) return;
-                            const t = e.touches[0];
-                            const dx = t.clientX - d.startX;
-                            const dy = t.clientY - d.startY;
-                            el.style.left = `${d.startLeft + dx}px`;
-                            el.style.top = `${d.startTop + dy}px`;
-                            el.style.bottom = 'auto';
-                            el.style.transform = 'none';
-                          }}
-                          onTouchEnd={() => { youtubeDictDragRef.current.dragging = false; }}
                         >
                           <div className="yt-dict-drag-dots">
                             {[0,1,2,3,4,5].map((i) => <span key={i}/>)}
