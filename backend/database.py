@@ -7162,10 +7162,15 @@ def ensure_webapp_tables() -> None:
                     image_object_key    TEXT,
                     generation_status   TEXT NOT NULL DEFAULT 'pending',
                     failure_reason      TEXT,
+                    dalle_prompt        TEXT,
                     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     CHECK (generation_status IN ('pending', 'ready', 'failed'))
                 );
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_rebus_component_images
+                ADD COLUMN IF NOT EXISTS dalle_prompt TEXT;
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_rebus_bank (
@@ -7247,6 +7252,72 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_rebus_answers (user_id, answered_at DESC);
             """)
             # ── end rebus tables ──────────────────────────────────────────
+
+            # ── Article quiz (der/die/das) ────────────────────────────────
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_article_quiz_bank (
+                    word_id             TEXT PRIMARY KEY,
+                    word                TEXT NOT NULL,
+                    article             TEXT NOT NULL,
+                    meaning_ru          TEXT NOT NULL DEFAULT '',
+                    difficulty          TEXT NOT NULL DEFAULT 'A2',
+                    category            TEXT NOT NULL DEFAULT '',
+                    image_object_key    TEXT,
+                    image_status        TEXT NOT NULL DEFAULT 'pending',
+                    send_count          INTEGER NOT NULL DEFAULT 0,
+                    last_sent_at        TIMESTAMPTZ,
+                    retired             BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (article IN ('der', 'die', 'das')),
+                    CHECK (image_status IN ('pending', 'ready', 'failed'))
+                );
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_article_quiz_bank
+                ADD COLUMN IF NOT EXISTS dalle_prompt TEXT;
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_aq_bank_available
+                ON bt_3_article_quiz_bank (image_status, retired, last_sent_at NULLS FIRST);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_article_quiz_dispatches (
+                    id                  BIGSERIAL PRIMARY KEY,
+                    slot_date           DATE NOT NULL,
+                    slot_hour           INTEGER NOT NULL,
+                    word_id             TEXT NOT NULL,
+                    target_user_id      BIGINT NOT NULL,
+                    chat_id             BIGINT NOT NULL,
+                    telegram_message_id BIGINT,
+                    status              TEXT NOT NULL DEFAULT 'sent',
+                    sent_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (target_user_id, slot_date, slot_hour),
+                    CHECK (status IN ('sent', 'failed'))
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_aq_dispatches_user_date
+                ON bt_3_article_quiz_dispatches (target_user_id, slot_date DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_article_quiz_answers (
+                    id                  BIGSERIAL PRIMARY KEY,
+                    dispatch_id         BIGINT NOT NULL REFERENCES bt_3_article_quiz_dispatches(id),
+                    user_id             BIGINT NOT NULL,
+                    selected_article    TEXT NOT NULL,
+                    is_correct          BOOLEAN NOT NULL,
+                    answered_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    feedback_sent_at    TIMESTAMPTZ,
+                    UNIQUE (dispatch_id, user_id),
+                    CHECK (selected_article IN ('der', 'die', 'das'))
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_aq_answers_user_time
+                ON bt_3_article_quiz_answers (user_id, answered_at DESC);
+            """)
+            # ── end article quiz tables ───────────────────────────────────
             cursor.close()
             _run_dictionary_canonical_schema_migration(conn)
         missing_phase1_objects = get_missing_phase1_shadow_schema_objects()
@@ -30687,7 +30758,7 @@ def get_rebus_component_image(word: str) -> dict | None:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT word, image_object_key, generation_status
+                SELECT word, image_object_key, generation_status, dalle_prompt
                 FROM bt_3_rebus_component_images
                 WHERE word = %s
                 """,
@@ -30696,7 +30767,10 @@ def get_rebus_component_image(word: str) -> dict | None:
             row = cursor.fetchone()
     if not row:
         return None
-    return {"word": row[0], "image_object_key": row[1], "generation_status": row[2]}
+    return {
+        "word": row[0], "image_object_key": row[1],
+        "generation_status": row[2], "dalle_prompt": row[3],
+    }
 
 
 def upsert_rebus_component_image(
@@ -30705,21 +30779,23 @@ def upsert_rebus_component_image(
     image_object_key: str | None = None,
     generation_status: str = "pending",
     failure_reason: str | None = None,
+    dalle_prompt: str | None = None,
 ) -> None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
                 INSERT INTO bt_3_rebus_component_images
-                    (word, image_object_key, generation_status, failure_reason, updated_at)
-                VALUES (%s, %s, %s, %s, NOW())
+                    (word, image_object_key, generation_status, failure_reason, dalle_prompt, updated_at)
+                VALUES (%s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (word) DO UPDATE SET
                     image_object_key  = COALESCE(EXCLUDED.image_object_key, bt_3_rebus_component_images.image_object_key),
                     generation_status = EXCLUDED.generation_status,
                     failure_reason    = EXCLUDED.failure_reason,
+                    dalle_prompt      = COALESCE(EXCLUDED.dalle_prompt, bt_3_rebus_component_images.dalle_prompt),
                     updated_at        = NOW()
                 """,
-                (str(word), image_object_key, str(generation_status), failure_reason),
+                (str(word), image_object_key, str(generation_status), failure_reason, dalle_prompt),
             )
         conn.commit()
 
@@ -30991,5 +31067,266 @@ def update_rebus_dispatch_telegram_id(dispatch_id: int, *, telegram_message_id: 
             cursor.execute(
                 "UPDATE bt_3_rebus_dispatches SET telegram_message_id = %s WHERE id = %s",
                 (int(telegram_message_id), int(dispatch_id)),
+            )
+        conn.commit()
+
+
+# ─── Article quiz DB functions ────────────────────────────────────────────────
+
+def upsert_article_quiz_entry(entry: dict) -> None:
+    """Idempotent upsert of one article quiz bank entry."""
+    import json as _json
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_article_quiz_bank
+                    (word_id, word, article, meaning_ru, difficulty, category, dalle_prompt, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (word_id) DO UPDATE SET
+                    word        = EXCLUDED.word,
+                    article     = EXCLUDED.article,
+                    meaning_ru  = EXCLUDED.meaning_ru,
+                    difficulty  = EXCLUDED.difficulty,
+                    category    = EXCLUDED.category,
+                    dalle_prompt = COALESCE(EXCLUDED.dalle_prompt, bt_3_article_quiz_bank.dalle_prompt),
+                    updated_at  = NOW()
+                """,
+                (
+                    str(entry["id"]), str(entry["word"]), str(entry["article"]),
+                    str(entry.get("meaning_ru") or ""), str(entry.get("difficulty") or "A2"),
+                    str(entry.get("category") or ""), entry.get("dalle_prompt"),
+                ),
+            )
+        conn.commit()
+
+
+def sync_article_quiz_bank_from_code() -> dict:
+    """Upsert all entries from ARTICLE_QUIZ_BANK; return {synced, total}."""
+    from backend.article_quiz_bank import ARTICLE_QUIZ_BANK
+    synced = 0
+    for entry in ARTICLE_QUIZ_BANK:
+        try:
+            upsert_article_quiz_entry(entry)
+            synced += 1
+        except Exception:
+            logging.warning("sync_article_quiz: failed for %s", entry.get("id"), exc_info=True)
+    return {"synced": synced, "total": len(ARTICLE_QUIZ_BANK)}
+
+
+def get_article_quiz_entry(word_id: str) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT word_id, word, article, meaning_ru, difficulty, category,
+                       image_object_key, image_status, send_count, last_sent_at, retired, dalle_prompt
+                FROM bt_3_article_quiz_bank WHERE word_id = %s
+                """,
+                (str(word_id),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "word_id": row[0], "word": row[1], "article": row[2], "meaning_ru": row[3],
+        "difficulty": row[4], "category": row[5], "image_object_key": row[6],
+        "image_status": row[7], "send_count": row[8], "last_sent_at": row[9],
+        "retired": row[10], "dalle_prompt": row[11],
+    }
+
+
+def mark_article_quiz_image_ready(word_id: str, *, image_object_key: str) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_article_quiz_bank
+                SET image_object_key = %s, image_status = 'ready', updated_at = NOW()
+                WHERE word_id = %s
+                """,
+                (str(image_object_key), str(word_id)),
+            )
+        conn.commit()
+
+
+def mark_article_quiz_image_failed(word_id: str) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_article_quiz_bank SET image_status = 'failed', updated_at = NOW() WHERE word_id = %s",
+                (str(word_id),),
+            )
+        conn.commit()
+
+
+def pick_next_article_quiz(*, cooldown_days: int = 14) -> dict | None:
+    """Pick the least-recently-sent ready word, respecting cooldown."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT word_id, word, article, meaning_ru, difficulty, category,
+                       image_object_key, image_status, send_count, last_sent_at, retired, dalle_prompt
+                FROM bt_3_article_quiz_bank
+                WHERE image_status = 'ready'
+                  AND retired = FALSE
+                  AND (last_sent_at IS NULL OR last_sent_at < NOW() - INTERVAL '%s days')
+                ORDER BY last_sent_at NULLS FIRST, send_count ASC
+                LIMIT 1
+                """ % int(cooldown_days),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "word_id": row[0], "word": row[1], "article": row[2], "meaning_ru": row[3],
+        "difficulty": row[4], "category": row[5], "image_object_key": row[6],
+        "image_status": row[7], "send_count": row[8], "last_sent_at": row[9],
+        "retired": row[10], "dalle_prompt": row[11],
+    }
+
+
+def mark_article_quiz_sent(word_id: str) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_article_quiz_bank
+                SET send_count = send_count + 1, last_sent_at = NOW(), updated_at = NOW()
+                WHERE word_id = %s
+                """,
+                (str(word_id),),
+            )
+        conn.commit()
+
+
+def count_available_article_quiz_entries(*, cooldown_days: int = 14) -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM bt_3_article_quiz_bank
+                WHERE image_status = 'ready'
+                  AND retired = FALSE
+                  AND (last_sent_at IS NULL OR last_sent_at < NOW() - INTERVAL '%s days')
+                """ % int(cooldown_days),
+            )
+            row = cursor.fetchone()
+    return int(row[0]) if row else 0
+
+
+def get_article_quiz_slot(*, slot_date, slot_hour: int) -> str | None:
+    """Return assigned word_id for this slot, or None."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT word_id FROM bt_3_article_quiz_dispatches
+                WHERE slot_date = %s AND slot_hour = %s
+                LIMIT 1
+                """,
+                (slot_date, int(slot_hour)),
+            )
+            row = cursor.fetchone()
+    return str(row[0]) if row else None
+
+
+def record_article_quiz_dispatch(
+    *,
+    slot_date,
+    slot_hour: int,
+    word_id: str,
+    target_user_id: int,
+    chat_id: int,
+    telegram_message_id: int | None = None,
+    status: str = "sent",
+) -> int | None:
+    """Insert dispatch row; return new id or None on conflict."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_article_quiz_dispatches
+                    (slot_date, slot_hour, word_id, target_user_id, chat_id,
+                     telegram_message_id, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (target_user_id, slot_date, slot_hour) DO NOTHING
+                RETURNING id
+                """,
+                (
+                    slot_date, int(slot_hour), str(word_id),
+                    int(target_user_id), int(chat_id),
+                    int(telegram_message_id) if telegram_message_id else None,
+                    str(status),
+                ),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return int(row[0]) if row else None
+
+
+def update_article_quiz_dispatch_telegram_id(dispatch_id: int, *, telegram_message_id: int) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_article_quiz_dispatches SET telegram_message_id = %s WHERE id = %s",
+                (int(telegram_message_id), int(dispatch_id)),
+            )
+        conn.commit()
+
+
+def get_article_quiz_dispatch_by_id(dispatch_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, slot_date, slot_hour, word_id, target_user_id, chat_id,
+                       telegram_message_id, status, sent_at
+                FROM bt_3_article_quiz_dispatches WHERE id = %s
+                """,
+                (int(dispatch_id),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": row[0], "slot_date": row[1], "slot_hour": row[2], "word_id": row[3],
+        "target_user_id": row[4], "chat_id": row[5], "telegram_message_id": row[6],
+        "status": row[7], "sent_at": row[8],
+    }
+
+
+def record_article_quiz_answer(
+    *,
+    dispatch_id: int,
+    user_id: int,
+    selected_article: str,
+    is_correct: bool,
+) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_article_quiz_answers
+                    (dispatch_id, user_id, selected_article, is_correct)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (dispatch_id, user_id) DO NOTHING
+                """,
+                (int(dispatch_id), int(user_id), str(selected_article), bool(is_correct)),
+            )
+        conn.commit()
+
+
+def mark_article_quiz_answer_feedback_sent(*, dispatch_id: int, user_id: int) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_article_quiz_answers
+                SET feedback_sent_at = NOW()
+                WHERE dispatch_id = %s AND user_id = %s
+                """,
+                (int(dispatch_id), int(user_id)),
             )
         conn.commit()

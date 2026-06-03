@@ -329,7 +329,11 @@ def prepare_rebus_entry(compound_id: str) -> dict:
             word = str(part.get("word") or "").strip()
             if not word:
                 raise ValueError(f"empty part word in {compound_id}")
+            # Static bank first, then DB-stored prompt (for GPT-generated entries)
             prompt = str(COMPONENT_IMAGE_PROMPTS.get(word) or "").strip()
+            if not prompt:
+                cached = get_rebus_component_image(word)
+                prompt = str((cached or {}).get("dalle_prompt") or "").strip()
             if not prompt:
                 raise ValueError(f"no DALL-E prompt for component word '{word}'")
             key = generate_component_image(word, prompt)
@@ -425,3 +429,205 @@ def prepare_rebus_pool(*, target_ready: int = 20, max_attempts: int = 30) -> dic
         "failed": failed,
         "attempts": attempts,
     }
+
+
+# ─── GPT replenishment ────────────────────────────────────────────────────────
+
+_REPLENISHMENT_STYLE = (
+    "children's book illustration style, soft watercolor, vibrant colors, "
+    "clean white background, single object centered, no text, no labels, "
+    "no other objects, high clarity, detailed"
+)
+
+_REPLENISHMENT_SYSTEM = """You are a German linguistics expert specializing in Komposita (compound nouns).
+Generate German compound word entries for a visual rebus puzzle game.
+
+STRICT requirements for EVERY entry:
+1. EXACTLY 2 component parts, each a standalone German noun with a clear visual form
+2. Both parts must be concrete, drawable objects (e.g. Hand ✓, Freude ✗, Mut ✗)
+3. The compound must be a real, standard German word (not archaic or regional)
+4. wrong_options: exactly 3 real German compound words, each sharing EXACTLY ONE part with the answer
+5. dalle_prompts: describe ONE concrete object on a plain white background — no text, no labels, no other objects
+6. difficulty: A2=very common everyday, B1=intermediate everyday, B2=less common but standard
+7. explanation_ru: etymology in Russian (e.g. "рука + обувь = перчатка — буквально «обувь для руки»")"""
+
+_REPLENISHMENT_USER_TMPL = """\
+Generate {count} new German Komposita entries. Return ONLY valid JSON, no markdown.
+
+ALREADY IN BANK — do NOT repeat: {existing_words}
+
+Format (return exactly this structure):
+{{
+  "words": [
+    {{
+      "id": "handschuh",
+      "compound": "Handschuh",
+      "article": "der",
+      "meaning_ru": "перчатка",
+      "difficulty": "A2",
+      "category": "Kleidung",
+      "parts": [
+        {{"word": "Hand", "meaning_ru": "рука"}},
+        {{"word": "Schuh", "meaning_ru": "ботинок"}}
+      ],
+      "dalle_prompts": {{
+        "Hand": "An open human hand, palm facing viewer, fingers spread, {style}",
+        "Schuh": "A single classic leather shoe, side view, {style}"
+      }},
+      "wrong_options": ["Hausschuh", "Handtuch", "Handtasche"],
+      "explanation_ru": "Hand (рука) + Schuh (ботинок) = Handschuh (перчатка) — буквально «обувь для руки»"
+    }}
+  ]
+}}"""
+
+
+def _call_gpt_for_replenishment(count: int, existing_words: list[str]) -> list[dict]:
+    """Call GPT-4.1-mini to generate new compound entries. Returns validated list."""
+    import json
+    import os
+    import requests as _requests
+
+    api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY not set")
+    model = (os.getenv("OPENAI_QUIZ_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-4.1-mini").strip()
+
+    existing_str = ", ".join(sorted(existing_words)) if existing_words else "none"
+    user_msg = _REPLENISHMENT_USER_TMPL.format(
+        count=count, existing_words=existing_str, style=_REPLENISHMENT_STYLE
+    )
+
+    payload = {
+        "model": model,
+        "temperature": 0.7,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": _REPLENISHMENT_SYSTEM},
+            {"role": "user", "content": user_msg},
+        ],
+    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    resp = _requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers=headers,
+        json=payload,
+        timeout=60,
+    )
+    if not resp.ok:
+        raise RuntimeError(f"OpenAI replenishment HTTP {resp.status_code}: {resp.text[:300]}")
+
+    data = resp.json()
+    raw = str((data.get("choices") or [{}])[0].get("message", {}).get("content") or "")
+    try:
+        parsed = json.loads(raw)
+    except Exception as exc:
+        raise RuntimeError(f"GPT replenishment JSON parse failed: {exc}") from exc
+
+    words = parsed.get("words") if isinstance(parsed, dict) else None
+    if not isinstance(words, list):
+        raise RuntimeError("GPT replenishment: missing 'words' array in response")
+
+    return words
+
+
+def _validate_replenishment_entry(entry: dict, existing_set: set[str]) -> str | None:
+    """Return None if valid, or error string if invalid."""
+    compound = str(entry.get("compound") or "").strip()
+    if not compound:
+        return "missing compound"
+    if compound.lower() in existing_set:
+        return f"duplicate: {compound}"
+    article = str(entry.get("article") or "").strip().lower()
+    if article not in ("der", "die", "das"):
+        return f"bad article '{article}'"
+    parts = entry.get("parts")
+    if not isinstance(parts, list) or len(parts) != 2:
+        return "parts must be list of exactly 2"
+    for p in parts:
+        if not str(p.get("word") or "").strip():
+            return "empty part word"
+    dalle = entry.get("dalle_prompts")
+    if not isinstance(dalle, dict) or len(dalle) < 2:
+        return "dalle_prompts must map both part words"
+    wrong = entry.get("wrong_options")
+    if not isinstance(wrong, list) or len(wrong) != 3:
+        return "wrong_options must be list of 3"
+    return None
+
+
+def generate_rebus_replenishment(count: int = 20) -> dict:
+    """
+    Call GPT to generate `count` new Komposita entries, validate them,
+    store DALL-E prompts for new component words, upsert into bt_3_rebus_bank.
+    Returns stats dict.
+    """
+    from backend.database import (
+        get_existing_rebus_compound_words,
+        upsert_rebus_bank_entry,
+        upsert_rebus_component_image,
+    )
+
+    existing_words = get_existing_rebus_compound_words()
+    existing_set = {w.lower() for w in existing_words}
+
+    logging.info("rebus_replenishment: requesting %s new entries from GPT (existing=%s)", count, len(existing_words))
+
+    try:
+        raw_entries = _call_gpt_for_replenishment(count, existing_words)
+    except Exception as exc:
+        logging.warning("rebus_replenishment: GPT call failed: %s", exc, exc_info=True)
+        return {"status": "error", "error": str(exc), "added": 0}
+
+    added = 0
+    skipped = 0
+    errors = []
+
+    for entry in raw_entries:
+        compound = str(entry.get("compound") or "").strip()
+        err = _validate_replenishment_entry(entry, existing_set)
+        if err:
+            logging.info("rebus_replenishment: skip %s — %s", compound, err)
+            skipped += 1
+            errors.append(f"{compound}: {err}")
+            continue
+
+        # Store DALL-E prompts for component words not yet in DB
+        dalle_prompts: dict = entry.get("dalle_prompts") or {}
+        parts = entry.get("parts") or []
+        for part in parts:
+            word = str(part.get("word") or "").strip()
+            if word and dalle_prompts.get(word):
+                upsert_rebus_component_image(
+                    word,
+                    generation_status="pending",
+                    dalle_prompt=str(dalle_prompts[word]),
+                )
+
+        # Build DB entry (same structure as REBUS_COMPOUND_BANK)
+        compound_id = str(entry.get("id") or compound.lower().replace(" ", "_"))
+        db_entry = {
+            "id": compound_id,
+            "compound": compound,
+            "article": str(entry.get("article") or "").strip(),
+            "meaning_ru": str(entry.get("meaning_ru") or "").strip(),
+            "difficulty": str(entry.get("difficulty") or "B1").strip(),
+            "category": str(entry.get("category") or "").strip(),
+            "parts": [
+                {"word": str(p.get("word") or ""), "meaning_ru": str(p.get("meaning_ru") or "")}
+                for p in parts
+            ],
+            "wrong_options": [str(w) for w in (entry.get("wrong_options") or [])[:3]],
+            "explanation_ru": str(entry.get("explanation_ru") or "").strip(),
+        }
+        try:
+            upsert_rebus_bank_entry(db_entry)
+            existing_set.add(compound.lower())
+            added += 1
+            logging.info("rebus_replenishment: added %s", compound)
+        except Exception as exc:
+            logging.warning("rebus_replenishment: upsert failed for %s: %s", compound, exc)
+            errors.append(f"{compound}: upsert error {exc}")
+            skipped += 1
+
+    logging.info("rebus_replenishment: done added=%s skipped=%s", added, skipped)
+    return {"status": "done", "added": added, "skipped": skipped, "errors": errors[:10]}

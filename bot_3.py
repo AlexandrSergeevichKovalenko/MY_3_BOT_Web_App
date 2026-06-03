@@ -214,6 +214,17 @@ from backend.database import (
     get_rebus_dispatch_by_id,
     record_rebus_answer,
     mark_rebus_answer_feedback_sent,
+    sync_article_quiz_bank_from_code,
+    pick_next_article_quiz,
+    get_article_quiz_entry,
+    mark_article_quiz_sent,
+    count_available_article_quiz_entries,
+    get_article_quiz_slot,
+    record_article_quiz_dispatch,
+    update_article_quiz_dispatch_telegram_id,
+    get_article_quiz_dispatch_by_id,
+    record_article_quiz_answer,
+    mark_article_quiz_answer_feedback_sent,
 )
 from backend.r2_storage import r2_public_url
 from backend.job_queue import (
@@ -239,6 +250,10 @@ REBUS_SLOT_TIMES = {(h, 30) for h in range(8, 21)}  # 8:30–20:30 every hour
 REBUS_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("REBUS_POOL_TOPUP_TRIGGER") or "10").strip() or "10"))
 REBUS_POOL_TARGET = max(5, int((os.getenv("REBUS_POOL_TARGET") or "20").strip() or "20"))
 REBUS_COOLDOWN_DAYS = max(7, int((os.getenv("REBUS_COOLDOWN_DAYS") or "30").strip() or "30"))
+ARTICLE_QUIZ_SLOT_TIMES = {(9, 15), (13, 15), (17, 15)}  # 3x/day at :15
+ARTICLE_QUIZ_COOLDOWN_DAYS = max(7, int((os.getenv("ARTICLE_QUIZ_COOLDOWN_DAYS") or "14").strip() or "14"))
+ARTICLE_QUIZ_POOL_TARGET = max(5, int((os.getenv("ARTICLE_QUIZ_POOL_TARGET") or "30").strip() or "30"))
+ARTICLE_QUIZ_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("ARTICLE_QUIZ_POOL_TOPUP_TRIGGER") or "5").strip() or "5"))
 VISUAL_RIDDLE_POOL_TOPUP_HOUR = max(0, min(23, int((os.getenv("VISUAL_RIDDLE_POOL_TOPUP_HOUR") or "6").strip() or "6")))
 VISUAL_RIDDLE_POOL_TOPUP_MINUTE = max(0, min(59, int((os.getenv("VISUAL_RIDDLE_POOL_TOPUP_MINUTE") or "15").strip() or "15")))
 VISUAL_RIDDLE_RECENCY_DAYS = max(1, int((os.getenv("VISUAL_RIDDLE_RECENCY_DAYS") or "7").strip() or "7"))
@@ -396,6 +411,15 @@ def _rebuses_dry_run() -> bool:
     return val in ("1", "true", "yes", "on")
 
 
+def _is_article_quiz_slot(slot_dt: datetime) -> bool:
+    return (int(slot_dt.hour), int(slot_dt.minute)) in ARTICLE_QUIZ_SLOT_TIMES
+
+
+def _article_quiz_enabled() -> bool:
+    val = (os.getenv("ARTICLE_QUIZ_ENABLED") or "1").strip().lower()
+    return val in ("1", "true", "yes", "on")
+
+
 def _format_quiz_delivery_slot(slot_dt: datetime) -> str:
     return f"{int(slot_dt.hour):02d}:{int(slot_dt.minute):02d}"
 
@@ -456,6 +480,7 @@ PENDING_INPUT_STATE_CLEANUP_INTERVAL_MINUTES = max(
     int((os.getenv("PENDING_INPUT_STATE_CLEANUP_INTERVAL_MINUTES") or "15").strip() or "15"),
 )
 LANGUAGE_TUTOR_BUTTON_TEXT = "💬 Спросить у GPT"
+SHORTCUT_INSTALL_BUTTON_TEXT = "📲 Установить Shortcut"
 SHORTCUT_CONNECT_BUTTON_TEXT = "📱 Connect Shortcut"
 DICTIONARY_BATCH_FAST_BUTTON_TEXT = "🇩🇪➡️🇷🇺 Быстрый перевод"
 TTS_PREWARM_QUOTA_MIN = max(50, min(10000, int((os.getenv("TTS_PREWARM_PER_USER_CHAR_LIMIT_MIN") or "200").strip() or "200")))
@@ -1367,7 +1392,8 @@ async def send_main_menu(update: Update, context: CallbackContext):
         ["📜 Проверить перевод", "🟡 Посмотреть свою статистику"],
         ["🎙 Начать урок", "👥 Групповой звонок"],
         ["💬 Перейти в личку"],
-        [LANGUAGE_TUTOR_BUTTON_TEXT, SHORTCUT_CONNECT_BUTTON_TEXT],
+        [LANGUAGE_TUTOR_BUTTON_TEXT, SHORTCUT_INSTALL_BUTTON_TEXT],
+        [SHORTCUT_CONNECT_BUTTON_TEXT],
     ]
     
     # создаем в словаре клю service_message_ids Список для хранения всех id Сообщений, Для того чтобы потом можно было их удалить после выполнения перевода
@@ -1402,8 +1428,37 @@ async def send_main_menu(update: Update, context: CallbackContext):
     #await update.message.reply_text("Используйте кнопки:", reply_markup=reply_markup)
 
 def _build_shortcut_connect_keyboard() -> InlineKeyboardMarkup:
+    rows = []
+    install_url = _shortcut_install_web_url()
+    if install_url:
+        rows.append([InlineKeyboardButton(SHORTCUT_INSTALL_BUTTON_TEXT, url=install_url)])
+    rows.append([InlineKeyboardButton(SHORTCUT_CONNECT_BUTTON_TEXT, callback_data="shortcut:connect")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _shortcut_install_web_url() -> str:
+    direct_url = (
+        (os.getenv("SHORTCUT_INSTALL_URL") or "").strip()
+        or (os.getenv("SHORTCUT_ICLOUD_URL") or "").strip()
+        or (os.getenv("IOS_SHORTCUT_INSTALL_URL") or "").strip()
+    )
+    if not direct_url:
+        return ""
+    base_url = get_public_web_url()
+    if base_url:
+        return f"{base_url.rstrip('/')}/api/shortcut/install"
+    return direct_url
+
+
+def _build_shortcut_install_keyboard() -> InlineKeyboardMarkup | None:
+    install_url = _shortcut_install_web_url()
+    if not install_url:
+        return None
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton(SHORTCUT_CONNECT_BUTTON_TEXT, callback_data="shortcut:connect")]]
+        [
+            [InlineKeyboardButton(SHORTCUT_INSTALL_BUTTON_TEXT, url=install_url)],
+            [InlineKeyboardButton(SHORTCUT_CONNECT_BUTTON_TEXT, callback_data="shortcut:connect")],
+        ]
     )
 
 
@@ -1411,8 +1466,25 @@ async def _send_shortcut_connect_prompt(update: Update, context: CallbackContext
     if not update.effective_message:
         return
     await update.effective_message.reply_text(
-        "Подключите Shortcut один раз. Потом он будет запускаться автоматически, а код привязки понадобится только при первом запуске.",
+        "Сначала установите Shortcut на iPhone, потом нажмите Connect Shortcut и подключите его одним кодом.",
         reply_markup=_build_shortcut_connect_keyboard(),
+    )
+
+
+async def _send_shortcut_install_prompt(update: Update, context: CallbackContext) -> None:
+    if not update.effective_message:
+        return
+    keyboard = _build_shortcut_install_keyboard()
+    if not keyboard:
+        await update.effective_message.reply_text(
+            "Установка Shortcut временно не настроена. Администратору нужно задать SHORTCUT_INSTALL_URL."
+        )
+        return
+    await update.effective_message.reply_text(
+        "📲 Установите iPhone Shortcut один раз.\n\n"
+        "После установки вернитесь сюда и нажмите «📱 Connect Shortcut», чтобы получить код привязки.",
+        reply_markup=keyboard,
+        disable_web_page_preview=True,
     )
 
 
@@ -1950,7 +2022,8 @@ def _language_tutor_pair_for_user(user_id: int) -> tuple[str, str]:
 def _build_private_language_tutor_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
-            [LANGUAGE_TUTOR_BUTTON_TEXT, SHORTCUT_CONNECT_BUTTON_TEXT],
+            [LANGUAGE_TUTOR_BUTTON_TEXT, SHORTCUT_INSTALL_BUTTON_TEXT],
+            [SHORTCUT_CONNECT_BUTTON_TEXT],
             [DICTIONARY_BATCH_FAST_BUTTON_TEXT],
         ],
         resize_keyboard=True,
@@ -1986,10 +2059,12 @@ def _build_private_start_onboarding_text() -> str:
         "• принять пересланный немецкий текст;\n"
         "• помочь со скриншотами, рилсами и любым немецким контентом через Shortcut.\n\n"
         "Что делать дальше:\n"
-        "1. Нажмите «📱 Connect Shortcut» и подключите Shortcut один раз.\n"
-        "2. Привяжите его к кнопке действия или к двойному касанию задней панели.\n"
-        "3. После этого просто отправляйте слова сюда в личку или запускайте Shortcut на немецком контенте.\n"
-        "4. Код нужен только при первом запуске. Потом он больше не понадобится.\n\n"
+        "1. Нажмите «📲 Установить Shortcut» и добавьте команду на iPhone.\n"
+        "2. Вернитесь сюда и нажмите «📱 Connect Shortcut», чтобы получить код привязки.\n"
+        "3. Запустите Shortcut один раз и вставьте код.\n"
+        "4. Привяжите Shortcut к кнопке действия или к двойному касанию задней панели.\n"
+        "5. После этого просто отправляйте слова сюда в личку или запускайте Shortcut на немецком контенте.\n"
+        "6. Код нужен только при первом запуске. Потом он больше не понадобится.\n\n"
         "Если слов много, нажмите «🇩🇪➡️🇷🇺 Быстрый перевод», чтобы применить один и тот же режим ко всей текущей очереди."
     )
 
@@ -3842,7 +3917,11 @@ async def handle_tts_prewarm_quota_callback(update: Update, context: CallbackCon
 
 async def handle_button_click(update: Update, context: CallbackContext):
     """Обрабатывает нажатия на кнопки главного меню."""
-    _allowed_without_legacy_keyboard = {SHORTCUT_CONNECT_BUTTON_TEXT, DICTIONARY_BATCH_FAST_BUTTON_TEXT}
+    _allowed_without_legacy_keyboard = {
+        SHORTCUT_INSTALL_BUTTON_TEXT,
+        SHORTCUT_CONNECT_BUTTON_TEXT,
+        DICTIONARY_BATCH_FAST_BUTTON_TEXT,
+    }
     if not ENABLE_LEGACY_REPLY_KEYBOARD and (
         not update.message
         or (update.message.text or "").strip() not in _allowed_without_legacy_keyboard
@@ -3886,6 +3965,8 @@ async def handle_button_click(update: Update, context: CallbackContext):
             )
         else:
             await update.message.reply_text("Не удалось получить имя бота.")
+    elif text == SHORTCUT_INSTALL_BUTTON_TEXT:
+        await _send_shortcut_install_prompt(update, context)
     elif text == SHORTCUT_CONNECT_BUTTON_TEXT:
         await update.message.reply_text("⏳ Генерирую pairing code...")
 
@@ -5068,6 +5149,7 @@ def _is_menu_button_text(text: str) -> bool:
         "📜 Проверить перевод",
         "💬 Перейти в личку",
         "🎙 Начать урок",
+        SHORTCUT_INSTALL_BUTTON_TEXT,
         SHORTCUT_CONNECT_BUTTON_TEXT,
         LANGUAGE_TUTOR_BUTTON_TEXT,
     }
@@ -15620,7 +15702,7 @@ async def _send_scheduled_rebuses(context: CallbackContext) -> None:
         slot_date, slot_hour, compound_id, sent,
     )
 
-    # Trigger pool top-up if running low
+    # Trigger pool top-up and/or GPT replenishment if running low
     try:
         available = await asyncio.to_thread(count_available_rebuses, cooldown_days=REBUS_COOLDOWN_DAYS)
         if available < REBUS_POOL_TOPUP_TRIGGER:
@@ -15630,6 +15712,12 @@ async def _send_scheduled_rebuses(context: CallbackContext) -> None:
             )
             from backend.rebus_generator import prepare_rebus_pool
             await asyncio.to_thread(prepare_rebus_pool, target_ready=REBUS_POOL_TARGET, max_attempts=40)
+        # If total bank is getting small, request GPT to generate new compounds
+        total = await asyncio.to_thread(count_available_rebuses, cooldown_days=0)
+        if total < 100:
+            logging.info("rebus_bank_small total=%s — triggering GPT replenishment", total)
+            from backend.rebus_generator import generate_rebus_replenishment
+            await asyncio.to_thread(generate_rebus_replenishment, 25)
     except Exception:
         logging.warning("rebus_slot: pool top-up check failed", exc_info=True)
 
@@ -15799,6 +15887,351 @@ async def admin_rebus_pool_command(update: Update, context: CallbackContext) -> 
         from backend.rebus_generator import prepare_rebus_pool
         result = await asyncio.to_thread(prepare_rebus_pool, target_ready=REBUS_POOL_TARGET, max_attempts=40)
         await status_msg.edit_text(f"Rebus pool done:\n{result}")
+    except Exception as exc:
+        await status_msg.edit_text(f"Error: {exc}")
+
+
+# ─────────────────────────────────────────────────────────────
+#  ARTICLE QUIZ (der/die/das) — send, callback, scheduler
+# ─────────────────────────────────────────────────────────────
+
+_ARTICLE_BUTTONS = [
+    ("🔵 der", "der"),
+    ("🔴 die", "die"),
+    ("⚪ das", "das"),
+]
+
+
+def _build_article_quiz_caption(entry: dict) -> str:
+    word = str(entry.get("word") or "")
+    meaning = str(entry.get("meaning_ru") or "")
+    lines = [
+        "🎯 *Welcher Artikel?*",
+        "",
+        f"*{word}*",
+        f"_({meaning})_" if meaning else "",
+        "",
+        "Wähle den richtigen Artikel! 👇",
+    ]
+    return "\n".join(l for l in lines if l is not None)
+
+
+def _build_article_quiz_keyboard(dispatch_id: int) -> InlineKeyboardMarkup:
+    row = [
+        InlineKeyboardButton(label, callback_data=f"aq:{dispatch_id}:{article}")
+        for label, article in _ARTICLE_BUTTONS
+    ]
+    return InlineKeyboardMarkup([row])
+
+
+async def send_article_quiz_to_chat(
+    context: CallbackContext,
+    *,
+    entry: dict,
+    image_url: str,
+    slot_date,
+    slot_hour: int,
+    chat_id: int,
+    target_user_id: int,
+) -> bool:
+    """Send one article quiz card to a chat. Returns True on success."""
+    word_id = str(entry.get("word_id") or "")
+
+    try:
+        dispatch_id = await asyncio.to_thread(
+            record_article_quiz_dispatch,
+            slot_date=slot_date,
+            slot_hour=int(slot_hour),
+            word_id=word_id,
+            target_user_id=int(target_user_id),
+            chat_id=int(chat_id),
+            telegram_message_id=None,
+            status="sent",
+        )
+    except Exception:
+        logging.warning(
+            "aq_send: dispatch insert failed word_id=%s chat_id=%s slot=%s/%s",
+            word_id, chat_id, slot_date, slot_hour, exc_info=True,
+        )
+        return False
+
+    if dispatch_id is None:
+        logging.info(
+            "aq_send: duplicate suppressed word_id=%s chat_id=%s slot=%s/%s",
+            word_id, chat_id, slot_date, slot_hour,
+        )
+        return False
+
+    caption = _build_article_quiz_caption(entry)
+    keyboard = _build_article_quiz_keyboard(dispatch_id)
+
+    logging.info(
+        "aq_send_begin dispatch_id=%s word_id=%s chat_id=%s slot=%s/%s",
+        dispatch_id, word_id, chat_id, slot_date, slot_hour,
+    )
+
+    try:
+        photo_message = await context.bot.send_photo(
+            chat_id=int(chat_id),
+            photo=image_url,
+            caption=caption,
+            reply_markup=keyboard,
+            parse_mode="Markdown",
+        )
+    except Exception as exc:
+        logging.warning("aq_send_failed dispatch_id=%s chat_id=%s: %s", dispatch_id, chat_id, exc)
+        return False
+
+    try:
+        await asyncio.to_thread(
+            update_article_quiz_dispatch_telegram_id,
+            dispatch_id,
+            telegram_message_id=int(photo_message.message_id),
+        )
+    except Exception:
+        logging.warning("aq_send: update telegram_id failed dispatch_id=%s", dispatch_id, exc_info=True)
+
+    logging.info("aq_send_ok dispatch_id=%s word_id=%s chat_id=%s", dispatch_id, word_id, chat_id)
+    return True
+
+
+async def _send_scheduled_article_quiz(context: CallbackContext) -> None:
+    if not _article_quiz_enabled():
+        logging.info("aq_slot_triggered enabled=False — skipping")
+        return
+
+    slot_now = _get_quiz_schedule_now()
+    slot_date = slot_now.date()
+    slot_hour = int(slot_now.hour) * 100 + int(slot_now.minute)  # unique: e.g. 915, 1315, 1715
+
+    logging.info("aq_slot_triggered slot=%s/%s", slot_date, slot_hour)
+
+    try:
+        entry = await asyncio.to_thread(
+            pick_next_article_quiz, cooldown_days=ARTICLE_QUIZ_COOLDOWN_DAYS
+        )
+    except Exception:
+        logging.warning("aq_slot: pick_next_article_quiz failed", exc_info=True)
+        entry = None
+
+    if not entry:
+        logging.warning("aq_slot: pool exhausted slot=%s/%s", slot_date, slot_hour)
+        return
+
+    word_id = str(entry.get("word_id") or "")
+    object_key = str(entry.get("image_object_key") or "")
+    if not object_key:
+        logging.warning("aq_slot: no image key word_id=%s", word_id)
+        return
+
+    try:
+        image_url = r2_public_url(object_key)
+    except Exception:
+        logging.warning("aq_slot: r2_public_url failed key=%s", object_key, exc_info=True)
+        return
+
+    delivery_targets = await _collect_quiz_delivery_user_targets(context)
+    if not delivery_targets:
+        logging.info("aq_slot: no delivery targets word_id=%s", word_id)
+        return
+
+    sent = 0
+    for target in delivery_targets:
+        target_chat_id = int(target.get("chat_id") or 0)
+        if target_chat_id == 0:
+            continue
+        ok = await send_article_quiz_to_chat(
+            context,
+            entry=entry,
+            image_url=image_url,
+            slot_date=slot_date,
+            slot_hour=slot_hour,
+            chat_id=target_chat_id,
+            target_user_id=target_chat_id,
+        )
+        if ok:
+            sent += 1
+
+    if sent > 0:
+        try:
+            await asyncio.to_thread(mark_article_quiz_sent, word_id)
+        except Exception:
+            logging.warning("aq_slot: mark_article_quiz_sent failed word_id=%s", word_id, exc_info=True)
+
+    logging.info("aq_slot_done slot=%s/%s word_id=%s sent=%s", slot_date, slot_hour, word_id, sent)
+
+    # Trigger pool top-up if running low
+    try:
+        available = await asyncio.to_thread(
+            count_available_article_quiz_entries, cooldown_days=ARTICLE_QUIZ_COOLDOWN_DAYS
+        )
+        if available < ARTICLE_QUIZ_POOL_TOPUP_TRIGGER:
+            logging.info("aq_pool_low available=%s — triggering top-up", available)
+            from backend.article_quiz_generator import prepare_article_quiz_pool
+            await asyncio.to_thread(prepare_article_quiz_pool, target_ready=ARTICLE_QUIZ_POOL_TARGET)
+    except Exception:
+        logging.warning("aq_slot: pool top-up check failed", exc_info=True)
+
+
+async def handle_article_quiz_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user:
+        return
+    raw_data = str(query.data or "").strip()
+    match = re.match(r"^aq:(\d+):(der|die|das)$", raw_data)
+    if not match:
+        await query.answer("Quiz nicht verfügbar.")
+        return
+
+    dispatch_id = int(match.group(1))
+    selected_article = match.group(2).lower()
+
+    try:
+        dispatch = await asyncio.to_thread(get_article_quiz_dispatch_by_id, dispatch_id)
+    except Exception:
+        logging.warning("aq_callback: dispatch lookup failed id=%s", dispatch_id, exc_info=True)
+        dispatch = None
+    if not dispatch:
+        await query.answer("Quiz nicht verfügbar.")
+        return
+
+    word_id = str(dispatch.get("word_id") or "")
+    try:
+        entry = await asyncio.to_thread(get_article_quiz_entry, word_id)
+    except Exception:
+        logging.warning("aq_callback: entry lookup failed word_id=%s", word_id, exc_info=True)
+        entry = None
+    if not entry:
+        await query.answer("Quiz nicht verfügbar.")
+        return
+
+    correct_article = str(entry.get("article") or "").lower()
+    word = str(entry.get("word") or "")
+    meaning = str(entry.get("meaning_ru") or "")
+    is_correct = selected_article == correct_article
+
+    try:
+        await asyncio.to_thread(
+            record_article_quiz_answer,
+            dispatch_id=dispatch_id,
+            user_id=int(user.id),
+            selected_article=selected_article,
+            is_correct=bool(is_correct),
+        )
+    except Exception:
+        logging.warning(
+            "aq_callback: record_answer failed dispatch_id=%s user_id=%s",
+            dispatch_id, int(user.id), exc_info=True,
+        )
+
+    if is_correct:
+        icon = "✅"
+        verdict = f"Richtig! *{correct_article} {word}*"
+    else:
+        icon = "❌"
+        verdict = f"Falsch. Es ist *{correct_article} {word}*"
+
+    detail = f" ({meaning})" if meaning else ""
+    alert_text = f"{icon} {verdict}{detail}"
+
+    try:
+        await query.answer(alert_text[:200], show_alert=True)
+    except Exception:
+        logging.warning("aq_callback: answer alert failed dispatch_id=%s", dispatch_id, exc_info=True)
+
+    try:
+        await asyncio.to_thread(
+            mark_article_quiz_answer_feedback_sent,
+            dispatch_id=dispatch_id,
+            user_id=int(user.id),
+        )
+    except Exception:
+        logging.warning("aq_callback: mark_feedback_sent failed dispatch_id=%s", dispatch_id, exc_info=True)
+
+
+async def prepare_article_quiz_pool_job(context: CallbackContext) -> None:
+    """Startup + periodic: sync bank and generate missing images."""
+    try:
+        from backend.article_quiz_generator import prepare_article_quiz_pool
+        result = await asyncio.to_thread(
+            prepare_article_quiz_pool,
+            target_ready=ARTICLE_QUIZ_POOL_TARGET,
+            max_attempts=40,
+        )
+        logging.info("article_quiz_pool_job done: %s", result)
+    except Exception:
+        logging.warning("article_quiz_pool_job failed", exc_info=True)
+
+
+async def admin_article_quiz_send_command(update: Update, context: CallbackContext) -> None:
+    """Send an article quiz to this chat immediately (admin test)."""
+    user = update.effective_user
+    chat = update.effective_chat
+    message = update.effective_message
+    if not user or not chat or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+
+    status_msg = await message.reply_text("Preparing article quiz...")
+
+    try:
+        entry = await asyncio.to_thread(pick_next_article_quiz, cooldown_days=0)
+    except Exception as exc:
+        await status_msg.edit_text(f"pick_next_article_quiz failed: {exc}")
+        return
+
+    if not entry:
+        await status_msg.edit_text("No ready article quiz found. Run /admin_aq_pool first.")
+        return
+
+    object_key = str(entry.get("image_object_key") or "")
+    if not object_key:
+        await status_msg.edit_text(f"No image yet for {entry.get('word')}. Run /admin_aq_pool.")
+        return
+
+    try:
+        image_url = r2_public_url(object_key)
+    except Exception as exc:
+        await status_msg.edit_text(f"r2_public_url failed: {exc}")
+        return
+
+    slot_now = _get_quiz_schedule_now()
+    ok = await send_article_quiz_to_chat(
+        context,
+        entry=entry,
+        image_url=image_url,
+        slot_date=slot_now.date(),
+        slot_hour=int(slot_now.hour) * 10000 + int(slot_now.second),  # unique test slot
+        chat_id=int(chat.id),
+        target_user_id=int(user.id),
+    )
+    if ok:
+        await status_msg.delete()
+    else:
+        await status_msg.edit_text("Article quiz send failed — check logs.")
+
+
+async def admin_article_quiz_pool_command(update: Update, context: CallbackContext) -> None:
+    """Trigger article quiz pool preparation (admin command)."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    status_msg = await message.reply_text("Preparing article quiz pool...")
+    try:
+        from backend.article_quiz_generator import prepare_article_quiz_pool
+        result = await asyncio.to_thread(
+            prepare_article_quiz_pool,
+            target_ready=ARTICLE_QUIZ_POOL_TARGET,
+            max_attempts=40,
+        )
+        await status_msg.edit_text(f"Article quiz pool done:\n{result}")
     except Exception as exc:
         await status_msg.edit_text(f"Error: {exc}")
 
@@ -16887,11 +17320,14 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_image_quiz_callback, pattern=r"^iq:\d+:\d+$"))
     application.add_handler(CallbackQueryHandler(handle_visual_riddle_callback, pattern=r"^vr:\d+:\d+$"))
     application.add_handler(CallbackQueryHandler(handle_rebus_answer_callback, pattern=r"^rb:\d+:[A-D]$"))
+    application.add_handler(CallbackQueryHandler(handle_article_quiz_callback, pattern=r"^aq:\d+:(der|die|das)$"))
     application.add_handler(CallbackQueryHandler(handle_text_level_callback, pattern=r"^text_level:"))
 
     application.add_handler(CommandHandler("translate", check_user_translation))  # ✅ Проверка переводов
     application.add_handler(CommandHandler("admin_rebus_send", admin_rebus_send_command))
     application.add_handler(CommandHandler("admin_rebus_pool", admin_rebus_pool_command))
+    application.add_handler(CommandHandler("admin_aq_send", admin_article_quiz_send_command))
+    application.add_handler(CommandHandler("admin_aq_pool", admin_article_quiz_pool_command))
 
 
     application.add_handler(CallbackQueryHandler(topic_selected)) #Он ждет любые нажатия на inline-кнопки.
@@ -16915,6 +17351,7 @@ def main():
                 application.job_queue.run_once(prepare_image_quiz_pool, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 20),
                 application.job_queue.run_once(_startup_visual_riddle_pool_check, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 40),
                 application.job_queue.run_once(prepare_rebus_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 70),
+                application.job_queue.run_once(prepare_article_quiz_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 100),
             ),
             enabled=True,
             category="housekeeping",
@@ -17096,6 +17533,29 @@ def main():
             sorted(REBUS_SLOT_TIMES),
             QUIZ_SCHEDULE_TZ_NAME,
             _rebuses_enabled(),
+        )
+        # -- Article quiz (der/die/das) slots: 9:15, 13:15, 17:15 Europe/Vienna --
+        for _aq_hour, _aq_minute in sorted(ARTICLE_QUIZ_SLOT_TIMES):
+            scheduler.add_job(
+                lambda: submit_async(_send_scheduled_article_quiz, CallbackContext(application=application)),
+                "cron",
+                hour=_aq_hour,
+                minute=_aq_minute,
+                timezone=QUIZ_SCHEDULE_TZ_NAME,
+            )
+        # -- Article quiz pool daily top-up (08:00) --
+        scheduler.add_job(
+            lambda: submit_async(prepare_article_quiz_pool_job, CallbackContext(application=application)),
+            "cron",
+            hour=8,
+            minute=0,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        logging.info(
+            "article_quiz_scheduler_slots_registered slots=%s tz=%s enabled=%s",
+            sorted(ARTICLE_QUIZ_SLOT_TIMES),
+            QUIZ_SCHEDULE_TZ_NAME,
+            _article_quiz_enabled(),
         )
 
     # scheduler.add_job(
