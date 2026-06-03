@@ -23,10 +23,17 @@ class ReaderAsyncIngestTests(unittest.TestCase):
             "processing_status": "pending",
         }
 
+        bootstrap_subscription = {
+            "user_id": 55,
+            "plan_code": "free",
+            "status": "inactive",
+            "trial_ends_at": None,
+        }
+
         with patch.object(server, "_telegram_hash_is_valid", return_value=True), \
              patch.object(server, "_parse_telegram_init_data", return_value={"user": {"id": 55}}), \
              patch.object(server, "_resolve_webapp_user_allowed", return_value=(True, "test")), \
-             patch.object(server, "get_or_create_user_subscription"), \
+             patch.object(server, "get_or_create_user_subscription", return_value=bootstrap_subscription) as bootstrap_mock, \
              patch.object(server, "_get_user_language_pair", return_value=("ru", "de", {})), \
              patch.object(server, "_resolve_user_entitlement", return_value=({"effective_mode": "pro"}, None)), \
              patch.object(server, "list_reader_library_documents", return_value=[]), \
@@ -50,6 +57,9 @@ class ReaderAsyncIngestTests(unittest.TestCase):
         self.assertTrue(payload["async"])
         self.assertEqual(payload["status"], "pending")
         self.assertEqual(payload["document"]["id"], 91)
+        bootstrap_mock.assert_called_once()
+        self.assertEqual(bootstrap_mock.return_value["status"], "inactive")
+        self.assertIsNone(bootstrap_mock.return_value["trial_ends_at"])
         enqueue_mock.assert_called_once()
 
     def test_reader_open_pending_document_returns_processing_payload(self):

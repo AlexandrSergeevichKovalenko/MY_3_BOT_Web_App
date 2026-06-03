@@ -16,6 +16,7 @@ from backend.database import (
     get_free_feature_limit_metadata,
     get_free_feature_usage_today,
     get_global_billing_summary,
+    get_or_create_user_subscription,
     increment_free_feature_usage,
     log_billing_event,
     resolve_entitlement,
@@ -457,6 +458,125 @@ class BillingEconomicsTests(unittest.TestCase):
         self.assertEqual(trial["source_of_entitlement"], "explicit_trial_subscription")
         self.assertEqual(pro["effective_mode"], "pro")
         self.assertEqual(pro["source_of_entitlement"], "paid_subscription")
+
+    def test_no_subscription_row_resolves_free_default(self):
+        now = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+
+        with patch("backend.database.get_user_subscription", return_value=None), \
+             patch("backend.database.get_billing_plan", return_value={
+                 "plan_code": "free",
+                 "name": "Free",
+                 "is_paid": False,
+                 "daily_cost_cap_eur": 0.5,
+             }):
+            payload = resolve_entitlement(user_id=77, now_ts_utc=now)
+
+        self.assertEqual(payload["effective_mode"], "free")
+        self.assertEqual(payload["source_of_entitlement"], "free_default")
+        self.assertIn("reset_at", payload)
+
+    def test_subscription_bootstrap_creates_free_inactive_row(self):
+        created_at = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+        cursor = _DummyCursor([
+            (
+                77,
+                "free",
+                "inactive",
+                None,
+                None,
+                None,
+                None,
+                created_at,
+                created_at,
+            )
+        ])
+
+        with patch("backend.database.get_db_connection_context", _db_context(cursor)):
+            subscription = get_or_create_user_subscription(
+                user_id=77,
+                now_ts=datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(subscription["plan_code"], "free")
+        self.assertEqual(subscription["status"], "inactive")
+        self.assertIsNone(subscription["trial_ends_at"])
+        query, params = cursor.executed[0]
+        self.assertIn("VALUES (%s, 'free', 'inactive', NULL, NOW())", query)
+        self.assertEqual(params, (77,))
+
+    def test_subscription_bootstrap_preserves_existing_trial_row(self):
+        now = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+        trial_end = now + timedelta(days=1)
+        cursor = _DummyCursor([
+            None,
+            (
+                77,
+                "free",
+                "trialing",
+                trial_end,
+                None,
+                None,
+                None,
+                now,
+                now,
+            ),
+        ])
+
+        with patch("backend.database.get_db_connection_context", _db_context(cursor)):
+            subscription = get_or_create_user_subscription(user_id=77, now_ts=now)
+
+        self.assertEqual(subscription["plan_code"], "free")
+        self.assertEqual(subscription["status"], "trialing")
+        self.assertEqual(subscription["trial_ends_at"], trial_end.isoformat())
+        self.assertEqual(len(cursor.executed), 2)
+
+    def test_subscription_bootstrap_preserves_existing_paid_row(self):
+        now = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+        period_end = now + timedelta(days=30)
+        cursor = _DummyCursor([
+            None,
+            (
+                77,
+                "pro",
+                "active",
+                None,
+                period_end,
+                "cus_test",
+                "sub_test",
+                now,
+                now,
+            ),
+        ])
+
+        with patch("backend.database.get_db_connection_context", _db_context(cursor)):
+            subscription = get_or_create_user_subscription(user_id=77, now_ts=now)
+
+        self.assertEqual(subscription["plan_code"], "pro")
+        self.assertEqual(subscription["status"], "active")
+        self.assertIsNone(subscription["trial_ends_at"])
+        self.assertEqual(subscription["stripe_customer_id"], "cus_test")
+        self.assertEqual(subscription["stripe_subscription_id"], "sub_test")
+        self.assertEqual(len(cursor.executed), 2)
+
+    def test_bootstrap_created_subscription_resolves_free(self):
+        now = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+        subscription = {
+            "user_id": 77,
+            "plan_code": "free",
+            "status": "inactive",
+            "trial_ends_at": None,
+        }
+
+        with patch("backend.database.get_billing_plan", return_value={
+            "plan_code": "free",
+            "name": "Free",
+            "is_paid": False,
+            "daily_cost_cap_eur": 0.5,
+        }):
+            payload = resolve_entitlement(user_id=77, now_ts_utc=now, subscription=subscription)
+
+        self.assertEqual(payload["effective_mode"], "free")
+        self.assertEqual(payload["source_of_entitlement"], "free_default")
 
 
 if __name__ == "__main__":

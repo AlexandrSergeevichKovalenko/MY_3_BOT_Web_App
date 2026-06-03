@@ -24540,7 +24540,6 @@ def get_or_create_user_subscription(
 ) -> dict:
     """Race-safe create-or-get via INSERT .. ON CONFLICT DO NOTHING + SELECT."""
     user_id_value = int(user_id)
-    trial_ends_at = _compute_trial_ends_at(now_ts, trial_days=TRIAL_POLICY_DAYS, tz_name=tz)
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -24552,7 +24551,7 @@ def get_or_create_user_subscription(
                     trial_ends_at,
                     updated_at
                 )
-                VALUES (%s, 'free', 'trialing', %s, NOW())
+                VALUES (%s, 'free', 'inactive', NULL, NOW())
                 ON CONFLICT (user_id) DO NOTHING
                 RETURNING
                     user_id,
@@ -24565,7 +24564,7 @@ def get_or_create_user_subscription(
                     created_at,
                     updated_at;
                 """,
-                (user_id_value, trial_ends_at),
+                (user_id_value,),
             )
             row = cursor.fetchone()
             if not row:
