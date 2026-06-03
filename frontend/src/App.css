@@ -15679,6 +15679,18 @@ body {
   color: #7c4a12;
 }
 
+.webapp-page.is-theme-light .translation-dict-widget-actions button,
+.webapp-page.is-theme-light .translation-dict-save-button {
+  background: rgba(105, 78, 47, 0.1);
+  border-color: rgba(105, 78, 47, 0.22);
+  color: #3d2410;
+}
+
+.webapp-page.is-theme-light .translation-dict-widget-actions button:disabled,
+.webapp-page.is-theme-light .translation-dict-save-button:disabled {
+  color: rgba(61, 36, 16, 0.4);
+}
+
 /* Reader v2: Dark Minimal Premium Study Mode */
 .webapp-reader {
   margin-top: 0;
