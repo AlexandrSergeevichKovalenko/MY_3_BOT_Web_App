@@ -13013,12 +13013,19 @@ async def _generate_quiz_phrase_suggestion(payload: dict) -> dict:
             }
         )
 
-    def _candidate_rank(item: dict[str, str]) -> tuple[int, int, int, str]:
+    base_source_norm = _normalize_dictionary_compare_key(source_text)
+
+    def _candidate_rank(item: dict[str, str]) -> tuple[int, int, int, int, str]:
         source_value = str(item.get("source") or "").strip()
+        source_norm = _normalize_dictionary_compare_key(source_value)
         source_word_count = len([part for part in re.split(r"\s+", source_value) if part])
         char_count = len(source_value)
-        contains_base = 0 if _normalize_dictionary_compare_key(source_text) in _normalize_dictionary_compare_key(source_value) else 1
+        # Prefer candidates whose source is NOT just the bare input word (≥2 words ideally).
+        is_bare_word = 1 if source_norm == base_source_norm else 0
+        # Prefer candidates that contain the input word somewhere in their source.
+        contains_base = 0 if base_source_norm in source_norm else 1
         return (
+            is_bare_word,
             contains_base,
             abs(source_word_count - 3),
             abs(char_count - max(12, len(source_text))),

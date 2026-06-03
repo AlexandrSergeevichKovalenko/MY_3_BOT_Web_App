@@ -2057,20 +2057,27 @@ Rules:
   If the original input is a full sentence, keep it a full sentence.
   Do not reduce sentence input to only a lemma or generic collocation.
 
-- #2 ITEM — REAL-LIFE SPEECH CARD:
-  The second item must be the single best short, conversational, high-frequency phrase or complete sentence built around the SAME CORE MEANING.
+- #2 ITEM — COLLOCATION PHRASE (MANDATORY):
+  CRITICAL: Item #2 MUST be a multi-word phrase (minimum 3 words) that uses the original word in a real-life context.
+  NEVER return the original word alone or a single-word synonym as item #2 — that is a hard failure.
+  The phrase must contain the core word (or its inflected form) inside a sentence or fixed expression.
   It should sound like something a native speaker would actually say in everyday life.
-  It may be a more natural paraphrase, but it must not weaken or remove the key idea.
-  Example: for "Франц ушел на пенсию" / "Franz ist in Rente gegangen", good #2:
+  Example: for "Franz ist in Rente gegangen", good #2:
     "Franz ist jetzt in Rente" / "Франц теперь на пенсии"
-    or "Franz genießt jetzt seine Rente" / "Франц теперь наслаждается пенсией"
-  Bad #2:
-    "Franz geht nicht mehr zur Arbeit" / "Франц больше не ходит на работу"
-    because it loses the specific retirement/Rente meaning.
+  Example: for "der Erlös" (revenue/proceeds), good #2:
+    "Der Erlös geht an die Stiftung" / "Выручка идёт в фонд"
+    or "einen hohen Erlös erzielen" / "получить высокую выручку"
+  Bad #2 for "der Erlös":
+    "der Erlös" / "выручка" — this is item #1 repeated, FORBIDDEN
+    "Einnahmen" / "доходы" — this is a synonym, not a collocation, FORBIDDEN
 
-- #3 ITEM — OPTIONAL DISTINCT REAL USAGE:
-  The third item may be another useful collocation/phrase only if it adds a genuinely different common usage pattern.
-  If a third item would be weak, repetitive, or artificial, still return the best available practical variant rather than invented filler.
+- #3 ITEM — DISTINCT COLLOCATION (MANDATORY):
+  Item #3 MUST also be a multi-word phrase (minimum 3 words) that uses the original word in a DIFFERENT pattern from #2.
+  NEVER return the original word alone or a single-word synonym as item #3.
+  If a genuinely different common usage exists, use it. Otherwise pick the next best real-life phrase.
+  Example: for "der Erlös", good #3:
+    "Den Erlös spenden" / "Пожертвовать выручку"
+    or "der Erlös aus dem Verkauf" / "выручка от продажи"
 
 - REAL FREQUENCY: Every phrase must be something Germans actually say. Ask yourself: "Would a native speaker say this naturally?" If not, replace it.
   * Good — Trümmer: "Das Gebäude liegt in Trümmern" (fixed expression, heard in news/everyday)
@@ -2081,18 +2088,18 @@ Rules:
   * Good — Termin: "Den Termin absagen" (fixed expression)
   * BAD — Termin: "Der Mann hat einen wichtigen Termin" — too vague, no real context
 
-- DIFFERENT USAGE PATTERNS: When possible, items must use structurally different patterns — different verb, different syntactic role, different domain. Changing only the subject ("das Kind" → "die Kinder") is NOT distinct and is forbidden.
-  * Aim for: (1) a fixed expression or idiom, (2) a common everyday action, (3) a figurative or journalistic use — if natural for the word.
+- DIFFERENT USAGE PATTERNS: Items #2 and #3 must use structurally different patterns — different verb, different syntactic role, different domain. Changing only the subject ("das Kind" → "die Kinder") is NOT distinct and is forbidden.
+  * Aim for: (1) a common everyday action with the word, (2) a fixed expression or idiom, (3) a figurative or journalistic use — if natural for the word.
 
-- NO INVENTED SCENARIOS: Do not place the word in a fictional situation just to create a "vivid scene". Learners waste time on sentences they will never hear or say. Prefer corpus-style phrases that appear frequently in real German texts.
+- NO INVENTED SCENARIOS: Do not place the word in a fictional situation just to create a "vivid scene". Prefer corpus-style phrases that appear frequently in real German texts.
 
-- LENGTH: Prefer 3–9 source words per item. Full-sentence inputs may remain slightly longer if needed for exact translation.
+- LENGTH: Item #1: any length needed for exact translation. Items #2 and #3: 3–9 source words.
 - ARTICLES: German nouns must always have the correct article (der/die/das/ein/eine). Never output a bare German noun.
 - GRAMMAR: Correct German word order and case throughout.
 
 - If "word" is a FULL SENTENCE or long phrase (more than 4 words):
   * #1 must translate the whole sentence.
-  * #2 must keep the same core meaning in a shorter, more reusable real-life phrase/sentence.
+  * #2 and #3 must be shorter real-life phrases that preserve the core word/expression — NOT paraphrases that omit it.
   * Do NOT replace the specific meaning with a weaker generic statement.
 
 - Output ONLY JSON.
@@ -2125,20 +2132,20 @@ Rules:
   If the original input is a full sentence, keep it a full sentence.
   Do not reduce sentence input to only a lemma or generic collocation.
 
-- #2 ITEM — REAL-LIFE SPEECH CARD:
-  The second item must be the single best short, conversational, high-frequency phrase or complete sentence built around the SAME CORE MEANING.
-  It should sound like something a native speaker would actually say in everyday life.
-  It may be a more natural paraphrase, but it must not weaken or remove the key idea.
-  Example: for "Франц ушел на пенсию" / "Franz ist in Rente gegangen", good #2:
-    "Franz ist jetzt in Rente" / "Франц теперь на пенсии"
-    or "Franz genießt jetzt seine Rente" / "Франц теперь наслаждается пенсией"
-  Bad #2:
-    "Franz geht nicht mehr zur Arbeit" / "Франц больше не ходит на работу"
-    because it loses the specific retirement/Rente meaning.
+- #2 ITEM — COLLOCATION PHRASE (MANDATORY):
+  CRITICAL: Item #2 MUST be a multi-word phrase (minimum 3 words) that uses the original word in a real-life context.
+  NEVER return the original word alone or a single-word synonym as item #2 — that is a hard failure.
+  The phrase must contain the core word (or its inflected form) inside a sentence or fixed expression.
+  Example: for "der Erlös" (revenue), good #2:
+    "Der Erlös geht an die Stiftung" / "Выручка идёт в фонд"
+    or "einen hohen Erlös erzielen" / "получить высокую выручку"
+  Bad #2 for "der Erlös":
+    "der Erlös" / "выручка" — this is item #1 repeated, FORBIDDEN
+    "Einnahmen" / "доходы" — single synonym, FORBIDDEN
 
-- #3 ITEM — OPTIONAL DISTINCT REAL USAGE:
-  The third item may be another useful collocation/phrase only if it adds a genuinely different common usage pattern.
-  If a third item would be weak, repetitive, or artificial, still return the best available practical variant rather than invented filler.
+- #3 ITEM — DISTINCT COLLOCATION (MANDATORY):
+  Item #3 MUST also be a multi-word phrase (minimum 3 words) with the original word in a DIFFERENT pattern from #2.
+  NEVER return the original word alone or a single-word synonym as item #3.
 
 - REAL FREQUENCY: Every phrase must be something native speakers actually say. Ask yourself: "Would a native speaker say this naturally?" If not, replace it.
   * Good — Trümmer: "Das Gebäude liegt in Trümmern" (fixed expression, used in news)
@@ -2148,19 +2155,19 @@ Rules:
   * Good — Termin: "Ich habe einen Termin beim Arzt" (most common usage)
   * BAD — Termin: "Der Mann hat einen wichtigen Termin" — too vague, no real-life context
 
-- DIFFERENT USAGE PATTERNS: When possible, items must use structurally different patterns — different verb, different domain, different syntactic role. Changing only the subject is NOT distinct and is forbidden.
-  * Aim for: (1) a fixed expression or idiom, (2) a common everyday action, (3) a figurative or extended use — if natural for the word.
+- DIFFERENT USAGE PATTERNS: Items #2 and #3 must use structurally different patterns — different verb, different domain, different syntactic role. Changing only the subject is NOT distinct and is forbidden.
+  * Aim for: (1) a common everyday action with the word, (2) a fixed expression or idiom, (3) a figurative or extended use — if natural for the word.
 
 - NO INVENTED SCENARIOS: Do not place the word in a fictional situation just to create drama. Prefer corpus-style phrases that appear frequently in real texts and speech.
 
-- LENGTH: Prefer 3–9 source words per item. Full-sentence inputs may remain slightly longer if needed for exact translation.
+- LENGTH: Item #1: any length for exact translation. Items #2 and #3: 3–9 source words.
 - ARTICLES: When source_language is German, always include the correct article for German nouns. Never output a bare German noun.
 - GRAMMAR: Correct grammar, word order, and case throughout.
 - TARGET SIDE: The translation must be a natural, idiomatic phrase in the target language — not a word-for-word gloss.
 
 - If "word_source" is a FULL SENTENCE or long phrase (more than 4 words):
   * #1 must translate the whole sentence.
-  * #2 must keep the same core meaning in a shorter, more reusable real-life phrase/sentence.
+  * #2 and #3 must be shorter real-life phrases that preserve the core word/expression.
   * Do NOT replace the specific meaning with a weaker generic statement.
 
 - Output ONLY JSON.
