@@ -5344,6 +5344,8 @@ function AppInner() {
   const [todayTestSending, setTodayTestSending] = useState(false);
   const [todayItemLoading, setTodayItemLoading] = useState({});
   const [todayTimerNowMs, setTodayTimerNowMs] = useState(Date.now());
+  const [flashcardsDailyElapsedSec, setFlashcardsDailyElapsedSec] = useState(0);
+  const [flashcardsDailyTimerActive, setFlashcardsDailyTimerActive] = useState(false);
   const [theoryLoading, setTheoryLoading] = useState(false);
   const [theoryError, setTheoryError] = useState('');
   const [theoryPackage, setTheoryPackage] = useState(null);
@@ -5960,6 +5962,7 @@ function AppInner() {
   const skillReportRequestIdRef = useRef(0);
   const weeklyPlanRequestIdRef = useRef(0);
   const languageProfileRequestIdRef = useRef(0);
+  const languageProfileAutoSaveAttemptedRef = useRef(false);
   const starterDictionaryStatusRequestIdRef = useRef(0);
 
   const analyticsCalendarRangeValid = Boolean(
@@ -6026,6 +6029,11 @@ function AppInner() {
   const globalTimerAutoResumeInFlightRef = useRef(false);
   const sectionVisibilitySnapshotRef = useRef(null);
   const autoPausedTodayTimerIdsRef = useRef(new Set());
+  const flashcardsDailyTimerStorageKeyRef = useRef('');
+  const flashcardsDailyElapsedRef = useRef(0);
+  const flashcardsDailyStartedAtRef = useRef(null);
+  const flashcardsDailyActiveRef = useRef(false);
+  const flashcardsDailyHydratedKeyRef = useRef('');
   const youtubeTodayTimerSyncInFlightRef = useRef(false);
   const readerAutoPausedByNavigationRef = useRef(false);
   const readerAutoPausedByIdleRef = useRef(false);
@@ -7664,7 +7672,8 @@ function AppInner() {
   const nativeLanguageOptions = [
     { value: 'ru', label: tr('Русский', 'Russisch') },
   ];
-  const needsLanguageProfileChoice = Boolean(isWebAppMode && initData && !languageProfileLoading && !languageProfile?.has_profile);
+  const needsLanguageProfileBootstrap = Boolean(isWebAppMode && initData && !languageProfileLoading && !languageProfile?.has_profile);
+  const needsLanguageProfileChoice = Boolean(needsLanguageProfileBootstrap && !GERMAN_ONLY_MODE);
   const languageProfileGateOpen = needsLanguageProfileChoice || languageProfileModalOpen;
   const solvedTodayStorageKeyByMode = useMemo(() => {
     const uid = webappUser?.id ? String(webappUser.id) : 'anon';
@@ -7686,6 +7695,9 @@ function AppInner() {
   }, [initData, telegramApp, webappUser?.id]);
   const canViewEconomics = stableWebappUserId === '117649764';
   const currentLocalDateKey = getLocalDateKey();
+  const flashcardsDailyTimerStorageKey = useMemo(() => {
+    return `flashcards_daily_active_seconds_${stableWebappUserId}_${currentLocalDateKey}`;
+  }, [currentLocalDateKey, stableWebappUserId]);
   const skillTrainingStorageKey = useMemo(() => {
     return `skill_training_sessions_${stableWebappUserId}_${getLocalDateKey()}`;
   }, [stableWebappUserId]);
@@ -10567,6 +10579,126 @@ function AppInner() {
     return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
   };
 
+  const readFlashcardsDailyTimerSnapshot = useCallback(() => {
+    const key = flashcardsDailyTimerStorageKeyRef.current;
+    if (!key || typeof window === 'undefined') {
+      return { elapsedSeconds: 0 };
+    }
+    try {
+      const raw = window.localStorage.getItem(key);
+      const parsed = raw ? JSON.parse(raw) : null;
+      return {
+        elapsedSeconds: Math.max(0, Math.floor(Number(parsed?.elapsed_seconds || 0))),
+      };
+    } catch (_error) {
+      return { elapsedSeconds: 0 };
+    }
+  }, []);
+
+  const writeFlashcardsDailyTimerSnapshot = useCallback((elapsedSeconds) => {
+    const key = flashcardsDailyTimerStorageKeyRef.current;
+    if (!key || typeof window === 'undefined') return;
+    const safeElapsed = Math.max(0, Math.floor(Number(elapsedSeconds || 0)));
+    try {
+      window.localStorage.setItem(key, JSON.stringify({
+        date_key: currentLocalDateKey,
+        elapsed_seconds: safeElapsed,
+        updated_at: new Date().toISOString(),
+      }));
+    } catch (_error) {
+      // Local persistence is best-effort; the server task timer still syncs separately.
+    }
+  }, [currentLocalDateKey]);
+
+  const pauseFlashcardsDailyTimer = useCallback((reason = 'pause') => {
+    if (!flashcardsDailyActiveRef.current) {
+      writeFlashcardsDailyTimerSnapshot(flashcardsDailyElapsedRef.current);
+      return flashcardsDailyElapsedRef.current;
+    }
+    const nowMs = Date.now();
+    const startedAt = Number(flashcardsDailyStartedAtRef.current || 0);
+    const segmentSeconds = startedAt > 0 ? Math.max(0, Math.floor((nowMs - startedAt) / 1000)) : 0;
+    const nextElapsed = Math.max(0, Math.floor(Number(flashcardsDailyElapsedRef.current || 0))) + segmentSeconds;
+    flashcardsDailyElapsedRef.current = nextElapsed;
+    flashcardsDailyStartedAtRef.current = null;
+    flashcardsDailyActiveRef.current = false;
+    setFlashcardsDailyElapsedSec(nextElapsed);
+    setFlashcardsDailyTimerActive(false);
+    writeFlashcardsDailyTimerSnapshot(nextElapsed);
+    if (reason !== 'tick') {
+      setTodayTimerNowMs(nowMs);
+    }
+    return nextElapsed;
+  }, [writeFlashcardsDailyTimerSnapshot]);
+
+  const startFlashcardsDailyTimer = useCallback(() => {
+    const key = flashcardsDailyTimerStorageKeyRef.current;
+    if (key && flashcardsDailyHydratedKeyRef.current !== key) {
+      const snapshot = readFlashcardsDailyTimerSnapshot();
+      flashcardsDailyHydratedKeyRef.current = key;
+      flashcardsDailyElapsedRef.current = snapshot.elapsedSeconds;
+      setFlashcardsDailyElapsedSec(snapshot.elapsedSeconds);
+    }
+    if (flashcardsDailyActiveRef.current) return flashcardsDailyElapsedRef.current;
+    const nowMs = Date.now();
+    flashcardsDailyStartedAtRef.current = nowMs;
+    flashcardsDailyActiveRef.current = true;
+    setFlashcardsDailyTimerActive(true);
+    writeFlashcardsDailyTimerSnapshot(flashcardsDailyElapsedRef.current);
+    setTodayTimerNowMs(nowMs);
+    return flashcardsDailyElapsedRef.current;
+  }, [readFlashcardsDailyTimerSnapshot, writeFlashcardsDailyTimerSnapshot]);
+
+  const getFlashcardsDailyDisplayElapsedSeconds = useCallback((nowMs = Date.now()) => {
+    const baseSeconds = Math.max(0, Math.floor(Number(flashcardsDailyElapsedRef.current || 0)));
+    if (!flashcardsDailyActiveRef.current || !flashcardsDailyStartedAtRef.current) {
+      return baseSeconds;
+    }
+    return baseSeconds + Math.max(0, Math.floor((nowMs - Number(flashcardsDailyStartedAtRef.current)) / 1000));
+  }, []);
+
+  const ensureFlashcardsDailyTimerAtLeast = useCallback((elapsedSeconds) => {
+    const safeElapsed = Math.max(0, Math.floor(Number(elapsedSeconds || 0)));
+    const currentElapsed = getFlashcardsDailyDisplayElapsedSeconds(Date.now());
+    if (safeElapsed <= currentElapsed) return currentElapsed;
+    flashcardsDailyElapsedRef.current = safeElapsed;
+    if (flashcardsDailyActiveRef.current) {
+      flashcardsDailyStartedAtRef.current = Date.now();
+    }
+    setFlashcardsDailyElapsedSec(safeElapsed);
+    writeFlashcardsDailyTimerSnapshot(safeElapsed);
+    setTodayTimerNowMs(Date.now());
+    return safeElapsed;
+  }, [getFlashcardsDailyDisplayElapsedSeconds, writeFlashcardsDailyTimerSnapshot]);
+
+  useEffect(() => {
+    flashcardsDailyTimerStorageKeyRef.current = flashcardsDailyTimerStorageKey;
+    const snapshot = readFlashcardsDailyTimerSnapshot();
+    flashcardsDailyHydratedKeyRef.current = flashcardsDailyTimerStorageKey;
+    flashcardsDailyElapsedRef.current = snapshot.elapsedSeconds;
+    flashcardsDailyStartedAtRef.current = null;
+    flashcardsDailyActiveRef.current = false;
+    setFlashcardsDailyElapsedSec(snapshot.elapsedSeconds);
+    setFlashcardsDailyTimerActive(false);
+    setTodayTimerNowMs(Date.now());
+  }, [flashcardsDailyTimerStorageKey, readFlashcardsDailyTimerSnapshot]);
+
+  useEffect(() => {
+    flashcardsDailyElapsedRef.current = Math.max(0, Math.floor(Number(flashcardsDailyElapsedSec || 0)));
+  }, [flashcardsDailyElapsedSec]);
+
+  useEffect(() => {
+    flashcardsDailyActiveRef.current = Boolean(flashcardsDailyTimerActive);
+  }, [flashcardsDailyTimerActive]);
+
+  useEffect(() => {
+    if (!flashcardsDailyTimerActive) return undefined;
+    const intervalId = window.setInterval(() => {
+      setTodayTimerNowMs(Date.now());
+    }, 1000);
+    return () => window.clearInterval(intervalId);
+  }, [flashcardsDailyTimerActive]);
+
   const formatSrsIntervalHint = (seconds) => {
     const safeSeconds = Number(seconds);
     if (!Number.isFinite(safeSeconds) || safeSeconds < 0) return '';
@@ -10617,10 +10749,13 @@ function AppInner() {
     // ignoreProgress: always show timer button even when daily goal is met.
     // Without this, progress >= 100 replaces the timer with ✅ which hides it mid-session.
     const ignoreProgress = Boolean(options?.ignoreProgress);
-    const elapsed = getTodayItemElapsedSeconds(item, todayTimerNowMs);
+    const isFlashcardsTimer = String(sectionKey || '').toLowerCase() === 'flashcards';
+    const elapsed = isFlashcardsTimer
+      ? getFlashcardsDailyDisplayElapsedSeconds(todayTimerNowMs)
+      : getTodayItemDisplayElapsedSeconds(item, todayTimerNowMs);
     const progress = getTodayItemProgressPercent(item, todayTimerNowMs);
     const done = String(item?.status || '').toLowerCase() === 'done' || (!ignoreProgress && progress >= 100);
-    const running = isTodayItemTimerRunning(item);
+    const running = isFlashcardsTimer ? flashcardsDailyTimerActive : isTodayItemTimerRunning(item);
     return (
       <div className={`today-section-task-hud ${inline ? 'is-inline' : ''}`.trim()}>
         {done && (
@@ -10641,8 +10776,13 @@ function AppInner() {
   const ensureFlashcardsTaskTimerRunning = async () => {
     const item = getTodayTaskForSection('flashcards');
     if (!item) return;
+    const serverElapsedSeconds = getTodayItemElapsedSeconds(item, Date.now());
+    ensureFlashcardsDailyTimerAtLeast(serverElapsedSeconds);
     if (isTodayItemTimerRunning(item)) return;
-    const elapsedSeconds = getTodayItemElapsedSeconds(item, Date.now());
+    const elapsedSeconds = Math.max(
+      serverElapsedSeconds,
+      getFlashcardsDailyDisplayElapsedSeconds(Date.now())
+    );
     const hasStartedBefore = elapsedSeconds > 0 || String(item?.status || '').toLowerCase() === 'doing';
     await syncTodayItemTimer(
       item,
@@ -10655,7 +10795,10 @@ function AppInner() {
     const item = getTodayTaskForSection('flashcards');
     if (!item) return;
     if (!isTodayItemTimerRunning(item)) return;
-    const elapsedSeconds = getTodayItemElapsedSeconds(item, Date.now());
+    const elapsedSeconds = Math.max(
+      getTodayItemElapsedSeconds(item, Date.now()),
+      getFlashcardsDailyDisplayElapsedSeconds(Date.now())
+    );
     await syncTodayItemTimer(item, 'pause', { elapsedSeconds, running: false });
   };
 
@@ -11598,15 +11741,18 @@ function AppInner() {
     }
   };
 
-  const saveLanguageProfile = () => {
+  const saveLanguageProfile = (options = {}) => {
     if (!initData) return;
+    const silent = Boolean(options?.silent);
     setLanguageProfileError('');
 
     // Close modal immediately — save + any session reset runs in background
     if (!needsLanguageProfileChoice) {
       setLanguageProfileModalOpen(false);
     }
-    showInlineToast(tr('Профиль сохранён ✅', 'Profil gespeichert ✅'));
+    if (!silent) {
+      showInlineToast(tr('Профиль сохранён ✅', 'Profil gespeichert ✅'));
+    }
 
     (async () => {
       try {
@@ -11681,8 +11827,10 @@ function AppInner() {
         }
       } catch (error) {
         setLanguageProfileError(`${tr('Ошибка сохранения профиля', 'Fehler beim Speichern des Profils')}: ${error.message}`);
-        showInlineToast(`${tr('Ошибка сохранения профиля', 'Fehler beim Speichern des Profils')}: ${error.message}`);
-        setLanguageProfileModalOpen(true);
+        if (!silent) {
+          showInlineToast(`${tr('Ошибка сохранения профиля', 'Fehler beim Speichern des Profils')}: ${error.message}`);
+          setLanguageProfileModalOpen(true);
+        }
       } finally {
         setLanguageProfileSaving(false);
       }
@@ -13588,6 +13736,7 @@ function AppInner() {
   }
 
   const goHomeScreen = () => {
+    pauseFlashcardsDailyTimer('home');
     setFlashcardsOnly(false);
     setFlashcardSessionActive(false);
     setSelectedSections(new Set());
@@ -13680,6 +13829,7 @@ function AppInner() {
 
   const openFlashcardsSetup = (ref) => {
     stopTtsPlayback();
+    pauseFlashcardsDailyTimer('open_flashcards_setup');
     setFlashcardsVisible(true);
     setFlashcardsOnly(false);
     setFlashcardActiveMode(null);
@@ -13697,6 +13847,7 @@ function AppInner() {
 
   const exitFlashcardsTraining = async () => {
     stopTtsPlayback();
+    pauseFlashcardsDailyTimer('exit_flashcards');
     void dispatchQueuedFlashcardFeel('exit_session');
     setFlashcardsOnly(false);
     setFlashcardActiveMode(null);
@@ -13737,6 +13888,7 @@ function AppInner() {
     setFlashcardExitSummary(false);
     setFlashcardsError('');
     setFlashcardsEmptyState(null);
+    startFlashcardsDailyTimer();
     await ensureFlashcardsTaskTimerRunning();
 
     if (normalizedMode === 'fsrs') {
@@ -14547,6 +14699,7 @@ function AppInner() {
   const pauseAllActiveTimers = useCallback(async (reason = 'auto') => {
     if (globalTimerAutoPauseInFlightRef.current) return;
     globalTimerAutoPauseInFlightRef.current = true;
+    pauseFlashcardsDailyTimer(reason);
     setGlobalTimerSuspended(true);
     setGlobalPauseReason(
       reason === 'lifecycle'
@@ -14569,7 +14722,9 @@ function AppInner() {
         });
         await Promise.all(runningTodayTimers.map((item) => (
           syncTodayItemTimer(item, 'pause', {
-            elapsedSeconds: getTodayItemElapsedSeconds(item, nowMs),
+            elapsedSeconds: String(item?.task_type || '').toLowerCase() === 'cards'
+              ? Math.max(getTodayItemElapsedSeconds(item, nowMs), getFlashcardsDailyDisplayElapsedSeconds(nowMs))
+              : getTodayItemElapsedSeconds(item, nowMs),
             running: false,
             keepalive: reason === 'pagehide' || reason === 'beforeunload',
           })
@@ -14618,7 +14773,9 @@ function AppInner() {
     assistantSessionId,
     syncTodayItemTimer,
     getTodayItemElapsedSeconds,
+    getFlashcardsDailyDisplayElapsedSeconds,
     isTodayItemTimerRunning,
+    pauseFlashcardsDailyTimer,
     stopReaderSessionTracking,
     stopAssistantSessionTracking,
   ]);
@@ -14754,8 +14911,6 @@ function AppInner() {
     globalTimerAutoResumeInFlightRef.current = true;
     try {
       const items = Array.isArray(todayPlan?.items) ? todayPlan.items : [];
-      if (items.length === 0) return;
-
       const sectionVisibility = {
         flashcards: flashcardsOnly || selectedSections.has('flashcards'),
         translations: !flashcardsOnly && selectedSections.has('translations'),
@@ -14778,6 +14933,12 @@ function AppInner() {
         if (key === 'theory') return findTodayTaskByTypesLocal(['theory']);
         return null;
       };
+
+      if (sectionVisibility.flashcards && flashcardActiveMode) {
+        startFlashcardsDailyTimer();
+      }
+
+      if (items.length === 0) return;
 
       const nowMs = Date.now();
       const timerSyncCalls = [];
@@ -14832,10 +14993,13 @@ function AppInner() {
     readerArchiveOpen,
     readerSettingsOpen,
     readerTimerPaused,
+    flashcardActiveMode,
     getTodayItemElapsedSeconds,
+    getFlashcardsDailyDisplayElapsedSeconds,
     isTodayItemTimerRunning,
     syncTodayItemTimer,
     startReaderSessionTracking,
+    startFlashcardsDailyTimer,
   ]);
 
   const requestTelegramFullscreen = useCallback(() => {
@@ -15137,6 +15301,13 @@ function AppInner() {
       const wasVisible = Boolean(prevVisibility[sectionKey]);
       const isVisible = Boolean(sectionVisibility[sectionKey]);
       if (wasVisible === isVisible) return;
+      if (sectionKey === 'flashcards') {
+        if (wasVisible && !isVisible) {
+          pauseFlashcardsDailyTimer('section_hidden');
+        } else if (!wasVisible && isVisible && flashcardActiveMode) {
+          startFlashcardsDailyTimer();
+        }
+      }
       const item = getSectionTask(sectionKey);
       if (!item?.id) return;
       const status = String(item?.status || '').toLowerCase();
@@ -15144,7 +15315,9 @@ function AppInner() {
         autoPausedTodayTimerIdsRef.current.delete(item.id);
         return;
       }
-      const elapsedSeconds = getTodayItemElapsedSeconds(item, nowMs);
+      const elapsedSeconds = sectionKey === 'flashcards'
+        ? Math.max(getTodayItemElapsedSeconds(item, nowMs), getFlashcardsDailyDisplayElapsedSeconds(nowMs))
+        : getTodayItemElapsedSeconds(item, nowMs);
       if (wasVisible && !isVisible && isTodayItemTimerRunning(item)) {
         pausedByNavigation = true;
         if (sectionKey !== 'youtube') {
@@ -15233,9 +15406,13 @@ function AppInner() {
     readerAccumulatedSeconds,
     readerSessionStartedAt,
     readerSessionId,
+    flashcardActiveMode,
     getTodayItemElapsedSeconds,
+    getFlashcardsDailyDisplayElapsedSeconds,
     isTodayItemTimerRunning,
+    pauseFlashcardsDailyTimer,
     syncTodayItemTimer,
+    startFlashcardsDailyTimer,
     stopReaderSessionTracking,
     startReaderSessionTracking,
   ]);
@@ -15606,12 +15783,14 @@ function AppInner() {
     setSkillReportLoadedOnce(true);
   }, [initData, isWebAppMode, readSkillReportSnapshot, skillReport]);
 
-  // In GERMAN_ONLY_MODE auto-save the fixed profile so the gate never appears.
+  // In GERMAN_ONLY_MODE save the fixed profile silently so the gate never appears.
   useEffect(() => {
     if (!GERMAN_ONLY_MODE) return;
-    if (!needsLanguageProfileChoice || languageProfileSaving) return;
-    void saveLanguageProfile();
-  }, [needsLanguageProfileChoice, languageProfileSaving]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!needsLanguageProfileBootstrap || languageProfileSaving) return;
+    if (languageProfileAutoSaveAttemptedRef.current) return;
+    languageProfileAutoSaveAttemptedRef.current = true;
+    void saveLanguageProfile({ silent: true });
+  }, [needsLanguageProfileBootstrap, languageProfileSaving]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!isWebAppMode || !initData || !startupPhase3Ready || !languageProfile?.has_profile) {

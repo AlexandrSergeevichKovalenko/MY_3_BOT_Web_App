@@ -10,6 +10,12 @@ class OpenAIManagerPromptingTests(unittest.TestCase):
         self.assertIn("Never output broken fragments, dictionary-style fragments, or artificial textbook phrases.", prompt)
         self.assertIn("Avoid trivial toy examples unless they are the only natural option.", prompt)
 
+    def test_quiz_followup_prompt_prioritizes_exact_question(self) -> None:
+        prompt = system_message["quiz_followup_question"]
+        self.assertIn("learner_question is the primary task", prompt)
+        self.assertIn("Start reply_text with the direct answer to learner_question", prompt)
+        self.assertIn("Do not re-explain the whole studied_text", prompt)
+
     def test_private_question_prompt_prefers_natural_collocations(self) -> None:
         prompt = system_message["language_learning_private_question"]
         self.assertIn("Prefer a natural collocation over a generic example sentence", prompt)

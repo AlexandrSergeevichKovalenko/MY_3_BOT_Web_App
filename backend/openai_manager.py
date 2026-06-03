@@ -49,6 +49,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "enrich_word",
     "enrich_word_multilang",
     "quiz_followup_question",
+    "quiz_result_commentary",
     "check_translation",
     "check_translation_multilang",
     "check_translation_story",
@@ -938,7 +939,12 @@ Return STRICT JSON only with this schema:
 
 Rules:
 - reply_text must be written in target_language.
-- Answer the learner's question directly and practically.
+- learner_question is the primary task. Answer that exact question, not a generic explanation of the card.
+- Start reply_text with the direct answer to learner_question in 1-3 sentences.
+- Only after the direct answer, add the shortest necessary context from studied_text/translation_text.
+- Do not re-explain the whole studied_text or repeat a generic "feel the word" explanation unless the learner explicitly asks for a full explanation.
+- If the learner asks "why?", "what exactly?", "is it correct?", "which case?", "can I say X?", or another narrow question, address that narrow point first.
+- If the question is ambiguous, state the most likely interpretation tied to studied_text and answer it directly.
 - studied_text is the main expression the learner is studying.
 - translation_text is only the gloss/translation of studied_text.
 - If the learner asks anaphoric questions like "what does this word mean?", "what is the origin of this word?", "when do they say this?", assume "this word/this phrase" refers to studied_text, not translation_text.
@@ -965,6 +971,44 @@ Rules:
 - If there is only 1 genuinely good item, return 1 item.
 - If there is no good save candidate, return an empty array for save_variants.
 - Never swap source and target languages.
+- Output ONLY valid JSON. No markdown fences. No extra commentary.
+""",
+"quiz_result_commentary": """
+You write a compact quiz-result commentary for Russian-speaking learners of German.
+
+Input JSON:
+{
+  "quiz_question": "...",
+  "correct_de": "...",
+  "selected_de": "...",
+  "translation_ru": "...",
+  "is_correct": true
+}
+
+Return STRICT JSON only with this schema:
+{
+  "items": [
+    {"emoji": "🔎", "text": "..."},
+    {"emoji": "🧩", "text": "..."}
+  ]
+}
+
+Task:
+- Explain the key grammar and vocabulary in correct_de, in Russian.
+- Keep it short, clear, and practical: 2-4 items, each 1 concise sentence.
+- Prioritize what prevents the most common learner questions:
+  compound words and how their parts form the meaning;
+  unusual grammatical constructions;
+  noun + preposition government in this exact example;
+  article/gender/case if it is non-obvious, irregular, weak declension, or can conflict with simple learner rules;
+  fixed/formal/register-specific wording;
+  why selected_de is weaker/wrong when it helps, but do not dwell on it.
+- If correct_de contains a sign/instruction/legal-style formula, explain the formula.
+- If there is nothing unusual, give only the most useful lexical/collocation note.
+- Do not invent facts. Do not list every word.
+- Write text in Russian. German examples inside text are allowed.
+- No markdown, no HTML, no numbering.
+- Max 95 characters per item.text.
 - Output ONLY valid JSON. No markdown fences. No extra commentary.
 """,
 "language_learning_private_question": """
@@ -5051,6 +5095,15 @@ async def run_quiz_followup_question(payload: dict) -> dict:
         system_instruction_key="quiz_followup_question",
         payload=payload or {},
         poll_delay_sec=1.2,
+    )
+
+
+async def run_quiz_result_commentary(payload: dict) -> dict:
+    return await _run_json_assistant_task(
+        task_name="quiz_result_commentary",
+        system_instruction_key="quiz_result_commentary",
+        payload=payload or {},
+        poll_delay_sec=1.0,
     )
 
 

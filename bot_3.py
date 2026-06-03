@@ -84,6 +84,7 @@ from backend.openai_manager import (
     run_language_learning_private_question,
     run_language_learning_private_question_detailed,
     run_quiz_followup_question,
+    run_quiz_result_commentary,
     run_translate_subtitles_ru,
     run_translate_subtitles_multilang,
     run_text_vocab_extract,
@@ -6557,15 +6558,17 @@ def _build_dictionary_feel_private_message(
     return "\n".join(lines)
 
 
-def _build_dictionary_feel_reply_markup(token: str) -> InlineKeyboardMarkup:
+def _build_dictionary_feel_reply_markup(token: str, question_request_key: str | None = None) -> InlineKeyboardMarkup:
     feedback_token = str(token or "").strip()
+    followup_key = str(question_request_key or "").strip()
+    followup_callback = f"quizask:{followup_key}" if followup_key else "langgpt:continue"
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("👍 Like", callback_data=f"feelfb:{feedback_token}:like"),
             InlineKeyboardButton("👎 Dislike", callback_data=f"feelfb:{feedback_token}:dislike"),
         ],
         [
-            InlineKeyboardButton("❓ Задать вопрос", callback_data="langgpt:continue"),
+            InlineKeyboardButton("❓ Задать вопрос", callback_data=followup_callback),
         ],
     ])
 
@@ -7723,7 +7726,14 @@ async def handle_dictionary_feel_callback(update: Update, context: CallbackConte
             entry_id=0,
             feel_explanation=feel_text,
         )
-        reply_markup = _build_dictionary_feel_reply_markup(token)
+        question_request_key = _store_pending_quiz_question_request(
+            user_id=int(user.id),
+            source_text=source_text,
+            target_text=target_text,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        reply_markup = _build_dictionary_feel_reply_markup(token, question_request_key)
         text = _build_dictionary_feel_private_message(
             source_text=source_text,
             target_text=target_text or "—",
@@ -7880,7 +7890,14 @@ async def handle_quiz_feel_callback(update: Update, context: CallbackContext) ->
             entry_id=0,
             feel_explanation=feel_text,
         )
-        reply_markup = _build_dictionary_feel_reply_markup(token)
+        question_request_key = _store_pending_quiz_question_request(
+            user_id=int(user.id),
+            source_text=source_text,
+            target_text=target_text,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        reply_markup = _build_dictionary_feel_reply_markup(token, question_request_key)
         text = _build_dictionary_feel_private_message(
             source_text=source_text,
             target_text=target_text or "—",
@@ -13047,6 +13064,68 @@ def _normalize_language_tutor_llm_response(
     }
 
 
+def _normalize_quiz_result_commentary(raw_payload: dict, *, max_items: int = 4) -> list[dict[str, str]]:
+    payload = raw_payload if isinstance(raw_payload, dict) else {}
+    raw_items = payload.get("items")
+    normalized: list[dict[str, str]] = []
+    if not isinstance(raw_items, list):
+        return normalized
+
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        text = re.sub(r"\s+", " ", str(item.get("text") or "").strip())
+        if not text:
+            continue
+        if len(text) > 140:
+            text = text[:137].rstrip() + "..."
+        emoji = str(item.get("emoji") or "").strip()
+        if len(emoji) > 3:
+            emoji = ""
+        normalized.append(
+            {
+                "emoji": emoji or "•",
+                "text": text,
+            }
+        )
+        if len(normalized) >= max(1, int(max_items or 1)):
+            break
+    return normalized
+
+
+async def _build_quiz_result_commentary_items(
+    *,
+    quiz_data: dict,
+    correct_de: str,
+    selected_de: str,
+    translation_ru: str,
+    is_correct: bool,
+) -> list[dict[str, str]]:
+    correct_text = str(correct_de or "").strip()
+    if not correct_text or correct_text == "—":
+        return []
+    try:
+        payload = await asyncio.wait_for(
+            run_quiz_result_commentary(
+                {
+                    "quiz_question": str(quiz_data.get("question") or "").strip(),
+                    "correct_de": correct_text,
+                    "selected_de": str(selected_de or "").strip(),
+                    "translation_ru": str(translation_ru or "").strip(),
+                    "is_correct": bool(is_correct),
+                }
+            ),
+            timeout=9.0,
+        )
+    except asyncio.TimeoutError:
+        logging.warning("⚠️ Таймаут генерации комментария к результату квиза")
+        return []
+    except Exception as exc:
+        logging.warning("⚠️ Не удалось сгенерировать комментарий к результату квиза: %s", exc)
+        return []
+    return _normalize_quiz_result_commentary(payload)
+
+
 async def _send_quiz_result_private(
     context: ContextTypes.DEFAULT_TYPE,
     user_id: int,
@@ -13102,6 +13181,20 @@ async def _send_quiz_result_private(
             "",
             f"💡 <b>Пояснение:</b> {html.escape(explanation_text)}",
         ])
+    commentary_items = await _build_quiz_result_commentary_items(
+        quiz_data=quiz_data if isinstance(quiz_data, dict) else {},
+        correct_de=de_text,
+        selected_de=selected_display,
+        translation_ru=ru_text,
+        is_correct=bool(is_correct),
+    )
+    if commentary_items:
+        lines.extend(["", "🟩 <b>Комментарий:</b>"])
+        for item in commentary_items:
+            emoji = str(item.get("emoji") or "•").strip() or "•"
+            text = str(item.get("text") or "").strip()
+            if text:
+                lines.append(f"{html.escape(emoji)} {html.escape(text)}")
 
     reply_markup = None
     fallback_reply_markup = None
