@@ -3071,7 +3071,7 @@ const TranslationDraftField = React.memo(function TranslationDraftField({
         <button
           type="button"
           className="translation-dict-jump"
-          onClick={onJumpToDictionary}
+          onClick={() => onJumpToDictionary?.(sentenceText, sentenceId)}
           aria-label={dictionaryLabel}
           disabled={Boolean(checkLoading)}
         >
@@ -5114,6 +5114,8 @@ function AppInner() {
   const [translationCheckProgress, setTranslationCheckProgress] = useState({ active: false, done: 0, total: 0 });
   const [translationDrafts, setTranslationDrafts] = useState({});
   const [finishMessage, setFinishMessage] = useState('');
+  const [translationDictionaryOpen, setTranslationDictionaryOpen] = useState(false);
+  const [translationDictionaryAnchor, setTranslationDictionaryAnchor] = useState('');
   const [dictionaryWord, setDictionaryWord] = useState('');
   const [dictionaryResult, setDictionaryResult] = useState(null);
   const [dictionaryError, setDictionaryError] = useState('');
@@ -5917,6 +5919,8 @@ function AppInner() {
   const youtubeSuppressSentenceTapRef = useRef(0);
   const youtubeDictDragRef = useRef({ dragging: false, startX: 0, startY: 0, startLeft: 0, startTop: 0 });
   const youtubeDictWidgetRef = useRef(null);
+  const translationDictDragRef = useRef({ dragging: false, startX: 0, startY: 0, startLeft: 0, startTop: 0 });
+  const translationDictWidgetRef = useRef(null);
   const youtubeTranslateInFlightRef = useRef(false);
   const youtubeTranslateIndexRef = useRef(-1);
   const autoAdvanceTimeoutRef = useRef(null);
@@ -8800,7 +8804,7 @@ function AppInner() {
         if (itemId) seen.add(itemId);
         next.push(item);
       }
-      return next.slice(0, 20);
+      return next.slice(0, 60);
     });
   }, [getSrsCardId, updateSrsPrefetchQueue]);
 
@@ -13880,13 +13884,21 @@ function AppInner() {
     youtubeLearningMode,
   ]);
 
-  const jumpToDictionaryFromSentence = useCallback(() => {
+  const jumpToDictionaryFromSentence = useCallback((sentenceText = '', sentenceId = '') => {
     setLastLookupScrollY(window.scrollY);
-    setSelectedSections(new Set(['dictionary']));
-    setTimeout(() => {
-      scrollToRef(dictionaryRef, { block: 'start' });
-    }, 80);
-  }, [scrollToRef]);
+    const anchor = String(sentenceId || sentenceText || '').trim();
+    setTranslationDictionaryOpen((prev) => {
+      const nextOpen = prev && anchor && anchor === translationDictionaryAnchor ? false : true;
+      if (nextOpen) {
+        setTranslationDictionaryAnchor(anchor);
+        setDictionaryError('');
+        setDictionarySaved('');
+      } else {
+        setTranslationDictionaryAnchor('');
+      }
+      return nextOpen;
+    });
+  }, [translationDictionaryAnchor]);
 
   const openFlashcardsSetup = (ref) => {
     stopTtsPlayback();
@@ -17081,7 +17093,7 @@ function AppInner() {
     const activeCardId = getSrsCardId(srsCard);
     const pendingTotal = Math.max(0, Number(srsQueueInfo?.due_count || 0)) + Math.max(0, Number(srsQueueInfo?.new_remaining_today || 0));
     if (!activeCardId && pendingTotal <= 0) return;
-    if (srsPrefetchQueue.length > 2) return;
+    if (srsPrefetchQueue.length > 12) return;
     const signature = `${activeCardId}:${pendingTotal}:${srsPrefetchQueue.length}`;
     if (srsTtsPrefetchSignatureRef.current === signature) return;
     srsTtsPrefetchSignatureRef.current = signature;
@@ -17102,7 +17114,7 @@ function AppInner() {
 
   useEffect(() => {
     if (!initData || !isSectionVisible('flashcards') || !flashcardsVisible || flashcardActiveMode !== 'fsrs') return;
-    const cardsToWarm = [srsCard, ...srsPrefetchQueue.slice(0, 4)];
+    const cardsToWarm = [srsCard, ...srsPrefetchQueue.slice(0, 12)];
     cardsToWarm.forEach((card) => {
       if (!card) return;
       const direction = (card?.source_lang || 'ru') === 'de' ? 'de-ru' : 'ru-de';
@@ -26206,6 +26218,260 @@ function AppInner() {
     })();
   };
 
+  const renderTranslationDictionaryWidget = () => {
+    if (!translationDictionaryOpen) return null;
+    const sourceTarget = getDictionarySourceTarget(dictionaryResult, dictionaryDirection);
+    const displaySource = sourceTarget.sourceText || String(dictionaryWord || '').trim();
+    const displayTarget = getDictionaryDisplayedTranslation(dictionaryResult, dictionaryDirection);
+    const targetTts = resolveDictionaryTargetTts(dictionaryResult, dictionaryDirection);
+    const targetTtsKey = `translation-floating-dictionary-${String(dictionaryDirection || 'default')}`;
+    const targetTtsLoading = targetTts.text ? isTtsPending(targetTtsKey) : false;
+
+    const beginDrag = (clientX, clientY) => {
+      const el = translationDictWidgetRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      translationDictDragRef.current = {
+        dragging: true,
+        startX: clientX,
+        startY: clientY,
+        startLeft: rect.left,
+        startTop: rect.top,
+      };
+    };
+    const moveDrag = (clientX, clientY) => {
+      const drag = translationDictDragRef.current;
+      const el = translationDictWidgetRef.current;
+      if (!drag.dragging || !el) return;
+      const width = el.offsetWidth || 340;
+      const height = el.offsetHeight || 420;
+      const nextLeft = Math.max(8, Math.min(window.innerWidth - width - 8, drag.startLeft + clientX - drag.startX));
+      const nextTop = Math.max(8, Math.min(window.innerHeight - height - 8, drag.startTop + clientY - drag.startY));
+      el.style.left = `${nextLeft}px`;
+      el.style.top = `${nextTop}px`;
+      el.style.bottom = 'auto';
+      el.style.transform = 'none';
+    };
+    const endDrag = () => {
+      translationDictDragRef.current.dragging = false;
+    };
+
+    return (
+      <div
+        className="translation-dict-widget"
+        ref={translationDictWidgetRef}
+        onMouseDown={(event) => {
+          if (!event.target.closest('.translation-dict-widget-handle')) return;
+          beginDrag(event.clientX, event.clientY);
+          event.preventDefault();
+        }}
+        onTouchStart={(event) => {
+          if (!event.target.closest('.translation-dict-widget-handle')) return;
+          const touch = event.touches[0];
+          if (touch) beginDrag(touch.clientX, touch.clientY);
+        }}
+      >
+        <div
+          className="translation-dict-widget-handle"
+          onMouseMove={(event) => moveDrag(event.clientX, event.clientY)}
+          onMouseUp={endDrag}
+          onMouseLeave={endDrag}
+          onTouchMove={(event) => {
+            const touch = event.touches[0];
+            if (touch) moveDrag(touch.clientX, touch.clientY);
+          }}
+          onTouchEnd={endDrag}
+          onTouchCancel={endDrag}
+        >
+          <div className="yt-dict-drag-dots" aria-hidden="true">
+            {[0, 1, 2, 3, 4, 5].map((item) => <span key={item} />)}
+          </div>
+          <span className="translation-dict-widget-title">{tr('Словарь', 'Wörterbuch')}</span>
+          <button
+            type="button"
+            className="translation-dict-widget-close"
+            onClick={() => {
+              setTranslationDictionaryOpen(false);
+              setTranslationDictionaryAnchor('');
+            }}
+            aria-label={tr('Закрыть', 'Schließen')}
+          >
+            ×
+          </button>
+        </div>
+
+        <form className="translation-dict-widget-body" onSubmit={handleDictionaryLookup}>
+          <div className="translation-dict-input-wrap">
+            <input
+              className="translation-dict-input"
+              type="text"
+              value={dictionaryWord}
+              onChange={(event) => setDictionaryWord(event.target.value)}
+              placeholder={tr('Слово или фраза...', 'Wort oder Phrase...')}
+            />
+            {dictionaryWord.trim() && (
+              <button
+                type="button"
+                className="translation-dict-clear"
+                onClick={() => setDictionaryWord('')}
+                aria-label={tr('Очистить', 'Leeren')}
+              >
+                ×
+              </button>
+            )}
+          </div>
+          <div className="translation-dict-widget-actions">
+            <button type="button" onClick={handleDictionaryQuickLookup} disabled={dictionaryLoading}>
+              {dictionaryLoading && dictionaryLookupMode === 'quick' ? tr('Перевод...', 'Übersetzen...') : tr('⚡ Перевод', '⚡ Übersetzen')}
+            </button>
+            <button type="submit" disabled={dictionaryLoading}>
+              {dictionaryLoading && dictionaryLookupMode === 'gpt' ? tr('AI...', 'KI...') : tr('🤖 AI', '🤖 KI')}
+            </button>
+            <button type="button" onClick={handleDictionaryBaseLookup} disabled={dictionaryLoading}>
+              {dictionaryLoading && dictionaryLookupMode === 'base' ? tr('Офлайн...', 'Offline...') : tr('📖 Офлайн', '📖 Offline')}
+            </button>
+          </div>
+          <label className="translation-dict-folder-row">
+            <span>{tr('Папка для сохранения', 'Speicherordner')}</span>
+            <select
+              value={dictionaryFolderId}
+              onChange={(event) => setDictionaryFolderId(event.target.value)}
+            >
+              <option value="none">{tr('Без папки', 'Ohne Ordner')}</option>
+              {folders.map((folder) => (
+                <option key={folder.id} value={folder.id}>
+                  {resolveFolderIconLabel(folder.icon)} • {folder.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </form>
+
+        <div className="translation-dict-widget-content">
+          {dictionaryError && <div className="webapp-error">{dictionaryError}</div>}
+          {dictionarySaved && <div className="webapp-success">{dictionarySaved}</div>}
+          {dictionaryLoading && (
+            <div className="translation-dict-widget-empty">{tr('Ищем...', 'Suche...')}</div>
+          )}
+          {!dictionaryLoading && !dictionaryResult && !dictionaryError && (
+            <div className="translation-dict-widget-empty">
+              {tr('Введите слово или фразу и выберите режим поиска.', 'Gib ein Wort oder eine Phrase ein und wähle den Suchmodus.')}
+            </div>
+          )}
+          {!dictionaryLoading && dictionaryResult && (
+            <div className="translation-dict-widget-result">
+              <div className="translation-dict-result-head">
+                <strong>{displaySource || '—'}</strong>
+                {dictionaryResult.part_of_speech && <span>{dictionaryResult.part_of_speech}</span>}
+              </div>
+              <div className="translation-dict-result-translation">
+                {dictionaryResult.article ? `${dictionaryResult.article} ` : ''}{displayTarget || '—'}
+                {targetTts.text && (
+                  <button
+                    type="button"
+                    className={`inline-tts-button ${targetTtsLoading ? 'is-loading' : ''}`}
+                    onClick={() => {
+                      void playTtsWithUi(targetTtsKey, targetTts.text, targetTts.locale);
+                    }}
+                    aria-label={tr('Озвучить', 'Vorlesen')}
+                    disabled={targetTtsLoading}
+                  >
+                    {renderTtsButtonContent(targetTtsLoading)}
+                  </button>
+                )}
+              </div>
+              {getDictionaryPrimaryMeaning(dictionaryResult) && (
+                <div className="translation-dict-mini-block">
+                  <strong>{tr('Главный смысл', 'Hauptbedeutung')}</strong>
+                  <span>{formatDictionaryMeaningText(getDictionaryPrimaryMeaning(dictionaryResult))}</span>
+                </div>
+              )}
+              {Array.isArray(dictionaryResult.usage_examples) && dictionaryResult.usage_examples.length > 0 && (
+                <div className="translation-dict-mini-block">
+                  <strong>{tr('Примеры', 'Beispiele')}</strong>
+                  {dictionaryResult.usage_examples.slice(0, 2).map((example, index) => {
+                    const text = formatDictionaryExampleText(example);
+                    return text ? <span key={`${text}-${index}`}>{text}</span> : null;
+                  })}
+                </div>
+              )}
+              {dictionaryLookupProgress.status === 'enriching' && (
+                <div className="webapp-muted">
+                  {tr('Уточняем полный GPT-разбор...', 'Die volle KI-Analyse wird noch geladen...')}
+                </div>
+              )}
+              {dictionaryLookupProgress.error && dictionaryLookupProgress.status !== 'failed' && (
+                <div className="webapp-muted">{dictionaryLookupProgress.error}</div>
+              )}
+              <button
+                className="translation-dict-save-button"
+                type="button"
+                onClick={handleDictionarySave}
+                disabled={dictionaryLoading || !dictionaryResult || dictionaryLookupProgress.saveLocked}
+              >
+                {dictionaryLookupProgress.saveLocked
+                  ? tr('Ждём полный разбор...', 'Warte auf die volle Analyse...')
+                  : tr('Добавить в словарь', 'Ins Wörterbuch speichern')}
+              </button>
+            </div>
+          )}
+
+          {collocationsVisible && (
+            <div className="translation-dict-collocations">
+              <h4>{tr('Выберите связку для словаря', 'Wähle eine Kollokation')}</h4>
+              {collocationsLoading && <div className="webapp-muted">{tr('Генерируем варианты...', 'Varianten werden generiert...')}</div>}
+              {collocationsError && <div className="webapp-error">{collocationsError}</div>}
+              {!collocationsLoading && collocationOptions.length > 0 && (
+                <div className="collocation-list">
+                  {collocationOptions.map((option, index) => {
+                    const optionKey = `${String(option.source)}|||${String(option.target)}`;
+                    return (
+                      <label key={`${option.source}-${index}`} className="collocation-item">
+                        <input
+                          type="checkbox"
+                          checked={selectedCollocations.includes(optionKey)}
+                          onChange={() => {
+                            setSelectedCollocations((prev) => (
+                              prev.includes(optionKey)
+                                ? prev.filter((key) => key !== optionKey)
+                                : [...prev, optionKey]
+                            ));
+                          }}
+                        />
+                        <div>
+                          <div className="collocation-source">{option.source}</div>
+                          <div className="collocation-target">{option.target}</div>
+                          {option.isBase && <span className="collocation-tag">{tr('Исходное', 'Basis')}</span>}
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+              <div className="collocation-actions">
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={handleConfirmSaveCollocation}
+                  disabled={dictionaryLoading}
+                >
+                  {dictionaryLoading ? tr('Сохраняем...', 'Speichern...') : tr('Добавить выбранное', 'Ausgewähltes hinzufügen')}
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => setCollocationsVisible(false)}
+                >
+                  {tr('Отмена', 'Abbrechen')}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   const handleExportDictionaryPdf = async () => {
     if (!initData) {
       setDictionaryError(initDataMissingMsg);
@@ -30196,6 +30462,7 @@ function AppInner() {
                 handleTranslationVoteStable={handleTranslationVoteStable}
               />
             )}
+            {renderTranslationDictionaryWidget()}
 
             {!flashcardsOnly && (isSectionVisible('youtube') || isSectionVisible('dictionary')) && (
               <div className={`webapp-video-dictionary ${videoExpanded ? 'is-split' : ''}`}>

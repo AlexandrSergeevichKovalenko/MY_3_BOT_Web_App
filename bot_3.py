@@ -202,7 +202,20 @@ from backend.database import (
     claim_or_create_visual_riddle_slot_template,
     count_ready_visual_riddle_templates,
     list_recent_visual_riddle_slot_assignments,
+    sync_rebus_bank_from_code,
+    pick_next_rebus,
+    assign_rebus_slot,
+    get_rebus_slot,
+    get_rebus_bank_entry,
+    mark_rebus_sent,
+    count_available_rebuses,
+    record_rebus_dispatch,
+    update_rebus_dispatch_telegram_id,
+    get_rebus_dispatch_by_id,
+    record_rebus_answer,
+    mark_rebus_answer_feedback_sent,
 )
+from backend.r2_storage import r2_public_url
 from backend.job_queue import (
     can_enqueue_background_jobs,
     enqueue_image_quiz_template_refresh_job,
@@ -222,6 +235,10 @@ QUIZ_SCHEDULE_TZ_NAME = (os.getenv("QUIZ_SCHEDULE_TZ") or "Europe/Vienna").strip
 QUIZ_IMAGE_SLOT_TIMES = {(9, 0), (12, 0), (18, 0)}
 VISUAL_RIDDLE_SLOT_TIMES = {(7, 30), (12, 30), (15, 30)}
 VISUAL_RIDDLE_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("VISUAL_RIDDLE_POOL_TOPUP_TRIGGER") or "5").strip() or "5"))
+REBUS_SLOT_TIMES = {(h, 30) for h in range(8, 21)}  # 8:30–20:30 every hour
+REBUS_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("REBUS_POOL_TOPUP_TRIGGER") or "10").strip() or "10"))
+REBUS_POOL_TARGET = max(5, int((os.getenv("REBUS_POOL_TARGET") or "20").strip() or "20"))
+REBUS_COOLDOWN_DAYS = max(7, int((os.getenv("REBUS_COOLDOWN_DAYS") or "30").strip() or "30"))
 VISUAL_RIDDLE_POOL_TOPUP_HOUR = max(0, min(23, int((os.getenv("VISUAL_RIDDLE_POOL_TOPUP_HOUR") or "6").strip() or "6")))
 VISUAL_RIDDLE_POOL_TOPUP_MINUTE = max(0, min(59, int((os.getenv("VISUAL_RIDDLE_POOL_TOPUP_MINUTE") or "15").strip() or "15")))
 VISUAL_RIDDLE_RECENCY_DAYS = max(1, int((os.getenv("VISUAL_RIDDLE_RECENCY_DAYS") or "7").strip() or "7"))
@@ -365,6 +382,20 @@ def _visual_riddles_dry_run() -> bool:
     return val in ("1", "true", "yes", "on")
 
 
+def _is_rebus_slot(slot_dt: datetime) -> bool:
+    return (int(slot_dt.hour), int(slot_dt.minute)) in REBUS_SLOT_TIMES
+
+
+def _rebuses_enabled() -> bool:
+    val = (os.getenv("REBUSES_ENABLED") or "1").strip().lower()
+    return val in ("1", "true", "yes", "on")
+
+
+def _rebuses_dry_run() -> bool:
+    val = (os.getenv("REBUSES_DRY_RUN") or "0").strip().lower()
+    return val in ("1", "true", "yes", "on")
+
+
 def _format_quiz_delivery_slot(slot_dt: datetime) -> str:
     return f"{int(slot_dt.hour):02d}:{int(slot_dt.minute):02d}"
 
@@ -449,6 +480,9 @@ SYSTEM_MESSAGE_CLEANUP_EXCLUDE_TYPES = [
     if item.strip()
 ]
 ENABLE_LEGACY_REPLY_KEYBOARD = (os.getenv("ENABLE_LEGACY_REPLY_KEYBOARD") or "0").strip().lower() in {"1", "true", "yes", "on"}
+ENABLE_LEGACY_TRANSLATION_TEXT_CAPTURE = (
+    os.getenv("ENABLE_LEGACY_TRANSLATION_TEXT_CAPTURE") or "0"
+).strip().lower() in {"1", "true", "yes", "on"}
 DICTIONARY_CARD_THEME = (os.getenv("DICTIONARY_CARD_THEME") or "classic").strip().lower()
 
 
@@ -2221,6 +2255,7 @@ async def handle_language_tutor_detail_callback(update: Update, context: Callbac
         answer = str(normalized.get("answer") or "").strip()
         if not answer:
             answer = _language_tutor_default_refusal() if not is_language_question else "Не удалось подготовить ответ. Попробуйте переформулировать вопрос."
+        normalized["answer"] = answer
         save_key = None
         save_variants = normalized.get("save_variants") or []
         if save_variants:
@@ -2232,14 +2267,25 @@ async def handle_language_tutor_detail_callback(update: Update, context: Callbac
                 target_text=str(primary.get("target_text") or "").strip(),
                 source_lang=normalized["source_lang"],
                 target_lang=normalized["target_lang"],
+                options=[
+                    {
+                        "source": str(item.get("source_text") or "").strip(),
+                        "target": str(item.get("target_text") or "").strip(),
+                    }
+                    for item in save_variants
+                    if isinstance(item, dict)
+                ],
                 continue_callback_data="langgpt:continue",
                 continue_button_text="❓ Задать вопрос",
             )
         await query.message.reply_text(
-            _truncate_telegram_reply_text(answer, max_chars=3000),
+            _build_language_tutor_reply_message(normalized, max_chars=3000),
             parse_mode="Markdown",
             disable_web_page_preview=True,
-            reply_markup=_build_language_tutor_answer_keyboard(save_key=save_key),
+            reply_markup=_build_language_tutor_answer_keyboard(
+                save_key=save_key,
+                save_options_count=len(save_variants),
+            ),
         )
     except Exception:
         logging.exception("❌ Ошибка language tutor detail user_id=%s", user_id)
@@ -4348,6 +4394,9 @@ _GERMAN_COMMON_WORDS_RE = re.compile(
     re.IGNORECASE,
 )
 
+DICTIONARY_LOOKUP_MAX_CHARS = 260
+DICTIONARY_LOOKUP_MAX_WORDS = 32
+
 
 def _is_german_text_for_analysis(text: str) -> bool:
     """Return True when text is long enough and contains German content worth vocabulary extraction."""
@@ -4947,8 +4996,9 @@ async def handle_user_message(update: Update, context: CallbackContext):
                     feel_key=feel_key,
                     speak_key=feel_key,
                 )
+            normalized_tutor["answer"] = answer
             await update.message.reply_text(
-                _truncate_telegram_reply_text(answer, max_chars=3000),
+                _build_language_tutor_reply_message(normalized_tutor, max_chars=3000),
                 parse_mode="Markdown",
                 disable_web_page_preview=True,
                 reply_markup=_build_language_tutor_answer_keyboard(
@@ -4969,9 +5019,7 @@ async def handle_user_message(update: Update, context: CallbackContext):
             _clear_pending_input_state(state_key=state_key, user_id=int(user_id))
         return
 
-    # Проверяем, является ли сообщение переводом (поддержка многострочных сообщений)
-    pattern = re.compile(r"^(\d+)\.\s*([^\d\n]+(?:\n[^\d\n]+)*)", re.MULTILINE)
-    translations = pattern.findall(text)
+    translations = _extract_legacy_translation_submissions(text, context)
 
     if translations:
         if "pending_translations" not in context.user_data:
@@ -5025,15 +5073,24 @@ def _is_menu_button_text(text: str) -> bool:
     }
 
 
+def _extract_legacy_translation_submissions(text: str, context: CallbackContext | None = None) -> list[tuple[str, str]]:
+    if not ENABLE_LEGACY_TRANSLATION_TEXT_CAPTURE:
+        return []
+    if context is not None and "pending_translations" not in getattr(context, "user_data", {}):
+        return []
+    pattern = re.compile(r"^(\d+)\.\s*([^\d\n]+(?:\n[^\d\n]+)*)", re.MULTILINE)
+    return [(num, trans.strip()) for num, trans in pattern.findall(str(text or ""))]
+
+
 def _is_dictionary_lookup_candidate(text: str) -> bool:
-    if not text or text.startswith("/") or len(text) > 120:
+    if not text or text.startswith("/") or len(text) > DICTIONARY_LOOKUP_MAX_CHARS:
         return False
     # Allow numbers in dictionary/phrase lookup (e.g. "Top 10", "B2 level", "5 минут").
     if re.search(r"[^0-9A-Za-zА-Яа-яЁёÄÖÜäöüßẞ'\-\s.,!?;:()\"]", text):
         return False
     normalized = re.sub(r"[.,!?;:()\"]", " ", text)
     words = [part for part in re.split(r"\s+", normalized.strip()) if part]
-    return 1 <= len(words) <= 15
+    return 1 <= len(words) <= DICTIONARY_LOOKUP_MAX_WORDS
 
 
 def _dictionary_language_pairs() -> list[tuple[str, str]]:
@@ -12965,6 +13022,26 @@ def _build_quiz_question_reply_message(normalized: dict) -> str:
     return _truncate_telegram_reply_text("\n".join(lines).strip())
 
 
+def _build_language_tutor_reply_message(normalized: dict, *, max_chars: int = 3000) -> str:
+    answer = str((normalized or {}).get("answer") or "").strip()
+    source_lang = str((normalized or {}).get("source_lang") or "").strip().lower()
+    target_lang = str((normalized or {}).get("target_lang") or "").strip().lower()
+    save_variants = (normalized or {}).get("save_variants") if isinstance((normalized or {}).get("save_variants"), list) else []
+    if not save_variants:
+        return _truncate_telegram_reply_text(answer, max_chars=max_chars)
+
+    lines = [answer, "", "*💾 Что сохранят кнопки:*", ""]
+    for idx, item in enumerate(save_variants[:2], start=1):
+        if not isinstance(item, dict):
+            continue
+        source_text = str(item.get("source_text") or "").strip() or "—"
+        target_text = str(item.get("target_text") or "").strip() or "—"
+        lines.append(f"{idx}. {source_lang.upper()}: {source_text}")
+        lines.append(f"   {target_lang.upper()}: {target_text}")
+        lines.append("")
+    return _truncate_telegram_reply_text("\n".join(lines).strip(), max_chars=max_chars)
+
+
 async def _generate_quiz_phrase_suggestion(payload: dict) -> dict:
     source_text = str(payload.get("source_text") or "").strip()
     target_text = str(payload.get("target_text") or "").strip()
@@ -13071,15 +13148,55 @@ def _normalize_language_tutor_llm_response(
     }
 
 
-def _normalize_quiz_result_commentary(raw_payload: dict, *, max_items: int = 4) -> list[dict[str, str]]:
+def _normalize_quiz_result_commentary(raw_payload: dict, *, max_items: int = 5) -> list[dict]:
     payload = raw_payload if isinstance(raw_payload, dict) else {}
     raw_items = payload.get("items")
-    normalized: list[dict[str, str]] = []
+    normalized: list[dict] = []
     if not isinstance(raw_items, list):
         return normalized
 
     for item in raw_items:
         if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "").strip().lower()
+        if item_type == "synonym_scale":
+            raw_scale = item.get("scale")
+            if not isinstance(raw_scale, list):
+                continue
+            scale_items: list[dict[str, str]] = []
+            seen_de: set[str] = set()
+            for scale_item in raw_scale:
+                if not isinstance(scale_item, dict):
+                    continue
+                de_text = re.sub(r"\s+", " ", str(scale_item.get("de") or "").strip())
+                ru_text = re.sub(r"\s+", " ", str(scale_item.get("ru") or "").strip())
+                if not de_text or not ru_text:
+                    continue
+                de_key = de_text.lower()
+                if de_key in seen_de:
+                    continue
+                seen_de.add(de_key)
+                if len(de_text) > 36:
+                    de_text = de_text[:33].rstrip() + "..."
+                if len(ru_text) > 48:
+                    ru_text = ru_text[:45].rstrip() + "..."
+                scale_items.append({"de": de_text, "ru": ru_text})
+                if len(scale_items) >= 4:
+                    break
+            if len(scale_items) < 3:
+                continue
+            title = re.sub(r"\s+", " ", str(item.get("title") or "Синонимы по силе").strip())
+            if len(title) > 48:
+                title = title[:45].rstrip() + "..."
+            normalized.append(
+                {
+                    "type": "synonym_scale",
+                    "title": title or "Синонимы по силе",
+                    "scale": scale_items,
+                }
+            )
+            if len(normalized) >= max(1, int(max_items or 1)):
+                break
             continue
         text = re.sub(r"\s+", " ", str(item.get("text") or "").strip())
         if not text:
@@ -13198,6 +13315,23 @@ async def _send_quiz_result_private(
     if commentary_items:
         lines.extend(["", "🟩 <b>Комментарий:</b>"])
         for item in commentary_items:
+            if str(item.get("type") or "").strip().lower() == "synonym_scale":
+                scale = item.get("scale") if isinstance(item.get("scale"), list) else []
+                if not scale:
+                    continue
+                title = str(item.get("title") or "Синонимы по силе").strip()
+                lines.extend(["", f"🌡️ <b>{html.escape(title)}:</b>"])
+                scale_parts = []
+                for scale_item in scale:
+                    if not isinstance(scale_item, dict):
+                        continue
+                    de_value = str(scale_item.get("de") or "").strip()
+                    ru_value = str(scale_item.get("ru") or "").strip()
+                    if de_value and ru_value:
+                        scale_parts.append(f"{html.escape(de_value)} ({html.escape(ru_value)})")
+                if scale_parts:
+                    lines.append(" → ".join(scale_parts))
+                continue
             emoji = str(item.get("emoji") or "•").strip() or "•"
             text = str(item.get("text") or "").strip()
             if text:

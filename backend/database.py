@@ -7155,6 +7155,98 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_voice_session_mistakes_category
                 ON bt_3_voice_session_mistakes (error_category, session_id);
             """)
+            # ── Compound-word rebus system ────────────────────────────────
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_rebus_component_images (
+                    word                TEXT PRIMARY KEY,
+                    image_object_key    TEXT,
+                    generation_status   TEXT NOT NULL DEFAULT 'pending',
+                    failure_reason      TEXT,
+                    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (generation_status IN ('pending', 'ready', 'failed'))
+                );
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_rebus_bank (
+                    compound_id             TEXT PRIMARY KEY,
+                    compound_word           TEXT NOT NULL,
+                    article                 TEXT NOT NULL DEFAULT '',
+                    meaning_ru              TEXT NOT NULL DEFAULT '',
+                    difficulty              TEXT NOT NULL DEFAULT 'A2',
+                    parts_json              JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    wrong_options_json      JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    explanation_ru          TEXT NOT NULL DEFAULT '',
+                    composed_image_object_key  TEXT,
+                    composed_status         TEXT NOT NULL DEFAULT 'pending',
+                    send_count              INTEGER NOT NULL DEFAULT 0,
+                    last_sent_at            TIMESTAMPTZ,
+                    retired                 BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (difficulty IN ('A2', 'B1', 'B2')),
+                    CHECK (composed_status IN ('pending', 'ready', 'failed'))
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_rebus_bank_available
+                ON bt_3_rebus_bank (composed_status, retired, last_sent_at NULLS FIRST, difficulty);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_rebus_slot_assignments (
+                    id              BIGSERIAL PRIMARY KEY,
+                    slot_date       DATE NOT NULL,
+                    slot_hour       INTEGER NOT NULL,
+                    compound_id     TEXT NOT NULL REFERENCES bt_3_rebus_bank(compound_id),
+                    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (slot_date, slot_hour)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_rebus_slot_date_hour
+                ON bt_3_rebus_slot_assignments (slot_date, slot_hour);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_rebus_dispatches (
+                    id                  BIGSERIAL PRIMARY KEY,
+                    slot_date           DATE NOT NULL,
+                    slot_hour           INTEGER NOT NULL,
+                    compound_id         TEXT NOT NULL,
+                    target_user_id      BIGINT NOT NULL,
+                    chat_id             BIGINT NOT NULL,
+                    telegram_message_id BIGINT,
+                    status              TEXT NOT NULL DEFAULT 'sent',
+                    sent_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (target_user_id, slot_date, slot_hour),
+                    CHECK (status IN ('sent', 'failed'))
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_rebus_dispatches_user_date
+                ON bt_3_rebus_dispatches (target_user_id, slot_date DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_rebus_dispatches_compound
+                ON bt_3_rebus_dispatches (compound_id, slot_date DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_rebus_answers (
+                    id                  BIGSERIAL PRIMARY KEY,
+                    dispatch_id         BIGINT NOT NULL REFERENCES bt_3_rebus_dispatches(id),
+                    user_id             BIGINT NOT NULL,
+                    selected_option     TEXT NOT NULL,
+                    is_correct          BOOLEAN NOT NULL,
+                    answered_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    feedback_sent_at    TIMESTAMPTZ,
+                    UNIQUE (dispatch_id, user_id),
+                    CHECK (selected_option IN ('A', 'B', 'C', 'D'))
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_rebus_answers_user_time
+                ON bt_3_rebus_answers (user_id, answered_at DESC);
+            """)
+            # ── end rebus tables ──────────────────────────────────────────
             cursor.close()
             _run_dictionary_canonical_schema_migration(conn)
         missing_phase1_objects = get_missing_phase1_shadow_schema_objects()
@@ -30533,3 +30625,371 @@ def get_visual_riddle_quiz_type_distribution(*, lookback_count: int = 30) -> dic
             )
             rows = cursor.fetchall() or []
     return {str(r[0] or ""): int(r[1] or 0) for r in rows if r[0]}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Compound-word rebus DB helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def upsert_rebus_bank_entry(entry: dict) -> None:
+    """Insert or update a single compound entry from REBUS_COMPOUND_BANK."""
+    import json
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_rebus_bank (
+                    compound_id, compound_word, article, meaning_ru,
+                    difficulty, parts_json, wrong_options_json, explanation_ru,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, NOW())
+                ON CONFLICT (compound_id) DO UPDATE SET
+                    compound_word       = EXCLUDED.compound_word,
+                    article             = EXCLUDED.article,
+                    meaning_ru          = EXCLUDED.meaning_ru,
+                    difficulty          = EXCLUDED.difficulty,
+                    parts_json          = EXCLUDED.parts_json,
+                    wrong_options_json  = EXCLUDED.wrong_options_json,
+                    explanation_ru      = EXCLUDED.explanation_ru,
+                    updated_at          = NOW()
+                """,
+                (
+                    str(entry["id"]),
+                    str(entry["compound"]),
+                    str(entry.get("article") or ""),
+                    str(entry.get("meaning_ru") or ""),
+                    str(entry.get("difficulty") or "A2"),
+                    json.dumps(entry.get("parts") or [], ensure_ascii=False),
+                    json.dumps(entry.get("wrong_options") or [], ensure_ascii=False),
+                    str(entry.get("explanation_ru") or ""),
+                ),
+            )
+        conn.commit()
+
+
+def sync_rebus_bank_from_code() -> dict:
+    """Upsert all entries from REBUS_COMPOUND_BANK into DB. Returns stats."""
+    from backend.rebus_bank import REBUS_COMPOUND_BANK
+    inserted = 0
+    for entry in REBUS_COMPOUND_BANK:
+        try:
+            upsert_rebus_bank_entry(entry)
+            inserted += 1
+        except Exception:
+            logging.warning("sync_rebus_bank: failed for %s", entry.get("id"), exc_info=True)
+    return {"synced": inserted, "total": len(REBUS_COMPOUND_BANK)}
+
+
+def get_rebus_component_image(word: str) -> dict | None:
+    """Return cached component image row or None."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT word, image_object_key, generation_status
+                FROM bt_3_rebus_component_images
+                WHERE word = %s
+                """,
+                (str(word),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {"word": row[0], "image_object_key": row[1], "generation_status": row[2]}
+
+
+def upsert_rebus_component_image(
+    word: str,
+    *,
+    image_object_key: str | None = None,
+    generation_status: str = "pending",
+    failure_reason: str | None = None,
+) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_rebus_component_images
+                    (word, image_object_key, generation_status, failure_reason, updated_at)
+                VALUES (%s, %s, %s, %s, NOW())
+                ON CONFLICT (word) DO UPDATE SET
+                    image_object_key  = COALESCE(EXCLUDED.image_object_key, bt_3_rebus_component_images.image_object_key),
+                    generation_status = EXCLUDED.generation_status,
+                    failure_reason    = EXCLUDED.failure_reason,
+                    updated_at        = NOW()
+                """,
+                (str(word), image_object_key, str(generation_status), failure_reason),
+            )
+        conn.commit()
+
+
+def get_rebus_bank_entry(compound_id: str) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT compound_id, compound_word, article, meaning_ru, difficulty,
+                       parts_json, wrong_options_json, explanation_ru,
+                       composed_image_object_key, composed_status,
+                       send_count, last_sent_at, retired
+                FROM bt_3_rebus_bank
+                WHERE compound_id = %s
+                """,
+                (str(compound_id),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "compound_id": row[0], "compound_word": row[1], "article": row[2],
+        "meaning_ru": row[3], "difficulty": row[4],
+        "parts": row[5] if isinstance(row[5], list) else [],
+        "wrong_options": row[6] if isinstance(row[6], list) else [],
+        "explanation_ru": row[7],
+        "composed_image_object_key": row[8], "composed_status": row[9],
+        "send_count": int(row[10] or 0), "last_sent_at": row[11],
+        "retired": bool(row[12]),
+    }
+
+
+def mark_rebus_composed(compound_id: str, *, image_object_key: str) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_rebus_bank
+                SET composed_image_object_key = %s,
+                    composed_status = 'ready',
+                    updated_at = NOW()
+                WHERE compound_id = %s
+                """,
+                (str(image_object_key), str(compound_id)),
+            )
+        conn.commit()
+
+
+def mark_rebus_compose_failed(compound_id: str) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_rebus_bank
+                SET composed_status = 'failed', updated_at = NOW()
+                WHERE compound_id = %s
+                """,
+                (str(compound_id),),
+            )
+        conn.commit()
+
+
+def pick_next_rebus(*, cooldown_days: int = 30) -> dict | None:
+    """Pick the least-recently-sent ready rebus, respecting cooldown."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT compound_id, compound_word, article, meaning_ru, difficulty,
+                       parts_json, wrong_options_json, explanation_ru,
+                       composed_image_object_key, send_count, last_sent_at
+                FROM bt_3_rebus_bank
+                WHERE composed_status = 'ready'
+                  AND retired = FALSE
+                  AND (
+                      last_sent_at IS NULL
+                      OR last_sent_at < NOW() - (%s || ' days')::INTERVAL
+                  )
+                ORDER BY last_sent_at NULLS FIRST, send_count ASC, compound_id
+                LIMIT 1
+                """,
+                (int(cooldown_days),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "compound_id": row[0], "compound_word": row[1], "article": row[2],
+        "meaning_ru": row[3], "difficulty": row[4],
+        "parts": row[5] if isinstance(row[5], list) else [],
+        "wrong_options": row[6] if isinstance(row[6], list) else [],
+        "explanation_ru": row[7],
+        "composed_image_object_key": row[8],
+        "send_count": int(row[9] or 0), "last_sent_at": row[10],
+    }
+
+
+def mark_rebus_sent(compound_id: str) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_rebus_bank
+                SET send_count = send_count + 1,
+                    last_sent_at = NOW(),
+                    updated_at = NOW()
+                WHERE compound_id = %s
+                """,
+                (str(compound_id),),
+            )
+        conn.commit()
+
+
+def count_available_rebuses(*, cooldown_days: int = 30) -> int:
+    """Count ready rebuses not in cooldown — used for replenishment check."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM bt_3_rebus_bank
+                WHERE composed_status = 'ready'
+                  AND retired = FALSE
+                  AND (
+                      last_sent_at IS NULL
+                      OR last_sent_at < NOW() - (%s || ' days')::INTERVAL
+                  )
+                """,
+                (int(cooldown_days),),
+            )
+            row = cursor.fetchone()
+    return int((row or [0])[0])
+
+
+def get_existing_rebus_compound_words() -> list[str]:
+    """Return all compound words currently in DB — used to avoid GPT duplicates."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT compound_word FROM bt_3_rebus_bank")
+            rows = cursor.fetchall() or []
+    return [str(r[0]) for r in rows if r[0]]
+
+
+def assign_rebus_slot(
+    *, slot_date, slot_hour: int, compound_id: str
+) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_rebus_slot_assignments (slot_date, slot_hour, compound_id)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (slot_date, slot_hour) DO NOTHING
+                """,
+                (slot_date, int(slot_hour), str(compound_id)),
+            )
+        conn.commit()
+
+
+def get_rebus_slot(*, slot_date, slot_hour: int) -> str | None:
+    """Return compound_id assigned to this slot, or None."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT compound_id FROM bt_3_rebus_slot_assignments
+                WHERE slot_date = %s AND slot_hour = %s
+                """,
+                (slot_date, int(slot_hour)),
+            )
+            row = cursor.fetchone()
+    return str(row[0]) if row else None
+
+
+def record_rebus_dispatch(
+    *,
+    slot_date,
+    slot_hour: int,
+    compound_id: str,
+    target_user_id: int,
+    chat_id: int,
+    telegram_message_id: int | None = None,
+    status: str = "sent",
+) -> int | None:
+    """Insert dispatch row; return new id or None on conflict."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_rebus_dispatches
+                    (slot_date, slot_hour, compound_id, target_user_id, chat_id,
+                     telegram_message_id, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (target_user_id, slot_date, slot_hour) DO NOTHING
+                RETURNING id
+                """,
+                (
+                    slot_date, int(slot_hour), str(compound_id),
+                    int(target_user_id), int(chat_id),
+                    int(telegram_message_id) if telegram_message_id else None,
+                    str(status),
+                ),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return int(row[0]) if row else None
+
+
+def record_rebus_answer(
+    *,
+    dispatch_id: int,
+    user_id: int,
+    selected_option: str,
+    is_correct: bool,
+) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_rebus_answers
+                    (dispatch_id, user_id, selected_option, is_correct)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (dispatch_id, user_id) DO NOTHING
+                """,
+                (int(dispatch_id), int(user_id), str(selected_option), bool(is_correct)),
+            )
+        conn.commit()
+
+
+def mark_rebus_answer_feedback_sent(*, dispatch_id: int, user_id: int) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_rebus_answers
+                SET feedback_sent_at = NOW()
+                WHERE dispatch_id = %s AND user_id = %s
+                """,
+                (int(dispatch_id), int(user_id)),
+            )
+        conn.commit()
+
+
+def get_rebus_dispatch_by_id(dispatch_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, slot_date, slot_hour, compound_id,
+                       target_user_id, chat_id, telegram_message_id, status, sent_at
+                FROM bt_3_rebus_dispatches WHERE id = %s
+                """,
+                (int(dispatch_id),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": row[0], "slot_date": row[1], "slot_hour": row[2],
+        "compound_id": row[3], "target_user_id": row[4], "chat_id": row[5],
+        "telegram_message_id": row[6], "status": row[7], "sent_at": row[8],
+    }
+
+
+def update_rebus_dispatch_telegram_id(dispatch_id: int, *, telegram_message_id: int) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_rebus_dispatches SET telegram_message_id = %s WHERE id = %s",
+                (int(telegram_message_id), int(dispatch_id)),
+            )
+        conn.commit()

@@ -989,7 +989,15 @@ Return STRICT JSON only with this schema:
 {
   "items": [
     {"emoji": "🔎", "text": "..."},
-    {"emoji": "🧩", "text": "..."}
+    {"emoji": "🧩", "text": "..."},
+    {
+      "type": "synonym_scale",
+      "title": "Синонимы по силе",
+      "scale": [
+        {"de": "...", "ru": "..."},
+        {"de": "...", "ru": "..."}
+      ]
+    }
   ]
 }
 
@@ -1005,10 +1013,17 @@ Task:
   why selected_de is weaker/wrong when it helps, but do not dwell on it.
 - If correct_de contains a sign/instruction/legal-style formula, explain the formula.
 - If there is nothing unusual, give only the most useful lexical/collocation note.
+- If the key issue is a gradable adjective, verb, or emotion/state word, you MAY add one
+  synonym_scale item after the normal commentary.
+- synonym_scale must contain 3-4 German near-synonyms ordered from weaker/neutral to
+  stronger/more intense, each with a short Russian translation.
+- Only add synonym_scale when it is genuinely useful for the exact example; skip it for
+  articles, pure grammar, fixed prepositions, or non-gradable technical terms.
 - Do not invent facts. Do not list every word.
 - Write text in Russian. German examples inside text are allowed.
 - No markdown, no HTML, no numbering.
 - Max 95 characters per item.text.
+- Max 28 characters per scale.de and max 34 characters per scale.ru.
 - Output ONLY valid JSON. No markdown fences. No extra commentary.
 """,
 "language_learning_private_question": """

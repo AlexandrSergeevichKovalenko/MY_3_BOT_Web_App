@@ -1007,29 +1007,30 @@ QUICK_TRANSLATE_COALESCE_WAIT_TIMEOUT_SEC = max(
     0.5,
     min(10.0, float((os.getenv("QUICK_TRANSLATE_COALESCE_WAIT_TIMEOUT_SEC") or "3.0").strip() or "3.0")),
 )
-TTS_PREWARM_ENABLED = str(os.getenv("TTS_PREWARM_ENABLED") or "0").strip().lower() in {"1", "true", "yes", "on"}
+TTS_PREWARM_ENABLED = str(os.getenv("TTS_PREWARM_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 TTS_PREWARM_INTERVAL_MINUTES = max(10, int((os.getenv("TTS_PREWARM_INTERVAL_MINUTES") or "60").strip()))
-TTS_PREWARM_BATCH_SIZE = max(10, min(500, int((os.getenv("TTS_PREWARM_BATCH_SIZE") or "120").strip())))
-TTS_PREWARM_MAX_CHARS_PER_RUN = max(500, min(200000, int((os.getenv("TTS_PREWARM_MAX_CHARS_PER_RUN") or "12000").strip())))
+TTS_PREWARM_BATCH_SIZE = max(10, min(500, int((os.getenv("TTS_PREWARM_BATCH_SIZE") or "300").strip())))
+TTS_PREWARM_MAX_CHARS_PER_RUN = max(500, min(200000, int((os.getenv("TTS_PREWARM_MAX_CHARS_PER_RUN") or "30000").strip())))
 TTS_PREWARM_LOOKBACK_HOURS = max(1, min(24 * 90, int((os.getenv("TTS_PREWARM_LOOKBACK_HOURS") or "168").strip())))
 TTS_PREWARM_ACTIVE_USER_LOOKBACK_DAYS = max(1, min(90, int((os.getenv("TTS_PREWARM_ACTIVE_USER_LOOKBACK_DAYS") or "7").strip())))
 TTS_PREWARM_MAX_USERS = max(10, min(5000, int((os.getenv("TTS_PREWARM_MAX_USERS") or "250").strip())))
 TTS_PREWARM_HORIZON_HOURS = max(1, min(72, int((os.getenv("TTS_PREWARM_HORIZON_HOURS") or "24").strip())))
-TTS_PREWARM_PER_USER_ITEM_LIMIT = max(1, min(100, int((os.getenv("TTS_PREWARM_PER_USER_ITEM_LIMIT") or "15").strip())))
-TTS_PREWARM_PER_USER_CHAR_LIMIT = max(50, min(10000, int((os.getenv("TTS_PREWARM_PER_USER_CHAR_LIMIT") or "600").strip())))
+TTS_PREWARM_PER_USER_ITEM_LIMIT = max(1, min(100, int((os.getenv("TTS_PREWARM_PER_USER_ITEM_LIMIT") or "40").strip())))
+TTS_PREWARM_PER_USER_CHAR_LIMIT = max(50, min(10000, int((os.getenv("TTS_PREWARM_PER_USER_CHAR_LIMIT") or "1800").strip())))
 TTS_PREWARM_PER_USER_CHAR_LIMIT_MIN = max(50, min(10000, int((os.getenv("TTS_PREWARM_PER_USER_CHAR_LIMIT_MIN") or "200").strip())))
 TTS_PREWARM_PER_USER_CHAR_LIMIT_MAX = max(
     TTS_PREWARM_PER_USER_CHAR_LIMIT_MIN,
-    min(20000, int((os.getenv("TTS_PREWARM_PER_USER_CHAR_LIMIT_MAX") or "3000").strip())),
+    min(20000, int((os.getenv("TTS_PREWARM_PER_USER_CHAR_LIMIT_MAX") or "5000").strip())),
 )
 TTS_PREWARM_PER_USER_MAX_ITEM_LIMIT = max(
     TTS_PREWARM_PER_USER_ITEM_LIMIT,
-    min(200, int((os.getenv("TTS_PREWARM_PER_USER_MAX_ITEM_LIMIT") or "30").strip())),
+    min(200, int((os.getenv("TTS_PREWARM_PER_USER_MAX_ITEM_LIMIT") or "80").strip())),
 )
 TTS_PREWARM_PER_USER_MAX_CHAR_LIMIT = max(
     TTS_PREWARM_PER_USER_CHAR_LIMIT,
-    min(20000, int((os.getenv("TTS_PREWARM_PER_USER_MAX_CHAR_LIMIT") or "1200").strip())),
+    min(20000, int((os.getenv("TTS_PREWARM_PER_USER_MAX_CHAR_LIMIT") or "3600").strip())),
 )
+SRS_PREFETCH_MAX_ITEMS = max(20, min(100, int((os.getenv("SRS_PREFETCH_MAX_ITEMS") or "60").strip())))
 TTS_PREWARM_QUOTA_CONTROL_ENABLED = str(os.getenv("TTS_PREWARM_QUOTA_CONTROL_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 TTS_PREWARM_QUOTA_CONTROL_TZ = (os.getenv("TTS_PREWARM_QUOTA_CONTROL_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
 TTS_PREWARM_QUOTA_CONTROL_HOUR = max(0, min(23, int((os.getenv("TTS_PREWARM_QUOTA_CONTROL_HOUR") or "8").strip())))
@@ -37167,7 +37168,7 @@ def get_srs_prefetch_cards():
                     queue_info_duration_ms = _elapsed_ms_since(queue_info_started_perf)
             due_count = max(0, int(queue_info.get("due_count") or 0))
             new_remaining_today = max(0, int(queue_info.get("new_remaining_today") or 0))
-            max_items = max(1, min(20, due_count + new_remaining_today))
+            max_items = max(1, min(int(SRS_PREFETCH_MAX_ITEMS), due_count + new_remaining_today))
             limit_check_started_perf = time.perf_counter()
             fsrs_limit_state = _check_flashcards_words_daily_limit(
                 user_id=int(user_id),
