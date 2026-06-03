@@ -23,6 +23,16 @@ class TelegramInitDataTtlTests(unittest.TestCase):
 
         self.assertTrue(server._telegram_hash_is_valid(init_data))
 
+    def test_default_webapp_init_ttl_allows_long_lived_mini_app_session(self):
+        server.TELEGRAM_WEBAPP_INIT_TTL_SECONDS = self.original_ttl
+        init_data = server._build_signed_init_data_for_user(
+            {"id": 123456, "first_name": "Test"},
+            auth_date=int(time.time()) - (3 * 86400),
+        )
+
+        self.assertTrue(server._telegram_init_data_auth_date_is_fresh(init_data))
+        self.assertTrue(server._telegram_hash_is_valid(init_data))
+
     def test_signed_init_data_is_rejected_after_ttl(self):
         init_data = server._build_signed_init_data_for_user(
             {"id": 123456, "first_name": "Test"},
