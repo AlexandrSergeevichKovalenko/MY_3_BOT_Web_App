@@ -102,6 +102,24 @@ class ShortcutLookupSplitTests(unittest.TestCase):
         self.assertIn("Back Tap", text)
         self.assertIn("A7F4K2", text)
 
+    def test_shortcut_install_endpoint_redirects_to_configured_link(self):
+        with patch.dict(os.environ, {"SHORTCUT_INSTALL_URL": "https://www.icloud.com/shortcuts/test-id"}, clear=False):
+            response = self.client.get("/api/shortcut/install")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers.get("Location"), "https://www.icloud.com/shortcuts/test-id")
+
+    def test_shortcut_install_endpoint_requires_configured_link(self):
+        with patch.dict(os.environ, {
+            "SHORTCUT_INSTALL_URL": "",
+            "SHORTCUT_ICLOUD_URL": "",
+            "IOS_SHORTCUT_INSTALL_URL": "",
+        }, clear=False):
+            response = self.client.get("/api/shortcut/install")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json()["error"], "Shortcut install link is not configured")
+
     def test_shortcut_pairing_code_endpoint_returns_code_for_allowed_user(self):
         with patch.dict(os.environ, {"SHORTCUT_BOT_SECRET": "adminsecret"}, clear=False), \
              patch.object(server, "get_redis_client", return_value=self.redis), \

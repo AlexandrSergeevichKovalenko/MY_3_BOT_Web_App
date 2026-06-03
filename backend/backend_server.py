@@ -35004,6 +35004,14 @@ _SHORTCUT_PAIRING_CODE_CLEANUP_AFTER_CONSUMED_SECONDS = max(
     int((os.getenv("SHORTCUT_PAIRING_CODE_CLEANUP_AFTER_CONSUMED_SECONDS") or "2592000").strip() or "2592000"),
 )
 
+
+def _shortcut_public_install_url() -> str:
+    return (
+        (os.getenv("SHORTCUT_INSTALL_URL") or "").strip()
+        or (os.getenv("SHORTCUT_ICLOUD_URL") or "").strip()
+        or (os.getenv("IOS_SHORTCUT_INSTALL_URL") or "").strip()
+    )
+
 _SHORTCUT_RATE_LIMIT_LUA = """
 local current = redis.call('INCR', KEYS[1])
 if current == 1 then
@@ -35527,15 +35535,14 @@ def _build_shortcut_onboarding_text(*, pairing_code: str, expires_at: datetime |
         f"{safe_code}\n\n"
         f"{expiry_note}\n\n"
         "Что делать дальше:\n"
-        "1. Откройте приложение «Команды» на iPhone.\n"
-        "2. Добавьте Shortcut, который будет запускаться с кнопки действия или двойного касания задней панели.\n"
-        "3. Запустите Shortcut один раз и вставьте код из этого сообщения.\n"
-        "4. После первого запуска код больше не нужен.\n"
-        "5. Потом просто откройте любой немецкий рилс, пост, скриншот или сообщение и запустите Shortcut.\n"
-        "6. Бот сам сохранит слова и переводы в ваш словарь.\n\n"
+        "1. Если Shortcut ещё не установлен, сначала нажмите «📲 Установить Shortcut» в Telegram.\n"
+        "2. Запустите установленный Shortcut один раз и вставьте код из этого сообщения.\n"
+        "3. После первого запуска код больше не нужен.\n"
+        "4. Потом просто откройте любой немецкий рилс, пост, скриншот или сообщение и запустите Shortcut.\n"
+        "5. Бот сам сохранит слова и переводы в ваш словарь.\n\n"
         "Где включить запуск на iPhone:\n"
-        "• Если у вас iPhone 15 Pro или новее: Настройки -> Кнопка действия -> Команда -> выберите этот Shortcut.\n"
-        "• Если кнопки действия нет: Настройки -> Универсальный доступ -> Касание -> Касание задней панели -> Двойное касание -> выберите этот Shortcut.\n"
+        "• Если у вас iPhone 15 Pro или новее: Settings -> Action Button -> Shortcut -> выберите этот Shortcut.\n"
+        "• Если кнопки действия нет: Settings -> Accessibility -> Touch -> Back Tap -> Double Tap -> выберите этот Shortcut.\n"
         "• На поддерживаемых iPhone можно использовать и кнопку действия, и заднюю панель — что удобнее.\n\n"
         "Если код истечет, нажмите Connect Shortcut еще раз и получите новый."
     )
@@ -35566,12 +35573,14 @@ def _build_shortcut_onboarding_code_text(*, pairing_code: str, expires_at: datet
 def _build_shortcut_onboarding_instructions() -> str:
     return (
         "Как пользоваться:\n"
-        "1. Один раз подключите Shortcut по кнопке Connect Shortcut.\n"
-        "2. Привяжите его к кнопке действия или к двойному касанию задней панели.\n"
-        "3. Откройте любой немецкий рилс, пост, сообщение или скриншот.\n"
-        "4. Запустите Shortcut.\n"
-        "5. Код нужен только при первом запуске.\n"
-        "6. После этого код больше не нужен — дальше всё будет запускаться автоматически.\n\n"
+        "1. Сначала установите iPhone Shortcut по кнопке установки.\n"
+        "2. Потом нажмите Connect Shortcut и получите код привязки.\n"
+        "3. Запустите установленный Shortcut один раз и вставьте этот код.\n"
+        "4. Привяжите Shortcut к кнопке действия или к двойному касанию задней панели.\n"
+        "5. Откройте любой немецкий рилс, пост, сообщение или скриншот.\n"
+        "6. Запустите Shortcut.\n"
+        "7. Код нужен только при первом запуске.\n"
+        "8. После этого код больше не нужен — дальше всё будет запускаться автоматически.\n\n"
         "Что умеет бот:\n"
         "• Можно просто написать ему слово или фразу.\n"
         "• Можно переслать сюда немецкий текст из другого чата.\n"
@@ -35841,6 +35850,18 @@ def _start_shortcut_lookup_enqueue_runner(*, user_id: int, text: str) -> str:
 
     _SHORTCUT_ENQUEUE_EXECUTOR.submit(_worker)
     return request_key
+
+
+@app.route("/api/shortcut/install", methods=["GET"])
+def shortcut_install_redirect():
+    install_url = _shortcut_public_install_url()
+    parsed = urlparse(install_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return jsonify({
+            "error": "Shortcut install link is not configured",
+            "env": "Set SHORTCUT_INSTALL_URL to the shared iCloud Shortcut link.",
+        }), 503
+    return redirect(install_url, code=302)
 
 
 @app.route("/api/shortcut/pairing-code", methods=["POST"])

@@ -8,11 +8,16 @@ The only supported client flow is:
 
 1. User opens the Telegram bot.
 2. User sends `/start`.
-3. Bot shows `📱 Connect Shortcut`.
-4. User presses the button.
-5. Bot returns a one-time pairing code and detailed iPhone setup instructions.
-6. Shortcut exchanges the pairing code for a permanent `install_token`.
-7. Future requests use `install_token` only.
+3. Bot shows `📲 Установить Shortcut` and `📱 Connect Shortcut`.
+4. User installs the shared iPhone Shortcut from the install button.
+5. User presses `📱 Connect Shortcut`.
+6. Bot returns a one-time pairing code and detailed iPhone setup instructions.
+7. Installed Shortcut exchanges the pairing code for a permanent `install_token`.
+8. Future requests use `install_token` only.
+
+The physical Shortcut installation and pairing are separate steps. iOS requires
+the user to confirm adding a shared Shortcut in Shortcuts.app; the bot/backend
+cannot silently install a Shortcut on the user's phone.
 
 ## Database schema
 
@@ -50,6 +55,27 @@ Notes:
 - Install tokens are random and opaque.
 
 ## Endpoints
+
+### `GET /api/shortcut/install`
+
+Public redirect endpoint for the shared iPhone Shortcut.
+
+Configuration:
+
+- `SHORTCUT_INSTALL_URL`
+- or `SHORTCUT_ICLOUD_URL`
+- or `IOS_SHORTCUT_INSTALL_URL`
+
+Expected value is the shared iCloud Shortcut link, for example:
+
+```text
+https://www.icloud.com/shortcuts/...
+```
+
+Response:
+
+- `302` redirect to the configured install link.
+- `503` if no install link is configured.
 
 ### `POST /api/shortcut/pairing-code`
 
@@ -146,9 +172,11 @@ Rules:
 
 ## Telegram bot flow
 
-- `/start` in private chat now sends a `📱 Connect Shortcut` button.
+- `/start` in private chat now sends `📲 Установить Shortcut` and `📱 Connect Shortcut`.
+- `📲 Установить Shortcut` opens the shared Shortcut install link.
 - The button issues a fresh pairing code.
 - The bot also sends detailed iPhone-specific instructions:
+  - Install the shared Shortcut first.
   - Action Button path for supported models.
   - Back Tap `Double Tap` path for models without Action Button.
   - Shortcut setup steps for creating the first-run link exchange.
