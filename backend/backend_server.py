@@ -5009,6 +5009,19 @@ def _log_flashcards_words_served(
     )
 
 
+def _flashcards_free_limit_queue_info(limit_state: dict | None) -> dict:
+    state = limit_state if isinstance(limit_state, dict) else {}
+    effective_mode = str(state.get("effective_mode") or "free").strip().lower() or "free"
+    payload: dict[str, object] = {"effective_mode": effective_mode}
+    if effective_mode == "free":
+        payload["free_daily_words_limit"] = int(state.get("limit_words") or FREE_FLASHCARDS_WORDS_DAILY_PER_MODE)
+        payload["free_daily_words_used"] = int(float(state.get("used_words") or 0))
+    else:
+        payload["free_daily_words_limit"] = None
+        payload["free_daily_words_used"] = None
+    return payload
+
+
 def _check_voice_minutes_daily_limit(
     *,
     user_id: int,
@@ -37106,6 +37119,12 @@ def get_next_srs_card():
                 )
         mark("build_next")
 
+        if isinstance(payload_next, dict) and isinstance(payload_next.get("queue_info"), dict):
+            payload_next["queue_info"] = {
+                **payload_next["queue_info"],
+                **_flashcards_free_limit_queue_info(fsrs_limit_state),
+            }
+
         return jsonify(
             {
                 "ok": True,
@@ -37280,6 +37299,7 @@ def get_srs_prefetch_cards():
                 "due_count_total": int(queue_info.get("due_count_total") or 0),
                 "due_reviewed_today": int(queue_info.get("due_reviewed_today") or 0),
                 "due_limit_today": int(queue_info.get("due_limit_today") or 30),
+                **_flashcards_free_limit_queue_info(fsrs_limit_state),
             },
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }

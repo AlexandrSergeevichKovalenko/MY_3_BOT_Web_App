@@ -5392,7 +5392,17 @@ function AppInner() {
   const [flashcardPreviewIndex, setFlashcardPreviewIndex] = useState(0);
   const [srsCard, setSrsCard] = useState(null);
   const [srsState, setSrsState] = useState(null);
-  const [srsQueueInfo, setSrsQueueInfo] = useState({ due_count: 0, new_remaining_today: 0, due_count_total: 0, due_reviewed_today: 0, due_limit_today: 30, introduced_today: 0 });
+  const [srsQueueInfo, setSrsQueueInfo] = useState({
+    due_count: 0,
+    new_remaining_today: 0,
+    due_count_total: 0,
+    due_reviewed_today: 0,
+    due_limit_today: 30,
+    introduced_today: 0,
+    effective_mode: null,
+    free_daily_words_used: null,
+    free_daily_words_limit: null,
+  });
   const [srsPreview, setSrsPreview] = useState(null);
   const [srsPrefetchQueue, setSrsPrefetchQueue] = useState([]);
   const [todayPlan, setTodayPlan] = useState(null);
@@ -8875,6 +8885,15 @@ function AppInner() {
         introduced_today: Number.isFinite(Number(incomingQueue?.introduced_today))
           ? Math.max(Math.max(0, Math.trunc(Number(incomingQueue.introduced_today))), Math.max(0, Math.trunc(Number(prev?.introduced_today || 0))))
           : Math.max(0, Math.trunc(Number(prev?.introduced_today || 0))),
+        effective_mode: incomingQueue?.effective_mode !== undefined
+          ? String(incomingQueue.effective_mode || '').trim().toLowerCase() || null
+          : (prev?.effective_mode ?? null),
+        free_daily_words_used: Number.isFinite(Number(incomingQueue?.free_daily_words_used))
+          ? Math.max(0, Math.trunc(Number(incomingQueue.free_daily_words_used)))
+          : (prev?.free_daily_words_used ?? null),
+        free_daily_words_limit: Number.isFinite(Number(incomingQueue?.free_daily_words_limit))
+          ? Math.max(1, Math.trunc(Number(incomingQueue.free_daily_words_limit)))
+          : (prev?.free_daily_words_limit ?? null),
       }));
     }
     const activeCardId = getSrsCardId(nextCard);
@@ -8894,6 +8913,11 @@ function AppInner() {
       const dueReviewedToday = Math.max(0, Math.trunc(Number(prev?.due_reviewed_today || 0)));
       const dueLimitToday = Math.max(1, Math.trunc(Number(prev?.due_limit_today || 30)));
       const introducedToday = Math.max(0, Math.trunc(Number(prev?.introduced_today || 0)));
+      const commonLimitInfo = {
+        effective_mode: prev?.effective_mode ?? null,
+        free_daily_words_used: prev?.free_daily_words_used ?? null,
+        free_daily_words_limit: prev?.free_daily_words_limit ?? null,
+      };
       if (dueCount > 0) {
         return {
           due_count: dueCount - 1,
@@ -8902,6 +8926,7 @@ function AppInner() {
           due_reviewed_today: isAgain ? dueReviewedToday : dueReviewedToday + 1,
           due_limit_today: dueLimitToday,
           introduced_today: introducedToday,
+          ...commonLimitInfo,
         };
       }
       if (newRemaining > 0) {
@@ -8912,9 +8937,10 @@ function AppInner() {
           due_reviewed_today: dueReviewedToday,
           due_limit_today: dueLimitToday,
           introduced_today: isAgain ? introducedToday : introducedToday + 1,
+          ...commonLimitInfo,
         };
       }
-      return { due_count: dueCount, new_remaining_today: newRemaining, due_count_total: dueCountTotal, due_reviewed_today: dueReviewedToday, due_limit_today: dueLimitToday, introduced_today: introducedToday };
+      return { due_count: dueCount, new_remaining_today: newRemaining, due_count_total: dueCountTotal, due_reviewed_today: dueReviewedToday, due_limit_today: dueLimitToday, introduced_today: introducedToday, ...commonLimitInfo };
     });
   };
 
@@ -9077,6 +9103,15 @@ function AppInner() {
             introduced_today: Number.isFinite(Number(queueInfo?.introduced_today))
               ? Math.max(0, Math.trunc(Number(queueInfo.introduced_today)))
               : Math.max(0, Math.trunc(Number(prev?.introduced_today || 0))),
+            effective_mode: queueInfo?.effective_mode !== undefined
+              ? String(queueInfo.effective_mode || '').trim().toLowerCase() || null
+              : (prev?.effective_mode ?? null),
+            free_daily_words_used: Number.isFinite(Number(queueInfo?.free_daily_words_used))
+              ? Math.max(0, Math.trunc(Number(queueInfo.free_daily_words_used)))
+              : (prev?.free_daily_words_used ?? null),
+            free_daily_words_limit: Number.isFinite(Number(queueInfo?.free_daily_words_limit))
+              ? Math.max(1, Math.trunc(Number(queueInfo.free_daily_words_limit)))
+              : (prev?.free_daily_words_limit ?? null),
           }));
         }
       }
@@ -32894,7 +32929,15 @@ function AppInner() {
                           <div className="fsrs-study-header">
                             <div className="fsrs-study-title">Space Repetition</div>
                             <div className="fsrs-study-queue">
-                              {tr('Сегодня', 'Heute')}: {(srsQueueInfo?.due_reviewed_today ?? 0) + (srsQueueInfo?.introduced_today ?? 0)}/{(srsQueueInfo?.due_limit_today ?? 30) + (srsQueueInfo?.introduced_today ?? 0) + (srsQueueInfo?.new_remaining_today ?? 0)} · {tr('К повторению', 'Zu wiederholen')}: {srsQueueInfo?.due_count_total ?? srsQueueInfo?.due_count ?? 0}
+                              {(() => {
+                                const freeLimit = Math.max(0, Math.trunc(Number(srsQueueInfo?.free_daily_words_limit || 0)));
+                                const freeUsed = Math.max(0, Math.trunc(Number(srsQueueInfo?.free_daily_words_used || 0)));
+                                const isFree = String(srsQueueInfo?.effective_mode || '').trim().toLowerCase() === 'free' && freeLimit > 0;
+                                if (isFree) {
+                                  return `${tr('Бесплатный лимит', 'Free limit')}: ${Math.min(freeUsed, freeLimit)}/${freeLimit} · ${tr('К повторению', 'Zu wiederholen')}: ${srsQueueInfo?.due_count_total ?? srsQueueInfo?.due_count ?? 0}`;
+                                }
+                                return `${tr('Повторено сегодня', 'Reviewed today')}: ${(srsQueueInfo?.due_reviewed_today ?? 0) + (srsQueueInfo?.introduced_today ?? 0)} · ${tr('К повторению', 'Zu wiederholen')}: ${srsQueueInfo?.due_count_total ?? srsQueueInfo?.due_count ?? 0}`;
+                              })()}
                             </div>
                             {(!isOnline || srsOfflinePendingCount > 0) && (
                               <div className={`srs-offline-badge ${!isOnline ? 'is-offline' : 'is-syncing'}`}>
@@ -33636,7 +33679,10 @@ function AppInner() {
                                 <div className="setup-group">
                                   <div className="setup-label">{tr('Card Queue', 'Card Queue')}</div>
                                   <div className="flashcard-settings-queue">
-                                    <span>{tr('Сегодня', 'Heute')}: {(srsQueueInfo?.due_reviewed_today ?? 0) + (srsQueueInfo?.introduced_today ?? 0)}/{(srsQueueInfo?.due_limit_today ?? 30) + (srsQueueInfo?.introduced_today ?? 0) + (srsQueueInfo?.new_remaining_today ?? 0)}</span>
+                                    {String(srsQueueInfo?.effective_mode || '').trim().toLowerCase() === 'free' && Number(srsQueueInfo?.free_daily_words_limit || 0) > 0 && (
+                                      <span>{tr('Бесплатный лимит', 'Free limit')}: {Math.min(Math.max(0, Math.trunc(Number(srsQueueInfo?.free_daily_words_used || 0))), Math.max(1, Math.trunc(Number(srsQueueInfo?.free_daily_words_limit || 0))))}/{Math.max(1, Math.trunc(Number(srsQueueInfo?.free_daily_words_limit || 0)))}</span>
+                                    )}
+                                    <span>{tr('Повторено сегодня', 'Reviewed today')}: {(srsQueueInfo?.due_reviewed_today ?? 0) + (srsQueueInfo?.introduced_today ?? 0)}</span>
                                     <span>{tr('К повторению', 'Zu wiederholen')}: {srsQueueInfo?.due_count_total ?? srsQueueInfo?.due_count ?? 0}</span>
                                     <span>{tr('Новые', 'Neu')}: {srsQueueInfo?.new_remaining_today ?? 0}</span>
                                   </div>
