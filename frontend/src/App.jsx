@@ -9073,6 +9073,10 @@ function AppInner() {
 
   const prefetchSrsCards = useCallback(async () => {
     if (!initData || srsPrefetchInFlightRef.current) return;
+    if (String(srsQueueInfo?.effective_mode || '').trim().toLowerCase() === 'free') {
+      updateSrsPrefetchQueue(() => []);
+      return;
+    }
     srsPrefetchInFlightRef.current = true;
     try {
       const resolvedQueueSource = flashcardQueueSource === 'manual' ? 'manual' : 'system';
@@ -9127,7 +9131,7 @@ function AppInner() {
     } finally {
       srsPrefetchInFlightRef.current = false;
     }
-  }, [appendToSrsPrefetchQueue, fetchWithTimeout, flashcardQueueSource, initData, webappUser?.id]);
+  }, [appendToSrsPrefetchQueue, fetchWithTimeout, flashcardQueueSource, initData, srsQueueInfo?.effective_mode, updateSrsPrefetchQueue, webappUser?.id]);
 
   const drainOfflineSrsReviews = useCallback(async () => {
     if (!initData || !isOfflineCacheAvailable()) return;
@@ -11494,7 +11498,11 @@ function AppInner() {
       setSrsSubmitting(true);
       setSrsSubmittingRating(ratingValue);
       const resolvedQueueSource = flashcardQueueSource === 'manual' ? 'manual' : 'system';
-      const optimisticCard = takeFromSrsPrefetchQueue();
+      const isFreeMode = String(srsQueueInfo?.effective_mode || '').trim().toLowerCase() === 'free';
+      if (isFreeMode) {
+        updateSrsPrefetchQueue(() => []);
+      }
+      const optimisticCard = isFreeMode ? null : takeFromSrsPrefetchQueue();
       setSrsRevealAnswer(false);
       setSrsRevealStartedAt(0);
       setSrsRevealElapsedSec(0);
@@ -32934,7 +32942,7 @@ function AppInner() {
                                 const freeUsed = Math.max(0, Math.trunc(Number(srsQueueInfo?.free_daily_words_used || 0)));
                                 const isFree = String(srsQueueInfo?.effective_mode || '').trim().toLowerCase() === 'free' && freeLimit > 0;
                                 if (isFree) {
-                                  return `${tr('Бесплатный лимит', 'Free limit')}: ${Math.min(freeUsed, freeLimit)}/${freeLimit} · ${tr('К повторению', 'Zu wiederholen')}: ${srsQueueInfo?.due_count_total ?? srsQueueInfo?.due_count ?? 0}`;
+                                  return `${tr('Лимит', 'Limit')}: ${Math.min(freeUsed, freeLimit)}/${freeLimit}`;
                                 }
                                 return `${tr('Повторено сегодня', 'Reviewed today')}: ${(srsQueueInfo?.due_reviewed_today ?? 0) + (srsQueueInfo?.introduced_today ?? 0)} · ${tr('К повторению', 'Zu wiederholen')}: ${srsQueueInfo?.due_count_total ?? srsQueueInfo?.due_count ?? 0}`;
                               })()}

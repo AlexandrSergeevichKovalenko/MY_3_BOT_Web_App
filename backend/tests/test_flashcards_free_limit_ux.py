@@ -40,6 +40,20 @@ class FlashcardsFreeLimitUxTests(unittest.TestCase):
         self.assertEqual(payload["free_daily_words_used"], 9)
         self.assertEqual(payload["free_daily_words_limit"], 10)
 
+    def test_free_limit_queue_info_counts_pending_served_card(self):
+        payload = server._flashcards_free_limit_queue_info(
+            {
+                "effective_mode": "free",
+                "used_words": 9.0,
+                "limit_words": 10,
+            },
+            pending_served_words=1,
+        )
+
+        self.assertEqual(payload["effective_mode"], "free")
+        self.assertEqual(payload["free_daily_words_used"], 10)
+        self.assertEqual(payload["free_daily_words_limit"], 10)
+
     def test_trial_flashcards_limit_is_unchanged(self):
         with patch.object(server, "_resolve_user_entitlement", return_value=self._entitlement("trial")), \
              patch.object(server, "_sum_billing_units_today") as usage_mock:

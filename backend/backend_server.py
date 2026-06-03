@@ -5009,13 +5009,15 @@ def _log_flashcards_words_served(
     )
 
 
-def _flashcards_free_limit_queue_info(limit_state: dict | None) -> dict:
+def _flashcards_free_limit_queue_info(limit_state: dict | None, *, pending_served_words: int = 0) -> dict:
     state = limit_state if isinstance(limit_state, dict) else {}
     effective_mode = str(state.get("effective_mode") or "free").strip().lower() or "free"
     payload: dict[str, object] = {"effective_mode": effective_mode}
     if effective_mode == "free":
-        payload["free_daily_words_limit"] = int(state.get("limit_words") or FREE_FLASHCARDS_WORDS_DAILY_PER_MODE)
-        payload["free_daily_words_used"] = int(float(state.get("used_words") or 0))
+        limit_words = int(state.get("limit_words") or FREE_FLASHCARDS_WORDS_DAILY_PER_MODE)
+        used_words = int(float(state.get("used_words") or 0)) + max(0, int(pending_served_words or 0))
+        payload["free_daily_words_limit"] = limit_words
+        payload["free_daily_words_used"] = min(used_words, limit_words)
     else:
         payload["free_daily_words_limit"] = None
         payload["free_daily_words_used"] = None
@@ -37122,7 +37124,10 @@ def get_next_srs_card():
         if isinstance(payload_next, dict) and isinstance(payload_next.get("queue_info"), dict):
             payload_next["queue_info"] = {
                 **payload_next["queue_info"],
-                **_flashcards_free_limit_queue_info(fsrs_limit_state),
+                **_flashcards_free_limit_queue_info(
+                    fsrs_limit_state,
+                    pending_served_words=1 if payload_next.get("card") else 0,
+                ),
             }
 
         return jsonify(
@@ -37443,6 +37448,13 @@ def review_srs_card():
                     cursor=cursor,
                 )
                 mark("db_write")
+                fsrs_limit_state = _check_flashcards_words_daily_limit(
+                    user_id=int(user_id),
+                    mode="fsrs",
+                    requested_words=1,
+                )
+                if fsrs_limit_state.get("error"):
+                    return jsonify(fsrs_limit_state.get("error")), 429
                 payload_next = _build_next_srs_payload(
                     user_id=int(user_id),
                     source_lang=source_lang,
@@ -37450,9 +37462,17 @@ def review_srs_card():
                     now_utc=datetime.now(timezone.utc),
                     queue_source=queue_source,
                     allowed_card_ids=manual_selected_card_ids,
-                    include_queue_info=False,
+                    include_queue_info=True,
                     cursor=cursor,
                 )
+                if isinstance(payload_next, dict) and isinstance(payload_next.get("queue_info"), dict):
+                    payload_next["queue_info"] = {
+                        **payload_next["queue_info"],
+                        **_flashcards_free_limit_queue_info(
+                            fsrs_limit_state,
+                            pending_served_words=1 if payload_next.get("card") else 0,
+                        ),
+                    }
                 mark("build_next")
     except ValueError as exc:
         log_profile(int(user_id) if user_id else None, int(card_id) if card_id else None, queue_source, error_text=str(exc))
@@ -37470,6 +37490,17 @@ def review_srs_card():
         )
     except Exception:
         logging.warning("Failed to mark today snapshot stale after SRS review: user=%s", user_id, exc_info=True)
+    try:
+        if isinstance(payload_next, dict) and payload_next.get("card"):
+            _log_flashcards_words_served(
+                user_id=int(user_id),
+                mode="fsrs",
+                served_words=1,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+    except Exception:
+        logging.warning("Failed to log FSRS review next-card usage: user=%s", user_id, exc_info=True)
     log_profile(int(user_id), int(card_id), queue_source, error_text=None)
     return jsonify(
         {

@@ -8168,6 +8168,8 @@ body {
   gap: 12px;
   padding: 10px 10px 8px;
   border-bottom: 1px solid rgba(124, 156, 208, 0.22);
+  min-width: 0;
+  overflow: hidden;
 }
 
 .fsrs-study-title {
@@ -8177,7 +8179,8 @@ body {
   color: #edf3ff;
   letter-spacing: 0.01em;
   white-space: nowrap;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .fsrs-study-queue {
@@ -8188,6 +8191,8 @@ body {
   white-space: nowrap;
   flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .srs-offline-badge {
