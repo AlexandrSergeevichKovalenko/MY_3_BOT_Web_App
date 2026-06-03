@@ -1,11 +1,25 @@
 import unittest
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch
 
 from psycopg2.extras import Json
 
-from backend.database import _billing_period_bounds, _get_feature_usage_today, _get_product_active_users_count, _prorate_fixed_cost_amount, enforce_feature_limit, get_global_billing_summary, log_billing_event
+from backend.database import (
+    FREE_FEATURE_LIMITS,
+    _billing_period_bounds,
+    _get_feature_usage_today,
+    _get_product_active_users_count,
+    _prorate_fixed_cost_amount,
+    build_free_limit_error,
+    enforce_feature_limit,
+    get_free_feature_limit_metadata,
+    get_free_feature_usage_today,
+    get_global_billing_summary,
+    increment_free_feature_usage,
+    log_billing_event,
+    resolve_entitlement,
+)
 
 
 class _DummyCursor:
@@ -295,6 +309,154 @@ class BillingEconomicsTests(unittest.TestCase):
                     )
 
         self.assertIsNone(result)
+
+    def test_free_feature_metadata_exists_for_expected_keys(self):
+        expected = {
+            "translation_daily_sets",
+            "dictionary_lookup_save_daily",
+            "dictionary_openai_explanation_daily",
+            "fsrs_card_review_daily",
+            "shortcut_ingest_save_daily",
+            "ask_gpt_daily",
+        }
+
+        self.assertTrue(expected.issubset(set(FREE_FEATURE_LIMITS)))
+        for feature_key in expected:
+            meta = get_free_feature_limit_metadata(feature_key)
+            self.assertIsNotNone(meta)
+            self.assertIn("title", meta)
+            self.assertIn("free_limit", meta)
+            self.assertEqual(meta["reset_policy"], "daily_europe_vienna")
+
+    def test_get_free_feature_usage_today_uses_europe_vienna_day_boundary(self):
+        cursor = _DummyCursor([
+            (3.0,),
+        ])
+
+        usage = get_free_feature_usage_today(
+            user_id=77,
+            feature_key="ask_gpt_daily",
+            now_ts_utc=datetime(2026, 3, 30, 22, 30, tzinfo=timezone.utc),
+            tz="Europe/Vienna",
+            cursor=cursor,
+        )
+
+        self.assertEqual(usage, 3.0)
+        self.assertEqual(len(cursor.executed), 1)
+        query, params = cursor.executed[0]
+        self.assertIn("bt_3_billing_events", query)
+        self.assertEqual(params, (77, "ask_gpt_daily", "Europe/Vienna", date(2026, 3, 31)))
+
+    def test_increment_free_feature_usage_writes_one_event(self):
+        event_time = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+        cursor = _DummyCursor([
+            (
+                42,
+                "free_usage:test",
+                77,
+                "ru",
+                "de",
+                "ask_gpt_daily",
+                "app_internal",
+                "requests",
+                1.0,
+                None,
+                0.0,
+                "USD",
+                "estimated",
+                {"source": "test"},
+                event_time,
+                event_time,
+            )
+        ])
+
+        event = increment_free_feature_usage(
+            user_id=77,
+            feature_key="ask_gpt_daily",
+            idempotency_key="free_usage:test",
+            source_lang="ru",
+            target_lang="de",
+            metadata={"source": "test"},
+            event_time=event_time,
+            cursor=cursor,
+        )
+
+        self.assertEqual(event["id"], 42)
+        self.assertEqual(event["action_type"], "ask_gpt_daily")
+        self.assertEqual(event["provider"], "app_internal")
+        self.assertEqual(event["units_type"], "requests")
+        self.assertEqual(event["units_value"], 1.0)
+        self.assertEqual(len(cursor.executed), 1)
+        query, params = cursor.executed[0]
+        self.assertIn("INSERT INTO bt_3_billing_events", query)
+        self.assertEqual(params[0], "free_usage:test")
+        self.assertEqual(params[1], 77)
+        self.assertEqual(params[4], "ask_gpt_daily")
+        self.assertEqual(params[5], "app_internal")
+        self.assertEqual(params[6], "requests")
+        self.assertEqual(params[7], 1.0)
+        self.assertEqual(params[11], "estimated")
+        self.assertIsInstance(params[12], Json)
+        self.assertEqual(params[12].adapted, {"source": "test"})
+
+    def test_build_free_limit_error_payload(self):
+        payload = build_free_limit_error(
+            "ask_gpt_daily",
+            used=5.0,
+            limit=5.0,
+            reset_at="2026-03-23T00:00:00+01:00",
+        )
+
+        self.assertEqual(payload["ok"], False)
+        self.assertEqual(payload["error"], "free_limit_exceeded")
+        self.assertEqual(payload["feature"], "ask_gpt_daily")
+        self.assertEqual(payload["feature_title"], "Спросить GPT")
+        self.assertEqual(payload["limit"], 5)
+        self.assertEqual(payload["used"], 5)
+        self.assertEqual(payload["reset_at"], "2026-03-23T00:00:00+01:00")
+        self.assertIn("message", payload)
+
+    def test_resolve_entitlement_preserves_free_trial_pro_and_source(self):
+        now = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+        plans = {
+            "free": {"plan_code": "free", "name": "Free", "is_paid": False, "daily_cost_cap_eur": 0.5},
+            "trial": {"plan_code": "trial", "name": "Trial", "is_paid": False, "daily_cost_cap_eur": 0.5},
+            "pro": {"plan_code": "pro", "name": "Pro", "is_paid": True, "daily_cost_cap_eur": 5.0},
+        }
+
+        def _plan(code):
+            return plans.get(code)
+
+        with patch("backend.database.get_billing_plan", side_effect=_plan):
+            free = resolve_entitlement(user_id=77, now_ts_utc=now, subscription={})
+            trial = resolve_entitlement(
+                user_id=77,
+                now_ts_utc=now,
+                subscription={
+                    "user_id": 77,
+                    "plan_code": "trial",
+                    "status": "trialing",
+                    "trial_ends_at": (now + timedelta(days=1)).isoformat(),
+                },
+            )
+            pro = resolve_entitlement(
+                user_id=77,
+                now_ts_utc=now,
+                subscription={
+                    "user_id": 77,
+                    "plan_code": "pro",
+                    "status": "active",
+                    "trial_ends_at": None,
+                },
+            )
+
+        self.assertEqual(free["effective_mode"], "free")
+        self.assertEqual(free["source_of_entitlement"], "free_default")
+        self.assertIn("reset_at", free)
+        self.assertEqual(trial["effective_mode"], "trial")
+        self.assertEqual(trial["source_of_entitlement"], "explicit_trial_subscription")
+        self.assertEqual(pro["effective_mode"], "pro")
+        self.assertEqual(pro["source_of_entitlement"], "paid_subscription")
 
 
 if __name__ == "__main__":

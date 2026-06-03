@@ -24953,14 +24953,326 @@ def _next_local_month_start_iso(now_ts_utc: datetime | None = None, tz: str = TR
     return next_month_local.isoformat()
 
 
+FREE_FEATURE_LIMITS: dict[str, dict[str, Any]] = {
+    "translation_daily_sets": {
+        "title": "Переводы",
+        "free_limit": 1,
+        "reset_policy": "daily_europe_vienna",
+    },
+    "dictionary_lookup_save_daily": {
+        "title": "Словарь",
+        "free_limit": 20,
+        "reset_policy": "daily_europe_vienna",
+    },
+    "dictionary_openai_explanation_daily": {
+        "title": "OpenAI-объяснения в словаре",
+        "free_limit": 5,
+        "reset_policy": "daily_europe_vienna",
+    },
+    "fsrs_card_review_daily": {
+        "title": "Тренировка карточек",
+        "free_limit": 20,
+        "reset_policy": "daily_europe_vienna",
+    },
+    "shortcut_ingest_save_daily": {
+        "title": "Shortcut сохранение слов",
+        "free_limit": 20,
+        "reset_policy": "daily_europe_vienna",
+    },
+    "ask_gpt_daily": {
+        "title": "Спросить GPT",
+        "free_limit": 5,
+        "reset_policy": "daily_europe_vienna",
+    },
+}
+
+
+def get_free_feature_limit_metadata(feature_key: str) -> dict[str, Any] | None:
+    feature = str(feature_key or "").strip().lower()
+    if not feature:
+        return None
+    meta = FREE_FEATURE_LIMITS.get(feature)
+    return dict(meta) if isinstance(meta, dict) else None
+
+
+def get_free_feature_usage_today(
+    user_id: int,
+    feature_key: str,
+    *,
+    now_ts_utc: datetime | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+    cursor=None,
+) -> float:
+    feature = str(feature_key or "").strip().lower()
+    if not get_free_feature_limit_metadata(feature):
+        logging.error("free_usage_metadata_missing user_id=%s feature=%s", int(user_id), feature)
+        raise ValueError(f"Missing free feature metadata for {feature!r}")
+    tz_name = str(tz or TRIAL_POLICY_TZ).strip() or TRIAL_POLICY_TZ
+    day_local = _to_aware_datetime(now_ts_utc).astimezone(_resolve_timezone(tz_name)).date()
+
+    def _get(cur):
+        cur.execute(
+            """
+            SELECT COALESCE(SUM(units_value), 0)
+            FROM bt_3_billing_events
+            WHERE user_id = %s
+              AND action_type = %s
+              AND units_type = 'requests'
+              AND status IN ('estimated', 'final')
+              AND (event_time AT TIME ZONE %s)::date = %s;
+            """,
+            (int(user_id), feature, tz_name, day_local),
+        )
+        return cur.fetchone()
+
+    if cursor is not None:
+        row = _get(cursor)
+    else:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as own_cursor:
+                row = _get(own_cursor)
+    return float((row or [0])[0] or 0.0)
+
+
+def _insert_free_feature_usage_with_cursor(
+    cursor,
+    *,
+    idempotency_key: str,
+    user_id: int,
+    feature_key: str,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+    metadata: dict | None = None,
+    event_time: datetime | None = None,
+) -> dict | None:
+    event_time_value = event_time or datetime.now(timezone.utc)
+    metadata_payload = Json(metadata if isinstance(metadata, dict) else {})
+    cursor.execute(
+        """
+        INSERT INTO bt_3_billing_events (
+            idempotency_key,
+            user_id,
+            source_lang,
+            target_lang,
+            action_type,
+            provider,
+            units_type,
+            units_value,
+            price_snapshot_id,
+            cost_amount,
+            currency,
+            status,
+            metadata,
+            event_time
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (idempotency_key) DO NOTHING
+        RETURNING
+            id, idempotency_key, user_id, source_lang, target_lang, action_type, provider,
+            units_type, units_value, price_snapshot_id, cost_amount, currency, status,
+            metadata, event_time, created_at;
+        """,
+        (
+            idempotency_key,
+            int(user_id),
+            str(source_lang or "").strip().lower() or None,
+            str(target_lang or "").strip().lower() or None,
+            feature_key,
+            "app_internal",
+            "requests",
+            1.0,
+            None,
+            0.0,
+            "USD",
+            "estimated",
+            metadata_payload,
+            event_time_value,
+        ),
+    )
+    row = cursor.fetchone()
+    if not row:
+        cursor.execute(
+            """
+            SELECT
+                id, idempotency_key, user_id, source_lang, target_lang, action_type, provider,
+                units_type, units_value, price_snapshot_id, cost_amount, currency, status,
+                metadata, event_time, created_at
+            FROM bt_3_billing_events
+            WHERE idempotency_key = %s
+            LIMIT 1;
+            """,
+            (idempotency_key,),
+        )
+        row = cursor.fetchone()
+    return _billing_event_row_to_dict(row) if row else None
+
+
+def increment_free_feature_usage(
+    *,
+    user_id: int,
+    feature_key: str,
+    idempotency_key: str,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+    metadata: dict | None = None,
+    event_time: datetime | None = None,
+    cursor=None,
+) -> dict:
+    feature = str(feature_key or "").strip().lower()
+    if not get_free_feature_limit_metadata(feature):
+        logging.error("free_usage_metadata_missing user_id=%s feature=%s", int(user_id), feature)
+        raise ValueError(f"Missing free feature metadata for {feature!r}")
+    key = str(idempotency_key or "").strip()
+    if not key:
+        raise ValueError("idempotency_key is required")
+    if cursor is not None:
+        item = _insert_free_feature_usage_with_cursor(
+            cursor,
+            idempotency_key=key,
+            user_id=int(user_id),
+            feature_key=feature,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            metadata=metadata,
+            event_time=event_time,
+        )
+    else:
+        item = log_billing_event(
+            idempotency_key=key,
+            user_id=int(user_id),
+            action_type=feature,
+            provider="app_internal",
+            units_type="requests",
+            units_value=1.0,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            status="estimated",
+            metadata=metadata if isinstance(metadata, dict) else {},
+            event_time=event_time,
+        )
+    if not item:
+        logging.error("free_usage_increment_missing user_id=%s feature=%s", int(user_id), feature)
+        raise RuntimeError(f"Failed to increment free feature usage for {feature!r}")
+    return item
+
+
+def build_free_limit_error(
+    feature_key: str,
+    *,
+    used: float | int,
+    limit: float | int | None = None,
+    reset_at: str | None = None,
+    now_ts_utc: datetime | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+) -> dict:
+    feature = str(feature_key or "").strip().lower()
+    meta = get_free_feature_limit_metadata(feature)
+    if not meta:
+        logging.error("free_limit_error_metadata_missing feature=%s", feature)
+        raise ValueError(f"Missing free feature metadata for {feature!r}")
+    title = str(meta.get("title") or feature or "услуга").strip()
+    limit_value = meta.get("free_limit") if limit is None else limit
+    try:
+        limit_float = float(limit_value)
+        limit_out: int | float = int(limit_float) if limit_float.is_integer() else limit_float
+    except Exception:
+        limit_out = 0
+    try:
+        used_float = float(used)
+        used_out: int | float = int(used_float) if used_float.is_integer() else used_float
+    except Exception:
+        used_out = 0
+    reset_value = str(reset_at or "").strip() or _next_local_midnight_iso(now_ts_utc, tz=tz)
+    return {
+        "ok": False,
+        "error": "free_limit_exceeded",
+        "feature": feature,
+        "feature_title": title,
+        "limit": limit_out,
+        "used": used_out,
+        "reset_at": reset_value,
+        "message": (
+            f"На бесплатном тарифе лимит для услуги '{title}' на сегодня закончился. "
+            "Лимит обновится завтра в 00:00 по Вене."
+        ),
+    }
+
+
+def _get_billing_plan_with_cursor(cursor, plan_code: str) -> dict | None:
+    code = str(plan_code or "").strip().lower()
+    if not code:
+        return None
+    cursor.execute(
+        """
+        SELECT
+            plan_code,
+            name,
+            is_paid,
+            stripe_price_id,
+            daily_cost_cap_eur,
+            trial_days,
+            is_active,
+            created_at,
+            updated_at
+        FROM plans
+        WHERE plan_code = %s
+        LIMIT 1;
+        """,
+        (code,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "plan_code": str(row[0] or ""),
+        "name": str(row[1] or ""),
+        "is_paid": bool(row[2]),
+        "stripe_price_id": str(row[3] or "") or None,
+        "daily_cost_cap_eur": float(row[4]) if row[4] is not None else None,
+        "trial_days": int(row[5] or 0),
+        "is_active": bool(row[6]),
+        "created_at": row[7].isoformat() if row[7] else None,
+        "updated_at": row[8].isoformat() if row[8] else None,
+    }
+
+
+def _get_user_subscription_with_cursor(cursor, user_id: int) -> dict | None:
+    cursor.execute(
+        """
+        SELECT
+            user_id,
+            plan_code,
+            status,
+            trial_ends_at,
+            current_period_end,
+            stripe_customer_id,
+            stripe_subscription_id,
+            created_at,
+            updated_at
+        FROM user_subscriptions
+        WHERE user_id = %s
+        LIMIT 1;
+        """,
+        (int(user_id),),
+    )
+    row = cursor.fetchone()
+    return _subscription_row_to_dict(row) if row else None
+
+
 def resolve_entitlement(
     user_id: int,
     now_ts_utc: datetime | None = None,
     tz: str = TRIAL_POLICY_TZ,
     subscription: dict | None = None,
+    cursor=None,
 ) -> dict:
     now_utc = _to_aware_datetime(now_ts_utc)
-    subscription_row = dict(subscription) if isinstance(subscription, dict) else get_user_subscription(int(user_id))
+    if isinstance(subscription, dict):
+        subscription_row = dict(subscription)
+    elif cursor is not None:
+        subscription_row = _get_user_subscription_with_cursor(cursor, int(user_id))
+    else:
+        subscription_row = get_user_subscription(int(user_id))
     if not subscription_row:
         subscription = {
             "user_id": int(user_id),
@@ -24978,10 +25290,18 @@ def resolve_entitlement(
 
     plan_code = str(subscription.get("plan_code") or "free").strip().lower() or "free"
     status = _normalize_subscription_status(subscription.get("status"))
-    current_plan = get_billing_plan(plan_code) or {}
+    current_plan = (
+        _get_billing_plan_with_cursor(cursor, plan_code)
+        if cursor is not None
+        else get_billing_plan(plan_code)
+    ) or {}
     if not current_plan and plan_code != "free":
         plan_code = "free"
-        current_plan = get_billing_plan("free") or {}
+        current_plan = (
+            _get_billing_plan_with_cursor(cursor, "free")
+            if cursor is not None
+            else get_billing_plan("free")
+        ) or {}
 
     trial_ends_at_value = subscription.get("trial_ends_at")
     trial_ends_at_dt = None
@@ -24992,15 +25312,28 @@ def resolve_entitlement(
         except Exception:
             trial_ends_at_dt = None
 
+    source_of_entitlement = "free_default"
     if bool(current_plan.get("is_paid")) and status in {"active", "trialing"}:
         effective_mode = "pro"
+        source_of_entitlement = "paid_subscription"
     elif status == "trialing" and trial_ends_at_dt is not None and now_utc < trial_ends_at_dt:
         effective_mode = "trial"
+        source_of_entitlement = "explicit_trial_subscription"
     else:
         effective_mode = "free"
+        if status == "trialing":
+            source_of_entitlement = "expired_or_invalid_trial"
 
-    free_plan = get_billing_plan("free") or {}
-    pro_plan = current_plan if bool(current_plan.get("is_paid")) else (get_billing_plan("pro") or {})
+    free_plan = (
+        _get_billing_plan_with_cursor(cursor, "free")
+        if cursor is not None
+        else get_billing_plan("free")
+    ) or {}
+    pro_plan = current_plan if bool(current_plan.get("is_paid")) else ((
+        _get_billing_plan_with_cursor(cursor, "pro")
+        if cursor is not None
+        else get_billing_plan("pro")
+    ) or {})
     if effective_mode == "pro":
         cap_eur = pro_plan.get("daily_cost_cap_eur")
     elif effective_mode == "trial":
@@ -25018,6 +25351,7 @@ def resolve_entitlement(
         "status": status,
         "trial_ends_at": trial_ends_at_dt.isoformat() if trial_ends_at_dt else None,
         "effective_mode": effective_mode,
+        "source_of_entitlement": source_of_entitlement,
         "cap_eur": float(cap_eur) if cap_eur is not None else None,
         "reset_at": _next_local_midnight_iso(now_utc, tz=tz),
     }
