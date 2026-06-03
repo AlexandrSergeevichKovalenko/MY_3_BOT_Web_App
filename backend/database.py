@@ -30867,7 +30867,7 @@ def pick_next_rebus(*, cooldown_days: int = 30) -> dict | None:
                 """
                 SELECT compound_id, compound_word, article, meaning_ru, difficulty,
                        parts_json, wrong_options_json, explanation_ru,
-                       composed_image_object_key, send_count, last_sent_at
+                       composed_image_object_key, composed_status, send_count, last_sent_at
                 FROM bt_3_rebus_bank
                 WHERE composed_status = 'ready'
                   AND retired = FALSE
@@ -30890,7 +30890,8 @@ def pick_next_rebus(*, cooldown_days: int = 30) -> dict | None:
         "wrong_options": row[6] if isinstance(row[6], list) else [],
         "explanation_ru": row[7],
         "composed_image_object_key": row[8],
-        "send_count": int(row[9] or 0), "last_sent_at": row[10],
+        "composed_status": row[9],
+        "send_count": int(row[10] or 0), "last_sent_at": row[11],
     }
 
 
