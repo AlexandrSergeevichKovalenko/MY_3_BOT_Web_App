@@ -354,6 +354,7 @@ from backend.database import (
     rename_dictionary_folder,
     delete_dictionary_folder,
     create_flashcard_feel_feedback_token,
+    upsert_pending_telegram_quiz_followup_request,
     get_tts_chunk_cache,
     upsert_tts_chunk_cache,
     get_tts_audio_cache,
@@ -6452,6 +6453,43 @@ def _resolve_user_entitlement(
         subscription=subscription_row or None,
     )
     return entitlement, subscription_row
+
+
+def _build_paid_feature_required_response(
+    *,
+    feature: str,
+    feature_title: str,
+    entitlement: dict | None = None,
+) -> dict:
+    entitlement_payload = dict(entitlement or {})
+    return {
+        "ok": False,
+        "error": "paid_feature_required",
+        "feature": str(feature or "").strip(),
+        "feature_title": str(feature_title or "").strip() or str(feature or "").strip(),
+        "effective_mode": str(entitlement_payload.get("effective_mode") or "free").strip().lower() or "free",
+    }
+
+
+def _paid_surface_gate_response(
+    *,
+    user_id: int,
+    feature: str,
+    feature_title: str,
+) -> tuple[dict | None, int | None]:
+    entitlement, _subscription = _resolve_user_entitlement(
+        user_id=int(user_id),
+        now_ts_utc=datetime.now(timezone.utc),
+        tz="Europe/Vienna",
+    )
+    effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
+    if effective_mode == "free":
+        return _build_paid_feature_required_response(
+            feature=feature,
+            feature_title=feature_title,
+            entitlement=entitlement,
+        ), 402
+    return None, None
 
 
 def _refresh_subscription_before_translation_start(user_id: int) -> None:
@@ -17956,42 +17994,10 @@ def _list_translation_focus_pool_refill_candidates() -> list[dict[str, Any]]:
         return []
 
     focus_payloads = [dict(payload or {}) for payload in pool_payloads.values() if isinstance(payload, dict)]
-    low_watermark_by_bucket, target_ready_by_bucket = _build_translation_focus_pool_bucket_targets(
-        focus_payloads,
-        levels=TRANSLATION_FOCUS_POOL_PREWARM_LEVELS,
-    )
-    _log_translation_focus_pool_refill_stage(
-        "candidate_planning_start",
-        focus_payload_count=len(pool_payloads),
-        configured_levels=list(TRANSLATION_FOCUS_POOL_PREWARM_LEVELS or []),
-        low_watermark_bucket_count=len(low_watermark_by_bucket),
-        target_bucket_count=len(target_ready_by_bucket),
-        preset_limit=int(TRANSLATION_FOCUS_POOL_PREWARM_PRESET_LIMIT),
-        hot_level_limit=int(TRANSLATION_FOCUS_POOL_PREWARM_HOT_LEVEL_LIMIT),
-        target_per_bucket=int(TRANSLATION_FOCUS_POOL_PREWARM_TARGET_PER_BUCKET),
-        max_generate_per_bucket=int(TRANSLATION_FOCUS_POOL_PREWARM_MAX_GENERATE_PER_BUCKET),
-    )
-    current_rows = get_translation_focus_pool_bucket_counts(
-        source_lang="ru",
-        target_lang="de",
-    )
-    current_ready_by_bucket = {
-        (
-            str(row.get("focus_key") or "").strip(),
-            str(row.get("level") or "").strip().lower(),
-        ): int(row.get("ready_count") or 0)
-        for row in list(current_rows or [])
-        if str(row.get("focus_key") or "").strip() and str(row.get("level") or "").strip()
-    }
-    _log_translation_focus_pool_refill_stage(
-        "candidate_inventory_loaded",
-        inventory_row_count=len(list(current_rows or [])),
-        inventory_bucket_count=len(current_ready_by_bucket),
-        min_ready=min(current_ready_by_bucket.values()) if current_ready_by_bucket else 0,
-        max_ready=max(current_ready_by_bucket.values()) if current_ready_by_bucket else 0,
-        total_ready=sum(int(value or 0) for value in current_ready_by_bucket.values()),
-    )
 
+    # Load demand scores FIRST so target computation reflects actual usage pressure.
+    # Without this, all focuses have _demand_score=0, bonus=0, target≈24, and buckets
+    # with 72+ entries appear "already satisfied" — silently suppressing all generation.
     demand_scores: Counter[str] = Counter()
     bucket_demand_scores: Counter[tuple[str, str]] = Counter()
     try:
@@ -18033,6 +18039,52 @@ def _list_translation_focus_pool_refill_candidates() -> list[dict[str, Any]]:
     except Exception:
         logging.exception("Failed to load translation readiness rollup for refill candidates")
         _log_translation_focus_pool_refill_stage("candidate_readiness_failed")
+
+    # Inject demand scores into focus_payloads so _build_translation_focus_pool_bucket_targets
+    # computes the bonus and yields targets of 96-120 (matching the admin report).
+    # Without this injection, _demand_score=0 everywhere, bonus=0, default_target=24,
+    # and buckets with 72+ entries appear satisfied — suppressing all generation silently.
+    max_demand_score = max(demand_scores.values(), default=0)
+    for focus in focus_payloads:
+        fk = str(focus.get("key") or "").strip()
+        focus["_demand_score"] = int(demand_scores.get(fk) or 0)
+        focus["_max_demand_score"] = int(max_demand_score)
+
+    low_watermark_by_bucket, target_ready_by_bucket = _build_translation_focus_pool_bucket_targets(
+        focus_payloads,
+        levels=TRANSLATION_FOCUS_POOL_PREWARM_LEVELS,
+    )
+    _log_translation_focus_pool_refill_stage(
+        "candidate_planning_start",
+        focus_payload_count=len(pool_payloads),
+        configured_levels=list(TRANSLATION_FOCUS_POOL_PREWARM_LEVELS or []),
+        low_watermark_bucket_count=len(low_watermark_by_bucket),
+        target_bucket_count=len(target_ready_by_bucket),
+        preset_limit=int(TRANSLATION_FOCUS_POOL_PREWARM_PRESET_LIMIT),
+        hot_level_limit=int(TRANSLATION_FOCUS_POOL_PREWARM_HOT_LEVEL_LIMIT),
+        target_per_bucket=int(TRANSLATION_FOCUS_POOL_PREWARM_TARGET_PER_BUCKET),
+        max_generate_per_bucket=int(TRANSLATION_FOCUS_POOL_PREWARM_MAX_GENERATE_PER_BUCKET),
+    )
+    current_rows = get_translation_focus_pool_bucket_counts(
+        source_lang="ru",
+        target_lang="de",
+    )
+    current_ready_by_bucket = {
+        (
+            str(row.get("focus_key") or "").strip(),
+            str(row.get("level") or "").strip().lower(),
+        ): int(row.get("ready_count") or 0)
+        for row in list(current_rows or [])
+        if str(row.get("focus_key") or "").strip() and str(row.get("level") or "").strip()
+    }
+    _log_translation_focus_pool_refill_stage(
+        "candidate_inventory_loaded",
+        inventory_row_count=len(list(current_rows or [])),
+        inventory_bucket_count=len(current_ready_by_bucket),
+        min_ready=min(current_ready_by_bucket.values()) if current_ready_by_bucket else 0,
+        max_ready=max(current_ready_by_bucket.values()) if current_ready_by_bucket else 0,
+        total_ready=sum(int(v or 0) for v in current_ready_by_bucket.values()),
+    )
 
     deficit_by_focus: Counter[str] = Counter()
     max_bucket_deficit_by_focus: Counter[str] = Counter()
@@ -31084,6 +31136,14 @@ def get_today_plan():
         )
         return jsonify({"error": error}), status
 
+    paid_gate_payload, paid_gate_status = _paid_surface_gate_response(
+        user_id=int(user_id),
+        feature="today",
+        feature_title="Задачи на день",
+    )
+    if paid_gate_payload:
+        return jsonify(paid_gate_payload), int(paid_gate_status or 402)
+
     requested_date = request.args.get("date")
     plan_date = _safe_plan_date(requested_date, TODAY_PLAN_DEFAULT_TZ)
     try:
@@ -33012,6 +33072,14 @@ def get_skill_progress():
         )
         return jsonify({"error": error}), status
 
+    paid_gate_payload, paid_gate_status = _paid_surface_gate_response(
+        user_id=int(user_id),
+        feature="skills",
+        feature_title="Карта навыков",
+    )
+    if paid_gate_payload:
+        return jsonify(paid_gate_payload), int(paid_gate_status or 402)
+
     raw_period = str(request.args.get("period") or "7d").strip().lower()
     lookback_days = 7
     if raw_period.endswith("d"):
@@ -33251,6 +33319,14 @@ def weekly_plan_progress():
                 **summarize_db_acquire_events(db_acquire_events),
             )
             return jsonify({"error": error}), status
+
+        paid_gate_payload, paid_gate_status = _paid_surface_gate_response(
+            user_id=int(user_id),
+            feature="weekly_plan",
+            feature_title="План на неделю",
+        )
+        if paid_gate_payload:
+            return jsonify(paid_gate_payload), int(paid_gate_status or 402)
 
         plan_anchor_date = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
         save_goals_duration_ms = 0
@@ -37597,8 +37673,10 @@ def _build_flashcard_feel_private_message(
     return "\n".join(lines)
 
 
-def _build_flashcard_feel_reply_markup(feedback_token: str) -> dict:
+def _build_flashcard_feel_reply_markup(feedback_token: str, question_request_key: str | None = None) -> dict:
     token = str(feedback_token or "").strip()
+    followup_key = str(question_request_key or "").strip()
+    followup_callback = f"quizask:{followup_key}" if followup_key else "langgpt:continue"
     return {
         "inline_keyboard": [
             [
@@ -37606,10 +37684,32 @@ def _build_flashcard_feel_reply_markup(feedback_token: str) -> dict:
                 {"text": "👎 Dislike", "callback_data": f"feelfb:{token}:dislike"},
             ],
             [
-                {"text": "❓ Задать вопрос", "callback_data": "langgpt:continue"},
+                {"text": "❓ Задать вопрос", "callback_data": followup_callback},
             ],
         ]
     }
+
+
+def _create_flashcard_feel_question_request(
+    *,
+    user_id: int,
+    source_text: str,
+    target_text: str,
+    source_lang: str,
+    target_lang: str,
+) -> str:
+    key = hashlib.sha1(
+        f"feelq:{user_id}:{source_lang}:{target_lang}:{source_text}:{datetime.utcnow().isoformat()}".encode("utf-8")
+    ).hexdigest()[:20]
+    upsert_pending_telegram_quiz_followup_request(
+        request_key=key,
+        user_id=int(user_id),
+        source_text=str(source_text or "").strip(),
+        target_text=str(target_text or "").strip(),
+        source_lang=str(source_lang or "").strip().lower(),
+        target_lang=str(target_lang or "").strip().lower(),
+    )
+    return key
 
 
 def _dispatch_flashcard_feel_messages(
@@ -37682,7 +37782,24 @@ def _dispatch_flashcard_feel_messages(
                 )
                 continue
 
-            reply_markup = _build_flashcard_feel_reply_markup(token)
+            question_request_key = ""
+            try:
+                question_request_key = _create_flashcard_feel_question_request(
+                    user_id=int(user_id),
+                    source_text=source_text,
+                    target_text=target_text,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                )
+            except Exception:
+                logging.warning(
+                    "⚠️ feel follow-up request save failed for user_id=%s entry_id=%s",
+                    int(user_id),
+                    int(entry_id),
+                    exc_info=True,
+                )
+
+            reply_markup = _build_flashcard_feel_reply_markup(token, question_request_key)
             text = _build_flashcard_feel_private_message(
                 source_text=source_text,
                 target_text=target_text,
