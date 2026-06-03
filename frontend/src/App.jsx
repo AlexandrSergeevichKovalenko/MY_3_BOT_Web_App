@@ -69,6 +69,7 @@ const ECONOMICS_RAILWAY_POSTGRES_VOLUME_STORAGE_KEY = 'dds_economics_railway_pos
 const ECONOMICS_RAILWAY_REDIS_RAM_STORAGE_KEY = 'dds_economics_railway_redis_ram_v1';
 const ECONOMICS_RAILWAY_EGRESS_STORAGE_KEY = 'dds_economics_railway_egress_v1';
 const ECONOMICS_PERIOD_OPTIONS = new Set(['day', 'week', 'month', 'quarter', 'half-year', 'year', 'all']);
+const PAID_FEATURE_ERROR_PREFIX = '__paid_feature_required__:';
 const EPUB_RUNTIME_CDN_URLS = [
   'https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js',
   'https://unpkg.com/epubjs/dist/epub.min.js',
@@ -4161,6 +4162,39 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
   skillTrainingStatusMap,
   getStoredSkillTrainingSnapshot,
 }) {
+  const parsePaidFeatureError = useCallback((value) => {
+    const raw = String(value || '').trim();
+    if (!raw.startsWith(PAID_FEATURE_ERROR_PREFIX)) return null;
+    try {
+      const payload = JSON.parse(raw.slice(PAID_FEATURE_ERROR_PREFIX.length));
+      return payload && typeof payload === 'object' ? payload : null;
+    } catch (_error) {
+      return null;
+    }
+  }, []);
+  const renderPaidFeatureNotice = useCallback((errorValue, fallbackTitle) => {
+    const paid = parsePaidFeatureError(errorValue);
+    if (!paid) return null;
+    const title = String(paid.feature_title || fallbackTitle || '').trim();
+    return (
+      <div className="paid-feature-card">
+        <div className="paid-feature-card-icon" aria-hidden="true">🔒</div>
+        <div className="paid-feature-card-copy">
+          <strong>{tr('Доступно в подписке', 'Im Abo enthalten')}</strong>
+          <span>
+            {tr(
+              title
+                ? `Раздел «${title}» входит в расширенный режим. Подключите подписку, чтобы пользоваться им без ограничений.`
+                : 'Этот раздел входит в расширенный режим. Подключите подписку, чтобы пользоваться им без ограничений.',
+              title
+                ? `Der Bereich „${title}“ ist im erweiterten Modus enthalten. Aktiviere ein Abo, um ihn ohne Einschraenkungen zu nutzen.`
+                : 'Dieser Bereich ist im erweiterten Modus enthalten. Aktiviere ein Abo, um ihn ohne Einschraenkungen zu nutzen.'
+            )}
+          </span>
+        </div>
+      </div>
+    );
+  }, [parsePaidFeatureError, tr]);
   const {
     weeklyPlanRef = null,
     todayRef = null,
@@ -4478,7 +4512,10 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
           {weeklyPlanLoading && hasWeeklyPlanSnapshot && (
             <div className="webapp-muted">{tr('Обновляем недельный план в фоне...', 'Wochenplan wird im Hintergrund aktualisiert...')}</div>
           )}
-          {weeklyPlanError && <div className="webapp-error">{weeklyPlanError}</div>}
+          {weeklyPlanError && (
+            renderPaidFeatureNotice(weeklyPlanError, tr('План на неделю', 'Wochenplan'))
+            || <div className="webapp-error">{weeklyPlanError}</div>
+          )}
           {weeklyPlanUsesDeferredAnalytics && planAnalyticsLoading && (
             <div className="webapp-muted">{tr('Считаем показатели плана...', 'Planwerte werden berechnet...')}</div>
           )}
@@ -4681,7 +4718,10 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
           {todayPlanLoading && hasTodayPlanSnapshot && (
             <div className="webapp-muted">{tr('Синхронизируем выполнение в фоне...', 'Fortschritt wird im Hintergrund synchronisiert...')}</div>
           )}
-          {todayPlanError && <div className="webapp-error">{todayPlanError}</div>}
+          {todayPlanError && (
+            renderPaidFeatureNotice(todayPlanError, tr('Задачи на сегодня', 'Aufgaben fuer heute'))
+            || <div className="webapp-error">{todayPlanError}</div>
+          )}
           {!showTodayPlanSkeleton && !todayPlanLoading && !todayPlanError && !hasTodayPlanItems && (
             <div className="webapp-muted">{tr('План на сегодня пуст.', 'Tagesplan ist leer.')}</div>
           )}
@@ -4841,7 +4881,10 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
           {skillReportLoading && hasSkillReportSnapshot && (
             <div className="webapp-muted">{tr('Обновляем карту навыков...', 'Skill-Karte wird aktualisiert...')}</div>
           )}
-          {skillReportError && <div className="webapp-error">{skillReportError}</div>}
+          {skillReportError && (
+            renderPaidFeatureNotice(skillReportError, tr('Карта навыков', 'Skill-Karte'))
+            || <div className="webapp-error">{skillReportError}</div>
+          )}
           {!showSkillReportSkeleton && !skillReportError && (
             <div className="skill-rings-layout">
               <div className="skill-rings-canvas">
@@ -7449,6 +7492,12 @@ function AppInner() {
           `Лимит функции исчерпан (${feature}): ${used} / ${limit} ${unit}. Сброс: ${resetAt}`,
           `Funktionslimit erreicht (${feature}): ${used} / ${limit} ${unit}. Reset: ${resetAt}`
         );
+      }
+      if (errorCode === 'paid_feature_required') {
+        return `${PAID_FEATURE_ERROR_PREFIX}${JSON.stringify({
+          feature: String(payload.feature || '').trim(),
+          feature_title: String(payload.feature_title || '').trim(),
+        })}`;
       }
       return '';
     };

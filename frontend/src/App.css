@@ -4292,6 +4292,73 @@ body {
   font-size: 11px;
 }
 
+.paid-feature-card {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  margin: 12px 0 0;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(245, 158, 11, 0.34);
+  background:
+    linear-gradient(135deg, rgba(251, 191, 36, 0.16), rgba(96, 165, 250, 0.12)),
+    rgba(15, 23, 42, 0.46);
+  color: rgba(248, 250, 252, 0.92);
+  box-shadow: 0 16px 30px rgba(0, 0, 0, 0.18);
+}
+
+.paid-feature-card-icon {
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  background: rgba(251, 191, 36, 0.18);
+  border: 1px solid rgba(251, 191, 36, 0.34);
+  font-size: 24px;
+}
+
+.paid-feature-card-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.paid-feature-card-copy strong {
+  font-size: 15px;
+  line-height: 1.25;
+  color: #fff7ed;
+}
+
+.paid-feature-card-copy span {
+  font-size: 13px;
+  line-height: 1.45;
+  color: rgba(226, 232, 240, 0.86);
+}
+
+.webapp-page.is-theme-light .paid-feature-card {
+  border-color: rgba(194, 134, 46, 0.36);
+  background:
+    linear-gradient(135deg, rgba(246, 207, 132, 0.34), rgba(199, 219, 255, 0.32)),
+    rgba(255, 252, 245, 0.88);
+  color: #2e2618;
+  box-shadow: 0 14px 26px rgba(116, 83, 36, 0.12);
+}
+
+.webapp-page.is-theme-light .paid-feature-card-icon {
+  background: rgba(246, 207, 132, 0.46);
+  border-color: rgba(194, 134, 46, 0.32);
+}
+
+.webapp-page.is-theme-light .paid-feature-card-copy strong {
+  color: #2d2415;
+}
+
+.webapp-page.is-theme-light .paid-feature-card-copy span {
+  color: rgba(66, 54, 35, 0.78);
+}
+
 .webapp-success {
   color: #bbf7d0;
   background: rgba(34, 197, 94, 0.15);
