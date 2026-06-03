@@ -569,6 +569,7 @@ from backend.database import (
     get_user_story_rank,
     vote_story,
     vote_translation,
+    dedupe_user_dictionary_by_source,
 )
 from backend.r2_storage import (
     r2_exists,
@@ -31239,6 +31240,14 @@ def sync_today_plan_facts():
         )
         return jsonify({"error": error}), status
 
+    paid_gate_payload, paid_gate_status = _paid_surface_gate_response(
+        user_id=int(user_id),
+        feature="today",
+        feature_title="Задачи на день",
+    )
+    if paid_gate_payload:
+        return jsonify(paid_gate_payload), int(paid_gate_status or 402)
+
     payload = request.get_json(silent=True) or {}
     requested_date = request.args.get("date")
     if not requested_date and isinstance(payload, dict):
@@ -33185,6 +33194,14 @@ def sync_skill_progress():
         )
         return jsonify({"error": error}), status
 
+    paid_gate_payload, paid_gate_status = _paid_surface_gate_response(
+        user_id=int(user_id),
+        feature="skills",
+        feature_title="Карта навыков",
+    )
+    if paid_gate_payload:
+        return jsonify(paid_gate_payload), int(paid_gate_status or 402)
+
     payload = request.get_json(silent=True) or {}
     raw_period = str(request.args.get("period") or (payload.get("period") if isinstance(payload, dict) else "") or "7d").strip().lower()
     lookback_days = 7
@@ -33491,6 +33508,14 @@ def save_weekly_plan_goals_fast():
             )
             return jsonify({"error": error}), status
 
+        paid_gate_payload, paid_gate_status = _paid_surface_gate_response(
+            user_id=int(user_id),
+            feature="weekly_plan",
+            feature_title="План на неделю",
+        )
+        if paid_gate_payload:
+            return jsonify(paid_gate_payload), int(paid_gate_status or 402)
+
         payload = request.get_json(silent=True) or {}
         try:
             translations_goal = max(0, int(payload.get("translations_goal", 0)))
@@ -33607,6 +33632,14 @@ def sync_weekly_plan_progress():
                 **summarize_db_acquire_events(db_acquire_events),
             )
             return jsonify({"error": error}), status
+
+        paid_gate_payload, paid_gate_status = _paid_surface_gate_response(
+            user_id=int(user_id),
+            feature="weekly_plan",
+            feature_title="План на неделю",
+        )
+        if paid_gate_payload:
+            return jsonify(paid_gate_payload), int(paid_gate_status or 402)
 
         plan_anchor_date = _get_local_today_date(TODAY_PLAN_DEFAULT_TZ)
         try:
@@ -47224,6 +47257,100 @@ def _run_today_evening_reminders_scheduler_job() -> None:
         logging.exception("❌ Today evening reminders scheduler failed")
 
 
+_DICT_DEDUP_REDIS_KEY_PREFIX = "dict_dedup_last_checked"
+_DICT_DEDUP_MAX_USERS_PER_RUN = 100  # cap per nightly run; scales automatically as user base grows
+
+
+def _run_dictionary_dedup_scheduler_job() -> None:
+    """
+    Nightly job: find users who have added dictionary entries since their last dedup check,
+    remove source-word duplicates (keeping the most complete entry per word), and transfer
+    is_learned / SRS state to the survivor entry. Processes at most
+    _DICT_DEDUP_MAX_USERS_PER_RUN users per run to avoid overloading the DB at night.
+    """
+    enabled = (os.getenv("DICT_DEDUP_ENABLED") or "1").strip().lower()
+    if enabled not in ("1", "true", "yes", "on"):
+        return
+
+    redis_client = _get_redis_client()
+    if redis_client is None:
+        logging.warning("dict_dedup: Redis unavailable, skipping")
+        return
+
+    try:
+        # Gather all users who have dictionary entries
+        from backend.database import get_db_connection_context
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT DISTINCT user_id FROM bt_3_webapp_dictionary_queries ORDER BY user_id;"
+                )
+                all_user_ids = [int(row[0]) for row in (cursor.fetchall() or [])]
+    except Exception:
+        logging.exception("dict_dedup: failed to fetch user list")
+        return
+
+    if not all_user_ids:
+        return
+
+    now_utc = datetime.utcnow()
+    processed = 0
+    total_deleted = 0
+    total_groups = 0
+
+    for user_id in all_user_ids:
+        if processed >= _DICT_DEDUP_MAX_USERS_PER_RUN:
+            break
+
+        redis_key = f"{_DICT_DEDUP_REDIS_KEY_PREFIX}:{user_id}"
+        try:
+            raw_ts = redis_client.get(redis_key)
+        except Exception:
+            raw_ts = None
+
+        if raw_ts:
+            try:
+                last_checked_at = datetime.fromisoformat(str(raw_ts if isinstance(raw_ts, str) else raw_ts.decode("utf-8")))
+            except Exception:
+                last_checked_at = datetime.utcfromtimestamp(0)
+        else:
+            # First run for this user — only look at last 7 days to avoid scanning 3333 entries
+            last_checked_at = now_utc - timedelta(days=7)
+
+        try:
+            result = dedupe_user_dictionary_by_source(
+                user_id=user_id,
+                since_datetime=last_checked_at,
+            )
+        except Exception:
+            logging.exception("dict_dedup: error for user_id=%s", user_id)
+            continue
+
+        groups = int(result.get("groups_found") or 0)
+        deleted = int(result.get("entries_deleted") or 0)
+
+        if groups > 0 or deleted > 0:
+            total_groups += groups
+            total_deleted += deleted
+            logging.info(
+                "dict_dedup user_id=%s: groups=%d deleted=%d srs_transferred=%d",
+                user_id, groups, deleted, int(result.get("srs_transferred") or 0),
+            )
+
+        # Update last_checked_at regardless (even if no dupes found)
+        try:
+            redis_client.set(redis_key, now_utc.isoformat(), ex=60 * 60 * 24 * 90)  # 90 days TTL
+        except Exception:
+            pass
+
+        processed += 1
+
+    logging.info(
+        "dict_dedup run complete: users_processed=%d groups_found=%d entries_deleted=%d",
+        processed, total_groups, total_deleted,
+    )
+
+
 def _run_system_message_cleanup_job() -> None:
     enabled = (os.getenv("SYSTEM_MESSAGE_CLEANUP_ENABLED") or "1").strip().lower()
     if enabled not in ("1", "true", "yes", "on"):
@@ -47852,6 +47979,19 @@ def _start_audio_scheduler() -> None:
             day=feel_cleanup_day,
             hour=feel_cleanup_hour,
             minute=feel_cleanup_minute,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+    dict_dedup_enabled = (os.getenv("DICT_DEDUP_ENABLED") or "1").strip().lower()
+    if dict_dedup_enabled in ("1", "true", "yes", "on"):
+        dict_dedup_hour = int((os.getenv("DICT_DEDUP_HOUR") or "3").strip())
+        dict_dedup_minute = int((os.getenv("DICT_DEDUP_MINUTE") or "40").strip())
+        _audio_scheduler.add_job(
+            _run_dictionary_dedup_scheduler_job,
+            "cron",
+            hour=dict_dedup_hour,
+            minute=dict_dedup_minute,
             max_instances=1,
             coalesce=True,
             misfire_grace_time=3600,

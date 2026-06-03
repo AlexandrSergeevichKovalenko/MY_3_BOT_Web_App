@@ -931,6 +931,181 @@ def _dedupe_webapp_dictionary_entry_after_insert(
     return len(duplicate_ids)
 
 
+def dedupe_user_dictionary_by_source(
+    user_id: int,
+    since_datetime,  # datetime — only process groups that contain at least one entry newer than this
+) -> dict:
+    """
+    Finds groups of user's dictionary entries sharing the same normalized source word,
+    where at least one entry was added after since_datetime. For each such group:
+    - Keeps the entry with the longest translation (most complete); ties broken by newest id.
+    - Transfers is_learned=TRUE from any duplicate to the kept entry.
+    - Transfers the best SRS state (most reps, highest stability) to the kept entry's card_id;
+      removes weaker SRS states for deleted entries.
+    - Deletes the duplicate entries.
+    Returns a dict with stats (groups_found, entries_deleted, srs_transferred).
+    """
+    groups_found = 0
+    entries_deleted = 0
+    srs_transferred = 0
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            # Find all groups with 2+ entries sharing the same normalized source,
+            # where at least one entry is newer than since_datetime.
+            cursor.execute(
+                """
+                WITH all_entries AS (
+                    SELECT
+                        id,
+                        source_lang,
+                        target_lang,
+                        LOWER(TRIM(REGEXP_REPLACE(
+                            COALESCE(word_de, word_ru, ''), E'\\\\s+', ' ', 'g'
+                        ))) AS source_norm,
+                        COALESCE(
+                            LENGTH(NULLIF(TRIM(COALESCE(translation_ru, '')), '')),
+                            LENGTH(NULLIF(TRIM(COALESCE(translation_de, '')), '')),
+                            0
+                        ) AS translation_len,
+                        is_learned,
+                        created_at
+                    FROM bt_3_webapp_dictionary_queries
+                    WHERE user_id = %s
+                ),
+                dup_groups AS (
+                    SELECT source_norm, source_lang, target_lang
+                    FROM all_entries
+                    WHERE source_norm != ''
+                    GROUP BY source_norm, source_lang, target_lang
+                    HAVING COUNT(*) > 1
+                       AND BOOL_OR(created_at > %s)
+                )
+                SELECT
+                    e.id,
+                    e.source_norm,
+                    e.source_lang,
+                    e.target_lang,
+                    e.translation_len,
+                    e.is_learned,
+                    e.created_at
+                FROM all_entries e
+                JOIN dup_groups d
+                  ON d.source_norm = e.source_norm
+                 AND d.source_lang IS NOT DISTINCT FROM e.source_lang
+                 AND d.target_lang IS NOT DISTINCT FROM e.target_lang
+                ORDER BY e.source_norm, e.source_lang, e.target_lang,
+                         e.translation_len DESC, e.id DESC;
+                """,
+                (int(user_id), since_datetime),
+            )
+            rows = cursor.fetchall() or []
+
+        if not rows:
+            return {"groups_found": 0, "entries_deleted": 0, "srs_transferred": 0}
+
+        # Group rows: first entry per (source_norm, source_lang, target_lang) = keep, rest = delete
+        from collections import defaultdict
+        groups: dict = defaultdict(list)
+        for row in rows:
+            entry_id, source_norm, source_lang, target_lang, translation_len, is_learned, created_at = row
+            key = (source_norm, source_lang or "", target_lang or "")
+            groups[key].append({
+                "id": int(entry_id),
+                "translation_len": int(translation_len or 0),
+                "is_learned": bool(is_learned),
+            })
+
+        all_delete_ids: list[int] = []
+        keep_learned_ids: list[int] = []  # keep_ids that should have is_learned set TRUE
+
+        for key, entries in groups.items():
+            if len(entries) < 2:
+                continue
+            groups_found += 1
+            keep = entries[0]  # already ordered: best translation len, newest id first
+            duplicates = entries[1:]
+            keep_id = keep["id"]
+            delete_ids = [e["id"] for e in duplicates]
+            any_learned = keep["is_learned"] or any(e["is_learned"] for e in duplicates)
+            if any_learned and not keep["is_learned"]:
+                keep_learned_ids.append(keep_id)
+            all_delete_ids.extend(delete_ids)
+
+            # SRS: find best state among all entries in group, move it to keep_id
+            all_group_ids = [keep_id] + delete_ids
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT card_id, reps, stability, status, due_at, last_review_at,
+                           interval_days, lapses, step
+                    FROM bt_3_card_srs_state
+                    WHERE user_id = %s AND card_id = ANY(%s)
+                    ORDER BY reps DESC, stability DESC NULLS LAST
+                    LIMIT 1;
+                    """,
+                    (int(user_id), all_group_ids),
+                )
+                best_srs = cursor.fetchone()
+                if best_srs and int(best_srs[0]) != keep_id:
+                    # Best SRS state is on a duplicate — re-point it to keep_id
+                    cursor.execute(
+                        """
+                        DELETE FROM bt_3_card_srs_state
+                        WHERE user_id = %s AND card_id = %s;
+                        """,
+                        (int(user_id), int(keep_id)),
+                    )
+                    cursor.execute(
+                        """
+                        UPDATE bt_3_card_srs_state
+                        SET card_id = %s, updated_at = NOW()
+                        WHERE user_id = %s AND card_id = %s;
+                        """,
+                        (int(keep_id), int(user_id), int(best_srs[0])),
+                    )
+                    srs_transferred += 1
+
+        if not all_delete_ids:
+            return {"groups_found": groups_found, "entries_deleted": 0, "srs_transferred": srs_transferred}
+
+        with conn.cursor() as cursor:
+            # Transfer is_learned to kept entries
+            if keep_learned_ids:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_webapp_dictionary_queries
+                    SET is_learned = TRUE, updated_at = NOW()
+                    WHERE user_id = %s AND id = ANY(%s);
+                    """,
+                    (int(user_id), keep_learned_ids),
+                )
+            # Remove SRS states for entries about to be deleted (weaker ones)
+            cursor.execute(
+                """
+                DELETE FROM bt_3_card_srs_state
+                WHERE user_id = %s AND card_id = ANY(%s);
+                """,
+                (int(user_id), all_delete_ids),
+            )
+            # Delete the duplicate dictionary entries
+            cursor.execute(
+                """
+                DELETE FROM bt_3_webapp_dictionary_queries
+                WHERE user_id = %s AND id = ANY(%s);
+                """,
+                (int(user_id), all_delete_ids),
+            )
+            entries_deleted = len(all_delete_ids)
+        conn.commit()
+
+    return {
+        "groups_found": groups_found,
+        "entries_deleted": entries_deleted,
+        "srs_transferred": srs_transferred,
+    }
+
+
 def _upsert_dictionary_canonical_entry_with_cursor(
     cursor,
     *,
