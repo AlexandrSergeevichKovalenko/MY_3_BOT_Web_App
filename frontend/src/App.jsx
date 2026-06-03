@@ -779,6 +779,21 @@ function formatSnapshotDateTime(value, locale = 'ru-RU') {
   }).format(new Date(timestampMs));
 }
 
+function formatLimitResetDateTime(value, locale = 'ru-RU') {
+  const timestampMs = parseIsoTimestampMs(value);
+  if (!Number.isFinite(timestampMs)) {
+    return '';
+  }
+  return new Intl.DateTimeFormat(locale, {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'Europe/Vienna',
+    timeZoneName: 'short',
+  }).format(new Date(timestampMs));
+}
+
 const SKILL_CATEGORY_LOCALIZATION = {
   'Verbs': { ru: 'Глаголы', de: 'Verben' },
   'Tenses': { ru: 'Времена', de: 'Zeiten' },
@@ -7481,6 +7496,17 @@ function AppInner() {
         );
       }
       if (errorCode === 'feature_limit_exceeded') {
+        const errorDetailCode = String(payload.error_code || '').trim();
+        if (errorDetailCode === 'flashcards_daily_words_limit_exceeded') {
+          const resetLabel = formatLimitResetDateTime(payload.reset_at, uiLang === 'de' ? 'de-AT' : 'ru-RU');
+          const resetLine = resetLabel
+            ? tr(`\n\nОбновление: ${resetLabel}`, `\n\nAktualisierung: ${resetLabel}`)
+            : '';
+          return tr(
+            `Лимит повторения слов на сегодня достигнут\n\nНа бесплатном тарифе можно повторять до 10 слов в день.\n\nЗавтра лимит автоматически обновится.${resetLine}`,
+            `Das Tageslimit fuer Wortwiederholungen ist erreicht\n\nIm kostenlosen Tarif kannst du bis zu 10 Woerter pro Tag wiederholen.\n\nMorgen wird das Limit automatisch erneuert.${resetLine}`
+          );
+        }
         const feature = String(payload.feature || '').trim();
         const used = Number(payload.used || 0);
         const limit = Number(payload.limit || 0);
@@ -22755,6 +22781,23 @@ function AppInner() {
     }
     if (normalizedReason === 'daily_mode_limit_reached') {
       const limit = Math.max(0, Number(meta?.limit || 0) || 0);
+      const errorCode = String(meta?.error_code || '').trim();
+      if (errorCode === 'flashcards_daily_words_limit_exceeded') {
+        const effectiveLimit = limit > 0 ? limit : 10;
+        const resetLabel = formatLimitResetDateTime(meta?.reset_at, uiLang === 'de' ? 'de-AT' : 'ru-RU');
+        const resetLine = resetLabel
+          ? tr(`\n\nОбновление: ${resetLabel}`, `\n\nAktualisierung: ${resetLabel}`)
+          : '';
+        return {
+          kind: normalizedReason,
+          badge: 'Training',
+          title: tr('Лимит повторения слов на сегодня достигнут', 'Das Tageslimit fuer Wortwiederholungen ist erreicht'),
+          body: tr(
+            `На бесплатном тарифе можно повторять до ${effectiveLimit} слов в день.\n\nЗавтра лимит автоматически обновится.${resetLine}`,
+            `Im kostenlosen Tarif kannst du bis zu ${effectiveLimit} Woerter pro Tag wiederholen.\n\nMorgen wird das Limit automatisch erneuert.${resetLine}`
+          ),
+        };
+      }
       return {
         kind: normalizedReason,
         badge: normalizedMode === 'blocks' ? 'Blocks' : normalizedMode === 'quiz' ? 'Quiz' : 'Training',
@@ -22771,7 +22814,7 @@ function AppInner() {
       };
     }
     return null;
-  }, [flashcardTrainingMode, tr]);
+  }, [flashcardTrainingMode, tr, uiLang]);
 
   const buildYoutubeEmptyState = useCallback((reason) => {
     const normalizedReason = String(reason || '').trim().toLowerCase();

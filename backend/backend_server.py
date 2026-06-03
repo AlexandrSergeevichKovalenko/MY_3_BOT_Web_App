@@ -833,7 +833,7 @@ BILLING_CURRENCY_DEFAULT = (os.getenv("BILLING_CURRENCY") or "USD").strip().uppe
 BILLING_ALLOCATION_DEFAULT = (os.getenv("BILLING_ALLOCATION_METHOD_DEFAULT") or "weighted").strip().lower() or "weighted"
 READER_AUDIO_PAGES_7D_LIMIT = max(1, int((os.getenv("READER_AUDIO_PAGES_7D_LIMIT") or "10").strip() or "10"))
 READER_AUDIO_PAGES_WINDOW_DAYS = max(1, int((os.getenv("READER_AUDIO_PAGES_WINDOW_DAYS") or "7").strip() or "7"))
-FREE_FLASHCARDS_WORDS_DAILY_PER_MODE = max(1, int((os.getenv("FREE_FLASHCARDS_WORDS_DAILY_PER_MODE") or "5").strip() or "5"))
+FREE_FLASHCARDS_WORDS_DAILY_PER_MODE = max(1, int((os.getenv("FREE_FLASHCARDS_WORDS_DAILY_PER_MODE") or "10").strip() or "10"))
 BLOCKS_SINGLE_WORD_MAX_LEN = 10
 FREE_VOICE_MINUTES_DAILY_LIMIT = max(1, int((os.getenv("FREE_VOICE_MINUTES_DAILY_LIMIT") or "3").strip() or "3"))
 PAID_VOICE_MINUTES_DAILY_LIMIT = max(1, int((os.getenv("PAID_VOICE_MINUTES_DAILY_LIMIT") or "15").strip() or "15"))
@@ -4960,16 +4960,18 @@ def _check_flashcards_words_daily_limit(
     remaining_words = max(0.0, limit_words - used_words)
     allowed_words = min(safe_requested, max(0, int(remaining_words)))
     if allowed_words <= 0:
+        reset_at = str(entitlement.get("reset_at") or "").strip()
         return {
             "error": {
                 "error": "feature_limit_exceeded",
                 "error_code": "flashcards_daily_words_limit_exceeded",
-                "feature": f"flashcards_{normalized_mode}_words_daily",
-                "mode": normalized_mode,
                 "limit": int(limit_words),
-                "used": int(used_words),
-                "unit": "words",
-                "reset_at": entitlement.get("reset_at"),
+                "reset_at": reset_at,
+                "title": "Лимит повторения слов на сегодня достигнут",
+                "message": (
+                    f"На бесплатном тарифе можно повторять до {int(limit_words)} слов в день.\n\n"
+                    "Завтра лимит автоматически обновится."
+                ),
                 "upgrade": _build_upgrade_payload("pro"),
             }
         }
