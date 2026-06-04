@@ -1374,7 +1374,7 @@ def _run_rebus_rute_fix_migration(conn) -> None:
             return
         cur.execute(
             """UPDATE bt_3_rebus_component_images
-               SET image_status = 'pending', image_object_key = NULL, updated_at = NOW()
+               SET generation_status = 'pending', image_object_key = NULL, updated_at = NOW()
                WHERE word = 'Rute'""",
         )
         cur.execute(
