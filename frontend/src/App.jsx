@@ -4212,21 +4212,6 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
       </div>
     );
   }, [parsePaidFeatureError, tr]);
-  const renderYoutubeTranscriptNotice = useCallback((errorValue) => {
-    const raw = String(errorValue || '');
-    if (!raw.startsWith(YOUTUBE_TRANSCRIPT_LIBRARY_NOTICE_PREFIX)) return null;
-    const message = raw.slice(YOUTUBE_TRANSCRIPT_LIBRARY_NOTICE_PREFIX.length).trim();
-    if (!message) return null;
-    return (
-      <div className="paid-feature-card youtube-library-notice">
-        <div className="paid-feature-card-icon youtube-library-notice-icon" aria-hidden="true">CC</div>
-        <div className="paid-feature-card-copy youtube-library-notice-copy">
-          <strong>{tr('Субтитры недоступны', 'Untertitel nicht verfuegbar')}</strong>
-          <span>{message}</span>
-        </div>
-      </div>
-    );
-  }, [tr]);
   const {
     weeklyPlanRef = null,
     todayRef = null,
@@ -5521,6 +5506,21 @@ function AppInner() {
   const [themeModeOverride, setThemeModeOverride] = useState(null);
   const t = useMemo(() => createTranslator(uiLang), [uiLang]);
   const tr = useCallback((ru, de) => (uiLang === 'de' ? de : ru), [uiLang]);
+  const renderYoutubeTranscriptNotice = useCallback((errorValue) => {
+    const raw = String(errorValue || '');
+    if (!raw.startsWith(YOUTUBE_TRANSCRIPT_LIBRARY_NOTICE_PREFIX)) return null;
+    const message = raw.slice(YOUTUBE_TRANSCRIPT_LIBRARY_NOTICE_PREFIX.length).trim();
+    if (!message) return null;
+    return (
+      <div className="paid-feature-card youtube-library-notice">
+        <div className="paid-feature-card-icon youtube-library-notice-icon" aria-hidden="true">CC</div>
+        <div className="paid-feature-card-copy youtube-library-notice-copy">
+          <strong>{tr('Субтитры недоступны', 'Untertitel nicht verfuegbar')}</strong>
+          <span>{message}</span>
+        </div>
+      </div>
+    );
+  }, [tr]);
   const STORY_TOPIC = '🧩 ЗАГАДОЧНАЯ ИСТОРИЯ';
   const CUSTOM_TOPIC = '✍️ Свой грамматический фокус';
   const isStoryTopic = (value) => (value || '').includes('ЗАГАДОЧНАЯ ИСТОРИЯ');

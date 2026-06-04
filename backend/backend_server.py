@@ -39975,6 +39975,18 @@ def save_manual_youtube_transcript():
         return jsonify({"error": "videoId обязателен"}), 400
     if not _telegram_hash_is_valid(init_data):
         return jsonify({"error": "initData не прошёл проверку"}), 401
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+    if int(user_id) != YOUTUBE_LIBRARY_ADMIN_USER_ID:
+        return jsonify({
+            "error": "youtube_manual_transcript_admin_required",
+            "error_code": "youtube_manual_transcript_admin_required",
+            "message": "Ручное добавление субтитров доступно только администратору.",
+            "video_id": video_id,
+        }), 403
     if not isinstance(items, list) or not items:
         return jsonify({"error": "items обязателен"}), 400
 

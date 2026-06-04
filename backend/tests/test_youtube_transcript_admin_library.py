@@ -42,6 +42,29 @@ class YoutubeTranscriptAdminLibraryTests(unittest.TestCase):
                 },
             )
 
+    def _post_manual_transcript(self, user_id: int, extra_patches):
+        base_patches = [
+            patch.object(server, "WEBAPP_SINGLE_INSTANCE_GUARD_ENABLED", False),
+            patch.object(server, "_telegram_hash_is_valid", return_value=True),
+            patch.object(server, "_parse_telegram_init_data", return_value={"user": {"id": user_id}}),
+            patch.object(server, "_resolve_webapp_user_allowed", return_value=(True, "test")),
+        ]
+        with ExitStack() as stack:
+            for patcher in base_patches + list(extra_patches):
+                stack.enter_context(patcher)
+            return self.client.post(
+                "/api/webapp/youtube/manual",
+                json={
+                    "initData": "signed",
+                    "videoId": "video-123",
+                    "language": "de",
+                    "items": [
+                        {"text": "Hallo", "start": 0, "duration": 1},
+                        {"text": "Welt", "start": 1, "duration": 1},
+                    ],
+                },
+            )
+
     def test_admin_cache_miss_creates_transcript(self):
         fetched = {
             "items": [{"text": "Hallo", "start": 0, "duration": 1}],
@@ -166,6 +189,94 @@ class YoutubeTranscriptAdminLibraryTests(unittest.TestCase):
         self.assertEqual(response.get_json()["error_code"], "youtube_transcript_not_in_library")
         enqueue_mock.assert_not_called()
         fetch_mock.assert_not_called()
+
+    def test_admin_can_manually_save_transcript(self):
+        with patch.object(server, "upsert_youtube_transcript_cache") as upsert_mock, \
+             patch.object(server, "_yt_cache_put") as memory_cache_mock:
+            response = self._post_manual_transcript(117649764, [])
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {"ok": True})
+        upsert_mock.assert_called_once()
+        memory_cache_mock.assert_called_once()
+
+    def test_admin_can_overwrite_existing_manual_transcript(self):
+        with patch.object(server, "upsert_youtube_transcript_cache") as upsert_mock, \
+             patch.object(server, "_yt_cache_put") as memory_cache_mock:
+            response = self._post_manual_transcript(117649764, [])
+
+        self.assertEqual(response.status_code, 200)
+        upsert_mock.assert_called_once()
+        args = upsert_mock.call_args.args
+        self.assertEqual(args[0], "video-123")
+        self.assertEqual(args[1][0]["text"], "Hallo")
+        self.assertEqual(args[2], "de")
+        self.assertFalse(args[3])
+        memory_cache_mock.assert_called_once()
+
+    def test_non_admin_cannot_manually_create_transcript(self):
+        with patch.object(server, "upsert_youtube_transcript_cache") as upsert_mock, \
+             patch.object(server, "_yt_cache_put") as memory_cache_mock:
+            response = self._post_manual_transcript(55, [])
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json()["error_code"], "youtube_manual_transcript_admin_required")
+        upsert_mock.assert_not_called()
+        memory_cache_mock.assert_not_called()
+
+    def test_non_admin_cannot_manually_overwrite_transcript(self):
+        with patch.object(server, "upsert_youtube_transcript_cache") as upsert_mock, \
+             patch.object(server, "_yt_cache_put") as memory_cache_mock:
+            response = self._post_manual_transcript(55, [])
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json()["error_code"], "youtube_manual_transcript_admin_required")
+        upsert_mock.assert_not_called()
+        memory_cache_mock.assert_not_called()
+
+    def test_movies_catalog_read_behavior_remains_unchanged(self):
+        class FakeCursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def execute(self, *_args, **_kwargs):
+                return None
+
+            def fetchall(self):
+                return [("video-123", "de", False, None, 2)]
+
+        class FakeConnection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def cursor(self):
+                return FakeCursor()
+
+        with patch.object(server, "WEBAPP_SINGLE_INSTANCE_GUARD_ENABLED", False), \
+             patch.object(server, "_telegram_hash_is_valid", return_value=True), \
+             patch.object(server, "_parse_telegram_init_data", return_value={"user": {"id": 55}}), \
+             patch.object(server, "_resolve_webapp_user_allowed", return_value=(True, "test")), \
+             patch.object(server, "_get_user_language_pair", return_value=("ru", "de", {})), \
+             patch.object(server, "db_acquire_scope", _fake_db_scope), \
+             patch.object(server, "get_db_connection_context", return_value=FakeConnection()), \
+             patch.object(server, "_get_youtube_oembed", return_value={"title": "Video", "author_name": "Author", "thumbnail_url": "thumb"}), \
+             patch.object(server, "_log_flow_observation"), \
+             patch.object(server, "_estimate_json_payload_size_bytes", return_value=100), \
+             patch.object(server, "upsert_youtube_transcript_cache") as upsert_mock:
+            response = self.client.post(
+                "/api/webapp/youtube/catalog",
+                json={"initData": "signed", "limit": 60},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["items"][0]["video_id"], "video-123")
+        upsert_mock.assert_not_called()
 
 
 if __name__ == "__main__":
