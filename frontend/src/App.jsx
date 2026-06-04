@@ -33044,14 +33044,17 @@ function AppInner() {
                             const freeLimit = Math.max(0, Math.trunc(Number(srsQueueInfo?.free_daily_words_limit || 0)));
                             const freeUsed = Math.max(0, Math.trunc(Number(srsQueueInfo?.free_daily_words_used || 0)));
                             const errorText = String(srsError || '').toLowerCase();
-                            const isFreeLimitError = String(srsQueueInfo?.effective_mode || '').trim().toLowerCase() === 'free'
+                            const looksLikeFreeLimitError = errorText.includes('лимит')
+                              || errorText.includes('бесплатн')
+                              || errorText.includes('10 слов')
+                              || errorText.includes('tageslimit')
+                              || errorText.includes('kostenlosen tarif')
+                              || errorText.includes('10 woerter')
+                              || errorText.includes('10 wörter');
+                            const isFreeLimitError = looksLikeFreeLimitError || (String(srsQueueInfo?.effective_mode || '').trim().toLowerCase() === 'free'
                               && freeLimit > 0
                               && freeUsed >= freeLimit
-                              && (
-                                errorText.includes('лимит')
-                                || errorText.includes('tageslimit')
-                                || errorText.includes('kostenlosen tarif')
-                              );
+                            );
 
                             return (
                               <div className="fsrs-study-card fsrs-error-state" role="alert" aria-live="polite">
