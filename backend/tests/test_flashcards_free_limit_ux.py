@@ -29,6 +29,36 @@ class FlashcardsFreeLimitUxTests(unittest.TestCase):
         self.assertEqual(state["limit_words"], 10)
         self.assertEqual(state["effective_mode"], "free")
 
+    def test_free_srs_prefetch_limit_is_three(self):
+        self.assertEqual(server.FREE_SRS_PREFETCH_MAX_ITEMS, 3)
+
+    def test_sum_billing_units_today_can_use_existing_cursor(self):
+        class DummyCursor:
+            def __init__(self):
+                self.executed = []
+
+            def execute(self, query, params):
+                self.executed.append((query, params))
+
+            def fetchone(self):
+                return (7.0,)
+
+        cursor = DummyCursor()
+        usage = server._sum_billing_units_today(
+            user_id=77,
+            action_type="flashcards_words_served_fsrs",
+            units_type="words",
+            cursor=cursor,
+        )
+
+        self.assertEqual(usage, 7.0)
+        self.assertEqual(len(cursor.executed), 1)
+        query, params = cursor.executed[0]
+        self.assertIn("FROM bt_3_billing_events", query)
+        self.assertEqual(params[0], 77)
+        self.assertEqual(params[1], "flashcards_words_served_fsrs")
+        self.assertEqual(params[2], "words")
+
     def test_free_limit_queue_info_exposes_user_facing_counter(self):
         payload = server._flashcards_free_limit_queue_info({
             "effective_mode": "free",

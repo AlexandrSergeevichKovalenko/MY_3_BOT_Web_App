@@ -47,6 +47,7 @@ const SINGLE_INSTANCE_LOCK_KEY = 'dds_single_instance_lock_v1';
 const SINGLE_INSTANCE_HEARTBEAT_MS = 1000;
 const SINGLE_INSTANCE_STALE_MS = 5000;
 const TTS_CACHE_MAX_ENTRIES = 60;
+const FREE_SRS_PREFETCH_QUEUE_LIMIT = 3;
 const READER_IDLE_TIMEOUT_MS = 60000;
 const READER_DEFAULT_FONT_SIZE = 18;
 const READER_DEFAULT_FONT_WEIGHT = 500;
@@ -8821,9 +8822,11 @@ function AppInner() {
     clearSrsReviewRetryTimer();
   }, [clearSrsReviewRetryTimer]);
 
-  const appendToSrsPrefetchQueue = useCallback((items = []) => {
+  const appendToSrsPrefetchQueue = useCallback((items = [], options = {}) => {
     const incoming = Array.isArray(items) ? items : [];
     if (incoming.length === 0) return;
+    const maxItems = Math.max(0, Math.trunc(Number(options?.maxItems || 60)));
+    if (maxItems <= 0) return;
     updateSrsPrefetchQueue((prev) => {
       const activeCardId = getSrsCardId(srsCardRef.current);
       const seen = new Set(activeCardId ? [activeCardId] : []);
@@ -8840,7 +8843,7 @@ function AppInner() {
         if (itemId) seen.add(itemId);
         next.push(item);
       }
-      return next.slice(0, 60);
+      return next.slice(0, maxItems);
     });
   }, [getSrsCardId, updateSrsPrefetchQueue]);
 
@@ -8943,6 +8946,19 @@ function AppInner() {
       return { due_count: dueCount, new_remaining_today: newRemaining, due_count_total: dueCountTotal, due_reviewed_today: dueReviewedToday, due_limit_today: dueLimitToday, introduced_today: introducedToday, ...commonLimitInfo };
     });
   };
+
+  const incrementFreeSrsServedLocal = useCallback(() => {
+    setSrsQueueInfo((prev) => {
+      const mode = String(prev?.effective_mode || '').trim().toLowerCase();
+      const limit = Math.max(0, Math.trunc(Number(prev?.free_daily_words_limit || 0)));
+      if (mode !== 'free' || limit <= 0) return prev;
+      const used = Math.max(0, Math.trunc(Number(prev?.free_daily_words_used || 0)));
+      return {
+        ...prev,
+        free_daily_words_used: Math.min(limit, used + 1),
+      };
+    });
+  }, []);
 
   const loadSrsNextCard = useCallback(async () => {
     if (!initData) return;
@@ -9073,7 +9089,10 @@ function AppInner() {
 
   const prefetchSrsCards = useCallback(async () => {
     if (!initData || srsPrefetchInFlightRef.current) return;
-    if (String(srsQueueInfo?.effective_mode || '').trim().toLowerCase() === 'free') {
+    const currentMode = String(srsQueueInfo?.effective_mode || '').trim().toLowerCase();
+    const currentFreeLimit = Math.max(0, Math.trunc(Number(srsQueueInfo?.free_daily_words_limit || 0)));
+    const currentFreeUsed = Math.max(0, Math.trunc(Number(srsQueueInfo?.free_daily_words_used || 0)));
+    if (currentMode === 'free' && currentFreeLimit > 0 && currentFreeUsed >= currentFreeLimit) {
       updateSrsPrefetchQueue(() => []);
       return;
     }
@@ -9119,8 +9138,15 @@ function AppInner() {
           }));
         }
       }
-      const items = Array.isArray(data?.items) ? data.items : [];
-      appendToSrsPrefetchQueue(items);
+      const effectiveMode = String(queueInfo?.effective_mode ?? srsQueueInfo?.effective_mode ?? '').trim().toLowerCase();
+      const freeLimit = Math.max(0, Math.trunc(Number(queueInfo?.free_daily_words_limit ?? srsQueueInfo?.free_daily_words_limit ?? 0)));
+      const freeUsed = Math.max(0, Math.trunc(Number(queueInfo?.free_daily_words_used ?? srsQueueInfo?.free_daily_words_used ?? 0)));
+      const freeRemaining = Math.max(0, freeLimit - freeUsed);
+      const queueLimit = effectiveMode === 'free' && freeLimit > 0
+        ? Math.min(FREE_SRS_PREFETCH_QUEUE_LIMIT, freeRemaining)
+        : 60;
+      const items = (Array.isArray(data?.items) ? data.items : []).slice(0, queueLimit);
+      appendToSrsPrefetchQueue(items, { maxItems: queueLimit });
       // Persist prefetched cards to IDB for offline review
       if (items.length > 0 && isOfflineCacheAvailable()) {
         const userId = webappUser?.id ? Number(webappUser.id) : null;
@@ -9131,7 +9157,17 @@ function AppInner() {
     } finally {
       srsPrefetchInFlightRef.current = false;
     }
-  }, [appendToSrsPrefetchQueue, fetchWithTimeout, flashcardQueueSource, initData, srsQueueInfo?.effective_mode, updateSrsPrefetchQueue, webappUser?.id]);
+  }, [
+    appendToSrsPrefetchQueue,
+    fetchWithTimeout,
+    flashcardQueueSource,
+    initData,
+    srsQueueInfo?.effective_mode,
+    srsQueueInfo?.free_daily_words_limit,
+    srsQueueInfo?.free_daily_words_used,
+    updateSrsPrefetchQueue,
+    webappUser?.id,
+  ]);
 
   const drainOfflineSrsReviews = useCallback(async () => {
     if (!initData || !isOfflineCacheAvailable()) return;
@@ -11499,15 +11535,21 @@ function AppInner() {
       setSrsSubmittingRating(ratingValue);
       const resolvedQueueSource = flashcardQueueSource === 'manual' ? 'manual' : 'system';
       const isFreeMode = String(srsQueueInfo?.effective_mode || '').trim().toLowerCase() === 'free';
-      if (isFreeMode) {
+      const freeLimit = Math.max(0, Math.trunc(Number(srsQueueInfo?.free_daily_words_limit || 0)));
+      const freeUsed = Math.max(0, Math.trunc(Number(srsQueueInfo?.free_daily_words_used || 0)));
+      const canUseFreePrefetch = isFreeMode && freeLimit > 0 && freeUsed < freeLimit;
+      if (isFreeMode && !canUseFreePrefetch) {
         updateSrsPrefetchQueue(() => []);
       }
-      const optimisticCard = isFreeMode ? null : takeFromSrsPrefetchQueue();
+      const optimisticCard = (!isFreeMode || canUseFreePrefetch) ? takeFromSrsPrefetchQueue() : null;
       setSrsRevealAnswer(false);
       setSrsRevealStartedAt(0);
       setSrsRevealElapsedSec(0);
       decrementSrsQueueInfoLocal(ratingValue);
       if (optimisticCard) {
+        if (isFreeMode) {
+          incrementFreeSrsServedLocal();
+        }
         applySrsPayload({
           card: optimisticCard,
           srs: null,
@@ -32998,36 +33040,63 @@ function AppInner() {
                               </div>
                             );
                           })()}
-                          {!srsLoading && !srsCard && srsError && (
-                            <div className="fsrs-study-card fsrs-error-state" role="alert" aria-live="polite">
-                              <div className="fsrs-error-badge">
-                                {tr('Соединение', 'Verbindung')}
+                          {!srsLoading && !srsCard && srsError && (() => {
+                            const freeLimit = Math.max(0, Math.trunc(Number(srsQueueInfo?.free_daily_words_limit || 0)));
+                            const freeUsed = Math.max(0, Math.trunc(Number(srsQueueInfo?.free_daily_words_used || 0)));
+                            const errorText = String(srsError || '').toLowerCase();
+                            const isFreeLimitError = String(srsQueueInfo?.effective_mode || '').trim().toLowerCase() === 'free'
+                              && freeLimit > 0
+                              && freeUsed >= freeLimit
+                              && (
+                                errorText.includes('лимит')
+                                || errorText.includes('tageslimit')
+                                || errorText.includes('kostenlosen tarif')
+                              );
+
+                            return (
+                              <div className="fsrs-study-card fsrs-error-state" role="alert" aria-live="polite">
+                                <div className="fsrs-error-badge">
+                                  {isFreeLimitError ? tr('Лимит', 'Limit') : tr('Соединение', 'Verbindung')}
+                                </div>
+                                <div className="fsrs-error-title">
+                                  {isFreeLimitError
+                                    ? tr('Лимит в этой тренировке достигнут', 'Das Limit fuer dieses Training ist erreicht')
+                                    : tr('Не удалось загрузить следующую карточку', 'Die naechste Karte konnte nicht geladen werden')}
+                                </div>
+                                <div className="fsrs-divider" />
+                                <div className="fsrs-error-copy">
+                                  <p>{srsError}</p>
+                                  <p>
+                                    {isFreeLimitError
+                                      ? tr(
+                                        'Вы использовали дневной лимит бесплатной тренировки слов в этом тренажёре. Перейдите к выбору тренировок и выберите другой режим.',
+                                        'Du hast das Tageslimit fuer das kostenlose Worttraining in diesem Modus genutzt. Wechsle zur Trainingsauswahl und waehle einen anderen Modus.'
+                                      )
+                                      : tr(
+                                        'Карточка не потеряна. Проверьте соединение и нажмите «Повторить».',
+                                        'Die Karte ist nicht verloren. Bitte Verbindung pruefen und dann auf „Erneut versuchen“ tippen.'
+                                      )}
+                                  </p>
+                                </div>
+                                <button
+                                  type="button"
+                                  className="fsrs-retry-btn"
+                                  onClick={() => {
+                                    setWebappError('');
+                                    if (isFreeLimitError) {
+                                      void exitFlashcardsTraining();
+                                      return;
+                                    }
+                                    void loadSrsNextCard();
+                                  }}
+                                >
+                                  {isFreeLimitError
+                                    ? tr('К другим тренировкам', 'Zu anderen Trainings')
+                                    : tr('Повторить', 'Erneut versuchen')}
+                                </button>
                               </div>
-                              <div className="fsrs-error-title">
-                                {tr('Не удалось загрузить следующую карточку', 'Die naechste Karte konnte nicht geladen werden')}
-                              </div>
-                              <div className="fsrs-divider" />
-                              <div className="fsrs-error-copy">
-                                <p>{srsError}</p>
-                                <p>
-                                  {tr(
-                                    'Карточка не потеряна. Проверьте соединение и нажмите «Повторить».',
-                                    'Die Karte ist nicht verloren. Bitte Verbindung pruefen und dann auf „Erneut versuchen“ tippen.'
-                                  )}
-                                </p>
-                              </div>
-                              <button
-                                type="button"
-                                className="fsrs-retry-btn"
-                                onClick={() => {
-                                  setWebappError('');
-                                  void loadSrsNextCard();
-                                }}
-                              >
-                                {tr('Повторить', 'Erneut versuchen')}
-                              </button>
-                            </div>
-                          )}
+                            );
+                          })()}
                           {!srsLoading && !srsCard && !srsError && (
                             <div className="fsrs-empty-note">{t('no_cards_now')}</div>
                           )}
