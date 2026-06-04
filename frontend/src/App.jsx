@@ -71,6 +71,7 @@ const ECONOMICS_RAILWAY_REDIS_RAM_STORAGE_KEY = 'dds_economics_railway_redis_ram
 const ECONOMICS_RAILWAY_EGRESS_STORAGE_KEY = 'dds_economics_railway_egress_v1';
 const ECONOMICS_PERIOD_OPTIONS = new Set(['day', 'week', 'month', 'quarter', 'half-year', 'year', 'all']);
 const PAID_FEATURE_ERROR_PREFIX = '__paid_feature_required__:';
+const YOUTUBE_TRANSCRIPT_LIBRARY_NOTICE_PREFIX = '__youtube_transcript_library_notice__:';
 const EPUB_RUNTIME_CDN_URLS = [
   'https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js',
   'https://unpkg.com/epubjs/dist/epub.min.js',
@@ -4211,6 +4212,21 @@ const HomeScreenSection = React.memo(function HomeScreenSection({
       </div>
     );
   }, [parsePaidFeatureError, tr]);
+  const renderYoutubeTranscriptNotice = useCallback((errorValue) => {
+    const raw = String(errorValue || '');
+    if (!raw.startsWith(YOUTUBE_TRANSCRIPT_LIBRARY_NOTICE_PREFIX)) return null;
+    const message = raw.slice(YOUTUBE_TRANSCRIPT_LIBRARY_NOTICE_PREFIX.length).trim();
+    if (!message) return null;
+    return (
+      <div className="paid-feature-card youtube-library-notice">
+        <div className="paid-feature-card-icon youtube-library-notice-icon" aria-hidden="true">CC</div>
+        <div className="paid-feature-card-copy youtube-library-notice-copy">
+          <strong>{tr('Субтитры недоступны', 'Untertitel nicht verfuegbar')}</strong>
+          <span>{message}</span>
+        </div>
+      </div>
+    );
+  }, [tr]);
   const {
     weeklyPlanRef = null,
     todayRef = null,
@@ -26970,10 +26986,10 @@ function AppInner() {
         try {
           const data = JSON.parse(message);
           if (data.error_code === 'youtube_transcript_not_in_library' || data.error === 'youtube_transcript_not_in_library') {
-            message = tr(
+            message = `${YOUTUBE_TRANSCRIPT_LIBRARY_NOTICE_PREFIX}${tr(
               'Субтитры для этого видео недоступны.\n\nВключите субтитры YouTube кнопкой CC или выберите видео из раздела «Фильмы», чтобы пользоваться кликабельными субтитрами и сохранять слова.',
               'Untertitel fuer dieses Video sind nicht verfuegbar.\n\nAktivieren Sie YouTube-Untertitel mit CC oder waehlen Sie ein Video aus „Filme“, um klickbare Untertitel zu nutzen und Woerter zu speichern.'
-            );
+            )}`;
           } else {
             message = data.error || message;
           }
@@ -27017,10 +27033,10 @@ function AppInner() {
         try {
           const data = JSON.parse(message);
           if (data.error_code === 'youtube_transcript_not_in_library' || data.error === 'youtube_transcript_not_in_library') {
-            message = tr(
+            message = `${YOUTUBE_TRANSCRIPT_LIBRARY_NOTICE_PREFIX}${tr(
               'Субтитры для этого видео недоступны.\n\nВключите субтитры YouTube кнопкой CC или выберите видео из раздела «Фильмы», чтобы пользоваться кликабельными субтитрами и сохранять слова.',
               'Untertitel fuer dieses Video sind nicht verfuegbar.\n\nAktivieren Sie YouTube-Untertitel mit CC oder waehlen Sie ein Video aus „Filme“, um klickbare Untertitel zu nutzen und Woerter zu speichern.'
-            );
+            )}`;
           } else {
             message = data.error || message;
           }
@@ -27033,7 +27049,12 @@ function AppInner() {
       applyYoutubeTranscriptPayload(data);
     } catch (error) {
       setYoutubeTranscript([]);
-      setYoutubeTranscriptError(`${tr('Авто-субтитры недоступны', 'Auto-Untertitel nicht verfuegbar')}: ${error.message}`);
+      const message = String(error?.message || '').trim();
+      if (message.startsWith(YOUTUBE_TRANSCRIPT_LIBRARY_NOTICE_PREFIX)) {
+        setYoutubeTranscriptError(message);
+      } else {
+        setYoutubeTranscriptError(`${tr('Авто-субтитры недоступны', 'Auto-Untertitel nicht verfuegbar')}: ${message}`);
+      }
     } finally {
       setYoutubeTranscriptLoading(false);
     }
@@ -31001,7 +31022,9 @@ function AppInner() {
                       </div>
                     )}
                     {youtubeError && <div className="webapp-error">{youtubeError}</div>}
-                    {youtubeTranscriptError && <div className="webapp-error">{youtubeTranscriptError}</div>}
+                    {youtubeTranscriptError && (
+                      renderYoutubeTranscriptNotice(youtubeTranscriptError) || <div className="webapp-error">{youtubeTranscriptError}</div>
+                    )}
                     {youtubeSearchExpanded && (
                       <div className="webapp-video-form youtube-setup-form">
                         <YoutubeQueryInputField

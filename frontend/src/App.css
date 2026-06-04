@@ -4359,6 +4359,35 @@ body {
   color: rgba(66, 54, 35, 0.78);
 }
 
+.youtube-library-notice {
+  grid-template-columns: 54px minmax(0, 1fr);
+  align-items: start;
+  margin-top: 14px;
+  padding: 16px;
+}
+
+.youtube-library-notice-icon {
+  width: 54px;
+  height: 54px;
+  border-radius: 16px;
+  font-size: 15px;
+  font-weight: 900;
+  letter-spacing: 0;
+}
+
+.youtube-library-notice-copy {
+  gap: 6px;
+}
+
+.youtube-library-notice-copy strong {
+  font-size: 17px;
+}
+
+.youtube-library-notice-copy span {
+  white-space: pre-line;
+  font-size: 14px;
+}
+
 .webapp-success {
   color: #bbf7d0;
   background: rgba(34, 197, 94, 0.15);
