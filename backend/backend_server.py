@@ -4829,6 +4829,11 @@ def _apply_billing_guard(path: str) -> tuple[dict | None, int | None]:
             if cached_data:
                 return None, None
 
+    if path == "/api/webapp/youtube/translate":
+        payload = request.get_json(silent=True) or {}
+        if _youtube_translate_request_is_fully_cached(payload, int(user_id)):
+            return None, None
+
     _sync_user_subscription_from_live_stripe(user_id=int(user_id))
     now_utc = datetime.now(timezone.utc)
     if bool(rule.get("cap")):
@@ -14518,6 +14523,58 @@ def _infer_reader_title(
 
 def _youtube_translation_key(target_lang: str, idx: int | str) -> str:
     return f"{_normalize_short_lang_code(target_lang)}:{idx}"
+
+
+def _youtube_translate_request_is_fully_cached(payload: dict, user_id: int) -> bool:
+    try:
+        video_id = str((payload or {}).get("videoId") or "").strip()
+        lines_raw = (payload or {}).get("lines") or []
+        if not video_id or not isinstance(lines_raw, list):
+            return False
+        try:
+            start_index = int((payload or {}).get("start_index")) if (payload or {}).get("start_index") is not None else 0
+        except Exception:
+            start_index = 0
+        lines = [str(line) for line in lines_raw][:50]
+        if not any(str(line).strip() for line in lines):
+            return True
+
+        source_lang, _target_lang, _profile, _lookup_mode = _get_user_language_pair_for_webapp_request(
+            int(user_id),
+            payload=payload,
+        )
+        subtitle_target_lang = _normalize_short_lang_code(source_lang, fallback="ru")
+        cached_db = get_youtube_transcript_cache(video_id) or {}
+        translations_map = cached_db.get("translations") or {}
+        if not isinstance(translations_map, dict):
+            return False
+
+        for offset, line in enumerate(lines):
+            if not str(line).strip():
+                continue
+            idx = str(start_index + offset)
+            cached = translations_map.get(_youtube_translation_key(subtitle_target_lang, idx))
+            if cached is None and subtitle_target_lang == "ru":
+                cached = translations_map.get(idx)
+            if not cached:
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def _can_generate_youtube_subtitle_translation(user_id: int) -> bool:
+    try:
+        if int(user_id) == YOUTUBE_LIBRARY_ADMIN_USER_ID:
+            return True
+        entitlement = resolve_entitlement(
+            user_id=int(user_id),
+            now_ts_utc=datetime.now(timezone.utc),
+            tz="Europe/Vienna",
+        )
+        return str(entitlement.get("effective_mode") or "free").strip().lower() == "pro"
+    except Exception:
+        return False
 
 
 def _extract_youtube_translations_for_target(
@@ -40185,6 +40242,38 @@ def translate_youtube_subtitles():
         llm_translate_duration_ms = 0
         persist_duration_ms = 0
         if missing_lines:
+            if not _can_generate_youtube_subtitle_translation(int(user_id)):
+                response_payload = {
+                    "error": "youtube_translation_pro_required",
+                    "error_code": "youtube_translation_pro_required",
+                    "message": "Перевод субтитров доступен в Pro.",
+                    "video_id": video_id,
+                }
+                _log_flow_observation(
+                    "youtube_translate",
+                    "youtube_translate_completed",
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                    user_id=int(user_id),
+                    video_id=video_id,
+                    start_index=start_index,
+                    requested_lines_count=len(lines),
+                    missing_lines_count=len(missing_lines),
+                    cached_hits=cached_hits,
+                    target_subtitle_lang=subtitle_target_lang,
+                    language_pair_lookup_mode=language_pair_lookup_mode,
+                    language_pair_lookup_duration_ms=language_pair_duration_ms,
+                    cache_read_duration_ms=cache_read_duration_ms,
+                    cache_hit=False,
+                    cache_tier="miss",
+                    final_status="error",
+                    error_code="youtube_translation_pro_required",
+                    duration_ms=_elapsed_ms_since(started_perf),
+                    http_status=403,
+                    **summarize_db_acquire_events(db_acquire_events),
+                )
+                return jsonify(response_payload), 403
+
             detected_source_lang = "de"
             try:
                 cached_db = get_youtube_transcript_cache(video_id) or {}

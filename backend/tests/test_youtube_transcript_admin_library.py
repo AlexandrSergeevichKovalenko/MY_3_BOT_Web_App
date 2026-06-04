@@ -1,6 +1,6 @@
 import unittest
 from contextlib import ExitStack, contextmanager
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import backend.backend_server as server
 
@@ -62,6 +62,34 @@ class YoutubeTranscriptAdminLibraryTests(unittest.TestCase):
                         {"text": "Hallo", "start": 0, "duration": 1},
                         {"text": "Welt", "start": 1, "duration": 1},
                     ],
+                },
+            )
+
+    def _post_translate(self, user_id: int, extra_patches, *, lines=None, patch_billing_guard: bool = True):
+        base_patches = [
+            patch.object(server, "WEBAPP_SINGLE_INSTANCE_GUARD_ENABLED", False),
+            patch.object(server, "_telegram_hash_is_valid", return_value=True),
+            patch.object(server, "_parse_telegram_init_data", return_value={"user": {"id": user_id}}),
+            patch.object(server, "_resolve_webapp_user_allowed", return_value=(True, "test")),
+            patch.object(server, "db_acquire_scope", _fake_db_scope),
+            patch.object(server, "_get_user_language_pair_for_webapp_request", return_value=("ru", "de", {}, "test")),
+            patch.object(server, "_log_flow_observation"),
+            patch.object(server, "summarize_db_acquire_events", return_value={}),
+            patch.object(server, "_estimate_json_payload_size_bytes", return_value=100),
+            patch.object(server, "_billing_log_openai_usage"),
+        ]
+        if patch_billing_guard:
+            base_patches.append(patch.object(server, "_apply_billing_guard", return_value=(None, None)))
+        with ExitStack() as stack:
+            for patcher in base_patches + list(extra_patches):
+                stack.enter_context(patcher)
+            return self.client.post(
+                "/api/webapp/youtube/translate",
+                json={
+                    "initData": "signed",
+                    "videoId": "video-123",
+                    "start_index": 0,
+                    "lines": lines if lines is not None else ["Hallo"],
                 },
             )
 
@@ -276,6 +304,123 @@ class YoutubeTranscriptAdminLibraryTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["items"][0]["video_id"], "video-123")
+        upsert_mock.assert_not_called()
+
+    def test_free_can_read_cached_ru_translations(self):
+        cached = {"translations": {"ru:0": "Привет"}, "language": "de"}
+        with patch.object(server, "get_youtube_transcript_cache", return_value=cached) as cache_mock, \
+             patch.object(server, "run_translate_subtitles_ru", new=AsyncMock()) as translate_mock, \
+             patch.object(server, "upsert_youtube_translations") as upsert_mock:
+            response = self._post_translate(55, [])
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["translations"], ["Привет"])
+        cache_mock.assert_called_with("video-123")
+        translate_mock.assert_not_called()
+        upsert_mock.assert_not_called()
+
+    def test_free_cached_ru_translation_bypasses_cost_cap(self):
+        cached = {"translations": {"ru:0": "Привет"}, "language": "de"}
+        with patch.object(server, "get_youtube_transcript_cache", return_value=cached), \
+             patch.object(server, "enforce_daily_cost_cap", return_value={"error": "cap"}), \
+             patch.object(server, "run_translate_subtitles_ru", new=AsyncMock()) as translate_mock, \
+             patch.object(server, "upsert_youtube_translations") as upsert_mock:
+            response = self._post_translate(55, [], patch_billing_guard=False)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["translations"], ["Привет"])
+        translate_mock.assert_not_called()
+        upsert_mock.assert_not_called()
+
+    def test_free_cannot_generate_missing_ru_translations(self):
+        cached = {"translations": {}, "language": "de"}
+        with patch.object(server, "get_youtube_transcript_cache", return_value=cached), \
+             patch.object(server, "resolve_entitlement", return_value={"effective_mode": "free"}), \
+             patch.object(server, "run_translate_subtitles_ru", new=AsyncMock()) as translate_mock, \
+             patch.object(server, "upsert_youtube_translations") as upsert_mock:
+            response = self._post_translate(55, [])
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json()["error_code"], "youtube_translation_pro_required")
+        translate_mock.assert_not_called()
+        upsert_mock.assert_not_called()
+
+    def test_free_missing_ru_translation_does_not_trigger_openai(self):
+        cached = {"translations": {}, "language": "de"}
+        with patch.object(server, "get_youtube_transcript_cache", return_value=cached), \
+             patch.object(server, "resolve_entitlement", return_value={"effective_mode": "free"}), \
+             patch.object(server, "run_translate_subtitles_ru", new=AsyncMock()) as translate_mock:
+            response = self._post_translate(55, [])
+
+        self.assertEqual(response.status_code, 403)
+        translate_mock.assert_not_called()
+
+    def test_free_missing_ru_translation_does_not_write_translations(self):
+        cached = {"translations": {}, "language": "de"}
+        with patch.object(server, "get_youtube_transcript_cache", return_value=cached), \
+             patch.object(server, "resolve_entitlement", return_value={"effective_mode": "free"}), \
+             patch.object(server, "upsert_youtube_translations") as upsert_mock:
+            response = self._post_translate(55, [])
+
+        self.assertEqual(response.status_code, 403)
+        upsert_mock.assert_not_called()
+
+    def test_pro_can_generate_missing_ru_translations(self):
+        cached = {"translations": {}, "language": "de"}
+        with patch.object(server, "get_youtube_transcript_cache", return_value=cached), \
+             patch.object(server, "resolve_entitlement", return_value={"effective_mode": "pro"}), \
+             patch.object(server, "run_translate_subtitles_ru", new=AsyncMock(return_value=["Привет"])) as translate_mock, \
+             patch.object(server, "get_last_llm_usage", return_value={"total_tokens": 12}), \
+             patch.object(server, "upsert_youtube_translations") as upsert_mock:
+            response = self._post_translate(77, [])
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["translations"], ["Привет"])
+        translate_mock.assert_called_once_with(["Hallo"])
+        upsert_mock.assert_called_once()
+        self.assertEqual(upsert_mock.call_args.args[0], "video-123")
+        self.assertEqual(upsert_mock.call_args.args[1]["ru:0"], "Привет")
+
+    def test_pro_can_reuse_cached_ru_translations(self):
+        cached = {"translations": {"ru:0": "Привет"}, "language": "de"}
+        with patch.object(server, "get_youtube_transcript_cache", return_value=cached), \
+             patch.object(server, "resolve_entitlement", return_value={"effective_mode": "pro"}) as entitlement_mock, \
+             patch.object(server, "run_translate_subtitles_ru", new=AsyncMock()) as translate_mock, \
+             patch.object(server, "upsert_youtube_translations") as upsert_mock:
+            response = self._post_translate(77, [])
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["translations"], ["Привет"])
+        entitlement_mock.assert_not_called()
+        translate_mock.assert_not_called()
+        upsert_mock.assert_not_called()
+
+    def test_admin_can_generate_missing_ru_translations(self):
+        cached = {"translations": {}, "language": "de"}
+        with patch.object(server, "get_youtube_transcript_cache", return_value=cached), \
+             patch.object(server, "resolve_entitlement", return_value={"effective_mode": "free"}) as entitlement_mock, \
+             patch.object(server, "run_translate_subtitles_ru", new=AsyncMock(return_value=["Привет"])) as translate_mock, \
+             patch.object(server, "get_last_llm_usage", return_value={"total_tokens": 12}), \
+             patch.object(server, "upsert_youtube_translations") as upsert_mock:
+            response = self._post_translate(117649764, [])
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["translations"], ["Привет"])
+        entitlement_mock.assert_not_called()
+        translate_mock.assert_called_once_with(["Hallo"])
+        upsert_mock.assert_called_once()
+
+    def test_existing_translation_cache_reuse_remains_global_by_video_id(self):
+        cached = {"translations": {"ru:0": "Привет"}, "language": "de"}
+        with patch.object(server, "get_youtube_transcript_cache", return_value=cached) as cache_mock, \
+             patch.object(server, "run_translate_subtitles_ru", new=AsyncMock()) as translate_mock, \
+             patch.object(server, "upsert_youtube_translations") as upsert_mock:
+            response = self._post_translate(88, [])
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["translations"], ["Привет"])
+        cache_mock.assert_called_with("video-123")
+        translate_mock.assert_not_called()
         upsert_mock.assert_not_called()
 
 
