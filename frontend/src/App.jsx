@@ -5858,6 +5858,8 @@ function AppInner() {
   const [billingPlans, setBillingPlans] = useState([]);
   const [billingActionLoading, setBillingActionLoading] = useState(false);
   const [billingPlanDetailsOpenFor, setBillingPlanDetailsOpenFor] = useState('');
+  const knownBillingEffectiveMode = String(billingStatus?.effective_mode || '').trim().toLowerCase();
+  const isKnownFreePaidSurfaceMode = Boolean(billingStatus && knownBillingEffectiveMode === 'free');
   const [languageProfile, setLanguageProfile] = useState(null);
   const [languageProfileDraft, setLanguageProfileDraft] = useState({ learning_language: 'de', native_language: 'ru' });
   const [languageProfileLoading, setLanguageProfileLoading] = useState(false);
@@ -9770,6 +9772,15 @@ function AppInner() {
     const requestId = beginAsyncGuard(todayPlanRequestIdRef);
     const tone = options?.manual ? 'manual' : 'snapshot';
     const syncFacts = Boolean(options?.syncFacts);
+    if (isKnownFreePaidSurfaceMode) {
+      if (!isAsyncGuardCurrent(todayPlanRequestIdRef, requestId)) {
+        return;
+      }
+      setTodayPlanError(`${PAID_FEATURE_ERROR_PREFIX}${JSON.stringify({ feature: 'today', feature_title: 'Задачи на день' })}`);
+      setTodayPlanLoadedOnce(true);
+      setTodayPlanLoading(false);
+      return;
+    }
     try {
       setTodayPlanLoading(true);
       setTodayPlanError('');
@@ -9847,6 +9858,15 @@ function AppInner() {
     const requestId = beginAsyncGuard(skillReportRequestIdRef);
     const tone = options?.manual ? 'manual' : 'snapshot';
     const syncFacts = Boolean(options?.syncFacts);
+    if (isKnownFreePaidSurfaceMode) {
+      if (!isAsyncGuardCurrent(skillReportRequestIdRef, requestId)) {
+        return;
+      }
+      setSkillReportError(`${PAID_FEATURE_ERROR_PREFIX}${JSON.stringify({ feature: 'skills', feature_title: 'Карта навыков' })}`);
+      setSkillReportLoadedOnce(true);
+      setSkillReportLoading(false);
+      return;
+    }
     try {
       setSkillReportLoading(true);
       setSkillReportError('');
@@ -9913,6 +9933,16 @@ function AppInner() {
     const tone = options?.manual ? 'manual' : 'snapshot';
     const syncFacts = Boolean(options?.syncFacts);
     const silent = Boolean(options?.silent);
+    if (isKnownFreePaidSurfaceMode) {
+      if (!isAsyncGuardCurrent(weeklyPlanRequestIdRef, requestId)) {
+        return;
+      }
+      setWeeklyPlanError(`${PAID_FEATURE_ERROR_PREFIX}${JSON.stringify({ feature: 'weekly_plan', feature_title: 'План на неделю' })}`);
+      if (!silent) {
+        setWeeklyPlanLoading(false);
+      }
+      return;
+    }
     try {
       if (!silent) {
         setWeeklyPlanLoading(true);
