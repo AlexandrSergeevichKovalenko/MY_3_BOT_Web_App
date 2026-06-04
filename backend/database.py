@@ -1389,6 +1389,39 @@ def _run_rebus_rute_fix_migration(conn) -> None:
     conn.commit()
 
 
+def _run_rebus_freetext_migration(conn) -> None:
+    """Drop the A/B/C/D CHECK constraint on bt_3_rebus_answers.selected_option
+    so we can store the user's typed word directly."""
+    KEY = "rebus_answers_freetext_selected_option_20260604"
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM bt_3_schema_migrations WHERE migration_key = %s LIMIT 1",
+            (KEY,),
+        )
+        if cur.fetchone():
+            return
+        # Find and drop the check constraint by name pattern
+        cur.execute(
+            """
+            SELECT conname FROM pg_constraint
+            WHERE conrelid = 'bt_3_rebus_answers'::regclass
+              AND contype = 'c'
+              AND conname ILIKE '%selected_option%'
+            LIMIT 1
+            """
+        )
+        row = cur.fetchone()
+        if row:
+            cur.execute(
+                f"ALTER TABLE bt_3_rebus_answers DROP CONSTRAINT IF EXISTS {row[0]}"
+            )
+        cur.execute(
+            "INSERT INTO bt_3_schema_migrations (migration_key) VALUES (%s) ON CONFLICT DO NOTHING",
+            (KEY,),
+        )
+    conn.commit()
+
+
 def _run_dictionary_canonical_schema_migration(conn, *, batch_size: int = 250) -> None:
     with conn.cursor() as cursor:
         cursor.execute(
@@ -7414,6 +7447,7 @@ def ensure_webapp_tables() -> None:
             cursor.close()
             _run_dictionary_canonical_schema_migration(conn)
             _run_rebus_rute_fix_migration(conn)
+            _run_rebus_freetext_migration(conn)
         missing_phase1_objects = get_missing_phase1_shadow_schema_objects()
         if missing_phase1_objects:
             raise RuntimeError(

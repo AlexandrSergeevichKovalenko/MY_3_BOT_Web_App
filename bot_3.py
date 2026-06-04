@@ -487,6 +487,8 @@ PENDING_INPUT_STATE_LANGUAGE_TUTOR = "language_tutor_input"
 PENDING_INPUT_STATE_TTS_BUDGET_CUSTOM = "tts_budget_custom"
 PENDING_INPUT_STATE_CROSSWORD = "crossword_answer"
 CROSSWORD_ANSWER_TTL_SECONDS = 60 * 30  # 30 minutes
+PENDING_INPUT_STATE_REBUS = "rebus_answer"
+REBUS_ANSWER_TTL_SECONDS = 60 * 30  # 30 minutes
 PENDING_INPUT_STATE_DICTIONARY_FOLDER_CREATE = "dictionary_folder_create"
 DICTIONARY_FOLDER_CREATE_TTL_SECONDS = 60 * 10
 PENDING_INPUT_STATE_CLEANUP_INTERVAL_MINUTES = max(
@@ -4833,6 +4835,58 @@ async def handle_user_message(update: Update, context: CallbackContext):
             user_id=int(user_id),
         )
         return
+
+    # ── Rebus free-text answer ──────────────────────────────────────────────
+    rebus_pending = _restore_active_pending_input_state(int(user_id), PENDING_INPUT_STATE_REBUS)
+    if rebus_pending:
+        import time as _time_rb
+        started_at = float(rebus_pending.get("started_at") or 0.0)
+        state_key  = str(rebus_pending.get("state_key") or "").strip()
+        if started_at > 0 and (_time_rb.time() - started_at) > REBUS_ANSWER_TTL_SECONDS:
+            _clear_pending_input_state(state_key=state_key, user_id=int(user_id))
+        else:
+            dispatch_id  = int(rebus_pending.get("dispatch_id") or 0)
+            correct_word = str(rebus_pending.get("correct_word") or "").strip()
+            article      = str(rebus_pending.get("article") or "").strip()
+            meaning_ru   = str(rebus_pending.get("meaning_ru") or "").strip()
+            explanation_ru = str(rebus_pending.get("explanation_ru") or "").strip()
+
+            # Strip article if user typed it (e.g. "das Dampfschiff" → "Dampfschiff")
+            user_answer = text.strip()
+            for art in ("der ", "die ", "das ", "Der ", "Die ", "Das "):
+                if user_answer.startswith(art):
+                    user_answer = user_answer[len(art):]
+                    break
+            is_correct = user_answer.lower() == correct_word.lower()
+
+            if dispatch_id and correct_word:
+                try:
+                    await asyncio.to_thread(
+                        record_rebus_answer,
+                        dispatch_id=dispatch_id,
+                        user_id=int(user_id),
+                        selected_option=user_answer[:50],
+                        is_correct=bool(is_correct),
+                    )
+                except Exception:
+                    logging.warning(
+                        "rebus_text: record_answer failed dispatch_id=%s", dispatch_id, exc_info=True
+                    )
+
+            _clear_pending_input_state(state_key=state_key, user_id=int(user_id))
+
+            full_word = f"{article} {correct_word}".strip() if article else correct_word
+            detail    = f" ({meaning_ru})" if meaning_ru else ""
+            extra     = f"\n_{explanation_ru}_" if explanation_ru else ""
+
+            if is_correct:
+                reply = f"✅ Richtig! *{full_word}*{detail}{extra}"
+            else:
+                reply = f"❌ Falsch. Das Wort ist *{full_word}*{detail}{extra}"
+
+            await update.message.reply_text(reply, parse_mode="Markdown")
+            return
+    # ── end rebus ───────────────────────────────────────────────────────────
 
     # ── Crossword free-text answer ──────────────────────────────────────────
     cw_pending = _restore_active_pending_input_state(int(user_id), PENDING_INPUT_STATE_CROSSWORD)
@@ -15583,29 +15637,27 @@ def _shuffle_rebus_options(
     return options, correct_label
 
 
-def _build_rebus_caption(compound_entry: dict, shuffled_options: list[str]) -> str:
-    lines = [
-        "🧩 *Deutsches Rätsel* — Was ergibt das zusammen?",
-        "",
-    ]
-    for i, label in enumerate(_REBUS_OPTION_LABELS):
-        if i < len(shuffled_options):
-            lines.append(f"*{label})* {shuffled_options[i]}")
-    lines += ["", "Wähle die richtige Antwort! 👇"]
+def _build_rebus_caption(compound_entry: dict) -> str:
+    article = str(compound_entry.get("article") or "").strip()
+    meaning_ru = str(compound_entry.get("meaning_ru") or "").strip()
+    parts = list(compound_entry.get("parts") or [])
+    part_hints = " + ".join(
+        str(p.get("meaning_ru") or p.get("word") or "") for p in parts
+    )
+    lines = ["🧩 *Deutsches Rätsel* — Was ergibt das zusammen?", ""]
+    if part_hints:
+        lines.append(f"_{part_hints}_")
+        lines.append("")
+    lines.append("Schreibe das Wort! ✏️ 👇")
     return "\n".join(lines)
 
 
-def _build_rebus_keyboard(dispatch_id: int, shuffled_options: list[str]) -> InlineKeyboardMarkup:
-    row1, row2 = [], []
-    for i, label in enumerate(_REBUS_OPTION_LABELS):
-        if i >= len(shuffled_options):
-            break
-        btn = InlineKeyboardButton(
-            text=f"{label}) {shuffled_options[i]}",
-            callback_data=f"rb:{dispatch_id}:{label}",
-        )
-        (row1 if i < 2 else row2).append(btn)
-    return InlineKeyboardMarkup([r for r in [row1, row2] if r])
+def _build_rebus_keyboard(dispatch_id: int) -> InlineKeyboardMarkup:
+    btn = InlineKeyboardButton(
+        text="✏️ Antworten",
+        callback_data=f"rb:start:{dispatch_id}",
+    )
+    return InlineKeyboardMarkup([[btn]])
 
 
 async def send_rebus_to_chat(
@@ -15648,9 +15700,8 @@ async def send_rebus_to_chat(
         )
         return False
 
-    shuffled_options, _correct = _shuffle_rebus_options(compound_word, wrong_options, dispatch_id)
-    caption = _build_rebus_caption(compound_entry, shuffled_options)
-    keyboard = _build_rebus_keyboard(dispatch_id, shuffled_options)
+    caption = _build_rebus_caption(compound_entry)
+    keyboard = _build_rebus_keyboard(dispatch_id)
 
     logging.info(
         "rebus_send_begin dispatch_id=%s compound_id=%s chat_id=%s slot=%s/%s",
@@ -15811,18 +15862,22 @@ async def _send_scheduled_rebuses(context: CallbackContext) -> None:
 
 
 async def handle_rebus_answer_callback(update: Update, context: CallbackContext) -> None:
+    """Handle ✏️ Antworten tap — sets up free-text input for the rebus."""
     query = update.callback_query
     user = update.effective_user
     if not query or not user:
         return
-    raw_data = str(query.data or "").strip()
-    match = re.match(r"^rb:(\d+):([A-D])$", raw_data)
-    if not match:
-        await query.answer("Rebus unavailable")
+
+    parts = (query.data or "").split(":", 2)
+    if len(parts) != 3 or parts[1] != "start":
+        await query.answer()
         return
 
-    dispatch_id = int(match.group(1))
-    selected_label = match.group(2).upper()
+    try:
+        dispatch_id = int(parts[2])
+    except ValueError:
+        await query.answer()
+        return
 
     try:
         dispatch = await asyncio.to_thread(get_rebus_dispatch_by_id, dispatch_id)
@@ -15844,45 +15899,37 @@ async def handle_rebus_answer_callback(update: Update, context: CallbackContext)
         return
 
     compound_word = str(compound_entry.get("compound_word") or "")
-    wrong_options = list(compound_entry.get("wrong_options") or [])
-    shuffled_options, correct_label = _shuffle_rebus_options(compound_word, wrong_options, dispatch_id)
+    article      = str(compound_entry.get("article") or "")
+    meaning_ru   = str(compound_entry.get("meaning_ru") or "")
 
-    is_correct = selected_label == correct_label
-    meaning_ru = str(compound_entry.get("meaning_ru") or "")
-    explanation_ru = str(compound_entry.get("explanation_ru") or "")
+    state_key = f"rebus_answer:{int(user.id)}:{dispatch_id}"
+    _store_pending_input_state(
+        state_key=state_key,
+        user_id=int(user.id),
+        state_type=PENDING_INPUT_STATE_REBUS,
+        payload={
+            "dispatch_id": dispatch_id,
+            "compound_id": compound_id,
+            "correct_word": compound_word,
+            "article": article,
+            "meaning_ru": meaning_ru,
+            "explanation_ru": str(compound_entry.get("explanation_ru") or ""),
+            "state_key": state_key,
+            "started_at": __import__("time").time(),
+        },
+        ttl_seconds=REBUS_ANSWER_TTL_SECONDS,
+    )
 
+    await query.answer()
+    letter_count = len(compound_word)
+    prompt = (
+        f"✏️ *Deutsches Rätsel* — {letter_count} Buchstaben\n\n"
+        f"Schreibe das zusammengesetzte Wort:"
+    )
     try:
-        await asyncio.to_thread(
-            record_rebus_answer,
-            dispatch_id=dispatch_id,
-            user_id=int(user.id),
-            selected_option=selected_label,
-            is_correct=bool(is_correct),
-        )
+        await query.message.reply_text(prompt, parse_mode="Markdown")
     except Exception:
-        logging.warning(
-            "rebus_callback: record_rebus_answer failed dispatch_id=%s user_id=%s",
-            dispatch_id, int(user.id), exc_info=True,
-        )
-
-    if is_correct:
-        icon = "✅"
-        verdict = f"Richtig! Das Wort ist *{compound_word}*."
-    else:
-        icon = "❌"
-        verdict = f"Falsch. Richtig: *{compound_word}*."
-
-    detail = f" ({meaning_ru})" if meaning_ru else ""
-    extra = f"\n\n{explanation_ru}" if explanation_ru else ""
-    alert_text = f"{icon} {verdict}{detail}{extra}"
-
-    try:
-        await query.answer(alert_text[:200], show_alert=True)
-    except Exception:
-        logging.warning(
-            "rebus_callback: answer alert failed dispatch_id=%s user_id=%s",
-            dispatch_id, int(user.id), exc_info=True,
-        )
+        logging.warning("rebus_callback: reply prompt failed dispatch_id=%s", dispatch_id, exc_info=True)
 
     try:
         await asyncio.to_thread(
@@ -17809,7 +17856,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_language_tutor_detail_callback, pattern=r"^langgpt:detail$"))
     application.add_handler(CallbackQueryHandler(handle_image_quiz_callback, pattern=r"^iq:\d+:\d+$"))
     application.add_handler(CallbackQueryHandler(handle_visual_riddle_callback, pattern=r"^vr:\d+:\d+$"))
-    application.add_handler(CallbackQueryHandler(handle_rebus_answer_callback, pattern=r"^rb:\d+:[A-D]$"))
+    application.add_handler(CallbackQueryHandler(handle_rebus_answer_callback, pattern=r"^rb:start:\d+$"))
     application.add_handler(CallbackQueryHandler(handle_article_quiz_callback, pattern=r"^aq:\d+:(der|die|das)$"))
     application.add_handler(CallbackQueryHandler(handle_crossword_callback, pattern=r"^cw:start:\d+:\d+$"))
     application.add_handler(CallbackQueryHandler(handle_text_level_callback, pattern=r"^text_level:"))
