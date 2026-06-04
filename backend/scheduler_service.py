@@ -272,7 +272,7 @@ def _dispatch_translation_focus_pool_refill() -> None:
         os.getenv("TRANSLATION_FOCUS_POOL_REFILL_MINUTE"),
     )
     message = run_translation_focus_pool_refill_job.send(
-        force=False,
+        force=True,
         tz_name=tz_name,
         request_id=request_id,
         correlation_id=request_id,

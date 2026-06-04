@@ -1031,6 +1031,7 @@ TTS_PREWARM_PER_USER_MAX_CHAR_LIMIT = max(
     min(20000, int((os.getenv("TTS_PREWARM_PER_USER_MAX_CHAR_LIMIT") or "3600").strip())),
 )
 SRS_PREFETCH_MAX_ITEMS = max(20, min(100, int((os.getenv("SRS_PREFETCH_MAX_ITEMS") or "60").strip())))
+FREE_SRS_PREFETCH_MAX_ITEMS = max(1, min(SRS_PREFETCH_MAX_ITEMS, int((os.getenv("FREE_SRS_PREFETCH_MAX_ITEMS") or "3").strip() or "3")))
 TTS_PREWARM_QUOTA_CONTROL_ENABLED = str(os.getenv("TTS_PREWARM_QUOTA_CONTROL_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 TTS_PREWARM_QUOTA_CONTROL_TZ = (os.getenv("TTS_PREWARM_QUOTA_CONTROL_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
 TTS_PREWARM_QUOTA_CONTROL_HOUR = max(0, min(23, int((os.getenv("TTS_PREWARM_QUOTA_CONTROL_HOUR") or "8").strip())))
@@ -4858,26 +4859,30 @@ def _sum_billing_units_today(
     action_type: str,
     units_type: str,
     tz_name: str = "Europe/Vienna",
+    cursor=None,
 ) -> float:
     action_value = str(action_type or "").strip().lower()
     units_value = str(units_type or "").strip().lower()
     if not action_value or not units_value:
         return 0.0
     day_local = _today_local_date(tz_name=tz_name)
+    query = """
+        SELECT COALESCE(SUM(units_value), 0)
+        FROM bt_3_billing_events
+        WHERE user_id = %s
+          AND action_type = %s
+          AND units_type = %s
+          AND (event_time AT TIME ZONE %s)::date = %s;
+    """
+    params = (int(user_id), action_value, units_value, str(tz_name or "Europe/Vienna"), day_local)
     try:
+        if cursor is not None:
+            cursor.execute(query, params)
+            row = cursor.fetchone()
+            return float((row or [0])[0] or 0.0)
         with db_acquire_scope("billing_units_today"), get_db_connection_context() as conn:
             with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT COALESCE(SUM(units_value), 0)
-                    FROM bt_3_billing_events
-                    WHERE user_id = %s
-                      AND action_type = %s
-                      AND units_type = %s
-                      AND (event_time AT TIME ZONE %s)::date = %s;
-                    """,
-                    (int(user_id), action_value, units_value, str(tz_name or "Europe/Vienna"), day_local),
-                )
+                cursor.execute(query, params)
                 row = cursor.fetchone()
         return float((row or [0])[0] or 0.0)
     except Exception:
@@ -4936,11 +4941,18 @@ def _check_flashcards_words_daily_limit(
     mode: str,
     requested_words: int,
     tz_name: str = "Europe/Vienna",
+    cursor=None,
 ) -> dict:
     normalized_mode = _normalize_flashcards_mode(mode)
     safe_requested = max(1, int(requested_words or 1))
     now_utc = datetime.now(timezone.utc)
-    entitlement, _subscription = _resolve_user_entitlement(user_id=int(user_id), now_ts_utc=now_utc, tz=tz_name)
+    entitlement, _subscription = _resolve_user_entitlement(
+        user_id=int(user_id),
+        now_ts_utc=now_utc,
+        tz=tz_name,
+        refresh_from_stripe=cursor is None,
+        cursor=cursor,
+    )
     effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
     if effective_mode != "free":
         return {
@@ -4955,6 +4967,7 @@ def _check_flashcards_words_daily_limit(
         action_type=f"flashcards_words_served_{normalized_mode}",
         units_type="words",
         tz_name=tz_name,
+        cursor=cursor,
     )
     limit_words = float(FREE_FLASHCARDS_WORDS_DAILY_PER_MODE)
     remaining_words = max(0.0, limit_words - used_words)
@@ -6458,7 +6471,16 @@ def _resolve_user_entitlement(
     tz: str = "Europe/Vienna",
     subscription: dict | None = None,
     refresh_from_stripe: bool = True,
+    cursor=None,
 ) -> tuple[dict, dict]:
+    if cursor is not None and not refresh_from_stripe and not isinstance(subscription, dict):
+        entitlement = resolve_entitlement(
+            user_id=int(user_id),
+            now_ts_utc=now_ts_utc,
+            tz=tz,
+            cursor=cursor,
+        )
+        return entitlement, {}
     subscription_row = dict(subscription) if isinstance(subscription, dict) else (get_user_subscription(int(user_id)) or {})
     if refresh_from_stripe:
         subscription_row = _sync_user_subscription_from_live_stripe(
@@ -37229,6 +37251,8 @@ def get_srs_prefetch_cards():
                 http_status = 429
                 return jsonify(fsrs_limit_state.get("error")), 429
             max_items = max(1, min(max_items, int(fsrs_limit_state.get("allowed_words") or max_items)))
+            if str(fsrs_limit_state.get("effective_mode") or "").strip().lower() == "free":
+                max_items = max(1, min(max_items, int(FREE_SRS_PREFETCH_MAX_ITEMS)))
             list_cards_started_perf = time.perf_counter()
             cards, _selection = _list_srs_queue_cards(
                 user_id=int(user_id),
@@ -37452,6 +37476,7 @@ def review_srs_card():
                     user_id=int(user_id),
                     mode="fsrs",
                     requested_words=1,
+                    cursor=cursor,
                 )
                 if fsrs_limit_state.get("error"):
                     return jsonify(fsrs_limit_state.get("error")), 429
@@ -48675,6 +48700,22 @@ def send_today_evening_reminders_now():
         target_date = _get_local_today_date(tz_name)
 
     result = _dispatch_today_evening_reminders(target_date=target_date, tz_name=tz_name)
+    return jsonify(result)
+
+
+@app.route("/api/admin/force-translation-pool-refill", methods=["POST"])
+def force_translation_pool_refill():
+    """Manually force-trigger a translation pool refill (bypasses offpeak window).
+    Returns the full refill result so you can diagnose why delta is 0."""
+    payload = request.get_json(silent=True) or {}
+    token = payload.get("token") or request.headers.get("X-Admin-Token")
+    required_token = (os.getenv("AUDIO_DISPATCH_TOKEN") or os.getenv("ADMIN_TOKEN") or "").strip()
+    if not required_token:
+        return jsonify({"error": "AUDIO_DISPATCH_TOKEN not set"}), 500
+    if token != required_token:
+        return jsonify({"error": "bad token"}), 401
+    tz_name = str(payload.get("tz") or TRANSLATION_FOCUS_POOL_REFILL_TZ or TODAY_PLAN_DEFAULT_TZ).strip()
+    result = _dispatch_translation_focus_pool_refill(force=True, tz_name=tz_name)
     return jsonify(result)
 
 
