@@ -449,7 +449,15 @@ STRICT requirements for EVERY entry:
 4. wrong_options: exactly 3 real German compound words, each sharing EXACTLY ONE part with the answer
 5. dalle_prompts: describe ONE concrete object on a plain white background — no text, no labels, no other objects
 6. difficulty: A2=very common everyday, B1=intermediate everyday, B2=less common but standard
-7. explanation_ru: etymology in Russian (e.g. "рука + обувь = перчатка — буквально «обувь для руки»")"""
+7. explanation_ru: etymology in Russian (e.g. "рука + обувь = перчатка — буквально «обувь для руки»")
+8. CRITICAL — dalle_prompts must show the GENERIC LITERAL meaning of each component word IN ISOLATION, completely divorced from the compound context. The image must NOT hint at or reveal the compound answer.
+   ✗ WRONG: compound=Angelrute, part=Rute → "A long fishing rod" (this IS Angelrute — reveals the answer!)
+   ✓ RIGHT: compound=Angelrute, part=Rute → "A plain thin wooden rod or stick, bare, no fishing equipment"
+   ✗ WRONG: compound=Hausschlüssel, part=Schlüssel → "A house key at a door" (context reveals the compound)
+   ✓ RIGHT: compound=Hausschlüssel, part=Schlüssel → "A single metal key, plain, no door or lock visible"
+   ✗ WRONG: compound=Schneeball, part=Schnee → "Children throwing snowballs" (reveals the activity)
+   ✓ RIGHT: compound=Schneeball, part=Schnee → "A small pile of white snow"
+   Rule of thumb: ask yourself — if someone sees ONLY this image with no context, could they guess the compound? If yes, simplify until they cannot."""
 
 _REPLENISHMENT_USER_TMPL = """\
 Generate {count} new German Komposita entries. Return ONLY valid JSON, no markdown.
