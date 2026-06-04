@@ -7803,6 +7803,7 @@ function AppInner() {
     return 'anon';
   }, [initData, telegramApp, webappUser?.id]);
   const canViewEconomics = stableWebappUserId === '117649764';
+  const canManageYoutubeTranscripts = stableWebappUserId === '117649764';
   const currentLocalDateKey = getLocalDateKey();
   const flashcardsDailyTimerStorageKey = useMemo(() => {
     return `flashcards_daily_active_seconds_${stableWebappUserId}_${currentLocalDateKey}`;
@@ -30746,13 +30747,15 @@ function AppInner() {
                             >
                               {youtubeSearchLoading ? tr('Ищем...', 'Searching...') : tr('Искать в YouTube', 'Search on YouTube')}
                             </button>
-                            <button
-                              type="button"
-                              className={`youtube-command-action ${showManualTranscript ? 'is-active' : ''}`}
-                              onClick={() => setShowManualTranscript((prev) => !prev)}
-                            >
-                              {tr('Вставить транскрипцию', 'Paste transcript')}
-                            </button>
+                            {canManageYoutubeTranscripts && (
+                              <button
+                                type="button"
+                                className={`youtube-command-action ${showManualTranscript ? 'is-active' : ''}`}
+                                onClick={() => setShowManualTranscript((prev) => !prev)}
+                              >
+                                {tr('Вставить транскрипцию', 'Paste transcript')}
+                              </button>
+                            )}
                             <button
                               type="button"
                               className="youtube-command-action"
@@ -30793,7 +30796,7 @@ function AppInner() {
                             </button>
                           </div>
                         </div>
-                        {showManualTranscript && (
+                        {canManageYoutubeTranscripts && showManualTranscript && (
                           <div className="webapp-subtitles-manual youtube-sheet-manual youtube-sheet-manual-desktop">
                             <textarea
                               rows={6}
@@ -30837,6 +30840,21 @@ function AppInner() {
                             )}
                           </div>
                           <div className="youtube-player-first-title-actions">
+                            {canManageYoutubeTranscripts && (
+                              <button
+                                type="button"
+                                className={`youtube-dock-icon-btn youtube-head-import-btn ${showManualTranscript ? 'is-active' : ''}`}
+                                onClick={() => setShowManualTranscript((prev) => !prev)}
+                                aria-label={tr('Импортировать субтитры', 'Import subtitles')}
+                                title={tr('Импортировать субтитры', 'Import subtitles')}
+                              >
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="17" height="17" aria-hidden="true">
+                                  <path d="M12 3v12"/>
+                                  <path d="m7 8 5-5 5 5"/>
+                                  <path d="M5 15v4h14v-4"/>
+                                </svg>
+                              </button>
+                            )}
                             {!youtubeTaskDone && renderTodaySectionTaskHud('youtube', { inline: true })}
                             <button
                               type="button"
@@ -30873,13 +30891,15 @@ function AppInner() {
                               ? tr('Загружаем...', 'Loading...')
                               : tr('Субтитры', 'Subtitles')}
                           </button>
-                          <button
-                            type="button"
-                            className={`youtube-status-action-btn ${showManualTranscript ? 'is-active' : ''}`}
-                            onClick={() => setShowManualTranscript((prev) => !prev)}
-                          >
-                            {showManualTranscript ? tr('Транскрипция: ON', 'Transcript: ON') : tr('Транскрипция', 'Transcript')}
-                          </button>
+                          {canManageYoutubeTranscripts && (
+                            <button
+                              type="button"
+                              className={`youtube-status-action-btn ${showManualTranscript ? 'is-active' : ''}`}
+                              onClick={() => setShowManualTranscript((prev) => !prev)}
+                            >
+                              {showManualTranscript ? tr('Транскрипция: ON', 'Transcript: ON') : tr('Транскрипция', 'Transcript')}
+                            </button>
+                          )}
                           <button
                             type="button"
                             className={`youtube-status-action-btn ${youtubeOverlayEnabled ? 'is-active' : ''}`}
@@ -30909,7 +30929,7 @@ function AppInner() {
                           </button>
                         </div>
                         </div>
-                        {showManualTranscript && (
+                        {canManageYoutubeTranscripts && showManualTranscript && (
                           <div className="webapp-subtitles-manual youtube-sheet-manual youtube-mobile-transcript-panel">
                             <textarea
                               rows={5}
@@ -31218,14 +31238,16 @@ function AppInner() {
                               <span>{tr('Искать в YouTube', 'Search on YouTube')}</span>
                               <span>{youtubeSearchLoading ? tr('Загрузка...', 'Loading...') : tr('Запустить', 'Run')}</span>
                             </button>
-                            <button
-                              type="button"
-                              className={`youtube-settings-row ${showManualTranscript ? 'is-active' : ''}`}
-                              onClick={() => setShowManualTranscript((prev) => !prev)}
-                            >
-                              <span>{tr('Вставить транскрипцию', 'Paste transcript')}</span>
-                              <span>{showManualTranscript ? tr('ON', 'ON') : tr('OFF', 'OFF')}</span>
-                            </button>
+                            {canManageYoutubeTranscripts && (
+                              <button
+                                type="button"
+                                className={`youtube-settings-row ${showManualTranscript ? 'is-active' : ''}`}
+                                onClick={() => setShowManualTranscript((prev) => !prev)}
+                              >
+                                <span>{tr('Вставить транскрипцию', 'Paste transcript')}</span>
+                                <span>{showManualTranscript ? tr('ON', 'ON') : tr('OFF', 'OFF')}</span>
+                              </button>
+                            )}
                             <button
                               type="button"
                               className={`youtube-settings-row ${youtubeTranslationEnabled ? 'is-active' : ''}`}
@@ -31266,7 +31288,7 @@ function AppInner() {
                               <span>{youtubeSubtitlesReady ? tr('Готово', 'Ready') : tr('Не загружено', 'Not loaded')}</span>
                             </button>
                           </div>
-                          {showManualTranscript && (
+                          {canManageYoutubeTranscripts && showManualTranscript && (
                             <div className="webapp-subtitles-manual youtube-sheet-manual">
                               <textarea
                                 rows={6}
