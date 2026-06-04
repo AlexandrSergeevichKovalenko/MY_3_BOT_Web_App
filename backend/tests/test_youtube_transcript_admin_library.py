@@ -156,6 +156,7 @@ class YoutubeTranscriptAdminLibraryTests(unittest.TestCase):
                 55,
                 [
                     patch.object(server, "_load_cached_youtube_transcript_data", return_value=(cached, "db_cache", 1)),
+                    patch.object(server, "resolve_entitlement", return_value={"effective_mode": "free"}),
                 ],
             )
 
@@ -173,6 +174,7 @@ class YoutubeTranscriptAdminLibraryTests(unittest.TestCase):
             "source": "db",
         }
         with patch.object(server, "_load_cached_youtube_transcript_data", return_value=(cached, "db_cache", 1)), \
+             patch.object(server, "resolve_entitlement", return_value={"effective_mode": "free"}), \
              patch.object(server, "_fetch_youtube_transcript") as fetch_mock, \
              patch.object(server, "enforce_feature_limit", return_value={"error": "limit"}):
             response = self._post_transcript(
@@ -184,6 +186,70 @@ class YoutubeTranscriptAdminLibraryTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["items"], cached["items"])
         fetch_mock.assert_not_called()
+
+    def test_free_transcript_payload_excludes_cached_ru_translations(self):
+        cached = {
+            "items": [{"text": "Shared", "start": 0, "duration": 1}],
+            "language": "de",
+            "is_generated": False,
+            "translations": {"ru:0": "Привет"},
+            "source": "db",
+        }
+        with patch.object(server, "_fetch_youtube_transcript") as fetch_mock, \
+             patch.object(server, "upsert_youtube_transcript_cache") as upsert_mock:
+            response = self._post_transcript(
+                55,
+                [
+                    patch.object(server, "_load_cached_youtube_transcript_data", return_value=(cached, "db_cache", 1)),
+                    patch.object(server, "resolve_entitlement", return_value={"effective_mode": "free"}),
+                ],
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["items"], cached["items"])
+        self.assertEqual(payload["translations"], {})
+        fetch_mock.assert_not_called()
+        upsert_mock.assert_not_called()
+
+    def test_pro_transcript_payload_includes_cached_ru_translations(self):
+        cached = {
+            "items": [{"text": "Shared", "start": 0, "duration": 1}],
+            "language": "de",
+            "is_generated": False,
+            "translations": {"ru:0": "Привет"},
+            "source": "db",
+        }
+        response = self._post_transcript(
+            77,
+            [
+                patch.object(server, "_load_cached_youtube_transcript_data", return_value=(cached, "db_cache", 1)),
+                patch.object(server, "resolve_entitlement", return_value={"effective_mode": "pro"}),
+            ],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["translations"], {"0": "Привет"})
+
+    def test_admin_transcript_payload_includes_cached_ru_translations(self):
+        cached = {
+            "items": [{"text": "Shared", "start": 0, "duration": 1}],
+            "language": "de",
+            "is_generated": False,
+            "translations": {"ru:0": "Привет"},
+            "source": "db",
+        }
+        with patch.object(server, "resolve_entitlement", return_value={"effective_mode": "free"}) as entitlement_mock:
+            response = self._post_transcript(
+                117649764,
+                [
+                    patch.object(server, "_load_cached_youtube_transcript_data", return_value=(cached, "db_cache", 1)),
+                ],
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["translations"], {"0": "Привет"})
+        entitlement_mock.assert_not_called()
 
     def test_non_admin_cache_miss_cannot_create_transcript(self):
         with patch.object(server, "_fetch_youtube_transcript") as fetch_mock, \

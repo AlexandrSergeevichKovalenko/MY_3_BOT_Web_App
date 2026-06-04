@@ -38932,11 +38932,16 @@ def _build_youtube_transcript_response_payload(
     *,
     subtitle_target_lang: str,
     proxy_allowed: bool,
+    include_translations: bool,
     cache_tier: str | None = None,
 ) -> dict:
-    visible_translations = _extract_youtube_translations_for_target(
-        data.get("translations") or {},
-        subtitle_target_lang,
+    visible_translations = (
+        _extract_youtube_translations_for_target(
+            data.get("translations") or {},
+            subtitle_target_lang,
+        )
+        if include_translations
+        else {}
     )
     response_payload = {
         "ok": True,
@@ -39085,6 +39090,7 @@ def get_youtube_transcript():
                 data,
                 subtitle_target_lang=subtitle_target_lang,
                 proxy_allowed=proxy_allowed,
+                include_translations=_can_access_youtube_subtitle_translation(int(user_id)),
                 cache_tier=cache_tier,
             )
             _log_flow_observation(
@@ -39285,9 +39291,13 @@ def get_youtube_transcript():
             "items": data.get("items", []),
             "language": data.get("language"),
             "is_generated": data.get("is_generated"),
-            "translations": _extract_youtube_translations_for_target(
-                data.get("translations") or {},
-                subtitle_target_lang,
+            "translations": (
+                _extract_youtube_translations_for_target(
+                    data.get("translations") or {},
+                    subtitle_target_lang,
+                )
+                if _can_access_youtube_subtitle_translation(int(user_id))
+                else {}
             ),
             "translation_lang": subtitle_target_lang,
             "source": data.get("source"),
@@ -39351,6 +39361,7 @@ def get_youtube_transcript_status():
             data,
             subtitle_target_lang=subtitle_target_lang,
             proxy_allowed=proxy_allowed,
+            include_translations=_can_access_youtube_subtitle_translation(int(user_id)),
             cache_tier=cache_tier,
         )
         _log_flow_observation(
