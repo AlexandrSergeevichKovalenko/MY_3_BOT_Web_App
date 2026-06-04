@@ -15492,12 +15492,8 @@ def _shuffle_rebus_options(
 
 
 def _build_rebus_caption(compound_entry: dict, shuffled_options: list[str]) -> str:
-    parts = list(compound_entry.get("parts") or [])
-    part_words = " + ".join(str(p.get("word", "?")) for p in parts)
     lines = [
         "🧩 *Deutsches Rätsel* — Was ergibt das zusammen?",
-        "",
-        f"_{part_words} = ?_",
         "",
     ]
     for i, label in enumerate(_REBUS_OPTION_LABELS):
