@@ -4851,13 +4851,29 @@ async def handle_user_message(update: Update, context: CallbackContext):
             meaning_ru   = str(rebus_pending.get("meaning_ru") or "").strip()
             explanation_ru = str(rebus_pending.get("explanation_ru") or "").strip()
 
-            # Strip article if user typed it (e.g. "das Dampfschiff" → "Dampfschiff")
-            user_answer = text.strip()
-            for art in ("der ", "die ", "das ", "Der ", "Die ", "Das "):
-                if user_answer.startswith(art):
-                    user_answer = user_answer[len(art):]
-                    break
-            is_correct = user_answer.lower() == correct_word.lower()
+            # Article is mandatory: expect "{article} {word}", e.g. "das Dampfschiff"
+            user_input = text.strip()
+            known_articles = {"der", "die", "das"}
+            input_parts = user_input.split(None, 1)  # split on first whitespace
+            user_article = input_parts[0].lower() if len(input_parts) >= 2 else ""
+            user_word    = input_parts[1].strip() if len(input_parts) >= 2 else user_input
+
+            full_word = f"{article} {correct_word}".strip() if article else correct_word
+            detail    = f" ({meaning_ru})" if meaning_ru else ""
+            extra     = f"\n_{explanation_ru}_" if explanation_ru else ""
+
+            # If user forgot the article entirely — nudge without consuming the state
+            if article and user_article not in known_articles:
+                await update.message.reply_text(
+                    f"Bitte mit Artikel antworten!\n"
+                    f"Beispiel: _{article} ..._",
+                    parse_mode="Markdown",
+                )
+                return
+
+            article_correct = (not article) or (user_article == article.lower())
+            word_correct    = user_word.lower() == correct_word.lower()
+            is_correct      = article_correct and word_correct
 
             if dispatch_id and correct_word:
                 try:
@@ -4865,7 +4881,7 @@ async def handle_user_message(update: Update, context: CallbackContext):
                         record_rebus_answer,
                         dispatch_id=dispatch_id,
                         user_id=int(user_id),
-                        selected_option=user_answer[:50],
+                        selected_option=user_input[:50],
                         is_correct=bool(is_correct),
                     )
                 except Exception:
@@ -4875,14 +4891,15 @@ async def handle_user_message(update: Update, context: CallbackContext):
 
             _clear_pending_input_state(state_key=state_key, user_id=int(user_id))
 
-            full_word = f"{article} {correct_word}".strip() if article else correct_word
-            detail    = f" ({meaning_ru})" if meaning_ru else ""
-            extra     = f"\n_{explanation_ru}_" if explanation_ru else ""
-
             if is_correct:
                 reply = f"✅ Richtig! *{full_word}*{detail}{extra}"
+            elif word_correct and not article_correct:
+                reply = (
+                    f"❌ Falscher Artikel!\n"
+                    f"Es ist *{full_word}*{detail}{extra}"
+                )
             else:
-                reply = f"❌ Falsch. Das Wort ist *{full_word}*{detail}{extra}"
+                reply = f"❌ Falsch. Es ist *{full_word}*{detail}{extra}"
 
             await update.message.reply_text(reply, parse_mode="Markdown")
             return
@@ -15922,9 +15939,11 @@ async def handle_rebus_answer_callback(update: Update, context: CallbackContext)
 
     await query.answer()
     letter_count = len(compound_word)
+    article_hint = f"_{article} ..._" if article else "_das/die/der ..._"
     prompt = (
         f"✏️ *Deutsches Rätsel* — {letter_count} Buchstaben\n\n"
-        f"Schreibe das zusammengesetzte Wort:"
+        f"Schreibe das Wort *mit Artikel*!\n"
+        f"Beispiel: {article_hint}"
     )
     try:
         await query.message.reply_text(prompt, parse_mode="Markdown")
