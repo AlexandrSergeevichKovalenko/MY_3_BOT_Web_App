@@ -1360,6 +1360,35 @@ def _save_webapp_dictionary_query_returning_id_with_conn(
         )
 
 
+def _run_rebus_rute_fix_migration(conn) -> None:
+    """One-time fix: reset wrongly-generated 'Rute' component image and
+    angelrute_001 composed image so pool top-up regenerates them with the
+    corrected DALL-E prompts and corrected parts (Angel+Rute, not Rute+Fisch)."""
+    KEY = "rebus_fix_rute_angelrute_001_20260604"
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM bt_3_schema_migrations WHERE migration_key = %s LIMIT 1",
+            (KEY,),
+        )
+        if cur.fetchone():
+            return
+        cur.execute(
+            """UPDATE bt_3_rebus_component_images
+               SET image_status = 'pending', image_object_key = NULL, updated_at = NOW()
+               WHERE word = 'Rute'""",
+        )
+        cur.execute(
+            """UPDATE bt_3_rebus_bank
+               SET composed_status = 'pending', composed_image_object_key = NULL, updated_at = NOW()
+               WHERE compound_id = 'angelrute_001'""",
+        )
+        cur.execute(
+            "INSERT INTO bt_3_schema_migrations (migration_key) VALUES (%s) ON CONFLICT DO NOTHING",
+            (KEY,),
+        )
+    conn.commit()
+
+
 def _run_dictionary_canonical_schema_migration(conn, *, batch_size: int = 250) -> None:
     with conn.cursor() as cursor:
         cursor.execute(
@@ -7320,6 +7349,7 @@ def ensure_webapp_tables() -> None:
             # ── end article quiz tables ───────────────────────────────────
             cursor.close()
             _run_dictionary_canonical_schema_migration(conn)
+            _run_rebus_rute_fix_migration(conn)
         missing_phase1_objects = get_missing_phase1_shadow_schema_objects()
         if missing_phase1_objects:
             raise RuntimeError(
