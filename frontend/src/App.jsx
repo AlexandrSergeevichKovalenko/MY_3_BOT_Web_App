@@ -8947,7 +8947,7 @@ function AppInner() {
     });
   };
 
-  const incrementFreeSrsServedLocal = useCallback(() => {
+  const incrementFreeSrsAnsweredLocal = useCallback(() => {
     setSrsQueueInfo((prev) => {
       const mode = String(prev?.effective_mode || '').trim().toLowerCase();
       const limit = Math.max(0, Math.trunc(Number(prev?.free_daily_words_limit || 0)));
@@ -11537,7 +11537,7 @@ function AppInner() {
       const isFreeMode = String(srsQueueInfo?.effective_mode || '').trim().toLowerCase() === 'free';
       const freeLimit = Math.max(0, Math.trunc(Number(srsQueueInfo?.free_daily_words_limit || 0)));
       const freeUsed = Math.max(0, Math.trunc(Number(srsQueueInfo?.free_daily_words_used || 0)));
-      const canUseFreePrefetch = isFreeMode && freeLimit > 0 && freeUsed < freeLimit;
+      const canUseFreePrefetch = isFreeMode && freeLimit > 0 && (freeUsed + 1) < freeLimit;
       if (isFreeMode && !canUseFreePrefetch) {
         updateSrsPrefetchQueue(() => []);
       }
@@ -11548,7 +11548,7 @@ function AppInner() {
       decrementSrsQueueInfoLocal(ratingValue);
       if (optimisticCard) {
         if (isFreeMode) {
-          incrementFreeSrsServedLocal();
+          incrementFreeSrsAnsweredLocal();
         }
         applySrsPayload({
           card: optimisticCard,
@@ -33005,7 +33005,7 @@ function AppInner() {
                                 const freeUsed = Math.max(0, Math.trunc(Number(srsQueueInfo?.free_daily_words_used || 0)));
                                 const isFree = String(srsQueueInfo?.effective_mode || '').trim().toLowerCase() === 'free' && freeLimit > 0;
                                 if (isFree) {
-                                  return `${tr('Лимит', 'Limit')}: ${Math.min(freeUsed, freeLimit)}/${freeLimit}`;
+                                  return `Free: ${Math.min(freeUsed, freeLimit)}/${freeLimit}`;
                                 }
                                 return `${tr('Повторено сегодня', 'Reviewed today')}: ${(srsQueueInfo?.due_reviewed_today ?? 0) + (srsQueueInfo?.introduced_today ?? 0)} · ${tr('К повторению', 'Zu wiederholen')}: ${srsQueueInfo?.due_count_total ?? srsQueueInfo?.due_count ?? 0}`;
                               })()}
@@ -35407,11 +35407,11 @@ function AppInner() {
                     )}
 
                     <div className="billing-trial-banner">
-                      <strong>{tr('Первые 3 дня: Trial Pro для всех новых пользователей.', 'Die ersten 3 Tage: Trial Pro fuer alle neuen Nutzer.')}</strong>
+                      <strong>{tr('Новые пользователи начинают с Free. Платные функции доступны по подписке Pro.', 'Neue Nutzer starten mit Free. Bezahlte Funktionen sind mit Pro-Abo verfuegbar.')}</strong>
                     </div>
                     <div className="billing-policy-grid">
                       <article className="billing-policy-card">
-                        <h4>{tr('Free после trial', 'Free nach Trial')}</h4>
+                        <h4>{tr('Free по умолчанию', 'Free standardmaessig')}</h4>
                         <ul>
                           <li>{tr('Переводы: 1 набор в день (7 предложений).', 'Uebersetzungen: 1 Set pro Tag (7 Saetze).')}</li>
                           <li>{tr('Читалка: 1 книга (до 30 дней), новая только после удаления старой.', 'Reader: 1 Buch (bis 30 Tage), neues nur nach Loeschen des alten.')}</li>

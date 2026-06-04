@@ -46,7 +46,7 @@ class FlashcardsFreeLimitUxTests(unittest.TestCase):
         cursor = DummyCursor()
         usage = server._sum_billing_units_today(
             user_id=77,
-            action_type="flashcards_words_served_fsrs",
+            action_type="flashcards_words_answered_fsrs",
             units_type="words",
             cursor=cursor,
         )
@@ -56,7 +56,7 @@ class FlashcardsFreeLimitUxTests(unittest.TestCase):
         query, params = cursor.executed[0]
         self.assertIn("FROM bt_3_billing_events", query)
         self.assertEqual(params[0], 77)
-        self.assertEqual(params[1], "flashcards_words_served_fsrs")
+        self.assertEqual(params[1], "flashcards_words_answered_fsrs")
         self.assertEqual(params[2], "words")
 
     def test_free_limit_queue_info_exposes_user_facing_counter(self):
@@ -70,14 +70,14 @@ class FlashcardsFreeLimitUxTests(unittest.TestCase):
         self.assertEqual(payload["free_daily_words_used"], 9)
         self.assertEqual(payload["free_daily_words_limit"], 10)
 
-    def test_free_limit_queue_info_counts_pending_served_card(self):
+    def test_free_limit_queue_info_counts_pending_answered_card(self):
         payload = server._flashcards_free_limit_queue_info(
             {
                 "effective_mode": "free",
                 "used_words": 9.0,
                 "limit_words": 10,
             },
-            pending_served_words=1,
+            pending_answered_words=1,
         )
 
         self.assertEqual(payload["effective_mode"], "free")

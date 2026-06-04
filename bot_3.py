@@ -16123,10 +16123,10 @@ async def handle_article_quiz_callback(update: Update, context: CallbackContext)
 
     if is_correct:
         icon = "✅"
-        verdict = f"Richtig! *{correct_article} {word}*"
+        verdict = f"Richtig! {correct_article} {word}"
     else:
         icon = "❌"
-        verdict = f"Falsch. Es ist *{correct_article} {word}*"
+        verdict = f"Falsch. Es ist {correct_article} {word}"
 
     detail = f" ({meaning})" if meaning else ""
     alert_text = f"{icon} {verdict}{detail}"
