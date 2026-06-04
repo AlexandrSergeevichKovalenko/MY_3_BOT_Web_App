@@ -457,7 +457,14 @@ STRICT requirements for EVERY entry:
    ✓ RIGHT: compound=Hausschlüssel, part=Schlüssel → "A single metal key, plain, no door or lock visible"
    ✗ WRONG: compound=Schneeball, part=Schnee → "Children throwing snowballs" (reveals the activity)
    ✓ RIGHT: compound=Schneeball, part=Schnee → "A small pile of white snow"
-   Rule of thumb: ask yourself — if someone sees ONLY this image with no context, could they guess the compound? If yes, simplify until they cannot."""
+   Rule of thumb: ask yourself — if someone sees ONLY this image with no context, could they guess the compound? If yes, simplify until they cannot.
+9. CRITICAL — The dalle_prompt for part 1 must NOT visually contain the object depicted in part 2, and vice versa.
+   If the parts are visually related (e.g., Brat=frying + Pfanne=pan), you MUST separate them:
+   ✗ WRONG: Brat → "Meat sizzling in a frying pan" (shows the pan which IS part 2!)
+   ✓ RIGHT: Brat → "A raw beef steak on a plain white cutting board, no pan visible"
+   ✗ WRONG: Blumen=flowers + Strauß=bouquet → part 1 shows a bouquet (that IS the compound already)
+   ✓ RIGHT: Blumen → "Three separate flowers lying flat on white background, not arranged into a bouquet"
+   Always ask: does part 1's image contain the object shown in part 2? If yes, redesign the prompt."""
 
 _REPLENISHMENT_USER_TMPL = """\
 Generate {count} new German Komposita entries. Return ONLY valid JSON, no markdown.
