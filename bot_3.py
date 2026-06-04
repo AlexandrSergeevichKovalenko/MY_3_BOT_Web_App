@@ -227,6 +227,7 @@ from backend.database import (
     mark_article_quiz_answer_feedback_sent,
     pick_next_crossword,
     mark_crossword_sent,
+    reset_crossword_images_to_pending,
     record_crossword_dispatch,
     update_crossword_dispatch_telegram_id,
     get_crossword_dispatch_by_id,
@@ -16703,6 +16704,26 @@ async def admin_crossword_pool_command(update: Update, context: CallbackContext)
         await status_msg.edit_text(f"Error: {exc}")
 
 
+async def admin_crossword_rerender_command(update: Update, context: CallbackContext) -> None:
+    """Reset all crossword images to pending and re-render them. /admin_cw_rerender"""
+    user    = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    status_msg = await message.reply_text("Resetting crossword images to pending...")
+    try:
+        count = await asyncio.to_thread(reset_crossword_images_to_pending)
+        await status_msg.edit_text(f"Reset {count} crosswords to pending. Rendering now...")
+        from backend.crossword_renderer import prepare_crossword_images_batch
+        img_result = await asyncio.to_thread(prepare_crossword_images_batch, limit=count or 20)
+        await status_msg.edit_text(f"Done!\nReset: {count}\nRendered: {img_result}")
+    except Exception as exc:
+        await status_msg.edit_text(f"Error: {exc}")
+
+
 # ── end crossword ──────────────────────────────────────────────────────────────
 
 async def _run_semantic_retag_backfill(admin_chat_id: int, max_entries: int | None = None) -> None:
@@ -17800,6 +17821,7 @@ def main():
     application.add_handler(CommandHandler("admin_aq_pool", admin_article_quiz_pool_command))
     application.add_handler(CommandHandler("admin_cw_send", admin_crossword_send_command))
     application.add_handler(CommandHandler("admin_cw_pool", admin_crossword_pool_command))
+    application.add_handler(CommandHandler("admin_cw_rerender", admin_crossword_rerender_command))
 
 
     application.add_handler(CallbackQueryHandler(topic_selected)) #Он ждет любые нажатия на inline-кнопки.

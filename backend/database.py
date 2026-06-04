@@ -31675,3 +31675,20 @@ def get_crossword_answers(*, dispatch_id: int, user_id: int) -> list[dict]:
             rows = cursor.fetchall()
     cols = ["word_number", "user_answer", "is_correct", "answered_at"]
     return [dict(zip(cols, r)) for r in rows]
+
+
+def reset_crossword_images_to_pending() -> int:
+    """Mark all non-retired crossword entries as pending re-render. Returns count updated."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_crossword_bank
+                SET image_status = 'pending', updated_at = NOW()
+                WHERE retired = FALSE
+                RETURNING crossword_id
+                """
+            )
+            count = cursor.rowcount
+        conn.commit()
+    return count
