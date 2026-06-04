@@ -14365,6 +14365,10 @@ async def generate_prefix_quiz(entry: dict) -> dict | None:
         # entry so scheduler can select a contextual quiz or another item.
         return None
 
+    if not context and correct_word and correct_word.lower() in word_ru.lower():
+        # The answer appears verbatim in the question — trivially guessable. Skip.
+        return None
+
     random.shuffle(options)
     correct_option_id = options.index(correct_word)
     if context:
