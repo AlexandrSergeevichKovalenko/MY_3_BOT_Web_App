@@ -26969,7 +26969,14 @@ function AppInner() {
         let message = await response.text();
         try {
           const data = JSON.parse(message);
-          message = data.error || message;
+          if (data.error_code === 'youtube_transcript_not_in_library' || data.error === 'youtube_transcript_not_in_library') {
+            message = tr(
+              'Субтитры для этого видео недоступны.\n\nВключите субтитры YouTube кнопкой CC или выберите видео из раздела «Фильмы», чтобы пользоваться кликабельными субтитрами и сохранять слова.',
+              'Untertitel fuer dieses Video sind nicht verfuegbar.\n\nAktivieren Sie YouTube-Untertitel mit CC oder waehlen Sie ein Video aus „Filme“, um klickbare Untertitel zu nutzen und Woerter zu speichern.'
+            );
+          } else {
+            message = data.error || message;
+          }
         } catch (_error) {
           // ignore parsing errors
         }
@@ -27009,7 +27016,14 @@ function AppInner() {
         let message = await response.text();
         try {
           const data = JSON.parse(message);
-          message = data.error || message;
+          if (data.error_code === 'youtube_transcript_not_in_library' || data.error === 'youtube_transcript_not_in_library') {
+            message = tr(
+              'Субтитры для этого видео недоступны.\n\nВключите субтитры YouTube кнопкой CC или выберите видео из раздела «Фильмы», чтобы пользоваться кликабельными субтитрами и сохранять слова.',
+              'Untertitel fuer dieses Video sind nicht verfuegbar.\n\nAktivieren Sie YouTube-Untertitel mit CC oder waehlen Sie ein Video aus „Filme“, um klickbare Untertitel zu nutzen und Woerter zu speichern.'
+            );
+          } else {
+            message = data.error || message;
+          }
         } catch (error) {
           // ignore parsing errors
         }
