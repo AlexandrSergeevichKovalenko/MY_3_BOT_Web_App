@@ -225,6 +225,13 @@ from backend.database import (
     get_article_quiz_dispatch_by_id,
     record_article_quiz_answer,
     mark_article_quiz_answer_feedback_sent,
+    pick_next_crossword,
+    mark_crossword_sent,
+    record_crossword_dispatch,
+    update_crossword_dispatch_telegram_id,
+    get_crossword_dispatch_by_id,
+    record_crossword_answer,
+    get_crossword_answers,
 )
 from backend.r2_storage import r2_public_url
 from backend.job_queue import (
@@ -254,6 +261,10 @@ ARTICLE_QUIZ_SLOT_TIMES = {(9, 15), (13, 15), (17, 15)}  # 3x/day at :15
 ARTICLE_QUIZ_COOLDOWN_DAYS = max(7, int((os.getenv("ARTICLE_QUIZ_COOLDOWN_DAYS") or "14").strip() or "14"))
 ARTICLE_QUIZ_POOL_TARGET = max(5, int((os.getenv("ARTICLE_QUIZ_POOL_TARGET") or "30").strip() or "30"))
 ARTICLE_QUIZ_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("ARTICLE_QUIZ_POOL_TOPUP_TRIGGER") or "5").strip() or "5"))
+CROSSWORD_SLOT_TIMES = {(11, 45), (17, 45)}  # 2x/day at :45
+CROSSWORD_COOLDOWN_DAYS = max(7, int((os.getenv("CROSSWORD_COOLDOWN_DAYS") or "21").strip() or "21"))
+CROSSWORD_POOL_TARGET = max(5, int((os.getenv("CROSSWORD_POOL_TARGET") or "15").strip() or "15"))
+CROSSWORD_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("CROSSWORD_POOL_TOPUP_TRIGGER") or "3").strip() or "3"))
 VISUAL_RIDDLE_POOL_TOPUP_HOUR = max(0, min(23, int((os.getenv("VISUAL_RIDDLE_POOL_TOPUP_HOUR") or "6").strip() or "6")))
 VISUAL_RIDDLE_POOL_TOPUP_MINUTE = max(0, min(59, int((os.getenv("VISUAL_RIDDLE_POOL_TOPUP_MINUTE") or "15").strip() or "15")))
 VISUAL_RIDDLE_RECENCY_DAYS = max(1, int((os.getenv("VISUAL_RIDDLE_RECENCY_DAYS") or "7").strip() or "7"))
@@ -16232,6 +16243,429 @@ async def admin_article_quiz_pool_command(update: Update, context: CallbackConte
         await status_msg.edit_text(f"Error: {exc}")
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# CROSSWORD
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _crosswords_enabled() -> bool:
+    return (os.getenv("CROSSWORDS_ENABLED") or "true").strip().lower() not in ("0", "false", "no")
+
+
+def _crosswords_dry_run() -> bool:
+    return (os.getenv("CROSSWORDS_DRY_RUN") or "false").strip().lower() in ("1", "true", "yes")
+
+
+def _is_crossword_slot(slot_dt) -> bool:
+    return (slot_dt.hour, slot_dt.minute) in CROSSWORD_SLOT_TIMES
+
+
+def _build_crossword_caption(words_json: list, topic: str, difficulty: str) -> str:
+    hidden = [w for w in words_json if w.get("hidden")]
+    across = [w for w in hidden if w.get("direction") == "across"]
+    down   = [w for w in hidden if w.get("direction") == "down"]
+
+    lines = [f"🧩 *Kreuzworträtsel* — {topic} ({difficulty})", ""]
+
+    if across:
+        lines.append("↔ *По горизонтали:*")
+        for w in sorted(across, key=lambda x: x["number"]):
+            lines.append(f"{w['number']}. {w['clue_de']}")
+            lines.append(f"    _{w['clue_ru']}_")
+        lines.append("")
+
+    if down:
+        lines.append("↕ *По вертикали:*")
+        for w in sorted(down, key=lambda x: x["number"]):
+            lines.append(f"{w['number']}. {w['clue_de']}")
+            lines.append(f"    _{w['clue_ru']}_")
+        lines.append("")
+
+    lines.append("Finde die fehlenden Wörter! 👇")
+    return "\n".join(lines)
+
+
+def _build_crossword_options(words_json: list, dispatch_id: int) -> dict[int, list[str]]:
+    """
+    For each hidden word, build a shuffled list of 4 options:
+    the correct word + 3 distractors drawn from other words in the crossword.
+    Returns {word_number: [opt1, opt2, opt3, opt4]}.
+    """
+    import random as _random
+    all_words = [str(w["word"]) for w in words_json]
+    result = {}
+    for word in words_json:
+        if not word.get("hidden"):
+            continue
+        correct = str(word["word"])
+        pool = [w for w in all_words if w != correct]
+        _random.Random(dispatch_id * 97 + word["number"]).shuffle(pool)
+        distractors = pool[:3]
+        while len(distractors) < 3:
+            distractors.append("—")
+        options = [correct] + distractors
+        _random.Random(dispatch_id * 31 + word["number"]).shuffle(options)
+        result[word["number"]] = options
+    return result
+
+
+def _build_crossword_keyboard(dispatch_id: int, words_json: list) -> InlineKeyboardMarkup:
+    """
+    One group of 4 buttons per hidden word (2×2 layout per word).
+    callback_data: cw:{dispatch_id}:{word_number}:{ANSWER}
+    """
+    options_map = _build_crossword_options(words_json, dispatch_id)
+    rows = []
+    for word in sorted([w for w in words_json if w.get("hidden")], key=lambda x: x["number"]):
+        num = word["number"]
+        arrow = "↔" if word.get("direction") == "across" else "↕"
+        options = options_map.get(num, [])
+        row1, row2 = [], []
+        for i, opt in enumerate(options[:4]):
+            btn = InlineKeyboardButton(
+                text=f"{num}{arrow} {opt}",
+                callback_data=f"cw:{dispatch_id}:{num}:{opt}",
+            )
+            (row1 if i < 2 else row2).append(btn)
+        if row1:
+            rows.append(row1)
+        if row2:
+            rows.append(row2)
+    return InlineKeyboardMarkup(rows)
+
+
+async def send_crossword_to_chat(
+    context: CallbackContext,
+    *,
+    crossword_entry: dict,
+    image_url: str,
+    slot_date,
+    slot_hour: int,
+    chat_id: int,
+    target_user_id: int,
+) -> bool:
+    """Send one crossword card to a chat. Returns True on success."""
+    crossword_id = str(crossword_entry.get("crossword_id") or "")
+    words_json   = list(crossword_entry.get("words_json") or [])
+    topic        = str(crossword_entry.get("topic") or "")
+    difficulty   = str(crossword_entry.get("difficulty") or "")
+
+    try:
+        dispatch_id = await asyncio.to_thread(
+            record_crossword_dispatch,
+            slot_date=slot_date,
+            slot_hour=int(slot_hour),
+            crossword_id=crossword_id,
+            target_user_id=int(target_user_id),
+            chat_id=int(chat_id),
+        )
+    except Exception:
+        logging.warning(
+            "cw_send: dispatch insert failed crossword_id=%s chat_id=%s slot=%s/%s",
+            crossword_id, chat_id, slot_date, slot_hour, exc_info=True,
+        )
+        return False
+
+    if not dispatch_id:
+        logging.info(
+            "cw_send: duplicate suppressed crossword_id=%s chat_id=%s slot=%s/%s",
+            crossword_id, chat_id, slot_date, slot_hour,
+        )
+        return False
+
+    caption  = _build_crossword_caption(words_json, topic, difficulty)
+    keyboard = _build_crossword_keyboard(dispatch_id, words_json)
+
+    logging.info(
+        "cw_send_begin dispatch_id=%s crossword_id=%s chat_id=%s slot=%s/%s",
+        dispatch_id, crossword_id, chat_id, slot_date, slot_hour,
+    )
+
+    if _crosswords_dry_run():
+        logging.info("cw_dry_run_skipped dispatch_id=%s chat_id=%s", dispatch_id, chat_id)
+        return True
+
+    try:
+        msg = await context.bot.send_photo(
+            chat_id=int(chat_id),
+            photo=image_url,
+            caption=caption,
+            reply_markup=keyboard,
+            parse_mode="Markdown",
+        )
+    except Exception as exc:
+        logging.warning("cw_send_failed dispatch_id=%s chat_id=%s: %s", dispatch_id, chat_id, exc)
+        return False
+
+    try:
+        await asyncio.to_thread(
+            update_crossword_dispatch_telegram_id,
+            dispatch_id,
+            telegram_message_id=int(msg.message_id),
+        )
+    except Exception:
+        logging.warning(
+            "cw_send: update telegram_id failed dispatch_id=%s", dispatch_id, exc_info=True,
+        )
+
+    logging.info("cw_send_ok dispatch_id=%s crossword_id=%s chat_id=%s", dispatch_id, crossword_id, chat_id)
+    return True
+
+
+async def _send_scheduled_crossword(context: CallbackContext) -> None:
+    if not _crosswords_enabled():
+        logging.info("cw_slot_triggered enabled=False — skipping")
+        return
+
+    slot_now  = _get_quiz_schedule_now()
+    slot_date = slot_now.date()
+    slot_hour = slot_now.hour
+
+    if not _is_crossword_slot(slot_now):
+        return
+
+    try:
+        entry = await asyncio.to_thread(
+            pick_next_crossword, cooldown_days=CROSSWORD_COOLDOWN_DAYS
+        )
+    except Exception:
+        logging.warning("cw_slot: pick_next_crossword failed", exc_info=True)
+        return
+
+    if not entry:
+        logging.info("cw_slot: no ready crossword available slot=%s/%s", slot_date, slot_hour)
+        return
+
+    crossword_id = str(entry.get("crossword_id") or "")
+    object_key   = str(entry.get("image_object_key") or "")
+    if not object_key:
+        logging.warning("cw_slot: no image key crossword_id=%s", crossword_id)
+        return
+
+    try:
+        image_url = r2_public_url(object_key)
+    except Exception:
+        logging.warning("cw_slot: r2_public_url failed key=%s", object_key, exc_info=True)
+        return
+
+    delivery_targets = await _collect_quiz_delivery_user_targets(context)
+    if not delivery_targets:
+        logging.info("cw_slot: no delivery targets crossword_id=%s", crossword_id)
+        return
+
+    sent = 0
+    for target in delivery_targets:
+        target_chat_id = int(target.get("chat_id") or 0)
+        if target_chat_id == 0:
+            continue
+        ok = await send_crossword_to_chat(
+            context,
+            crossword_entry=entry,
+            image_url=image_url,
+            slot_date=slot_date,
+            slot_hour=slot_hour,
+            chat_id=target_chat_id,
+            target_user_id=target_chat_id,
+        )
+        if ok:
+            sent += 1
+
+    if sent > 0:
+        try:
+            await asyncio.to_thread(mark_crossword_sent, crossword_id)
+        except Exception:
+            logging.warning("cw_slot: mark_crossword_sent failed crossword_id=%s", crossword_id, exc_info=True)
+
+    logging.info(
+        "cw_slot_done slot=%s/%s crossword_id=%s sent=%d",
+        slot_date, slot_hour, crossword_id, sent,
+    )
+
+
+async def handle_crossword_callback(update: Update, context: CallbackContext) -> None:
+    """Handle user tapping an answer button on a crossword message."""
+    query = update.callback_query
+    if not query:
+        return
+    user = query.from_user
+    if not user:
+        return
+
+    # callback_data format: cw:{dispatch_id}:{word_number}:{ANSWER}
+    parts = (query.data or "").split(":", 3)
+    if len(parts) != 4:
+        await query.answer()
+        return
+
+    _, dispatch_id_str, word_number_str, user_answer = parts
+    try:
+        dispatch_id = int(dispatch_id_str)
+        word_number = int(word_number_str)
+    except ValueError:
+        await query.answer()
+        return
+
+    try:
+        dispatch = await asyncio.to_thread(get_crossword_dispatch_by_id, dispatch_id)
+    except Exception:
+        logging.warning("cw_callback: dispatch lookup failed id=%s", dispatch_id, exc_info=True)
+        await query.answer("Fehler. Bitte versuche es erneut.")
+        return
+
+    if not dispatch:
+        await query.answer("Rätsel nicht gefunden.")
+        return
+
+    words_json = list(dispatch.get("words_json") or [])
+    hidden = [w for w in words_json if w.get("hidden") and w.get("number") == word_number]
+    if not hidden:
+        await query.answer()
+        return
+
+    target_word = hidden[0]
+    correct_word = str(target_word.get("word") or "")
+    is_correct = user_answer.upper().strip() == correct_word.upper().strip()
+
+    try:
+        await asyncio.to_thread(
+            record_crossword_answer,
+            dispatch_id=dispatch_id,
+            user_id=int(user.id),
+            word_number=word_number,
+            user_answer=user_answer,
+            is_correct=is_correct,
+        )
+    except Exception:
+        logging.warning(
+            "cw_callback: record_answer failed dispatch_id=%s user_id=%s",
+            dispatch_id, int(user.id), exc_info=True,
+        )
+
+    direction_label = "↔" if target_word.get("direction") == "across" else "↕"
+    if is_correct:
+        alert = f"✅ Richtig! {direction_label} Nr.{word_number}: {correct_word}"
+    else:
+        alert = f"❌ Falsch. {direction_label} Nr.{word_number} ist {correct_word}"
+
+    try:
+        await query.answer(alert[:200], show_alert=True)
+    except Exception:
+        logging.warning("cw_callback: answer alert failed dispatch_id=%s", dispatch_id, exc_info=True)
+
+    # Check if user answered all hidden words
+    try:
+        all_answers = await asyncio.to_thread(
+            get_crossword_answers, dispatch_id=dispatch_id, user_id=int(user.id)
+        )
+        answered_numbers = {a["word_number"] for a in all_answers}
+        hidden_numbers   = {w["number"] for w in words_json if w.get("hidden")}
+        if hidden_numbers and hidden_numbers <= answered_numbers:
+            correct_count = sum(1 for a in all_answers if a.get("is_correct"))
+            total = len(hidden_numbers)
+            summary = f"🎉 Fertig! {correct_count}/{total} richtig!" if correct_count == total else f"🏁 {correct_count}/{total} richtig."
+            await query.answer(summary[:200], show_alert=True)
+    except Exception:
+        logging.warning("cw_callback: summary check failed dispatch_id=%s", dispatch_id, exc_info=True)
+
+
+async def prepare_crossword_pool_job(context: CallbackContext) -> None:
+    """Startup + periodic: generate crosswords and render images."""
+    try:
+        from backend.crossword_generator import prepare_crossword_pool
+        result = await asyncio.to_thread(
+            prepare_crossword_pool,
+            target_ready=CROSSWORD_POOL_TARGET,
+            max_attempts=20,
+        )
+        logging.info("crossword_pool_job done: %s", result)
+    except Exception:
+        logging.warning("crossword_pool_job failed", exc_info=True)
+
+    try:
+        from backend.crossword_renderer import prepare_crossword_images_batch
+        img_result = await asyncio.to_thread(prepare_crossword_images_batch, limit=10)
+        logging.info("crossword_render_job done: %s", img_result)
+    except Exception:
+        logging.warning("crossword_render_job failed", exc_info=True)
+
+
+async def admin_crossword_send_command(update: Update, context: CallbackContext) -> None:
+    """Send a crossword to this chat immediately (admin test). /admin_cw_send"""
+    user    = update.effective_user
+    chat    = update.effective_chat
+    message = update.effective_message
+    if not user or not chat or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+
+    status_msg = await message.reply_text("Preparing crossword...")
+
+    try:
+        entry = await asyncio.to_thread(pick_next_crossword, cooldown_days=0)
+    except Exception as exc:
+        await status_msg.edit_text(f"pick_next_crossword failed: {exc}")
+        return
+
+    if not entry:
+        await status_msg.edit_text("No ready crossword. Run /admin_cw_pool first.")
+        return
+
+    object_key = str(entry.get("image_object_key") or "")
+    if not object_key:
+        await status_msg.edit_text(f"No image yet for {entry.get('crossword_id')}. Run /admin_cw_pool.")
+        return
+
+    try:
+        image_url = r2_public_url(object_key)
+    except Exception as exc:
+        await status_msg.edit_text(f"r2_public_url failed: {exc}")
+        return
+
+    slot_now = _get_quiz_schedule_now()
+    ok = await send_crossword_to_chat(
+        context,
+        crossword_entry=entry,
+        image_url=image_url,
+        slot_date=slot_now.date(),
+        slot_hour=int(slot_now.hour) * 10000 + int(slot_now.second),
+        chat_id=int(chat.id),
+        target_user_id=int(user.id),
+    )
+    if ok:
+        await status_msg.delete()
+    else:
+        await status_msg.edit_text("Crossword send failed — check logs.")
+
+
+async def admin_crossword_pool_command(update: Update, context: CallbackContext) -> None:
+    """Trigger crossword pool generation (admin). /admin_cw_pool"""
+    user    = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    status_msg = await message.reply_text("Preparing crossword pool...")
+    try:
+        from backend.crossword_generator import prepare_crossword_pool
+        gen_result = await asyncio.to_thread(
+            prepare_crossword_pool,
+            target_ready=CROSSWORD_POOL_TARGET,
+            max_attempts=20,
+        )
+        from backend.crossword_renderer import prepare_crossword_images_batch
+        img_result = await asyncio.to_thread(prepare_crossword_images_batch, limit=10)
+        await status_msg.edit_text(
+            f"Crossword pool done:\nGenerated: {gen_result}\nRendered: {img_result}"
+        )
+    except Exception as exc:
+        await status_msg.edit_text(f"Error: {exc}")
+
+
+# ── end crossword ──────────────────────────────────────────────────────────────
+
 async def _run_semantic_retag_backfill(admin_chat_id: int, max_entries: int | None = None) -> None:
     processed = 0
     failed = 0
@@ -17317,6 +17751,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_visual_riddle_callback, pattern=r"^vr:\d+:\d+$"))
     application.add_handler(CallbackQueryHandler(handle_rebus_answer_callback, pattern=r"^rb:\d+:[A-D]$"))
     application.add_handler(CallbackQueryHandler(handle_article_quiz_callback, pattern=r"^aq:\d+:(der|die|das)$"))
+    application.add_handler(CallbackQueryHandler(handle_crossword_callback, pattern=r"^cw:\d+:\d+:.+$"))
     application.add_handler(CallbackQueryHandler(handle_text_level_callback, pattern=r"^text_level:"))
 
     application.add_handler(CommandHandler("translate", check_user_translation))  # ✅ Проверка переводов
@@ -17324,6 +17759,8 @@ def main():
     application.add_handler(CommandHandler("admin_rebus_pool", admin_rebus_pool_command))
     application.add_handler(CommandHandler("admin_aq_send", admin_article_quiz_send_command))
     application.add_handler(CommandHandler("admin_aq_pool", admin_article_quiz_pool_command))
+    application.add_handler(CommandHandler("admin_cw_send", admin_crossword_send_command))
+    application.add_handler(CommandHandler("admin_cw_pool", admin_crossword_pool_command))
 
 
     application.add_handler(CallbackQueryHandler(topic_selected)) #Он ждет любые нажатия на inline-кнопки.
@@ -17348,6 +17785,7 @@ def main():
                 application.job_queue.run_once(_startup_visual_riddle_pool_check, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 40),
                 application.job_queue.run_once(prepare_rebus_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 70),
                 application.job_queue.run_once(prepare_article_quiz_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 100),
+                application.job_queue.run_once(prepare_crossword_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 130),
             ),
             enabled=True,
             category="housekeeping",
@@ -17552,6 +17990,29 @@ def main():
             sorted(ARTICLE_QUIZ_SLOT_TIMES),
             QUIZ_SCHEDULE_TZ_NAME,
             _article_quiz_enabled(),
+        )
+        # -- Crossword slots: 11:45, 17:45 Europe/Vienna --
+        for _cw_hour, _cw_minute in sorted(CROSSWORD_SLOT_TIMES):
+            scheduler.add_job(
+                lambda: submit_async(_send_scheduled_crossword, CallbackContext(application=application)),
+                "cron",
+                hour=_cw_hour,
+                minute=_cw_minute,
+                timezone=QUIZ_SCHEDULE_TZ_NAME,
+            )
+        # -- Crossword pool daily top-up (08:30) --
+        scheduler.add_job(
+            lambda: submit_async(prepare_crossword_pool_job, CallbackContext(application=application)),
+            "cron",
+            hour=8,
+            minute=30,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        logging.info(
+            "crossword_scheduler_slots_registered slots=%s tz=%s enabled=%s",
+            sorted(CROSSWORD_SLOT_TIMES),
+            QUIZ_SCHEDULE_TZ_NAME,
+            _crosswords_enabled(),
         )
 
     # scheduler.add_job(

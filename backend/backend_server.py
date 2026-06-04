@@ -1089,6 +1089,7 @@ try:
 except Exception:
     STARTER_DICTIONARY_SOURCE_USER_ID = 117649764
 ECONOMICS_ADMIN_TELEGRAM_ID = 117649764
+YOUTUBE_LIBRARY_ADMIN_USER_ID = 117649764
 try:
     STARTER_DICTIONARY_IMPORT_LIMIT = int((os.getenv("STARTER_DICTIONARY_IMPORT_LIMIT") or "1000").strip() or "1000")
 except Exception:
@@ -4819,6 +4820,14 @@ def _apply_billing_guard(path: str) -> tuple[dict | None, int | None]:
     user_id = _extract_guard_user_id_for_path(path)
     if user_id is None:
         return {"error": "user_id не определён для billing guard"}, 400
+
+    if path == "/api/webapp/youtube/transcript":
+        payload = request.get_json(silent=True) or {}
+        video_id = str(payload.get("videoId") or "").strip()
+        if video_id:
+            cached_data, _cache_tier, _cached_db_duration_ms = _load_cached_youtube_transcript_data(video_id)
+            if cached_data:
+                return None, None
 
     _sync_user_subscription_from_live_stripe(user_id=int(user_id))
     now_utc = datetime.now(timezone.utc)
@@ -39016,6 +39025,8 @@ def _validate_youtube_transcript_request(
         "user_id": int(user_id),
         "video_id": video_id,
         "lang": lang,
+        "source_lang": source_lang,
+        "target_lang": target_lang,
         "subtitle_target_lang": subtitle_target_lang,
         "proxy_allowed": bool(proxy_allowed),
         "language_pair_duration_ms": language_pair_duration_ms,
@@ -39043,6 +39054,8 @@ def get_youtube_transcript():
         user_id = validated["user_id"]
         video_id = validated["video_id"]
         lang = validated["lang"]
+        source_lang = validated["source_lang"]
+        target_lang = validated["target_lang"]
         subtitle_target_lang = validated["subtitle_target_lang"]
         proxy_allowed = validated["proxy_allowed"]
         language_pair_duration_ms = validated["language_pair_duration_ms"]
@@ -39080,6 +39093,36 @@ def get_youtube_transcript():
                 **summarize_db_acquire_events(db_acquire_events),
             )
             return jsonify(response_payload)
+
+        if int(user_id) != YOUTUBE_LIBRARY_ADMIN_USER_ID:
+            response_payload = {
+                "error": "youtube_transcript_not_in_library",
+                "error_code": "youtube_transcript_not_in_library",
+                "message": "Видео пока не добавлено в библиотеку.",
+                "video_id": video_id,
+            }
+            _log_flow_observation(
+                "youtube_transcript",
+                "youtube_transcript_completed",
+                request_id=request_id,
+                correlation_id=correlation_id,
+                user_id=int(user_id),
+                video_id=video_id,
+                requested_lang=lang,
+                subtitle_target_lang=subtitle_target_lang,
+                proxy_allowed=bool(proxy_allowed),
+                cache_hit=False,
+                cache_tier="library_miss_blocked",
+                language_pair_lookup_duration_ms=language_pair_duration_ms,
+                proxy_lookup_duration_ms=proxy_lookup_duration_ms,
+                cached_db_duration_ms=cached_db_duration_ms,
+                final_status="error",
+                error_code="youtube_transcript_not_in_library",
+                duration_ms=_elapsed_ms_since(started_perf),
+                http_status=403,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify(response_payload), 403
 
         now = time.time()
         err = _yt_transcript_errors.get(video_id)

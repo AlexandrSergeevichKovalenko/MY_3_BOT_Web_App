@@ -7347,6 +7347,70 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_article_quiz_answers (user_id, answered_at DESC);
             """)
             # ── end article quiz tables ───────────────────────────────────
+
+            # ── Crossword tables ──────────────────────────────────────────
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_crossword_bank (
+                    crossword_id        TEXT PRIMARY KEY,
+                    topic               TEXT NOT NULL DEFAULT '',
+                    difficulty          TEXT NOT NULL DEFAULT 'A2',
+                    grid_json           JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    words_json          JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    image_object_key    TEXT,
+                    image_status        TEXT NOT NULL DEFAULT 'pending',
+                    send_count          INTEGER NOT NULL DEFAULT 0,
+                    last_sent_at        TIMESTAMPTZ,
+                    retired             BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (difficulty IN ('A1', 'A2', 'B1', 'B2')),
+                    CHECK (image_status IN ('pending', 'ready', 'failed'))
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_crossword_bank_available
+                ON bt_3_crossword_bank (image_status, retired, last_sent_at NULLS FIRST, difficulty);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_crossword_dispatches (
+                    id                  BIGSERIAL PRIMARY KEY,
+                    slot_date           DATE NOT NULL,
+                    slot_hour           INTEGER NOT NULL,
+                    crossword_id        TEXT NOT NULL REFERENCES bt_3_crossword_bank(crossword_id),
+                    target_user_id      BIGINT NOT NULL,
+                    chat_id             BIGINT NOT NULL,
+                    telegram_message_id BIGINT,
+                    status              TEXT NOT NULL DEFAULT 'sent',
+                    sent_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (target_user_id, slot_date, slot_hour),
+                    CHECK (status IN ('sent', 'failed'))
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_crossword_dispatches_user_date
+                ON bt_3_crossword_dispatches (target_user_id, slot_date DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_crossword_dispatches_crossword
+                ON bt_3_crossword_dispatches (crossword_id, slot_date DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_crossword_answers (
+                    id                  BIGSERIAL PRIMARY KEY,
+                    dispatch_id         BIGINT NOT NULL REFERENCES bt_3_crossword_dispatches(id),
+                    user_id             BIGINT NOT NULL,
+                    word_number         INTEGER NOT NULL,
+                    user_answer         TEXT NOT NULL DEFAULT '',
+                    is_correct          BOOLEAN NOT NULL,
+                    answered_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (dispatch_id, user_id, word_number)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_crossword_answers_user_time
+                ON bt_3_crossword_answers (user_id, answered_at DESC);
+            """)
+            # ── end crossword tables ──────────────────────────────────────
             cursor.close()
             _run_dictionary_canonical_schema_migration(conn)
             _run_rebus_rute_fix_migration(conn)
@@ -31361,3 +31425,253 @@ def mark_article_quiz_answer_feedback_sent(*, dispatch_id: int, user_id: int) ->
                 (int(dispatch_id), int(user_id)),
             )
         conn.commit()
+
+
+# ── Crossword functions ────────────────────────────────────────────────────────
+
+def upsert_crossword_bank_entry(
+    crossword_id: str,
+    *,
+    topic: str,
+    difficulty: str,
+    grid_json: list,
+    words_json: list,
+    image_status: str = "pending",
+) -> None:
+    import json as _json
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_crossword_bank
+                    (crossword_id, topic, difficulty, grid_json, words_json, image_status)
+                VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s)
+                ON CONFLICT (crossword_id) DO UPDATE SET
+                    topic        = EXCLUDED.topic,
+                    difficulty   = EXCLUDED.difficulty,
+                    grid_json    = EXCLUDED.grid_json,
+                    words_json   = EXCLUDED.words_json,
+                    image_status = EXCLUDED.image_status,
+                    updated_at   = NOW()
+                """,
+                (
+                    str(crossword_id),
+                    str(topic),
+                    str(difficulty),
+                    _json.dumps(grid_json, ensure_ascii=False),
+                    _json.dumps(words_json, ensure_ascii=False),
+                    str(image_status),
+                ),
+            )
+        conn.commit()
+
+
+def count_crossword_bank_entries(*, exclude_retired: bool = True) -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if exclude_retired:
+                cursor.execute(
+                    "SELECT COUNT(*) FROM bt_3_crossword_bank WHERE retired = FALSE"
+                )
+            else:
+                cursor.execute("SELECT COUNT(*) FROM bt_3_crossword_bank")
+            row = cursor.fetchone()
+            return int((row or [0])[0])
+
+
+def get_crossword_bank_entry(crossword_id: str) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT crossword_id, topic, difficulty, grid_json, words_json,
+                       image_object_key, image_status, send_count, last_sent_at,
+                       retired, created_at, updated_at
+                FROM bt_3_crossword_bank
+                WHERE crossword_id = %s
+                """,
+                (str(crossword_id),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    cols = ["crossword_id", "topic", "difficulty", "grid_json", "words_json",
+            "image_object_key", "image_status", "send_count", "last_sent_at",
+            "retired", "created_at", "updated_at"]
+    return dict(zip(cols, row))
+
+
+def mark_crossword_image_ready(crossword_id: str, *, image_object_key: str) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_crossword_bank
+                SET image_object_key = %s, image_status = 'ready', updated_at = NOW()
+                WHERE crossword_id = %s
+                """,
+                (str(image_object_key), str(crossword_id)),
+            )
+        conn.commit()
+
+
+def mark_crossword_image_failed(crossword_id: str) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_crossword_bank
+                SET image_status = 'failed', updated_at = NOW()
+                WHERE crossword_id = %s
+                """,
+                (str(crossword_id),),
+            )
+        conn.commit()
+
+
+def pick_next_crossword(*, cooldown_days: int = 14) -> dict | None:
+    """Return the oldest unsent (or cooldown-expired) ready crossword."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT crossword_id, topic, difficulty, grid_json, words_json,
+                       image_object_key, send_count
+                FROM bt_3_crossword_bank
+                WHERE image_status = 'ready'
+                  AND retired = FALSE
+                  AND (last_sent_at IS NULL
+                       OR last_sent_at < NOW() - INTERVAL '1 day' * %s)
+                ORDER BY last_sent_at NULLS FIRST, created_at
+                LIMIT 1
+                """,
+                (int(cooldown_days),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    cols = ["crossword_id", "topic", "difficulty", "grid_json", "words_json",
+            "image_object_key", "send_count"]
+    return dict(zip(cols, row))
+
+
+def mark_crossword_sent(crossword_id: str) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_crossword_bank
+                SET send_count = send_count + 1, last_sent_at = NOW(), updated_at = NOW()
+                WHERE crossword_id = %s
+                """,
+                (str(crossword_id),),
+            )
+        conn.commit()
+
+
+def record_crossword_dispatch(
+    *,
+    slot_date,
+    slot_hour: int,
+    crossword_id: str,
+    target_user_id: int,
+    chat_id: int,
+) -> int:
+    """Insert dispatch record. Returns dispatch id."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_crossword_dispatches
+                    (slot_date, slot_hour, crossword_id, target_user_id, chat_id)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (target_user_id, slot_date, slot_hour) DO NOTHING
+                RETURNING id
+                """,
+                (slot_date, int(slot_hour), str(crossword_id),
+                 int(target_user_id), int(chat_id)),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return int(row[0]) if row else 0
+
+
+def update_crossword_dispatch_telegram_id(dispatch_id: int, *, telegram_message_id: int) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_crossword_dispatches
+                SET telegram_message_id = %s
+                WHERE id = %s
+                """,
+                (int(telegram_message_id), int(dispatch_id)),
+            )
+        conn.commit()
+
+
+def get_crossword_dispatch_by_id(dispatch_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT d.id, d.crossword_id, d.target_user_id, d.chat_id,
+                       d.slot_date, d.slot_hour, d.status,
+                       b.grid_json, b.words_json, b.topic, b.difficulty
+                FROM bt_3_crossword_dispatches d
+                JOIN bt_3_crossword_bank b ON b.crossword_id = d.crossword_id
+                WHERE d.id = %s
+                """,
+                (int(dispatch_id),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    cols = ["id", "crossword_id", "target_user_id", "chat_id",
+            "slot_date", "slot_hour", "status",
+            "grid_json", "words_json", "topic", "difficulty"]
+    return dict(zip(cols, row))
+
+
+def record_crossword_answer(
+    *,
+    dispatch_id: int,
+    user_id: int,
+    word_number: int,
+    user_answer: str,
+    is_correct: bool,
+) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_crossword_answers
+                    (dispatch_id, user_id, word_number, user_answer, is_correct)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (dispatch_id, user_id, word_number) DO UPDATE SET
+                    user_answer = EXCLUDED.user_answer,
+                    is_correct  = EXCLUDED.is_correct,
+                    answered_at = NOW()
+                """,
+                (int(dispatch_id), int(user_id), int(word_number),
+                 str(user_answer).upper()[:50], bool(is_correct)),
+            )
+        conn.commit()
+
+
+def get_crossword_answers(*, dispatch_id: int, user_id: int) -> list[dict]:
+    """Return all answers for a user on a given dispatch."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT word_number, user_answer, is_correct, answered_at
+                FROM bt_3_crossword_answers
+                WHERE dispatch_id = %s AND user_id = %s
+                ORDER BY word_number
+                """,
+                (int(dispatch_id), int(user_id)),
+            )
+            rows = cursor.fetchall()
+    cols = ["word_number", "user_answer", "is_correct", "answered_at"]
+    return [dict(zip(cols, r)) for r in rows]
