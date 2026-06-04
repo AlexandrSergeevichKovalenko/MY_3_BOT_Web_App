@@ -1466,15 +1466,36 @@ def run_translation_focus_pool_refill_job(
     tz_name: str | None = None,
     request_id: str | None = None,
     correlation_id: str | None = None,
+    enqueued_at_utc: str | None = None,
+    max_age_hours: float = 4.0,
 ) -> None:
     started_at = time.perf_counter()
     normalized_tz_name = str(tz_name or "").strip() or None
+
+    # If the message sat in the queue longer than max_age_hours (e.g. worker was
+    # down), skip it entirely — we must NOT run the refill outside the night window.
+    if not bool(force) and enqueued_at_utc:
+        try:
+            from datetime import datetime as _dt
+            enqueued_dt = _dt.fromisoformat(str(enqueued_at_utc))
+            age_hours = (_dt.utcnow() - enqueued_dt).total_seconds() / 3600.0
+            if age_hours > float(max_age_hours or 4.0):
+                logging.warning(
+                    "translation_focus_pool_refill_job: stale message discarded "
+                    "request_id=%s enqueued_at_utc=%s age_hours=%.2f max_age_hours=%.1f",
+                    request_id, enqueued_at_utc, age_hours, float(max_age_hours or 4.0),
+                )
+                return
+        except Exception:
+            pass  # if timestamp unparseable, proceed normally
+
     logging.info(
-        "translation_focus_pool_refill_job start request_id=%s correlation_id=%s tz_name=%s force=%s",
+        "translation_focus_pool_refill_job start request_id=%s correlation_id=%s tz_name=%s force=%s enqueued_at_utc=%s",
         request_id,
         correlation_id,
         normalized_tz_name,
         bool(force),
+        enqueued_at_utc,
     )
     try:
         from backend.backend_server import _dispatch_translation_focus_pool_refill, TODAY_PLAN_DEFAULT_TZ

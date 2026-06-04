@@ -261,21 +261,26 @@ def _dispatch_sentence_prewarm() -> None:
 
 
 def _dispatch_translation_focus_pool_refill() -> None:
+    from datetime import datetime as _dt
     tz_name = str(os.getenv("TRANSLATION_FOCUS_POOL_REFILL_TZ") or "UTC").strip() or "UTC"
     request_id = f"translation_pool_refill_sched_{uuid4().hex[:16]}"
+    enqueued_at_utc = _dt.utcnow().isoformat()
     logging.info(
-        "scheduler_service: translation_focus_pool_refill enqueue_start request_id=%s tz_name=%s enabled_env=%r hour_env=%r minute_env=%r",
+        "scheduler_service: translation_focus_pool_refill enqueue_start request_id=%s tz_name=%s enabled_env=%r hour_env=%r minute_env=%r enqueued_at_utc=%s",
         request_id,
         tz_name,
         os.getenv("TRANSLATION_FOCUS_POOL_REFILL_ENABLED"),
         os.getenv("TRANSLATION_FOCUS_POOL_REFILL_HOUR"),
         os.getenv("TRANSLATION_FOCUS_POOL_REFILL_MINUTE"),
+        enqueued_at_utc,
     )
     message = run_translation_focus_pool_refill_job.send(
-        force=True,
+        force=False,
         tz_name=tz_name,
         request_id=request_id,
         correlation_id=request_id,
+        enqueued_at_utc=enqueued_at_utc,
+        max_age_hours=4.0,
     )
     logging.info(
         "scheduler_service: translation_focus_pool_refill enqueue_finish request_id=%s message_id=%s tz_name=%s",
