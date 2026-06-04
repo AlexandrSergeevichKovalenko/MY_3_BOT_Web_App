@@ -5954,6 +5954,7 @@ function AppInner() {
   const youtubeTimeIntervalRef = useRef(null);
   const youtubeCurrentTimeRef = useRef(0);
   const youtubeInputDraftRef = useRef('');
+  const youtubeTranscriptVideoIdRef = useRef('');
   const youtubeResumeAppliedForVideoRef = useRef('');
   const youtubeResumeLastSavedSecondRef = useRef(-1);
   const youtubeResumeLastSyncedSecondRef = useRef(-1);
@@ -27061,7 +27062,9 @@ function AppInner() {
   };
 
   useEffect(() => {
+    const currentVideoId = String(youtubeId || '').trim();
     if (!youtubeId || !initData) {
+      youtubeTranscriptVideoIdRef.current = currentVideoId;
       setYoutubeTranscript([]);
       setYoutubeTranscriptError('');
       setYoutubeTranslations({});
@@ -27069,6 +27072,21 @@ function AppInner() {
       setYoutubeManualOverride(false);
       setYoutubeTranscriptHasTiming(true);
       setYoutubeIsPaused(false);
+      youtubeTranslateInFlightRef.current = false;
+      youtubeTranslateIndexRef.current = -1;
+      return;
+    }
+    if (youtubeTranscriptVideoIdRef.current !== currentVideoId) {
+      youtubeTranscriptVideoIdRef.current = currentVideoId;
+      setYoutubeTranscript([]);
+      setYoutubeTranscriptError('');
+      setYoutubeTranslations({});
+      setYoutubeTranslationEnabled(false);
+      setYoutubeManualOverride(false);
+      setYoutubeTranscriptHasTiming(true);
+      setYoutubeIsPaused(false);
+      youtubeTranslateInFlightRef.current = false;
+      youtubeTranslateIndexRef.current = -1;
     }
   }, [youtubeId, initData]);
 
