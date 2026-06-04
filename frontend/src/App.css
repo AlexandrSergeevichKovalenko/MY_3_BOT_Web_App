@@ -14055,6 +14055,16 @@ body {
   gap: 10px;
 }
 
+.youtube-player-first-title-actions .youtube-dock-icon-btn {
+  width: 46px;
+  min-width: 46px;
+  height: 46px;
+}
+
+.youtube-head-import-btn {
+  font-size: 18px;
+}
+
 .youtube-player-first-title-actions .today-section-timer-pill {
   min-height: 28px;
   padding: 0 8px;

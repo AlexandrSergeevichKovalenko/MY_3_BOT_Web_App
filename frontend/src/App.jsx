@@ -30834,7 +30834,7 @@ function AppInner() {
                       <div className="youtube-mobile-head">
                         <div className="youtube-player-first-title-row">
                           <div className="youtube-player-first-title-wrap">
-                            <h3>{tr('Видео YouTube', 'YouTube Video')}</h3>
+                            <h3>{tr('YouTube', 'YouTube')}</h3>
                             {youtubeTaskDone && (
                               <span className="youtube-inline-done" title={tr('Задача выполнена', 'Aufgabe erledigt')}>✅</span>
                             )}
@@ -30848,11 +30848,7 @@ function AppInner() {
                                 aria-label={tr('Импортировать субтитры', 'Import subtitles')}
                                 title={tr('Импортировать субтитры', 'Import subtitles')}
                               >
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="17" height="17" aria-hidden="true">
-                                  <path d="M12 3v12"/>
-                                  <path d="m7 8 5-5 5 5"/>
-                                  <path d="M5 15v4h14v-4"/>
-                                </svg>
+                                <span aria-hidden="true">📥</span>
                               </button>
                             )}
                             {!youtubeTaskDone && renderTodaySectionTaskHud('youtube', { inline: true })}
@@ -30891,15 +30887,6 @@ function AppInner() {
                               ? tr('Загружаем...', 'Loading...')
                               : tr('Субтитры', 'Subtitles')}
                           </button>
-                          {canManageYoutubeTranscripts && (
-                            <button
-                              type="button"
-                              className={`youtube-status-action-btn ${showManualTranscript ? 'is-active' : ''}`}
-                              onClick={() => setShowManualTranscript((prev) => !prev)}
-                            >
-                              {showManualTranscript ? tr('Транскрипция: ON', 'Transcript: ON') : tr('Транскрипция', 'Transcript')}
-                            </button>
-                          )}
                           <button
                             type="button"
                             className={`youtube-status-action-btn ${youtubeOverlayEnabled ? 'is-active' : ''}`}
