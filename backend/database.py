@@ -25917,10 +25917,19 @@ def resolve_entitlement(
             fallback = _env_decimal("FREE_DAILY_COST_CAP_EUR", "0.50")
             cap_eur = float(fallback) if fallback is not None else None
 
+    effective_plan_code = "pro" if effective_mode == "pro" else "free"
+    if effective_mode == "trial":
+        effective_plan_code = "trial"
+    effective_plan_name = (
+        str(pro_plan.get("name") or "Pro")
+        if effective_mode == "pro"
+        else ("Trial" if effective_mode == "trial" else str(free_plan.get("name") or "Free"))
+    )
+
     return {
         "user_id": int(user_id),
-        "plan_code": plan_code,
-        "plan_name": str(current_plan.get("name") or (free_plan.get("name") if plan_code == "free" else plan_code)),
+        "plan_code": effective_plan_code,
+        "plan_name": effective_plan_name,
         "status": status,
         "trial_ends_at": trial_ends_at_dt.isoformat() if trial_ends_at_dt else None,
         "effective_mode": effective_mode,

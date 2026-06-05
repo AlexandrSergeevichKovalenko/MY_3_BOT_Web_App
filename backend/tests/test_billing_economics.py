@@ -606,6 +606,28 @@ class BillingEconomicsTests(unittest.TestCase):
         self.assertEqual(payload["effective_mode"], "free")
         self.assertEqual(payload["source_of_entitlement"], "free_default")
 
+    def test_canceled_pro_subscription_resolves_as_current_free_plan(self):
+        now = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+        subscription = {
+            "user_id": 77,
+            "plan_code": "pro",
+            "status": "canceled",
+            "trial_ends_at": None,
+        }
+        plans = {
+            "free": {"plan_code": "free", "name": "Free", "is_paid": False, "daily_cost_cap_eur": 0.5},
+            "pro": {"plan_code": "pro", "name": "Pro", "is_paid": True, "daily_cost_cap_eur": 5.0},
+        }
+
+        with patch("backend.database.get_billing_plan", side_effect=lambda code: plans.get(code)):
+            payload = resolve_entitlement(user_id=77, now_ts_utc=now, subscription=subscription)
+
+        self.assertEqual(payload["effective_mode"], "free")
+        self.assertEqual(payload["plan_code"], "free")
+        self.assertEqual(payload["plan_name"], "Free")
+        self.assertEqual(payload["status"], "canceled")
+        self.assertEqual(payload["source_of_entitlement"], "free_default")
+
 
 if __name__ == "__main__":
     unittest.main()
