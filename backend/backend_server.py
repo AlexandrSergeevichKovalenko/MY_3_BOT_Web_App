@@ -441,6 +441,12 @@ from backend.database import (
     get_billing_plan,
     get_or_create_user_subscription,
     get_user_subscription,
+    list_pro_subscriber_user_ids,
+    get_analytics_summary_snapshot,
+    upsert_analytics_summary_snapshot,
+    mark_analytics_snapshots_dirty_for_user,
+    list_dirty_analytics_snapshot_keys,
+    prune_stale_analytics_snapshots,
     get_user_subscription_by_customer_id,
     get_user_subscription_by_stripe_subscription_id,
     deactivate_user_subscription,
@@ -46606,6 +46612,92 @@ def _build_semantic_weekly_audit_command(*, output_json_path: Path) -> list[str]
     return audit_command
 
 
+# ── Analytics snapshot precompute (Phase 3b) ──────────────────────────────────
+
+ANALYTICS_SNAPSHOT_PERIODS = ["week", "month", "all"]
+
+
+def _compute_and_store_analytics_snapshot(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    period: str,
+) -> bool:
+    """Compute a personal-scope summary for one (user, period) and store it.
+    Returns True on success."""
+    scope_user_ids = [int(user_id)]
+    normalized_period, start_date, end_date = _resolve_webapp_analytics_bounds(
+        period_value=period,
+        scope_user_ids=scope_user_ids,
+    )
+    summary = fetch_scope_summary(
+        scope_user_ids, start_date, end_date,
+        source_lang=source_lang, target_lang=target_lang,
+    )
+    upsert_analytics_summary_snapshot(
+        user_id=int(user_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        scope_key="personal",
+        period=normalized_period,
+        start_date=start_date,
+        end_date=end_date,
+        summary_json=summary if isinstance(summary, dict) else {},
+    )
+    return True
+
+
+def run_analytics_snapshot_precompute_job(*, user_ids: list[int] | None = None) -> dict:
+    """Nightly: precompute personal-scope analytics summaries for all Pro users
+    so the analytics screen reads a ready row instead of running heavy SQL.
+    Returns stats dict."""
+    stats = {"users": 0, "snapshots": 0, "failed": 0, "pruned": 0}
+    try:
+        target_user_ids = (
+            list(user_ids)
+            if user_ids is not None
+            else list_pro_subscriber_user_ids()
+        )
+    except Exception:
+        logging.warning("analytics_snapshot_job: failed to list pro users", exc_info=True)
+        return stats
+
+    for uid in target_user_ids:
+        try:
+            source_lang, target_lang, _profile = _get_user_language_pair(int(uid))
+        except Exception:
+            logging.warning("analytics_snapshot_job: lang pair failed user_id=%s", uid, exc_info=True)
+            continue
+        user_had_success = False
+        for period in ANALYTICS_SNAPSHOT_PERIODS:
+            try:
+                _compute_and_store_analytics_snapshot(
+                    user_id=int(uid),
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    period=period,
+                )
+                stats["snapshots"] += 1
+                user_had_success = True
+            except Exception:
+                stats["failed"] += 1
+                logging.warning(
+                    "analytics_snapshot_job: compute failed user_id=%s period=%s",
+                    uid, period, exc_info=True,
+                )
+        if user_had_success:
+            stats["users"] += 1
+
+    try:
+        stats["pruned"] = prune_stale_analytics_snapshots(older_than_days=14)
+    except Exception:
+        logging.warning("analytics_snapshot_job: prune failed", exc_info=True)
+
+    logging.info("analytics_snapshot_job done: %s", stats)
+    return stats
+
+
 def _run_semantic_benchmark_prep_scheduler_job() -> None:
     try:
         now_local = datetime.now(ZoneInfo(SEMANTIC_BENCHMARK_PREP_SCHEDULER_TZ))
@@ -49114,6 +49206,28 @@ def _start_audio_scheduler() -> None:
             max_instances=1,
             coalesce=True,
             misfire_grace_time=1800,
+        )
+    # Analytics snapshot precompute — daily at 04:00 (free window; 02:00 = quiz
+    # pools, 03:00 = cleanup jobs). Precomputes Pro users' summaries so the
+    # analytics screen reads a ready row instead of running heavy SQL.
+    analytics_snapshot_enabled = (os.getenv("ANALYTICS_SNAPSHOT_SCHEDULER_ENABLED") or "1").strip().lower() in ("1", "true", "yes", "on")
+    if analytics_snapshot_enabled:
+        analytics_snapshot_hour = max(0, min(23, int((os.getenv("ANALYTICS_SNAPSHOT_SCHEDULER_HOUR") or "4").strip() or "4")))
+        analytics_snapshot_minute = max(0, min(59, int((os.getenv("ANALYTICS_SNAPSHOT_SCHEDULER_MINUTE") or "0").strip() or "0")))
+        analytics_snapshot_tz_name = (os.getenv("ANALYTICS_SNAPSHOT_SCHEDULER_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
+        _audio_scheduler.add_job(
+            run_analytics_snapshot_precompute_job,
+            "cron",
+            hour=analytics_snapshot_hour,
+            minute=analytics_snapshot_minute,
+            timezone=analytics_snapshot_tz_name,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=1800,
+        )
+        logging.info(
+            "analytics_snapshot_scheduler_registered hour=%s minute=%s tz=%s",
+            analytics_snapshot_hour, analytics_snapshot_minute, analytics_snapshot_tz_name,
         )
     db_table_size_report_enabled = (os.getenv("DB_TABLE_SIZE_REPORT_ENABLED") or "1").strip().lower()
     if db_table_size_report_enabled in ("1", "true", "yes", "on"):

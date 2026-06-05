@@ -25022,6 +25022,25 @@ def get_user_subscription(user_id: int) -> dict | None:
     return _subscription_row_to_dict(row) if row else None
 
 
+def list_pro_subscriber_user_ids() -> list[int]:
+    """Return user_ids with an active/trialing PAID subscription.
+    Used by the nightly analytics snapshot precompute job."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT s.user_id
+                FROM user_subscriptions s
+                JOIN plans p ON p.plan_code = s.plan_code
+                WHERE p.is_paid = TRUE
+                  AND s.status IN ('active', 'trialing')
+                ORDER BY s.user_id
+                """
+            )
+            rows = cursor.fetchall()
+    return [int(r[0]) for r in rows]
+
+
 def get_user_subscription_by_customer_id(stripe_customer_id: str) -> dict | None:
     customer_id_value = str(stripe_customer_id or "").strip()
     if not customer_id_value:
@@ -32097,6 +32116,15 @@ def upsert_analytics_summary_snapshot(
 ) -> None:
     """Write/refresh a precomputed snapshot and clear its dirty flag."""
     import json as _json
+    from decimal import Decimal as _Decimal
+
+    def _json_default(o):
+        if isinstance(o, _Decimal):
+            return float(o)
+        if hasattr(o, "isoformat"):  # date/datetime
+            return o.isoformat()
+        return str(o)
+
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -32115,7 +32143,7 @@ def upsert_analytics_summary_snapshot(
                 """,
                 (int(user_id), str(source_lang), str(target_lang), str(scope_key),
                  str(period), start_date, end_date,
-                 _json.dumps(summary_json, ensure_ascii=False)),
+                 _json.dumps(summary_json, ensure_ascii=False, default=_json_default)),
             )
         conn.commit()
 
