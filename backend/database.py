@@ -7444,6 +7444,66 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_crossword_answers (user_id, answered_at DESC);
             """)
             # ── end crossword tables ──────────────────────────────────────
+
+            # ── Hörverständnis (listening comprehension) tables ───────────
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_listening_bank (
+                    listening_id        TEXT PRIMARY KEY,
+                    topic               TEXT NOT NULL DEFAULT '',
+                    difficulty          TEXT NOT NULL DEFAULT 'B2',
+                    german_text         TEXT NOT NULL DEFAULT '',
+                    questions_json      JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    audio_object_key    TEXT,
+                    audio_status        TEXT NOT NULL DEFAULT 'pending',
+                    send_count          INTEGER NOT NULL DEFAULT 0,
+                    last_sent_at        TIMESTAMPTZ,
+                    retired             BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (audio_status IN ('pending', 'ready', 'failed'))
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_listening_bank_available
+                ON bt_3_listening_bank (audio_status, retired, last_sent_at NULLS FIRST);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_listening_dispatches (
+                    id                  BIGSERIAL PRIMARY KEY,
+                    slot_date           DATE NOT NULL,
+                    listening_id        TEXT NOT NULL REFERENCES bt_3_listening_bank(listening_id),
+                    target_user_id      BIGINT NOT NULL,
+                    chat_id             BIGINT NOT NULL,
+                    audio_message_id    BIGINT,
+                    status              TEXT NOT NULL DEFAULT 'sent',
+                    sent_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (target_user_id, slot_date),
+                    CHECK (status IN ('sent', 'failed'))
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_listening_dispatches_user
+                ON bt_3_listening_dispatches (target_user_id, slot_date DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_listening_answers (
+                    id                  BIGSERIAL PRIMARY KEY,
+                    dispatch_id         BIGINT NOT NULL REFERENCES bt_3_listening_dispatches(id),
+                    user_id             BIGINT NOT NULL,
+                    answers_json        JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    evaluation_json     JSONB,
+                    evaluation_status   TEXT NOT NULL DEFAULT 'pending',
+                    submitted_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    evaluated_at        TIMESTAMPTZ,
+                    UNIQUE (dispatch_id, user_id),
+                    CHECK (evaluation_status IN ('pending', 'done', 'failed'))
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_listening_answers_user
+                ON bt_3_listening_answers (user_id, submitted_at DESC);
+            """)
+            # ── end listening tables ──────────────────────────────────────
             cursor.close()
             _run_dictionary_canonical_schema_migration(conn)
             _run_rebus_rute_fix_migration(conn)
@@ -31761,3 +31821,203 @@ def reset_crossword_images_to_pending() -> int:
             count = cursor.rowcount
         conn.commit()
     return count
+
+
+# ── Hörverständnis (listening comprehension) ──────────────────────────────────
+
+def upsert_listening_bank_entry(
+    listening_id: str,
+    *,
+    topic: str,
+    difficulty: str,
+    german_text: str,
+    questions_json: list,
+    audio_object_key: str | None,
+    audio_status: str,
+) -> None:
+    import json as _json
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_listening_bank
+                    (listening_id, topic, difficulty, german_text,
+                     questions_json, audio_object_key, audio_status)
+                VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)
+                ON CONFLICT (listening_id) DO UPDATE SET
+                    topic             = EXCLUDED.topic,
+                    difficulty        = EXCLUDED.difficulty,
+                    german_text       = EXCLUDED.german_text,
+                    questions_json    = EXCLUDED.questions_json,
+                    audio_object_key  = EXCLUDED.audio_object_key,
+                    audio_status      = EXCLUDED.audio_status,
+                    updated_at        = NOW()
+                """,
+                (
+                    str(listening_id), str(topic), str(difficulty),
+                    str(german_text),
+                    _json.dumps(questions_json, ensure_ascii=False),
+                    audio_object_key, str(audio_status),
+                ),
+            )
+        conn.commit()
+
+
+def count_listening_bank_entries(*, exclude_retired: bool = True) -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if exclude_retired:
+                cursor.execute(
+                    "SELECT COUNT(*) FROM bt_3_listening_bank WHERE retired = FALSE"
+                )
+            else:
+                cursor.execute("SELECT COUNT(*) FROM bt_3_listening_bank")
+            return int((cursor.fetchone() or [0])[0])
+
+
+def pick_next_listening(*, cooldown_days: int = 7) -> dict | None:
+    """Pick the oldest ready listening entry not sent within cooldown."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT listening_id, topic, difficulty, german_text,
+                       questions_json, audio_object_key, send_count
+                FROM bt_3_listening_bank
+                WHERE audio_status = 'ready'
+                  AND retired = FALSE
+                  AND (last_sent_at IS NULL
+                       OR last_sent_at < NOW() - (%s || ' days')::INTERVAL)
+                ORDER BY last_sent_at NULLS FIRST, created_at
+                LIMIT 1
+                """,
+                (int(cooldown_days),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    cols = ["listening_id", "topic", "difficulty", "german_text",
+            "questions_json", "audio_object_key", "send_count"]
+    return dict(zip(cols, row))
+
+
+def mark_listening_sent(listening_id: str) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_listening_bank
+                SET send_count = send_count + 1, last_sent_at = NOW(), updated_at = NOW()
+                WHERE listening_id = %s
+                """,
+                (str(listening_id),),
+            )
+        conn.commit()
+
+
+def record_listening_dispatch(
+    *,
+    slot_date,
+    listening_id: str,
+    target_user_id: int,
+    chat_id: int,
+) -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_listening_dispatches
+                    (slot_date, listening_id, target_user_id, chat_id)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (target_user_id, slot_date) DO NOTHING
+                RETURNING id
+                """,
+                (slot_date, str(listening_id), int(target_user_id), int(chat_id)),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return int(row[0]) if row else 0
+
+
+def update_listening_dispatch_audio_message_id(
+    dispatch_id: int, *, audio_message_id: int
+) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_listening_dispatches SET audio_message_id = %s WHERE id = %s",
+                (int(audio_message_id), int(dispatch_id)),
+            )
+        conn.commit()
+
+
+def get_listening_dispatch_by_id(dispatch_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT d.id, d.listening_id, d.target_user_id, d.chat_id,
+                       d.slot_date, d.audio_message_id,
+                       b.german_text, b.questions_json, b.topic, b.difficulty
+                FROM bt_3_listening_dispatches d
+                JOIN bt_3_listening_bank b ON b.listening_id = d.listening_id
+                WHERE d.id = %s
+                """,
+                (int(dispatch_id),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    cols = ["id", "listening_id", "target_user_id", "chat_id",
+            "slot_date", "audio_message_id",
+            "german_text", "questions_json", "topic", "difficulty"]
+    return dict(zip(cols, row))
+
+
+def save_listening_answers(
+    *,
+    dispatch_id: int,
+    user_id: int,
+    answers_json: list,
+) -> int:
+    import json as _json
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_listening_answers
+                    (dispatch_id, user_id, answers_json, evaluation_status)
+                VALUES (%s, %s, %s::jsonb, 'pending')
+                ON CONFLICT (dispatch_id, user_id) DO UPDATE SET
+                    answers_json       = EXCLUDED.answers_json,
+                    evaluation_status  = 'pending',
+                    submitted_at       = NOW()
+                RETURNING id
+                """,
+                (int(dispatch_id), int(user_id),
+                 _json.dumps(answers_json, ensure_ascii=False)),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return int(row[0]) if row else 0
+
+
+def save_listening_evaluation(
+    *,
+    answer_id: int,
+    evaluation_json: list,
+) -> None:
+    import json as _json
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_listening_answers
+                SET evaluation_json    = %s::jsonb,
+                    evaluation_status  = 'done',
+                    evaluated_at       = NOW()
+                WHERE id = %s
+                """,
+                (_json.dumps(evaluation_json, ensure_ascii=False), int(answer_id)),
+            )
+        conn.commit()

@@ -230,6 +230,13 @@ from backend.database import (
     mark_crossword_sent,
     reset_crossword_images_to_pending,
     record_crossword_dispatch,
+    pick_next_listening,
+    mark_listening_sent,
+    record_listening_dispatch,
+    update_listening_dispatch_audio_message_id,
+    get_listening_dispatch_by_id,
+    save_listening_answers,
+    save_listening_evaluation,
     update_crossword_dispatch_telegram_id,
     get_crossword_dispatch_by_id,
     record_crossword_answer,
@@ -265,6 +272,11 @@ ARTICLE_QUIZ_COOLDOWN_DAYS = max(7, int((os.getenv("ARTICLE_QUIZ_COOLDOWN_DAYS")
 ARTICLE_QUIZ_POOL_TARGET = max(5, int((os.getenv("ARTICLE_QUIZ_POOL_TARGET") or "30").strip() or "30"))
 ARTICLE_QUIZ_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("ARTICLE_QUIZ_POOL_TOPUP_TRIGGER") or "5").strip() or "5"))
 CROSSWORD_SLOT_TIMES = {(11, 45), (17, 45)}  # 2x/day at :45
+LISTENING_SLOT_TIME  = (18, 30)              # once/day at 18:30
+LISTENING_COOLDOWN_DAYS = max(5, int((os.getenv("LISTENING_COOLDOWN_DAYS") or "7").strip() or "7"))
+LISTENING_POOL_TARGET   = max(3, int((os.getenv("LISTENING_POOL_TARGET") or "7").strip() or "7"))
+PENDING_INPUT_STATE_LISTENING = "listening_answer"
+LISTENING_ANSWER_TTL_SECONDS  = 60 * 45  # 45 minutes
 CROSSWORD_COOLDOWN_DAYS = max(7, int((os.getenv("CROSSWORD_COOLDOWN_DAYS") or "21").strip() or "21"))
 CROSSWORD_POOL_TARGET = max(5, int((os.getenv("CROSSWORD_POOL_TARGET") or "15").strip() or "15"))
 CROSSWORD_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("CROSSWORD_POOL_TOPUP_TRIGGER") or "3").strip() or "3"))
@@ -4856,6 +4868,57 @@ async def handle_user_message(update: Update, context: CallbackContext):
             user_id=int(user_id),
         )
         return
+
+    # ── Listening comprehension answers ─────────────────────────────────────
+    ls_pending = _restore_active_pending_input_state(int(user_id), PENDING_INPUT_STATE_LISTENING)
+    if ls_pending and update.effective_chat and update.effective_chat.type != "private":
+        ls_pending = None
+    if ls_pending:
+        import time as _time_ls
+        started_at = float(ls_pending.get("started_at") or 0.0)
+        state_key  = str(ls_pending.get("state_key") or "").strip()
+        if started_at > 0 and (_time_ls.time() - started_at) > LISTENING_ANSWER_TTL_SECONDS:
+            _clear_pending_input_state(state_key=state_key, user_id=int(user_id))
+            await update.message.reply_text(
+                "⏰ Die Zeit ist abgelaufen. Starte die Übung erneut."
+            )
+            return
+
+        dispatch_id  = int(ls_pending.get("dispatch_id") or 0)
+        questions    = list(ls_pending.get("questions") or [])
+        german_text  = str(ls_pending.get("german_text") or "")
+
+        # Parse numbered answers (1. ... 2. ... 3. ... 4. ...)
+        import re as _re_ls
+        raw_lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
+        # Strip leading "1." / "2." etc.
+        parsed: list[str] = []
+        for line in raw_lines:
+            cleaned = _re_ls.sub(r"^\d+[\.\)]\s*", "", line).strip()
+            if cleaned:
+                parsed.append(cleaned)
+
+        if len(parsed) < len(questions):
+            await update.message.reply_text(
+                f"Bitte beantworte alle {len(questions)} Fragen!\n"
+                f"Du hast nur {len(parsed)} Antwort(en) geschickt.\n\n"
+                "Schreibe alle Antworten nummeriert, eine pro Zeile."
+            )
+            return
+
+        _clear_pending_input_state(state_key=state_key, user_id=int(user_id))
+
+        asyncio.create_task(_process_listening_answers(
+            context,
+            user_id=int(user_id),
+            dispatch_id=dispatch_id,
+            questions=questions,
+            german_text=german_text,
+            raw_answers=parsed[:len(questions)],
+            message=update.message,
+        ))
+        return
+    # ── end listening ────────────────────────────────────────────────────────
 
     # ── Rebus free-text answer ──────────────────────────────────────────────
     rebus_pending = _restore_active_pending_input_state(int(user_id), PENDING_INPUT_STATE_REBUS)
@@ -17335,6 +17398,391 @@ async def admin_crossword_rerender_command(update: Update, context: CallbackCont
 
 # ── end crossword ──────────────────────────────────────────────────────────────
 
+# ══════════════════════════════════════════════════════════════════════════════
+# HÖRVERSTÄNDNIS (Listening Comprehension)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _listening_enabled() -> bool:
+    return (os.getenv("LISTENING_ENABLED") or "true").strip().lower() not in ("0", "false", "no")
+
+
+def _build_listening_group_message(entry: dict, dispatch_id: int) -> tuple[str, "InlineKeyboardMarkup"]:
+    """Build the beautiful group caption + keyboard for the listening quiz."""
+    topic   = str(entry.get("topic") or "")
+    questions: list = list(entry.get("questions_json") or [])
+
+    lines = [
+        f"🎧 *Hörverständnis* — B2",
+        f"📌 _{topic}_",
+        "",
+        "━━━━━━━━━━━━━━━━━━━",
+        "",
+        "❓ *Fragen zum Hörtext:*",
+        "",
+    ]
+    for q in questions:
+        num = int(q.get("number") or 0)
+        q_text = str(q.get("question_de") or "")
+        lines.append(f"*{num}.* {q_text}")
+    lines += [
+        "",
+        "━━━━━━━━━━━━━━━━━━━",
+        "",
+        "💬 Höre den Text genau — auch kleine Details zählen!",
+        "Drücke den Knopf und beantworte alle 4 Fragen.",
+    ]
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            "✏️ Fragen beantworten",
+            callback_data=f"ls:start:{dispatch_id}",
+        )
+    ]])
+    return "\n".join(lines), keyboard
+
+
+def _build_listening_dm_instruction(questions: list) -> str:
+    """Build the clear instruction message sent to user's DM."""
+    q_lines = "\n".join(
+        f"*{q.get('number')}.* _{q.get('question_de', '')}_"
+        for q in questions
+    )
+    return (
+        "🎧 *Hörverständnis — Deine Antworten*\n"
+        "━━━━━━━━━━━━━━━━━━━\n\n"
+        "Höre dir das Audio noch einmal genau an und beantworte alle 4 Fragen.\n\n"
+        f"{q_lines}\n\n"
+        "━━━━━━━━━━━━━━━━━━━\n\n"
+        "✍️ *Schreibe alle 4 Antworten — eine pro Zeile, nummeriert:*\n\n"
+        "```\n"
+        "1. Deine Antwort auf Frage 1\n"
+        "2. Deine Antwort auf Frage 2\n"
+        "3. Deine Antwort auf Frage 3\n"
+        "4. Deine Antwort auf Frage 4\n"
+        "```\n\n"
+        "💡 *Tipp:* Achte auf genaue Uhrzeiten, Bedingungen und Ausnahmen!\n"
+        f"⏳ Du hast 45 Minuten Zeit."
+    )
+
+
+async def send_listening_to_chat(
+    context: CallbackContext,
+    *,
+    entry: dict,
+    slot_date,
+    chat_id: int,
+    target_user_id: int,
+) -> bool:
+    """Send one listening quiz (audio + caption + button) to a group chat."""
+    listening_id = str(entry.get("listening_id") or "")
+    audio_key    = str(entry.get("audio_object_key") or "")
+    if not audio_key:
+        logging.warning("ls_send: no audio key listening_id=%s", listening_id)
+        return False
+
+    try:
+        dispatch_id = await asyncio.to_thread(
+            record_listening_dispatch,
+            slot_date=slot_date,
+            listening_id=listening_id,
+            target_user_id=int(target_user_id),
+            chat_id=int(chat_id),
+        )
+    except Exception:
+        logging.warning("ls_send: dispatch insert failed listening_id=%s", listening_id, exc_info=True)
+        return False
+
+    if not dispatch_id:
+        logging.info("ls_send: duplicate suppressed listening_id=%s chat_id=%s", listening_id, chat_id)
+        return False
+
+    from backend.r2_storage import r2_public_url
+    try:
+        audio_url = r2_public_url(audio_key)
+    except Exception:
+        logging.warning("ls_send: r2_public_url failed key=%s", audio_key, exc_info=True)
+        return False
+
+    caption, keyboard = _build_listening_group_message(entry, dispatch_id)
+
+    try:
+        audio_msg = await context.bot.send_audio(
+            chat_id=int(chat_id),
+            audio=audio_url,
+            caption=caption,
+            reply_markup=keyboard,
+            parse_mode="Markdown",
+            title="Hörverständnis B2",
+            performer="Das Deutsche Schlümpfchen",
+        )
+        await asyncio.to_thread(
+            update_listening_dispatch_audio_message_id,
+            dispatch_id,
+            audio_message_id=int(audio_msg.message_id),
+        )
+    except Exception as exc:
+        logging.warning("ls_send: send_audio failed dispatch_id=%s: %s", dispatch_id, exc)
+        return False
+
+    logging.info("ls_send_ok dispatch_id=%s listening_id=%s chat_id=%s", dispatch_id, listening_id, chat_id)
+    return True
+
+
+async def _send_scheduled_listening(context: CallbackContext) -> None:
+    if not _listening_enabled():
+        return
+
+    slot_now  = _get_quiz_schedule_now()
+    slot_date = slot_now.date()
+
+    if (slot_now.hour, slot_now.minute) != LISTENING_SLOT_TIME:
+        return
+
+    try:
+        entry = await asyncio.to_thread(pick_next_listening, cooldown_days=LISTENING_COOLDOWN_DAYS)
+    except Exception:
+        logging.warning("ls_slot: pick_next_listening failed", exc_info=True)
+        return
+
+    if not entry:
+        logging.info("ls_slot: no ready listening entry slot=%s", slot_date)
+        return
+
+    delivery_targets = await _collect_quiz_delivery_user_targets(context)
+    if not delivery_targets:
+        return
+
+    sent = 0
+    for target in delivery_targets:
+        target_chat_id = int(target.get("chat_id") or 0)
+        if not target_chat_id:
+            continue
+        ok = await send_listening_to_chat(
+            context,
+            entry=entry,
+            slot_date=slot_date,
+            chat_id=target_chat_id,
+            target_user_id=target_chat_id,
+        )
+        if ok:
+            sent += 1
+
+    if sent > 0:
+        try:
+            await asyncio.to_thread(mark_listening_sent, str(entry.get("listening_id") or ""))
+        except Exception:
+            logging.warning("ls_slot: mark_listening_sent failed", exc_info=True)
+
+    logging.info("ls_slot_done slot=%s sent=%d", slot_date, sent)
+
+
+async def handle_listening_callback(update: Update, context: CallbackContext) -> None:
+    """Handle ✏️ Fragen beantworten tap — send instruction to DM."""
+    query = update.callback_query
+    if not query:
+        return
+    user = query.from_user
+    if not user:
+        return
+
+    parts = (query.data or "").split(":", 2)
+    if len(parts) != 3 or parts[1] != "start":
+        await query.answer()
+        return
+
+    try:
+        dispatch_id = int(parts[2])
+    except ValueError:
+        await query.answer()
+        return
+
+    try:
+        dispatch = await asyncio.to_thread(get_listening_dispatch_by_id, dispatch_id)
+    except Exception:
+        await query.answer("Fehler. Bitte versuche es erneut.")
+        return
+
+    if not dispatch:
+        await query.answer("Quiz nicht gefunden.")
+        return
+
+    questions = list(dispatch.get("questions_json") or [])
+
+    state_key = f"ls_answer:{int(user.id)}:{dispatch_id}"
+    _store_pending_input_state(
+        state_key=state_key,
+        user_id=int(user.id),
+        state_type=PENDING_INPUT_STATE_LISTENING,
+        payload={
+            "dispatch_id": dispatch_id,
+            "questions": questions,
+            "german_text": str(dispatch.get("german_text") or ""),
+            "state_key": state_key,
+            "started_at": __import__("time").time(),
+        },
+        ttl_seconds=LISTENING_ANSWER_TTL_SECONDS,
+    )
+
+    await query.answer()
+    instruction = _build_listening_dm_instruction(questions)
+
+    dm_sent = False
+    try:
+        await context.bot.send_message(
+            chat_id=int(user.id),
+            text=instruction,
+            parse_mode="Markdown",
+        )
+        dm_sent = True
+    except Exception:
+        logging.warning("ls_callback: DM failed user_id=%s", int(user.id))
+
+    if not dm_sent:
+        try:
+            await query.message.reply_text(
+                "Schreibe mir eine Privatnachricht, um zu antworten! 🤫"
+            )
+        except Exception:
+            pass
+
+
+async def _process_listening_answers(
+    context: CallbackContext,
+    *,
+    user_id: int,
+    dispatch_id: int,
+    questions: list,
+    german_text: str,
+    raw_answers: list[str],
+    message,
+) -> None:
+    """Evaluate answers via GPT and send feedback."""
+    from backend.listening_evaluator import evaluate_listening_answers, format_evaluation_message
+
+    # Save answers to DB
+    try:
+        answer_id = await asyncio.to_thread(
+            save_listening_answers,
+            dispatch_id=dispatch_id,
+            user_id=int(user_id),
+            answers_json=raw_answers,
+        )
+    except Exception:
+        logging.warning("ls_text: save_answers failed dispatch_id=%s", dispatch_id, exc_info=True)
+        answer_id = 0
+
+    await message.reply_text("⏳ Ich werte deine Antworten aus… (10-20 Sekunden)")
+
+    try:
+        evaluations = await asyncio.to_thread(
+            evaluate_listening_answers,
+            german_text,
+            questions,
+            raw_answers,
+        )
+    except Exception as exc:
+        logging.warning("ls_text: evaluation failed dispatch_id=%s: %s", dispatch_id, exc)
+        await message.reply_text("❌ Auswertung fehlgeschlagen. Bitte versuche es später erneut.")
+        return
+
+    if answer_id:
+        try:
+            await asyncio.to_thread(
+                save_listening_evaluation,
+                answer_id=answer_id,
+                evaluation_json=evaluations,
+            )
+        except Exception:
+            logging.warning("ls_text: save_evaluation failed answer_id=%s", answer_id, exc_info=True)
+
+    feedback = format_evaluation_message(questions, raw_answers, evaluations)
+    # Split into chunks if too long for Telegram (4096 char limit)
+    chunk_size = 3800
+    for i in range(0, len(feedback), chunk_size):
+        await message.reply_text(feedback[i:i + chunk_size], parse_mode="Markdown")
+
+
+async def prepare_listening_pool_job(context: CallbackContext) -> None:
+    """Startup + nightly: generate listening entries until pool is filled."""
+    try:
+        from backend.listening_generator import prepare_listening_pool
+        result = await asyncio.to_thread(
+            prepare_listening_pool,
+            target_ready=LISTENING_POOL_TARGET,
+            max_attempts=10,
+        )
+        logging.info("listening_pool_job done: %s", result)
+    except Exception:
+        logging.warning("listening_pool_job failed", exc_info=True)
+
+
+async def admin_listening_send_command(update: Update, context: CallbackContext) -> None:
+    """/admin_ls_send — send a listening quiz to this chat immediately (admin test)."""
+    user    = update.effective_user
+    chat    = update.effective_chat
+    message = update.effective_message
+    if not user or not chat or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+
+    status_msg = await message.reply_text("Preparing listening quiz...")
+    try:
+        entry = await asyncio.to_thread(pick_next_listening, cooldown_days=0)
+    except Exception as exc:
+        await status_msg.edit_text(f"pick_next_listening failed: {exc}")
+        return
+
+    if not entry:
+        await status_msg.edit_text("No ready listening entry. Run /admin_ls_pool first.")
+        return
+
+    slot_now = _get_quiz_schedule_now()
+    ok = await send_listening_to_chat(
+        context,
+        entry=entry,
+        slot_date=slot_now.date(),
+        chat_id=int(chat.id),
+        target_user_id=int(user.id),
+    )
+    if ok:
+        await status_msg.delete()
+    else:
+        await status_msg.edit_text("Listening send failed — check logs.")
+
+
+async def admin_listening_pool_command(update: Update, context: CallbackContext) -> None:
+    """/admin_ls_pool — generate listening entries (admin)."""
+    user    = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+
+    args = context.args or []
+    try:
+        target = max(1, int(args[0])) if args else LISTENING_POOL_TARGET
+    except (ValueError, IndexError):
+        target = LISTENING_POOL_TARGET
+
+    status_msg = await message.reply_text(f"Generating listening pool (target={target})...")
+    try:
+        from backend.listening_generator import prepare_listening_pool
+        result = await asyncio.to_thread(
+            prepare_listening_pool,
+            target_ready=target,
+            max_attempts=max(10, target),
+        )
+        await status_msg.edit_text(f"Listening pool done:\n{result}")
+    except Exception as exc:
+        await status_msg.edit_text(f"Error: {exc}")
+
+
+# ── end Hörverständnis ────────────────────────────────────────────────────────
+
 async def _run_semantic_retag_backfill(admin_chat_id: int, max_entries: int | None = None) -> None:
     processed = 0
     failed = 0
@@ -18421,6 +18869,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_rebus_answer_callback, pattern=r"^rb:start:\d+$"))
     application.add_handler(CallbackQueryHandler(handle_article_quiz_callback, pattern=r"^aq:\d+:(der|die|das)$"))
     application.add_handler(CallbackQueryHandler(handle_crossword_callback, pattern=r"^cw:start:\d+$"))
+    application.add_handler(CallbackQueryHandler(handle_listening_callback, pattern=r"^ls:start:\d+$"))
     application.add_handler(CallbackQueryHandler(handle_text_level_callback, pattern=r"^text_level:"))
 
     application.add_handler(CommandHandler("translate", check_user_translation))  # ✅ Проверка переводов
@@ -18431,6 +18880,8 @@ def main():
     application.add_handler(CommandHandler("admin_cw_send", admin_crossword_send_command))
     application.add_handler(CommandHandler("admin_cw_pool", admin_crossword_pool_command))
     application.add_handler(CommandHandler("admin_cw_rerender", admin_crossword_rerender_command))
+    application.add_handler(CommandHandler("admin_ls_send", admin_listening_send_command))
+    application.add_handler(CommandHandler("admin_ls_pool", admin_listening_pool_command))
 
 
     application.add_handler(CallbackQueryHandler(topic_selected)) #Он ждет любые нажатия на inline-кнопки.
@@ -18456,6 +18907,7 @@ def main():
                 application.job_queue.run_once(prepare_rebus_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 70),
                 application.job_queue.run_once(prepare_article_quiz_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 100),
                 application.job_queue.run_once(prepare_crossword_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 130),
+                application.job_queue.run_once(prepare_listening_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 160),
             ),
             enabled=True,
             category="housekeeping",
@@ -18683,6 +19135,27 @@ def main():
             sorted(CROSSWORD_SLOT_TIMES),
             QUIZ_SCHEDULE_TZ_NAME,
             _crosswords_enabled(),
+        )
+        # -- Hörverständnis: daily at 18:30 --
+        _ls_hour, _ls_minute = LISTENING_SLOT_TIME
+        scheduler.add_job(
+            lambda: submit_async(_send_scheduled_listening, CallbackContext(application=application)),
+            "cron",
+            hour=_ls_hour,
+            minute=_ls_minute,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Hörverständnis pool top-up: nightly at 02:00 --
+        scheduler.add_job(
+            lambda: submit_async(prepare_listening_pool_job, CallbackContext(application=application)),
+            "cron",
+            hour=2,
+            minute=0,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        logging.info(
+            "listening_scheduler_registered slot=%s:00 tz=%s enabled=%s",
+            LISTENING_SLOT_TIME, QUIZ_SCHEDULE_TZ_NAME, _listening_enabled(),
         )
 
     # scheduler.add_job(
