@@ -20447,7 +20447,7 @@ function AppInner() {
     await handleSelectionOpenDictionary(text);
   };
 
-  const parseSelectionGptPayload = (explanationRaw, quickTranslationRaw) => {
+  const parseSelectionGptPayload = (explanationRaw, quickTranslationRaw, explainPayload = {}) => {
     const quickTranslation = String(quickTranslationRaw || '').trim();
     const explanation = String(explanationRaw || '').trim();
     const lines = explanation
@@ -20492,6 +20492,47 @@ function AppInner() {
       translation: quickTranslation || lines[0] || '',
       notes: explanation,
       examples,
+      dictionaryItem: explainPayload?.dictionary_item && typeof explainPayload.dictionary_item === 'object'
+        ? explainPayload.dictionary_item
+        : null,
+      direction: String(explainPayload?.direction || '').trim().toLowerCase(),
+      languagePair: resolveLanguagePairForUI(explainPayload?.language_pair || dictionaryLanguagePair),
+    };
+  };
+
+  const isYoutubeSelectionContext = () => Boolean(
+    youtubeAppFullscreen
+    || String(selectionType || '').startsWith('youtube_')
+    || String(selectionInlineLookup?.direction || '').startsWith('youtube_')
+  );
+
+  const splitBilingualGptLine = (value) => {
+    const text = normalizeSelectionText(value)
+      .replace(/^["“”„«»]+/, '')
+      .replace(/["“”„«»]+$/, '')
+      .trim();
+    if (!text) return { left: '', right: '' };
+    const parts = text
+      .split(/\s+(?:—|–|-|->|→)\s+/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+    if (parts.length >= 2) {
+      return { left: parts[0], right: parts.slice(1).join(' — ') };
+    }
+    return { left: text, right: '' };
+  };
+
+  const getSelectionGptDictionarySemanticCategory = () => {
+    const item = selectionGptData?.dictionaryItem;
+    if (!item || typeof item !== 'object') return '';
+    return String(item.semantic_category || item.semantic_tag || item.category || '').trim();
+  };
+
+  const buildSelectionGptResponseJson = (base = {}) => {
+    const semanticCategory = getSelectionGptDictionarySemanticCategory();
+    return {
+      ...(base && typeof base === 'object' ? base : {}),
+      ...(semanticCategory ? { semantic_category: semanticCategory } : {}),
     };
   };
 
@@ -20523,6 +20564,22 @@ function AppInner() {
     const resolvedDirection = String(direction || `${resolvedSourceLang}-${resolvedTargetLang}`).trim().toLowerCase();
     const sanitizedTarget = sanitizeBilingualTargetText(source, target, resolvedTargetLang);
     const isLegacyPair = pair.source_lang === 'ru' && pair.target_lang === 'de' && isLegacyRuDeDirection(resolvedDirection);
+    const autoFolder = isYoutubeSelectionContext()
+      ? await ensureYoutubeAutoFolderId()
+      : null;
+    const autoFolderId = autoFolder?.id || null;
+    const responseJsonPayload = buildSelectionGptResponseJson({
+      ...(responseJson && typeof responseJson === 'object' ? responseJson : {}),
+      source_text: source,
+      target_text: sanitizedTarget,
+      source_lang: resolvedSourceLang,
+      target_lang: resolvedTargetLang,
+      direction: resolvedDirection,
+      language_pair: {
+        source_lang: resolvedSourceLang,
+        target_lang: resolvedTargetLang,
+      },
+    });
     const response = await fetch('/api/webapp/dictionary/save', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -20534,27 +20591,17 @@ function AppInner() {
         translation_ru: isLegacyPair && resolvedDirection === 'de-ru' ? sanitizedTarget : '',
         source_text: source,
         target_text: sanitizedTarget,
-        response_json: {
-          ...(responseJson && typeof responseJson === 'object' ? responseJson : {}),
-          source_text: source,
-          target_text: sanitizedTarget,
-          source_lang: resolvedSourceLang,
-          target_lang: resolvedTargetLang,
-          direction: resolvedDirection,
-          language_pair: {
-            source_lang: resolvedSourceLang,
-            target_lang: resolvedTargetLang,
-          },
-        },
+        response_json: responseJsonPayload,
         source_lang: resolvedSourceLang || undefined,
         target_lang: resolvedTargetLang || undefined,
         direction: resolvedDirection || undefined,
-        folder_id: dictionaryFolderId !== 'none' ? dictionaryFolderId : null,
-        origin_process: 'reader',
+        folder_id: autoFolderId ?? (dictionaryFolderId !== 'none' ? dictionaryFolderId : null),
+        origin_process: isYoutubeSelectionContext() ? 'youtube' : 'reader',
         origin_meta: {
           endpoint: '/api/webapp/dictionary/save',
           flow: 'reader_gpt_sheet',
-          from: 'reader_gpt_sheet',
+          from: isYoutubeSelectionContext() ? 'youtube_gpt_sheet' : 'reader_gpt_sheet',
+          ...(responseJsonPayload.semantic_category ? { semantic_category: responseJsonPayload.semantic_category } : {}),
           ...(originMeta && typeof originMeta === 'object' ? originMeta : {}),
         },
       }),
@@ -20569,6 +20616,53 @@ function AppInner() {
   const saveSelectionGptOriginalWord = async (rawText) => {
     const cleaned = normalizeSelectionText(rawText);
     if (!cleaned) return false;
+    const gptItem = selectionGptData?.dictionaryItem && typeof selectionGptData.dictionaryItem === 'object'
+      ? selectionGptData.dictionaryItem
+      : null;
+    const gptPair = resolveLanguagePairForUI(selectionGptData?.languagePair || dictionaryLanguagePair);
+    if (gptItem) {
+      const detected = String(gptItem.detected_language || '').trim().toLowerCase();
+      const direction = String(
+        selectionGptData?.direction
+        || (detected === 'target'
+          ? `${gptPair.target_lang}-${gptPair.source_lang}`
+          : `${gptPair.source_lang}-${gptPair.target_lang}`)
+      ).trim().toLowerCase();
+      const [directionSourceLang = gptPair.source_lang, directionTargetLang = gptPair.target_lang] = direction.includes('-')
+        ? direction.split('-', 2)
+        : [gptPair.source_lang, gptPair.target_lang];
+      const sourceText = String(
+        directionSourceLang === gptPair.target_lang
+          ? (gptItem.word_target || gptItem.target_text || cleaned)
+          : (gptItem.word_source || gptItem.source_text || cleaned)
+      ).trim();
+      const targetText = String(
+        directionTargetLang === gptPair.source_lang
+          ? (gptItem.word_source || gptItem.source_text || selectionGptData.translation || '')
+          : (gptItem.word_target || gptItem.target_text || selectionGptData.translation || '')
+      ).trim();
+      if (sourceText && targetText) {
+        await saveSelectionGptDictionaryEntry({
+          sourceText,
+          targetText,
+          sourceLang: directionSourceLang,
+          targetLang: directionTargetLang,
+          direction,
+          responseJson: {
+            ...gptItem,
+            word_ru: directionSourceLang === 'ru' ? sourceText : (directionTargetLang === 'ru' ? targetText : ''),
+            word_de: directionSourceLang === 'de' ? sourceText : (directionTargetLang === 'de' ? targetText : ''),
+            translation_ru: directionTargetLang === 'ru' ? targetText : (directionSourceLang === 'ru' ? sourceText : ''),
+            translation_de: directionTargetLang === 'de' ? targetText : (directionSourceLang === 'de' ? sourceText : ''),
+          },
+          originMeta: {
+            source_kind: 'original_word',
+            save_source: 'selection_gpt_dictionary_item',
+          },
+        });
+        return true;
+      }
+    }
     const normalized = await normalizeForLookup(cleaned);
     const lookupParams = resolveQuickTranslateParams(normalized);
     const lookupLangHint = normalizeLangCode(lookupParams.sourceLangHint || '');
@@ -20638,7 +20732,7 @@ function AppInner() {
       sourceLang: directionSourceLang,
       targetLang: directionTargetLang,
       direction,
-      responseJson,
+      responseJson: buildSelectionGptResponseJson(responseJson),
       originMeta: {
         source_kind: 'original_word',
       },
@@ -20647,24 +20741,21 @@ function AppInner() {
   };
 
   const saveSelectionGptExample = async (exampleText, exampleIndex) => {
-    const cleaned = normalizeSelectionText(exampleText)
-      .replace(/^["“”„«»]+/, '')
-      .replace(/["“”„«»]+$/, '')
-      .trim();
+    const pair = resolveLanguagePairForUI(selectionGptData?.languagePair || dictionaryLanguagePair);
+    const bilingual = splitBilingualGptLine(exampleText);
+    const cleaned = bilingual.left;
     if (!cleaned) return false;
-    const quick = await requestQuickTranslation(cleaned);
-    const pair = resolveLanguagePairForUI(dictionaryLanguagePair);
-    const sourceLang = normalizeLangCode(
-      quick.detectedSource
-      || quick.sourceLangHint
-      || pair.source_lang
-    ) || pair.source_lang;
-    const targetLang = normalizeLangCode(
-      quick.targetLang
-      || (sourceLang === pair.source_lang ? pair.target_lang : pair.source_lang)
-    ) || pair.target_lang;
-    const sourceText = String(quick.cleaned || cleaned).trim();
-    const targetText = String(quick.translation || '').trim();
+    let sourceLang = pair.target_lang;
+    let targetLang = pair.source_lang;
+    let sourceText = cleaned;
+    let targetText = String(bilingual.right || '').trim();
+    if (!targetText) {
+      const quick = await requestQuickTranslation(cleaned);
+      sourceLang = normalizeLangCode(quick.detectedSource || quick.sourceLangHint || pair.target_lang) || pair.target_lang;
+      targetLang = normalizeLangCode(quick.targetLang || (sourceLang === pair.source_lang ? pair.target_lang : pair.source_lang)) || pair.source_lang;
+      sourceText = String(quick.cleaned || cleaned).trim();
+      targetText = String(quick.translation || '').trim();
+    }
     if (!targetText) {
       throw new Error(tr('Перевод примера не получен', 'Beispieluebersetzung fehlt'));
     }
@@ -20677,6 +20768,7 @@ function AppInner() {
       responseJson: {
         source_text: sourceText,
         target_text: targetText,
+        semantic_category: getSelectionGptDictionarySemanticCategory() || undefined,
       },
       originMeta: {
         source_kind: 'gpt_example',
@@ -20770,7 +20862,7 @@ function AppInner() {
         throw new Error(await readApiError(explainResponse, 'Ошибка GPT-объяснения', 'Fehler bei GPT-Erklaerung'));
       }
       const explainData = await explainResponse.json();
-      setSelectionGptData(parseSelectionGptPayload(explainData?.explanation, quick.translation));
+      setSelectionGptData(parseSelectionGptPayload(explainData?.explanation, quick.translation, explainData));
       setSelectionInlineLookup({
         loading: false,
         word: cleaned,
@@ -29099,7 +29191,7 @@ function AppInner() {
     }
     return (
       <div
-        className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${showReaderTopbarPeekInAppTopbar ? 'is-reader-peek' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isAndroidTelegramClient ? 'is-android-client' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''} ${canTopbarGoBack ? 'is-topbar-back-mode' : ''}`}
+        className={`webapp-page ${themeMode === 'light' ? 'is-theme-light' : ''} ${flashcardsOnly ? 'is-flashcards' : ''} ${readerHasContent && readerImmersive ? 'is-reader-immersive' : ''} ${showReaderTopbarPeekInAppTopbar ? 'is-reader-peek' : ''} ${youtubeWatchFocusMode ? 'is-youtube-watch-focus' : ''} ${!flashcardsOnly && youtubeSectionVisible ? 'is-youtube-active' : ''} ${telegramFullscreenMode ? 'is-telegram-fullscreen' : ''} ${telegramTabletLike ? 'is-telegram-tablet' : ''} ${needsContainedWebappScroll ? 'is-contained-scroll' : ''} ${isAndroidTelegramClient ? 'is-android-client' : ''} ${isGuideScreen ? 'is-guide-screen' : ''} ${!flashcardsOnly && dictionarySectionVisible ? 'is-dictionary-layout' : ''} ${canTopbarGoBack ? 'is-topbar-back-mode' : ''}`}
         data-reader-theme={readerHasContent && readerImmersive ? readerColorTheme : undefined}
       >
         <pre id="app-perf-report" style={{ display: 'none' }} />

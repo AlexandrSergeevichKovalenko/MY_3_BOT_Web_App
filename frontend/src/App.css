@@ -24220,3 +24220,43 @@ body {
   border-color: rgba(13,148,136,0.3);
   color: #0b5f5a;
 }
+
+/* ── YouTube: edge-to-edge layout ──────────────────────────────────────────── */
+
+/* Reduce page side padding so video takes full width */
+.webapp-page.is-youtube-active {
+  padding-left: clamp(6px, 1.5vw, 48px);
+  padding-right: clamp(6px, 1.5vw, 48px);
+}
+
+/* Tighter header padding — reclaimed space goes to player */
+.webapp-video.youtube-player-first .webapp-local-section-head.youtube-player-first-head {
+  padding: 12px 14px;
+}
+
+/* Less gap between blocks inside the section */
+.webapp-video.youtube-player-first {
+  gap: 10px;
+}
+
+/* Slightly tighter border-radius so rounded corners don't eat corners */
+.webapp-video.youtube-player-first .webapp-video-frame.youtube-player-frame {
+  border-radius: 16px;
+}
+.webapp-video.youtube-player-first .webapp-video-frame.youtube-player-frame iframe,
+.webapp-video.youtube-player-first .youtube-player-host {
+  border-radius: 16px;
+}
+
+/* Tighter chip bar so the row is more compact */
+.webapp-page.is-youtube-active .youtube-desktop-command-row-top {
+  padding: 0;
+}
+
+/* On very small phones (< 390px) go almost full bleed */
+@media (max-width: 390px) {
+  .webapp-page.is-youtube-active {
+    padding-left: 4px;
+    padding-right: 4px;
+  }
+}
