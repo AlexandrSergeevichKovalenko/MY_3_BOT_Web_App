@@ -311,7 +311,9 @@ pending_dictionary_save_options = {}
 pending_dictionary_folder_create = {}
 pending_dictionary_lookup_requests = {}
 pending_dictionary_lookup_inflight = set()
+pending_dictionary_batch_fast_inflight = set()
 pending_dictionary_folder_cache = {}
+pending_dictionary_semantic_folder_cache = {}
 pending_text_analysis = {}
 pending_feel_requests_inflight = set()
 pending_tts_listen_requests_inflight = set()
@@ -4006,6 +4008,9 @@ async def handle_button_click(update: Update, context: CallbackContext):
             await update.message.reply_text("Эта кнопка доступна только в личке с ботом.")
             return
         user_id = int(update.effective_user.id)
+        if user_id in pending_dictionary_batch_fast_inflight:
+            await update.message.reply_text("🚀 Быстрый перевод уже запущен. Дождитесь текущей очереди.")
+            return
         pending_keys = _list_pending_dictionary_lookup_request_keys_for_user(user_id)
         if not pending_keys:
             _debug_lines: list[str] = []
@@ -4048,9 +4053,10 @@ async def handle_button_click(update: Update, context: CallbackContext):
         await update.message.reply_text(
             f"🚀 Запускаю быстрый перевод DE → RU для {len(pending_keys)} текущих запросов."
         )
+        pending_dictionary_batch_fast_inflight.add(user_id)
         try:
             context.application.create_task(
-                _run_dictionary_batch_fast_for_user(
+                _run_dictionary_batch_fast_for_user_guarded(
                     context,
                     user_id=user_id,
                     chat_id=int(update.effective_chat.id),
@@ -4058,7 +4064,7 @@ async def handle_button_click(update: Update, context: CallbackContext):
                 )
             )
         except Exception:
-            await _run_dictionary_batch_fast_for_user(
+            await _run_dictionary_batch_fast_for_user_guarded(
                 context,
                 user_id=user_id,
                 chat_id=int(update.effective_chat.id),
@@ -8121,7 +8127,7 @@ async def _run_dictionary_batch_fast_for_user(
             return False
         return True
 
-    concurrency = max(1, min(5, int((os.getenv("DICTIONARY_BATCH_FAST_CONCURRENCY") or "3").strip() or "3")))
+    concurrency = max(1, min(2, int((os.getenv("DICTIONARY_BATCH_FAST_CONCURRENCY") or "1").strip() or "1")))
     processed = 0
     for offset in range(0, len(batch_items), concurrency):
         chunk = batch_items[offset: offset + concurrency]
@@ -8141,6 +8147,24 @@ async def _run_dictionary_batch_fast_for_user(
             )
         except Exception:
             logging.debug("Failed to send no-processed batch notice", exc_info=True)
+
+
+async def _run_dictionary_batch_fast_for_user_guarded(
+    context: CallbackContext,
+    *,
+    user_id: int,
+    chat_id: int,
+    pending_snapshot: dict | None = None,
+) -> None:
+    try:
+        await _run_dictionary_batch_fast_for_user(
+            context,
+            user_id=user_id,
+            chat_id=chat_id,
+            pending_snapshot=pending_snapshot,
+        )
+    finally:
+        pending_dictionary_batch_fast_inflight.discard(int(user_id))
 
 
 async def handle_dictionary_pair_callback(update: Update, context: CallbackContext) -> None:
@@ -8839,7 +8863,8 @@ async def handle_quiz_question_save_callback(update: Update, context: CallbackCo
     saved_lines: list[str] = []
     for idx in selected_idxs:
         chosen = options[idx]
-        save_ok, save_msg, entry_id, already_tagged = _save_dictionary_option_for_user(
+        save_ok, save_msg, entry_id, already_tagged = await asyncio.to_thread(
+            _save_dictionary_option_for_user,
             payload=save_payload,
             chosen=chosen,
             user_id=int(user.id),
@@ -9089,7 +9114,21 @@ async def handle_dictionary_save_option_callback(update: Update, context: Callba
         return
 
     chosen = options[option_idx]
-    save_ok, save_msg, entry_id, already_tagged = _save_dictionary_option_for_user(payload=payload, chosen=chosen, user_id=int(user.id))
+    save_started_perf = pytime.perf_counter()
+    save_ok, save_msg, entry_id, already_tagged = await asyncio.to_thread(
+        _save_dictionary_option_for_user,
+        payload=payload,
+        chosen=chosen,
+        user_id=int(user.id),
+    )
+    logging.info(
+        "dictionary_save_option_done user_id=%s option_key=%s ok=%s entry_id=%s db_ms=%s",
+        int(user.id),
+        option_key,
+        bool(save_ok),
+        int(entry_id or 0),
+        int((pytime.perf_counter() - save_started_perf) * 1000),
+    )
     if not save_ok:
         await query.answer(save_msg or "Ошибка сохранения. Попробуйте позже.", show_alert=True)
         return
@@ -9176,6 +9215,71 @@ def _match_folder_for_tag(tag: str, folders: list[dict]) -> int | None:
     return None
 
 
+def _semantic_folder_cache_key(user_id: int, semantic_tag: str) -> tuple[int, str]:
+    return (int(user_id), str(semantic_tag or "").strip())
+
+
+def _get_cached_semantic_folder_id(user_id: int, semantic_tag: str) -> int | None:
+    key = _semantic_folder_cache_key(user_id, semantic_tag)
+    cached = pending_dictionary_semantic_folder_cache.get(key)
+    if not cached:
+        return None
+    expires_at, folder_id = cached
+    if float(expires_at or 0) <= pytime.time():
+        pending_dictionary_semantic_folder_cache.pop(key, None)
+        return None
+    try:
+        safe_folder_id = int(folder_id)
+    except Exception:
+        return None
+    return safe_folder_id if safe_folder_id > 0 else None
+
+
+def _cache_semantic_folder_id(user_id: int, semantic_tag: str, folder_id: int | None) -> None:
+    try:
+        safe_folder_id = int(folder_id) if folder_id is not None else 0
+    except Exception:
+        safe_folder_id = 0
+    if safe_folder_id <= 0:
+        return
+    key = _semantic_folder_cache_key(user_id, semantic_tag)
+    pending_dictionary_semantic_folder_cache[key] = (
+        pytime.time() + DICTIONARY_FOLDER_CACHE_TTL_SECONDS,
+        safe_folder_id,
+    )
+    if len(pending_dictionary_semantic_folder_cache) > 1000:
+        now_ts = pytime.time()
+        expired_keys = [
+            cache_key
+            for cache_key, cache_value in pending_dictionary_semantic_folder_cache.items()
+            if float((cache_value or (0,))[0] or 0) <= now_ts
+        ]
+        for cache_key in expired_keys[:200]:
+            pending_dictionary_semantic_folder_cache.pop(cache_key, None)
+        while len(pending_dictionary_semantic_folder_cache) > 900:
+            oldest_key = next(iter(pending_dictionary_semantic_folder_cache))
+            pending_dictionary_semantic_folder_cache.pop(oldest_key, None)
+
+
+def _resolve_semantic_folder_id_for_save(user_id: int, semantic_tag: str) -> int | None:
+    cached_folder_id = _get_cached_semantic_folder_id(user_id, semantic_tag)
+    if cached_folder_id is not None:
+        return cached_folder_id
+    folders = get_dictionary_folders(int(user_id))
+    folder_id = _match_folder_for_tag(semantic_tag, folders)
+    if folder_id is None:
+        meta = _TAG_FOLDER_META.get(semantic_tag, ("📂", "#5ddcff"))
+        new_folder = get_or_create_dictionary_folder(
+            user_id=int(user_id),
+            name=semantic_tag,
+            color=meta[1],
+            icon=meta[0],
+        )
+        folder_id = int(new_folder.get("id") or 0) or None
+    _cache_semantic_folder_id(user_id, semantic_tag, folder_id)
+    return folder_id
+
+
 def _apply_semantic_tag_sync(
     user_id: int,
     entry_id: int,
@@ -9183,17 +9287,7 @@ def _apply_semantic_tag_sync(
 ) -> None:
     """Find or create the semantic folder, then update the DB entry. All sync, no GPT."""
     try:
-        folders = get_dictionary_folders(user_id)
-        folder_id = _match_folder_for_tag(tag, folders)
-        if folder_id is None:
-            meta = _TAG_FOLDER_META.get(tag, ("📂", "#5ddcff"))
-            new_folder = get_or_create_dictionary_folder(
-                user_id=user_id,
-                name=tag,
-                color=meta[1],
-                icon=meta[0],
-            )
-            folder_id = int(new_folder.get("id") or 0) or None
+        folder_id = _resolve_semantic_folder_id_for_save(user_id, tag)
         if entry_id and entry_id > 0:
             update_entry_semantic_tag_and_folder(
                 entry_id=entry_id,
@@ -9311,17 +9405,7 @@ def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) 
         # If we have a tag, route to the semantic folder instead of user's default.
         if semantic_tag:
             try:
-                folders = get_dictionary_folders(int(user_id))
-                folder_id = _match_folder_for_tag(semantic_tag, folders)
-                if folder_id is None:
-                    meta = _TAG_FOLDER_META.get(semantic_tag, ("📂", "#5ddcff"))
-                    new_folder = get_or_create_dictionary_folder(
-                        user_id=int(user_id),
-                        name=semantic_tag,
-                        color=meta[1],
-                        icon=meta[0],
-                    )
-                    folder_id = int(new_folder.get("id") or 0) or None
+                folder_id = _resolve_semantic_folder_id_for_save(int(user_id), semantic_tag)
             except Exception:
                 logging.warning("semantic folder resolve failed user_id=%s tag=%s", user_id, semantic_tag, exc_info=True)
                 folder_id = None
@@ -9351,17 +9435,8 @@ def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) 
                 "flow": "dictionary_select",
                 "source": "private_bot",
             },
+            semantic_tag=semantic_tag or None,
         )
-        if semantic_tag and entry_id and entry_id > 0:
-            try:
-                update_entry_semantic_tag_and_folder(
-                    entry_id=int(entry_id),
-                    user_id=int(user_id),
-                    semantic_tag=semantic_tag,
-                    folder_id=int(folder_id) if folder_id is not None else None,
-                )
-            except Exception:
-                logging.warning("semantic_tag update failed entry_id=%s", entry_id, exc_info=True)
     except Exception as exc:
         logging.exception(f"❌ Ошибка сохранения выбранного варианта user_id={user_id}: {exc}")
         return False, "Ошибка сохранения. Попробуйте позже.", 0, False
@@ -9488,25 +9563,51 @@ async def handle_dictionary_save_confirm_callback(update: Update, context: Callb
         await query.answer("Выберите минимум один вариант.", show_alert=True)
         return
 
-    saved_lines: list[str] = []
-    for idx in selected_idxs:
+    save_started_perf = pytime.perf_counter()
+
+    async def _save_selected_idx(idx: int) -> tuple[int, bool, str, int, bool, dict]:
         if idx < 0 or idx >= len(options):
-            continue
+            return idx, False, "Индекс вне диапазона.", 0, False, {}
         chosen = options[idx]
-        save_ok, save_msg, entry_id, already_tagged = _save_dictionary_option_for_user(payload=payload, chosen=chosen, user_id=int(user.id))
-        if save_ok:
-            source = (chosen.get("source") or "").strip()
-            target = (chosen.get("target") or "").strip()
-            saved_lines.append(f"• {source} -> {target}")
-            if entry_id and entry_id > 0:
-                asyncio.create_task(_auto_tag_saved_entry(
-                    user_id=int(user.id), entry_id=entry_id,
-                    source_text=source, target_text=target,
-                    source_lang=str(payload.get("source_lang") or "").strip().lower(),
-                    target_lang=str(payload.get("target_lang") or "").strip().lower(),
-                ))
-        else:
+        save_ok, save_msg, entry_id, already_tagged = await asyncio.to_thread(
+            _save_dictionary_option_for_user,
+            payload=payload,
+            chosen=chosen,
+            user_id=int(user.id),
+        )
+        return idx, save_ok, save_msg, entry_id, already_tagged, chosen
+
+    results = await asyncio.gather(
+        *(_save_selected_idx(idx) for idx in selected_idxs),
+        return_exceptions=True,
+    )
+    saved_lines: list[str] = []
+    for result in results:
+        if isinstance(result, Exception):
+            logging.warning("Dictionary multi-save worker failed", exc_info=(type(result), result, result.__traceback__))
+            continue
+        idx, save_ok, save_msg, entry_id, already_tagged, chosen = result
+        if not save_ok:
             logging.warning("Dictionary multi-save skipped idx=%s: %s", idx, save_msg)
+            continue
+        source = (chosen.get("source") or "").strip()
+        target = (chosen.get("target") or "").strip()
+        saved_lines.append(f"• {source} -> {target}")
+        if entry_id and entry_id > 0 and not already_tagged:
+            asyncio.create_task(_auto_tag_saved_entry(
+                user_id=int(user.id), entry_id=entry_id,
+                source_text=source, target_text=target,
+                source_lang=str(payload.get("source_lang") or "").strip().lower(),
+                target_lang=str(payload.get("target_lang") or "").strip().lower(),
+            ))
+    logging.info(
+        "dictionary_save_confirm_done user_id=%s option_key=%s selected=%s saved=%s db_ms=%s",
+        int(user.id),
+        option_key,
+        len(selected_idxs),
+        len(saved_lines),
+        int((pytime.perf_counter() - save_started_perf) * 1000),
+    )
 
     if not saved_lines:
         await query.answer("Не удалось сохранить выбранные варианты.", show_alert=True)
@@ -9566,10 +9667,28 @@ async def handle_dictionary_quick_save_callback(update: Update, context: Callbac
             return
         selected_idxs = [selected_idx]
 
-    saved_lines: list[str] = []
-    for idx in selected_idxs:
+    save_started_perf = pytime.perf_counter()
+
+    async def _save_quick_idx(idx: int) -> tuple[int, bool, str, int, bool, dict]:
         chosen = options[idx]
-        save_ok, save_msg, entry_id, already_tagged = _save_dictionary_option_for_user(payload=payload, chosen=chosen, user_id=int(user.id))
+        save_ok, save_msg, entry_id, already_tagged = await asyncio.to_thread(
+            _save_dictionary_option_for_user,
+            payload=payload,
+            chosen=chosen,
+            user_id=int(user.id),
+        )
+        return idx, save_ok, save_msg, entry_id, already_tagged, chosen
+
+    results = await asyncio.gather(
+        *(_save_quick_idx(idx) for idx in selected_idxs),
+        return_exceptions=True,
+    )
+    saved_lines: list[str] = []
+    for result in results:
+        if isinstance(result, Exception):
+            logging.warning("Quick dictionary save worker failed", exc_info=(type(result), result, result.__traceback__))
+            continue
+        idx, save_ok, save_msg, entry_id, already_tagged, chosen = result
         if not save_ok:
             logging.warning("Quick dictionary save skipped idx=%s: %s", idx, save_msg)
             continue
@@ -9583,6 +9702,14 @@ async def handle_dictionary_quick_save_callback(update: Update, context: Callbac
                 source_lang=str(payload.get("source_lang") or "").strip().lower(),
                 target_lang=str(payload.get("target_lang") or "").strip().lower(),
             ))
+    logging.info(
+        "dictionary_quick_save_done user_id=%s option_key=%s selected=%s saved=%s db_ms=%s",
+        int(user.id),
+        option_key,
+        len(selected_idxs),
+        len(saved_lines),
+        int((pytime.perf_counter() - save_started_perf) * 1000),
+    )
 
     if not saved_lines:
         await query.answer("Не удалось сохранить выбранные варианты.", show_alert=True)
