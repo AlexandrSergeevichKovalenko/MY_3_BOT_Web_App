@@ -6546,6 +6546,14 @@ def _paid_surface_gate_response(
     return None, None
 
 
+def _analytics_paid_gate_response(user_id: int) -> tuple[dict | None, int | None]:
+    return _paid_surface_gate_response(
+        user_id=int(user_id),
+        feature="analytics",
+        feature_title="Аналитика",
+    )
+
+
 def _refresh_subscription_before_translation_start(user_id: int) -> None:
     user_id_value = int(user_id)
     trace_request_id = getattr(g, "request_id", None) if has_request_context() else None
@@ -25166,6 +25174,10 @@ def get_webapp_analytics_scope():
             )
             return jsonify({"error": error}), status
 
+        paid_gate_payload, paid_gate_status = _analytics_paid_gate_response(int(user_id))
+        if paid_gate_payload:
+            return jsonify(paid_gate_payload), int(paid_gate_status or 402)
+
         try:
             scope_started_at = time.perf_counter()
             scope, scope_cache_meta = _resolve_analytics_scope_for_request(
@@ -25260,6 +25272,10 @@ def select_webapp_analytics_scope():
         status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
         return jsonify({"error": error}), status
 
+    paid_gate_payload, paid_gate_status = _analytics_paid_gate_response(int(user_id))
+    if paid_gate_payload:
+        return jsonify(paid_gate_payload), int(paid_gate_status or 402)
+
     scope_kind = _normalize_scope_kind_payload(payload.get("scope_kind") or payload.get("scope"))
     scope_chat_id = _safe_int(payload.get("scope_chat_id"))
     if scope_chat_id is None:
@@ -25352,6 +25368,10 @@ def get_webapp_progress_reset_status():
             )
             return jsonify({"error": error}), status
         user_id_int = int(user_id)
+        paid_gate_payload, paid_gate_status = _analytics_paid_gate_response(user_id_int)
+        if paid_gate_payload:
+            return jsonify(paid_gate_payload), int(paid_gate_status or 402)
+
         lookup_started_at = time.perf_counter()
         source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
         reset_info = get_user_progress_reset(
@@ -25401,6 +25421,10 @@ def apply_webapp_progress_reset():
         return jsonify({"error": error}), status
     payload = request.get_json(silent=True) or {}
     user_id_int = int(user_id)
+    paid_gate_payload, paid_gate_status = _analytics_paid_gate_response(user_id_int)
+    if paid_gate_payload:
+        return jsonify(paid_gate_payload), int(paid_gate_status or 402)
+
     source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
     reset_date = _parse_iso_date(str(payload.get("reset_date") or "").strip() or None)
     if reset_date is None:
@@ -26019,6 +26043,10 @@ def get_webapp_analytics_summary():
             _log_flow_observation("analytics_summary", "summary_completed", request_id=request_id, correlation_id=correlation_id, final_status="error", error_code="missing_user_id", duration_ms=_elapsed_ms_since(started_perf), http_status=400, **summarize_db_acquire_events(db_acquire_events))
             return jsonify({"error": "user_id отсутствует в initData"}), 400
         user_id_int = int(user_id)
+        paid_gate_payload, paid_gate_status = _analytics_paid_gate_response(user_id_int)
+        if paid_gate_payload:
+            return jsonify(paid_gate_payload), int(paid_gate_status or 402)
+
         source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
 
         try:
@@ -26141,6 +26169,10 @@ def get_webapp_analytics_timeseries():
             _log_flow_observation("analytics_timeseries", "timeseries_completed", request_id=request_id, correlation_id=correlation_id, final_status="error", error_code="missing_user_id", duration_ms=_elapsed_ms_since(started_perf), http_status=400, **summarize_db_acquire_events(db_acquire_events))
             return jsonify({"error": "user_id отсутствует в initData"}), 400
         user_id_int = int(user_id)
+        paid_gate_payload, paid_gate_status = _analytics_paid_gate_response(user_id_int)
+        if paid_gate_payload:
+            return jsonify(paid_gate_payload), int(paid_gate_status or 402)
+
         source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
 
         try:
@@ -26253,6 +26285,10 @@ def get_webapp_analytics_compare():
             _log_flow_observation("analytics_compare", "compare_completed", request_id=request_id, correlation_id=correlation_id, final_status="error", error_code="missing_user_id", duration_ms=_elapsed_ms_since(started_perf), http_status=400, **summarize_db_acquire_events(db_acquire_events))
             return jsonify({"error": "user_id отсутствует в initData"}), 400
         user_id_int = int(user_id)
+        paid_gate_payload, paid_gate_status = _analytics_paid_gate_response(user_id_int)
+        if paid_gate_payload:
+            return jsonify(paid_gate_payload), int(paid_gate_status or 402)
+
         source_lang, target_lang, _profile = _get_user_language_pair(user_id_int)
 
         try:

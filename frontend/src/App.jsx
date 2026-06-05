@@ -5876,6 +5876,7 @@ function AppInner() {
   const [billingPlanDetailsOpenFor, setBillingPlanDetailsOpenFor] = useState('');
   const knownBillingEffectiveMode = String(billingStatus?.effective_mode || '').trim().toLowerCase();
   const isKnownFreePaidSurfaceMode = Boolean(billingStatus && knownBillingEffectiveMode === 'free');
+  const analyticsPaidFeatureError = `${PAID_FEATURE_ERROR_PREFIX}${JSON.stringify({ feature: 'analytics', feature_title: 'Аналитика' })}`;
   const [languageProfile, setLanguageProfile] = useState(null);
   const [languageProfileDraft, setLanguageProfileDraft] = useState({ learning_language: 'de', native_language: 'ru' });
   const [languageProfileLoading, setLanguageProfileLoading] = useState(false);
@@ -27819,6 +27820,12 @@ function AppInner() {
   };
 
   const loadAnalyticsScope = async ({ silent = false } = {}) => {
+    if (isKnownFreePaidSurfaceMode) {
+      if (!silent) {
+        setAnalyticsScopeError('');
+      }
+      return null;
+    }
     if (!initData) {
       if (!silent) {
         setAnalyticsScopeError(initDataMissingMsg);
@@ -27867,6 +27874,12 @@ function AppInner() {
   };
 
   const loadProgressResetStatus = async ({ silent = false } = {}) => {
+    if (isKnownFreePaidSurfaceMode) {
+      if (!silent) {
+        setProgressResetError('');
+      }
+      return null;
+    }
     if (!initData) {
       if (!silent) {
         setProgressResetError(initDataMissingMsg);
@@ -27907,6 +27920,10 @@ function AppInner() {
   }, [progressResetInfo]);
 
   const applyProgressReset = async () => {
+    if (isKnownFreePaidSurfaceMode) {
+      setProgressResetError(analyticsPaidFeatureError);
+      return;
+    }
     if (!initData) {
       setProgressResetError(initDataMissingMsg);
       return;
@@ -27948,7 +27965,7 @@ function AppInner() {
   };
 
   const loadWeeklySummarySocialSignal = useCallback(async () => {
-    if (!initData || !weeklySummaryVisitConfig) {
+    if (isKnownFreePaidSurfaceMode || !initData || !weeklySummaryVisitConfig) {
       setWeeklySummarySocialSignal(null);
       return;
     }
@@ -28020,12 +28037,17 @@ function AppInner() {
     analyticsScopeData,
     analyticsScopeKey,
     initData,
+    isKnownFreePaidSurfaceMode,
     readApiError,
     tr,
     weeklySummaryVisitConfig,
   ]);
 
   const handleAnalyticsScopeSelect = async (nextScopeRaw) => {
+    if (isKnownFreePaidSurfaceMode) {
+      setAnalyticsScopeError('');
+      return;
+    }
     if (!initData) {
       setAnalyticsScopeError(initDataMissingMsg);
       return;
@@ -28186,6 +28208,12 @@ function AppInner() {
   ]);
 
   const loadAnalyticsSummary = useCallback(async (overridePeriod, overrideScopeKey, overrideRange = null) => {
+    if (isKnownFreePaidSurfaceMode) {
+      setAnalyticsSummary(null);
+      setAnalyticsError(analyticsPaidFeatureError);
+      setAnalyticsLoading(false);
+      return;
+    }
     if (!initData) {
       setAnalyticsError(initDataMissingMsg);
       return;
@@ -28221,14 +28249,20 @@ function AppInner() {
   }, [
     initData,
     initDataMissingMsg,
+    isKnownFreePaidSurfaceMode,
     normalizeNetworkErrorMessage,
     postJsonWithRetry,
     readApiError,
     resolveAnalyticsLoadContext,
+    analyticsPaidFeatureError,
     tr,
   ]);
 
   const loadAnalyticsTimeseries = useCallback(async (overridePeriod, overrideScopeKey, overrideRange = null) => {
+    if (isKnownFreePaidSurfaceMode) {
+      setAnalyticsPoints([]);
+      return null;
+    }
     if (!initData) {
       return null;
     }
@@ -28257,6 +28291,7 @@ function AppInner() {
     }
   }, [
     initData,
+    isKnownFreePaidSurfaceMode,
     normalizeNetworkErrorMessage,
     postJsonWithRetry,
     readApiError,
@@ -28265,6 +28300,11 @@ function AppInner() {
   ]);
 
   const loadAnalyticsCompare = useCallback(async (overridePeriod, overrideScopeKey, overrideRange = null) => {
+    if (isKnownFreePaidSurfaceMode) {
+      setAnalyticsCompare([]);
+      setAnalyticsRank(null);
+      return null;
+    }
     if (!initData) {
       return null;
     }
@@ -28294,6 +28334,7 @@ function AppInner() {
     }
   }, [
     initData,
+    isKnownFreePaidSurfaceMode,
     normalizeNetworkErrorMessage,
     postJsonWithRetry,
     readApiError,
@@ -34602,6 +34643,10 @@ function AppInner() {
                   <p className="webapp-muted">{tr('Языковая пара', 'Sprachpaar')}: {getActiveLanguagePairLabel()}</p>
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
+                {isKnownFreePaidSurfaceMode ? (
+                  renderPaidFeatureNotice(analyticsPaidFeatureError, tr('Аналитика', 'Analytik'))
+                ) : (
+                  <>
                 <div className="analytics-controls">
                   <label className="webapp-field analytics-period-field">
                     <span>{tr('Период', 'Zeitraum')}</span>
@@ -34896,6 +34941,8 @@ function AppInner() {
                       </div>
                     </div>
                   </div>
+                )}
+                  </>
                 )}
                 </section>
               </PerfProfiler>
