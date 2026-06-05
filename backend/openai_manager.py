@@ -2456,9 +2456,17 @@ Rules:
 - Keep every item compact.
 - Return at most 2 translation variants per item.
 - Return at most 1 usage example per item.
-- Return exactly 2 save_worthy_options per item whenever possible:
+- save_worthy_options:
   1) EXACT TRANSLATION CARD: the most accurate, natural translation of the user's original input.
-  2) REAL-LIFE SPEECH CARD: a short, high-frequency collocation or complete everyday sentence with the same core meaning.
+  2) REAL-LIFE SPEECH CARD: a SHORT EXAMPLE SENTENCE (3-8 words) that actually uses the
+     input word in a natural everyday context, with its translation.
+     For adverbs, conjunctions and function words (hingegen, immerhin, trotzdem, sogar, ...)
+     there is no collocation — give a real example sentence instead.
+     Example: input "hingegen" → #2 source "Ich bleibe; sie geht hingegen." target "Я остаюсь; она же уходит."
+     Example: input "immerhin" → #2 source "Immerhin hat er es versucht." target "Всё-таки он попытался."
+- HARD RULE: items #1 and #2 must have DIFFERENT "source" text. Returning the same word
+  twice (only changing the translation or punctuation) is a hard failure.
+  If you genuinely cannot produce a distinct, useful #2, return only ONE save_worthy_option.
 - The second save_worthy_options item must not weaken or drop the key idea from the original.
 - GERMAN HEADWORD NORMALIZATION:
   - If the main German word is a standalone noun, include the correct definite article in nominative: "der/die/das + noun".

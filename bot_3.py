@@ -7521,7 +7521,7 @@ def _build_fast_dictionary_save_options(payload: dict, max_options: int = 2) -> 
         lookup = {}
     source_text = str((payload or {}).get("source_text") or "").strip()
     options: list[dict] = []
-    unique: set[tuple[str, str]] = set()
+    unique: set[str] = set()
 
     def _dedup_key(value: str) -> str:
         normalized = re.sub(r"\s+", " ", str(value or "").lower().strip())
@@ -7535,7 +7535,9 @@ def _build_fast_dictionary_save_options(payload: dict, max_options: int = 2) -> 
         target = str(target_value or "").strip()
         if not source or not target:
             return False
-        key = (_dedup_key(source), _dedup_key(target))
+        # Dedup by SOURCE only: two cards with the same source word/phrase are
+        # redundant for the learner even if their translations differ slightly.
+        key = _dedup_key(source)
         if key in unique:
             return False
         unique.add(key)
