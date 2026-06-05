@@ -170,6 +170,92 @@ ARTICLE_QUIZ_BANK: list[dict] = [
     {"id": "bruecke",       "word": "Brücke",        "article": "die", "meaning_ru": "мост",         "difficulty": "B1", "category": "Gebäude", "dalle_prompt": f"A stone arch bridge over water, {_S}"},
     {"id": "leuchtturm",    "word": "Leuchtturm",    "article": "der", "meaning_ru": "маяк",         "difficulty": "B1", "category": "Gebäude", "dalle_prompt": f"A lighthouse by the sea, {_S}"},
     {"id": "zelt",          "word": "Zelt",          "article": "das", "meaning_ru": "палатка",      "difficulty": "B1", "category": "Gebäude", "dalle_prompt": f"A camping tent, {_S}"},
+
+    # ── B1 Erweiterung ────────────────────────────────────────────────────────
+    # Tiere B1
+    {"id": "adler",        "word": "Adler",         "article": "der", "meaning_ru": "орёл",         "difficulty": "B1", "category": "Tiere",   "dalle_prompt": f"A bald eagle with wings slightly spread, front view, {_S}"},
+    {"id": "fuchs",        "word": "Fuchs",         "article": "der", "meaning_ru": "лиса",         "difficulty": "B1", "category": "Tiere",   "dalle_prompt": f"A red fox sitting, side view, {_S}"},
+    {"id": "moewe",        "word": "Möwe",          "article": "die", "meaning_ru": "чайка",        "difficulty": "B1", "category": "Tiere",   "dalle_prompt": f"A seagull in flight, side view, {_S}"},
+    {"id": "ameise",       "word": "Ameise",        "article": "die", "meaning_ru": "муравей",      "difficulty": "B1", "category": "Tiere",   "dalle_prompt": f"A single ant, top view magnified, {_S}"},
+    {"id": "libelle",      "word": "Libelle",       "article": "die", "meaning_ru": "стрекоза",     "difficulty": "B1", "category": "Tiere",   "dalle_prompt": f"A dragonfly with wings spread, top view, {_S}"},
+    {"id": "wal",          "word": "Wal",           "article": "der", "meaning_ru": "кит",          "difficulty": "B1", "category": "Tiere",   "dalle_prompt": f"A blue whale, side view, {_S}"},
+    {"id": "pinguin",      "word": "Pinguin",       "article": "der", "meaning_ru": "пингвин",      "difficulty": "B1", "category": "Tiere",   "dalle_prompt": f"A penguin standing, front view, {_S}"},
+    # Essen B1
+    {"id": "avocado",      "word": "Avocado",       "article": "die", "meaning_ru": "авокадо",      "difficulty": "B1", "category": "Essen",   "dalle_prompt": f"A whole avocado, {_S}"},
+    {"id": "gurke",        "word": "Gurke",         "article": "die", "meaning_ru": "огурец",       "difficulty": "B1", "category": "Essen",   "dalle_prompt": f"A single whole cucumber, {_S}"},
+    {"id": "knoblauch",    "word": "Knoblauch",     "article": "der", "meaning_ru": "чеснок",       "difficulty": "B1", "category": "Essen",   "dalle_prompt": f"A whole garlic bulb, {_S}"},
+    {"id": "kirsche",      "word": "Kirsche",       "article": "die", "meaning_ru": "вишня",        "difficulty": "B1", "category": "Essen",   "dalle_prompt": f"A single ripe cherry with stem, {_S}"},
+    {"id": "ananas",       "word": "Ananas",        "article": "die", "meaning_ru": "ананас",       "difficulty": "B1", "category": "Essen",   "dalle_prompt": f"A whole pineapple, {_S}"},
+    {"id": "honig",        "word": "Honig",         "article": "der", "meaning_ru": "мёд",          "difficulty": "B1", "category": "Essen",   "dalle_prompt": f"A jar of golden honey with a honey dipper, {_S}"},
+    {"id": "essig",        "word": "Essig",         "article": "der", "meaning_ru": "уксус",        "difficulty": "B1", "category": "Essen",   "dalle_prompt": f"A bottle of vinegar, {_S}"},
+    # Natur B1
+    {"id": "vulkan",       "word": "Vulkan",        "article": "der", "meaning_ru": "вулкан",       "difficulty": "B1", "category": "Natur",   "dalle_prompt": f"An erupting volcano, side view, {_S}"},
+    {"id": "gletscher",    "word": "Gletscher",     "article": "der", "meaning_ru": "ледник",       "difficulty": "B1", "category": "Natur",   "dalle_prompt": f"A glacier in a mountain valley, {_S}"},
+    {"id": "welle",        "word": "Welle",         "article": "die", "meaning_ru": "волна",        "difficulty": "B1", "category": "Natur",   "dalle_prompt": f"A large ocean wave curling, side view, {_S}"},
+    {"id": "klippe",       "word": "Klippe",        "article": "die", "meaning_ru": "скала/утёс",   "difficulty": "B1", "category": "Natur",   "dalle_prompt": f"A rocky cliff by the sea, {_S}"},
+    # Objekte B1
+    {"id": "kompass",      "word": "Kompass",       "article": "der", "meaning_ru": "компас",       "difficulty": "B1", "category": "Objekte", "dalle_prompt": f"A brass compass open, top view, {_S}"},
+    {"id": "rucksack",     "word": "Rucksack",      "article": "der", "meaning_ru": "рюкзак",       "difficulty": "B1", "category": "Objekte", "dalle_prompt": f"A hiking backpack, front view, {_S}"},
+    {"id": "pinsel",       "word": "Pinsel",        "article": "der", "meaning_ru": "кисть",        "difficulty": "B1", "category": "Objekte", "dalle_prompt": f"A single paintbrush, {_S}"},
+    {"id": "kerze",        "word": "Kerze",         "article": "die", "meaning_ru": "свеча",        "difficulty": "B1", "category": "Objekte", "dalle_prompt": f"A single white candle with flame, {_S}"},
+    {"id": "lupe",         "word": "Lupe",          "article": "die", "meaning_ru": "лупа",         "difficulty": "B1", "category": "Objekte", "dalle_prompt": f"A magnifying glass, {_S}"},
+    {"id": "mikroskop",    "word": "Mikroskop",     "article": "das", "meaning_ru": "микроскоп",    "difficulty": "B1", "category": "Objekte", "dalle_prompt": f"A lab microscope, side view, {_S}"},
+    {"id": "teleskop",     "word": "Teleskop",      "article": "das", "meaning_ru": "телескоп",     "difficulty": "B1", "category": "Objekte", "dalle_prompt": f"An astronomical telescope on a tripod, {_S}"},
+    {"id": "schirm",       "word": "Schirm",        "article": "der", "meaning_ru": "зонт",         "difficulty": "B1", "category": "Objekte", "dalle_prompt": f"An open umbrella, top view, {_S}"},
+    {"id": "kissen",       "word": "Kissen",        "article": "das", "meaning_ru": "подушка",      "difficulty": "B1", "category": "Objekte", "dalle_prompt": f"A single decorative pillow, {_S}"},
+    {"id": "nadel",        "word": "Nadel",         "article": "die", "meaning_ru": "игла/иголка",  "difficulty": "B1", "category": "Objekte", "dalle_prompt": f"A sewing needle with thread, {_S}"},
+    {"id": "nagel",        "word": "Nagel",         "article": "der", "meaning_ru": "гвоздь",       "difficulty": "B1", "category": "Objekte", "dalle_prompt": f"A single metal nail, side view, {_S}"},
+    {"id": "kette",        "word": "Kette",         "article": "die", "meaning_ru": "цепочка/цепь", "difficulty": "B1", "category": "Objekte", "dalle_prompt": f"A gold necklace chain, {_S}"},
+
+    # ── B2 Standard ───────────────────────────────────────────────────────────
+    {"id": "rakete",       "word": "Rakete",        "article": "die", "meaning_ru": "ракета",       "difficulty": "B2", "category": "Technik", "dalle_prompt": f"A rocket launching, side view, {_S}"},
+    {"id": "satellit",     "word": "Satellit",      "article": "der", "meaning_ru": "спутник",      "difficulty": "B2", "category": "Technik", "dalle_prompt": f"A satellite in space, {_S}"},
+    {"id": "magnet",       "word": "Magnet",        "article": "der", "meaning_ru": "магнит",       "difficulty": "B2", "category": "Technik", "dalle_prompt": f"A horseshoe magnet, {_S}"},
+    {"id": "prisma",       "word": "Prisma",        "article": "das", "meaning_ru": "призма",       "difficulty": "B2", "category": "Technik", "dalle_prompt": f"A glass prism splitting white light into rainbow, {_S}"},
+    {"id": "fossil",       "word": "Fossil",        "article": "das", "meaning_ru": "окаменелость", "difficulty": "B2", "category": "Natur",   "dalle_prompt": f"A dinosaur fossil embedded in rock, {_S}"},
+    {"id": "kristall",     "word": "Kristall",      "article": "der", "meaning_ru": "кристалл",     "difficulty": "B2", "category": "Natur",   "dalle_prompt": f"A clear quartz crystal cluster, {_S}"},
+    {"id": "denkmal",      "word": "Denkmal",       "article": "das", "meaning_ru": "памятник",     "difficulty": "B2", "category": "Gebäude", "dalle_prompt": f"A stone monument statue on a pedestal, {_S}"},
+    {"id": "archiv",       "word": "Archiv",        "article": "das", "meaning_ru": "архив",        "difficulty": "B2", "category": "Gebäude", "dalle_prompt": f"Old archive shelves filled with folders and documents, {_S}"},
+    {"id": "tablett",      "word": "Tablett",       "article": "das", "meaning_ru": "поднос",       "difficulty": "B2", "category": "Objekte", "dalle_prompt": f"A wooden serving tray, top view, {_S}"},
+    {"id": "stempel",      "word": "Stempel",       "article": "der", "meaning_ru": "штамп/печать", "difficulty": "B2", "category": "Objekte", "dalle_prompt": f"A rubber stamp, side view, {_S}"},
+
+    # ── B2 Ausnahmen — слова-исключения, где артикль неочевиден ───────────────
+    # das Sofa — многие ожидают der (мужское), но нейтральный
+    {"id": "sofa",         "word": "Sofa",          "article": "das", "meaning_ru": "диван",        "difficulty": "B2", "category": "Ausnahme","dalle_prompt": f"A modern three-seat sofa, front view, {_S}"},
+    # das Café — многие говорят der, но нейтральный (французское)
+    {"id": "cafe",         "word": "Café",          "article": "das", "meaning_ru": "кафе",         "difficulty": "B2", "category": "Ausnahme","dalle_prompt": f"A cozy street café exterior with tables outside, {_S}"},
+    # das Büro — нейтральный, окончание не подсказывает
+    {"id": "buero",        "word": "Büro",          "article": "das", "meaning_ru": "офис",         "difficulty": "B2", "category": "Ausnahme","dalle_prompt": f"A tidy office desk with computer and chair, {_S}"},
+    # das Handy — немецкое слово для мобильника, нейтральный
+    {"id": "handy",        "word": "Handy",         "article": "das", "meaning_ru": "мобильный телефон","difficulty": "B2","category": "Ausnahme","dalle_prompt": f"A modern smartphone, front view, {_S}"},
+    # das Virus — латинское -us обычно der, но здесь das
+    {"id": "virus",        "word": "Virus",         "article": "das", "meaning_ru": "вирус",        "difficulty": "B2", "category": "Ausnahme","dalle_prompt": f"A colorful 3D illustration of a coronavirus particle, {_S}"},
+    # das Ticket — английское заимствование, нейтральный
+    {"id": "ticket",       "word": "Ticket",        "article": "das", "meaning_ru": "билет",        "difficulty": "B2", "category": "Ausnahme","dalle_prompt": f"A single paper event ticket, {_S}"},
+    # das Regal — нейтральный, окончание -al обычно das, но не очевидно
+    {"id": "regal",        "word": "Regal",         "article": "das", "meaning_ru": "полка/стеллаж","difficulty": "B2", "category": "Ausnahme","dalle_prompt": f"A wooden bookshelf with books, side view, {_S}"},
+    # das Kabel — нейтральный (-el чаще der: Schlüssel, Würfel)
+    {"id": "kabel",        "word": "Kabel",         "article": "das", "meaning_ru": "кабель",       "difficulty": "B2", "category": "Ausnahme","dalle_prompt": f"A coiled electrical cable, {_S}"},
+    # das Team — английское, нейтральный (ожидают der)
+    {"id": "team",         "word": "Team",          "article": "das", "meaning_ru": "команда",      "difficulty": "B2", "category": "Ausnahme","dalle_prompt": f"A group of diverse people putting hands together in a circle, {_S}"},
+    # das Hobby — нейтральный (ожидают der)
+    {"id": "hobby",        "word": "Hobby",         "article": "das", "meaning_ru": "хобби",        "difficulty": "B2", "category": "Ausnahme","dalle_prompt": f"Various hobby items: paintbrush, book, tennis racket arranged together, {_S}"},
+    # der Joghurt — мужской, многие ожидают das
+    {"id": "joghurt",      "word": "Joghurt",       "article": "der", "meaning_ru": "йогурт",       "difficulty": "B2", "category": "Ausnahme","dalle_prompt": f"A single yogurt cup with a spoon, {_S}"},
+    # die Couch — женский (многие ожидают das)
+    {"id": "couch",        "word": "Couch",         "article": "die", "meaning_ru": "кушетка/диван","difficulty": "B2", "category": "Ausnahme","dalle_prompt": f"A modern couch sofa, side view, {_S}"},
+    # der Kanal — мужской (Canal), окончание -al часто das
+    {"id": "kanal",        "word": "Kanal",         "article": "der", "meaning_ru": "канал",        "difficulty": "B2", "category": "Ausnahme","dalle_prompt": f"A water canal with stone walls and a boat, {_S}"},
+    # der Gipfel — мужской (mountaintop), -el чаще der но не всегда
+    {"id": "gipfel",       "word": "Gipfel",        "article": "der", "meaning_ru": "вершина горы", "difficulty": "B2", "category": "Ausnahme","dalle_prompt": f"A snowy mountain peak, {_S}"},
+    # das Signal — нейтральный (-al чаще das: Signal, Portal, Lokal, но не всегда)
+    {"id": "signal",       "word": "Signal",        "article": "das", "meaning_ru": "сигнал",       "difficulty": "B2", "category": "Ausnahme","dalle_prompt": f"A traffic light showing green, {_S}"},
+    # das Pedal — нейтральный (bicycle pedal)
+    {"id": "pedal",        "word": "Pedal",         "article": "das", "meaning_ru": "педаль",       "difficulty": "B2", "category": "Ausnahme","dalle_prompt": f"A bicycle pedal, {_S}"},
+    # das Labor — нейтральный (-or обычно der: Motor, Traktor, но Labor — das)
+    {"id": "labor",        "word": "Labor",         "article": "das", "meaning_ru": "лаборатория",  "difficulty": "B2", "category": "Ausnahme","dalle_prompt": f"A science laboratory with flasks and equipment, {_S}"},
+    # das Podium — нейтральный (греческое -ium → das)
+    {"id": "podium",       "word": "Podium",        "article": "das", "meaning_ru": "подиум/пьедестал","difficulty": "B2","category": "Ausnahme","dalle_prompt": f"A winners podium with three levels (1st, 2nd, 3rd), {_S}"},
 ]
 
 
@@ -177,6 +263,7 @@ def get_article_quiz_bank_stats() -> dict:
     from collections import Counter
     articles = Counter(e["article"] for e in ARTICLE_QUIZ_BANK)
     diff = Counter(e["difficulty"] for e in ARTICLE_QUIZ_BANK)
+    cats = Counter(e["category"] for e in ARTICLE_QUIZ_BANK)
     return {
         "total": len(ARTICLE_QUIZ_BANK),
         "der": articles["der"],
@@ -184,4 +271,6 @@ def get_article_quiz_bank_stats() -> dict:
         "das": articles["das"],
         "A2": diff["A2"],
         "B1": diff["B1"],
+        "B2": diff["B2"],
+        "Ausnahme": cats["Ausnahme"],
     }

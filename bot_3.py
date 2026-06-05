@@ -16522,9 +16522,16 @@ async def _send_scheduled_article_quiz(context: CallbackContext) -> None:
 
     logging.info("aq_slot_triggered slot=%s/%s", slot_date, slot_hour)
 
+    # Difficulty routing: middle slot (13:15) → B2/tricky words; others → any
+    # This ensures ~1/3 of quizzes are hard, with fallback to any if pool empty.
+    _AQ_HARD_SLOTS = {(13, 15)}
+    difficulty_hint = "B2" if (slot_now.hour, slot_now.minute) in _AQ_HARD_SLOTS else None
+
     try:
         entry = await asyncio.to_thread(
-            pick_next_article_quiz, cooldown_days=ARTICLE_QUIZ_COOLDOWN_DAYS
+            pick_next_article_quiz,
+            cooldown_days=ARTICLE_QUIZ_COOLDOWN_DAYS,
+            difficulty_filter=difficulty_hint,
         )
     except Exception:
         logging.warning("aq_slot: pick_next_article_quiz failed", exc_info=True)
