@@ -5882,6 +5882,27 @@ function AppInner() {
     analyticsScopeError,
     progressResetError,
   ].some((value) => String(value || '').includes(PAID_FEATURE_ERROR_PREFIX));
+  const renderAppPaidFeatureNotice = useCallback((featureTitle) => {
+    const title = String(featureTitle || '').trim();
+    return (
+      <div className="paid-feature-card">
+        <div className="paid-feature-card-icon" aria-hidden="true">🔒</div>
+        <div className="paid-feature-card-copy">
+          <strong>{tr('Доступно в подписке', 'Im Abo enthalten')}</strong>
+          <span>
+            {tr(
+              title
+                ? `Раздел «${title}» входит в расширенный режим. Подключите подписку, чтобы пользоваться им без ограничений.`
+                : 'Этот раздел входит в расширенный режим. Подключите подписку, чтобы пользоваться им без ограничений.',
+              title
+                ? `Der Bereich „${title}“ ist im erweiterten Modus enthalten. Aktiviere ein Abo, um ihn ohne Einschraenkungen zu nutzen.`
+                : 'Dieser Bereich ist im erweiterten Modus enthalten. Aktiviere ein Abo, um ihn ohne Einschraenkungen zu nutzen.'
+            )}
+          </span>
+        </div>
+      </div>
+    );
+  }, [tr]);
   const [languageProfile, setLanguageProfile] = useState(null);
   const [languageProfileDraft, setLanguageProfileDraft] = useState({ learning_language: 'de', native_language: 'ru' });
   const [languageProfileLoading, setLanguageProfileLoading] = useState(false);
@@ -34649,7 +34670,7 @@ function AppInner() {
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
                 {analyticsSurfaceProRequired ? (
-                  renderPaidFeatureNotice(analyticsPaidFeatureError, tr('Аналитика', 'Analytik'))
+                  renderAppPaidFeatureNotice(tr('Аналитика', 'Analytik'))
                 ) : (
                   <>
                 <div className="analytics-controls">

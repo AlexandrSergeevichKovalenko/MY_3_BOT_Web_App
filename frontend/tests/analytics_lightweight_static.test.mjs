@@ -40,7 +40,7 @@ assert.match(
 
 assert.match(
   source,
-  /analyticsSurfaceProRequired \? \(\s*renderPaidFeatureNotice\(analyticsPaidFeatureError/s,
+  /analyticsSurfaceProRequired \? \(\s*renderAppPaidFeatureNotice\(tr\('Аналитика', 'Analytik'\)/s,
   'Analytics section must render existing paid-feature card when Analytics requires Pro',
 );
 
