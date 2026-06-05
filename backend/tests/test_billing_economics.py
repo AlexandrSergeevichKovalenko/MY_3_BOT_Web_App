@@ -294,6 +294,34 @@ class BillingEconomicsTests(unittest.TestCase):
         self.assertEqual(result["limit"], 1)
         self.assertEqual(result["used"], 1)
 
+    def test_enforce_feature_limit_uses_free_limits_for_canceled_pro_subscription(self):
+        with patch("backend.database.resolve_entitlement", return_value={
+            "plan_code": "pro",
+            "status": "canceled",
+            "effective_mode": "free",
+            "reset_at": "2026-03-23T00:00:00+01:00",
+        }):
+            with patch("backend.database.get_plan_limit", return_value={
+                "plan_code": "free",
+                "feature_code": "translation_daily_sets",
+                "limit_value": 1,
+                "limit_unit": "count",
+                "period": "day",
+                "is_active": True,
+            }) as limit_mock:
+                with patch("backend.database._get_feature_usage_today", return_value=1.0):
+                    result = enforce_feature_limit(
+                        user_id=77,
+                        feature_code="translation_daily_sets",
+                        requested_units=1.0,
+                        tz="Europe/Vienna",
+                    )
+
+        limit_mock.assert_called_once_with("free", "translation_daily_sets", period="day")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["error"], "feature_limit_exceeded")
+        self.assertEqual(result["feature"], "translation_daily_sets")
+
     def test_enforce_feature_limit_allows_pro_translation_set_rerequest(self):
         with patch("backend.database.resolve_entitlement", return_value={
             "plan_code": "pro",

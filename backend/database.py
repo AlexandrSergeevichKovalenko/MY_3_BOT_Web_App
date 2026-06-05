@@ -26098,7 +26098,7 @@ def enforce_feature_limit(
     if effective_mode == "trial" and feature_code != "youtube_fetch_daily":
         return None
 
-    lookup_plan = plan_code
+    lookup_plan = "free" if effective_mode == "free" else plan_code
     if effective_mode == "trial" and feature_code == "youtube_fetch_daily":
         lookup_plan = "free"
     limit = get_plan_limit(lookup_plan, feature_code, period="day")

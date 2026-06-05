@@ -28141,7 +28141,7 @@ function AppInner() {
     }
   };
 
-  const resolveAnalyticsGranularity = (periodValue, rangeOverride = null) => {
+  const resolveAnalyticsGranularity = useCallback((periodValue, rangeOverride = null) => {
     const resolvedRange = rangeOverride && typeof rangeOverride === 'object'
       ? {
         startDate: String(rangeOverride.startDate || '').trim(),
@@ -28178,7 +28178,7 @@ function AppInner() {
       default:
         return 'day';
     }
-  };
+  }, [analyticsCustomStartDate, analyticsCustomEndDate]);
 
   const ensureAnalyticsCalendarDraftRange = useCallback(() => {
     const fallback = buildDefaultAnalyticsCalendarRange();
