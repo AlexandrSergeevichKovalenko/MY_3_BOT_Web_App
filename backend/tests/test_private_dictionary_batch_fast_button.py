@@ -66,6 +66,17 @@ class PrivateDictionaryBatchFastButtonTests(unittest.TestCase):
         ]
         self.assertIn(bot_3.DICTIONARY_BATCH_FAST_BUTTON_TEXT, labels)
 
+    def test_private_keyboard_places_shortcut_buttons_on_bottom_row(self):
+        markup = bot_3._build_private_language_tutor_reply_keyboard()
+        rows = [
+            [str(getattr(button, "text", "") or "") for button in row or []]
+            for row in getattr(markup, "keyboard", []) or []
+        ]
+
+        self.assertEqual(rows[0], [bot_3.LANGUAGE_TUTOR_BUTTON_TEXT])
+        self.assertEqual(rows[1], [bot_3.DICTIONARY_BATCH_FAST_BUTTON_TEXT])
+        self.assertEqual(rows[-1], [bot_3.SHORTCUT_INSTALL_BUTTON_TEXT, bot_3.SHORTCUT_CONNECT_BUTTON_TEXT])
+
     def test_open_private_chat_keyboard_uses_direct_bot_link(self):
         context = SimpleNamespace(bot=SimpleNamespace(username="TestDeutschBot"))
 

@@ -25,6 +25,41 @@ class _FakeCursor:
         return None
 
 
+class _InventoryDemandCursor:
+    def __init__(self):
+        self._execute_count = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def execute(self, *_args, **_kwargs):
+        self._execute_count += 1
+
+    def fetchall(self):
+        if self._execute_count == 1:
+            return []
+        if self._execute_count == 2:
+            return [("focus_1", "b1", 30)]
+        return []
+
+
+class _InventoryDemandConnection:
+    def __init__(self):
+        self._cursor = _InventoryDemandCursor()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def cursor(self):
+        return self._cursor
+
+
 class _FakeConnection:
     def __init__(self):
         self._cursor = _FakeCursor()
@@ -122,6 +157,33 @@ class TranslationFocusPoolRefillTests(unittest.TestCase):
 
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0].get("_pool_levels"), ["b1"])
+
+    def test_refill_candidates_use_inventory_demand_when_readiness_is_empty(self):
+        payloads = {
+            "focus_1": {
+                "key": "focus_1",
+                "label": "Focus 1",
+                "kind": "preset",
+            },
+        }
+        pool_rows = [
+            {"focus_key": "focus_1", "level": "b1", "ready_count": 30, "focus_label": "Focus 1"},
+            {"focus_key": "focus_1", "level": "b2", "ready_count": 30, "focus_label": "Focus 1"},
+            {"focus_key": "focus_1", "level": "c1", "ready_count": 30, "focus_label": "Focus 1"},
+        ]
+
+        with patch.object(server, "_all_translation_focus_pool_payloads", return_value=payloads), \
+             patch.object(server, "get_translation_readiness_bucket_rollup", return_value=[]), \
+             patch.object(server, "get_translation_focus_pool_bucket_counts", return_value=pool_rows), \
+             patch.object(server, "get_db_connection_context", return_value=_InventoryDemandConnection()), \
+             patch.object(server, "_load_translation_focus_pool_history_by_bucket", return_value={}), \
+             patch.object(server, "_load_translation_readiness_by_bucket", return_value={}):
+            candidates = server._list_translation_focus_pool_refill_candidates()
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].get("key"), "focus_1")
+        self.assertEqual(candidates[0].get("_pool_levels"), ["b1"])
+        self.assertGreater(int(candidates[0].get("_demand_score") or 0), 0)
 
     def test_inventory_deficit_can_trigger_daytime_refill_without_background_fill(self):
         fake_redis = _FakeRedis()

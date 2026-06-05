@@ -88,6 +88,7 @@ from backend.background_jobs import (  # noqa: E402
     run_sentence_prewarm_actor,
     run_translation_focus_pool_refill_job,       # existing actor — reused
     run_translation_focus_pool_admin_report_actor,
+    run_weekly_global_ranking_report_actor,
     run_semantic_benchmark_prep_actor,
     run_semantic_audit_actor,
     run_skill_state_v2_aggregation_actor,
@@ -112,6 +113,13 @@ def _tz(name: str | None, fallback: str = "UTC") -> ZoneInfo:
 def _int_env(key: str, default: int) -> int:
     try:
         return int((os.getenv(key) or str(default)).strip())
+    except Exception:
+        return default
+
+
+def _float_env(key: str, default: float) -> float:
+    try:
+        return float((os.getenv(key) or str(default)).strip())
     except Exception:
         return default
 
@@ -262,16 +270,22 @@ def _dispatch_sentence_prewarm() -> None:
 
 def _dispatch_translation_focus_pool_refill() -> None:
     from datetime import datetime as _dt
-    tz_name = str(os.getenv("TRANSLATION_FOCUS_POOL_REFILL_TZ") or "UTC").strip() or "UTC"
+    tz_name = str(
+        os.getenv("TRANSLATION_FOCUS_POOL_REFILL_TZ")
+        or os.getenv("AUDIO_SCHEDULER_TZ")
+        or "UTC"
+    ).strip() or "UTC"
+    max_age_hours = max(0.1, _float_env("TRANSLATION_FOCUS_POOL_REFILL_MAX_AGE_HOURS", 4.0))
     request_id = f"translation_pool_refill_sched_{uuid4().hex[:16]}"
     enqueued_at_utc = _dt.utcnow().isoformat()
     logging.info(
-        "scheduler_service: translation_focus_pool_refill enqueue_start request_id=%s tz_name=%s enabled_env=%r hour_env=%r minute_env=%r enqueued_at_utc=%s",
+        "scheduler_service: translation_focus_pool_refill enqueue_start request_id=%s tz_name=%s enabled_env=%r hour_env=%r minute_env=%r max_age_hours=%.1f enqueued_at_utc=%s",
         request_id,
         tz_name,
         os.getenv("TRANSLATION_FOCUS_POOL_REFILL_ENABLED"),
         os.getenv("TRANSLATION_FOCUS_POOL_REFILL_HOUR"),
         os.getenv("TRANSLATION_FOCUS_POOL_REFILL_MINUTE"),
+        max_age_hours,
         enqueued_at_utc,
     )
     message = run_translation_focus_pool_refill_job.send(
@@ -280,7 +294,7 @@ def _dispatch_translation_focus_pool_refill() -> None:
         request_id=request_id,
         correlation_id=request_id,
         enqueued_at_utc=enqueued_at_utc,
-        max_age_hours=4.0,
+        max_age_hours=max_age_hours,
     )
     logging.info(
         "scheduler_service: translation_focus_pool_refill enqueue_finish request_id=%s message_id=%s tz_name=%s",
@@ -292,6 +306,30 @@ def _dispatch_translation_focus_pool_refill() -> None:
 
 def _dispatch_translation_focus_pool_admin_report() -> None:
     run_translation_focus_pool_admin_report_actor.send()
+
+
+def _dispatch_weekly_global_ranking_report() -> None:
+    tz_name = str(os.getenv("WEEKLY_GLOBAL_RANKING_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
+    request_id = f"weekly_global_ranking_{uuid4().hex[:16]}"
+    logging.info(
+        "scheduler_service: weekly_global_ranking enqueue_start request_id=%s tz_name=%s day_env=%r hour_env=%r minute_env=%r",
+        request_id,
+        tz_name,
+        os.getenv("WEEKLY_GLOBAL_RANKING_DAY_OF_WEEK"),
+        os.getenv("WEEKLY_GLOBAL_RANKING_HOUR"),
+        os.getenv("WEEKLY_GLOBAL_RANKING_MINUTE"),
+    )
+    message = run_weekly_global_ranking_report_actor.send(
+        request_id=request_id,
+        correlation_id=request_id,
+        tz_name=tz_name,
+    )
+    logging.info(
+        "scheduler_service: weekly_global_ranking enqueue_finish request_id=%s message_id=%s tz_name=%s",
+        request_id,
+        str(getattr(message, "message_id", None) or "").strip() or None,
+        tz_name,
+    )
 
 
 def _dispatch_semantic_benchmark_prep() -> None:
@@ -445,6 +483,20 @@ def _build_scheduler():
             max_instances=1,
             coalesce=True,
             misfire_grace_time=300,
+        )
+
+    # -- Weekly global ranking cards --
+    if _enabled("WEEKLY_GLOBAL_RANKING_ENABLED", "1"):
+        scheduler.add_job(
+            _dispatch_weekly_global_ranking_report,
+            "cron",
+            day_of_week=str(os.getenv("WEEKLY_GLOBAL_RANKING_DAY_OF_WEEK") or "sun").strip() or "sun",
+            hour=_int_env("WEEKLY_GLOBAL_RANKING_HOUR", 6),
+            minute=_int_env("WEEKLY_GLOBAL_RANKING_MINUTE", 40),
+            timezone=_tz(os.getenv("WEEKLY_GLOBAL_RANKING_TZ") or "Europe/Vienna"),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=1800,
         )
 
     # -- Semantic benchmark prep --

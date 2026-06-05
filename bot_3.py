@@ -1408,8 +1408,9 @@ async def send_main_menu(update: Update, context: CallbackContext):
         ["📜 Проверить перевод", "🟡 Посмотреть свою статистику"],
         ["🎙 Начать урок", "👥 Групповой звонок"],
         ["💬 Перейти в личку"],
-        [LANGUAGE_TUTOR_BUTTON_TEXT, SHORTCUT_INSTALL_BUTTON_TEXT],
-        [SHORTCUT_CONNECT_BUTTON_TEXT],
+        [LANGUAGE_TUTOR_BUTTON_TEXT],
+        [DICTIONARY_BATCH_FAST_BUTTON_TEXT],
+        [SHORTCUT_INSTALL_BUTTON_TEXT, SHORTCUT_CONNECT_BUTTON_TEXT],
     ]
     
     # создаем в словаре клю service_message_ids Список для хранения всех id Сообщений, Для того чтобы потом можно было их удалить после выполнения перевода
@@ -2038,9 +2039,9 @@ def _language_tutor_pair_for_user(user_id: int) -> tuple[str, str]:
 def _build_private_language_tutor_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
-            [LANGUAGE_TUTOR_BUTTON_TEXT, SHORTCUT_INSTALL_BUTTON_TEXT],
-            [SHORTCUT_CONNECT_BUTTON_TEXT],
+            [LANGUAGE_TUTOR_BUTTON_TEXT],
             [DICTIONARY_BATCH_FAST_BUTTON_TEXT],
+            [SHORTCUT_INSTALL_BUTTON_TEXT, SHORTCUT_CONNECT_BUTTON_TEXT],
         ],
         resize_keyboard=True,
         is_persistent=True,

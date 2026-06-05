@@ -7304,9 +7304,19 @@ def _prepare_dictionary_response_json_for_save(
 
 def _resolve_dictionary_semantic_folder_for_save(user_id: int, response_json: dict | None) -> tuple[str, int | None]:
     payload = response_json if isinstance(response_json, dict) else {}
+    language_pair = payload.get("language_pair") if isinstance(payload.get("language_pair"), dict) else {}
+    source_entry = payload.get("source_entry") if isinstance(payload.get("source_entry"), dict) else {}
+    target_entry = payload.get("target_entry") if isinstance(payload.get("target_entry"), dict) else {}
+    origin_meta = payload.get("origin_meta") if isinstance(payload.get("origin_meta"), dict) else {}
     semantic_tag = normalize_dictionary_semantic_tag(
         payload.get("semantic_category")
         or payload.get("semantic_tag")
+        or payload.get("category")
+        or language_pair.get("semantic_category")
+        or source_entry.get("semantic_category")
+        or target_entry.get("semantic_category")
+        or origin_meta.get("semantic_category")
+        or origin_meta.get("semantic_tag")
     )
     if not semantic_tag:
         return "", None
@@ -18108,6 +18118,64 @@ def _list_translation_focus_pool_refill_candidates() -> list[dict[str, Any]]:
         logging.exception("Failed to load translation readiness rollup for refill candidates")
         _log_translation_focus_pool_refill_stage("candidate_readiness_failed")
 
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        COALESCE(NULLIF(main_category, ''), '') AS main_category,
+                        COALESCE(NULLIF(sub_category, ''), '') AS sub_category,
+                        SUM(COALESCE(mistake_count, 0)) AS total_mistakes
+                    FROM bt_3_detailed_mistakes
+                    WHERE COALESCE(last_seen, added_data, NOW()) >= NOW() - (%s::int * INTERVAL '1 day')
+                    GROUP BY 1, 2;
+                    """,
+                    (int(TRANSLATION_FOCUS_POOL_PREWARM_LOOKBACK_DAYS),),
+                )
+                mistake_score_rows = 0
+                for main_category, sub_category, total_mistakes in cursor.fetchall() or []:
+                    mistake_score_rows += 1
+                    for focus_key, focus_payload in pool_payloads.items():
+                        if str((focus_payload or {}).get("kind") or "").strip().lower() != "preset":
+                            continue
+                        if focus_matches_error_pair(focus_payload, main_category, sub_category):
+                            demand_scores[focus_key] += int(total_mistakes or 0)
+                cursor.execute(
+                    """
+                    SELECT focus_key, level, COALESCE(SUM(use_count), 0) AS total_use
+                    FROM bt_3_translation_sentence_pool
+                    WHERE source_lang = 'ru'
+                      AND target_lang = 'de'
+                      AND is_active = TRUE
+                    GROUP BY focus_key, level;
+                    """
+                )
+                pool_use_rows = 0
+                for focus_key, level, total_use in cursor.fetchall() or []:
+                    normalized_focus_key = str(focus_key or "").strip()
+                    normalized_level = str(level or "").strip().lower()
+                    if normalized_focus_key in pool_payloads:
+                        use_score = int(total_use or 0) * 3
+                        demand_scores[normalized_focus_key] += use_score
+                        if normalized_level:
+                            bucket_demand_scores[(normalized_focus_key, normalized_level)] += use_score
+                        pool_use_rows += 1
+        _log_translation_focus_pool_refill_stage(
+            "candidate_inventory_demand_loaded",
+            mistake_score_rows=mistake_score_rows,
+            pool_use_rows=pool_use_rows,
+            demand_focus_count=len(demand_scores),
+            demand_bucket_count=len(bucket_demand_scores),
+            top_demand_focuses=[
+                {"focus_key": key, "score": int(score)}
+                for key, score in demand_scores.most_common(10)
+            ],
+        )
+    except Exception:
+        logging.exception("Failed to load inventory demand for refill candidates")
+        _log_translation_focus_pool_refill_stage("candidate_inventory_demand_failed")
+
     # Inject demand scores into focus_payloads so _build_translation_focus_pool_bucket_targets
     # computes the bonus and yields targets of 96-120 (matching the admin report).
     # Without this injection, _demand_score=0 everywhere, bonus=0, default_target=24,
@@ -18210,6 +18278,13 @@ def _list_translation_focus_pool_refill_candidates() -> list[dict[str, Any]]:
         total_deficit=sum(int(item.get("deficit") or 0) for item in underfilled_bucket_details),
         top_underfilled_buckets=underfilled_bucket_details[:30],
     )
+    logging.info(
+        "translation_focus_pool_refill candidate_deficits underfilled_focuses=%s underfilled_buckets=%s total_deficit=%s top=%s",
+        len(underfilled_focus_keys),
+        len(underfilled_bucket_details),
+        sum(int(item.get("deficit") or 0) for item in underfilled_bucket_details),
+        underfilled_bucket_details[:8],
+    )
     if not underfilled_focus_keys:
         _log_translation_focus_pool_refill_stage(
             "candidate_no_underfilled_buckets",
@@ -18276,6 +18351,20 @@ def _list_translation_focus_pool_refill_candidates() -> list[dict[str, Any]]:
             }
             for item in list(candidates or [])
         ],
+    )
+    logging.info(
+        "translation_focus_pool_refill candidate_planning_finish count=%s candidates=%s duration_ms=%s",
+        len(candidates),
+        [
+            {
+                "focus_key": str((item or {}).get("key") or "").strip(),
+                "levels": list((item or {}).get("_pool_levels") or []),
+                "demand_score": int((item or {}).get("_demand_score") or 0),
+                "deficit_score": int((item or {}).get("_deficit_score") or 0),
+            }
+            for item in list(candidates or [])[:15]
+        ],
+        _elapsed_ms_since(started_perf),
     )
     return candidates
 
@@ -18913,6 +19002,21 @@ def _dispatch_translation_focus_pool_refill(*, force: bool = False, tz_name: str
         max_generate_per_bucket=int(TRANSLATION_FOCUS_POOL_PREWARM_MAX_GENERATE_PER_BUCKET),
         levels=list(TRANSLATION_FOCUS_POOL_PREWARM_LEVELS or []),
     )
+    logging.info(
+        "translation_focus_pool_refill dispatch_start force=%s tz=%s local_now=%s offpeak_allowed=%s prewarm_enabled=%s refill_enabled=%s targets={low:%s,base:%s,bonus_cap:%s,forecast_cap:%s,max_generate:%s,levels:%s}",
+        bool(force),
+        normalized_tz_name,
+        local_now_iso,
+        bool(offpeak_allowed),
+        bool(TRANSLATION_FOCUS_POOL_PREWARM_ENABLED),
+        bool(TRANSLATION_FOCUS_POOL_REFILL_ENABLED),
+        int(TRANSLATION_FOCUS_POOL_PREWARM_TARGET_PER_BUCKET),
+        int(TRANSLATION_FOCUS_POOL_PREWARM_BASE_TARGET_PER_BUCKET),
+        int(TRANSLATION_FOCUS_POOL_PREWARM_TARGET_BONUS_CAP),
+        int(TRANSLATION_FOCUS_POOL_PREWARM_FORECAST_TARGET_CAP),
+        int(TRANSLATION_FOCUS_POOL_PREWARM_MAX_GENERATE_PER_BUCKET),
+        list(TRANSLATION_FOCUS_POOL_PREWARM_LEVELS or []),
+    )
 
     def _persist_daily_snapshot() -> None:
         try:
@@ -18952,6 +19056,10 @@ def _dispatch_translation_focus_pool_refill(*, force: bool = False, tz_name: str
             upserted=0,
             focuses=0,
         )
+        logging.info(
+            "translation_focus_pool_refill dispatch_finish skipped=True reason=disabled generated=0 upserted=0 focuses=0 duration_ms=%s",
+            _elapsed_ms_since(started_perf),
+        )
         return {"ok": True, "skipped": True, "reason": "disabled", "generated": 0, "upserted": 0, "focuses": 0}
     if not force and not offpeak_allowed:
         _persist_daily_snapshot()
@@ -18966,6 +19074,13 @@ def _dispatch_translation_focus_pool_refill(*, force: bool = False, tz_name: str
             generated=0,
             upserted=0,
             focuses=0,
+        )
+        logging.info(
+            "translation_focus_pool_refill dispatch_finish skipped=True reason=outside_offpeak_window tz=%s local_now=%s local_hour=%s generated=0 upserted=0 focuses=0 duration_ms=%s",
+            normalized_tz_name,
+            local_now_iso,
+            local_hour,
+            _elapsed_ms_since(started_perf),
         )
         return {"ok": True, "skipped": True, "reason": "outside_offpeak_window", "generated": 0, "upserted": 0, "focuses": 0}
     try:
@@ -18985,6 +19100,10 @@ def _dispatch_translation_focus_pool_refill(*, force: bool = False, tz_name: str
                 generated=0,
                 upserted=0,
                 focuses=0,
+            )
+            logging.info(
+                "translation_focus_pool_refill dispatch_finish skipped=True reason=no_focus_candidates generated=0 upserted=0 focuses=0 duration_ms=%s",
+                _elapsed_ms_since(started_perf),
             )
             return {
                 "ok": True,
@@ -19034,6 +19153,28 @@ def _dispatch_translation_focus_pool_refill(*, force: bool = False, tz_name: str
             focuses=int(focus_pool_result.get("focuses") or 0),
             bucket_result_count=len(list(focus_pool_result.get("bucket_results") or [])),
         )
+        bucket_results = list(focus_pool_result.get("bucket_results") or [])
+        logging.info(
+            "translation_focus_pool_refill generation_finished generated=%s upserted=%s focuses=%s bucket_results=%s duration_ms=%s",
+            int(focus_pool_result.get("generated") or 0),
+            int(focus_pool_result.get("upserted") or 0),
+            int(focus_pool_result.get("focuses") or 0),
+            [
+                {
+                    "focus_key": str((item or {}).get("focus_key") or "").strip(),
+                    "level": str((item or {}).get("level") or "").strip(),
+                    "ready_before": int((item or {}).get("ready_before") or 0),
+                    "ready_after": int((item or {}).get("ready_after") or 0),
+                    "target_ready": int((item or {}).get("target_ready") or 0),
+                    "generated": int((item or {}).get("generated") or 0),
+                    "upserted": int((item or {}).get("upserted") or 0),
+                    "finish_reason": str((item or {}).get("finish_reason") or (item or {}).get("skipped") or "").strip(),
+                    "deficit_after": int((item or {}).get("deficit_after") or 0),
+                }
+                for item in bucket_results[:30]
+            ],
+            _elapsed_ms_since(generation_started_perf),
+        )
         focus_pool_result["skipped"] = False
         _persist_daily_snapshot()
         _log_translation_focus_pool_refill_stage(
@@ -19044,6 +19185,15 @@ def _dispatch_translation_focus_pool_refill(*, force: bool = False, tz_name: str
             upserted=int(focus_pool_result.get("upserted") or 0),
             focuses=int(focus_pool_result.get("focuses") or 0),
             bucket_result_count=len(list(focus_pool_result.get("bucket_results") or [])),
+        )
+        logging.info(
+            "translation_focus_pool_refill dispatch_finish ok=%s skipped=%s generated=%s upserted=%s focuses=%s duration_ms=%s",
+            bool(focus_pool_result.get("ok", True)),
+            bool(focus_pool_result.get("skipped")),
+            int(focus_pool_result.get("generated") or 0),
+            int(focus_pool_result.get("upserted") or 0),
+            int(focus_pool_result.get("focuses") or 0),
+            _elapsed_ms_since(started_perf),
         )
         return focus_pool_result
     except Exception:
@@ -44492,6 +44642,630 @@ def _dispatch_private_analytics(target_date: date) -> dict:
     return {"ok": True, "date": target_date.isoformat(), "sent": sent, "errors": errors}
 
 
+WEEKLY_GLOBAL_RANKING_WEIGHTS = {
+    "practice": 0.35,
+    "quality": 0.25,
+    "stability": 0.20,
+    "progress": 0.10,
+    "diversity": 0.10,
+}
+
+
+def _weekly_global_ranking_bounds(tz_name: str) -> tuple[date, date]:
+    try:
+        local_today = datetime.now(ZoneInfo(str(tz_name or TODAY_PLAN_DEFAULT_TZ))).date()
+    except Exception:
+        local_today = datetime.now(ZoneInfo(TODAY_PLAN_DEFAULT_TZ)).date()
+    end_date = local_today - timedelta(days=1)
+    start_date = end_date - timedelta(days=6)
+    return start_date, end_date
+
+
+def _ensure_weekly_global_ranking_schema() -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_weekly_global_ranking_snapshots (
+                    id BIGSERIAL PRIMARY KEY,
+                    week_start DATE NOT NULL,
+                    week_end DATE NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    username TEXT,
+                    total_users INTEGER NOT NULL DEFAULT 0,
+                    rank INTEGER NOT NULL,
+                    rank_delta INTEGER,
+                    final_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    components JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    metrics JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    delivered_at TIMESTAMPTZ,
+                    delivery_status TEXT NOT NULL DEFAULT 'pending',
+                    delivery_error TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (week_start, user_id)
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_bt_3_weekly_global_ranking_week_rank
+                ON bt_3_weekly_global_ranking_snapshots (week_start DESC, rank ASC);
+                """
+            )
+
+
+def _safe_percent(value: float) -> float:
+    return round(max(0.0, min(100.0, float(value or 0.0))), 1)
+
+
+def _collect_weekly_global_ranking_rows(start_date: date, end_date: date) -> list[dict[str, Any]]:
+    previous_start = start_date - timedelta(days=7)
+    previous_end = end_date - timedelta(days=7)
+    synthetic_floor = max(
+        0,
+        int((os.getenv("SYNTHETIC_TELEGRAM_USER_ID_MIN") or "9100000001").strip() or "9100000001"),
+    )
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH eligible AS (
+                    SELECT
+                        au.user_id,
+                        COALESCE(
+                            NULLIF(MAX(au.username), ''),
+                            NULLIF(MAX(up.username), ''),
+                            NULLIF(MAX(tr.username), ''),
+                            'Student'
+                        ) AS username
+                    FROM bt_3_allowed_users au
+                    LEFT JOIN bt_3_user_progress up ON up.user_id = au.user_id
+                    LEFT JOIN bt_3_translations tr ON tr.user_id = au.user_id
+                    WHERE au.user_id > 0
+                      AND au.user_id < %s
+                      AND LOWER(COALESCE(au.username, '')) NOT LIKE 'load_test%%'
+                      AND LOWER(COALESCE(au.note, '')) NOT LIKE '%%load_test%%'
+                      AND LOWER(COALESCE(au.note, '')) NOT LIKE '%%synthetic%%'
+                      AND (
+                          up.user_id IS NOT NULL
+                          OR tr.user_id IS NOT NULL
+                          OR EXISTS (
+                              SELECT 1
+                              FROM bt_3_telegram_system_messages sm
+                              WHERE sm.chat_id = au.user_id
+                              LIMIT 1
+                          )
+                      )
+                    GROUP BY au.user_id
+                ),
+                trans AS (
+                    SELECT
+                        user_id,
+                        COUNT(*) AS translations_count,
+                        COALESCE(AVG(score), 0) AS avg_score,
+                        COUNT(DISTINCT timestamp::date) AS translation_days
+                    FROM bt_3_translations
+                    WHERE timestamp::date BETWEEN %s AND %s
+                    GROUP BY user_id
+                ),
+                prev_trans AS (
+                    SELECT
+                        user_id,
+                        COUNT(*) AS prev_translations_count,
+                        COALESCE(AVG(score), 0) AS prev_avg_score
+                    FROM bt_3_translations
+                    WHERE timestamp::date BETWEEN %s AND %s
+                    GROUP BY user_id
+                ),
+                srs AS (
+                    SELECT
+                        user_id,
+                        COUNT(*) AS srs_reviews,
+                        COUNT(DISTINCT reviewed_at::date) AS srs_days
+                    FROM bt_3_card_review_log
+                    WHERE reviewed_at::date BETWEEN %s AND %s
+                    GROUP BY user_id
+                ),
+                prev_srs AS (
+                    SELECT user_id, COUNT(*) AS prev_srs_reviews
+                    FROM bt_3_card_review_log
+                    WHERE reviewed_at::date BETWEEN %s AND %s
+                    GROUP BY user_id
+                ),
+                voice AS (
+                    SELECT
+                        user_id,
+                        COALESCE(SUM(GREATEST(COALESCE(duration_seconds, EXTRACT(EPOCH FROM (COALESCE(ended_at, started_at) - started_at))), 0)), 0) / 60.0 AS voice_minutes,
+                        COUNT(DISTINCT started_at::date) AS voice_days
+                    FROM bt_3_agent_voice_sessions
+                    WHERE started_at::date BETWEEN %s AND %s
+                    GROUP BY user_id
+                ),
+                prev_voice AS (
+                    SELECT
+                        user_id,
+                        COALESCE(SUM(GREATEST(COALESCE(duration_seconds, EXTRACT(EPOCH FROM (COALESCE(ended_at, started_at) - started_at))), 0)), 0) / 60.0 AS prev_voice_minutes
+                    FROM bt_3_agent_voice_sessions
+                    WHERE started_at::date BETWEEN %s AND %s
+                    GROUP BY user_id
+                ),
+                reader AS (
+                    SELECT
+                        user_id,
+                        COALESCE(SUM(GREATEST(COALESCE(duration_seconds, EXTRACT(EPOCH FROM (COALESCE(ended_at, started_at) - started_at))), 0)), 0) / 60.0 AS reader_minutes,
+                        COUNT(DISTINCT started_at::date) AS reader_days
+                    FROM bt_3_reader_sessions
+                    WHERE started_at::date BETWEEN %s AND %s
+                    GROUP BY user_id
+                ),
+                prev_reader AS (
+                    SELECT
+                        user_id,
+                        COALESCE(SUM(GREATEST(COALESCE(duration_seconds, EXTRACT(EPOCH FROM (COALESCE(ended_at, started_at) - started_at))), 0)), 0) / 60.0 AS prev_reader_minutes
+                    FROM bt_3_reader_sessions
+                    WHERE started_at::date BETWEEN %s AND %s
+                    GROUP BY user_id
+                ),
+                progress_days AS (
+                    SELECT user_id, COUNT(DISTINCT start_time::date) AS session_days
+                    FROM bt_3_user_progress
+                    WHERE start_time::date BETWEEN %s AND %s
+                    GROUP BY user_id
+                ),
+                active_dates AS (
+                    SELECT user_id, timestamp::date AS active_date
+                    FROM bt_3_translations
+                    WHERE timestamp::date BETWEEN %s AND %s
+                    UNION
+                    SELECT user_id, reviewed_at::date AS active_date
+                    FROM bt_3_card_review_log
+                    WHERE reviewed_at::date BETWEEN %s AND %s
+                    UNION
+                    SELECT user_id, started_at::date AS active_date
+                    FROM bt_3_agent_voice_sessions
+                    WHERE started_at::date BETWEEN %s AND %s
+                    UNION
+                    SELECT user_id, started_at::date AS active_date
+                    FROM bt_3_reader_sessions
+                    WHERE started_at::date BETWEEN %s AND %s
+                    UNION
+                    SELECT user_id, start_time::date AS active_date
+                    FROM bt_3_user_progress
+                    WHERE start_time::date BETWEEN %s AND %s
+                ),
+                active_days AS (
+                    SELECT user_id, COUNT(DISTINCT active_date) AS active_days
+                    FROM active_dates
+                    GROUP BY user_id
+                )
+                SELECT
+                    e.user_id,
+                    e.username,
+                    COALESCE(t.translations_count, 0),
+                    COALESCE(t.avg_score, 0),
+                    COALESCE(s.srs_reviews, 0),
+                    COALESCE(v.voice_minutes, 0),
+                    COALESCE(r.reader_minutes, 0),
+                    COALESCE(ad.active_days, 0) AS active_days,
+                    COALESCE(pt.prev_translations_count, 0),
+                    COALESCE(ps.prev_srs_reviews, 0),
+                    COALESCE(pv.prev_voice_minutes, 0),
+                    COALESCE(pr.prev_reader_minutes, 0),
+                    COALESCE(prevsnap.rank, NULL)
+                FROM eligible e
+                LEFT JOIN trans t ON t.user_id = e.user_id
+                LEFT JOIN prev_trans pt ON pt.user_id = e.user_id
+                LEFT JOIN srs s ON s.user_id = e.user_id
+                LEFT JOIN prev_srs ps ON ps.user_id = e.user_id
+                LEFT JOIN voice v ON v.user_id = e.user_id
+                LEFT JOIN prev_voice pv ON pv.user_id = e.user_id
+                LEFT JOIN reader r ON r.user_id = e.user_id
+                LEFT JOIN prev_reader pr ON pr.user_id = e.user_id
+                LEFT JOIN progress_days pd ON pd.user_id = e.user_id
+                LEFT JOIN active_days ad ON ad.user_id = e.user_id
+                LEFT JOIN bt_3_weekly_global_ranking_snapshots prevsnap
+                  ON prevsnap.user_id = e.user_id
+                 AND prevsnap.week_start = %s
+                ORDER BY e.user_id;
+                """,
+                (
+                    synthetic_floor,
+                    start_date, end_date,
+                    previous_start, previous_end,
+                    start_date, end_date,
+                    previous_start, previous_end,
+                    start_date, end_date,
+                    previous_start, previous_end,
+                    start_date, end_date,
+                    previous_start, previous_end,
+                    start_date, end_date,
+                    start_date, end_date,
+                    start_date, end_date,
+                    start_date, end_date,
+                    start_date, end_date,
+                    start_date, end_date,
+                    previous_start,
+                ),
+            )
+            raw_rows = cursor.fetchall() or []
+
+    base_rows: list[dict[str, Any]] = []
+    for row in raw_rows:
+        translations_count = int(row[2] or 0)
+        avg_score = float(row[3] or 0.0)
+        srs_reviews = int(row[4] or 0)
+        voice_minutes = float(row[5] or 0.0)
+        reader_minutes = float(row[6] or 0.0)
+        active_days = max(0, min(7, int(row[7] or 0)))
+        prev_translations = int(row[8] or 0)
+        prev_srs = int(row[9] or 0)
+        prev_voice = float(row[10] or 0.0)
+        prev_reader = float(row[11] or 0.0)
+        current_units = translations_count + (srs_reviews * 0.35) + ((voice_minutes + reader_minutes) * 0.12)
+        previous_units = prev_translations + (prev_srs * 0.35) + ((prev_voice + prev_reader) * 0.12)
+        base_rows.append(
+            {
+                "user_id": int(row[0]),
+                "username": str(row[1] or "Student").strip() or "Student",
+                "translations_count": translations_count,
+                "avg_score": avg_score,
+                "srs_reviews": srs_reviews,
+                "voice_minutes": voice_minutes,
+                "reader_minutes": reader_minutes,
+                "active_days": active_days,
+                "current_units": current_units,
+                "previous_units": previous_units,
+                "previous_rank": int(row[12]) if row[12] is not None else None,
+            }
+        )
+
+    max_translations = max((item["translations_count"] for item in base_rows), default=0)
+    max_srs = max((item["srs_reviews"] for item in base_rows), default=0)
+    max_minutes = max((item["voice_minutes"] + item["reader_minutes"] for item in base_rows), default=0.0)
+    scored_rows: list[dict[str, Any]] = []
+    for item in base_rows:
+        practice = 0.0
+        if max_translations > 0:
+            practice += 70.0 * (float(item["translations_count"]) / float(max_translations))
+        if max_srs > 0:
+            practice += 20.0 * (float(item["srs_reviews"]) / float(max_srs))
+        if max_minutes > 0:
+            practice += 10.0 * ((float(item["voice_minutes"]) + float(item["reader_minutes"])) / float(max_minutes))
+        quality = float(item["avg_score"]) if int(item["translations_count"]) > 0 else 0.0
+        stability = (float(item["active_days"]) / 7.0) * 100.0
+        if float(item["previous_units"]) <= 0:
+            progress = 100.0 if float(item["current_units"]) > 0 else 0.0
+        else:
+            ratio = (float(item["current_units"]) - float(item["previous_units"])) / max(1.0, float(item["previous_units"]))
+            progress = 50.0 + max(-50.0, min(50.0, ratio * 100.0))
+        diversity_count = sum(
+            1
+            for flag in (
+                int(item["translations_count"]) > 0,
+                int(item["srs_reviews"]) > 0,
+                float(item["voice_minutes"]) > 0,
+                float(item["reader_minutes"]) > 0,
+            )
+            if flag
+        )
+        diversity = (float(diversity_count) / 4.0) * 100.0
+        components = {
+            "practice": _safe_percent(practice),
+            "quality": _safe_percent(quality),
+            "stability": _safe_percent(stability),
+            "progress": _safe_percent(progress),
+            "diversity": _safe_percent(diversity),
+        }
+        final_score = sum(
+            float(components[key]) * float(weight)
+            for key, weight in WEEKLY_GLOBAL_RANKING_WEIGHTS.items()
+        )
+        item["components"] = components
+        item["final_score"] = round(final_score, 2)
+        item["metrics"] = {
+            "translations": int(item["translations_count"]),
+            "avg_score": round(float(item["avg_score"]), 1),
+            "srs_reviews": int(item["srs_reviews"]),
+            "voice_minutes": round(float(item["voice_minutes"]), 1),
+            "reader_minutes": round(float(item["reader_minutes"]), 1),
+            "active_days": int(item["active_days"]),
+        }
+        scored_rows.append(item)
+
+    scored_rows.sort(key=lambda item: (-float(item["final_score"]), -int(item["active_days"]), str(item["username"]).casefold(), int(item["user_id"])))
+    total_users = len(scored_rows)
+    for index, item in enumerate(scored_rows, start=1):
+        item["rank"] = index
+        item["total_users"] = total_users
+        previous_rank = item.get("previous_rank")
+        item["rank_delta"] = (int(previous_rank) - index) if previous_rank else None
+    return scored_rows
+
+
+def _persist_weekly_global_ranking_snapshot(start_date: date, end_date: date, rows: list[dict[str, Any]]) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            for item in rows:
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_weekly_global_ranking_snapshots (
+                        week_start, week_end, user_id, username, total_users, rank,
+                        rank_delta, final_score, components, metrics, updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, NOW())
+                    ON CONFLICT (week_start, user_id) DO UPDATE
+                    SET
+                        week_end = EXCLUDED.week_end,
+                        username = EXCLUDED.username,
+                        total_users = EXCLUDED.total_users,
+                        rank = EXCLUDED.rank,
+                        rank_delta = EXCLUDED.rank_delta,
+                        final_score = EXCLUDED.final_score,
+                        components = EXCLUDED.components,
+                        metrics = EXCLUDED.metrics,
+                        updated_at = NOW();
+                    """,
+                    (
+                        start_date,
+                        end_date,
+                        int(item["user_id"]),
+                        str(item.get("username") or "Student"),
+                        int(item.get("total_users") or len(rows)),
+                        int(item["rank"]),
+                        item.get("rank_delta"),
+                        float(item["final_score"]),
+                        json.dumps(item.get("components") or {}, ensure_ascii=False),
+                        json.dumps(item.get("metrics") or {}, ensure_ascii=False),
+                    ),
+                )
+
+
+def _mark_weekly_global_ranking_delivery(
+    *,
+    week_start: date,
+    user_id: int,
+    status: str,
+    error: str | None = None,
+) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_weekly_global_ranking_snapshots
+                SET delivered_at = CASE WHEN %s = 'sent' THEN NOW() ELSE delivered_at END,
+                    delivery_status = %s,
+                    delivery_error = %s,
+                    updated_at = NOW()
+                WHERE week_start = %s
+                  AND user_id = %s;
+                """,
+                (
+                    str(status or "pending"),
+                    str(status or "pending"),
+                    str(error or "")[:1000] if error else None,
+                    week_start,
+                    int(user_id),
+                ),
+            )
+
+
+def _render_weekly_global_ranking_card_png(row: dict[str, Any], *, start_date: date, end_date: date, top_rows: list[dict[str, Any]]) -> bytes | None:
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except Exception:
+        return None
+
+    base_dir = Path(__file__).resolve().parent.parent
+    font_regular_path = base_dir / "backend" / "assets" / "fonts" / "DejaVuSans.ttf"
+    font_bold_path = base_dir / "backend" / "assets" / "fonts" / "DejaVuSans-Bold.ttf"
+
+    def _font(size: int, bold: bool = False):
+        candidate = font_bold_path if bold and font_bold_path.exists() else font_regular_path
+        if candidate.exists():
+            try:
+                return ImageFont.truetype(str(candidate), size=size)
+            except Exception:
+                pass
+        return ImageFont.load_default()
+
+    def _text_width(draw_ctx, text: str, font) -> float:
+        try:
+            return float(draw_ctx.textlength(str(text), font=font))
+        except Exception:
+            box = draw_ctx.textbbox((0, 0), str(text), font=font)
+            return float(box[2] - box[0])
+
+    def _fit_text(draw_ctx, text: str, font_size: int, max_width: int, *, bold: bool = False, min_size: int = 22):
+        size = int(font_size)
+        while size > min_size:
+            candidate = _font(size, bold=bold)
+            if _text_width(draw_ctx, text, candidate) <= max_width:
+                return candidate
+            size -= 2
+        return _font(min_size, bold=bold)
+
+    width, height = 1080, 1440
+    image = Image.new("RGB", (width, height), (248, 244, 235))
+    draw = ImageDraw.Draw(image)
+    for y in range(height):
+        ratio = y / max(1, height - 1)
+        r = int(250 - (ratio * 14))
+        g = int(246 - (ratio * 13))
+        b = int(236 - (ratio * 22))
+        draw.line([(0, y), (width, y)], fill=(r, g, b))
+
+    navy = (24, 44, 68)
+    muted = (86, 94, 108)
+    gold = (205, 149, 58)
+    gold_light = (255, 236, 174)
+    green = (35, 136, 91)
+    red = (186, 71, 68)
+    blue = (69, 111, 160)
+    line = (224, 206, 170)
+    white = (255, 252, 245)
+
+    title_font = _font(44, True)
+    small_font = _font(25)
+    label_font = _font(27, True)
+    body_font = _font(30)
+    rank_font = _font(120, True)
+    score_font = _font(44, True)
+
+    draw.rounded_rectangle([(54, 54), (1026, height - 54)], radius=32, fill=white, outline=line, width=3)
+    draw.rounded_rectangle([(86, 86), (994, 238)], radius=24, fill=(33, 58, 86), outline=(228, 177, 82), width=3)
+    draw.text((116, 118), "Weekly Deutsch Ranking", fill=gold_light, font=title_font)
+    draw.text((118, 176), f"{start_date.isoformat()} - {end_date.isoformat()}", fill=(216, 226, 236), font=small_font)
+
+    rank = int(row.get("rank") or 0)
+    total_users = int(row.get("total_users") or 0)
+    username = str(row.get("username") or "Student").strip() or "Student"
+    name_font = _fit_text(draw, username, 50, 560, bold=True, min_size=30)
+    draw.text((104, 276), username, fill=navy, font=name_font)
+    draw.text((104, 342), f"место из {total_users} пользователей", fill=muted, font=body_font)
+    draw.text((760, 260), f"#{rank}", fill=gold, font=rank_font, anchor="ma")
+
+    delta = row.get("rank_delta")
+    if delta is None:
+        delta_text, delta_color = "new", blue
+    elif int(delta) > 0:
+        delta_text, delta_color = f"up {int(delta)}", green
+    elif int(delta) < 0:
+        delta_text, delta_color = f"down {abs(int(delta))}", red
+    else:
+        delta_text, delta_color = "same", muted
+    draw.rounded_rectangle([(104, 400), (372, 456)], radius=18, fill=(244, 248, 242), outline=delta_color, width=2)
+    draw.text((128, 412), delta_text, fill=delta_color, font=label_font)
+
+    final_score = float(row.get("final_score") or 0.0)
+    draw.rounded_rectangle([(404, 400), (976, 456)], radius=18, fill=(250, 246, 235), outline=(228, 207, 165), width=2)
+    draw.text((430, 409), "Итоговый балл", fill=muted, font=small_font)
+    draw.text((760, 397), f"{final_score:.1f}", fill=navy, font=score_font)
+
+    components = row.get("components") if isinstance(row.get("components"), dict) else {}
+    component_labels = [
+        ("practice", "Практика", "35%"),
+        ("quality", "Качество", "25%"),
+        ("stability", "Стабильность", "20%"),
+        ("progress", "Прогресс", "10%"),
+        ("diversity", "Разнообразие", "10%"),
+    ]
+    y = 506
+    draw.text((104, y), "Как считается место", fill=navy, font=_font(34, True))
+    y += 54
+    for key, label, weight in component_labels:
+        value = float(components.get(key) or 0.0)
+        draw.text((104, y + 4), label, fill=navy, font=label_font)
+        draw.text((314, y + 4), weight, fill=muted, font=small_font)
+        bar_x0, bar_y0, bar_x1, bar_y1 = 420, y + 10, 910, y + 34
+        draw.rounded_rectangle([(bar_x0, bar_y0), (bar_x1, bar_y1)], radius=10, fill=(235, 229, 216))
+        fill_x = bar_x0 + int((bar_x1 - bar_x0) * max(0.0, min(100.0, value)) / 100.0)
+        draw.rounded_rectangle([(bar_x0, bar_y0), (fill_x, bar_y1)], radius=10, fill=blue if key != "progress" else green)
+        draw.text((928, y + 1), f"{value:.0f}", fill=navy, font=small_font)
+        y += 58
+
+    metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+    y += 22
+    draw.rounded_rectangle([(104, y), (976, y + 122)], radius=20, fill=(247, 250, 247), outline=(204, 224, 207), width=2)
+    metric_items = [
+        ("Переводы", int(metrics.get("translations") or 0)),
+        ("Средний score", f"{float(metrics.get('avg_score') or 0.0):.1f}"),
+        ("SRS", int(metrics.get("srs_reviews") or 0)),
+        ("Активные дни", f"{int(metrics.get('active_days') or 0)}/7"),
+    ]
+    x = 132
+    for label, value in metric_items:
+        draw.text((x, y + 24), str(value), fill=navy, font=_font(34, True))
+        draw.text((x, y + 68), label, fill=muted, font=small_font)
+        x += 210
+
+    y += 168
+    draw.text((104, y), "Топ недели", fill=navy, font=_font(34, True))
+    y += 58
+    medal_fills = [(219, 169, 70), (160, 169, 181), (185, 119, 72)]
+    for idx, top in enumerate(top_rows[:3], start=1):
+        row_y = y + ((idx - 1) * 72)
+        draw.ellipse([(110, row_y), (160, row_y + 50)], fill=medal_fills[idx - 1], outline=(128, 92, 47), width=2)
+        draw.text((135, row_y + 10), str(idx), fill=white, font=_font(24, True), anchor="ma")
+        top_name = str(top.get("username") or "Student").strip() or "Student"
+        top_font = _fit_text(draw, top_name, 29, 520, bold=True, min_size=22)
+        draw.text((184, row_y + 5), top_name, fill=navy, font=top_font)
+        draw.text((760, row_y + 6), f"{float(top.get('final_score') or 0.0):.1f}", fill=gold, font=_font(30, True))
+
+    message = f"Так держать, {username}!" if rank == 1 else "Новая неделя - новый шанс подняться выше."
+    banner_y0 = height - 144
+    banner_y1 = height - 88
+    draw.rounded_rectangle([(104, banner_y0), (976, banner_y1)], radius=18, fill=(33, 58, 86))
+    msg_font = _fit_text(draw, message, 29, 790, bold=True, min_size=22)
+    draw.text((540, banner_y0 + 14), message, fill=gold_light, font=msg_font, anchor="ma")
+
+    output = BytesIO()
+    image.save(output, format="PNG", optimize=True)
+    return output.getvalue()
+
+
+def _dispatch_weekly_global_ranking_report(*, tz_name: str = TODAY_PLAN_DEFAULT_TZ) -> dict:
+    started_perf = time.perf_counter()
+    start_date, end_date = _weekly_global_ranking_bounds(tz_name)
+    logging.info(
+        "weekly_global_ranking dispatch_start tz=%s start=%s end=%s",
+        tz_name,
+        start_date,
+        end_date,
+    )
+    if str(os.getenv("WEEKLY_GLOBAL_RANKING_ENABLED") or "1").strip().lower() not in {"1", "true", "yes", "on"}:
+        return {"ok": True, "skipped": True, "reason": "disabled", "sent": 0}
+
+    _ensure_weekly_global_ranking_schema()
+    rows = _collect_weekly_global_ranking_rows(start_date, end_date)
+    _persist_weekly_global_ranking_snapshot(start_date, end_date, rows)
+    if not rows:
+        return {"ok": True, "skipped": True, "reason": "no_users", "sent": 0}
+
+    limit = max(1, int((os.getenv("WEEKLY_GLOBAL_RANKING_SEND_LIMIT") or "5000").strip() or "5000"))
+    top_rows = rows[:3]
+    sent = 0
+    errors: list[str] = []
+    for row in rows[:limit]:
+        user_id = int(row.get("user_id") or 0)
+        if user_id <= 0 or not is_telegram_user_allowed(user_id):
+            continue
+        try:
+            image_bytes = _render_weekly_global_ranking_card_png(row, start_date=start_date, end_date=end_date, top_rows=top_rows)
+            if not image_bytes:
+                raise RuntimeError("ranking card renderer unavailable")
+            caption = f"🏆 Твой weekly ranking: #{int(row.get('rank') or 0)} из {int(row.get('total_users') or 0)}"
+            _send_private_photo(
+                user_id=user_id,
+                image_bytes=image_bytes,
+                filename=f"weekly_ranking_{user_id}_{start_date.isoformat()}.png",
+                caption=caption,
+            )
+            _mark_weekly_global_ranking_delivery(week_start=start_date, user_id=user_id, status="sent")
+            sent += 1
+        except Exception as exc:
+            errors.append(f"user {user_id}: {exc}")
+            _mark_weekly_global_ranking_delivery(
+                week_start=start_date,
+                user_id=user_id,
+                status="failed",
+                error=str(exc),
+            )
+            logging.warning("weekly_global_ranking delivery failed user_id=%s", user_id, exc_info=True)
+
+    result = {
+        "ok": True,
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "users": len(rows),
+        "sent": sent,
+        "errors": errors[:20],
+        "duration_ms": _elapsed_ms_since(started_perf),
+    }
+    logging.info("weekly_global_ranking dispatch_finish result=%s", result)
+    return result
+
+
 def _build_plan_goals_chart_png(
     *,
     username: str,
@@ -49516,6 +50290,8 @@ def explain_webapp_translation():
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    dictionary_result_payload = None
+    dictionary_direction = None
     try:
         if mode == "selection_context":
             dictionary_result = asyncio.run(
@@ -49525,6 +50301,13 @@ def explain_webapp_translation():
                     target_lang=target_lang,
                 )
             )
+            if isinstance(dictionary_result, dict):
+                dictionary_result_payload = dictionary_result
+                detected = str(dictionary_result.get("detected_language") or "").strip().lower()
+                if detected == "target":
+                    dictionary_direction = f"{target_lang}-{source_lang}"
+                elif detected == "source":
+                    dictionary_direction = f"{source_lang}-{target_lang}"
             explanation = _format_selection_dictionary_explanation(
                 dictionary_result,
                 source_lang=source_lang,
@@ -49550,6 +50333,8 @@ def explain_webapp_translation():
             "ok": True,
             "explanation": explanation,
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
+            "dictionary_item": dictionary_result_payload,
+            "direction": dictionary_direction,
         }
     )
 

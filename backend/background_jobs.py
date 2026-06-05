@@ -1479,6 +1479,14 @@ def run_translation_focus_pool_refill_job(
             from datetime import datetime as _dt
             enqueued_dt = _dt.fromisoformat(str(enqueued_at_utc))
             age_hours = (_dt.utcnow() - enqueued_dt).total_seconds() / 3600.0
+            logging.info(
+                "translation_focus_pool_refill_job age_check request_id=%s enqueued_at_utc=%s age_hours=%.2f max_age_hours=%.1f force=%s",
+                request_id,
+                enqueued_at_utc,
+                age_hours,
+                float(max_age_hours or 4.0),
+                bool(force),
+            )
             if age_hours > float(max_age_hours or 4.0):
                 logging.warning(
                     "translation_focus_pool_refill_job: stale message discarded "
@@ -1506,6 +1514,17 @@ def run_translation_focus_pool_refill_job(
         )
         total_ms = int((time.perf_counter() - started_at) * 1000)
         logging.info(
+            "translation_focus_pool_refill_job result_summary request_id=%s ok=%s skipped=%s reason=%s generated=%s upserted=%s focuses=%s total_ms=%s",
+            request_id,
+            bool(result.get("ok", True)) if isinstance(result, dict) else None,
+            bool(result.get("skipped")) if isinstance(result, dict) else None,
+            str(result.get("reason") or "").strip() if isinstance(result, dict) else None,
+            int(result.get("generated") or 0) if isinstance(result, dict) else None,
+            int(result.get("upserted") or 0) if isinstance(result, dict) else None,
+            int(result.get("focuses") or 0) if isinstance(result, dict) else None,
+            total_ms,
+        )
+        logging.info(
             "translation_focus_pool_refill_job completed request_id=%s correlation_id=%s tz_name=%s total_ms=%s result=%s",
             request_id,
             correlation_id,
@@ -1519,6 +1538,41 @@ def run_translation_focus_pool_refill_job(
             request_id,
             correlation_id,
             normalized_tz_name,
+        )
+        raise
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_weekly_global_ranking_report_actor(
+    request_id: str | None = None,
+    correlation_id: str | None = None,
+    tz_name: str | None = None,
+) -> None:
+    started_at = time.perf_counter()
+    logging.info(
+        "weekly_global_ranking_report start request_id=%s correlation_id=%s tz_name=%s",
+        request_id,
+        correlation_id,
+        tz_name,
+    )
+    try:
+        from backend.backend_server import _dispatch_weekly_global_ranking_report, TODAY_PLAN_DEFAULT_TZ
+
+        result = _dispatch_weekly_global_ranking_report(
+            tz_name=str(tz_name or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ,
+        )
+        logging.info(
+            "weekly_global_ranking_report completed request_id=%s correlation_id=%s total_ms=%s result=%s",
+            request_id,
+            correlation_id,
+            int((time.perf_counter() - started_at) * 1000),
+            result,
+        )
+    except Exception:
+        logging.exception(
+            "weekly_global_ranking_report failed request_id=%s correlation_id=%s",
+            request_id,
+            correlation_id,
         )
         raise
 
