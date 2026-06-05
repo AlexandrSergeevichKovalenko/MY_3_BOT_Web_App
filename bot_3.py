@@ -4925,7 +4925,25 @@ async def handle_user_message(update: Update, context: CallbackContext):
             else:
                 reply = f"❌ Falsch. Es ist *{full_word}*{detail}{extra}"
 
-            await update.message.reply_text(reply, parse_mode="Markdown")
+            # 🔊 TTS button — pronounce the compound word
+            import hashlib as _hs_rb
+            speak_key = _hs_rb.sha1(
+                f"rebuspeak:{int(user_id)}:{dispatch_id}:{correct_word}".encode()
+            ).hexdigest()[:20]
+            pending_quiz_feel_requests[speak_key] = {
+                "user_id": int(user_id),
+                "source_lang": "de",
+                "source_text": full_word,
+                "target_lang": "ru",
+                "target_text": meaning_ru,
+            }
+            speak_keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔊 Anhören", callback_data=f"quizspeak:{speak_key}")
+            ]])
+
+            await update.message.reply_text(
+                reply, parse_mode="Markdown", reply_markup=speak_keyboard
+            )
             return
     # ── end rebus ───────────────────────────────────────────────────────────
 
