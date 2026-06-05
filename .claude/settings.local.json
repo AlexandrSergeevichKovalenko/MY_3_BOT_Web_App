@@ -124,7 +124,10 @@
       "Bash(xargs '-I{}' sh -c 'count=$\\(git show {} -- frontend/src/App.jsx 2>/dev/null | grep \"renderTodaySectionTaskHud\" | wc -l\\); if [ \"$count\" -gt 0 ]; then echo \"{}: $count\"; fi')",
       "Bash(xargs '-I{}' sh -c 'count=$\\(git show {} -- frontend/src/App.jsx 2>/dev/null | grep \"srsRevealElapsedSec\\\\|srs-timer\" | wc -l\\); if [ \"$count\" -gt 0 ]; then echo \"{}: $count\"; fi')",
       "Bash(xargs '-I{}' sh -c 'count=$\\(git show {} -- backend/openai_manager.py 2>/dev/null | grep \"EXACT TRANSLATION CARD\" | wc -l\\); if [ \"$count\" -gt 0 ]; then echo \"{}: $count\"; fi')",
-      "Bash(grep -E \"conn\\\\.commit|def |\\\\\"\\\\\"\\\\\"$\")"
+      "Bash(grep -E \"conn\\\\.commit|def |\\\\\"\\\\\"\\\\\"$\")",
+      "Bash(PYTHONPATH=. python3 /tmp/snap_test.py)",
+      "Bash(PYTHONPATH=. python3 *)",
+      "Bash(grep -c \"^import logging\\\\|^import logging$\" /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/backend/translation_workflow.py)"
     ]
   }
 }

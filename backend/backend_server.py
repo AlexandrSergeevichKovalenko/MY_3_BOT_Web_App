@@ -43940,6 +43940,13 @@ def start_webapp_translation():
                 **response_payload,
                 "language_pair": _build_language_pair_payload(source_lang, target_lang),
             }
+            if session_id and response_body.get("items"):
+                _mark_translation_sentences_delivered(
+                    user_id=int(user_id),
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    items=response_body.get("items"),
+                )
             if session_id:
                 try:
                     _write_session_presence_projection_active(
