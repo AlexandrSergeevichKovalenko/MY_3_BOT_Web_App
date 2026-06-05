@@ -17473,11 +17473,11 @@ async def send_listening_to_chat(
     chat_id: int,
     target_user_id: int,
 ) -> bool:
-    """Send one listening quiz (audio + caption + button) to a group chat."""
+    """Send one listening quiz (voice + caption + button) to a group chat."""
     listening_id = str(entry.get("listening_id") or "")
-    audio_key    = str(entry.get("audio_object_key") or "")
-    if not audio_key:
-        logging.warning("ls_send: no audio key listening_id=%s", listening_id)
+    german_text  = str(entry.get("german_text") or "")
+    if not german_text:
+        logging.warning("ls_send: no german_text listening_id=%s", listening_id)
         return False
 
     try:
@@ -17496,32 +17496,30 @@ async def send_listening_to_chat(
         logging.info("ls_send: duplicate suppressed listening_id=%s chat_id=%s", listening_id, chat_id)
         return False
 
-    from backend.r2_storage import r2_public_url
+    # Synthesize voice at send time using the bot's existing TTS engine
     try:
-        audio_url = r2_public_url(audio_key)
-    except Exception:
-        logging.warning("ls_send: r2_public_url failed key=%s", audio_key, exc_info=True)
+        voice_buffer, _ = await _synthesize_telegram_tts_voice("de", german_text)
+    except Exception as exc:
+        logging.warning("ls_send: TTS synthesis failed listening_id=%s: %s", listening_id, exc)
         return False
 
     caption, keyboard = _build_listening_group_message(entry, dispatch_id)
 
     try:
-        audio_msg = await context.bot.send_audio(
+        voice_msg = await context.bot.send_voice(
             chat_id=int(chat_id),
-            audio=audio_url,
+            voice=voice_buffer,
             caption=caption,
             reply_markup=keyboard,
             parse_mode="Markdown",
-            title="Hörverständnis B2",
-            performer="Das Deutsche Schlümpfchen",
         )
         await asyncio.to_thread(
             update_listening_dispatch_audio_message_id,
             dispatch_id,
-            audio_message_id=int(audio_msg.message_id),
+            audio_message_id=int(voice_msg.message_id),
         )
     except Exception as exc:
-        logging.warning("ls_send: send_audio failed dispatch_id=%s: %s", dispatch_id, exc)
+        logging.warning("ls_send: send_voice failed dispatch_id=%s: %s", dispatch_id, exc)
         return False
 
     logging.info("ls_send_ok dispatch_id=%s listening_id=%s chat_id=%s", dispatch_id, listening_id, chat_id)
