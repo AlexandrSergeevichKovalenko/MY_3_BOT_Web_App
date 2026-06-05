@@ -7504,6 +7504,35 @@ def ensure_webapp_tables() -> None:
                 ON bt_3_listening_answers (user_id, submitted_at DESC);
             """)
             # ── end listening tables ──────────────────────────────────────
+
+            # ── Analytics precomputed snapshots ───────────────────────────
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_analytics_summary_snapshot (
+                    user_id         BIGINT NOT NULL,
+                    source_lang     TEXT   NOT NULL DEFAULT 'ru',
+                    target_lang     TEXT   NOT NULL DEFAULT 'de',
+                    scope_key       TEXT   NOT NULL DEFAULT 'personal',
+                    period          TEXT   NOT NULL,
+                    start_date      DATE   NOT NULL,
+                    end_date        DATE   NOT NULL,
+                    summary_json    JSONB  NOT NULL DEFAULT '{}'::jsonb,
+                    is_dirty        BOOLEAN NOT NULL DEFAULT FALSE,
+                    computed_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, source_lang, target_lang, scope_key,
+                                 period, start_date, end_date)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_analytics_snapshot_dirty
+                ON bt_3_analytics_summary_snapshot (is_dirty, updated_at)
+                WHERE is_dirty = TRUE;
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_analytics_snapshot_user
+                ON bt_3_analytics_summary_snapshot (user_id, computed_at DESC);
+            """)
+            # ── end analytics snapshots ───────────────────────────────────
             cursor.close()
             _run_dictionary_canonical_schema_migration(conn)
             _run_rebus_rute_fix_migration(conn)
@@ -32021,3 +32050,142 @@ def save_listening_evaluation(
                 (_json.dumps(evaluation_json, ensure_ascii=False), int(answer_id)),
             )
         conn.commit()
+
+
+# ── Analytics summary snapshots ───────────────────────────────────────────────
+
+def get_analytics_summary_snapshot(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    scope_key: str,
+    period: str,
+    start_date,
+    end_date,
+) -> dict | None:
+    """Return precomputed snapshot {summary, is_dirty, computed_at} or None."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT summary_json, is_dirty, computed_at
+                FROM bt_3_analytics_summary_snapshot
+                WHERE user_id = %s AND source_lang = %s AND target_lang = %s
+                  AND scope_key = %s AND period = %s
+                  AND start_date = %s AND end_date = %s
+                """,
+                (int(user_id), str(source_lang), str(target_lang),
+                 str(scope_key), str(period), start_date, end_date),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {"summary": row[0], "is_dirty": bool(row[1]), "computed_at": row[2]}
+
+
+def upsert_analytics_summary_snapshot(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    scope_key: str,
+    period: str,
+    start_date,
+    end_date,
+    summary_json: dict,
+) -> None:
+    """Write/refresh a precomputed snapshot and clear its dirty flag."""
+    import json as _json
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_analytics_summary_snapshot
+                    (user_id, source_lang, target_lang, scope_key, period,
+                     start_date, end_date, summary_json, is_dirty, computed_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, FALSE, NOW(), NOW())
+                ON CONFLICT (user_id, source_lang, target_lang, scope_key,
+                             period, start_date, end_date)
+                DO UPDATE SET
+                    summary_json = EXCLUDED.summary_json,
+                    is_dirty     = FALSE,
+                    computed_at  = NOW(),
+                    updated_at   = NOW()
+                """,
+                (int(user_id), str(source_lang), str(target_lang), str(scope_key),
+                 str(period), start_date, end_date,
+                 _json.dumps(summary_json, ensure_ascii=False)),
+            )
+        conn.commit()
+
+
+def mark_analytics_snapshots_dirty_for_user(
+    *,
+    user_id: int,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+) -> int:
+    """Mark a user's snapshots dirty so they get recomputed. Returns rows touched.
+    If source/target lang given, scope to that pair; otherwise all pairs."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if source_lang and target_lang:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_analytics_summary_snapshot
+                    SET is_dirty = TRUE, updated_at = NOW()
+                    WHERE user_id = %s AND source_lang = %s AND target_lang = %s
+                      AND is_dirty = FALSE
+                    """,
+                    (int(user_id), str(source_lang), str(target_lang)),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_analytics_summary_snapshot
+                    SET is_dirty = TRUE, updated_at = NOW()
+                    WHERE user_id = %s AND is_dirty = FALSE
+                    """,
+                    (int(user_id),),
+                )
+            count = cursor.rowcount
+        conn.commit()
+    return count
+
+
+def list_dirty_analytics_snapshot_keys(*, limit: int = 200) -> list[dict]:
+    """Return dirty snapshot keys to recompute (for incremental refresh worker)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id, source_lang, target_lang, scope_key,
+                       period, start_date, end_date
+                FROM bt_3_analytics_summary_snapshot
+                WHERE is_dirty = TRUE
+                ORDER BY updated_at
+                LIMIT %s
+                """,
+                (int(limit),),
+            )
+            rows = cursor.fetchall()
+    cols = ["user_id", "source_lang", "target_lang", "scope_key",
+            "period", "start_date", "end_date"]
+    return [dict(zip(cols, r)) for r in rows]
+
+
+def prune_stale_analytics_snapshots(*, older_than_days: int = 14) -> int:
+    """Delete snapshots whose end_date is far in the past (rolled-over periods)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM bt_3_analytics_summary_snapshot
+                WHERE end_date < CURRENT_DATE - (%s || ' days')::INTERVAL
+                """,
+                (int(older_than_days),),
+            )
+            count = cursor.rowcount
+        conn.commit()
+    return count

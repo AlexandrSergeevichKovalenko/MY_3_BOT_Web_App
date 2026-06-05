@@ -14605,6 +14605,8 @@ function AppInner() {
   const [assistantSessionMistakes, setAssistantSessionMistakes] = useState([]);
   const [assistantSessionReviewRequested, setAssistantSessionReviewRequested] = useState(false);
   const [voiceMistakesExpanded, setVoiceMistakesExpanded] = useState(false);
+  const assistantSurfaceProRequired = isKnownFreePaidSurfaceMode
+    || String(assistantError || '').includes(PAID_FEATURE_ERROR_PREFIX);
   const [readerSessionId, setReaderSessionId] = useState(null);
 
   // LiveKit login state
@@ -14672,13 +14674,17 @@ function AppInner() {
       );
 
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`${tr('Ошибка получения токена', 'Token-Fehler')}: ${errorText}`);
+        throw new Error(await readApiError(response, 'Ошибка получения токена', 'Token-Fehler'));
       }
 
       const data = await response.json();
       setToken(data.token);
     } catch (error) {
+      if (String(error?.message || '').includes(PAID_FEATURE_ERROR_PREFIX)) {
+        setToken(null);
+        setAssistantError(error.message);
+        return;
+      }
       console.error(error);
       alert(error.message);
     }
@@ -14717,7 +14723,7 @@ function AppInner() {
         `/api/token?user_id=${encodeURIComponent(userId)}&username=${encodeURIComponent(displayName)}&voice_session_id=${encodeURIComponent(boundSessionId)}`
       );
       if (!response.ok) {
-        throw new Error(await response.text());
+        throw new Error(await readApiError(response, 'Ошибка подключения ассистента', 'Assistent-Verbindungsfehler'));
       }
       const data = await response.json();
       setAssistantToken(data.token);
@@ -14726,7 +14732,12 @@ function AppInner() {
         await stopAssistantSessionTracking(boundSessionId, { skipRefresh: true });
       }
       setAssistantToken(null);
-      setAssistantError(`${tr('Ошибка подключения ассистента', 'Assistent-Verbindungsfehler')}: ${error.message}`);
+      const message = String(error?.message || '');
+      setAssistantError(
+        message.includes(PAID_FEATURE_ERROR_PREFIX)
+          ? message
+          : `${tr('Ошибка подключения ассистента', 'Assistent-Verbindungsfehler')}: ${message}`
+      );
     } finally {
       setAssistantConnecting(false);
     }
@@ -14743,7 +14754,7 @@ function AppInner() {
         body: JSON.stringify({ initData }),
       });
       if (!response.ok) {
-        throw new Error(await response.text());
+        throw new Error(await readApiError(response, 'Ошибка старта сессии ассистента', 'Fehler beim Start der Assistent-Session'));
       }
       const data = await response.json();
       const nextSessionId = data?.session?.session_id;
@@ -14753,7 +14764,15 @@ function AppInner() {
         return numericSessionId;
       }
     } catch (error) {
-      setAssistantError(`${tr('Ошибка старта сессии ассистента', 'Fehler beim Start der Assistent-Session')}: ${error.message}`);
+      const message = String(error?.message || '');
+      setAssistantError(
+        message.includes(PAID_FEATURE_ERROR_PREFIX)
+          ? message
+          : `${tr('Ошибка старта сессии ассистента', 'Fehler beim Start der Assistent-Session')}: ${message}`
+      );
+      if (message.includes(PAID_FEATURE_ERROR_PREFIX)) {
+        throw error;
+      }
     }
     return null;
   };
@@ -34300,7 +34319,7 @@ function AppInner() {
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
 
-                {isKnownFreePaidSurfaceMode ? (
+                {assistantSurfaceProRequired ? (
                   renderAppPaidFeatureNotice(assistantPaidFeatureTitle)
                 ) : !assistantToken ? (
                   <div className={`voice-assistant-join ${isLightTheme ? 'is-theme-light' : ''}`}>
@@ -34372,7 +34391,7 @@ function AppInner() {
                   </div>
                 )}
 
-                {!isKnownFreePaidSurfaceMode && !assistantToken && assistantSessionReviewRequested && (
+                {!assistantSurfaceProRequired && !assistantToken && assistantSessionReviewRequested && (
                   assistantSessionAssessment ? (
                     <div className="voice-assistant-review">
                       <div className="voice-assistant-review-head">
