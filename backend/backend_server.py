@@ -26629,14 +26629,55 @@ def get_webapp_analytics_compare():
                 )
                 compare_build_mode = "summary_cache"
             else:
-                leaderboard = fetch_comparison_leaderboard(
-                    start_date,
-                    end_date,
-                    limit=limit,
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                    cohort_user_ids=scope_user_ids,
-                )
+                # Group leaderboard: try the precomputed snapshot first.
+                _eff_chat_id = _safe_int(effective_scope.get("scope_chat_id"))
+                leaderboard = None
+                if _eff_chat_id:
+                    try:
+                        lb_snap = get_analytics_summary_snapshot(
+                            user_id=int(_eff_chat_id),
+                            source_lang=source_lang, target_lang=target_lang,
+                            scope_key=f"leaderboard:{int(_eff_chat_id)}",
+                            period=period, start_date=start_date, end_date=end_date,
+                        )
+                    except Exception:
+                        lb_snap = None
+                    if lb_snap and isinstance(lb_snap.get("summary"), dict):
+                        leaderboard = list((lb_snap["summary"]).get("items") or [])
+                        compare_build_mode = "leaderboard_snapshot"
+                        if lb_snap.get("is_dirty"):
+                            _members_for_refresh = list(scope_user_ids)
+                            _s_lang, _t_lang = source_lang, target_lang
+                            _cid, _per = int(_eff_chat_id), period
+                            _sd, _ed = start_date, end_date
+                            def _bg_refresh_leaderboard() -> None:
+                                try:
+                                    fresh_lb = fetch_comparison_leaderboard(
+                                        _sd, _ed, limit=ANALYTICS_LEADERBOARD_SNAPSHOT_LIMIT,
+                                        source_lang=_s_lang, target_lang=_t_lang,
+                                        cohort_user_ids=_members_for_refresh,
+                                    )
+                                    upsert_analytics_summary_snapshot(
+                                        user_id=_cid, source_lang=_s_lang, target_lang=_t_lang,
+                                        scope_key=f"leaderboard:{_cid}", period=_per,
+                                        start_date=_sd, end_date=_ed,
+                                        summary_json={"items": fresh_lb if isinstance(fresh_lb, list) else []},
+                                    )
+                                except Exception:
+                                    logging.warning("analytics_compare: leaderboard bg refresh failed chat_id=%s", _cid, exc_info=True)
+                            _HOTPATH_ANALYTICS_COMPARE_CACHE.enqueue_refresh(
+                                ("lb_refresh", *compare_cache_key), _bg_refresh_leaderboard
+                            )
+
+                if leaderboard is None:
+                    leaderboard = fetch_comparison_leaderboard(
+                        start_date,
+                        end_date,
+                        limit=limit,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        cohort_user_ids=scope_user_ids,
+                    )
                 user_rank = None
                 for index, item in enumerate(leaderboard, start=1):
                     if int(item.get("user_id")) == int(user_id_int):
@@ -46753,6 +46794,49 @@ def _compute_and_store_group_analytics_snapshot(
     return True
 
 
+ANALYTICS_LEADERBOARD_SNAPSHOT_LIMIT = 8
+
+
+def _leaderboard_scope_key(chat_id: int) -> str:
+    return f"leaderboard:{int(chat_id)}"
+
+
+def _compute_and_store_group_leaderboard_snapshot(
+    *,
+    chat_id: int,
+    member_user_ids: list[int],
+    source_lang: str,
+    target_lang: str,
+    period: str,
+) -> bool:
+    """Compute the group leaderboard (ranked members) once and store the list
+    under scope_key=leaderboard:{chat_id} so the group 'Ваше место' screen is
+    served instantly instead of running the heavy GROUP BY query."""
+    if not member_user_ids:
+        return False
+    normalized_period, start_date, end_date = _resolve_webapp_analytics_bounds(
+        period_value=period,
+        scope_user_ids=member_user_ids,
+    )
+    leaderboard = fetch_comparison_leaderboard(
+        start_date, end_date,
+        limit=ANALYTICS_LEADERBOARD_SNAPSHOT_LIMIT,
+        source_lang=source_lang, target_lang=target_lang,
+        cohort_user_ids=member_user_ids,
+    )
+    upsert_analytics_summary_snapshot(
+        user_id=int(chat_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        scope_key=_leaderboard_scope_key(chat_id),
+        period=normalized_period,
+        start_date=start_date,
+        end_date=end_date,
+        summary_json={"items": leaderboard if isinstance(leaderboard, list) else []},
+    )
+    return True
+
+
 def run_analytics_snapshot_precompute_job(*, user_ids: list[int] | None = None) -> dict:
     """Nightly: precompute personal- AND group-scope analytics summaries so the
     analytics screen reads a ready row instead of running heavy SQL.
@@ -46848,6 +46932,22 @@ def run_analytics_snapshot_precompute_job(*, user_ids: list[int] | None = None) 
                     stats["failed"] += 1
                     logging.warning(
                         "analytics_snapshot_job: group compute failed chat_id=%s period=%s",
+                        chat_id, period, exc_info=True,
+                    )
+                # Leaderboard snapshot (the group-mode "Ваше место" screen).
+                try:
+                    _compute_and_store_group_leaderboard_snapshot(
+                        chat_id=chat_id,
+                        member_user_ids=members,
+                        source_lang=s_lang,
+                        target_lang=t_lang,
+                        period=period,
+                    )
+                    stats["group_snapshots"] += 1
+                except Exception:
+                    stats["failed"] += 1
+                    logging.warning(
+                        "analytics_snapshot_job: leaderboard compute failed chat_id=%s period=%s",
                         chat_id, period, exc_info=True,
                     )
         if group_had_success:
