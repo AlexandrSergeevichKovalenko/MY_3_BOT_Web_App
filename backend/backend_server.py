@@ -46713,11 +46713,44 @@ def _compute_and_store_analytics_snapshot(
     return True
 
 
+def _compute_and_store_group_analytics_snapshot(
+    *,
+    chat_id: int,
+    member_user_ids: list[int],
+    source_lang: str,
+    target_lang: str,
+    period: str,
+) -> bool:
+    """Compute a group-scope summary (aggregate over members, filtered by the
+    given language pair) and store it once under the group's chat_id."""
+    if not member_user_ids:
+        return False
+    normalized_period, start_date, end_date = _resolve_webapp_analytics_bounds(
+        period_value=period,
+        scope_user_ids=member_user_ids,
+    )
+    summary = fetch_scope_summary(
+        member_user_ids, start_date, end_date,
+        source_lang=source_lang, target_lang=target_lang,
+    )
+    upsert_analytics_summary_snapshot(
+        user_id=int(chat_id),  # group snapshots are keyed by the group's chat_id
+        source_lang=source_lang,
+        target_lang=target_lang,
+        scope_key=f"group:{int(chat_id)}",
+        period=normalized_period,
+        start_date=start_date,
+        end_date=end_date,
+        summary_json=summary if isinstance(summary, dict) else {},
+    )
+    return True
+
+
 def run_analytics_snapshot_precompute_job(*, user_ids: list[int] | None = None) -> dict:
-    """Nightly: precompute personal-scope analytics summaries for all Pro users
-    so the analytics screen reads a ready row instead of running heavy SQL.
+    """Nightly: precompute personal- AND group-scope analytics summaries so the
+    analytics screen reads a ready row instead of running heavy SQL.
     Returns stats dict."""
-    stats = {"users": 0, "snapshots": 0, "failed": 0, "pruned": 0}
+    stats = {"users": 0, "snapshots": 0, "failed": 0, "groups": 0, "group_snapshots": 0, "pruned": 0}
     try:
         target_user_ids = (
             list(user_ids)
@@ -46728,6 +46761,7 @@ def run_analytics_snapshot_precompute_job(*, user_ids: list[int] | None = None) 
         logging.warning("analytics_snapshot_job: failed to list pro users", exc_info=True)
         return stats
 
+    # ── Personal scope ────────────────────────────────────────────────────────
     for uid in target_user_ids:
         try:
             source_lang, target_lang, _profile = _get_user_language_pair(int(uid))
@@ -46753,6 +46787,64 @@ def run_analytics_snapshot_precompute_job(*, user_ids: list[int] | None = None) 
                 )
         if user_had_success:
             stats["users"] += 1
+
+    # ── Group scope ───────────────────────────────────────────────────────────
+    # When user_ids is given (admin test for specific users), restrict groups to
+    # those that contain at least one of the requested users; otherwise all groups.
+    try:
+        known_groups = list_known_webapp_group_chats(limit=1000)
+    except Exception:
+        logging.warning("analytics_snapshot_job: list groups failed", exc_info=True)
+        known_groups = []
+
+    requested_set = set(int(u) for u in target_user_ids) if user_ids is not None else None
+
+    for group in known_groups:
+        chat_id = int(group.get("chat_id") or 0)
+        if chat_id == 0:
+            continue
+        try:
+            members = list_webapp_group_member_user_ids(chat_id, limit=5000, only_confirmed=True)
+        except Exception:
+            logging.warning("analytics_snapshot_job: group members failed chat_id=%s", chat_id, exc_info=True)
+            continue
+        if not members:
+            continue
+        if requested_set is not None and not (set(members) & requested_set):
+            continue  # admin test scoped to specific users; skip unrelated groups
+
+        # Distinct language pairs among members (almost always just one).
+        pairs: set[tuple[str, str]] = set()
+        for m in members:
+            try:
+                s_lang, t_lang, _p = _get_user_language_pair(int(m))
+                pairs.add((s_lang, t_lang))
+            except Exception:
+                continue
+        if not pairs:
+            continue
+
+        group_had_success = False
+        for (s_lang, t_lang) in pairs:
+            for period in ANALYTICS_SNAPSHOT_PERIODS:
+                try:
+                    _compute_and_store_group_analytics_snapshot(
+                        chat_id=chat_id,
+                        member_user_ids=members,
+                        source_lang=s_lang,
+                        target_lang=t_lang,
+                        period=period,
+                    )
+                    stats["group_snapshots"] += 1
+                    group_had_success = True
+                except Exception:
+                    stats["failed"] += 1
+                    logging.warning(
+                        "analytics_snapshot_job: group compute failed chat_id=%s period=%s",
+                        chat_id, period, exc_info=True,
+                    )
+        if group_had_success:
+            stats["groups"] += 1
 
     try:
         stats["pruned"] = prune_stale_analytics_snapshots(older_than_days=14)

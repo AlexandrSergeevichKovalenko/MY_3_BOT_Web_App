@@ -32153,29 +32153,49 @@ def mark_analytics_snapshots_dirty_for_user(
     user_id: int,
     source_lang: str | None = None,
     target_lang: str | None = None,
+    include_member_groups: bool = True,
 ) -> int:
     """Mark a user's snapshots dirty so they get recomputed. Returns rows touched.
-    If source/target lang given, scope to that pair; otherwise all pairs."""
+    If source/target lang given, scope to that pair; otherwise all pairs.
+    When include_member_groups=True, also marks dirty the group-scope snapshots
+    (keyed by the group's chat_id) for every group the user is a confirmed
+    member of — so group analytics reflect the member's same-day activity."""
+    # Snapshot rows the activity affects: the user's own (personal) rows plus
+    # the group rows (stored under the group's chat_id) for their groups.
+    group_subquery = (
+        " OR user_id IN (SELECT chat_id FROM bt_3_webapp_group_contexts "
+        "WHERE user_id = %s AND participation_confirmed = TRUE)"
+        if include_member_groups else ""
+    )
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             if source_lang and target_lang:
+                params = [int(user_id)]
+                if include_member_groups:
+                    params.append(int(user_id))
+                params += [str(source_lang), str(target_lang)]
                 cursor.execute(
-                    """
+                    f"""
                     UPDATE bt_3_analytics_summary_snapshot
                     SET is_dirty = TRUE, updated_at = NOW()
-                    WHERE user_id = %s AND source_lang = %s AND target_lang = %s
+                    WHERE (user_id = %s{group_subquery})
+                      AND source_lang = %s AND target_lang = %s
                       AND is_dirty = FALSE
                     """,
-                    (int(user_id), str(source_lang), str(target_lang)),
+                    tuple(params),
                 )
             else:
+                params = [int(user_id)]
+                if include_member_groups:
+                    params.append(int(user_id))
                 cursor.execute(
-                    """
+                    f"""
                     UPDATE bt_3_analytics_summary_snapshot
                     SET is_dirty = TRUE, updated_at = NOW()
-                    WHERE user_id = %s AND is_dirty = FALSE
+                    WHERE (user_id = %s{group_subquery})
+                      AND is_dirty = FALSE
                     """,
-                    (int(user_id),),
+                    tuple(params),
                 )
             count = cursor.rowcount
         conn.commit()
