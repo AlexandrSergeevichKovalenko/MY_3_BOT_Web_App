@@ -5774,34 +5774,16 @@ def _store_pending_dictionary_lookup_request(
     return key
 
 
-_DICT_PENDING_TTL_SECONDS = 90 * 60  # 90 minutes — older entries are stale
-
-
 def _list_pending_dictionary_lookup_request_keys_for_user(user_id: int) -> list[str]:
-    import time as _t
     target_user_id = int(user_id)
     _restore_pending_from_redis(target_user_id)
-    now = _t.time()
-    fresh_keys = []
-    stale_keys = []
-    for key, payload in list(pending_dictionary_lookup_requests.items()):
-        if int((payload or {}).get("user_id", 0)) != target_user_id:
-            continue
-        created_at = float((payload or {}).get("created_at") or 0.0)
-        # Entries without timestamp are old (pre-fix); treat as stale
-        age = now - created_at if created_at > 0 else _DICT_PENDING_TTL_SECONDS + 1
-        if age <= _DICT_PENDING_TTL_SECONDS:
-            fresh_keys.append(key)
-        else:
-            stale_keys.append(key)
-    # Silently drop stale entries so they don't accumulate
-    for k in stale_keys:
-        pending_dictionary_lookup_requests.pop(k, None)
-    logging.info(
-        "dict_pending: list_keys user_id=%s fresh=%d stale_dropped=%d",
-        target_user_id, len(fresh_keys), len(stale_keys),
-    )
-    return fresh_keys
+    in_memory = [
+        key
+        for key, payload in pending_dictionary_lookup_requests.items()
+        if int((payload or {}).get("user_id", 0)) == target_user_id
+    ]
+    logging.info("dict_pending: list_keys user_id=%s result=%d", target_user_id, len(in_memory))
+    return in_memory
 
 
 def _build_dictionary_pair_selection_text(source_text: str) -> str:
@@ -8246,6 +8228,18 @@ async def _run_dictionary_batch_fast_for_user(
             )
         except Exception:
             logging.debug("Failed to send no-processed batch notice", exc_info=True)
+
+    # Clear all keys that were in this batch — processed or not.
+    # This ensures "Быстрый перевод" always starts fresh next time.
+    for item in batch_items:
+        key = str(item.get("request_key") or "").strip()
+        if key:
+            pending_dictionary_lookup_requests.pop(key, None)
+            _remove_pending_from_redis(int(user_id), key)
+    logging.info(
+        "batch_fast: cleared %d processed keys from pending for user_id=%s",
+        len(batch_items), int(user_id),
+    )
 
 
 async def _run_dictionary_batch_fast_for_user_guarded(
