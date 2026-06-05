@@ -40,8 +40,8 @@ assert.match(
 
 assert.match(
   source,
-  /isKnownFreePaidSurfaceMode \? \(\s*renderPaidFeatureNotice\(analyticsPaidFeatureError/s,
-  'Analytics section must render existing paid-feature card for known FREE users',
+  /analyticsSurfaceProRequired \? \(\s*renderPaidFeatureNotice\(analyticsPaidFeatureError/s,
+  'Analytics section must render existing paid-feature card when Analytics requires Pro',
 );
 
 console.log('analytics lightweight static checks passed');

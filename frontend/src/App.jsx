@@ -5877,6 +5877,11 @@ function AppInner() {
   const knownBillingEffectiveMode = String(billingStatus?.effective_mode || '').trim().toLowerCase();
   const isKnownFreePaidSurfaceMode = Boolean(billingStatus && knownBillingEffectiveMode === 'free');
   const analyticsPaidFeatureError = `${PAID_FEATURE_ERROR_PREFIX}${JSON.stringify({ feature: 'analytics', feature_title: 'Аналитика' })}`;
+  const analyticsSurfaceProRequired = isKnownFreePaidSurfaceMode || [
+    analyticsError,
+    analyticsScopeError,
+    progressResetError,
+  ].some((value) => String(value || '').includes(PAID_FEATURE_ERROR_PREFIX));
   const [languageProfile, setLanguageProfile] = useState(null);
   const [languageProfileDraft, setLanguageProfileDraft] = useState({ learning_language: 'de', native_language: 'ru' });
   const [languageProfileLoading, setLanguageProfileLoading] = useState(false);
@@ -34643,7 +34648,7 @@ function AppInner() {
                   <p className="webapp-muted">{tr('Языковая пара', 'Sprachpaar')}: {getActiveLanguagePairLabel()}</p>
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
-                {isKnownFreePaidSurfaceMode ? (
+                {analyticsSurfaceProRequired ? (
                   renderPaidFeatureNotice(analyticsPaidFeatureError, tr('Аналитика', 'Analytik'))
                 ) : (
                   <>

@@ -273,47 +273,16 @@ def generate_listening_entry(topic_id: Optional[str] = None) -> str:
         for i, q in enumerate(data["questions"])
     ]
 
-    # 2. Generate TTS audio
-    try:
-        audio_bytes = _generate_tts_audio(german_text)
-    except Exception as exc:
-        logging.warning("listening_gen: TTS failed, saving text-only entry: %s", exc)
-        audio_bytes = None
-
-    # 3. Upload audio to R2
+    # 2. Save to DB — audio is generated at send time by the bot's TTS engine
     listening_id = str(uuid.uuid4())
-    audio_object_key = None
-    audio_status = "pending"
-
-    if audio_bytes:
-        safe_id = listening_id.replace("-", "_")
-        audio_object_key = f"listening/audio/{safe_id}.mp3"
-        try:
-            r2_put_bytes(
-                audio_object_key,
-                audio_bytes,
-                content_type="audio/mpeg",
-                cache_control="public, max-age=31536000, immutable",
-            )
-            audio_status = "ready"
-            logging.info(
-                "listening_gen: audio uploaded key=%s bytes=%d",
-                audio_object_key, len(audio_bytes),
-            )
-        except Exception as exc:
-            logging.warning("listening_gen: R2 upload failed: %s", exc)
-            audio_object_key = None
-            audio_status = "failed"
-
-    # 4. Save to DB
     upsert_listening_bank_entry(
         listening_id=listening_id,
         topic=topic["label"],
         difficulty="B2",
         german_text=german_text,
         questions_json=questions,
-        audio_object_key=audio_object_key,
-        audio_status=audio_status,
+        audio_object_key=None,
+        audio_status="ready",   # text+questions ready; TTS done at send time
     )
 
     logging.info(
