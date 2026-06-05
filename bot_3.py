@@ -5758,11 +5758,13 @@ def _store_pending_dictionary_lookup_request(
     key = hashlib.sha1(
         f"{user_id}:{text}:{datetime.utcnow().isoformat()}".encode("utf-8")
     ).hexdigest()[:20]
+    import time as _t
     pending_dictionary_lookup_requests[key] = {
         "user_id": int(user_id),
         "text": (text or "").strip(),
         "chat_id": int(chat_id) if chat_id is not None else None,
         "message_id": int(message_id) if message_id is not None else None,
+        "created_at": _t.time(),
     }
     if len(pending_dictionary_lookup_requests) > 500:
         oldest_key = next(iter(pending_dictionary_lookup_requests))
@@ -5772,19 +5774,34 @@ def _store_pending_dictionary_lookup_request(
     return key
 
 
+_DICT_PENDING_TTL_SECONDS = 90 * 60  # 90 minutes — older entries are stale
+
+
 def _list_pending_dictionary_lookup_request_keys_for_user(user_id: int) -> list[str]:
+    import time as _t
     target_user_id = int(user_id)
-    # Always merge Redis first. A user can have direct Telegram entries already
-    # in memory and fresh Shortcut entries waiting in Redis at the same time.
     _restore_pending_from_redis(target_user_id)
-    in_memory = [
-        key
-        for key, payload in pending_dictionary_lookup_requests.items()
-        if int((payload or {}).get("user_id", 0)) == target_user_id
-    ]
-    logging.info("dict_pending: list_keys user_id=%s in_memory_before_restore=%d", target_user_id, len(in_memory))
-    logging.info("dict_pending: list_keys user_id=%s result=%d", target_user_id, len(in_memory))
-    return in_memory
+    now = _t.time()
+    fresh_keys = []
+    stale_keys = []
+    for key, payload in list(pending_dictionary_lookup_requests.items()):
+        if int((payload or {}).get("user_id", 0)) != target_user_id:
+            continue
+        created_at = float((payload or {}).get("created_at") or 0.0)
+        # Entries without timestamp are old (pre-fix); treat as stale
+        age = now - created_at if created_at > 0 else _DICT_PENDING_TTL_SECONDS + 1
+        if age <= _DICT_PENDING_TTL_SECONDS:
+            fresh_keys.append(key)
+        else:
+            stale_keys.append(key)
+    # Silently drop stale entries so they don't accumulate
+    for k in stale_keys:
+        pending_dictionary_lookup_requests.pop(k, None)
+    logging.info(
+        "dict_pending: list_keys user_id=%s fresh=%d stale_dropped=%d",
+        target_user_id, len(fresh_keys), len(stale_keys),
+    )
+    return fresh_keys
 
 
 def _build_dictionary_pair_selection_text(source_text: str) -> str:
