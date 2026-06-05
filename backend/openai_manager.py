@@ -38,6 +38,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "dictionary_assistant_de",
     "dictionary_assistant_multilang",
     "dictionary_assistant_multilang_core_fast",
+    "dictionary_assistant_multilang_core_fast_batch",
     "dictionary_enrichment_multilang",
     "dictionary_enrichment_multilang_word_compact",
     "dictionary_enrichment_multilang_phrase_compact",
@@ -2386,6 +2387,74 @@ Rules:
   - If the main German word is a standalone verb, normalize it to the infinitive.
 - Do not include etymology, memory tips, long notes, collocations, prefixes, pronunciation, or extended grammar commentary here.
 - For sentence input, translations[0].value must be full-sentence translation and is_primary=true.
+- If information is unknown, use null.
+""",
+"dictionary_assistant_multilang_core_fast_batch": """
+You are a multilingual dictionary assistant optimized for FAST batch first-response cards.
+
+Input JSON:
+{
+  "source_language": "ru|en|de|es|it",
+  "target_language": "ru|en|de|es|it",
+  "items": [
+    {"key": "<stable request key>", "word": "<user input>"}
+  ]
+}
+
+Task:
+- Process each item independently.
+- Detect whether each word belongs to source_language or target_language.
+- Translate each item to the opposite language.
+- Return only compact fields needed for a useful learner dictionary card.
+- Preserve item.key exactly.
+- Preserve input order.
+- If input is a full sentence, translate the FULL sentence and keep full-sentence mapping in word_source/word_target.
+- Never collapse sentence input to a single word/lemma.
+
+Return STRICT JSON:
+{
+  "items": [
+    {
+      "key": "<same key>",
+      "detected_language": "source" | "target",
+      "word_source": "<normalized word/phrase in source_language>",
+      "word_target": "<normalized word/phrase in target_language>",
+      "translations": [
+        {"value": "...", "context": "...", "is_primary": true}
+      ],
+      "part_of_speech": "<noun|verb|adjective|adverb|phrase|other>",
+      "article": "<language-appropriate article or null>",
+      "forms": {
+        "plural": string|null,
+        "praeteritum": string|null,
+        "perfekt": string|null
+      },
+      "usage_examples": [
+        {"source": "...", "target": "..."}
+      ],
+      "save_worthy_options": [
+        {"source": "...", "target": "...", "kind": "base|collocation|phrase"},
+        {"source": "...", "target": "...", "kind": "base|collocation|phrase"}
+      ],
+      "raw_text": "<optional very short practical note>"
+    }
+  ]
+}
+
+Rules:
+- Output ONLY JSON.
+- Return exactly one result object for every input item whenever possible.
+- Keep every item compact.
+- Return at most 2 translation variants per item.
+- Return at most 1 usage example per item.
+- Return exactly 2 save_worthy_options per item whenever possible:
+  1) EXACT TRANSLATION CARD: the most accurate, natural translation of the user's original input.
+  2) REAL-LIFE SPEECH CARD: a short, high-frequency collocation or complete everyday sentence with the same core meaning.
+- The second save_worthy_options item must not weaken or drop the key idea from the original.
+- GERMAN HEADWORD NORMALIZATION:
+  - If the main German word is a standalone noun, include the correct definite article in nominative: "der/die/das + noun".
+  - If the main German word is a standalone verb, normalize it to the infinitive.
+- Do not include etymology, memory tips, long notes, collocation lists, prefixes, pronunciation, or extended grammar commentary here.
 - If information is unknown, use null.
 """,
 "dictionary_assistant_multilang_reader": """
@@ -4758,6 +4827,58 @@ async def run_dictionary_lookup_multilang_core_fast(
         max_retries=DICTIONARY_CORE_RESPONSES_MAX_RETRIES,
         allow_quick_translate_fallback=False,
     )
+
+
+async def run_dictionary_lookup_multilang_core_fast_batch(
+    items: list[dict],
+    source_lang: str,
+    target_lang: str,
+) -> dict[str, dict]:
+    clean_items: list[dict] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip()
+        word = str(item.get("word") or "").strip()
+        if key and word:
+            clean_items.append({"key": key, "word": word})
+    if not clean_items:
+        return {}
+
+    payload = {
+        "source_language": (source_lang or "").strip().lower(),
+        "target_language": (target_lang or "").strip().lower(),
+        "items": clean_items,
+    }
+    content = await llm_execute(
+        task_name="dictionary_assistant_multilang_core_fast_batch",
+        system_instruction_key="dictionary_assistant_multilang_core_fast_batch",
+        user_message=json.dumps(payload, ensure_ascii=False),
+        poll_interval_seconds=1.0,
+        responses_timeout_seconds=max(2.0, DICTIONARY_CORE_RESPONSES_TIMEOUT_SECONDS * max(1.0, min(2.5, len(clean_items) / 3))),
+        responses_only=DICTIONARY_RESPONSES_ONLY,
+        allow_assistants_fallback=DICTIONARY_ALLOW_ASSISTANTS_FALLBACK,
+    )
+    cleaned = str(content or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned).rstrip("`").strip()
+    parsed = json.loads(cleaned)
+    parsed_items = parsed.get("items") if isinstance(parsed, dict) else parsed
+    if not isinstance(parsed_items, list):
+        return {}
+
+    by_key: dict[str, dict] = {}
+    allowed_keys = {str(item["key"]) for item in clean_items}
+    for item in parsed_items:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip()
+        if not key or key not in allowed_keys:
+            continue
+        result = dict(item)
+        result.pop("key", None)
+        by_key[key] = result
+    return by_key
 
 
 async def run_dictionary_enrichment_multilang(

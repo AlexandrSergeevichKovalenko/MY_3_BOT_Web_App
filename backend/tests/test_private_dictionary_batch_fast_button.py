@@ -1,7 +1,7 @@
 import unittest
 import json
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import bot_3
 
@@ -46,6 +46,25 @@ class _FakeRedis:
         self.values.pop(key, None)
         self.hashes.pop(key, None)
         self.lists.pop(key, None)
+
+
+class _FakeBatchBot:
+    def __init__(self):
+        self.sent_messages = []
+        self.edited_messages = []
+        self._message_id = 1000
+
+    async def send_message(self, **kwargs):
+        self._message_id += 1
+        self.sent_messages.append(kwargs)
+        return SimpleNamespace(
+            chat_id=kwargs.get("chat_id"),
+            message_id=self._message_id,
+        )
+
+    async def edit_message_reply_markup(self, **kwargs):
+        self.edited_messages.append(kwargs)
+        return True
 
 
 class PrivateDictionaryBatchFastButtonTests(unittest.TestCase):
@@ -240,6 +259,77 @@ class PrivateDictionaryBatchFastButtonTests(unittest.TestCase):
                 bot_3._list_pending_dictionary_lookup_request_keys_for_user(11),
                 ["h1", "h2", "h3"],
             )
+
+    def test_quick_prepare_skips_collocation_generation(self):
+        lookup = {
+            "word_source": "Biernachschub",
+            "word_target": "поставка пива",
+            "source_lang": "de",
+            "target_lang": "ru",
+            "save_worthy_options": [
+                {"source": "der Biernachschub", "target": "поставка пива"},
+            ],
+        }
+
+        with patch.object(bot_3, "_run_dictionary_lookup_for_pair", new=AsyncMock(return_value=lookup)), \
+             patch.object(bot_3, "_generate_dictionary_save_options", new=AsyncMock(side_effect=AssertionError("slow path"))), \
+             patch.object(bot_3, "_resolve_private_dictionary_save_folder", return_value={"folder_id": None, "name": "GENERAL", "icon": "📁"}):
+            prepared = bot_3.asyncio.run(
+                bot_3._prepare_dictionary_lookup_response(
+                    user_id=11,
+                    lookup_input="Biernachschub",
+                    source_lang="de",
+                    target_lang="ru",
+                    max_options=2,
+                    fast_options=True,
+                )
+            )
+
+        self.assertEqual(prepared["options"][0]["source"], "Biernachschub")
+        self.assertEqual(prepared["options"][0]["target"], "поставка пива")
+        self.assertEqual(prepared["options"][1]["source"], "der Biernachschub")
+
+    def test_batch_fast_uses_single_batch_lookup_payloads(self):
+        bot_3.pending_dictionary_lookup_requests["k1"] = {"user_id": 11, "text": "Biernachschub", "message_id": 501}
+        bot_3.pending_dictionary_lookup_requests["k2"] = {"user_id": 11, "text": "schwindeln", "message_id": 502}
+        fake_bot = _FakeBatchBot()
+        context = SimpleNamespace(bot=fake_bot, user_data={})
+        batch_payloads = {
+            "k1": {
+                "word_source": "der Biernachschub",
+                "word_target": "поставка пива",
+                "save_worthy_options": [
+                    {"source": "der Biernachschub", "target": "поставка пива"},
+                ],
+            },
+            "k2": {
+                "word_source": "schwindeln",
+                "word_target": "жульничать",
+                "save_worthy_options": [
+                    {"source": "schwindeln", "target": "жульничать"},
+                ],
+            },
+        }
+
+        with patch.object(bot_3, "run_dictionary_lookup_multilang_core_fast_batch", new=AsyncMock(return_value=batch_payloads)) as batch_mock, \
+             patch.object(bot_3, "_run_dictionary_lookup_for_pair", new=AsyncMock(side_effect=AssertionError("per-word lookup should not run"))), \
+             patch.object(bot_3, "_resolve_private_dictionary_save_folder", return_value={"folder_id": None, "name": "GENERAL", "icon": "📁"}), \
+             patch.object(bot_3, "add_service_msg_id"), \
+             patch.object(bot_3, "_remove_pending_from_redis"), \
+             patch.object(bot_3, "_sync_pending_to_redis"):
+            bot_3.asyncio.run(
+                bot_3._run_dictionary_batch_fast_for_user(
+                    context,
+                    user_id=11,
+                    chat_id=777,
+                    pending_snapshot=dict(bot_3.pending_dictionary_lookup_requests),
+                )
+            )
+
+        batch_mock.assert_awaited_once()
+        self.assertEqual(len(fake_bot.sent_messages), 2)
+        self.assertIn("der Biernachschub", fake_bot.sent_messages[0]["text"])
+        self.assertIn("schwindeln", fake_bot.sent_messages[1]["text"])
 
 
 if __name__ == "__main__":

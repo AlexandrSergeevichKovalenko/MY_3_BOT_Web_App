@@ -75,6 +75,7 @@ from backend.openai_manager import (
     run_dictionary_lookup,
     run_dictionary_lookup_de,
     run_dictionary_lookup_multilang,
+    run_dictionary_lookup_multilang_core_fast_batch,
     run_check_story_guess_semantic,
     run_feel_word,
     run_feel_word_multilang,
@@ -310,12 +311,18 @@ pending_dictionary_save_options = {}
 pending_dictionary_folder_create = {}
 pending_dictionary_lookup_requests = {}
 pending_dictionary_lookup_inflight = set()
+pending_dictionary_folder_cache = {}
 pending_text_analysis = {}
 pending_feel_requests_inflight = set()
 pending_tts_listen_requests_inflight = set()
 pending_quiz_phrase_requests_inflight = set()
 scheduled_quiz_delivery_suppress_until = {}
 recent_message_activity_logged = {}
+
+DICTIONARY_FOLDER_CACHE_TTL_SECONDS = max(
+    30,
+    int((os.getenv("DICTIONARY_FOLDER_CACHE_TTL_SECONDS") or "300").strip() or "300"),
+)
 
 
 class _ReplyTextAdapter:
@@ -4753,6 +4760,12 @@ async def handle_user_message(update: Update, context: CallbackContext):
                 target_lang=target_lang,
                 folder_id=int(folder.get("id")) if folder.get("id") is not None else None,
             )
+            _cache_private_dictionary_save_folder(
+                user_id=int(user_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                folder_payload=folder_payload,
+            )
         except Exception as exc:
             logging.exception("❌ Ошибка создания папки словаря user_id=%s: %s", int(user_id), exc)
             await update.message.reply_text("Не удалось создать папку. Попробуйте ещё раз.")
@@ -5392,6 +5405,31 @@ def _dict_pending_redis_hash_key(user_id: int) -> str:
     return f"dict_pending_user_hash:{user_id}"
 
 
+def _schedule_pending_redis_sync(context: CallbackContext | None, user_id: int) -> None:
+    if not context or not getattr(context, "application", None):
+        _sync_pending_to_redis(int(user_id))
+        return
+    try:
+        context.application.create_task(asyncio.to_thread(_sync_pending_to_redis, int(user_id)))
+    except Exception:
+        logging.debug("dict_pending: async redis sync schedule failed user_id=%s", user_id, exc_info=True)
+        _sync_pending_to_redis(int(user_id))
+
+
+def _schedule_pending_redis_remove(context: CallbackContext | None, user_id: int, request_key: str) -> None:
+    if not context or not getattr(context, "application", None):
+        _remove_pending_from_redis(int(user_id), request_key)
+        _sync_pending_to_redis(int(user_id))
+        return
+    try:
+        context.application.create_task(asyncio.to_thread(_remove_pending_from_redis, int(user_id), request_key))
+        context.application.create_task(asyncio.to_thread(_sync_pending_to_redis, int(user_id)))
+    except Exception:
+        logging.debug("dict_pending: async redis cleanup schedule failed user_id=%s key=%s", user_id, request_key, exc_info=True)
+        _remove_pending_from_redis(int(user_id), request_key)
+        _sync_pending_to_redis(int(user_id))
+
+
 def _sync_pending_to_redis(user_id: int) -> bool:
     try:
         from backend.job_queue import get_redis_client
@@ -5593,6 +5631,7 @@ def _store_pending_dictionary_lookup_request(
     *,
     chat_id: int | None = None,
     message_id: int | None = None,
+    sync_redis: bool = True,
 ) -> str:
     key = hashlib.sha1(
         f"{user_id}:{text}:{datetime.utcnow().isoformat()}".encode("utf-8")
@@ -5606,7 +5645,8 @@ def _store_pending_dictionary_lookup_request(
     if len(pending_dictionary_lookup_requests) > 500:
         oldest_key = next(iter(pending_dictionary_lookup_requests))
         pending_dictionary_lookup_requests.pop(oldest_key, None)
-    _sync_pending_to_redis(int(user_id))
+    if sync_redis:
+        _sync_pending_to_redis(int(user_id))
     return key
 
 
@@ -6558,18 +6598,84 @@ def _format_dictionary_folder_button_label(folder_payload: dict | None) -> str:
     return f"📁 {name}"
 
 
+def _private_dictionary_folder_cache_key(user_id: int, source_lang: str, target_lang: str) -> tuple[int, str, str]:
+    return (
+        int(user_id),
+        str(source_lang or "").strip().lower(),
+        str(target_lang or "").strip().lower(),
+    )
+
+
+def _cache_private_dictionary_save_folder(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    folder_payload: dict | None,
+) -> None:
+    if not isinstance(folder_payload, dict):
+        return
+    key = _private_dictionary_folder_cache_key(user_id, source_lang, target_lang)
+    pending_dictionary_folder_cache[key] = (
+        pytime.time() + DICTIONARY_FOLDER_CACHE_TTL_SECONDS,
+        dict(folder_payload),
+    )
+    if len(pending_dictionary_folder_cache) > 1000:
+        now_ts = pytime.time()
+        expired_keys = [
+            cache_key
+            for cache_key, cache_value in pending_dictionary_folder_cache.items()
+            if float((cache_value or (0,))[0] or 0) <= now_ts
+        ]
+        for cache_key in expired_keys[:200]:
+            pending_dictionary_folder_cache.pop(cache_key, None)
+        while len(pending_dictionary_folder_cache) > 900:
+            oldest_key = next(iter(pending_dictionary_folder_cache))
+            pending_dictionary_folder_cache.pop(oldest_key, None)
+
+
+def _get_cached_private_dictionary_save_folder(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+) -> dict | None:
+    key = _private_dictionary_folder_cache_key(user_id, source_lang, target_lang)
+    cached = pending_dictionary_folder_cache.get(key)
+    if not cached:
+        return None
+    expires_at, payload = cached
+    if float(expires_at or 0) <= pytime.time():
+        pending_dictionary_folder_cache.pop(key, None)
+        return None
+    return dict(payload) if isinstance(payload, dict) else None
+
+
 def _resolve_private_dictionary_save_folder(
     *,
     user_id: int,
     source_lang: str,
     target_lang: str,
 ) -> dict:
+    cached_folder = _get_cached_private_dictionary_save_folder(
+        user_id=int(user_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    if cached_folder:
+        return cached_folder
     preference = get_telegram_dictionary_folder_preference(
         int(user_id),
         source_lang=source_lang,
         target_lang=target_lang,
     )
     if preference:
+        _cache_private_dictionary_save_folder(
+            user_id=int(user_id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            folder_payload=preference,
+        )
         return preference
     default_folder = get_or_create_dictionary_folder(
         user_id=int(user_id),
@@ -6577,7 +6683,7 @@ def _resolve_private_dictionary_save_folder(
         color="#7d8590",
         icon="📁",
     )
-    return {
+    folder_payload = {
         "folder_id": int(default_folder.get("id")) if default_folder.get("id") is not None else None,
         "name": str(default_folder.get("name") or "").strip() or "GENERAL",
         "color": default_folder.get("color"),
@@ -6586,6 +6692,13 @@ def _resolve_private_dictionary_save_folder(
         "target_lang": str(target_lang or "").strip().lower(),
         "is_none": False,
     }
+    _cache_private_dictionary_save_folder(
+        user_id=int(user_id),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        folder_payload=folder_payload,
+    )
+    return folder_payload
 
 
 def _store_pending_dictionary_save_options(
@@ -7281,6 +7394,81 @@ async def _generate_dictionary_save_options(payload: dict) -> list[dict]:
     return options[:3]
 
 
+def _build_fast_dictionary_save_options(payload: dict, max_options: int = 2) -> list[dict]:
+    lookup = payload.get("lookup") if isinstance(payload, dict) else {}
+    if not isinstance(lookup, dict):
+        lookup = {}
+    source_text = str((payload or {}).get("source_text") or "").strip()
+    options: list[dict] = []
+    unique: set[tuple[str, str]] = set()
+
+    def _dedup_key(value: str) -> str:
+        normalized = re.sub(r"\s+", " ", str(value or "").lower().strip())
+        normalized = re.sub(r"[.,;:!?»)\]]+$", "", normalized)
+        normalized = re.sub(r"\s+([?!.,;:»\)])", r"\1", normalized)
+        normalized = normalized.replace(",", "")
+        return normalized.strip()
+
+    def _add_option(source_value: str, target_value: str, is_original: bool = False) -> bool:
+        source = str(source_value or "").strip()
+        target = str(target_value or "").strip()
+        if not source or not target:
+            return False
+        key = (_dedup_key(source), _dedup_key(target))
+        if key in unique:
+            return False
+        unique.add(key)
+        options.append({"source": source, "target": target, "is_original": bool(is_original)})
+        return True
+
+    default_option = _resolve_default_dictionary_option(payload)
+    _add_option(
+        str(default_option.get("source") or source_text or "").strip(),
+        str(default_option.get("target") or "").strip(),
+        is_original=True,
+    )
+
+    predefined = lookup.get("save_worthy_options")
+    if isinstance(predefined, list):
+        for item in predefined:
+            if not isinstance(item, dict):
+                continue
+            _add_option(
+                item.get("source") or item.get("word_source") or "",
+                item.get("target") or item.get("word_target") or "",
+            )
+            if len(options) >= max(1, int(max_options or 1)):
+                return options[:max_options]
+
+    usage_examples = lookup.get("usage_examples")
+    if isinstance(usage_examples, list):
+        for item in usage_examples:
+            if not isinstance(item, dict):
+                continue
+            _add_option(
+                item.get("source") or item.get("example_source") or "",
+                item.get("target") or item.get("example_target") or "",
+            )
+            if len(options) >= max(1, int(max_options or 1)):
+                return options[:max_options]
+
+    meanings = lookup.get("meanings")
+    if isinstance(meanings, dict):
+        primary = meanings.get("primary") if isinstance(meanings.get("primary"), dict) else {}
+        _add_option(primary.get("example_source") or "", primary.get("example_target") or "")
+        if len(options) >= max(1, int(max_options or 1)):
+            return options[:max_options]
+        secondary = meanings.get("secondary") if isinstance(meanings.get("secondary"), list) else []
+        for item in secondary:
+            if not isinstance(item, dict):
+                continue
+            _add_option(item.get("example_source") or "", item.get("example_target") or "")
+            if len(options) >= max(1, int(max_options or 1)):
+                return options[:max_options]
+
+    return options[:max(1, int(max_options or 1))]
+
+
 async def _run_dictionary_lookup_for_pair(lookup_input: str, source_lang: str, target_lang: str) -> dict:
     source_lang = (source_lang or "").strip().lower()
     target_lang = (target_lang or "").strip().lower()
@@ -7486,13 +7674,22 @@ async def _prepare_dictionary_lookup_response(
     source_lang: str,
     target_lang: str,
     max_options: int = 3,
+    fast_options: bool = False,
+    lookup_payload: dict | None = None,
 ) -> dict:
+    started_perf = pytime.perf_counter()
     normalized_lookup_input = _normalize_dictionary_lookup_input(lookup_input)
-    lookup = await _run_dictionary_lookup_for_pair(
-        normalized_lookup_input or lookup_input,
-        source_lang,
-        target_lang,
-    )
+    if isinstance(lookup_payload, dict):
+        lookup = dict(lookup_payload)
+        lookup_ms = 0
+    else:
+        lookup_started_perf = pytime.perf_counter()
+        lookup = await _run_dictionary_lookup_for_pair(
+            normalized_lookup_input or lookup_input,
+            source_lang,
+            target_lang,
+        )
+        lookup_ms = int((pytime.perf_counter() - lookup_started_perf) * 1000)
     if not isinstance(lookup, dict):
         raise ValueError("lookup result is not a dict")
 
@@ -7518,30 +7715,37 @@ async def _prepare_dictionary_lookup_response(
         card_payload["question_request_key"] = question_request_key
         pending_dictionary_cards[card_key] = card_payload
 
-    try:
-        options = await _generate_dictionary_save_options(
-            {
-                "source_lang": source_lang,
-                "target_lang": target_lang,
-                "source_text": source_text,
-                "lookup": lookup,
-                "original_query": lookup_input,
-            }
-        )
-    except Exception as exc:
-        logging.exception(f"❌ Ошибка генерации вариантов сохранения: {exc}")
-        options = []
+    option_source_payload = {
+        "source_lang": source_lang,
+        "target_lang": target_lang,
+        "source_text": source_text,
+        "lookup": lookup,
+        "original_query": lookup_input,
+    }
+    options: list[dict]
+    options_started_perf = pytime.perf_counter()
+    if fast_options:
+        options = _build_fast_dictionary_save_options(option_source_payload, max_options=max_options)
+    else:
+        try:
+            options = await _generate_dictionary_save_options(option_source_payload)
+        except Exception as exc:
+            logging.exception(f"❌ Ошибка генерации вариантов сохранения: {exc}")
+            options = []
+    options_ms = int((pytime.perf_counter() - options_started_perf) * 1000)
 
     if not options:
         options = [_resolve_default_dictionary_option({"source_text": source_text, "lookup": lookup})]
 
     trimmed_options = [item for item in (options or []) if isinstance(item, dict)]
     trimmed_options = trimmed_options[: max(1, int(max_options or 1))]
+    folder_started_perf = pytime.perf_counter()
     folder_payload = _resolve_private_dictionary_save_folder(
         user_id=int(user_id),
         source_lang=source_lang,
         target_lang=target_lang,
     )
+    folder_ms = int((pytime.perf_counter() - folder_started_perf) * 1000)
     option_key = _store_pending_dictionary_save_options(
         user_id=int(user_id),
         card_key=card_key,
@@ -7560,6 +7764,18 @@ async def _prepare_dictionary_lookup_response(
         card_payload["folder_icon"] = folder_payload.get("icon")
         card_payload["folder_is_none"] = bool(folder_payload.get("is_none"))
         pending_dictionary_cards[card_key] = card_payload
+    logging.info(
+        "dictionary_lookup_prepare user_id=%s mode=%s pair=%s->%s lookup_ms=%s options_ms=%s folder_ms=%s options=%s total_ms=%s",
+        int(user_id),
+        "quick" if fast_options else "full",
+        source_lang,
+        target_lang,
+        lookup_ms,
+        options_ms,
+        folder_ms,
+        len(trimmed_options),
+        int((pytime.perf_counter() - started_perf) * 1000),
+    )
     return {
         "lookup": lookup,
         "source_text": source_text,
@@ -7578,8 +7794,10 @@ async def _send_dictionary_lookup_quick_result(
     lookup_input: str,
     source_lang: str,
     target_lang: str,
+    lookup_payload: dict | None = None,
 ) -> None:
     lookup_input = (lookup_input or "").strip()
+    started_perf = pytime.perf_counter()
     try:
         prepared = await _prepare_dictionary_lookup_response(
             user_id=int(user_id),
@@ -7587,6 +7805,8 @@ async def _send_dictionary_lookup_quick_result(
             source_lang=source_lang,
             target_lang=target_lang,
             max_options=2,
+            fast_options=True,
+            lookup_payload=lookup_payload,
         )
     except Exception as exc:
         logging.exception(
@@ -7611,11 +7831,22 @@ async def _send_dictionary_lookup_quick_result(
         prepared["option_key"],
         prepared["options"],
     )
+    send_started_perf = pytime.perf_counter()
     msg = await message.reply_text(
         quick_text,
         reply_markup=keyboard,
         parse_mode="HTML",
         disable_web_page_preview=True,
+    )
+    send_ms = int((pytime.perf_counter() - send_started_perf) * 1000)
+    logging.info(
+        "dictionary_lookup_quick_sent user_id=%s pair=%s->%s options=%s telegram_send_ms=%s total_ms=%s",
+        int(user_id),
+        source_lang,
+        target_lang,
+        len(prepared.get("options") or []),
+        send_ms,
+        int((pytime.perf_counter() - started_perf) * 1000),
     )
     option_payload = pending_dictionary_save_options.get(prepared["option_key"])
     if isinstance(option_payload, dict):
@@ -7637,6 +7868,7 @@ async def _handle_private_dictionary_lookup(update: Update, context: CallbackCon
         int(update.message.from_user.id),
         lookup_input,
         chat_id=int(update.message.chat_id),
+        sync_redis=False,
     )
     keyboard = _build_dictionary_pair_keyboard(request_key)
     msg = await update.message.reply_text(
@@ -7648,7 +7880,7 @@ async def _handle_private_dictionary_lookup(update: Update, context: CallbackCon
         payload["message_id"] = int(msg.message_id)
         payload["chat_id"] = int(msg.chat_id)
         pending_dictionary_lookup_requests[request_key] = payload
-        _sync_pending_to_redis(int(update.message.from_user.id))
+        _schedule_pending_redis_sync(context, int(update.message.from_user.id))
     add_service_msg_id(context, msg.message_id)
 
 
@@ -7662,6 +7894,7 @@ async def _process_dictionary_pair_selection(
     source_lang: str,
     target_lang: str,
     response_mode: str = "full",
+    lookup_payload: dict | None = None,
 ) -> None:
     try:
         normalized_mode = str(response_mode or "full").strip().lower()
@@ -7673,6 +7906,7 @@ async def _process_dictionary_pair_selection(
                 lookup_input=lookup_input,
                 source_lang=source_lang,
                 target_lang=target_lang,
+                lookup_payload=lookup_payload,
             )
         else:
             await _send_dictionary_lookup_result(
@@ -7702,8 +7936,7 @@ async def _process_dictionary_pair_selection(
         pending_dictionary_lookup_requests.pop(request_key, None)
         pending_dictionary_lookup_inflight.discard(request_key)
         if uid:
-            _remove_pending_from_redis(uid, request_key)
-            _sync_pending_to_redis(uid)
+            _schedule_pending_redis_remove(context, uid, request_key)
 
 
 async def _run_dictionary_batch_fast_for_user(
@@ -7730,7 +7963,7 @@ async def _run_dictionary_batch_fast_for_user(
             logging.debug("Failed to send empty batch notice", exc_info=True)
         return
 
-    processed = 0
+    batch_items: list[dict] = []
     for request_key in request_keys:
         # Use snapshot payload; fall back to live dict only if snapshot not present
         if pending_snapshot is not None:
@@ -7758,8 +7991,59 @@ async def _run_dictionary_batch_fast_for_user(
             _remove_pending_from_redis(int(user_id), request_key)
             pending_dictionary_lookup_requests.pop(request_key, None)
             continue
+        batch_items.append(
+            {
+                "request_key": request_key,
+                "payload": payload,
+                "lookup_input": lookup_input,
+                "original_message_id": payload.get("message_id"),
+            }
+        )
 
-        original_message_id = payload.get("message_id")
+    if not batch_items:
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="Не нашёл запросов для быстрого перевода.",
+            )
+        except Exception:
+            logging.debug("Failed to send no-processed batch notice", exc_info=True)
+        return
+
+    batch_started_perf = pytime.perf_counter()
+    batch_lookups: dict[str, dict] = {}
+    try:
+        batch_lookups = await run_dictionary_lookup_multilang_core_fast_batch(
+            [
+                {"key": item["request_key"], "word": item["lookup_input"]}
+                for item in batch_items
+            ],
+            source_lang="de",
+            target_lang="ru",
+        )
+    except Exception:
+        logging.warning(
+            "batch_fast: batch lookup failed user_id=%s count=%s, falling back per item",
+            int(user_id),
+            len(batch_items),
+            exc_info=True,
+        )
+        batch_lookups = {}
+    logging.info(
+        "batch_fast: lookup_batch_done user_id=%s requested=%s returned=%s ms=%s",
+        int(user_id),
+        len(batch_items),
+        len(batch_lookups),
+        int((pytime.perf_counter() - batch_started_perf) * 1000),
+    )
+
+    async def _process_one_batch_item(item: dict) -> bool:
+        request_key = str(item.get("request_key") or "").strip()
+        lookup_input = str(item.get("lookup_input") or "").strip()
+        original_message_id = item.get("original_message_id")
+        if not request_key or not lookup_input:
+            return False
+
         try:
             if original_message_id is not None:
                 try:
@@ -7791,8 +8075,8 @@ async def _run_dictionary_batch_fast_for_user(
                 source_lang="de",
                 target_lang="ru",
                 response_mode="quick",
+                lookup_payload=batch_lookups.get(request_key),
             )
-            processed += 1
         except Exception:
             logging.exception(
                 "❌ Bulk fast dictionary translation failed user_id=%s request_key=%s",
@@ -7800,6 +8084,20 @@ async def _run_dictionary_batch_fast_for_user(
                 request_key,
             )
             pending_dictionary_lookup_inflight.discard(request_key)
+            return False
+        return True
+
+    concurrency = max(1, min(5, int((os.getenv("DICTIONARY_BATCH_FAST_CONCURRENCY") or "3").strip() or "3")))
+    processed = 0
+    for offset in range(0, len(batch_items), concurrency):
+        chunk = batch_items[offset: offset + concurrency]
+        results = await asyncio.gather(
+            *(_process_one_batch_item(item) for item in chunk),
+            return_exceptions=True,
+        )
+        for result in results:
+            if result is True:
+                processed += 1
 
     if processed <= 0:
         try:
@@ -9409,6 +9707,12 @@ async def handle_dictionary_folder_pick_callback(update: Update, context: Callba
                 target_lang=target_lang,
                 folder_id=int(selector),
             )
+        _cache_private_dictionary_save_folder(
+            user_id=int(user.id),
+            source_lang=source_lang,
+            target_lang=target_lang,
+            folder_payload=folder_payload,
+        )
     except Exception as exc:
         logging.exception("❌ Ошибка выбора папки словаря user_id=%s: %s", int(user.id), exc)
         await query.answer("Не удалось выбрать папку.", show_alert=True)
