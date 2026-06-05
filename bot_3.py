@@ -4838,6 +4838,9 @@ async def handle_user_message(update: Update, context: CallbackContext):
 
     # ── Rebus free-text answer ──────────────────────────────────────────────
     rebus_pending = _restore_active_pending_input_state(int(user_id), PENDING_INPUT_STATE_REBUS)
+    if rebus_pending and update.effective_chat and update.effective_chat.type != "private":
+        # User has a pending rebus but wrote in a group — redirect to DM silently
+        rebus_pending = None
     if rebus_pending:
         import time as _time_rb
         started_at = float(rebus_pending.get("started_at") or 0.0)
@@ -4907,6 +4910,8 @@ async def handle_user_message(update: Update, context: CallbackContext):
 
     # ── Crossword free-text answer ──────────────────────────────────────────
     cw_pending = _restore_active_pending_input_state(int(user_id), PENDING_INPUT_STATE_CROSSWORD)
+    if cw_pending and update.effective_chat and update.effective_chat.type != "private":
+        cw_pending = None
     if cw_pending:
         import time as _time
         started_at = float(cw_pending.get("started_at") or 0.0)
@@ -15945,10 +15950,28 @@ async def handle_rebus_answer_callback(update: Update, context: CallbackContext)
         f"Schreibe das Wort *mit Artikel*!\n"
         f"Beispiel: {article_hint}"
     )
+    # Send prompt privately so the answer doesn't spoil the group
+    dm_sent = False
     try:
-        await query.message.reply_text(prompt, parse_mode="Markdown")
+        await context.bot.send_message(
+            chat_id=int(user.id),
+            text=prompt,
+            parse_mode="Markdown",
+        )
+        dm_sent = True
     except Exception:
-        logging.warning("rebus_callback: reply prompt failed dispatch_id=%s", dispatch_id, exc_info=True)
+        logging.warning("rebus_callback: DM prompt failed user_id=%s, falling back to group", int(user.id))
+
+    if not dm_sent:
+        # User hasn't started private chat with bot — tell them to go to DM
+        try:
+            await query.message.reply_text(
+                f"Antworte in der Privatnachricht mit dem Bot, "
+                f"damit du andere Spieler nicht spoilerst! 🤫",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            logging.warning("rebus_callback: fallback group reply failed dispatch_id=%s", dispatch_id, exc_info=True)
 
     try:
         await asyncio.to_thread(
@@ -16667,10 +16690,26 @@ async def handle_crossword_callback(update: Update, context: CallbackContext) ->
         f"`{pattern}`\n\n"
         f"Schreibe das Wort:"
     )
+    # Send prompt privately so the answer doesn't spoil other group members
+    dm_sent = False
     try:
-        await query.message.reply_text(prompt, parse_mode="Markdown")
+        await context.bot.send_message(
+            chat_id=int(user.id),
+            text=prompt,
+            parse_mode="Markdown",
+        )
+        dm_sent = True
     except Exception:
-        logging.warning("cw_callback: reply prompt failed dispatch_id=%s", dispatch_id, exc_info=True)
+        logging.warning("cw_callback: DM prompt failed user_id=%s", int(user.id))
+
+    if not dm_sent:
+        try:
+            await query.message.reply_text(
+                "Antworte in der Privatnachricht mit dem Bot, "
+                "damit du andere Spieler nicht spoilerst! 🤫"
+            )
+        except Exception:
+            logging.warning("cw_callback: fallback group reply failed dispatch_id=%s", dispatch_id, exc_info=True)
 
 
 async def prepare_crossword_pool_job(context: CallbackContext) -> None:
