@@ -14124,10 +14124,10 @@ body {
 .youtube-desktop-status-chips {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: center;
   gap: 8px;
   flex-wrap: wrap;
-  flex: 1 1 320px;
+  flex: 1 1 100%;
 }
 
 .youtube-status-chip {
