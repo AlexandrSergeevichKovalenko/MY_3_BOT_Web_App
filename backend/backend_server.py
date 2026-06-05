@@ -1297,6 +1297,14 @@ ANALYTICS_COMPARE_CACHE_STALE_TTL_SEC = max(
     ANALYTICS_COMPARE_CACHE_TTL_SEC,
     min(3600, int((os.getenv("ANALYTICS_COMPARE_CACHE_STALE_TTL_SEC") or "1800").strip() or "1800")),
 )
+ANALYTICS_TIMESERIES_CACHE_TTL_SEC = max(
+    2,
+    min(600, int((os.getenv("ANALYTICS_TIMESERIES_CACHE_TTL_SEC") or "300").strip() or "300")),
+)
+ANALYTICS_TIMESERIES_CACHE_STALE_TTL_SEC = max(
+    ANALYTICS_TIMESERIES_CACHE_TTL_SEC,
+    min(3600, int((os.getenv("ANALYTICS_TIMESERIES_CACHE_STALE_TTL_SEC") or "1800").strip() or "1800")),
+)
 BILLING_PLANS_CACHE_TTL_SEC = max(
     5,
     min(3600, int((os.getenv("BILLING_PLANS_CACHE_TTL_SEC") or "300").strip() or "300")),
@@ -1370,6 +1378,12 @@ _HOTPATH_ANALYTICS_SUMMARY_CACHE = HotPathCacheManager(
 )
 _HOTPATH_ANALYTICS_COMPARE_CACHE = HotPathCacheManager(
     name="analytics_compare_hot",
+    max_entries=HOTPATH_FRONT_CACHE_MAX_ENTRIES,
+    refresh_workers=2,
+    shared_executor_name="analytics_bg_refresh",
+)
+_HOTPATH_ANALYTICS_TIMESERIES_CACHE = HotPathCacheManager(
+    name="analytics_timeseries_hot",
     max_entries=HOTPATH_FRONT_CACHE_MAX_ENTRIES,
     refresh_workers=2,
     shared_executor_name="analytics_bg_refresh",
@@ -25566,6 +25580,30 @@ def _build_analytics_compare_cache_key(
     )
 
 
+def _build_analytics_timeseries_cache_key(
+    *,
+    user_id: int,
+    source_lang: str,
+    target_lang: str,
+    scope_key: str,
+    period: str,
+    granularity: str,
+    start_date: date,
+    end_date: date,
+) -> tuple[Any, ...]:
+    return (
+        "analytics_timeseries",
+        int(user_id),
+        str(source_lang or "").strip().lower(),
+        str(target_lang or "").strip().lower(),
+        str(scope_key or "personal").strip().lower() or "personal",
+        str(period or "week").strip().lower() or "week",
+        str(granularity or "").strip().lower(),
+        start_date.isoformat(),
+        end_date.isoformat(),
+    )
+
+
 def _build_billing_plans_cache_key() -> tuple[Any, ...]:
     return ("billing_plans", "active_only")
 
@@ -25600,6 +25638,7 @@ def _invalidate_analytics_front_caches_for_user(user_id: int) -> None:
         (_HOTPATH_ANALYTICS_SCOPE_CACHE, ("analytics_scope", safe_user_id)),
         (_HOTPATH_ANALYTICS_SUMMARY_CACHE, ("analytics_summary", safe_user_id)),
         (_HOTPATH_ANALYTICS_COMPARE_CACHE, ("analytics_compare", safe_user_id)),
+        (_HOTPATH_ANALYTICS_TIMESERIES_CACHE, ("analytics_timeseries", safe_user_id)),
     ):
         try:
             manager.invalidate_prefix(prefix)
@@ -26273,6 +26312,73 @@ def get_webapp_analytics_timeseries():
             _log_flow_observation("analytics_timeseries", "timeseries_completed", request_id=request_id, correlation_id=correlation_id, user_id=user_id_int, source_lang=source_lang, target_lang=target_lang, final_status="error", error_code="invalid_period", duration_ms=_elapsed_ms_since(started_perf), http_status=400, **summarize_db_acquire_events(db_acquire_events))
             return jsonify({"error": str(exc)}), 400
 
+        effective_scope = scope.get("effective_scope") if isinstance(scope.get("effective_scope"), dict) else {}
+        timeseries_cache_key = _build_analytics_timeseries_cache_key(
+            user_id=user_id_int,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            scope_key=str(effective_scope.get("scope_key") or "personal"),
+            period=period,
+            granularity=granularity,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+        def _build_timeseries_payload(points_value: list) -> dict:
+            return {
+                "ok": True,
+                "period": {
+                    "period": period,
+                    "granularity": granularity,
+                    "start_date": start_date.isoformat(),
+                    "end_date": end_date.isoformat(),
+                },
+                "points": points_value,
+                "scope": scope.get("effective_scope"),
+                "language_pair": _build_language_pair_payload(source_lang, target_lang),
+            }
+
+        # ── Stale-while-revalidate ────────────────────────────────────────────
+        cached_entry = _HOTPATH_ANALYTICS_TIMESERIES_CACHE.get(timeseries_cache_key)
+        if cached_entry is not None:
+            _log_flow_observation(
+                "analytics_timeseries", "timeseries_completed",
+                request_id=request_id, correlation_id=correlation_id,
+                user_id=user_id_int, source_lang=source_lang, target_lang=target_lang,
+                cache_hit=True, cache_tier="front", cache_state="fresh",
+                duration_ms=_elapsed_ms_since(started_perf), http_status=200,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify(dict(cached_entry.get("payload") or {}))
+
+        stale_entry = _HOTPATH_ANALYTICS_TIMESERIES_CACHE.get(timeseries_cache_key, allow_stale=True)
+        if stale_entry is not None:
+            def _bg_refresh_timeseries() -> None:
+                try:
+                    fresh_points = fetch_scope_timeseries(
+                        scope_user_ids, start_date, end_date, granularity,
+                        source_lang=source_lang, target_lang=target_lang,
+                    )
+                    _HOTPATH_ANALYTICS_TIMESERIES_CACHE.put(
+                        timeseries_cache_key, _build_timeseries_payload(fresh_points),
+                        fresh_ttl_sec=ANALYTICS_TIMESERIES_CACHE_TTL_SEC,
+                        stale_ttl_sec=ANALYTICS_TIMESERIES_CACHE_STALE_TTL_SEC,
+                    )
+                except Exception:
+                    logging.warning("analytics_timeseries: bg refresh failed user_id=%s", user_id_int, exc_info=True)
+
+            _HOTPATH_ANALYTICS_TIMESERIES_CACHE.enqueue_refresh(timeseries_cache_key, _bg_refresh_timeseries)
+            _log_flow_observation(
+                "analytics_timeseries", "timeseries_completed",
+                request_id=request_id, correlation_id=correlation_id,
+                user_id=user_id_int, source_lang=source_lang, target_lang=target_lang,
+                cache_hit=True, cache_tier="front", cache_state="stale",
+                duration_ms=_elapsed_ms_since(started_perf), http_status=200,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify(dict(stale_entry.get("payload") or {}))
+        # ── end stale-while-revalidate ────────────────────────────────────────
+
         fetch_started_at = time.perf_counter()
         points = fetch_scope_timeseries(
             scope_user_ids,
@@ -26283,19 +26389,13 @@ def get_webapp_analytics_timeseries():
             target_lang=target_lang,
         )
         fetch_duration_ms = int((time.perf_counter() - fetch_started_at) * 1000)
-        response_payload = {
-            "ok": True,
-            "period": {
-                "period": period,
-                "granularity": granularity,
-                "start_date": start_date.isoformat(),
-                "end_date": end_date.isoformat(),
-            },
-            "points": points,
-            "scope": scope.get("effective_scope"),
-            "language_pair": _build_language_pair_payload(source_lang, target_lang),
-        }
-        effective_scope = scope.get("effective_scope") if isinstance(scope.get("effective_scope"), dict) else {}
+        response_payload = _build_timeseries_payload(points)
+        _HOTPATH_ANALYTICS_TIMESERIES_CACHE.put(
+            timeseries_cache_key,
+            response_payload,
+            fresh_ttl_sec=ANALYTICS_TIMESERIES_CACHE_TTL_SEC,
+            stale_ttl_sec=ANALYTICS_TIMESERIES_CACHE_STALE_TTL_SEC,
+        )
         _log_flow_observation(
             "analytics_timeseries",
             "timeseries_completed",
