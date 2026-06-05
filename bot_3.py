@@ -4927,74 +4927,108 @@ async def handle_user_message(update: Update, context: CallbackContext):
     if cw_pending and update.effective_chat and update.effective_chat.type != "private":
         cw_pending = None
     if cw_pending:
-        import time as _time
-        started_at = float(cw_pending.get("started_at") or 0.0)
-        state_key  = str(cw_pending.get("state_key") or "").strip()
-        if started_at > 0 and (_time.time() - started_at) > CROSSWORD_ANSWER_TTL_SECONDS:
+        import time as _time_cw
+        import hashlib as _hashlib
+        started_at   = float(cw_pending.get("started_at") or 0.0)
+        state_key    = str(cw_pending.get("state_key") or "").strip()
+        if started_at > 0 and (_time_cw.time() - started_at) > CROSSWORD_ANSWER_TTL_SECONDS:
             _clear_pending_input_state(state_key=state_key, user_id=int(user_id))
         else:
             dispatch_id  = int(cw_pending.get("dispatch_id") or 0)
-            word_number  = int(cw_pending.get("word_number") or 0)
-            correct_word = str(cw_pending.get("correct_word") or "").strip().upper()
-            direction    = str(cw_pending.get("direction") or "across")
-            arrow        = "↔" if direction == "across" else "↕"
-            user_answer  = text.strip().upper()
+            hidden_words = list(cw_pending.get("hidden_words") or [])
 
-            is_correct = user_answer == correct_word
-
-            if dispatch_id and word_number and correct_word:
-                try:
-                    await asyncio.to_thread(
-                        record_crossword_answer,
-                        dispatch_id=dispatch_id,
-                        user_id=int(user_id),
-                        word_number=word_number,
-                        user_answer=user_answer,
-                        is_correct=is_correct,
-                    )
-                except Exception:
-                    logging.warning(
-                        "cw_text: record_answer failed dispatch_id=%s", dispatch_id, exc_info=True
-                    )
+            # Parse user input: split on whitespace, map to hidden words in order
+            raw_parts = text.strip().split()
+            results: list[dict] = []
+            for i, hw in enumerate(hidden_words):
+                user_answer = raw_parts[i].upper().strip() if i < len(raw_parts) else ""
+                correct     = str(hw.get("word") or "").upper()
+                is_correct  = user_answer == correct
+                results.append({
+                    "number": hw["number"],
+                    "direction": hw.get("direction", "across"),
+                    "correct": correct,
+                    "user_answer": user_answer,
+                    "is_correct": is_correct,
+                    "clue_de": str(hw.get("clue_de") or ""),
+                    "clue_ru": str(hw.get("clue_ru") or ""),
+                })
 
             _clear_pending_input_state(state_key=state_key, user_id=int(user_id))
 
-            if is_correct:
-                reply = f"✅ Richtig! Wort {word_number}{arrow}: *{correct_word}*"
-            else:
-                reply = (
-                    f"❌ Leider falsch.\n"
-                    f"Wort {word_number}{arrow}: *{correct_word}*"
-                )
+            # Record answers and build reply
+            correct_count = 0
+            reply_lines   = []
+            wrong_words   = []  # words to offer saving
 
-            # Check if all hidden words answered — show summary
-            summary_text = ""
-            if dispatch_id:
-                try:
-                    all_answers = await asyncio.to_thread(
-                        get_crossword_answers, dispatch_id=dispatch_id, user_id=int(user_id)
-                    )
-                    dispatch = await asyncio.to_thread(get_crossword_dispatch_by_id, dispatch_id)
-                    if dispatch:
-                        words_json    = list(dispatch.get("words_json") or [])
-                        hidden_nums   = {w["number"] for w in words_json if w.get("hidden")}
-                        answered_nums = {a["word_number"] for a in all_answers}
-                        if hidden_nums and hidden_nums <= answered_nums:
-                            correct_count = sum(1 for a in all_answers if a.get("is_correct"))
-                            total = len(hidden_nums)
-                            if correct_count == total:
-                                summary_text = f"\n\n🎉 Alle {total} Wörter gelöst! Perfekt!"
-                            else:
-                                summary_text = f"\n\n🏁 Fertig: {correct_count}/{total} richtig."
-                except Exception:
-                    logging.warning(
-                        "cw_text: summary check failed dispatch_id=%s", dispatch_id, exc_info=True
-                    )
+            for r in results:
+                arrow = "↔" if r["direction"] == "across" else "↕"
+                num   = r["number"]
+                if dispatch_id and r["correct"] and r["user_answer"]:
+                    try:
+                        await asyncio.to_thread(
+                            record_crossword_answer,
+                            dispatch_id=dispatch_id,
+                            user_id=int(user_id),
+                            word_number=num,
+                            user_answer=r["user_answer"],
+                            is_correct=r["is_correct"],
+                        )
+                    except Exception:
+                        logging.warning("cw_text: record failed dispatch_id=%s wn=%s", dispatch_id, num, exc_info=True)
+
+                if r["is_correct"]:
+                    correct_count += 1
+                    reply_lines.append(f"✅ Wort {num}{arrow}: *{r['correct']}*")
+                else:
+                    if r["user_answer"]:
+                        reply_lines.append(f"❌ Wort {num}{arrow}: *{r['correct']}* (du: {r['user_answer']})")
+                    else:
+                        reply_lines.append(f"❌ Wort {num}{arrow}: *{r['correct']}*")
+                    wrong_words.append(r)
+
+            total = len(results)
+            if correct_count == total:
+                summary = f"\n\n🎉 Alle {total} Wörter richtig! Perfekt!"
+            else:
+                summary = f"\n\n🏁 {correct_count}/{total} richtig."
 
             await update.message.reply_text(
-                reply + summary_text,
+                "\n".join(reply_lines) + summary,
                 parse_mode="Markdown",
             )
+
+            # Offer to save each wrong word into the dictionary
+            for w in wrong_words:
+                correct_word = w["correct"]
+                clue_ru      = w["clue_ru"]
+                clue_de      = w["clue_de"]
+                if not correct_word or not clue_ru:
+                    continue
+                # Build save payload: DE word → RU translation from clue
+                card_key  = f"cw_{dispatch_id}_{w['number']}"
+                save_opts = [{"source": correct_word, "target": clue_ru, "is_original": True}]
+                option_key = _store_pending_dictionary_save_options(
+                    user_id=int(user_id),
+                    card_key=card_key,
+                    options=save_opts,
+                    lookup={},
+                    source_lang="de",
+                    target_lang="ru",
+                    keyboard_mode="quick",
+                )
+                arrow = "↔" if w["direction"] == "across" else "↕"
+                save_keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "💾 In den Wortschatz",
+                        callback_data=f"dictquicksave:{option_key}:0",
+                    )
+                ]])
+                await update.message.reply_text(
+                    f"Möchtest du *{correct_word}* speichern?\n_{clue_de}_",
+                    parse_mode="Markdown",
+                    reply_markup=save_keyboard,
+                )
             return
     # ── end crossword ───────────────────────────────────────────────────────
 
@@ -16760,21 +16794,12 @@ def _build_crossword_caption(words_json: list, topic: str, difficulty: str) -> s
 
 
 def _build_crossword_keyboard(dispatch_id: int, words_json: list) -> InlineKeyboardMarkup:
-    """
-    One button per hidden word — tapping opens free-text input.
-    callback_data: cw:start:{dispatch_id}:{word_number}
-    """
-    rows = []
-    for word in sorted([w for w in words_json if w.get("hidden")], key=lambda x: x["number"]):
-        num = word["number"]
-        arrow = "↔" if word.get("direction") == "across" else "↕"
-        length = len(str(word.get("word") or ""))
-        btn = InlineKeyboardButton(
-            text=f"✏️ Wort {num}{arrow}  ({length} Buchst.)",
-            callback_data=f"cw:start:{dispatch_id}:{num}",
-        )
-        rows.append([btn])
-    return InlineKeyboardMarkup(rows)
+    """Single ✏️ button — user types all hidden words in one message."""
+    btn = InlineKeyboardButton(
+        text="✏️ Antworten",
+        callback_data=f"cw:start:{dispatch_id}",
+    )
+    return InlineKeyboardMarkup([[btn]])
 
 
 async def send_crossword_to_chat(
@@ -16926,7 +16951,7 @@ async def _send_scheduled_crossword(context: CallbackContext) -> None:
 
 
 async def handle_crossword_callback(update: Update, context: CallbackContext) -> None:
-    """Handle user tapping ✏️ Wort button — sets up free-text input."""
+    """Handle ✏️ Antworten tap — prompt user to type all hidden words in one message."""
     query = update.callback_query
     if not query:
         return
@@ -16934,15 +16959,14 @@ async def handle_crossword_callback(update: Update, context: CallbackContext) ->
     if not user:
         return
 
-    # callback_data format: cw:start:{dispatch_id}:{word_number}
-    parts = (query.data or "").split(":", 3)
-    if len(parts) != 4 or parts[1] != "start":
+    # callback_data format: cw:start:{dispatch_id}
+    parts = (query.data or "").split(":", 2)
+    if len(parts) != 3 or parts[1] != "start":
         await query.answer()
         return
 
     try:
         dispatch_id = int(parts[2])
-        word_number = int(parts[3])
     except ValueError:
         await query.answer()
         return
@@ -16959,30 +16983,52 @@ async def handle_crossword_callback(update: Update, context: CallbackContext) ->
         return
 
     words_json = list(dispatch.get("words_json") or [])
-    hidden = [w for w in words_json if w.get("hidden") and w.get("number") == word_number]
+    hidden = sorted([w for w in words_json if w.get("hidden")], key=lambda x: x["number"])
     if not hidden:
         await query.answer()
         return
 
-    target_word = hidden[0]
-    correct_word = str(target_word.get("word") or "")
-    direction_label = "↔" if target_word.get("direction") == "across" else "↕"
-
     from backend.crossword_renderer import build_word_pattern
-    pattern = build_word_pattern(correct_word)
 
-    # Store pending input state for this user
-    state_key = f"cw_answer:{int(user.id)}:{dispatch_id}:{word_number}"
+    # Build compact instruction showing all hidden words with their patterns
+    word_lines = []
+    hidden_info = []
+    for w in hidden:
+        num = w["number"]
+        arrow = "↔" if w.get("direction") == "across" else "↕"
+        correct = str(w.get("word") or "")
+        pattern = build_word_pattern(correct)
+        clue_de = str(w.get("clue_de") or "")
+        word_lines.append(f"*{num}{arrow}* `{pattern}` — _{clue_de}_")
+        hidden_info.append({
+            "number": num,
+            "word": correct,
+            "direction": w.get("direction", "across"),
+            "clue_de": clue_de,
+            "clue_ru": str(w.get("clue_ru") or ""),
+        })
+
+    if len(hidden) == 1:
+        w = hidden_info[0]
+        arrow = "↔" if w["direction"] == "across" else "↕"
+        instruction = f"Schreibe Wort {w['number']}{arrow}:"
+    else:
+        nums = " · ".join(
+            f"{w['number']}{'↔' if w['direction'] == 'across' else '↕'}"
+            for w in hidden_info
+        )
+        instruction = f"Schreibe die Wörter *durch Leerzeichen getrennt* ({nums}):"
+
+    prompt = "\n".join(word_lines) + f"\n\n{instruction}"
+
+    state_key = f"cw_answer:{int(user.id)}:{dispatch_id}"
     _store_pending_input_state(
         state_key=state_key,
         user_id=int(user.id),
         state_type=PENDING_INPUT_STATE_CROSSWORD,
         payload={
             "dispatch_id": dispatch_id,
-            "word_number": word_number,
-            "correct_word": correct_word,
-            "pattern": pattern,
-            "direction": target_word.get("direction", "across"),
+            "hidden_words": hidden_info,
             "state_key": state_key,
             "started_at": __import__("time").time(),
         },
@@ -16990,12 +17036,6 @@ async def handle_crossword_callback(update: Update, context: CallbackContext) ->
     )
 
     await query.answer()
-    prompt = (
-        f"✏️ Wort {word_number}{direction_label} — {len(correct_word)} Buchstaben:\n"
-        f"`{pattern}`\n\n"
-        f"Schreibe das Wort:"
-    )
-    # Send prompt privately so the answer doesn't spoil other group members
     dm_sent = False
     try:
         await context.bot.send_message(
@@ -17010,7 +17050,7 @@ async def handle_crossword_callback(update: Update, context: CallbackContext) ->
     if not dm_sent:
         try:
             await query.message.reply_text(
-                "Antworte in der Privatnachricht mit dem Bot, "
+                "Antworte in der Privatnachricht mit dem Bot — "
                 "damit du andere Spieler nicht spoilerst! 🤫"
             )
         except Exception:
@@ -18221,7 +18261,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_visual_riddle_callback, pattern=r"^vr:\d+:\d+$"))
     application.add_handler(CallbackQueryHandler(handle_rebus_answer_callback, pattern=r"^rb:start:\d+$"))
     application.add_handler(CallbackQueryHandler(handle_article_quiz_callback, pattern=r"^aq:\d+:(der|die|das)$"))
-    application.add_handler(CallbackQueryHandler(handle_crossword_callback, pattern=r"^cw:start:\d+:\d+$"))
+    application.add_handler(CallbackQueryHandler(handle_crossword_callback, pattern=r"^cw:start:\d+$"))
     application.add_handler(CallbackQueryHandler(handle_text_level_callback, pattern=r"^text_level:"))
 
     application.add_handler(CommandHandler("translate", check_user_translation))  # ✅ Проверка переводов
