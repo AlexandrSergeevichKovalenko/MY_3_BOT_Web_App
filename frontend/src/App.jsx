@@ -51,7 +51,7 @@ const FREE_SRS_PREFETCH_QUEUE_LIMIT = 3;
 const READER_IDLE_TIMEOUT_MS = 60000;
 const READER_DEFAULT_FONT_SIZE = 18;
 const READER_DEFAULT_FONT_WEIGHT = 500;
-const READER_PAGINATION_FIT_RESERVE_PX = 12;
+const READER_PAGINATION_FIT_RESERVE_PX = 32;
 const READER_LOCAL_BOOKMARKS_STORAGE_KEY = 'dds_reader_exact_bookmarks_v1';
 const READER_LOCAL_ORIGINAL_LOCATIONS_STORAGE_KEY = 'dds_reader_original_locations_v1';
 const WEEKLY_SUMMARY_VISITS_ENABLED = false;
@@ -16852,10 +16852,35 @@ function AppInner() {
     }
 
     window.addEventListener('orientationchange', scheduleRepagination);
+
+    // On iPad/iOS, switching apps and returning may change the viewport height
+    // without triggering a resize event. Re-paginate in waves when tab becomes
+    // visible so the page layout matches the actual available height.
+    let visibilityTimeoutIds = [];
+    const handleVisibilityForPagination = () => {
+      if (document.visibilityState !== 'visible') return;
+      visibilityTimeoutIds.forEach((id) => window.clearTimeout(id));
+      visibilityTimeoutIds = [
+        window.setTimeout(() => scheduleRepagination('visibility:50ms'),   50),
+        window.setTimeout(() => scheduleRepagination('visibility:300ms'),  300),
+        window.setTimeout(() => scheduleRepagination('visibility:800ms'),  800),
+        window.setTimeout(() => scheduleRepagination('visibility:1600ms'), 1600),
+      ];
+    };
+    document.addEventListener('visibilitychange', handleVisibilityForPagination);
+
+    // Also watch height changes via ResizeObserver on the page container
+    const readerPageEl = readerArticleRef.current?.closest('.webapp-reader');
+    if (readerPageEl && typeof ResizeObserver !== 'undefined' && resizeObserver) {
+      resizeObserver.observe(readerPageEl);
+    }
+
     return () => {
       fontsCancelled = true;
       settleTimeoutIds.forEach((timeoutId) => window.clearTimeout(timeoutId));
+      visibilityTimeoutIds.forEach((id) => window.clearTimeout(id));
       window.removeEventListener('orientationchange', scheduleRepagination);
+      document.removeEventListener('visibilitychange', handleVisibilityForPagination);
       resizeObserver?.disconnect();
       if (readerPaginationResizeFrameRef.current) {
         window.cancelAnimationFrame(readerPaginationResizeFrameRef.current);
