@@ -254,6 +254,7 @@ QUIZ_SCHEDULE_MINUTES = [0]
 QUIZ_SCHEDULE_TZ_NAME = (os.getenv("QUIZ_SCHEDULE_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
 QUIZ_IMAGE_SLOT_TIMES = {(9, 0), (12, 0), (18, 0)}
 VISUAL_RIDDLE_SLOT_TIMES = {(7, 30), (12, 30), (15, 30)}
+VISUAL_RIDDLE_POOL_TARGET = max(1, int((os.getenv("VISUAL_RIDDLE_POOL_TARGET") or "12").strip() or "12"))
 VISUAL_RIDDLE_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("VISUAL_RIDDLE_POOL_TOPUP_TRIGGER") or "5").strip() or "5"))
 REBUS_SLOT_TIMES = {(h, 30) for h in range(8, 21)}  # 8:30–20:30 every hour
 REBUS_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("REBUS_POOL_TOPUP_TRIGGER") or "10").strip() or "10"))
