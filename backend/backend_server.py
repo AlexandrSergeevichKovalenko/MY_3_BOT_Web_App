@@ -2554,7 +2554,7 @@ _LEGACY_API_PREFIXES = (
 )
 _LEGACY_API_EXACT_PATHS = {"/token", "/message"}
 _BILLING_GUARD_RULES: dict[str, dict] = {
-    "/api/token": {"cap": True},
+    "/api/token": {"cap": True, "paid_feature": "voice_assistant", "paid_feature_title": "Голосовой ассистент"},
     "/api/webapp/dictionary": {"cap": True},
     "/api/webapp/dictionary/collocations": {"cap": True},
     "/api/webapp/flashcards/feel": {"cap": True, "feature_code": "feel_word_daily"},
@@ -4840,6 +4840,16 @@ def _apply_billing_guard(path: str) -> tuple[dict | None, int | None]:
     if path == "/api/webapp/youtube/translate":
         if not _can_access_youtube_subtitle_translation(int(user_id)):
             return None, None
+
+    paid_feature = str(rule.get("paid_feature") or "").strip()
+    if paid_feature:
+        payload, status = _paid_surface_gate_response(
+            user_id=int(user_id),
+            feature=paid_feature,
+            feature_title=str(rule.get("paid_feature_title") or paid_feature),
+        )
+        if payload:
+            return payload, status
 
     _sync_user_subscription_from_live_stripe(user_id=int(user_id))
     now_utc = datetime.now(timezone.utc)
@@ -32868,6 +32878,13 @@ def start_assistant_session():
     if error:
         status = 401 if "прошёл проверку" in error else 403 if "Доступ" in error else 400
         return jsonify({"error": error}), status
+    gate_payload, gate_status = _paid_surface_gate_response(
+        user_id=int(user_id),
+        feature="voice_assistant",
+        feature_title="Голосовой ассистент",
+    )
+    if gate_payload:
+        return jsonify(gate_payload), int(gate_status or 402)
     payload = request.get_json(silent=True) or {}
     voice_limit_state = _check_voice_minutes_daily_limit(user_id=int(user_id))
     if voice_limit_state.get("error"):

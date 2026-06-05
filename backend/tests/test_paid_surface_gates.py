@@ -1,10 +1,12 @@
 import unittest
 from contextlib import ExitStack, contextmanager
 from datetime import date
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import backend.backend_server as server
+from backend.voice_assessment_service import VoiceAssessment
 
 
 class PaidSurfaceGateTests(unittest.TestCase):
@@ -145,6 +147,120 @@ class PaidSurfaceGateTests(unittest.TestCase):
 
             self._assert_paid_required(response, feature="analytics", feature_title="Аналитика")
             blocked_mock.assert_not_called()
+
+    def test_free_user_blocked_on_voice_token_before_livekit_token_generation(self):
+        with patch.object(server, "_resolve_user_entitlement", return_value=self._entitlement("free")), \
+             patch.object(server, "_sync_user_subscription_from_live_stripe") as stripe_mock, \
+             patch.object(server, "enforce_daily_cost_cap") as cap_mock, \
+             patch.object(server, "_ensure_livekit_config") as livekit_config_mock, \
+             patch.object(server, "AccessToken") as token_mock:
+            response = self.client.get("/api/token?user_id=77&username=Iryna")
+
+        self._assert_paid_required(response, feature="voice_assistant", feature_title="Голосовой ассистент")
+        stripe_mock.assert_not_called()
+        cap_mock.assert_not_called()
+        livekit_config_mock.assert_not_called()
+        token_mock.assert_not_called()
+
+    def test_free_user_blocked_on_voice_session_start_before_session_creation(self):
+        with self._webapp_auth(), \
+             patch.object(server, "_resolve_user_entitlement", return_value=self._entitlement("free")), \
+             patch.object(server, "_check_voice_minutes_daily_limit") as limit_mock, \
+             patch.object(server, "_get_user_language_pair") as language_mock, \
+             patch.object(server, "start_agent_voice_session") as start_mock:
+            response = self.client.post("/api/assistant/session/start", json={"initData": "valid"})
+
+        self._assert_paid_required(response, feature="voice_assistant", feature_title="Голосовой ассистент")
+        limit_mock.assert_not_called()
+        language_mock.assert_not_called()
+        start_mock.assert_not_called()
+
+    def test_pro_user_allowed_on_voice_token_and_session_start(self):
+        class DummyAccessToken:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def with_identity(self, *_args, **_kwargs):
+                return self
+
+            def with_name(self, *_args, **_kwargs):
+                return self
+
+            def with_grants(self, *_args, **_kwargs):
+                return self
+
+            def with_attributes(self, *_args, **_kwargs):
+                return self
+
+            def to_jwt(self):
+                return "test-livekit-token"
+
+        with patch.object(server, "_resolve_user_entitlement", return_value=self._entitlement("pro")), \
+             patch.object(server, "_sync_user_subscription_from_live_stripe"), \
+             patch.object(server, "enforce_daily_cost_cap", return_value=None), \
+             patch.object(server, "_check_voice_minutes_daily_limit", return_value={}), \
+             patch.object(server, "_ensure_livekit_config") as livekit_config_mock, \
+             patch.object(server, "AccessToken", DummyAccessToken):
+            token_response = self.client.get("/api/token?user_id=77&username=Iryna")
+
+        self.assertEqual(token_response.status_code, 200)
+        self.assertEqual(token_response.get_json()["token"], "test-livekit-token")
+        livekit_config_mock.assert_called_once()
+
+        with self._webapp_auth(), \
+             patch.object(server, "_resolve_user_entitlement", return_value=self._entitlement("pro")), \
+             patch.object(server, "_check_voice_minutes_daily_limit", return_value={}), \
+             patch.object(server, "_get_user_language_pair", return_value=("ru", "de", {})), \
+             patch.object(server, "start_agent_voice_session", return_value={"session_id": 123}) as start_mock:
+            session_response = self.client.post("/api/assistant/session/start", json={"initData": "valid"})
+
+        self.assertEqual(session_response.status_code, 200)
+        self.assertEqual(session_response.get_json()["session"]["session_id"], 123)
+        start_mock.assert_called_once()
+
+    def test_completed_voice_session_assessment_remains_readable_for_free_user(self):
+        assessment = VoiceAssessment(
+            session_id=123,
+            summary="Stored summary",
+            strict_feedback="Stored feedback",
+            lexical_range_note="Lexical note",
+            grammar_control_note="Grammar note",
+            fluency_note="Fluency note",
+            coherence_relevance_note="Coherence note",
+            self_correction_note="Correction note",
+        )
+        with self._webapp_auth(), \
+             patch.object(server, "_resolve_user_entitlement", return_value=self._entitlement("free")), \
+             patch.object(server, "get_agent_voice_session", return_value={"session_id": 123, "user_id": 77}), \
+             patch.object(server, "load_voice_assessment", return_value=assessment), \
+             patch.object(server, "fetch_voice_session_mistakes", return_value=[]):
+            response = self.client.post(
+                "/api/assistant/session/assessment/get",
+                json={"initData": "valid", "session_id": 123},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["assessment"]["summary"], "Stored summary")
+
+    def test_frontend_known_free_voice_assistant_does_not_call_voice_endpoints(self):
+        app_path = Path(__file__).resolve().parents[2] / "frontend" / "src" / "App.jsx"
+        source = app_path.read_text(encoding="utf-8")
+
+        lesson_start = source.index("const handleConnect = async (e) => {")
+        lesson_guard = source.index("if (isKnownFreePaidSurfaceMode)", lesson_start)
+        lesson_fetch = source.index("/api/token?user_id=", lesson_start)
+        self.assertLess(lesson_guard, lesson_fetch)
+
+        connect_start = source.index("const connectAssistant = async () => {")
+        connect_guard = source.index("if (isKnownFreePaidSurfaceMode)", connect_start)
+        connect_fetch = source.index("/api/token?user_id=", connect_start)
+        self.assertLess(connect_guard, connect_fetch)
+
+        tracking_start = source.index("const startAssistantSessionTracking = async () => {")
+        tracking_guard = source.index("if (isKnownFreePaidSurfaceMode) return null;", tracking_start)
+        tracking_fetch = source.index("/api/assistant/session/start", tracking_start)
+        self.assertLess(tracking_guard, tracking_fetch)
+        self.assertIn("renderAppPaidFeatureNotice(assistantPaidFeatureTitle)", source)
 
     def _patch_analytics_success_dependencies(self):
         return (

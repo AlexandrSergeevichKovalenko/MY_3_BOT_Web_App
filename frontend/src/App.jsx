@@ -5877,6 +5877,7 @@ function AppInner() {
   const knownBillingEffectiveMode = String(billingStatus?.effective_mode || '').trim().toLowerCase();
   const isKnownFreePaidSurfaceMode = Boolean(billingStatus && knownBillingEffectiveMode === 'free');
   const analyticsPaidFeatureError = `${PAID_FEATURE_ERROR_PREFIX}${JSON.stringify({ feature: 'analytics', feature_title: 'Аналитика' })}`;
+  const assistantPaidFeatureTitle = tr('Голосовой ассистент', 'Sprachassistent');
   const analyticsSurfaceProRequired = isKnownFreePaidSurfaceMode || [
     analyticsError,
     analyticsScopeError,
@@ -14660,6 +14661,10 @@ function AppInner() {
       alert(tr('Пожалуйста, введите ваше имя', 'Bitte gib deinen Namen ein'));
       return;
     }
+    if (isKnownFreePaidSurfaceMode) {
+      setToken(null);
+      return;
+    }
 
     try {
       const response = await fetch(
@@ -14680,6 +14685,11 @@ function AppInner() {
   };
 
   const connectAssistant = async () => {
+    if (isKnownFreePaidSurfaceMode) {
+      setAssistantToken(null);
+      setAssistantError('');
+      return;
+    }
     const userId = assistantIdentity.userId;
     const displayName = assistantIdentity.displayName;
     if (!userId || !displayName) {
@@ -14724,6 +14734,7 @@ function AppInner() {
 
   const startAssistantSessionTracking = async () => {
     if (!initData) return null;
+    if (isKnownFreePaidSurfaceMode) return null;
     if (assistantSessionId) return assistantSessionId;
     try {
       const response = await fetch('/api/assistant/session/start', {
@@ -16442,12 +16453,12 @@ function AppInner() {
   }, [flashcardsOnly, selectedSections]);
 
   useEffect(() => {
-    if (appMode === 'lesson' || selectedSections.has('assistant') || assistantToken || token) {
+    if (!isKnownFreePaidSurfaceMode && (appMode === 'lesson' || selectedSections.has('assistant') || assistantToken || token)) {
       void loadLiveKitRuntime().catch(() => {
         // ignore lazy prefetch failures
       });
     }
-  }, [appMode, assistantToken, selectedSections, token]);
+  }, [appMode, assistantToken, isKnownFreePaidSurfaceMode, selectedSections, token]);
 
   useEffect(() => {
     const shouldTrackReader = Boolean(readerTrackingVisible && !readerTimerPaused);
@@ -34289,7 +34300,9 @@ function AppInner() {
                   <img src={heroStickerSrc} alt="" aria-hidden="true" className="section-corner-logo" />
                 </div>
 
-                {!assistantToken ? (
+                {isKnownFreePaidSurfaceMode ? (
+                  renderAppPaidFeatureNotice(assistantPaidFeatureTitle)
+                ) : !assistantToken ? (
                   <div className={`voice-assistant-join ${isLightTheme ? 'is-theme-light' : ''}`}>
                     <div className="voice-assistant-meta">
                       <span>{tr('Пользователь', 'Nutzer')}: {assistantIdentity.displayName || '—'}</span>
@@ -34359,7 +34372,7 @@ function AppInner() {
                   </div>
                 )}
 
-                {!assistantToken && assistantSessionReviewRequested && (
+                {!isKnownFreePaidSurfaceMode && !assistantToken && assistantSessionReviewRequested && (
                   assistantSessionAssessment ? (
                     <div className="voice-assistant-review">
                       <div className="voice-assistant-review-head">
@@ -36115,31 +36128,35 @@ if (!token) {
             <h2>{tr('Вход в урок', 'Unterricht betreten')}</h2>
             <p>{tr('Подключитесь к разговорной практике и начните диалог с учителем.', 'Verbinde dich fuer Sprachpraxis und starte den Dialog mit dem Tutor.')}</p>
           </div>
-          <form onSubmit={handleConnect} className="login-form">
-            <label className="field">
-              <span>Telegram ID</span>
-              <input
-                type="text"
-                placeholder={tr('Ваш Telegram ID (цифры)', 'Deine Telegram-ID (Ziffern)')}
-                value={telegramID}
-                onChange={(e) => setTelegramID(e.target.value)}
-              />
-            </label>
+          {isKnownFreePaidSurfaceMode ? (
+            renderAppPaidFeatureNotice(assistantPaidFeatureTitle)
+          ) : (
+            <form onSubmit={handleConnect} className="login-form">
+              <label className="field">
+                <span>Telegram ID</span>
+                <input
+                  type="text"
+                  placeholder={tr('Ваш Telegram ID (цифры)', 'Deine Telegram-ID (Ziffern)')}
+                  value={telegramID}
+                  onChange={(e) => setTelegramID(e.target.value)}
+                />
+              </label>
 
-            <label className="field">
-              <span>{tr('Ваше имя', 'Dein Name')}</span>
-              <input
-                type="text"
-                placeholder={tr('Как вас называть? (Имя)', 'Wie sollen wir dich nennen?')}
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-              />
-            </label>
+              <label className="field">
+                <span>{tr('Ваше имя', 'Dein Name')}</span>
+                <input
+                  type="text"
+                  placeholder={tr('Как вас называть? (Имя)', 'Wie sollen wir dich nennen?')}
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                />
+              </label>
 
-            <button type="submit" className="primary-button">
-              {tr('Начать урок', 'Unterricht starten')}
-            </button>
-          </form>
+              <button type="submit" className="primary-button">
+                {tr('Начать урок', 'Unterricht starten')}
+              </button>
+            </form>
+          )}
         </div>
       </div>
     );
