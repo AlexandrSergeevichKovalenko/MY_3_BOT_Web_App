@@ -26140,14 +26140,37 @@ def get_webapp_analytics_summary():
             return jsonify({"error": str(exc)}), 400
 
         effective_scope = scope.get("effective_scope") if isinstance(scope.get("effective_scope"), dict) else {}
+        scope_key_str = str(effective_scope.get("scope_key") or "personal")
         summary_cache_key = _build_analytics_summary_cache_key(
             user_id=user_id_int,
             source_lang=source_lang,
             target_lang=target_lang,
-            scope_key=str(effective_scope.get("scope_key") or "personal"),
+            scope_key=scope_key_str,
             period=period,
             start_date=start_date,
             end_date=end_date,
+        )
+
+        def _build_summary_payload(summary_value) -> dict:
+            return {
+                "ok": True,
+                "period": {
+                    "period": period,
+                    "start_date": start_date.isoformat(),
+                    "end_date": end_date.isoformat(),
+                },
+                "summary": summary_value,
+                "scope": scope.get("effective_scope"),
+                "language_pair": _build_language_pair_payload(source_lang, target_lang),
+            }
+
+        # For group scope the snapshot is stored once per group, keyed by the
+        # group's (negative) chat_id; personal scope is keyed by the user id.
+        _eff_kind = str(effective_scope.get("scope_kind") or "personal").strip().lower()
+        snapshot_user_id = (
+            int(effective_scope.get("scope_chat_id"))
+            if _eff_kind == "group" and effective_scope.get("scope_chat_id") is not None
+            else user_id_int
         )
 
         # ── Stale-while-revalidate ────────────────────────────────────────────
@@ -26173,15 +26196,8 @@ def get_webapp_analytics_summary():
                         scope_user_ids, start_date, end_date,
                         source_lang=source_lang, target_lang=target_lang,
                     )
-                    refreshed = {
-                        "ok": True,
-                        "period": {"period": period, "start_date": start_date.isoformat(), "end_date": end_date.isoformat()},
-                        "summary": fresh,
-                        "scope": scope.get("effective_scope"),
-                        "language_pair": _build_language_pair_payload(source_lang, target_lang),
-                    }
                     _HOTPATH_ANALYTICS_SUMMARY_CACHE.put(
-                        summary_cache_key, refreshed,
+                        summary_cache_key, _build_summary_payload(fresh),
                         fresh_ttl_sec=ANALYTICS_SUMMARY_CACHE_TTL_SEC,
                         stale_ttl_sec=ANALYTICS_SUMMARY_CACHE_STALE_TTL_SEC,
                     )
@@ -26200,7 +26216,66 @@ def get_webapp_analytics_summary():
             return jsonify(dict(stale_entry.get("payload") or {}))
         # ── end stale-while-revalidate ────────────────────────────────────────
 
-        # 3. Cache miss → compute from DB
+        # 3. Precomputed snapshot (nightly job) → return instantly, no heavy SQL
+        snapshot_entry = None
+        try:
+            snapshot_entry = get_analytics_summary_snapshot(
+                user_id=snapshot_user_id,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                scope_key=scope_key_str,
+                period=period,
+                start_date=start_date,
+                end_date=end_date,
+            )
+        except Exception:
+            logging.warning("analytics_summary: snapshot read failed user_id=%s", user_id_int, exc_info=True)
+        if snapshot_entry is not None and isinstance(snapshot_entry.get("summary"), dict):
+            snap_payload = _build_summary_payload(snapshot_entry["summary"])
+            # Warm the in-process hot cache so the next load skips even the DB row.
+            _HOTPATH_ANALYTICS_SUMMARY_CACHE.put(
+                summary_cache_key, snap_payload,
+                fresh_ttl_sec=ANALYTICS_SUMMARY_CACHE_TTL_SEC,
+                stale_ttl_sec=ANALYTICS_SUMMARY_CACHE_STALE_TTL_SEC,
+            )
+            if snapshot_entry.get("is_dirty"):
+                def _bg_refresh_from_snapshot() -> None:
+                    try:
+                        fresh = fetch_scope_summary(
+                            scope_user_ids, start_date, end_date,
+                            source_lang=source_lang, target_lang=target_lang,
+                        )
+                        upsert_analytics_summary_snapshot(
+                            user_id=snapshot_user_id,
+                            source_lang=source_lang, target_lang=target_lang,
+                            scope_key=scope_key_str, period=period,
+                            start_date=start_date, end_date=end_date,
+                            summary_json=fresh if isinstance(fresh, dict) else {},
+                        )
+                        _HOTPATH_ANALYTICS_SUMMARY_CACHE.put(
+                            summary_cache_key, _build_summary_payload(fresh),
+                            fresh_ttl_sec=ANALYTICS_SUMMARY_CACHE_TTL_SEC,
+                            stale_ttl_sec=ANALYTICS_SUMMARY_CACHE_STALE_TTL_SEC,
+                        )
+                    except Exception:
+                        logging.warning("analytics_summary: snapshot bg refresh failed user_id=%s", user_id_int, exc_info=True)
+
+                _HOTPATH_ANALYTICS_SUMMARY_CACHE.enqueue_refresh(
+                    ("snap_refresh", *summary_cache_key), _bg_refresh_from_snapshot
+                )
+            _log_flow_observation(
+                "analytics_summary", "summary_completed",
+                request_id=request_id, correlation_id=correlation_id,
+                user_id=user_id_int, source_lang=source_lang, target_lang=target_lang,
+                cache_hit=True, cache_tier="snapshot",
+                cache_state="dirty" if snapshot_entry.get("is_dirty") else "fresh",
+                duration_ms=_elapsed_ms_since(started_perf), http_status=200,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify(snap_payload)
+        # ── end snapshot read ─────────────────────────────────────────────────
+
+        # 4. Cache + snapshot miss → compute from DB
         fetch_started_at = time.perf_counter()
         summary = fetch_scope_summary(
             scope_user_ids,
@@ -26210,17 +26285,7 @@ def get_webapp_analytics_summary():
             target_lang=target_lang,
         )
         fetch_duration_ms = int((time.perf_counter() - fetch_started_at) * 1000)
-        response_payload = {
-            "ok": True,
-            "period": {
-                "period": period,
-                "start_date": start_date.isoformat(),
-                "end_date": end_date.isoformat(),
-            },
-            "summary": summary,
-            "scope": scope.get("effective_scope"),
-            "language_pair": _build_language_pair_payload(source_lang, target_lang),
-        }
+        response_payload = _build_summary_payload(summary)
         _HOTPATH_ANALYTICS_SUMMARY_CACHE.put(
             summary_cache_key,
             response_payload,
