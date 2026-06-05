@@ -16738,7 +16738,7 @@ async def admin_article_quiz_send_command(update: Update, context: CallbackConte
 
 
 async def admin_article_quiz_pool_command(update: Update, context: CallbackContext) -> None:
-    """Trigger article quiz pool preparation (admin command)."""
+    """Trigger article quiz pool preparation. /admin_aq_pool [target]"""
     user = update.effective_user
     message = update.effective_message
     if not user or not message:
@@ -16746,13 +16746,19 @@ async def admin_article_quiz_pool_command(update: Update, context: CallbackConte
     if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
         await message.reply_text("Allowed users only.")
         return
-    status_msg = await message.reply_text("Preparing article quiz pool...")
+    # Optional numeric argument overrides the pool target
+    args = (context.args or [])
+    try:
+        target = max(10, int(args[0])) if args else ARTICLE_QUIZ_POOL_TARGET
+    except (ValueError, IndexError):
+        target = ARTICLE_QUIZ_POOL_TARGET
+    status_msg = await message.reply_text(f"Preparing article quiz pool (target={target})...")
     try:
         from backend.article_quiz_generator import prepare_article_quiz_pool
         result = await asyncio.to_thread(
             prepare_article_quiz_pool,
-            target_ready=ARTICLE_QUIZ_POOL_TARGET,
-            max_attempts=40,
+            target_ready=target,
+            max_attempts=max(40, target),
         )
         await status_msg.edit_text(f"Article quiz pool done:\n{result}")
     except Exception as exc:
