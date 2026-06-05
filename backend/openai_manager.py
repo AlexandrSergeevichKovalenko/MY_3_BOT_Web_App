@@ -2114,9 +2114,18 @@ Rules:
 - GRAMMAR: Correct German word order and case throughout.
 
 - If "word" is a FULL SENTENCE or long phrase (more than 4 words):
-  * #1 must translate the whole sentence.
-  * #2 and #3 must be shorter real-life phrases that preserve the core word/expression — NOT paraphrases that omit it.
-  * Do NOT replace the specific meaning with a weaker generic statement.
+  * #1 must be the EXACT input sentence with its most natural translation.
+  * #2 must be a DIFFERENT, commonly used German expression with the same communicative intent —
+    a real alternative that a native speaker might use instead. It does NOT need to contain the
+    same words as the original; it just needs to convey the same core meaning in a natural,
+    high-frequency way. This gives the learner a practical everyday alternative.
+    Example: original "Was in aller Welt treibt sie hier?" →
+      good #2: "Was hat sie hier zu suchen?" / "Что ей здесь нужно?"
+      good #2: "Was macht sie denn hier?" / "Что она вообще здесь делает?"
+    BAD #2: same sentence with a slightly different Russian translation — that is a hard failure.
+  * #3 must be yet another distinct common phrase or shorter collocation around the core verb/noun,
+    useful for production. If none exists, give the most natural shorter fixed expression.
+  * NEVER return the same German source text in items #1 and #2. If they are identical, that is a hard failure.
 
 - Output ONLY JSON.
 """,
