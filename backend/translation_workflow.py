@@ -1768,6 +1768,13 @@ async def submit_story_translation_webapp(
             except Exception as exc:
                 logging.warning("Failed to save arena score for user_id=%s: %s", user_id, exc)
 
+            # New activity → mark analytics snapshots dirty for same-day freshness.
+            try:
+                from backend.database import mark_analytics_snapshots_dirty_for_user
+                mark_analytics_snapshots_dirty_for_user(user_id=int(user_id))
+            except Exception:
+                logging.warning("submit_story_translation: mark snapshots dirty failed user_id=%s", user_id, exc_info=True)
+
             return {
                 "ok": True,
                 "score": score_value,
@@ -8674,6 +8681,26 @@ def persist_translation_webapp_item_results_batch(
             }
         )
         persisted_payloads.append(persisted_payload)
+
+    # Mark analytics snapshots dirty for users with genuinely new activity, so
+    # the analytics screen serves today's numbers (stale snapshot + background
+    # recompute) instead of waiting for the next nightly precompute.
+    try:
+        dirty_user_ids = {
+            int(p.get("user_id") or 0)
+            for p in persisted_payloads
+            if p.get("inserted_new_row") and int(p.get("user_id") or 0) > 0
+        }
+        if dirty_user_ids:
+            from backend.database import mark_analytics_snapshots_dirty_for_user
+            for _uid in dirty_user_ids:
+                try:
+                    mark_analytics_snapshots_dirty_for_user(user_id=_uid)
+                except Exception:
+                    pass
+    except Exception:
+        logging.warning("translation persist: failed to mark analytics snapshots dirty", exc_info=True)
+
     return persisted_payloads
 
 
