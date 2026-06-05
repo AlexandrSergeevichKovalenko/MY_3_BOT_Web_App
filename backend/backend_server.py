@@ -1271,29 +1271,31 @@ WEBAPP_INSTANCE_LEASE_CACHE_STALE_TTL_SEC = max(
     WEBAPP_INSTANCE_LEASE_CACHE_TTL_SEC,
     min(600, int((os.getenv("WEBAPP_INSTANCE_LEASE_CACHE_STALE_TTL_SEC") or "45").strip() or "45")),
 )
+# Analytics cache TTL — 5 min fresh / 30 min stale (was 15s/60s).
+# Env vars allow override without redeploy if needed.
 ANALYTICS_SCOPE_CACHE_TTL_SEC = max(
     2,
-    min(300, int((os.getenv("ANALYTICS_SCOPE_CACHE_TTL_SEC") or "15").strip() or "15")),
+    min(600, int((os.getenv("ANALYTICS_SCOPE_CACHE_TTL_SEC") or "300").strip() or "300")),
 )
 ANALYTICS_SCOPE_CACHE_STALE_TTL_SEC = max(
     ANALYTICS_SCOPE_CACHE_TTL_SEC,
-    min(900, int((os.getenv("ANALYTICS_SCOPE_CACHE_STALE_TTL_SEC") or "60").strip() or "60")),
+    min(3600, int((os.getenv("ANALYTICS_SCOPE_CACHE_STALE_TTL_SEC") or "1800").strip() or "1800")),
 )
 ANALYTICS_SUMMARY_CACHE_TTL_SEC = max(
     2,
-    min(300, int((os.getenv("ANALYTICS_SUMMARY_CACHE_TTL_SEC") or "15").strip() or "15")),
+    min(600, int((os.getenv("ANALYTICS_SUMMARY_CACHE_TTL_SEC") or "300").strip() or "300")),
 )
 ANALYTICS_SUMMARY_CACHE_STALE_TTL_SEC = max(
     ANALYTICS_SUMMARY_CACHE_TTL_SEC,
-    min(900, int((os.getenv("ANALYTICS_SUMMARY_CACHE_STALE_TTL_SEC") or "60").strip() or "60")),
+    min(3600, int((os.getenv("ANALYTICS_SUMMARY_CACHE_STALE_TTL_SEC") or "1800").strip() or "1800")),
 )
 ANALYTICS_COMPARE_CACHE_TTL_SEC = max(
     2,
-    min(300, int((os.getenv("ANALYTICS_COMPARE_CACHE_TTL_SEC") or "15").strip() or "15")),
+    min(600, int((os.getenv("ANALYTICS_COMPARE_CACHE_TTL_SEC") or "300").strip() or "300")),
 )
 ANALYTICS_COMPARE_CACHE_STALE_TTL_SEC = max(
     ANALYTICS_COMPARE_CACHE_TTL_SEC,
-    min(900, int((os.getenv("ANALYTICS_COMPARE_CACHE_STALE_TTL_SEC") or "60").strip() or "60")),
+    min(3600, int((os.getenv("ANALYTICS_COMPARE_CACHE_STALE_TTL_SEC") or "1800").strip() or "1800")),
 )
 BILLING_PLANS_CACHE_TTL_SEC = max(
     5,
@@ -1357,14 +1359,20 @@ _HOTPATH_INSTANCE_LEASE_CACHE = HotPathCacheManager(
 _HOTPATH_ANALYTICS_SCOPE_CACHE = HotPathCacheManager(
     name="analytics_scope_hot",
     max_entries=HOTPATH_FRONT_CACHE_MAX_ENTRIES,
+    refresh_workers=2,
+    shared_executor_name="analytics_bg_refresh",
 )
 _HOTPATH_ANALYTICS_SUMMARY_CACHE = HotPathCacheManager(
     name="analytics_summary_hot",
     max_entries=HOTPATH_FRONT_CACHE_MAX_ENTRIES,
+    refresh_workers=2,
+    shared_executor_name="analytics_bg_refresh",
 )
 _HOTPATH_ANALYTICS_COMPARE_CACHE = HotPathCacheManager(
     name="analytics_compare_hot",
     max_entries=HOTPATH_FRONT_CACHE_MAX_ENTRIES,
+    refresh_workers=2,
+    shared_executor_name="analytics_bg_refresh",
 )
 _HOTPATH_BILLING_PLANS_CACHE = HotPathCacheManager(
     name="billing_plans_hot",
@@ -26076,6 +26084,68 @@ def get_webapp_analytics_summary():
             _log_flow_observation("analytics_summary", "summary_completed", request_id=request_id, correlation_id=correlation_id, user_id=user_id_int, source_lang=source_lang, target_lang=target_lang, final_status="error", error_code="invalid_period", duration_ms=_elapsed_ms_since(started_perf), http_status=400, **summarize_db_acquire_events(db_acquire_events))
             return jsonify({"error": str(exc)}), 400
 
+        effective_scope = scope.get("effective_scope") if isinstance(scope.get("effective_scope"), dict) else {}
+        summary_cache_key = _build_analytics_summary_cache_key(
+            user_id=user_id_int,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            scope_key=str(effective_scope.get("scope_key") or "personal"),
+            period=period,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+        # ── Stale-while-revalidate ────────────────────────────────────────────
+        # 1. Fresh hit → return immediately (no DB touch)
+        cached_entry = _HOTPATH_ANALYTICS_SUMMARY_CACHE.get(summary_cache_key)
+        if cached_entry is not None:
+            _log_flow_observation(
+                "analytics_summary", "summary_completed",
+                request_id=request_id, correlation_id=correlation_id,
+                user_id=user_id_int, source_lang=source_lang, target_lang=target_lang,
+                cache_hit=True, cache_tier="front", cache_state="fresh",
+                duration_ms=_elapsed_ms_since(started_perf), http_status=200,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify(dict(cached_entry.get("payload") or {}))
+
+        # 2. Stale hit → return immediately + schedule background refresh
+        stale_entry = _HOTPATH_ANALYTICS_SUMMARY_CACHE.get(summary_cache_key, allow_stale=True)
+        if stale_entry is not None:
+            def _bg_refresh_summary() -> None:
+                try:
+                    fresh = fetch_scope_summary(
+                        scope_user_ids, start_date, end_date,
+                        source_lang=source_lang, target_lang=target_lang,
+                    )
+                    refreshed = {
+                        "ok": True,
+                        "period": {"period": period, "start_date": start_date.isoformat(), "end_date": end_date.isoformat()},
+                        "summary": fresh,
+                        "scope": scope.get("effective_scope"),
+                        "language_pair": _build_language_pair_payload(source_lang, target_lang),
+                    }
+                    _HOTPATH_ANALYTICS_SUMMARY_CACHE.put(
+                        summary_cache_key, refreshed,
+                        fresh_ttl_sec=ANALYTICS_SUMMARY_CACHE_TTL_SEC,
+                        stale_ttl_sec=ANALYTICS_SUMMARY_CACHE_STALE_TTL_SEC,
+                    )
+                except Exception:
+                    logging.warning("analytics_summary: bg refresh failed user_id=%s", user_id_int, exc_info=True)
+
+            _HOTPATH_ANALYTICS_SUMMARY_CACHE.enqueue_refresh(summary_cache_key, _bg_refresh_summary)
+            _log_flow_observation(
+                "analytics_summary", "summary_completed",
+                request_id=request_id, correlation_id=correlation_id,
+                user_id=user_id_int, source_lang=source_lang, target_lang=target_lang,
+                cache_hit=True, cache_tier="front", cache_state="stale",
+                duration_ms=_elapsed_ms_since(started_perf), http_status=200,
+                **summarize_db_acquire_events(db_acquire_events),
+            )
+            return jsonify(dict(stale_entry.get("payload") or {}))
+        # ── end stale-while-revalidate ────────────────────────────────────────
+
+        # 3. Cache miss → compute from DB
         fetch_started_at = time.perf_counter()
         summary = fetch_scope_summary(
             scope_user_ids,
@@ -26096,16 +26166,6 @@ def get_webapp_analytics_summary():
             "scope": scope.get("effective_scope"),
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
-        effective_scope = scope.get("effective_scope") if isinstance(scope.get("effective_scope"), dict) else {}
-        summary_cache_key = _build_analytics_summary_cache_key(
-            user_id=user_id_int,
-            source_lang=source_lang,
-            target_lang=target_lang,
-            scope_key=str(effective_scope.get("scope_key") or "personal"),
-            period=period,
-            start_date=start_date,
-            end_date=end_date,
-        )
         _HOTPATH_ANALYTICS_SUMMARY_CACHE.put(
             summary_cache_key,
             response_payload,
