@@ -8357,8 +8357,20 @@ async def handle_dictionary_mode_callback(update: Update, context: CallbackConte
         await query.answer("Пользователь не найден. Повторите запрос.", show_alert=True)
         return
     if not payload:
-        await query.answer("Запрос устарел. Отправьте слово снова.", show_alert=True)
-        return
+        # Survive redeploys: the in-memory request is gone after a restart, but
+        # the word is still printed in the message ("Запрос: ..."), and the pair
+        # is in the callback data — so reconstruct instead of failing.
+        reconstructed_lookup_input = _extract_lookup_input_from_pair_message_text(
+            str(getattr(query.message, "text", "") or getattr(query.message, "caption", "") or "")
+        )
+        if not reconstructed_lookup_input:
+            await query.answer("Запрос устарел. Отправьте слово снова.", show_alert=True)
+            return
+        payload = {
+            "user_id": int(user.id),
+            "text": reconstructed_lookup_input,
+        }
+        pending_dictionary_lookup_requests[request_key] = payload
     if int(payload.get("user_id", 0)) != int(user.id):
         await query.answer("Выбор доступен только автору запроса.", show_alert=True)
         return
