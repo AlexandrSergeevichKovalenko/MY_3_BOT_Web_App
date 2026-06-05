@@ -21,54 +21,62 @@ from typing import Optional
 # ─── Topic pool ───────────────────────────────────────────────────────────────
 
 _TOPICS: list[tuple[str, str]] = [
-    ("Tiere", "A2"),
-    ("Familie", "A1"),
-    ("Farben und Formen", "A1"),
-    ("Essen und Trinken", "A2"),
-    ("Wetter", "A2"),
-    ("Schule und Lernen", "A1"),
+    # B1 — standard intermediate
+    ("Gesundheit und Medizin", "B1"),
+    ("Beruf und Arbeitsalltag", "B1"),
     ("Stadt und Verkehr", "B1"),
     ("Natur und Umwelt", "B1"),
-    ("Körper und Gesundheit", "B1"),
-    ("Kleidung", "A2"),
-    ("Sport und Freizeit", "B1"),
     ("Reisen und Urlaub", "B1"),
-    ("Berufe", "B1"),
-    ("Jahreszeiten und Monate", "A2"),
-    ("Möbel und Wohnen", "A2"),
-    ("Haushalt", "B1"),
-    ("Musik und Kultur", "B1"),
-    ("Technologie", "B2"),
+    ("Sport und Freizeit", "B1"),
+    ("Medien und Kommunikation", "B1"),
+    ("Wirtschaft und Finanzen", "B1"),
+    ("Politik und Gesellschaft", "B1"),
+    ("Wissenschaft und Forschung", "B1"),
+    # B2 — upper intermediate / advanced
+    ("Recht und Verwaltung", "B2"),
+    ("Psychologie und Emotionen", "B2"),
+    ("Philosophie und Ethik", "B2"),
+    ("Technologie und Innovation", "B2"),
+    ("Kunst und Literatur", "B2"),
+    ("Architektur und Design", "B2"),
+    ("Geschichte und Kultur", "B2"),
+    ("Umwelt und Nachhaltigkeit", "B2"),
+    ("Sprache und Linguistik", "B2"),
+    ("Globalisierung und Wirtschaft", "B2"),
 ]
 
 # ─── GPT prompts ──────────────────────────────────────────────────────────────
 
 _GPT_SYSTEM = """\
-Du bist Experte für Deutsch als Fremdsprache und erstellst Kreuzworträtsel-Wortlisten.
+Du bist Experte für Deutsch als Fremdsprache (B1-B2) und erstellst anspruchsvolle Kreuzwortraetsel.
 
-Regeln für jedes Wort:
+Regeln fuer jedes Wort:
 - Nur GROSSBUCHSTABEN, keine Leerzeichen, keine Bindestriche, kein Artikel
-- Umlaute als einzelne Zeichen: Ä Ö Ü (NICHT AE OE UE)
-- Wortlänge: 3–12 Zeichen
-- Alle Wörter müssen klar zum Thema passen
-- Hinweise: kurz, prägnant, 1 Satz — beschreiben das Wort, nennen es aber NICHT
-- Russischer Hinweis: gute, natürliche Übersetzung des deutschen Hinweises
+- Umlaute als einzelne Zeichen: Ae Oe Ue (NICHT AE OE UE) — nein: AEZRZTE → AERZTE, OeL → OEL
+- Wortlaenge: 4-12 Zeichen
+- NIVEAU: Woerter auf dem angegebenen Niveau — KEINE Grundwoerter (Mutter, Bruder, Hund usw.)
+  B1: wichtige Vokabeln die ein B1-Lernender kennen sollte, aber nicht trivial sind
+  B2: Fachvokabular, abstrakte Begriffe, seltener aber wichtig
+- Bevorzuge laengere Woerter (6-12 Zeichen) — kurze Woerter (3-4 Zeichen) vermeiden
+- Hinweise: 1 Satz, beschreibt das Wort praezise ohne es zu nennen
+- Russischer Hinweis: natuerliche Uebersetzung
 
-Antworte NUR mit validem JSON, ohne Erklärungen."""
+Antworte NUR mit validem JSON, ohne Erklaerungen."""
 
 _GPT_USER_TMPL = """\
 Thema: {topic}
 Schwierigkeitsgrad: {difficulty}
 
-Erstelle exakt 12 deutsche Wörter zum Thema mit Kreuzworträtsel-Hinweisen.
+Erstelle exakt 12 ANSPRUCHSVOLLE deutsche Woerter (Niveau {difficulty}) mit Kreuzwortraetsel-Hinweisen.
+WICHTIG: Keine Grundvokabeln (A1/A2)! Waehle Woerter die einen Lernenden wirklich fordern.
 
 Ausgabe:
 {{
   "words": [
     {{
-      "word": "HUND",
-      "clue_de": "Treues Haustier, das bellt und Gassi geht",
-      "clue_ru": "Верный питомец, который лает и гуляет на поводке"
+      "word": "BEHANDLUNG",
+      "clue_de": "Medizinische Massnahme zur Heilung einer Erkrankung",
+      "clue_ru": "Медицинская процедура для лечения болезни"
     }}
   ]
 }}"""
