@@ -275,8 +275,7 @@ class PrivateDictionaryBatchFastButtonTests(unittest.TestCase):
         }
 
         with patch.object(bot_3, "_run_dictionary_lookup_for_pair", new=AsyncMock(return_value=lookup)), \
-             patch.object(bot_3, "_free_dictionary_lookup_limit_blocks_user", return_value=False), \
-             patch.object(bot_3, "_record_dictionary_lookup_execution"), \
+             patch.object(bot_3, "_reserve_dictionary_lookup_execution", return_value=True), \
              patch.object(bot_3, "_generate_dictionary_save_options", new=AsyncMock(side_effect=AssertionError("slow path"))), \
              patch.object(bot_3, "_resolve_private_dictionary_save_folder", return_value={"folder_id": None, "name": "GENERAL", "icon": "📁"}):
             prepared = bot_3.asyncio.run(
@@ -317,8 +316,7 @@ class PrivateDictionaryBatchFastButtonTests(unittest.TestCase):
         }
 
         with patch.object(bot_3, "run_dictionary_lookup_multilang_core_fast_batch", new=AsyncMock(return_value=batch_payloads)) as batch_mock, \
-             patch.object(bot_3, "_dictionary_lookup_limit_remaining", return_value=2), \
-             patch.object(bot_3, "_record_dictionary_lookup_execution"), \
+             patch.object(bot_3, "_reserve_dictionary_lookup_execution", return_value=True), \
              patch.object(bot_3, "_run_dictionary_lookup_for_pair", new=AsyncMock(side_effect=AssertionError("per-word lookup should not run"))), \
              patch.object(bot_3, "_resolve_private_dictionary_save_folder", return_value={"folder_id": None, "name": "GENERAL", "icon": "📁"}), \
              patch.object(bot_3, "add_service_msg_id"), \
@@ -353,9 +351,11 @@ class PrivateDictionaryBatchFastButtonTests(unittest.TestCase):
             },
         }
 
+        def reserve_side_effect(_user_id, *, request_key=None, **_kwargs):
+            return str(request_key or "") == "k1"
+
         with patch.object(bot_3, "run_dictionary_lookup_multilang_core_fast_batch", new=AsyncMock(return_value=batch_payloads)) as batch_mock, \
-             patch.object(bot_3, "_dictionary_lookup_limit_remaining", return_value=1), \
-             patch.object(bot_3, "_record_dictionary_lookup_execution") as record_mock, \
+             patch.object(bot_3, "_reserve_dictionary_lookup_execution", side_effect=reserve_side_effect) as reserve_mock, \
              patch.object(bot_3, "_run_dictionary_lookup_for_pair", new=AsyncMock(side_effect=AssertionError("per-word lookup should not run"))), \
              patch.object(bot_3, "_resolve_private_dictionary_save_folder", return_value={"folder_id": None, "name": "GENERAL", "icon": "📁"}), \
              patch.object(bot_3, "add_service_msg_id"), \
@@ -373,7 +373,7 @@ class PrivateDictionaryBatchFastButtonTests(unittest.TestCase):
         batch_mock.assert_awaited_once()
         requested_items = batch_mock.await_args.args[0]
         self.assertEqual([item["key"] for item in requested_items], ["k1"])
-        record_mock.assert_called_once()
+        self.assertEqual(reserve_mock.call_count, 2)
         self.assertTrue(any("Остальные 1" in item["text"] for item in fake_bot.sent_messages))
 
 

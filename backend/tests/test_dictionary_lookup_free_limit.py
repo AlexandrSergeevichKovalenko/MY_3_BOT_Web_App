@@ -32,11 +32,14 @@ class DictionaryLookupFreeLimitWebappTests(unittest.TestCase):
         stack.enter_context(patch.object(server, "get_free_feature_limit_metadata", return_value={"free_limit": 30}))
         usage_mock = stack.enter_context(patch.object(server, "get_free_feature_usage_today", return_value=usage))
         increment_mock = stack.enter_context(patch.object(server, "increment_free_feature_usage"))
+        reserve_mock = stack.enter_context(
+            patch.object(server, "reserve_free_feature_usage", return_value={"ok": True, "blocked": False, "used": 1.0, "limit": 30.0})
+        )
         stack.enter_context(patch.object(server, "DICTIONARY_COALESCE_ENABLED", False))
         stack.enter_context(patch.object(server, "_get_dictionary_enrichment_job_for_cache_keys", return_value=None))
         stack.enter_context(patch.object(server, "_billing_log_event_safe"))
         stack.enter_context(patch.object(server, "_billing_log_openai_usage"))
-        return stack, {"usage": usage_mock, "increment": increment_mock}
+        return stack, {"usage": usage_mock, "increment": increment_mock, "reserve": reserve_mock}
 
     def test_mini_app_memory_cache_hit_does_not_consume_lookup_limit(self):
         stack, mocks = self._base_patches(mode="free", usage=30.0)
@@ -49,6 +52,7 @@ class DictionaryLookupFreeLimitWebappTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         mocks["usage"].assert_not_called()
         mocks["increment"].assert_not_called()
+        mocks["reserve"].assert_not_called()
         core_mock.assert_not_called()
 
     def test_mini_app_db_cache_hit_does_not_consume_lookup_limit(self):
@@ -62,6 +66,7 @@ class DictionaryLookupFreeLimitWebappTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         mocks["usage"].assert_not_called()
         mocks["increment"].assert_not_called()
+        mocks["reserve"].assert_not_called()
         core_mock.assert_not_called()
 
     def test_mini_app_openai_miss_consumes_lookup_limit(self):
@@ -82,12 +87,24 @@ class DictionaryLookupFreeLimitWebappTests(unittest.TestCase):
             response = self._post_lookup()
 
         self.assertEqual(response.status_code, 200)
-        mocks["usage"].assert_called_once()
-        mocks["increment"].assert_called_once()
-        self.assertEqual(mocks["increment"].call_args.kwargs["feature_key"], "dictionary_lookup_daily")
+        mocks["reserve"].assert_called_once()
+        self.assertEqual(mocks["reserve"].call_args.kwargs["feature_key"], "dictionary_lookup_daily")
 
     def test_free_thirty_first_mini_app_lookup_is_blocked_before_openai(self):
         stack, mocks = self._base_patches(mode="free", usage=30.0)
+        mocks["reserve"].return_value = {
+            "ok": False,
+            "blocked": True,
+            "used": 30.0,
+            "limit": 30.0,
+            "error": {
+                "ok": False,
+                "error": "free_limit_exceeded",
+                "feature": "dictionary_lookup_daily",
+                "limit": 30,
+                "used": 30,
+            },
+        }
         with stack, \
              patch.object(server, "_get_cached_dictionary_lookup_with_tier", return_value=(None, "none")), \
              patch.object(server, "_run_dictionary_core_lookup_sync") as core_mock:
@@ -119,6 +136,7 @@ class DictionaryLookupFreeLimitWebappTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         mocks["usage"].assert_not_called()
         mocks["increment"].assert_not_called()
+        mocks["reserve"].assert_called_once()
 
 
 class DictionaryLookupFreeLimitTelegramTests(unittest.TestCase):
@@ -128,11 +146,14 @@ class DictionaryLookupFreeLimitTelegramTests(unittest.TestCase):
         stack.enter_context(patch.object(bot_3, "get_free_feature_limit_metadata", return_value={"free_limit": 30}))
         usage_mock = stack.enter_context(patch.object(bot_3, "get_free_feature_usage_today", return_value=usage))
         increment_mock = stack.enter_context(patch.object(bot_3, "increment_free_feature_usage"))
+        reserve_mock = stack.enter_context(
+            patch.object(bot_3, "reserve_free_feature_usage", return_value={"ok": True, "blocked": False, "used": 1.0, "limit": 30.0})
+        )
         stack.enter_context(patch.object(bot_3, "_resolve_private_dictionary_save_folder", return_value={"folder_id": None, "name": "GENERAL", "icon": "📁"}))
         stack.enter_context(patch.object(bot_3, "_store_pending_dictionary_card", return_value="card-1"))
         stack.enter_context(patch.object(bot_3, "_store_pending_quiz_question_request", return_value="question-1"))
         stack.enter_context(patch.object(bot_3, "_store_pending_dictionary_save_options", return_value="option-1"))
-        return stack, {"usage": usage_mock, "increment": increment_mock}
+        return stack, {"usage": usage_mock, "increment": increment_mock, "reserve": reserve_mock}
 
     def _lookup_payload(self):
         return {
@@ -160,8 +181,8 @@ class DictionaryLookupFreeLimitTelegramTests(unittest.TestCase):
                 )
             )
 
-        mocks["increment"].assert_called_once()
-        self.assertEqual(mocks["increment"].call_args.kwargs["feature_key"], "dictionary_lookup_daily")
+        mocks["reserve"].assert_called_once()
+        self.assertEqual(mocks["reserve"].call_args.kwargs["feature_key"], "dictionary_lookup_daily")
 
     def test_telegram_full_lookup_consumes_usage_once(self):
         stack, mocks = self._patch_lookup_limit(mode="free", usage=0.0)
@@ -180,10 +201,11 @@ class DictionaryLookupFreeLimitTelegramTests(unittest.TestCase):
                 )
             )
 
-        mocks["increment"].assert_called_once()
+        mocks["reserve"].assert_called_once()
 
     def test_free_thirty_first_telegram_lookup_is_blocked_before_openai(self):
         stack, mocks = self._patch_lookup_limit(mode="free", usage=30.0)
+        mocks["reserve"].return_value = {"ok": False, "blocked": True, "used": 30.0, "limit": 30.0}
         with stack, \
              patch.object(bot_3, "_run_dictionary_lookup_for_pair", new=AsyncMock(return_value=self._lookup_payload())) as lookup_mock:
             with self.assertRaises(bot_3.DictionaryLookupDailyLimitExceeded):
@@ -237,7 +259,7 @@ class DictionaryLookupFreeLimitTelegramTests(unittest.TestCase):
                 )
             )
 
-        self.assertEqual(mocks["increment"].call_args.kwargs["metadata"]["origin"], "shortcut_delivery")
+        self.assertEqual(mocks["reserve"].call_args.kwargs["metadata"]["origin"], "shortcut_delivery")
 
     def test_forwarded_lookup_click_consumes_usage_with_origin(self):
         stack, mocks = self._patch_lookup_limit(mode="free", usage=0.0)
@@ -255,7 +277,7 @@ class DictionaryLookupFreeLimitTelegramTests(unittest.TestCase):
                 )
             )
 
-        self.assertEqual(mocks["increment"].call_args.kwargs["metadata"]["origin"], "forwarded_delivery")
+        self.assertEqual(mocks["reserve"].call_args.kwargs["metadata"]["origin"], "forwarded_delivery")
 
     def test_blocked_send_uses_friendly_telegram_message(self):
         class FakeMessage:

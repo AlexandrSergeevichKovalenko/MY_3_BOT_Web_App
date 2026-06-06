@@ -28,6 +28,7 @@ Timing env vars (all optional, defaults match original _start_audio_scheduler):
   SEMANTIC_BENCHMARK_PREP_SCHEDULER_ENABLED (+ HOUR/MINUTE/TZ/etc.)
   SEMANTIC_AUDIT_SCHEDULER_ENABLED (+ DAY_OF_WEEK/HOUR/MINUTE/TZ)
   DB_TABLE_SIZE_REPORT_ENABLED, DB_TABLE_SIZE_REPORT_DAY_OF_WEEK, HOUR/MINUTE/TZ
+  ADMIN_ECONOMICS_REPORT_ENABLED, ADMIN_ECONOMICS_REPORT_HOUR/MINUTE/TZ
   SYSTEM_MESSAGE_CLEANUP_ENABLED, SYSTEM_MESSAGE_CLEANUP_HOUR/MINUTE
   FLASHCARD_FEEL_CLEANUP_ENABLED, FLASHCARD_FEEL_CLEANUP_DAY/HOUR/MINUTE
   TTS_DB_CACHE_CLEANUP_ENABLED, TTS_DB_CACHE_CLEANUP_HOUR/MINUTE
@@ -82,6 +83,7 @@ from backend.background_jobs import (  # noqa: E402
     run_image_quiz_r2_cleanup_actor,
     run_visual_riddle_r2_cleanup_actor,
     run_database_table_sizes_report_actor,
+    run_admin_economics_report_actor,
     run_tts_prewarm_scheduler_actor,
     run_tts_generation_recovery_actor,
     run_tts_prewarm_quota_control_actor,
@@ -308,6 +310,10 @@ def _dispatch_translation_focus_pool_refill() -> None:
 
 def _dispatch_translation_focus_pool_admin_report() -> None:
     run_translation_focus_pool_admin_report_actor.send()
+
+
+def _dispatch_admin_economics_report() -> None:
+    run_admin_economics_report_actor.send()
 
 
 def _dispatch_weekly_global_ranking_report() -> None:
@@ -540,6 +546,19 @@ def _build_scheduler():
             max_instances=1,
             coalesce=True,
             misfire_grace_time=3600,
+        )
+
+    # -- Admin economics and limits report --
+    if _enabled("ADMIN_ECONOMICS_REPORT_ENABLED", "1"):
+        scheduler.add_job(
+            _dispatch_admin_economics_report,
+            "cron",
+            hour=_int_env("ADMIN_ECONOMICS_REPORT_HOUR", 23),
+            minute=_int_env("ADMIN_ECONOMICS_REPORT_MINUTE", 0),
+            timezone=_tz(os.getenv("ADMIN_ECONOMICS_REPORT_TZ") or "Europe/Vienna"),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=1800,
         )
 
     # -- System message cleanup --

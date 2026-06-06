@@ -96,6 +96,17 @@ from backend.image_quiz_utils import (
     build_image_quiz_feedback_payload,
     normalize_image_quiz_option_text,
 )
+from backend.admin_economics import (
+    _split_telegram_text,
+    apply_admin_limit_change,
+    build_admin_economics_limits_keyboard,
+    build_admin_limit_preview_keyboard,
+    build_admin_economics_report_payload,
+    cancel_admin_limit_change,
+    create_admin_limit_change_preview,
+    format_admin_economics_report,
+    format_admin_limit_preview,
+)
 from backend.database import (
     DATABASE_URL as SHARED_DATABASE_URL,
     DB_POOL_ALLOW_DIRECT_FALLBACK,
@@ -113,6 +124,8 @@ from backend.database import (
     is_telegram_quiz_word_mastered,
     get_admin_telegram_ids,
     is_telegram_user_allowed,
+    log_billing_event,
+    log_limit_runtime_event,
     allow_telegram_user,
     revoke_telegram_user,
     schedule_telegram_user_removal,
@@ -1764,11 +1777,68 @@ def _is_admin_user(user_id: int | None) -> bool:
     return int(user_id) in get_admin_telegram_ids()
 
 
+def _inline_markup_from_payload(payload: dict | None) -> InlineKeyboardMarkup | None:
+    if not isinstance(payload, dict):
+        return None
+    rows = payload.get("inline_keyboard")
+    if not isinstance(rows, list):
+        return None
+    keyboard: list[list[InlineKeyboardButton]] = []
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        buttons: list[InlineKeyboardButton] = []
+        for item in row:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or "").strip()
+            callback_data = str(item.get("callback_data") or "").strip()
+            url = str(item.get("url") or "").strip()
+            if not text:
+                continue
+            if callback_data:
+                buttons.append(InlineKeyboardButton(text, callback_data=callback_data))
+            elif url:
+                buttons.append(InlineKeyboardButton(text, url=url))
+        if buttons:
+            keyboard.append(buttons)
+    return InlineKeyboardMarkup(keyboard) if keyboard else None
+
+
 def _can_use_image_quiz_test_commands(user_id: int | None) -> bool:
     if not user_id:
         return False
     safe_user_id = int(user_id)
     return _is_admin_user(safe_user_id) or is_telegram_user_allowed(safe_user_id)
+
+
+def _log_bot_openai_request_event(
+    *,
+    user_id: int,
+    action_type: str,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+    metadata: dict | None = None,
+) -> None:
+    try:
+        log_billing_event(
+            idempotency_key=(
+                f"bot_openai:{int(user_id)}:{str(action_type or '').strip().lower()}:"
+                f"{hashlib.sha1(json.dumps(metadata or {}, sort_keys=True, ensure_ascii=False).encode('utf-8', 'ignore')).hexdigest()[:12]}:"
+                f"{pytime.time_ns()}"
+            ),
+            user_id=int(user_id),
+            action_type=str(action_type or "").strip().lower(),
+            provider="openai",
+            units_type="requests",
+            units_value=1.0,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            status="estimated",
+            metadata=metadata if isinstance(metadata, dict) else {},
+        )
+    except Exception:
+        logging.debug("bot openai request telemetry skipped", exc_info=True)
 
 
 def _format_admin_datetime(value: str | None) -> str:
@@ -2367,6 +2437,17 @@ async def handle_language_tutor_detail_callback(update: Update, context: Callbac
                 "previous_answer": prev_answer,
             }
         llm_response = await run_language_learning_private_question_detailed(llm_payload)
+        _log_bot_openai_request_event(
+            user_id=user_id,
+            action_type="ask_gpt_daily",
+            source_lang=source_lang,
+            target_lang=target_lang,
+            metadata={
+                "origin": "telegram_language_tutor_detail",
+                "question_len": len(question),
+                "has_context": bool(question and prev_answer),
+            },
+        )
         normalized = _normalize_language_tutor_llm_response(
             llm_response,
             source_lang=source_lang,
@@ -3838,6 +3919,143 @@ async def budgets_command(update: Update, context: CallbackContext):
     await tts_budget_command(update, context)
 
 
+async def admin_economics_command(update: Update, context: CallbackContext):
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    await message.reply_text("📊 Собираю economics report...")
+    try:
+        payload = await asyncio.to_thread(build_admin_economics_report_payload)
+        text = await asyncio.to_thread(format_admin_economics_report, payload)
+        keyboard_payload = await asyncio.to_thread(build_admin_economics_limits_keyboard)
+        reply_markup = _inline_markup_from_payload(keyboard_payload)
+        parts = _split_telegram_text(text)
+        for index, part in enumerate(parts):
+            await message.reply_text(
+                part,
+                reply_markup=reply_markup if index == len(parts) - 1 else None,
+                disable_web_page_preview=True,
+            )
+    except Exception as exc:
+        logging.exception("admin economics command failed user_id=%s", int(sender.id))
+        await message.reply_text(f"❌ Не удалось собрать economics report: {exc}")
+
+
+async def handle_admin_economics_callback(update: Update, context: CallbackContext):
+    query = update.callback_query
+    admin = update.effective_user
+    if not query or not admin:
+        return
+    if not _is_admin_user(admin.id):
+        await query.answer("Команда доступна только администратору.", show_alert=True)
+        return
+    data = str(query.data or "").strip()
+    if data.startswith("admecon:noop:"):
+        await query.answer("Выберите изменение лимита ниже.", show_alert=False)
+        return
+    if data == "admecon:refresh":
+        await query.answer("Обновляю…", show_alert=False)
+        try:
+            payload = await asyncio.to_thread(build_admin_economics_report_payload)
+            text = await asyncio.to_thread(format_admin_economics_report, payload)
+            keyboard_payload = await asyncio.to_thread(build_admin_economics_limits_keyboard)
+            reply_markup = _inline_markup_from_payload(keyboard_payload)
+            if query.message:
+                parts = _split_telegram_text(text)
+                try:
+                    await query.message.edit_text(
+                        parts[0],
+                        reply_markup=reply_markup if len(parts) == 1 else None,
+                        disable_web_page_preview=True,
+                    )
+                    for index, part in enumerate(parts[1:], start=1):
+                        await query.message.reply_text(
+                            part,
+                            reply_markup=reply_markup if index == len(parts) - 1 else None,
+                            disable_web_page_preview=True,
+                        )
+                except Exception:
+                    for index, part in enumerate(parts):
+                        await query.message.reply_text(
+                            part,
+                            reply_markup=reply_markup if index == len(parts) - 1 else None,
+                            disable_web_page_preview=True,
+                        )
+        except Exception as exc:
+            logging.exception("admin economics refresh failed user_id=%s", int(admin.id))
+            await query.answer(f"Ошибка: {exc}", show_alert=True)
+        return
+
+    preview_match = re.match(r"^admecon:preview:([a-z0-9_]+):(-?\d+)$", data)
+    if preview_match:
+        feature_code = str(preview_match.group(1) or "").strip().lower()
+        delta = int(preview_match.group(2) or 0)
+        await query.answer("Готовлю preview…", show_alert=False)
+        try:
+            preview = await asyncio.to_thread(
+                create_admin_limit_change_preview,
+                admin_user_id=int(admin.id),
+                feature_code=feature_code,
+                delta=delta,
+            )
+            text = await asyncio.to_thread(format_admin_limit_preview, preview)
+            keyboard_payload = build_admin_limit_preview_keyboard(str(preview.get("token") or ""))
+            reply_markup = _inline_markup_from_payload(keyboard_payload)
+            if query.message:
+                await query.message.reply_text(text, reply_markup=reply_markup)
+        except Exception as exc:
+            logging.exception("admin economics preview failed user_id=%s feature=%s", int(admin.id), feature_code)
+            await query.answer(f"Ошибка preview: {exc}", show_alert=True)
+        return
+
+    apply_match = re.match(r"^admecon:apply:([A-Za-z0-9_-]+)$", data)
+    if apply_match:
+        token = str(apply_match.group(1) or "").strip()
+        await query.answer("Применяю…", show_alert=False)
+        try:
+            result = await asyncio.to_thread(
+                apply_admin_limit_change,
+                token=token,
+                admin_user_id=int(admin.id),
+                telegram_message_id=int(query.message.message_id) if query.message else None,
+                reason="telegram_admin_economics",
+            )
+            text = (
+                "✅ Limit updated\n\n"
+                f"Limit: {result.get('feature_code')}\n"
+                f"Old: {result.get('old_value')}\n"
+                f"New: {result.get('new_value')}\n"
+                f"Audit ID: {result.get('audit_id')}"
+            )
+            if query.message:
+                try:
+                    await query.message.edit_text(text)
+                except Exception:
+                    await query.message.reply_text(text)
+        except Exception as exc:
+            logging.exception("admin economics apply failed user_id=%s", int(admin.id))
+            await query.answer(f"Ошибка apply: {exc}", show_alert=True)
+        return
+
+    cancel_match = re.match(r"^admecon:cancel:([A-Za-z0-9_-]+)$", data)
+    if cancel_match:
+        token = str(cancel_match.group(1) or "").strip()
+        await asyncio.to_thread(cancel_admin_limit_change, token, admin_user_id=int(admin.id))
+        await query.answer("Отменено.", show_alert=False)
+        if query.message:
+            try:
+                await query.message.edit_text("❌ Limit change cancelled.")
+            except Exception:
+                await query.message.reply_text("❌ Limit change cancelled.")
+        return
+
+    await query.answer("Некорректная кнопка.", show_alert=True)
+
+
 async def handle_tts_budget_callback(update: Update, context: CallbackContext):
     query = update.callback_query
     admin = update.effective_user
@@ -4525,6 +4743,13 @@ async def handle_forwarded_message_lookup(update: Update, context: CallbackConte
         return
     user_id = int(update.message.from_user.id)
     if _free_shortcut_forwarded_limit_blocks_user(user_id, origin="forwarded"):
+        log_limit_runtime_event(
+            user_id=user_id,
+            feature_code=SHORTCUT_FORWARDED_MESSAGE_FEATURE_KEY,
+            event_type="blocked",
+            origin="forwarded",
+            metadata={"surface": "telegram_forwarded_message"},
+        )
         await update.message.reply_text(SHORTCUT_FORWARDED_MESSAGE_LIMIT_MESSAGE, quote=True)
         return
     await update.message.reply_text("🔍", quote=True)
@@ -5346,6 +5571,17 @@ async def handle_user_message(update: Update, context: CallbackContext):
                         "previous_answer": prev_answer,
                     }
             llm_response = await run_language_learning_private_question_detailed(llm_payload)
+            _log_bot_openai_request_event(
+                user_id=int(user_id),
+                action_type="ask_gpt_daily",
+                source_lang=source_lang,
+                target_lang=target_lang,
+                metadata={
+                    "origin": "telegram_language_tutor",
+                    "question_len": len(str(text or "")),
+                    "has_context": bool(llm_payload.get("conversation_context")),
+                },
+            )
             normalized_tutor = _normalize_language_tutor_llm_response(
                 llm_response,
                 source_lang=source_lang,
@@ -9802,6 +10038,17 @@ def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) 
             target_lang=target_lang,
         )
         if existing_entry_id is None and _free_dictionary_save_limit_blocks_user(int(user_id)):
+            log_limit_runtime_event(
+                user_id=int(user_id),
+                feature_code=DICTIONARY_FREE_SAVE_FEATURE_KEY,
+                event_type="blocked",
+                origin=str(payload.get("origin") or payload.get("source") or "telegram_dictionary_save").strip().lower() or "telegram_dictionary_save",
+                metadata={
+                    "source_lang": source_lang,
+                    "target_lang": target_lang,
+                    "semantic_tag": semantic_tag or None,
+                },
+            )
             return False, DICTIONARY_FREE_SAVE_LIMIT_MESSAGE, 0, bool(semantic_tag)
 
         # If we have a tag, route to the semantic folder instead of user's default.
@@ -19202,6 +19449,7 @@ def main():
     application.add_handler(CommandHandler("pending_purges", pending_purges_command))
     application.add_handler(CommandHandler("mobile_token", mobile_token_command))
     application.add_handler(CommandHandler("budgets", budgets_command))
+    application.add_handler(CommandHandler("economics", admin_economics_command))
     application.add_handler(CommandHandler("ttsbudget", tts_budget_command))
     application.add_handler(CommandHandler("ttsprewarmquota", tts_prewarm_quota_command))
     application.add_handler(CommandHandler("test_image_quiz", test_image_quiz_command))
@@ -19225,6 +19473,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_access_request_action, pattern=r"^access:(approve|reject|defer):"))
     application.add_handler(CallbackQueryHandler(handle_user_removal_action, pattern=r"^userpurge:(confirm|cancel):"))
     application.add_handler(CallbackQueryHandler(handle_tts_budget_callback, pattern=r"^ttsbudget:"))
+    application.add_handler(CallbackQueryHandler(handle_admin_economics_callback, pattern=r"^admecon:"))
     application.add_handler(CallbackQueryHandler(handle_tts_prewarm_quota_callback, pattern=r"^ttsprewarmquota:"))
     application.add_handler(CallbackQueryHandler(handle_flashcard_feel_feedback_callback, pattern=r"^feelfb:"))
     application.add_handler(CallbackQueryHandler(handle_quiz_question_cancel_callback, pattern=r"^quizaskcancel$"))

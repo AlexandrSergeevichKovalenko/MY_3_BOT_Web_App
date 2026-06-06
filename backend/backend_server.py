@@ -461,6 +461,8 @@ from backend.database import (
     get_free_feature_limit_metadata,
     get_free_feature_usage_today,
     increment_free_feature_usage,
+    reserve_free_feature_usage,
+    log_limit_runtime_event,
     build_free_limit_error,
     enforce_reader_audio_pro_monthly_limit,
     READER_AUDIO_UNLIMITED_USER_IDS,
@@ -15310,7 +15312,7 @@ def _dictionary_lookup_limit_error(*, user_id: int, origin: str) -> dict | None:
     return None
 
 
-def _record_dictionary_lookup_execution(
+def _reserve_dictionary_lookup_execution(
     *,
     user_id: int,
     origin: str,
@@ -15319,15 +15321,11 @@ def _record_dictionary_lookup_execution(
     source_lang: str | None = None,
     target_lang: str | None = None,
     direction: str | None = None,
-) -> None:
+) -> dict | None:
     safe_user_id = int(user_id or 0)
-    entitlement = resolve_entitlement(user_id=safe_user_id, tz="Europe/Vienna")
-    effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
-    if effective_mode != "free":
-        return
     normalized_origin = str(origin or "unknown").strip().lower() or "unknown"
     normalized_lookup_id = str(lookup_id or "").strip()
-    increment_free_feature_usage(
+    reservation = reserve_free_feature_usage(
         user_id=safe_user_id,
         feature_key=DICTIONARY_LOOKUP_DAILY_FEATURE_KEY,
         idempotency_key=(
@@ -15343,13 +15341,32 @@ def _record_dictionary_lookup_execution(
             "direction": str(direction or "").strip().lower() or None,
         },
     )
+    if reservation.get("blocked"):
+        logging.info(
+            "dictionary_lookup_limit blocked user_id=%s origin=%s lookup_id=%s word=%r used=%s limit=%s",
+            safe_user_id,
+            normalized_origin,
+            normalized_lookup_id,
+            str(word or "").strip(),
+            reservation.get("used"),
+            reservation.get("limit"),
+        )
+        return reservation.get("error") if isinstance(reservation.get("error"), dict) else build_free_limit_error(
+            DICTIONARY_LOOKUP_DAILY_FEATURE_KEY,
+            used=float(reservation.get("used") or 0.0),
+            limit=float(reservation.get("limit") or 0.0),
+            tz="Europe/Vienna",
+        )
     logging.info(
-        "dictionary_lookup_limit accepted user_id=%s origin=%s lookup_id=%s word=%r",
+        "dictionary_lookup_limit reserved user_id=%s origin=%s lookup_id=%s word=%r used=%s limit=%s",
         safe_user_id,
         normalized_origin,
         normalized_lookup_id,
         str(word or "").strip(),
+        reservation.get("used"),
+        reservation.get("limit"),
     )
+    return None
 
 
 def _mobile_b64encode(data: bytes) -> str:
@@ -28515,6 +28532,23 @@ def lookup_webapp_dictionary():
             if isinstance(cached_item, dict) and cached_direction:
                 cache_hit = True
                 mark("cache_hit")
+                cache_event_type = "cache_hit"
+                if "memory" in cache_scope_value:
+                    cache_event_type = "memory_cache_hit"
+                elif "db" in cache_scope_value:
+                    cache_event_type = "db_cache_hit"
+                log_limit_runtime_event(
+                    user_id=int(user_id),
+                    feature_code=DICTIONARY_LOOKUP_DAILY_FEATURE_KEY,
+                    event_type=cache_event_type,
+                    origin="webapp_dictionary",
+                    metadata={
+                        "word": word_ru,
+                        "cache_scope": cache_scope_value,
+                        "source_lang": source_lang,
+                        "target_lang": target_lang,
+                    },
+                )
                 _log_dictionary_profile()
                 return jsonify(
                     {
@@ -28535,6 +28569,17 @@ def lookup_webapp_dictionary():
             active_direction = str(active_job.get("direction") or "").strip().lower()
             if active_status == "ready" and isinstance(active_job.get("item"), dict) and active_direction:
                 mark("cache_hit")
+                log_limit_runtime_event(
+                    user_id=int(user_id),
+                    feature_code=DICTIONARY_LOOKUP_DAILY_FEATURE_KEY,
+                    event_type="cache_hit",
+                    origin="webapp_dictionary",
+                    metadata={
+                        "word": word_ru,
+                        "cache_scope": "active_job_ready",
+                        "lookup_id": active_lookup_id,
+                    },
+                )
                 _log_dictionary_profile()
                 return jsonify(
                     {
@@ -28550,6 +28595,17 @@ def lookup_webapp_dictionary():
                 )
             if active_status == "enriching" and isinstance(active_job.get("core_item"), dict) and active_direction:
                 mark("cache_hit")
+                log_limit_runtime_event(
+                    user_id=int(user_id),
+                    feature_code=DICTIONARY_LOOKUP_DAILY_FEATURE_KEY,
+                    event_type="cache_hit",
+                    origin="webapp_dictionary",
+                    metadata={
+                        "word": word_ru,
+                        "cache_scope": "active_job_enriching",
+                        "lookup_id": active_lookup_id,
+                    },
+                )
                 _log_dictionary_profile()
                 return jsonify(
                     {
@@ -28564,7 +28620,15 @@ def lookup_webapp_dictionary():
                     }
                 )
 
-        limit_error = _dictionary_lookup_limit_error(user_id=int(user_id), origin="webapp_dictionary")
+        lookup_id = f"dict_{int(time.time() * 1000)}_{hashlib.sha1(cache_key.encode('utf-8')).hexdigest()[:10]}"
+        limit_error = _reserve_dictionary_lookup_execution(
+            user_id=int(user_id),
+            origin="webapp_dictionary",
+            lookup_id=lookup_id,
+            word=word_ru,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
         if limit_error:
             return jsonify(limit_error), 429
 
@@ -28583,7 +28647,6 @@ def lookup_webapp_dictionary():
             gateway_path = str(core_payload.get("gateway_path") or "unknown")
             result = core_payload.get("item") if isinstance(core_payload.get("item"), dict) else {}
             direction = str(core_payload.get("direction") or "").strip().lower()
-            lookup_id = f"dict_{int(time.time() * 1000)}_{hashlib.sha1(cache_key.encode('utf-8')).hexdigest()[:10]}"
             _create_dictionary_enrichment_job(
                 lookup_id=lookup_id,
                 user_id=int(user_id),
@@ -28599,15 +28662,6 @@ def lookup_webapp_dictionary():
                 direction=direction,
                 core_item=result,
                 core_raw=core_payload.get("raw") if isinstance(core_payload.get("raw"), dict) else {},
-            )
-            _record_dictionary_lookup_execution(
-                user_id=int(user_id),
-                origin="webapp_dictionary",
-                lookup_id=lookup_id,
-                word=word_ru,
-                source_lang=source_lang,
-                target_lang=target_lang,
-                direction=direction,
             )
             mark("decorate")
             _start_dictionary_enrichment_runner(lookup_id=lookup_id)
@@ -28673,15 +28727,6 @@ def lookup_webapp_dictionary():
             usage_main = full_payload.get("usage")
             result = full_payload.get("item") if isinstance(full_payload.get("item"), dict) else {}
             direction = str(full_payload.get("direction") or "").strip().lower()
-            _record_dictionary_lookup_execution(
-                user_id=int(user_id),
-                origin="webapp_dictionary",
-                lookup_id=f"full:{hashlib.sha1(f'{user_id}:{word_ru}:{time.time_ns()}'.encode('utf-8')).hexdigest()[:16]}",
-                word=word_ru,
-                source_lang=source_lang,
-                target_lang=target_lang,
-                direction=direction,
-            )
             mark("llm_main")
             if fallback_reverse_used:
                 mark("llm_fallback")
@@ -34671,6 +34716,28 @@ def get_webapp_dictionary_collocations():
                     word_target=word_target,
                 )
             )
+        usage_collocations = get_last_llm_usage(reset=True)
+        _billing_log_event_safe(
+            user_id=int(user_id),
+            action_type="dictionary_collocations",
+            provider="openai",
+            units_type="requests",
+            units_value=1.0,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            idempotency_seed=f"dictionary_collocations:{user_id}:{word}:{direction}:{time.time_ns()}",
+            status="estimated",
+            metadata={"word": word, "direction": direction},
+        )
+        _billing_log_openai_usage(
+            user_id=int(user_id),
+            action_type="dictionary_collocations",
+            source_lang=source_lang,
+            target_lang=target_lang,
+            usage=usage_collocations,
+            seed=f"dictionary_collocations_tokens:{user_id}:{word}:{time.time_ns()}",
+            metadata={"word": word, "direction": direction},
+        )
     except Exception as exc:
         return jsonify({"error": f"Ошибка генерации связок: {exc}"}), 500
 
@@ -35440,6 +35507,17 @@ def save_webapp_dictionary_entry():
                 tz="Europe/Vienna",
             )
             if limit_value >= 0 and used_today + 1.0 > limit_value:
+                log_limit_runtime_event(
+                    user_id=int(user_id),
+                    feature_code=dictionary_save_feature_key,
+                    event_type="blocked",
+                    origin=origin_process,
+                    metadata={
+                        **origin_meta,
+                        "used": used_today,
+                        "limit": limit_value,
+                    },
+                )
                 return jsonify(
                     build_free_limit_error(
                         dictionary_save_feature_key,
@@ -36557,6 +36635,17 @@ def _shortcut_forwarded_message_limit_error(
             used_today,
             limit_value,
             request_id,
+        )
+        log_limit_runtime_event(
+            user_id=safe_user_id,
+            feature_code=SHORTCUT_FORWARDED_MESSAGE_FEATURE_KEY,
+            event_type="blocked",
+            origin=str(origin or "unknown").strip().lower() or "unknown",
+            metadata={
+                "used": used_today,
+                "limit": limit_value,
+                "request_id": request_id,
+            },
         )
         return build_free_limit_error(
             SHORTCUT_FORWARDED_MESSAGE_FEATURE_KEY,
@@ -44614,6 +44703,23 @@ def start_webapp_story():
 
     if isinstance(result, dict) and result.get("error"):
         return jsonify({"error": result["error"]}), 400
+    if isinstance(result, dict) and bool(result.get("created")):
+        _billing_log_event_safe(
+            user_id=int(user_id),
+            action_type="story_start_generation",
+            provider="openai",
+            units_type="requests",
+            units_value=1.0,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            idempotency_seed=f"story_start:{user_id}:{result.get('session_id') or time.time_ns()}",
+            status="estimated",
+            metadata={
+                "mode": mode,
+                "story_type": story_type,
+                "difficulty": difficulty,
+            },
+        )
 
     return jsonify(
         {
@@ -44669,6 +44775,22 @@ def submit_webapp_story():
 
     if isinstance(result, dict) and result.get("error"):
         return jsonify({"error": result["error"]}), 400
+    _billing_log_event_safe(
+        user_id=int(user_id),
+        action_type="story_submit_check",
+        provider="openai",
+        units_type="requests",
+        units_value=3.0,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        idempotency_seed=f"story_submit:{user_id}:{result.get('session_id') or time.time_ns()}",
+        status="estimated",
+        metadata={
+            "translations_count": len(translations),
+            "has_guess": bool(guess),
+            "estimated_llm_calls": 3,
+        },
+    )
 
     return jsonify(
         {
@@ -51406,6 +51528,32 @@ def explain_webapp_translation():
                     explanation_lang=source_lang,
                 )
             )
+        usage_explain = get_last_llm_usage(reset=True)
+        _billing_log_event_safe(
+            user_id=int(user_id),
+            action_type="dictionary_openai_explanation",
+            provider="openai",
+            units_type="requests",
+            units_value=1.0,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            idempotency_seed=f"dictionary_explain:{user_id}:{mode}:{hashlib.sha1(original_text.encode('utf-8', 'ignore')).hexdigest()[:16]}:{time.time_ns()}",
+            status="estimated",
+            metadata={
+                "mode": mode or "translation",
+                "original_len": len(original_text),
+                "user_translation_len": len(user_translation),
+            },
+        )
+        _billing_log_openai_usage(
+            user_id=int(user_id),
+            action_type="dictionary_openai_explanation",
+            source_lang=source_lang,
+            target_lang=target_lang,
+            usage=usage_explain,
+            seed=f"dictionary_explain_tokens:{user_id}:{time.time_ns()}",
+            metadata={"mode": mode or "translation"},
+        )
     except Exception as exc:
         return jsonify({"error": f"Ошибка объяснения: {exc}"}), 500
 
@@ -51473,6 +51621,32 @@ def explain_webapp_translation_followup_question():
                     },
                 }
             )
+        )
+        usage_question = get_last_llm_usage(reset=True)
+        _billing_log_event_safe(
+            user_id=int(user_id),
+            action_type="ask_gpt_daily",
+            provider="openai",
+            units_type="requests",
+            units_value=1.0,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            idempotency_seed=f"explain_question:{user_id}:{hashlib.sha1(learner_question.encode('utf-8', 'ignore')).hexdigest()[:16]}:{time.time_ns()}",
+            status="estimated",
+            metadata={
+                "origin": "webapp_explain_question",
+                "question_len": len(learner_question),
+                "context_len": len(context_answer),
+            },
+        )
+        _billing_log_openai_usage(
+            user_id=int(user_id),
+            action_type="ask_gpt_daily",
+            source_lang=source_lang,
+            target_lang=target_lang,
+            usage=usage_question,
+            seed=f"explain_question_tokens:{user_id}:{time.time_ns()}",
+            metadata={"origin": "webapp_explain_question"},
         )
     except Exception as exc:
         return jsonify({"error": f"Ошибка follow-up вопроса: {exc}"}), 500

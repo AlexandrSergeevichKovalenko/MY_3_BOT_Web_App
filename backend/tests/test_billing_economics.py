@@ -19,6 +19,7 @@ from backend.database import (
     get_or_create_user_subscription,
     increment_free_feature_usage,
     log_billing_event,
+    reserve_free_feature_usage,
     resolve_entitlement,
 )
 
@@ -429,6 +430,81 @@ class BillingEconomicsTests(unittest.TestCase):
         self.assertEqual(params[11], "estimated")
         self.assertIsInstance(params[12], Json)
         self.assertEqual(params[12].adapted, {"source": "test"})
+
+    def test_reserve_free_feature_usage_locks_checks_and_inserts(self):
+        event_time = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+        cursor = _DummyCursor([
+            (30.0,),
+            (29.0,),
+            (
+                42,
+                "reserve:test",
+                77,
+                "de",
+                "ru",
+                "dictionary_lookup_daily",
+                "app_internal",
+                "requests",
+                1.0,
+                None,
+                0.0,
+                "USD",
+                "estimated",
+                {"origin": "test"},
+                event_time,
+                event_time,
+            ),
+        ])
+
+        @contextmanager
+        def _conn():
+            yield _DummyConnection(cursor)
+
+        with patch("backend.database.get_db_connection_context", return_value=_conn()), \
+             patch("backend.database.resolve_entitlement", return_value={"effective_mode": "free"}):
+            result = reserve_free_feature_usage(
+                user_id=77,
+                feature_key="dictionary_lookup_daily",
+                idempotency_key="reserve:test",
+                source_lang="de",
+                target_lang="ru",
+                metadata={"origin": "test"},
+                now_ts_utc=event_time,
+                tz="Europe/Vienna",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["blocked"])
+        self.assertEqual(result["used"], 30.0)
+        self.assertEqual(result["event"]["action_type"], "dictionary_lookup_daily")
+        queries = [query for query, _params in cursor.executed]
+        self.assertIn("pg_advisory_xact_lock", queries[0])
+        self.assertIn("FROM plan_limits", queries[1])
+        self.assertIn("SELECT COALESCE(SUM(units_value), 0)", queries[2])
+        self.assertIn("INSERT INTO bt_3_billing_events", queries[3])
+
+    def test_reserve_free_feature_usage_blocks_without_insert(self):
+        event_time = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+        cursor = _DummyCursor([(30.0,), (30.0,)])
+
+        @contextmanager
+        def _conn():
+            yield _DummyConnection(cursor)
+
+        with patch("backend.database.get_db_connection_context", return_value=_conn()), \
+             patch("backend.database.resolve_entitlement", return_value={"effective_mode": "free"}):
+            result = reserve_free_feature_usage(
+                user_id=77,
+                feature_key="dictionary_lookup_daily",
+                idempotency_key="reserve:blocked",
+                now_ts_utc=event_time,
+                tz="Europe/Vienna",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["blocked"])
+        self.assertEqual(result["error"]["feature"], "dictionary_lookup_daily")
+        self.assertFalse(any("INSERT INTO bt_3_billing_events" in query for query, _params in cursor.executed))
 
     def test_build_free_limit_error_payload(self):
         payload = build_free_limit_error(

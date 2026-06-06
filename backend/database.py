@@ -6766,6 +6766,85 @@ def ensure_webapp_tables() -> None:
                 ON daily_cost_rollup (user_id, day DESC);
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_limit_runtime_events (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT,
+                    feature_code TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    origin TEXT,
+                    units_value DOUBLE PRECISION NOT NULL DEFAULT 1,
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    event_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (units_value >= 0),
+                    CHECK (event_type IN (
+                        'accepted',
+                        'blocked',
+                        'cache_hit',
+                        'db_cache_hit',
+                        'memory_cache_hit',
+                        'openai_execution',
+                        'telemetry'
+                    ))
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_limit_runtime_events_feature_time
+                ON bt_3_limit_runtime_events (feature_code, event_type, event_time DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_limit_runtime_events_user_time
+                ON bt_3_limit_runtime_events (user_id, event_time DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_admin_limit_change_pending (
+                    token TEXT PRIMARY KEY,
+                    admin_user_id BIGINT NOT NULL,
+                    plan_code TEXT NOT NULL DEFAULT 'free',
+                    feature_code TEXT NOT NULL,
+                    old_value NUMERIC(20, 10) NOT NULL,
+                    new_value NUMERIC(20, 10) NOT NULL,
+                    limit_unit TEXT NOT NULL DEFAULT 'count',
+                    period TEXT NOT NULL DEFAULT 'day',
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_admin_limit_change_pending_admin
+                ON bt_3_admin_limit_change_pending (admin_user_id, expires_at DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_admin_limit_change_audit (
+                    id BIGSERIAL PRIMARY KEY,
+                    admin_user_id BIGINT NOT NULL,
+                    plan_code TEXT NOT NULL DEFAULT 'free',
+                    feature_code TEXT NOT NULL,
+                    old_value NUMERIC(20, 10) NOT NULL,
+                    new_value NUMERIC(20, 10) NOT NULL,
+                    limit_unit TEXT NOT NULL DEFAULT 'count',
+                    period TEXT NOT NULL DEFAULT 'day',
+                    reason TEXT,
+                    telegram_message_id BIGINT,
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_admin_limit_change_audit_feature_time
+                ON bt_3_admin_limit_change_audit (feature_code, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_admin_economics_daily_snapshots (
+                    day DATE PRIMARY KEY,
+                    tz_name TEXT NOT NULL DEFAULT 'Europe/Vienna',
+                    payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_tts_chunk_cache (
                     cache_key TEXT PRIMARY KEY,
                     language TEXT NOT NULL,
@@ -25662,7 +25741,495 @@ def get_free_feature_limit_metadata(feature_key: str) -> dict[str, Any] | None:
     if not feature:
         return None
     meta = FREE_FEATURE_LIMITS.get(feature)
-    return dict(meta) if isinstance(meta, dict) else None
+    if not isinstance(meta, dict):
+        return None
+    result = dict(meta)
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                return _free_feature_limit_metadata_from_cursor(feature, cursor) or result
+    except Exception:
+        result["source"] = "metadata"
+    return result
+
+
+def _free_feature_limit_metadata_from_cursor(feature_key: str, cursor) -> dict[str, Any] | None:
+    feature = str(feature_key or "").strip().lower()
+    meta = FREE_FEATURE_LIMITS.get(feature)
+    if not feature or not isinstance(meta, dict):
+        return None
+    result = dict(meta)
+    try:
+        cursor.execute(
+            """
+            SELECT limit_value
+            FROM plan_limits
+            WHERE plan_code = 'free'
+              AND feature_code = %s
+              AND period = 'day'
+              AND is_active = TRUE
+            LIMIT 1;
+            """,
+            (feature,),
+        )
+        row = cursor.fetchone()
+        if row:
+            value = float(row[0] or 0.0)
+            result["free_limit"] = int(value) if float(value).is_integer() else value
+            result["source"] = "plan_limits"
+        else:
+            result["source"] = "metadata"
+    except Exception:
+        result["source"] = "metadata"
+    return result
+
+
+def ensure_admin_economics_schema() -> None:
+    """Create admin economics tables and seed editable FREE limits.
+
+    This is intentionally idempotent so both scheduler workers and Telegram
+    callbacks can call it before using the dashboard.
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_limit_runtime_events (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT,
+                    feature_code TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    origin TEXT,
+                    units_value DOUBLE PRECISION NOT NULL DEFAULT 1,
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    event_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (units_value >= 0),
+                    CHECK (event_type IN (
+                        'accepted',
+                        'blocked',
+                        'cache_hit',
+                        'db_cache_hit',
+                        'memory_cache_hit',
+                        'openai_execution',
+                        'telemetry'
+                    ))
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_bt_3_limit_runtime_events_feature_time
+                ON bt_3_limit_runtime_events (feature_code, event_type, event_time DESC);
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_bt_3_limit_runtime_events_user_time
+                ON bt_3_limit_runtime_events (user_id, event_time DESC);
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_admin_limit_change_pending (
+                    token TEXT PRIMARY KEY,
+                    admin_user_id BIGINT NOT NULL,
+                    plan_code TEXT NOT NULL DEFAULT 'free',
+                    feature_code TEXT NOT NULL,
+                    old_value NUMERIC(20, 10) NOT NULL,
+                    new_value NUMERIC(20, 10) NOT NULL,
+                    limit_unit TEXT NOT NULL DEFAULT 'count',
+                    period TEXT NOT NULL DEFAULT 'day',
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_bt_3_admin_limit_change_pending_admin
+                ON bt_3_admin_limit_change_pending (admin_user_id, expires_at DESC);
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_admin_limit_change_audit (
+                    id BIGSERIAL PRIMARY KEY,
+                    admin_user_id BIGINT NOT NULL,
+                    plan_code TEXT NOT NULL DEFAULT 'free',
+                    feature_code TEXT NOT NULL,
+                    old_value NUMERIC(20, 10) NOT NULL,
+                    new_value NUMERIC(20, 10) NOT NULL,
+                    limit_unit TEXT NOT NULL DEFAULT 'count',
+                    period TEXT NOT NULL DEFAULT 'day',
+                    reason TEXT,
+                    telegram_message_id BIGINT,
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_bt_3_admin_limit_change_audit_feature_time
+                ON bt_3_admin_limit_change_audit (feature_code, created_at DESC);
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_admin_economics_daily_snapshots (
+                    day DATE PRIMARY KEY,
+                    tz_name TEXT NOT NULL DEFAULT 'Europe/Vienna',
+                    payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            rows = []
+            for feature, meta in sorted(FREE_FEATURE_LIMITS.items()):
+                try:
+                    free_limit = float(meta.get("free_limit"))
+                except Exception:
+                    continue
+                rows.append(("free", feature, free_limit, "count", "day"))
+            if rows:
+                cursor.executemany(
+                    """
+                    INSERT INTO plan_limits (
+                        plan_code,
+                        feature_code,
+                        limit_value,
+                        limit_unit,
+                        period,
+                        is_active,
+                        updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, TRUE, NOW())
+                    ON CONFLICT (plan_code, feature_code, period) DO NOTHING;
+                    """,
+                    rows,
+                )
+
+
+def log_limit_runtime_event(
+    *,
+    feature_code: str,
+    event_type: str,
+    user_id: int | None = None,
+    origin: str | None = None,
+    units_value: float = 1.0,
+    metadata: dict | None = None,
+    event_time: datetime | None = None,
+) -> None:
+    feature = str(feature_code or "").strip().lower()
+    event = str(event_type or "").strip().lower()
+    if not feature or event not in {
+        "accepted",
+        "blocked",
+        "cache_hit",
+        "db_cache_hit",
+        "memory_cache_hit",
+        "openai_execution",
+        "telemetry",
+    }:
+        return
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_limit_runtime_events (
+                        user_id,
+                        feature_code,
+                        event_type,
+                        origin,
+                        units_value,
+                        metadata,
+                        event_time
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s);
+                    """,
+                    (
+                        int(user_id) if user_id is not None else None,
+                        feature,
+                        event,
+                        str(origin or "").strip().lower() or None,
+                        max(0.0, float(units_value or 0.0)),
+                        Json(metadata if isinstance(metadata, dict) else {}),
+                        event_time or datetime.now(timezone.utc),
+                    ),
+                )
+    except Exception:
+        logging.debug("admin limit runtime telemetry skipped", exc_info=True)
+
+
+def list_admin_configurable_limits(plan_code: str = "free") -> list[dict[str, Any]]:
+    ensure_admin_economics_schema()
+    plan_value = str(plan_code or "free").strip().lower() or "free"
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT plan_code, feature_code, limit_value, limit_unit, period, is_active, updated_at
+                FROM plan_limits
+                WHERE plan_code = %s
+                  AND period = 'day'
+                  AND is_active = TRUE
+                ORDER BY feature_code ASC;
+                """,
+                (plan_value,),
+            )
+            rows = cursor.fetchall() or []
+    result = []
+    for row in rows:
+        feature = str(row[1] or "").strip().lower()
+        meta = FREE_FEATURE_LIMITS.get(feature, {})
+        value = float(row[2] or 0.0)
+        result.append(
+            {
+                "plan_code": str(row[0] or plan_value),
+                "feature_code": feature,
+                "title": str(meta.get("title") or feature),
+                "limit_value": int(value) if value.is_integer() else value,
+                "limit_unit": str(row[3] or "count"),
+                "period": str(row[4] or "day"),
+                "is_active": bool(row[5]),
+                "updated_at": row[6].isoformat() if row[6] else None,
+            }
+        )
+    return result
+
+
+def get_admin_configurable_limit(feature_code: str, plan_code: str = "free") -> dict[str, Any] | None:
+    feature = str(feature_code or "").strip().lower()
+    if not feature:
+        return None
+    for item in list_admin_configurable_limits(plan_code=plan_code):
+        if str(item.get("feature_code")) == feature:
+            return item
+    return None
+
+
+def create_admin_limit_change_preview(
+    *,
+    admin_user_id: int,
+    feature_code: str,
+    delta: float,
+    plan_code: str = "free",
+    ttl_minutes: int = 10,
+) -> dict[str, Any]:
+    ensure_admin_economics_schema()
+    current = get_admin_configurable_limit(feature_code, plan_code=plan_code)
+    if not current:
+        raise ValueError(f"Unknown configurable limit: {feature_code}")
+    old_value = float(current.get("limit_value") or 0.0)
+    new_value = max(0.0, old_value + float(delta or 0.0))
+    token = secrets.token_urlsafe(12)
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=max(1, int(ttl_minutes or 10)))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_admin_limit_change_pending (
+                    token,
+                    admin_user_id,
+                    plan_code,
+                    feature_code,
+                    old_value,
+                    new_value,
+                    limit_unit,
+                    period,
+                    expires_at,
+                    metadata
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                """,
+                (
+                    token,
+                    int(admin_user_id),
+                    str(current.get("plan_code") or plan_code),
+                    str(current.get("feature_code") or feature_code),
+                    old_value,
+                    new_value,
+                    str(current.get("limit_unit") or "count"),
+                    str(current.get("period") or "day"),
+                    expires_at,
+                    Json({"delta": float(delta or 0.0)}),
+                ),
+            )
+    return {
+        "token": token,
+        "admin_user_id": int(admin_user_id),
+        "plan_code": str(current.get("plan_code") or plan_code),
+        "feature_code": str(current.get("feature_code") or feature_code),
+        "title": str(current.get("title") or feature_code),
+        "old_value": int(old_value) if old_value.is_integer() else old_value,
+        "new_value": int(new_value) if new_value.is_integer() else new_value,
+        "limit_unit": str(current.get("limit_unit") or "count"),
+        "period": str(current.get("period") or "day"),
+        "expires_at": expires_at.isoformat(),
+    }
+
+
+def get_admin_limit_change_preview(token: str, *, admin_user_id: int | None = None) -> dict[str, Any] | None:
+    ensure_admin_economics_schema()
+    token_value = str(token or "").strip()
+    if not token_value:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT token, admin_user_id, plan_code, feature_code, old_value, new_value,
+                       limit_unit, period, expires_at, metadata, created_at
+                FROM bt_3_admin_limit_change_pending
+                WHERE token = %s
+                  AND expires_at > NOW()
+                  AND (%s IS NULL OR admin_user_id = %s)
+                LIMIT 1;
+                """,
+                (
+                    token_value,
+                    int(admin_user_id) if admin_user_id is not None else None,
+                    int(admin_user_id) if admin_user_id is not None else None,
+                ),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    old_value = float(row[4] or 0.0)
+    new_value = float(row[5] or 0.0)
+    return {
+        "token": str(row[0] or ""),
+        "admin_user_id": int(row[1]),
+        "plan_code": str(row[2] or "free"),
+        "feature_code": str(row[3] or ""),
+        "old_value": int(old_value) if old_value.is_integer() else old_value,
+        "new_value": int(new_value) if new_value.is_integer() else new_value,
+        "limit_unit": str(row[6] or "count"),
+        "period": str(row[7] or "day"),
+        "expires_at": row[8].isoformat() if row[8] else None,
+        "metadata": row[9] if isinstance(row[9], dict) else {},
+        "created_at": row[10].isoformat() if row[10] else None,
+    }
+
+
+def apply_admin_limit_change(
+    *,
+    token: str,
+    admin_user_id: int,
+    telegram_message_id: int | None = None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    ensure_admin_economics_schema()
+    token_value = str(token or "").strip()
+    if not token_value:
+        raise ValueError("token is required")
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s));", (f"admin_limit:{token_value}",))
+            cursor.execute(
+                """
+                SELECT token, admin_user_id, plan_code, feature_code, old_value, new_value,
+                       limit_unit, period, expires_at, metadata
+                FROM bt_3_admin_limit_change_pending
+                WHERE token = %s
+                  AND admin_user_id = %s
+                  AND expires_at > NOW()
+                LIMIT 1;
+                """,
+                (token_value, int(admin_user_id)),
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise ValueError("pending_limit_change_not_found_or_expired")
+            plan_code_value = str(row[2] or "free").strip().lower() or "free"
+            feature_value = str(row[3] or "").strip().lower()
+            old_value = float(row[4] or 0.0)
+            new_value = float(row[5] or 0.0)
+            unit_value = str(row[6] or "count")
+            period_value = str(row[7] or "day")
+            cursor.execute(
+                """
+                INSERT INTO plan_limits (
+                    plan_code,
+                    feature_code,
+                    limit_value,
+                    limit_unit,
+                    period,
+                    is_active,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, TRUE, NOW())
+                ON CONFLICT (plan_code, feature_code, period) DO UPDATE
+                SET
+                    limit_value = EXCLUDED.limit_value,
+                    limit_unit = EXCLUDED.limit_unit,
+                    is_active = TRUE,
+                    updated_at = NOW();
+                """,
+                (plan_code_value, feature_value, new_value, unit_value, period_value),
+            )
+            cursor.execute(
+                """
+                INSERT INTO bt_3_admin_limit_change_audit (
+                    admin_user_id,
+                    plan_code,
+                    feature_code,
+                    old_value,
+                    new_value,
+                    limit_unit,
+                    period,
+                    reason,
+                    telegram_message_id,
+                    metadata
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, created_at;
+                """,
+                (
+                    int(admin_user_id),
+                    plan_code_value,
+                    feature_value,
+                    old_value,
+                    new_value,
+                    unit_value,
+                    period_value,
+                    str(reason or "").strip() or None,
+                    int(telegram_message_id) if telegram_message_id is not None else None,
+                    Json(row[9] if isinstance(row[9], dict) else {}),
+                ),
+            )
+            audit_row = cursor.fetchone()
+            cursor.execute("DELETE FROM bt_3_admin_limit_change_pending WHERE token = %s;", (token_value,))
+    return {
+        "audit_id": int(audit_row[0]) if audit_row else None,
+        "created_at": audit_row[1].isoformat() if audit_row and audit_row[1] else None,
+        "admin_user_id": int(admin_user_id),
+        "plan_code": plan_code_value,
+        "feature_code": feature_value,
+        "old_value": int(old_value) if old_value.is_integer() else old_value,
+        "new_value": int(new_value) if new_value.is_integer() else new_value,
+        "limit_unit": unit_value,
+        "period": period_value,
+    }
+
+
+def cancel_admin_limit_change(token: str, *, admin_user_id: int) -> bool:
+    ensure_admin_economics_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM bt_3_admin_limit_change_pending
+                WHERE token = %s
+                  AND admin_user_id = %s;
+                """,
+                (str(token or "").strip(), int(admin_user_id)),
+            )
+            return int(cursor.rowcount or 0) > 0
 
 
 def get_free_feature_usage_today(
@@ -25823,6 +26390,14 @@ def increment_free_feature_usage(
     if not item:
         logging.error("free_usage_increment_missing user_id=%s feature=%s", int(user_id), feature)
         raise RuntimeError(f"Failed to increment free feature usage for {feature!r}")
+    log_limit_runtime_event(
+        user_id=int(user_id),
+        feature_code=feature,
+        event_type="accepted",
+        origin=(metadata or {}).get("origin") if isinstance(metadata, dict) else None,
+        metadata=metadata,
+        event_time=event_time,
+    )
     return item
 
 
@@ -25838,7 +26413,7 @@ def reserve_free_feature_usage(
     tz: str = TRIAL_POLICY_TZ,
 ) -> dict[str, Any]:
     feature = str(feature_key or "").strip().lower()
-    if not get_free_feature_limit_metadata(feature):
+    if feature not in FREE_FEATURE_LIMITS:
         logging.error("free_usage_metadata_missing user_id=%s feature=%s", int(user_id), feature)
         raise ValueError(f"Missing free feature metadata for {feature!r}")
     key = str(idempotency_key or "").strip()
@@ -25851,8 +26426,6 @@ def reserve_free_feature_usage(
     if effective_mode != "free":
         return {"ok": True, "blocked": False, "event": None, "used": None, "limit": None}
 
-    limit_meta = get_free_feature_limit_metadata(feature) or {}
-    limit_value = float(limit_meta.get("free_limit") or 0.0)
     now_value = now_ts_utc or datetime.now(timezone.utc)
     day_local = _to_aware_datetime(now_value).astimezone(_resolve_timezone(tz)).date()
     lock_material = f"free_feature:{safe_user_id}:{feature}:{day_local.isoformat()}"
@@ -25861,6 +26434,8 @@ def reserve_free_feature_usage(
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute("SELECT pg_advisory_xact_lock(%s::bigint);", (lock_key,))
+            limit_meta = _free_feature_limit_metadata_from_cursor(feature, cursor) or {}
+            limit_value = float(limit_meta.get("free_limit") or 0.0)
             used_today = get_free_feature_usage_today(
                 user_id=safe_user_id,
                 feature_key=feature,
@@ -25869,6 +26444,18 @@ def reserve_free_feature_usage(
                 cursor=cursor,
             )
             if limit_value >= 0 and used_today + 1.0 > limit_value:
+                log_limit_runtime_event(
+                    user_id=safe_user_id,
+                    feature_code=feature,
+                    event_type="blocked",
+                    origin=(metadata or {}).get("origin") if isinstance(metadata, dict) else None,
+                    metadata={
+                        **(metadata if isinstance(metadata, dict) else {}),
+                        "used": used_today,
+                        "limit": limit_value,
+                    },
+                    event_time=now_value,
+                )
                 return {
                     "ok": False,
                     "blocked": True,
@@ -25896,6 +26483,19 @@ def reserve_free_feature_usage(
             if not event:
                 logging.error("free_usage_reservation_missing user_id=%s feature=%s", safe_user_id, feature)
                 raise RuntimeError(f"Failed to reserve free feature usage for {feature!r}")
+            log_limit_runtime_event(
+                user_id=safe_user_id,
+                feature_code=feature,
+                event_type="accepted",
+                origin=(metadata or {}).get("origin") if isinstance(metadata, dict) else None,
+                metadata={
+                    **(metadata if isinstance(metadata, dict) else {}),
+                    "used": used_today + 1.0,
+                    "limit": limit_value,
+                    "reservation": True,
+                },
+                event_time=now_value,
+            )
             return {
                 "ok": True,
                 "blocked": False,
