@@ -2435,24 +2435,39 @@ body {
 
 .guide-step-grid {
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 
 .guide-step-card {
-  border-radius: var(--dmps-radius-inner);
-  border: 1px solid var(--dmps-border);
-  background: var(--dmps-card-alt);
+  --guide-accent: #6366f1;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--guide-accent) 26%, transparent);
+  background: color-mix(in srgb, var(--guide-accent) 10%, var(--dmps-card-alt));
   box-shadow: var(--dmps-shadow-card);
   cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.12s ease, border-color 0.16s ease, background 0.16s ease;
 }
+
+.guide-step-card:active { transform: scale(0.985); }
 
 .guide-step-card.is-open {
-  background: var(--dmps-hover);
+  border-color: color-mix(in srgb, var(--guide-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--guide-accent) 16%, var(--dmps-card-alt));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--guide-accent) 40%, transparent) inset, var(--dmps-shadow-card);
 }
 
+/* Colorful accents cycled per card — same lively feel as the dictionary
+   folder grid. Highlighted card overrides to blue below. */
+.guide-step-card:nth-child(6n+1) { --guide-accent: #6366f1; }
+.guide-step-card:nth-child(6n+2) { --guide-accent: #0ea5e9; }
+.guide-step-card:nth-child(6n+3) { --guide-accent: #10b981; }
+.guide-step-card:nth-child(6n+4) { --guide-accent: #f59e0b; }
+.guide-step-card:nth-child(6n+5) { --guide-accent: #ec4899; }
+.guide-step-card:nth-child(6n+6) { --guide-accent: #8b5cf6; }
+
 .guide-step-card.is-highlight {
-  border-color: #2563eb;
-  background: rgba(37, 99, 235, 0.12);
+  --guide-accent: #2563eb;
 }
 
 .guide-step-card.is-highlight .guide-step-title {
@@ -2463,18 +2478,12 @@ body {
   color: #93c5fd;
 }
 
-.guide-step-card.is-highlight .guide-step-number {
-  background: rgba(37, 99, 235, 0.2);
-  color: #dbeafe;
-  border: 1px solid rgba(191, 219, 254, 0.45);
-}
-
 .guide-step-question {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 14px 16px;
+  gap: 14px;
+  padding: 14px;
   width: 100%;
   border: none;
   background: transparent;
@@ -2487,21 +2496,24 @@ body {
 .guide-step-leading {
   min-width: 0;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 12px;
 }
 
+/* Square colored chip — same visual language as the dictionary folder icons */
 .guide-step-number {
-  width: 24px;
-  height: 24px;
-  border-radius: 999px;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
   display: grid;
   place-items: center;
-  background: var(--dmps-card);
-  color: var(--dmps-text-secondary);
-  font-size: 13px;
-  font-weight: 700;
+  background: var(--guide-accent);
+  color: #ffffff;
+  font-size: 16px;
+  font-weight: 800;
+  line-height: 1;
   flex: 0 0 auto;
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--guide-accent) 45%, transparent);
 }
 
 .guide-step-title,
@@ -2529,19 +2541,26 @@ body {
 }
 
 .guide-step-chevron {
-  color: var(--dmps-text-subtle);
-  font-size: 20px;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  color: color-mix(in srgb, var(--guide-accent) 75%, #ffffff);
+  background: color-mix(in srgb, var(--guide-accent) 16%, transparent);
+  font-size: 16px;
   line-height: 1;
   flex: 0 0 auto;
-  transition: transform 0.2s ease;
+  transition: transform 0.2s ease, background 0.16s ease;
 }
 
 .guide-step-chevron.is-open {
   transform: rotate(180deg);
+  background: color-mix(in srgb, var(--guide-accent) 28%, transparent);
 }
 
 .guide-step-answer {
-  padding: 0 20px 20px;
+  padding: 0 14px 16px;
 }
 
 .guide-step-answer-actions {
@@ -6009,6 +6028,42 @@ body {
   box-shadow: 0 10px 24px rgba(8, 11, 26, 0.22);
   animation: webappInlineToastFade var(--toast-duration, 3000ms) ease forwards;
   pointer-events: none;
+}
+
+.webapp-inline-toast.is-limit {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  max-width: min(92vw, 440px);
+  padding: 12px 14px;
+  text-align: left;
+  background:
+    linear-gradient(135deg, rgba(251, 191, 36, 0.24), rgba(248, 113, 113, 0.16)),
+    rgba(15, 23, 42, 0.92);
+  border-color: rgba(251, 191, 36, 0.42);
+  color: #fff7ed;
+  box-shadow: 0 18px 36px rgba(8, 11, 26, 0.3);
+}
+
+.webapp-inline-toast.is-limit::before {
+  content: "💾";
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: rgba(251, 191, 36, 0.2);
+  border: 1px solid rgba(251, 191, 36, 0.34);
+  font-size: 18px;
+}
+
+.dictionary-save-limit-notice {
+  margin: 12px 0;
+}
+
+.dictionary-save-limit-icon {
+  font-size: 22px;
 }
 
 .webapp-gpt-save-block {
@@ -22628,6 +22683,20 @@ body {
   color: #1f1a14;
   border-color: rgba(171, 139, 98, 0.32);
   box-shadow: 0 10px 24px rgba(105, 78, 47, 0.2);
+}
+
+.webapp-page.is-theme-light .webapp-inline-toast.is-limit {
+  background:
+    linear-gradient(135deg, rgba(246, 207, 132, 0.42), rgba(255, 228, 214, 0.72)),
+    rgba(255, 252, 245, 0.98);
+  color: #2e2618;
+  border-color: rgba(194, 134, 46, 0.4);
+  box-shadow: 0 16px 32px rgba(116, 83, 36, 0.18);
+}
+
+.webapp-page.is-theme-light .webapp-inline-toast.is-limit::before {
+  background: rgba(246, 207, 132, 0.5);
+  border-color: rgba(194, 134, 46, 0.34);
 }
 
 .webapp-page.is-theme-light .webapp-gpt-save-option input[type="checkbox"] {
