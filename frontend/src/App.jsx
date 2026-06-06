@@ -3150,6 +3150,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
   isStoryResultMode,
   handleTranslationSubmit,
   sentences,
+  renderTranslationLimitNotice,
   hasActiveRegularTranslationSession,
   translationProgressiveFill,
   translationDrafts,
@@ -30866,6 +30867,7 @@ function AppInner() {
                 isStoryResultMode={isStoryResultMode}
                 handleTranslationSubmit={handleTranslationSubmitStable}
                 sentences={sentences}
+                renderTranslationLimitNotice={renderTranslationLimitNotice}
                 hasActiveRegularTranslationSession={hasActiveRegularTranslationSession}
                 translationProgressiveFill={translationProgressiveFill}
                 translationDrafts={translationDrafts}
