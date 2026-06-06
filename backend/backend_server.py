@@ -28465,6 +28465,36 @@ def lookup_webapp_dictionary():
     source_lang, target_lang, _profile = _get_user_language_pair(user_id_for_log)
     mark("lang_pair")
 
+    # Free-tier save-limit precheck: if today's dictionary save quota is already
+    # exhausted, refuse the lookup up front. Otherwise we would run the LLM
+    # lookup + collocation generation (DB + model load) only to block the user
+    # at save time — wasted work that is never persisted. Mirrors the save
+    # endpoint's limit logic (see dictionary_lookup_save_daily there).
+    try:
+        _dict_save_feature = "dictionary_lookup_save_daily"
+        _ent = resolve_entitlement(user_id=user_id_for_log, tz="Europe/Vienna")
+        _mode = str(_ent.get("effective_mode") or "free").strip().lower() or "free"
+        if _mode == "free":
+            _limit_meta = get_free_feature_limit_metadata(_dict_save_feature) or {}
+            _limit_value = float(_limit_meta.get("free_limit") or 0)
+            _used_today = get_free_feature_usage_today(
+                user_id=user_id_for_log,
+                feature_key=_dict_save_feature,
+                tz="Europe/Vienna",
+            )
+            if _limit_value >= 0 and _used_today + 1.0 > _limit_value:
+                _log_dictionary_profile()
+                return jsonify(
+                    build_free_limit_error(
+                        _dict_save_feature,
+                        used=_used_today,
+                        limit=_limit_value,
+                        tz="Europe/Vienna",
+                    )
+                ), 429
+    except Exception:
+        logging.debug("dictionary lookup save-limit precheck failed", exc_info=True)
+
     cache_key = ""
     cache_key_shared = ""
     normalized_word = _normalize_dictionary_lookup_word(word_ru)
