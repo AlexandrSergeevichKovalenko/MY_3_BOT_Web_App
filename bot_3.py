@@ -136,6 +136,12 @@ from backend.database import (
     upsert_dictionary_cache,
     save_webapp_dictionary_query,
     save_webapp_dictionary_query_returning_id,
+    save_webapp_dictionary_query_returning_id_with_inserted,
+    get_existing_user_dictionary_entry_id_for_save,
+    get_free_feature_limit_metadata,
+    get_free_feature_usage_today,
+    increment_free_feature_usage,
+    resolve_entitlement,
     update_entry_semantic_tag_and_folder,
     get_entries_without_semantic_tag,
     create_support_message,
@@ -4027,7 +4033,14 @@ async def handle_button_click(update: Update, context: CallbackContext):
         pending_keys = _list_pending_dictionary_lookup_request_keys_for_user(user_id)
         if not pending_keys:
             _debug_lines: list[str] = []
+            is_admin_debug = False
             try:
+                is_admin_debug = int(user_id) in {int(item) for item in get_admin_telegram_ids()}
+            except Exception:
+                is_admin_debug = False
+            try:
+                if not is_admin_debug:
+                    raise RuntimeError("debug_disabled_for_non_admin")
                 from backend.job_queue import get_redis_client as _grc
                 _rc = _grc()
                 if _rc is None:
@@ -4047,7 +4060,8 @@ async def handle_button_click(update: Update, context: CallbackContext):
                         except Exception as _pe:
                             _debug_lines.append(f"shortcut parse error: {_pe}")
             except Exception as _de:
-                _debug_lines.append(f"debug error: {_de}")
+                if is_admin_debug:
+                    _debug_lines.append(f"debug error: {_de}")
             _debug_str = "\n\n🔍 DEBUG:\n" + "\n".join(_debug_lines) if _debug_lines else ""
             await update.message.reply_text(
                 "Сейчас нет ожидающих запросов для быстрого перевода.\n\n"
@@ -9448,6 +9462,30 @@ async def _auto_tag_saved_entry(
         )
 
 
+DICTIONARY_FREE_SAVE_FEATURE_KEY = "dictionary_lookup_save_daily"
+DICTIONARY_FREE_SAVE_LIMIT_MESSAGE = (
+    "На бесплатном тарифе лимит сохранения слов на сегодня достигнут.\n\n"
+    "Вы можете сохранить до 20 новых слов или фраз в день.\n\n"
+    "Лимит обновится завтра в 00:00 по Вене."
+)
+
+
+def _free_dictionary_save_limit_blocks_user(user_id: int) -> bool:
+    entitlement = resolve_entitlement(user_id=int(user_id), tz="Europe/Vienna")
+    effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
+    if effective_mode != "free":
+        return False
+
+    limit_meta = get_free_feature_limit_metadata(DICTIONARY_FREE_SAVE_FEATURE_KEY) or {}
+    limit_value = float(limit_meta.get("free_limit") or 0)
+    used_today = get_free_feature_usage_today(
+        user_id=int(user_id),
+        feature_key=DICTIONARY_FREE_SAVE_FEATURE_KEY,
+        tz="Europe/Vienna",
+    )
+    return limit_value >= 0 and used_today + 1.0 > limit_value
+
+
 def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) -> tuple[bool, str, int, bool]:
     """Returns (ok, msg, entry_id, already_tagged).
     already_tagged=True means semantic_category came from the lookup (no extra GPT needed)."""
@@ -9509,6 +9547,19 @@ def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) 
         semantic_tag = ""
 
     try:
+        existing_entry_id = get_existing_user_dictionary_entry_id_for_save(
+            user_id=int(user_id),
+            word_ru=word_ru,
+            translation_de=translation_de,
+            word_de=word_de,
+            translation_ru=translation_ru,
+            response_json=response_json,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        if existing_entry_id is None and _free_dictionary_save_limit_blocks_user(int(user_id)):
+            return False, DICTIONARY_FREE_SAVE_LIMIT_MESSAGE, 0, bool(semantic_tag)
+
         # If we have a tag, route to the semantic folder instead of user's default.
         if semantic_tag:
             try:
@@ -9527,7 +9578,7 @@ def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) 
             except Exception:
                 folder_id = None
 
-        entry_id = save_webapp_dictionary_query_returning_id(
+        entry_id, inserted = save_webapp_dictionary_query_returning_id_with_inserted(
             user_id=user_id,
             word_ru=word_ru,
             translation_de=translation_de,
@@ -9544,6 +9595,21 @@ def _save_dictionary_option_for_user(payload: dict, chosen: dict, user_id: int) 
             },
             semantic_tag=semantic_tag or None,
         )
+        if inserted:
+            entitlement = resolve_entitlement(user_id=int(user_id), tz="Europe/Vienna")
+            effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
+            if effective_mode == "free":
+                increment_free_feature_usage(
+                    user_id=int(user_id),
+                    feature_key=DICTIONARY_FREE_SAVE_FEATURE_KEY,
+                    idempotency_key=f"{DICTIONARY_FREE_SAVE_FEATURE_KEY}:{int(user_id)}:{int(entry_id or 0)}",
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    metadata={
+                        "entry_id": int(entry_id or 0),
+                        "origin_process": "bot_private_save",
+                    },
+                )
     except Exception as exc:
         logging.exception(f"❌ Ошибка сохранения выбранного варианта user_id={user_id}: {exc}")
         return False, "Ошибка сохранения. Попробуйте позже.", 0, False
@@ -9684,17 +9750,22 @@ async def handle_dictionary_save_confirm_callback(update: Update, context: Callb
         )
         return idx, save_ok, save_msg, entry_id, already_tagged, chosen
 
-    results = await asyncio.gather(
-        *(_save_selected_idx(idx) for idx in selected_idxs),
-        return_exceptions=True,
-    )
+    results = []
+    for idx in selected_idxs:
+        try:
+            results.append(await _save_selected_idx(idx))
+        except Exception as exc:
+            results.append(exc)
     saved_lines: list[str] = []
+    first_error_msg = ""
     for result in results:
         if isinstance(result, Exception):
             logging.warning("Dictionary multi-save worker failed", exc_info=(type(result), result, result.__traceback__))
             continue
         idx, save_ok, save_msg, entry_id, already_tagged, chosen = result
         if not save_ok:
+            if not first_error_msg:
+                first_error_msg = str(save_msg or "").strip()
             logging.warning("Dictionary multi-save skipped idx=%s: %s", idx, save_msg)
             continue
         source = (chosen.get("source") or "").strip()
@@ -9717,7 +9788,7 @@ async def handle_dictionary_save_confirm_callback(update: Update, context: Callb
     )
 
     if not saved_lines:
-        await query.answer("Не удалось сохранить выбранные варианты.", show_alert=True)
+        await query.answer(first_error_msg or "Не удалось сохранить выбранные варианты.", show_alert=True)
         return
 
     card_key = payload.get("card_key")
@@ -9786,17 +9857,22 @@ async def handle_dictionary_quick_save_callback(update: Update, context: Callbac
         )
         return idx, save_ok, save_msg, entry_id, already_tagged, chosen
 
-    results = await asyncio.gather(
-        *(_save_quick_idx(idx) for idx in selected_idxs),
-        return_exceptions=True,
-    )
+    results = []
+    for idx in selected_idxs:
+        try:
+            results.append(await _save_quick_idx(idx))
+        except Exception as exc:
+            results.append(exc)
     saved_lines: list[str] = []
+    first_error_msg = ""
     for result in results:
         if isinstance(result, Exception):
             logging.warning("Quick dictionary save worker failed", exc_info=(type(result), result, result.__traceback__))
             continue
         idx, save_ok, save_msg, entry_id, already_tagged, chosen = result
         if not save_ok:
+            if not first_error_msg:
+                first_error_msg = str(save_msg or "").strip()
             logging.warning("Quick dictionary save skipped idx=%s: %s", idx, save_msg)
             continue
         source = (chosen.get("source") or "").strip()
@@ -9819,7 +9895,7 @@ async def handle_dictionary_quick_save_callback(update: Update, context: Callbac
     )
 
     if not saved_lines:
-        await query.answer("Не удалось сохранить выбранные варианты.", show_alert=True)
+        await query.answer(first_error_msg or "Не удалось сохранить выбранные варианты.", show_alert=True)
         return
 
     card_key = payload.get("card_key")
@@ -14851,6 +14927,16 @@ def _extract_prefix_candidates_from_text(
     return variants
 
 
+# Words that pass the "separable prefix + -en" morphology but are NOT verbs
+# (declined adjectives / adverbs / pronouns). The heuristic alone can't tell
+# e.g. "beiden" (dative of "beide") from a real separable verb, so we block them.
+_PREFIX_QUIZ_NON_VERB_BLOCKLIST = {
+    "beiden", "beide", "mitten", "hinten", "vorderen", "hinteren",
+    "unteren", "oberen", "vorderem", "hinterem", "auseinanderen",
+    "zusammen", "vorne", "hinten", "mitnichten",
+}
+
+
 def _is_valid_prefix_quiz_verb(raw_word: str) -> bool:
     token = str(raw_word or "").strip()
     if not token or " " in token:
@@ -14861,6 +14947,8 @@ def _is_valid_prefix_quiz_verb(raw_word: str) -> bool:
         return False
     word = token.lower()
     if not word:
+        return False
+    if word in _PREFIX_QUIZ_NON_VERB_BLOCKLIST:
         return False
     if len(word) < 5 or len(word) > 28:
         return False
@@ -15083,6 +15171,13 @@ async def generate_prefix_quiz(entry: dict) -> dict | None:
                 break
 
     options = list(dict.fromkeys([opt for opt in options if opt]))
+    # Drop any option that isn't a real separable-prefix verb (e.g. "beiden",
+    # a declined adjective that leaked from saved entry variants). Always keep
+    # the correct answer. If too few valid options remain, skip the entry.
+    options = [
+        opt for opt in options
+        if opt.lower() == correct_word.lower() or _is_valid_prefix_quiz_verb(opt)
+    ]
     if len(options) < 4:
         return None
 
@@ -15094,6 +15189,23 @@ async def generate_prefix_quiz(entry: dict) -> dict | None:
     if not context and correct_word and correct_word.lower() in word_ru.lower():
         # The answer appears verbatim in the question — trivially guessable. Skip.
         return None
+
+    # Fix 2: the cue must be a real Russian meaning, not a raw German phrase like
+    # "mich ständig schimpfen". If there is no Cyrillic in word_ru and no gapped
+    # context, the prompt is unusable — skip this entry.
+    if not context and not re.search(r"[а-яёА-ЯЁ]", word_ru):
+        return None
+
+    # Fix 3: leak guard via suffix scan (robust, no dependency on the prefix
+    # list). The base verb of a separable verb is a suffix of it
+    # ("herumschimpfen" → "schimpfen"). If any suffix of length >= 5 of the
+    # answer appears in the cue, the answer is mechanically guessable → skip.
+    if not context:
+        _ans = _to_letters_only_word(correct_word).lower()
+        _cue = word_ru.lower()
+        for _suffix_len in range(len(_ans) - 2, 4, -1):
+            if _ans[-_suffix_len:] in _cue:
+                return None
 
     random.shuffle(options)
     correct_option_id = options.index(correct_word)

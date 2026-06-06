@@ -323,6 +323,8 @@ from backend.database import (
     get_latest_daily_sentences,
     save_webapp_dictionary_query,
     save_webapp_dictionary_query_returning_id,
+    save_webapp_dictionary_query_returning_id_with_inserted,
+    get_existing_user_dictionary_entry_id_for_save,
     save_webapp_translation,
     get_dictionary_cache,
     upsert_dictionary_cache,
@@ -456,6 +458,10 @@ from backend.database import (
     resolve_entitlement,
     enforce_daily_cost_cap,
     enforce_feature_limit,
+    get_free_feature_limit_metadata,
+    get_free_feature_usage_today,
+    increment_free_feature_usage,
+    build_free_limit_error,
     enforce_reader_audio_pro_monthly_limit,
     READER_AUDIO_UNLIMITED_USER_IDS,
     get_today_cost_eur,
@@ -7040,6 +7046,20 @@ def _save_dictionary_entry_with_schema_retry(**kwargs) -> None:
         )
         ensure_webapp_tables()
     return save_webapp_dictionary_query_returning_id(**kwargs)
+
+
+def _save_dictionary_entry_with_inserted_schema_retry(**kwargs) -> tuple[int, bool]:
+    try:
+        return save_webapp_dictionary_query_returning_id_with_inserted(**kwargs)
+    except Exception as exc:
+        if not _is_missing_dictionary_schema_error(exc):
+            raise
+        logging.warning(
+            "Dictionary save hit missing schema; running ensure_webapp_tables and retrying once: error=%s",
+            exc,
+        )
+        ensure_webapp_tables()
+    return save_webapp_dictionary_query_returning_id_with_inserted(**kwargs)
 
 
 def _align_dictionary_legacy_ru_de_columns(
@@ -35293,7 +35313,37 @@ def save_webapp_dictionary_entry():
             response_json["semantic_category"] = semantic_tag
             if semantic_folder_id is not None:
                 folder_id = semantic_folder_id
-        entry_id = _save_dictionary_entry_with_schema_retry(
+        existing_entry_id = get_existing_user_dictionary_entry_id_for_save(
+            user_id=int(user_id),
+            word_ru=resolved_word_ru if resolved_word_ru else None,
+            translation_de=resolved_translation_de,
+            word_de=resolved_word_de if resolved_word_de else None,
+            translation_ru=resolved_translation_ru,
+            response_json=response_json,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        dictionary_save_feature_key = "dictionary_lookup_save_daily"
+        entitlement = resolve_entitlement(user_id=int(user_id), tz="Europe/Vienna")
+        effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
+        if effective_mode == "free" and existing_entry_id is None:
+            limit_meta = get_free_feature_limit_metadata(dictionary_save_feature_key) or {}
+            limit_value = float(limit_meta.get("free_limit") or 0)
+            used_today = get_free_feature_usage_today(
+                user_id=int(user_id),
+                feature_key=dictionary_save_feature_key,
+                tz="Europe/Vienna",
+            )
+            if limit_value >= 0 and used_today + 1.0 > limit_value:
+                return jsonify(
+                    build_free_limit_error(
+                        dictionary_save_feature_key,
+                        used=used_today,
+                        limit=limit_value,
+                        tz="Europe/Vienna",
+                    )
+                ), 429
+        entry_id, inserted = _save_dictionary_entry_with_inserted_schema_retry(
             user_id=user_id,
             word_ru=resolved_word_ru if resolved_word_ru else None,
             translation_de=resolved_translation_de,
@@ -35307,6 +35357,18 @@ def save_webapp_dictionary_entry():
             origin_meta=origin_meta,
             semantic_tag=semantic_tag or None,
         )
+        if effective_mode == "free" and inserted:
+            increment_free_feature_usage(
+                user_id=int(user_id),
+                feature_key=dictionary_save_feature_key,
+                idempotency_key=f"{dictionary_save_feature_key}:{int(user_id)}:{int(entry_id or 0)}",
+                source_lang=source_lang,
+                target_lang=target_lang,
+                metadata={
+                    "entry_id": int(entry_id or 0),
+                    "origin_process": origin_process,
+                },
+            )
         _start_saved_dictionary_entry_enrichment(
             entry_id=int(entry_id or 0),
             response_json=response_json,

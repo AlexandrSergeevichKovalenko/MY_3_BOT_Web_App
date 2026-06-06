@@ -12063,6 +12063,93 @@ def save_webapp_dictionary_query_returning_id(
     return inserted_id if inserted_id > 0 else 0
 
 
+def save_webapp_dictionary_query_returning_id_with_inserted(
+    user_id: int,
+    word_ru: str | None,
+    translation_de: str | None,
+    word_de: str | None,
+    translation_ru: str | None,
+    response_json: dict,
+    folder_id: int | None = None,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+    origin_process: str | None = None,
+    origin_meta: dict | None = None,
+    semantic_tag: str | None = None,
+) -> tuple[int, bool]:
+    with get_db_connection_context() as conn:
+        inserted_id, inserted = _save_webapp_dictionary_query_returning_id_with_conn(
+            conn,
+            user_id=int(user_id),
+            word_ru=word_ru,
+            translation_de=translation_de,
+            word_de=word_de,
+            translation_ru=translation_ru,
+            response_json=response_json,
+            folder_id=folder_id,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            origin_process=origin_process,
+            origin_meta=origin_meta,
+            semantic_tag=semantic_tag,
+        )
+    return (inserted_id if inserted_id > 0 else 0, bool(inserted))
+
+
+def get_existing_user_dictionary_entry_id_for_save(
+    *,
+    user_id: int,
+    word_ru: str | None,
+    translation_de: str | None,
+    word_de: str | None,
+    translation_ru: str | None,
+    response_json: dict | None,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+) -> int | None:
+    normalized_response_json = _coerce_json_object(response_json)
+    normalized_source_lang = _normalize_lang_code(source_lang)
+    normalized_target_lang = _normalize_lang_code(target_lang)
+    source_text, target_text = _resolve_dictionary_source_target_texts(
+        source_lang=normalized_source_lang,
+        target_lang=normalized_target_lang,
+        word_ru=word_ru,
+        translation_de=translation_de,
+        word_de=word_de,
+        translation_ru=translation_ru,
+        response_json=normalized_response_json,
+    )
+    normalized_source_text = _normalize_dictionary_text_key(source_text)
+    normalized_target_text = _normalize_dictionary_text_key(target_text)
+    if not normalized_source_lang or not normalized_target_lang or not normalized_source_text or not normalized_target_text:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT q.id
+                FROM bt_3_dictionary_entries e
+                JOIN bt_3_webapp_dictionary_queries q
+                  ON q.canonical_entry_id = e.id
+                WHERE q.user_id = %s
+                  AND e.source_lang = %s
+                  AND e.target_lang = %s
+                  AND e.source_text_norm = %s
+                  AND e.target_text_norm = %s
+                LIMIT 1;
+                """,
+                (
+                    int(user_id),
+                    normalized_source_lang,
+                    normalized_target_lang,
+                    normalized_source_text,
+                    normalized_target_text,
+                ),
+            )
+            row = cursor.fetchone()
+    return int(row[0]) if row and row[0] is not None else None
+
+
 def get_webapp_dictionary_entries(
     user_id: int,
     limit: int = 100,

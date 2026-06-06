@@ -127,7 +127,10 @@
       "Bash(grep -E \"conn\\\\.commit|def |\\\\\"\\\\\"\\\\\"$\")",
       "Bash(PYTHONPATH=. python3 /tmp/snap_test.py)",
       "Bash(PYTHONPATH=. python3 *)",
-      "Bash(grep -c \"^import logging\\\\|^import logging$\" /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/backend/translation_workflow.py)"
+      "Bash(grep -c \"^import logging\\\\|^import logging$\" /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/backend/translation_workflow.py)",
+      "Bash(PYTHONPATH=. timeout 580 python3 -c ' *)",
+      "Bash(PYTHONPATH=. nohup python3 -c ' *)",
+      "Bash(echo \"started PID $!\")"
     ]
   }
 }
