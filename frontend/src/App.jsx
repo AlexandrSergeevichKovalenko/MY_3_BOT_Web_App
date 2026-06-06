@@ -22952,6 +22952,23 @@ function AppInner() {
       const w = (data.word_timings || []).find((x) => x?.char_start != null && Number(x.char_start) >= Number(absChar));
       return w ? Math.max(0, Number(w.start_ms || 0) / 1000) : 0;
     };
+    // Real speech bounds (skip leading / trim trailing silence so window seams
+    // are gapless). word_timings are ordered → first finite start, last finite end.
+    const audibleBoundsOf = (d) => {
+      const wt = (d && d.word_timings) || [];
+      let startMs = null;
+      let endMs = null;
+      for (let i = 0; i < wt.length; i += 1) {
+        const s = Number(wt[i]?.start_ms);
+        const e = Number(wt[i]?.end_ms);
+        if (Number.isFinite(s) && startMs == null) startMs = s;
+        if (Number.isFinite(e)) endMs = e;
+      }
+      return {
+        startSec: startMs != null ? Math.max(0, startMs / 1000) : 0,
+        endSec: endMs != null ? endMs / 1000 : null,
+      };
+    };
 
     const voice = readerAudioVoice || '';
     const rate = readerAudioRate || 1;
@@ -23001,7 +23018,7 @@ function AppInner() {
       setReaderAudioPlayActive(true);
       setReaderAudioPlayLoading(false);
 
-      await engine.start(key, { offsetSec, rate });
+      await engine.start(key, { offsetSec, rate, audibleEndSec: audibleBoundsOf(data).endSec });
       startWebRafRef.current?.();
       prefetchNextWindowRef.current?.(win, voice, rate);
     } catch (err) {
@@ -23086,7 +23103,23 @@ function AppInner() {
         readerAudioWebClipsRef.current.set(key, { window: nextWin, data: payload, segments });
         await engine.loadClip(key, payload.audio_url);
       }
-      if (readerAudioWebActiveRef.current) engine.enqueueNext(key);
+      if (readerAudioWebActiveRef.current) {
+        // Trim leading/trailing silence at the seam using the clip's word timings.
+        const clipData = readerAudioWebClipsRef.current.get(key)?.data;
+        const wt = (clipData && clipData.word_timings) || [];
+        let startMs = null;
+        let endMs = null;
+        for (let i = 0; i < wt.length; i += 1) {
+          const s = Number(wt[i]?.start_ms);
+          const e = Number(wt[i]?.end_ms);
+          if (Number.isFinite(s) && startMs == null) startMs = s;
+          if (Number.isFinite(e)) endMs = e;
+        }
+        engine.enqueueNext(key, {
+          audibleStartSec: startMs != null ? Math.max(0, startMs / 1000) : 0,
+          audibleEndSec: endMs != null ? endMs / 1000 : null,
+        });
+      }
     } catch (e) {
       console.warn('[ReaderAudio] prefetch next window failed:', e?.message || e);
     }

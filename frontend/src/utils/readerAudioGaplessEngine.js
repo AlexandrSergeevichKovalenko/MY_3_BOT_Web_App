@@ -141,8 +141,12 @@ export class ReaderAudioGaplessEngine {
     return source;
   }
 
-  /** Begin playback from a loaded clip. */
-  async start(clipKey, { offsetSec = 0, rate = 1 } = {}) {
+  /**
+   * Begin playback from a loaded clip.
+   * audibleEndSec: where real speech ends (last word end). Trailing silence
+   * after it is trimmed at the seam so the next clip starts with no gap.
+   */
+  async start(clipKey, { offsetSec = 0, rate = 1, audibleEndSec = null } = {}) {
     const k = String(clipKey || '').trim();
     const buffer = this._buffers.get(k);
     if (!buffer) throw new Error(`start: clip not loaded: ${k}`);
@@ -165,31 +169,58 @@ export class ReaderAudioGaplessEngine {
       startCtxTime: startAt,
       offsetSec: safeOffset,
       duration: buffer.duration,
+      audibleEndSec: this._normAudibleEnd(audibleEndSec, buffer.duration),
     };
     this._scheduled = null;
   }
 
+  /** Clamp/normalise an audible-end value to within the buffer. */
+  _normAudibleEnd(audibleEndSec, duration) {
+    const v = Number(audibleEndSec);
+    if (!Number.isFinite(v) || v <= 0) return duration;
+    return Math.max(0.05, Math.min(v, duration));
+  }
+
   /**
-   * Schedule the next clip to start exactly when the active clip ends — the
-   * gapless seam. Safe to call once the next clip's buffer is loaded.
+   * Schedule the next clip to start exactly when the active clip's SPEECH ends
+   * — the gapless seam. Trailing silence of the active clip and leading silence
+   * of the next clip are trimmed so consecutive windows join with no audible
+   * gap (e.g. "der" + "Tisch" across a window boundary stay contiguous).
+   *
+   *   audibleStartSec: where speech begins in the next clip (skip leading silence)
+   *   audibleEndSec:   where speech ends in the next clip (for the following seam)
    */
-  enqueueNext(clipKey) {
+  enqueueNext(clipKey, { audibleStartSec = 0, audibleEndSec = null } = {}) {
     const k = String(clipKey || '').trim();
     const buffer = this._buffers.get(k);
     if (!buffer || !this._active || this._stopped) return false;
     if (this._scheduled && this._scheduled.key === k) return true; // already queued
 
-    // When the active clip finishes (accounting for its play offset and rate).
-    const remaining = (this._active.duration - this._active.offsetSec) / this._rate;
+    // Seam = when the active clip's last spoken word finishes (not the buffer's
+    // trailing silence), accounting for the active play offset and rate.
+    const activeEnd = this._active.audibleEndSec ?? this._active.duration;
+    const remaining = (activeEnd - this._active.offsetSec) / this._rate;
     const seamAt = this._active.startCtxTime + remaining;
-    const source = this._makeSource(buffer);
-    // If we're already past the computed seam (e.g. enqueued late), start ASAP.
     const startAt = Math.max(seamAt, this._ctx.currentTime);
-    source.start(startAt, 0);
+
+    const nextOffset = Math.max(0, Math.min(Number(audibleStartSec) || 0, buffer.duration - 0.02));
+    const source = this._makeSource(buffer);
+    source.start(startAt, nextOffset);
     const gen = this._generation;
     source.onended = () => this._handleSourceEnded(k, gen);
 
-    this._scheduled = { key: k, source, startCtxTime: startAt, duration: buffer.duration };
+    // Cut the active clip's trailing silence so its onended (→ page/highlight
+    // promotion) fires exactly at the seam instead of after the silence.
+    try { this._active.source.stop(startAt); } catch (_e) { /* already stopped */ }
+
+    this._scheduled = {
+      key: k,
+      source,
+      startCtxTime: startAt,
+      offsetSec: nextOffset,
+      duration: buffer.duration,
+      audibleEndSec: this._normAudibleEnd(audibleEndSec, buffer.duration),
+    };
     return true;
   }
 
@@ -204,8 +235,9 @@ export class ReaderAudioGaplessEngine {
         key: this._scheduled.key,
         source: this._scheduled.source,
         startCtxTime: this._scheduled.startCtxTime,
-        offsetSec: 0,
+        offsetSec: this._scheduled.offsetSec || 0,
         duration: this._scheduled.duration,
+        audibleEndSec: this._scheduled.audibleEndSec,
       };
       this._scheduled = null;
       if (typeof this._onActiveClipChange === 'function') {
