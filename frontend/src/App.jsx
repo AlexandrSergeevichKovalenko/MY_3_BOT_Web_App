@@ -3690,7 +3690,10 @@ const TranslationsSection = React.memo(function TranslationsSection({
             {hasActiveTranslationSentences && (
               <>
                 {webappError && !webappLoading && (
-                  renderTranslationLimitNotice(webappError)
+                  (String(webappError).includes(PAID_FEATURE_ERROR_PREFIX) && renderStoryPaidFeatureNotice
+                    ? renderStoryPaidFeatureNotice()
+                    : null)
+                  || renderTranslationLimitNotice(webappError)
                   || <div className="webapp-error webapp-error-inline">{webappError}</div>
                 )}
                 <button
@@ -3723,7 +3726,10 @@ const TranslationsSection = React.memo(function TranslationsSection({
         )}
 
         {webappError && (
-          renderTranslationLimitNotice(webappError)
+          (String(webappError).includes(PAID_FEATURE_ERROR_PREFIX) && renderStoryPaidFeatureNotice
+            ? renderStoryPaidFeatureNotice()
+            : null)
+          || renderTranslationLimitNotice(webappError)
           || <div className="webapp-error">{webappError}</div>
         )}
         {finishMessage && <div className="webapp-success">{finishMessage}</div>}
