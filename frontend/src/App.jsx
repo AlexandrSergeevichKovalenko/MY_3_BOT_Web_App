@@ -5356,6 +5356,7 @@ function AppInner() {
   const [selectionGptSaveMessage, setSelectionGptSaveMessage] = useState('');
   const [ttsPendingMap, setTtsPendingMap] = useState({});
   const [inlineToast, setInlineToast] = useState('');
+  const [inlineToastKind, setInlineToastKind] = useState('');
   const [inlineToastDurationMs, setInlineToastDurationMs] = useState(3000);
   const [lastLookupScrollY, setLastLookupScrollY] = useState(null);
   const [telegramFullscreenMode, setTelegramFullscreenMode] = useState(false);
@@ -19421,7 +19422,7 @@ function AppInner() {
 
   const normalizeFolderKey = (value) => normalizeSelectionText(value).toLocaleLowerCase();
 
-  const showInlineToast = (text, durationMs = 3000) => {
+  const showInlineToast = (text, durationMs = 3000, kind = '') => {
     const value = normalizeSelectionText(text);
     if (!value) return;
     if (inlineToastTimeoutRef.current) {
@@ -19430,12 +19431,88 @@ function AppInner() {
     }
     const safeDurationMs = Math.max(1000, Number(durationMs || 3000));
     setInlineToastDurationMs(safeDurationMs);
+    setInlineToastKind(String(kind || '').trim());
     setInlineToast(value);
     inlineToastTimeoutRef.current = setTimeout(() => {
       setInlineToast('');
+      setInlineToastKind('');
       inlineToastTimeoutRef.current = null;
     }, safeDurationMs);
   };
+
+  const isDictionarySaveLimitError = useCallback((value) => {
+    const raw = String(value || '').trim().toLowerCase();
+    return raw.includes('free_limit_exceeded') || raw.includes('dictionary_lookup_save_daily');
+  }, []);
+
+  const getDictionarySaveLimitTitle = useCallback(() => tr(
+    'Лимит сохранения слов достигнут',
+    'Speicherlimit erreicht'
+  ), [tr]);
+
+  const getDictionarySaveLimitText = useCallback(() => tr(
+    'На Free можно сохранить до 20 новых слов или фраз в день. Подключите подписку, чтобы сохранять без ограничений.',
+    'Im Free-Tarif kannst du bis zu 20 neue Woerter oder Phrasen pro Tag speichern. Mit Abo speicherst du ohne Limit.'
+  ), [tr]);
+
+  const getDictionarySaveLimitToastText = useCallback(() => tr(
+    'Слово не сохранено: лимит Free на сегодня достигнут. В подписке сохранение без ограничений.',
+    'Wort nicht gespeichert: Free-Limit fuer heute erreicht. Im Abo speicherst du ohne Limit.'
+  ), [tr]);
+
+  const readDictionarySaveApiError = useCallback(async (response) => {
+    let message = await response.text();
+    try {
+      const payload = JSON.parse(message);
+      message = payload.message || payload.error || message;
+      if (payload?.error === 'free_limit_exceeded' || payload?.feature === 'dictionary_lookup_save_daily') {
+        return {
+          isLimit: true,
+          message: getDictionarySaveLimitText(),
+        };
+      }
+    } catch (_error) {
+      // ignore parsing errors
+    }
+    return {
+      isLimit: isDictionarySaveLimitError(message),
+      message: isDictionarySaveLimitError(message) ? getDictionarySaveLimitText() : message,
+    };
+  }, [getDictionarySaveLimitText, isDictionarySaveLimitError]);
+
+  const showDictionarySaveLimitToast = useCallback(() => {
+    showInlineToast(getDictionarySaveLimitToastText(), 3200, 'limit');
+  }, [getDictionarySaveLimitToastText, showInlineToast]);
+
+  const renderDictionarySaveLimitNotice = useCallback((value) => {
+    const normalizedValue = normalizeSelectionText(value);
+    const normalizedLimitText = normalizeSelectionText(getDictionarySaveLimitText());
+    if (!isDictionarySaveLimitError(value) && normalizedValue !== normalizedLimitText) return null;
+    return (
+      <div className="paid-feature-card dictionary-save-limit-notice">
+        <div className="paid-feature-card-icon dictionary-save-limit-icon" aria-hidden="true">💾</div>
+        <div className="paid-feature-card-copy">
+          <strong>{getDictionarySaveLimitTitle()}</strong>
+          <span>{getDictionarySaveLimitText()}</span>
+        </div>
+      </div>
+    );
+  }, [getDictionarySaveLimitText, getDictionarySaveLimitTitle, isDictionarySaveLimitError]);
+
+  const clearSelectionInlineSavedMarker = useCallback(() => {
+    setSelectionInlineLookup((prev) => {
+      const text = String(prev?.translation || '');
+      const cleaned = text
+        .replace(/\s*[•·]\s*(Сохранено|Gespeichert)\s*✅/gi, '')
+        .replace(/^(Сохранено|Gespeichert)\s*✅$/i, '')
+        .trim();
+      if (cleaned === text) return prev;
+      return {
+        ...prev,
+        translation: cleaned,
+      };
+    });
+  }, []);
 
   const resolveYoutubeAutoFolderName = () => {
     const fromPlayer = normalizeSelectionText(
@@ -20458,20 +20535,27 @@ function AppInner() {
             }),
           });
           if (!saveResponse.ok) {
-            let message = await saveResponse.text();
-            try {
-              const payload = JSON.parse(message);
-              message = payload.error || message;
-            } catch (_error) {
-              // ignore parsing errors
+            const errorPayload = await readDictionarySaveApiError(saveResponse);
+            if (errorPayload.isLimit) {
+              showDictionarySaveLimitToast();
             }
-            throw new Error(message);
+            throw new Error(errorPayload.message);
           }
           const savePayload = await saveResponse.json();
           setDictionaryLanguagePair(resolveLanguagePairForUI(savePayload.language_pair));
         } catch (error) {
-          setDictionaryError(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${error.message}`);
-          showInlineToast(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${error.message}`);
+          const message = String(error?.message || '').trim();
+          if (isDictionarySaveLimitError(message) || message === getDictionarySaveLimitText()) {
+            setDictionarySaved('');
+            if (inlineMode) {
+              clearSelectionInlineSavedMarker();
+            }
+            setDictionaryError(getDictionarySaveLimitText());
+            showDictionarySaveLimitToast();
+          } else {
+            setDictionaryError(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${message}`);
+            showInlineToast(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${message}`);
+          }
         }
       })();
     } catch (error) {
@@ -20736,7 +20820,11 @@ function AppInner() {
       }),
     });
     if (!response.ok) {
-      throw new Error(await readApiError(response, 'Ошибка сохранения', 'Speicherfehler'));
+      const errorPayload = await readDictionarySaveApiError(response);
+      if (errorPayload.isLimit) {
+        showDictionarySaveLimitToast();
+      }
+      throw new Error(errorPayload.message);
     }
     const payload = await response.json();
     setDictionaryLanguagePair(resolveLanguagePairForUI(payload.language_pair));
@@ -20956,8 +21044,17 @@ function AppInner() {
         }
       }
       if (failedItems.length > 0) {
-        showInlineToast(tr('Ошибка сохранения: ', 'Speicherfehler: ') + failedItems[0]);
-        setSelectionGptSaveError(failedItems.join('\n'));
+        const hasLimitError = failedItems.some((item) => (
+          isDictionarySaveLimitError(item) || normalizeSelectionText(item).includes(normalizeSelectionText(getDictionarySaveLimitText()))
+        ));
+        if (hasLimitError) {
+          showDictionarySaveLimitToast();
+          setSelectionGptSaveMessage('');
+          setSelectionGptSaveError(getDictionarySaveLimitText());
+        } else {
+          showInlineToast(tr('Ошибка сохранения: ', 'Speicherfehler: ') + failedItems[0]);
+          setSelectionGptSaveError(failedItems.join('\n'));
+        }
         setSelectionGptOpen(true);
       }
     })();
@@ -24243,6 +24340,12 @@ function AppInner() {
         if (entryId > 0) setYoutubeDictSavedEntryId(entryId);
         return entryId;
       }
+      const errorPayload = await readDictionarySaveApiError(saveResponse);
+      if (errorPayload.isLimit) {
+        setYoutubeDictSaved(false);
+        setYoutubeDictSavedEntryId(0);
+        showDictionarySaveLimitToast();
+      }
     } catch (_err) {
       // ignore save errors silently
     }
@@ -26595,21 +26698,25 @@ function AppInner() {
             }),
           });
           if (!response.ok) {
-            let message = await response.text();
-            try {
-              const data = JSON.parse(message);
-              message = data.error || message;
-            } catch (_error) {
-              // ignore parsing errors
+            const errorPayload = await readDictionarySaveApiError(response);
+            if (errorPayload.isLimit) {
+              showDictionarySaveLimitToast();
             }
-            throw new Error(message);
+            throw new Error(errorPayload.message);
           }
           const payload = await response.json();
           setDictionaryLanguagePair(resolveLanguagePairForUI(payload.language_pair));
         }
       } catch (error) {
-        setDictionaryError(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${error.message}`);
-        showInlineToast(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${error.message}`);
+        const message = String(error?.message || '').trim();
+        if (isDictionarySaveLimitError(message) || message === getDictionarySaveLimitText()) {
+          setDictionarySaved('');
+          setDictionaryError(getDictionarySaveLimitText());
+          showDictionarySaveLimitToast();
+        } else {
+          setDictionaryError(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${message}`);
+          showInlineToast(`${tr('Ошибка сохранения', 'Speicherfehler')}: ${message}`);
+        }
         setCollocationsVisible(true);
       }
     })();
@@ -26759,7 +26866,7 @@ function AppInner() {
         </form>
 
         <div className="translation-dict-widget-content">
-          {dictionaryError && <div className="webapp-error">{dictionaryError}</div>}
+          {dictionaryError && (renderDictionarySaveLimitNotice(dictionaryError) || <div className="webapp-error">{dictionaryError}</div>)}
           {dictionarySaved && <div className="webapp-success">{dictionarySaved}</div>}
           {dictionaryLoading && (
             <div className="translation-dict-widget-empty">{tr('Ищем...', 'Suche...')}</div>
@@ -32465,7 +32572,7 @@ function AppInner() {
                       {!showNewFolderForm && foldersError && <div className="webapp-error">{foldersError}</div>}
                     </div>
 
-                    {dictionaryError && <div className="webapp-error">{dictionaryError}</div>}
+                    {dictionaryError && (renderDictionarySaveLimitNotice(dictionaryError) || <div className="webapp-error">{dictionaryError}</div>)}
                     {dictionarySaved && <div className="webapp-success">{dictionarySaved}</div>}
 
                     {dictionaryResult && (
@@ -36137,9 +36244,11 @@ function AppInner() {
                           </div>
                         )}
                         {selectionGptSaveError && (
-                          <div className="webapp-gpt-save-status is-error">
-                            {selectionGptSaveError}
-                          </div>
+                          renderDictionarySaveLimitNotice(selectionGptSaveError) || (
+                            <div className="webapp-gpt-save-status is-error">
+                              {selectionGptSaveError}
+                            </div>
+                          )
                         )}
                       </div>
                     </>
@@ -36149,7 +36258,7 @@ function AppInner() {
             )}
             {inlineToast && (
               <div
-                className="webapp-inline-toast"
+                className={`webapp-inline-toast ${inlineToastKind ? `is-${inlineToastKind}` : ''}`}
                 style={{ '--toast-duration': `${inlineToastDurationMs}ms` }}
               >
                 {inlineToast}
