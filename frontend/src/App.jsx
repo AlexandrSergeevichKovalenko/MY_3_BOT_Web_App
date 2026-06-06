@@ -52,6 +52,13 @@ const READER_IDLE_TIMEOUT_MS = 60000;
 const READER_DEFAULT_FONT_SIZE = 18;
 const READER_DEFAULT_FONT_WEIGHT = 500;
 const READER_PAGINATION_FIT_RESERVE_PX = 32;
+// Reader TTS window sizing. Page flips INSIDE one audio clip are seamless;
+// the only audible gap is at a window boundary (clip reload). Large, char-
+// budgeted windows make boundaries rare → the page-turn pause effectively
+// disappears for normal reading. First-window generation is a bit longer,
+// but later windows are prefetched during playback so it stays hidden.
+const READER_AUDIO_WINDOW_MAX_PAGES = 12;
+const READER_AUDIO_WINDOW_MAX_CHARS = 7000;
 const READER_LOCAL_BOOKMARKS_STORAGE_KEY = 'dds_reader_exact_bookmarks_v1';
 const READER_LOCAL_ORIGINAL_LOCATIONS_STORAGE_KEY = 'dds_reader_original_locations_v1';
 const WEEKLY_SUMMARY_VISITS_ENABLED = false;
@@ -13154,7 +13161,7 @@ function AppInner() {
     return normalizeReaderVisiblePageText(String(readerDisplayPages[pageIndex]?.text || ''));
   }, [readerDisplayPages]);
   const readerPageCount = readerDisplayPages.length;
-  const buildReaderAudioWindow = useCallback((startPage, maxPages = 3) => {
+  const buildReaderAudioWindow = useCallback((startPage, maxPages = READER_AUDIO_WINDOW_MAX_PAGES, maxChars = READER_AUDIO_WINDOW_MAX_CHARS) => {
     const safeStartPage = Math.max(1, Math.min(readerPageCount || 1, Number(startPage || 1) || 1));
     const segments = [];
     let combinedText = '';
@@ -13162,6 +13169,14 @@ function AppInner() {
       const pageText = getReaderDisplayPageText(page);
       if (!pageText) continue;
       const separator = segments.length > 0 ? '\n\n' : '';
+      // Char budget: stop growing the window once it would exceed the budget,
+      // but always include at least the first page. Bigger windows mean far
+      // fewer window boundaries → far fewer (ideally zero) audible pauses,
+      // because page flips inside a window are already seamless.
+      if (segments.length > 0 && maxChars > 0
+          && (combinedText.length + separator.length + pageText.length) > maxChars) {
+        break;
+      }
       const charStart = combinedText.length + separator.length;
       combinedText += `${separator}${pageText}`;
       segments.push({
@@ -22394,7 +22409,7 @@ function AppInner() {
     setReaderAudioPlayError('');
     try {
       const voice = readerAudioVoice || '';
-      const playbackWindow = buildReaderAudioWindow(page, 3);
+      const playbackWindow = buildReaderAudioWindow(page);
       if (!playbackWindow?.combinedText) {
         throw new Error('Reader audio page text is empty');
       }
@@ -22540,7 +22555,7 @@ function AppInner() {
           }
         }
       };
-      const nextWindow = buildReaderAudioWindow((playbackWindow.endPage || page) + 1, 3);
+      const nextWindow = buildReaderAudioWindow((playbackWindow.endPage || page) + 1);
       if (nextWindow?.combinedText) {
         loadReaderAudioPageData({
           targetPage: nextWindow.startPage,
@@ -22551,7 +22566,7 @@ function AppInner() {
           prefetchOnly: true,
           browserPreload: true,
         }).catch(() => {});
-        const trailingWindow = buildReaderAudioWindow(nextWindow.endPage + 1, 3);
+        const trailingWindow = buildReaderAudioWindow(nextWindow.endPage + 1);
         if (trailingWindow?.combinedText) {
           loadReaderAudioPageData({
             targetPage: trailingWindow.startPage,
