@@ -443,14 +443,22 @@ def generate_crossword_entry(topic: str | None = None, difficulty: str | None = 
     return crossword_id
 
 
-def prepare_crossword_pool(*, target_ready: int = 10, max_attempts: int = 20) -> dict:
+def prepare_crossword_pool(
+    *, target_ready: int = 10, max_attempts: int = 20, force_fresh: bool = False
+) -> dict:
     """
     Fill bt_3_crossword_bank up to target_ready entries.
     Returns stats dict.
-    """
-    from backend.database import count_crossword_bank_entries
 
-    stats = {"attempted": 0, "succeeded": 0, "failed": 0, "skipped": 0}
+    force_fresh=True retires all existing entries first, so the whole pool is
+    regenerated with the current puzzle format (used after format changes).
+    """
+    from backend.database import count_crossword_bank_entries, retire_all_crossword_bank_entries
+
+    stats = {"attempted": 0, "succeeded": 0, "failed": 0, "skipped": 0, "retired": 0}
+    if force_fresh:
+        stats["retired"] = retire_all_crossword_bank_entries()
+        logging.info("crossword_pool: force_fresh retired=%d", stats["retired"])
     existing = count_crossword_bank_entries()
     needed = max(0, target_ready - existing)
 

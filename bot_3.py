@@ -141,6 +141,7 @@ from backend.database import (
     get_free_feature_limit_metadata,
     get_free_feature_usage_today,
     increment_free_feature_usage,
+    reserve_free_feature_usage,
     resolve_entitlement,
     update_entry_semantic_tag_and_folder,
     get_entries_without_semantic_tag,
@@ -7863,7 +7864,14 @@ async def _prepare_dictionary_lookup_response(
         lookup = dict(lookup_payload)
         lookup_ms = 0
     else:
-        if _free_dictionary_lookup_limit_blocks_user(user_id, origin=lookup_origin):
+        if not _reserve_dictionary_lookup_execution(
+            int(user_id),
+            origin=lookup_origin,
+            request_key=request_key,
+            lookup_input=normalized_lookup_input or lookup_input,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        ):
             raise DictionaryLookupDailyLimitExceeded()
         lookup_started_perf = pytime.perf_counter()
         lookup = await _run_dictionary_lookup_for_pair(
@@ -7872,14 +7880,6 @@ async def _prepare_dictionary_lookup_response(
             target_lang,
         )
         lookup_ms = int((pytime.perf_counter() - lookup_started_perf) * 1000)
-        _record_dictionary_lookup_execution(
-            int(user_id),
-            origin=lookup_origin,
-            request_key=request_key,
-            lookup_input=normalized_lookup_input or lookup_input,
-            source_lang=source_lang,
-            target_lang=target_lang,
-        )
     if not isinstance(lookup, dict):
         raise ValueError("lookup result is not a dict")
 
@@ -8212,30 +8212,39 @@ async def _run_dictionary_batch_fast_for_user(
             logging.debug("Failed to send no-processed batch notice", exc_info=True)
         return
 
-    allowed_units = _dictionary_lookup_limit_remaining(
-        int(user_id),
-        requested_units=len(batch_items),
-        origin="telegram_batch_fast",
-    )
-    if allowed_units <= 0:
+    reserved_batch_items: list[dict] = []
+    for item in batch_items:
+        if not _reserve_dictionary_lookup_execution(
+            int(user_id),
+            origin="telegram_batch_fast",
+            request_key=str(item.get("request_key") or "").strip(),
+            lookup_input=str(item.get("lookup_input") or "").strip(),
+            source_lang="de",
+            target_lang="ru",
+        ):
+            break
+        reserved_batch_items.append(item)
+    if not reserved_batch_items:
         try:
             await context.bot.send_message(chat_id=chat_id, text=DICTIONARY_LOOKUP_DAILY_LIMIT_MESSAGE)
         except Exception:
             logging.debug("Failed to send dictionary lookup limit notice", exc_info=True)
         return
-    if allowed_units < len(batch_items):
-        blocked_count = len(batch_items) - allowed_units
-        batch_items = batch_items[:allowed_units]
+    if len(reserved_batch_items) < len(batch_items):
+        blocked_count = len(batch_items) - len(reserved_batch_items)
+        batch_items = reserved_batch_items
         try:
             await context.bot.send_message(
                 chat_id=chat_id,
                 text=(
-                    f"Обработаю {allowed_units} запрос(ов), потому что дневной лимит бесплатного тарифа почти исчерпан.\n\n"
+                    f"Обработаю {len(batch_items)} запрос(ов), потому что дневной лимит бесплатного тарифа почти исчерпан.\n\n"
                     f"Остальные {blocked_count} запрос(ов) не отправлены в обработку."
                 ),
             )
         except Exception:
             logging.debug("Failed to send partial dictionary lookup limit notice", exc_info=True)
+    else:
+        batch_items = reserved_batch_items
 
     batch_started_perf = pytime.perf_counter()
     batch_lookups: dict[str, dict] = {}
@@ -8248,15 +8257,6 @@ async def _run_dictionary_batch_fast_for_user(
             source_lang="de",
             target_lang="ru",
         )
-        for item in batch_items:
-            _record_dictionary_lookup_execution(
-                int(user_id),
-                origin="telegram_batch_fast",
-                request_key=str(item.get("request_key") or "").strip(),
-                lookup_input=str(item.get("lookup_input") or "").strip(),
-                source_lang="de",
-                target_lang="ru",
-            )
     except Exception:
         logging.warning(
             "batch_fast: batch lookup failed user_id=%s count=%s, falling back per item",
@@ -9619,7 +9619,7 @@ def _free_dictionary_lookup_limit_blocks_user(user_id: int, *, origin: str) -> b
     return _dictionary_lookup_limit_remaining(user_id, requested_units=1, origin=origin) <= 0
 
 
-def _record_dictionary_lookup_execution(
+def _reserve_dictionary_lookup_execution(
     user_id: int,
     *,
     origin: str,
@@ -9627,14 +9627,10 @@ def _record_dictionary_lookup_execution(
     lookup_input: str | None = None,
     source_lang: str | None = None,
     target_lang: str | None = None,
-) -> None:
-    entitlement = resolve_entitlement(user_id=int(user_id), tz="Europe/Vienna")
-    effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
-    if effective_mode != "free":
-        return
+) -> bool:
     normalized_origin = str(origin or "unknown").strip().lower() or "unknown"
     normalized_request_key = str(request_key or "").strip()
-    increment_free_feature_usage(
+    reservation = reserve_free_feature_usage(
         user_id=int(user_id),
         feature_key=DICTIONARY_LOOKUP_DAILY_FEATURE_KEY,
         idempotency_key=(
@@ -9649,13 +9645,27 @@ def _record_dictionary_lookup_execution(
             "lookup_input": str(lookup_input or "").strip() or None,
         },
     )
+    if reservation.get("blocked"):
+        logging.info(
+            "dictionary_lookup_limit blocked user_id=%s origin=%s request_key=%s lookup=%r used=%s limit=%s",
+            int(user_id),
+            normalized_origin,
+            normalized_request_key,
+            str(lookup_input or "").strip(),
+            reservation.get("used"),
+            reservation.get("limit"),
+        )
+        return False
     logging.info(
-        "dictionary_lookup_limit accepted user_id=%s origin=%s request_key=%s lookup=%r",
+        "dictionary_lookup_limit reserved user_id=%s origin=%s request_key=%s lookup=%r used=%s limit=%s",
         int(user_id),
         normalized_origin,
         normalized_request_key,
         str(lookup_input or "").strip(),
+        reservation.get("used"),
+        reservation.get("limit"),
     )
+    return True
 
 
 def _free_shortcut_forwarded_limit_blocks_user(user_id: int, *, origin: str) -> bool:
@@ -17730,13 +17740,20 @@ async def admin_crossword_pool_command(update: Update, context: CallbackContext)
     if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
         await message.reply_text("Allowed users only.")
         return
-    status_msg = await message.reply_text("Preparing crossword pool...")
+    force_fresh = any(
+        str(a).strip().lower() in ("fresh", "force", "new", "regen")
+        for a in (context.args or [])
+    )
+    status_msg = await message.reply_text(
+        "Regenerating crossword pool (fresh)..." if force_fresh else "Preparing crossword pool..."
+    )
     try:
         from backend.crossword_generator import prepare_crossword_pool
         gen_result = await asyncio.to_thread(
             prepare_crossword_pool,
             target_ready=CROSSWORD_POOL_TARGET,
             max_attempts=20,
+            force_fresh=force_fresh,
         )
         from backend.crossword_renderer import prepare_crossword_images_batch
         img_result = await asyncio.to_thread(prepare_crossword_images_batch, limit=10)

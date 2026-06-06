@@ -25826,6 +25826,85 @@ def increment_free_feature_usage(
     return item
 
 
+def reserve_free_feature_usage(
+    *,
+    user_id: int,
+    feature_key: str,
+    idempotency_key: str,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+    metadata: dict | None = None,
+    now_ts_utc: datetime | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+) -> dict[str, Any]:
+    feature = str(feature_key or "").strip().lower()
+    if not get_free_feature_limit_metadata(feature):
+        logging.error("free_usage_metadata_missing user_id=%s feature=%s", int(user_id), feature)
+        raise ValueError(f"Missing free feature metadata for {feature!r}")
+    key = str(idempotency_key or "").strip()
+    if not key:
+        raise ValueError("idempotency_key is required")
+
+    safe_user_id = int(user_id)
+    entitlement = resolve_entitlement(user_id=safe_user_id, now_ts_utc=now_ts_utc, tz=tz)
+    effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
+    if effective_mode != "free":
+        return {"ok": True, "blocked": False, "event": None, "used": None, "limit": None}
+
+    limit_meta = get_free_feature_limit_metadata(feature) or {}
+    limit_value = float(limit_meta.get("free_limit") or 0.0)
+    now_value = now_ts_utc or datetime.now(timezone.utc)
+    day_local = _to_aware_datetime(now_value).astimezone(_resolve_timezone(tz)).date()
+    lock_material = f"free_feature:{safe_user_id}:{feature}:{day_local.isoformat()}"
+    lock_key = int.from_bytes(hashlib.sha256(lock_material.encode("utf-8")).digest()[:8], "big", signed=True)
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT pg_advisory_xact_lock(%s::bigint);", (lock_key,))
+            used_today = get_free_feature_usage_today(
+                user_id=safe_user_id,
+                feature_key=feature,
+                now_ts_utc=now_value,
+                tz=tz,
+                cursor=cursor,
+            )
+            if limit_value >= 0 and used_today + 1.0 > limit_value:
+                return {
+                    "ok": False,
+                    "blocked": True,
+                    "event": None,
+                    "used": used_today,
+                    "limit": limit_value,
+                    "error": build_free_limit_error(
+                        feature,
+                        used=used_today,
+                        limit=limit_value,
+                        now_ts_utc=now_value,
+                        tz=tz,
+                    ),
+                }
+            event = _insert_free_feature_usage_with_cursor(
+                cursor,
+                idempotency_key=key,
+                user_id=safe_user_id,
+                feature_key=feature,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                metadata=metadata,
+                event_time=now_value,
+            )
+            if not event:
+                logging.error("free_usage_reservation_missing user_id=%s feature=%s", safe_user_id, feature)
+                raise RuntimeError(f"Failed to reserve free feature usage for {feature!r}")
+            return {
+                "ok": True,
+                "blocked": False,
+                "event": event,
+                "used": used_today + 1.0,
+                "limit": limit_value,
+            }
+
+
 def build_free_limit_error(
     feature_key: str,
     *,
@@ -31983,6 +32062,26 @@ def get_crossword_answers(*, dispatch_id: int, user_id: int) -> list[dict]:
             rows = cursor.fetchall()
     cols = ["word_number", "user_answer", "is_correct", "answered_at"]
     return [dict(zip(cols, r)) for r in rows]
+
+
+def retire_all_crossword_bank_entries() -> int:
+    """Retire every active crossword entry. Returns count retired.
+
+    Used to flush the pool when the puzzle format changes so freshly
+    generated entries (e.g. 3 intersecting hidden words) replace the old ones.
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_crossword_bank
+                SET retired = TRUE, updated_at = NOW()
+                WHERE retired = FALSE
+                """
+            )
+            count = cursor.rowcount or 0
+        conn.commit()
+    return count
 
 
 def reset_crossword_images_to_pending() -> int:
