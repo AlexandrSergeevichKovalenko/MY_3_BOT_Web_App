@@ -25624,6 +25624,16 @@ FREE_FEATURE_LIMITS: dict[str, dict[str, Any]] = {
         "free_limit": 20,
         "reset_policy": "daily_europe_vienna",
     },
+    "dictionary_lookup_daily": {
+        "title": "Словарные запросы",
+        "free_limit": 30,
+        "reset_policy": "daily_europe_vienna",
+    },
+    "shortcut_forwarded_message_daily": {
+        "title": "Shortcut и пересланные сообщения",
+        "free_limit": 15,
+        "reset_policy": "daily_europe_vienna",
+    },
     "dictionary_openai_explanation_daily": {
         "title": "OpenAI-объяснения в словаре",
         "free_limit": 5,
@@ -31072,16 +31082,41 @@ def upsert_rebus_bank_entry(entry: dict) -> None:
 
 
 def sync_rebus_bank_from_code() -> dict:
-    """Upsert all entries from REBUS_COMPOUND_BANK into DB. Returns stats."""
+    """Upsert all entries from REBUS_COMPOUND_BANK into DB. Returns stats.
+
+    Also retires any DB entry whose compound_id is no longer present in code —
+    otherwise a removed (e.g. broken) entry would linger in the DB and keep
+    being scheduled, since pick selection only filters on retired = FALSE.
+    """
     from backend.rebus_bank import REBUS_COMPOUND_BANK
     inserted = 0
+    code_ids = []
     for entry in REBUS_COMPOUND_BANK:
         try:
             upsert_rebus_bank_entry(entry)
             inserted += 1
+            code_ids.append(str(entry.get("id")))
         except Exception:
             logging.warning("sync_rebus_bank: failed for %s", entry.get("id"), exc_info=True)
-    return {"synced": inserted, "total": len(REBUS_COMPOUND_BANK)}
+    retired = 0
+    if code_ids:
+        try:
+            with get_db_connection_context() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        UPDATE bt_3_rebus_bank
+                        SET retired = TRUE
+                        WHERE retired = FALSE
+                          AND compound_id <> ALL(%s)
+                        """,
+                        (code_ids,),
+                    )
+                    retired = cursor.rowcount or 0
+                conn.commit()
+        except Exception:
+            logging.warning("sync_rebus_bank: retire-stale failed", exc_info=True)
+    return {"synced": inserted, "total": len(REBUS_COMPOUND_BANK), "retired_stale": retired}
 
 
 def get_rebus_component_image(word: str) -> dict | None:

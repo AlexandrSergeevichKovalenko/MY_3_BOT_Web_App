@@ -319,6 +319,10 @@ class ShortcutLookupSplitTests(unittest.TestCase):
     def test_shortcut_lookup_uses_install_token_only(self):
         with patch.object(server, "resolve_shortcut_install_token", return_value={"installation_id": 11, "user_id": 117649764}), \
              patch.object(server, "is_telegram_user_allowed", return_value=True), \
+             patch.object(server, "resolve_entitlement", return_value={"effective_mode": "free", "plan_code": "free"}), \
+             patch.object(server, "get_free_feature_limit_metadata", return_value={"free_limit": 15}), \
+             patch.object(server, "get_free_feature_usage_today", return_value=0.0), \
+             patch.object(server, "increment_free_feature_usage") as increment_mock, \
              patch.object(server, "_shortcut_dedup_reserve", return_value=False), \
              patch.object(server, "can_enqueue_background_jobs", return_value=True), \
              patch.object(server, "_start_shortcut_lookup_enqueue_runner", return_value="job-123") as enqueue_mock:
@@ -332,6 +336,66 @@ class ShortcutLookupSplitTests(unittest.TestCase):
         self.assertTrue(payload["accepted"])
         self.assertEqual(payload["job_id"], "job-123")
         enqueue_mock.assert_called_once_with(user_id=117649764, text="noisy input", origin="shortcut", request_id=ANY)
+        increment_mock.assert_called_once()
+        self.assertEqual(increment_mock.call_args.kwargs["feature_key"], "shortcut_forwarded_message_daily")
+
+    def test_shortcut_lookup_invalid_token_does_not_consume_limit(self):
+        with patch.object(server, "resolve_shortcut_install_token", return_value=None), \
+             patch.object(server, "get_free_feature_usage_today") as usage_mock, \
+             patch.object(server, "increment_free_feature_usage") as increment_mock, \
+             patch.object(server, "_start_shortcut_lookup_enqueue_runner") as enqueue_mock:
+            response = self.client.post(
+                "/api/shortcut/lookup",
+                json={"text": "noisy input", "install_token": "bad-token"},
+            )
+
+        self.assertEqual(response.status_code, 401)
+        usage_mock.assert_not_called()
+        increment_mock.assert_not_called()
+        enqueue_mock.assert_not_called()
+
+    def test_free_shortcut_lookup_sixteenth_request_is_blocked_before_enqueue(self):
+        with patch.object(server, "resolve_shortcut_install_token", return_value={"installation_id": 11, "user_id": 77}), \
+             patch.object(server, "is_telegram_user_allowed", return_value=True), \
+             patch.object(server, "resolve_entitlement", return_value={"effective_mode": "free", "plan_code": "free"}), \
+             patch.object(server, "get_free_feature_limit_metadata", return_value={"free_limit": 15}), \
+             patch.object(server, "get_free_feature_usage_today", return_value=15.0), \
+             patch.object(server, "increment_free_feature_usage") as increment_mock, \
+             patch.object(server, "_shortcut_dedup_reserve", return_value=False), \
+             patch.object(server, "can_enqueue_background_jobs", return_value=True), \
+             patch.object(server, "_start_shortcut_lookup_enqueue_runner") as enqueue_mock, \
+             patch.object(server, "_shortcut_split_blocks") as split_mock:
+            response = self.client.post(
+                "/api/shortcut/lookup",
+                json={"text": "noisy input", "install_token": "install-token-value"},
+            )
+
+        self.assertEqual(response.status_code, 429)
+        payload = response.get_json()
+        self.assertEqual(payload["error"], "free_limit_exceeded")
+        self.assertEqual(payload["feature"], "shortcut_forwarded_message_daily")
+        enqueue_mock.assert_not_called()
+        split_mock.assert_not_called()
+        increment_mock.assert_not_called()
+
+    def test_pro_shortcut_lookup_is_not_blocked_by_free_limit(self):
+        with patch.object(server, "resolve_shortcut_install_token", return_value={"installation_id": 11, "user_id": 77}), \
+             patch.object(server, "is_telegram_user_allowed", return_value=True), \
+             patch.object(server, "resolve_entitlement", return_value={"effective_mode": "pro", "plan_code": "pro"}), \
+             patch.object(server, "get_free_feature_usage_today") as usage_mock, \
+             patch.object(server, "increment_free_feature_usage") as increment_mock, \
+             patch.object(server, "_shortcut_dedup_reserve", return_value=False), \
+             patch.object(server, "can_enqueue_background_jobs", return_value=True), \
+             patch.object(server, "_start_shortcut_lookup_enqueue_runner", return_value="job-456") as enqueue_mock:
+            response = self.client.post(
+                "/api/shortcut/lookup",
+                json={"text": "noisy input", "install_token": "install-token-value"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        enqueue_mock.assert_called_once()
+        usage_mock.assert_not_called()
+        increment_mock.assert_not_called()
 
 
 if __name__ == "__main__":

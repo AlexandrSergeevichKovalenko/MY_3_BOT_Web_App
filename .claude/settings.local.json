@@ -133,7 +133,8 @@
       "Bash(echo \"started PID $!\")",
       "Bash(sed -n '6370,6385p' /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/frontend/src/App.css)",
       "Bash(sed -n '17915,17930p' /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/frontend/src/App.css)",
-      "Bash(npx esbuild *)"
+      "Bash(npx esbuild *)",
+      "Bash(grep -c 'const \\\\[.*__TRACKED_VAR__\\\\]\\\\|__TRACKED_VAR__ =' src/App.jsx)"
     ]
   }
 }

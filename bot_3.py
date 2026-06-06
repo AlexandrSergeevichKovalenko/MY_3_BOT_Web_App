@@ -4523,8 +4523,12 @@ async def handle_forwarded_message_lookup(update: Update, context: CallbackConte
     if not text:
         return
     user_id = int(update.message.from_user.id)
+    if _free_shortcut_forwarded_limit_blocks_user(user_id, origin="forwarded"):
+        await update.message.reply_text(SHORTCUT_FORWARDED_MESSAGE_LIMIT_MESSAGE, quote=True)
+        return
     await update.message.reply_text("🔍", quote=True)
-    _start_shortcut_lookup_enqueue_runner(user_id=user_id, text=text, origin="forwarded")
+    request_key = _start_shortcut_lookup_enqueue_runner(user_id=user_id, text=text, origin="forwarded")
+    _record_shortcut_forwarded_message_accepted(user_id, origin="forwarded", request_key=request_key)
 
 
 _GERMAN_COMMON_WORDS_RE = re.compile(
@@ -9468,6 +9472,58 @@ DICTIONARY_FREE_SAVE_LIMIT_MESSAGE = (
     "Вы можете сохранить до 20 новых слов или фраз в день.\n\n"
     "Лимит обновится завтра в 00:00 по Вене."
 )
+SHORTCUT_FORWARDED_MESSAGE_FEATURE_KEY = "shortcut_forwarded_message_daily"
+SHORTCUT_FORWARDED_MESSAGE_LIMIT_MESSAGE = (
+    "На бесплатном тарифе достигнут дневной лимит обработки сообщений.\n\n"
+    "Вы можете обработать до 15 сообщений через Shortcut или пересылку в день.\n\n"
+    "Лимит обновится завтра в 00:00 по Вене."
+)
+
+
+def _free_shortcut_forwarded_limit_blocks_user(user_id: int, *, origin: str) -> bool:
+    entitlement = resolve_entitlement(user_id=int(user_id), tz="Europe/Vienna")
+    effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
+    if effective_mode != "free":
+        return False
+
+    limit_meta = get_free_feature_limit_metadata(SHORTCUT_FORWARDED_MESSAGE_FEATURE_KEY) or {}
+    limit_value = float(limit_meta.get("free_limit") or 0)
+    used_today = get_free_feature_usage_today(
+        user_id=int(user_id),
+        feature_key=SHORTCUT_FORWARDED_MESSAGE_FEATURE_KEY,
+        tz="Europe/Vienna",
+    )
+    blocked = limit_value >= 0 and used_today + 1.0 > limit_value
+    logging.info(
+        "shortcut_forwarded_message_limit %s user_id=%s origin=%s used=%s limit=%s",
+        "blocked" if blocked else "allowed",
+        int(user_id),
+        str(origin or "unknown").strip().lower() or "unknown",
+        used_today,
+        limit_value,
+    )
+    return blocked
+
+
+def _record_shortcut_forwarded_message_accepted(user_id: int, *, origin: str, request_key: str | None = None) -> None:
+    entitlement = resolve_entitlement(user_id=int(user_id), tz="Europe/Vienna")
+    effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
+    if effective_mode != "free":
+        return
+    normalized_origin = str(origin or "unknown").strip().lower() or "unknown"
+    normalized_request_key = str(request_key or "").strip()
+    increment_free_feature_usage(
+        user_id=int(user_id),
+        feature_key=SHORTCUT_FORWARDED_MESSAGE_FEATURE_KEY,
+        idempotency_key=(
+            f"{SHORTCUT_FORWARDED_MESSAGE_FEATURE_KEY}:{int(user_id)}:"
+            f"{normalized_origin}:{normalized_request_key or pytime.time_ns()}"
+        ),
+        metadata={
+            "origin": normalized_origin,
+            "request_key": normalized_request_key or None,
+        },
+    )
 
 
 def _free_dictionary_save_limit_blocks_user(user_id: int) -> bool:

@@ -15269,6 +15269,89 @@ def _start_dictionary_enrichment_runner(
     ).start()
 
 
+DICTIONARY_LOOKUP_DAILY_FEATURE_KEY = "dictionary_lookup_daily"
+
+
+def _dictionary_lookup_limit_error(*, user_id: int, origin: str) -> dict | None:
+    safe_user_id = int(user_id or 0)
+    entitlement = resolve_entitlement(user_id=safe_user_id, tz="Europe/Vienna")
+    effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
+    if effective_mode != "free":
+        return None
+
+    limit_meta = get_free_feature_limit_metadata(DICTIONARY_LOOKUP_DAILY_FEATURE_KEY) or {}
+    limit_value = float(limit_meta.get("free_limit") or 0)
+    used_today = get_free_feature_usage_today(
+        user_id=safe_user_id,
+        feature_key=DICTIONARY_LOOKUP_DAILY_FEATURE_KEY,
+        tz="Europe/Vienna",
+    )
+    if limit_value >= 0 and used_today + 1.0 > limit_value:
+        logging.info(
+            "dictionary_lookup_limit blocked user_id=%s origin=%s used=%s limit=%s",
+            safe_user_id,
+            str(origin or "unknown").strip().lower() or "unknown",
+            used_today,
+            limit_value,
+        )
+        return build_free_limit_error(
+            DICTIONARY_LOOKUP_DAILY_FEATURE_KEY,
+            used=used_today,
+            limit=limit_value,
+            tz="Europe/Vienna",
+        )
+    logging.info(
+        "dictionary_lookup_limit allowed user_id=%s origin=%s used=%s limit=%s",
+        safe_user_id,
+        str(origin or "unknown").strip().lower() or "unknown",
+        used_today,
+        limit_value,
+    )
+    return None
+
+
+def _record_dictionary_lookup_execution(
+    *,
+    user_id: int,
+    origin: str,
+    lookup_id: str | None = None,
+    word: str | None = None,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+    direction: str | None = None,
+) -> None:
+    safe_user_id = int(user_id or 0)
+    entitlement = resolve_entitlement(user_id=safe_user_id, tz="Europe/Vienna")
+    effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
+    if effective_mode != "free":
+        return
+    normalized_origin = str(origin or "unknown").strip().lower() or "unknown"
+    normalized_lookup_id = str(lookup_id or "").strip()
+    increment_free_feature_usage(
+        user_id=safe_user_id,
+        feature_key=DICTIONARY_LOOKUP_DAILY_FEATURE_KEY,
+        idempotency_key=(
+            f"{DICTIONARY_LOOKUP_DAILY_FEATURE_KEY}:{safe_user_id}:"
+            f"{normalized_origin}:{normalized_lookup_id or time.time_ns()}"
+        ),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        metadata={
+            "origin": normalized_origin,
+            "lookup_id": normalized_lookup_id or None,
+            "word": str(word or "").strip() or None,
+            "direction": str(direction or "").strip().lower() or None,
+        },
+    )
+    logging.info(
+        "dictionary_lookup_limit accepted user_id=%s origin=%s lookup_id=%s word=%r",
+        safe_user_id,
+        normalized_origin,
+        normalized_lookup_id,
+        str(word or "").strip(),
+    )
+
+
 def _mobile_b64encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode("utf-8").rstrip("=")
 
@@ -28481,6 +28564,10 @@ def lookup_webapp_dictionary():
                     }
                 )
 
+        limit_error = _dictionary_lookup_limit_error(user_id=int(user_id), origin="webapp_dictionary")
+        if limit_error:
+            return jsonify(limit_error), 429
+
         try:
             core_payload = _run_dictionary_core_lookup_sync(
                 word=word_ru,
@@ -28512,6 +28599,15 @@ def lookup_webapp_dictionary():
                 direction=direction,
                 core_item=result,
                 core_raw=core_payload.get("raw") if isinstance(core_payload.get("raw"), dict) else {},
+            )
+            _record_dictionary_lookup_execution(
+                user_id=int(user_id),
+                origin="webapp_dictionary",
+                lookup_id=lookup_id,
+                word=word_ru,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                direction=direction,
             )
             mark("decorate")
             _start_dictionary_enrichment_runner(lookup_id=lookup_id)
@@ -28577,6 +28673,15 @@ def lookup_webapp_dictionary():
             usage_main = full_payload.get("usage")
             result = full_payload.get("item") if isinstance(full_payload.get("item"), dict) else {}
             direction = str(full_payload.get("direction") or "").strip().lower()
+            _record_dictionary_lookup_execution(
+                user_id=int(user_id),
+                origin="webapp_dictionary",
+                lookup_id=f"full:{hashlib.sha1(f'{user_id}:{word_ru}:{time.time_ns()}'.encode('utf-8')).hexdigest()[:16]}",
+                word=word_ru,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                direction=direction,
+            )
             mark("llm_main")
             if fallback_reverse_used:
                 mark("llm_fallback")
@@ -36422,6 +36527,82 @@ def _shortcut_lookup_request_payload(body: dict) -> tuple[str, str]:
     return text, install_token
 
 
+SHORTCUT_FORWARDED_MESSAGE_FEATURE_KEY = "shortcut_forwarded_message_daily"
+
+
+def _shortcut_forwarded_message_limit_error(
+    *,
+    user_id: int,
+    origin: str,
+    request_id: str | None = None,
+) -> dict | None:
+    safe_user_id = int(user_id or 0)
+    entitlement = resolve_entitlement(user_id=safe_user_id, tz="Europe/Vienna")
+    effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
+    if effective_mode != "free":
+        return None
+
+    limit_meta = get_free_feature_limit_metadata(SHORTCUT_FORWARDED_MESSAGE_FEATURE_KEY) or {}
+    limit_value = float(limit_meta.get("free_limit") or 0)
+    used_today = get_free_feature_usage_today(
+        user_id=safe_user_id,
+        feature_key=SHORTCUT_FORWARDED_MESSAGE_FEATURE_KEY,
+        tz="Europe/Vienna",
+    )
+    if limit_value >= 0 and used_today + 1.0 > limit_value:
+        logging.info(
+            "shortcut_forwarded_message_limit blocked user_id=%s origin=%s used=%s limit=%s request_id=%s",
+            safe_user_id,
+            str(origin or "unknown").strip().lower() or "unknown",
+            used_today,
+            limit_value,
+            request_id,
+        )
+        return build_free_limit_error(
+            SHORTCUT_FORWARDED_MESSAGE_FEATURE_KEY,
+            used=used_today,
+            limit=limit_value,
+            tz="Europe/Vienna",
+        )
+    return None
+
+
+def _record_shortcut_forwarded_message_accepted(
+    *,
+    user_id: int,
+    origin: str,
+    request_key: str,
+    request_id: str | None = None,
+) -> None:
+    safe_user_id = int(user_id or 0)
+    entitlement = resolve_entitlement(user_id=safe_user_id, tz="Europe/Vienna")
+    effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
+    if effective_mode != "free":
+        return
+    normalized_origin = str(origin or "unknown").strip().lower() or "unknown"
+    normalized_request_key = str(request_key or "").strip()
+    increment_free_feature_usage(
+        user_id=safe_user_id,
+        feature_key=SHORTCUT_FORWARDED_MESSAGE_FEATURE_KEY,
+        idempotency_key=(
+            f"{SHORTCUT_FORWARDED_MESSAGE_FEATURE_KEY}:{safe_user_id}:"
+            f"{normalized_origin}:{normalized_request_key or request_id or time.time_ns()}"
+        ),
+        metadata={
+            "origin": normalized_origin,
+            "request_key": normalized_request_key or None,
+            "request_id": str(request_id or "").strip() or None,
+        },
+    )
+    logging.info(
+        "shortcut_forwarded_message_limit accepted user_id=%s origin=%s request_key=%s request_id=%s",
+        safe_user_id,
+        normalized_origin,
+        normalized_request_key,
+        request_id,
+    )
+
+
 def _shortcut_lookup_from_install_token(*, install_token: str, text: str, request_id: str | None = None, remote_ip: str | None = None) -> tuple[dict, int]:
     resolve_started_perf = time.perf_counter()
     _log_flow_observation(
@@ -36474,6 +36655,17 @@ def _shortcut_lookup_from_install_token(*, install_token: str, text: str, reques
         )
         return {"ok": True, "blocks_sent": 0, "duplicate": True}, 200
 
+    if not can_enqueue_background_jobs():
+        return {"error": "Shortcut processing is temporarily unavailable"}, 503
+
+    limit_error = _shortcut_forwarded_message_limit_error(
+        user_id=user_id,
+        origin="shortcut",
+        request_id=request_id,
+    )
+    if limit_error:
+        return limit_error, 429
+
     # Write raw text to Redis immediately so bot_3.py can find it even before
     # BACKGROUND_JOBS processes the Dramatiq job (avoids the "no pending" race condition).
     try:
@@ -36488,9 +36680,6 @@ def _shortcut_lookup_from_install_token(*, install_token: str, text: str, reques
             logging.info("shortcut_lookup: raw text written key=%s len=%d", _sc_raw_key, len(text))
     except Exception:
         logging.warning("shortcut_lookup: raw Redis write failed user_id=%s", user_id, exc_info=True)
-
-    if not can_enqueue_background_jobs():
-        return {"error": "Shortcut processing is temporarily unavailable"}, 503
 
     enqueue_started_perf = time.perf_counter()
     _log_flow_observation(
@@ -36508,6 +36697,12 @@ def _shortcut_lookup_from_install_token(*, install_token: str, text: str, reques
         user_id=user_id,
         text=text,
         origin="shortcut",
+        request_id=request_id,
+    )
+    _record_shortcut_forwarded_message_accepted(
+        user_id=user_id,
+        origin="shortcut",
+        request_key=request_key,
         request_id=request_id,
     )
     _log_flow_observation(

@@ -444,7 +444,10 @@ Generate German compound word entries for a visual rebus puzzle game.
 
 STRICT requirements for EVERY entry:
 1. EXACTLY 2 component parts, each a standalone German noun with a clear visual form
-2. Both parts must be concrete, drawable objects (e.g. Hand ✓, Freude ✗, Mut ✗)
+2. Both parts must be concrete, drawable PHYSICAL OBJECTS (e.g. Hand ✓, Freude ✗, Mut ✗).
+   ✗ FORBIDDEN as a part: numbers/quantities (ein/eins/zwei…), articles (der/die/das), pronouns, prepositions, verb prefixes (un-/ver-/vor-…) or any abstract concept.
+   ✗ WRONG: Einhorn = "ein"(one) + "Horn" — "one" is a number, it cannot be drawn (DALL-E will draw a random object).
+   ✓ RIGHT: Seepferd, Tischbein, Handschuh — every part is a tangible thing you can photograph.
 3. The compound must be a real, standard German word (not archaic or regional)
 4. wrong_options: exactly 3 real German compound words, each sharing EXACTLY ONE part with the answer
 5. dalle_prompts: describe ONE concrete object on a plain white background — no text, no labels, no other objects
@@ -545,6 +548,19 @@ def _call_gpt_for_replenishment(count: int, existing_words: list[str]) -> list[d
     return words
 
 
+# Parts that cannot be drawn as a single concrete object — numbers, articles,
+# pronouns, prepositions and inseparable prefixes. A rebus needs BOTH parts to
+# be depictable (e.g. Einhorn = "ein"(one) + "Horn" is invalid: "one" can't be
+# drawn, so DALL-E renders a random object like a ring).
+_NON_DEPICTABLE_PARTS = {
+    "ein", "eine", "einen", "eins", "zwei", "drei",
+    "der", "die", "das", "den", "dem", "des",
+    "un", "vor", "nach", "mit", "ab", "an", "auf", "aus", "bei", "zu", "zur", "zum",
+    "ueber", "über", "unter", "be", "ge", "ver", "er", "ent", "zer", "um", "durch",
+    "ich", "du", "er", "sie", "es", "wir", "ihr", "man", "kein", "nicht", "sehr",
+}
+
+
 def _validate_replenishment_entry(entry: dict, existing_set: set[str]) -> str | None:
     """Return None if valid, or error string if invalid."""
     compound = str(entry.get("compound") or "").strip()
@@ -559,8 +575,12 @@ def _validate_replenishment_entry(entry: dict, existing_set: set[str]) -> str | 
     if not isinstance(parts, list) or len(parts) != 2:
         return "parts must be list of exactly 2"
     for p in parts:
-        if not str(p.get("word") or "").strip():
+        word = str(p.get("word") or "").strip()
+        if not word:
             return "empty part word"
+        # Reject non-depictable parts: a rebus image must show a concrete object.
+        if word.lower() in _NON_DEPICTABLE_PARTS:
+            return f"non-depictable part: {word}"
     dalle = entry.get("dalle_prompts")
     if not isinstance(dalle, dict) or len(dalle) < 2:
         return "dalle_prompts must map both part words"

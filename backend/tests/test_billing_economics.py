@@ -343,6 +343,7 @@ class BillingEconomicsTests(unittest.TestCase):
         expected = {
             "translation_daily_sets",
             "dictionary_lookup_save_daily",
+            "shortcut_forwarded_message_daily",
             "dictionary_openai_explanation_daily",
             "fsrs_card_review_daily",
             "shortcut_ingest_save_daily",
