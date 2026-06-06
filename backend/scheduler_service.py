@@ -269,39 +269,41 @@ def _dispatch_sentence_prewarm() -> None:
 
 
 def _dispatch_translation_focus_pool_refill() -> None:
-    from datetime import datetime as _dt
     tz_name = str(
         os.getenv("TRANSLATION_FOCUS_POOL_REFILL_TZ")
         or os.getenv("AUDIO_SCHEDULER_TZ")
         or "UTC"
     ).strip() or "UTC"
-    max_age_hours = max(0.1, _float_env("TRANSLATION_FOCUS_POOL_REFILL_MAX_AGE_HOURS", 4.0))
     request_id = f"translation_pool_refill_sched_{uuid4().hex[:16]}"
-    enqueued_at_utc = _dt.utcnow().isoformat()
+    # Run the refill INLINE in the scheduler process (force=True) instead of
+    # enqueuing to the Dramatiq "translation_pool_refill" queue. No worker is
+    # subscribed to that queue, so the queued path never executed (Δ +0 daily).
+    # The scheduler cron already controls timing, so force=True is correct here
+    # and skips the redundant offpeak re-check. On-demand/deficit refills still
+    # use the queue path (now consumable by the worker via DRAMATIQ_QUEUES).
     logging.info(
-        "scheduler_service: translation_focus_pool_refill enqueue_start request_id=%s tz_name=%s enabled_env=%r hour_env=%r minute_env=%r max_age_hours=%.1f enqueued_at_utc=%s",
+        "scheduler_service: translation_focus_pool_refill inline_start request_id=%s tz_name=%s enabled_env=%r hour_env=%r minute_env=%r",
         request_id,
         tz_name,
         os.getenv("TRANSLATION_FOCUS_POOL_REFILL_ENABLED"),
         os.getenv("TRANSLATION_FOCUS_POOL_REFILL_HOUR"),
         os.getenv("TRANSLATION_FOCUS_POOL_REFILL_MINUTE"),
-        max_age_hours,
-        enqueued_at_utc,
     )
-    message = run_translation_focus_pool_refill_job.send(
-        force=False,
-        tz_name=tz_name,
-        request_id=request_id,
-        correlation_id=request_id,
-        enqueued_at_utc=enqueued_at_utc,
-        max_age_hours=max_age_hours,
-    )
-    logging.info(
-        "scheduler_service: translation_focus_pool_refill enqueue_finish request_id=%s message_id=%s tz_name=%s",
-        request_id,
-        str(getattr(message, "message_id", None) or "").strip() or None,
-        tz_name,
-    )
+    try:
+        from backend.backend_server import _dispatch_translation_focus_pool_refill as _run_refill_inline
+        result = _run_refill_inline(force=True, tz_name=tz_name)
+        logging.info(
+            "scheduler_service: translation_focus_pool_refill inline_finish request_id=%s tz_name=%s result=%s",
+            request_id,
+            tz_name,
+            result,
+        )
+    except Exception:
+        logging.exception(
+            "scheduler_service: translation_focus_pool_refill inline_failed request_id=%s tz_name=%s",
+            request_id,
+            tz_name,
+        )
 
 
 def _dispatch_translation_focus_pool_admin_report() -> None:
