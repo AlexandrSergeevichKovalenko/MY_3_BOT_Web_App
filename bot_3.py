@@ -1841,6 +1841,42 @@ def _log_bot_openai_request_event(
         logging.debug("bot openai request telemetry skipped", exc_info=True)
 
 
+ASK_GPT_DAILY_LIMIT_MESSAGE = (
+    "На бесплатном тарифе достигнут дневной лимит вопросов к AI-помощнику.\n\n"
+    "Вы можете задать до 5 вопросов в день.\n\n"
+    "Лимит обновится завтра в 00:00 по Вене."
+)
+
+
+def _reserve_telegram_ask_gpt_daily(
+    *,
+    user_id: int,
+    source_lang: str | None,
+    target_lang: str | None,
+    origin: str,
+    request_key: str,
+    question_len: int = 0,
+    has_context: bool = False,
+) -> dict:
+    return reserve_free_feature_usage(
+        user_id=int(user_id),
+        feature_key="ask_gpt_daily",
+        idempotency_key=(
+            f"askgpt:{int(user_id)}:{str(origin or 'telegram').strip().lower()}:"
+            f"{hashlib.sha1(str(request_key or '').encode('utf-8', 'ignore')).hexdigest()[:24]}"
+        ),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        metadata={
+            "origin": str(origin or "telegram").strip().lower(),
+            "request_key": str(request_key or "").strip()[:120],
+            "question_len": max(0, int(question_len or 0)),
+            "has_context": bool(has_context),
+        },
+        tz="Europe/Vienna",
+    )
+
+
 def _format_admin_datetime(value: str | None) -> str:
     raw_value = str(value or "").strip()
     if not raw_value:
@@ -2436,6 +2472,25 @@ async def handle_language_tutor_detail_callback(update: Update, context: Callbac
                 "previous_question": question,
                 "previous_answer": prev_answer,
             }
+        reservation = await asyncio.to_thread(
+            _reserve_telegram_ask_gpt_daily,
+            user_id=user_id,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            origin="telegram_language_tutor_detail",
+            request_key=(
+                f"detail:{user_id}:{getattr(query.message, 'message_id', '')}:"
+                f"{hashlib.sha1(question.encode('utf-8', 'ignore')).hexdigest()}"
+            ),
+            question_len=len(question),
+            has_context=bool(question and prev_answer),
+        )
+        if reservation.get("blocked"):
+            await query.message.reply_text(
+                ASK_GPT_DAILY_LIMIT_MESSAGE,
+                reply_markup=_build_private_language_tutor_reply_keyboard(),
+            )
+            return
         llm_response = await run_language_learning_private_question_detailed(llm_payload)
         _log_bot_openai_request_event(
             user_id=user_id,
@@ -5413,6 +5468,27 @@ async def handle_user_message(update: Update, context: CallbackContext):
                 "translation_text": str(focus_payload.get("translation_text") or "").strip(),
                 "learner_question": text,
             }
+            reservation = await asyncio.to_thread(
+                _reserve_telegram_ask_gpt_daily,
+                user_id=int(user_id),
+                source_lang=llm_payload["source_language"],
+                target_lang=llm_payload["target_language"],
+                origin="telegram_quiz_followup",
+                request_key=f"{request_key}:{hashlib.sha1(str(text or '').encode('utf-8', 'ignore')).hexdigest()}",
+                question_len=len(str(text or "")),
+                has_context=True,
+            )
+            if reservation.get("blocked"):
+                pending_quiz_question_input.pop(user_id, None)
+                try:
+                    clear_pending_telegram_quiz_followup_input(
+                        request_key=request_key,
+                        user_id=int(user_id),
+                    )
+                except Exception:
+                    logging.warning("⚠️ Не удалось очистить quiz follow-up input после лимита key=%s", request_key, exc_info=True)
+                await update.message.reply_text(ASK_GPT_DAILY_LIMIT_MESSAGE)
+                return
             llm_response = await run_quiz_followup_question(llm_payload)
             normalized = _normalize_quiz_question_llm_response(
                 llm_response,
@@ -5570,6 +5646,27 @@ async def handle_user_message(update: Update, context: CallbackContext):
                         "previous_question": prev_question,
                         "previous_answer": prev_answer,
                     }
+            reservation = await asyncio.to_thread(
+                _reserve_telegram_ask_gpt_daily,
+                user_id=int(user_id),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                origin="telegram_language_tutor",
+                request_key=(
+                    f"{state_key}:{started_at}:"
+                    f"{hashlib.sha1(str(text or '').encode('utf-8', 'ignore')).hexdigest()}"
+                ),
+                question_len=len(str(text or "")),
+                has_context=bool(llm_payload.get("conversation_context")),
+            )
+            if reservation.get("blocked"):
+                pending_language_tutor_input.pop(user_id, None)
+                _clear_pending_input_state(state_key=state_key, user_id=int(user_id))
+                await update.message.reply_text(
+                    ASK_GPT_DAILY_LIMIT_MESSAGE,
+                    reply_markup=_build_private_language_tutor_reply_keyboard(),
+                )
+                return
             llm_response = await run_language_learning_private_question_detailed(llm_payload)
             _log_bot_openai_request_event(
                 user_id=int(user_id),
@@ -12601,6 +12698,22 @@ async def send_me_analytics_and_recommend_me(context: CallbackContext):
         safe_user_id = int(user_id)
         if _is_synthetic_telegram_user_id(safe_user_id):
             skipped_synthetic_users += 1
+            continue
+        try:
+            entitlement = resolve_entitlement(user_id=safe_user_id, tz="Europe/Vienna")
+            effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
+        except Exception:
+            logging.exception(
+                "weekly_youtube_recommendation_entitlement_failed user_id=%s",
+                safe_user_id,
+            )
+            effective_mode = "free"
+        if effective_mode == "free":
+            logging.info(
+                "weekly_youtube_recommendation_skipped_free user_id=%s effective_mode=%s",
+                safe_user_id,
+                effective_mode,
+            )
             continue
         delivery_chat_id = await _resolve_user_delivery_chat_id(
             context,

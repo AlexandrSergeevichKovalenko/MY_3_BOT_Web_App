@@ -3239,6 +3239,8 @@ const TranslationsSection = React.memo(function TranslationsSection({
   handleStartArenaWithCandidateStable,
   handleStoryVoteStable,
   handleTranslationVoteStable,
+  storySurfaceProRequired,
+  renderStoryPaidFeatureNotice,
 }) {
   const [focusSheetOpen, setFocusSheetOpen] = React.useState(false);
 
@@ -3397,16 +3399,19 @@ const TranslationsSection = React.memo(function TranslationsSection({
             {/* Story-specific options — shown when story topic selected */}
             {selectedTopicIsStoryTopic && (
               <div className="tr-story-options">
+                {storySurfaceProRequired && renderStoryPaidFeatureNotice
+                  ? renderStoryPaidFeatureNotice()
+                  : null}
                 <div className="tr-field-block">
                   <div className="tr-field-label">{tr('Режим истории', 'Story-Modus')}</div>
                   <div className="tr-story-chips">
-                    <button type="button" className={`tr-story-chip ${storyMode === 'new' ? 'is-on' : ''}`} onClick={() => { setStoryMode('new'); setArenaPhase(''); }} disabled={webappLoading}>
+                    <button type="button" className={`tr-story-chip ${storyMode === 'new' ? 'is-on' : ''}`} onClick={() => { setStoryMode('new'); setArenaPhase(''); }} disabled={webappLoading || storySurfaceProRequired}>
                       {tr('Новая', 'Neu')}
                     </button>
-                    <button type="button" className={`tr-story-chip ${storyMode === 'repeat' ? 'is-on' : ''}`} onClick={() => { setStoryMode('repeat'); setArenaPhase(''); }} disabled={webappLoading}>
+                    <button type="button" className={`tr-story-chip ${storyMode === 'repeat' ? 'is-on' : ''}`} onClick={() => { setStoryMode('repeat'); setArenaPhase(''); }} disabled={webappLoading || storySurfaceProRequired}>
                       {tr('Повторить', 'Wiederholen')}
                     </button>
-                    <button type="button" className={`tr-story-chip is-arena ${storyMode === 'arena' ? 'is-on' : ''}`} onClick={() => { setStoryMode('arena'); setArenaPhase(''); }} disabled={webappLoading}>
+                    <button type="button" className={`tr-story-chip is-arena ${storyMode === 'arena' ? 'is-on' : ''}`} onClick={() => { setStoryMode('arena'); setArenaPhase(''); }} disabled={webappLoading || storySurfaceProRequired}>
                       {tr('⚔️ Арена', '⚔️ Arena')}
                     </button>
                   </div>
@@ -3418,7 +3423,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
                       className="tr-story-select"
                       value={selectedStoryId}
                       onChange={(event) => setSelectedStoryId(event.target.value)}
-                      disabled={webappLoading || storyHistoryLoading}
+                      disabled={webappLoading || storyHistoryLoading || storySurfaceProRequired}
                     >
                       <option value="">{tr('Последняя', 'Letzte')}</option>
                       {storyHistory.map((item) => (
@@ -3435,7 +3440,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
                     className="tr-story-select"
                     value={storyType}
                     onChange={(event) => setStoryType(event.target.value)}
-                    disabled={webappLoading}
+                    disabled={webappLoading || storySurfaceProRequired}
                   >
                     <option value="знаменитая личность">{tr('Знаменитая личность', 'Berühmte Persönlichkeit')}</option>
                     <option value="историческое событие">{tr('Историческое событие', 'Historisches Ereignis')}</option>
@@ -3456,7 +3461,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
                       { value: 'средний',   label: tr('Средний',   'Mittel') },
                       { value: 'продвинутый', label: tr('Продвинутый', 'Fortgeschritten') },
                     ].map(({ value, label }) => (
-                      <button key={value} type="button" className={`tr-story-chip ${storyDifficulty === value ? 'is-on' : ''}`} onClick={() => setStoryDifficulty(value)} disabled={webappLoading}>
+                      <button key={value} type="button" className={`tr-story-chip ${storyDifficulty === value ? 'is-on' : ''}`} onClick={() => setStoryDifficulty(value)} disabled={webappLoading || storySurfaceProRequired}>
                         {label}
                       </button>
                     ))}
@@ -3474,6 +3479,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
                 webappLoading
                 || topicsLoading
                 || showPreparingTranslationEmptyState
+                || (selectedTopicIsStoryTopic && storySurfaceProRequired)
                 || (!selectedTopicIsStoryTopic && !hasSelectedTranslationLevel)
                 || (selectedTopicIsCustomTopic && !customTopicInput.trim())
               }
@@ -5900,6 +5906,7 @@ function AppInner() {
   const isKnownFreePaidSurfaceMode = Boolean(billingStatus && knownBillingEffectiveMode === 'free');
   const analyticsPaidFeatureError = `${PAID_FEATURE_ERROR_PREFIX}${JSON.stringify({ feature: 'analytics', feature_title: 'Аналитика' })}`;
   const assistantPaidFeatureTitle = tr('Голосовой ассистент', 'Sprachassistent');
+  const storyPaidFeatureTitle = tr('Загадочная история', 'Mystery Story');
   const analyticsSurfaceProRequired = isKnownFreePaidSurfaceMode || [
     analyticsError,
     analyticsScopeError,
@@ -7604,6 +7611,22 @@ function AppInner() {
         return tr(
           `Лимит функции исчерпан (${feature}): ${used} / ${limit} ${unit}. Сброс: ${resetAt}`,
           `Funktionslimit erreicht (${feature}): ${used} / ${limit} ${unit}. Reset: ${resetAt}`
+        );
+      }
+      if (errorCode === 'free_limit_exceeded') {
+        const feature = String(payload.feature || '').trim();
+        const limit = Number(payload.limit || 0);
+        const resetAt = String(payload.reset_at || '');
+        if (feature === 'ask_gpt_daily') {
+          return tr(
+            `На бесплатном тарифе достигнут дневной лимит вопросов к AI-помощнику.\n\nВы можете задать до ${limit || 5} вопросов в день.\n\nЛимит обновится завтра в 00:00 по Вене.`,
+            `Das Tageslimit fuer Fragen an den AI-Assistenten ist erreicht.\n\nIm kostenlosen Tarif kannst du bis zu ${limit || 5} Fragen pro Tag stellen.\n\nDas Limit wird morgen um 00:00 Uhr Wiener Zeit erneuert.`
+          );
+        }
+        const message = String(payload.message || '').trim();
+        return message || tr(
+          `Лимит бесплатного тарифа исчерпан. Сброс: ${resetAt}`,
+          `Das Limit des kostenlosen Tarifs ist erreicht. Reset: ${resetAt}`
         );
       }
       if (errorCode === 'paid_feature_required') {
@@ -18984,6 +19007,10 @@ function AppInner() {
       setWebappError(initDataMissingMsg);
       return;
     }
+    if (isKnownFreePaidSurfaceMode) {
+      setWebappError('');
+      return;
+    }
     if (storyMode === 'arena' && arenaPhase !== 'playing') {
       setArenaPhase('selecting');
       void handleFetchArenaCandidates();
@@ -19051,6 +19078,10 @@ function AppInner() {
       setWebappError(initDataMissingMsg);
       return;
     }
+    if (isKnownFreePaidSurfaceMode) {
+      setWebappError('');
+      return;
+    }
     const missing = sentences.filter((item) => {
       const value = (liveDrafts[String(item.id_for_mistake_table)] || '').trim();
       return !value;
@@ -19112,6 +19143,7 @@ function AppInner() {
 
   const handleFetchArenaCandidates = async () => {
     if (!initData) return;
+    if (isKnownFreePaidSurfaceMode) return;
     setArenaCandidatesLoading(true);
     setArenaCandidates([]);
     try {
@@ -19128,6 +19160,10 @@ function AppInner() {
   };
 
   const handleStartArenaWithCandidate = async (candidate) => {
+    if (isKnownFreePaidSurfaceMode) {
+      setWebappError('');
+      return;
+    }
     setArenaSelectedCandidate(candidate || null);
     setArenaPhase('playing');
     const arenaStoryId = candidate ? candidate.story_id : null;
@@ -25528,6 +25564,9 @@ function AppInner() {
       return;
     }
     const key = getExplanationItemKey(item);
+    if (explanationQuestionLoading[key]) {
+      return;
+    }
     const learnerQuestion = String(explanationQuestionDrafts[key] || '').trim();
     const explanation = String(explanations[key] || '').trim();
     if (!learnerQuestion) {
@@ -25539,6 +25578,7 @@ function AppInner() {
       return;
     }
     setExplanationQuestionLoading((prev) => ({ ...prev, [key]: true }));
+    const requestId = `askgpt:${key}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
     try {
       const response = await fetch('/api/webapp/explain/question', {
         method: 'POST',
@@ -25549,17 +25589,11 @@ function AppInner() {
           user_translation: item.user_translation,
           explanation,
           learner_question: learnerQuestion,
+          request_id: requestId,
         }),
       });
       if (!response.ok) {
-        let message = await response.text();
-        try {
-          const data = JSON.parse(message);
-          message = data.error || message;
-        } catch (error) {
-          // ignore parsing errors
-        }
-        throw new Error(message);
+        throw new Error(await readApiError(response, 'Ошибка вопроса', 'Fragefehler'));
       }
       const data = await response.json();
       setExplanationQuestionAnswers((prev) => ({
@@ -31403,6 +31437,8 @@ function AppInner() {
                 handleStartArenaWithCandidateStable={handleStartArenaWithCandidateStable}
                 handleStoryVoteStable={handleStoryVoteStable}
                 handleTranslationVoteStable={handleTranslationVoteStable}
+                storySurfaceProRequired={isKnownFreePaidSurfaceMode && selectedTopicIsStoryTopic}
+                renderStoryPaidFeatureNotice={() => renderAppPaidFeatureNotice(storyPaidFeatureTitle)}
               />
             )}
             {renderTranslationDictionaryWidget()}

@@ -35094,6 +35094,7 @@ def export_webapp_dictionary_pdf():
 
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
+
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
     try:
@@ -37483,6 +37484,7 @@ def get_webapp_dictionary_cards():
 
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
+
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
     try:
@@ -44683,6 +44685,15 @@ def start_webapp_story():
 
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    paid_gate_payload, paid_gate_status = _paid_surface_gate_response(
+        user_id=int(user_id),
+        feature="story_mode",
+        feature_title="Загадочная история",
+    )
+    if paid_gate_payload is not None:
+        return jsonify(paid_gate_payload), paid_gate_status
+
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
     try:
@@ -44754,6 +44765,15 @@ def submit_webapp_story():
 
     if not user_id:
         return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    paid_gate_payload, paid_gate_status = _paid_surface_gate_response(
+        user_id=int(user_id),
+        feature="story_mode",
+        feature_title="Загадочная история",
+    )
+    if paid_gate_payload is not None:
+        return jsonify(paid_gate_payload), paid_gate_status
+
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
 
     try:
@@ -51598,6 +51618,26 @@ def explain_webapp_translation_followup_question():
         return jsonify({"error": "user_id отсутствует в initData"}), 400
 
     source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    request_id = str(payload.get("request_id") or "").strip()
+    if not request_id:
+        request_id = f"{hashlib.sha1(learner_question.encode('utf-8', 'ignore')).hexdigest()[:16]}:{time.time_ns()}"
+    reservation = reserve_free_feature_usage(
+        user_id=int(user_id),
+        feature_key="ask_gpt_daily",
+        idempotency_key=f"askgpt:webapp:{int(user_id)}:{hashlib.sha1(request_id.encode('utf-8', 'ignore')).hexdigest()[:24]}",
+        source_lang=source_lang,
+        target_lang=target_lang,
+        metadata={
+            "origin": "webapp_explain_question",
+            "request_id": request_id[:120],
+            "question_len": len(learner_question),
+            "context_len": len(explanation),
+        },
+        tz="Europe/Vienna",
+    )
+    if reservation.get("blocked"):
+        return jsonify(reservation.get("error") or build_free_limit_error("ask_gpt_daily", used=5, tz="Europe/Vienna")), 429
+
     context_question = (
         "У пользователя уже есть подробное объяснение ошибок в переводе этого предложения. "
         "Ответь на его уточняющий вопрос, опираясь на исходное предложение, перевод пользователя и уже данное объяснение."

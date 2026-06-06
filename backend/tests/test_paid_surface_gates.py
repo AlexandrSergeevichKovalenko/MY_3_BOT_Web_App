@@ -3,7 +3,7 @@ from contextlib import ExitStack, contextmanager
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import backend.backend_server as server
 from backend.voice_assessment_service import VoiceAssessment
@@ -242,6 +242,70 @@ class PaidSurfaceGateTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["assessment"]["summary"], "Stored summary")
 
+    def test_free_user_blocked_on_story_start_before_generation(self):
+        with self._webapp_auth(), \
+             patch.object(server, "_resolve_user_entitlement", return_value=self._entitlement("free")), \
+             patch.object(server, "_get_user_language_pair") as language_mock, \
+             patch.object(server, "start_story_session_webapp") as start_mock:
+            response = self.client.post(
+                "/api/webapp/story/start",
+                json={"initData": "valid", "mode": "new"},
+            )
+
+        self._assert_paid_required(response, feature="story_mode", feature_title="Загадочная история")
+        language_mock.assert_not_called()
+        start_mock.assert_not_called()
+
+    def test_free_user_blocked_on_story_submit_before_openai_checks(self):
+        with self._webapp_auth(), \
+             patch.object(server, "_resolve_user_entitlement", return_value=self._entitlement("free")), \
+             patch.object(server, "_get_user_language_pair") as language_mock, \
+             patch.object(server, "submit_story_translation_webapp") as submit_mock:
+            response = self.client.post(
+                "/api/webapp/story/submit",
+                json={
+                    "initData": "valid",
+                    "translations": [{"id_for_mistake_table": 1, "translation": "test"}],
+                    "guess": "test",
+                },
+            )
+
+        self._assert_paid_required(response, feature="story_mode", feature_title="Загадочная история")
+        language_mock.assert_not_called()
+        submit_mock.assert_not_called()
+
+    def test_pro_user_allowed_on_story_start_and_submit(self):
+        with self._webapp_auth(), \
+             patch.object(server, "_resolve_user_entitlement", return_value=self._entitlement("pro")), \
+             patch.object(server, "_get_user_language_pair", return_value=("ru", "de", {})), \
+             patch.object(server, "start_story_session_webapp", AsyncMock(return_value={"session_id": "story-1", "created": False})) as start_mock:
+            start_response = self.client.post(
+                "/api/webapp/story/start",
+                json={"initData": "valid", "mode": "new"},
+            )
+
+        self.assertEqual(start_response.status_code, 200)
+        self.assertEqual(start_response.get_json()["session_id"], "story-1")
+        start_mock.assert_called_once()
+
+        with self._webapp_auth(), \
+             patch.object(server, "_resolve_user_entitlement", return_value=self._entitlement("pro")), \
+             patch.object(server, "_get_user_language_pair", return_value=("ru", "de", {})), \
+             patch.object(server, "_billing_log_event_safe"), \
+             patch.object(server, "submit_story_translation_webapp", AsyncMock(return_value={"session_id": "story-1", "score": 90})) as submit_mock:
+            submit_response = self.client.post(
+                "/api/webapp/story/submit",
+                json={
+                    "initData": "valid",
+                    "translations": [{"id_for_mistake_table": 1, "translation": "test"}],
+                    "guess": "test",
+                },
+            )
+
+        self.assertEqual(submit_response.status_code, 200)
+        self.assertEqual(submit_response.get_json()["score"], 90)
+        submit_mock.assert_called_once()
+
     def test_frontend_known_free_voice_assistant_does_not_call_voice_endpoints(self):
         app_path = Path(__file__).resolve().parents[2] / "frontend" / "src" / "App.jsx"
         source = app_path.read_text(encoding="utf-8")
@@ -261,6 +325,31 @@ class PaidSurfaceGateTests(unittest.TestCase):
         tracking_fetch = source.index("/api/assistant/session/start", tracking_start)
         self.assertLess(tracking_guard, tracking_fetch)
         self.assertIn("renderAppPaidFeatureNotice(assistantPaidFeatureTitle)", source)
+
+    def test_frontend_known_free_story_does_not_call_story_endpoints(self):
+        app_path = Path(__file__).resolve().parents[2] / "frontend" / "src" / "App.jsx"
+        source = app_path.read_text(encoding="utf-8")
+
+        start_story = source.index("const handleStartStory = async () => {")
+        start_guard = source.index("if (isKnownFreePaidSurfaceMode)", start_story)
+        start_fetch = source.index("/api/webapp/story/start", start_story)
+        self.assertLess(start_guard, start_fetch)
+
+        submit_story = source.index("const handleStorySubmit = async () => {")
+        submit_guard = source.index("if (isKnownFreePaidSurfaceMode)", submit_story)
+        submit_fetch = source.index("/api/webapp/story/submit", submit_story)
+        self.assertLess(submit_guard, submit_fetch)
+
+        arena_candidates = source.index("const handleFetchArenaCandidates = async () => {")
+        arena_guard = source.index("if (isKnownFreePaidSurfaceMode) return;", arena_candidates)
+        arena_fetch = source.index("/api/webapp/story/arena/candidates", arena_candidates)
+        self.assertLess(arena_guard, arena_fetch)
+
+        arena_start = source.index("const handleStartArenaWithCandidate = async (candidate) => {")
+        arena_start_guard = source.index("if (isKnownFreePaidSurfaceMode)", arena_start)
+        arena_start_fetch = source.index("/api/webapp/story/start", arena_start)
+        self.assertLess(arena_start_guard, arena_start_fetch)
+        self.assertIn("renderAppPaidFeatureNotice(storyPaidFeatureTitle)", source)
 
     def _patch_analytics_success_dependencies(self):
         return (
