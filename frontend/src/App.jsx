@@ -13200,7 +13200,13 @@ function AppInner() {
     for (let page = safeStartPage; page <= readerPageCount && segments.length < maxPages; page += 1) {
       const pageText = getReaderDisplayPageText(page);
       if (!pageText) continue;
-      const separator = segments.length > 0 ? '\n\n' : '';
+      // Join consecutive pages with a SINGLE SPACE, not a blank line. A blank
+      // line ("\n\n") is read by the TTS as a paragraph break and gets a long
+      // pause — injected at EVERY page boundary, even mid-sentence, producing a
+      // distracting delay between words when the reader crosses pages. Pages are
+      // a purely visual unit; the audio should flow continuously across them and
+      // pause only where real punctuation dictates (flagship reader behaviour).
+      const separator = segments.length > 0 ? ' ' : '';
       // Char budget: stop growing the window once it would exceed the budget,
       // but always include at least the first page. Bigger windows mean far
       // fewer window boundaries → far fewer (ideally zero) audible pauses,
