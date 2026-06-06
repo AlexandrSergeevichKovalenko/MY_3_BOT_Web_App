@@ -48,11 +48,11 @@ from backend.utils import prepare_google_creds_for_tts
 # ---------------------------------------------------------------------------
 
 _TTS_VOICES = {
-    "de": "de-DE-Polyglot-1",
-    "ru": "ru-RU-Wavenet-B",
-    "en": "en-US-Wavenet-D",
-    "es": "es-ES-Standard-A",
-    "it": "it-IT-Standard-A",
+    "de": str(os.getenv("GOOGLE_TTS_VOICE_DE") or "de-DE-Neural2-C").strip() or "de-DE-Neural2-C",
+    "ru": str(os.getenv("GOOGLE_TTS_VOICE_RU") or "ru-RU-Wavenet-B").strip() or "ru-RU-Wavenet-B",
+    "en": str(os.getenv("GOOGLE_TTS_VOICE_EN") or "en-US-Wavenet-D").strip() or "en-US-Wavenet-D",
+    "es": str(os.getenv("GOOGLE_TTS_VOICE_ES") or "es-ES-Standard-A").strip() or "es-ES-Standard-A",
+    "it": str(os.getenv("GOOGLE_TTS_VOICE_IT") or "it-IT-Standard-A").strip() or "it-IT-Standard-A",
 }
 
 _TTS_LANG_CODES = {
@@ -325,12 +325,13 @@ def _enforce_google_tts_monthly_budget(requested_chars: int) -> dict:
 def _synthesize_mp3(
     text: str,
     language: str = "de-DE",
-    voice: str = "de-DE-Polyglot-1",
+    voice: str | None = None,
     speed: float = 0.9,
 ) -> bytes:
     normalized_text = str(text or "").strip()
     if not normalized_text:
         raise RuntimeError("Google TTS получил пустой текст")
+    voice_name = str(voice or _TTS_VOICES["de"]).strip() or _TTS_VOICES["de"]
 
     try:
         from google.cloud import texttospeech
@@ -412,7 +413,7 @@ def _synthesize_mp3(
     key_path = prepare_google_creds_for_tts()
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
     tts_client = texttospeech.TextToSpeechClient()
-    voice_params = texttospeech.VoiceSelectionParams(language_code=language, name=voice)
+    voice_params = texttospeech.VoiceSelectionParams(language_code=language, name=voice_name)
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3,
         speaking_rate=speed,
@@ -454,7 +455,7 @@ def synthesize_page_with_timings(
     *,
     page_text: str,
     lang_code: str = "de-DE",
-    voice_name: str = "de-DE-Polyglot-1",
+    voice_name: str | None = None,
     speaking_rate: float = 1.0,
 ) -> dict:
     """
@@ -492,13 +493,14 @@ def synthesize_page_with_timings(
     words = segment_page_words(page_text)
     if not words:
         raise RuntimeError("Страница не содержит слов")
+    resolved_voice_name = str(voice_name or _TTS_VOICES["de"]).strip() or _TTS_VOICES["de"]
 
     _enforce_google_tts_monthly_budget(_estimate_reader_page_tts_budget_chars(page_text))
 
     key_path = prepare_google_creds_for_tts()
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
     tts_client = texttospeech.TextToSpeechClient()
-    voice_params = texttospeech.VoiceSelectionParams(language_code=lang_code, name=voice_name)
+    voice_params = texttospeech.VoiceSelectionParams(language_code=lang_code, name=resolved_voice_name)
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3,
         speaking_rate=float(speaking_rate),
