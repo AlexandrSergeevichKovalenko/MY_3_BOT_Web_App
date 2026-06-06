@@ -19505,7 +19505,7 @@ function AppInner() {
   }, [getDictionarySaveLimitText, isDictionarySaveLimitError]);
 
   const showDictionarySaveLimitToast = useCallback(() => {
-    showInlineToast(getDictionarySaveLimitToastText(), 3200, 'limit');
+    showInlineToast(getDictionarySaveLimitToastText(), 3400, 'limit');
   }, [getDictionarySaveLimitToastText, showInlineToast]);
 
   const renderDictionarySaveLimitNotice = useCallback((value) => {

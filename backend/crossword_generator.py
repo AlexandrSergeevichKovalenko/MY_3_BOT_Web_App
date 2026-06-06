@@ -290,41 +290,76 @@ def _normalize_and_number(
     return grid_2d, normalized
 
 
-def _select_hidden_words(words: list[dict], hidden_count: int = 2) -> list[dict]:
-    """Mark hidden_count words as hidden=True. Prefers medium-length words."""
+def _word_cells(w: dict) -> set[tuple[int, int]]:
+    """Set of (row, col) grid cells occupied by a placed word."""
+    dr, dc = (0, 1) if w["direction"] == "across" else (1, 0)
+    return {(w["row"] + dr * i, w["col"] + dc * i) for i in range(len(w["word"]))}
+
+
+def _select_hidden_words(words: list[dict], hidden_count: int = 3) -> list[dict]:
+    """Mark hidden_count words as hidden=True.
+
+    The hidden words are chosen to form a CONNECTED chain — each one directly
+    intersects (shares a cell with) at least one other hidden word. This makes
+    the puzzle interdependent: solving one hidden word reveals a letter at the
+    crossing of the next, so the player can chain deductions instead of solving
+    isolated, unrelated blanks. Medium-length words are preferred for richness.
+    """
     result = [{**w, "hidden": False} for w in words]
-    if len(result) <= hidden_count:
+    n = len(result)
+    if n <= hidden_count:
         for w in result:
             w["hidden"] = True
         return result
 
-    # Score candidates: prefer medium length (4-7 chars) and alternating directions
-    def _candidate_score(w: dict) -> float:
-        length = len(w["word"])
-        length_score = -abs(length - 5.5)  # peak at 5-6 letters
-        return length_score
+    def _length_pref(idx: int) -> float:
+        return -abs(len(result[idx]["word"]) - 5.5)  # peak at 5-6 letters
 
-    candidates = sorted(result, key=_candidate_score, reverse=True)
-    chosen_indices = set()
-    directions_chosen: set[str] = set()
+    # Build the direct-intersection graph between placed words.
+    cells = [_word_cells(w) for w in result]
+    adj: dict[int, set[int]] = {i: set() for i in range(n)}
+    for i in range(n):
+        for j in range(i + 1, n):
+            if cells[i] & cells[j]:
+                adj[i].add(j)
+                adj[j].add(i)
 
-    for w in candidates:
-        if len(chosen_indices) >= hidden_count:
+    # Grow a connected group of `hidden_count` words, seeding from the best
+    # medium-length word and always extending through a direct intersection so
+    # the chosen set stays mutually crossing.
+    seed_order = sorted(range(n), key=_length_pref, reverse=True)
+    chosen: set[int] = set()
+    for seed in seed_order:
+        group = [seed]
+        frontier = set(adj[seed])
+        while len(group) < hidden_count and frontier:
+            nxt = max(frontier, key=_length_pref)
+            group.append(nxt)
+            frontier.discard(nxt)
+            frontier |= (adj[nxt] - set(group))
+        if len(group) == hidden_count:
+            chosen = set(group)
             break
-        # Prefer diversity of directions
-        if w["direction"] not in directions_chosen or len(chosen_indices) == hidden_count - 1:
-            chosen_indices.add(id(w))
-            directions_chosen.add(w["direction"])
 
-    # Fallback: just take first hidden_count if selection logic left gaps
-    if len(chosen_indices) < hidden_count:
-        for w in candidates:
-            if len(chosen_indices) >= hidden_count:
+    # Fallback: no connected group of the requested size (very sparse grid) —
+    # take the best-by-length words and at least keep direction diversity.
+    if len(chosen) < hidden_count:
+        chosen = set()
+        directions_chosen: set[str] = set()
+        for idx in seed_order:
+            if len(chosen) >= hidden_count:
                 break
-            chosen_indices.add(id(w))
+            d = result[idx]["direction"]
+            if d not in directions_chosen or len(chosen) == hidden_count - 1:
+                chosen.add(idx)
+                directions_chosen.add(d)
+        for idx in seed_order:
+            if len(chosen) >= hidden_count:
+                break
+            chosen.add(idx)
 
-    for w in result:
-        w["hidden"] = id(w) in chosen_indices
+    for idx, w in enumerate(result):
+        w["hidden"] = idx in chosen
     return result
 
 
@@ -376,8 +411,14 @@ def generate_crossword_entry(topic: str | None = None, difficulty: str | None = 
     # 4. Normalize and number words
     grid_2d, words_numbered = _normalize_and_number(raw_grid, placed)
 
-    # 5. Select hidden words (2, or 1 if very few words placed)
-    hidden_count = 2 if len(words_numbered) >= 5 else 1
+    # 5. Select hidden words — 3 intersecting words when the grid is rich enough,
+    #    falling back to 2 / 1 on sparse grids.
+    if len(words_numbered) >= 6:
+        hidden_count = 3
+    elif len(words_numbered) >= 4:
+        hidden_count = 2
+    else:
+        hidden_count = 1
     words_final = _select_hidden_words(words_numbered, hidden_count)
 
     hidden_count_actual = sum(1 for w in words_final if w.get("hidden"))

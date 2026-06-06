@@ -2393,6 +2393,8 @@ Rules:
 - Return exactly 2 save_worthy_options whenever possible:
   1) EXACT TRANSLATION CARD: the most accurate, natural translation of the user's original input. If the input is a sentence, keep it a complete sentence.
   2) REAL-LIFE SPEECH CARD: a short, high-frequency collocation or complete everyday sentence with the same core meaning. It must be conversational and something a native speaker would actually say.
+- For standalone nouns, #2 is still required whenever possible: make it a short everyday sentence that uses the noun. Do NOT return only the bare noun card unless no truthful sentence can be produced.
+- HARD RULE: #1 and #2 must have different source text. #2 must not be only the same noun with another translation.
 - The second save_worthy_options item must not weaken or drop the key idea from the original. For "Франц ушел на пенсию", do not output "Franz geht nicht mehr zur Arbeit"; keep the retirement/Rente idea.
 - GERMAN HEADWORD NORMALIZATION:
   - If the main German word is a standalone noun, word_source/word_target must include the correct definite article in nominative: "der/die/das + noun".
@@ -2463,6 +2465,9 @@ Rules:
   1) EXACT TRANSLATION CARD: the most accurate, natural translation of the user's original input.
   2) REAL-LIFE SPEECH CARD: a SHORT EXAMPLE SENTENCE (3-8 words) that actually uses the
      input word in a natural everyday context, with its translation.
+     For standalone nouns, #2 is still required whenever possible: make it a short everyday
+     sentence that uses the noun. Do NOT return only the bare noun card unless no truthful
+     sentence can be produced.
      For adverbs, conjunctions and function words (hingegen, immerhin, trotzdem, sogar, ...)
      there is no collocation — give a real example sentence instead.
      Example: input "hingegen" → #2 source "Ich bleibe; sie geht hingegen." target "Я остаюсь; она же уходит."

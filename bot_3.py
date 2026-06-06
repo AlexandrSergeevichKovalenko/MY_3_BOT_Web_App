@@ -5628,6 +5628,7 @@ def _restore_pending_from_redis(user_id: int) -> None:
                         "text": str(entry.get("text") or "").strip(),
                         "chat_id": entry.get("chat_id"),
                         "message_id": entry.get("message_id"),
+                        "source": str(entry.get("source") or "").strip() or None,
                     }
                     count += 1
             logging.info("dict_pending: absorbed %d new entries from %s", count, source_key)
@@ -5688,6 +5689,7 @@ def _restore_pending_from_redis(user_id: int) -> None:
                             "text": line,
                             "chat_id": None,
                             "message_id": None,
+                            "source": "shortcut_raw_list",
                         }
                         raw_list_count += 1
             except Exception:
@@ -5713,6 +5715,7 @@ def _restore_pending_from_redis(user_id: int) -> None:
                             "text": line,
                             "chat_id": None,
                             "message_id": None,
+                            "source": "shortcut_raw",
                         }
                         raw_count += 1
                 logging.info("dict_pending: absorbed %d entries from raw key %s", raw_count, raw_text_key)
@@ -5782,6 +5785,7 @@ def _store_pending_dictionary_lookup_request(
         "text": (text or "").strip(),
         "chat_id": int(chat_id) if chat_id is not None else None,
         "message_id": int(message_id) if message_id is not None else None,
+        "source": "telegram_direct",
         "created_at": _t.time(),
     }
     if len(pending_dictionary_lookup_requests) > 500:
@@ -6482,6 +6486,30 @@ def _apply_article_for_display(value: str, lookup: dict, target_lang: str) -> st
     if lowered == article_lower or lowered.startswith(f"{article_lower} "):
         return text
     return f"{article} {text}".strip()
+
+
+def _apply_article_for_save_option(value: str, lookup: dict, lang: str) -> str:
+    text = str(value or "").strip()
+    if not text or not isinstance(lookup, dict):
+        return text
+    if str(lang or "").strip().lower() != "de":
+        return text
+    article = str(lookup.get("article") or "").strip().lower()
+    if article not in {"der", "die", "das"}:
+        return text
+    part_of_speech = str(lookup.get("part_of_speech") or "").strip().lower()
+    if part_of_speech and part_of_speech not in {"noun", "substantiv", "nomen"}:
+        return text
+    tokens = text.split()
+    if not tokens:
+        return text
+    if tokens[0].lower() in {"der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "einem", "einer"}:
+        return text
+    # Only patch standalone nouns. For phrases/sentences, adding a nominative
+    # article would corrupt case or word order.
+    if len(tokens) == 1:
+        return f"{article} {text}".strip()
+    return text
 
 
 def _extract_learning_notes(lookup: dict) -> dict:
@@ -7538,6 +7566,8 @@ def _build_fast_dictionary_save_options(payload: dict, max_options: int = 2) -> 
     if not isinstance(lookup, dict):
         lookup = {}
     source_text = str((payload or {}).get("source_text") or "").strip()
+    source_lang = str((payload or {}).get("source_lang") or lookup.get("source_lang") or "").strip().lower()
+    target_lang = str((payload or {}).get("target_lang") or lookup.get("target_lang") or "").strip().lower()
     options: list[dict] = []
     unique: set[str] = set()
 
@@ -7549,8 +7579,8 @@ def _build_fast_dictionary_save_options(payload: dict, max_options: int = 2) -> 
         return normalized.strip()
 
     def _add_option(source_value: str, target_value: str, is_original: bool = False) -> bool:
-        source = str(source_value or "").strip()
-        target = str(target_value or "").strip()
+        source = _apply_article_for_save_option(str(source_value or "").strip(), lookup, source_lang)
+        target = _apply_article_for_save_option(str(target_value or "").strip(), lookup, target_lang)
         if not source or not target:
             return False
         # Dedup by SOURCE only: two cards with the same source word/phrase are
@@ -7752,6 +7782,8 @@ async def _send_dictionary_lookup_result(
     lookup_input: str,
     source_lang: str,
     target_lang: str,
+    request_key: str | None = None,
+    lookup_origin: str = "telegram_lookup",
 ) -> None:
     lookup_input = (lookup_input or "").strip()
     try:
@@ -7761,7 +7793,12 @@ async def _send_dictionary_lookup_result(
             source_lang=source_lang,
             target_lang=target_lang,
             max_options=3,
+            request_key=request_key,
+            lookup_origin=lookup_origin,
         )
+    except DictionaryLookupDailyLimitExceeded:
+        await message.reply_text(DICTIONARY_LOOKUP_DAILY_LIMIT_MESSAGE)
+        return
     except Exception as exc:
         logging.exception(
             "❌ Ошибка словарного поиска для '%s' (%s->%s, %s): %r",
@@ -7817,6 +7854,8 @@ async def _prepare_dictionary_lookup_response(
     max_options: int = 3,
     fast_options: bool = False,
     lookup_payload: dict | None = None,
+    request_key: str | None = None,
+    lookup_origin: str = "telegram_lookup",
 ) -> dict:
     started_perf = pytime.perf_counter()
     normalized_lookup_input = _normalize_dictionary_lookup_input(lookup_input)
@@ -7824,6 +7863,8 @@ async def _prepare_dictionary_lookup_response(
         lookup = dict(lookup_payload)
         lookup_ms = 0
     else:
+        if _free_dictionary_lookup_limit_blocks_user(user_id, origin=lookup_origin):
+            raise DictionaryLookupDailyLimitExceeded()
         lookup_started_perf = pytime.perf_counter()
         lookup = await _run_dictionary_lookup_for_pair(
             normalized_lookup_input or lookup_input,
@@ -7831,6 +7872,14 @@ async def _prepare_dictionary_lookup_response(
             target_lang,
         )
         lookup_ms = int((pytime.perf_counter() - lookup_started_perf) * 1000)
+        _record_dictionary_lookup_execution(
+            int(user_id),
+            origin=lookup_origin,
+            request_key=request_key,
+            lookup_input=normalized_lookup_input or lookup_input,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
     if not isinstance(lookup, dict):
         raise ValueError("lookup result is not a dict")
 
@@ -7936,6 +7985,8 @@ async def _send_dictionary_lookup_quick_result(
     source_lang: str,
     target_lang: str,
     lookup_payload: dict | None = None,
+    request_key: str | None = None,
+    lookup_origin: str = "telegram_lookup",
 ) -> None:
     lookup_input = (lookup_input or "").strip()
     started_perf = pytime.perf_counter()
@@ -7948,7 +7999,12 @@ async def _send_dictionary_lookup_quick_result(
             max_options=2,
             fast_options=True,
             lookup_payload=lookup_payload,
+            request_key=request_key,
+            lookup_origin=lookup_origin,
         )
+    except DictionaryLookupDailyLimitExceeded:
+        await message.reply_text(DICTIONARY_LOOKUP_DAILY_LIMIT_MESSAGE)
+        return
     except Exception as exc:
         logging.exception(
             "❌ Ошибка быстрого словарного поиска для '%s' (%s->%s, %s): %r",
@@ -8036,6 +8092,7 @@ async def _process_dictionary_pair_selection(
     target_lang: str,
     response_mode: str = "full",
     lookup_payload: dict | None = None,
+    lookup_origin: str = "telegram_lookup",
 ) -> None:
     try:
         normalized_mode = str(response_mode or "full").strip().lower()
@@ -8048,6 +8105,8 @@ async def _process_dictionary_pair_selection(
                 source_lang=source_lang,
                 target_lang=target_lang,
                 lookup_payload=lookup_payload,
+                request_key=request_key,
+                lookup_origin=lookup_origin,
             )
         else:
             await _send_dictionary_lookup_result(
@@ -8057,6 +8116,8 @@ async def _process_dictionary_pair_selection(
                 lookup_input=lookup_input,
                 source_lang=source_lang,
                 target_lang=target_lang,
+                request_key=request_key,
+                lookup_origin=lookup_origin,
             )
     except Exception as exc:
         logging.exception(
@@ -8151,6 +8212,31 @@ async def _run_dictionary_batch_fast_for_user(
             logging.debug("Failed to send no-processed batch notice", exc_info=True)
         return
 
+    allowed_units = _dictionary_lookup_limit_remaining(
+        int(user_id),
+        requested_units=len(batch_items),
+        origin="telegram_batch_fast",
+    )
+    if allowed_units <= 0:
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=DICTIONARY_LOOKUP_DAILY_LIMIT_MESSAGE)
+        except Exception:
+            logging.debug("Failed to send dictionary lookup limit notice", exc_info=True)
+        return
+    if allowed_units < len(batch_items):
+        blocked_count = len(batch_items) - allowed_units
+        batch_items = batch_items[:allowed_units]
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"Обработаю {allowed_units} запрос(ов), потому что дневной лимит бесплатного тарифа почти исчерпан.\n\n"
+                    f"Остальные {blocked_count} запрос(ов) не отправлены в обработку."
+                ),
+            )
+        except Exception:
+            logging.debug("Failed to send partial dictionary lookup limit notice", exc_info=True)
+
     batch_started_perf = pytime.perf_counter()
     batch_lookups: dict[str, dict] = {}
     try:
@@ -8162,6 +8248,15 @@ async def _run_dictionary_batch_fast_for_user(
             source_lang="de",
             target_lang="ru",
         )
+        for item in batch_items:
+            _record_dictionary_lookup_execution(
+                int(user_id),
+                origin="telegram_batch_fast",
+                request_key=str(item.get("request_key") or "").strip(),
+                lookup_input=str(item.get("lookup_input") or "").strip(),
+                source_lang="de",
+                target_lang="ru",
+            )
     except Exception:
         logging.warning(
             "batch_fast: batch lookup failed user_id=%s count=%s, falling back per item",
@@ -8319,6 +8414,7 @@ async def handle_dictionary_pair_callback(update: Update, context: CallbackConte
         payload = {
             "user_id": int(user.id),
             "text": reconstructed_lookup_input,
+            "source": "telegram_reconstructed",
         }
         pending_dictionary_lookup_requests[request_key] = payload
 
@@ -8410,6 +8506,7 @@ async def handle_dictionary_mode_callback(update: Update, context: CallbackConte
     except Exception:
         pass
 
+    lookup_origin = str(payload.get("source") or payload.get("origin") or "telegram_lookup").strip().lower() or "telegram_lookup"
     context.application.create_task(
         _process_dictionary_pair_selection(
             context=context,
@@ -8420,6 +8517,7 @@ async def handle_dictionary_mode_callback(update: Update, context: CallbackConte
             source_lang=source_lang,
             target_lang=target_lang,
             response_mode=response_mode,
+            lookup_origin=lookup_origin,
         )
     )
 
@@ -9472,12 +9570,92 @@ DICTIONARY_FREE_SAVE_LIMIT_MESSAGE = (
     "Вы можете сохранить до 20 новых слов или фраз в день.\n\n"
     "Лимит обновится завтра в 00:00 по Вене."
 )
+DICTIONARY_LOOKUP_DAILY_FEATURE_KEY = "dictionary_lookup_daily"
+DICTIONARY_LOOKUP_DAILY_LIMIT_MESSAGE = (
+    "На бесплатном тарифе достигнут дневной лимит словарных запросов.\n\n"
+    "Вы можете выполнить до 30 новых словарных запросов в день.\n\n"
+    "Лимит обновится завтра в 00:00 по Вене."
+)
 SHORTCUT_FORWARDED_MESSAGE_FEATURE_KEY = "shortcut_forwarded_message_daily"
 SHORTCUT_FORWARDED_MESSAGE_LIMIT_MESSAGE = (
     "На бесплатном тарифе достигнут дневной лимит обработки сообщений.\n\n"
     "Вы можете обработать до 15 сообщений через Shortcut или пересылку в день.\n\n"
     "Лимит обновится завтра в 00:00 по Вене."
 )
+
+
+class DictionaryLookupDailyLimitExceeded(Exception):
+    pass
+
+
+def _dictionary_lookup_limit_remaining(user_id: int, *, requested_units: int = 1, origin: str = "telegram") -> int:
+    entitlement = resolve_entitlement(user_id=int(user_id), tz="Europe/Vienna")
+    effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
+    safe_requested = max(0, int(requested_units or 0))
+    if effective_mode != "free":
+        return safe_requested
+
+    limit_meta = get_free_feature_limit_metadata(DICTIONARY_LOOKUP_DAILY_FEATURE_KEY) or {}
+    limit_value = int(float(limit_meta.get("free_limit") or 0))
+    used_today = int(float(get_free_feature_usage_today(
+        user_id=int(user_id),
+        feature_key=DICTIONARY_LOOKUP_DAILY_FEATURE_KEY,
+        tz="Europe/Vienna",
+    ) or 0))
+    remaining = max(0, limit_value - used_today)
+    logging.info(
+        "dictionary_lookup_limit checked user_id=%s origin=%s used=%s limit=%s requested=%s remaining=%s",
+        int(user_id),
+        str(origin or "unknown").strip().lower() or "unknown",
+        used_today,
+        limit_value,
+        safe_requested,
+        remaining,
+    )
+    return min(safe_requested, remaining)
+
+
+def _free_dictionary_lookup_limit_blocks_user(user_id: int, *, origin: str) -> bool:
+    return _dictionary_lookup_limit_remaining(user_id, requested_units=1, origin=origin) <= 0
+
+
+def _record_dictionary_lookup_execution(
+    user_id: int,
+    *,
+    origin: str,
+    request_key: str | None = None,
+    lookup_input: str | None = None,
+    source_lang: str | None = None,
+    target_lang: str | None = None,
+) -> None:
+    entitlement = resolve_entitlement(user_id=int(user_id), tz="Europe/Vienna")
+    effective_mode = str(entitlement.get("effective_mode") or "free").strip().lower() or "free"
+    if effective_mode != "free":
+        return
+    normalized_origin = str(origin or "unknown").strip().lower() or "unknown"
+    normalized_request_key = str(request_key or "").strip()
+    increment_free_feature_usage(
+        user_id=int(user_id),
+        feature_key=DICTIONARY_LOOKUP_DAILY_FEATURE_KEY,
+        idempotency_key=(
+            f"{DICTIONARY_LOOKUP_DAILY_FEATURE_KEY}:{int(user_id)}:"
+            f"{normalized_origin}:{normalized_request_key or pytime.time_ns()}"
+        ),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        metadata={
+            "origin": normalized_origin,
+            "request_key": normalized_request_key or None,
+            "lookup_input": str(lookup_input or "").strip() or None,
+        },
+    )
+    logging.info(
+        "dictionary_lookup_limit accepted user_id=%s origin=%s request_key=%s lookup=%r",
+        int(user_id),
+        normalized_origin,
+        normalized_request_key,
+        str(lookup_input or "").strip(),
+    )
 
 
 def _free_shortcut_forwarded_limit_blocks_user(user_id: int, *, origin: str) -> bool:

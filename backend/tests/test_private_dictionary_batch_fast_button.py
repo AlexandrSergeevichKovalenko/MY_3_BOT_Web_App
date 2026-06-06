@@ -264,14 +264,19 @@ class PrivateDictionaryBatchFastButtonTests(unittest.TestCase):
         lookup = {
             "word_source": "Biernachschub",
             "word_target": "поставка пива",
+            "part_of_speech": "noun",
+            "article": "der",
             "source_lang": "de",
             "target_lang": "ru",
             "save_worthy_options": [
                 {"source": "der Biernachschub", "target": "поставка пива"},
+                {"source": "Der Biernachschub ist da.", "target": "Пиво подвезли."},
             ],
         }
 
         with patch.object(bot_3, "_run_dictionary_lookup_for_pair", new=AsyncMock(return_value=lookup)), \
+             patch.object(bot_3, "_free_dictionary_lookup_limit_blocks_user", return_value=False), \
+             patch.object(bot_3, "_record_dictionary_lookup_execution"), \
              patch.object(bot_3, "_generate_dictionary_save_options", new=AsyncMock(side_effect=AssertionError("slow path"))), \
              patch.object(bot_3, "_resolve_private_dictionary_save_folder", return_value={"folder_id": None, "name": "GENERAL", "icon": "📁"}):
             prepared = bot_3.asyncio.run(
@@ -285,9 +290,9 @@ class PrivateDictionaryBatchFastButtonTests(unittest.TestCase):
                 )
             )
 
-        self.assertEqual(prepared["options"][0]["source"], "Biernachschub")
+        self.assertEqual(prepared["options"][0]["source"], "der Biernachschub")
         self.assertEqual(prepared["options"][0]["target"], "поставка пива")
-        self.assertEqual(prepared["options"][1]["source"], "der Biernachschub")
+        self.assertEqual(prepared["options"][1]["source"], "Der Biernachschub ist da.")
 
     def test_batch_fast_uses_single_batch_lookup_payloads(self):
         bot_3.pending_dictionary_lookup_requests["k1"] = {"user_id": 11, "text": "Biernachschub", "message_id": 501}
@@ -312,6 +317,8 @@ class PrivateDictionaryBatchFastButtonTests(unittest.TestCase):
         }
 
         with patch.object(bot_3, "run_dictionary_lookup_multilang_core_fast_batch", new=AsyncMock(return_value=batch_payloads)) as batch_mock, \
+             patch.object(bot_3, "_dictionary_lookup_limit_remaining", return_value=2), \
+             patch.object(bot_3, "_record_dictionary_lookup_execution"), \
              patch.object(bot_3, "_run_dictionary_lookup_for_pair", new=AsyncMock(side_effect=AssertionError("per-word lookup should not run"))), \
              patch.object(bot_3, "_resolve_private_dictionary_save_folder", return_value={"folder_id": None, "name": "GENERAL", "icon": "📁"}), \
              patch.object(bot_3, "add_service_msg_id"), \
@@ -330,6 +337,44 @@ class PrivateDictionaryBatchFastButtonTests(unittest.TestCase):
         self.assertEqual(len(fake_bot.sent_messages), 2)
         self.assertIn("der Biernachschub", fake_bot.sent_messages[0]["text"])
         self.assertIn("schwindeln", fake_bot.sent_messages[1]["text"])
+
+    def test_batch_fast_only_sends_allowed_items_to_openai(self):
+        bot_3.pending_dictionary_lookup_requests["k1"] = {"user_id": 11, "text": "Biernachschub", "message_id": 501}
+        bot_3.pending_dictionary_lookup_requests["k2"] = {"user_id": 11, "text": "schwindeln", "message_id": 502}
+        fake_bot = _FakeBatchBot()
+        context = SimpleNamespace(bot=fake_bot, user_data={})
+        batch_payloads = {
+            "k1": {
+                "word_source": "der Biernachschub",
+                "word_target": "поставка пива",
+                "save_worthy_options": [
+                    {"source": "der Biernachschub", "target": "поставка пива"},
+                ],
+            },
+        }
+
+        with patch.object(bot_3, "run_dictionary_lookup_multilang_core_fast_batch", new=AsyncMock(return_value=batch_payloads)) as batch_mock, \
+             patch.object(bot_3, "_dictionary_lookup_limit_remaining", return_value=1), \
+             patch.object(bot_3, "_record_dictionary_lookup_execution") as record_mock, \
+             patch.object(bot_3, "_run_dictionary_lookup_for_pair", new=AsyncMock(side_effect=AssertionError("per-word lookup should not run"))), \
+             patch.object(bot_3, "_resolve_private_dictionary_save_folder", return_value={"folder_id": None, "name": "GENERAL", "icon": "📁"}), \
+             patch.object(bot_3, "add_service_msg_id"), \
+             patch.object(bot_3, "_remove_pending_from_redis"), \
+             patch.object(bot_3, "_sync_pending_to_redis"):
+            bot_3.asyncio.run(
+                bot_3._run_dictionary_batch_fast_for_user(
+                    context,
+                    user_id=11,
+                    chat_id=777,
+                    pending_snapshot=dict(bot_3.pending_dictionary_lookup_requests),
+                )
+            )
+
+        batch_mock.assert_awaited_once()
+        requested_items = batch_mock.await_args.args[0]
+        self.assertEqual([item["key"] for item in requested_items], ["k1"])
+        record_mock.assert_called_once()
+        self.assertTrue(any("Остальные 1" in item["text"] for item in fake_bot.sent_messages))
 
 
 if __name__ == "__main__":
