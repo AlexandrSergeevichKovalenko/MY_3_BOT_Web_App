@@ -1,4 +1,5 @@
 import React, { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import './App.css';
 import './components/reader-redesign.css';
 import BlocksTrainer from './components/BlocksTrainer';
@@ -86,6 +87,54 @@ const EPUB_RUNTIME_CDN_URLS = [
   'https://unpkg.com/epubjs/dist/epub.min.js',
 ];
 let readerEpubRuntimePromise = null;
+
+// Transient "spotlight" for a paid-feature / limit notice. When the plate first
+// appears it is centered above a blurred backdrop (portaled to <body> so no
+// ancestor stacking context can hide it) and the inline copy is scrolled into
+// view. It auto-dismisses (tap / Esc / timeout) and then the inline plate stays
+// in place — these notices are persistent conditions, so the spotlight must
+// never hard-block the section. Purely a visual focus aid; no behaviour change.
+function PaidFeatureSpotlight({ children }) {
+  const [open, setOpen] = useState(true);
+  const inlineRef = useRef(null);
+  useEffect(() => {
+    const scrollTimer = window.setTimeout(() => {
+      try {
+        inlineRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } catch (_e) { /* noop */ }
+    }, 60);
+    const closeTimer = window.setTimeout(() => setOpen(false), 5200);
+    return () => {
+      window.clearTimeout(scrollTimer);
+      window.clearTimeout(closeTimer);
+    };
+  }, []);
+  const overlay = open && typeof document !== 'undefined'
+    ? createPortal(
+      <div
+        className="paid-feature-spotlight-overlay"
+        role="button"
+        tabIndex={0}
+        aria-label="Закрыть"
+        onClick={() => setOpen(false)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape' || e.key === 'Enter' || e.key === ' ') setOpen(false);
+        }}
+      >
+        <div className="paid-feature-spotlight-stage" onClick={(e) => e.stopPropagation()}>
+          {children}
+        </div>
+      </div>,
+      document.body,
+    )
+    : null;
+  return (
+    <>
+      <div ref={inlineRef} className="paid-feature-spotlight-inline">{children}</div>
+      {overlay}
+    </>
+  );
+}
 
 function normalizeReaderPaginationText(rawText) {
   return String(rawText || '')
@@ -3400,7 +3449,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
             {selectedTopicIsStoryTopic && (
               <div className="tr-story-options">
                 {storySurfaceProRequired && renderStoryPaidFeatureNotice
-                  ? renderStoryPaidFeatureNotice()
+                  ? <PaidFeatureSpotlight>{renderStoryPaidFeatureNotice()}</PaidFeatureSpotlight>
                   : null}
                 <div className="tr-field-block">
                   <div className="tr-field-label">{tr('Режим истории', 'Story-Modus')}</div>
@@ -3691,7 +3740,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
               <>
                 {webappError && !webappLoading && (
                   (String(webappError).includes(PAID_FEATURE_ERROR_PREFIX) && renderStoryPaidFeatureNotice
-                    ? renderStoryPaidFeatureNotice()
+                    ? <PaidFeatureSpotlight>{renderStoryPaidFeatureNotice()}</PaidFeatureSpotlight>
                     : null)
                   || renderTranslationLimitNotice(webappError)
                   || <div className="webapp-error webapp-error-inline">{webappError}</div>
@@ -3727,7 +3776,7 @@ const TranslationsSection = React.memo(function TranslationsSection({
 
         {webappError && (
           (String(webappError).includes(PAID_FEATURE_ERROR_PREFIX) && renderStoryPaidFeatureNotice
-            ? renderStoryPaidFeatureNotice()
+            ? <PaidFeatureSpotlight>{renderStoryPaidFeatureNotice()}</PaidFeatureSpotlight>
             : null)
           || renderTranslationLimitNotice(webappError)
           || <div className="webapp-error">{webappError}</div>
@@ -27260,7 +27309,9 @@ function AppInner() {
         </form>
 
         <div className="translation-dict-widget-content">
-          {dictionaryError && (renderDictionarySaveLimitNotice(dictionaryError) || <div className="webapp-error">{dictionaryError}</div>)}
+          {dictionaryError && (renderDictionarySaveLimitNotice(dictionaryError)
+            ? <PaidFeatureSpotlight>{renderDictionarySaveLimitNotice(dictionaryError)}</PaidFeatureSpotlight>
+            : <div className="webapp-error">{dictionaryError}</div>)}
           {dictionarySaved && <div className="webapp-success">{dictionarySaved}</div>}
           {dictionaryLoading && (
             <div className="translation-dict-widget-empty">{tr('Ищем...', 'Suche...')}</div>
@@ -32968,7 +33019,9 @@ function AppInner() {
                       {!showNewFolderForm && foldersError && <div className="webapp-error">{foldersError}</div>}
                     </div>
 
-                    {dictionaryError && (renderDictionarySaveLimitNotice(dictionaryError) || <div className="webapp-error">{dictionaryError}</div>)}
+                    {dictionaryError && (renderDictionarySaveLimitNotice(dictionaryError)
+            ? <PaidFeatureSpotlight>{renderDictionarySaveLimitNotice(dictionaryError)}</PaidFeatureSpotlight>
+            : <div className="webapp-error">{dictionaryError}</div>)}
                     {dictionarySaved && <div className="webapp-success">{dictionarySaved}</div>}
 
                     {dictionaryResult && (

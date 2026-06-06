@@ -4327,6 +4327,58 @@ body {
   font-size: 11px;
 }
 
+/* Spotlight: focus a paid-feature / limit notice over a blurred backdrop when
+   it first appears, so it can't be missed below the fold. Portaled to <body>. */
+.paid-feature-spotlight-inline {
+  /* plain block wrapper so scrollIntoView has a layout box; no visual change */
+  scroll-margin-top: 80px;
+  scroll-margin-bottom: 80px;
+}
+
+.paid-feature-spotlight-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(8, 11, 26, 0.52);
+  -webkit-backdrop-filter: blur(6px) saturate(118%);
+  backdrop-filter: blur(6px) saturate(118%);
+  animation: paidFeatureSpotlightFade 0.2s ease both;
+  cursor: pointer;
+}
+
+.paid-feature-spotlight-stage {
+  width: 100%;
+  max-width: 440px;
+  cursor: auto;
+  animation: paidFeatureSpotlightPop 0.26s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.paid-feature-spotlight-stage .paid-feature-card {
+  margin: 0;
+  box-shadow: 0 26px 70px rgba(0, 0, 0, 0.5);
+}
+
+@keyframes paidFeatureSpotlightFade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes paidFeatureSpotlightPop {
+  from { opacity: 0; transform: scale(0.94) translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .paid-feature-spotlight-overlay,
+  .paid-feature-spotlight-stage {
+    animation: none;
+  }
+}
+
 .paid-feature-card {
   display: grid;
   grid-template-columns: 46px minmax(0, 1fr);
