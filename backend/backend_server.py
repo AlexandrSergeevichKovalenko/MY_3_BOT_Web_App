@@ -904,9 +904,27 @@ TRANSLATION_FOCUS_POOL_PREWARM_FORECAST_TARGET_CAP = max(
 TRANSLATION_FOCUS_POOL_PREWARM_MAX_GENERATE_PER_BUCKET = max(1, min(16, int((os.getenv("TRANSLATION_FOCUS_POOL_PREWARM_MAX_GENERATE_PER_BUCKET") or "12").strip())))
 TRANSLATION_FOCUS_POOL_PREWARM_LEVELS = [
     str(item or "").strip().lower()
-    for item in str(os.getenv("TRANSLATION_FOCUS_POOL_PREWARM_LEVELS") or "b1,b2,c1").split(",")
+    for item in str(os.getenv("TRANSLATION_FOCUS_POOL_PREWARM_LEVELS") or "a2,b1,b2,c1,c2").split(",")
     if str(item or "").strip()
 ]
+# Rare levels: kept at a small always-present baseline (cheap), then raised by
+# the existing demand forecast only when learners were actually active on them.
+# Common levels (b1/b2/c1) use the full base target; rare levels (a1/a2/c2) use
+# a smaller baseline so we don't burn tokens pre-generating rarely-used buckets.
+TRANSLATION_FOCUS_POOL_RARE_LEVELS = {
+    str(item or "").strip().lower()
+    for item in str(os.getenv("TRANSLATION_FOCUS_POOL_RARE_LEVELS") or "a1,a2,c2").split(",")
+    if str(item or "").strip()
+}
+TRANSLATION_FOCUS_POOL_RARE_LEVEL_BASE_TARGET = max(
+    0,
+    min(48, int((os.getenv("TRANSLATION_FOCUS_POOL_RARE_LEVEL_BASE_TARGET") or "8").strip() or "8")),
+)
+TRANSLATION_FOCUS_POOL_RARE_LEVEL_LOW_WATERMARK = max(
+    0,
+    min(TRANSLATION_FOCUS_POOL_RARE_LEVEL_BASE_TARGET,
+        int((os.getenv("TRANSLATION_FOCUS_POOL_RARE_LEVEL_LOW_WATERMARK") or "6").strip() or "6")),
+)
 TRANSLATION_FOCUS_POOL_PREWARM_HOT_LEVEL_LIMIT = max(
     1,
     min(3, int((os.getenv("TRANSLATION_FOCUS_POOL_PREWARM_HOT_LEVEL_LIMIT") or "1").strip() or "1")),
@@ -18556,13 +18574,25 @@ def _build_translation_focus_pool_bucket_targets(
         bonus = 0
         if max_score > 0 and safe_bonus_cap > 0 and demand_score > 0:
             bonus = int(round((float(demand_score) / float(max_score)) * float(safe_bonus_cap)))
-        default_target = max(safe_base_target, safe_low_watermark) + max(0, bonus)
         focus_levels = [
             str(item or "").strip().lower()
             for item in list((focus or {}).get("_pool_levels") or normalized_levels)
             if str(item or "").strip()
         ]
         for level in focus_levels:
+            # Rare levels (a1/a2/c2) keep a small always-present baseline; common
+            # levels (b1/b2/c1) use the full base. The demand bonus + history
+            # signals below still raise rare levels when learners are active.
+            is_rare_level = level in TRANSLATION_FOCUS_POOL_RARE_LEVELS
+            level_base_target = (
+                int(TRANSLATION_FOCUS_POOL_RARE_LEVEL_BASE_TARGET)
+                if is_rare_level else int(safe_base_target)
+            )
+            level_low_watermark = (
+                int(TRANSLATION_FOCUS_POOL_RARE_LEVEL_LOW_WATERMARK)
+                if is_rare_level else int(safe_low_watermark)
+            )
+            default_target = max(level_base_target, level_low_watermark) + max(0, bonus)
             history = history_by_bucket.get((focus_key, level), {})
             readiness = readiness_by_bucket.get((focus_key, level), {})
             active_days = max(0, int(history.get("active_days") or 0))
@@ -18586,13 +18616,13 @@ def _build_translation_focus_pool_bucket_targets(
                 float(default_target) + (zero_ready_rate * 12.0) + (background_fill_rate * 10.0) + min(12.0, float(fill_underfilled + fill_failed)),
             )
             bucket_key = (focus_key, level)
-            low_watermark = safe_low_watermark
+            low_watermark = level_low_watermark
             target_ready = max(
                 int(low_watermark),
                 min(safe_forecast_cap, int(math.ceil(history_target))),
             )
             if zero_ready_rate >= 0.30 or background_fill_rate >= 0.45:
-                low_watermark = max(low_watermark, safe_low_watermark + 2)
+                low_watermark = max(low_watermark, level_low_watermark + 2)
             override = TRANSLATION_FOCUS_POOL_HOT_BUCKET_OVERRIDES.get(bucket_key) or {}
             if override:
                 low_watermark = max(low_watermark, int(override.get("min_ready") or 0))
