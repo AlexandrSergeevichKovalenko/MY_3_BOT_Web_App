@@ -9,7 +9,7 @@ import WeeklySummaryModal from './components/WeeklySummaryModal';
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
 import { buildWeeklySummaryHeroFacts, buildWeeklySummaryVisitConfig } from './utils/weeklySummary';
 import { detectAppMode } from './utils/appMode';
-import { ReaderAudioGaplessEngine, isWebAudioEngineEnabled } from './utils/readerAudioGaplessEngine';
+import { ReaderAudioGaplessEngine, isWebAudioEngineEnabled, getReaderAudioEnginePreference, isWebAudioSupported, READER_AUDIO_ENGINE_STORAGE_KEY } from './utils/readerAudioGaplessEngine';
 import {
   isOfflineCacheAvailable,
   saveVocabBatch,
@@ -5274,6 +5274,7 @@ function AppInner() {
   const [readerAudioPlayPosition, setReaderAudioPlayPosition] = useState(0);
   const [readerAudioVoice, setReaderAudioVoice] = useState('');
   const [readerAudioRate, setReaderAudioRate] = useState(1.0);
+  const [readerAudioEnginePref, setReaderAudioEnginePref] = useState(() => getReaderAudioEnginePreference());
   const [readerAudioPaused, setReaderAudioPaused] = useState(false);
   const [readerAudioCurrentPageCharOffset, setReaderAudioCurrentPageCharOffset] = useState(0);
   const audioElementRef = useRef(null);
@@ -7889,6 +7890,7 @@ function AppInner() {
   }, [initData, telegramApp, webappUser?.id]);
   const canViewEconomics = stableWebappUserId === '117649764';
   const canManageYoutubeTranscripts = stableWebappUserId === '117649764';
+  const canTestReaderAudioEngine = stableWebappUserId === '117649764';
   const currentLocalDateKey = getLocalDateKey();
   const flashcardsDailyTimerStorageKey = useMemo(() => {
     return `flashcards_daily_active_seconds_${stableWebappUserId}_${currentLocalDateKey}`;
@@ -23111,6 +23113,15 @@ function AppInner() {
     playReaderAudioPageWebAudioRef.current = playReaderAudioPageWebAudio;
   }, [playReaderAudioPageWebAudio]);
 
+  // Admin-only audio-engine switch. Persists the choice and stops any current
+  // playback so the next play uses the selected engine. Never auto-plays.
+  const applyReaderAudioEnginePref = useCallback((value) => {
+    const next = value === 'webaudio' ? 'webaudio' : 'legacy';
+    try { window.localStorage.setItem(READER_AUDIO_ENGINE_STORAGE_KEY, next); } catch (_e) { /* ignore */ }
+    try { stopReaderAudioPlay(); } catch (_e) { /* ignore */ }
+    setReaderAudioEnginePref(next);
+  }, [stopReaderAudioPlay]);
+
   // Apply rate changes live to the web engine (restart-at-position) and
   // re-queue the next window for the new tempo.
   useEffect(() => {
@@ -33577,6 +33588,10 @@ function AppInner() {
                   readerAudioPaused={readerAudioPaused}
                   readerAudioVoice={readerAudioVoice}           setReaderAudioVoice={setReaderAudioVoice}
                   readerAudioRate={readerAudioRate}             setReaderAudioRate={setReaderAudioRate}
+                  readerAudioEngineAdmin={canTestReaderAudioEngine}
+                  readerAudioEnginePref={readerAudioEnginePref}
+                  applyReaderAudioEnginePref={applyReaderAudioEnginePref}
+                  readerAudioEngineSupported={isWebAudioSupported()}
                   readerAudioStartWid={readerAudioStartWid}
                   readerAudioAwaitingWordTap={readerAudioAwaitingWordTap}
                   onReaderAudioPlayBtn={handleReaderAudioPlayBtn}

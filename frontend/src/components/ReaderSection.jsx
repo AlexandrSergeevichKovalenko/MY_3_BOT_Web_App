@@ -141,6 +141,10 @@ export default function ReaderSection(props) {
     setReaderAudioVoice = () => {},
     readerAudioRate = 1.0,
     setReaderAudioRate = () => {},
+    readerAudioEngineAdmin = false,
+    readerAudioEnginePref = 'legacy',
+    applyReaderAudioEnginePref = () => {},
+    readerAudioEngineSupported = false,
     readerAudioStartWid = null,
     readerAudioAwaitingWordTap = false,
     onReaderAudioPlayBtn = () => {},
@@ -1274,6 +1278,35 @@ export default function ReaderSection(props) {
                       ))}
                     </div>
                   </label>
+
+                  {/* Admin-only (test): audio playback engine. Hidden for everyone else. */}
+                  {readerAudioEngineAdmin && (
+                    <label className="webapp-field">
+                      <span>{tr('Движок аудио (тест)', 'Audio-Engine (Test)')}</span>
+                      <div className="reader-theme-seg">
+                        {[
+                          { k: 'legacy', l: tr('Классический', 'Klassisch') },
+                          { k: 'webaudio', l: tr('Gapless', 'Gapless') },
+                        ].map((opt) => (
+                          <button
+                            key={opt.k}
+                            type="button"
+                            className={`reader-theme-seg-btn ${readerAudioEnginePref === opt.k ? 'is-active' : ''}`}
+                            disabled={opt.k === 'webaudio' && !readerAudioEngineSupported}
+                            onClick={() => applyReaderAudioEnginePref(opt.k)}
+                          >
+                            {opt.l}
+                          </button>
+                        ))}
+                      </div>
+                      <span className="webapp-muted" style={{ fontSize: 11, marginTop: 4 }}>
+                        {readerAudioEngineSupported
+                          ? tr('Gapless убирает паузу при перелистывании. Применяется со следующего запуска аудио.',
+                               'Gapless entfernt die Pause beim Seitenwechsel. Wirkt ab dem naechsten Audiostart.')
+                          : tr('Web Audio не поддерживается в этом браузере.', 'Web Audio wird in diesem Browser nicht unterstuetzt.')}
+                      </span>
+                    </label>
+                  )}
 
                   <label className="webapp-field">
                     <span>{tr('Размер шрифта', 'Schriftgroesse')}</span>
