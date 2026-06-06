@@ -1,9 +1,50 @@
 import json
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import backend.backend_server as server
+
+
+class _FakeShortcutSplitMessage:
+    def __init__(self, content: str):
+        self.content = content
+
+
+class _FakeShortcutSplitChoice:
+    def __init__(self, content: str):
+        self.message = _FakeShortcutSplitMessage(content)
+
+
+class _FakeShortcutSplitResponse:
+    def __init__(self, content: str):
+        self.choices = [_FakeShortcutSplitChoice(content)]
+
+
+class _FakeShortcutSplitCompletions:
+    def __init__(self, outcomes):
+        self.outcomes = list(outcomes)
+        self.models: list[str] = []
+
+    async def create(self, **kwargs):
+        self.models.append(str(kwargs.get("model") or ""))
+        if not self.outcomes:
+            raise RuntimeError("no fake outcome configured")
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return _FakeShortcutSplitResponse(str(outcome))
+
+
+class _FakeShortcutSplitChat:
+    def __init__(self, completions):
+        self.completions = completions
+
+
+class _FakeShortcutSplitClient:
+    def __init__(self, outcomes):
+        self.completions = _FakeShortcutSplitCompletions(outcomes)
+        self.chat = _FakeShortcutSplitChat(self.completions)
 
 
 class _FakeRedis:
@@ -75,6 +116,108 @@ class ShortcutLookupSplitTests(unittest.TestCase):
                 ("Hat mich gefreut!", "Hat mich gefreut!"),
                 ("Man sieht sich!", "Man sieht sich!"),
             ],
+        )
+
+    def test_shortcut_split_uses_mini_model_first(self):
+        raw = json.dumps({"blocks": [{"term": "Haus", "content": "Haus"}]}, ensure_ascii=False)
+        fake_client = _FakeShortcutSplitClient([raw])
+
+        with patch("backend.openai_manager.client", fake_client), \
+             patch.object(server, "_log_flow_observation") as log_mock, \
+             patch.dict(os.environ, {
+                 "LLM_TASK_MODEL_SHORTCUT_SPLIT": "",
+                 "OPENAI_TASK_MODEL_SHORTCUT_SPLIT": "",
+                 "LLM_TASK_MODEL_SHORTCUT_SPLIT_FALLBACK": "",
+                 "OPENAI_TASK_MODEL_SHORTCUT_SPLIT_FALLBACK": "",
+             }, clear=False):
+            blocks = server._shortcut_split_blocks("Haus", origin="shortcut", user_id=123, request_key="rk1")
+
+        self.assertEqual(blocks, [("Haus", "Haus")])
+        self.assertEqual(fake_client.completions.models, ["gpt-4.1-mini"])
+        log_mock.assert_any_call(
+            "shortcut_split",
+            "split_completed",
+            origin="shortcut",
+            user_id=123,
+            request_id=None,
+            request_key="rk1",
+            model="gpt-4.1-mini",
+            attempt_role="primary",
+            final_status="success",
+            parse_succeeded=True,
+            blocks_count=1,
+            input_length=4,
+            output_length=ANY,
+            fallback_reason=None,
+            duration_ms=ANY,
+        )
+
+    def test_shortcut_split_fallback_uses_full_gpt41_after_invalid_primary(self):
+        invalid = json.dumps({"items": []}, ensure_ascii=False)
+        valid = json.dumps({"blocks": [{"term": "laufen", "content": "laufen"}]}, ensure_ascii=False)
+        fake_client = _FakeShortcutSplitClient([invalid, valid])
+
+        with patch("backend.openai_manager.client", fake_client), \
+             patch.object(server, "_log_flow_observation") as log_mock, \
+             patch.dict(os.environ, {
+                 "LLM_TASK_MODEL_SHORTCUT_SPLIT": "",
+                 "OPENAI_TASK_MODEL_SHORTCUT_SPLIT": "",
+                 "LLM_TASK_MODEL_SHORTCUT_SPLIT_FALLBACK": "",
+                 "OPENAI_TASK_MODEL_SHORTCUT_SPLIT_FALLBACK": "",
+             }, clear=False):
+            blocks = server._shortcut_split_blocks("laufen", origin="forwarded", user_id=456, request_key="rk2")
+
+        self.assertEqual(blocks, [("laufen", "laufen")])
+        self.assertEqual(fake_client.completions.models, ["gpt-4.1-mini", "gpt-4.1-2025-04-14"])
+        log_mock.assert_any_call(
+            "shortcut_split",
+            "split_completed",
+            origin="forwarded",
+            user_id=456,
+            request_id=None,
+            request_key="rk2",
+            model="gpt-4.1-2025-04-14",
+            attempt_role="fallback",
+            final_status="success",
+            parse_succeeded=True,
+            blocks_count=1,
+            input_length=6,
+            output_length=ANY,
+            fallback_reason="primary_invalid_json_or_parse",
+            duration_ms=ANY,
+        )
+
+    def test_shortcut_split_final_mechanical_fallback_still_works(self):
+        fake_client = _FakeShortcutSplitClient([RuntimeError("mini down"), RuntimeError("full down")])
+
+        with patch("backend.openai_manager.client", fake_client), \
+             patch.object(server, "_log_flow_observation") as log_mock, \
+             patch.dict(os.environ, {
+                 "LLM_TASK_MODEL_SHORTCUT_SPLIT": "",
+                 "OPENAI_TASK_MODEL_SHORTCUT_SPLIT": "",
+                 "LLM_TASK_MODEL_SHORTCUT_SPLIT_FALLBACK": "",
+                 "OPENAI_TASK_MODEL_SHORTCUT_SPLIT_FALLBACK": "",
+             }, clear=False):
+            blocks = server._shortcut_split_blocks("Haus\nlaufen", origin="shortcut", user_id=789, request_key="rk3")
+
+        self.assertEqual(blocks, [("Haus", "Haus"), ("laufen", "laufen")])
+        self.assertEqual(fake_client.completions.models, ["gpt-4.1-mini", "gpt-4.1-2025-04-14"])
+        log_mock.assert_any_call(
+            "shortcut_split",
+            "split_completed",
+            origin="shortcut",
+            user_id=789,
+            request_id=None,
+            request_key="rk3",
+            model=None,
+            attempt_role="mechanical",
+            final_status="success",
+            parse_succeeded=False,
+            blocks_count=2,
+            input_length=11,
+            output_length=None,
+            fallback_reason="fallback_exception:RuntimeError",
+            duration_ms=0,
         )
 
     def test_validate_coverage_allows_short_clean_units_from_long_noisy_text(self):
@@ -188,7 +331,7 @@ class ShortcutLookupSplitTests(unittest.TestCase):
         payload = response.get_json()
         self.assertTrue(payload["accepted"])
         self.assertEqual(payload["job_id"], "job-123")
-        enqueue_mock.assert_called_once_with(user_id=117649764, text="noisy input")
+        enqueue_mock.assert_called_once_with(user_id=117649764, text="noisy input", origin="shortcut", request_id=ANY)
 
 
 if __name__ == "__main__":

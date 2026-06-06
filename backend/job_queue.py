@@ -1809,6 +1809,8 @@ def enqueue_shortcut_lookup_job(
     user_id: int,
     text: str,
     request_key: str | None = None,
+    origin: str = "unknown",
+    request_id: str | None = None,
 ) -> str | None:
     if not can_enqueue_background_jobs():
         raise RuntimeError("background_jobs_unavailable")
@@ -1827,6 +1829,8 @@ def enqueue_shortcut_lookup_job(
             user_id=safe_user_id,
             text=normalized_text,
             request_key=normalized_request_key,
+            origin=str(origin or "unknown").strip().lower() or "unknown",
+            request_id=str(request_id or "").strip() or None,
         )
         return str(getattr(message, "message_id", None) or "").strip() or None
     except Exception:

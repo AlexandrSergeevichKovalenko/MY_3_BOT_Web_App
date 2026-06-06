@@ -36082,13 +36082,75 @@ def _shortcut_extract_blocks_from_json(
     return result
 
 
-def _shortcut_split_blocks(text: str) -> list[tuple[str, str]]:
+def _shortcut_split_model(task_name: str, default_model: str) -> str:
+    try:
+        from backend.openai_manager import _get_task_gateway_model
+
+        return _get_task_gateway_model(task_name) or default_model
+    except Exception:
+        logging.debug("shortcut split model resolution failed task=%s", task_name, exc_info=True)
+    env_suffix = re.sub(r"[^a-z0-9]+", "_", str(task_name or "").strip().lower()).strip("_").upper()
+    return (
+        str(
+            os.getenv(f"LLM_TASK_MODEL_{env_suffix}")
+            or os.getenv(f"OPENAI_TASK_MODEL_{env_suffix}")
+            or default_model
+        ).strip()
+        or default_model
+    )
+
+
+def _log_shortcut_split_event(
+    *,
+    origin: str,
+    user_id: int | None,
+    request_id: str | None,
+    request_key: str | None,
+    model: str | None,
+    attempt_role: str,
+    final_status: str,
+    parse_succeeded: bool,
+    blocks_count: int,
+    input_length: int,
+    output_length: int | None = None,
+    fallback_reason: str | None = None,
+    duration_ms: int = 0,
+) -> None:
+    payload = {
+        "origin": str(origin or "unknown").strip().lower() or "unknown",
+        "user_id": int(user_id) if user_id is not None and int(user_id or 0) > 0 else None,
+        "request_id": str(request_id or "").strip() or None,
+        "request_key": str(request_key or "").strip() or None,
+        "model": str(model or "").strip() or None,
+        "attempt_role": str(attempt_role or "").strip().lower() or "unknown",
+        "final_status": str(final_status or "").strip().lower() or "unknown",
+        "parse_succeeded": bool(parse_succeeded),
+        "blocks_count": int(blocks_count or 0),
+        "input_length": int(input_length or 0),
+        "output_length": int(output_length or 0) if output_length is not None else None,
+        "fallback_reason": str(fallback_reason or "").strip() or None,
+        "duration_ms": int(duration_ms or 0),
+    }
+    try:
+        _log_flow_observation("shortcut_split", "split_completed", **payload)
+    except Exception:
+        logging.info("shortcut_split telemetry %s", json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+
+def _shortcut_split_blocks(
+    text: str,
+    *,
+    origin: str = "unknown",
+    user_id: int | None = None,
+    request_id: str | None = None,
+    request_key: str | None = None,
+) -> list[tuple[str, str]]:
     """
     Split text into vocabulary learning units using LLM linguistic reasoning.
     Returns list of (term, content) tuples — both determined by the LLM, no mechanics.
 
-    Attempt 1 — gpt-4.1: purpose-aware prompt, 1M context, handles any language mix.
-    Attempt 2 — gpt-4o: 4-step structured analysis with different framing.
+    Attempt 1 — configurable mini model: purpose-aware prompt, low-cost structured extraction.
+    Attempt 2 — configurable full gpt-4.1 fallback: stronger recovery path.
     Last resort  — whole text as one block. Content is never lost or mangled.
     """
     from backend.openai_manager import client as _openai_async_client
@@ -36096,6 +36158,9 @@ def _shortcut_split_blocks(text: str) -> list[tuple[str, str]]:
     # Pre-compute input lines count — used to detect under-split LLM results
     input_lines = [line.strip() for line in text.splitlines() if line.strip()]
     multiline = len(input_lines) >= 2
+    input_length = len(text or "")
+    primary_model = _shortcut_split_model("shortcut_split", "gpt-4.1-mini")
+    fallback_model = _shortcut_split_model("shortcut_split_fallback", "gpt-4.1-2025-04-14")
 
     def _line_split_fallback() -> list[tuple[str, str]]:
         """Per-line split with basic normalization — no LLM, guaranteed N-in N-out."""
@@ -36119,33 +36184,148 @@ def _shortcut_split_blocks(text: str) -> list[tuple[str, str]]:
         )
         return response.choices[0].message.content or "{}"
 
-    # Attempt 1: gpt-4.1 — primary model
-    try:
-        raw = asyncio.run(_call("gpt-4.1-2025-04-14", _SHORTCUT_SPLIT_PROMPT_PRIMARY, timeout=40))
-        blocks = _shortcut_extract_blocks_from_json(raw, text)
-        if blocks:
-            logging.info("shortcut split: gpt-4.1 succeeded, %d blocks", len(blocks))
-            return blocks
-        logging.warning("shortcut split: gpt-4.1 returned no valid blocks, trying gpt-4o")
-    except Exception as exc:
-        logging.warning("shortcut split: gpt-4.1 failed (%s), trying gpt-4o", exc)
+    fallback_reason = ""
 
-    # Attempt 2: gpt-4o — different architecture, 4-step structured reasoning
+    # Attempt 1: mini model — primary model
     try:
-        raw = asyncio.run(_call("gpt-4o", _SHORTCUT_SPLIT_PROMPT_FALLBACK, timeout=45))
+        started_at = time.perf_counter()
+        raw = asyncio.run(_call(primary_model, _SHORTCUT_SPLIT_PROMPT_PRIMARY, timeout=40))
         blocks = _shortcut_extract_blocks_from_json(raw, text)
         if blocks:
-            logging.info("shortcut split: gpt-4o succeeded, %d blocks", len(blocks))
+            duration_ms = int((time.perf_counter() - started_at) * 1000)
+            _log_shortcut_split_event(
+                origin=origin,
+                user_id=user_id,
+                request_id=request_id,
+                request_key=request_key,
+                model=primary_model,
+                attempt_role="primary",
+                final_status="success",
+                parse_succeeded=True,
+                blocks_count=len(blocks),
+                input_length=input_length,
+                output_length=len(raw),
+                duration_ms=duration_ms,
+            )
+            logging.info("shortcut split: primary model succeeded model=%s blocks=%d", primary_model, len(blocks))
             return blocks
-        logging.warning("shortcut split: gpt-4o returned no valid blocks, using line-split fallback")
+        fallback_reason = "primary_invalid_json_or_parse"
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        _log_shortcut_split_event(
+            origin=origin,
+            user_id=user_id,
+            request_id=request_id,
+            request_key=request_key,
+            model=primary_model,
+            attempt_role="primary",
+            final_status="parse_failed",
+            parse_succeeded=False,
+            blocks_count=0,
+            input_length=input_length,
+            output_length=len(raw),
+            fallback_reason=fallback_reason,
+            duration_ms=duration_ms,
+        )
+        logging.warning("shortcut split: primary model returned no valid blocks model=%s, trying fallback", primary_model)
     except Exception as exc:
-        logging.warning("shortcut split: gpt-4o failed (%s), using line-split fallback", exc)
+        fallback_reason = f"primary_exception:{type(exc).__name__}"
+        _log_shortcut_split_event(
+            origin=origin,
+            user_id=user_id,
+            request_id=request_id,
+            request_key=request_key,
+            model=primary_model,
+            attempt_role="primary",
+            final_status="exception",
+            parse_succeeded=False,
+            blocks_count=0,
+            input_length=input_length,
+            output_length=None,
+            fallback_reason=fallback_reason,
+            duration_ms=0,
+        )
+        logging.warning("shortcut split: primary model failed model=%s (%s), trying fallback", primary_model, exc)
+
+    # Attempt 2: full gpt-4.1 fallback model
+    try:
+        started_at = time.perf_counter()
+        raw = asyncio.run(_call(fallback_model, _SHORTCUT_SPLIT_PROMPT_FALLBACK, timeout=45))
+        blocks = _shortcut_extract_blocks_from_json(raw, text)
+        if blocks:
+            duration_ms = int((time.perf_counter() - started_at) * 1000)
+            _log_shortcut_split_event(
+                origin=origin,
+                user_id=user_id,
+                request_id=request_id,
+                request_key=request_key,
+                model=fallback_model,
+                attempt_role="fallback",
+                final_status="success",
+                parse_succeeded=True,
+                blocks_count=len(blocks),
+                input_length=input_length,
+                output_length=len(raw),
+                fallback_reason=fallback_reason,
+                duration_ms=duration_ms,
+            )
+            logging.info("shortcut split: fallback model succeeded model=%s blocks=%d", fallback_model, len(blocks))
+            return blocks
+        fallback_reason = "fallback_invalid_json_or_parse"
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        _log_shortcut_split_event(
+            origin=origin,
+            user_id=user_id,
+            request_id=request_id,
+            request_key=request_key,
+            model=fallback_model,
+            attempt_role="fallback",
+            final_status="parse_failed",
+            parse_succeeded=False,
+            blocks_count=0,
+            input_length=input_length,
+            output_length=len(raw),
+            fallback_reason=fallback_reason,
+            duration_ms=duration_ms,
+        )
+        logging.warning("shortcut split: fallback model returned no valid blocks model=%s, using line-split fallback", fallback_model)
+    except Exception as exc:
+        fallback_reason = f"fallback_exception:{type(exc).__name__}"
+        _log_shortcut_split_event(
+            origin=origin,
+            user_id=user_id,
+            request_id=request_id,
+            request_key=request_key,
+            model=fallback_model,
+            attempt_role="fallback",
+            final_status="exception",
+            parse_succeeded=False,
+            blocks_count=0,
+            input_length=input_length,
+            output_length=None,
+            fallback_reason=fallback_reason,
+            duration_ms=0,
+        )
+        logging.warning("shortcut split: fallback model failed model=%s (%s), using line-split fallback", fallback_model, exc)
 
     # Last resort: per-line split for multi-line input, single block for single-line
     logging.warning("shortcut split: both models failed, using last-resort split (%d input lines)", len(input_lines))
-    if multiline:
-        return _line_split_fallback()
-    return [(text.strip(), text.strip())]
+    blocks = _line_split_fallback() if multiline else [(text.strip(), text.strip())]
+    _log_shortcut_split_event(
+        origin=origin,
+        user_id=user_id,
+        request_id=request_id,
+        request_key=request_key,
+        model=None,
+        attempt_role="mechanical",
+        final_status="success",
+        parse_succeeded=False,
+        blocks_count=len(blocks),
+        input_length=input_length,
+        output_length=None,
+        fallback_reason=fallback_reason or "all_llm_attempts_failed",
+        duration_ms=0,
+    )
+    return blocks
 
 
 def _build_shortcut_onboarding_text(*, pairing_code: str, expires_at: datetime | None = None) -> str:
@@ -36327,6 +36507,8 @@ def _shortcut_lookup_from_install_token(*, install_token: str, text: str, reques
     request_key = _start_shortcut_lookup_enqueue_runner(
         user_id=user_id,
         text=text,
+        origin="shortcut",
+        request_id=request_id,
     )
     _log_flow_observation(
         "shortcut_lookup",
@@ -36413,13 +36595,26 @@ def _shortcut_append_pending_to_redis(user_id: int, request_key: str, lookup_tex
         )
 
 
-def _run_shortcut_lookup_delivery(*, user_id: int, text: str) -> int:
+def _run_shortcut_lookup_delivery(
+    *,
+    user_id: int,
+    text: str,
+    origin: str = "unknown",
+    request_id: str | None = None,
+    request_key: str | None = None,
+) -> int:
     normalized_text = str(text or "").strip()
     safe_user_id = int(user_id or 0)
     if safe_user_id <= 0 or not normalized_text:
         return 0
 
-    blocks = _shortcut_split_blocks(normalized_text)
+    blocks = _shortcut_split_blocks(
+        normalized_text,
+        origin=origin,
+        user_id=safe_user_id,
+        request_id=request_id,
+        request_key=request_key,
+    )
     if not blocks:
         return 0
 
@@ -36455,7 +36650,13 @@ def _run_shortcut_lookup_delivery(*, user_id: int, text: str) -> int:
     return sent
 
 
-def _start_shortcut_lookup_enqueue_runner(*, user_id: int, text: str) -> str:
+def _start_shortcut_lookup_enqueue_runner(
+    *,
+    user_id: int,
+    text: str,
+    origin: str = "unknown",
+    request_id: str | None = None,
+) -> str:
     safe_user_id = int(user_id or 0)
     normalized_text = str(text or "").strip()
     request_key = hashlib.sha1(
@@ -36468,6 +36669,8 @@ def _start_shortcut_lookup_enqueue_runner(*, user_id: int, text: str) -> str:
                 user_id=safe_user_id,
                 text=normalized_text,
                 request_key=request_key,
+                origin=origin,
+                request_id=request_id,
             )
             logging.info(
                 "shortcut_lookup enqueue accepted user_id=%s request_key=%s",

@@ -1231,6 +1231,8 @@ def run_shortcut_lookup_job(
     user_id: int,
     text: str,
     request_key: str | None = None,
+    origin: str = "unknown",
+    request_id: str | None = None,
 ) -> None:
     safe_user_id = int(user_id or 0)
     normalized_text = str(text or "").strip()
@@ -1250,6 +1252,9 @@ def run_shortcut_lookup_job(
         sent = _run_shortcut_lookup_delivery(
             user_id=safe_user_id,
             text=normalized_text,
+            origin=str(origin or "unknown").strip().lower() or "unknown",
+            request_id=str(request_id or "").strip() or None,
+            request_key=normalized_request_key,
         )
         logging.info(
             "shortcut_lookup_job completed user_id=%s request_key=%s sent=%s total_ms=%s",

@@ -130,7 +130,9 @@
       "Bash(grep -c \"^import logging\\\\|^import logging$\" /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/backend/translation_workflow.py)",
       "Bash(PYTHONPATH=. timeout 580 python3 -c ' *)",
       "Bash(PYTHONPATH=. nohup python3 -c ' *)",
-      "Bash(echo \"started PID $!\")"
+      "Bash(echo \"started PID $!\")",
+      "Bash(sed -n '6370,6385p' /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/frontend/src/App.css)",
+      "Bash(sed -n '17915,17930p' /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/frontend/src/App.css)"
     ]
   }
 }

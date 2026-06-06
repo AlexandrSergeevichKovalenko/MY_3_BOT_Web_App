@@ -4524,7 +4524,7 @@ async def handle_forwarded_message_lookup(update: Update, context: CallbackConte
         return
     user_id = int(update.message.from_user.id)
     await update.message.reply_text("🔍", quote=True)
-    _start_shortcut_lookup_enqueue_runner(user_id=user_id, text=text)
+    _start_shortcut_lookup_enqueue_runner(user_id=user_id, text=text, origin="forwarded")
 
 
 _GERMAN_COMMON_WORDS_RE = re.compile(
