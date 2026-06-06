@@ -34259,6 +34259,66 @@ def _shortcut_build_pair_keyboard_rows(request_key: str) -> list[list[dict]]:
     return rows
 
 
+_SHORTCUT_PENDING_REDIS_TTL = 28800  # 8 hours
+
+
+def _shortcut_pending_redis_key(user_id: int) -> str:
+    return f"dict_pending_shortcut:{user_id}"
+
+
+def _shortcut_pending_hash_redis_key(user_id: int) -> str:
+    return f"dict_pending_user_hash:{user_id}"
+
+
+def _shortcut_append_pending_to_redis(user_id: int, request_key: str, lookup_text: str) -> None:
+    try:
+        from backend.job_queue import get_redis_client
+
+        client = get_redis_client()
+        if client is None:
+            logging.warning(
+                "shortcut_pending: redis client is None, cannot store pending user_id=%s key=%s",
+                user_id,
+                request_key,
+            )
+            return
+
+        payload = {
+            "key": request_key,
+            "user_id": int(user_id),
+            "text": str(lookup_text or "").strip(),
+            "chat_id": int(user_id),
+            "message_id": None,
+            "source": "shortcut_delivery",
+        }
+        hash_key = _shortcut_pending_hash_redis_key(user_id)
+        client.hset(hash_key, request_key, json.dumps(payload, ensure_ascii=False))
+        client.expire(hash_key, _SHORTCUT_PENDING_REDIS_TTL)
+
+        list_key = _shortcut_pending_redis_key(user_id)
+        raw = client.get(list_key)
+        existing = json.loads(raw) if raw else []
+        if not isinstance(existing, list):
+            existing = []
+        existing.append({"key": request_key, "user_id": int(user_id), "text": str(lookup_text or "").strip()})
+        client.setex(list_key, _SHORTCUT_PENDING_REDIS_TTL, json.dumps(existing, ensure_ascii=False))
+        logging.info(
+            "shortcut_pending: stored user_id=%s key=%s word=%r total_pending=%d redis_key=%s",
+            user_id,
+            request_key,
+            str(lookup_text or "")[:30],
+            len(existing),
+            list_key,
+        )
+    except Exception:
+        logging.warning(
+            "shortcut_pending: redis append FAILED user_id=%s key=%s",
+            user_id,
+            request_key,
+            exc_info=True,
+        )
+
+
 def _run_shortcut_lookup_delivery(*, user_id: int, text: str) -> int:
     normalized_text = str(text or "").strip()
     safe_user_id = int(user_id or 0)
@@ -34284,6 +34344,7 @@ def _run_shortcut_lookup_delivery(*, user_id: int, text: str) -> int:
         message_text = f"Запрос: {lookup_text}\n\nВыберите языковую пару для перевода:"
 
         try:
+            _shortcut_append_pending_to_redis(safe_user_id, request_key, lookup_text)
             _send_private_message(
                 safe_user_id,
                 message_text,
