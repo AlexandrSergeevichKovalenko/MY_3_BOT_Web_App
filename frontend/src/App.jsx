@@ -9,6 +9,7 @@ import WeeklySummaryModal from './components/WeeklySummaryModal';
 import { createTranslator, getPreferredLanguage, normalizeLanguage } from './i18n';
 import { buildWeeklySummaryHeroFacts, buildWeeklySummaryVisitConfig } from './utils/weeklySummary';
 import { detectAppMode } from './utils/appMode';
+import { ReaderAudioGaplessEngine, isWebAudioEngineEnabled } from './utils/readerAudioGaplessEngine';
 import {
   isOfflineCacheAvailable,
   saveVocabBatch,
@@ -5283,6 +5284,12 @@ function AppInner() {
   const readerEpubRelocationSaveTimeoutRef = useRef(null);
   const readerEpubLoadTokenRef = useRef(0);
   const audioRafRef = useRef(0);
+  // Web Audio gapless engine (active only when the 'webaudio' flag is on).
+  const readerAudioWebEngineRef = useRef(null);
+  const readerAudioWebRafRef = useRef(0);
+  const readerAudioWebActiveRef = useRef(false);
+  const readerAudioWebClipsRef = useRef(new Map()); // clipKey -> { window, data, segments }
+  const playReaderAudioPageWebAudioRef = useRef(null);
   // Ping-pong audio elements: activeEl plays, bufEl preloads next page.
   // Swap on seamless page transition to avoid the load() latency on iOS.
   const readerAudioActiveElRef = useRef(null); // lazily set to audioElementRef.current
@@ -22397,6 +22404,17 @@ function AppInner() {
       return;
     }
     const startWid = startWidOverride !== undefined ? startWidOverride : (readerAudioStartWid || null);
+    // Gapless Web Audio path (feature-flagged). When enabled, delegate to the
+    // standalone engine path and skip the legacy <audio> ping-pong entirely.
+    if (isWebAudioEngineEnabled() && playReaderAudioPageWebAudioRef.current) {
+      try {
+        await playReaderAudioPageWebAudioRef.current(page, startWid, charStartOverride);
+        return;
+      } catch (err) {
+        console.warn('[ReaderAudio] web-audio path failed, falling back to legacy:', err?.message || err);
+        // fall through to legacy on hard failure
+      }
+    }
     const requestToken = readerAudioRequestTokenRef.current + 1;
     readerAudioRequestTokenRef.current = requestToken;
     if (readerAudioPrefetchTimeoutRef.current) {
@@ -22765,12 +22783,20 @@ function AppInner() {
   ]);
 
   const pauseReaderAudioPlay = useCallback(() => {
-    (readerAudioActiveElRef.current || audioElementRef.current)?.pause();
+    if (readerAudioWebActiveRef.current && readerAudioWebEngineRef.current) {
+      readerAudioWebEngineRef.current.pause();
+    } else {
+      (readerAudioActiveElRef.current || audioElementRef.current)?.pause();
+    }
     setReaderAudioPaused(true);
   }, []);
 
   const resumeReaderAudioPlay = useCallback(() => {
-    (readerAudioActiveElRef.current || audioElementRef.current)?.play().catch(() => {});
+    if (readerAudioWebActiveRef.current && readerAudioWebEngineRef.current) {
+      readerAudioWebEngineRef.current.resume();
+    } else {
+      (readerAudioActiveElRef.current || audioElementRef.current)?.play().catch(() => {});
+    }
     setReaderAudioPaused(false);
   }, []);
 
@@ -22815,6 +22841,15 @@ function AppInner() {
       window.clearTimeout(readerAudioPrefetchTimeoutRef.current);
       readerAudioPrefetchTimeoutRef.current = null;
     }
+    // Web Audio engine teardown (no-op when on the legacy path).
+    if (readerAudioWebRafRef.current) {
+      cancelAnimationFrame(readerAudioWebRafRef.current);
+      readerAudioWebRafRef.current = 0;
+    }
+    if (readerAudioWebEngineRef.current) {
+      try { readerAudioWebEngineRef.current.stop(); } catch (_e) { /* ignore */ }
+    }
+    readerAudioWebActiveRef.current = false;
     // Stop both audio elements regardless of current active/buf assignment
     if (audioElementRef.current) {
       audioElementRef.current.pause();
@@ -22845,6 +22880,253 @@ function AppInner() {
     setReaderAudioAwaitingWordTap(false);
   }, []);
 
+  // ─── Web Audio (gapless) playback path ──────────────────────────────────
+  // Standalone path used only when the 'webaudio' flag is on. Reuses the same
+  // backend audio endpoint + the same React state (readerAudioPlayData,
+  // readerAudioPlayPosition, readerAudioCurrentPageCharOffset, readerCurrentPage)
+  // so word highlighting and page sync work unchanged. Playback + the gapless
+  // seam are handled by ReaderAudioGaplessEngine.
+  const playReaderAudioPageWebAudio = useCallback(async (page, startWid, charStartOverride) => {
+    const webKey = (targetPage, targetVoice, targetRate, targetText) => {
+      const raw = `${String(readerDocumentId || '')}|${String(targetPage || '')}|${String(targetVoice || '')}|${String(targetRate || '')}|${String(targetText || '')}`;
+      let hash = 0;
+      for (let i = 0; i < raw.length; i += 1) hash = ((hash << 5) - hash + raw.charCodeAt(i)) | 0;
+      return `${String(readerDocumentId || 'doc')}:${String(targetPage || '')}:${String(targetVoice || '')}:${String(targetRate || '')}:${raw.length}:${hash}`;
+    };
+    const fetchWindowData = async (win, voice, rate) => {
+      const key = webKey(win.startPage, voice, rate, win.combinedText);
+      const cached = readerAudioPageCacheRef.current.get(key);
+      if (cached?.audio_url) return { key, data: cached };
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        const resp = await fetch('/api/webapp/reader/audio/page', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            initData,
+            document_id: readerDocumentId,
+            page: win.startPage,
+            voice,
+            rate,
+            page_text: win.combinedText,
+            prefetch_only: false,
+          }),
+        });
+        const payload = await resp.json().catch(() => ({}));
+        if (!resp.ok && resp.status !== 202) {
+          if (String(payload?.error_code || '').trim() === 'reader_audio_premium_required') {
+            openReaderAudioPremiumPaywall();
+            return null;
+          }
+          throw new Error(payload.error || `HTTP ${resp.status}`);
+        }
+        const status = String(payload?.status || '').trim().toLowerCase();
+        if (status === 'failed') throw new Error(payload.error || 'audio generation failed');
+        if (status === 'skipped') return null;
+        if (status === 'pending') {
+          await new Promise((r) => window.setTimeout(r, Math.max(250, Number(payload?.retry_after_ms || 1000))));
+          continue;
+        }
+        if (payload?.audio_url) {
+          readerAudioPageCacheRef.current.set(key, payload);
+          return { key, data: payload };
+        }
+      }
+      throw new Error('audio generation timed out');
+    };
+    const buildSegments = (win, data) => win.segments.map((segment) => {
+      const words = (data.word_timings || []).filter((w) => {
+        if (w?.char_start == null) return false;
+        const cs = Number(w.char_start);
+        return cs >= segment.charStart && cs < segment.charEnd;
+      });
+      return {
+        ...segment,
+        startMs: words[0]?.start_ms ?? null,
+        endMs: words[words.length - 1]?.end_ms ?? null,
+      };
+    });
+    const offsetForCharStart = (data, absChar) => {
+      if (absChar == null) return 0;
+      const w = (data.word_timings || []).find((x) => x?.char_start != null && Number(x.char_start) >= Number(absChar));
+      return w ? Math.max(0, Number(w.start_ms || 0) / 1000) : 0;
+    };
+
+    const voice = readerAudioVoice || '';
+    const rate = readerAudioRate || 1;
+    const win = buildReaderAudioWindow(page);
+    if (!win?.combinedText) return;
+
+    // Engine + context (this runs inside a user-gesture-initiated call chain).
+    if (!readerAudioWebEngineRef.current) {
+      readerAudioWebEngineRef.current = new ReaderAudioGaplessEngine({
+        onActiveClipChange: (newKey) => advanceToClipRef.current?.(newKey),
+        onEnded: () => stopReaderAudioPlay(),
+        onError: (e) => console.warn('[ReaderAudio] engine error:', e?.message || e),
+      });
+    }
+    const engine = readerAudioWebEngineRef.current;
+
+    setReaderAudioPlayLoading(true);
+    setReaderAudioPlayError('');
+    try {
+      await engine.ensureContext();
+      const { key, data } = (await fetchWindowData(win, voice, rate)) || {};
+      if (!data?.audio_url) { setReaderAudioPlayLoading(false); return; }
+      const segments = buildSegments(win, data);
+      readerAudioWebClipsRef.current.set(key, { window: win, data, segments });
+      await engine.loadClip(key, data.audio_url);
+
+      // Compute start offset from a tapped word / char (start page = first segment).
+      let absChar = null;
+      if (charStartOverride != null) absChar = Number(charStartOverride);
+      else if (startWid != null) {
+        const pageLocal = readerAudioWidToCharStart.get(String(startWid));
+        if (pageLocal != null) absChar = Number(pageLocal);
+      }
+      const offsetSec = offsetForCharStart(data, absChar);
+
+      // Prime shared state so highlight + page UI work.
+      readerAudioWebActiveRef.current = true;
+      readerAudioWindowMetaRef.current = { ...win, segments };
+      readerAudioPlayingForPageRef.current = win.startPage;
+      readerCurrentPageRef.current = win.startPage;
+      setReaderCurrentPage(win.startPage);
+      readerAudioCurrentPageCharOffsetRef.current = win.segments[0]?.charStart || 0;
+      setReaderAudioCurrentPageCharOffset(win.segments[0]?.charStart || 0);
+      setReaderAudioPlayData(data);
+      setReaderAudioPlayPosition(offsetSec * 1000);
+      setReaderAudioPaused(false);
+      setReaderAudioPlayActive(true);
+      setReaderAudioPlayLoading(false);
+
+      await engine.start(key, { offsetSec, rate });
+      startWebRafRef.current?.();
+      prefetchNextWindowRef.current?.(win, voice, rate);
+    } catch (err) {
+      setReaderAudioPlayLoading(false);
+      throw err;
+    }
+  }, [
+    buildReaderAudioWindow, initData, openReaderAudioPremiumPaywall, readerAudioRate,
+    readerAudioVoice, readerAudioWidToCharStart, readerDocumentId, stopReaderAudioPlay,
+  ]);
+
+  // Refs to break ordering cycles between the web-audio helpers.
+  const advanceToClipRef = useRef(null);
+  const startWebRafRef = useRef(null);
+  const prefetchNextWindowRef = useRef(null);
+
+  // Position RAF for the web engine: drive highlight + page sync from the
+  // engine clock (mirrors the legacy timeupdate/RAF, but gapless).
+  startWebRafRef.current = () => {
+    if (readerAudioWebRafRef.current) cancelAnimationFrame(readerAudioWebRafRef.current);
+    const tick = () => {
+      const engine = readerAudioWebEngineRef.current;
+      if (!engine || !readerAudioWebActiveRef.current) return;
+      const posMs = engine.getPositionMs();
+      setReaderAudioPlayPosition(posMs);
+      const meta = readerAudioWindowMetaRef.current;
+      if (meta?.segments?.length) {
+        const seg = meta.segments.find((s) => (
+          Number.isFinite(s?.startMs) && Number.isFinite(s?.endMs)
+          && posMs >= Number(s.startMs) && posMs < Number(s.endMs)
+        )) || meta.segments[0];
+        if (seg) {
+          const np = Number(seg.page || 0);
+          if (np > 0 && readerCurrentPageRef.current !== np) {
+            readerCurrentPageRef.current = np;
+            readerAudioPlayingForPageRef.current = np;
+            setReaderCurrentPage(np);
+          }
+          const off = Number(seg.charStart || 0);
+          if (readerAudioCurrentPageCharOffsetRef.current !== off) {
+            readerAudioCurrentPageCharOffsetRef.current = off;
+            setReaderAudioCurrentPageCharOffset(off);
+          }
+        }
+      }
+      readerAudioWebRafRef.current = requestAnimationFrame(tick);
+    };
+    readerAudioWebRafRef.current = requestAnimationFrame(tick);
+  };
+
+  // Prefetch + gapless-enqueue the window AFTER the given one.
+  prefetchNextWindowRef.current = async (win, voice, rate) => {
+    try {
+      const engine = readerAudioWebEngineRef.current;
+      if (!engine || !readerAudioWebActiveRef.current) return;
+      if ((win.endPage || 0) >= readerPageCount) return; // book end
+      const nextWin = buildReaderAudioWindow(win.endPage + 1);
+      if (!nextWin?.combinedText) return;
+      const webKey = (tp, tv, tr2, tt) => {
+        const raw = `${String(readerDocumentId || '')}|${String(tp || '')}|${String(tv || '')}|${String(tr2 || '')}|${String(tt || '')}`;
+        let hash = 0;
+        for (let i = 0; i < raw.length; i += 1) hash = ((hash << 5) - hash + raw.charCodeAt(i)) | 0;
+        return `${String(readerDocumentId || 'doc')}:${String(tp || '')}:${String(tv || '')}:${String(tr2 || '')}:${raw.length}:${hash}`;
+      };
+      const key = webKey(nextWin.startPage, voice, rate, nextWin.combinedText);
+      if (!readerAudioWebClipsRef.current.has(key)) {
+        const cached = readerAudioPageCacheRef.current.get(key);
+        let payload = cached?.audio_url ? cached : null;
+        if (!payload) {
+          const resp = await fetch('/api/webapp/reader/audio/page', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ initData, document_id: readerDocumentId, page: nextWin.startPage, voice, rate, page_text: nextWin.combinedText, prefetch_only: true }),
+          });
+          const j = await resp.json().catch(() => ({}));
+          if (j?.audio_url) { readerAudioPageCacheRef.current.set(key, j); payload = j; }
+        }
+        if (!payload?.audio_url || !readerAudioWebActiveRef.current) return;
+        const segments = nextWin.segments.map((segment) => {
+          const words = (payload.word_timings || []).filter((w) => w?.char_start != null && Number(w.char_start) >= segment.charStart && Number(w.char_start) < segment.charEnd);
+          return { ...segment, startMs: words[0]?.start_ms ?? null, endMs: words[words.length - 1]?.end_ms ?? null };
+        });
+        readerAudioWebClipsRef.current.set(key, { window: nextWin, data: payload, segments });
+        await engine.loadClip(key, payload.audio_url);
+      }
+      if (readerAudioWebActiveRef.current) engine.enqueueNext(key);
+    } catch (e) {
+      console.warn('[ReaderAudio] prefetch next window failed:', e?.message || e);
+    }
+  };
+
+  // When the engine seamlessly moves to the next window clip, swap word
+  // timings/segments to that clip and prefetch the following window.
+  advanceToClipRef.current = (newKey) => {
+    const clip = readerAudioWebClipsRef.current.get(newKey);
+    if (!clip) return;
+    readerAudioWindowMetaRef.current = { ...clip.window, segments: clip.segments };
+    readerAudioPlayingForPageRef.current = clip.window.startPage;
+    readerCurrentPageRef.current = clip.window.startPage;
+    setReaderCurrentPage(clip.window.startPage);
+    readerAudioCurrentPageCharOffsetRef.current = clip.window.segments[0]?.charStart || 0;
+    setReaderAudioCurrentPageCharOffset(clip.window.segments[0]?.charStart || 0);
+    setReaderAudioPlayData(clip.data);
+    readerAudioPagesPlayedRef.current += Number(clip.segments?.length || 1);
+    prefetchNextWindowRef.current?.(clip.window, readerAudioVoice || '', readerAudioRate || 1);
+  };
+
+  // Keep the delegation ref pointing at the latest web-audio play fn.
+  useEffect(() => {
+    playReaderAudioPageWebAudioRef.current = playReaderAudioPageWebAudio;
+  }, [playReaderAudioPageWebAudio]);
+
+  // Apply rate changes live to the web engine (restart-at-position) and
+  // re-queue the next window for the new tempo.
+  useEffect(() => {
+    if (!readerAudioWebActiveRef.current || !readerAudioWebEngineRef.current) return;
+    const rate = readerAudioRate || 1;
+    (async () => {
+      try {
+        await readerAudioWebEngineRef.current.setRate(rate);
+        const meta = readerAudioWindowMetaRef.current;
+        if (meta?.combinedText) prefetchNextWindowRef.current?.(meta, readerAudioVoice || '', rate);
+      } catch (e) {
+        console.warn('[ReaderAudio] web setRate failed:', e?.message || e);
+      }
+    })();
+  }, [readerAudioRate, readerAudioVoice]);
+
   const seekReaderAudioToWid = useCallback((wid) => {
     const seekEl = readerAudioActiveElRef.current || audioElementRef.current;
     if (!readerAudioPlayData || !seekEl) return;
@@ -22869,13 +23151,18 @@ function AppInner() {
     }
     console.log('[AUDIO_SEEK] result timing=', timing, '→ seekTo', timing?.start_ms, 'ms');
     if (!timing) return;
-    seekEl.currentTime = timing.start_ms / 1000;
+    if (readerAudioWebActiveRef.current && readerAudioWebEngineRef.current) {
+      readerAudioWebEngineRef.current.seek(timing.start_ms / 1000);
+    } else {
+      seekEl.currentTime = timing.start_ms / 1000;
+    }
     setReaderAudioPlayPosition(timing.start_ms);
   }, [readerAudioPlayData, readerAudioWidReverseMap, readerAudioWidToCharStart]);
 
   // RAF position sync
   useEffect(() => {
     if (!readerAudioPlayActive) return undefined;
+    if (readerAudioWebActiveRef.current) return undefined; // web engine drives its own RAF
     const tick = () => {
       const audio = readerAudioActiveElRef.current || audioElementRef.current;
       if (audio && !audio.paused) {
@@ -22892,6 +23179,7 @@ function AppInner() {
   // Windowed audio page sync: keep the visible page aligned with the page
   // segment currently speaking inside a multi-page clip.
   useEffect(() => {
+    if (readerAudioWebActiveRef.current) return undefined; // web engine handles page sync
     const audio = readerAudioActiveElRef.current || audioElementRef.current;
     if (!audio || !readerAudioPlayActive) return undefined;
     const syncVisiblePageFromAudio = () => {
@@ -22926,6 +23214,7 @@ function AppInner() {
 
   // Auto-next-page: advance from the page that was actually playing (not the display page)
   useEffect(() => {
+    if (readerAudioWebActiveRef.current) return undefined; // web engine handles auto-next
     const audio = readerAudioActiveElRef.current || audioElementRef.current;
     if (!audio || !readerAudioPlayActive) return undefined;
     const onEnded = () => {
