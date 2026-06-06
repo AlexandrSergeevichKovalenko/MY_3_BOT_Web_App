@@ -3742,7 +3742,9 @@ const TranslationsSection = React.memo(function TranslationsSection({
                   (String(webappError).includes(PAID_FEATURE_ERROR_PREFIX) && renderStoryPaidFeatureNotice
                     ? <PaidFeatureSpotlight>{renderStoryPaidFeatureNotice()}</PaidFeatureSpotlight>
                     : null)
-                  || renderTranslationLimitNotice(webappError)
+                  || (renderTranslationLimitNotice(webappError)
+                    ? <PaidFeatureSpotlight>{renderTranslationLimitNotice(webappError)}</PaidFeatureSpotlight>
+                    : null)
                   || <div className="webapp-error webapp-error-inline">{webappError}</div>
                 )}
                 <button
@@ -3778,7 +3780,9 @@ const TranslationsSection = React.memo(function TranslationsSection({
           (String(webappError).includes(PAID_FEATURE_ERROR_PREFIX) && renderStoryPaidFeatureNotice
             ? <PaidFeatureSpotlight>{renderStoryPaidFeatureNotice()}</PaidFeatureSpotlight>
             : null)
-          || renderTranslationLimitNotice(webappError)
+          || (renderTranslationLimitNotice(webappError)
+            ? <PaidFeatureSpotlight>{renderTranslationLimitNotice(webappError)}</PaidFeatureSpotlight>
+            : null)
           || <div className="webapp-error">{webappError}</div>
         )}
         {finishMessage && <div className="webapp-success">{finishMessage}</div>}
