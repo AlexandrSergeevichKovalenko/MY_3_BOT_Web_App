@@ -48,7 +48,7 @@ from backend.utils import prepare_google_creds_for_tts
 # ---------------------------------------------------------------------------
 
 _TTS_VOICES = {
-    "de": str(os.getenv("GOOGLE_TTS_VOICE_DE") or "de-DE-Neural2-C").strip() or "de-DE-Neural2-C",
+    "de": str(os.getenv("GOOGLE_TTS_VOICE_DE") or "de-DE-Polyglot-1").strip() or "de-DE-Polyglot-1",
     "ru": str(os.getenv("GOOGLE_TTS_VOICE_RU") or "ru-RU-Wavenet-B").strip() or "ru-RU-Wavenet-B",
     "en": str(os.getenv("GOOGLE_TTS_VOICE_EN") or "en-US-Wavenet-D").strip() or "en-US-Wavenet-D",
     "es": str(os.getenv("GOOGLE_TTS_VOICE_ES") or "es-ES-Standard-A").strip() or "es-ES-Standard-A",
