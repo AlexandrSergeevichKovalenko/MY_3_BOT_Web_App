@@ -71,6 +71,7 @@ const ECONOMICS_RAILWAY_REDIS_RAM_STORAGE_KEY = 'dds_economics_railway_redis_ram
 const ECONOMICS_RAILWAY_EGRESS_STORAGE_KEY = 'dds_economics_railway_egress_v1';
 const ECONOMICS_PERIOD_OPTIONS = new Set(['day', 'week', 'month', 'quarter', 'half-year', 'year', 'all']);
 const PAID_FEATURE_ERROR_PREFIX = '__paid_feature_required__:';
+const TRANSLATION_LIMIT_NOTICE_PREFIX = '__translation_limit_notice__:';
 const YOUTUBE_TRANSCRIPT_LIBRARY_NOTICE_PREFIX = '__youtube_transcript_library_notice__:';
 const EPUB_RUNTIME_CDN_URLS = [
   'https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js',
@@ -3674,7 +3675,8 @@ const TranslationsSection = React.memo(function TranslationsSection({
             {hasActiveTranslationSentences && (
               <>
                 {webappError && !webappLoading && (
-                  <div className="webapp-error webapp-error-inline">{webappError}</div>
+                  renderTranslationLimitNotice(webappError)
+                  || <div className="webapp-error webapp-error-inline">{webappError}</div>
                 )}
                 <button
                   className={`primary-button translation-check-cta ${sentences.length === 0 && !webappLoading ? 'is-disabled-empty' : ''}`}
@@ -3705,7 +3707,10 @@ const TranslationsSection = React.memo(function TranslationsSection({
           </form>
         )}
 
-        {webappError && <div className="webapp-error">{webappError}</div>}
+        {webappError && (
+          renderTranslationLimitNotice(webappError)
+          || <div className="webapp-error">{webappError}</div>
+        )}
         {finishMessage && <div className="webapp-success">{finishMessage}</div>}
 
         {isStoryResultMode && (
@@ -7571,10 +7576,13 @@ function AppInner() {
         const unit = String(payload.unit || '').trim();
         const resetAt = String(payload.reset_at || '');
         if (feature === 'translation_daily_sets') {
-          return tr(
-            `В бесплатном режиме доступен 1 набор переводов в день: 7 предложений. Следующий набор будет доступен после сброса: ${resetAt}`,
-            `Im Free-Modus ist 1 Uebersetzungsset pro Tag verfuegbar: 7 Saetze. Das naechste Set ist nach dem Reset verfuegbar: ${resetAt}`
-          );
+          return `${TRANSLATION_LIMIT_NOTICE_PREFIX}${JSON.stringify({
+            feature,
+            limit,
+            used,
+            unit,
+            reset_at: resetAt,
+          })}`;
         }
         return tr(
           `Лимит функции исчерпан (${feature}): ${used} / ${limit} ${unit}. Сброс: ${resetAt}`,
@@ -7615,6 +7623,39 @@ function AppInner() {
       return `${fallback} (HTTP ${response.status})`;
     }
   }, [handleInitDataAuthFailure, handleSingleInstanceConflict, isInitDataAuthFailureMessage, tr]);
+  const parseTranslationLimitNotice = useCallback((value) => {
+    const raw = String(value || '').trim();
+    if (!raw.startsWith(TRANSLATION_LIMIT_NOTICE_PREFIX)) return null;
+    try {
+      const payload = JSON.parse(raw.slice(TRANSLATION_LIMIT_NOTICE_PREFIX.length));
+      return payload && typeof payload === 'object' ? payload : null;
+    } catch (_error) {
+      return null;
+    }
+  }, []);
+  const renderTranslationLimitNotice = useCallback((value) => {
+    const payload = parseTranslationLimitNotice(value);
+    if (!payload) return null;
+    const resetLabel = formatLimitResetDateTime(payload.reset_at, uiLang === 'de' ? 'de-AT' : 'ru-RU');
+    return (
+      <div className="paid-feature-card">
+        <div className="paid-feature-card-icon" aria-hidden="true">⏱️</div>
+        <div className="paid-feature-card-copy">
+          <strong>{tr('Лимит на сегодня достигнут', 'Tageslimit erreicht')}</strong>
+          <span>
+            {tr(
+              resetLabel
+                ? `На Free доступен 1 набор переводов в день: 7 предложений. Новый набор будет доступен после сброса: ${resetLabel}.`
+                : 'На Free доступен 1 набор переводов в день: 7 предложений. Новый набор будет доступен завтра после сброса.',
+              resetLabel
+                ? `Im Free-Tarif ist 1 Uebersetzungsset pro Tag verfuegbar: 7 Saetze. Das naechste Set ist nach dem Reset verfuegbar: ${resetLabel}.`
+                : 'Im Free-Tarif ist 1 Uebersetzungsset pro Tag verfuegbar: 7 Saetze. Das naechste Set ist morgen nach dem Reset verfuegbar.'
+            )}
+          </span>
+        </div>
+      </div>
+    );
+  }, [parseTranslationLimitNotice, tr, uiLang]);
   const postSupportApi = useCallback(async (path, body = {}) => {
     if (!initData) {
       throw new Error(initDataMissingMsg);
@@ -18800,7 +18841,12 @@ function AppInner() {
         });
       }
     } catch (error) {
-      setWebappError(`${tr('Ошибка старта', 'Startfehler')}: ${error.message}`);
+      const message = String(error?.message || '').trim();
+      setWebappError(
+        message.startsWith(TRANSLATION_LIMIT_NOTICE_PREFIX)
+          ? message
+          : `${tr('Ошибка старта', 'Startfehler')}: ${message}`
+      );
     } finally {
       translationStartInFlightRef.current = false;
       setWebappLoading(false);
