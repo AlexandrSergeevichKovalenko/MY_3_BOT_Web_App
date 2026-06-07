@@ -17356,6 +17356,12 @@ function AppInner() {
       setSelectedSections(new Set(['assistant']));
       const t = setTimeout(() => { scrollToRef(assistantRef, { block: 'start' }); }, 120);
       return () => clearTimeout(t);
+    } else if (startParam === 'guide') {
+      setFlashcardsOnly(false);
+      setFlashcardSessionActive(false);
+      setSelectedSections(new Set(['guide']));
+      const t = setTimeout(() => { scrollToRef(guideRef, { block: 'start' }); }, 120);
+      return () => clearTimeout(t);
     }
     if (window.location.pathname === '/webapp/review') {
       setFlashcardsVisible(true);

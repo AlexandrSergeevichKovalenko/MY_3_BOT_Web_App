@@ -542,6 +542,18 @@ LANGUAGE_TUTOR_BUTTON_TEXT = "💬 Спросить у GPT"
 SHORTCUT_INSTALL_BUTTON_TEXT = "📲 Установить Shortcut"
 SHORTCUT_CONNECT_BUTTON_TEXT = "📱 Connect Shortcut"
 DICTIONARY_BATCH_FAST_BUTTON_TEXT = "🇩🇪➡️🇷🇺 Быстрый перевод"
+HOWTO_GUIDE_BUTTON_TEXT = "🎬 Как пользоваться"
+
+try:
+    from backend.onboarding_assets import ONBOARDING_ASSETS as _ONBOARDING_ASSETS
+except Exception:  # pragma: no cover - assets module optional before first upload
+    _ONBOARDING_ASSETS = {}
+
+
+def _onboarding_file_id(key: str) -> str | None:
+    """Return the Telegram file_id for an onboarding asset, or None if not uploaded yet."""
+    value = str((_ONBOARDING_ASSETS or {}).get(key) or "").strip()
+    return value or None
 TTS_PREWARM_QUOTA_MIN = max(50, min(10000, int((os.getenv("TTS_PREWARM_PER_USER_CHAR_LIMIT_MIN") or "200").strip() or "200")))
 TTS_PREWARM_QUOTA_MAX = max(
     TTS_PREWARM_QUOTA_MIN,
@@ -1434,10 +1446,11 @@ async def send_main_menu(update: Update, context: CallbackContext):
         if not bot_username:
             bot_info = await context.bot.get_me()
             bot_username = bot_info.username
-        webapp_url = get_webapp_deeplink(bot_username=bot_username)
+        guide_url = get_webapp_deeplink("guide", bot_username=bot_username)
         await update.message.reply_text(
             _build_private_start_onboarding_text() + "\n\n"
-            f"Полная версия в mini app: {webapp_url}",
+            f"📱 <b>Что умеет приложение:</b> {guide_url}",
+            parse_mode="HTML",
             disable_web_page_preview=True,
             reply_markup=_build_private_language_tutor_reply_keyboard()
             if update.effective_chat and update.effective_chat.type == "private"
@@ -1454,6 +1467,7 @@ async def send_main_menu(update: Update, context: CallbackContext):
         [LANGUAGE_TUTOR_BUTTON_TEXT],
         [DICTIONARY_BATCH_FAST_BUTTON_TEXT],
         [SHORTCUT_INSTALL_BUTTON_TEXT, SHORTCUT_CONNECT_BUTTON_TEXT],
+        [HOWTO_GUIDE_BUTTON_TEXT],
     ]
     
     # создаем в словаре клю service_message_ids Список для хранения всех id Сообщений, Для того чтобы потом можно было их удалить после выполнения перевода
@@ -1531,19 +1545,171 @@ async def _send_shortcut_connect_prompt(update: Update, context: CallbackContext
     )
 
 
+async def _send_onboarding_photo(context: CallbackContext, chat_id: int, asset_key: str, caption: str | None = None) -> None:
+    """Send an onboarding photo by file_id; silently skip if not uploaded yet."""
+    file_id = _onboarding_file_id(asset_key)
+    if not file_id:
+        return
+    try:
+        await context.bot.send_photo(
+            chat_id=chat_id,
+            photo=file_id,
+            caption=caption or None,
+            parse_mode="HTML" if caption else None,
+        )
+    except Exception:
+        logging.warning("onboarding photo send failed asset=%s chat_id=%s", asset_key, chat_id, exc_info=True)
+
+
+async def _send_onboarding_video(context: CallbackContext, chat_id: int, asset_key: str, caption: str | None = None) -> None:
+    """Send an onboarding video by file_id; silently skip if not uploaded yet."""
+    file_id = _onboarding_file_id(asset_key)
+    if not file_id:
+        return
+    try:
+        await context.bot.send_video(
+            chat_id=chat_id,
+            video=file_id,
+            caption=caption or None,
+            parse_mode="HTML" if caption else None,
+        )
+    except Exception:
+        logging.warning("onboarding video send failed asset=%s chat_id=%s", asset_key, chat_id, exc_info=True)
+
+
 async def _send_shortcut_install_prompt(update: Update, context: CallbackContext) -> None:
     if not update.effective_message:
         return
+    chat_id = int(update.effective_chat.id) if update.effective_chat else int(update.effective_user.id)
     keyboard = _build_shortcut_install_keyboard()
-    if not keyboard:
-        await update.effective_message.reply_text(
-            "Установка Shortcut временно не настроена. Администратору нужно задать SHORTCUT_INSTALL_URL."
+
+    # Сообщение 0 — для кого это
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "📲 <b>Установка Shortcut — делаем по шагам</b>\n\n"
+            "Shortcut — функция <b>только для iPhone</b>. С ней одним нажатием (кнопка действия "
+            "или двойной тап по задней крышке) вы фотографируете экран с немецким контентом, "
+            "бот вытягивает оттуда слова и присылает их вам в личку для перевода и сохранения.\n\n"
+            "📱 <b>Другой телефон (Android и т.д.)?</b> Shortcut не нужен — вам доступно всё остальное:\n"
+            "• написать боту слово или фразу;\n"
+            "• переслать немецкий текст из любого мессенджера;\n"
+            "• вставить большой кусок текста — бот сам выберет слова под ваш уровень."
+        ),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+
+    # Сообщение 1 — Шаг 1: установка (+ кнопка установки и фото)
+    if keyboard:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "<b>Шаг 1. Установите Shortcut</b>\n\n"
+                "1️⃣ Нажмите кнопку <b>«📲 Установить Shortcut»</b> ниже.\n"
+                "2️⃣ Откроется приложение <b>«Команды»</b> (Shortcuts).\n"
+                "3️⃣ Пролистайте вниз и нажмите <b>«Добавить быструю команду»</b>. "
+                "На всех экранах просто <b>соглашайтесь / разрешайте</b>."
+            ),
+            parse_mode="HTML",
+            reply_markup=keyboard,
+            disable_web_page_preview=True,
         )
+    else:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "⚠️ Кнопка установки временно не настроена (администратору нужно задать SHORTCUT_INSTALL_URL). "
+                "Остальные функции бота работают как обычно."
+            ),
+        )
+    for _photo_key in ("step1_photo_1", "step1_photo_2", "step1_photo_3"):
+        await _send_onboarding_photo(context, chat_id, _photo_key)
+
+    # Сообщение 2 — Шаг 2: привязка к запуску (+ видео)
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "<b>Шаг 2. Привяжите запуск</b> (чтобы вызывать одним движением)\n\n"
+            "🔹 <b>Вариант А — двойное касание задней крышки</b> (любой iPhone):\n"
+            "Настройки → <b>Универсальный доступ</b> → <b>Касание</b> → <b>Касание задней панели</b> → "
+            "<b>Двойное касание</b> → выберите вашу команду.\n\n"
+            "🔹 <b>Вариант Б — кнопка «Действие»</b> (iPhone 15 Pro и новее):\n"
+            "Настройки → <b>Кнопка «Действие»</b> → пролистайте до пункта <b>«Быстрая команда»</b> → "
+            "<b>Выбрать команду</b> → выберите вашу."
+        ),
+        parse_mode="HTML",
+    )
+    await _send_onboarding_video(context, chat_id, "step2_back_tap", caption="🔹 Двойное касание задней крышки")
+    await _send_onboarding_video(context, chat_id, "step2_action_button", caption="🔹 Кнопка «Действие»")
+
+    # Сообщение 3 — Шаг 3: подключение (код). Фото добавим позже.
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "<b>Шаг 3. Подключите Shortcut к вашему аккаунту — один раз</b>\n\n"
+            "1️⃣ Вернитесь в бот и нажмите <b>«📱 Connect Shortcut»</b>.\n"
+            "2️⃣ Бот пришлёт <b>персональный код</b> отдельным сообщением — <b>скопируйте его</b>.\n"
+            "3️⃣ Сразу найдите любой немецкий контент и запустите Shortcut (двойной тап / кнопка действия). "
+            "При <b>первом</b> запуске он попросит код — <b>вставьте его</b>.\n\n"
+            "⚠️ Код <b>одноразовый</b> и действует <b>24 часа</b> — поэтому подключитесь прямо сейчас. "
+            "После этого код больше не нужен: всё запускается автоматически."
+        ),
+        parse_mode="HTML",
+    )
+    await _send_onboarding_photo(context, chat_id, "step3_photo")
+
+    # Сообщение 4 — готово / как пользоваться
+    guide_url = get_webapp_deeplink("guide", bot_username=context.bot.username)
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "✅ <b>Готово! Дальше всё просто:</b>\n\n"
+            "🎬 Смотрите рилс/видео → на интересном месте поставьте на паузу → кнопка действия или двойной "
+            "тап → скрин превращается в текст → можно что-то дописать или убрать лишние слова → подтвердите → "
+            "слова прилетают в личку.\n\n"
+            "⚡️ Накопилось много слов? Зайдите в личку и нажмите один раз <b>«🇩🇪➡️🇷🇺 Быстрый перевод»</b> — "
+            "режим применится сразу ко всей очереди.\n"
+            "🔎 Или переводите слова по одному — там доступен ещё и <b>детальный</b> разбор.\n\n"
+            f"📱 <b>Что умеет приложение:</b> {guide_url}\n"
+            "🎬 Видео-инструкции — кнопка <b>«Как пользоваться»</b> внизу."
+        ),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+
+
+async def _send_howto_guide_chapter(update: Update, context: CallbackContext) -> None:
+    """«🎬 Как пользоваться» — глава с видео о работе бота и приложения."""
+    if not update.effective_message:
         return
-    await update.effective_message.reply_text(
-        "📲 Установите iPhone Shortcut один раз.\n\n"
-        "После установки вернитесь сюда и нажмите «📱 Connect Shortcut», чтобы получить код привязки.",
-        reply_markup=keyboard,
+    chat_id = int(update.effective_chat.id) if update.effective_chat else int(update.effective_user.id)
+
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "🎬 <b>Как пользоваться — короткие видео</b>\n\n"
+            "Ниже несколько роликов: как работает Shortcut, как учить слова и что ещё умеет приложение."
+        ),
+        parse_mode="HTML",
+    )
+    await _send_onboarding_video(context, chat_id, "howto_shortcut", caption="🎬 <b>Как работает Shortcut</b>")
+    await _send_onboarding_video(context, chat_id, "howto_learn_words", caption="📚 <b>Как учить слова</b>")
+
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="➕ <b>Дополнительно</b>",
+        parse_mode="HTML",
+    )
+    await _send_onboarding_video(context, chat_id, "howto_tests_quizzes", caption="🧩 <b>Тесты, квизы и другие функции бота</b>")
+    await _send_onboarding_video(context, chat_id, "howto_translate_sentences", caption="🔤 <b>Как переводить предложения</b>")
+    await _send_onboarding_video(context, chat_id, "howto_youtube_subs", caption="▶️ <b>Как смотреть YouTube с субтитрами</b>")
+
+    guide_url = get_webapp_deeplink("guide", bot_username=context.bot.username)
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"📱 <b>Открыть приложение:</b> {guide_url}",
+        parse_mode="HTML",
         disable_web_page_preview=True,
     )
 
@@ -2178,6 +2344,7 @@ def _build_private_language_tutor_reply_keyboard() -> ReplyKeyboardMarkup:
             [LANGUAGE_TUTOR_BUTTON_TEXT],
             [DICTIONARY_BATCH_FAST_BUTTON_TEXT],
             [SHORTCUT_INSTALL_BUTTON_TEXT, SHORTCUT_CONNECT_BUTTON_TEXT],
+            [HOWTO_GUIDE_BUTTON_TEXT],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -2203,22 +2370,24 @@ def _format_shortcut_pairing_code_ttl_note() -> str:
 
 
 def _build_private_start_onboarding_text() -> str:
+    """HTML (parse_mode=HTML). Avoid raw < > & in the literal text."""
     return (
-        "✅ Здесь можно быстро работать с немецким текстом.\n\n"
-        "Что умеет бот:\n"
-        "• перевести одно слово или фразу прямо в чате;\n"
-        "• разобрать грамматику и задать вопрос;\n"
-        "• сохранить слова в словарь;\n"
-        "• принять пересланный немецкий текст;\n"
-        "• помочь со скриншотами, рилсами и любым немецким контентом через Shortcut.\n\n"
-        "Что делать дальше:\n"
-        "1. Нажмите «📲 Установить Shortcut» и добавьте команду на iPhone.\n"
-        "2. Вернитесь сюда и нажмите «📱 Connect Shortcut», чтобы получить код привязки.\n"
-        "3. Запустите Shortcut один раз и вставьте код.\n"
-        "4. Привяжите Shortcut к кнопке действия или к двойному касанию задней панели.\n"
-        "5. После этого просто отправляйте слова сюда в личку или запускайте Shortcut на немецком контенте.\n"
-        "6. Код нужен только при первом запуске. Потом он больше не понадобится.\n\n"
-        "Если слов много, нажмите «🇩🇪➡️🇷🇺 Быстрый перевод», чтобы применить один и тот же режим ко всей текущей очереди."
+        "✅ <b>Здесь вы быстро работаете с немецким: переводите, разбираете грамматику и собираете личный словарь.</b>\n\n"
+        "<b>Что умеет бот:</b>\n\n"
+        "🔹 <b>Перевод слова или фразы прямо в чате</b>\n"
+        "Отправьте боту сообщение на русском или немецком, следуйте подсказкам — и получите перевод.\n\n"
+        "🔹 <b>Разбор грамматики — «💬 Спросить у GPT»</b>\n"
+        "Нажмите кнопку внизу и задайте любой вопрос по грамматике. Получите развёрнутый ответ и слова для сохранения в словарь.\n\n"
+        "🔹 <b>Сохранение слов в словарь одной кнопкой</b>\n"
+        "Сохраняется не просто слово, а <b>слово в контексте</b>. Бот связан с приложением: здесь сохраняете — там повторяете по интервальной системе.\n\n"
+        "🔹 <b>Пересланный немецкий текст</b>\n"
+        "Нашли интересный пост в любом мессенджере — <b>перешлите его боту</b>. Он разобьёт текст на слова и фразы, предложит сохранить, добавит объяснения, озвучку и примеры в разных контекстах.\n"
+        "→ <b>Быстрый перевод</b> — 2 коротких варианта; <b>детальный</b> — глубокий разбор слова и его частей.\n\n"
+        "🔹 <b>Скриншоты, рилсы и любой контент — через Shortcut (iPhone)</b>\n"
+        "Смотрите видео в YouTube/Instagram/TikTok → нажимаете кнопку действия или двойной тап по задней крышке → скрин превращается в немецкий текст → прилетает вам в личку для перевода и сохранения.\n\n"
+        "➖➖➖\n"
+        "📲 Начните с кнопки <b>«Установить Shortcut»</b> внизу.\n"
+        "🎬 А как всё это выглядит на практике — кнопка <b>«Как пользоваться»</b>."
     )
 
 
@@ -4244,6 +4413,7 @@ async def handle_button_click(update: Update, context: CallbackContext):
         SHORTCUT_INSTALL_BUTTON_TEXT,
         SHORTCUT_CONNECT_BUTTON_TEXT,
         DICTIONARY_BATCH_FAST_BUTTON_TEXT,
+        HOWTO_GUIDE_BUTTON_TEXT,
     }
     if not ENABLE_LEGACY_REPLY_KEYBOARD and (
         not update.message
@@ -4290,6 +4460,8 @@ async def handle_button_click(update: Update, context: CallbackContext):
             await update.message.reply_text("Не удалось получить имя бота.")
     elif text == SHORTCUT_INSTALL_BUTTON_TEXT:
         await _send_shortcut_install_prompt(update, context)
+    elif text == HOWTO_GUIDE_BUTTON_TEXT:
+        await _send_howto_guide_chapter(update, context)
     elif text == SHORTCUT_CONNECT_BUTTON_TEXT:
         await update.message.reply_text("⏳ Генерирую pairing code...")
 
