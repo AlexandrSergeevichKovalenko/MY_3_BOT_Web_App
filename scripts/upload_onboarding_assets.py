@@ -68,12 +68,29 @@ def _extract_file_id(kind: str, result: dict) -> str:
     raise ValueError(f"unknown kind {kind!r}")
 
 
+def _load_existing_file_ids() -> dict[str, str]:
+    """Return file_ids already stored, so re-runs only upload what is missing."""
+    try:
+        from backend.onboarding_assets import ONBOARDING_ASSETS  # type: ignore
+        return {k: str(v or "").strip() for k, v in (ONBOARDING_ASSETS or {}).items()}
+    except Exception:
+        return {}
+
+
 def main() -> int:
     token = _bot_token()
     chat_id = int(os.getenv("ONBOARDING_UPLOAD_CHAT_ID") or DEFAULT_CHAT_ID)
+    force = (os.getenv("ONBOARDING_FORCE_REUPLOAD") or "").strip().lower() in {"1", "true", "yes", "on"}
+    existing = _load_existing_file_ids()
     file_ids: dict[str, str] = {}
 
     for key, path_str, kind in ASSETS:
+        # Keep an already-uploaded file_id unless a re-upload is forced. This makes
+        # "add the Step 3 photo later" a one-shot: only the empty key is uploaded.
+        if not force and existing.get(key):
+            print(f"✓ keeping {key} (already uploaded)")
+            file_ids[key] = existing[key]
+            continue
         path = Path(path_str)
         if not path.exists():
             # Missing file is non-fatal: keep the key empty so the bot skips that
