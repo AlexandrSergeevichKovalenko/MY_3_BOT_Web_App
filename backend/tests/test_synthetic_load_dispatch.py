@@ -140,6 +140,118 @@ class DispatchLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls), 10)
         self.assertIn("handler_latency", result["metrics"])
         self.assertGreaterEqual(result["seeded_allowed_users"], 1)
+        self.assertEqual(result["mode"], "sequential")
+
+
+class _SleepyApp:
+    """Mock app whose process_update sleeps (to force/observe overlap) and can
+    fail selected update_ids. Never touches Telegram or any provider."""
+    bot = None
+
+    def __init__(self, delay: float = 0.05, fail_ids: set | None = None):
+        self.delay = delay
+        self.fail_ids = fail_ids or set()
+        self.calls = []
+        self._inflight = 0
+        self.concurrent_peak = 0
+
+    async def process_update(self, update):
+        import asyncio as _asyncio
+        self._inflight += 1
+        self.concurrent_peak = max(self.concurrent_peak, self._inflight)
+        try:
+            await _asyncio.sleep(self.delay)
+            if isinstance(update, dict) and update.get("update_id") in self.fail_ids:
+                raise RuntimeError("synthetic task failure")
+            self.calls.append(update)
+        finally:
+            self._inflight -= 1
+
+
+class ConcurrentDispatchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_default_mode_is_sequential(self):
+        app = _SleepyApp(delay=0.02)
+        result = await disp.run_dispatch(
+            users=20, rate=200.0, duration=0.1,
+            application=app, enforce_guards=False,
+        )
+        self.assertEqual(result["mode"], "sequential")
+        self.assertEqual(app.concurrent_peak, 1)          # never overlaps
+        self.assertLessEqual(result["max_in_flight_observed"], 1)
+
+    async def test_concurrent_mode_overlaps(self):
+        app = _SleepyApp(delay=0.05)
+        result = await disp.run_dispatch(
+            users=20, rate=500.0, duration=0.1,
+            application=app, enforce_guards=False,
+            concurrent=True, max_in_flight=32,
+        )
+        self.assertEqual(result["mode"], "concurrent")
+        self.assertGreater(app.concurrent_peak, 1)        # tasks ran in parallel
+        self.assertGreater(result["max_in_flight_observed"], 1)
+        self.assertEqual(result["completed_tasks"], result["scheduled_tasks"])
+
+    async def test_max_in_flight_cap_respected(self):
+        app = _SleepyApp(delay=0.05)
+        result = await disp.run_dispatch(
+            users=20, rate=500.0, duration=0.1,
+            application=app, enforce_guards=False,
+            concurrent=True, max_in_flight=4,
+        )
+        self.assertLessEqual(app.concurrent_peak, 4)
+        self.assertLessEqual(result["max_in_flight_observed"], 4)
+        self.assertGreater(result["backpressure_events"], 0)   # cap was hit
+
+    async def test_task_errors_collected(self):
+        # Fail a few specific update_ids; errors must be collected, not lost.
+        payloads = list(disp.generate_updates(20, 500.0, 0.1))
+        fail_ids = {p["update_id"] for p in payloads[:3]}
+        app = _SleepyApp(delay=0.01, fail_ids=fail_ids)
+        result = await disp.run_dispatch(
+            users=20, rate=500.0, duration=0.1,
+            application=app, enforce_guards=False,
+            concurrent=True, max_in_flight=8,
+        )
+        self.assertGreater(result["task_errors"], 0)
+        self.assertEqual(result["errors"], result["task_errors"])
+        self.assertEqual(result["dispatched"], result["scheduled_tasks"])
+
+    async def test_pending_tasks_awaited_on_shutdown(self):
+        app = _SleepyApp(delay=0.05)
+        result = await disp.run_dispatch(
+            users=20, rate=500.0, duration=0.1,
+            application=app, enforce_guards=False,
+            concurrent=True, max_in_flight=16,
+        )
+        # all scheduled tasks completed before returning (no orphaned in-flight work)
+        self.assertEqual(result["completed_tasks"], result["scheduled_tasks"])
+        self.assertGreater(result["completed_tasks"], 0)
+
+    async def test_guards_run_before_concurrent_dispatch(self):
+        import os
+        with patch.dict("os.environ", {}, clear=False):
+            os.environ.pop("SYNTHETIC_LOAD_MODE", None)
+            with patch.object(disp, "_active_db_host", return_value="localhost"):
+                with self.assertRaises(disp.SyntheticSafetyError):
+                    await disp.run_dispatch(
+                        users=5, rate=50.0, duration=0.05,
+                        application=_SleepyApp(), enforce_guards=True,
+                        concurrent=True, max_in_flight=4,
+                    )
+
+    async def test_no_telegram_or_providers_touched_in_concurrent(self):
+        from backend import load_metrics
+        app = _SleepyApp(delay=0.01)
+        await disp.run_dispatch(
+            users=20, rate=500.0, duration=0.1,
+            application=app, enforce_guards=False,
+            concurrent=True, max_in_flight=8,
+        )
+        tg = load_metrics.snapshot()["telegram"]
+        # mock app's process_update never calls the stub bot -> zero Telegram ops
+        self.assertEqual(tg["send"], 0)
+        self.assertEqual(tg["edit"], 0)
+        self.assertEqual(tg["callback_answer"], 0)
 
 
 if __name__ == "__main__":

@@ -269,12 +269,21 @@ async def run_dispatch(
     duration: float,
     application: Any | None = None,
     enforce_guards: bool = True,
+    concurrent: bool = False,
+    max_in_flight: int = 32,
 ) -> dict[str, Any]:
     """Dispatch synthetic updates at `rate`/s for `duration`s into `application`.
 
     `application` must expose `async process_update(update)`. If None, a real
     synthetic Application is built. Tests inject a recorder. Guards run first
-    unless enforce_guards=False (tests)."""
+    unless enforce_guards=False (tests).
+
+    Sequential mode (default): awaits each process_update before scheduling the
+    next — safe, but peak in-flight ~1. Concurrent mode (`concurrent=True`):
+    schedules process_update as tasks at the target rate without awaiting each,
+    capped at `max_in_flight` simultaneous tasks (the cap is what lets us stress
+    DB_POOL_MAXCONN / the event loop / PgBouncer). All pending tasks are awaited
+    before returning."""
     safety = assert_safe_to_dispatch() if enforce_guards else {"guards": "skipped"}
     load_metrics.reset()
 
@@ -292,19 +301,71 @@ async def run_dispatch(
 
     lag_task = asyncio.create_task(load_metrics.event_loop_lag_sampler(interval_sec=0.2))
     interval = 1.0 / rate if rate > 0 else 0.0
-    generated = dispatched = errors = 0
     started = time.perf_counter()
+
+    # Counters shared across both modes (kept present in the result either way).
+    generated = dispatched = errors = 0
+    scheduled_tasks = completed_tasks = task_errors = 0
+    in_flight = 0
+    max_in_flight_observed = 0
+    backpressure_events = 0
+    cap = max(1, int(max_in_flight))
+
+    def _to_update(payload):
+        return build_update(payload, bot) if bot is not None else payload
+
     try:
-        for payload in payloads:
-            generated += 1
-            try:
-                update = build_update(payload, bot) if bot is not None else payload
-                await application.process_update(update)
+        if not concurrent:
+            for payload in payloads:
+                generated += 1
+                try:
+                    await application.process_update(_to_update(payload))
+                    dispatched += 1
+                except Exception:
+                    errors += 1
+                if interval:
+                    await asyncio.sleep(interval)
+            scheduled_tasks = completed_tasks = dispatched
+            task_errors = errors
+            max_in_flight_observed = min(1, dispatched)
+        else:
+            sem = asyncio.Semaphore(cap)
+            tasks: set[asyncio.Task] = set()
+
+            async def _runner(update) -> None:
+                nonlocal in_flight, max_in_flight_observed, completed_tasks, task_errors
+                in_flight += 1
+                max_in_flight_observed = max(max_in_flight_observed, in_flight)
+                try:
+                    await application.process_update(update)
+                except Exception:
+                    task_errors += 1
+                finally:
+                    in_flight -= 1
+                    completed_tasks += 1
+                    sem.release()
+
+            for payload in payloads:
+                generated += 1
+                try:
+                    update = _to_update(payload)
+                except Exception:
+                    errors += 1
+                    continue
+                if sem.locked():            # next acquire will block -> backpressure
+                    backpressure_events += 1
+                await sem.acquire()
+                t = asyncio.create_task(_runner(update))
+                tasks.add(t)
+                t.add_done_callback(tasks.discard)
+                scheduled_tasks += 1
                 dispatched += 1
-            except Exception:
-                errors += 1
-            if interval:
-                await asyncio.sleep(interval)
+                if interval:
+                    await asyncio.sleep(interval)
+
+            if tasks:                       # drain: never exit with work in flight
+                await asyncio.gather(*list(tasks), return_exceptions=True)
+            errors += task_errors
     finally:
         lag_task.cancel()
         if own_app:
@@ -323,9 +384,15 @@ async def run_dispatch(
 
     return {
         "safety": safety,
+        "mode": "concurrent" if concurrent else "sequential",
         "users": users, "rate": rate, "duration": duration,
+        "max_in_flight": cap if concurrent else 1,
         "seeded_allowed_users": seeded,
         "generated": generated, "dispatched": dispatched, "errors": errors,
+        "scheduled_tasks": scheduled_tasks, "completed_tasks": completed_tasks,
+        "task_errors": task_errors,
+        "max_in_flight_observed": max_in_flight_observed,
+        "backpressure_events": backpressure_events,
         "elapsed_sec": round(time.perf_counter() - started, 3),
         "metrics": load_metrics.snapshot(),
         "db_pool": pool,
@@ -354,6 +421,10 @@ def main() -> int:
     parser.add_argument("--duration", type=float, default=60.0)
     parser.add_argument("--execute", action="store_true",
                         help="actually dispatch load (otherwise safety check only)")
+    parser.add_argument("--concurrent", action="store_true",
+                        help="schedule overlapping process_update tasks (default: sequential)")
+    parser.add_argument("--max-in-flight", type=int, default=32,
+                        help="cap on simultaneous in-flight tasks in concurrent mode")
     args = parser.parse_args()
 
     if not args.execute:
@@ -371,7 +442,10 @@ def main() -> int:
     except SyntheticSafetyError as exc:
         print(f"ABORT: {exc}")
         return 1
-    result = asyncio.run(run_dispatch(users=args.users, rate=args.rate, duration=args.duration))
+    result = asyncio.run(run_dispatch(
+        users=args.users, rate=args.rate, duration=args.duration,
+        concurrent=args.concurrent, max_in_flight=args.max_in_flight,
+    ))
     _print_report(result)
     return 0 if result["errors"] == 0 else 2
 
