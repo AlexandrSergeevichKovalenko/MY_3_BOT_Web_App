@@ -3719,7 +3719,10 @@ logging.basicConfig(
 
 # === Настройка Open AI API ===
 
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=60)
+# SYNTHETIC_LOAD_MODE returns a deterministic in-process proxy instead of a real
+# AsyncOpenAI client (no network). Default OFF -> identical to AsyncOpenAI(...).
+from backend.synthetic_load import build_async_openai_client
+client = build_async_openai_client(api_key=os.getenv("OPENAI_API_KEY"), timeout=60)
 logging.info("OpenAI SDK version detected: %s", getattr(openai, "__version__", "unknown"))
 _LAST_LLM_USAGE: contextvars.ContextVar[dict | None] = contextvars.ContextVar("last_llm_usage", default=None)
 

@@ -331,6 +331,11 @@ def _synthesize_mp3(
     normalized_text = str(text or "").strip()
     if not normalized_text:
         raise RuntimeError("Google TTS получил пустой текст")
+    # SYNTHETIC_LOAD_MODE: return a tiny fake audio payload, no Google TTS network.
+    from backend.synthetic_load import synthetic_tts_mp3_or_none
+    _synthetic = synthetic_tts_mp3_or_none(normalized_text)
+    if _synthetic is not None:
+        return _synthetic
     voice_name = str(voice or _TTS_VOICES["de"]).strip() or _TTS_VOICES["de"]
 
     try:

@@ -21327,6 +21327,11 @@ def _fetch_youtube_transcript(
     3) Webshare rotation + DE/AT filter (only if allow_proxy=True)
     4) Generic proxy + DE/AT filter (only if allow_proxy=True)
     """
+    # SYNTHETIC_LOAD_MODE: return a fixed transcript fixture, no YouTube network.
+    from backend.synthetic_load import synthetic_youtube_transcript_or_none
+    _synthetic = synthetic_youtube_transcript_or_none(video_id, lang)
+    if _synthetic is not None:
+        return _synthetic
 
     errors: list[str] = []
     preferred_lang = _normalize_short_lang_code(lang, fallback="") if lang else ""
@@ -36978,26 +36983,65 @@ def _start_shortcut_lookup_enqueue_runner(
         f"shortcut-enqueue:{safe_user_id}:{normalized_text}:{time.time_ns()}".encode("utf-8")
     ).hexdigest()[:20]
 
-    def _worker() -> None:
+    # Delivery runs in this in-process executor thread (off the request/update
+    # event loop). Default = inline: the originating process (bot/web) splits the
+    # text and sends the word cards itself. This is deliberate — _send_private_message
+    # needs TELEGRAM_Deutsch_BOT_TOKEN, which the bot/web process always has but a
+    # background worker service may not, and that token gap fails sends silently
+    # (sent=0, no error to the user). Set SHORTCUT_LOOKUP_USE_QUEUE=1 to offload the
+    # split+send to the dramatiq "shortcut_lookup" worker instead; if that enqueue
+    # cannot happen we still fall back to inline so the user always gets their words.
+    use_queue = (os.getenv("SHORTCUT_LOOKUP_USE_QUEUE") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    def _deliver_inline(reason: str) -> None:
         try:
-            enqueue_shortcut_lookup_job(
+            sent = _run_shortcut_lookup_delivery(
                 user_id=safe_user_id,
                 text=normalized_text,
-                request_key=request_key,
                 origin=origin,
                 request_id=request_id,
+                request_key=request_key,
             )
             logging.info(
-                "shortcut_lookup enqueue accepted user_id=%s request_key=%s",
+                "shortcut_lookup inline delivery done user_id=%s request_key=%s reason=%s sent=%s",
                 safe_user_id,
                 request_key,
+                reason,
+                int(sent or 0),
             )
         except Exception:
             logging.exception(
-                "shortcut_lookup enqueue failed user_id=%s request_key=%s",
+                "shortcut_lookup inline delivery failed user_id=%s request_key=%s reason=%s",
                 safe_user_id,
                 request_key,
+                reason,
             )
+
+    def _worker() -> None:
+        if use_queue:
+            try:
+                enqueue_shortcut_lookup_job(
+                    user_id=safe_user_id,
+                    text=normalized_text,
+                    request_key=request_key,
+                    origin=origin,
+                    request_id=request_id,
+                )
+                logging.info(
+                    "shortcut_lookup enqueue accepted user_id=%s request_key=%s",
+                    safe_user_id,
+                    request_key,
+                )
+                return
+            except Exception:
+                logging.exception(
+                    "shortcut_lookup enqueue failed user_id=%s request_key=%s, falling back to inline",
+                    safe_user_id,
+                    request_key,
+                )
+                _deliver_inline("enqueue_failed")
+                return
+        _deliver_inline("inline_default")
 
     _SHORTCUT_ENQUEUE_EXECUTOR.submit(_worker)
     return request_key

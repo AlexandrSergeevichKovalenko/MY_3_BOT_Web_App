@@ -78,7 +78,9 @@ def generate_image_bytes(
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not configured")
 
-    client = OpenAI(
+    # SYNTHETIC_LOAD_MODE -> deterministic proxy (no network). Default OFF -> OpenAI(...).
+    from backend.synthetic_load import build_sync_openai_client
+    client = build_sync_openai_client(
         api_key=api_key,
         timeout=IMAGE_GENERATION_TIMEOUT_SECONDS,
     )

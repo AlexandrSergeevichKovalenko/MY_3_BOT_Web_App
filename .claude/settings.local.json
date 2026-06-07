@@ -134,7 +134,15 @@
       "Bash(sed -n '6370,6385p' /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/frontend/src/App.css)",
       "Bash(sed -n '17915,17930p' /Users/alexandr/Desktop/TELEGRAM_BOT_DEUTSCHESPRACHE/frontend/src/App.css)",
       "Bash(npx esbuild *)",
-      "Bash(grep -c 'const \\\\[.*__TRACKED_VAR__\\\\]\\\\|__TRACKED_VAR__ =' src/App.jsx)"
+      "Bash(grep -c 'const \\\\[.*__TRACKED_VAR__\\\\]\\\\|__TRACKED_VAR__ =' src/App.jsx)",
+      "Bash(grep -rhoE \"COUNT\\\\\\(\\\\*\\\\\\)[^;]{0,60}FROM [a-z_{}]+\" database.py)",
+      "Bash(sed -n '1855,1875p' bot_3.py)",
+      "Bash(sed -n '9960,9975p' bot_3.py)",
+      "Bash(grep -iA3 \"pytest\\\\|testpaths\")",
+      "Bash(sed -n '24,45p' background_jobs.py)",
+      "Bash(sed -n '20,55p' run_dramatiq_worker.py)",
+      "Bash(grep -rnE '\"__TRACKED_VAR__\"|'\\\\''__TRACKED_VAR__'\\\\''|__TRACKED_VAR__' backend/backend_server.py bot_3.py backend/database.py)",
+      "Bash(grep -EA2 \"^Ran \")"
     ]
   }
 }
