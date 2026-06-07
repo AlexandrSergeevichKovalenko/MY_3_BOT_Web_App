@@ -1,0 +1,64 @@
+# Local, disposable synthetic load-testing stack — NOT for production.
+#   Postgres + Redis + PgBouncer (transaction mode), all bound to localhost only.
+#
+# Mirrors the prod topology (PgBouncer transaction pooling in front of Postgres)
+# so app-tier bottlenecks (bot DB pool, pool-hold time, queue contention)
+# reproduce. Pool sizing is set at the app side via DB_POOL_MAXCONN=8.
+#
+# Start:  docker compose -f docker-compose.synthetic.yml up -d
+# Reset:  docker compose -f docker-compose.synthetic.yml down -v
+#
+# Connection (host machine):
+#   direct Postgres : postgresql://synthetic:synthetic@127.0.0.1:55432/synthetic
+#   via PgBouncer   : postgresql://synthetic:synthetic@127.0.0.1:56432/synthetic
+#   Redis           : redis://127.0.0.1:56379/0
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: synthetic_postgres
+    environment:
+      POSTGRES_USER: synthetic
+      POSTGRES_PASSWORD: synthetic
+      POSTGRES_DB: synthetic
+    ports:
+      - "127.0.0.1:55432:5432"   # localhost-only
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synthetic -d synthetic"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    tmpfs:
+      - /var/lib/postgresql/data   # disposable: data lives in RAM, gone on down
+
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: synthetic_pgbouncer
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: synthetic
+      DB_PASSWORD: synthetic
+      DB_NAME: synthetic
+      POOL_MODE: transaction          # mirror production PgBouncer
+      AUTH_TYPE: scram-sha-256
+      MAX_CLIENT_CONN: "200"
+      DEFAULT_POOL_SIZE: "20"
+      LISTEN_PORT: "5432"
+    ports:
+      - "127.0.0.1:56432:5432"        # localhost-only
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  redis:
+    image: redis:7
+    container_name: synthetic_redis
+    command: ["redis-server", "--save", "", "--appendonly", "no"]  # disposable
+    ports:
+      - "127.0.0.1:56379:6379"        # localhost-only
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
