@@ -124,6 +124,7 @@ from backend.database import (
     is_telegram_quiz_word_mastered,
     get_admin_telegram_ids,
     is_telegram_user_allowed,
+    is_telegram_user_allowed_async,
     log_billing_event,
     log_limit_runtime_event,
     allow_telegram_user,
@@ -3022,7 +3023,10 @@ async def enforce_user_access(update: Update, context: CallbackContext):
 
     await _register_group_context_from_update(update)
 
-    if is_telegram_user_allowed(int(user.id)):
+    # Event-loop-safe: fresh in-memory cache hit / admin returns without DB; on a
+    # cache miss the lookup runs via asyncio.to_thread (see database module) so the
+    # per-update access check never blocks the event loop with a synchronous query.
+    if await is_telegram_user_allowed_async(int(user.id)):
         return
 
     message = update.effective_message

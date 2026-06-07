@@ -12,6 +12,7 @@ import atexit
 import math
 import logging
 from contextlib import contextmanager
+import asyncio
 import json
 import secrets
 import random
@@ -8832,11 +8833,65 @@ def get_admin_telegram_ids() -> set[int]:
     return result
 
 
+# In-memory TTL cache for the Telegram allow-list lookup.
+# enforce_user_access runs is_telegram_user_allowed on every update (group=-2,
+# block=True). Without a cache that was an uncached, event-loop-blocking DB query
+# per non-admin update. The allow-list changes rarely (manual admin grant/revoke),
+# so a short-TTL per-user cache turns the hot path into an O(1) memory hit while
+# invalidation on allow/revoke keeps staleness bounded. Admins are NOT cached here
+# (they short-circuit before the DB in both the sync and async entry points).
+TELEGRAM_ALLOWED_USER_CACHE_TTL_SEC = max(
+    0, int(os.getenv("TELEGRAM_ALLOWED_USER_CACHE_TTL_SEC", "90"))
+)
+_ALLOWED_USER_CACHE_LOCK = threading.Lock()
+_ALLOWED_USER_CACHE: dict[int, tuple[float, bool]] = {}
+
+
+def _allowed_user_cache_get(user_id: int) -> bool | None:
+    """Return cached allow-decision for a non-admin user, or None on miss/expiry."""
+    if TELEGRAM_ALLOWED_USER_CACHE_TTL_SEC <= 0:
+        return None
+    now = time.monotonic()
+    with _ALLOWED_USER_CACHE_LOCK:
+        entry = _ALLOWED_USER_CACHE.get(int(user_id))
+        if entry is None:
+            return None
+        expiry, allowed = entry
+        if expiry < now:
+            _ALLOWED_USER_CACHE.pop(int(user_id), None)
+            return None
+        return allowed
+
+
+def _allowed_user_cache_put(user_id: int, allowed: bool) -> None:
+    if TELEGRAM_ALLOWED_USER_CACHE_TTL_SEC <= 0:
+        return
+    with _ALLOWED_USER_CACHE_LOCK:
+        _ALLOWED_USER_CACHE[int(user_id)] = (
+            time.monotonic() + TELEGRAM_ALLOWED_USER_CACHE_TTL_SEC,
+            bool(allowed),
+        )
+
+
+def invalidate_telegram_user_allowed_cache(user_id: int | None = None) -> None:
+    """Drop one (or all) cached allow-decisions. Called on grant/revoke so a
+    change in access never lingers beyond the next lookup."""
+    with _ALLOWED_USER_CACHE_LOCK:
+        if user_id is None:
+            _ALLOWED_USER_CACHE.clear()
+        else:
+            _ALLOWED_USER_CACHE.pop(int(user_id), None)
+
+
 def is_telegram_user_allowed(user_id: int) -> bool:
     if not user_id:
         return False
     if int(user_id) in get_admin_telegram_ids():
         return True
+
+    cached = _allowed_user_cache_get(int(user_id))
+    if cached is not None:
+        return cached
 
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -8844,7 +8899,28 @@ def is_telegram_user_allowed(user_id: int) -> bool:
                 "SELECT 1 FROM bt_3_allowed_users WHERE user_id = %s LIMIT 1;",
                 (int(user_id),),
             )
-            return cursor.fetchone() is not None
+            allowed = cursor.fetchone() is not None
+    _allowed_user_cache_put(int(user_id), allowed)
+    return allowed
+
+
+async def is_telegram_user_allowed_async(user_id: int) -> bool:
+    """Event-loop-safe allow check for the per-update hot path.
+
+    A fresh in-memory cache hit (or admin short-circuit) returns without touching
+    the database or a worker thread. On a cache miss the blocking DB lookup runs
+    via ``asyncio.to_thread`` so it never blocks the event loop. Decision and
+    caching semantics are identical to is_telegram_user_allowed().
+    """
+    uid = int(user_id) if user_id else 0
+    if not uid:
+        return False
+    if uid in get_admin_telegram_ids():
+        return True
+    cached = _allowed_user_cache_get(uid)
+    if cached is not None:
+        return cached
+    return await asyncio.to_thread(is_telegram_user_allowed, uid)
 
 
 def allow_telegram_user(
@@ -8868,6 +8944,8 @@ def allow_telegram_user(
                 """,
                 (int(user_id), username, added_by, note),
             )
+    # Access just changed — drop any stale cached decision for this user.
+    invalidate_telegram_user_allowed_cache(int(user_id))
 
 
 def revoke_telegram_user(user_id: int) -> bool:
@@ -8877,7 +8955,10 @@ def revoke_telegram_user(user_id: int) -> bool:
                 "DELETE FROM bt_3_allowed_users WHERE user_id = %s;",
                 (int(user_id),),
             )
-            return cursor.rowcount > 0
+            removed = cursor.rowcount > 0
+    # Access just changed — drop any stale cached decision for this user.
+    invalidate_telegram_user_allowed_cache(int(user_id))
+    return removed
 
 
 def _serialize_user_removal_row(row) -> dict[str, Any] | None:
