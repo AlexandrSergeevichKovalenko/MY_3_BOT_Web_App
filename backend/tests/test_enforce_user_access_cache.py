@@ -113,6 +113,48 @@ class AllowListCacheTests(unittest.TestCase):
             self.assertFalse(database.is_telegram_user_allowed(999))  # re-reads DB -> denied
         self.assertEqual(len(denied_exec), 1, "after invalidation the next lookup must hit DB")
 
+    def test_purge_invalidates_cache(self):
+        # purge_telegram_user_personal_data deletes the allow-list row directly; it must
+        # also invalidate the in-memory cache so a purged user is denied immediately,
+        # independent of TTL.
+        uid = 13579
+        database._allowed_user_cache_put(uid, True)
+        self.assertIs(database._allowed_user_cache_get(uid), True)
+
+        removal_row = (uid, "user", None, None, "pending", None, None,
+                       None, [], None, None, None, None, {}, {}, None, None)
+        purged_row = (uid, "user", None, None, "purged", None, None,
+                      None, [], None, None, None, None, {}, {}, None, None)
+
+        class _PurgeCursor:
+            def __init__(self):
+                self.rowcount = 0
+                self._rows = [removal_row, purged_row]
+            def __enter__(self):
+                return self
+            def __exit__(self, *exc):
+                return False
+            def execute(self, sql, params=None):
+                pass
+            def fetchone(self):
+                return self._rows.pop(0) if self._rows else None
+
+        class _PurgeConn:
+            def cursor(self):
+                return _PurgeCursor()
+
+        class _PurgeCtx:
+            def __enter__(self):
+                return _PurgeConn()
+            def __exit__(self, *exc):
+                return False
+
+        with patch.object(database, "get_db_connection_context", lambda *a, **k: _PurgeCtx()):
+            database.purge_telegram_user_personal_data(user_id=uid, approved_by=1, note="t")
+
+        self.assertIsNone(database._allowed_user_cache_get(uid),
+                          "purge must invalidate the cached allow-decision")
+
     def test_admin_bypasses_db(self):
         def _boom(*a, **k):
             raise AssertionError("admin must not hit the database")
@@ -120,6 +162,13 @@ class AllowListCacheTests(unittest.TestCase):
         with patch.object(database, "get_admin_telegram_ids", return_value={4242}):
             with patch.object(database, "get_db_connection_context", _boom):
                 self.assertTrue(database.is_telegram_user_allowed(4242))
+
+
+class DefaultTtlTests(unittest.TestCase):
+    def test_default_ttl_is_24h(self):
+        # Default raised to 24h (86400): complete invalidation (allow/revoke/purge)
+        # makes the TTL a bounded safety-net, not the primary correctness mechanism.
+        self.assertEqual(database.TELEGRAM_ALLOWED_USER_CACHE_TTL_SEC, 86400)
 
 
 class AllowListAsyncTests(unittest.IsolatedAsyncioTestCase):

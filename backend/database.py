@@ -8837,11 +8837,17 @@ def get_admin_telegram_ids() -> set[int]:
 # enforce_user_access runs is_telegram_user_allowed on every update (group=-2,
 # block=True). Without a cache that was an uncached, event-loop-blocking DB query
 # per non-admin update. The allow-list changes rarely (manual admin grant/revoke),
-# so a short-TTL per-user cache turns the hot path into an O(1) memory hit while
-# invalidation on allow/revoke keeps staleness bounded. Admins are NOT cached here
-# (they short-circuit before the DB in both the sync and async entry points).
+# so the per-user cache turns the hot path into an O(1) memory hit.
+#
+# All mutators of bt_3_allowed_users run in the single bot process and explicitly
+# invalidate this cache: allow_telegram_user(), revoke_telegram_user(), and
+# purge_telegram_user_personal_data(). Because invalidation is complete, the TTL
+# is only a bounded safety-net against any future un-invalidated drift (e.g. a new
+# mutation path or a second writer process), so it can be long. Default 24h; set
+# TELEGRAM_ALLOWED_USER_CACHE_TTL_SEC=0 to disable the cache entirely.
+# Admins are NOT cached here (they short-circuit before the DB in both entry points).
 TELEGRAM_ALLOWED_USER_CACHE_TTL_SEC = max(
-    0, int(os.getenv("TELEGRAM_ALLOWED_USER_CACHE_TTL_SEC", "90"))
+    0, int(os.getenv("TELEGRAM_ALLOWED_USER_CACHE_TTL_SEC", "86400"))
 )
 _ALLOWED_USER_CACHE_LOCK = threading.Lock()
 _ALLOWED_USER_CACHE: dict[int, tuple[float, bool]] = {}
@@ -9570,6 +9576,10 @@ def purge_telegram_user_personal_data(
                 ),
             )
             row = cursor.fetchone()
+    # Purge deletes the bt_3_allowed_users row directly (not via revoke_telegram_user),
+    # so invalidate here too — otherwise a purged user could retain cached access
+    # until the TTL expires.
+    invalidate_telegram_user_allowed_cache(int(user_id))
     return _serialize_user_removal_row(row)
 
 
