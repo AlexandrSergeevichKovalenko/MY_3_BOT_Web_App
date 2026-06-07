@@ -148,19 +148,40 @@ def _normalize_db_connection_target(raw_value: str | None) -> str:
     return "direct"
 
 
+def _compute_database_url_selection(
+    target: str,
+    direct_url: str,
+    pgbouncer_url: str,
+) -> tuple[str, str, str | None]:
+    """Pure selection of the active DATABASE_URL from the connection target.
+
+    Returns (active_url, source_label, selection_error). Behaviour mirrors the
+    original inline block exactly: default is the direct URL; only
+    ``pgbouncer_transaction`` switches to the PgBouncer URL, and a missing
+    PgBouncer URL surfaces a selection error instead of silently falling back.
+    Kept side-effect free so it can be unit tested without import-time env.
+    """
+    active_url = direct_url
+    source_label = "DATABASE_URL_RAILWAY"
+    selection_error: str | None = None
+    if target == "pgbouncer_transaction":
+        if pgbouncer_url:
+            active_url = pgbouncer_url
+            source_label = "DATABASE_URL_PGBOUNCER"
+        else:
+            selection_error = (
+                "DB_CONNECTION_TARGET=pgbouncer_transaction requires DATABASE_URL_PGBOUNCER or "
+                "DATABASE_URL_PGBOUNCER_RAILWAY"
+            )
+    return active_url, source_label, selection_error
+
+
 DB_CONNECTION_TARGET = _normalize_db_connection_target(os.getenv("DB_CONNECTION_TARGET"))
-DATABASE_URL = DATABASE_URL_DIRECT
-DATABASE_URL_SOURCE = "DATABASE_URL_RAILWAY"
-DATABASE_URL_SELECTION_ERROR: str | None = None
-if DB_CONNECTION_TARGET == "pgbouncer_transaction":
-    if DATABASE_URL_PGBOUNCER:
-        DATABASE_URL = DATABASE_URL_PGBOUNCER
-        DATABASE_URL_SOURCE = "DATABASE_URL_PGBOUNCER"
-    else:
-        DATABASE_URL_SELECTION_ERROR = (
-            "DB_CONNECTION_TARGET=pgbouncer_transaction requires DATABASE_URL_PGBOUNCER or "
-            "DATABASE_URL_PGBOUNCER_RAILWAY"
-        )
+DATABASE_URL, DATABASE_URL_SOURCE, DATABASE_URL_SELECTION_ERROR = _compute_database_url_selection(
+    DB_CONNECTION_TARGET,
+    DATABASE_URL_DIRECT,
+    DATABASE_URL_PGBOUNCER,
+)
 
 DB_CONNECT_TIMEOUT_SECONDS = int(os.getenv("DB_CONNECT_TIMEOUT_SECONDS", "12"))
 DB_CONNECT_RETRIES = max(1, int(os.getenv("DB_CONNECT_RETRIES", "3")))
@@ -2796,7 +2817,55 @@ def _emit_db_pool_runtime_audit() -> None:
     )
 
 
+def pgbouncer_rollout_status() -> dict[str, Any]:
+    """Sanitized snapshot of the active DB connection target for rollout checks.
+
+    Never includes credentials or full DSNs — only the connection target, the
+    resolved source label, sanitized endpoint metadata, the pool bounds, and any
+    selection error. Safe to log and to return from an admin diagnostic.
+    """
+    return {
+        "db_connection_target": DB_CONNECTION_TARGET,
+        "database_url_source": DATABASE_URL_SOURCE,
+        "pgbouncer_url_configured": bool(_PGBOUNCER_DATABASE_URL_META.get("configured")),
+        "direct_url_configured": bool(_DIRECT_DATABASE_URL_META.get("configured")),
+        "selection_error": DATABASE_URL_SELECTION_ERROR,
+        "active_endpoint_kind": _ACTIVE_DATABASE_URL_META.get("endpoint_kind"),
+        "active_endpoint_host": _ACTIVE_DATABASE_URL_META.get("host"),
+        "active_endpoint_port": _ACTIVE_DATABASE_URL_META.get("port"),
+        "active_sslmode": _ACTIVE_DATABASE_URL_META.get("sslmode"),
+        "db_pool_enabled": bool(DB_POOL_ENABLED),
+        "db_pool_minconn": int(DB_POOL_MINCONN),
+        "db_pool_maxconn": int(DB_POOL_MAXCONN),
+    }
+
+
+def log_pgbouncer_rollout_status() -> dict[str, Any]:
+    """Emit one concise, greppable, secret-free startup line for rollout tracking."""
+    status = pgbouncer_rollout_status()
+    # Inline service-name resolution: this runs at import time, before
+    # _db_runtime_service_name() is defined further down the module.
+    service_name = str(os.getenv("RAILWAY_SERVICE_NAME") or os.getenv("SERVICE_NAME") or "").strip() or "-"
+    logging.info(
+        "pgbouncer_rollout startup service=%s target=%s source=%s pgbouncer_url_configured=%s "
+        "endpoint_kind=%s host=%s port=%s sslmode=%s pool_min=%s pool_max=%s selection_error=%s",
+        service_name,
+        status["db_connection_target"],
+        status["database_url_source"],
+        status["pgbouncer_url_configured"],
+        status["active_endpoint_kind"],
+        status["active_endpoint_host"],
+        status["active_endpoint_port"],
+        status["active_sslmode"],
+        status["db_pool_minconn"],
+        status["db_pool_maxconn"],
+        status["selection_error"] or "none",
+    )
+    return status
+
+
 _emit_db_pool_runtime_audit()
+log_pgbouncer_rollout_status()
 
 @contextmanager
 def get_db_connection_context(*, acquire_timeout_ms: int | None = None): #
@@ -6370,6 +6439,26 @@ def ensure_webapp_tables() -> None:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_billing_events_currency_time
                 ON bt_3_billing_events (currency, event_time DESC);
+            """)
+            # Phase-0 free-limit usage gate optimization.
+            # get_free_feature_usage_today() runs, per gated request:
+            #   SUM(units_value) FROM bt_3_billing_events
+            #   WHERE user_id = ? AND action_type = ? AND units_type = 'requests'
+            #     AND status IN ('estimated','final')
+            #     AND (event_time AT TIME ZONE ?)::date = ?
+            # A direct expression index on (event_time AT TIME ZONE 'Europe/Vienna')::date
+            # is NOT possible: that expression is STABLE (named-zone conversion depends on
+            # tzdata), and index expressions must be IMMUTABLE. This partial covering index
+            # is the IMMUTABLE-safe equivalent: (user_id, action_type) match the equality
+            # predicates, event_time supports the local-date filter, units_value is INCLUDEd
+            # so the SUM can be served index-only, and the partial WHERE restricts the index
+            # to exactly the gate-relevant rows (the table CHECK already guarantees status).
+            # Does not change accounting, limits, reserve_*, or increment_* — read-path only.
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_billing_events_free_usage_lookup
+                ON bt_3_billing_events (user_id, action_type, event_time DESC)
+                INCLUDE (units_value)
+                WHERE units_type = 'requests' AND status IN ('estimated', 'final');
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_billing_fixed_costs (
