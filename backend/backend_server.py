@@ -36958,6 +36958,32 @@ def _run_shortcut_lookup_delivery(
 
         if sent < len(blocks):
             time.sleep(0.35)
+
+    # Delivery wrote canonical pending entries (hash + dict_pending_shortcut) and
+    # sent the word cards, so the raw-text "safety net" copy for this text is now
+    # redundant. Drop it — otherwise the append-only raw list keeps every word the
+    # user ever sent for 8h, and the next "Быстрый перевод" re-absorbs already
+    # translated words (the "113 pending instead of 7" bug). Only clear on success
+    # (sent > 0); on failure the raw copy stays as the fallback it was designed for.
+    if sent > 0:
+        try:
+            client = get_redis_client()
+            if client is not None:
+                raw_list_key = f"dict_pending_shortcut_raw_list:{safe_user_id}"
+                client.lrem(raw_list_key, 0, normalized_text)
+                raw_text_key = f"dict_pending_shortcut_raw:{safe_user_id}"
+                current_raw = client.get(raw_text_key)
+                current_raw_str = (
+                    current_raw.decode("utf-8") if isinstance(current_raw, bytes) else current_raw
+                )
+                if current_raw_str is not None and str(current_raw_str).strip() == normalized_text:
+                    client.delete(raw_text_key)
+        except Exception:
+            logging.debug(
+                "shortcut_lookup: raw safety-net cleanup failed user_id=%s",
+                safe_user_id,
+                exc_info=True,
+            )
     return sent
 
 
