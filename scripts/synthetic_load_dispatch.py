@@ -8,13 +8,20 @@ external API.
 
 Hard safety contract (see assert_safe_to_dispatch):
   * SYNTHETIC_LOAD_MODE must be 1
-  * the active Postgres host must be local/synthetic (never a known prod host)
-  * the Redis host must be local/synthetic
+  * a KNOWN production host (centerbeam/kodama proxy, or any host in
+    SYNTHETIC_EXTRA_PRODUCTION_HOSTS) is refused UNCONDITIONALLY — even when armed
+  * a local/synthetic host (localhost/127.0.0.1/docker service names) runs with no
+    further arming required
+  * any OTHER (non-local) host — including a Railway staging host on a *.rlwy.net /
+    *.railway.internal / *.up.railway.app suffix — is refused unless BOTH:
+      - SYNTHETIC_STAGING_ARMED=1   (explicit arming for non-local targets), and
+      - SYNTHETIC_ALLOWED_HOST=<host> exactly matches the active DB/Redis host
   * only a stub bot is used — never a real Telegram token / network call
   * OpenAI / YouTube / TTS are faked by the synthetic-provider layer
 
-Run only against the local docker-compose.synthetic.yml stack. The CLI refuses
-to dispatch unless --execute is passed AND all guards pass.
+Run the local docker-compose.synthetic.yml stack with no arming, or an explicitly
+armed Railway *staging* project. The CLI refuses to dispatch unless --execute is
+passed AND all guards pass.
 """
 
 from __future__ import annotations
@@ -37,11 +44,19 @@ from scripts.synthetic_load_runner import generate_updates
 # Safety guards
 # --------------------------------------------------------------------------- #
 
-# Known production hosts (explicit) + production-like suffixes.
-PRODUCTION_HOSTS = {"centerbeam.proxy.rlwy.net", "kodama.proxy.rlwy.net"}
+# Known production hosts that are refused UNCONDITIONALLY (even when fully armed).
+KNOWN_PRODUCTION_HOSTS = {"centerbeam.proxy.rlwy.net", "kodama.proxy.rlwy.net"}
+# Backwards-compatible alias (older callers/tests refer to PRODUCTION_HOSTS).
+PRODUCTION_HOSTS = KNOWN_PRODUCTION_HOSTS
+# Production-LIKE Railway suffixes. A host on one of these is non-local, so it is
+# refused by default and only allowed for an explicitly-armed staging host
+# (SYNTHETIC_STAGING_ARMED=1 + SYNTHETIC_ALLOWED_HOST match) that is NOT a known
+# production host.
 PRODUCTION_HOST_SUFFIXES = (".proxy.rlwy.net", ".railway.internal", ".up.railway.app", ".rlwy.net")
-# Hosts considered safe local/synthetic targets.
+# Hosts considered safe local/synthetic targets (no arming required).
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0", "postgres", "pgbouncer", "redis"}
+
+_TRUTHY = {"1", "true", "yes", "on"}
 
 
 class SyntheticSafetyError(RuntimeError):
@@ -58,25 +73,50 @@ def _host_from_url(url: str | None) -> str:
         return ""
 
 
-def _is_production_host(host: str) -> bool:
+def is_staging_armed() -> bool:
+    """True only when SYNTHETIC_STAGING_ARMED is explicitly enabled. Required for
+    any non-local (Railway-style staging) synthetic target."""
+    return (os.getenv("SYNTHETIC_STAGING_ARMED") or "").strip().lower() in _TRUTHY
+
+
+def _allowed_host() -> str:
+    return (os.getenv("SYNTHETIC_ALLOWED_HOST") or "").strip().lower()
+
+
+def _extra_production_hosts() -> set[str]:
+    """Operator-supplied extra known-production hosts (comma/semicolon separated).
+    These are added to the unconditional deny list and can never be armed past."""
+    raw = os.getenv("SYNTHETIC_EXTRA_PRODUCTION_HOSTS") or ""
+    return {h.strip().lower() for h in raw.replace(";", ",").split(",") if h.strip()}
+
+
+def _is_known_production_host(host: str) -> bool:
+    """A host on the hard, unbypassable deny list."""
     h = (host or "").strip().lower()
     if not h:
         return False
-    if h in PRODUCTION_HOSTS:
+    return h in KNOWN_PRODUCTION_HOSTS or h in _extra_production_hosts()
+
+
+def _is_production_host(host: str) -> bool:
+    """Broad classifier: a known prod host OR any production-like Railway suffix.
+    Used for reporting; arming decisions use the finer-grained helpers above."""
+    h = (host or "").strip().lower()
+    if not h:
+        return False
+    if _is_known_production_host(h):
         return True
     return any(h.endswith(suffix) for suffix in PRODUCTION_HOST_SUFFIXES)
 
 
 def _is_local_or_synthetic_host(host: str) -> bool:
+    """A host that needs no arming (local docker stack / clearly-synthetic name)."""
     h = (host or "").strip().lower()
     if not h:
         return False
     if h in LOCAL_HOSTS:
         return True
-    if h.endswith(".local") or "synthetic" in h:
-        return True
-    allowed = (os.getenv("SYNTHETIC_ALLOWED_HOST") or "").strip().lower()
-    return bool(allowed) and h == allowed
+    return h.endswith(".local") or "synthetic" in h
 
 
 def _active_db_host() -> str:
@@ -104,28 +144,68 @@ def _active_redis_host() -> str:
     return ""
 
 
+def _assert_host_safe(host: str, label: str, *, required: bool, armed: bool, allowed_host: str) -> None:
+    """Validate a single DB/Redis host against the safety contract.
+
+    Order matters: a KNOWN production host is rejected first and can never be
+    armed past. A local/synthetic host is always fine. Anything else is treated
+    as a staging target and requires BOTH SYNTHETIC_STAGING_ARMED=1 and an exact
+    SYNTHETIC_ALLOWED_HOST match (this is the only path that permits a
+    production-like Railway suffix host)."""
+    h = (host or "").strip().lower()
+    if not h:
+        if required:
+            raise SyntheticSafetyError(
+                f"Refusing to dispatch: {label} host is not configured (no DATABASE_URL host resolved).")
+        return
+
+    if _is_known_production_host(h):
+        raise SyntheticSafetyError(
+            f"Refusing to dispatch: {label} host '{h}' is a KNOWN PRODUCTION host (refused even when armed).")
+
+    if _is_local_or_synthetic_host(h):
+        return  # local docker stack / synthetic name — no arming required
+
+    # Non-local host => staging path. Both arming and an exact allow-list match are required.
+    if not armed:
+        raise SyntheticSafetyError(
+            f"Refusing to dispatch: {label} host '{h}' is non-local. "
+            "Set SYNTHETIC_STAGING_ARMED=1 to authorize a staging target.")
+    if not allowed_host:
+        raise SyntheticSafetyError(
+            f"Refusing to dispatch: {label} host '{h}' is non-local. "
+            "Set SYNTHETIC_ALLOWED_HOST to the exact staging host to authorize it.")
+    if h != allowed_host:
+        raise SyntheticSafetyError(
+            f"Refusing to dispatch: {label} host '{h}' does not match "
+            f"SYNTHETIC_ALLOWED_HOST ('{allowed_host}').")
+    # armed + exact allow-list match + not a known prod host -> permitted staging target.
+
+
 def assert_safe_to_dispatch() -> dict[str, Any]:
     """Raise SyntheticSafetyError unless it is safe to dispatch synthetic load."""
     if not is_synthetic_load_mode():
         raise SyntheticSafetyError("Refusing to dispatch: SYNTHETIC_LOAD_MODE is not enabled (set =1).")
 
+    armed = is_staging_armed()
+    allowed_host = _allowed_host()
+
     db_host = _active_db_host()
-    if _is_production_host(db_host):
-        raise SyntheticSafetyError(f"Refusing to dispatch: DB host '{db_host}' looks like PRODUCTION.")
-    if not _is_local_or_synthetic_host(db_host):
-        raise SyntheticSafetyError(
-            f"Refusing to dispatch: DB host '{db_host or '<none>'}' is not local/synthetic. "
-            "Point DATABASE_URL at the local stack or set SYNTHETIC_ALLOWED_HOST.")
+    _assert_host_safe(db_host, "DB", required=True, armed=armed, allowed_host=allowed_host)
 
     redis_host = _active_redis_host()
     if redis_host:  # redis optional for DB-only flows, but if set it must be safe
-        if _is_production_host(redis_host):
-            raise SyntheticSafetyError(f"Refusing to dispatch: Redis host '{redis_host}' looks like PRODUCTION.")
-        if not _is_local_or_synthetic_host(redis_host):
-            raise SyntheticSafetyError(
-                f"Refusing to dispatch: Redis host '{redis_host}' is not local/synthetic.")
+        _assert_host_safe(redis_host, "Redis", required=False, armed=armed, allowed_host=allowed_host)
 
-    return {"db_host": db_host, "redis_host": redis_host or "<unset>", "synthetic_mode": True}
+    target = "local" if _is_local_or_synthetic_host(db_host) else "staging"
+    return {
+        "db_host": db_host,
+        "redis_host": redis_host or "<unset>",
+        "synthetic_mode": True,
+        "staging_armed": armed,
+        "allowed_host": allowed_host or "<unset>",
+        "target": target,
+    }
 
 
 # --------------------------------------------------------------------------- #

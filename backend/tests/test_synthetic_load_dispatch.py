@@ -66,6 +66,142 @@ class SafetyGuardTests(unittest.TestCase):
         self.assertFalse(disp._is_local_or_synthetic_host("centerbeam.proxy.rlwy.net"))
 
 
+class StagingSafetyGuardTests(unittest.TestCase):
+    """Railway staging safety guards: arming + allow-list + hard prod deny."""
+
+    def _clear(self):
+        import os
+        for k in ("SYNTHETIC_STAGING_ARMED", "SYNTHETIC_ALLOWED_HOST",
+                  "SYNTHETIC_EXTRA_PRODUCTION_HOSTS"):
+            os.environ.pop(k, None)
+
+    def test_local_run_without_staging_armed_passes(self):
+        with patch.dict("os.environ", {"SYNTHETIC_LOAD_MODE": "1"}):
+            self._clear()
+            with patch.object(disp, "_active_db_host", return_value="127.0.0.1"), \
+                 patch.object(disp, "_active_redis_host", return_value="localhost"):
+                safety = disp.assert_safe_to_dispatch()
+        self.assertEqual(safety["target"], "local")
+        self.assertFalse(safety["staging_armed"])
+
+    def test_nonlocal_host_requires_staging_armed(self):
+        with patch.dict("os.environ", {"SYNTHETIC_LOAD_MODE": "1"}):
+            self._clear()  # not armed
+            with patch.object(disp, "_active_db_host", return_value="staging-pg.example.com"):
+                with self.assertRaises(disp.SyntheticSafetyError) as ctx:
+                    disp.assert_safe_to_dispatch()
+        self.assertIn("SYNTHETIC_STAGING_ARMED", str(ctx.exception))
+
+    def test_nonlocal_host_requires_allowed_host_match(self):
+        # Armed but no allow-list set -> refuse.
+        with patch.dict("os.environ", {"SYNTHETIC_LOAD_MODE": "1", "SYNTHETIC_STAGING_ARMED": "1"}):
+            disp.os.environ.pop("SYNTHETIC_ALLOWED_HOST", None)
+            with patch.object(disp, "_active_db_host", return_value="staging-pg.example.com"):
+                with self.assertRaises(disp.SyntheticSafetyError) as ctx:
+                    disp.assert_safe_to_dispatch()
+        self.assertIn("SYNTHETIC_ALLOWED_HOST", str(ctx.exception))
+        # Armed + allow-list set but MISMATCHED host -> refuse.
+        with patch.dict("os.environ", {"SYNTHETIC_LOAD_MODE": "1", "SYNTHETIC_STAGING_ARMED": "1",
+                                       "SYNTHETIC_ALLOWED_HOST": "other-host.example.com"}):
+            with patch.object(disp, "_active_db_host", return_value="staging-pg.example.com"):
+                with self.assertRaises(disp.SyntheticSafetyError) as ctx:
+                    disp.assert_safe_to_dispatch()
+        self.assertIn("SYNTHETIC_ALLOWED_HOST", str(ctx.exception))
+
+    def test_nonlocal_host_passes_when_armed_and_allowed(self):
+        with patch.dict("os.environ", {"SYNTHETIC_LOAD_MODE": "1", "SYNTHETIC_STAGING_ARMED": "1",
+                                       "SYNTHETIC_ALLOWED_HOST": "staging-pg.example.com"}):
+            with patch.object(disp, "_active_db_host", return_value="staging-pg.example.com"), \
+                 patch.object(disp, "_active_redis_host", return_value="staging-pg.example.com"):
+                safety = disp.assert_safe_to_dispatch()
+        self.assertEqual(safety["target"], "staging")
+        self.assertTrue(safety["staging_armed"])
+        self.assertEqual(safety["allowed_host"], "staging-pg.example.com")
+
+    def test_railway_staging_suffix_allowed_when_armed_and_allowed(self):
+        # A *.proxy.rlwy.net host that is NOT a known prod host may run as a staging
+        # target only when armed + explicitly allow-listed.
+        host = "bot3-staging.proxy.rlwy.net"
+        with patch.dict("os.environ", {"SYNTHETIC_LOAD_MODE": "1", "SYNTHETIC_STAGING_ARMED": "1",
+                                       "SYNTHETIC_ALLOWED_HOST": host}):
+            with patch.object(disp, "_active_db_host", return_value=host), \
+                 patch.object(disp, "_active_redis_host", return_value=""):
+                safety = disp.assert_safe_to_dispatch()
+        self.assertEqual(safety["target"], "staging")
+
+    def test_railway_staging_suffix_refused_without_arming(self):
+        host = "bot3-staging.proxy.rlwy.net"
+        with patch.dict("os.environ", {"SYNTHETIC_LOAD_MODE": "1", "SYNTHETIC_ALLOWED_HOST": host}):
+            disp.os.environ.pop("SYNTHETIC_STAGING_ARMED", None)
+            with patch.object(disp, "_active_db_host", return_value=host):
+                with self.assertRaises(disp.SyntheticSafetyError) as ctx:
+                    disp.assert_safe_to_dispatch()
+        self.assertIn("SYNTHETIC_STAGING_ARMED", str(ctx.exception))
+
+    def test_known_production_db_refused_even_if_armed(self):
+        host = "centerbeam.proxy.rlwy.net"
+        with patch.dict("os.environ", {"SYNTHETIC_LOAD_MODE": "1", "SYNTHETIC_STAGING_ARMED": "1",
+                                       "SYNTHETIC_ALLOWED_HOST": host}):
+            with patch.object(disp, "_active_db_host", return_value=host):
+                with self.assertRaises(disp.SyntheticSafetyError) as ctx:
+                    disp.assert_safe_to_dispatch()
+        self.assertIn("KNOWN PRODUCTION", str(ctx.exception).upper())
+
+    def test_known_production_redis_refused_even_if_armed(self):
+        with patch.dict("os.environ", {"SYNTHETIC_LOAD_MODE": "1", "SYNTHETIC_STAGING_ARMED": "1",
+                                       "SYNTHETIC_ALLOWED_HOST": "kodama.proxy.rlwy.net"}):
+            with patch.object(disp, "_active_db_host", return_value="localhost"), \
+                 patch.object(disp, "_active_redis_host", return_value="kodama.proxy.rlwy.net"):
+                with self.assertRaises(disp.SyntheticSafetyError) as ctx:
+                    disp.assert_safe_to_dispatch()
+        self.assertIn("KNOWN PRODUCTION", str(ctx.exception).upper())
+
+    def test_extra_production_hosts_are_refused_even_if_allowed(self):
+        host = "extra-prod.example.com"
+        with patch.dict("os.environ", {"SYNTHETIC_LOAD_MODE": "1", "SYNTHETIC_STAGING_ARMED": "1",
+                                       "SYNTHETIC_ALLOWED_HOST": host,
+                                       "SYNTHETIC_EXTRA_PRODUCTION_HOSTS": "a.example.com, extra-prod.example.com"}):
+            with patch.object(disp, "_active_db_host", return_value=host):
+                with self.assertRaises(disp.SyntheticSafetyError) as ctx:
+                    disp.assert_safe_to_dispatch()
+        self.assertIn("KNOWN PRODUCTION", str(ctx.exception).upper())
+
+
+class SyntheticUserNamespaceTests(unittest.TestCase):
+    """Generated synthetic user IDs must live in the reserved >= 900e9 namespace
+    so they can never collide with a real Telegram user ID."""
+
+    def test_reserved_base_is_correct(self):
+        from scripts.synthetic_load_runner import SYNTHETIC_USER_ID_BASE
+        self.assertGreaterEqual(SYNTHETIC_USER_ID_BASE, 900_000_000_000)
+
+    def test_all_generated_user_ids_in_reserved_namespace(self):
+        from scripts.synthetic_load_runner import generate_updates, SYNTHETIC_USER_ID_BASE
+        updates = list(generate_updates(user_count=250, rate_per_sec=50, duration_sec=4))
+        self.assertTrue(updates)
+        ids = []
+        for u in updates:
+            uid = (u.get("message", {}).get("from", {}).get("id")
+                   or u.get("callback_query", {}).get("from", {}).get("id"))
+            self.assertIsNotNone(uid)
+            ids.append(int(uid))
+        self.assertTrue(all(i >= SYNTHETIC_USER_ID_BASE for i in ids),
+                        f"min generated id {min(ids)} < base {SYNTHETIC_USER_ID_BASE}")
+
+    def test_no_collision_with_plausible_real_telegram_ids(self):
+        # Real Telegram user IDs are far below the reserved base (the production
+        # synthetic floor itself is ~9.1e9). No generated id may fall below 900e9.
+        from scripts.synthetic_load_runner import generate_updates, is_synthetic_user_id
+        plausible_real_ids = [1, 12345, 7_000_000_000, 9_100_000_000]  # all < 900e9
+        for rid in plausible_real_ids:
+            self.assertFalse(is_synthetic_user_id(rid))
+        for u in generate_updates(user_count=100, rate_per_sec=20, duration_sec=2):
+            uid = (u.get("message", {}).get("from", {}).get("id")
+                   or u.get("callback_query", {}).get("from", {}).get("id"))
+            self.assertTrue(is_synthetic_user_id(int(uid)))
+            self.assertNotIn(int(uid), plausible_real_ids)
+
+
 class AllowListSeedTests(unittest.TestCase):
     def test_seed_allows_users_via_cache_only(self):
         import backend.database as database

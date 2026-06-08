@@ -18,6 +18,23 @@ import json
 import time
 from typing import Any, Callable, Iterator, Optional
 
+# Reserved synthetic user-ID namespace. Generated synthetic Telegram user IDs
+# start here so they can NEVER collide with a real Telegram user ID. 900 billion
+# sits far above the largest plausible real Telegram ID and also above the
+# production-side synthetic floor (SYNTHETIC_TELEGRAM_USER_ID_MIN, default
+# 9_100_000_001 ≈ 9.1 billion), so any synthetic user is also recognised as
+# synthetic by the backend. Do NOT lower this value.
+SYNTHETIC_USER_ID_BASE = 900_000_000_000
+
+
+def is_synthetic_user_id(user_id: int) -> bool:
+    """True iff `user_id` is inside the reserved synthetic namespace."""
+    try:
+        return int(user_id) >= SYNTHETIC_USER_ID_BASE
+    except (TypeError, ValueError):
+        return False
+
+
 # Synthetic user mix (matches the load-testing plan: A translator, B reviewer,
 # C shortcut, D callback-heavy). Weights sum to 1.0.
 USER_MIX = {
@@ -61,7 +78,7 @@ def generate_updates(user_count: int, rate_per_sec: float, duration_sec: float) 
     This is a generator; it performs no I/O and no Telegram calls."""
     type_counts = _assign_types(user_count)
     user_ids: list[tuple[int, str]] = []
-    next_id = 100_000
+    next_id = SYNTHETIC_USER_ID_BASE  # reserved namespace: never collides with real IDs
     for cohort, n in type_counts.items():
         for _ in range(n):
             user_ids.append((next_id, cohort))
