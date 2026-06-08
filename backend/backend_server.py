@@ -35922,6 +35922,11 @@ Never bundle a phrase together with its example sentence into one block. \
 A line with 3 distinct learnable units → 3 blocks. \
 A line with 1 learnable unit → 1 block. Let the content decide, not the line count.
 
+TARGET LANGUAGE IS GERMAN. The input is copied from German-language material but is \
+often very dirty — mixed scripts, other languages, social-media chrome, stray numbers \
+and symbols. Extract GERMAN learnable units only; everything not German is noise unless \
+it is an integral part of a German sentence (e.g. a foreign proper name inside it).
+
 WHAT TO DISCARD — NOT LEARNABLE UNITS:
   • Section titles and topic headers.
   • Explanations ABOUT the unit instead of the unit itself.
@@ -35932,6 +35937,15 @@ WHAT TO DISCARD — NOT LEARNABLE UNITS:
   • Etymological or prefix/suffix analyses.
   • Metalinguistic commentary and valency tables written as annotations.
   • Parenthetical glosses and quoted explanations.
+  • Standalone numbers or numeric counts with no German word ("284", "2,291", "19"). \
+    KEEP a number only when it is part of a real German phrase ("284 Kilometer", "20 Euro").
+  • Social-media UI chrome and engagement counters: "und 99 weitere Personen haben das \
+    kommentiert", "Gefällt 1,2 Tsd. Mal", view/like/comment/share counts, and button \
+    labels like "Mehr anzeigen", "Folgen", "Antworten", "Teilen".
+  • Usernames, @mentions, handles, channel names and URLs ("deutsch_erfolgreich", \
+    "deutsch.laman", "@user", "t.me/...").
+  • Text that is not German (Russian, English, other languages) standing on its own.
+  • Pure symbols, emoji, emoticons, ASCII-art, and lone punctuation ("...", "•", "/\\) )").
   • Any fragment that, translated in isolation, would produce a meaningless result.
 
 BOTH FIELDS PER BLOCK:
@@ -35981,6 +35995,15 @@ For every piece of text in the input ask: \
     written as annotations rather than as natural sentences.
   DISCARD — translations and glosses in another language
   DISCARD — topic headings and explanatory prose
+  DISCARD — standalone numbers / numeric counts with no German word ("284", "2,291"); \
+    keep a number only inside a real German phrase ("284 Kilometer")
+  DISCARD — social-media UI chrome and engagement counters ("und 99 weitere Personen \
+    haben das kommentiert", like/view/comment counts, buttons "Folgen"/"Mehr anzeigen")
+  DISCARD — usernames, @mentions, handles, channel names, URLs \
+    ("deutsch_erfolgreich", "deutsch.laman", "t.me/...")
+  DISCARD — non-German text (Russian/English/other) that stands on its own. \
+    The source language is German; other languages alone are noise.
+  DISCARD — pure symbols, emoji, emoticons, ASCII-art, lone punctuation ("...", "•", "/\\) )")
   DISCARD — any fragment that would yield no meaningful dictionary entry if translated.
 
 STEP 2 — ONE BLOCK PER ATOMIC UNIT (from what survived Step 1):
@@ -36028,13 +36051,66 @@ def _shortcut_normalize_unit_text(text: str) -> str:
     cleaned = re.sub(r"(?<=\S)\s*(?:\.{3,})\s*(?=\S)", " ", cleaned)
     cleaned = re.sub(r"\s*\+\s*", " + ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned)
-    cleaned = re.sub(r"^[•▪◦●■▸▹▶►*]+\s*", "", cleaned)
+    cleaned = re.sub(r"^[•▪◦●■▸▹▶►*·‣⁃∙‧–—\-]+\s*", "", cleaned)
     cleaned = re.sub(r"^\d+[\.)]\s*", "", cleaned)
     for left, right in (('"', '"'), ("'", "'"), ("«", "»"), ("“", "”"), ("„", "“")):
         if cleaned.startswith(left) and cleaned.endswith(right) and len(cleaned) > 2:
             cleaned = cleaned[len(left):-len(right)].strip()
     cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+    # Strip dangling trailing bullets / dashes / colons left over from copied lists
+    # ("Hallo meine Lieben —" → "Hallo meine Lieben"). Sentence terminators . ! ? stay.
+    cleaned = re.sub(r"[\s•·‣⁃∙–—\-:;]+$", "", cleaned)
     return cleaned.strip()
+
+
+# Any Unicode letter (covers German umlauts, Cyrillic, CJK, etc.)
+_SHORTCUT_ANY_LETTER_RE = re.compile(r"[^\W\d_]", re.UNICODE)
+# Latin letters only (the script German is written in)
+_SHORTCUT_LATIN_LETTER_RE = re.compile(r"[A-Za-zÄÖÜäöüßẞ]")
+# A single token shaped like a social-media handle: foo.bar / foo_bar
+_SHORTCUT_HANDLE_TOKEN_RE = re.compile(r"^[^\W\d_][\w]*[._][\w]+$", re.UNICODE)
+
+
+def _shortcut_is_learnable_unit(term: str, content: str) -> bool:
+    """Conservative deterministic gate applied to every extracted block before delivery.
+
+    The Shortcut/forwarded source is always German, so the goal is to KEEP anything that
+    plausibly carries a German learnable word/phrase/sentence and DROP only material that
+    is, with high confidence, not a dictionary unit. Numbers/symbols/foreign-script-only
+    fragments are noise. Tuned for precision: when in doubt, keep (a German word, or a
+    number embedded in a real phrase like "284 Kilometer", always survives).
+    """
+    text = str(content or term or "").strip()
+    if not text:
+        return False
+
+    letters = _SHORTCUT_ANY_LETTER_RE.findall(text)
+    # 1) No letters at all → standalone number / punctuation / ASCII-art / emoticon
+    #    ("284", "2,291", "(58", "•0 20", "/\\) )", "...", lone "•")
+    if not letters:
+        return False
+    # 2) Fewer than two letters → single-letter fragment ("i:", "A) )")
+    if len(letters) < 2:
+        return False
+    # 3) No Latin letters → other-script-only unit (CJK "田", pure Cyrillic). Conservative:
+    #    drop ONLY when there is zero Latin content (mixed German+other is kept).
+    if not _SHORTCUT_LATIN_LETTER_RE.search(text):
+        return False
+    # 4) Angle brackets never appear in real German text → dictionary annotation ("+ <-,-en>")
+    if "<" in text or ">" in text:
+        return False
+    # 5) Short, symbol-dominated annotation ("m–(e)s"): very few letters wrapped in
+    #    structural brackets/slashes/dashes. Real German words/phrases have more letters.
+    structural_symbols = sum(text.count(ch) for ch in "()[]{}+\\/–—-")
+    if len(letters) <= 4 and structural_symbols >= 2:
+        return False
+    # 6) Handle-dominated block (≤2 tokens, one is foo.bar / foo_bar):
+    #    "deutsch.laman o", "deutsch_erfolgreich". A handle inside a longer real sentence
+    #    is left to the LLM prompt (kept here — conservative).
+    tokens = text.split()
+    if len(tokens) <= 2 and any(_SHORTCUT_HANDLE_TOKEN_RE.match(tok) for tok in tokens):
+        return False
+    return True
 
 
 def _shortcut_dedup_key(user_id: int, text: str) -> str:
@@ -36289,6 +36365,9 @@ def _shortcut_extract_blocks_from_json(
         if not content and term:
             content = term
         if term and content:
+            if not _shortcut_is_learnable_unit(term, content):
+                logging.info("shortcut split: dropped non-learnable block content=%r", content[:60])
+                continue
             norm_content = re.sub(r"\s+", " ", content.lower())
             if norm_content not in seen_contents:
                 seen_contents.add(norm_content)
@@ -36382,13 +36461,20 @@ def _shortcut_split_blocks(
     fallback_model = _shortcut_split_model("shortcut_split_fallback", "gpt-4.1-2025-04-14")
 
     def _line_split_fallback() -> list[tuple[str, str]]:
-        """Per-line split with basic normalization — no LLM, guaranteed N-in N-out."""
+        """Per-line split with basic normalization + garbage gate — no LLM.
+
+        Without an LLM to reason about content, the deterministic gate is the only
+        thing standing between raw copied noise (numbers, bullets, ASCII-art) and the
+        user's dictionary, so we apply it here too. May legitimately return [] when the
+        whole input is noise — that is the desired "nothing to translate" outcome.
+        """
         result = [
-            (_shortcut_normalize_unit_text(line), _shortcut_normalize_unit_text(line))
+            (cleaned, cleaned)
             for line in input_lines
-            if _shortcut_normalize_unit_text(line)
+            if (cleaned := _shortcut_normalize_unit_text(line))
+            and _shortcut_is_learnable_unit(cleaned, cleaned)
         ]
-        return result or [(text.strip(), text.strip())]
+        return result
 
     async def _call(model: str, system_prompt: str, timeout: float) -> str:
         response = await _openai_async_client.chat.completions.create(
@@ -36526,9 +36612,15 @@ def _shortcut_split_blocks(
         )
         logging.warning("shortcut split: fallback model failed model=%s (%s), using line-split fallback", fallback_model, exc)
 
-    # Last resort: per-line split for multi-line input, single block for single-line
+    # Last resort: per-line split for multi-line input, single block for single-line.
+    # The single-line block still passes through the garbage gate so a lone "284" or
+    # "/\\) )" is dropped rather than translated.
     logging.warning("shortcut split: both models failed, using last-resort split (%d input lines)", len(input_lines))
-    blocks = _line_split_fallback() if multiline else [(text.strip(), text.strip())]
+    if multiline:
+        blocks = _line_split_fallback()
+    else:
+        single = _shortcut_normalize_unit_text(text)
+        blocks = [(single, single)] if single and _shortcut_is_learnable_unit(single, single) else []
     _log_shortcut_split_event(
         origin=origin,
         user_id=user_id,

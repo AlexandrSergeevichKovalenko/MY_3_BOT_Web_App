@@ -118,6 +118,83 @@ class ShortcutLookupSplitTests(unittest.TestCase):
             ],
         )
 
+    def test_is_learnable_unit_drops_garbage(self):
+        # Real garbage observed in production Shortcut output (numbers, symbols,
+        # ASCII-art, dictionary annotations, handles, foreign-script-only).
+        for raw in [
+            "284", "19", "161", "2,291", "58", "(58", "•0  20", "/\\) )",
+            "A) )", "...", "i:", "m–(e)s", "+ <-,-en>",
+            "deutsch.laman o", "deutsch_erfolgreich", "田", "•",
+        ]:
+            cleaned = server._shortcut_normalize_unit_text(raw)
+            self.assertFalse(
+                bool(cleaned) and server._shortcut_is_learnable_unit(cleaned, cleaned),
+                msg=f"expected DROP for {raw!r} (normalized {cleaned!r})",
+            )
+
+    def test_is_learnable_unit_keeps_german_units(self):
+        # Genuine German words / phrases / sentences and number+word phrases must survive.
+        for raw in [
+            "284 Kilometer", "20 Euro", "Hallo meine Lieben", "in Darmstadt",
+            "auf dem Feld arbeiten", "die Absage", "erinnern an + Akkusativ",
+            "Er ist sich todsicher, dass er recht hat.", "Ei",
+        ]:
+            cleaned = server._shortcut_normalize_unit_text(raw)
+            self.assertTrue(
+                server._shortcut_is_learnable_unit(cleaned, cleaned),
+                msg=f"expected KEEP for {raw!r} (normalized {cleaned!r})",
+            )
+
+    def test_normalize_strips_dangling_trailing_dash_and_leading_bullet(self):
+        self.assertEqual(server._shortcut_normalize_unit_text("Hallo meine Lieben —"), "Hallo meine Lieben")
+        self.assertEqual(server._shortcut_normalize_unit_text("• Darmstadt"), "Darmstadt")
+        # Sentence terminators are preserved
+        self.assertEqual(server._shortcut_normalize_unit_text("Wer bist du?"), "Wer bist du?")
+
+    def test_extract_blocks_filters_out_garbage_blocks(self):
+        raw = json.dumps(
+            {
+                "blocks": [
+                    {"term": "284", "content": "284"},
+                    {"term": "die Absage", "content": "die Absage"},
+                    {"term": "deutsch_erfolgreich", "content": "deutsch_erfolgreich"},
+                    {"term": "in Darmstadt", "content": "in Darmstadt"},
+                    {"term": "...", "content": "..."},
+                ]
+            },
+            ensure_ascii=False,
+        )
+        blocks = server._shortcut_extract_blocks_from_json(raw, "284 die Absage in Darmstadt")
+        self.assertEqual(blocks, [("die Absage", "die Absage"), ("in Darmstadt", "in Darmstadt")])
+
+    def test_mechanical_fallback_drops_garbage_lines(self):
+        # Both LLM attempts fail → deterministic line split must still filter noise.
+        fake_client = _FakeShortcutSplitClient([RuntimeError("mini down"), RuntimeError("full down")])
+        with patch("backend.openai_manager.client", fake_client), \
+             patch.object(server, "_log_flow_observation"), \
+             patch.dict(os.environ, {
+                 "LLM_TASK_MODEL_SHORTCUT_SPLIT": "",
+                 "OPENAI_TASK_MODEL_SHORTCUT_SPLIT": "",
+                 "LLM_TASK_MODEL_SHORTCUT_SPLIT_FALLBACK": "",
+                 "OPENAI_TASK_MODEL_SHORTCUT_SPLIT_FALLBACK": "",
+             }, clear=False):
+            blocks = server._shortcut_split_blocks("284\ndie Absage\n/\\) )", origin="shortcut", user_id=1, request_key="rk")
+        self.assertEqual(blocks, [("die Absage", "die Absage")])
+
+    def test_single_line_garbage_yields_no_blocks(self):
+        # A lone "284" with both models down must not be translated.
+        fake_client = _FakeShortcutSplitClient([RuntimeError("mini down"), RuntimeError("full down")])
+        with patch("backend.openai_manager.client", fake_client), \
+             patch.object(server, "_log_flow_observation"), \
+             patch.dict(os.environ, {
+                 "LLM_TASK_MODEL_SHORTCUT_SPLIT": "",
+                 "OPENAI_TASK_MODEL_SHORTCUT_SPLIT": "",
+                 "LLM_TASK_MODEL_SHORTCUT_SPLIT_FALLBACK": "",
+                 "OPENAI_TASK_MODEL_SHORTCUT_SPLIT_FALLBACK": "",
+             }, clear=False):
+            blocks = server._shortcut_split_blocks("284", origin="shortcut", user_id=1, request_key="rk")
+        self.assertEqual(blocks, [])
+
     def test_shortcut_split_uses_mini_model_first(self):
         raw = json.dumps({"blocks": [{"term": "Haus", "content": "Haus"}]}, ensure_ascii=False)
         fake_client = _FakeShortcutSplitClient([raw])

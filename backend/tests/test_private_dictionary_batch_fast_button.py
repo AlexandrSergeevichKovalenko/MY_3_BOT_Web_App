@@ -216,6 +216,35 @@ class PrivateDictionaryBatchFastButtonTests(unittest.TestCase):
             ["k2"],
         )
 
+    def test_purge_all_pending_clears_memory_and_every_redis_key(self):
+        redis = _FakeRedis()
+        redis.values["dict_pending_user:11"] = '[{"key": "k1", "user_id": 11}]'
+        redis.values["dict_pending_shortcut:11"] = '[{"key": "sc1", "user_id": 11}]'
+        redis.values["dict_pending_shortcut_raw:11"] = "Welt"
+        redis.lists["dict_pending_shortcut_raw_list:11"] = ["Welt"]
+        redis.hashes["dict_pending_user_hash:11"] = {"k1": "{}"}
+        # Two users in memory — only user 11 must be purged.
+        bot_3.pending_dictionary_lookup_requests["k1"] = {"user_id": 11, "text": "eins"}
+        bot_3.pending_dictionary_lookup_requests["k2"] = {"user_id": 22, "text": "zwei"}
+
+        with patch("backend.job_queue.get_redis_client", return_value=redis):
+            dropped = bot_3._purge_all_pending_dictionary_for_user(11)
+
+        self.assertEqual(dropped, 1)
+        self.assertNotIn("k1", bot_3.pending_dictionary_lookup_requests)
+        self.assertIn("k2", bot_3.pending_dictionary_lookup_requests)  # other user untouched
+        for key in (
+            "dict_pending_user_hash:11",
+            "dict_pending_user:11",
+            "dict_pending_shortcut:11",
+            "dict_pending_shortcut_raw:11",
+            "dict_pending_shortcut_raw_list:11",
+        ):
+            self.assertIn(key, redis.deleted, msg=f"{key} should be deleted")
+            self.assertNotIn(key, redis.values)
+            self.assertNotIn(key, redis.hashes)
+            self.assertNotIn(key, redis.lists)
+
     def test_shortcut_pending_is_promoted_to_primary_redis_queue(self):
         redis = _FakeRedis()
         redis.values["dict_pending_user:11"] = "[]"

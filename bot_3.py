@@ -4185,6 +4185,25 @@ async def admin_economics_command(update: Update, context: CallbackContext):
         await message.reply_text(f"❌ Не удалось собрать economics report: {exc}")
 
 
+async def clear_dictionary_queue_command(update: Update, context: CallbackContext):
+    """Flush the caller's own pending fast-translate queue (memory + all Redis keys)."""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    user_id = int(sender.id)
+    # Pull any Redis-only residue into memory first so the reported count is accurate.
+    try:
+        await asyncio.to_thread(_list_pending_dictionary_lookup_request_keys_for_user, user_id)
+    except Exception:
+        logging.debug("clearqueue: restore-before-purge failed user_id=%s", user_id, exc_info=True)
+    dropped = await asyncio.to_thread(_purge_all_pending_dictionary_for_user, user_id)
+    await message.reply_text(
+        f"🧹 Очередь быстрого перевода очищена. Убрано записей: {dropped}.\n"
+        "Следующий «Быстрый перевод» начнётся с чистого листа."
+    )
+
+
 async def handle_admin_economics_callback(update: Update, context: CallbackContext):
     query = update.callback_query
     admin = update.effective_user
@@ -4539,6 +4558,11 @@ async def handle_button_click(update: Update, context: CallbackContext):
             k: dict(pending_dictionary_lookup_requests.get(k) or {})
             for k in pending_keys
         }
+        # Snapshot captured → wipe the WHOLE queue now (memory + all Redis keys). This is
+        # the only reliable way to guarantee "translated == gone": no residue, no partial
+        # cleanup, no re-absorption next time. Words arriving during processing form a
+        # fresh queue. Without this the count keeps inflating across sessions.
+        await asyncio.to_thread(_purge_all_pending_dictionary_for_user, user_id)
         await update.message.reply_text(
             f"🚀 Запускаю быстрый перевод DE → RU для {len(pending_keys)} текущих запросов."
         )
@@ -6288,6 +6312,45 @@ def _remove_pending_from_redis(user_id: int, request_key: str) -> None:
         _remove_from_json_list(f"dict_pending_shortcut:{user_id}")
     except Exception:
         logging.debug("dict_pending: redis remove failed user_id=%s key=%s", user_id, key, exc_info=True)
+
+
+def _purge_all_pending_dictionary_for_user(user_id: int) -> int:
+    """Wipe the ENTIRE pending-lookup queue for a user — memory + every Redis key.
+
+    The pending state is spread across two in-memory stores and five Redis keys
+    (hash, dict_pending_user JSON, dict_pending_shortcut JSON, and two raw safety-net
+    keys). Partial per-key cleanup has repeatedly left residue that gets re-absorbed on
+    the next "Быстрый перевод", inflating the count. This is the single source of truth
+    for "the queue is now empty": call it once a snapshot of what to translate has been
+    captured, so nothing stale can carry over. Returns how many in-memory entries were dropped.
+    """
+    uid = int(user_id)
+    removed = 0
+    for key in [
+        k for k, v in list(pending_dictionary_lookup_requests.items())
+        if int((v or {}).get("user_id", 0)) == uid
+    ]:
+        pending_dictionary_lookup_requests.pop(key, None)
+        removed += 1
+    try:
+        from backend.job_queue import get_redis_client
+        client = get_redis_client()
+        if client is not None:
+            for redis_key in (
+                _dict_pending_redis_hash_key(uid),
+                _dict_pending_redis_key(uid),
+                f"dict_pending_shortcut:{uid}",
+                f"dict_pending_shortcut_raw:{uid}",
+                f"dict_pending_shortcut_raw_list:{uid}",
+            ):
+                try:
+                    client.delete(redis_key)
+                except Exception:
+                    logging.debug("dict_pending: purge delete failed key=%s", redis_key, exc_info=True)
+    except Exception:
+        logging.warning("dict_pending: full purge failed user_id=%s", uid, exc_info=True)
+    logging.info("dict_pending: purged ALL pending for user_id=%s memory_dropped=%d", uid, removed)
+    return removed
 
 
 def _store_pending_dictionary_lookup_request(
@@ -19751,6 +19814,7 @@ def main():
     application.add_handler(CommandHandler("mobile_token", mobile_token_command))
     application.add_handler(CommandHandler("budgets", budgets_command))
     application.add_handler(CommandHandler("economics", admin_economics_command))
+    application.add_handler(CommandHandler("clearqueue", clear_dictionary_queue_command))
     application.add_handler(CommandHandler("ttsbudget", tts_budget_command))
     application.add_handler(CommandHandler("ttsprewarmquota", tts_prewarm_quota_command))
     application.add_handler(CommandHandler("test_image_quiz", test_image_quiz_command))
