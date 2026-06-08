@@ -106,6 +106,7 @@ from backend.admin_economics import (
     create_admin_limit_change_preview,
     format_admin_economics_report,
     format_admin_limit_preview,
+    send_admin_economics_report,
 )
 from backend.database import (
     DATABASE_URL as SHARED_DATABASE_URL,
@@ -4145,6 +4146,17 @@ async def tts_budget_command(update: Update, context: CallbackContext):
 
 async def budgets_command(update: Update, context: CallbackContext):
     await tts_budget_command(update, context)
+
+
+def _run_admin_economics_report_safe() -> None:
+    """Bot-side 23:00 economics report. Runs in a BackgroundScheduler thread, so it
+    must stay synchronous. force=True bypasses the daily run-guard (see scheduler
+    registration for why)."""
+    try:
+        result = send_admin_economics_report(force=True)
+        logging.info("admin economics report (bot scheduler) result=%s", result)
+    except Exception:
+        logging.exception("admin economics report (bot scheduler) failed")
 
 
 async def admin_economics_command(update: Update, context: CallbackContext):
@@ -19932,6 +19944,22 @@ def main():
             "cron",
             hour=4,
             minute=20,
+        )
+        # -- Admin economics report at 23:00 Europe/Vienna --
+        # Runs in the bot process (guaranteed bot token + admin IDs + DB), unlike the
+        # background-worker scheduler path which silently fails when the worker lacks
+        # TELEGRAM_Deutsch_BOT_TOKEN. force=True bypasses the daily run-guard so a stale
+        # "failed" claim from the broken worker path can't block delivery. Set
+        # ADMIN_ECONOMICS_REPORT_ENABLED=0 on the scheduler service to retire that path.
+        scheduler.add_job(
+            _run_admin_economics_report_safe,
+            "cron",
+            hour=int((os.getenv("ADMIN_ECONOMICS_REPORT_HOUR") or "23").strip() or "23"),
+            minute=int((os.getenv("ADMIN_ECONOMICS_REPORT_MINUTE") or "0").strip() or "0"),
+            timezone=ZoneInfo(os.getenv("ADMIN_ECONOMICS_REPORT_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=1800,
         )
         for hour, minute in FLASHCARD_REMINDER_TIMES:
             scheduler.add_job(
