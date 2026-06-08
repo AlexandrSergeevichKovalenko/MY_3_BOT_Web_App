@@ -97,7 +97,7 @@ def _fetch_active_user_ids(target_day: date, tz_name: str) -> set[int]:
                     FROM bt_3_daily_sentences
                     WHERE user_id IS NOT NULL
                       AND COALESCE(shown_to_user, FALSE) = TRUE
-                      AND (created_at AT TIME ZONE %s)::date = %s
+                      AND (shown_to_user_at AT TIME ZONE %s)::date = %s
                 )
                 SELECT DISTINCT user_id
                 FROM active
@@ -210,7 +210,7 @@ def _limit_usage_values(feature_code: str, target_day: date, tz_name: str) -> di
                     FROM bt_3_daily_sentences
                     WHERE user_id IS NOT NULL
                       AND COALESCE(shown_to_user, FALSE) = TRUE
-                      AND (created_at AT TIME ZONE %s)::date = %s
+                      AND (shown_to_user_at AT TIME ZONE %s)::date = %s
                     GROUP BY user_id;
                     """,
                     (tz_name, target_day),
