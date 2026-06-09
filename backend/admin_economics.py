@@ -88,6 +88,9 @@ def _fetch_active_user_ids(target_day: date, tz_name: str) -> set[int]:
             cursor.execute(
                 """
                 WITH active AS (
+                    -- billing_events is a cost/free-limit ledger: it misses PRO users
+                    -- (free-limit rows are gated on effective_mode='free') and cache hits.
+                    -- Source "active" from real activity tables so all plans are counted.
                     SELECT user_id
                     FROM bt_3_billing_events
                     WHERE user_id IS NOT NULL
@@ -98,12 +101,17 @@ def _fetch_active_user_ids(target_day: date, tz_name: str) -> set[int]:
                     WHERE user_id IS NOT NULL
                       AND COALESCE(shown_to_user, FALSE) = TRUE
                       AND (shown_to_user_at AT TIME ZONE %s)::date = %s
+                    UNION
+                    SELECT user_id
+                    FROM bt_3_webapp_dictionary_queries
+                    WHERE user_id IS NOT NULL
+                      AND (created_at AT TIME ZONE %s)::date = %s
                 )
                 SELECT DISTINCT user_id
                 FROM active
                 WHERE user_id IS NOT NULL;
                 """,
-                (tz_name, target_day, tz_name, target_day),
+                (tz_name, target_day, tz_name, target_day, tz_name, target_day),
             )
             return {int(row[0]) for row in cursor.fetchall() or [] if row and row[0] is not None}
 
@@ -285,6 +293,66 @@ def _limit_utilization(target_day: date, tz_name: str) -> list[dict[str, Any]]:
     return result
 
 
+def _user_activity(target_day: date, tz_name: str, *, limit: int = 15) -> list[dict[str, Any]]:
+    """Per-user activity from real activity tables (plan-independent, unlike billing_events).
+
+    Counts dictionary lookups/saves and translations shown so PRO users — whose actions
+    never hit the free-limit billing ledger — are still visible.
+    """
+    dict_counts: dict[int, int] = {}
+    translation_counts: dict[int, int] = {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id, COUNT(*)
+                FROM bt_3_webapp_dictionary_queries
+                WHERE user_id IS NOT NULL
+                  AND (created_at AT TIME ZONE %s)::date = %s
+                GROUP BY user_id;
+                """,
+                (tz_name, target_day),
+            )
+            for row in cursor.fetchall() or []:
+                if row and row[0] is not None:
+                    dict_counts[int(row[0])] = int(row[1] or 0)
+            cursor.execute(
+                """
+                SELECT user_id, COUNT(*)
+                FROM bt_3_daily_sentences
+                WHERE user_id IS NOT NULL
+                  AND COALESCE(shown_to_user, FALSE) = TRUE
+                  AND (shown_to_user_at AT TIME ZONE %s)::date = %s
+                GROUP BY user_id;
+                """,
+                (tz_name, target_day),
+            )
+            for row in cursor.fetchall() or []:
+                if row and row[0] is not None:
+                    translation_counts[int(row[0])] = int(row[1] or 0)
+
+    result = []
+    for user_id in set(dict_counts) | set(translation_counts):
+        dict_actions = dict_counts.get(user_id, 0)
+        translations = translation_counts.get(user_id, 0)
+        try:
+            entitlement = resolve_entitlement(user_id=int(user_id), tz=tz_name)
+            plan = str(entitlement.get("effective_mode") or "free").lower()
+        except Exception:
+            plan = "free"
+        result.append(
+            {
+                "user_id": int(user_id),
+                "plan": plan,
+                "dict_actions": dict_actions,
+                "translations": translations,
+                "total": dict_actions + translations,
+            }
+        )
+    result.sort(key=lambda item: item["total"], reverse=True)
+    return result[:limit]
+
+
 def _gpt_helper_usage(target_day: date, tz_name: str) -> dict[str, int]:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -379,6 +447,7 @@ def build_admin_economics_report_payload(
         "tz_name": tz_name,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "user_stats": _user_stats(day, tz_name),
+        "user_activity": _user_activity(day, tz_name),
         "openai_stats": _openai_stats(day, tz_name),
         "limit_utilization": _limit_utilization(day, tz_name),
         "gpt_helper_usage": _gpt_helper_usage(day, tz_name),
@@ -423,7 +492,21 @@ def format_admin_economics_report(payload: dict[str, Any]) -> str:
         f"New users today: {_fmt_num(stats.get('new_users_today'))}",
         f"Total active users: {_fmt_num(stats.get('total_active_users'))}",
         "",
-        "🤖 OpenAI",
+        "👤 Activity by user (dict + translations, all plans)",
+    ]
+    activity = payload.get("user_activity") or []
+    if not activity:
+        lines.append("- none")
+    for item in activity:
+        lines.append(
+            f"- {int(item.get('user_id') or 0)} [{str(item.get('plan') or 'free').upper()}] — "
+            f"{_fmt_num(item.get('total'))} actions "
+            f"(dict {_fmt_num(item.get('dict_actions'))}, transl {_fmt_num(item.get('translations'))})"
+        )
+    lines.extend(
+        [
+            "",
+            "🤖 OpenAI",
         f"Total requests: {_fmt_num(openai_stats.get('total_openai_requests'))}",
         f"Lookup: {_fmt_num(openai_stats.get('lookup_requests'))}",
         f"Explain: {_fmt_num(openai_stats.get('explain_requests'))}",
@@ -434,7 +517,8 @@ def format_admin_economics_report(payload: dict[str, Any]) -> str:
         f"OpenAI avoided by cache: {_fmt_num(openai_stats.get('openai_requests_avoided_by_cache'))}",
         "",
         "📏 Limits",
-    ]
+        ]
+    )
     trend = payload.get("trend_7d") or {}
     for item in payload.get("limit_utilization") or []:
         feature = str(item.get("feature_code") or "")
