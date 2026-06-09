@@ -65,8 +65,8 @@ def _digest_state(uid=99):
         "source_lang": "de",
         "target_lang": "ru",
         "items": [
-            {"term": "Strafmaß", "canonical": "das Strafmaß", "translation": "мера наказания"},
-            {"term": "blamierst", "canonical": "blamieren", "translation": "позорить"},
+            {"term": "Strafmaß", "canonical": "das Strafmaß", "translation": "мера наказания", "semantic_category": "Право"},
+            {"term": "blamierst", "canonical": "blamieren", "translation": "позорить", "semantic_category": "Эмоции"},
         ],
         "selected": [False, False],
         "created_at": 1.0,
@@ -120,7 +120,7 @@ class BotAutosaveDigestTests(unittest.TestCase):
         saved_calls = []
 
         def _fake_save(*, payload, chosen, user_id):
-            saved_calls.append(chosen)
+            saved_calls.append((chosen, payload))
             return True, "ok", 1, False
 
         # context=None → context.application raises → handler awaits the bg save inline.
@@ -131,8 +131,11 @@ class BotAutosaveDigestTests(unittest.TestCase):
             asyncio.run(bot_3.handle_autosave_digest_save_callback(_FakeUpdate(query), None))
 
         self.assertEqual(len(saved_calls), 1)
-        self.assertEqual(saved_calls[0]["source"], "das Strafmaß")  # canonical, not raw "Strafmaß"
-        self.assertEqual(saved_calls[0]["target"], "мера наказания")
+        chosen, payload = saved_calls[0]
+        self.assertEqual(chosen["source"], "das Strafmaß")  # canonical, not raw "Strafmaß"
+        self.assertEqual(chosen["target"], "мера наказания")
+        # semantic_category routed into lookup so the save lands in the right folder
+        self.assertEqual(payload["lookup"].get("semantic_category"), "Право")
         # buttons removed immediately + digest consumed
         self.assertIn(None, query.markup_edits)
         self.assertNotIn(bot_3._autosave_digest_redis_key(self.digest_id), self.redis.kv)

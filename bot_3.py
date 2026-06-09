@@ -2037,12 +2037,15 @@ async def handle_autosave_digest_save_callback(update: Update, context: Callback
             target_text = str(it.get("translation") or "").strip()
             if not source_text or not target_text:
                 continue
+            # Pass the semantic_category computed at flush so the save routes to the right
+            # folder WITHOUT a per-word GPT call (same folders as manual saves).
+            semantic_category = str(it.get("semantic_category") or "").strip()
             payload = {
                 "user_id": user_id,
                 "source_lang": src,
                 "target_lang": tgt,
                 "direction": f"{src}-{tgt}",
-                "lookup": {},
+                "lookup": {"semantic_category": semantic_category} if semantic_category else {},
                 "origin": "shortcut_autosave_digest",
             }
             chosen = {"source": source_text, "target": target_text}

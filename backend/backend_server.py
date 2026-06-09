@@ -37230,17 +37230,20 @@ def _run_shortcut_lookup_delivery(
 
 
 # --- Nightly auto-save (staging + debounced digest) -------------------------------------
-# When the user toggles auto-save ON, OCR'd words are STAGED (not sent as one card each).
-# A nightly batch is 30 photos = 30 separate HTTP requests, so we debounce: each request
-# re-arms a ~90s timer; when photos stop arriving, one flush translates the staged terms
-# and sends a single multi-select digest the user reviews in the morning.
-_AUTOSAVE_STAGE_TTL = 21600  # 6h — staged terms live until flushed/reviewed
+# Toggle ON → OCR'd text is appended to a Redis list per user (NOT split per request). The
+# request path is intentionally trivial (RPUSH + a flush-at timestamp) so nothing heavy runs
+# on the web tier. A scheduler-driven sweep enqueues a worker flush ~DEBOUNCE seconds after
+# the LAST photo; the worker does ONE split + ONE normalize/translate/categorize call for the
+# whole batch and sends a single multi-select digest. This scales to 1k–10k nightly batches.
+_AUTOSAVE_RAW_TTL = 21600  # 6h — raw queue + flush-at live until flushed/reviewed
 _AUTOSAVE_DEBOUNCE_SECONDS = max(15, int((os.getenv("SHORTCUT_AUTOSAVE_DEBOUNCE_SECONDS") or "90").strip() or "90"))
-_AUTOSAVE_FLUSH_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="autosave-flush")
+# Backend-side short TTL cache for the toggle: avoids a DB round-trip on EVERY shortcut request.
+_AUTOSAVE_TOGGLE_CACHE: dict[int, tuple[float, bool]] = {}
+_AUTOSAVE_TOGGLE_CACHE_TTL = 30.0
 
 
-def _autosave_stage_key(user_id: int) -> str:
-    return f"autosave_stage:{int(user_id)}"
+def _autosave_raw_key(user_id: int) -> str:
+    return f"autosave_raw:{int(user_id)}"
 
 
 def _autosave_flush_at_key(user_id: int) -> str:
@@ -37251,6 +37254,21 @@ def _autosave_flush_lock_key(user_id: int) -> str:
     return f"autosave_flush_lock:{int(user_id)}"
 
 
+def _autosave_toggle_cached(user_id: int) -> bool:
+    """Toggle state with a 30s in-process cache so the hot shortcut path doesn't hit the DB."""
+    now = time.time()
+    hit = _AUTOSAVE_TOGGLE_CACHE.get(int(user_id))
+    if hit and hit[0] > now:
+        return hit[1]
+    try:
+        val = bool(get_shortcut_autosave_enabled(int(user_id)))
+    except Exception:
+        logging.debug("autosave: toggle lookup failed user_id=%s", user_id, exc_info=True)
+        val = False
+    _AUTOSAVE_TOGGLE_CACHE[int(user_id)] = (now + _AUTOSAVE_TOGGLE_CACHE_TTL, val)
+    return val
+
+
 def _run_shortcut_autosave_staging(
     *,
     user_id: int,
@@ -37258,8 +37276,9 @@ def _run_shortcut_autosave_staging(
     origin: str = "shortcut",
     request_id: str | None = None,
 ) -> int:
-    """Split + filter + dedup the request's words into the per-user staging hash, then
-    (re)arm the debounce. Returns the count of NEW units staged by this request."""
+    """CRITICAL-PATH-LIGHT: only append the raw OCR text and (re)arm the debounce in Redis.
+    NO split/LLM here — all heavy work is deferred to the worker flush. Returns the raw
+    queue length. Falls back to the card flow only if Redis itself is unavailable."""
     normalized_text = str(text or "").strip()
     safe_user_id = int(user_id or 0)
     if safe_user_id <= 0 or not normalized_text:
@@ -37267,96 +37286,56 @@ def _run_shortcut_autosave_staging(
 
     client = get_redis_client()
     if client is None:
-        # No Redis → cannot stage/debounce. Fall back to the card flow so words aren't lost.
         logging.warning("autosave: redis unavailable, falling back to card delivery user_id=%s", safe_user_id)
         return _run_shortcut_lookup_delivery(
             user_id=safe_user_id, text=normalized_text, origin=origin, request_id=request_id
         )
-
-    blocks = _shortcut_split_blocks(
-        normalized_text, origin=origin, user_id=safe_user_id, request_id=request_id
-    )
-    if not blocks:
-        # Still re-arm: a no-content photo shouldn't end the batch prematurely.
-        _autosave_arm_flush(safe_user_id)
-        return 0
-
-    stage_key = _autosave_stage_key(safe_user_id)
-    existing_norms = {
-        (k.decode("utf-8") if isinstance(k, bytes) else k)
-        for k in (client.hkeys(stage_key) or [])
-    }
-    staged = 0
-    for term, content in blocks:
-        lookup_text = str(term or content or "").strip()
-        if not lookup_text:
-            continue
-        norm = _shortcut_dedup_norm(lookup_text)
-        if not norm or norm in existing_norms:
-            continue  # cross-request + within-request dedup
-        existing_norms.add(norm)
-        client.hset(
-            stage_key,
-            norm,
-            json.dumps({"term": term, "content": content, "added_at": time.time()}, ensure_ascii=False),
-        )
-        staged += 1
-    client.expire(stage_key, _AUTOSAVE_STAGE_TTL)
-    _autosave_arm_flush(safe_user_id)
-    logging.info(
-        "autosave: staged user_id=%s new=%d total_staged=%d", safe_user_id, staged, len(existing_norms)
-    )
-    return staged
-
-
-def _autosave_arm_flush(user_id: int) -> None:
-    """(Re)arm the debounce: bump flush-at to now+DEBOUNCE and schedule a check after it."""
-    safe_user_id = int(user_id)
-    flush_at = time.time() + _AUTOSAVE_DEBOUNCE_SECONDS
+    raw_key = _autosave_raw_key(safe_user_id)
     try:
-        client = get_redis_client()
-        if client is not None:
-            client.setex(_autosave_flush_at_key(safe_user_id), _AUTOSAVE_STAGE_TTL, f"{flush_at:.3f}")
+        length = int(client.rpush(raw_key, normalized_text))
+        client.expire(raw_key, _AUTOSAVE_RAW_TTL)
+        # (re)arm debounce: the sweep flushes ~DEBOUNCE seconds after the LAST photo arrives.
+        client.setex(
+            _autosave_flush_at_key(safe_user_id),
+            _AUTOSAVE_RAW_TTL,
+            f"{time.time() + _AUTOSAVE_DEBOUNCE_SECONDS:.3f}",
+        )
     except Exception:
-        logging.debug("autosave: failed to set flush-at user_id=%s", safe_user_id, exc_info=True)
-
-    def _delayed_check() -> None:
-        try:
-            time.sleep(_AUTOSAVE_DEBOUNCE_SECONDS + 1)
-            _autosave_maybe_flush(safe_user_id)
-        except Exception:
-            logging.exception("autosave: delayed flush check failed user_id=%s", safe_user_id)
-
-    _AUTOSAVE_FLUSH_EXECUTOR.submit(_delayed_check)
+        logging.exception("autosave: staging RPUSH failed user_id=%s", safe_user_id)
+        return 0
+    logging.info("autosave: queued raw text user_id=%s raw_len=%d", safe_user_id, length)
+    return length
 
 
-def _autosave_maybe_flush(user_id: int) -> None:
-    """Flush only if the debounce window has elapsed (no newer request re-armed it) and no
-    other thread is already flushing this user (Redis NX lock = exactly-once)."""
-    safe_user_id = int(user_id)
+def _autosave_collect_due_user_ids() -> list[int]:
+    """Scan flush-at keys and CLAIM (delete) those whose debounce window has elapsed.
+    Returns the user_ids ready to flush. Called by the sweep actor on the worker tier — one
+    cheap pass for ALL users regardless of count (no per-request threads/timers)."""
     client = get_redis_client()
     if client is None:
-        return
-    raw = client.get(_autosave_flush_at_key(safe_user_id))
-    if not raw:
-        return  # already flushed/cleared
+        return []
+    now = time.time()
+    due: list[int] = []
     try:
-        flush_at = float(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+        for key in client.scan_iter(match="autosave_flush_at:*", count=200):
+            key_s = key.decode("utf-8") if isinstance(key, bytes) else key
+            val = client.get(key_s)
+            if val is None:
+                continue
+            try:
+                flush_at = float(val.decode("utf-8") if isinstance(val, bytes) else val)
+            except Exception:
+                client.delete(key_s)
+                continue
+            if now >= flush_at:
+                client.delete(key_s)  # claim → won't be re-enqueued next sweep
+                try:
+                    due.append(int(key_s.rsplit(":", 1)[1]))
+                except Exception:
+                    continue
     except Exception:
-        flush_at = 0.0
-    if time.time() < flush_at - 0.5:
-        return  # a newer request bumped the window; its timer will handle the flush
-    # Claim the flush so concurrent timers don't double-send.
-    if client.set(_autosave_flush_lock_key(safe_user_id), "1", nx=True, ex=120) is None:
-        return
-    try:
-        _run_autosave_flush(safe_user_id)
-    finally:
-        # flush-at is consumed; clear so a late timer is a no-op
-        try:
-            client.delete(_autosave_flush_at_key(safe_user_id))
-        except Exception:
-            pass
+        logging.exception("autosave: sweep scan failed")
+    return due
 
 
 _AUTOSAVE_DIGEST_TTL = 86400  # 24h — user reviews the morning digest at leisure
@@ -37367,29 +37346,41 @@ def _autosave_digest_key(digest_id: str) -> str:
     return f"autosave_digest:{digest_id}"
 
 
+# Semantic folder tags — mirror of bot_3._TAG_FOLDER_META keys. The bot validates against its
+# own list on save, so this only needs to steer the LLM; a stray value degrades to no folder.
+_AUTOSAVE_SEMANTIC_CATEGORIES = (
+    "Работа", "Учёба", "Здоровье", "Путешествия", "Быт", "Еда", "Спорт", "Технологии",
+    "Деньги", "Семья", "Транспорт", "Природа", "Культура", "Общение", "Покупки", "Жильё",
+    "Право", "Эмоции", "Прочее",
+)
+
+
 def _autosave_prepare_cards(terms: list[str], *, source_lang: str, target_lang: str) -> list[dict]:
-    """ONE LLM call that normalizes each staged term to its DICTIONARY form (noun with
-    article, verb infinitive, …) AND gives a short translation — so saved cards match
-    manual saves (with article/lemma), not raw OCR text. Positional, order-preserving.
-    Falls back to {canonical: term, translation: ""} so the digest still renders."""
-    fallback = [{"canonical": t, "translation": ""} for t in terms]
+    """ONE LLM call that, per term, returns its DICTIONARY form (noun with article, verb
+    infinitive, …), a short translation, AND a semantic_category — so saved cards match manual
+    saves (article/lemma/folder) WITHOUT any extra per-word GPT at save time. Positional,
+    order-preserving. Falls back to {canonical: term, translation: "", semantic_category: ""}."""
+    fallback = [{"canonical": t, "translation": "", "semantic_category": ""} for t in terms]
     if not terms:
         return []
     from backend.openai_manager import client as _openai_async_client
 
     source_name = _SKILL_RESOURCE_LANGUAGE_NAMES.get(source_lang, source_lang or "the source language")
     target_name = _SKILL_RESOURCE_LANGUAGE_NAMES.get(target_lang, target_lang or "the target language")
+    categories = ", ".join(_AUTOSAVE_SEMANTIC_CATEGORIES)
     system_prompt = (
         f"You are a concise bilingual dictionary editor for {source_name} learners. For EACH input "
-        f"learning unit return two fields:\n"
+        f"learning unit return three fields:\n"
         f'- "canonical": its clean dictionary headword form. A NOUN → nominative singular WITH its '
         f"definite article (der/die/das). A VERB → infinitive. An adjective/adverb → base form. A "
         f"fixed phrase, grammar construction, or a full sentence → keep it as-is, only cleaned. "
         f"Preserve correct {source_name} spelling and capitalization.\n"
         f'- "translation": a short {target_name} translation, dictionary-style, no commentary '
         f"(empty string if already in {target_name} or untranslatable).\n"
-        f'Return ONLY valid JSON: {{"cards": [{{"canonical": "...", "translation": "..."}}]}} with '
-        f"EXACTLY one object per input item, in the SAME order."
+        f'- "semantic_category": the single best-fitting topic from this EXACT list (use the '
+        f"Russian word verbatim, or \"\" if none fits): {categories}.\n"
+        f'Return ONLY valid JSON: {{"cards": [{{"canonical": "...", "translation": "...", '
+        f'"semantic_category": "..."}}]}} with EXACTLY one object per input item, in the SAME order.'
     )
     user_payload = json.dumps({"items": terms}, ensure_ascii=False)
     model = _shortcut_split_model("autosave_translate", "gpt-4.1-mini")
@@ -37407,6 +37398,7 @@ def _autosave_prepare_cards(terms: list[str], *, source_lang: str, target_lang: 
         )
         return response.choices[0].message.content or "{}"
 
+    valid_categories = set(_AUTOSAVE_SEMANTIC_CATEGORIES)
     try:
         raw = asyncio.run(_call())
         parsed = json.loads(raw)
@@ -37417,7 +37409,10 @@ def _autosave_prepare_cards(terms: list[str], *, source_lang: str, target_lang: 
                 card = card if isinstance(card, dict) else {}
                 canonical = str(card.get("canonical") or "").strip() or terms[i]
                 translation = str(card.get("translation") or "").strip()
-                result.append({"canonical": canonical, "translation": translation})
+                category = str(card.get("semantic_category") or "").strip()
+                if category not in valid_categories:
+                    category = ""
+                result.append({"canonical": canonical, "translation": translation, "semantic_category": category})
             return result
         logging.warning("autosave: prepare-cards length mismatch terms=%d got=%s", len(terms), type(cards))
     except Exception:
@@ -37466,70 +37461,96 @@ def _autosave_digest_body_text(items: list[dict]) -> str:
 
 
 def _run_autosave_flush(user_id: int) -> None:
-    """Normalize+translate the staged terms and send ONE multi-select digest. Idempotent via
-    the flush lock in _autosave_maybe_flush; consumes (deletes) the staging hash on success."""
+    """WORKER-TIER heavy work for one user's nightly batch. Runs on BACKGROUND_JOBS (which has
+    the bot token). NX-locked + raw-list-claimed = exactly-once. Does ONE split over the whole
+    batch and ONE normalize/translate/categorize call, then sends a single multi-select digest."""
     safe_user_id = int(user_id)
     client = get_redis_client()
     if client is None:
         return
-    stage_key = _autosave_stage_key(safe_user_id)
-    raw_entries = client.hgetall(stage_key) or {}
-    if not raw_entries:
+
+    # Exactly-once: only one flush per user at a time.
+    lock_key = _autosave_flush_lock_key(safe_user_id)
+    if client.set(lock_key, "1", nx=True, ex=300) is None:
         return
-
-    # Preserve insertion-ish order by added_at.
-    parsed: list[dict] = []
-    for raw in raw_entries.values():
-        try:
-            obj = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
-        except Exception:
-            continue
-        if isinstance(obj, dict) and (obj.get("term") or obj.get("content")):
-            parsed.append(obj)
-    parsed.sort(key=lambda o: float(o.get("added_at") or 0.0))
-    if len(parsed) > _AUTOSAVE_DIGEST_MAX_ITEMS:
-        parsed = parsed[:_AUTOSAVE_DIGEST_MAX_ITEMS]
-
-    native_lang, learning_lang, _profile = _get_user_language_pair(safe_user_id)
-    # Source text is the learning language (German); translate into the user's native language.
-    source_lang = (learning_lang or "de").strip().lower()
-    target_lang = (native_lang or "ru").strip().lower()
-
-    terms = [str(o.get("term") or o.get("content") or "").strip() for o in parsed]
-    cards = _autosave_prepare_cards(terms, source_lang=source_lang, target_lang=target_lang)
-
-    items = [
-        {
-            "term": terms[i],
-            "canonical": cards[i].get("canonical") or terms[i],
-            "translation": cards[i].get("translation") or "",
-        }
-        for i in range(len(terms))
-    ]
-    selected = [True] * len(items)  # default: all checked — user unchecks the few bad ones
-
-    digest_id = hashlib.sha1(f"asv:{safe_user_id}:{time.time_ns()}".encode("utf-8")).hexdigest()[:12]
-    digest_state = {
-        "user_id": safe_user_id,
-        "source_lang": source_lang,
-        "target_lang": target_lang,
-        "items": items,
-        "selected": selected,
-        "created_at": time.time(),
-    }
-    client.setex(_autosave_digest_key(digest_id), _AUTOSAVE_DIGEST_TTL, json.dumps(digest_state, ensure_ascii=False))
-
     try:
-        _send_private_message(
-            safe_user_id,
-            _autosave_digest_body_text(items),
-            reply_markup=_autosave_build_digest_keyboard(digest_id, items, selected),
-            parse_mode="HTML",
-        )
-        client.delete(stage_key)  # consumed into the digest
-        logging.info("autosave: digest sent user_id=%s digest_id=%s items=%d", safe_user_id, digest_id, len(items))
-    except Exception:
-        logging.exception("autosave: digest send failed user_id=%s digest_id=%s", safe_user_id, digest_id)
+        # Claim the raw queue: read everything, then delete so late photos start a fresh batch.
+        raw_key = _autosave_raw_key(safe_user_id)
+        raw_texts = client.lrange(raw_key, 0, -1) or []
+        client.delete(raw_key)
+        client.delete(_autosave_flush_at_key(safe_user_id))
+        texts = [
+            (t.decode("utf-8") if isinstance(t, bytes) else t).strip()
+            for t in raw_texts
+        ]
+        texts = [t for t in texts if t]
+        if not texts:
+            return
+
+        native_lang, learning_lang, _profile = _get_user_language_pair(safe_user_id)
+        source_lang = (learning_lang or "de").strip().lower()
+        target_lang = (native_lang or "ru").strip().lower()
+
+        # ONE split over the whole batch (instead of one per photo). Dedup happens inside.
+        joined = "\n".join(texts)
+        blocks = _shortcut_split_blocks(joined, origin="autosave", user_id=safe_user_id)
+        if not blocks:
+            return
+        # Cross-photo dedup on canonicalized text + cap.
+        terms: list[str] = []
+        seen: set[str] = set()
+        for term, content in blocks:
+            t = str(term or content or "").strip()
+            if not t:
+                continue
+            norm = _shortcut_dedup_norm(t)
+            if not norm or norm in seen:
+                continue
+            seen.add(norm)
+            terms.append(t)
+            if len(terms) >= _AUTOSAVE_DIGEST_MAX_ITEMS:
+                break
+        if not terms:
+            return
+
+        cards = _autosave_prepare_cards(terms, source_lang=source_lang, target_lang=target_lang)
+        items = [
+            {
+                "term": terms[i],
+                "canonical": cards[i].get("canonical") or terms[i],
+                "translation": cards[i].get("translation") or "",
+                "semantic_category": cards[i].get("semantic_category") or "",
+            }
+            for i in range(len(terms))
+        ]
+        selected = [True] * len(items)  # default: all checked — user unchecks the few bad ones
+
+        digest_id = hashlib.sha1(f"asv:{safe_user_id}:{time.time_ns()}".encode("utf-8")).hexdigest()[:12]
+        digest_state = {
+            "user_id": safe_user_id,
+            "source_lang": source_lang,
+            "target_lang": target_lang,
+            "items": items,
+            "selected": selected,
+            "created_at": time.time(),
+        }
+        client.setex(_autosave_digest_key(digest_id), _AUTOSAVE_DIGEST_TTL, json.dumps(digest_state, ensure_ascii=False))
+
+        try:
+            _send_private_message(
+                safe_user_id,
+                _autosave_digest_body_text(items),
+                reply_markup=_autosave_build_digest_keyboard(digest_id, items, selected),
+                parse_mode="HTML",
+            )
+            logging.info("autosave: digest sent user_id=%s digest_id=%s items=%d", safe_user_id, digest_id, len(items))
+        except Exception:
+            logging.exception("autosave: digest send failed user_id=%s digest_id=%s", safe_user_id, digest_id)
+    finally:
+        try:
+            client.delete(lock_key)
+        except Exception:
+            pass
 
 
 def _autosave_plural_words(n: int) -> str:
@@ -37592,14 +37613,10 @@ def _start_shortcut_lookup_enqueue_runner(
             )
 
     def _worker() -> None:
-        try:
-            autosave_on = get_shortcut_autosave_enabled(safe_user_id)
-        except Exception:
-            logging.debug("autosave: toggle lookup failed user_id=%s", safe_user_id, exc_info=True)
-            autosave_on = False
+        autosave_on = _autosave_toggle_cached(safe_user_id)  # 30s cache, no DB hit per request
         if autosave_on:
-            # Nightly auto-save: stage + debounce instead of one card per word. Always inline
-            # (the flush sends a Telegram digest, which needs the bot token this process holds).
+            # Nightly auto-save: append raw text + arm debounce (pure Redis); the worker flush
+            # does the heavy split/translate later. Keeps this request path light at scale.
             try:
                 staged = _run_shortcut_autosave_staging(
                     user_id=safe_user_id, text=normalized_text, origin=origin, request_id=request_id

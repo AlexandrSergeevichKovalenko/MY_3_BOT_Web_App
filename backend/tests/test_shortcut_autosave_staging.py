@@ -1,3 +1,4 @@
+import fnmatch
 import json
 import unittest
 from contextlib import ExitStack
@@ -7,11 +8,11 @@ import backend.backend_server as server
 
 
 class _FakeRedis:
-    """Minimal in-memory Redis covering the ops the autosave staging/flush path uses."""
+    """Minimal in-memory Redis covering the ops the autosave staging/sweep/flush path uses."""
 
     def __init__(self):
         self.kv: dict[str, str] = {}
-        self.hashes: dict[str, dict[str, str]] = {}
+        self.lists: dict[str, list] = {}
 
     # --- string ops ---
     def get(self, key):
@@ -30,22 +31,27 @@ class _FakeRedis:
     def delete(self, *keys):
         for k in keys:
             self.kv.pop(k, None)
-            self.hashes.pop(k, None)
+            self.lists.pop(k, None)
         return True
 
     def expire(self, key, ttl):
         return True
 
-    # --- hash ops ---
-    def hset(self, key, field, value):
-        self.hashes.setdefault(key, {})[field] = value
-        return 1
+    def scan_iter(self, match="*", count=100):
+        for k in list(self.kv.keys()):
+            if fnmatch.fnmatch(k, match):
+                yield k
 
-    def hkeys(self, key):
-        return list(self.hashes.get(key, {}).keys())
+    # --- list ops ---
+    def rpush(self, key, *values):
+        self.lists.setdefault(key, []).extend(values)
+        return len(self.lists[key])
 
-    def hgetall(self, key):
-        return dict(self.hashes.get(key, {}))
+    def lrange(self, key, start, end):
+        lst = self.lists.get(key, [])
+        if end == -1:
+            return list(lst[start:])
+        return list(lst[start:end + 1])
 
 
 class ShortcutAutosaveStagingTests(unittest.TestCase):
@@ -60,76 +66,82 @@ class ShortcutAutosaveStagingTests(unittest.TestCase):
             side_effect=lambda uid, text, reply_markup=None, parse_mode=None: self.sent.append((text, reply_markup)),
         ))
 
-    def test_staging_dedups_across_requests(self):
-        # Two "photos" (separate requests); "Strafmaß" appears in both → staged once.
+    def test_staging_is_pure_redis_append_no_split(self):
+        # The request path must NOT split (no LLM) — only RPUSH raw text + arm flush-at.
         with ExitStack() as stack:
-            stack.enter_context(patch.object(
+            split = stack.enter_context(patch.object(server, "_shortcut_split_blocks"))
+            stack.enter_context(patch.object(server, "get_redis_client", return_value=self.redis))
+            n1 = server._run_shortcut_autosave_staging(user_id=42, text="Foto 1 text")
+            n2 = server._run_shortcut_autosave_staging(user_id=42, text="Foto 2 text")
+        split.assert_not_called()  # no per-request split
+        self.assertEqual(n1, 1)
+        self.assertEqual(n2, 2)  # raw queue length grows
+        self.assertEqual(self.redis.lists[server._autosave_raw_key(42)], ["Foto 1 text", "Foto 2 text"])
+        self.assertIn(server._autosave_flush_at_key(42), self.redis.kv)  # debounce armed
+
+    def test_collect_due_claims_only_elapsed(self):
+        now = server.time.time()
+        self.redis.kv[server._autosave_flush_at_key(7)] = f"{now - 5:.3f}"      # due
+        self.redis.kv[server._autosave_flush_at_key(8)] = f"{now + 999:.3f}"    # not yet
+        with patch.object(server, "get_redis_client", return_value=self.redis):
+            due = server._autosave_collect_due_user_ids()
+        self.assertEqual(due, [7])
+        # claimed (deleted) so it won't be re-enqueued; the future one stays
+        self.assertNotIn(server._autosave_flush_at_key(7), self.redis.kv)
+        self.assertIn(server._autosave_flush_at_key(8), self.redis.kv)
+
+    def test_flush_one_split_one_prepare_then_digest(self):
+        uid = 99
+        raw_key = server._autosave_raw_key(uid)
+        self.redis.rpush(raw_key, "Strafmaß\nblamierst", "Strafmaß noch mal")
+        self.redis.kv[server._autosave_flush_at_key(uid)] = "1.0"
+
+        with ExitStack() as stack:
+            split = stack.enter_context(patch.object(
                 server, "_shortcut_split_blocks",
-                side_effect=[
-                    [("Strafmaß", "Strafmaß"), ("Rückfallrisiko", "Rückfallrisiko")],
-                    [("strafmaß.", "strafmaß."), ("blamierst", "blamierst")],
-                ],
+                return_value=[("Strafmaß", "Strafmaß"), ("blamierst", "blamierst"), ("strafmaß.", "strafmaß.")],
             ))
-            stack.enter_context(patch.object(server, "_AUTOSAVE_FLUSH_EXECUTOR"))
-            self._enter_common(stack)
-            n1 = server._run_shortcut_autosave_staging(user_id=42, text="photo1")
-            n2 = server._run_shortcut_autosave_staging(user_id=42, text="photo2")
-
-        self.assertEqual(n1, 2)
-        self.assertEqual(n2, 1)  # only "blamierst" is new
-        staged = self.redis.hashes[server._autosave_stage_key(42)]
-        self.assertEqual(len(staged), 3)
-
-    def test_maybe_flush_respects_debounce_window(self):
-        # flush-at is in the FUTURE → a newer request is pending, must NOT flush.
-        self.redis.hset(server._autosave_stage_key(7), "x", json.dumps({"term": "x", "content": "x"}))
-        self.redis.kv[server._autosave_flush_at_key(7)] = f"{server.time.time() + 999:.3f}"
-        with patch.object(server, "_run_autosave_flush") as flush_mock, \
-             patch.object(server, "get_redis_client", return_value=self.redis):
-            server._autosave_maybe_flush(7)
-        flush_mock.assert_not_called()
-
-    def test_flush_normalizes_and_sends_multiselect_digest(self):
-        stage_key = server._autosave_stage_key(99)
-        self.redis.hset(stage_key, "strafmaß", json.dumps({"term": "Strafmaß", "content": "Strafmaß", "added_at": 1.0}))
-        self.redis.hset(stage_key, "blamierst", json.dumps({"term": "blamierst", "content": "blamierst", "added_at": 2.0}))
-
-        with ExitStack() as stack:
-            stack.enter_context(patch.object(server, "_get_user_language_pair", return_value=("ru", "de", {})))
-            stack.enter_context(patch.object(
+            prep = stack.enter_context(patch.object(
                 server, "_autosave_prepare_cards",
                 return_value=[
-                    {"canonical": "das Strafmaß", "translation": "мера наказания"},
-                    {"canonical": "blamieren", "translation": "позорить"},
+                    {"canonical": "das Strafmaß", "translation": "мера наказания", "semantic_category": "Право"},
+                    {"canonical": "blamieren", "translation": "позорить", "semantic_category": "Эмоции"},
                 ],
             ))
+            stack.enter_context(patch.object(server, "_get_user_language_pair", return_value=("ru", "de", {})))
             self._enter_common(stack)
-            server._run_autosave_flush(99)
+            server._run_autosave_flush(uid)
 
-        # One digest sent, staging consumed
+        # ONE split over the whole concatenated batch (not per photo)
+        self.assertEqual(split.call_count, 1)
+        self.assertIn("Strafmaß\nblamierst\nStrafmaß noch mal", split.call_args[0][0])
+        # cross-photo dedup → "strafmaß." collapsed, 2 unique terms passed to prepare
+        self.assertEqual(prep.call_args[0][0], ["Strafmaß", "blamierst"])
+        # one digest sent, raw queue consumed
         self.assertEqual(len(self.sent), 1)
-        self.assertNotIn(stage_key, self.redis.hashes)
+        self.assertNotIn(raw_key, self.redis.lists)
+        self.assertNotIn(server._autosave_flush_at_key(uid), self.redis.kv)
         text, markup = self.sent[0]
-        # Readable list lives in the message BODY with canonical (article) forms
-        self.assertIn("Ночная подборка", text)
         self.assertIn("1. <b>das Strafmaß</b> — мера наказания", text)
-        self.assertIn("2. <b>blamieren</b> — позорить", text)
         rows = markup["inline_keyboard"]
-        # 1 row of number toggles (2 items) + save footer; NO delete row
-        self.assertEqual(len(rows), 2)
-        self.assertEqual(rows[0][0]["text"], "✅ 1")  # default all checked
-        self.assertTrue(rows[0][0]["callback_data"].startswith("asv_tog:"))
+        self.assertEqual(rows[0][0]["text"], "✅ 1")
         self.assertIn("Сохранить выбранные (2)", rows[1][0]["text"])
-        self.assertTrue(rows[1][0]["callback_data"].startswith("asv_save:"))
-        self.assertFalse(any("asv_del" in btn["callback_data"] for row in rows for btn in row))
-        # digest state persisted for the bot callbacks
+        # digest state carries semantic_category for folder routing on save
         digest_id = rows[1][0]["callback_data"].split(":")[1]
         state = json.loads(self.redis.kv[server._autosave_digest_key(digest_id)])
-        self.assertEqual(len(state["items"]), 2)
+        self.assertEqual(state["items"][0]["semantic_category"], "Право")
         self.assertEqual(state["selected"], [True, True])
-        self.assertEqual(state["items"][0]["canonical"], "das Strafmaß")
-        self.assertEqual(state["source_lang"], "de")
-        self.assertEqual(state["target_lang"], "ru")
+
+    def test_flush_is_nx_locked_against_concurrent(self):
+        uid = 55
+        self.redis.rpush(server._autosave_raw_key(uid), "text")
+        # Pre-hold the lock → flush must bail without sending.
+        self.redis.kv[server._autosave_flush_lock_key(uid)] = "1"
+        with ExitStack() as stack:
+            self._enter_common(stack)
+            stack.enter_context(patch.object(server, "_shortcut_split_blocks", return_value=[("x", "x")]))
+            server._run_autosave_flush(uid)
+        self.assertEqual(self.sent, [])
 
     def test_plural_words(self):
         self.assertEqual(server._autosave_plural_words(1), "слово")

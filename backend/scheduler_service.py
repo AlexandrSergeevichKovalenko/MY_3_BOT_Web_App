@@ -97,6 +97,7 @@ from backend.background_jobs import (  # noqa: E402
     run_agent_worker_schedule_control_actor,
     run_translation_check_worker_schedule_control_actor,
     run_service_resource_schedule_control_actor,
+    run_autosave_sweep_job,
 )
 
 # ---------------------------------------------------------------------------
@@ -350,6 +351,10 @@ def _dispatch_semantic_audit() -> None:
 
 def _dispatch_skill_state_v2_aggregation() -> None:
     run_skill_state_v2_aggregation_actor.send()
+
+
+def _dispatch_autosave_sweep() -> None:
+    run_autosave_sweep_job.send()
 
 
 def _dispatch_agent_worker_schedule_start() -> None:
@@ -719,6 +724,21 @@ def _build_scheduler():
             max_instances=1,
             coalesce=True,
             misfire_grace_time=max(10, interval_secs),
+        )
+
+    # -- Nightly auto-save debounce sweep (interval) --
+    # Fans out a worker flush for every user whose Shortcut batch went quiet. Cheap one-pass
+    # scan; debounce precision is the interval (default 30s). On by default — the feature is
+    # inert (no flush-at keys) unless a user has auto-save ON.
+    if _enabled("AUTOSAVE_SWEEP_ENABLED", "1"):
+        autosave_interval_secs = max(10, _int_env("AUTOSAVE_SWEEP_INTERVAL_SECONDS", 30))
+        scheduler.add_job(
+            _dispatch_autosave_sweep,
+            "interval",
+            seconds=autosave_interval_secs,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=max(10, autosave_interval_secs),
         )
 
     # -- AGENT_WORKER scheduled uptime --

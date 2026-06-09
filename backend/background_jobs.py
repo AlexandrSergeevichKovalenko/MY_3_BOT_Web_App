@@ -1273,6 +1273,50 @@ def run_shortcut_lookup_job(
         raise
 
 
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_autosave_sweep_job() -> None:
+    """Debounce sweep: find users whose nightly auto-save batch went quiet (flush-at elapsed)
+    and fan out one flush job each. Triggered by the scheduler every ~30s; one cheap pass for
+    all users, replacing the old per-request sleeping-thread debounce."""
+    try:
+        from backend.backend_server import _autosave_collect_due_user_ids
+
+        due = _autosave_collect_due_user_ids()
+    except Exception:
+        logging.exception("autosave_sweep_job: collect due failed")
+        return
+    for uid in due:
+        try:
+            run_autosave_flush_job.send(user_id=int(uid))
+        except Exception:
+            logging.exception("autosave_sweep_job: enqueue flush failed user_id=%s", uid)
+    if due:
+        logging.info("autosave_sweep_job enqueued flush for %d user(s)", len(due))
+
+
+@dramatiq.actor(max_retries=0, queue_name="shortcut_lookup")
+def run_autosave_flush_job(user_id: int) -> None:
+    """WORKER flush for one user's nightly batch: ONE split + ONE normalize/translate/categorize
+    call, then send the digest. Runs on the shortcut_lookup queue (BACKGROUND_JOBS has the bot
+    token). NX-locked inside, so duplicate enqueues are safe."""
+    safe_user_id = int(user_id or 0)
+    if safe_user_id <= 0:
+        return
+    started_at = time.perf_counter()
+    try:
+        from backend.backend_server import _run_autosave_flush
+
+        _run_autosave_flush(safe_user_id)
+        logging.info(
+            "autosave_flush_job completed user_id=%s total_ms=%s",
+            safe_user_id,
+            int((time.perf_counter() - started_at) * 1000),
+        )
+    except Exception:
+        logging.exception("autosave_flush_job failed user_id=%s", safe_user_id)
+        raise
+
+
 def _run_projection_materialization_job_impl(
     *,
     job_id: int,
