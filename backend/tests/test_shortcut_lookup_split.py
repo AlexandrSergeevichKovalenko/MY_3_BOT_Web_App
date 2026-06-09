@@ -145,6 +145,43 @@ class ShortcutLookupSplitTests(unittest.TestCase):
                 msg=f"expected KEEP for {raw!r} (normalized {cleaned!r})",
             )
 
+    def test_is_learnable_unit_drops_screenshot_chrome(self):
+        # Real leakage observed in production: Instagram/Telegram app navigation,
+        # bare function words, Russian captions, hashtags and OCR scraps.
+        for raw in [
+            # app UI chrome (German + English locale)
+            "Für dich", "Erkunden", "Gefolgt", "Home", "LIVE", "mehr",
+            "Übersetzung anzeigen", "Explore", "Following", "For you",
+            # bare standalone function words
+            "auf", "an", "für", "und", "der", "sich",
+            # Russian-dominant caption / hashtags
+            "Пять фраз, которые лучше записать. #немецкийязык #немецкий mehr",
+            "#немецкийязык #немецкий", "@deutsch_user",
+            # OCR scraps
+            "ch", "Il 66",
+        ]:
+            cleaned = server._shortcut_normalize_unit_text(raw)
+            self.assertFalse(
+                bool(cleaned) and server._shortcut_is_learnable_unit(cleaned, cleaned),
+                msg=f"expected DROP for {raw!r} (normalized {cleaned!r})",
+            )
+
+    def test_is_learnable_unit_keeps_german_despite_new_rules(self):
+        # The new chrome/function-word/cyrillic rules must NOT touch real German content,
+        # including 2-letter nouns, phrases that merely contain a UI word, and DE+RU mixes
+        # where German dominates.
+        for raw in [
+            "Ei", "Öl", "noch mehr Zeit", "sich verlassen auf + Akkusativ",
+            "Du bist wirklich ein Meister der Mittelmäßigkeit",
+            "ich ertrage das nicht", "Strafmaß", "Rückfallrisiko", "blamierst",
+            "der Erfolg ist (успех) garantiert",
+        ]:
+            cleaned = server._shortcut_normalize_unit_text(raw)
+            self.assertTrue(
+                server._shortcut_is_learnable_unit(cleaned, cleaned),
+                msg=f"expected KEEP for {raw!r} (normalized {cleaned!r})",
+            )
+
     def test_normalize_strips_dangling_trailing_dash_and_leading_bullet(self):
         self.assertEqual(server._shortcut_normalize_unit_text("Hallo meine Lieben —"), "Hallo meine Lieben")
         self.assertEqual(server._shortcut_normalize_unit_text("• Darmstadt"), "Darmstadt")
@@ -228,6 +265,48 @@ class ShortcutLookupSplitTests(unittest.TestCase):
             fallback_reason=None,
             duration_ms=ANY,
         )
+
+    def test_delivery_skips_cross_request_duplicates(self):
+        # A nightly batch sends each photo as a separate request; the same German word
+        # extracted from several photos must reach the user as ONE card, not N. Here the
+        # user already has "Strafmaß" pending (an earlier photo) and this request yields
+        # "Strafmaß" again plus a new word — only the new word should be sent.
+        sent_texts: list[str] = []
+
+        def _fake_send(uid, text, reply_markup=None):
+            sent_texts.append(text)
+
+        with patch.object(server, "_shortcut_split_blocks",
+                          return_value=[("Strafmaß", "Strafmaß"), ("Rückfallrisiko", "Rückfallrisiko")]), \
+             patch.object(server, "_shortcut_existing_pending_norms",
+                          return_value={server._shortcut_dedup_norm("Strafmaß")}), \
+             patch.object(server, "_shortcut_append_pending_to_redis"), \
+             patch.object(server, "_send_private_message", side_effect=_fake_send), \
+             patch.object(server, "get_redis_client", return_value=None), \
+             patch("time.sleep"):
+            sent = server._run_shortcut_lookup_delivery(user_id=99, text="Strafmaß\nRückfallrisiko")
+
+        self.assertEqual(sent, 1)
+        self.assertEqual(len(sent_texts), 1)
+        self.assertIn("Rückfallrisiko", sent_texts[0])
+        self.assertNotIn("Strafmaß", sent_texts[0])
+
+    def test_delivery_collapses_duplicates_within_one_request(self):
+        # Two identical units inside a single request must also collapse to one card.
+        sent_texts: list[str] = []
+
+        with patch.object(server, "_shortcut_split_blocks",
+                          return_value=[("die Absage", "die Absage"), ("die absage.", "die absage.")]), \
+             patch.object(server, "_shortcut_existing_pending_norms", return_value=set()), \
+             patch.object(server, "_shortcut_append_pending_to_redis"), \
+             patch.object(server, "_send_private_message",
+                          side_effect=lambda uid, text, reply_markup=None: sent_texts.append(text)), \
+             patch.object(server, "get_redis_client", return_value=None), \
+             patch("time.sleep"):
+            sent = server._run_shortcut_lookup_delivery(user_id=99, text="die Absage\ndie absage.")
+
+        self.assertEqual(sent, 1)
+        self.assertEqual(len(sent_texts), 1)
 
     def test_shortcut_split_fallback_uses_full_gpt41_after_invalid_primary(self):
         invalid = json.dumps({"items": []}, ensure_ascii=False)

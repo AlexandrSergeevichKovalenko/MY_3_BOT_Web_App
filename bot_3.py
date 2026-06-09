@@ -88,7 +88,6 @@ from backend.openai_manager import (
     run_quiz_result_commentary,
     run_translate_subtitles_ru,
     run_translate_subtitles_multilang,
-    run_text_vocab_extract,
     run_auto_categorize_batch,
 )
 from backend.image_quiz_utils import (
@@ -112,6 +111,8 @@ from backend.database import (
     DATABASE_URL as SHARED_DATABASE_URL,
     DB_POOL_ALLOW_DIRECT_FALLBACK,
     DB_POOL_ENABLED,
+    get_shortcut_autosave_enabled,
+    set_shortcut_autosave_enabled,
     init_db,
     db_acquire_scope,
     get_db_connection,
@@ -349,7 +350,6 @@ pending_dictionary_lookup_inflight = set()
 pending_dictionary_batch_fast_inflight = set()
 pending_dictionary_folder_cache = {}
 pending_dictionary_semantic_folder_cache = {}
-pending_text_analysis = {}
 pending_feel_requests_inflight = set()
 pending_tts_listen_requests_inflight = set()
 pending_quiz_phrase_requests_inflight = set()
@@ -544,6 +544,35 @@ SHORTCUT_INSTALL_BUTTON_TEXT = "📲 Установить Shortcut"
 SHORTCUT_CONNECT_BUTTON_TEXT = "📱 Connect Shortcut"
 DICTIONARY_BATCH_FAST_BUTTON_TEXT = "🇩🇪➡️🇷🇺 Быстрый перевод"
 HOWTO_GUIDE_BUTTON_TEXT = "🎬 Как пользоваться"
+SHORTCUT_AUTOSAVE_BUTTON_TEXT = "🌙 Ночной автосейв"  # neutral fallback when user is unknown
+_AUTOSAVE_BUTTON_PREFIX = "🌙 Автосейв:"  # dynamic label prefix used for routing reply-button taps
+# Short-lived cache so rendering the reply keyboard doesn't hit the DB on every menu draw.
+_AUTOSAVE_STATE_CACHE: dict[int, tuple[float, bool]] = {}
+_AUTOSAVE_STATE_CACHE_TTL = 30.0
+
+
+def _autosave_state_cached(user_id: int) -> bool:
+    now = pytime.time()
+    hit = _AUTOSAVE_STATE_CACHE.get(int(user_id))
+    if hit and hit[0] > now:
+        return hit[1]
+    try:
+        val = bool(get_shortcut_autosave_enabled(int(user_id)))
+    except Exception:
+        val = False
+    _AUTOSAVE_STATE_CACHE[int(user_id)] = (now + _AUTOSAVE_STATE_CACHE_TTL, val)
+    return val
+
+
+def _autosave_set_cached(user_id: int, val: bool) -> None:
+    _AUTOSAVE_STATE_CACHE[int(user_id)] = (pytime.time() + _AUTOSAVE_STATE_CACHE_TTL, bool(val))
+
+
+def _autosave_button_text(user_id: int | None) -> str:
+    """Dynamic reply-keyboard label so the user sees ВКЛ/ВЫКЛ at a glance (Option B)."""
+    if user_id is None:
+        return SHORTCUT_AUTOSAVE_BUTTON_TEXT
+    return f"{_AUTOSAVE_BUTTON_PREFIX} ВКЛ" if _autosave_state_cached(user_id) else f"{_AUTOSAVE_BUTTON_PREFIX} ВЫКЛ"
 
 try:
     from backend.onboarding_assets import ONBOARDING_ASSETS as _ONBOARDING_ASSETS
@@ -1453,7 +1482,9 @@ async def send_main_menu(update: Update, context: CallbackContext):
             f"📱 <b>Что умеет приложение:</b> {guide_url}",
             parse_mode="HTML",
             disable_web_page_preview=True,
-            reply_markup=_build_private_language_tutor_reply_keyboard()
+            reply_markup=_build_private_language_tutor_reply_keyboard(
+                int(update.effective_user.id) if update.effective_user else None
+            )
             if update.effective_chat and update.effective_chat.type == "private"
             else None,
         )
@@ -1468,9 +1499,10 @@ async def send_main_menu(update: Update, context: CallbackContext):
         [LANGUAGE_TUTOR_BUTTON_TEXT],
         [DICTIONARY_BATCH_FAST_BUTTON_TEXT],
         [SHORTCUT_INSTALL_BUTTON_TEXT, SHORTCUT_CONNECT_BUTTON_TEXT],
+        [_autosave_button_text(int(update.effective_user.id) if update.effective_user else None)],
         [HOWTO_GUIDE_BUTTON_TEXT],
     ]
-    
+
     # создаем в словаре клю service_message_ids Список для хранения всех id Сообщений, Для того чтобы потом можно было их удалить после выполнения перевода
     context.user_data.setdefault("service_message_ids", [])
 
@@ -1821,6 +1853,217 @@ async def handle_shortcut_connect_callback(update: Update, context: CallbackCont
         context.application.create_task(_deliver_shortcut_connect_flow(int(user.id), _reply))
     except Exception:
         await _deliver_shortcut_connect_flow(int(user.id), _reply)
+
+
+# ===== Nightly auto-save: settings toggle + multi-select digest =========================
+
+def _autosave_digest_redis_key(digest_id: str) -> str:
+    return f"autosave_digest:{digest_id}"
+
+
+def _autosave_read_digest(digest_id: str) -> dict | None:
+    from backend.job_queue import get_redis_client
+    client = get_redis_client()
+    if client is None:
+        return None
+    raw = client.get(_autosave_digest_redis_key(digest_id))
+    if not raw:
+        return None
+    try:
+        return json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+    except Exception:
+        return None
+
+
+def _autosave_write_digest(digest_id: str, state: dict, ttl: int = 86400) -> None:
+    from backend.job_queue import get_redis_client
+    client = get_redis_client()
+    if client is None:
+        return
+    client.setex(_autosave_digest_redis_key(digest_id), ttl, json.dumps(state, ensure_ascii=False))
+
+
+def _autosave_delete_digest(digest_id: str) -> None:
+    from backend.job_queue import get_redis_client
+    client = get_redis_client()
+    if client is not None:
+        try:
+            client.delete(_autosave_digest_redis_key(digest_id))
+        except Exception:
+            pass
+
+
+def _autosave_build_digest_keyboard(digest_id: str, items: list, selected: list) -> InlineKeyboardMarkup:
+    rows = []
+    for idx, item in enumerate(items):
+        mark = "☑️" if (idx < len(selected) and selected[idx]) else "☐"
+        term = str(item.get("term") or item.get("content") or "").strip()
+        translation = str(item.get("translation") or "").strip()
+        label = f"{mark} {term}" + (f" — {translation}" if translation else "")
+        if len(label) > 60:
+            label = label[:59] + "…"
+        rows.append([InlineKeyboardButton(label, callback_data=f"asv_tog:{digest_id}:{idx}")])
+    count = sum(1 for s in selected if s)
+    rows.append([InlineKeyboardButton(f"💾 Сохранить выбранные ({count})", callback_data=f"asv_save:{digest_id}")])
+    rows.append([InlineKeyboardButton("🗑 Удалить остальные", callback_data=f"asv_del:{digest_id}")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def _handle_autosave_button_tap(update: Update, context: CallbackContext) -> None:
+    """Reply-keyboard button tap = flip the toggle in one tap and re-render the keyboard
+    so its label (🌙 Автосейв: ВКЛ/ВЫКЛ) immediately reflects the new state (Option B)."""
+    user = update.effective_user
+    if not user or not update.message:
+        return
+    if update.effective_chat and update.effective_chat.type != "private":
+        await update.message.reply_text("Эта кнопка доступна только в личке с ботом.")
+        return
+    user_id = int(user.id)
+    new_val = not bool(await asyncio.to_thread(get_shortcut_autosave_enabled, user_id))
+    try:
+        await asyncio.to_thread(set_shortcut_autosave_enabled, user_id, new_val)
+    except Exception:
+        logging.exception("autosave: toggle save failed user_id=%s", user_id)
+        await update.message.reply_text("Не удалось сохранить настройку, попробуйте ещё раз.")
+        return
+    _autosave_set_cached(user_id, new_val)
+    if new_val:
+        msg = (
+            "🌙 <b>Ночной автосейв включён.</b>\n\n"
+            "Слова из Shortcut больше не приходят по одной карточке — бот копит их, переводит и "
+            "присылает <b>одной подборкой</b>. Отметьте нужные галочками и нажмите «💾 Сохранить выбранные», "
+            "остальные удалятся."
+        )
+    else:
+        msg = (
+            "🌙 <b>Ночной автосейв выключен.</b>\n\n"
+            "Слова из Shortcut снова приходят обычными карточками сразу."
+        )
+    await update.message.reply_text(
+        msg,
+        parse_mode="HTML",
+        reply_markup=_build_private_language_tutor_reply_keyboard(user_id),
+    )
+
+
+async def handle_autosave_digest_toggle_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query or not query.from_user:
+        return
+    parts = (query.data or "").split(":")
+    if len(parts) != 3:
+        await query.answer("Неверный формат.")
+        return
+    digest_id = parts[1]
+    try:
+        idx = int(parts[2])
+    except ValueError:
+        await query.answer("Неверный индекс.")
+        return
+    state = _autosave_read_digest(digest_id)
+    if not state:
+        await query.answer("Подборка устарела.", show_alert=True)
+        return
+    if int(state.get("user_id", 0)) != int(query.from_user.id):
+        await query.answer("Доступно только автору.", show_alert=True)
+        return
+    selected = state.get("selected") or []
+    items = state.get("items") or []
+    if idx < 0 or idx >= len(selected):
+        await query.answer("Слово не найдено.")
+        return
+    selected[idx] = not bool(selected[idx])
+    state["selected"] = selected
+    _autosave_write_digest(digest_id, state)
+    try:
+        await query.edit_message_reply_markup(
+            reply_markup=_autosave_build_digest_keyboard(digest_id, items, selected)
+        )
+    except Exception:
+        pass
+    await query.answer("Отмечено ✅" if selected[idx] else "Снято")
+
+
+async def handle_autosave_digest_save_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query or not query.from_user:
+        return
+    parts = (query.data or "").split(":")
+    digest_id = parts[1] if len(parts) >= 2 else ""
+    state = _autosave_read_digest(digest_id)
+    if not state:
+        await query.answer("Подборка устарела.", show_alert=True)
+        return
+    if int(state.get("user_id", 0)) != int(query.from_user.id):
+        await query.answer("Доступно только автору.", show_alert=True)
+        return
+    items = state.get("items") or []
+    selected = state.get("selected") or []
+    chosen_items = [items[i] for i in range(len(items)) if i < len(selected) and selected[i]]
+    if not chosen_items:
+        await query.answer("Отметьте хотя бы одно слово.", show_alert=True)
+        return
+    await query.answer("Сохраняю…")
+    src = str(state.get("source_lang") or "de").strip().lower()
+    tgt = str(state.get("target_lang") or "ru").strip().lower()
+    saved = 0
+    for it in chosen_items:
+        source_text = str(it.get("term") or it.get("content") or "").strip()
+        target_text = str(it.get("translation") or "").strip()
+        if not source_text or not target_text:
+            continue
+        payload = {
+            "user_id": int(query.from_user.id),
+            "source_lang": src,
+            "target_lang": tgt,
+            "direction": f"{src}-{tgt}",
+            "lookup": {},
+            "origin": "shortcut_autosave_digest",
+        }
+        chosen = {"source": source_text, "target": target_text}
+        try:
+            ok, _msg, _entry_id, _tagged = await asyncio.to_thread(
+                _save_dictionary_option_for_user, payload=payload, chosen=chosen, user_id=int(query.from_user.id)
+            )
+            if ok:
+                saved += 1
+        except Exception:
+            logging.exception("autosave digest save failed item=%r", source_text)
+    _autosave_delete_digest(digest_id)
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    if query.message:
+        try:
+            await query.message.reply_text(
+                f"✅ Сохранено в словарь: {saved} из {len(chosen_items)}. Остальные слова удалены."
+            )
+        except Exception:
+            pass
+
+
+async def handle_autosave_digest_delete_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query or not query.from_user:
+        return
+    parts = (query.data or "").split(":")
+    digest_id = parts[1] if len(parts) >= 2 else ""
+    state = _autosave_read_digest(digest_id)
+    if state and int(state.get("user_id", 0)) != int(query.from_user.id):
+        await query.answer("Доступно только автору.", show_alert=True)
+        return
+    _autosave_delete_digest(digest_id)
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await query.answer("Удалено 🗑")
+    if query.message:
+        try:
+            await query.message.reply_text("🗑 Подборка удалена. Ничего не сохранено.")
+        except Exception:
+            pass
 
 
 async def debug_message_handler(update: Update, context: CallbackContext):
@@ -2339,12 +2582,13 @@ def _language_tutor_pair_for_user(user_id: int) -> tuple[str, str]:
         return "ru", "de"
 
 
-def _build_private_language_tutor_reply_keyboard() -> ReplyKeyboardMarkup:
+def _build_private_language_tutor_reply_keyboard(user_id: int | None = None) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
             [LANGUAGE_TUTOR_BUTTON_TEXT],
             [DICTIONARY_BATCH_FAST_BUTTON_TEXT],
             [SHORTCUT_INSTALL_BUTTON_TEXT, SHORTCUT_CONNECT_BUTTON_TEXT],
+            [_autosave_button_text(user_id)],
             [HOWTO_GUIDE_BUTTON_TEXT],
         ],
         resize_keyboard=True,
@@ -2436,7 +2680,7 @@ async def _open_language_tutor_prompt(
         "Нельзя: вопросы не про язык.\n"
         f"Для отмены напишите `cancel`.{prompt_suffix}",
         parse_mode="Markdown",
-        reply_markup=_build_private_language_tutor_reply_keyboard(),
+        reply_markup=_build_private_language_tutor_reply_keyboard(user_id),
     )
 
 
@@ -2619,7 +2863,7 @@ async def handle_language_tutor_detail_callback(update: Update, context: Callbac
     if not isinstance(last_exchange, dict) or not str(last_exchange.get("question") or "").strip():
         await query.message.reply_text(
             "Не удалось найти предыдущий вопрос. Задайте вопрос заново.",
-            reply_markup=_build_private_language_tutor_reply_keyboard(),
+            reply_markup=_build_private_language_tutor_reply_keyboard(user_id),
         )
         return
 
@@ -2629,7 +2873,7 @@ async def handle_language_tutor_detail_callback(update: Update, context: Callbac
 
     await query.message.reply_text(
         "📖 Готовлю подробный разбор...",
-        reply_markup=_build_private_language_tutor_reply_keyboard(),
+        reply_markup=_build_private_language_tutor_reply_keyboard(user_id),
     )
     try:
         llm_payload: dict = {
@@ -2659,7 +2903,7 @@ async def handle_language_tutor_detail_callback(update: Update, context: Callbac
         if reservation.get("blocked"):
             await query.message.reply_text(
                 ASK_GPT_DAILY_LIMIT_MESSAGE,
-                reply_markup=_build_private_language_tutor_reply_keyboard(),
+                reply_markup=_build_private_language_tutor_reply_keyboard(user_id),
             )
             return
         llm_response = await run_language_learning_private_question_detailed(llm_payload)
@@ -2719,7 +2963,7 @@ async def handle_language_tutor_detail_callback(update: Update, context: Callbac
         logging.exception("❌ Ошибка language tutor detail user_id=%s", user_id)
         await query.message.reply_text(
             "Не удалось подготовить подробный разбор. Попробуйте чуть позже.",
-            reply_markup=_build_private_language_tutor_reply_keyboard(),
+            reply_markup=_build_private_language_tutor_reply_keyboard(user_id),
         )
 
 
@@ -4444,11 +4688,16 @@ async def handle_button_click(update: Update, context: CallbackContext):
         SHORTCUT_INSTALL_BUTTON_TEXT,
         SHORTCUT_CONNECT_BUTTON_TEXT,
         DICTIONARY_BATCH_FAST_BUTTON_TEXT,
+        SHORTCUT_AUTOSAVE_BUTTON_TEXT,
         HOWTO_GUIDE_BUTTON_TEXT,
     }
+    _msg_text = (update.message.text or "").strip() if update.message else ""
     if not ENABLE_LEGACY_REPLY_KEYBOARD and (
         not update.message
-        or (update.message.text or "").strip() not in _allowed_without_legacy_keyboard
+        or (
+            _msg_text not in _allowed_without_legacy_keyboard
+            and not _msg_text.startswith(_AUTOSAVE_BUTTON_PREFIX)
+        )
     ):
         return
     
@@ -4493,6 +4742,8 @@ async def handle_button_click(update: Update, context: CallbackContext):
         await _send_shortcut_install_prompt(update, context)
     elif text == HOWTO_GUIDE_BUTTON_TEXT:
         await _send_howto_guide_chapter(update, context)
+    elif text == SHORTCUT_AUTOSAVE_BUTTON_TEXT or text.startswith(_AUTOSAVE_BUTTON_PREFIX):
+        await _handle_autosave_button_tap(update, context)
     elif text == SHORTCUT_CONNECT_BUTTON_TEXT:
         await update.message.reply_text("⏳ Генерирую pairing code...")
 
@@ -4999,29 +5250,39 @@ async def letsgo(update: Update, context: CallbackContext):
 
 
 # 🔹 **Функция, которая запоминает переводы, но не проверяет их**
+async def _run_shortcut_text_split(message, user_id: int, text: str, *, origin: str) -> None:
+    """Shared LLM phrase/word split (iOS Shortcut style) for both forwarded and pasted German text."""
+    text = (text or "").strip()
+    if not text:
+        return
+    user_id = int(user_id)
+    if _free_shortcut_forwarded_limit_blocks_user(user_id, origin=origin):
+        log_limit_runtime_event(
+            user_id=user_id,
+            feature_code=SHORTCUT_FORWARDED_MESSAGE_FEATURE_KEY,
+            event_type="blocked",
+            origin=origin,
+            metadata={"surface": f"telegram_{origin}"},
+        )
+        await message.reply_text(SHORTCUT_FORWARDED_MESSAGE_LIMIT_MESSAGE, quote=True)
+        return
+    await message.reply_text("🔍", quote=True)
+    request_key = _start_shortcut_lookup_enqueue_runner(user_id=user_id, text=text, origin=origin)
+    _record_shortcut_forwarded_message_accepted(user_id, origin=origin, request_key=request_key)
+
+
 async def handle_forwarded_message_lookup(update: Update, context: CallbackContext) -> None:
     """Forward any message to the bot in private chat → same LLM split as iOS Shortcut."""
     if not update.message or not update.message.text:
         return
     if not (update.effective_chat and update.effective_chat.type == "private"):
         return
-    text = update.message.text.strip()
-    if not text:
-        return
-    user_id = int(update.message.from_user.id)
-    if _free_shortcut_forwarded_limit_blocks_user(user_id, origin="forwarded"):
-        log_limit_runtime_event(
-            user_id=user_id,
-            feature_code=SHORTCUT_FORWARDED_MESSAGE_FEATURE_KEY,
-            event_type="blocked",
-            origin="forwarded",
-            metadata={"surface": "telegram_forwarded_message"},
-        )
-        await update.message.reply_text(SHORTCUT_FORWARDED_MESSAGE_LIMIT_MESSAGE, quote=True)
-        return
-    await update.message.reply_text("🔍", quote=True)
-    request_key = _start_shortcut_lookup_enqueue_runner(user_id=user_id, text=text, origin="forwarded")
-    _record_shortcut_forwarded_message_accepted(user_id, origin="forwarded", request_key=request_key)
+    await _run_shortcut_text_split(
+        update.message,
+        int(update.message.from_user.id),
+        update.message.text,
+        origin="forwarded",
+    )
 
 
 _GERMAN_COMMON_WORDS_RE = re.compile(
@@ -5043,121 +5304,6 @@ def _is_german_text_for_analysis(text: str) -> bool:
     has_umlauts = bool(re.search(r'[äöüßÄÖÜ]', text))
     has_german_words = len(_GERMAN_COMMON_WORDS_RE.findall(text)) >= 4
     return has_umlauts or has_german_words
-
-
-async def _handle_text_analysis_prompt(message, user_id: int, text: str) -> None:
-    pending_text_analysis[user_id] = {
-        "text": text,
-        "started_at": pytime.time(),
-    }
-    if len(pending_text_analysis) > 200:
-        oldest_key = next(iter(pending_text_analysis))
-        pending_text_analysis.pop(oldest_key, None)
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("A2", callback_data="text_level:A2"),
-        InlineKeyboardButton("B1", callback_data="text_level:B1"),
-        InlineKeyboardButton("B2", callback_data="text_level:B2"),
-        InlineKeyboardButton("C1", callback_data="text_level:C1"),
-        InlineKeyboardButton("C2", callback_data="text_level:C2"),
-    ]])
-    await message.reply_text(
-        "🇩🇪 Вижу немецкий текст. Выберите уровень — извлеку полезный словарный запас:",
-        reply_markup=keyboard,
-    )
-
-
-async def handle_text_level_callback(update: Update, context: CallbackContext) -> None:
-    query = update.callback_query
-    if not query:
-        return
-    data = str(query.data or "").strip()
-    parts = data.split(":", 1)
-    if len(parts) != 2:
-        await query.answer("Неверный формат.", show_alert=True)
-        return
-    level = parts[1].strip().upper()
-    if level not in {"A2", "B1", "B2", "C1", "C2"}:
-        await query.answer("Неизвестный уровень.", show_alert=True)
-        return
-
-    user = query.from_user
-    if not user:
-        await query.answer()
-        return
-    user_id = int(user.id)
-
-    pending = pending_text_analysis.pop(user_id, None)
-    if not pending:
-        await query.answer("Текст устарел. Отправьте его снова.", show_alert=True)
-        return
-
-    text = str(pending.get("text") or "").strip()
-    if not text:
-        await query.answer("Текст не найден.", show_alert=True)
-        return
-
-    await query.answer()
-    try:
-        await query.edit_message_reply_markup(reply_markup=None)
-    except Exception:
-        pass
-
-    await query.message.reply_text(f"⏳ Извлекаю словарный запас уровня {level}...")
-
-    try:
-        result = await run_text_vocab_extract({"text": text, "level": level})
-        items = result.get("items") or []
-        items = [
-            item for item in items
-            if isinstance(item, dict) and str(item.get("de") or "").strip() and str(item.get("ru") or "").strip()
-        ]
-    except Exception:
-        logging.exception("text_vocab_extract failed user_id=%s level=%s", user_id, level)
-        await query.message.reply_text("Не удалось проанализировать текст. Попробуйте позже.")
-        return
-
-    if not items:
-        await query.message.reply_text("Не нашёл подходящих слов для сохранения.")
-        return
-
-    lines = [f"📚 <b>Уровень {level}</b> — {len(items)} единиц\n"]
-    for idx, item in enumerate(items, start=1):
-        lines.append(f"{idx}. <b>{html.escape(str(item.get('de') or ''))}</b> — {html.escape(str(item.get('ru') or ''))}")
-    await query.message.reply_text("\n".join(lines), parse_mode="HTML")
-
-    try:
-        folder_payload = _resolve_private_dictionary_save_folder(
-            user_id=user_id, source_lang="de", target_lang="ru"
-        )
-    except Exception:
-        folder_payload = {}
-
-    for item in items[:12]:
-        de_word = str(item.get("de") or "").strip()
-        ru_word = str(item.get("ru") or "").strip()
-        if not de_word or not ru_word:
-            continue
-        try:
-            lookup = {"word_source": de_word, "word_target": ru_word, "source_lang": "de", "target_lang": "ru"}
-            card_key = _store_pending_dictionary_card(user_id, "de", "ru", de_word, lookup)
-            option_key = _store_pending_dictionary_save_options(
-                user_id=user_id,
-                card_key=card_key,
-                options=[{"source": de_word, "target": ru_word}],
-                lookup=lookup,
-                source_lang="de",
-                target_lang="ru",
-                question_request_key="",
-                keyboard_mode="quick",
-                folder_payload=folder_payload,
-            )
-            card_text = f"🔹 <b>{html.escape(de_word)}</b> — {html.escape(ru_word)}"
-            keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton("💾 Сохранить", callback_data=f"dictquicksave:{option_key}:0")
-            ]])
-            await query.message.reply_text(card_text, parse_mode="HTML", reply_markup=keyboard)
-        except Exception:
-            logging.warning("text_vocab_extract save card failed user_id=%s item=%s", user_id, de_word, exc_info=True)
 
 
 async def handle_user_message(update: Update, context: CallbackContext):
@@ -5808,7 +5954,7 @@ async def handle_user_message(update: Update, context: CallbackContext):
             await update.message.reply_text(
                 "Окно для вопроса истекло. Нажмите кнопку `Спросить у GPT` ещё раз.",
                 parse_mode="Markdown",
-                reply_markup=_build_private_language_tutor_reply_keyboard(),
+                reply_markup=_build_private_language_tutor_reply_keyboard(user_id),
             )
             return
 
@@ -5831,13 +5977,13 @@ async def handle_user_message(update: Update, context: CallbackContext):
             _clear_pending_input_state(state_key=state_key, user_id=int(user_id))
             await update.message.reply_text(
                 "Ок, отменил вопрос.",
-                reply_markup=_build_private_language_tutor_reply_keyboard(),
+                reply_markup=_build_private_language_tutor_reply_keyboard(user_id),
             )
             return
 
         await update.message.reply_text(
             "⏳ Думаю над ответом...",
-            reply_markup=_build_private_language_tutor_reply_keyboard(),
+            reply_markup=_build_private_language_tutor_reply_keyboard(user_id),
         )
         try:
             source_lang, target_lang = _language_tutor_pair_for_user(int(user_id))
@@ -5876,7 +6022,7 @@ async def handle_user_message(update: Update, context: CallbackContext):
                 _clear_pending_input_state(state_key=state_key, user_id=int(user_id))
                 await update.message.reply_text(
                     ASK_GPT_DAILY_LIMIT_MESSAGE,
-                    reply_markup=_build_private_language_tutor_reply_keyboard(),
+                    reply_markup=_build_private_language_tutor_reply_keyboard(user_id),
                 )
                 return
             llm_response = await run_language_learning_private_question_detailed(llm_payload)
@@ -5957,7 +6103,7 @@ async def handle_user_message(update: Update, context: CallbackContext):
             logging.exception("❌ Ошибка language tutor answer user_id=%s", user_id)
             await update.message.reply_text(
                 "Не удалось подготовить ответ. Попробуйте чуть позже.",
-                reply_markup=_build_private_language_tutor_reply_keyboard(),
+                reply_markup=_build_private_language_tutor_reply_keyboard(user_id),
             )
         finally:
             pending_language_tutor_input.pop(user_id, None)
@@ -5994,7 +6140,7 @@ async def handle_user_message(update: Update, context: CallbackContext):
             await handle_button_click(update, context)
             return
         if update.effective_chat and update.effective_chat.type == "private" and _is_german_text_for_analysis(text):
-            await _handle_text_analysis_prompt(update.message, int(user_id), text)
+            await _run_shortcut_text_split(update.message, int(user_id), text, origin="pasted")
             return
         if update.effective_chat and update.effective_chat.type == "private" and _is_dictionary_lookup_candidate(text):
             await _handle_private_dictionary_lookup(update, context, text)
@@ -19824,6 +19970,9 @@ def main():
     application.add_handler(CommandHandler("admin_retag", admin_retag_command))
     application.add_handler(CallbackQueryHandler(request_access_from_button, pattern=r"^access:request$"))
     application.add_handler(CallbackQueryHandler(handle_shortcut_connect_callback, pattern=r"^shortcut:connect$"))
+    application.add_handler(CallbackQueryHandler(handle_autosave_digest_toggle_callback, pattern=r"^asv_tog:"))
+    application.add_handler(CallbackQueryHandler(handle_autosave_digest_save_callback, pattern=r"^asv_save:"))
+    application.add_handler(CallbackQueryHandler(handle_autosave_digest_delete_callback, pattern=r"^asv_del:"))
     # 🔥 Логирование всех сообщений (группа -1, не блокирует цепочку)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message, block=False), group=-1)
 
@@ -19870,7 +20019,6 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_article_quiz_callback, pattern=r"^aq:\d+:(der|die|das)$"))
     application.add_handler(CallbackQueryHandler(handle_crossword_callback, pattern=r"^cw:start:\d+$"))
     application.add_handler(CallbackQueryHandler(handle_listening_callback, pattern=r"^ls:start:\d+$"))
-    application.add_handler(CallbackQueryHandler(handle_text_level_callback, pattern=r"^text_level:"))
 
     application.add_handler(CommandHandler("translate", check_user_translation))  # ✅ Проверка переводов
     application.add_handler(CommandHandler("admin_rebus_send", admin_rebus_send_command))

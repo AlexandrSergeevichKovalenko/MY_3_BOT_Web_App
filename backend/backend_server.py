@@ -325,6 +325,7 @@ from backend.database import (
     save_webapp_dictionary_query_returning_id,
     save_webapp_dictionary_query_returning_id_with_inserted,
     get_existing_user_dictionary_entry_id_for_save,
+    get_shortcut_autosave_enabled,
     save_webapp_translation,
     get_dictionary_cache,
     upsert_dictionary_cache,
@@ -35942,10 +35943,24 @@ WHAT TO DISCARD — NOT LEARNABLE UNITS:
   • Social-media UI chrome and engagement counters: "und 99 weitere Personen haben das \
     kommentiert", "Gefällt 1,2 Tsd. Mal", view/like/comment/share counts, and button \
     labels like "Mehr anzeigen", "Folgen", "Antworten", "Teilen".
+  • App NAVIGATION labels OCR'd from Instagram/Telegram screenshots — discard ALWAYS, \
+    they are interface text, not learning material: "Für dich", "Erkunden", "Gefolgt", \
+    "Home", "LIVE", "Reels", "mehr", "Übersetzung anzeigen", "Original anzeigen", \
+    "Story", "Stories", and their English equivalents "Explore", "Following", "For you", \
+    "See translation", "Home".
+  • Bare standalone function words with no content word — a lone preposition, article or \
+    conjunction is NOT a card: "auf", "an", "für", "und", "der", "die", "das". \
+    KEEP them only inside a real phrase/sentence or a taught construction \
+    ("sich verlassen auf + Akk").
+  • Single-word proper names standing alone ("Anastasia", "Berlin" as a bare label).
+  • Hashtags and tag clusters ("#немецкийязык", "#deutsch").
   • Usernames, @mentions, handles, channel names and URLs ("deutsch_erfolgreich", \
     "deutsch.laman", "@user", "t.me/...").
-  • Text that is not German (Russian, English, other languages) standing on its own.
+  • Text that is not German (Russian, English, other languages) standing on its own — \
+    including English example phrases in quotes ("I will try", "I'll give it a go") and \
+    Russian instructional captions ("Пять фраз, которые лучше записать").
   • Pure symbols, emoji, emoticons, ASCII-art, and lone punctuation ("...", "•", "/\\) )").
+  • OCR fragments: 1–2 letter scraps and broken tokens ("ch", "Il 66").
   • Any fragment that, translated in isolation, would produce a meaningless result.
 
 BOTH FIELDS PER BLOCK:
@@ -35999,11 +36014,22 @@ For every piece of text in the input ask: \
     keep a number only inside a real German phrase ("284 Kilometer")
   DISCARD — social-media UI chrome and engagement counters ("und 99 weitere Personen \
     haben das kommentiert", like/view/comment counts, buttons "Folgen"/"Mehr anzeigen")
+  DISCARD — app NAVIGATION labels from Instagram/Telegram screenshots (interface text, \
+    never learnable): "Für dich", "Erkunden", "Gefolgt", "Home", "LIVE", "Reels", "mehr", \
+    "Übersetzung anzeigen", and English equivalents "Explore", "Following", "For you", \
+    "See translation"
+  DISCARD — bare standalone function words (a lone preposition/article/conjunction is not \
+    a card): "auf", "an", "für", "und", "der/die/das". Keep them only inside a real \
+    phrase, sentence, or taught construction.
+  DISCARD — single-word proper names standing alone ("Anastasia"), and hashtags ("#deutsch")
   DISCARD — usernames, @mentions, handles, channel names, URLs \
     ("deutsch_erfolgreich", "deutsch.laman", "t.me/...")
-  DISCARD — non-German text (Russian/English/other) that stands on its own. \
-    The source language is German; other languages alone are noise.
+  DISCARD — non-German text (Russian/English/other) that stands on its own — including \
+    English example phrases in quotes ("I will try", "I'll give it a go") and Russian \
+    captions ("Пять фраз, которые лучше записать"). The source language is German; \
+    other languages alone are noise.
   DISCARD — pure symbols, emoji, emoticons, ASCII-art, lone punctuation ("...", "•", "/\\) )")
+  DISCARD — OCR fragments: 1–2 letter scraps and broken tokens ("ch", "Il 66")
   DISCARD — any fragment that would yield no meaningful dictionary entry if translated.
 
 STEP 2 — ONE BLOCK PER ATOMIC UNIT (from what survived Step 1):
@@ -36069,6 +36095,49 @@ _SHORTCUT_ANY_LETTER_RE = re.compile(r"[^\W\d_]", re.UNICODE)
 _SHORTCUT_LATIN_LETTER_RE = re.compile(r"[A-Za-zÄÖÜäöüßẞ]")
 # A single token shaped like a social-media handle: foo.bar / foo_bar
 _SHORTCUT_HANDLE_TOKEN_RE = re.compile(r"^[^\W\d_][\w]*[._][\w]+$", re.UNICODE)
+# Cyrillic letters (Russian captions are the dominant non-German contaminant here)
+_SHORTCUT_CYRILLIC_LETTER_RE = re.compile(r"[А-Яа-яЁё]")
+
+# App / social-media UI chrome that gets OCR'd off Instagram & Telegram screenshots.
+# These are the navigation labels and action buttons of the app, never learnable German.
+# Matched against the WHOLE normalized unit (casefolded, stripped) — so a real phrase that
+# merely CONTAINS one of these words ("noch mehr Zeit") survives; only the bare label dies.
+_SHORTCUT_UI_CHROME_BLOCKLIST = frozenset({
+    # Instagram navigation & actions (German locale)
+    "für dich", "fur dich", "erkunden", "gefolgt", "folgen", "abonniert", "abonnieren",
+    "home", "live", "reels", "mehr", "mehr anzeigen", "weniger anzeigen", "weiter",
+    "übersetzung anzeigen", "ubersetzung anzeigen", "original anzeigen",
+    "antworten", "teilen", "senden", "speichern", "gespeichert", "kommentieren",
+    "kommentare", "kommentar", "gefällt mir", "gefallt mir", "verifiziert",
+    "alle ansehen", "alle anzeigen", "alle kommentare ansehen", "vorgeschlagen",
+    "story", "stories", "beitrag", "beiträge", "markiert", "suchen", "abos",
+    "benachrichtigungen", "nachricht", "nachrichten", "profil bearbeiten",
+    # English app chrome that slips into screenshots
+    "explore", "following", "for you", "more", "see translation", "see more",
+    "reply", "share", "save", "like", "comment", "follow", "view all comments",
+    "home feed", "notifications", "messages",
+})
+
+# Closed-class function words (prepositions / articles / conjunctions / bare pronouns).
+# Dropped ONLY when the whole unit is this single token — a lone "auf" is never a save-worthy
+# dictionary card, while "auf + Akkusativ" or any real phrase containing it is multi-token
+# and untouched.
+_SHORTCUT_STANDALONE_FUNCTION_WORDS = frozenset({
+    # prepositions
+    "auf", "an", "in", "im", "am", "zu", "zum", "zur", "für", "fur", "mit", "von",
+    "vom", "bei", "beim", "nach", "aus", "um", "über", "uber", "unter", "vor",
+    "hinter", "neben", "zwischen", "durch", "gegen", "ohne", "bis", "seit", "ab",
+    "trotz", "während", "wahrend", "wegen", "statt", "innerhalb", "außerhalb",
+    # articles
+    "der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "einem",
+    "einer", "eines", "kein", "keine",
+    # conjunctions / particles
+    "und", "oder", "aber", "denn", "sondern", "doch", "als", "dass", "ob", "weil",
+    "wenn", "damit", "obwohl", "sowie", "bzw", "etc",
+    # bare pronouns — useless as standalone cards
+    "ich", "du", "er", "sie", "es", "wir", "ihr", "man", "sich", "mich", "dich",
+    "mir", "dir", "ihm", "ihn", "ihnen", "uns", "euch",
+})
 
 
 def _shortcut_is_learnable_unit(term: str, content: str) -> bool:
@@ -36109,6 +36178,38 @@ def _shortcut_is_learnable_unit(term: str, content: str) -> bool:
     #    is left to the LLM prompt (kept here — conservative).
     tokens = text.split()
     if len(tokens) <= 2 and any(_SHORTCUT_HANDLE_TOKEN_RE.match(tok) for tok in tokens):
+        return False
+    # 7) Cyrillic-dominant unit → Russian caption text ("Пять фраз, ... mehr", "#немецкийязык").
+    #    Source is ALWAYS German; drop only when Cyrillic outweighs Latin (a German sentence
+    #    with one Russian gloss word survives — the Latin German body still dominates).
+    cyrillic_count = len(_SHORTCUT_CYRILLIC_LETTER_RE.findall(text))
+    latin_count = len(_SHORTCUT_LATIN_LETTER_RE.findall(text))
+    if cyrillic_count > latin_count:
+        return False
+    # 8) Hashtag / @-handle only unit ("#немецкийязык #немецкий", "@user") — nothing left
+    #    once the social tags are removed.
+    if tokens and all(tok.startswith("#") or tok.startswith("@") for tok in tokens):
+        return False
+    # Normalized form for exact-match lookups: casefolded, surrounding punctuation stripped.
+    normalized = text.casefold().strip(" \t\"'«»“”„.,:;!?()[]{}…—–-")
+    # 9) App / social-media UI chrome ("Für dich", "Erkunden", "Übersetzung anzeigen",
+    #    "Home", "LIVE", "mehr") — navigation labels, never a learnable German unit.
+    if normalized in _SHORTCUT_UI_CHROME_BLOCKLIST:
+        return False
+    # 10) Standalone closed-class function word ("auf", "an", "für", "und") — a bare
+    #     preposition/article/conjunction is not a save-worthy card. Only single-token units.
+    if len(tokens) == 1 and normalized in _SHORTCUT_STANDALONE_FUNCTION_WORDS:
+        return False
+    # 11) OCR scrap: at most one letter-bearing token and ≤2 letters total, AND either all
+    #     lowercase ("ch") or carrying a digit ("Il 66") — pure-number tokens like "66" don't
+    #     count as content. Capitalized 2-letter German NOUNS ("Ei", "Öl") are preserved; the
+    #     useful 2-letter function words (es/er/in/zu/um/ab) are dropped earlier in rule 10.
+    letter_tokens = [tok for tok in tokens if _SHORTCUT_ANY_LETTER_RE.search(tok)]
+    if (
+        len(letter_tokens) <= 1
+        and len(letters) <= 2
+        and (text == text.lower() or any(ch.isdigit() for ch in text))
+    ):
         return False
     return True
 
@@ -36998,6 +37099,42 @@ def _shortcut_append_pending_to_redis(user_id: int, request_key: str, lookup_tex
         )
 
 
+def _shortcut_dedup_norm(text: str) -> str:
+    """Normalized key for deduplicating learning units across requests.
+
+    Case/space/surrounding-punctuation insensitive so "Strafmaß", "strafmaß" and
+    "Strafmaß." collapse to one. Used to stop a nightly multi-photo batch (each photo is
+    a SEPARATE request) from sending the same German word as several identical cards.
+    """
+    norm = re.sub(r"\s+", " ", str(text or "").casefold()).strip()
+    return norm.strip(" \t\"'«»“”„.,:;!?()[]{}…—–-")
+
+
+def _shortcut_existing_pending_norms(user_id: int) -> set[str]:
+    """Normalized texts already queued for this user (read from the canonical pending hash).
+
+    Seeds cross-request dedup WITHOUT introducing a new Redis key — the purge-all rule
+    in _purge_all_pending_dictionary_for_user already wipes this hash, so no extra cleanup
+    surface is added (see the pending-queue-architecture note).
+    """
+    norms: set[str] = set()
+    try:
+        client = get_redis_client()
+        if client is None:
+            return norms
+        for raw in client.hvals(_shortcut_pending_hash_redis_key(user_id)) or []:
+            try:
+                payload = json.loads(raw)
+            except Exception:
+                continue
+            norm = _shortcut_dedup_norm((payload or {}).get("text") or "")
+            if norm:
+                norms.add(norm)
+    except Exception:
+        logging.debug("shortcut_dedup: failed reading pending norms user_id=%s", user_id, exc_info=True)
+    return norms
+
+
 def _run_shortcut_lookup_delivery(
     *,
     user_id: int,
@@ -37026,10 +37163,23 @@ def _run_shortcut_lookup_delivery(
         blocks = blocks[:shortcut_max_blocks]
 
     sent = 0
+    # Seed with what is ALREADY pending so the same word from an earlier photo in this
+    # nightly batch is not offered again; add this delivery's own units as we go to also
+    # collapse duplicates within a single multi-line request.
+    seen_norms = _shortcut_existing_pending_norms(safe_user_id)
     for term, content in blocks:
         lookup_text = str(term or content or "").strip()
         if not lookup_text:
             continue
+        dedup_norm = _shortcut_dedup_norm(lookup_text)
+        if dedup_norm and dedup_norm in seen_norms:
+            logging.info(
+                "shortcut_lookup: skipped cross-request duplicate user_id=%s word=%r",
+                safe_user_id, lookup_text[:40],
+            )
+            continue
+        if dedup_norm:
+            seen_norms.add(dedup_norm)
         request_key = hashlib.sha1(
             f"{safe_user_id}:{lookup_text}:{time.time()}:{sent}".encode("utf-8")
         ).hexdigest()[:20]
@@ -37077,6 +37227,284 @@ def _run_shortcut_lookup_delivery(
                 exc_info=True,
             )
     return sent
+
+
+# --- Nightly auto-save (staging + debounced digest) -------------------------------------
+# When the user toggles auto-save ON, OCR'd words are STAGED (not sent as one card each).
+# A nightly batch is 30 photos = 30 separate HTTP requests, so we debounce: each request
+# re-arms a ~90s timer; when photos stop arriving, one flush translates the staged terms
+# and sends a single multi-select digest the user reviews in the morning.
+_AUTOSAVE_STAGE_TTL = 21600  # 6h — staged terms live until flushed/reviewed
+_AUTOSAVE_DEBOUNCE_SECONDS = max(15, int((os.getenv("SHORTCUT_AUTOSAVE_DEBOUNCE_SECONDS") or "90").strip() or "90"))
+_AUTOSAVE_FLUSH_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="autosave-flush")
+
+
+def _autosave_stage_key(user_id: int) -> str:
+    return f"autosave_stage:{int(user_id)}"
+
+
+def _autosave_flush_at_key(user_id: int) -> str:
+    return f"autosave_flush_at:{int(user_id)}"
+
+
+def _autosave_flush_lock_key(user_id: int) -> str:
+    return f"autosave_flush_lock:{int(user_id)}"
+
+
+def _run_shortcut_autosave_staging(
+    *,
+    user_id: int,
+    text: str,
+    origin: str = "shortcut",
+    request_id: str | None = None,
+) -> int:
+    """Split + filter + dedup the request's words into the per-user staging hash, then
+    (re)arm the debounce. Returns the count of NEW units staged by this request."""
+    normalized_text = str(text or "").strip()
+    safe_user_id = int(user_id or 0)
+    if safe_user_id <= 0 or not normalized_text:
+        return 0
+
+    client = get_redis_client()
+    if client is None:
+        # No Redis → cannot stage/debounce. Fall back to the card flow so words aren't lost.
+        logging.warning("autosave: redis unavailable, falling back to card delivery user_id=%s", safe_user_id)
+        return _run_shortcut_lookup_delivery(
+            user_id=safe_user_id, text=normalized_text, origin=origin, request_id=request_id
+        )
+
+    blocks = _shortcut_split_blocks(
+        normalized_text, origin=origin, user_id=safe_user_id, request_id=request_id
+    )
+    if not blocks:
+        # Still re-arm: a no-content photo shouldn't end the batch prematurely.
+        _autosave_arm_flush(safe_user_id)
+        return 0
+
+    stage_key = _autosave_stage_key(safe_user_id)
+    existing_norms = {
+        (k.decode("utf-8") if isinstance(k, bytes) else k)
+        for k in (client.hkeys(stage_key) or [])
+    }
+    staged = 0
+    for term, content in blocks:
+        lookup_text = str(term or content or "").strip()
+        if not lookup_text:
+            continue
+        norm = _shortcut_dedup_norm(lookup_text)
+        if not norm or norm in existing_norms:
+            continue  # cross-request + within-request dedup
+        existing_norms.add(norm)
+        client.hset(
+            stage_key,
+            norm,
+            json.dumps({"term": term, "content": content, "added_at": time.time()}, ensure_ascii=False),
+        )
+        staged += 1
+    client.expire(stage_key, _AUTOSAVE_STAGE_TTL)
+    _autosave_arm_flush(safe_user_id)
+    logging.info(
+        "autosave: staged user_id=%s new=%d total_staged=%d", safe_user_id, staged, len(existing_norms)
+    )
+    return staged
+
+
+def _autosave_arm_flush(user_id: int) -> None:
+    """(Re)arm the debounce: bump flush-at to now+DEBOUNCE and schedule a check after it."""
+    safe_user_id = int(user_id)
+    flush_at = time.time() + _AUTOSAVE_DEBOUNCE_SECONDS
+    try:
+        client = get_redis_client()
+        if client is not None:
+            client.setex(_autosave_flush_at_key(safe_user_id), _AUTOSAVE_STAGE_TTL, f"{flush_at:.3f}")
+    except Exception:
+        logging.debug("autosave: failed to set flush-at user_id=%s", safe_user_id, exc_info=True)
+
+    def _delayed_check() -> None:
+        try:
+            time.sleep(_AUTOSAVE_DEBOUNCE_SECONDS + 1)
+            _autosave_maybe_flush(safe_user_id)
+        except Exception:
+            logging.exception("autosave: delayed flush check failed user_id=%s", safe_user_id)
+
+    _AUTOSAVE_FLUSH_EXECUTOR.submit(_delayed_check)
+
+
+def _autosave_maybe_flush(user_id: int) -> None:
+    """Flush only if the debounce window has elapsed (no newer request re-armed it) and no
+    other thread is already flushing this user (Redis NX lock = exactly-once)."""
+    safe_user_id = int(user_id)
+    client = get_redis_client()
+    if client is None:
+        return
+    raw = client.get(_autosave_flush_at_key(safe_user_id))
+    if not raw:
+        return  # already flushed/cleared
+    try:
+        flush_at = float(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+    except Exception:
+        flush_at = 0.0
+    if time.time() < flush_at - 0.5:
+        return  # a newer request bumped the window; its timer will handle the flush
+    # Claim the flush so concurrent timers don't double-send.
+    if client.set(_autosave_flush_lock_key(safe_user_id), "1", nx=True, ex=120) is None:
+        return
+    try:
+        _run_autosave_flush(safe_user_id)
+    finally:
+        # flush-at is consumed; clear so a late timer is a no-op
+        try:
+            client.delete(_autosave_flush_at_key(safe_user_id))
+        except Exception:
+            pass
+
+
+_AUTOSAVE_DIGEST_TTL = 86400  # 24h — user reviews the morning digest at leisure
+_AUTOSAVE_DIGEST_MAX_ITEMS = 40  # Telegram keyboard / readability cap
+
+
+def _autosave_digest_key(digest_id: str) -> str:
+    return f"autosave_digest:{digest_id}"
+
+
+def _autosave_translate_terms(terms: list[str], *, source_lang: str, target_lang: str) -> list[str]:
+    """Batch-translate staged terms in ONE LLM call (positional, order-preserving).
+    Falls back to empty strings on failure so the digest still renders the source words."""
+    if not terms:
+        return []
+    from backend.openai_manager import client as _openai_async_client
+
+    source_name = _SKILL_RESOURCE_LANGUAGE_NAMES.get(source_lang, source_lang or "the source language")
+    target_name = _SKILL_RESOURCE_LANGUAGE_NAMES.get(target_lang, target_lang or "the target language")
+    system_prompt = (
+        f"You are a concise bilingual dictionary. Translate each {source_name} learning unit "
+        f"into {target_name}. Keep each translation short and dictionary-style (no commentary). "
+        f"Return ONLY valid JSON: {{\"translations\": [\"...\", \"...\"]}} — a list with EXACTLY one "
+        f"translation per input item, in the SAME order. If an item is already in {target_name} or "
+        f"untranslatable, return an empty string for it."
+    )
+    user_payload = json.dumps({"items": terms}, ensure_ascii=False)
+    model = _shortcut_split_model("autosave_translate", "gpt-4.1-mini")
+
+    async def _call() -> str:
+        response = await _openai_async_client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_payload},
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+            timeout=60,
+        )
+        return response.choices[0].message.content or "{}"
+
+    try:
+        raw = asyncio.run(_call())
+        parsed = json.loads(raw)
+        translations = parsed.get("translations") if isinstance(parsed, dict) else None
+        if isinstance(translations, list) and len(translations) == len(terms):
+            return [str(t or "").strip() for t in translations]
+        logging.warning("autosave: translation length mismatch terms=%d got=%s", len(terms), type(translations))
+    except Exception:
+        logging.exception("autosave: batch translation failed terms=%d", len(terms))
+    return ["" for _ in terms]
+
+
+def _autosave_build_digest_keyboard(digest_id: str, items: list[dict], selected: list[bool]) -> dict:
+    """Multi-select checkbox keyboard: one toggle row per word + a save/delete footer."""
+    rows: list[list[dict]] = []
+    for idx, item in enumerate(items):
+        mark = "☑️" if (idx < len(selected) and selected[idx]) else "☐"
+        term = str(item.get("term") or item.get("content") or "").strip()
+        translation = str(item.get("translation") or "").strip()
+        label = f"{mark} {term}" + (f" — {translation}" if translation else "")
+        if len(label) > 60:
+            label = label[:59] + "…"
+        rows.append([{"text": label, "callback_data": f"asv_tog:{digest_id}:{idx}"}])
+    selected_count = sum(1 for s in selected if s)
+    rows.append([{"text": f"💾 Сохранить выбранные ({selected_count})", "callback_data": f"asv_save:{digest_id}"}])
+    rows.append([{"text": "🗑 Удалить остальные", "callback_data": f"asv_del:{digest_id}"}])
+    return {"inline_keyboard": rows}
+
+
+def _run_autosave_flush(user_id: int) -> None:
+    """Translate the staged terms and send ONE multi-select digest. Idempotent via the
+    flush lock in _autosave_maybe_flush; consumes (deletes) the staging hash on success."""
+    safe_user_id = int(user_id)
+    client = get_redis_client()
+    if client is None:
+        return
+    stage_key = _autosave_stage_key(safe_user_id)
+    raw_entries = client.hgetall(stage_key) or {}
+    if not raw_entries:
+        return
+
+    # Preserve insertion-ish order by added_at.
+    parsed: list[dict] = []
+    for raw in raw_entries.values():
+        try:
+            obj = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+        except Exception:
+            continue
+        if isinstance(obj, dict) and (obj.get("term") or obj.get("content")):
+            parsed.append(obj)
+    parsed.sort(key=lambda o: float(o.get("added_at") or 0.0))
+    if len(parsed) > _AUTOSAVE_DIGEST_MAX_ITEMS:
+        parsed = parsed[:_AUTOSAVE_DIGEST_MAX_ITEMS]
+
+    native_lang, learning_lang, _profile = _get_user_language_pair(safe_user_id)
+    # Source text is the learning language (German); translate into the user's native language.
+    source_lang = (learning_lang or "de").strip().lower()
+    target_lang = (native_lang or "ru").strip().lower()
+
+    terms = [str(o.get("term") or o.get("content") or "").strip() for o in parsed]
+    translations = _autosave_translate_terms(terms, source_lang=source_lang, target_lang=target_lang)
+
+    items = [
+        {"term": terms[i], "content": str(parsed[i].get("content") or terms[i]), "translation": translations[i]}
+        for i in range(len(terms))
+    ]
+    selected = [False] * len(items)
+
+    digest_id = hashlib.sha1(f"asv:{safe_user_id}:{time.time_ns()}".encode("utf-8")).hexdigest()[:12]
+    digest_state = {
+        "user_id": safe_user_id,
+        "source_lang": source_lang,
+        "target_lang": target_lang,
+        "items": items,
+        "selected": selected,
+        "created_at": time.time(),
+    }
+    client.setex(_autosave_digest_key(digest_id), _AUTOSAVE_DIGEST_TTL, json.dumps(digest_state, ensure_ascii=False))
+
+    header = (
+        f"🌙 <b>Ночная подборка</b> — {len(items)} "
+        f"{_autosave_plural_words(len(items))}\n"
+        "Отметьте галочками, что сохранить, и нажмите «Сохранить выбранные»."
+    )
+    try:
+        _send_private_message(
+            safe_user_id,
+            header,
+            reply_markup=_autosave_build_digest_keyboard(digest_id, items, selected),
+        )
+        client.delete(stage_key)  # consumed into the digest
+        logging.info("autosave: digest sent user_id=%s digest_id=%s items=%d", safe_user_id, digest_id, len(items))
+    except Exception:
+        logging.exception("autosave: digest send failed user_id=%s digest_id=%s", safe_user_id, digest_id)
+
+
+def _autosave_plural_words(n: int) -> str:
+    n_abs = abs(int(n))
+    if 11 <= (n_abs % 100) <= 14:
+        return "слов"
+    last = n_abs % 10
+    if last == 1:
+        return "слово"
+    if 2 <= last <= 4:
+        return "слова"
+    return "слов"
 
 
 def _start_shortcut_lookup_enqueue_runner(
@@ -37127,6 +37555,29 @@ def _start_shortcut_lookup_enqueue_runner(
             )
 
     def _worker() -> None:
+        try:
+            autosave_on = get_shortcut_autosave_enabled(safe_user_id)
+        except Exception:
+            logging.debug("autosave: toggle lookup failed user_id=%s", safe_user_id, exc_info=True)
+            autosave_on = False
+        if autosave_on:
+            # Nightly auto-save: stage + debounce instead of one card per word. Always inline
+            # (the flush sends a Telegram digest, which needs the bot token this process holds).
+            try:
+                staged = _run_shortcut_autosave_staging(
+                    user_id=safe_user_id, text=normalized_text, origin=origin, request_id=request_id
+                )
+                logging.info(
+                    "shortcut_lookup autosave staged user_id=%s request_key=%s staged=%s",
+                    safe_user_id, request_key, int(staged or 0),
+                )
+            except Exception:
+                logging.exception(
+                    "shortcut_lookup autosave staging failed user_id=%s request_key=%s; falling back to cards",
+                    safe_user_id, request_key,
+                )
+                _deliver_inline("autosave_staging_failed")
+            return
         if use_queue:
             try:
                 enqueue_shortcut_lookup_job(

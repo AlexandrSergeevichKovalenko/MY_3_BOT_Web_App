@@ -4129,6 +4129,15 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_telegram_dictionary_folder_preferences_user
                 ON bt_3_telegram_dictionary_folder_preferences (user_id, updated_at DESC);
             """)
+            # Per-user toggle for the Shortcut "nightly auto-save" mode: when enabled, OCR'd
+            # words are staged + sent as a multi-select digest instead of one card per word.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_shortcut_autosave_prefs (
+                    user_id BIGINT PRIMARY KEY,
+                    enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_webapp_dictionary_queries_user_pair_created
                 ON bt_3_webapp_dictionary_queries (user_id, source_lang, target_lang, created_at DESC);
@@ -17685,6 +17694,39 @@ def get_entries_without_semantic_tag(
                 }
                 for row in rows
             ]
+
+
+def get_shortcut_autosave_enabled(user_id: int) -> bool:
+    """Whether the user has the Shortcut nightly auto-save (staging + digest) mode ON."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT enabled FROM bt_3_shortcut_autosave_prefs WHERE user_id = %s LIMIT 1;",
+                    (int(user_id),),
+                )
+                row = cursor.fetchone()
+        return bool(row[0]) if row else False
+    except Exception:
+        logging.debug("get_shortcut_autosave_enabled failed user_id=%s", user_id, exc_info=True)
+        return False
+
+
+def set_shortcut_autosave_enabled(user_id: int, enabled: bool) -> bool:
+    """Upsert the toggle; returns the stored value."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_shortcut_autosave_prefs (user_id, enabled, updated_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (user_id)
+                DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = NOW();
+                """,
+                (int(user_id), bool(enabled)),
+            )
+        conn.commit()
+    return bool(enabled)
 
 
 def get_telegram_dictionary_folder_preference(
