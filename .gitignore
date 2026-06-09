@@ -67,3 +67,5 @@ Thumbs.db
 # =========================
 *.sqlite3
 *.db
+# Local Claude Code settings — may contain inlined secrets, never commit
+.claude/settings.local.json
