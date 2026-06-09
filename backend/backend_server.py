@@ -36139,6 +36139,79 @@ _SHORTCUT_STANDALONE_FUNCTION_WORDS = frozenset({
     "mir", "dir", "ihm", "ihn", "ihnen", "uns", "euch",
 })
 
+# --- Рубеж 1: high-confidence "this is NOT German" detector ------------------------------
+# Source screenshots sometimes contain English text, code, math formulas, brand/URL lines
+# (e.g. a coding course). The conservative gate above keeps any Latin word, so this layer
+# drops the clearly-non-German cases — but ONLY when there is no German signal, so real
+# German is never touched. Anything ambiguous falls through to the translation-time filter.
+_SHORTCUT_GERMAN_UMLAUT_RE = re.compile(r"[äöüßÄÖÜẞ]")
+# Tokens that are unambiguously German (NOT shared with English) — their presence = "keep".
+_SHORTCUT_GERMAN_SIGNAL_WORDS = frozenset({
+    "der", "die", "das", "und", "ist", "sind", "nicht", "ich", "ein", "eine", "einen",
+    "einem", "einer", "eines", "mit", "für", "fur", "auf", "von", "vom", "zur", "zum",
+    "sich", "wir", "ihr", "sie", "euch", "uns", "oder", "aber", "auch", "noch", "dann",
+    "wenn", "weil", "dass", "über", "uber", "wird", "wurde", "haben", "hatte", "sein",
+    "werden", "kann", "muss", "müssen", "mussen", "sehr", "schon", "immer", "kein", "keine",
+    "mein", "dein", "unser", "welche", "welcher", "durch", "gegen", "ohne", "nach", "aus",
+    "bei", "vor", "hinter", "neben", "zwischen", "während", "wegen", "trotz", "zwar", "doch",
+    "akkusativ", "dativ", "genitiv", "nominativ",  # grammar terms common in learning material
+})
+# Common English marker words — used ONLY to flag confident English (≥3) when no German signal
+# is present. Deliberately excludes words shared with German (in, an, so, was, bei, hat, ...).
+_SHORTCUT_ENGLISH_MARKER_WORDS = frozenset({
+    "the", "of", "and", "will", "ever", "is", "are", "were", "to", "for", "you", "your",
+    "yours", "no", "not", "with", "from", "this", "that", "what", "why", "how", "they",
+    "their", "them", "there", "would", "could", "should", "have", "has", "had", "been",
+    "being", "does", "did", "but", "or", "amount", "evidence", "persuade", "idiot", "best",
+    "regards", "simple", "way", "import", "class", "return", "function", "model", "models",
+    "please", "thanks", "thank", "dear", "hello", "about", "into", "than", "then", "because",
+    "which", "while", "where", "when", "who", "whom", "every", "any", "all", "some", "more",
+})
+_SHORTCUT_URL_RE = re.compile(
+    r"https?://|www\.|\b[\w-]+\.[\w-]+\.[\w-]+\b"  # multi-segment domain: edu.goit.global
+    r"|\b[\w-]+\.(?:com|net|org|io|ua|ru|de|info|app|co|edu|gov)\b",
+    re.IGNORECASE,
+)
+_SHORTCUT_CODE_RE = re.compile(
+    r"[{}]|==|!=|=>|->|::|\bimport\b|\bdef\b|\bclass\b|\breturn\s|\(\s*\)",
+    re.IGNORECASE,
+)
+
+
+def _shortcut_looks_non_german(text: str) -> bool:
+    """True only when we are CONFIDENT the unit is not German (URL/brand, code, math blob,
+    or English-heavy) AND there is no German signal. Conservative by design — ambiguous text
+    is left to the translation-time filter so we never drop real German."""
+    t = str(text or "").strip()
+    if not t:
+        return False
+    # German signal → keep, never flag.
+    if _SHORTCUT_GERMAN_UMLAUT_RE.search(t):
+        return False
+    low = t.casefold()
+    word_tokens = re.findall(r"[a-zäöüß]+", low)
+    if any(tok in _SHORTCUT_GERMAN_SIGNAL_WORDS for tok in word_tokens):
+        return False
+    # URL / domain / brand line.
+    if _SHORTCUT_URL_RE.search(t):
+        return True
+    # Code markers ("from x import y", "def", "==", "{}", "()").
+    if _SHORTCUT_CODE_RE.search(t):
+        return True
+    # Math/formula-dominant: many digits & operators, almost no real words. Two cases:
+    # a lone word in a formula ("(batch x 10000) ="), or digits/ops heavily outnumbering words
+    # ("3, (batch x 16)x 16x1) → ="). A real phrase like "284 Kilometer" stays (digit_ops=3).
+    digit_ops = len(re.findall(r"[0-9=+\-*/×÷→<>()]", t))
+    long_words = [w for w in word_tokens if len(w) >= 3]
+    if digit_ops >= 4 and len(long_words) <= 1:
+        return True
+    if digit_ops >= 6 and digit_ops > len(long_words) * 2:
+        return True
+    # Confident English: several English marker words and no German signal.
+    if sum(1 for tok in word_tokens if tok in _SHORTCUT_ENGLISH_MARKER_WORDS) >= 3:
+        return True
+    return False
+
 
 def _shortcut_is_learnable_unit(term: str, content: str) -> bool:
     """Conservative deterministic gate applied to every extracted block before delivery.
@@ -36210,6 +36283,10 @@ def _shortcut_is_learnable_unit(term: str, content: str) -> bool:
         and len(letters) <= 2
         and (text == text.lower() or any(ch.isdigit() for ch in text))
     ):
+        return False
+    # 12) High-confidence non-German (URL/brand, code, math blob, English-heavy) with NO German
+    #     signal → drop. Ambiguous cases fall through to the translation-time filter (Рубеж 2).
+    if _shortcut_looks_non_german(text):
         return False
     return True
 
@@ -36558,7 +36635,9 @@ def _shortcut_split_blocks(
     input_lines = [line.strip() for line in text.splitlines() if line.strip()]
     multiline = len(input_lines) >= 2
     input_length = len(text or "")
-    primary_model = _shortcut_split_model("shortcut_split", "gpt-4.1-mini")
+    # Full gpt-4.1 by default (better at rejecting non-German than mini). Override via
+    # LLM_TASK_MODEL_SHORTCUT_SPLIT if cost becomes a concern.
+    primary_model = _shortcut_split_model("shortcut_split", "gpt-4.1-2025-04-14")
     fallback_model = _shortcut_split_model("shortcut_split_fallback", "gpt-4.1-2025-04-14")
 
     def _line_split_fallback() -> list[tuple[str, str]]:
@@ -37072,6 +37151,7 @@ def _shortcut_append_pending_to_redis(user_id: int, request_key: str, lookup_tex
             logging.warning("shortcut_pending: redis client is None, cannot store pending user_id=%s key=%s", user_id, request_key)
             return
         hash_key = _shortcut_pending_hash_redis_key(user_id)
+        created_at = time.time()  # age stamp → enables the nightly stale-pending cleanup (Рубеж 3)
         hash_payload = {
             "key": request_key,
             "user_id": int(user_id),
@@ -37079,6 +37159,7 @@ def _shortcut_append_pending_to_redis(user_id: int, request_key: str, lookup_tex
             "chat_id": int(user_id),
             "message_id": None,
             "source": "shortcut_delivery",
+            "created_at": created_at,
         }
         client.hset(hash_key, request_key, json.dumps(hash_payload, ensure_ascii=False))
         client.expire(hash_key, _SHORTCUT_PENDING_REDIS_TTL)
@@ -37087,7 +37168,7 @@ def _shortcut_append_pending_to_redis(user_id: int, request_key: str, lookup_tex
         existing = json.loads(raw) if raw else []
         if not isinstance(existing, list):
             existing = []
-        existing.append({"key": request_key, "user_id": user_id, "text": lookup_text})
+        existing.append({"key": request_key, "user_id": user_id, "text": lookup_text, "created_at": created_at})
         client.setex(redis_key, _SHORTCUT_PENDING_REDIS_TTL, json.dumps(existing, ensure_ascii=False))
         logging.info(
             "shortcut_pending: stored user_id=%s key=%s word=%r total_pending=%d redis_key=%s",
@@ -37339,7 +37420,8 @@ def _autosave_collect_due_user_ids() -> list[int]:
 
 
 _AUTOSAVE_DIGEST_TTL = 86400  # 24h — user reviews the morning digest at leisure
-_AUTOSAVE_DIGEST_MAX_ITEMS = 40  # Telegram keyboard / readability cap
+_AUTOSAVE_DIGEST_PAGE_SIZE = max(5, int((os.getenv("SHORTCUT_AUTOSAVE_DIGEST_PAGE_SIZE") or "30").strip() or "30"))
+_AUTOSAVE_DIGEST_HARD_CAP = 200  # safety bound on a single night's batch (token/abuse guard)
 
 
 def _autosave_digest_key(digest_id: str) -> str:
@@ -37445,11 +37527,15 @@ def _autosave_build_digest_keyboard(digest_id: str, items: list[dict], selected:
     return {"inline_keyboard": rows}
 
 
-def _autosave_digest_body_text(items: list[dict]) -> str:
-    """Readable numbered list in the message body (full text, articles, nothing truncated)."""
+def _autosave_digest_body_text(items: list[dict], *, page: tuple[int, int] | None = None) -> str:
+    """Readable numbered list in the message body (full text, articles, nothing truncated).
+    `page=(i, total)` adds a "часть i из total" header when the batch is paginated."""
     n = len(items)
+    header = f"🌙 <b>Ночная подборка</b> — {n} {_autosave_plural_words(n)}"
+    if page is not None and page[1] > 1:
+        header += f" · часть {page[0]} из {page[1]}"
     lines = [
-        f"🌙 <b>Ночная подборка</b> — {n} {_autosave_plural_words(n)}",
+        header,
         "Снимите галочки с лишних и нажмите «💾 Сохранить выбранные».",
         "",
     ]
@@ -37508,7 +37594,7 @@ def _run_autosave_flush(user_id: int) -> None:
                 continue
             seen.add(norm)
             terms.append(t)
-            if len(terms) >= _AUTOSAVE_DIGEST_MAX_ITEMS:
+            if len(terms) >= _AUTOSAVE_DIGEST_HARD_CAP:
                 break
         if not terms:
             return
@@ -37523,29 +37609,41 @@ def _run_autosave_flush(user_id: int) -> None:
             }
             for i in range(len(terms))
         ]
-        selected = [True] * len(items)  # default: all checked — user unchecks the few bad ones
-
-        digest_id = hashlib.sha1(f"asv:{safe_user_id}:{time.time_ns()}".encode("utf-8")).hexdigest()[:12]
-        digest_state = {
-            "user_id": safe_user_id,
-            "source_lang": source_lang,
-            "target_lang": target_lang,
-            "items": items,
-            "selected": selected,
-            "created_at": time.time(),
-        }
-        client.setex(_autosave_digest_key(digest_id), _AUTOSAVE_DIGEST_TTL, json.dumps(digest_state, ensure_ascii=False))
-
-        try:
-            _send_private_message(
-                safe_user_id,
-                _autosave_digest_body_text(items),
-                reply_markup=_autosave_build_digest_keyboard(digest_id, items, selected),
-                parse_mode="HTML",
-            )
-            logging.info("autosave: digest sent user_id=%s digest_id=%s items=%d", safe_user_id, digest_id, len(items))
-        except Exception:
-            logging.exception("autosave: digest send failed user_id=%s digest_id=%s", safe_user_id, digest_id)
+        # Paginate: split into pages of PAGE_SIZE so a big batch is several clean digests
+        # instead of a truncated one (nothing is dropped). Each page is its own independent
+        # multi-select message (own digest_id, own checkboxes, own save).
+        pages = [items[i:i + _AUTOSAVE_DIGEST_PAGE_SIZE] for i in range(0, len(items), _AUTOSAVE_DIGEST_PAGE_SIZE)]
+        total_pages = len(pages)
+        for page_idx, page_items in enumerate(pages):
+            selected = [True] * len(page_items)  # default: all checked — user unchecks the few bad ones
+            digest_id = hashlib.sha1(
+                f"asv:{safe_user_id}:{time.time_ns()}:{page_idx}".encode("utf-8")
+            ).hexdigest()[:12]
+            digest_state = {
+                "user_id": safe_user_id,
+                "source_lang": source_lang,
+                "target_lang": target_lang,
+                "items": page_items,
+                "selected": selected,
+                "created_at": time.time(),
+            }
+            client.setex(_autosave_digest_key(digest_id), _AUTOSAVE_DIGEST_TTL, json.dumps(digest_state, ensure_ascii=False))
+            page_label = (page_idx + 1, total_pages) if total_pages > 1 else None
+            try:
+                _send_private_message(
+                    safe_user_id,
+                    _autosave_digest_body_text(page_items, page=page_label),
+                    reply_markup=_autosave_build_digest_keyboard(digest_id, page_items, selected),
+                    parse_mode="HTML",
+                )
+                logging.info(
+                    "autosave: digest page sent user_id=%s digest_id=%s page=%s/%s items=%d",
+                    safe_user_id, digest_id, page_idx + 1, total_pages, len(page_items),
+                )
+            except Exception:
+                logging.exception("autosave: digest send failed user_id=%s digest_id=%s", safe_user_id, digest_id)
+            if page_idx + 1 < total_pages:
+                time.sleep(0.4)  # gentle pacing between page messages
     finally:
         try:
             client.delete(lock_key)

@@ -132,6 +132,26 @@ class ShortcutAutosaveStagingTests(unittest.TestCase):
         self.assertEqual(state["items"][0]["semantic_category"], "Право")
         self.assertEqual(state["selected"], [True, True])
 
+    def test_flush_paginates_large_batch(self):
+        uid = 77
+        self.redis.rpush(server._autosave_raw_key(uid), "big batch text")
+        n = 65  # > one page (30) → expect 3 pages: 30 + 30 + 5
+        blocks = [(f"Wort{i}", f"Wort{i}") for i in range(n)]
+        cards = [{"canonical": f"das Wort{i}", "translation": f"слово{i}", "semantic_category": ""} for i in range(n)]
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(server, "_shortcut_split_blocks", return_value=blocks))
+            stack.enter_context(patch.object(server, "_autosave_prepare_cards", return_value=cards))
+            stack.enter_context(patch.object(server, "_get_user_language_pair", return_value=("ru", "de", {})))
+            stack.enter_context(patch("time.sleep"))
+            self._enter_common(stack)
+            server._run_autosave_flush(uid)
+
+        self.assertEqual(len(self.sent), 3)  # nothing dropped — split across 3 messages
+        self.assertIn("часть 1 из 3", self.sent[0][0])
+        self.assertIn("часть 3 из 3", self.sent[2][0])
+        # page sizes 30/30/5 (number-toggle rows of 5 + 1 save footer)
+        self.assertEqual(sum(len(r) for r in self.sent[2][1]["inline_keyboard"][:-1]), 5)
+
     def test_flush_is_nx_locked_against_concurrent(self):
         uid = 55
         self.redis.rpush(server._autosave_raw_key(uid), "text")

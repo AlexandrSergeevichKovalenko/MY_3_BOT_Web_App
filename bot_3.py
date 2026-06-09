@@ -6238,6 +6238,77 @@ def _build_dictionary_pair_keyboard(request_key: str) -> InlineKeyboardMarkup:
 
 
 _DICT_PENDING_REDIS_TTL_SEC = 28800  # 8 hours — user may send words in morning, batch-translate evening
+# Рубеж 3: a pending entry the user never acts on is dropped after this age (long window so
+# today's words you mean to batch tomorrow are never lost). Enforced on restore + nightly job.
+_DICT_PENDING_MAX_AGE_SEC = max(
+    3600, int((os.getenv("DICT_PENDING_MAX_AGE_SEC") or str(60 * 60 * 24)).strip() or str(60 * 60 * 24))
+)
+
+
+def _dict_pending_entry_age_seconds(entry: dict, now: float | None = None) -> float:
+    """Seconds since the entry was created. Missing/zero created_at → 0 (treated as fresh)."""
+    try:
+        created_at = float((entry or {}).get("created_at") or 0.0)
+    except Exception:
+        created_at = 0.0
+    if created_at <= 0:
+        return 0.0
+    return max(0.0, (now if now is not None else pytime.time()) - created_at)
+
+
+def _purge_stale_pending_all_users() -> int:
+    """Рубеж 3 nightly sweep: drop pending entries older than the max-age window from both the
+    in-process map and the Redis hashes (all users). Keeps RAM clean for users who never press
+    «Быстрый перевод». The long window means today's un-batched words are never lost."""
+    removed = 0
+    now = pytime.time()
+    # 1) in-memory map (this bot process, all users)
+    stale = [
+        k for k, v in list(pending_dictionary_lookup_requests.items())
+        if _dict_pending_entry_age_seconds(v, now) > _DICT_PENDING_MAX_AGE_SEC
+    ]
+    for k in stale:
+        pending_dictionary_lookup_requests.pop(k, None)
+        removed += 1
+    # 2) Redis hashes across all users — delete stale fields only
+    try:
+        from backend.job_queue import get_redis_client
+        client = get_redis_client()
+        if client is not None:
+            for hk in client.scan_iter(match="dict_pending_user_hash:*", count=200):
+                hks = hk.decode("utf-8") if isinstance(hk, bytes) else hk
+                try:
+                    fields = client.hgetall(hks) or {}
+                except Exception:
+                    continue
+                stale_fields = []
+                for fk, raw in fields.items():
+                    try:
+                        entry = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+                    except Exception:
+                        continue
+                    if _dict_pending_entry_age_seconds(entry, now) > _DICT_PENDING_MAX_AGE_SEC:
+                        stale_fields.append(fk)
+                if stale_fields:
+                    try:
+                        client.hdel(hks, *stale_fields)
+                        removed += len(stale_fields)
+                    except Exception:
+                        logging.debug("dict_pending: hdel stale failed key=%s", hks, exc_info=True)
+    except Exception:
+        logging.warning("dict_pending: nightly stale sweep redis pass failed", exc_info=True)
+    logging.info(
+        "dict_pending: nightly stale sweep removed=%d (max_age=%ss)", removed, _DICT_PENDING_MAX_AGE_SEC
+    )
+    return removed
+
+
+async def _nightly_pending_cleanup_job(context: CallbackContext) -> None:
+    try:
+        removed = await asyncio.to_thread(_purge_stale_pending_all_users)
+        logging.info("nightly_pending_cleanup done removed=%d", removed)
+    except Exception:
+        logging.exception("nightly_pending_cleanup failed")
 
 
 def _dict_pending_redis_key(user_id: int) -> str:
@@ -6323,8 +6394,13 @@ def _restore_pending_from_redis(user_id: int) -> None:
                 logging.warning("dict_pending: unexpected type for %s: %s", source_key, type(entries))
                 return 0
             count = 0
+            now_ts = pytime.time()
             for entry in entries:
                 k = entry.get("key")
+                # Рубеж 3: don't pull stale entries back into RAM — the user never acted on
+                # them and they're past the max-age window; the nightly job clears Redis too.
+                if _dict_pending_entry_age_seconds(entry, now_ts) > _DICT_PENDING_MAX_AGE_SEC:
+                    continue
                 if k and k not in pending_dictionary_lookup_requests:
                     pending_dictionary_lookup_requests[k] = {
                         "user_id": int(entry.get("user_id", user_id)),
@@ -6332,6 +6408,7 @@ def _restore_pending_from_redis(user_id: int) -> None:
                         "chat_id": entry.get("chat_id"),
                         "message_id": entry.get("message_id"),
                         "source": str(entry.get("source") or "").strip() or None,
+                        "created_at": float(entry.get("created_at") or now_ts),  # preserve age
                     }
                     count += 1
             logging.info("dict_pending: absorbed %d new entries from %s", count, source_key)
@@ -8517,6 +8594,30 @@ async def _run_dictionary_lookup_for_pair(lookup_input: str, source_lang: str, t
     return await _coerce_sentence_lookup_payload(result, lookup_input, source_lang, target_lang)
 
 
+# Рубеж 2: the translator itself flags garbage (e.g. "нет подходящего немецкого слова:
+# неверный ввод"). When every option is empty/garbage-marked, we skip the save card entirely
+# so junk that slipped past the entry filter never reaches the chat. The pending entry is
+# still removed by the caller, so it leaves the queue too.
+_DICT_GARBAGE_TARGET_RE = re.compile(
+    r"нет\s+подходящ|неверн\w*\s+ввод|не\s+немецк|нельзя\s+перевести|бессмысл"
+    r"|no\s+valid|not\s+(?:a\s+)?valid|untranslat|gibberish|invalid\s+input",
+    re.IGNORECASE,
+)
+
+
+def _dictionary_result_is_garbage(prepared: dict) -> bool:
+    """True when the translation result has no usable German option (all empty or
+    explicitly marked 'not German / invalid input' by the model)."""
+    options = (prepared or {}).get("options") if isinstance(prepared, dict) else None
+    if not options:
+        return True
+    for opt in options:
+        target = str((opt or {}).get("target") or "").strip()
+        if target and target not in {"—", "-", "?"} and not _DICT_GARBAGE_TARGET_RE.search(target):
+            return False  # at least one real translation → keep
+    return True
+
+
 async def _send_dictionary_lookup_result(
     message,
     context: CallbackContext,
@@ -8551,6 +8652,14 @@ async def _send_dictionary_lookup_result(
             exc,
         )
         await message.reply_text("Не удалось получить перевод. Попробуйте снова через несколько секунд.")
+        return
+
+    # Рубеж 2: drop garbage at translation time (same as the quick path).
+    if _dictionary_result_is_garbage(prepared):
+        logging.info(
+            "dict_lookup(full): dropped non-German at translation user_id=%s input=%r",
+            int(user_id), lookup_input[:40],
+        )
         return
 
     card_text = _build_dictionary_card_text(
@@ -8756,6 +8865,15 @@ async def _send_dictionary_lookup_quick_result(
             exc,
         )
         await message.reply_text("Не удалось получить быстрый перевод. Попробуйте снова через несколько секунд.")
+        return
+
+    # Рубеж 2: drop garbage at translation time — no save card for junk (entry is removed
+    # by the caller's finally, so it also leaves the queue).
+    if _dictionary_result_is_garbage(prepared):
+        logging.info(
+            "dict_lookup: dropped non-German at translation user_id=%s input=%r",
+            int(user_id), lookup_input[:40],
+        )
         return
 
     quick_text = _build_quick_dictionary_result_text(
@@ -20071,6 +20189,15 @@ def main():
             category="housekeeping",
             required_before_first_request=False,
         )
+        try:
+            application.job_queue.run_daily(
+                _nightly_pending_cleanup_job,
+                time=time(hour=23, minute=59, tzinfo=ZoneInfo("Europe/Vienna")),
+                name="nightly_pending_cleanup",
+            )
+            logging.info("scheduled nightly_pending_cleanup at 23:59 Europe/Vienna")
+        except Exception:
+            logging.warning("failed to schedule nightly_pending_cleanup", exc_info=True)
     elif application.job_queue:
         logging.info("Skipping bot startup run_once jobs in this process")
         _emit_bot_startup_phase(

@@ -182,6 +182,36 @@ class ShortcutLookupSplitTests(unittest.TestCase):
                 msg=f"expected KEEP for {raw!r} (normalized {cleaned!r})",
             )
 
+    def test_rubezh1_drops_non_german_code_url_math_english(self):
+        # Real garbage from forwarded non-German screenshots (coding course, emails, IG).
+        for raw in [
+            "No amount of evidence will ever persuade an idiot.",
+            "from keras. models import Sequential",
+            "(batch x 10000) x (10000 x 16) =",
+            "GoIT | Simple way to IT | goit.com.ua",
+            "https://payment.goit.ua/AddAgreements",
+            "3, (batch x 16)x 16x1) → = (bAtch x 1)",
+            "edu.goit.global",
+        ]:
+            cleaned = server._shortcut_normalize_unit_text(raw)
+            self.assertFalse(
+                bool(cleaned) and server._shortcut_is_learnable_unit(cleaned, cleaned),
+                msg=f"expected DROP (non-German) for {raw!r}",
+            )
+
+    def test_rubezh1_keeps_german_even_without_umlauts(self):
+        # German signal (umlaut/ß OR a German-only word OR grammar term) must always keep it.
+        for raw in [
+            "begegnen", "sich begegnen", "gesetzwidrig", "widerrechtlich", "herwärts",
+            "meiner Ansicht nach", "Ich bin begeistert", "Das ist cringe",
+            "sich verlassen auf + Akkusativ", "erinnern an + Akkusativ", "284 Kilometer",
+        ]:
+            cleaned = server._shortcut_normalize_unit_text(raw)
+            self.assertTrue(
+                server._shortcut_is_learnable_unit(cleaned, cleaned),
+                msg=f"expected KEEP (German) for {raw!r}",
+            )
+
     def test_normalize_strips_dangling_trailing_dash_and_leading_bullet(self):
         self.assertEqual(server._shortcut_normalize_unit_text("Hallo meine Lieben —"), "Hallo meine Lieben")
         self.assertEqual(server._shortcut_normalize_unit_text("• Darmstadt"), "Darmstadt")
