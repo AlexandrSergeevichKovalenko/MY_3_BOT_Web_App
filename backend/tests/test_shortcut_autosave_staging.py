@@ -57,7 +57,7 @@ class ShortcutAutosaveStagingTests(unittest.TestCase):
         stack.enter_context(patch.object(server, "get_redis_client", return_value=self.redis))
         stack.enter_context(patch.object(
             server, "_send_private_message",
-            side_effect=lambda uid, text, reply_markup=None: self.sent.append((text, reply_markup)),
+            side_effect=lambda uid, text, reply_markup=None, parse_mode=None: self.sent.append((text, reply_markup)),
         ))
 
     def test_staging_dedups_across_requests(self):
@@ -89,7 +89,7 @@ class ShortcutAutosaveStagingTests(unittest.TestCase):
             server._autosave_maybe_flush(7)
         flush_mock.assert_not_called()
 
-    def test_flush_translates_and_sends_multiselect_digest(self):
+    def test_flush_normalizes_and_sends_multiselect_digest(self):
         stage_key = server._autosave_stage_key(99)
         self.redis.hset(stage_key, "strafmaß", json.dumps({"term": "Strafmaß", "content": "Strafmaß", "added_at": 1.0}))
         self.redis.hset(stage_key, "blamierst", json.dumps({"term": "blamierst", "content": "blamierst", "added_at": 2.0}))
@@ -97,7 +97,12 @@ class ShortcutAutosaveStagingTests(unittest.TestCase):
         with ExitStack() as stack:
             stack.enter_context(patch.object(server, "_get_user_language_pair", return_value=("ru", "de", {})))
             stack.enter_context(patch.object(
-                server, "_autosave_translate_terms", return_value=["мера наказания", "ты позоришь"]))
+                server, "_autosave_prepare_cards",
+                return_value=[
+                    {"canonical": "das Strafmaß", "translation": "мера наказания"},
+                    {"canonical": "blamieren", "translation": "позорить"},
+                ],
+            ))
             self._enter_common(stack)
             server._run_autosave_flush(99)
 
@@ -105,21 +110,24 @@ class ShortcutAutosaveStagingTests(unittest.TestCase):
         self.assertEqual(len(self.sent), 1)
         self.assertNotIn(stage_key, self.redis.hashes)
         text, markup = self.sent[0]
+        # Readable list lives in the message BODY with canonical (article) forms
         self.assertIn("Ночная подборка", text)
+        self.assertIn("1. <b>das Strafmaß</b> — мера наказания", text)
+        self.assertIn("2. <b>blamieren</b> — позорить", text)
         rows = markup["inline_keyboard"]
-        # 2 toggle rows + save + delete
-        self.assertEqual(len(rows), 4)
-        self.assertIn("Strafmaß", rows[0][0]["text"])
-        self.assertIn("мера наказания", rows[0][0]["text"])
+        # 1 row of number toggles (2 items) + save footer; NO delete row
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0][0]["text"], "✅ 1")  # default all checked
         self.assertTrue(rows[0][0]["callback_data"].startswith("asv_tog:"))
-        self.assertIn("Сохранить выбранные (0)", rows[2][0]["text"])
-        self.assertTrue(rows[2][0]["callback_data"].startswith("asv_save:"))
-        self.assertTrue(rows[3][0]["callback_data"].startswith("asv_del:"))
+        self.assertIn("Сохранить выбранные (2)", rows[1][0]["text"])
+        self.assertTrue(rows[1][0]["callback_data"].startswith("asv_save:"))
+        self.assertFalse(any("asv_del" in btn["callback_data"] for row in rows for btn in row))
         # digest state persisted for the bot callbacks
-        digest_id = rows[0][0]["callback_data"].split(":")[1]
+        digest_id = rows[1][0]["callback_data"].split(":")[1]
         state = json.loads(self.redis.kv[server._autosave_digest_key(digest_id)])
         self.assertEqual(len(state["items"]), 2)
-        self.assertEqual(state["selected"], [False, False])
+        self.assertEqual(state["selected"], [True, True])
+        self.assertEqual(state["items"][0]["canonical"], "das Strafmaß")
         self.assertEqual(state["source_lang"], "de")
         self.assertEqual(state["target_lang"], "ru")
 

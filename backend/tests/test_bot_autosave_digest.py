@@ -65,8 +65,8 @@ def _digest_state(uid=99):
         "source_lang": "de",
         "target_lang": "ru",
         "items": [
-            {"term": "Strafmaß", "content": "Strafmaß", "translation": "мера наказания"},
-            {"term": "blamierst", "content": "blamierst", "translation": "ты позоришь"},
+            {"term": "Strafmaß", "canonical": "das Strafmaß", "translation": "мера наказания"},
+            {"term": "blamierst", "canonical": "blamieren", "translation": "позорить"},
         ],
         "selected": [False, False],
         "created_at": 1.0,
@@ -83,13 +83,16 @@ class BotAutosaveDigestTests(unittest.TestCase):
     def _patch_redis(self, stack):
         stack.enter_context(patch("backend.job_queue.get_redis_client", return_value=self.redis))
 
-    def test_keyboard_marks_and_footer(self):
+    def test_keyboard_number_toggles_and_footer(self):
         kb = bot_3._autosave_build_digest_keyboard("d", _digest_state()["items"], [True, False])
         rows = kb.inline_keyboard
-        self.assertTrue(rows[0][0].text.startswith("☑️ Strafmaß"))
-        self.assertTrue(rows[1][0].text.startswith("☐ blamierst"))
-        self.assertIn("Сохранить выбранные (1)", rows[2][0].text)
-        self.assertEqual(rows[3][0].callback_data, "asv_del:d")
+        # number toggles in one row (2 items), then a single save footer — no delete
+        self.assertEqual(rows[0][0].text, "✅ 1")
+        self.assertEqual(rows[0][1].text, "⬜️ 2")
+        self.assertEqual(rows[0][0].callback_data, "asv_tog:d:0")
+        self.assertIn("Сохранить выбранные (1)", rows[1][0].text)
+        self.assertEqual(rows[1][0].callback_data, "asv_save:d")
+        self.assertFalse(any("asv_del" in b.callback_data for row in rows for b in row))
 
     def test_toggle_flips_and_persists(self):
         query = _FakeQuery(f"asv_tog:{self.digest_id}:0", self.uid)
@@ -109,8 +112,8 @@ class BotAutosaveDigestTests(unittest.TestCase):
         self.assertEqual(state["selected"], [False, False])  # unchanged
         self.assertTrue(any("автору" in a for a in query.answers))
 
-    def test_save_persists_only_selected_and_clears_digest(self):
-        # select item 0 only
+    def test_save_persists_canonical_form_and_clears_digest(self):
+        # select item 0 only → saves its CANONICAL form (with article), background path
         st = _digest_state(self.uid)
         st["selected"] = [True, False]
         self.redis.kv[bot_3._autosave_digest_redis_key(self.digest_id)] = json.dumps(st)
@@ -120,6 +123,7 @@ class BotAutosaveDigestTests(unittest.TestCase):
             saved_calls.append(chosen)
             return True, "ok", 1, False
 
+        # context=None → context.application raises → handler awaits the bg save inline.
         query = _FakeQuery(f"asv_save:{self.digest_id}", self.uid)
         with ExitStack() as stack:
             self._patch_redis(stack)
@@ -127,9 +131,10 @@ class BotAutosaveDigestTests(unittest.TestCase):
             asyncio.run(bot_3.handle_autosave_digest_save_callback(_FakeUpdate(query), None))
 
         self.assertEqual(len(saved_calls), 1)
-        self.assertEqual(saved_calls[0]["source"], "Strafmaß")
+        self.assertEqual(saved_calls[0]["source"], "das Strafmaß")  # canonical, not raw "Strafmaß"
         self.assertEqual(saved_calls[0]["target"], "мера наказания")
-        # digest consumed
+        # buttons removed immediately + digest consumed
+        self.assertIn(None, query.markup_edits)
         self.assertNotIn(bot_3._autosave_digest_redis_key(self.digest_id), self.redis.kv)
         self.assertTrue(any("Сохранено в словарь: 1" in r for r in query.message.replies))
 
@@ -142,13 +147,6 @@ class BotAutosaveDigestTests(unittest.TestCase):
         self.assertTrue(any("Отметьте" in a for a in query.answers))
         # digest still present (not consumed)
         self.assertIn(bot_3._autosave_digest_redis_key(self.digest_id), self.redis.kv)
-
-    def test_delete_clears_digest(self):
-        query = _FakeQuery(f"asv_del:{self.digest_id}", self.uid)
-        with ExitStack() as stack:
-            self._patch_redis(stack)
-            asyncio.run(bot_3.handle_autosave_digest_delete_callback(_FakeUpdate(query), None))
-        self.assertNotIn(bot_3._autosave_digest_redis_key(self.digest_id), self.redis.kv)
 
 
 class _FakeReplyMessage:

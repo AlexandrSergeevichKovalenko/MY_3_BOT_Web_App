@@ -1894,18 +1894,23 @@ def _autosave_delete_digest(digest_id: str) -> None:
 
 
 def _autosave_build_digest_keyboard(digest_id: str, items: list, selected: list) -> InlineKeyboardMarkup:
+    """Compact number-toggle keyboard — the readable word list lives in the message body.
+    Five toggles per row, then a single save footer (saving discards the unchecked rest)."""
     rows = []
-    for idx, item in enumerate(items):
-        mark = "☑️" if (idx < len(selected) and selected[idx]) else "☐"
-        term = str(item.get("term") or item.get("content") or "").strip()
-        translation = str(item.get("translation") or "").strip()
-        label = f"{mark} {term}" + (f" — {translation}" if translation else "")
-        if len(label) > 60:
-            label = label[:59] + "…"
-        rows.append([InlineKeyboardButton(label, callback_data=f"asv_tog:{digest_id}:{idx}")])
+    row = []
+    for idx in range(len(items)):
+        on = idx < len(selected) and selected[idx]
+        row.append(InlineKeyboardButton(
+            f"{'✅' if on else '⬜️'} {idx + 1}",
+            callback_data=f"asv_tog:{digest_id}:{idx}",
+        ))
+        if len(row) == 5:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
     count = sum(1 for s in selected if s)
     rows.append([InlineKeyboardButton(f"💾 Сохранить выбранные ({count})", callback_data=f"asv_save:{digest_id}")])
-    rows.append([InlineKeyboardButton("🗑 Удалить остальные", callback_data=f"asv_del:{digest_id}")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -2003,67 +2008,70 @@ async def handle_autosave_digest_save_callback(update: Update, context: Callback
     if not chosen_items:
         await query.answer("Отметьте хотя бы одно слово.", show_alert=True)
         return
-    await query.answer("Сохраняю…")
+
+    # Instant feedback: ack, remove the keyboard, show a status line — the actual saving
+    # (DB writes per word) happens in the BACKGROUND so the user never waits or re-taps.
+    await query.answer("Отправлено на сохранение ✅")
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    _autosave_delete_digest(digest_id)  # consume now → a stray second tap can't double-process
+
+    user_id = int(query.from_user.id)
     src = str(state.get("source_lang") or "de").strip().lower()
     tgt = str(state.get("target_lang") or "ru").strip().lower()
-    saved = 0
-    for it in chosen_items:
-        source_text = str(it.get("term") or it.get("content") or "").strip()
-        target_text = str(it.get("translation") or "").strip()
-        if not source_text or not target_text:
-            continue
-        payload = {
-            "user_id": int(query.from_user.id),
-            "source_lang": src,
-            "target_lang": tgt,
-            "direction": f"{src}-{tgt}",
-            "lookup": {},
-            "origin": "shortcut_autosave_digest",
-        }
-        chosen = {"source": source_text, "target": target_text}
-        try:
-            ok, _msg, _entry_id, _tagged = await asyncio.to_thread(
-                _save_dictionary_option_for_user, payload=payload, chosen=chosen, user_id=int(query.from_user.id)
-            )
-            if ok:
-                saved += 1
-        except Exception:
-            logging.exception("autosave digest save failed item=%r", source_text)
-    _autosave_delete_digest(digest_id)
-    try:
-        await query.edit_message_reply_markup(reply_markup=None)
-    except Exception:
-        pass
+    total = len(chosen_items)
+    status_msg = None
     if query.message:
         try:
-            await query.message.reply_text(
-                f"✅ Сохранено в словарь: {saved} из {len(chosen_items)}. Остальные слова удалены."
-            )
+            status_msg = await query.message.reply_text(f"⏳ Сохраняю {total} в словарь…")
         except Exception:
-            pass
+            status_msg = None
 
+    async def _bg_save() -> None:
+        saved = 0
+        for it in chosen_items:
+            # Save the CANONICAL form (noun with article / verb infinitive), not raw OCR text.
+            source_text = str(it.get("canonical") or it.get("term") or it.get("content") or "").strip()
+            target_text = str(it.get("translation") or "").strip()
+            if not source_text or not target_text:
+                continue
+            payload = {
+                "user_id": user_id,
+                "source_lang": src,
+                "target_lang": tgt,
+                "direction": f"{src}-{tgt}",
+                "lookup": {},
+                "origin": "shortcut_autosave_digest",
+            }
+            chosen = {"source": source_text, "target": target_text}
+            try:
+                ok, *_rest = await asyncio.to_thread(
+                    _save_dictionary_option_for_user, payload=payload, chosen=chosen, user_id=user_id
+                )
+                if ok:
+                    saved += 1
+            except Exception:
+                logging.exception("autosave digest save failed item=%r", source_text)
+        done_text = f"✅ Сохранено в словарь: {saved} из {total}."
+        if status_msg is not None:
+            try:
+                await status_msg.edit_text(done_text)
+                return
+            except Exception:
+                pass
+        if query.message:
+            try:
+                await query.message.reply_text(done_text)
+            except Exception:
+                pass
 
-async def handle_autosave_digest_delete_callback(update: Update, context: CallbackContext) -> None:
-    query = update.callback_query
-    if not query or not query.from_user:
-        return
-    parts = (query.data or "").split(":")
-    digest_id = parts[1] if len(parts) >= 2 else ""
-    state = _autosave_read_digest(digest_id)
-    if state and int(state.get("user_id", 0)) != int(query.from_user.id):
-        await query.answer("Доступно только автору.", show_alert=True)
-        return
-    _autosave_delete_digest(digest_id)
+    _coro = _bg_save()
     try:
-        await query.edit_message_reply_markup(reply_markup=None)
+        context.application.create_task(_coro)
     except Exception:
-        pass
-    await query.answer("Удалено 🗑")
-    if query.message:
-        try:
-            await query.message.reply_text("🗑 Подборка удалена. Ничего не сохранено.")
-        except Exception:
-            pass
+        await _coro
 
 
 async def debug_message_handler(update: Update, context: CallbackContext):
@@ -19972,7 +19980,6 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_shortcut_connect_callback, pattern=r"^shortcut:connect$"))
     application.add_handler(CallbackQueryHandler(handle_autosave_digest_toggle_callback, pattern=r"^asv_tog:"))
     application.add_handler(CallbackQueryHandler(handle_autosave_digest_save_callback, pattern=r"^asv_save:"))
-    application.add_handler(CallbackQueryHandler(handle_autosave_digest_delete_callback, pattern=r"^asv_del:"))
     # 🔥 Логирование всех сообщений (группа -1, не блокирует цепочку)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message, block=False), group=-1)
 

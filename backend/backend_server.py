@@ -37367,9 +37367,12 @@ def _autosave_digest_key(digest_id: str) -> str:
     return f"autosave_digest:{digest_id}"
 
 
-def _autosave_translate_terms(terms: list[str], *, source_lang: str, target_lang: str) -> list[str]:
-    """Batch-translate staged terms in ONE LLM call (positional, order-preserving).
-    Falls back to empty strings on failure so the digest still renders the source words."""
+def _autosave_prepare_cards(terms: list[str], *, source_lang: str, target_lang: str) -> list[dict]:
+    """ONE LLM call that normalizes each staged term to its DICTIONARY form (noun with
+    article, verb infinitive, …) AND gives a short translation — so saved cards match
+    manual saves (with article/lemma), not raw OCR text. Positional, order-preserving.
+    Falls back to {canonical: term, translation: ""} so the digest still renders."""
+    fallback = [{"canonical": t, "translation": ""} for t in terms]
     if not terms:
         return []
     from backend.openai_manager import client as _openai_async_client
@@ -37377,11 +37380,16 @@ def _autosave_translate_terms(terms: list[str], *, source_lang: str, target_lang
     source_name = _SKILL_RESOURCE_LANGUAGE_NAMES.get(source_lang, source_lang or "the source language")
     target_name = _SKILL_RESOURCE_LANGUAGE_NAMES.get(target_lang, target_lang or "the target language")
     system_prompt = (
-        f"You are a concise bilingual dictionary. Translate each {source_name} learning unit "
-        f"into {target_name}. Keep each translation short and dictionary-style (no commentary). "
-        f"Return ONLY valid JSON: {{\"translations\": [\"...\", \"...\"]}} — a list with EXACTLY one "
-        f"translation per input item, in the SAME order. If an item is already in {target_name} or "
-        f"untranslatable, return an empty string for it."
+        f"You are a concise bilingual dictionary editor for {source_name} learners. For EACH input "
+        f"learning unit return two fields:\n"
+        f'- "canonical": its clean dictionary headword form. A NOUN → nominative singular WITH its '
+        f"definite article (der/die/das). A VERB → infinitive. An adjective/adverb → base form. A "
+        f"fixed phrase, grammar construction, or a full sentence → keep it as-is, only cleaned. "
+        f"Preserve correct {source_name} spelling and capitalization.\n"
+        f'- "translation": a short {target_name} translation, dictionary-style, no commentary '
+        f"(empty string if already in {target_name} or untranslatable).\n"
+        f'Return ONLY valid JSON: {{"cards": [{{"canonical": "...", "translation": "..."}}]}} with '
+        f"EXACTLY one object per input item, in the SAME order."
     )
     user_payload = json.dumps({"items": terms}, ensure_ascii=False)
     model = _shortcut_split_model("autosave_translate", "gpt-4.1-mini")
@@ -37402,35 +37410,64 @@ def _autosave_translate_terms(terms: list[str], *, source_lang: str, target_lang
     try:
         raw = asyncio.run(_call())
         parsed = json.loads(raw)
-        translations = parsed.get("translations") if isinstance(parsed, dict) else None
-        if isinstance(translations, list) and len(translations) == len(terms):
-            return [str(t or "").strip() for t in translations]
-        logging.warning("autosave: translation length mismatch terms=%d got=%s", len(terms), type(translations))
+        cards = parsed.get("cards") if isinstance(parsed, dict) else None
+        if isinstance(cards, list) and len(cards) == len(terms):
+            result = []
+            for i, card in enumerate(cards):
+                card = card if isinstance(card, dict) else {}
+                canonical = str(card.get("canonical") or "").strip() or terms[i]
+                translation = str(card.get("translation") or "").strip()
+                result.append({"canonical": canonical, "translation": translation})
+            return result
+        logging.warning("autosave: prepare-cards length mismatch terms=%d got=%s", len(terms), type(cards))
     except Exception:
-        logging.exception("autosave: batch translation failed terms=%d", len(terms))
-    return ["" for _ in terms]
+        logging.exception("autosave: batch prepare-cards failed terms=%d", len(terms))
+    return fallback
+
+
+def _autosave_html_escape(text: str) -> str:
+    return str(text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _autosave_build_digest_keyboard(digest_id: str, items: list[dict], selected: list[bool]) -> dict:
-    """Multi-select checkbox keyboard: one toggle row per word + a save/delete footer."""
+    """Compact number-toggle keyboard (the words are in the message body). Five per row,
+    then a single save footer — no separate delete (saving discards the unchecked rest)."""
     rows: list[list[dict]] = []
-    for idx, item in enumerate(items):
-        mark = "☑️" if (idx < len(selected) and selected[idx]) else "☐"
-        term = str(item.get("term") or item.get("content") or "").strip()
-        translation = str(item.get("translation") or "").strip()
-        label = f"{mark} {term}" + (f" — {translation}" if translation else "")
-        if len(label) > 60:
-            label = label[:59] + "…"
-        rows.append([{"text": label, "callback_data": f"asv_tog:{digest_id}:{idx}"}])
-    selected_count = sum(1 for s in selected if s)
-    rows.append([{"text": f"💾 Сохранить выбранные ({selected_count})", "callback_data": f"asv_save:{digest_id}"}])
-    rows.append([{"text": "🗑 Удалить остальные", "callback_data": f"asv_del:{digest_id}"}])
+    row: list[dict] = []
+    for idx in range(len(items)):
+        on = idx < len(selected) and selected[idx]
+        row.append({
+            "text": f"{'✅' if on else '⬜️'} {idx + 1}",
+            "callback_data": f"asv_tog:{digest_id}:{idx}",
+        })
+        if len(row) == 5:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    count = sum(1 for s in selected if s)
+    rows.append([{"text": f"💾 Сохранить выбранные ({count})", "callback_data": f"asv_save:{digest_id}"}])
     return {"inline_keyboard": rows}
 
 
+def _autosave_digest_body_text(items: list[dict]) -> str:
+    """Readable numbered list in the message body (full text, articles, nothing truncated)."""
+    n = len(items)
+    lines = [
+        f"🌙 <b>Ночная подборка</b> — {n} {_autosave_plural_words(n)}",
+        "Снимите галочки с лишних и нажмите «💾 Сохранить выбранные».",
+        "",
+    ]
+    for idx, item in enumerate(items):
+        de = _autosave_html_escape(str(item.get("canonical") or item.get("term") or "").strip())
+        ru = _autosave_html_escape(str(item.get("translation") or "").strip())
+        lines.append(f"{idx + 1}. <b>{de}</b>" + (f" — {ru}" if ru else ""))
+    return "\n".join(lines)
+
+
 def _run_autosave_flush(user_id: int) -> None:
-    """Translate the staged terms and send ONE multi-select digest. Idempotent via the
-    flush lock in _autosave_maybe_flush; consumes (deletes) the staging hash on success."""
+    """Normalize+translate the staged terms and send ONE multi-select digest. Idempotent via
+    the flush lock in _autosave_maybe_flush; consumes (deletes) the staging hash on success."""
     safe_user_id = int(user_id)
     client = get_redis_client()
     if client is None:
@@ -37459,13 +37496,17 @@ def _run_autosave_flush(user_id: int) -> None:
     target_lang = (native_lang or "ru").strip().lower()
 
     terms = [str(o.get("term") or o.get("content") or "").strip() for o in parsed]
-    translations = _autosave_translate_terms(terms, source_lang=source_lang, target_lang=target_lang)
+    cards = _autosave_prepare_cards(terms, source_lang=source_lang, target_lang=target_lang)
 
     items = [
-        {"term": terms[i], "content": str(parsed[i].get("content") or terms[i]), "translation": translations[i]}
+        {
+            "term": terms[i],
+            "canonical": cards[i].get("canonical") or terms[i],
+            "translation": cards[i].get("translation") or "",
+        }
         for i in range(len(terms))
     ]
-    selected = [False] * len(items)
+    selected = [True] * len(items)  # default: all checked — user unchecks the few bad ones
 
     digest_id = hashlib.sha1(f"asv:{safe_user_id}:{time.time_ns()}".encode("utf-8")).hexdigest()[:12]
     digest_state = {
@@ -37478,16 +37519,12 @@ def _run_autosave_flush(user_id: int) -> None:
     }
     client.setex(_autosave_digest_key(digest_id), _AUTOSAVE_DIGEST_TTL, json.dumps(digest_state, ensure_ascii=False))
 
-    header = (
-        f"🌙 <b>Ночная подборка</b> — {len(items)} "
-        f"{_autosave_plural_words(len(items))}\n"
-        "Отметьте галочками, что сохранить, и нажмите «Сохранить выбранные»."
-    )
     try:
         _send_private_message(
             safe_user_id,
-            header,
+            _autosave_digest_body_text(items),
             reply_markup=_autosave_build_digest_keyboard(digest_id, items, selected),
+            parse_mode="HTML",
         )
         client.delete(stage_key)  # consumed into the digest
         logging.info("autosave: digest sent user_id=%s digest_id=%s items=%d", safe_user_id, digest_id, len(items))
