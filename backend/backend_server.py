@@ -22222,6 +22222,89 @@ def release_webapp_instance():
     return jsonify({"ok": True, "released": bool(released)})
 
 
+def _answer_auth_user_id() -> tuple[int | None, tuple]:
+    """Shared auth for /api/answer/*. Returns (user_id, error_response).
+
+    On success error_response is empty; on failure user_id is None and
+    error_response is the (jsonify, status) tuple to return directly.
+    """
+    payload = request.get_json(silent=True) or {}
+    init_data = _extract_request_init_data(payload)
+    if not init_data:
+        return None, (jsonify({"error": "initData обязателен"}), 400)
+    if not _telegram_hash_is_valid(init_data):
+        return None, (jsonify({"error": "initData не прошёл проверку"}), 401)
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return None, (jsonify({"error": "user_id отсутствует в initData"}), 400)
+    return int(user_id), ()
+
+
+@app.route("/api/answer/task", methods=["GET", "POST"])
+def get_answer_task():
+    """Return render metadata for an in-group task (rebus/crossword).
+
+    Never reveals the correct answer unless the user has already answered
+    (then the stored verdict is included so reopening shows the result).
+    """
+    user_id, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+
+    payload = request.get_json(silent=True) or {}
+    kind = str(request.args.get("kind") or payload.get("kind") or "").strip().lower()
+    raw_id = request.args.get("id") or payload.get("id")
+    try:
+        dispatch_id = int(raw_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "id обязателен"}), 400
+
+    from backend.answer_eval import load_rebus_task, load_crossword_task
+    if kind == "rb":
+        meta = load_rebus_task(dispatch_id=dispatch_id, user_id=user_id)
+    elif kind == "cw":
+        meta = load_crossword_task(dispatch_id=dispatch_id, user_id=user_id)
+    else:
+        return jsonify({"error": "unsupported kind"}), 400
+    if meta is None:
+        return jsonify({"error": "Задание не найдено"}), 404
+    return jsonify({"ok": True, **meta})
+
+
+@app.route("/api/answer/submit", methods=["POST"])
+def submit_answer():
+    """Evaluate a free-text answer in place. user_id comes only from initData;
+    a second submission returns the stored verdict (anti-replay)."""
+    user_id, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+
+    payload = request.get_json(silent=True) or {}
+    kind = str(payload.get("kind") or "").strip().lower()
+    try:
+        dispatch_id = int(payload.get("id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "id обязателен"}), 400
+    answer = str(payload.get("answer") or "")
+
+    from backend.answer_eval import evaluate_rebus, evaluate_crossword
+    try:
+        if kind == "rb":
+            result = evaluate_rebus(dispatch_id=dispatch_id, user_id=user_id, raw_input=answer)
+        elif kind == "cw":
+            result = evaluate_crossword(dispatch_id=dispatch_id, user_id=user_id, raw_input=answer)
+        else:
+            return jsonify({"error": "unsupported kind"}), 400
+    except Exception:
+        logging.exception("answer submit failed kind=%s id=%s user=%s", kind, dispatch_id, user_id)
+        return jsonify({"error": "Ошибка проверки"}), 500
+    if result is None:
+        return jsonify({"error": "Задание не найдено"}), 404
+    return jsonify({"ok": True, **result})
+
+
 def _load_user_translation_sentence_map(
     user_id: int,
     *,
@@ -37245,6 +37328,30 @@ def _shortcut_existing_pending_norms(user_id: int) -> set[str]:
     return norms
 
 
+def _shortcut_clear_raw_safety_net(safe_user_id: int, normalized_text: str) -> None:
+    """Drop the raw-text 'safety net' copy of one shortcut request after it has been
+    handled (cards OR digest). The HTTP route appends every OCR'd text to an append-only
+    raw list/string so a worker crash never loses it; once delivery succeeded that copy is
+    redundant. If we DON'T clear it, the next 'Быстрый перевод' re-absorbs every word the
+    user ever sent — the '348 pending instead of 3' bug. Best-effort, success-path only."""
+    try:
+        client = get_redis_client()
+        if client is None:
+            return
+        client.lrem(f"dict_pending_shortcut_raw_list:{safe_user_id}", 0, normalized_text)
+        raw_text_key = f"dict_pending_shortcut_raw:{safe_user_id}"
+        current_raw = client.get(raw_text_key)
+        current_raw_str = (
+            current_raw.decode("utf-8") if isinstance(current_raw, bytes) else current_raw
+        )
+        if current_raw_str is not None and str(current_raw_str).strip() == normalized_text:
+            client.delete(raw_text_key)
+    except Exception:
+        logging.debug(
+            "shortcut_lookup: raw safety-net cleanup failed user_id=%s", safe_user_id, exc_info=True
+        )
+
+
 def _run_shortcut_lookup_delivery(
     *,
     user_id: int,
@@ -37277,7 +37384,14 @@ def _run_shortcut_lookup_delivery(
             "shortcut: %d units > %d → digest instead of cards user_id=%s",
             len(blocks), _SHORTCUT_CARD_OVERFLOW_UNITS, safe_user_id,
         )
-        return _autosave_send_digest_from_blocks(safe_user_id, blocks)
+        sent = _autosave_send_digest_from_blocks(safe_user_id, blocks)
+        # The digest now owns these words (multi-select save), so the raw safety-net copy is
+        # redundant. Clear it on success — otherwise this text stays in the append-only raw list
+        # and the next "Быстрый перевод" re-absorbs it (the 348-pending accumulation bug). This
+        # path used to return early, BEFORE the cleanup below, which is exactly what regressed.
+        if sent > 0:
+            _shortcut_clear_raw_safety_net(safe_user_id, normalized_text)
+        return sent
 
     shortcut_max_blocks = 20
     if len(blocks) > shortcut_max_blocks:
@@ -37322,31 +37436,11 @@ def _run_shortcut_lookup_delivery(
         if sent < len(blocks):
             time.sleep(0.35)
 
-    # Delivery wrote canonical pending entries (hash + dict_pending_shortcut) and
-    # sent the word cards, so the raw-text "safety net" copy for this text is now
-    # redundant. Drop it — otherwise the append-only raw list keeps every word the
-    # user ever sent for 8h, and the next "Быстрый перевод" re-absorbs already
-    # translated words (the "113 pending instead of 7" bug). Only clear on success
+    # Delivery wrote canonical pending entries (hash + dict_pending_shortcut) and sent the word
+    # cards, so the raw-text "safety net" copy for this text is now redundant. Drop it on success
     # (sent > 0); on failure the raw copy stays as the fallback it was designed for.
     if sent > 0:
-        try:
-            client = get_redis_client()
-            if client is not None:
-                raw_list_key = f"dict_pending_shortcut_raw_list:{safe_user_id}"
-                client.lrem(raw_list_key, 0, normalized_text)
-                raw_text_key = f"dict_pending_shortcut_raw:{safe_user_id}"
-                current_raw = client.get(raw_text_key)
-                current_raw_str = (
-                    current_raw.decode("utf-8") if isinstance(current_raw, bytes) else current_raw
-                )
-                if current_raw_str is not None and str(current_raw_str).strip() == normalized_text:
-                    client.delete(raw_text_key)
-        except Exception:
-            logging.debug(
-                "shortcut_lookup: raw safety-net cleanup failed user_id=%s",
-                safe_user_id,
-                exc_info=True,
-            )
+        _shortcut_clear_raw_safety_net(safe_user_id, normalized_text)
     return sent
 
 

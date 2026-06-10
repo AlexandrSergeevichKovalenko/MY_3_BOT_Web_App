@@ -147,6 +147,24 @@ class ShortcutAutosaveStagingTests(unittest.TestCase):
             server._run_shortcut_lookup_delivery(user_id=1, text="x")
         self.assertEqual(cards_sent, [("digest", len(many_blocks))])
 
+    def test_overflow_digest_clears_raw_safety_net(self):
+        # Regression: the card-flow overflow→digest path must ALSO drop the raw safety-net copy.
+        # It used to `return` before the cleanup, so every big batch left its text in the raw
+        # list and the next «Быстрый перевод» re-absorbed it (the 348-pending accumulation bug).
+        uid = 1
+        text = "x"
+        self.redis.rpush(f"dict_pending_shortcut_raw_list:{uid}", text)
+        self.redis.kv[f"dict_pending_shortcut_raw:{uid}"] = text
+        many_blocks = [(f"Wort{i}", f"Wort{i}") for i in range(server._SHORTCUT_CARD_OVERFLOW_UNITS + 5)]
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(server, "_shortcut_split_blocks", return_value=many_blocks))
+            stack.enter_context(patch.object(server, "get_redis_client", return_value=self.redis))
+            stack.enter_context(patch.object(server, "_autosave_send_digest_from_blocks",
+                                             side_effect=lambda u, blocks: len(blocks)))  # sent > 0
+            server._run_shortcut_lookup_delivery(user_id=uid, text=text)
+        self.assertEqual(self.redis.lists.get(f"dict_pending_shortcut_raw_list:{uid}"), [])
+        self.assertNotIn(f"dict_pending_shortcut_raw:{uid}", self.redis.kv)
+
     def test_collect_due_claims_only_elapsed(self):
         now = server.time.time()
         self.redis.kv[server._autosave_flush_at_key(7)] = f"{now - 5:.3f}"      # due

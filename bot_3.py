@@ -350,6 +350,10 @@ pending_dictionary_folder_create = {}
 pending_dictionary_lookup_requests = {}
 pending_dictionary_lookup_inflight = set()
 pending_dictionary_batch_fast_inflight = set()
+# user_ids whose in-flight "Быстрый перевод" batch should stop after the current chunk.
+# The batch snapshots + purges the queue up front and runs in the background, so /clearqueue
+# alone can't halt it — this flag gives an actual abort point inside the send loop.
+pending_dictionary_batch_fast_cancel = set()
 pending_dictionary_folder_cache = {}
 pending_dictionary_semantic_folder_cache = {}
 pending_feel_requests_inflight = set()
@@ -4480,6 +4484,16 @@ async def clear_dictionary_queue_command(update: Update, context: CallbackContex
     if not sender or not message:
         return
     user_id = int(sender.id)
+    # If a "Быстрый перевод" batch is running, this is also a STOP request. The batch already
+    # snapshotted + purged the queue at launch, so it runs from memory — flag it to abort after
+    # the current chunk instead of misleadingly reporting "0 removed" while it keeps sending.
+    if user_id in pending_dictionary_batch_fast_inflight:
+        pending_dictionary_batch_fast_cancel.add(user_id)
+        await message.reply_text(
+            "🛑 Останавливаю текущий «Быстрый перевод»… (завершит начатое и прекратит).\n"
+            "Очередь уже пуста — следующий запуск начнётся с чистого листа."
+        )
+        return
     # Pull any Redis-only residue into memory first so the reported count is accurate.
     try:
         await asyncio.to_thread(_list_pending_dictionary_lookup_request_keys_for_user, user_id)
@@ -5640,18 +5654,18 @@ async def handle_user_message(update: Update, context: CallbackContext):
             explanation_ru = str(rebus_pending.get("explanation_ru") or "").strip()
 
             # Article is mandatory: expect "{article} {word}", e.g. "das Dampfschiff"
+            # Correctness is decided by the shared evaluator (single source of
+            # truth with the Mini App /api/answer endpoint).
+            from backend.answer_eval import check_rebus
             user_input = text.strip()
-            known_articles = {"der", "die", "das"}
-            input_parts = user_input.split(None, 1)  # split on first whitespace
-            user_article = input_parts[0].lower() if len(input_parts) >= 2 else ""
-            user_word    = input_parts[1].strip() if len(input_parts) >= 2 else user_input
-
             full_word = f"{article} {correct_word}".strip() if article else correct_word
             detail    = f" ({meaning_ru})" if meaning_ru else ""
             extra     = f"\n_{explanation_ru}_" if explanation_ru else ""
 
+            verdict = check_rebus(correct_word=correct_word, article=article, raw_input=user_input)
+
             # If user forgot the article entirely — nudge without consuming the state
-            if article and user_article not in known_articles:
+            if verdict["needs_article"]:
                 await update.message.reply_text(
                     f"Bitte mit Artikel antworten!\n"
                     f"Beispiel: _{article} ..._",
@@ -5659,9 +5673,9 @@ async def handle_user_message(update: Update, context: CallbackContext):
                 )
                 return
 
-            article_correct = (not article) or (user_article == article.lower())
-            word_correct    = user_word.lower() == correct_word.lower()
-            is_correct      = article_correct and word_correct
+            article_correct = verdict["article_correct"]
+            word_correct    = verdict["word_correct"]
+            is_correct      = verdict["is_correct"]
 
             if dispatch_id and correct_word:
                 try:
@@ -5726,22 +5740,10 @@ async def handle_user_message(update: Update, context: CallbackContext):
             dispatch_id  = int(cw_pending.get("dispatch_id") or 0)
             hidden_words = list(cw_pending.get("hidden_words") or [])
 
-            # Parse user input: split on whitespace, map to hidden words in order
-            raw_parts = text.strip().split()
-            results: list[dict] = []
-            for i, hw in enumerate(hidden_words):
-                user_answer = raw_parts[i].upper().strip() if i < len(raw_parts) else ""
-                correct     = str(hw.get("word") or "").upper()
-                is_correct  = user_answer == correct
-                results.append({
-                    "number": hw["number"],
-                    "direction": hw.get("direction", "across"),
-                    "correct": correct,
-                    "user_answer": user_answer,
-                    "is_correct": is_correct,
-                    "clue_de": str(hw.get("clue_de") or ""),
-                    "clue_ru": str(hw.get("clue_ru") or ""),
-                })
+            # Parse + grade via the shared evaluator (single source of truth
+            # with the Mini App /api/answer endpoint).
+            from backend.answer_eval import check_crossword
+            results = check_crossword(hidden_words=hidden_words, raw_input=text)
 
             _clear_pending_input_state(state_key=state_key, user_id=int(user_id))
 
@@ -9217,7 +9219,18 @@ async def _run_dictionary_batch_fast_for_user(
 
     concurrency = max(1, min(2, int((os.getenv("DICTIONARY_BATCH_FAST_CONCURRENCY") or "1").strip() or "1")))
     processed = 0
+    cancelled = False
     for offset in range(0, len(batch_items), concurrency):
+        # Honour a stop request (e.g. /clearqueue while this batch is running): finish nothing
+        # more, tell the user how far we got. The queue was already purged at launch, so there's
+        # no residue to clean — just stop sending.
+        if int(user_id) in pending_dictionary_batch_fast_cancel:
+            cancelled = True
+            logging.info(
+                "batch_fast: cancelled by user user_id=%s processed=%d/%d",
+                int(user_id), processed, len(batch_items),
+            )
+            break
         chunk = batch_items[offset: offset + concurrency]
         results = await asyncio.gather(
             *(_process_one_batch_item(item) for item in chunk),
@@ -9226,6 +9239,15 @@ async def _run_dictionary_batch_fast_for_user(
         for result in results:
             if result is True:
                 processed += 1
+
+    if cancelled:
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"🛑 Быстрый перевод остановлен. Успел обработать: {processed}.",
+            )
+        except Exception:
+            logging.debug("Failed to send batch-cancelled notice", exc_info=True)
 
     if processed <= 0:
         try:
@@ -9265,6 +9287,7 @@ async def _run_dictionary_batch_fast_for_user_guarded(
         )
     finally:
         pending_dictionary_batch_fast_inflight.discard(int(user_id))
+        pending_dictionary_batch_fast_cancel.discard(int(user_id))
 
 
 async def handle_dictionary_pair_callback(update: Update, context: CallbackContext) -> None:
