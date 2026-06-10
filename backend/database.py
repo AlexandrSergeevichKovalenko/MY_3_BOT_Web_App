@@ -7731,6 +7731,53 @@ def ensure_webapp_tables() -> None:
             """)
             # ── end crossword tables ──────────────────────────────────────
 
+            # ── Anagram (assemble-the-word) Mini-App game tables ──────────
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_anagram_cards (
+                    card_id     TEXT PRIMARY KEY,
+                    word        TEXT NOT NULL,
+                    hint_ru     TEXT NOT NULL DEFAULT '',
+                    scrambled   TEXT NOT NULL,
+                    explanation TEXT NOT NULL DEFAULT '',
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_anagram_dispatches (
+                    id                  BIGSERIAL PRIMARY KEY,
+                    slot_date           DATE NOT NULL,
+                    slot_hour           INTEGER NOT NULL,
+                    card_id             TEXT NOT NULL REFERENCES bt_3_anagram_cards(card_id),
+                    target_user_id      BIGINT NOT NULL,
+                    chat_id             BIGINT NOT NULL,
+                    telegram_message_id BIGINT,
+                    status              TEXT NOT NULL DEFAULT 'sent',
+                    sent_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (target_user_id, slot_date, slot_hour),
+                    CHECK (status IN ('sent', 'failed'))
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_anagram_dispatches_user_date
+                ON bt_3_anagram_dispatches (target_user_id, slot_date DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_anagram_answers (
+                    id          BIGSERIAL PRIMARY KEY,
+                    dispatch_id BIGINT NOT NULL REFERENCES bt_3_anagram_dispatches(id),
+                    user_id     BIGINT NOT NULL,
+                    assembled   TEXT NOT NULL DEFAULT '',
+                    is_correct  BOOLEAN NOT NULL,
+                    answered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (dispatch_id, user_id)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_anagram_answers_user_time
+                ON bt_3_anagram_answers (user_id, answered_at DESC);
+            """)
+            # ── end anagram tables ────────────────────────────────────────
+
             # ── Hörverständnis (listening comprehension) tables ───────────
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_listening_bank (
@@ -33075,6 +33122,106 @@ def get_crossword_answers(*, dispatch_id: int, user_id: int) -> list[dict]:
             rows = cursor.fetchall()
     cols = ["word_number", "user_answer", "is_correct", "answered_at"]
     return [dict(zip(cols, r)) for r in rows]
+
+
+# ─── Anagram (assemble-the-word) DB functions ─────────────────────────────────
+
+def create_anagram_card(*, card_id: str, word: str, hint_ru: str,
+                        scrambled: str, explanation: str = "") -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_anagram_cards (card_id, word, hint_ru, scrambled, explanation)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (card_id) DO NOTHING
+                """,
+                (str(card_id), str(word), str(hint_ru or ""), str(scrambled), str(explanation or "")),
+            )
+        conn.commit()
+
+
+def record_anagram_dispatch(*, slot_date, slot_hour: int, card_id: str,
+                            target_user_id: int, chat_id: int) -> int | None:
+    """Insert dispatch row; return new id or None on conflict (dedup per slot)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_anagram_dispatches
+                    (slot_date, slot_hour, card_id, target_user_id, chat_id)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (target_user_id, slot_date, slot_hour) DO NOTHING
+                RETURNING id
+                """,
+                (slot_date, int(slot_hour), str(card_id), int(target_user_id), int(chat_id)),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return int(row[0]) if row else None
+
+
+def update_anagram_dispatch_telegram_id(dispatch_id: int, *, telegram_message_id: int) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_anagram_dispatches SET telegram_message_id = %s WHERE id = %s",
+                (int(telegram_message_id), int(dispatch_id)),
+            )
+        conn.commit()
+
+
+def get_anagram_dispatch_by_id(dispatch_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT d.id, d.card_id, d.target_user_id, d.chat_id,
+                       c.word, c.hint_ru, c.scrambled, c.explanation
+                FROM bt_3_anagram_dispatches d
+                JOIN bt_3_anagram_cards c ON c.card_id = d.card_id
+                WHERE d.id = %s
+                """,
+                (int(dispatch_id),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    cols = ["id", "card_id", "target_user_id", "chat_id",
+            "word", "hint_ru", "scrambled", "explanation"]
+    return dict(zip(cols, row))
+
+
+def record_anagram_answer(*, dispatch_id: int, user_id: int,
+                          assembled: str, is_correct: bool) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_anagram_answers (dispatch_id, user_id, assembled, is_correct)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (dispatch_id, user_id) DO NOTHING
+                """,
+                (int(dispatch_id), int(user_id), str(assembled)[:60], bool(is_correct)),
+            )
+        conn.commit()
+
+
+def get_anagram_answer(*, dispatch_id: int, user_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT assembled, is_correct, answered_at
+                FROM bt_3_anagram_answers
+                WHERE dispatch_id = %s AND user_id = %s
+                """,
+                (int(dispatch_id), int(user_id)),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {"assembled": row[0], "is_correct": bool(row[1]), "answered_at": row[2]}
 
 
 def retire_all_crossword_bank_entries() -> int:

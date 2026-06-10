@@ -167,6 +167,79 @@ body { background: var(--dmps-bg, #0F172A); overflow-x: hidden; }
 .ans-note { margin: 0; font-size: 13px; color: var(--dmps-text-subtle, #64748B); text-align: center; }
 .ans-error { margin: 0; font-size: 14px; font-weight: 600; color: var(--ans-bad); }
 
+/* ── Anagram game ─────────────────────────────────────────────────────────── */
+.ag-slots {
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 7px;
+  margin: 4px 0 2px;
+}
+.ag-slot {
+  width: 42px; height: 50px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; font-weight: 800;
+  color: var(--dmps-text-primary, #F8FAFC);
+  background: var(--dmps-card-alt, #0B1220);
+  border: 1.5px solid var(--dmps-border, #334155);
+  border-radius: 12px;
+  box-shadow: inset 0 -2px 6px rgba(0, 0, 0, 0.25);
+}
+.ag-slot.locked {
+  color: var(--dmps-on-accent, #fff);
+  background: linear-gradient(180deg, var(--dmps-primary, #2563EB), #1e4fd0);
+  border-color: transparent;
+  box-shadow: 0 6px 14px rgba(37, 99, 235, 0.35);
+}
+.ag-slot.filled { cursor: pointer; border-color: rgba(37, 99, 235, 0.55); background: #14233f; }
+.ag-slot.active {
+  border-color: var(--dmps-primary, #2563EB);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.22);
+  animation: ag-pulse 1.4s ease-in-out infinite;
+}
+@keyframes ag-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.20); }
+  50%      { box-shadow: 0 0 0 5px rgba(37, 99, 235, 0.10); }
+}
+.ag-slot-letter { display: inline-block; animation: ag-drop 0.26s cubic-bezier(0.34, 1.56, 0.64, 1); }
+@keyframes ag-drop {
+  from { opacity: 0; transform: translateY(-12px) scale(0.5); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.ag-pool {
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 9px;
+  min-height: 52px; align-items: center;
+  margin-top: 4px;
+}
+.ag-pool-empty { font-size: 14px; color: var(--dmps-text-muted, #94A3B8); font-weight: 600; }
+.ag-tile {
+  width: 46px; height: 52px;
+  font-family: inherit; font-size: 23px; font-weight: 800;
+  color: var(--dmps-text-primary, #F8FAFC);
+  background: linear-gradient(180deg, #28344b, #1b2740);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 13px;
+  box-shadow: 0 5px 12px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+  transition: transform 0.1s ease, filter 0.12s ease;
+  animation: ag-pop 0.2s ease;
+}
+.ag-tile:active { transform: translateY(2px) scale(0.96); filter: brightness(1.1); }
+.ag-tile:disabled { opacity: 0.5; cursor: default; }
+@keyframes ag-pop { from { transform: scale(0.7); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+.ag-controls { display: flex; justify-content: center; gap: 12px; margin-top: 2px; }
+.ag-ctrl {
+  width: 52px; height: 40px;
+  font-size: 18px;
+  color: var(--dmps-text-secondary, #CBD5E1);
+  background: transparent;
+  border: 1px solid var(--dmps-border, #334155);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: transform 0.1s ease, background 0.12s ease;
+}
+.ag-ctrl:active { transform: scale(0.94); background: rgba(148, 163, 184, 0.08); }
+.ag-ctrl:disabled { opacity: 0.4; cursor: default; }
+
 /* Skeleton loader */
 .ans-skel {
   height: 56px; border-radius: var(--dmps-radius-button, 16px);

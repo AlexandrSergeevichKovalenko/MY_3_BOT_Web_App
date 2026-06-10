@@ -267,6 +267,9 @@ from backend.database import (
     get_crossword_dispatch_by_id,
     record_crossword_answer,
     get_crossword_answers,
+    create_anagram_card,
+    record_anagram_dispatch,
+    update_anagram_dispatch_telegram_id,
 )
 from backend.r2_storage import r2_public_url
 from backend.job_queue import (
@@ -298,6 +301,7 @@ ARTICLE_QUIZ_COOLDOWN_DAYS = max(7, int((os.getenv("ARTICLE_QUIZ_COOLDOWN_DAYS")
 ARTICLE_QUIZ_POOL_TARGET = max(5, int((os.getenv("ARTICLE_QUIZ_POOL_TARGET") or "30").strip() or "30"))
 ARTICLE_QUIZ_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("ARTICLE_QUIZ_POOL_TOPUP_TRIGGER") or "5").strip() or "5"))
 CROSSWORD_SLOT_TIMES = {(11, 45), (17, 45)}  # 2x/day at :45
+ANAGRAM_SLOT_TIMES   = {(12, 15), (19, 15)}  # 2x/day — assemble-the-word Mini-App card
 LISTENING_SLOT_TIME  = (18, 30)              # once/day at 18:30
 LISTENING_COOLDOWN_DAYS = max(5, int((os.getenv("LISTENING_COOLDOWN_DAYS") or "7").strip() or "7"))
 LISTENING_POOL_TARGET   = max(3, int((os.getenv("LISTENING_POOL_TARGET") or "7").strip() or "7"))
@@ -16525,7 +16529,8 @@ def _get_quiz_generator_catalog() -> list[tuple[str, Callable[..., Any]]]:
     return [
         ("word_order", generate_word_order_quiz),
         ("prefix", generate_prefix_quiz),
-        ("anagram", generate_anagram_quiz),
+        # "anagram" moved to its own WOW Mini-App card (_send_scheduled_anagram),
+        # so it no longer ships as a native poll.
         ("word", generate_word_quiz),
     ]
 
@@ -18664,6 +18669,199 @@ async def admin_crossword_send_command(update: Update, context: CallbackContext)
         await status_msg.edit_text("Crossword send failed — check logs.")
 
 
+# ─────────────────────────────────────────────────────────────
+#  ANAGRAM (assemble-the-word) — Mini-App card, send, scheduler
+# ─────────────────────────────────────────────────────────────
+
+def _anagram_enabled() -> bool:
+    return (os.getenv("ANAGRAM_ENABLED") or "true").strip().lower() not in ("0", "false", "no")
+
+
+def _is_anagram_slot(slot_dt) -> bool:
+    return (int(slot_dt.hour), int(slot_dt.minute)) in ANAGRAM_SLOT_TIMES
+
+
+def _build_anagram_card_payload(entry: dict) -> dict | None:
+    """Dictionary entry → {word, hint_ru, scrambled}, or None if unsuitable.
+
+    Reuses the same validation/scramble as the (now-retired) anagram poll
+    generator so the game stays linguistically sound.
+    """
+    word_ru = (entry.get("word_ru") or "").strip()
+    if not _is_valid_anagram_ru_hint(word_ru):
+        return None
+    correct_word = _extract_german_word(entry, require_single_token=True)
+    if not correct_word or not _is_valid_anagram_target(correct_word):
+        return None
+    correct_word = _to_letters_only_word(correct_word)
+    if not _is_valid_anagram_target(correct_word):
+        return None
+    scrambled = _scramble_word_preserve_ends(correct_word)
+    if not scrambled:
+        return None
+    if _letters_signature(scrambled) != _letters_signature(correct_word):
+        return None
+    return {"word": correct_word, "hint_ru": word_ru, "scrambled": scrambled}
+
+
+async def _generate_anagram_card_payload() -> dict | None:
+    for _ in range(15):
+        try:
+            entry = await asyncio.to_thread(get_random_dictionary_entry, cooldown_days=0)
+        except Exception:
+            logging.warning("ag_gen: get_random_dictionary_entry failed", exc_info=True)
+            return None
+        if not entry:
+            continue
+        payload = _build_anagram_card_payload(entry)
+        if payload:
+            return payload
+    return None
+
+
+def _build_anagram_caption(hint_ru: str) -> str:
+    safe_hint = html.escape(str(hint_ru or "").strip())
+    return (
+        "🔤 <b>Anagramm</b> — собери слово!\n\n"
+        f"🔡 Подсказка: <b>{safe_hint}</b>\n"
+        "Первая и последняя буквы на месте, середина перемешана. Жми кнопку 👇"
+    )
+
+
+def _build_anagram_keyboard(dispatch_id: int) -> InlineKeyboardMarkup:
+    btn = InlineKeyboardButton(
+        text="🧩 Spielen",
+        url=get_webapp_deeplink(f"ans_ag_{dispatch_id}"),
+    )
+    return InlineKeyboardMarkup([[btn]])
+
+
+async def send_anagram_to_chat(
+    context: CallbackContext,
+    *,
+    card_id: str,
+    payload: dict,
+    slot_date,
+    slot_hour: int,
+    chat_id: int,
+    target_user_id: int,
+) -> bool:
+    """Send one anagram card to a chat. Returns True on success."""
+    try:
+        await asyncio.to_thread(
+            create_anagram_card,
+            card_id=card_id, word=payload["word"], hint_ru=payload["hint_ru"],
+            scrambled=payload["scrambled"],
+        )
+    except Exception:
+        logging.warning("ag_send: create_card failed card_id=%s", card_id, exc_info=True)
+        return False
+
+    try:
+        dispatch_id = await asyncio.to_thread(
+            record_anagram_dispatch,
+            slot_date=slot_date, slot_hour=int(slot_hour), card_id=card_id,
+            target_user_id=int(target_user_id), chat_id=int(chat_id),
+        )
+    except Exception:
+        logging.warning("ag_send: dispatch insert failed card_id=%s chat_id=%s", card_id, chat_id, exc_info=True)
+        return False
+    if not dispatch_id:
+        logging.info(
+            "ag_send: duplicate suppressed card_id=%s chat_id=%s slot=%s/%s",
+            card_id, chat_id, slot_date, slot_hour,
+        )
+        return False
+
+    try:
+        msg = await context.bot.send_message(
+            chat_id=int(chat_id),
+            text=_build_anagram_caption(payload["hint_ru"]),
+            reply_markup=_build_anagram_keyboard(dispatch_id),
+            parse_mode="HTML",
+        )
+    except Exception as exc:
+        logging.warning("ag_send_failed dispatch_id=%s chat_id=%s: %s", dispatch_id, chat_id, exc)
+        return False
+
+    try:
+        await asyncio.to_thread(
+            update_anagram_dispatch_telegram_id, dispatch_id, telegram_message_id=int(msg.message_id)
+        )
+    except Exception:
+        logging.warning("ag_send: update telegram_id failed dispatch_id=%s", dispatch_id, exc_info=True)
+
+    logging.info("ag_send_ok dispatch_id=%s card_id=%s chat_id=%s", dispatch_id, card_id, chat_id)
+    return True
+
+
+async def _send_scheduled_anagram(context: CallbackContext) -> None:
+    if not _anagram_enabled():
+        logging.info("ag_slot_triggered enabled=False — skipping")
+        return
+    slot_now  = _get_quiz_schedule_now()
+    slot_date = slot_now.date()
+    slot_hour = int(slot_now.hour)
+    if not _is_anagram_slot(slot_now):
+        return
+
+    payload = await _generate_anagram_card_payload()
+    if not payload:
+        logging.info("ag_slot: no anagram card generated slot=%s/%s", slot_date, slot_hour)
+        return
+
+    card_id = str(__import__("uuid").uuid4())
+    delivery_targets = await _collect_quiz_delivery_user_targets(context)
+    if not delivery_targets:
+        logging.info("ag_slot: no delivery targets slot=%s/%s", slot_date, slot_hour)
+        return
+
+    sent = 0
+    for target in delivery_targets:
+        target_chat_id = int(target.get("chat_id") or 0)
+        if target_chat_id == 0:
+            continue
+        ok = await send_anagram_to_chat(
+            context, card_id=card_id, payload=payload,
+            slot_date=slot_date, slot_hour=slot_hour,
+            chat_id=target_chat_id, target_user_id=target_chat_id,
+        )
+        if ok:
+            sent += 1
+    logging.info("ag_slot_done slot=%s/%s card_id=%s sent=%d", slot_date, slot_hour, card_id, sent)
+
+
+async def admin_anagram_send_command(update: Update, context: CallbackContext) -> None:
+    """Send an anagram card to this chat immediately (admin test). /admin_anagram_send"""
+    user    = update.effective_user
+    chat    = update.effective_chat
+    message = update.effective_message
+    if not user or not chat or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+
+    status_msg = await message.reply_text("Preparing anagram...")
+    payload = await _generate_anagram_card_payload()
+    if not payload:
+        await status_msg.edit_text("Could not generate an anagram (no suitable word). Try again.")
+        return
+
+    slot_now = _get_quiz_schedule_now()
+    card_id = str(__import__("uuid").uuid4())
+    ok = await send_anagram_to_chat(
+        context, card_id=card_id, payload=payload,
+        slot_date=slot_now.date(),
+        slot_hour=int(slot_now.hour) * 10000 + int(slot_now.second),  # unique test slot
+        chat_id=int(chat.id), target_user_id=int(user.id),
+    )
+    if ok:
+        await status_msg.delete()
+    else:
+        await status_msg.edit_text("Anagram send failed — check logs.")
+
+
 async def admin_crossword_pool_command(update: Update, context: CallbackContext) -> None:
     """Trigger crossword pool generation (admin). /admin_cw_pool"""
     user    = update.effective_user
@@ -20224,6 +20422,7 @@ def main():
     application.add_handler(CommandHandler("admin_aq_send", admin_article_quiz_send_command))
     application.add_handler(CommandHandler("admin_aq_pool", admin_article_quiz_pool_command))
     application.add_handler(CommandHandler("admin_cw_send", admin_crossword_send_command))
+    application.add_handler(CommandHandler("admin_anagram_send", admin_anagram_send_command))
     application.add_handler(CommandHandler("admin_cw_pool", admin_crossword_pool_command))
     application.add_handler(CommandHandler("admin_cw_rerender", admin_crossword_rerender_command))
     application.add_handler(CommandHandler("admin_ls_send", admin_listening_send_command))
@@ -20521,6 +20720,21 @@ def main():
             sorted(CROSSWORD_SLOT_TIMES),
             QUIZ_SCHEDULE_TZ_NAME,
             _crosswords_enabled(),
+        )
+        # -- Anagram (assemble-the-word) Mini-App card slots --
+        for _ag_hour, _ag_minute in sorted(ANAGRAM_SLOT_TIMES):
+            scheduler.add_job(
+                lambda: submit_async(_send_scheduled_anagram, CallbackContext(application=application)),
+                "cron",
+                hour=_ag_hour,
+                minute=_ag_minute,
+                timezone=QUIZ_SCHEDULE_TZ_NAME,
+            )
+        logging.info(
+            "anagram_scheduler_slots_registered slots=%s tz=%s enabled=%s",
+            sorted(ANAGRAM_SLOT_TIMES),
+            QUIZ_SCHEDULE_TZ_NAME,
+            _anagram_enabled(),
         )
         # -- Hörverständnis: daily at 18:30 --
         _ls_hour, _ls_minute = LISTENING_SLOT_TIME

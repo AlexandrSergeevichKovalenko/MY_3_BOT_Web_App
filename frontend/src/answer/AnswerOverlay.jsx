@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import './answer.css';
+import AnagramGame from './AnagramGame.jsx';
 
 /**
  * Lightweight in-place answer overlay for in-group tasks (rebus + crossword).
@@ -23,12 +24,18 @@ function getInitData() {
   return '';
 }
 
-// start_param: "ans_rb_123" / "ans_cw_45"
+// start_param: "ans_rb_123" / "ans_cw_45" / "ans_ag_7"
 function parseStartParam(startParam) {
-  const m = /^ans_(rb|cw)_(\d+)$/.exec(String(startParam || '').trim().toLowerCase());
+  const m = /^ans_(rb|cw|ag)_(\d+)$/.exec(String(startParam || '').trim().toLowerCase());
   if (!m) return null;
   return { kind: m[1], id: Number(m[2]) };
 }
+
+const KIND_META = {
+  rb: { eyebrow: '🧩 Rätsel', title: 'Deutsches Rätsel' },
+  cw: { eyebrow: '🔤 Kreuzwort', title: 'Kreuzworträtsel' },
+  ag: { eyebrow: '🔤 Anagramm', title: 'Anagramm' },
+};
 
 function haptic(type) {
   try {
@@ -92,6 +99,21 @@ function CrosswordResult({ result }) {
   );
 }
 
+function AnagramResult({ result }) {
+  const good = !!result.is_correct;
+  return (
+    <div className={`ans-result ${good ? 'ok' : 'bad'}`}>
+      <div className="ans-verdict">{good ? '✅ Richtig!' : '❌ Falsch'}</div>
+      <div className="ans-answer">
+        {good ? '' : 'Richtiges Wort: '}
+        <b>{result.correct_word}</b>
+        {result.hint_ru ? <span className="ans-meaning"> · {result.hint_ru}</span> : null}
+      </div>
+      {result.explanation ? <div className="ans-explain">{result.explanation}</div> : null}
+    </div>
+  );
+}
+
 export default function AnswerOverlay({ startParam }) {
   const parsed = useMemo(() => parseStartParam(startParam), [startParam]);
   const [meta, setMeta] = useState(null);
@@ -130,9 +152,11 @@ export default function AnswerOverlay({ startParam }) {
     return () => { cancelled = true; };
   }, [parsed]);
 
-  const submit = useCallback(async () => {
+  const submit = useCallback(async (answerOverride) => {
     if (!parsed || submitting) return;
-    const answer = parsed.kind === 'rb' ? rebusInput.trim() : cwInputs.map((s) => s.trim()).join(' ');
+    const answer = answerOverride != null
+      ? String(answerOverride)
+      : parsed.kind === 'rb' ? rebusInput.trim() : cwInputs.map((s) => s.trim()).join(' ');
     if (!answer) return;
     haptic('light');
     setSubmitting(true);
@@ -157,9 +181,10 @@ export default function AnswerOverlay({ startParam }) {
 
   const close = useCallback(() => { try { tg?.close?.(); } catch (_e) { /* ignore */ } }, []);
 
-  const isRebus = parsed?.kind === 'rb';
-  const heading = isRebus ? 'Deutsches Rätsel' : 'Kreuzworträtsel';
-  const eyebrow = isRebus ? '🧩 Rätsel' : '🔤 Kreuzwort';
+  const kind = parsed?.kind;
+  const isRebus = kind === 'rb';
+  const isAnagram = kind === 'ag';
+  const { eyebrow, title: heading } = KIND_META[kind] || KIND_META.rb;
 
   // Fatal (bad link / task missing) — only when we have nothing to show.
   if (fatal && !result) {
@@ -180,9 +205,32 @@ export default function AnswerOverlay({ startParam }) {
           <span className="ans-eyebrow">{eyebrow}</span>
           <h1 className="ans-title">{heading}</h1>
         </div>
-        {isRebus ? <RebusResult result={result} /> : <CrosswordResult result={result} />}
+        {isRebus ? <RebusResult result={result} />
+          : isAnagram ? <AnagramResult result={result} />
+          : <CrosswordResult result={result} />}
         {meta?.already_answered ? <p className="ans-note">Bereits beantwortet</p> : null}
         <button className="ans-btn" onClick={close}>Schließen</button>
+      </div></div>
+    );
+  }
+
+  // Anagram input view — its own slots/tiles UI with a built-in Prüfen button.
+  if (isAnagram) {
+    return (
+      <div className="ans-root"><div className="ans-card">
+        <div className="ans-head">
+          <span className="ans-eyebrow">{eyebrow}</span>
+          <h1 className="ans-title">{heading}</h1>
+          <p className="ans-sub">
+            Подсказка: <b style={{ color: 'var(--dmps-text-primary, #F8FAFC)' }}>{meta?.hint_ru || '…'}</b>
+            {meta?.length ? ` · ${meta.length} Buchstaben` : ''} 🧩
+          </p>
+        </div>
+        {metaLoading || !meta ? (
+          <><div className="ans-skel" /><div className="ans-skel sm" /></>
+        ) : (
+          <AnagramGame task={meta} onSubmit={(a) => submit(a)} submitting={submitting} error={error} />
+        )}
       </div></div>
     );
   }

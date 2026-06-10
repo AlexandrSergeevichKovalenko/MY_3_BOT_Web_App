@@ -297,3 +297,81 @@ def evaluate_crossword(*, dispatch_id: int, user_id: int, raw_input: str) -> dic
                 is_correct=bool(r["is_correct"]),
             )
     return _summarize_crossword(results, already_answered=False)
+
+
+# ── Anagram (assemble-the-word): load + evaluate ─────────────────────────────
+
+def check_anagram(*, correct_word: str, assembled: str) -> bool:
+    """Case-insensitive compare of the assembled letters against the word."""
+    a = "".join(str(assembled or "").split()).strip().lower()
+    w = str(correct_word or "").strip().lower()
+    return bool(a) and a == w
+
+
+def _anagram_result_payload(*, card: dict, is_correct: bool, already_answered: bool) -> dict:
+    word = str(card.get("word") or "")
+    hint_ru = str(card.get("hint_ru") or "")
+    return {
+        "kind": "anagram",
+        "is_correct": bool(is_correct),
+        "correct_word": word,
+        "hint_ru": hint_ru,
+        "explanation": str(card.get("explanation") or ""),
+        "already_answered": bool(already_answered),
+        "saveable_words": ([{"source": word, "target": hint_ru}] if hint_ru else []),
+    }
+
+
+def load_anagram_task(*, dispatch_id: int, user_id: int) -> dict | None:
+    """Render metadata: scrambled letters + hint, never the solved word (unless
+    the user already answered). All letters are given by design — only their
+    solved order is withheld."""
+    from backend.database import get_anagram_dispatch_by_id, get_anagram_answer
+    card = get_anagram_dispatch_by_id(int(dispatch_id))
+    if not card:
+        return None
+
+    scrambled = str(card.get("scrambled") or "")
+    if len(scrambled) < 3:
+        return None
+
+    existing = get_anagram_answer(dispatch_id=int(dispatch_id), user_id=int(user_id))
+    meta = {
+        "kind": "anagram",
+        "hint_ru": str(card.get("hint_ru") or ""),
+        "first_letter": scrambled[0],
+        "last_letter": scrambled[-1],
+        "length": len(scrambled),
+        "middle_letters": list(scrambled[1:-1]),  # already shuffled at creation
+        "already_answered": bool(existing),
+    }
+    if existing:
+        meta["result"] = _anagram_result_payload(
+            card=card, is_correct=bool(existing.get("is_correct")), already_answered=True,
+        )
+    return meta
+
+
+def evaluate_anagram(*, dispatch_id: int, user_id: int, assembled: str) -> dict | None:
+    """Load → compare → record (once) → render-ready verdict."""
+    from backend.database import (
+        get_anagram_dispatch_by_id, get_anagram_answer, record_anagram_answer,
+    )
+    card = get_anagram_dispatch_by_id(int(dispatch_id))
+    if not card:
+        return None
+
+    existing = get_anagram_answer(dispatch_id=int(dispatch_id), user_id=int(user_id))
+    if existing:
+        return _anagram_result_payload(
+            card=card, is_correct=bool(existing.get("is_correct")), already_answered=True,
+        )
+
+    is_correct = check_anagram(correct_word=card.get("word"), assembled=assembled)
+    record_anagram_answer(
+        dispatch_id=int(dispatch_id),
+        user_id=int(user_id),
+        assembled=str(assembled or ""),
+        is_correct=bool(is_correct),
+    )
+    return _anagram_result_payload(card=card, is_correct=is_correct, already_answered=False)

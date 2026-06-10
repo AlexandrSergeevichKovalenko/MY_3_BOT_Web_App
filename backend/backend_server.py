@@ -22261,11 +22261,13 @@ def get_answer_task():
     except (TypeError, ValueError):
         return jsonify({"error": "id обязателен"}), 400
 
-    from backend.answer_eval import load_rebus_task, load_crossword_task
+    from backend.answer_eval import load_rebus_task, load_crossword_task, load_anagram_task
     if kind == "rb":
         meta = load_rebus_task(dispatch_id=dispatch_id, user_id=user_id)
     elif kind == "cw":
         meta = load_crossword_task(dispatch_id=dispatch_id, user_id=user_id)
+    elif kind == "ag":
+        meta = load_anagram_task(dispatch_id=dispatch_id, user_id=user_id)
     else:
         return jsonify({"error": "unsupported kind"}), 400
     if meta is None:
@@ -22289,12 +22291,14 @@ def submit_answer():
         return jsonify({"error": "id обязателен"}), 400
     answer = str(payload.get("answer") or "")
 
-    from backend.answer_eval import evaluate_rebus, evaluate_crossword
+    from backend.answer_eval import evaluate_rebus, evaluate_crossword, evaluate_anagram
     try:
         if kind == "rb":
             result = evaluate_rebus(dispatch_id=dispatch_id, user_id=user_id, raw_input=answer)
         elif kind == "cw":
             result = evaluate_crossword(dispatch_id=dispatch_id, user_id=user_id, raw_input=answer)
+        elif kind == "ag":
+            result = evaluate_anagram(dispatch_id=dispatch_id, user_id=user_id, assembled=answer)
         else:
             return jsonify({"error": "unsupported kind"}), 400
     except Exception:
