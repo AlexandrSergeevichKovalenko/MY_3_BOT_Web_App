@@ -18146,8 +18146,16 @@ async def handle_article_quiz_callback(update: Update, context: CallbackContext)
         icon = "❌"
         verdict = f"Falsch. Es ist {correct_article} {word}"
 
-    detail = f" ({meaning})" if meaning else ""
-    alert_text = f"{icon} {verdict}{detail}"
+    # In-place popup: verdict + a pre-generated grammar hint (ending → gender +
+    # exceptions). Hint is read from the bank (no LLM call here — kept off the
+    # critical path). Telegram alert text is capped at 200 chars.
+    gender_hint = str(entry.get("gender_hint") or "").strip()
+    header = f"{icon} {verdict}"
+    if gender_hint:
+        alert_text = f"{header}\n\n{gender_hint}"
+    else:
+        detail = f" ({meaning})" if meaning else ""
+        alert_text = f"{header}{detail}"
 
     try:
         await query.answer(alert_text[:200], show_alert=True)
@@ -18167,13 +18175,20 @@ async def handle_article_quiz_callback(update: Update, context: CallbackContext)
 async def prepare_article_quiz_pool_job(context: CallbackContext) -> None:
     """Startup + periodic: sync bank and generate missing images."""
     try:
-        from backend.article_quiz_generator import prepare_article_quiz_pool
+        from backend.article_quiz_generator import (
+            prepare_article_quiz_pool,
+            backfill_article_gender_hints,
+        )
         result = await asyncio.to_thread(
             prepare_article_quiz_pool,
             target_ready=ARTICLE_QUIZ_POOL_TARGET,
             max_attempts=40,
         )
         logging.info("article_quiz_pool_job done: %s", result)
+        # Off critical path: fill the der/die/das grammar hints used in the
+        # answer popup, so tapping never triggers an LLM call.
+        hint_result = await backfill_article_gender_hints(limit=50)
+        logging.info("article_quiz_hint_backfill done: %s", hint_result)
     except Exception:
         logging.warning("article_quiz_pool_job failed", exc_info=True)
 
@@ -19334,6 +19349,24 @@ async def _send_image_quiz_for_target(
     return True
 
 
+def _build_quiz_poll_explanation(quiz: dict) -> str:
+    """Short comment shown in Telegram's in-place quiz popup after answering.
+
+    Prefers the generator's pre-made ``explanation`` (no LLM call here); falls
+    back to a concise correct-answer line so a popup always appears. Capped at
+    the 200-char Telegram limit.
+    """
+    text = str((quiz or {}).get("explanation") or "").strip()
+    if not text:
+        correct = str((quiz or {}).get("correct_text") or "").strip()
+        word_ru = str((quiz or {}).get("word_ru") or "").strip()
+        if correct and word_ru:
+            text = f"✅ {correct} — {word_ru}"
+        elif correct:
+            text = f"✅ {correct}"
+    return text[:200]
+
+
 async def _send_poll_quiz_for_target(
     context: CallbackContext,
     *,
@@ -19354,6 +19387,8 @@ async def _send_poll_quiz_for_target(
     shuffled_quiz = _shuffle_quiz_options(quiz)
     if shuffled_quiz:
         quiz = shuffled_quiz
+    # In-place feedback popup after answering (Telegram quiz explanation, ≤200).
+    poll_explanation = _build_quiz_poll_explanation(quiz) or None
     try:
         poll_message = await context.bot.send_poll(
             chat_id=int(target_chat_id),
@@ -19363,6 +19398,7 @@ async def _send_poll_quiz_for_target(
             correct_option_id=quiz["correct_option_id"],
             is_anonymous=False,
             allows_multiple_answers=False,
+            explanation=poll_explanation,
         )
     except Exception as exc:
         if _is_permanent_quiz_delivery_error(exc):

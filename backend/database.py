@@ -7618,6 +7618,10 @@ def ensure_webapp_tables() -> None:
                 ADD COLUMN IF NOT EXISTS dalle_prompt TEXT;
             """)
             cursor.execute("""
+                ALTER TABLE bt_3_article_quiz_bank
+                ADD COLUMN IF NOT EXISTS gender_hint TEXT NOT NULL DEFAULT '';
+            """)
+            cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_aq_bank_available
                 ON bt_3_article_quiz_bank (image_status, retired, last_sent_at NULLS FIRST);
             """)
@@ -32511,7 +32515,8 @@ def get_article_quiz_entry(word_id: str) -> dict | None:
             cursor.execute(
                 """
                 SELECT word_id, word, article, meaning_ru, difficulty, category,
-                       image_object_key, image_status, send_count, last_sent_at, retired, dalle_prompt
+                       image_object_key, image_status, send_count, last_sent_at, retired,
+                       dalle_prompt, gender_hint
                 FROM bt_3_article_quiz_bank WHERE word_id = %s
                 """,
                 (str(word_id),),
@@ -32523,8 +32528,43 @@ def get_article_quiz_entry(word_id: str) -> dict | None:
         "word_id": row[0], "word": row[1], "article": row[2], "meaning_ru": row[3],
         "difficulty": row[4], "category": row[5], "image_object_key": row[6],
         "image_status": row[7], "send_count": row[8], "last_sent_at": row[9],
-        "retired": row[10], "dalle_prompt": row[11],
+        "retired": row[10], "dalle_prompt": row[11], "gender_hint": row[12] or "",
     }
+
+
+def set_article_quiz_gender_hint(word_id: str, *, gender_hint: str) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_article_quiz_bank
+                SET gender_hint = %s, updated_at = NOW()
+                WHERE word_id = %s
+                """,
+                (str(gender_hint or "")[:300], str(word_id)),
+            )
+        conn.commit()
+
+
+def get_article_quiz_words_missing_hint(limit: int = 200) -> list[dict]:
+    """Active words whose gender_hint is still empty — for off-critical-path backfill."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT word_id, word, article, meaning_ru
+                FROM bt_3_article_quiz_bank
+                WHERE retired = FALSE AND COALESCE(gender_hint, '') = ''
+                ORDER BY created_at
+                LIMIT %s
+                """,
+                (int(limit),),
+            )
+            rows = cursor.fetchall()
+    return [
+        {"word_id": r[0], "word": r[1], "article": r[2], "meaning_ru": r[3]}
+        for r in rows
+    ]
 
 
 def mark_article_quiz_image_ready(word_id: str, *, image_object_key: str) -> None:

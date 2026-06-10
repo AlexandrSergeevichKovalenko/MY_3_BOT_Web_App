@@ -7,6 +7,7 @@ white background so the article quiz is visually unambiguous.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -129,3 +130,37 @@ def prepare_article_quiz_pool(*, target_ready: int = 30, max_attempts: int = 40)
         "failed": failed,
         "attempts": attempts,
     }
+
+
+async def backfill_article_gender_hints(*, limit: int = 50) -> dict:
+    """Fill gender_hint for active words that don't have one yet.
+
+    Runs off the critical path (pool-prep job), so the answer popup just reads
+    the stored string — no LLM call when the user taps a der/die/das button.
+    """
+    from backend.database import (
+        get_article_quiz_words_missing_hint,
+        set_article_quiz_gender_hint,
+    )
+    from backend.openai_manager import run_article_gender_hint
+
+    words = await asyncio.to_thread(get_article_quiz_words_missing_hint, limit)
+    filled = 0
+    for w in words:
+        try:
+            hint = await run_article_gender_hint(
+                w.get("word", ""), w.get("article", ""), w.get("meaning_ru", "")
+            )
+            if hint:
+                await asyncio.to_thread(
+                    set_article_quiz_gender_hint, w["word_id"], gender_hint=hint
+                )
+                filled += 1
+        except Exception:
+            logging.warning(
+                "article_gender_hint: backfill failed word_id=%s",
+                w.get("word_id"), exc_info=True,
+            )
+    if words:
+        logging.info("article_gender_hint: backfill missing=%s filled=%s", len(words), filled)
+    return {"missing": len(words), "filled": filled}

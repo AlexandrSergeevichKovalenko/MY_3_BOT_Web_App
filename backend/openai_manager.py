@@ -52,6 +52,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "feel_word_multilang",
     "enrich_word",
     "enrich_word_multilang",
+    "article_gender_hint",
     "quiz_followup_question",
     "quiz_result_commentary",
     "check_translation",
@@ -888,6 +889,24 @@ Rules:
 - Always include 2-3 usage_examples in German.
 - Include 2-3 prefix variants if they exist for the base verb.
 - Do not include extra fields or text outside JSON.
+""",
+"article_gender_hint":"""
+Ты — преподаватель немецкого. На входе JSON: {"word","article","meaning_ru"}.
+Дай ОЧЕНЬ короткую подсказку по роду существительного НА РУССКОМ, строго не длиннее 160 символов.
+
+Что включить:
+1) Значимое окончание слова (если есть), например -e, -ung, -chen, -er, -ling.
+2) Типичный род для такого окончания и 3-5 характерных окончаний этого же рода.
+3) Если слово — ИСКЛЮЧЕНИЕ из правила окончания, явно припиши «исключение, запомни».
+Если у слова нет показательного окончания (род нужно просто запомнить) — так и напиши коротко, без выдуманных правил.
+
+Примеры стиля:
+- die Freiheit → "-heit → женский род (die). Также die: -ung, -keit, -schaft, -ei, -ion, -tät."
+- das Mädchen → "-chen → всегда средний род (das), уменьшительное. -lein тоже das."
+- der Tisch → "Нет явного окончания — род надо запомнить: der Tisch."
+- das Auge → "-e часто женский (die), но Auge — исключение: средний род (das), запомни."
+
+Без приветствий, без эмодзи, без лишнего текста. Верни ТОЛЬКО JSON: {"hint": "..."}.
 """,
 "feel_word_multilang":"""
 You are a multilingual lexical explainer.
@@ -4534,6 +4553,31 @@ async def run_enrich_word(word_ru: str, word_de: str | None = None) -> dict:
         return json.loads(content)
     except json.JSONDecodeError:
         return {}
+
+
+async def run_article_gender_hint(word: str, article: str, meaning_ru: str | None = None) -> str:
+    """Short (≤160 chars) RU grammar hint for a noun's gender, by ending + exceptions.
+
+    Generated off the critical path (at pool-prep time) and stored, so the answer
+    popup just reads the string — no LLM call when the user taps.
+    """
+    payload = {
+        "word": (word or "").strip(),
+        "article": (article or "").strip().lower(),
+        "meaning_ru": (meaning_ru or "").strip(),
+    }
+    content = await llm_execute(
+        task_name="article_gender_hint",
+        system_instruction_key="article_gender_hint",
+        user_message=json.dumps(payload, ensure_ascii=False),
+        poll_interval_seconds=2.0,
+        fast_delete=True,
+    )
+    try:
+        hint = str((json.loads(content) or {}).get("hint") or "").strip()
+    except json.JSONDecodeError:
+        hint = str(content or "").strip()
+    return hint[:160]
 
 
 async def run_feel_word_multilang(
