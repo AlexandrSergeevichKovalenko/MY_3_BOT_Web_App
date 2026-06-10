@@ -4873,39 +4873,66 @@ async def run_dictionary_lookup_multilang_core_fast_batch(
     if not clean_items:
         return {}
 
-    payload = {
-        "source_language": (source_lang or "").strip().lower(),
-        "target_language": (target_lang or "").strip().lower(),
-        "items": clean_items,
-    }
-    content = await llm_execute(
-        task_name="dictionary_assistant_multilang_core_fast_batch",
-        system_instruction_key="dictionary_assistant_multilang_core_fast_batch",
-        user_message=json.dumps(payload, ensure_ascii=False),
-        poll_interval_seconds=1.0,
-        responses_timeout_seconds=max(2.0, DICTIONARY_CORE_RESPONSES_TIMEOUT_SECONDS * max(1.0, min(2.5, len(clean_items) / 3))),
-        responses_only=DICTIONARY_RESPONSES_ONLY,
-        allow_assistants_fallback=DICTIONARY_ALLOW_ASSISTANTS_FALLBACK,
-    )
-    cleaned = str(content or "").strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned).rstrip("`").strip()
-    parsed = json.loads(cleaned)
-    parsed_items = parsed.get("items") if isinstance(parsed, dict) else parsed
-    if not isinstance(parsed_items, list):
-        return {}
+    src = (source_lang or "").strip().lower()
+    tgt = (target_lang or "").strip().lower()
+
+    # CHUNK: one LLM call cannot return hundreds of translations (output-token limit truncates
+    # the JSON — this is the "requested=352 returned=7" bug). Split into small chunks, run them
+    # with limited concurrency, and merge. Each chunk's keys are still validated independently.
+    chunk_size = max(1, int((os.getenv("DICTIONARY_FAST_BATCH_CHUNK_SIZE") or "20").strip() or "20"))
+    chunks = [clean_items[i:i + chunk_size] for i in range(0, len(clean_items), chunk_size)]
+    semaphore = asyncio.Semaphore(max(1, int((os.getenv("DICTIONARY_FAST_BATCH_CONCURRENCY") or "4").strip() or "4")))
+
+    async def _run_chunk(chunk: list[dict]) -> dict[str, dict]:
+        payload = {"source_language": src, "target_language": tgt, "items": chunk}
+        async with semaphore:
+            try:
+                content = await llm_execute(
+                    task_name="dictionary_assistant_multilang_core_fast_batch",
+                    system_instruction_key="dictionary_assistant_multilang_core_fast_batch",
+                    user_message=json.dumps(payload, ensure_ascii=False),
+                    poll_interval_seconds=1.0,
+                    responses_timeout_seconds=max(
+                        2.0, DICTIONARY_CORE_RESPONSES_TIMEOUT_SECONDS * max(1.0, min(2.5, len(chunk) / 3))
+                    ),
+                    responses_only=DICTIONARY_RESPONSES_ONLY,
+                    allow_assistants_fallback=DICTIONARY_ALLOW_ASSISTANTS_FALLBACK,
+                )
+            except Exception:
+                logging.warning("dictionary fast batch chunk failed (size=%d)", len(chunk), exc_info=True)
+                return {}
+        cleaned = str(content or "").strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned).rstrip("`").strip()
+        try:
+            parsed = json.loads(cleaned)
+        except Exception:
+            logging.warning("dictionary fast batch chunk parse failed (size=%d)", len(chunk))
+            return {}
+        parsed_items = parsed.get("items") if isinstance(parsed, dict) else parsed
+        if not isinstance(parsed_items, list):
+            return {}
+        allowed = {str(it["key"]) for it in chunk}
+        out: dict[str, dict] = {}
+        for it in parsed_items:
+            if not isinstance(it, dict):
+                continue
+            key = str(it.get("key") or "").strip()
+            if not key or key not in allowed:
+                continue
+            res = dict(it)
+            res.pop("key", None)
+            out[key] = res
+        return out
 
     by_key: dict[str, dict] = {}
-    allowed_keys = {str(item["key"]) for item in clean_items}
-    for item in parsed_items:
-        if not isinstance(item, dict):
-            continue
-        key = str(item.get("key") or "").strip()
-        if not key or key not in allowed_keys:
-            continue
-        result = dict(item)
-        result.pop("key", None)
-        by_key[key] = result
+    for chunk_result in await asyncio.gather(*[_run_chunk(c) for c in chunks], return_exceptions=True):
+        if isinstance(chunk_result, dict):
+            by_key.update(chunk_result)
+    logging.info(
+        "dictionary fast batch done items=%d chunks=%d returned=%d",
+        len(clean_items), len(chunks), len(by_key),
+    )
     return by_key
 
 

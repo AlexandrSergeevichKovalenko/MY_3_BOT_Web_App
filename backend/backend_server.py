@@ -36899,8 +36899,15 @@ def _build_shortcut_pairing_code_response(pairing_result: dict) -> dict:
 
 
 def _shortcut_lookup_request_payload(body: dict) -> tuple[str, str]:
-    text = str(body.get("text") or "").strip()
     install_token = str(body.get("install_token") or "").strip()
+    # New batched format: the Shortcut OCRs a whole folder into one list and sends it once
+    # ({"screenshots": ["text1", "text2", ...]}) — far lighter than one HTTP request per photo.
+    # We join into a single text and feed the SAME pipeline. Legacy {"text": "..."} still works.
+    shots = body.get("screenshots")
+    if isinstance(shots, list) and shots:
+        text = "\n".join(part for s in shots if (part := str(s or "").strip()))
+    else:
+        text = str(body.get("text") or "").strip()
     return text, install_token
 
 
