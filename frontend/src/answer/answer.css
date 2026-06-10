@@ -4,11 +4,21 @@
  * this route (the overlay bypasses the heavy App), so this file is standalone.
  */
 
+/* Global reset for the overlay route. App.css (which normally zeroes the body
+ * margin and paints the background) is intentionally NOT loaded here, so the UA
+ * default body margin would otherwise let the webview's white background bleed
+ * through at the screen edges. Scoped to this route — main App is unaffected. */
+html, body { margin: 0; padding: 0; }
+body { background: var(--dmps-bg, #0F172A); overflow-x: hidden; }
+#root { min-height: 100vh; }
+
 .ans-root {
   --ans-ok: var(--dmps-success, #16A34A);
   --ans-bad: var(--dmps-danger, #DC2626);
+  width: 100%;
   min-height: 100vh;
   box-sizing: border-box;
+  overflow-x: hidden;
   padding: 22px 16px calc(22px + env(safe-area-inset-bottom, 0px));
   background:
     radial-gradient(120% 80% at 50% -10%, rgba(37, 99, 235, 0.18), transparent 60%),
