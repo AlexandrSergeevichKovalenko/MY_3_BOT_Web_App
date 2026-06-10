@@ -10823,6 +10823,89 @@ async def handle_dictionary_select_all_callback(update: Update, context: Callbac
     await query.answer("Выбраны все варианты")
 
 
+def _dict_save_status_keyboard(label: str) -> InlineKeyboardMarkup:
+    # A non-interactive label button shown in place of the save buttons (Сохраняем… → Сохранено).
+    return InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data="dictsave_noop")]])
+
+
+async def _save_dictionary_variants_in_place(
+    query, context, *, option_key: str, payload: dict, user_id: int,
+    selected_idxs: list[int], options: list[dict],
+) -> None:
+    """Part-1 UX: instant ack + «💾 Сохраняем…» on the block, do the save in the BACKGROUND,
+    then flip the same block to «✅ Сохранено» — no second chat message, so the user can
+    immediately go press save on the next word. The DB write happens right away (in the
+    background), so there is no batching/restart data-loss window."""
+    try:
+        await query.answer("Сохраняю…")
+    except Exception:
+        pass
+    try:
+        await query.edit_message_reply_markup(reply_markup=_dict_save_status_keyboard("💾 Сохраняем…"))
+    except Exception:
+        pass
+
+    src_lang = str(payload.get("source_lang") or "").strip().lower()
+    tgt_lang = str(payload.get("target_lang") or "").strip().lower()
+
+    async def _bg() -> None:
+        saved = 0
+        first_error = ""
+        for idx in selected_idxs:
+            if idx < 0 or idx >= len(options):
+                continue
+            chosen = options[idx]
+            try:
+                ok, msg, entry_id, already_tagged = await asyncio.to_thread(
+                    _save_dictionary_option_for_user, payload=payload, chosen=chosen, user_id=int(user_id),
+                )
+            except Exception:
+                logging.exception("dict save (background) failed idx=%s", idx)
+                continue
+            if not ok:
+                if not first_error:
+                    first_error = str(msg or "").strip()
+                continue
+            saved += 1
+            if entry_id and entry_id > 0 and not already_tagged:
+                asyncio.create_task(_auto_tag_saved_entry(
+                    user_id=int(user_id), entry_id=int(entry_id),
+                    source_text=str(chosen.get("source") or "").strip(),
+                    target_text=str(chosen.get("target") or "").strip(),
+                    source_lang=src_lang, target_lang=tgt_lang,
+                ))
+        if saved > 0:
+            card_key = payload.get("card_key")
+            cp = pending_dictionary_cards.get(card_key or "")
+            if isinstance(cp, dict):
+                cp["saved"] = True
+                pending_dictionary_cards[card_key] = cp
+            pending_dictionary_save_options.pop(option_key, None)
+            label = "✅ Сохранено" if saved == 1 else f"✅ Сохранено ({saved})"
+        elif "лимит" in first_error.lower():
+            label = "⚠️ Лимит бесплатного тарифа"
+        else:
+            label = "⚠️ Не удалось — нажмите ещё раз"
+        try:
+            await query.edit_message_reply_markup(reply_markup=_dict_save_status_keyboard(label))
+        except Exception:
+            pass
+
+    coro = _bg()
+    try:
+        context.application.create_task(coro)
+    except Exception:
+        await coro
+
+
+async def _noop_callback(update: Update, context: CallbackContext) -> None:
+    if update.callback_query:
+        try:
+            await update.callback_query.answer()
+        except Exception:
+            pass
+
+
 async def handle_dictionary_save_confirm_callback(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     if not query:
@@ -10850,73 +10933,10 @@ async def handle_dictionary_save_confirm_callback(update: Update, context: Callb
         await query.answer("Выберите минимум один вариант.", show_alert=True)
         return
 
-    save_started_perf = pytime.perf_counter()
-
-    async def _save_selected_idx(idx: int) -> tuple[int, bool, str, int, bool, dict]:
-        if idx < 0 or idx >= len(options):
-            return idx, False, "Индекс вне диапазона.", 0, False, {}
-        chosen = options[idx]
-        save_ok, save_msg, entry_id, already_tagged = await asyncio.to_thread(
-            _save_dictionary_option_for_user,
-            payload=payload,
-            chosen=chosen,
-            user_id=int(user.id),
-        )
-        return idx, save_ok, save_msg, entry_id, already_tagged, chosen
-
-    results = []
-    for idx in selected_idxs:
-        try:
-            results.append(await _save_selected_idx(idx))
-        except Exception as exc:
-            results.append(exc)
-    saved_lines: list[str] = []
-    first_error_msg = ""
-    for result in results:
-        if isinstance(result, Exception):
-            logging.warning("Dictionary multi-save worker failed", exc_info=(type(result), result, result.__traceback__))
-            continue
-        idx, save_ok, save_msg, entry_id, already_tagged, chosen = result
-        if not save_ok:
-            if not first_error_msg:
-                first_error_msg = str(save_msg or "").strip()
-            logging.warning("Dictionary multi-save skipped idx=%s: %s", idx, save_msg)
-            continue
-        source = (chosen.get("source") or "").strip()
-        target = (chosen.get("target") or "").strip()
-        saved_lines.append(f"• {source} -> {target}")
-        if entry_id and entry_id > 0 and not already_tagged:
-            asyncio.create_task(_auto_tag_saved_entry(
-                user_id=int(user.id), entry_id=entry_id,
-                source_text=source, target_text=target,
-                source_lang=str(payload.get("source_lang") or "").strip().lower(),
-                target_lang=str(payload.get("target_lang") or "").strip().lower(),
-            ))
-    logging.info(
-        "dictionary_save_confirm_done user_id=%s option_key=%s selected=%s saved=%s db_ms=%s",
-        int(user.id),
-        option_key,
-        len(selected_idxs),
-        len(saved_lines),
-        int((pytime.perf_counter() - save_started_perf) * 1000),
+    await _save_dictionary_variants_in_place(
+        query, context, option_key=option_key, payload=payload,
+        user_id=int(user.id), selected_idxs=selected_idxs, options=options,
     )
-
-    if not saved_lines:
-        await query.answer(first_error_msg or "Не удалось сохранить выбранные варианты.", show_alert=True)
-        return
-
-    card_key = payload.get("card_key")
-    card_payload = pending_dictionary_cards.get(card_key or "")
-    if isinstance(card_payload, dict):
-        card_payload["saved"] = True
-        pending_dictionary_cards[card_key] = card_payload
-    pending_dictionary_save_options.pop(option_key, None)
-    try:
-        await query.edit_message_reply_markup(reply_markup=None)
-    except Exception:
-        pass
-    await query.answer("✅ Сохранено")
-    await query.message.reply_text("✅ Сохранены варианты:\n" + "\n".join(saved_lines))
 
 
 async def handle_dictionary_quick_save_callback(update: Update, context: CallbackContext) -> None:
@@ -10959,74 +10979,10 @@ async def handle_dictionary_quick_save_callback(update: Update, context: Callbac
             return
         selected_idxs = [selected_idx]
 
-    save_started_perf = pytime.perf_counter()
-
-    async def _save_quick_idx(idx: int) -> tuple[int, bool, str, int, bool, dict]:
-        chosen = options[idx]
-        save_ok, save_msg, entry_id, already_tagged = await asyncio.to_thread(
-            _save_dictionary_option_for_user,
-            payload=payload,
-            chosen=chosen,
-            user_id=int(user.id),
-        )
-        return idx, save_ok, save_msg, entry_id, already_tagged, chosen
-
-    results = []
-    for idx in selected_idxs:
-        try:
-            results.append(await _save_quick_idx(idx))
-        except Exception as exc:
-            results.append(exc)
-    saved_lines: list[str] = []
-    first_error_msg = ""
-    for result in results:
-        if isinstance(result, Exception):
-            logging.warning("Quick dictionary save worker failed", exc_info=(type(result), result, result.__traceback__))
-            continue
-        idx, save_ok, save_msg, entry_id, already_tagged, chosen = result
-        if not save_ok:
-            if not first_error_msg:
-                first_error_msg = str(save_msg or "").strip()
-            logging.warning("Quick dictionary save skipped idx=%s: %s", idx, save_msg)
-            continue
-        source = (chosen.get("source") or "").strip()
-        target = (chosen.get("target") or "").strip()
-        saved_lines.append(f"• {source} -> {target}")
-        if entry_id and entry_id > 0 and not already_tagged:
-            asyncio.create_task(_auto_tag_saved_entry(
-                user_id=int(user.id), entry_id=entry_id,
-                source_text=source, target_text=target,
-                source_lang=str(payload.get("source_lang") or "").strip().lower(),
-                target_lang=str(payload.get("target_lang") or "").strip().lower(),
-            ))
-    logging.info(
-        "dictionary_quick_save_done user_id=%s option_key=%s selected=%s saved=%s db_ms=%s",
-        int(user.id),
-        option_key,
-        len(selected_idxs),
-        len(saved_lines),
-        int((pytime.perf_counter() - save_started_perf) * 1000),
+    await _save_dictionary_variants_in_place(
+        query, context, option_key=option_key, payload=payload,
+        user_id=int(user.id), selected_idxs=selected_idxs, options=options,
     )
-
-    if not saved_lines:
-        await query.answer(first_error_msg or "Не удалось сохранить выбранные варианты.", show_alert=True)
-        return
-
-    card_key = payload.get("card_key")
-    card_payload = pending_dictionary_cards.get(card_key or "")
-    if isinstance(card_payload, dict):
-        card_payload["saved"] = True
-        pending_dictionary_cards[card_key] = card_payload
-    pending_dictionary_save_options.pop(option_key, None)
-    try:
-        await query.edit_message_reply_markup(reply_markup=None)
-    except Exception:
-        pass
-    await query.answer("✅ Сохранено")
-    if len(saved_lines) == 1:
-        await query.message.reply_text("✅ Сохранён вариант:\n" + saved_lines[0])
-    else:
-        await query.message.reply_text("✅ Сохранены варианты:\n" + "\n".join(saved_lines))
 
 
 def _update_pending_dictionary_folder_payload(
@@ -20130,6 +20086,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_dictionary_mode_callback, pattern=r"^dictmode:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_select_toggle_callback, pattern=r"^dictseltoggle:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_select_all_callback, pattern=r"^dictselall:"))
+    application.add_handler(CallbackQueryHandler(_noop_callback, pattern=r"^dictsave_noop$"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_save_confirm_callback, pattern=r"^dictsaveconfirm:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_save_option_callback, pattern=r"^dictsaveopt:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_quick_save_callback, pattern=r"^dictquicksave:"))
