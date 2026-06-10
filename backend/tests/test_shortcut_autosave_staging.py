@@ -100,12 +100,40 @@ class ShortcutAutosaveStagingTests(unittest.TestCase):
         self.assertEqual(self.redis.lists.get(f"dict_pending_shortcut_raw_list:{uid}"), [])
         self.assertNotIn(f"dict_pending_shortcut_raw:{uid}", self.redis.kv)
 
-    def test_big_batch_detector(self):
-        few = "\n".join(f"Wort {i}" for i in range(5))      # 5 lines → small
-        many = "\n".join(f"Wort {i}" for i in range(40))    # 40 lines → big
-        self.assertFalse(server._shortcut_is_big_batch(few))
-        self.assertTrue(server._shortcut_is_big_batch(many))
-        self.assertFalse(server._shortcut_is_big_batch(""))
+    def test_card_flow_overflows_to_digest_by_unit_count(self):
+        # Toggle OFF (card flow). Few units → cards; many real units (> threshold) → digest.
+        # Decided on the SPLIT unit count, not OCR lines (so a multi-line Reel with few units
+        # still gets cards).
+        cards_sent = []
+        few_blocks = [(f"Wort{i}", f"Wort{i}") for i in range(3)]
+        many_blocks = [(f"Wort{i}", f"Wort{i}") for i in range(server._SHORTCUT_CARD_OVERFLOW_UNITS + 5)]
+
+        # few → cards (no digest)
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(server, "_shortcut_split_blocks", return_value=few_blocks))
+            stack.enter_context(patch.object(server, "_shortcut_existing_pending_norms", return_value=set()))
+            stack.enter_context(patch.object(server, "_shortcut_append_pending_to_redis"))
+            stack.enter_context(patch.object(server, "get_redis_client", return_value=self.redis))
+            stack.enter_context(patch.object(server, "_autosave_send_digest_from_blocks",
+                                             side_effect=lambda uid, blocks: cards_sent.append(("digest", len(blocks)))))
+            stack.enter_context(patch.object(server, "_send_private_message",
+                                             side_effect=lambda uid, text, reply_markup=None, parse_mode=None: cards_sent.append(("card", text))))
+            stack.enter_context(patch("time.sleep"))
+            server._run_shortcut_lookup_delivery(user_id=1, text="x")
+        self.assertTrue(all(k == "card" for k, _ in cards_sent))
+        self.assertEqual(len([1 for k, _ in cards_sent if k == "card"]), 3)
+
+        # many → one digest, no cards
+        cards_sent.clear()
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(server, "_shortcut_split_blocks", return_value=many_blocks))
+            stack.enter_context(patch.object(server, "get_redis_client", return_value=self.redis))
+            stack.enter_context(patch.object(server, "_autosave_send_digest_from_blocks",
+                                             side_effect=lambda uid, blocks: cards_sent.append(("digest", len(blocks))) or len(blocks)))
+            stack.enter_context(patch.object(server, "_send_private_message",
+                                             side_effect=lambda *a, **k: cards_sent.append(("card", None))))
+            server._run_shortcut_lookup_delivery(user_id=1, text="x")
+        self.assertEqual(cards_sent, [("digest", len(many_blocks))])
 
     def test_collect_due_claims_only_elapsed(self):
         now = server.time.time()

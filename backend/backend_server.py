@@ -37268,6 +37268,17 @@ def _run_shortcut_lookup_delivery(
     if not blocks:
         return 0
 
+    # Overflow → digest: more than N real learnable units would flood the chat with individual
+    # cards, so send ONE (paginated) multi-select digest instead. Decided AFTER the split on the
+    # actual unit count — so a single Reel screenshot (a multi-line paragraph → 2–3 units) still
+    # comes as cards, while a folder (dozens of units) becomes a clean digest.
+    if len(blocks) > _SHORTCUT_CARD_OVERFLOW_UNITS:
+        logging.info(
+            "shortcut: %d units > %d → digest instead of cards user_id=%s",
+            len(blocks), _SHORTCUT_CARD_OVERFLOW_UNITS, safe_user_id,
+        )
+        return _autosave_send_digest_from_blocks(safe_user_id, blocks)
+
     shortcut_max_blocks = 20
     if len(blocks) > shortcut_max_blocks:
         blocks = blocks[:shortcut_max_blocks]
@@ -37347,15 +37358,6 @@ def _run_shortcut_lookup_delivery(
 # whole batch and sends a single multi-select digest. This scales to 1k–10k nightly batches.
 _AUTOSAVE_RAW_TTL = 21600  # 6h — raw queue + flush-at live until flushed/reviewed
 _AUTOSAVE_DEBOUNCE_SECONDS = max(15, int((os.getenv("SHORTCUT_AUTOSAVE_DEBOUNCE_SECONDS") or "90").strip() or "90"))
-# Foolproofing: a request whose combined text has MORE than this many non-empty lines is a big
-# batch (a folder) → forced into the digest regardless of the toggle, so cards can't flood.
-_SHORTCUT_FORCE_DIGEST_MIN_LINES = max(1, int((os.getenv("SHORTCUT_FORCE_DIGEST_MIN_LINES") or "10").strip() or "10"))
-
-
-def _shortcut_is_big_batch(text: str) -> bool:
-    """A whole-folder batch (many lines) → always digest, never card-flood. Robust whether the
-    Shortcut sends screenshots as a JSON array or a single newline-joined string."""
-    return sum(1 for ln in str(text or "").splitlines() if ln.strip()) > _SHORTCUT_FORCE_DIGEST_MIN_LINES
 # Backend-side short TTL cache for the toggle: avoids a DB round-trip on EVERY shortcut request.
 _AUTOSAVE_TOGGLE_CACHE: dict[int, tuple[float, bool]] = {}
 _AUTOSAVE_TOGGLE_CACHE_TTL = 30.0
@@ -37597,6 +37599,86 @@ def _autosave_digest_body_text(items: list[dict], *, page: tuple[int, int] | Non
     return "\n".join(lines)
 
 
+# When the card flow (toggle OFF) produces MORE than this many learnable units, it sends ONE
+# digest instead of a flood of cards. Counted AFTER the split (real units), not OCR lines — so a
+# single Reel screenshot (2–3 units, but a multi-line paragraph) stays as cards. The user set 12.
+_SHORTCUT_CARD_OVERFLOW_UNITS = max(1, int((os.getenv("SHORTCUT_CARD_OVERFLOW_UNITS") or "12").strip() or "12"))
+
+
+def _autosave_send_digest_from_blocks(user_id: int, blocks: list[tuple[str, str]]) -> int:
+    """Translate the given learning units and send them as one (paginated) multi-select digest.
+    Shared by the nightly autosave flush AND the card-flow overflow (>N units → digest instead
+    of a card flood). Returns the number of items sent."""
+    safe_user_id = int(user_id)
+    client = get_redis_client()
+    if client is None or not blocks:
+        return 0
+    # Cross-photo dedup on canonicalized text + hard cap.
+    terms: list[str] = []
+    seen: set[str] = set()
+    for term, content in blocks:
+        t = str(term or content or "").strip()
+        if not t:
+            continue
+        norm = _shortcut_dedup_norm(t)
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        terms.append(t)
+        if len(terms) >= _AUTOSAVE_DIGEST_HARD_CAP:
+            break
+    if not terms:
+        return 0
+
+    native_lang, learning_lang, _profile = _get_user_language_pair(safe_user_id)
+    source_lang = (learning_lang or "de").strip().lower()
+    target_lang = (native_lang or "ru").strip().lower()
+    cards = _autosave_prepare_cards(terms, source_lang=source_lang, target_lang=target_lang)
+    items = [
+        {
+            "term": terms[i],
+            "canonical": cards[i].get("canonical") or terms[i],
+            "translation": cards[i].get("translation") or "",
+            "semantic_category": cards[i].get("semantic_category") or "",
+        }
+        for i in range(len(terms))
+    ]
+    # Paginate: split into pages so a big batch is several clean digests (nothing dropped).
+    pages = [items[i:i + _AUTOSAVE_DIGEST_PAGE_SIZE] for i in range(0, len(items), _AUTOSAVE_DIGEST_PAGE_SIZE)]
+    total_pages = len(pages)
+    for page_idx, page_items in enumerate(pages):
+        selected = [True] * len(page_items)  # default: all checked — user unchecks the few bad ones
+        digest_id = hashlib.sha1(
+            f"asv:{safe_user_id}:{time.time_ns()}:{page_idx}".encode("utf-8")
+        ).hexdigest()[:12]
+        digest_state = {
+            "user_id": safe_user_id,
+            "source_lang": source_lang,
+            "target_lang": target_lang,
+            "items": page_items,
+            "selected": selected,
+            "created_at": time.time(),
+        }
+        client.setex(_autosave_digest_key(digest_id), _AUTOSAVE_DIGEST_TTL, json.dumps(digest_state, ensure_ascii=False))
+        page_label = (page_idx + 1, total_pages) if total_pages > 1 else None
+        try:
+            _send_private_message(
+                safe_user_id,
+                _autosave_digest_body_text(page_items, page=page_label),
+                reply_markup=_autosave_build_digest_keyboard(digest_id, page_items, selected),
+                parse_mode="HTML",
+            )
+            logging.info(
+                "autosave: digest page sent user_id=%s digest_id=%s page=%s/%s items=%d",
+                safe_user_id, digest_id, page_idx + 1, total_pages, len(page_items),
+            )
+        except Exception:
+            logging.exception("autosave: digest send failed user_id=%s digest_id=%s", safe_user_id, digest_id)
+        if page_idx + 1 < total_pages:
+            time.sleep(0.4)  # gentle pacing between page messages
+    return len(items)
+
+
 def _run_autosave_flush(user_id: int) -> None:
     """WORKER-TIER heavy work for one user's nightly batch. Runs on BACKGROUND_JOBS (which has
     the bot token). NX-locked + raw-list-claimed = exactly-once. Does ONE split over the whole
@@ -37624,77 +37706,12 @@ def _run_autosave_flush(user_id: int) -> None:
         if not texts:
             return
 
-        native_lang, learning_lang, _profile = _get_user_language_pair(safe_user_id)
-        source_lang = (learning_lang or "de").strip().lower()
-        target_lang = (native_lang or "ru").strip().lower()
-
-        # ONE split over the whole batch (instead of one per photo). Dedup happens inside.
+        # ONE split over the whole batch (instead of one per photo), then build+send the digest.
         joined = "\n".join(texts)
         blocks = _shortcut_split_blocks(joined, origin="autosave", user_id=safe_user_id)
         if not blocks:
             return
-        # Cross-photo dedup on canonicalized text + cap.
-        terms: list[str] = []
-        seen: set[str] = set()
-        for term, content in blocks:
-            t = str(term or content or "").strip()
-            if not t:
-                continue
-            norm = _shortcut_dedup_norm(t)
-            if not norm or norm in seen:
-                continue
-            seen.add(norm)
-            terms.append(t)
-            if len(terms) >= _AUTOSAVE_DIGEST_HARD_CAP:
-                break
-        if not terms:
-            return
-
-        cards = _autosave_prepare_cards(terms, source_lang=source_lang, target_lang=target_lang)
-        items = [
-            {
-                "term": terms[i],
-                "canonical": cards[i].get("canonical") or terms[i],
-                "translation": cards[i].get("translation") or "",
-                "semantic_category": cards[i].get("semantic_category") or "",
-            }
-            for i in range(len(terms))
-        ]
-        # Paginate: split into pages of PAGE_SIZE so a big batch is several clean digests
-        # instead of a truncated one (nothing is dropped). Each page is its own independent
-        # multi-select message (own digest_id, own checkboxes, own save).
-        pages = [items[i:i + _AUTOSAVE_DIGEST_PAGE_SIZE] for i in range(0, len(items), _AUTOSAVE_DIGEST_PAGE_SIZE)]
-        total_pages = len(pages)
-        for page_idx, page_items in enumerate(pages):
-            selected = [True] * len(page_items)  # default: all checked — user unchecks the few bad ones
-            digest_id = hashlib.sha1(
-                f"asv:{safe_user_id}:{time.time_ns()}:{page_idx}".encode("utf-8")
-            ).hexdigest()[:12]
-            digest_state = {
-                "user_id": safe_user_id,
-                "source_lang": source_lang,
-                "target_lang": target_lang,
-                "items": page_items,
-                "selected": selected,
-                "created_at": time.time(),
-            }
-            client.setex(_autosave_digest_key(digest_id), _AUTOSAVE_DIGEST_TTL, json.dumps(digest_state, ensure_ascii=False))
-            page_label = (page_idx + 1, total_pages) if total_pages > 1 else None
-            try:
-                _send_private_message(
-                    safe_user_id,
-                    _autosave_digest_body_text(page_items, page=page_label),
-                    reply_markup=_autosave_build_digest_keyboard(digest_id, page_items, selected),
-                    parse_mode="HTML",
-                )
-                logging.info(
-                    "autosave: digest page sent user_id=%s digest_id=%s page=%s/%s items=%d",
-                    safe_user_id, digest_id, page_idx + 1, total_pages, len(page_items),
-                )
-            except Exception:
-                logging.exception("autosave: digest send failed user_id=%s digest_id=%s", safe_user_id, digest_id)
-            if page_idx + 1 < total_pages:
-                time.sleep(0.4)  # gentle pacing between page messages
+        _autosave_send_digest_from_blocks(safe_user_id, blocks)
     finally:
         try:
             client.delete(lock_key)
@@ -37762,18 +37779,11 @@ def _start_shortcut_lookup_enqueue_runner(
             )
 
     def _worker() -> None:
-        # Foolproofing: a big batch (a whole folder of screenshots → many lines) ALWAYS goes to
-        # the digest, regardless of the toggle — so you can never accidentally flood the chat
-        # with hundreds of cards. Small inputs still respect the toggle. Threshold is on the
-        # non-empty line count of the combined text (works whether screenshots arrive as an
-        # array or a newline-joined string).
-        big_batch = _shortcut_is_big_batch(normalized_text)
-        autosave_on = big_batch or _autosave_toggle_cached(safe_user_id)  # 30s cache, no DB hit
+        # Toggle ON → digest (autosave staging). Toggle OFF → card flow, which itself switches to
+        # a digest only when the SPLIT yields > _SHORTCUT_CARD_OVERFLOW_UNITS real units (decided
+        # post-split on actual units, not OCR lines — so a single Reel screenshot stays as cards).
+        autosave_on = _autosave_toggle_cached(safe_user_id)  # 30s cache, no DB hit per request
         if autosave_on:
-            if big_batch and not _autosave_toggle_cached(safe_user_id):
-                logging.info(
-                    "shortcut: forcing digest for big batch user_id=%s (toggle is OFF)", safe_user_id
-                )
             # Nightly auto-save: append raw text + arm debounce (pure Redis); the worker flush
             # does the heavy split/translate later. Keeps this request path light at scale.
             try:
