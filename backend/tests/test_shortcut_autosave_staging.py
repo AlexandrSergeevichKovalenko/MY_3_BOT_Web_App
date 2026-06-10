@@ -47,6 +47,14 @@ class _FakeRedis:
         self.lists.setdefault(key, []).extend(values)
         return len(self.lists[key])
 
+    def lrem(self, key, count, value):
+        lst = self.lists.get(key)
+        if not lst:
+            return 0
+        removed = lst.count(value)
+        self.lists[key] = [x for x in lst if x != value]
+        return removed
+
     def lrange(self, key, start, end):
         lst = self.lists.get(key, [])
         if end == -1:
@@ -78,6 +86,26 @@ class ShortcutAutosaveStagingTests(unittest.TestCase):
         self.assertEqual(n2, 2)  # raw queue length grows
         self.assertEqual(self.redis.lists[server._autosave_raw_key(42)], ["Foto 1 text", "Foto 2 text"])
         self.assertIn(server._autosave_flush_at_key(42), self.redis.kv)  # debounce armed
+
+    def test_staging_clears_card_flow_raw_safety_net(self):
+        # The HTTP route writes a card-flow safety-net copy on every request; the autosave path
+        # must clear it so it doesn't pile up and resurface in «Быстрый перевод» (the 55 ghosts).
+        uid = 42
+        text = "Foto text"
+        self.redis.rpush(f"dict_pending_shortcut_raw_list:{uid}", text)
+        self.redis.kv[f"dict_pending_shortcut_raw:{uid}"] = text
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(server, "get_redis_client", return_value=self.redis))
+            server._run_shortcut_autosave_staging(user_id=uid, text=text)
+        self.assertEqual(self.redis.lists.get(f"dict_pending_shortcut_raw_list:{uid}"), [])
+        self.assertNotIn(f"dict_pending_shortcut_raw:{uid}", self.redis.kv)
+
+    def test_big_batch_detector(self):
+        few = "\n".join(f"Wort {i}" for i in range(5))      # 5 lines → small
+        many = "\n".join(f"Wort {i}" for i in range(40))    # 40 lines → big
+        self.assertFalse(server._shortcut_is_big_batch(few))
+        self.assertTrue(server._shortcut_is_big_batch(many))
+        self.assertFalse(server._shortcut_is_big_batch(""))
 
     def test_collect_due_claims_only_elapsed(self):
         now = server.time.time()

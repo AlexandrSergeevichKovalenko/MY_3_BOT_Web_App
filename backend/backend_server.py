@@ -37347,6 +37347,15 @@ def _run_shortcut_lookup_delivery(
 # whole batch and sends a single multi-select digest. This scales to 1k–10k nightly batches.
 _AUTOSAVE_RAW_TTL = 21600  # 6h — raw queue + flush-at live until flushed/reviewed
 _AUTOSAVE_DEBOUNCE_SECONDS = max(15, int((os.getenv("SHORTCUT_AUTOSAVE_DEBOUNCE_SECONDS") or "90").strip() or "90"))
+# Foolproofing: a request whose combined text has MORE than this many non-empty lines is a big
+# batch (a folder) → forced into the digest regardless of the toggle, so cards can't flood.
+_SHORTCUT_FORCE_DIGEST_MIN_LINES = max(1, int((os.getenv("SHORTCUT_FORCE_DIGEST_MIN_LINES") or "10").strip() or "10"))
+
+
+def _shortcut_is_big_batch(text: str) -> bool:
+    """A whole-folder batch (many lines) → always digest, never card-flood. Robust whether the
+    Shortcut sends screenshots as a JSON array or a single newline-joined string."""
+    return sum(1 for ln in str(text or "").splitlines() if ln.strip()) > _SHORTCUT_FORCE_DIGEST_MIN_LINES
 # Backend-side short TTL cache for the toggle: avoids a DB round-trip on EVERY shortcut request.
 _AUTOSAVE_TOGGLE_CACHE: dict[int, tuple[float, bool]] = {}
 _AUTOSAVE_TOGGLE_CACHE_TTL = 30.0
@@ -37410,6 +37419,19 @@ def _run_shortcut_autosave_staging(
             _AUTOSAVE_RAW_TTL,
             f"{time.time() + _AUTOSAVE_DEBOUNCE_SECONDS:.3f}",
         )
+        # The HTTP shortcut route writes a card-flow "safety-net" copy (dict_pending_shortcut_raw*)
+        # on EVERY request. The card delivery clears it, but the autosave path didn't — so it
+        # piled up and resurfaced in «Быстрый перевод» (the 55 ghosts). Clear our copy here so
+        # autosave never leaves residue in the card queue.
+        try:
+            client.lrem(f"dict_pending_shortcut_raw_list:{safe_user_id}", 0, normalized_text)
+            raw_text_key = f"dict_pending_shortcut_raw:{safe_user_id}"
+            cur = client.get(raw_text_key)
+            cur_s = cur.decode("utf-8") if isinstance(cur, bytes) else cur
+            if cur_s is not None and str(cur_s).strip() == normalized_text:
+                client.delete(raw_text_key)
+        except Exception:
+            logging.debug("autosave: raw safety-net cleanup failed user_id=%s", safe_user_id, exc_info=True)
     except Exception:
         logging.exception("autosave: staging RPUSH failed user_id=%s", safe_user_id)
         return 0
@@ -37740,8 +37762,18 @@ def _start_shortcut_lookup_enqueue_runner(
             )
 
     def _worker() -> None:
-        autosave_on = _autosave_toggle_cached(safe_user_id)  # 30s cache, no DB hit per request
+        # Foolproofing: a big batch (a whole folder of screenshots → many lines) ALWAYS goes to
+        # the digest, regardless of the toggle — so you can never accidentally flood the chat
+        # with hundreds of cards. Small inputs still respect the toggle. Threshold is on the
+        # non-empty line count of the combined text (works whether screenshots arrive as an
+        # array or a newline-joined string).
+        big_batch = _shortcut_is_big_batch(normalized_text)
+        autosave_on = big_batch or _autosave_toggle_cached(safe_user_id)  # 30s cache, no DB hit
         if autosave_on:
+            if big_batch and not _autosave_toggle_cached(safe_user_id):
+                logging.info(
+                    "shortcut: forcing digest for big batch user_id=%s (toggle is OFF)", safe_user_id
+                )
             # Nightly auto-save: append raw text + arm debounce (pure Redis); the worker flush
             # does the heavy split/translate later. Keeps this request path light at scale.
             try:
