@@ -7683,6 +7683,10 @@ def ensure_webapp_tables() -> None:
                 );
             """)
             cursor.execute("""
+                ALTER TABLE bt_3_crossword_bank
+                ADD COLUMN IF NOT EXISTS fail_count INTEGER NOT NULL DEFAULT 0;
+            """)
+            cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_crossword_bank_available
                 ON bt_3_crossword_bank (image_status, retired, last_sent_at NULLS FIRST, difficulty);
             """)
@@ -32932,10 +32936,35 @@ def mark_crossword_sent(crossword_id: str) -> None:
             cursor.execute(
                 """
                 UPDATE bt_3_crossword_bank
-                SET send_count = send_count + 1, last_sent_at = NOW(), updated_at = NOW()
+                SET send_count = send_count + 1, last_sent_at = NOW(),
+                    fail_count = 0, updated_at = NOW()
                 WHERE crossword_id = %s
                 """,
                 (str(crossword_id),),
+            )
+        conn.commit()
+
+
+def mark_crossword_send_failed(crossword_id: str, *, retire_after: int = 3) -> None:
+    """Record a slot where the crossword reached zero recipients.
+
+    Advances last_sent_at so a broken entry rotates to the back instead of being
+    re-picked every slot (it has the oldest last_sent_at otherwise), and
+    auto-retires it once it has failed `retire_after` slots in a row — so one
+    bad image can never wedge the whole crossword queue again.
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_crossword_bank
+                SET fail_count = fail_count + 1,
+                    last_sent_at = NOW(),
+                    retired = (fail_count + 1 >= %s),
+                    updated_at = NOW()
+                WHERE crossword_id = %s
+                """,
+                (int(retire_after), str(crossword_id)),
             )
         conn.commit()
 

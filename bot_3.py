@@ -253,6 +253,7 @@ from backend.database import (
     mark_article_quiz_answer_feedback_sent,
     pick_next_crossword,
     mark_crossword_sent,
+    mark_crossword_send_failed,
     reset_crossword_images_to_pending,
     record_crossword_dispatch,
     pick_next_listening,
@@ -18466,6 +18467,18 @@ async def _send_scheduled_crossword(context: CallbackContext) -> None:
             await asyncio.to_thread(mark_crossword_sent, crossword_id)
         except Exception:
             logging.warning("cw_slot: mark_crossword_sent failed crossword_id=%s", crossword_id, exc_info=True)
+    else:
+        # Zero recipients (e.g. a broken image → send_photo fails for everyone).
+        # Advance rotation + auto-retire after repeated failures so one bad entry
+        # can't monopolize the queue forever (it has the oldest last_sent_at).
+        logging.warning(
+            "cw_slot: zero recipients — advancing rotation crossword_id=%s slot=%s/%s",
+            crossword_id, slot_date, slot_hour,
+        )
+        try:
+            await asyncio.to_thread(mark_crossword_send_failed, crossword_id)
+        except Exception:
+            logging.warning("cw_slot: mark_crossword_send_failed failed crossword_id=%s", crossword_id, exc_info=True)
 
     logging.info(
         "cw_slot_done slot=%s/%s crossword_id=%s sent=%d",
