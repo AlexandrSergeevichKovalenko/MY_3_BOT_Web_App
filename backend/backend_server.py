@@ -36901,13 +36901,35 @@ def _build_shortcut_pairing_code_response(pairing_result: dict) -> dict:
 def _shortcut_lookup_request_payload(body: dict) -> tuple[str, str]:
     install_token = str(body.get("install_token") or "").strip()
     # New batched format: the Shortcut OCRs a whole folder into one list and sends it once
-    # ({"screenshots": ["text1", "text2", ...]}) — far lighter than one HTTP request per photo.
-    # We join into a single text and feed the SAME pipeline. Legacy {"text": "..."} still works.
+    # ({"screenshots": [...]}) — far lighter than one HTTP request per photo. iOS Shortcuts may
+    # serialize that list as a JSON array OR as a single newline-joined string OR as a string
+    # that itself contains a JSON array — accept all three. Legacy {"text": "..."} still works.
+    def _join_list(seq) -> str:
+        return "\n".join(part for x in seq if (part := str(x if x is not None else "").strip()))
+
     shots = body.get("screenshots")
-    if isinstance(shots, list) and shots:
-        text = "\n".join(part for s in shots if (part := str(s or "").strip()))
-    else:
+    text = ""
+    if isinstance(shots, list):
+        text = _join_list(shots)
+    elif isinstance(shots, str) and shots.strip():
+        s = shots.strip()
+        if s[:1] in "[{":  # the list arrived JSON-encoded inside a string
+            try:
+                decoded = json.loads(s)
+                text = _join_list(decoded) if isinstance(decoded, list) else str(decoded).strip()
+            except Exception:
+                text = s
+        else:  # plain newline-joined text — already what we want
+            text = s
+    if not text:
         text = str(body.get("text") or "").strip()
+    if not text:
+        # Diagnostic so we can see exactly what a Shortcut sent if parsing yields nothing.
+        logging.warning(
+            "shortcut payload empty: body_keys=%s screenshots_type=%s",
+            list(body.keys()) if isinstance(body, dict) else type(body).__name__,
+            type(body.get("screenshots")).__name__ if isinstance(body, dict) else "n/a",
+        )
     return text, install_token
 
 

@@ -24,6 +24,25 @@ class ShortcutScreenshotsPayloadTests(unittest.TestCase):
         text, _ = server._shortcut_lookup_request_payload({"screenshots": [], "text": "x"})
         self.assertEqual(text, "x")
 
+    def test_screenshots_as_newline_string(self):
+        # iOS Shortcuts often serializes a List variable as one newline-joined string.
+        text, _ = server._shortcut_lookup_request_payload(
+            {"install_token": "T", "screenshots": "Hallo\nWelt\nHaus"}
+        )
+        self.assertEqual(text, "Hallo\nWelt\nHaus")
+
+    def test_screenshots_as_json_encoded_string(self):
+        text, _ = server._shortcut_lookup_request_payload(
+            {"install_token": "T", "screenshots": '["Hallo", "Welt", "Haus"]'}
+        )
+        self.assertEqual(text, "Hallo\nWelt\nHaus")
+
+    def test_screenshots_single_string(self):
+        text, _ = server._shortcut_lookup_request_payload(
+            {"install_token": "T", "screenshots": "Nur ein Screenshot"}
+        )
+        self.assertEqual(text, "Nur ein Screenshot")
+
 
 class FastBatchChunkingTests(unittest.TestCase):
     def test_large_batch_is_chunked_and_fully_returned(self):
