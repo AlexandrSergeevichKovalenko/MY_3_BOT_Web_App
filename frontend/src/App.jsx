@@ -11064,11 +11064,33 @@ function AppInner() {
 
   useEffect(() => {
     if (!flashcardsDailyTimerActive) return undefined;
+    // Sleep/lock detection: a 1s interval can't fire while the device is asleep (screen locked
+    // or the Telegram web view suspended in the background). On iOS those don't reliably emit
+    // visibilitychange/blur, so the wall-clock timer would otherwise jump forward on unlock.
+    // When a tick arrives much later than the ~1s it should, treat the extra as "asleep" time
+    // and shift the segment start forward so that gap is NOT counted — the timer simply resumes
+    // where you left it. (If visibilitychange DID fire, the timer is already paused and this
+    // interval isn't running, so the two mechanisms never double-correct.)
+    const SLEEP_GAP_MS = 3000;
+    let lastTickMs = Date.now();
     const intervalId = window.setInterval(() => {
-      setTodayTimerNowMs(Date.now());
+      const now = Date.now();
+      const gap = now - lastTickMs;
+      if (
+        gap > SLEEP_GAP_MS
+        && flashcardsDailyActiveRef.current
+        && flashcardsDailyStartedAtRef.current
+      ) {
+        const asleepMs = gap - 1000; // everything beyond the normal 1s tick was asleep time
+        flashcardsDailyStartedAtRef.current = Number(flashcardsDailyStartedAtRef.current) + asleepMs;
+        // Persist the corrected elapsed so a reload/snapshot stays consistent too.
+        writeFlashcardsDailyTimerSnapshot(getFlashcardsDailyDisplayElapsedSeconds(now));
+      }
+      lastTickMs = now;
+      setTodayTimerNowMs(now);
     }, 1000);
     return () => window.clearInterval(intervalId);
-  }, [flashcardsDailyTimerActive]);
+  }, [flashcardsDailyTimerActive, writeFlashcardsDailyTimerSnapshot, getFlashcardsDailyDisplayElapsedSeconds]);
 
   const formatSrsIntervalHint = (seconds) => {
     const safeSeconds = Number(seconds);
