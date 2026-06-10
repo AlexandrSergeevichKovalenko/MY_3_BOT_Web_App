@@ -50423,6 +50423,18 @@ def _run_dictionary_dedup_scheduler_job() -> None:
         processed, total_groups, total_deleted,
     )
 
+    # Durably record this run's totals so the weekly admin report can prove the
+    # duplicate-removal job is actually working (survives redeploys / Redis flushes).
+    try:
+        from backend.database import record_dict_dedup_run
+        record_dict_dedup_run(
+            users_processed=processed,
+            groups_found=total_groups,
+            entries_deleted=total_deleted,
+        )
+    except Exception:
+        logging.exception("dict_dedup: failed to record run totals")
+
 
 def _run_system_message_cleanup_job() -> None:
     enabled = (os.getenv("SYSTEM_MESSAGE_CLEANUP_ENABLED") or "1").strip().lower()

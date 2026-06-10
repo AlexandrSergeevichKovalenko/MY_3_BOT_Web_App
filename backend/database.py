@@ -1128,6 +1128,106 @@ def dedupe_user_dictionary_by_source(
     }
 
 
+def record_dict_dedup_run(
+    *,
+    users_processed: int,
+    groups_found: int,
+    entries_deleted: int,
+) -> None:
+    """Persist the totals of one nightly dictionary-dedup run.
+
+    Stored durably in Postgres (not Redis) so the weekly admin report can prove the
+    duplicate-removal job is actually doing work, surviving redeploys / Redis flushes.
+    Best-effort: never raises into the scheduler job.
+    """
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS bt_3_dict_dedup_runs (
+                        id BIGSERIAL PRIMARY KEY,
+                        ran_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        users_processed INTEGER NOT NULL DEFAULT 0,
+                        groups_found INTEGER NOT NULL DEFAULT 0,
+                        entries_deleted INTEGER NOT NULL DEFAULT 0
+                    );
+                    """
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_bt_3_dict_dedup_runs_ran_at "
+                    "ON bt_3_dict_dedup_runs (ran_at);"
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_dict_dedup_runs (users_processed, groups_found, entries_deleted)
+                    VALUES (%s, %s, %s);
+                    """,
+                    (int(users_processed), int(groups_found), int(entries_deleted)),
+                )
+            conn.commit()
+    except Exception:
+        logging.exception("record_dict_dedup_run failed")
+
+
+def get_dict_dedup_report(*, days: int = 7) -> dict:
+    """Aggregate dedup-run stats for the weekly admin report.
+
+    Returns window totals (last `days` days), all-time totals, and the timestamp of the
+    most recent run. Returns zeros (ok=True) when the table does not exist yet so the
+    report can still say "0 removed this week".
+    """
+    empty = {
+        "days": int(days),
+        "window_entries_deleted": 0,
+        "window_groups_found": 0,
+        "window_runs": 0,
+        "window_active_runs": 0,
+        "total_entries_deleted": 0,
+        "total_groups_found": 0,
+        "last_run_at": None,
+        "ok": True,
+    }
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT to_regclass('public.bt_3_dict_dedup_runs');")
+                regclass = cursor.fetchone()
+                if not regclass or regclass[0] is None:
+                    return empty
+                cursor.execute(
+                    """
+                    SELECT
+                        COALESCE(SUM(entries_deleted) FILTER (WHERE ran_at >= NOW() - %s::interval), 0),
+                        COALESCE(SUM(groups_found)    FILTER (WHERE ran_at >= NOW() - %s::interval), 0),
+                        COUNT(*)                      FILTER (WHERE ran_at >= NOW() - %s::interval),
+                        COUNT(*)                      FILTER (WHERE ran_at >= NOW() - %s::interval AND entries_deleted > 0),
+                        COALESCE(SUM(entries_deleted), 0),
+                        COALESCE(SUM(groups_found), 0),
+                        MAX(ran_at)
+                    FROM bt_3_dict_dedup_runs;
+                    """,
+                    (f"{int(days)} days",) * 4,
+                )
+                row = cursor.fetchone()
+    except Exception:
+        logging.exception("get_dict_dedup_report failed")
+        return {**empty, "ok": False}
+    if not row:
+        return empty
+    return {
+        "days": int(days),
+        "window_entries_deleted": int(row[0] or 0),
+        "window_groups_found": int(row[1] or 0),
+        "window_runs": int(row[2] or 0),
+        "window_active_runs": int(row[3] or 0),
+        "total_entries_deleted": int(row[4] or 0),
+        "total_groups_found": int(row[5] or 0),
+        "last_run_at": row[6].isoformat() if row[6] else None,
+        "ok": True,
+    }
+
+
 def _upsert_dictionary_canonical_entry_with_cursor(
     cursor,
     *,

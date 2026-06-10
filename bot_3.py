@@ -105,7 +105,9 @@ from backend.admin_economics import (
     create_admin_limit_change_preview,
     format_admin_economics_report,
     format_admin_limit_preview,
+    format_dict_dedup_weekly_report,
     send_admin_economics_report,
+    send_dict_dedup_weekly_report,
 )
 from backend.database import (
     DATABASE_URL as SHARED_DATABASE_URL,
@@ -4414,6 +4416,17 @@ def _run_admin_economics_report_safe() -> None:
         logging.exception("admin economics report (bot scheduler) failed")
 
 
+def _run_dict_dedup_weekly_report_safe() -> None:
+    """Bot-side weekly duplicate-removal report. Runs in a BackgroundScheduler thread
+    (must stay synchronous). force=True bypasses the weekly run-guard so a stale claim
+    from a token-less worker path can't block delivery."""
+    try:
+        result = send_dict_dedup_weekly_report(force=True)
+        logging.info("dict dedup weekly report (bot scheduler) result=%s", result)
+    except Exception:
+        logging.exception("dict dedup weekly report (bot scheduler) failed")
+
+
 async def admin_economics_command(update: Update, context: CallbackContext):
     sender = update.effective_user
     message = update.effective_message
@@ -4438,6 +4451,26 @@ async def admin_economics_command(update: Update, context: CallbackContext):
     except Exception as exc:
         logging.exception("admin economics command failed user_id=%s", int(sender.id))
         await message.reply_text(f"❌ Не удалось собрать economics report: {exc}")
+
+
+async def admin_dedup_report_command(update: Update, context: CallbackContext):
+    """On-demand weekly duplicate-removal summary (same numbers as the Monday DM)."""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    try:
+        from backend.database import get_dict_dedup_report
+        report = await asyncio.to_thread(get_dict_dedup_report, days=7)
+        text = format_dict_dedup_weekly_report(report)
+        for part in _split_telegram_text(text):
+            await message.reply_text(part, disable_web_page_preview=True)
+    except Exception as exc:
+        logging.exception("admin dedup report command failed user_id=%s", int(sender.id))
+        await message.reply_text(f"❌ Не удалось собрать отчёт по дубликатам: {exc}")
 
 
 async def clear_dictionary_queue_command(update: Update, context: CallbackContext):
@@ -20045,6 +20078,7 @@ def main():
     application.add_handler(CommandHandler("mobile_token", mobile_token_command))
     application.add_handler(CommandHandler("budgets", budgets_command))
     application.add_handler(CommandHandler("economics", admin_economics_command))
+    application.add_handler(CommandHandler("dedupreport", admin_dedup_report_command))
     application.add_handler(CommandHandler("clearqueue", clear_dictionary_queue_command))
     application.add_handler(CommandHandler("ttsbudget", tts_budget_command))
     application.add_handler(CommandHandler("ttsprewarmquota", tts_prewarm_quota_command))
@@ -20263,6 +20297,21 @@ def main():
             hour=int((os.getenv("ADMIN_ECONOMICS_REPORT_HOUR") or "23").strip() or "23"),
             minute=int((os.getenv("ADMIN_ECONOMICS_REPORT_MINUTE") or "0").strip() or "0"),
             timezone=ZoneInfo(os.getenv("ADMIN_ECONOMICS_REPORT_TZ") or "Europe/Vienna"),
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=1800,
+        )
+        # -- Weekly duplicate-removal report (Mon 10:00 Europe/Vienna) --
+        # Tells the admin how many vocabulary duplicates the nightly dedup job removed,
+        # so it's visible whether that check is actually working. Bot-side delivery
+        # (guaranteed token) + force=True, mirroring the economics report above.
+        scheduler.add_job(
+            _run_dict_dedup_weekly_report_safe,
+            "cron",
+            day_of_week=os.getenv("DICT_DEDUP_REPORT_DOW") or "mon",
+            hour=int((os.getenv("DICT_DEDUP_REPORT_HOUR") or "10").strip() or "10"),
+            minute=int((os.getenv("DICT_DEDUP_REPORT_MINUTE") or "0").strip() or "0"),
+            timezone=ZoneInfo(os.getenv("DICT_DEDUP_REPORT_TZ") or "Europe/Vienna"),
             coalesce=True,
             max_instances=1,
             misfire_grace_time=1800,
