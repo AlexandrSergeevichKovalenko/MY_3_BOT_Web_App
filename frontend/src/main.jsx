@@ -144,7 +144,31 @@ async function loadAppComponent() {
   }
 }
 
+// Lightweight answer overlay: launched from a group task button via
+// startapp=ans_rb_<id> / ans_cw_<id>. Mounts ONLY the tiny overlay (lazy chunk)
+// and skips the heavy main App so it opens instantly over the group chat.
+function getAnswerStartParam() {
+  const fromTelegram = String(window.Telegram?.WebApp?.initDataUnsafe?.start_param || '').trim();
+  if (fromTelegram) return fromTelegram;
+  return String(params.get('startapp') || params.get('start_param') || '').trim();
+}
+
+async function bootstrapAnswerOverlay(startParam) {
+  try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
+  const { default: AnswerOverlay } = await import('./answer/AnswerOverlay.jsx');
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    <React.StrictMode>
+      <AnswerOverlay startParam={startParam} />
+    </React.StrictMode>,
+  );
+}
+
 async function bootstrapApp() {
+  const answerStartParam = getAnswerStartParam();
+  if (/^ans_/i.test(answerStartParam)) {
+    await bootstrapAnswerOverlay(answerStartParam);
+    return;
+  }
   const canRender = await ensureFreshTelegramBundle();
   if (!canRender) return;
   const App = await loadAppComponent();

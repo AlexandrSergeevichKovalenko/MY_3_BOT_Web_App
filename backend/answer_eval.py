@@ -1,0 +1,299 @@
+"""Shared answer-evaluation logic for in-group tasks (rebus + crossword).
+
+Single source of truth for *correctness*, used by both:
+  • the bot's free-text answer handler (bot_3.py), and
+  • the Mini App answer endpoints (backend_server.py /api/answer/*).
+
+The pure ``check_*`` functions take already-loaded data and return verdicts —
+no DB, no IO — so they are trivially unit-testable. The ``evaluate_*`` functions
+load the task from the DB, run the pure check, record the answer (with
+anti-replay), and return a render-ready dict.
+
+Anti-spoiler / anti-replay contract:
+  • ``load_*_task`` never returns the correct answer (it only describes the
+    input affordance) unless the user has *already answered*.
+  • ``evaluate_*`` records once; a second submission returns the stored verdict
+    instead of overwriting it.
+"""
+
+from __future__ import annotations
+
+KNOWN_ARTICLES = {"der", "die", "das"}
+
+
+# ── Pure correctness checks (no IO) ──────────────────────────────────────────
+
+def check_rebus(*, correct_word: str, article: str, raw_input: str) -> dict:
+    """Compare a free-text rebus answer against the expected ``article word``.
+
+    Returns a verdict dict. ``needs_article`` is True when an article is
+    required but the user omitted it — the caller should nudge *without*
+    consuming the attempt.
+    """
+    correct_word = str(correct_word or "").strip()
+    article = str(article or "").strip()
+    user_input = str(raw_input or "").strip()
+
+    input_parts = user_input.split(None, 1)  # split on first whitespace
+    user_article = input_parts[0].lower() if len(input_parts) >= 2 else ""
+    user_word = input_parts[1].strip() if len(input_parts) >= 2 else user_input
+
+    if article and user_article not in KNOWN_ARTICLES:
+        return {
+            "needs_article": True,
+            "is_correct": False,
+            "article_correct": False,
+            "word_correct": False,
+            "user_word": user_word,
+            "user_article": user_article,
+        }
+
+    article_correct = (not article) or (user_article == article.lower())
+    word_correct = user_word.lower() == correct_word.lower()
+    return {
+        "needs_article": False,
+        "is_correct": bool(article_correct and word_correct),
+        "article_correct": bool(article_correct),
+        "word_correct": bool(word_correct),
+        "user_word": user_word,
+        "user_article": user_article,
+    }
+
+
+def check_crossword(*, hidden_words: list[dict], raw_input: str) -> list[dict]:
+    """Map a whitespace-separated answer string onto the hidden words in order.
+
+    ``hidden_words`` is a list of {number, word, direction, clue_de, clue_ru}
+    sorted by number. Returns one result dict per hidden word.
+    """
+    raw_parts = str(raw_input or "").strip().split()
+    results: list[dict] = []
+    for i, hw in enumerate(hidden_words):
+        user_answer = raw_parts[i].upper().strip() if i < len(raw_parts) else ""
+        correct = str(hw.get("word") or "").upper()
+        results.append({
+            "number": hw.get("number"),
+            "direction": hw.get("direction", "across"),
+            "correct": correct,
+            "user_answer": user_answer,
+            "is_correct": user_answer == correct,
+            "clue_de": str(hw.get("clue_de") or ""),
+            "clue_ru": str(hw.get("clue_ru") or ""),
+        })
+    return results
+
+
+# ── Rebus: load + evaluate ───────────────────────────────────────────────────
+
+def _load_rebus(dispatch_id: int) -> tuple[dict, dict] | None:
+    from backend.database import get_rebus_dispatch_by_id, get_rebus_bank_entry
+    dispatch = get_rebus_dispatch_by_id(int(dispatch_id))
+    if not dispatch:
+        return None
+    entry = get_rebus_bank_entry(str(dispatch.get("compound_id") or ""))
+    if not entry:
+        return None
+    return dispatch, entry
+
+
+def load_rebus_task(*, dispatch_id: int, user_id: int) -> dict | None:
+    """Metadata to render the rebus input. Never reveals the answer unless the
+    user has already answered (then it surfaces the stored verdict + answer)."""
+    loaded = _load_rebus(dispatch_id)
+    if not loaded:
+        return None
+    _dispatch, entry = loaded
+    correct_word = str(entry.get("compound_word") or "")
+    article = str(entry.get("article") or "")
+
+    from backend.database import get_rebus_answer
+    existing = get_rebus_answer(dispatch_id=int(dispatch_id), user_id=int(user_id))
+
+    meta = {
+        "kind": "rebus",
+        "letter_count": len(correct_word),
+        "requires_article": bool(article),
+        "already_answered": bool(existing),
+    }
+    if existing:
+        meta["result"] = _rebus_result_payload(
+            entry=entry,
+            is_correct=bool(existing.get("is_correct")),
+            already_answered=True,
+        )
+    return meta
+
+
+def _rebus_result_payload(*, entry: dict, is_correct: bool, already_answered: bool,
+                          article_correct: bool = True, word_correct: bool = True) -> dict:
+    correct_word = str(entry.get("compound_word") or "")
+    article = str(entry.get("article") or "")
+    meaning_ru = str(entry.get("meaning_ru") or "")
+    full_word = f"{article} {correct_word}".strip() if article else correct_word
+    return {
+        "kind": "rebus",
+        "is_correct": bool(is_correct),
+        "article_correct": bool(article_correct),
+        "word_correct": bool(word_correct),
+        "correct_word": correct_word,
+        "article": article,
+        "full_word": full_word,
+        "meaning_ru": meaning_ru,
+        "explanation_ru": str(entry.get("explanation_ru") or ""),
+        "already_answered": bool(already_answered),
+        "saveable_words": (
+            [{"source": full_word, "target": meaning_ru}] if meaning_ru else []
+        ),
+    }
+
+
+def evaluate_rebus(*, dispatch_id: int, user_id: int, raw_input: str) -> dict | None:
+    """Load → check → record (once) → render-ready verdict.
+
+    Returns None if the dispatch/bank entry is missing. Returns
+    ``{"needs_article": True}`` (without recording) when the article is missing.
+    """
+    loaded = _load_rebus(dispatch_id)
+    if not loaded:
+        return None
+    _dispatch, entry = loaded
+    correct_word = str(entry.get("compound_word") or "")
+    article = str(entry.get("article") or "")
+
+    from backend.database import get_rebus_answer, record_rebus_answer
+
+    existing = get_rebus_answer(dispatch_id=int(dispatch_id), user_id=int(user_id))
+    if existing:
+        return _rebus_result_payload(
+            entry=entry, is_correct=bool(existing.get("is_correct")), already_answered=True,
+        )
+
+    verdict = check_rebus(correct_word=correct_word, article=article, raw_input=raw_input)
+    if verdict.get("needs_article"):
+        return {"needs_article": True, "kind": "rebus", "article": article}
+
+    if correct_word:
+        record_rebus_answer(
+            dispatch_id=int(dispatch_id),
+            user_id=int(user_id),
+            selected_option=str(raw_input or "").strip()[:50],
+            is_correct=bool(verdict["is_correct"]),
+        )
+
+    return _rebus_result_payload(
+        entry=entry,
+        is_correct=bool(verdict["is_correct"]),
+        already_answered=False,
+        article_correct=bool(verdict["article_correct"]),
+        word_correct=bool(verdict["word_correct"]),
+    )
+
+
+# ── Crossword: load + evaluate ───────────────────────────────────────────────
+
+def _load_crossword_hidden(dispatch_id: int) -> list[dict] | None:
+    from backend.database import get_crossword_dispatch_by_id
+    dispatch = get_crossword_dispatch_by_id(int(dispatch_id))
+    if not dispatch:
+        return None
+    words_json = list(dispatch.get("words_json") or [])
+    hidden = sorted(
+        [w for w in words_json if w.get("hidden")],
+        key=lambda x: x.get("number", 0),
+    )
+    return [
+        {
+            "number": w.get("number"),
+            "word": str(w.get("word") or ""),
+            "direction": w.get("direction", "across"),
+            "clue_de": str(w.get("clue_de") or ""),
+            "clue_ru": str(w.get("clue_ru") or ""),
+        }
+        for w in hidden
+    ]
+
+
+def load_crossword_task(*, dispatch_id: int, user_id: int) -> dict | None:
+    """Metadata to render N crossword inputs (clue + length, never the word),
+    plus the stored result if the user already answered."""
+    hidden = _load_crossword_hidden(dispatch_id)
+    if not hidden:
+        return None
+
+    from backend.database import get_crossword_answers
+    existing = get_crossword_answers(dispatch_id=int(dispatch_id), user_id=int(user_id))
+
+    meta = {
+        "kind": "crossword",
+        "words": [
+            {
+                "number": hw["number"],
+                "direction": hw["direction"],
+                "clue_de": hw["clue_de"],
+                "clue_ru": hw["clue_ru"],
+                "length": len(hw["word"]),
+            }
+            for hw in hidden
+        ],
+        "already_answered": bool(existing),
+    }
+    if existing:
+        meta["result"] = _crossword_result_from_stored(hidden, existing)
+    return meta
+
+
+def _summarize_crossword(results: list[dict], *, already_answered: bool) -> dict:
+    correct_count = sum(1 for r in results if r["is_correct"])
+    wrong = [r for r in results if not r["is_correct"] and r.get("clue_ru") and r.get("correct")]
+    return {
+        "kind": "crossword",
+        "results": results,
+        "correct_count": correct_count,
+        "total": len(results),
+        "already_answered": bool(already_answered),
+        "saveable_words": [
+            {"source": r["correct"], "target": r["clue_ru"]} for r in wrong
+        ],
+    }
+
+
+def _crossword_result_from_stored(hidden: list[dict], stored: list[dict]) -> dict:
+    by_number = {int(s["word_number"]): s for s in stored}
+    results: list[dict] = []
+    for hw in hidden:
+        s = by_number.get(int(hw["number"])) if hw.get("number") is not None else None
+        results.append({
+            "number": hw["number"],
+            "direction": hw["direction"],
+            "correct": str(hw["word"]).upper(),
+            "user_answer": str((s or {}).get("user_answer") or ""),
+            "is_correct": bool((s or {}).get("is_correct")),
+            "clue_de": hw["clue_de"],
+            "clue_ru": hw["clue_ru"],
+        })
+    return _summarize_crossword(results, already_answered=True)
+
+
+def evaluate_crossword(*, dispatch_id: int, user_id: int, raw_input: str) -> dict | None:
+    """Load → check → record (once) → render-ready verdict for all words."""
+    hidden = _load_crossword_hidden(dispatch_id)
+    if not hidden:
+        return None
+
+    from backend.database import get_crossword_answers, record_crossword_answer
+
+    existing = get_crossword_answers(dispatch_id=int(dispatch_id), user_id=int(user_id))
+    if existing:
+        return _crossword_result_from_stored(hidden, existing)
+
+    results = check_crossword(hidden_words=hidden, raw_input=raw_input)
+    for r in results:
+        if r["number"] is not None and r["correct"] and r["user_answer"]:
+            record_crossword_answer(
+                dispatch_id=int(dispatch_id),
+                user_id=int(user_id),
+                word_number=int(r["number"]),
+                user_answer=r["user_answer"],
+                is_correct=bool(r["is_correct"]),
+            )
+    return _summarize_crossword(results, already_answered=False)

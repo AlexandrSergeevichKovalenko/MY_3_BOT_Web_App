@@ -32409,6 +32409,28 @@ def mark_rebus_answer_feedback_sent(*, dispatch_id: int, user_id: int) -> None:
         conn.commit()
 
 
+def get_rebus_answer(*, dispatch_id: int, user_id: int) -> dict | None:
+    """Return the stored answer for (dispatch_id, user_id), or None if unanswered.
+
+    Used for anti-replay: a user who already answered a rebus gets their stored
+    verdict back instead of overwriting it (answer table is INSERT … DO NOTHING).
+    """
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT selected_option, is_correct, answered_at
+                FROM bt_3_rebus_answers
+                WHERE dispatch_id = %s AND user_id = %s
+                """,
+                (int(dispatch_id), int(user_id)),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {"selected_option": row[0], "is_correct": bool(row[1]), "answered_at": row[2]}
+
+
 def get_rebus_dispatch_by_id(dispatch_id: int) -> dict | None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:

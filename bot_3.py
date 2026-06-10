@@ -17502,9 +17502,12 @@ def _build_rebus_caption(compound_entry: dict) -> str:
 
 
 def _build_rebus_keyboard(dispatch_id: int) -> InlineKeyboardMarkup:
+    # Mini App overlay: opens over the group chat so the user answers in place
+    # (no DM switch, no scroll). The rb:start callback + free-text handler stay
+    # wired (via the shared answer_eval) as an under-the-hood fallback.
     btn = InlineKeyboardButton(
         text="✏️ Antworten",
-        callback_data=f"rb:start:{dispatch_id}",
+        url=get_webapp_deeplink(f"ans_rb_{dispatch_id}"),
     )
     return InlineKeyboardMarkup([[btn]])
 
@@ -18295,10 +18298,14 @@ def _build_crossword_caption(words_json: list, topic: str, difficulty: str) -> s
 
 
 def _build_crossword_keyboard(dispatch_id: int, words_json: list) -> InlineKeyboardMarkup:
-    """Single ✏️ button — user types all hidden words in one message."""
+    """Single ✏️ button → Mini App overlay (answer all words in place, no DM).
+
+    The cw:start callback + free-text handler stay wired (via the shared
+    answer_eval) as an under-the-hood fallback.
+    """
     btn = InlineKeyboardButton(
         text="✏️ Antworten",
-        callback_data=f"cw:start:{dispatch_id}",
+        url=get_webapp_deeplink(f"ans_cw_{dispatch_id}"),
     )
     return InlineKeyboardMarkup([[btn]])
 
