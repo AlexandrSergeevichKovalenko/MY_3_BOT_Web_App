@@ -23,7 +23,12 @@
 4. [The full pipeline, step by step (with code)](#4-the-full-pipeline)
 5. [The three scaling bugs we fixed (before → after)](#5-the-three-bugs-we-fixed)
 6. [How this behaves at 1k–10k users](#6-at-1k10k-users)
-7. [Glossary](#7-glossary)
+7. [Keeping it clean & correct — anti-garbage & anti-duplicate techniques](#7-clean-and-correct)
+   - [7.1 No garbage — three layers of filtering](#71-three-layers)
+   - [7.2 No duplicates — exactly-once with NX-locks & claims](#72-no-duplicates)
+   - [7.3 No loss — at-least-once durability (process → send → consume)](#73-durability)
+   - [7.4 Supporting techniques (chunking, overflow, batched upload, instant save)](#74-supporting)
+8. [Glossary](#8-glossary)
 
 ---
 
@@ -444,7 +449,130 @@ the same place. We just redeploy the code; no new env vars, no new queues.
 
 ---
 
-## 7. Glossary
+<a name="7-clean-and-correct"></a>
+## 7. Keeping it clean & correct — anti-garbage & anti-duplicate techniques
+
+The hardest part of this feature wasn't sending words — it was making sure **only good words**
+reach you, **exactly once**, and **never lost**. Early on we had real disasters: a queue that
+piled up to 1660 stale entries, batches that translated 7 of 352 items, garbage symbols flooding
+the chat. This chapter explains the techniques we used to fix all of that — they're the same
+ideas you'll use anywhere you build reliable systems.
+
+<a name="71-three-layers"></a>
+### 7.1 No garbage — three layers of filtering ("рубежи")
+
+You can never filter perfectly in one place, so we filter in **three independent layers**. If
+junk slips past one, the next catches it. This "defense in depth" is the key idea.
+
+**Layer 1 — at the entry (when we split the text into units).** A deterministic gate drops the
+obviously-not-German stuff *before* it ever becomes a card: URLs/brands, code, math formulas,
+English-heavy text, pure symbols/numbers. Crucially it's **conservative** — anything with a
+German signal (an umlaut/ß, a German-only word, a grammar term) is **always kept**, so we never
+lose real German. Code: `_shortcut_looks_non_german` — `backend/backend_server.py:36181` — used
+inside the gate `_shortcut_is_learnable_unit` — `backend/backend_server.py:36216`.
+
+> Why conservative? Because dropping a real German word is worse than letting one piece of junk
+> through — the junk gets caught later (Layers 2–3), but a lost word is gone.
+
+**Layer 2 — at translation time.** When the translator processes a word and itself reports "this
+isn't valid German / no translation" (e.g. for `/\` it returns *"нет подходящего немецкого
+слова"*), we simply **don't show a card** for it. So junk that slipped past Layer 1 silently
+disappears the moment you press translate. Code: `_dictionary_result_is_garbage` — `bot_3.py:8608`.
+
+> This is what stopped "Быстрый перевод" from dumping garbage: the translator already *knows*
+> the input is junk, so we just trust that signal and drop it.
+
+**Layer 3 — the self-cleaning queue.** The card-flow "inbox" only removes a word when you act on
+it. A word you *ignore* used to sit there forever (the 1660 pile-up). Now every entry carries a
+`created_at` timestamp, and a nightly sweep drops anything older than a day — junk you never
+touched expires on its own. Code: `_dict_pending_entry_age_seconds` — `bot_3.py:6248` and the
+nightly job `_purge_stale_pending_all_users` — `bot_3.py:6259`. The window is long (24h) on
+purpose, so today's real words you mean to batch tomorrow are never lost.
+
+<a name="72-no-duplicates"></a>
+### 7.2 No duplicates — exactly-once with NX-locks, claims & dedup
+
+When many machines (or many retries) touch the same batch, the danger is sending the **same
+digest twice** or saving the **same word twice**. Three tools prevent that:
+
+**NX-lock — "only one at a time."** Before a worker flushes a user's batch, it tries to grab a
+Redis lock with `SET key value NX` — *set only if it doesn't already exist*. Because Redis runs
+commands one at a time, **exactly one** worker wins; any other worker (a retry, an overlapping
+sweep) sees the lock is taken and backs off. So a user's digest is built by **one** worker at a
+time — no parallel duplicates. Code: the top of `_run_autosave_flush` — `backend/backend_server.py:37686`:
+
+```python
+lock_key = _autosave_flush_lock_key(safe_user_id)
+if client.set(lock_key, "1", nx=True, ex=300) is None:
+    return  # another flush for this user is already running
+```
+
+(`ex=300` auto-releases the lock after 5 minutes, so a crashed worker can't deadlock the user
+forever.)
+
+**Dedup — "the same word collapses to one."** The same German word from several photos is
+normalized to one key (lowercase, no punctuation; ß≈ss) so it only appears once in a batch. Code:
+`_shortcut_dedup_norm` — `backend/backend_server.py:37212`.
+
+**Idempotent save — "saving twice is harmless."** The final dictionary save checks for an
+existing entry first, so pressing save twice (or a retry) never creates a duplicate row.
+
+Together: **NX-lock + dedup + idempotent save = "exactly-once" in practice.** The digest is sent
+once, each word stored once — even if jobs retry or overlap.
+
+<a name="73-durability"></a>
+### 7.3 No loss — at-least-once durability (process → send → consume)
+
+This one matters because the iPhone Shortcut **deletes the photos** once the server says `ok`.
+If we then lost the text, you'd have neither photos nor words.
+
+Two safeguards:
+
+1. **Persist before acknowledging.** The server writes the raw text to Redis *before* it returns
+   `ok` to the Shortcut. Redis is a **separate service** — redeploying the app doesn't touch it —
+   so an app redeploy can never lose accepted text.
+
+2. **Process, send, *then* consume.** The flush used to *delete* the queue first, then spend
+   seconds translating + sending. A redeploy in that window lost the batch. Now it reads the
+   queue (no delete), sends the digest, and **only then** removes the items it processed
+   (`LTRIM` the processed prefix — photos that arrived mid-flush survive). If the worker is killed
+   in the middle, the queue + trigger are untouched, so the next sweep just re-processes it. The
+   sweep also no longer deletes the trigger early — the flush owns clearing it on success. Code:
+   `_run_autosave_flush` — `backend/backend_server.py:37686` and the sweep
+   `_autosave_collect_due_user_ids` — `backend/backend_server.py:37444`.
+
+This is the classic **at-least-once vs at-most-once** choice:
+- *At-most-once* (delete first) risks **loss** — unacceptable when photos are already gone.
+- *At-least-once* (consume last) risks a rare **duplicate** — but only if the worker dies in the
+  tiny gap between Telegram delivering the digest and the consume, and it's a duplicate of the
+  **same clean words**, not garbage. We chose at-least-once: **a duplicate is annoying; a loss is
+  unacceptable.** A small attempt counter caps retries so a persistently-failing batch can't spam
+  the chat.
+
+<a name="74-supporting"></a>
+### 7.4 Supporting techniques
+
+- **LLM batch chunking.** One LLM call can't return hundreds of translations — the JSON answer
+  gets truncated (this caused "requested 352, returned 7"). We split the work into small chunks
+  (~20), run them with limited concurrency, and merge — reliable at any size. Code:
+  `run_dictionary_lookup_multilang_core_fast_batch` — `backend/openai_manager.py:4860`.
+- **Decide by real units, not raw lines.** Whether a batch becomes individual cards or one
+  digest is decided *after* the split, on the number of actual learnable units (> 12 → digest),
+  not on OCR line count — so a single Reel screenshot (a multi-line paragraph → 2–3 units) stays
+  as cards. Code: `_run_shortcut_lookup_delivery` — `backend/backend_server.py:37248`,
+  threshold `_SHORTCUT_CARD_OVERFLOW_UNITS` — `backend/backend_server.py:37606`.
+- **Batched upload.** The Shortcut OCRs a whole folder into one list and sends it in **one** HTTP
+  request (`{"screenshots": [...]}`) instead of one request per photo — far lighter on the web
+  tier. The parser accepts the list in any shape (array, newline string, JSON-in-a-string). Code:
+  `_shortcut_lookup_request_payload` — `backend/backend_server.py:36901`.
+- **Instant in-place save.** Tapping a save button instantly shows "💾 Сохраняем…" in place, does
+  the DB write in the background, then flips to "✅ Сохранено" — no waiting, no extra chat
+  message. Same "instant ack + background work" pattern as the digest. Code:
+  `_save_dictionary_variants_in_place` — `bot_3.py:10831`.
+
+---
+
+## 8. Glossary
 
 - **Service / tier** — a separate running program (web, bot, worker, scheduler, db). Scaled
   independently.
@@ -477,16 +605,38 @@ the same place. We just redeploy the code; no new env vars, no new queues.
 - **Idempotent** — doing it twice has the same effect as once (no duplicates).
 - **Exactly-once** — the practical guarantee, via lock + claim + idempotency, that an effect
   happens a single time.
+- **NX-lock** — `SET key value NX` in Redis: "set only if absent." Because Redis is atomic,
+  exactly one caller wins it — our way to make a flush run for one user at a time.
+- **At-most-once vs at-least-once** — two delivery guarantees. *At-most-once* (consume/delete
+  first) can lose work on a crash. *At-least-once* (consume after success) can produce a rare
+  duplicate but never loses work. We pick at-least-once where loss is unacceptable.
+- **Defense in depth / layered filtering** — filtering the same problem (garbage) at several
+  independent points, so what slips past one layer is caught by the next.
+- **Dedup / normalization** — collapsing variants of the same thing to one canonical key
+  (lowercase, no punctuation) so it appears once.
+- **Chunking** — splitting a too-big request into small pieces (e.g. ~20 items per LLM call) so
+  the response isn't truncated, then merging the pieces.
+- **Debounce** — waiting until activity goes quiet before acting (so a burst yields one action).
 - **Horizontal scaling** — adding more copies of the bottleneck tier to handle more load.
 
 ---
 
 *Code map (jump points):*
-`_run_shortcut_autosave_staging` `backend/backend_server.py:37272` ·
-`_autosave_toggle_cached` `backend/backend_server.py:37257` ·
-`_autosave_collect_due_user_ids` `backend/backend_server.py:37310` ·
-`_run_autosave_flush` `backend/backend_server.py:37463` ·
-`_autosave_prepare_cards` `backend/backend_server.py:37358` ·
+`_run_shortcut_autosave_staging` `backend/backend_server.py:37393` ·
+`_autosave_toggle_cached` `backend/backend_server.py:37378` ·
+`_autosave_collect_due_user_ids` `backend/backend_server.py:37444` ·
+`_run_autosave_flush` `backend/backend_server.py:37686` ·
+`_autosave_send_digest_from_blocks` `backend/backend_server.py:37609` ·
+`_autosave_prepare_cards` `backend/backend_server.py:37494` ·
+`_shortcut_looks_non_german` (Layer 1) `backend/backend_server.py:36181` ·
+`_shortcut_is_learnable_unit` `backend/backend_server.py:36216` ·
+`_dictionary_result_is_garbage` (Layer 2) `bot_3.py:8608` ·
+`_purge_stale_pending_all_users` (Layer 3) `bot_3.py:6259` ·
+`_shortcut_dedup_norm` `backend/backend_server.py:37212` ·
+`_run_shortcut_lookup_delivery` (card↔digest, >12 units) `backend/backend_server.py:37248` ·
+`_shortcut_lookup_request_payload` (batched screenshots) `backend/backend_server.py:36901` ·
+`run_dictionary_lookup_multilang_core_fast_batch` (chunking) `backend/openai_manager.py:4860` ·
+`_save_dictionary_variants_in_place` (instant save) `bot_3.py:10831` ·
 `run_autosave_sweep_job` `backend/background_jobs.py:1277` ·
 `run_autosave_flush_job` `backend/background_jobs.py:1298` ·
 `_dispatch_autosave_sweep` `backend/scheduler_service.py:356` ·

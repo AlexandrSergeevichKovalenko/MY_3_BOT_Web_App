@@ -79,7 +79,7 @@
 
 Эти процессы крутятся на **Railway** (хостинг) и общаются через **Postgres** (постоянное
 хранилище, через **PgBouncer**) и **Redis** (быстрая память + очереди). Что означает каждое из
-этих слов — см. [глоссарий](autosave_scaling_explained.md#7-glossary).
+этих слов — см. [глоссарий](autosave_scaling_explained.md#8-glossary).
 
 **Готовые карты-справочники** (прочитать после этого файла):
 - 🗺️ [Backend Study Map](../backend/README.md) — все backend-процессы, модули, что за что отвечает.
@@ -106,8 +106,10 @@ TTL, Redis, очередь/брокер/воркер, Dramatiq, планиров
 **Что читать:**
 1. [autosave_scaling_explained.md](autosave_scaling_explained.md) — **полностью**. Это не только
    про авто-сейв: это наш учебник по всем базовым технологиям с примерами из реального кода.
-   Особое внимание — разделам [«Building blocks»](autosave_scaling_explained.md#3-building-blocks)
-   и [глоссарию](autosave_scaling_explained.md#7-glossary).
+   Особое внимание — разделам [«Building blocks»](autosave_scaling_explained.md#3-building-blocks),
+   **[«Чистота и корректность: борьба с мусором и дублями»](autosave_scaling_explained.md#7-clean-and-correct)**
+   (3 рубежа фильтрации, NX-lock / exactly-once, at-least-once durability, чанкинг) и
+   [глоссарию](autosave_scaling_explained.md#8-glossary).
 
 **Что попрактиковать:** возьми из глоссария 5 терминов и объясни их вслух своими словами. Не
 получилось — перечитай соответствующий раздел.
