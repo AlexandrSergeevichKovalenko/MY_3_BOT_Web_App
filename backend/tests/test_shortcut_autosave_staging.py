@@ -18,6 +18,10 @@ class _FakeRedis:
     def get(self, key):
         return self.kv.get(key)
 
+    def incr(self, key):
+        self.kv[key] = str(int(self.kv.get(key, "0")) + 1)
+        return int(self.kv[key])
+
     def set(self, key, value, nx=False, ex=None):
         if nx and key in self.kv:
             return None
@@ -60,6 +64,14 @@ class _FakeRedis:
         if end == -1:
             return list(lst[start:])
         return list(lst[start:end + 1])
+
+    def llen(self, key):
+        return len(self.lists.get(key, []))
+
+    def ltrim(self, key, start, end):
+        lst = self.lists.get(key, [])
+        self.lists[key] = list(lst[start:]) if end == -1 else list(lst[start:end + 1])
+        return True
 
 
 class ShortcutAutosaveStagingTests(unittest.TestCase):
@@ -142,8 +154,9 @@ class ShortcutAutosaveStagingTests(unittest.TestCase):
         with patch.object(server, "get_redis_client", return_value=self.redis):
             due = server._autosave_collect_due_user_ids()
         self.assertEqual(due, [7])
-        # claimed (deleted) so it won't be re-enqueued; the future one stays
-        self.assertNotIn(server._autosave_flush_at_key(7), self.redis.kv)
+        # durability: the sweep NO LONGER deletes flush_at (the flush clears it on success),
+        # so both keys remain after the scan — the flush's NX-lock prevents duplicate work.
+        self.assertIn(server._autosave_flush_at_key(7), self.redis.kv)
         self.assertIn(server._autosave_flush_at_key(8), self.redis.kv)
 
     def test_flush_one_split_one_prepare_then_digest(self):
@@ -218,6 +231,49 @@ class ShortcutAutosaveStagingTests(unittest.TestCase):
             stack.enter_context(patch.object(server, "_shortcut_split_blocks", return_value=[("x", "x")]))
             server._run_autosave_flush(uid)
         self.assertEqual(self.sent, [])
+
+    def test_flush_crash_before_send_keeps_queue_for_retry(self):
+        # DURABILITY: if the flush is killed during processing (here: split raises, simulating a
+        # redeploy kill before the digest is sent), the raw queue + flush-at must remain so the
+        # next sweep re-processes the batch — NO LOSS.
+        uid = 31
+        raw_key = server._autosave_raw_key(uid)
+        self.redis.rpush(raw_key, "Wort eins", "Wort zwei")
+        self.redis.kv[server._autosave_flush_at_key(uid)] = "1.0"
+        with ExitStack() as stack:
+            self._enter_common(stack)
+            stack.enter_context(patch.object(server, "_get_user_language_pair", return_value=("ru", "de", {})))
+            stack.enter_context(patch.object(server, "_shortcut_split_blocks", side_effect=RuntimeError("killed")))
+            with self.assertRaises(RuntimeError):
+                server._run_autosave_flush(uid)
+        # nothing sent, queue + trigger preserved, lock released for the retry
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.redis.lists.get(raw_key), ["Wort eins", "Wort zwei"])
+        self.assertIn(server._autosave_flush_at_key(uid), self.redis.kv)
+        self.assertNotIn(server._autosave_flush_lock_key(uid), self.redis.kv)
+
+    def test_flush_keeps_photos_that_arrive_during_processing(self):
+        # A photo RPUSHed while the digest is being built must survive (LTRIM removes only the
+        # processed prefix, not the new tail).
+        uid = 32
+        raw_key = server._autosave_raw_key(uid)
+        self.redis.rpush(raw_key, "first")
+        self.redis.kv[server._autosave_flush_at_key(uid)] = "1.0"
+
+        def _split_then_new_photo(*a, **k):
+            self.redis.rpush(raw_key, "late photo")  # arrives mid-flush
+            return [("Wort", "Wort")]
+
+        with ExitStack() as stack:
+            self._enter_common(stack)
+            stack.enter_context(patch.object(server, "_get_user_language_pair", return_value=("ru", "de", {})))
+            stack.enter_context(patch.object(server, "_shortcut_split_blocks", side_effect=_split_then_new_photo))
+            stack.enter_context(patch.object(server, "_autosave_prepare_cards",
+                                             return_value=[{"canonical": "das Wort", "translation": "слово", "semantic_category": ""}]))
+            server._run_autosave_flush(uid)
+        self.assertEqual(len(self.sent), 1)                         # digest for "first" sent
+        self.assertEqual(self.redis.lists.get(raw_key), ["late photo"])  # late photo preserved
+        self.assertIn(server._autosave_flush_at_key(uid), self.redis.kv)  # trigger kept for it
 
     def test_plural_words(self):
         self.assertEqual(server._autosave_plural_words(1), "слово")

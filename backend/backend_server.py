@@ -37442,9 +37442,11 @@ def _run_shortcut_autosave_staging(
 
 
 def _autosave_collect_due_user_ids() -> list[int]:
-    """Scan flush-at keys and CLAIM (delete) those whose debounce window has elapsed.
-    Returns the user_ids ready to flush. Called by the sweep actor on the worker tier — one
-    cheap pass for ALL users regardless of count (no per-request threads/timers)."""
+    """Scan flush-at keys and return the user_ids whose debounce window has elapsed. We do NOT
+    delete flush_at here (durability): the FLUSH clears it only after it has successfully
+    processed + sent the batch. So if a flush is killed mid-work (redeploy), flush_at survives
+    and the next sweep re-triggers it — no lost batch. The flush's NX-lock prevents the repeated
+    enqueues from doing duplicate work while one is in progress."""
     client = get_redis_client()
     if client is None:
         return []
@@ -37459,10 +37461,9 @@ def _autosave_collect_due_user_ids() -> list[int]:
             try:
                 flush_at = float(val.decode("utf-8") if isinstance(val, bytes) else val)
             except Exception:
-                client.delete(key_s)
+                client.delete(key_s)  # malformed → drop
                 continue
             if now >= flush_at:
-                client.delete(key_s)  # claim → won't be re-enqueued next sweep
                 try:
                     due.append(int(key_s.rsplit(":", 1)[1]))
                 except Exception:
@@ -37679,39 +37680,71 @@ def _autosave_send_digest_from_blocks(user_id: int, blocks: list[tuple[str, str]
     return len(items)
 
 
+_AUTOSAVE_FLUSH_MAX_TRIES = max(2, int((os.getenv("SHORTCUT_AUTOSAVE_FLUSH_MAX_TRIES") or "5").strip() or "5"))
+
+
 def _run_autosave_flush(user_id: int) -> None:
     """WORKER-TIER heavy work for one user's nightly batch. Runs on BACKGROUND_JOBS (which has
-    the bot token). NX-locked + raw-list-claimed = exactly-once. Does ONE split over the whole
-    batch and ONE normalize/translate/categorize call, then sends a single multi-select digest."""
+    the bot token). NX-lock = only one flush per user at a time.
+
+    DURABILITY (no loss on redeploy): we do NOT delete the raw queue up front. We read it,
+    process + SEND the digest, and only THEN consume the items we processed (LTRIM the prefix —
+    so photos that arrived during processing survive). If the worker is killed mid-flight, the
+    queue + flush-at are untouched, so the next sweep simply re-processes the batch. Worst case
+    is a rare DUPLICATE digest (killed between Telegram-delivery and the LTRIM) — never a loss.
+    The attempt counter caps pathological retries so a persistently-failing batch can't spam."""
     safe_user_id = int(user_id)
     client = get_redis_client()
     if client is None:
         return
 
-    # Exactly-once: only one flush per user at a time.
     lock_key = _autosave_flush_lock_key(safe_user_id)
     if client.set(lock_key, "1", nx=True, ex=300) is None:
-        return
+        return  # another flush for this user is already running
     try:
-        # Claim the raw queue: read everything, then delete so late photos start a fresh batch.
         raw_key = _autosave_raw_key(safe_user_id)
+        flush_at_key = _autosave_flush_at_key(safe_user_id)
         raw_texts = client.lrange(raw_key, 0, -1) or []
-        client.delete(raw_key)
-        client.delete(_autosave_flush_at_key(safe_user_id))
-        texts = [
-            (t.decode("utf-8") if isinstance(t, bytes) else t).strip()
-            for t in raw_texts
-        ]
-        texts = [t for t in texts if t]
-        if not texts:
+        processed_n = len(raw_texts)
+        if processed_n == 0:
+            client.delete(flush_at_key)  # nothing to flush → stop the sweep re-triggering
             return
 
-        # ONE split over the whole batch (instead of one per photo), then build+send the digest.
-        joined = "\n".join(texts)
-        blocks = _shortcut_split_blocks(joined, origin="autosave", user_id=safe_user_id)
-        if not blocks:
+        # Defensive cap: if this batch keeps failing (e.g. repeated crashes), give up after N
+        # tries instead of re-sending forever. Counter is cleared on success below.
+        tries_key = f"autosave_flush_tries:{safe_user_id}"
+        tries = int(client.incr(tries_key))
+        client.expire(tries_key, _AUTOSAVE_RAW_TTL)
+        if tries > _AUTOSAVE_FLUSH_MAX_TRIES:
+            logging.error(
+                "autosave: flush gave up after %d tries user_id=%s — dropping %d staged item(s)",
+                tries, safe_user_id, processed_n,
+            )
+            client.ltrim(raw_key, processed_n, -1)
+            if int(client.llen(raw_key) or 0) == 0:
+                client.delete(raw_key)
+                client.delete(flush_at_key)
+            client.delete(tries_key)
             return
-        _autosave_send_digest_from_blocks(safe_user_id, blocks)
+
+        texts = [(t.decode("utf-8") if isinstance(t, bytes) else t).strip() for t in raw_texts]
+        texts = [t for t in texts if t]
+        if texts:
+            # ONE split over the whole batch, then build + SEND the digest. (May send nothing if
+            # the whole batch is filtered out as non-learnable — that still counts as processed.)
+            joined = "\n".join(texts)
+            blocks = _shortcut_split_blocks(joined, origin="autosave", user_id=safe_user_id)
+            if blocks:
+                _autosave_send_digest_from_blocks(safe_user_id, blocks)
+
+        # SUCCESS path — consume ONLY the items we read (LTRIM the processed prefix). Photos that
+        # arrived during processing sit at index >= processed_n and are kept for the next flush.
+        client.ltrim(raw_key, processed_n, -1)
+        client.delete(tries_key)
+        if int(client.llen(raw_key) or 0) == 0:
+            client.delete(raw_key)
+            client.delete(flush_at_key)  # fully drained → sweep stops re-triggering
+        # else: new photos remain; their RPUSH already re-armed flush_at → next sweep flushes them
     finally:
         try:
             client.delete(lock_key)
