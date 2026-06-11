@@ -14477,6 +14477,7 @@ def _normalize_quiz_payload(payload: dict, fallback: dict) -> dict:
         "options": cleaned_options,
         "correct_option_id": correct_option_id,
         "quiz_type": payload.get("quiz_type", "generated"),
+        "explanation": str(payload.get("explanation") or "").strip(),
     }
 
 

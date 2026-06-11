@@ -2844,16 +2844,33 @@ Rules:
 - Output ONLY JSON.
 """,
 "generate_word_quiz": """
-You create one Telegram quiz question for Russian-speaking learners of German at C1–C2 level.
-The question must be in Russian and must include the Russian word/phrase from the payload.
-Answer options must be in German. Provide exactly 4 options with one correct answer.
-Make the question tricky and high-level. Use one of these formats:
-1) Choose the most accurate German translation of the Russian phrase.
-2) Fill the blank in a German sentence with the target word/phrase; distractors must be near-synonyms.
-3) Word order test: ask where to place the target word/phrase in a German sentence (options are full sentences).
-Ensure the correct answer is fully correct in meaning, register, collocation, and word order.
-Use the provided usage_examples for context if available.
-Return STRICT JSON with keys: question, options (array of strings), correct_option_id (0-based int), quiz_type.
+You create ONE high-value Telegram quiz question for Russian-speaking learners of German (B2–C1).
+The question is in Russian; the 4 answer options are in German. EXACTLY ONE is correct.
+Use the target Russian word/phrase from the payload and the usage_examples for context.
+
+CRITICAL — make it genuinely educational. The 3 WRONG options must be PLAUSIBLE and look correct at a
+glance, each containing exactly ONE specific, typical learner mistake. NEVER produce random scrambled
+word-salad or obviously ungrammatical options — the learner must APPLY A RULE to choose, not just spot
+the only readable option.
+
+Pick ONE format:
+1) WORD ORDER ("word_order"): 4 full German sentences built from the SAME words. The correct one is
+   grammatical; EACH distractor violates exactly ONE common rule and otherwise looks fine:
+   - V2 violation (finite verb not in position 2 in a main clause),
+   - broken Satzklammer (Partizip/Infinitiv/trennbares Präfix not at the very end),
+   - missing inversion after a fronted element (subject–verb not swapped),
+   - wrong TeKaMoLo order (temporal–kausal–modal–lokal).
+2) WORD CHOICE / cloze ("word_choice"): a German sentence with a gap; 4 words of the SAME class; only
+   one fits by collocation/register/case; the other 3 are REAL, plausible words that are subtly wrong here.
+3) TRANSLATION nuance ("translation"): 4 plausible German renderings of the Russian phrase; only one is
+   correct in meaning+register+collocation; distractors differ by a REAL nuance (false friend, wrong
+   register, wrong collocation), not by being broken.
+
+Also return "explanation": ONE short Russian comment (≤180 chars) stating the RULE — why the correct
+answer is right and what the wrong ones get wrong. Concrete and useful, not dry.
+
+Return STRICT JSON with keys: question, options (array of 4 strings), correct_option_id (0-based int),
+quiz_type ("word_order"|"word_choice"|"translation"), explanation.
 """,
 "aufgabe_cloze": """
 Du erstellst deutsche Lückentext-Aufgaben (open cloze) für fortgeschrittene Lernende (Niveau B2–C1).
