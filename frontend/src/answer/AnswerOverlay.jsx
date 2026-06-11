@@ -48,6 +48,16 @@ const AU_LABELS = {
   cloze: { eyebrow: '✏️ Lückentext', title: 'Lückentext · B2+' },
   wortbildung: { eyebrow: '🔧 Wortbildung', title: 'Wortbildung · B2+' },
   transform: { eyebrow: '🔄 Umformung', title: 'Satztransformation · C1' },
+  error: { eyebrow: '🔍 Fehler finden', title: 'Fehler finden · B2+' },
+  hoerluecke: { eyebrow: '🎧 Hörlücke', title: 'Hörlücke · B2+' },
+};
+
+const AU_SUBS = {
+  wortbildung: 'Bilde die richtige Wortform ✍️',
+  transform: 'Forme den Satz mit dem Schlüsselwort um ✍️',
+  error: 'Finde und korrigiere den Fehler 🔍',
+  hoerluecke: 'Höre und ergänze das fehlende Wort 🎧',
+  cloze: 'Setze das fehlende Wort ein ✍️',
 };
 
 function haptic(type) {
@@ -402,11 +412,7 @@ export default function AnswerOverlay({ startParam }) {
         <div className="ans-head">
           <span className="ans-eyebrow">{eyebrow}</span>
           <h1 className="ans-title">{heading}</h1>
-          <p className="ans-sub">
-            {meta?.format === 'wortbildung' ? 'Bilde die richtige Wortform ✍️'
-              : meta?.format === 'transform' ? 'Forme den Satz mit dem Schlüsselwort um ✍️'
-              : 'Setze das fehlende Wort ein ✍️'}
-          </p>
+          <p className="ans-sub">{AU_SUBS[meta?.format] || AU_SUBS.cloze}</p>
         </div>
         {metaLoading || !meta ? (
           <><div className="ans-skel" /><div className="ans-skel sm" /></>

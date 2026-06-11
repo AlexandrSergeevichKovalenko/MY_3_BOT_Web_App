@@ -19032,6 +19032,25 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
                 "target_prefix": str(it.get("target_prefix") or ""),
                 "target_suffix": str(it.get("target_suffix") or ""),
                 "accepted": accepted, **common}
+    if fmt == "error":
+        woerter = [str(w) for w in (it.get("woerter") or []) if str(w).strip()]
+        correct_word = str(it.get("correct_word") or "").strip()
+        try:
+            error_index = int(it.get("error_index"))
+        except (TypeError, ValueError):
+            return None
+        if len(woerter) < 3 or not correct_word or not (0 <= error_index < len(woerter)):
+            return None
+        return {"woerter": woerter, "error_index": error_index, "correct_word": correct_word,
+                "aliases": [str(a) for a in (it.get("aliases") or []) if str(a).strip()], **common}
+    if fmt == "hoerluecke":
+        satz_voll = str(it.get("satz_voll") or "").strip()
+        satz_luecke = str(it.get("satz_luecke") or "").strip()
+        correct = str(it.get("correct") or "").strip()
+        if not satz_voll or not correct or "_____" not in satz_luecke:
+            return None
+        return {"satz_voll": satz_voll, "satz_luecke": satz_luecke, "correct": correct,
+                "aliases": [str(a) for a in (it.get("aliases") or []) if str(a).strip()], **common}
     return None
 
 
@@ -19040,9 +19059,11 @@ async def prepare_aufgabe_pool_job(context: CallbackContext) -> None:
     critical path. The generator does the heavy work (incl. the full accepted-answer
     list for transform) so answering stays a fast deterministic check."""
     from backend.openai_manager import run_generate_aufgabe
-    per_format = max(4, AUFGABE_POOL_TARGET // 3)
+    from backend.r2_storage import r2_put_bytes
+    per_format = max(3, AUFGABE_POOL_TARGET // 5)
     total_made = 0
-    for fmt, level in (("cloze", "B2"), ("wortbildung", "B2"), ("transform", "C1")):
+    for fmt, level in (("cloze", "B2"), ("wortbildung", "B2"), ("transform", "C1"),
+                       ("error", "B2"), ("hoerluecke", "B2")):
         try:
             have = await asyncio.to_thread(count_available_aufgaben, format=fmt)
             if have >= per_format:
@@ -19053,9 +19074,21 @@ async def prepare_aufgabe_pool_job(context: CallbackContext) -> None:
                 payload = _aufgabe_payload_from_item(fmt, it)
                 if not payload:
                     continue
+                aufgabe_id = str(__import__("uuid").uuid4())
+                if fmt == "hoerluecke":
+                    # Synthesize the spoken sentence → MP3 → R2 (iOS-playable, off
+                    # critical path). Skip the item if TTS fails — no silent stub.
+                    try:
+                        seg = await asyncio.to_thread(get_or_create_tts_clip, "de", payload["satz_voll"], 0.95)
+                        mp3 = await asyncio.to_thread(_audiosegment_to_mp3_bytes, seg)
+                        key = f"aufgabe/audio/{aufgabe_id}.mp3"
+                        await asyncio.to_thread(r2_put_bytes, key, mp3, content_type="audio/mpeg")
+                        payload["audio_object_key"] = key
+                    except Exception:
+                        logging.warning("aufgabe_pool: hoerluecke TTS/R2 failed, skipping item", exc_info=True)
+                        continue
                 await asyncio.to_thread(
-                    create_aufgabe, aufgabe_id=str(__import__("uuid").uuid4()),
-                    format=fmt, level=level, payload=payload,
+                    create_aufgabe, aufgabe_id=aufgabe_id, format=fmt, level=level, payload=payload,
                 )
                 made += 1
             total_made += made

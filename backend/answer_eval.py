@@ -702,6 +702,9 @@ def _aufgabe_correct_answer(payload: dict) -> str:
     correct = str(payload.get("correct") or "").strip()
     if correct:
         return correct
+    cw = str(payload.get("correct_word") or "").strip()
+    if cw:
+        return cw
     accepted = payload.get("accepted") or []
     return str(accepted[0]) if accepted else ""
 
@@ -745,6 +748,18 @@ def load_aufgabe_task(*, dispatch_id: int, user_id: int) -> dict | None:
         meta["schluesselwort"] = str(payload.get("schluesselwort") or "")
         meta["target_prefix"] = str(payload.get("target_prefix") or "")
         meta["target_suffix"] = str(payload.get("target_suffix") or "")
+    elif fmt == "error":
+        meta["woerter"] = [str(w) for w in (payload.get("woerter") or [])]
+    elif fmt == "hoerluecke":
+        meta["satz_luecke"] = str(payload.get("satz_luecke") or "")
+        meta["audio_url"] = ""
+        key = str(payload.get("audio_object_key") or "")
+        if key:
+            try:
+                from backend.r2_storage import r2_public_url
+                meta["audio_url"] = r2_public_url(key)
+            except Exception:
+                meta["audio_url"] = ""
     existing = get_aufgabe_answer(dispatch_id=int(dispatch_id), user_id=int(user_id))
     if existing:
         meta["already_answered"] = True
@@ -758,9 +773,20 @@ def _check_aufgabe(fmt: str, payload: dict, raw_input: str) -> bool:
     answer = str(raw_input or "").strip()
     if not answer:
         return False
+    if fmt == "error":
+        # raw_input = "{tapped_index}|{correction}"
+        idx_str, _, correction = answer.partition("|")
+        try:
+            tapped = int(idx_str)
+        except ValueError:
+            return False
+        if tapped != int(payload.get("error_index", -1)):
+            return False
+        candidates = [str(payload.get("correct_word") or "")] + [str(a) for a in (payload.get("aliases") or [])]
+        return any(check_quiz_freeform_deterministic(user_text=correction, correct_text=c) for c in candidates if str(c).strip())
     if fmt == "transform":
         candidates = [str(a) for a in (payload.get("accepted") or [])]
-    else:  # cloze, wortbildung
+    else:  # cloze, wortbildung, hoerluecke
         candidates = [str(payload.get("correct") or "")]
         candidates += [str(a) for a in (payload.get("aliases") or [])]
     return any(

@@ -76,6 +76,8 @@ _DEFAULT_RESPONSES_TASKS = {
     "aufgabe_cloze",
     "aufgabe_wortbildung",
     "aufgabe_transform",
+    "aufgabe_error",
+    "aufgabe_hoerluecke",
     "image_quiz_sentence_fallback",
     "image_quiz_visual_screen",
     "image_quiz_blueprint",
@@ -2928,6 +2930,51 @@ Gib NUR STRICT JSON:
 {"items":[{"original":"…","schluesselwort":"trotz","target_prefix":"","target_suffix":"gingen wir spazieren.","accepted":["Trotz des Regens"],"erklaerung":"…","hint_ru":"…"}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
+"aufgabe_error": """
+Du erstellst deutsche "Finde den Fehler"-Aufgaben für fortgeschrittene Lernende (B2–C1).
+
+Eingabe-JSON: {"count": <int>, "level": "B2"|"C1"}.
+
+Jede Aufgabe: EIN deutscher Satz mit GENAU EINEM klaren grammatischen Fehler in
+EINEM einzigen Wort (falscher Kasus, falsche Adjektivendung, falsche Verbform,
+falsche Präposition, falsche Wortstellung des einen Wortes). Der Rest ist korrekt.
+
+Regeln:
+- "woerter" = der fehlerhafte Satz als Liste von Tokens (Wörter inkl. anhängender
+  Satzzeichen, z. B. ["Ich","gehe","mit","dem","Auto","zur","Arbeit."]).
+- "error_index" = Index (0-basiert) des EINEN falschen Tokens in "woerter".
+- "correct_word" = das korrigierte Token (nur dieses eine Wort).
+- "aliases" = echte gleichwertige Korrekturvarianten, sonst [].
+- Es darf NUR EINEN eindeutigen Fehler geben; alle anderen Wörter sind korrekt.
+- "erklaerung" = 1 kurzer Satz auf Russisch: warum falsch + die richtige Form.
+- "hint_ru" = sehr kurzer russischer Hinweis (z. B. "падеж после предлога").
+
+Gib NUR STRICT JSON:
+{"items":[{"woerter":["Ich","vertraue","auf","meinem","Freund."],"error_index":3,"correct_word":"meinen","aliases":[],"erklaerung":"…","hint_ru":"…"}]}
+Genau "count" Aufgaben, alle verschieden, ohne Markdown.
+""",
+"aufgabe_hoerluecke": """
+Du erstellst deutsche Hörlücken-Aufgaben (Audio + ein fehlendes Wort) für B2–C1.
+
+Eingabe-JSON: {"count": <int>, "level": "B2"|"C1"}.
+
+Jede Aufgabe: EIN natürlicher, gut hörbarer deutscher Satz (8–16 Wörter). Genau EIN
+inhaltlich/grammatisch tragendes Wort wird zur Lücke. Der/die Lernende HÖRT den
+ganzen Satz und tippt das fehlende Wort.
+
+Regeln:
+- "satz_voll" = der vollständige Satz (wird als Audio vorgelesen) — OHNE Lücke.
+- "satz_luecke" = derselbe Satz mit "_____" anstelle des einen fehlenden Wortes.
+- "correct" = das fehlende Wort, exakt.
+- "aliases" = echte Schreibvarianten, sonst [].
+- Genau EINE richtige Lösung; das Wort muss aus dem Hören eindeutig erkennbar sein.
+- "erklaerung" = 1 kurzer Satz auf Russisch (Bedeutung/Regel).
+- "hint_ru" = sehr kurzer russischer Hinweis.
+
+Gib NUR STRICT JSON:
+{"items":[{"satz_voll":"Trotz des schlechten Wetters fand das Konzert im Freien statt.","satz_luecke":"Trotz des schlechten Wetters fand das Konzert im _____ statt.","correct":"Freien","aliases":[],"erklaerung":"…","hint_ru":"…"}]}
+Genau "count" Aufgaben, alle verschieden, ohne Markdown.
+""",
 "image_quiz_sentence_fallback": """
 You help build a visual language-learning quiz.
 
@@ -5319,6 +5366,8 @@ _AUFGABE_INSTRUCTION_KEYS = {
     "cloze": "aufgabe_cloze",
     "wortbildung": "aufgabe_wortbildung",
     "transform": "aufgabe_transform",
+    "error": "aufgabe_error",
+    "hoerluecke": "aufgabe_hoerluecke",
 }
 
 
