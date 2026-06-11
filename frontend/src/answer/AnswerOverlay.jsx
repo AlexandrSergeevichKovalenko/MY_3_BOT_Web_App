@@ -162,6 +162,14 @@ export default function AnswerOverlay({ startParam }) {
       tg?.expand?.();
       tg?.setHeaderColor?.('secondary_bg_color');
     } catch (_e) { /* ignore */ }
+    // Respect the user's Telegram light/dark scheme (default dark).
+    const applyScheme = () => {
+      const scheme = (tg?.colorScheme === 'light') ? 'light' : 'dark';
+      try { document.documentElement.setAttribute('data-scheme', scheme); } catch (_e) { /* ignore */ }
+    };
+    applyScheme();
+    try { tg?.onEvent?.('themeChanged', applyScheme); } catch (_e) { /* ignore */ }
+    return () => { try { tg?.offEvent?.('themeChanged', applyScheme); } catch (_e) { /* ignore */ } };
   }, []);
 
   useEffect(() => {

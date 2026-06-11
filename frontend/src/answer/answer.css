@@ -12,6 +12,38 @@ html, body { margin: 0; padding: 0; }
 body { background: var(--dmps-bg, #0F172A); overflow-x: hidden; }
 #root { min-height: 100vh; }
 
+/* Every element on this route uses border-box so width:100% + padding + border
+ * never makes a box wider than its container (which would push the card off the
+ * right edge). Scoped to the overlay route. */
+.ans-root, .ans-root *, .ans-root *::before, .ans-root *::after { box-sizing: border-box; }
+
+/* ── Light theme (Telegram colorScheme=light) — set on <html> by AnswerOverlay.
+ * Redefines the dark DMPS tokens + the few hard-coded dark surfaces. */
+html[data-scheme="light"] body { background: #e9edf3; }
+html[data-scheme="light"] .ans-root {
+  --dmps-bg: #e9edf3;
+  --dmps-card: #ffffff;
+  --dmps-card-alt: #f4f6fa;
+  --dmps-border: #d6dbe4;
+  --dmps-text-primary: #0f172a;
+  --dmps-text-title: #111827;
+  --dmps-text-secondary: #334155;
+  --dmps-text-muted: #64748b;
+  --dmps-text-subtle: #94a3b8;
+  --dmps-shadow-card: 0 18px 40px rgba(15, 23, 42, 0.14);
+}
+html[data-scheme="light"] .ans-card {
+  background: #ffffff;
+}
+html[data-scheme="light"] .ans-input { background: #f4f6fa; }
+html[data-scheme="light"] .ans-tile { background: linear-gradient(180deg, #ffffff, #eef1f7); }
+html[data-scheme="light"] .ans-slot { background: #f4f6fa; box-shadow: inset 0 -2px 6px rgba(15,23,42,0.06); }
+html[data-scheme="light"] .ag-slot { background: #f4f6fa; box-shadow: inset 0 -2px 6px rgba(15,23,42,0.06); }
+html[data-scheme="light"] .ag-slot.filled { background: #e7eefb; }
+html[data-scheme="light"] .ag-tile { background: linear-gradient(180deg, #ffffff, #eef1f7); box-shadow: 0 4px 10px rgba(15,23,42,0.10); }
+html[data-scheme="light"] .ls-player { background: linear-gradient(180deg, rgba(37,99,235,0.10), #f4f6fa); }
+html[data-scheme="light"] .ans-result { background: #f4f6fa; }
+
 .ans-root {
   --ans-ok: var(--dmps-success, #16A34A);
   --ans-bad: var(--dmps-danger, #DC2626);
