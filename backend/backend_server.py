@@ -22318,9 +22318,14 @@ def submit_answer():
             result = evaluate_aufgabe(dispatch_id=dispatch_id, user_id=user_id, raw_input=answer)
         elif kind == "ls":
             answers = payload.get("answers")
+            try:
+                ls_time_ms = int(payload.get("time_ms") or 0)
+            except (TypeError, ValueError):
+                ls_time_ms = 0
             result = start_listening_evaluation(
                 dispatch_id=dispatch_id, user_id=user_id,
                 answers=answers if isinstance(answers, list) else [],
+                user_name=user_name, time_ms=ls_time_ms,
             )
         else:
             return jsonify({"error": "unsupported kind"}), 400

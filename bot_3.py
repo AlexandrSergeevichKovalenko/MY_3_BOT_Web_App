@@ -460,8 +460,14 @@ def _get_quiz_schedule_now() -> datetime:
     return datetime.now(tz)
 
 
+def _image_quiz_enabled() -> bool:
+    # Retired: replaced by the B2+ "Aufgabe" formats (incl. the vision-checked
+    # Pin-auf-Bild). Default OFF; set IMAGE_QUIZ_ENABLED=1 to bring it back.
+    return (os.getenv("IMAGE_QUIZ_ENABLED") or "false").strip().lower() in ("1", "true", "yes")
+
+
 def _is_image_quiz_slot(slot_dt: datetime) -> bool:
-    return (int(slot_dt.hour), int(slot_dt.minute)) in QUIZ_IMAGE_SLOT_TIMES
+    return _image_quiz_enabled() and (int(slot_dt.hour), int(slot_dt.minute)) in QUIZ_IMAGE_SLOT_TIMES
 
 
 def _is_visual_riddle_slot(slot_dt: datetime) -> bool:
@@ -16844,6 +16850,8 @@ async def prepare_scheduled_quiz_pool(context: CallbackContext, target_per_type:
 
 
 async def prepare_image_quiz_pool(context: CallbackContext, target_ready_per_user: int | None = None) -> None:
+    if not _image_quiz_enabled():
+        return  # retired — don't spend image generation on it
     desired_ready = max(1, int(target_ready_per_user or IMAGE_QUIZ_READY_TARGET_PER_USER))
     if not can_enqueue_background_jobs():
         logging.info("ℹ️ image quiz pool topup skipped: background jobs unavailable")

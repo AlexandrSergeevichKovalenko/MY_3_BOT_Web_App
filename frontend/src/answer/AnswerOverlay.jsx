@@ -317,7 +317,8 @@ export default function AnswerOverlay({ startParam }) {
     setSubmitting(true);
     setError('');
     try {
-      const data = await api('/api/answer/submit', { kind: 'ls', id: parsed.id, answers });
+      const time_ms = taskLoadedAt.current ? Date.now() - taskLoadedAt.current : 0;
+      const data = await api('/api/answer/submit', { kind: 'ls', id: parsed.id, answers, time_ms });
       if (data.items) { // already graded (anti-replay) → direct result
         setResult(data);
         haptic(data.correct_count === data.total ? 'ok' : 'bad');

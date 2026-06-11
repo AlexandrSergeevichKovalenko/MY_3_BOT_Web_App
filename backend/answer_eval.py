@@ -537,15 +537,29 @@ def load_listening_task(*, dispatch_id: int, user_id: int) -> dict | None:
     return meta
 
 
-def _spawn_listening_grader(answer_id: int, german_text: str, questions: list, answers: list) -> None:
+def _spawn_listening_grader(answer_id: int, german_text: str, questions: list, answers: list,
+                            *, dispatch_id: int, user_id: int, user_name: str, time_ms: int) -> None:
     import threading
 
     def _run():
         import logging
         try:
             from backend.listening_evaluator import evaluate_listening_answers
-            from backend.database import save_listening_evaluation
+            from backend.database import save_listening_evaluation, record_challenge_result
             evals = evaluate_listening_answers(german_text, questions, answers)
+            # Record the ranking result BEFORE flipping status to 'done', so the
+            # first poll that sees 'done' already has a ranking to show.
+            try:
+                total = len(questions)
+                correct = sum(1 for i in range(total)
+                              if i < len(evals) and isinstance(evals[i], dict) and evals[i].get("content_correct"))
+                record_challenge_result(
+                    challenge_key=f"ls:{int(dispatch_id)}", user_id=int(user_id),
+                    user_name=str(user_name or ""), is_correct=(total > 0 and correct == total),
+                    time_ms=int(time_ms or 0),
+                )
+            except Exception:
+                logging.warning("listening grader: ranking record failed answer_id=%s", answer_id, exc_info=True)
             save_listening_evaluation(answer_id=int(answer_id), evaluation_json=evals)
         except Exception:
             logging.warning("listening grader thread failed answer_id=%s", answer_id, exc_info=True)
@@ -558,7 +572,19 @@ def _spawn_listening_grader(answer_id: int, german_text: str, questions: list, a
     threading.Thread(target=_run, daemon=True).start()
 
 
-def start_listening_evaluation(*, dispatch_id: int, user_id: int, answers: list) -> dict | None:
+def _listening_result_with_ranking(dispatch: dict, dispatch_id: int, user_id: int,
+                                   answers: list, evaluation: list) -> dict:
+    result = _listening_result_payload(dispatch, answers, evaluation, already_answered=True)
+    try:
+        from backend.database import compute_challenge_ranking
+        result["ranking"] = compute_challenge_ranking(challenge_key=f"ls:{int(dispatch_id)}", user_id=int(user_id))
+    except Exception:
+        pass
+    return result
+
+
+def start_listening_evaluation(*, dispatch_id: int, user_id: int, answers: list,
+                               user_name: str = "", time_ms: int = 0) -> dict | None:
     """Save answers and kick off async LLM grading. Returns pending (or the
     stored result if this attempt was already graded — anti-replay)."""
     from backend.database import (
@@ -570,9 +596,9 @@ def start_listening_evaluation(*, dispatch_id: int, user_id: int, answers: list)
 
     existing = get_listening_answer_status(dispatch_id=int(dispatch_id), user_id=int(user_id))
     if existing and existing.get("status") == "done" and existing.get("evaluation") is not None:
-        return _listening_result_payload(
-            dispatch, existing.get("answers") or [], existing.get("evaluation") or [],
-            already_answered=True,
+        return _listening_result_with_ranking(
+            dispatch, int(dispatch_id), int(user_id),
+            existing.get("answers") or [], existing.get("evaluation") or [],
         )
 
     clean_answers = [str(a or "").strip() for a in (answers or [])]
@@ -585,6 +611,8 @@ def start_listening_evaluation(*, dispatch_id: int, user_id: int, answers: list)
     _spawn_listening_grader(
         answer_id, str(dispatch.get("german_text") or ""),
         list(dispatch.get("questions_json") or []), clean_answers,
+        dispatch_id=int(dispatch_id), user_id=int(user_id),
+        user_name=str(user_name or ""), time_ms=int(time_ms or 0),
     )
     return {"kind": "listening", "status": "pending"}
 
@@ -602,9 +630,9 @@ def get_listening_status(*, dispatch_id: int, user_id: int) -> dict:
             return {"kind": "listening", "status": "failed"}
         return {
             "kind": "listening", "status": "done",
-            "result": _listening_result_payload(
-                dispatch, status.get("answers") or [], status.get("evaluation") or [],
-                already_answered=True,
+            "result": _listening_result_with_ranking(
+                dispatch, int(dispatch_id), int(user_id),
+                status.get("answers") or [], status.get("evaluation") or [],
             ),
         }
     return {"kind": "listening", "status": st}
