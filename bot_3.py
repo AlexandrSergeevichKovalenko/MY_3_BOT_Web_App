@@ -19071,70 +19071,83 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
     return None
 
 
-async def prepare_aufgabe_pool_job(context: CallbackContext) -> None:
-    """Startup + periodic: fill the B2+ task pool (all formats) via LLM, off the
-    critical path. The generator does the heavy work (incl. the full accepted-answer
-    list for transform) so answering stays a fast deterministic check."""
+_AUFGABE_FORMATS = (
+    ("cloze", "B2"), ("wortbildung", "B2"), ("transform", "C1"),
+    ("error", "B2"), ("hoerluecke", "B2"), ("pin", "B2"),
+)
+_AUFGABE_LEVEL = {f: lvl for f, lvl in _AUFGABE_FORMATS}
+
+
+async def _aufgabe_topup_format(fmt: str, level: str, want: int) -> int:
+    """Generate up to `want` ready items of ONE format into the pool. All heavy
+    work (LLM + TTS/DALL-E/vision) is here, off the user's critical path; bad
+    items are skipped (no silent stub). Returns how many were created. Reused by
+    the nightly pool job AND the admin on-demand send."""
+    if want <= 0:
+        return 0
     from backend.openai_manager import run_generate_aufgabe
     from backend.r2_storage import r2_put_bytes
+    items = await run_generate_aufgabe(fmt, count=min(8, want + 2), level=level)
+    made = 0
+    for it in items:
+        payload = _aufgabe_payload_from_item(fmt, it)
+        if not payload:
+            continue
+        aufgabe_id = str(__import__("uuid").uuid4())
+        if fmt == "hoerluecke":
+            # Synthesize the spoken sentence → MP3 → R2 (iOS-playable). Skip on TTS fail.
+            try:
+                seg = await asyncio.to_thread(get_or_create_tts_clip, "de", payload["satz_voll"], 0.95)
+                mp3 = await asyncio.to_thread(_audiosegment_to_mp3_bytes, seg)
+                key = f"aufgabe/audio/{aufgabe_id}.mp3"
+                await asyncio.to_thread(r2_put_bytes, key, mp3, content_type="audio/mpeg")
+                payload["audio_object_key"] = key
+            except Exception:
+                logging.warning("aufgabe_pool: hoerluecke TTS/R2 failed, skipping item", exc_info=True)
+                continue
+        elif fmt == "pin":
+            # DALL-E image → R2, then vision verifies the target is present + bbox.
+            try:
+                from backend.image_generation_provider import generate_image_bytes
+                from backend.openai_manager import run_vision_locate
+                res = await asyncio.to_thread(
+                    generate_image_bytes, prompt=payload["image_prompt"], template_id=0, user_id=0
+                )
+                img = bytes(res.get("data") or b"")
+                mime = str(res.get("mime_type") or "image/png").strip().lower() or "image/png"
+                if not img:
+                    continue
+                loc = await asyncio.to_thread(run_vision_locate, img, payload["target_label"], mime=mime)
+                if not loc.get("present") or not loc.get("bbox"):
+                    logging.info("aufgabe_pool: pin target not located, skipping (%s)", payload["target_label"])
+                    continue
+                ext = "png" if "png" in mime else ("webp" if "webp" in mime else "jpg")
+                key = f"aufgabe/images/{aufgabe_id}.{ext}"
+                await asyncio.to_thread(r2_put_bytes, key, img, content_type=mime)
+                payload["image_object_key"] = key
+                payload["bbox"] = loc["bbox"]
+                payload.pop("image_prompt", None)  # not needed at runtime
+            except Exception:
+                logging.warning("aufgabe_pool: pin image/vision failed, skipping item", exc_info=True)
+                continue
+        await asyncio.to_thread(
+            create_aufgabe, aufgabe_id=aufgabe_id, format=fmt, level=level, payload=payload,
+        )
+        made += 1
+    return made
+
+
+async def prepare_aufgabe_pool_job(context: CallbackContext) -> None:
+    """Startup + nightly: fill the B2+ task pool (all 6 formats) to target via the
+    per-format top-up helper, off the critical path."""
     per_format = max(3, AUFGABE_POOL_TARGET // 5)
     total_made = 0
-    for fmt, level in (("cloze", "B2"), ("wortbildung", "B2"), ("transform", "C1"),
-                       ("error", "B2"), ("hoerluecke", "B2"), ("pin", "B2")):
+    for fmt, level in _AUFGABE_FORMATS:
         try:
             have = await asyncio.to_thread(count_available_aufgaben, format=fmt)
             if have >= per_format:
                 continue
-            items = await run_generate_aufgabe(fmt, count=min(8, per_format - have + 2), level=level)
-            made = 0
-            for it in items:
-                payload = _aufgabe_payload_from_item(fmt, it)
-                if not payload:
-                    continue
-                aufgabe_id = str(__import__("uuid").uuid4())
-                if fmt == "hoerluecke":
-                    # Synthesize the spoken sentence → MP3 → R2 (iOS-playable, off
-                    # critical path). Skip the item if TTS fails — no silent stub.
-                    try:
-                        seg = await asyncio.to_thread(get_or_create_tts_clip, "de", payload["satz_voll"], 0.95)
-                        mp3 = await asyncio.to_thread(_audiosegment_to_mp3_bytes, seg)
-                        key = f"aufgabe/audio/{aufgabe_id}.mp3"
-                        await asyncio.to_thread(r2_put_bytes, key, mp3, content_type="audio/mpeg")
-                        payload["audio_object_key"] = key
-                    except Exception:
-                        logging.warning("aufgabe_pool: hoerluecke TTS/R2 failed, skipping item", exc_info=True)
-                        continue
-                elif fmt == "pin":
-                    # DALL-E image → R2, then a vision model verifies the target is
-                    # clearly present and returns its bbox (for tap grading). Reject
-                    # the item if the object isn't there — no silent fallback.
-                    try:
-                        from backend.image_generation_provider import generate_image_bytes
-                        from backend.openai_manager import run_vision_locate
-                        res = await asyncio.to_thread(
-                            generate_image_bytes, prompt=payload["image_prompt"], template_id=0, user_id=0
-                        )
-                        img = bytes(res.get("data") or b"")
-                        mime = str(res.get("mime_type") or "image/png").strip().lower() or "image/png"
-                        if not img:
-                            continue
-                        loc = await asyncio.to_thread(run_vision_locate, img, payload["target_label"], mime=mime)
-                        if not loc.get("present") or not loc.get("bbox"):
-                            logging.info("aufgabe_pool: pin target not located, skipping (%s)", payload["target_label"])
-                            continue
-                        ext = "png" if "png" in mime else ("webp" if "webp" in mime else "jpg")
-                        key = f"aufgabe/images/{aufgabe_id}.{ext}"
-                        await asyncio.to_thread(r2_put_bytes, key, img, content_type=mime)
-                        payload["image_object_key"] = key
-                        payload["bbox"] = loc["bbox"]
-                        payload.pop("image_prompt", None)  # not needed at runtime
-                    except Exception:
-                        logging.warning("aufgabe_pool: pin image/vision failed, skipping item", exc_info=True)
-                        continue
-                await asyncio.to_thread(
-                    create_aufgabe, aufgabe_id=aufgabe_id, format=fmt, level=level, payload=payload,
-                )
-                made += 1
+            made = await _aufgabe_topup_format(fmt, level, per_format - have)
             total_made += made
             logging.info("aufgabe_pool[%s]: have=%s target=%s made=%s", fmt, have, per_format, made)
         except Exception:
@@ -19188,7 +19201,11 @@ async def _send_scheduled_aufgabe(context: CallbackContext) -> None:
 
 
 async def admin_aufgabe_send_command(update: Update, context: CallbackContext) -> None:
-    """Send a B2+ text task to this chat immediately (admin test). /admin_aufgabe_send"""
+    """Send a B2+ task now (admin). Optionally pick a specific format:
+    /admin_aufgabe_send                 → next in rotation (any format)
+    /admin_aufgabe_send <format>        → that format (cloze|wortbildung|transform|
+                                          error|hoerluecke|pin); generates it on
+                                          demand if the pool has none."""
     user    = update.effective_user
     chat    = update.effective_chat
     message = update.effective_message
@@ -19198,25 +19215,43 @@ async def admin_aufgabe_send_command(update: Update, context: CallbackContext) -
         await message.reply_text("Allowed users only.")
         return
 
-    status_msg = await message.reply_text("Preparing Aufgabe...")
-    # ensure the pool has at least one item (any format)
+    args = context.args or []
+    fmt = str(args[0]).strip().lower() if args else None
+    valid = {f for f, _ in _AUFGABE_FORMATS}
+    if fmt and fmt not in valid:
+        await message.reply_text(
+            "Форматы: " + ", ".join(f for f, _ in _AUFGABE_FORMATS)
+            + "\nБез аргумента — следующий по ротации."
+        )
+        return
+
+    status_msg = await message.reply_text(f"Preparing Aufgabe{(' · ' + fmt) if fmt else ''}...")
+    # Ensure availability of the requested format (or any). For a specific format
+    # with an empty pool, generate just that one on demand so the admin can see it.
     try:
-        have = await asyncio.to_thread(count_available_aufgaben, format=None)
+        have = await asyncio.to_thread(count_available_aufgaben, format=fmt)
     except Exception:
         have = 0
     if have == 0:
-        await prepare_aufgabe_pool_job(context)
+        if fmt:
+            await status_msg.edit_text(f"Generating {fmt} (LLM{'/TTS' if fmt == 'hoerluecke' else ''}{'/DALL·E+vision' if fmt == 'pin' else ''})…")
+            made = await _aufgabe_topup_format(fmt, _AUFGABE_LEVEL.get(fmt, "B2"), 2)
+            if made == 0:
+                await status_msg.edit_text(f"Не удалось сгенерировать «{fmt}» (см. логи). Попробуй ещё раз.")
+                return
+        else:
+            await prepare_aufgabe_pool_job(context)
 
     slot_now = _get_quiz_schedule_now()
     last_error = "no ready aufgabe"
     for _attempt in range(5):
         try:
-            entry = await asyncio.to_thread(pick_next_aufgabe, cooldown_days=0)
+            entry = await asyncio.to_thread(pick_next_aufgabe, cooldown_days=0, format=fmt)
         except Exception as exc:
             await status_msg.edit_text(f"pick_next_aufgabe failed: {exc}")
             return
         if not entry:
-            await status_msg.edit_text("No ready Aufgabe. Pool empty — try again in a moment.")
+            await status_msg.edit_text(f"No ready Aufgabe{(' · ' + fmt) if fmt else ''}. Pool empty — try again in a moment.")
             return
         ok = await send_aufgabe_to_chat(
             context, entry=entry, slot_date=slot_now.date(),
@@ -19230,6 +19265,47 @@ async def admin_aufgabe_send_command(update: Update, context: CallbackContext) -
         last_error = f"send failed for {str(entry.get('aufgabe_id') or '')[:8]}"
         await asyncio.to_thread(mark_aufgabe_send_failed, str(entry.get("aufgabe_id") or ""))
     await status_msg.edit_text(f"Aufgabe send failed ({last_error}).")
+
+
+async def admin_aufgabe_all_command(update: Update, context: CallbackContext) -> None:
+    """Send ONE task of EACH B2+ format (admin showcase). /admin_aufgabe_all
+    Generates a missing format on the fly so all 6 variants can be reviewed."""
+    user    = update.effective_user
+    chat    = update.effective_chat
+    message = update.effective_message
+    if not user or not chat or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+
+    status_msg = await message.reply_text("Отправляю по одному заданию каждого формата…")
+    slot_now = _get_quiz_schedule_now()
+    base_slot = int(slot_now.hour) * 100000 + int(slot_now.minute) * 100
+    sent_formats: list[str] = []
+    for idx, (fmt, level) in enumerate(_AUFGABE_FORMATS):
+        try:
+            have = await asyncio.to_thread(count_available_aufgaben, format=fmt)
+            if have == 0:
+                await _aufgabe_topup_format(fmt, level, 1)
+            entry = await asyncio.to_thread(pick_next_aufgabe, cooldown_days=0, format=fmt)
+            if not entry:
+                logging.info("aufgabe_all: no item for format=%s", fmt)
+                continue
+            ok = await send_aufgabe_to_chat(
+                context, entry=entry, slot_date=slot_now.date(),
+                slot_hour=base_slot + idx,
+                chat_id=int(chat.id), target_user_id=int(user.id),
+            )
+            if ok:
+                await asyncio.to_thread(mark_aufgabe_sent, str(entry.get("aufgabe_id") or ""))
+                sent_formats.append(fmt)
+        except Exception:
+            logging.warning("aufgabe_all: format=%s failed", fmt, exc_info=True)
+    await status_msg.edit_text(
+        "Отправлено: " + (", ".join(sent_formats) if sent_formats else "ничего (см. логи)")
+        + f"\nВсего форматов: {len(_AUFGABE_FORMATS)}"
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -21009,6 +21085,7 @@ def main():
     application.add_handler(CommandHandler("admin_cw_send", admin_crossword_send_command))
     application.add_handler(CommandHandler("admin_anagram_send", admin_anagram_send_command))
     application.add_handler(CommandHandler("admin_aufgabe_send", admin_aufgabe_send_command))
+    application.add_handler(CommandHandler("admin_aufgabe_all", admin_aufgabe_all_command))
     application.add_handler(CommandHandler("poolreport", admin_pool_report_command))
     application.add_handler(CommandHandler("admin_cw_pool", admin_crossword_pool_command))
     application.add_handler(CommandHandler("admin_cw_rerender", admin_crossword_rerender_command))
