@@ -21213,6 +21213,16 @@ def main():
             QUIZ_SCHEDULE_TZ_NAME,
             _aufgabe_enabled(),
         )
+        # -- Aufgabe (B2+ text tasks) pool nightly top-up (03:00) --
+        # Keeps the library of all 6 formats refilled to target whenever it drops
+        # below the lower bound (heavy work — LLM/TTS/DALL-E/vision — runs overnight).
+        scheduler.add_job(
+            lambda: submit_async(prepare_aufgabe_pool_job, CallbackContext(application=application)),
+            "cron",
+            hour=3,
+            minute=0,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
         # -- Hörverständnis: daily at 18:30 --
         _ls_hour, _ls_minute = LISTENING_SLOT_TIME
         scheduler.add_job(
