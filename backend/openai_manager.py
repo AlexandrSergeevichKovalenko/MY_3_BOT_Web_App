@@ -2949,6 +2949,9 @@ Task:
 - One option must be the exact target_text answer for the shown scene. Do not replace it with a paraphrase, synonym, hypernym, or a more concrete alternative.
 - The other 3 must be plausible near-synonyms or semantically adjacent concepts — close enough to be tempting, but clearly wrong for this exact scene.
 - Wrong options must be genuinely wrong for the depicted scene, not merely less precise or based on a second plausible interpretation.
+- CRITICAL — only the correct answer may be visible in the image. NONE of the 3 wrong options may appear or be depicted. Otherwise the quiz is unanswerable. To enforce this: put every one of the 3 distractor words (and their obvious visual forms) into "must_not_show", and make image_prompt explicitly exclude them by name.
+- If the correct answer is a concrete object (a fruit, animal, food, tool, vehicle, plant, etc.), depict that ONE object alone. NEVER show a group, bowl, pile, basket, plate, or collection that could also contain a distractor object. Example: for "die Banane" with distractors Apfel/Birne/Orange → a single banana on a plain surface, and image_prompt must say "no apple, no orange, no pear, no other fruit, only one banana".
+- The 3 distractors must be words for things clearly ABSENT from the image, so that exactly one option (the correct one) is visible.
 - Keep options short: usually 1–5 words.
 - Keep all 4 options in the same answer format. Do not mix full sentences with short noun/prepositional phrases in one quiz.
 - Place the correct option at a RANDOM position: pick correct_option_index from 0, 1, 2, or 3 with roughly equal probability. NEVER default to 0 — vary the position each time.
@@ -2983,10 +2986,10 @@ Rules:
 - Every answer option must be written only in answer_language.
 - If answer_language is "de", never use Russian or Cyrillic in answer_options.
 - question_de must be in German and specific to the depicted scene and the word being practised.
-- image_prompt must describe a single, highly detailed, visually explicit real-world scene.
+- image_prompt must describe a single, highly detailed, visually explicit real-world scene, showing ONLY the correct answer's subject and explicitly excluding every distractor (e.g. "...only one banana, no apple, no orange, no other fruit or object...").
 - scene_core must be a short summary of the one exact situation shown.
 - must_show should list the decisive visible details that make the answer unambiguous.
-- must_not_show should list distracting or misleading details to avoid.
+- must_not_show MUST include all 3 wrong answer_options (and any object easily confused with them), so the renderer never draws a distractor into the image. This is mandatory, not optional.
 - camera_framing should tell the renderer how to frame the scene for clarity.
 - key_disambiguator should explicitly say what visible cue makes the correct answer right and the distractors wrong.
 - explanation must briefly say why the correct answer is right and why the three distractors are wrong or less precise.
