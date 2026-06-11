@@ -18644,41 +18644,50 @@ async def admin_crossword_send_command(update: Update, context: CallbackContext)
 
     status_msg = await message.reply_text("Preparing crossword...")
 
-    try:
-        entry = await asyncio.to_thread(pick_next_crossword, cooldown_days=0)
-    except Exception as exc:
-        await status_msg.edit_text(f"pick_next_crossword failed: {exc}")
-        return
+    # Self-healing: a broken entry (bad image) is advanced+retired and the next
+    # one is tried, so one /admin_cw_send always yields a working crossword.
+    last_error = "no ready crossword"
+    for _attempt in range(6):
+        try:
+            entry = await asyncio.to_thread(pick_next_crossword, cooldown_days=0)
+        except Exception as exc:
+            await status_msg.edit_text(f"pick_next_crossword failed: {exc}")
+            return
+        if not entry:
+            await status_msg.edit_text("No ready crossword. Run /admin_cw_pool first.")
+            return
 
-    if not entry:
-        await status_msg.edit_text("No ready crossword. Run /admin_cw_pool first.")
-        return
+        crossword_id = str(entry.get("crossword_id") or "")
+        object_key = str(entry.get("image_object_key") or "")
+        if not object_key:
+            last_error = f"no image for {crossword_id[:8]}"
+            await asyncio.to_thread(mark_crossword_send_failed, crossword_id)
+            continue
+        try:
+            image_url = r2_public_url(object_key)
+        except Exception as exc:
+            last_error = f"r2_public_url failed: {exc}"
+            await asyncio.to_thread(mark_crossword_send_failed, crossword_id)
+            continue
 
-    object_key = str(entry.get("image_object_key") or "")
-    if not object_key:
-        await status_msg.edit_text(f"No image yet for {entry.get('crossword_id')}. Run /admin_cw_pool.")
-        return
+        slot_now = _get_quiz_schedule_now()
+        ok = await send_crossword_to_chat(
+            context,
+            crossword_entry=entry,
+            image_url=image_url,
+            slot_date=slot_now.date(),
+            slot_hour=int(slot_now.hour) * 10000 + int(slot_now.second) + _attempt,
+            chat_id=int(chat.id),
+            target_user_id=int(user.id),
+        )
+        if ok:
+            await status_msg.delete()
+            return
+        # send_photo failed (e.g. broken image) → advance/retire and try next.
+        last_error = f"send failed for {crossword_id[:8]}"
+        await asyncio.to_thread(mark_crossword_send_failed, crossword_id)
 
-    try:
-        image_url = r2_public_url(object_key)
-    except Exception as exc:
-        await status_msg.edit_text(f"r2_public_url failed: {exc}")
-        return
-
-    slot_now = _get_quiz_schedule_now()
-    ok = await send_crossword_to_chat(
-        context,
-        crossword_entry=entry,
-        image_url=image_url,
-        slot_date=slot_now.date(),
-        slot_hour=int(slot_now.hour) * 10000 + int(slot_now.second),
-        chat_id=int(chat.id),
-        target_user_id=int(user.id),
-    )
-    if ok:
-        await status_msg.delete()
-    else:
-        await status_msg.edit_text("Crossword send failed — check logs.")
+    await status_msg.edit_text(f"Crossword send failed after retries ({last_error}).")
 
 
 # ─────────────────────────────────────────────────────────────
