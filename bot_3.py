@@ -3185,7 +3185,7 @@ def _command_name_from_text(text: str) -> str:
 
 def _build_group_enroll_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("✅ Подтвердить участие", callback_data="groupenroll:confirm")]]
+        [[InlineKeyboardButton("✅ Получать задания здесь, в группе", callback_data="groupenroll:confirm")]]
     )
 
 
@@ -3225,11 +3225,13 @@ async def _send_group_enrollment_prompt(
     group_title = str(chat_title or "").strip()
     prefix = f"Группа: {group_title}\n\n" if group_title else ""
     text = (
-        "🏁 Режим соревнования в Mini App\n\n"
+        "📍 Где получать задания и отчёты\n\n"
         f"{prefix}"
-        "Чтобы участвовать в рейтинге и групповой статистике, нажмите кнопку ниже.\n"
-        "Кто не подтвердит участие, останется в группе, но в соревновании учитываться не будет.\n"
-        "Если вы уже подтверждали участие раньше, повторно нажимать кнопку не нужно."
+        "Нажми кнопку — и твои ежедневные задания, итоги и рейтинг будут приходить "
+        "СЮДА, в группу, вместе с одногруппниками. 👥\n\n"
+        "🙋 Не нажимаешь — играешь индивидуально: всё приходит тебе в личку с ботом.\n"
+        "🏆 Рейтинг и Кубок чемпиона — общие для ВСЕХ игроков бота в любом случае.\n\n"
+        "Если уже нажимал раньше — повторно не нужно."
     )
     sent_message = await context.bot.send_message(
         chat_id=int(chat_id),
@@ -19200,6 +19202,33 @@ async def _send_weekly_champion_job(context: CallbackContext) -> None:
         logging.warning("weekly_champion job failed", exc_info=True)
 
 
+async def group_play_help_command(update: Update, context: CallbackContext) -> None:
+    """Tell an individual (DM) user they can play as a group, and how. /group"""
+    message = update.effective_message
+    if not message:
+        return
+    try:
+        bot_username = context.bot.username or (await context.bot.get_me()).username
+    except Exception:
+        bot_username = "bot"
+    text = (
+        "👥 <b>Играть вместе с друзьями</b>\n\n"
+        "Сейчас задания и отчёты приходят тебе <b>в личку</b> (индивидуально). "
+        "Можно играть <b>командой</b> — в общем чате, видно друг друга, итоги и рейтинг в группе. "
+        "Настроить просто:\n\n"
+        "1️⃣ Создай группу в Telegram.\n"
+        f"2️⃣ Добавь в неё бота @{bot_username} и сделай его <b>администратором</b> "
+        "(нужно право «Закреплять сообщения»).\n"
+        f"3️⃣ Позови друзей. Каждый должен открыть бота @{bot_username} и нажать <b>«Старт»</b> "
+        "(иначе бот не сможет ему писать).\n"
+        "4️⃣ В группе бот закрепит кнопку <b>«Получать задания здесь»</b> — каждый, кто хочет "
+        "играть в группе, жмёт её.\n\n"
+        "Готово! 🎉 Задания, вечерние итоги и рейтинг будут приходить в группу.\n"
+        "🏆 Общий рейтинг и Кубок чемпиона — для всех игроков бота в любом случае."
+    )
+    await message.reply_text(text, parse_mode="HTML")
+
+
 async def admin_champion_command(update: Update, context: CallbackContext) -> None:
     """Post the global quiz champion card on demand. /champion [days]"""
     user    = update.effective_user
@@ -21633,6 +21662,7 @@ def main():
     application.add_handler(CommandHandler("admin_aufgabe_all", admin_aufgabe_all_command))
     application.add_handler(CommandHandler("admin_testalert", admin_testalert_command))
     application.add_handler(CommandHandler("champion", admin_champion_command))
+    application.add_handler(CommandHandler("group", group_play_help_command))
     application.add_handler(CommandHandler("poolreport", admin_pool_report_command))
     application.add_handler(CommandHandler("admin_cw_pool", admin_crossword_pool_command))
     application.add_handler(CommandHandler("admin_cw_rerender", admin_crossword_rerender_command))
