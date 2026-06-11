@@ -7803,6 +7803,10 @@ def ensure_webapp_tables() -> None:
                     UNIQUE (dispatch_id, user_id)
                 );
             """)
+            cursor.execute("""
+                ALTER TABLE bt_3_quiz_freeform_answers
+                ADD COLUMN IF NOT EXISTS card_sent_at TIMESTAMPTZ;
+            """)
             # ── end freeform quiz tables ──────────────────────────────────
 
             # ── Hörverständnis (listening comprehension) tables ───────────
@@ -33320,6 +33324,40 @@ def get_quiz_freeform_answer(*, dispatch_id: int, user_id: int) -> dict | None:
     if not row:
         return None
     return {"answer": row[0], "is_correct": bool(row[1]), "answered_at": row[2]}
+
+
+def get_pending_freeform_result_cards(limit: int = 20) -> list[dict]:
+    """Freeform answers (Mini-App path) whose rich DM result card hasn't been
+    sent yet. Recent only, so old test rows aren't replayed."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT a.id, a.user_id, a.answer, a.is_correct,
+                       d.correct_text, d.word_ru, d.explanation, d.quiz_type
+                FROM bt_3_quiz_freeform_answers a
+                JOIN bt_3_quiz_freeform_dispatches d ON d.id = a.dispatch_id
+                WHERE a.card_sent_at IS NULL
+                  AND a.answered_at > NOW() - INTERVAL '30 minutes'
+                ORDER BY a.answered_at
+                LIMIT %s
+                """,
+                (int(limit),),
+            )
+            rows = cursor.fetchall()
+    cols = ["answer_id", "user_id", "answer", "is_correct",
+            "correct_text", "word_ru", "explanation", "quiz_type"]
+    return [dict(zip(cols, r)) for r in rows]
+
+
+def mark_freeform_card_sent(answer_id: int) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_quiz_freeform_answers SET card_sent_at = NOW() WHERE id = %s",
+                (int(answer_id),),
+            )
+        conn.commit()
 
 
 def retire_all_crossword_bank_entries() -> int:

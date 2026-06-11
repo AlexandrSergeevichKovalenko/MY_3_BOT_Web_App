@@ -273,6 +273,8 @@ from backend.database import (
     record_anagram_dispatch,
     update_anagram_dispatch_telegram_id,
     create_quiz_freeform_dispatch,
+    get_pending_freeform_result_cards,
+    mark_freeform_card_sent,
 )
 from backend.r2_storage import r2_public_url
 from backend.job_queue import (
@@ -18852,6 +18854,47 @@ async def _send_scheduled_anagram(context: CallbackContext) -> None:
     logging.info("ag_slot_done slot=%s/%s card_id=%s sent=%d", slot_date, slot_hour, card_id, sent)
 
 
+async def _send_pending_freeform_cards_job(context: CallbackContext) -> None:
+    """Deliver the rich DM result card for freeform answers submitted via the
+    Mini-App overlay. The overlay grades + records on the backend tier (which
+    can't DM), so the bot polls for unsent cards and sends the same private
+    result + 4 action buttons as the old DM-text flow (process THEN consume)."""
+    try:
+        rows = await asyncio.to_thread(get_pending_freeform_result_cards, 20)
+    except Exception:
+        logging.warning("freeform_card_job: fetch failed", exc_info=True)
+        return
+    for row in rows:
+        try:
+            quiz_data = {
+                "correct_text": str(row.get("correct_text") or ""),
+                "word_ru": str(row.get("word_ru") or ""),
+                "explanation": str(row.get("explanation") or ""),
+                "quiz_type": str(row.get("quiz_type") or ""),
+                "options": [],
+                "correct_option_id": None,
+                "chat_id": int(row.get("user_id") or 0),
+            }
+            await _send_quiz_result_private(
+                context=context,
+                user_id=int(row["user_id"]),
+                quiz_data=quiz_data,
+                is_correct=bool(row.get("is_correct")),
+                selected_text=str(row.get("answer") or ""),
+            )
+        except Exception:
+            logging.warning(
+                "freeform_card_job: send failed answer_id=%s", row.get("answer_id"), exc_info=True
+            )
+            continue
+        try:
+            await asyncio.to_thread(mark_freeform_card_sent, int(row["answer_id"]))
+        except Exception:
+            logging.warning(
+                "freeform_card_job: mark_sent failed answer_id=%s", row.get("answer_id"), exc_info=True
+            )
+
+
 async def admin_anagram_send_command(update: Update, context: CallbackContext) -> None:
     """Send an anagram card to this chat immediately (admin test). /admin_anagram_send"""
     user    = update.effective_user
@@ -20563,6 +20606,7 @@ def main():
                 application.job_queue.run_once(prepare_article_quiz_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 100),
                 application.job_queue.run_once(prepare_crossword_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 130),
                 application.job_queue.run_once(prepare_listening_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 160),
+                application.job_queue.run_repeating(_send_pending_freeform_cards_job, interval=8, first=20),
             ),
             enabled=True,
             category="housekeeping",
