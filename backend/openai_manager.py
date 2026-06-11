@@ -3898,6 +3898,17 @@ from backend.synthetic_load import build_async_openai_client
 client = build_async_openai_client(api_key=os.getenv("OPENAI_API_KEY"), timeout=60)
 logging.info("OpenAI SDK version detected: %s", getattr(openai, "__version__", "unknown"))
 _LAST_LLM_USAGE: contextvars.ContextVar[dict | None] = contextvars.ContextVar("last_llm_usage", default=None)
+# User to attribute bot-tier OpenAI usage/cost to (set per Telegram update). The
+# gateway functions don't take user_id, so callers set this contextvar instead.
+_LLM_BILLING_USER_ID: contextvars.ContextVar[int | None] = contextvars.ContextVar("llm_billing_user_id", default=None)
+
+
+def set_llm_billing_user(user_id) -> None:
+    """Set the user that subsequent OpenAI calls in this task are billed to."""
+    try:
+        _LLM_BILLING_USER_ID.set(int(user_id) if user_id is not None else None)
+    except (TypeError, ValueError):
+        _LLM_BILLING_USER_ID.set(None)
 
 
 def _extract_usage_dict(run_status, *, task_name: str | None = None) -> dict | None:
@@ -3944,41 +3955,46 @@ def _extract_usage_dict(run_status, *, task_name: str | None = None) -> dict | N
     return result
 
 
-def _log_openai_usage_event(task_name, usage) -> None:
-    """Record one OpenAI request (+ token counts) in the billing ledger for every
-    completed gateway call. This is the bot tier's single OpenAI chokepoint — the
-    web tier logs its own events and does NOT go through here, so there is no
-    double counting. Aggregate (user_id=None); fire-and-forget so it never blocks
-    the call. Without this, all bot-tier OpenAI usage (shortcut, lookups,
-    translations, story, …) was invisible to the economics report."""
+def _log_openai_usage_event(task_name, usage, user_id) -> None:
+    """Record one OpenAI request + token counts (with $-cost via price snapshots)
+    in the billing ledger for every completed gateway call. This is the bot tier's
+    single OpenAI chokepoint — the web tier logs its own events and does NOT go
+    through here, so there is no double counting. Attributed to `user_id` (from the
+    billing contextvar) when known. Fire-and-forget so it never blocks the call.
+    Without this, all bot-tier OpenAI usage was invisible to the economics report;
+    tokens_in/out carry price_sku so cost is computed when a snapshot exists."""
     try:
         import threading
         import time as _time
         tn = str(task_name or "llm").strip() or "llm"
+        uid = int(user_id) if user_id is not None else None
         u = usage if isinstance(usage, dict) else {}
         tokens_in = int(u.get("input_tokens") or u.get("prompt_tokens") or 0)
         tokens_out = int(u.get("output_tokens") or u.get("completion_tokens") or 0)
+        model = _get_gateway_model()
 
         def _worker():
             try:
                 from backend.database import log_billing_event
                 seed = f"llm:{tn}:{_time.time_ns()}"
                 log_billing_event(
-                    idempotency_key=f"req:{seed}", user_id=None, action_type=tn,
+                    idempotency_key=f"req:{seed}", user_id=uid, action_type=tn,
                     provider="openai", units_type="requests", units_value=1.0,
-                    status="estimated",
+                    status="estimated", metadata={"model": model, "tier": "bot"},
                 )
                 if tokens_in > 0:
                     log_billing_event(
-                        idempotency_key=f"tin:{seed}", user_id=None, action_type=tn,
+                        idempotency_key=f"tin:{seed}", user_id=uid, action_type=tn,
                         provider="openai", units_type="tokens_in", units_value=float(tokens_in),
-                        status="estimated",
+                        price_provider="openai", price_sku=f"{model}_input", price_unit="tokens_in",
+                        status="estimated", metadata={"model": model, "tier": "bot"},
                     )
                 if tokens_out > 0:
                     log_billing_event(
-                        idempotency_key=f"tout:{seed}", user_id=None, action_type=tn,
+                        idempotency_key=f"tout:{seed}", user_id=uid, action_type=tn,
                         provider="openai", units_type="tokens_out", units_value=float(tokens_out),
-                        status="estimated",
+                        price_provider="openai", price_sku=f"{model}_output", price_unit="tokens_out",
+                        status="estimated", metadata={"model": model, "tier": "bot"},
                     )
             except Exception:
                 logging.debug("openai usage logging failed task=%s", tn, exc_info=True)
@@ -3991,7 +4007,11 @@ def _log_openai_usage_event(task_name, usage) -> None:
 def _store_last_usage(run_status, *, task_name: str | None = None) -> dict | None:
     usage = _extract_usage_dict(run_status, task_name=task_name)
     _LAST_LLM_USAGE.set(usage)
-    _log_openai_usage_event(task_name, usage)
+    try:
+        billing_uid = _LLM_BILLING_USER_ID.get()
+    except Exception:
+        billing_uid = None
+    _log_openai_usage_event(task_name, usage, billing_uid)
     return usage
 
 

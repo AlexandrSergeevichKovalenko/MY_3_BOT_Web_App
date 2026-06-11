@@ -19267,6 +19267,17 @@ async def admin_aufgabe_send_command(update: Update, context: CallbackContext) -
     await status_msg.edit_text(f"Aufgabe send failed ({last_error}).")
 
 
+async def _set_billing_user_context(update: Update, context: CallbackContext) -> None:
+    """group=-1: tag this update's task with the acting user so bot-tier OpenAI
+    usage/cost is attributed to them (read by openai_manager._store_last_usage)."""
+    try:
+        from backend.openai_manager import set_llm_billing_user
+        u = update.effective_user
+        set_llm_billing_user(int(u.id) if u else None)
+    except Exception:
+        pass
+
+
 async def admin_aufgabe_all_command(update: Update, context: CallbackContext) -> None:
     """Send ONE task of EACH B2+ format (admin showcase). /admin_aufgabe_all
     Generates a missing format on the fly so all 6 variants can be reviewed."""
@@ -21006,6 +21017,8 @@ def main():
     application.add_handler(ChatMemberHandler(handle_bot_group_membership, chat_member_types=ChatMemberHandler.MY_CHAT_MEMBER), group=-4)
     application.add_handler(ChatMemberHandler(track_group_member_context, chat_member_types=ChatMemberHandler.CHAT_MEMBER), group=-3)
     application.add_handler(TypeHandler(Update, enforce_user_access, block=True), group=-2)
+    # Attribute any OpenAI usage during this update to the acting user (bot tier).
+    application.add_handler(TypeHandler(Update, _set_billing_user_context, block=True), group=-1)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("request_access", request_access))
     application.add_handler(CommandHandler("allow", allow_user_command))

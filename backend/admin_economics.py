@@ -354,6 +354,45 @@ def _user_activity(target_day: date, tz_name: str, *, limit: int = 15) -> list[d
     return result[:limit]
 
 
+def _openai_by_user(target_day: date, tz_name: str, *, limit: int = 15) -> list[dict[str, Any]]:
+    """Per-user OpenAI usage + $-cost for the day (provider='openai' billing rows).
+    Now that the bot tier logs usage with the acting user_id, this attributes
+    requests/tokens/cost per user. Cost is in the billing currency (USD default);
+    0 until price snapshots exist for the gateway model's input/output SKUs."""
+    rows_out: list[dict[str, Any]] = []
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id,
+                       COUNT(*) FILTER (WHERE units_type = 'requests') AS requests,
+                       COALESCE(SUM(units_value) FILTER (WHERE units_type IN ('tokens_in', 'tokens_out')), 0) AS tokens,
+                       COALESCE(SUM(cost_amount), 0) AS cost
+                FROM bt_3_billing_events
+                WHERE provider = 'openai'
+                  AND user_id IS NOT NULL
+                  AND (event_time AT TIME ZONE %s)::date = %s
+                GROUP BY user_id
+                ORDER BY cost DESC, requests DESC
+                LIMIT %s;
+                """,
+                (tz_name, target_day, int(limit)),
+            )
+            for row in cursor.fetchall() or []:
+                if not row or row[0] is None:
+                    continue
+                try:
+                    plan = str(resolve_entitlement(user_id=int(row[0]), tz=tz_name).get("effective_mode") or "free").lower()
+                except Exception:
+                    plan = "free"
+                rows_out.append({
+                    "user_id": int(row[0]), "plan": plan,
+                    "requests": int(row[1] or 0), "tokens": int(row[2] or 0),
+                    "cost": float(row[3] or 0.0),
+                })
+    return rows_out
+
+
 def _gpt_helper_usage(target_day: date, tz_name: str) -> dict[str, int]:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -450,6 +489,7 @@ def build_admin_economics_report_payload(
         "user_stats": _user_stats(day, tz_name),
         "user_activity": _user_activity(day, tz_name),
         "openai_stats": _openai_stats(day, tz_name),
+        "openai_by_user": _openai_by_user(day, tz_name),
         "limit_utilization": _limit_utilization(day, tz_name),
         "gpt_helper_usage": _gpt_helper_usage(day, tz_name),
         "top_consumers": _top_consumers(day, tz_name),
@@ -516,10 +556,24 @@ def format_admin_economics_report(payload: dict[str, Any]) -> str:
         f"Cache hit ratio: {_fmt_num(float(openai_stats.get('estimated_cache_hit_ratio') or 0) * 100)}%",
         f"DB cache hit ratio: {_fmt_num(float(openai_stats.get('estimated_db_cache_hit_ratio') or 0) * 100)}%",
         f"OpenAI avoided by cache: {_fmt_num(openai_stats.get('openai_requests_avoided_by_cache'))}",
-        "",
-        "📏 Limits",
         ]
     )
+    by_user = payload.get("openai_by_user") or []
+    total_cost = sum(float(it.get("cost") or 0.0) for it in by_user)
+    total_reqs = sum(int(it.get("requests") or 0) for it in by_user)
+    lines.extend([
+        "",
+        "💸 OpenAI by user (cost)",
+        f"Σ ${total_cost:.4f} · {total_reqs} req",
+    ])
+    if not by_user:
+        lines.append("- none")
+    for it in by_user:
+        lines.append(
+            f"- {int(it.get('user_id') or 0)} [{str(it.get('plan') or 'free').upper()}] — "
+            f"${float(it.get('cost') or 0.0):.4f} · {_fmt_num(it.get('requests'))} req · {_fmt_num(it.get('tokens'))} tok"
+        )
+    lines.extend(["", "📏 Limits"])
     trend = payload.get("trend_7d") or {}
     for item in payload.get("limit_utilization") or []:
         feature = str(item.get("feature_code") or "")
