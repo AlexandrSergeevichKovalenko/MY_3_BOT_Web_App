@@ -19244,6 +19244,7 @@ async def build_pool_inventory_report(context: CallbackContext) -> str:
         count_aufgaben_by_format, count_available_rebuses, count_available_article_quiz_entries,
         count_crossword_bank_entries, count_anagram_cards, count_listening_bank_entries,
         count_prepared_telegram_quizzes, count_ready_visual_riddle_templates,
+        pool_demand_last_24h,
     )
     try:
         targets = await _collect_quiz_delivery_user_targets(context)
@@ -19303,6 +19304,24 @@ async def build_pool_inventory_report(context: CallbackContext) -> str:
     lines.append(row("🃏", "Prepared-Quiz (poll)", prep, None, "—"))
     lines.append(row("🖼", "Visual-Riddle", vr, VISUAL_RIDDLE_POOL_TARGET, len(VISUAL_RIDDLE_SLOT_TIMES), _visual_riddles_enabled()))
     lines.append("🖼 <b>Image-Quiz</b>: ретайрнут <i>(off)</i>")
+
+    # Actual supply vs demand over the last 24h (sent items / answers given)
+    try:
+        demand = await asyncio.to_thread(pool_demand_last_24h)
+        s = demand.get("sent", {})
+        a = demand.get("answered", {})
+        lines.append("")
+        lines.append("📈 <b>За 24ч (факт)</b> — отправлено · отвечено")
+        lines.append(f"🆕 Aufgabe: {int(s.get('aufgabe', 0))} · {int(a.get('au', 0))}")
+        lines.append(f"🧩 Rebus: {int(s.get('rebus', 0))} · {int(a.get('rb', 0))}")
+        lines.append(f"🔤 Kreuzwort: {int(s.get('crossword', 0))} · {int(a.get('cw', 0))}")
+        lines.append(f"🇩🇪 Artikel: {int(s.get('article', 0))} · —")
+        lines.append(f"🔀 Anagramm: {int(s.get('anagram', 0))} · {int(a.get('ag', 0))}")
+        lines.append(f"🎧 Hören: {int(s.get('listening', 0))} · {int(a.get('ls', 0))}")
+        lines.append(f"✍️ Freeform: — · {int(a.get('qf', 0))}")
+    except Exception:
+        logging.warning("pool_report: demand block failed", exc_info=True)
+
     return "\n".join(lines)
 
 

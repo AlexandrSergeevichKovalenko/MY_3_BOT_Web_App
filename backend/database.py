@@ -33772,6 +33772,45 @@ def count_aufgaben_by_format() -> dict:
             return {str(r[0]): int(r[1]) for r in (cursor.fetchall() or [])}
 
 
+def pool_demand_last_24h() -> dict:
+    """Actual supply vs demand in the last 24h for the daily pool report:
+    - "sent": distinct items dispatched per game (1 slot = 1 item, counted once
+      regardless of how many recipients got it);
+    - "answered": answers recorded per game kind from the unified challenge ledger.
+    """
+    sent: dict[str, int] = {}
+    answered: dict[str, int] = {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            sent_queries = {
+                "rebus": "SELECT COUNT(DISTINCT (slot_date, slot_hour)) FROM bt_3_rebus_dispatches WHERE sent_at >= NOW() - INTERVAL '24 hours'",
+                "article": "SELECT COUNT(DISTINCT (slot_date, slot_hour)) FROM bt_3_article_quiz_dispatches WHERE sent_at >= NOW() - INTERVAL '24 hours'",
+                "crossword": "SELECT COUNT(DISTINCT (slot_date, slot_hour)) FROM bt_3_crossword_dispatches WHERE sent_at >= NOW() - INTERVAL '24 hours'",
+                "anagram": "SELECT COUNT(DISTINCT (slot_date, slot_hour)) FROM bt_3_anagram_dispatches WHERE sent_at >= NOW() - INTERVAL '24 hours'",
+                "aufgabe": "SELECT COUNT(DISTINCT (slot_date, slot_hour)) FROM bt_3_aufgabe_dispatches WHERE sent_at >= NOW() - INTERVAL '24 hours'",
+                "listening": "SELECT COUNT(DISTINCT slot_date) FROM bt_3_listening_dispatches WHERE sent_at >= NOW() - INTERVAL '24 hours'",
+            }
+            for game, q in sent_queries.items():
+                try:
+                    cursor.execute(q)
+                    sent[game] = int((cursor.fetchone() or [0])[0])
+                except Exception:
+                    sent[game] = 0
+            try:
+                cursor.execute(
+                    """
+                    SELECT split_part(challenge_key, ':', 1) AS kind, COUNT(*)
+                    FROM bt_3_challenge_results
+                    WHERE created_at >= NOW() - INTERVAL '24 hours'
+                    GROUP BY 1
+                    """
+                )
+                answered = {str(r[0]): int(r[1]) for r in (cursor.fetchall() or [])}
+            except Exception:
+                answered = {}
+    return {"sent": sent, "answered": answered}
+
+
 def pick_next_listening(*, cooldown_days: int = 7) -> dict | None:
     """Pick the oldest ready listening entry not sent within cooldown."""
     with get_db_connection_context() as conn:
