@@ -257,31 +257,78 @@ def _load_crossword_hidden(dispatch_id: int) -> list[dict] | None:
 
 
 def load_crossword_task(*, dispatch_id: int, user_id: int) -> dict | None:
-    """Metadata to render N crossword inputs (clue + length, never the word),
-    plus the stored result if the user already answered."""
-    hidden = _load_crossword_hidden(dispatch_id)
+    """Spoiler-safe interactive grid: given letters (already visible in the image)
+    are shown; hidden cells are empty/fillable; the answer letters never leave the
+    server. Plus per-hidden-word clue + cells (for highlighting + submission), and
+    the stored result if the user already answered."""
+    from backend.database import get_crossword_dispatch_by_id, get_crossword_answers
+    dispatch = get_crossword_dispatch_by_id(int(dispatch_id))
+    if not dispatch:
+        return None
+    words_json = list(dispatch.get("words_json") or [])
+    grid_json = list(dispatch.get("grid_json") or [])
+    hidden = sorted([w for w in words_json if w.get("hidden")], key=lambda x: x.get("number", 0))
     if not hidden:
         return None
 
-    from backend.database import get_crossword_answers
-    existing = get_crossword_answers(dispatch_id=int(dispatch_id), user_id=int(user_id))
+    from backend.crossword_renderer import _compute_revealed_cells, _word_start_numbers
+    revealed = _compute_revealed_cells(words_json)
+    starts = _word_start_numbers(words_json)
+    rows = len(grid_json)
+    cols = max((len(r) for r in grid_json), default=0)
+    grid = []
+    for r in range(rows):
+        grow = grid_json[r] if r < len(grid_json) else []
+        row_cells = []
+        for c in range(cols):
+            letter = grow[c] if c < len(grow) else None
+            if not letter:
+                row_cells.append(None)  # blocked cell
+                continue
+            cell = {}
+            if (r, c) in revealed:
+                cell["l"] = str(letter)   # given letter (already visible)
+            else:
+                cell["e"] = True          # empty / fillable (answer withheld)
+            nums = starts.get((r, c))
+            if nums:
+                cell["n"] = min(nums)
+            row_cells.append(cell)
+        grid.append(row_cells)
 
+    def _word_cells(w):
+        r, c = int(w["row"]), int(w["col"])
+        dr, dc = (0, 1) if w.get("direction") == "across" else (1, 0)
+        return [[r + dr * i, c + dc * i] for i in range(len(str(w.get("word") or "")))]
+
+    words = [
+        {
+            "number": w.get("number"),
+            "direction": w.get("direction", "across"),
+            "clue_de": str(w.get("clue_de") or ""),
+            "clue_ru": str(w.get("clue_ru") or ""),
+            "length": len(str(w.get("word") or "")),
+            "cells": _word_cells(w),
+        }
+        for w in hidden
+    ]
+
+    existing = get_crossword_answers(dispatch_id=int(dispatch_id), user_id=int(user_id))
     meta = {
         "kind": "crossword",
-        "words": [
-            {
-                "number": hw["number"],
-                "direction": hw["direction"],
-                "clue_de": hw["clue_de"],
-                "clue_ru": hw["clue_ru"],
-                "length": len(hw["word"]),
-            }
-            for hw in hidden
-        ],
+        "topic": str(dispatch.get("topic") or ""),
+        "rows": rows, "cols": cols, "grid": grid,
+        "words": words,
         "already_answered": bool(existing),
     }
     if existing:
-        meta["result"] = _crossword_result_from_stored(hidden, existing)
+        hidden_for_result = [
+            {"number": w.get("number"), "word": str(w.get("word") or ""),
+             "direction": w.get("direction", "across"),
+             "clue_de": str(w.get("clue_de") or ""), "clue_ru": str(w.get("clue_ru") or "")}
+            for w in hidden
+        ]
+        meta["result"] = _crossword_result_from_stored(hidden_for_result, existing)
     return meta
 
 

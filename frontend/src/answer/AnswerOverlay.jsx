@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import './answer.css';
 import AnagramGame from './AnagramGame.jsx';
 import ListeningGame from './ListeningGame.jsx';
+import CrosswordGrid from './CrosswordGrid.jsx';
 
 /**
  * Lightweight in-place answer overlay for in-group tasks (rebus + crossword).
@@ -275,6 +276,7 @@ export default function AnswerOverlay({ startParam }) {
   const isAnagram = kind === 'ag';
   const isListening = kind === 'ls';
   const isFreeform = kind === 'qf';
+  const isCrossword = kind === 'cw';
   const { eyebrow, title: heading } = KIND_META[kind] || KIND_META.rb;
 
   // Fatal (bad link / task missing) — only when we have nothing to show.
@@ -326,6 +328,25 @@ export default function AnswerOverlay({ startParam }) {
           <><div className="ans-skel" /><div className="ans-skel sm" /><div className="ans-skel" /></>
         ) : (
           <ListeningGame task={meta} onSubmit={submitListening} submitting={submitting} />
+        )}
+        {error ? <p className="ans-error">{error}</p> : null}
+      </div></div>
+    );
+  }
+
+  // Crossword input view — interactive grid + on-screen keyboard.
+  if (isCrossword) {
+    return (
+      <div className="ans-root"><div className="ans-card">
+        <div className="ans-head">
+          <span className="ans-eyebrow">{eyebrow}</span>
+          <h1 className="ans-title">{heading}</h1>
+          {meta?.topic ? <p className="ans-sub">📌 {meta.topic} — fülle die leeren Felder ✍️</p> : null}
+        </div>
+        {metaLoading || !meta || !meta.grid ? (
+          <><div className="ans-skel" /><div className="ans-skel sm" /><div className="ans-skel" /></>
+        ) : (
+          <CrosswordGrid task={meta} onSubmit={(a) => submit(a)} submitting={submitting} />
         )}
         {error ? <p className="ans-error">{error}</p> : null}
       </div></div>
