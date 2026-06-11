@@ -19213,6 +19213,7 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
     it = it or {}
     common = {
         "erklaerung": str(it.get("erklaerung") or "").strip(),
+        "tip": str(it.get("tip") or "").strip(),
         "hint_ru": str(it.get("hint_ru") or "").strip(),
     }
     if fmt in ("cloze", "wortbildung"):
@@ -19250,13 +19251,22 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
         return {"woerter": woerter, "error_index": error_index, "correct_word": correct_word,
                 "aliases": [str(a) for a in (it.get("aliases") or []) if str(a).strip()], **common}
     if fmt == "hoerluecke":
+        # New multi-gap format: 3+ sentence text + ordered gaps. The audio (full text)
+        # is synthesized in the pool job.
         satz_voll = str(it.get("satz_voll") or "").strip()
-        satz_luecke = str(it.get("satz_luecke") or "").strip()
-        correct = str(it.get("correct") or "").strip()
-        if not satz_voll or not correct or "_____" not in satz_luecke:
+        transcript = str(it.get("transcript") or "").strip()
+        raw_gaps = it.get("gaps") or []
+        gaps = []
+        for g in raw_gaps:
+            if not isinstance(g, dict):
+                continue
+            gc = str(g.get("correct") or "").strip()
+            if not gc:
+                continue
+            gaps.append({"correct": gc, "aliases": [str(a) for a in (g.get("aliases") or []) if str(a).strip()]})
+        if not satz_voll or not gaps or transcript.count("_____") != len(gaps):
             return None
-        return {"satz_voll": satz_voll, "satz_luecke": satz_luecke, "correct": correct,
-                "aliases": [str(a) for a in (it.get("aliases") or []) if str(a).strip()], **common}
+        return {"satz_voll": satz_voll, "transcript": transcript, "gaps": gaps, **common}
     if fmt == "pin":
         # image_object_key + bbox are filled in the pool job (DALL-E + vision).
         question_de = str(it.get("question_de") or "").strip()
@@ -19264,8 +19274,15 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
         image_prompt = str(it.get("image_prompt") or "").strip()
         if not question_de or not target_label or not image_prompt:
             return None
+        article = str(it.get("article") or "").strip().lower()
+        if article not in ("der", "die", "das"):
+            # derive from the article in target_label, else unusable (no guess)
+            first = target_label.split()[0].lower() if target_label.split() else ""
+            article = first if first in ("der", "die", "das") else ""
+            if not article:
+                return None
         return {"question_de": question_de, "target_label": target_label,
-                "image_prompt": image_prompt, **common}
+                "image_prompt": image_prompt, "article": article, **common}
     return None
 
 

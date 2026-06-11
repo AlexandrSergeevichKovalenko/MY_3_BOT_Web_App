@@ -727,6 +727,9 @@ def evaluate_freeform(*, dispatch_id: int, user_id: int, raw_input: str) -> dict
 
 def _aufgabe_correct_answer(payload: dict) -> str:
     """The canonical answer to show after answering (per format)."""
+    gaps = payload.get("gaps")
+    if isinstance(gaps, list) and gaps:  # multi-gap hörlücke
+        return " · ".join(str(g.get("correct") or "") for g in gaps)
     correct = str(payload.get("correct") or "").strip()
     if correct:
         return correct
@@ -749,6 +752,7 @@ def _aufgabe_result_payload(dispatch: dict, *, is_correct: bool, already_answere
         "correct_word": _aufgabe_correct_answer(payload),  # reuses AnagramResult FE
         "hint_ru": str(payload.get("hint_ru") or ""),
         "explanation": str(payload.get("erklaerung") or payload.get("explanation") or ""),
+        "tip": str(payload.get("tip") or ""),
         "already_answered": bool(already_answered),
         "saveable_words": [],
     }
@@ -782,7 +786,13 @@ def load_aufgabe_task(*, dispatch_id: int, user_id: int) -> dict | None:
     elif fmt == "error":
         meta["woerter"] = [str(w) for w in (payload.get("woerter") or [])]
     elif fmt == "hoerluecke":
-        meta["satz_luecke"] = str(payload.get("satz_luecke") or "")
+        gaps = payload.get("gaps")
+        if isinstance(gaps, list) and gaps:  # new multi-gap format
+            meta["transcript"] = str(payload.get("transcript") or "")
+            meta["gap_count"] = len(gaps)
+        else:  # backward-compat single gap
+            meta["satz_luecke"] = str(payload.get("satz_luecke") or "")
+            meta["gap_count"] = 1
         meta["audio_url"] = ""
         key = str(payload.get("audio_object_key") or "")
         if key:
@@ -793,6 +803,7 @@ def load_aufgabe_task(*, dispatch_id: int, user_id: int) -> dict | None:
                 meta["audio_url"] = ""
     elif fmt == "pin":
         meta["question_de"] = str(payload.get("question_de") or "")
+        meta["needs_article"] = bool(str(payload.get("article") or "").strip())
         meta["image_url"] = ""
         key = str(payload.get("image_object_key") or "")
         if key:
@@ -826,21 +837,41 @@ def _check_aufgabe(fmt: str, payload: dict, raw_input: str) -> bool:
         candidates = [str(payload.get("correct_word") or "")] + [str(a) for a in (payload.get("aliases") or [])]
         return any(check_quiz_freeform_deterministic(user_text=correction, correct_text=c) for c in candidates if str(c).strip())
     if fmt == "pin":
-        # raw_input = "x,y" normalized tap; correct if inside the target bbox (+margin)
+        # raw_input = "x,y" or "x,y|article": tap inside the bbox AND (if required) the article.
+        coords, _, article = answer.partition("|")
         bbox = payload.get("bbox")
         if not (isinstance(bbox, list) and len(bbox) == 4):
             return False
         try:
-            x_str, _, y_str = answer.partition(",")
+            x_str, _, y_str = coords.partition(",")
             x, y = float(x_str), float(y_str)
             bx, by, bw, bh = (float(v) for v in bbox)
         except (TypeError, ValueError):
             return False
         m = 0.06  # forgiving margin so a near-miss on a clear object still counts
-        return (bx - m) <= x <= (bx + bw + m) and (by - m) <= y <= (by + bh + m)
+        in_box = (bx - m) <= x <= (bx + bw + m) and (by - m) <= y <= (by + bh + m)
+        req_article = str(payload.get("article") or "").strip().lower()
+        if req_article:
+            ok_article = check_quiz_freeform_deterministic(user_text=article.strip(), correct_text=req_article)
+            return in_box and ok_article
+        return in_box
+    if fmt == "hoerluecke":
+        gaps = payload.get("gaps")
+        if isinstance(gaps, list) and gaps:  # multi-gap: answers joined by "|", in order
+            answers = answer.split("|")
+            if len(answers) != len(gaps):
+                return False
+            for i, g in enumerate(gaps):
+                cands = [str(g.get("correct") or "")] + [str(a) for a in (g.get("aliases") or [])]
+                if not any(check_quiz_freeform_deterministic(user_text=answers[i], correct_text=c) for c in cands if str(c).strip()):
+                    return False
+            return True
+        # backward-compat single gap
+        candidates = [str(payload.get("correct") or "")] + [str(a) for a in (payload.get("aliases") or [])]
+        return any(check_quiz_freeform_deterministic(user_text=answer, correct_text=c) for c in candidates if str(c).strip())
     if fmt == "transform":
         candidates = [str(a) for a in (payload.get("accepted") or [])]
-    else:  # cloze, wortbildung, hoerluecke
+    else:  # cloze, wortbildung
         candidates = [str(payload.get("correct") or "")]
         candidates += [str(a) for a in (payload.get("aliases") or [])]
     return any(

@@ -135,6 +135,7 @@ function AnagramResult({ result }) {
         {result.hint_ru ? <span className="ans-meaning"> · {result.hint_ru}</span> : null}
       </div>
       {result.explanation ? <div className="ans-explain">{result.explanation}</div> : null}
+      {result.tip ? <div className="ans-tip">💡 {result.tip}</div> : null}
     </div>
   );
 }

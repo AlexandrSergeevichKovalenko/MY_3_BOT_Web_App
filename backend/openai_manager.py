@@ -2870,14 +2870,18 @@ Regeln:
 - Es muss GENAU EINE eindeutig richtige Lösung geben (open cloze: keine Auswahloptionen).
 - "correct" ist das eine fehlende Wort (oder die kurze feste Wortgruppe), exakt so, wie es in die Lücke gehört.
 - "aliases": zulässige gleichwertige Schreibweisen/Varianten (z. B. Groß-/Kleinschreibung-neutral wird separat behandelt; hier nur echte Synonyme/Varianten, sonst leere Liste).
-- "erklaerung": 1 kurzer Satz auf Russisch, warum diese Lösung korrekt ist (Regel/Grund).
+- "erklaerung": klare, „lehrbuchartige“ Erklärung auf Russisch (2–3 Sätze), WARUM diese
+  Lösung korrekt ist — benenne die Regel, zeig den Mechanismus, nenne ggf. die typische
+  Falle/Ausnahme. Verständlich und konkret, nicht trocken.
+- "tip": EIN kurzer russischer Merk-Tipp mit Gefühl (Eselsbrücke/Bild/Faustregel), damit
+  man es FÜHLT statt auswendig zu lernen. Ohne das Emoji selbst.
 - "hint_ru": sehr kurzer russischer Hinweis, WAS geprüft wird (z. B. "союз уступки", "предлог с дательным").
 - Der Satz muss ohne Bild verständlich sein und natürlich klingen.
 
 Gib NUR STRICT JSON zurück:
 {
   "items": [
-    {"satz": "Satz mit _____ Lücke.", "correct": "...", "aliases": ["..."], "erklaerung": "...", "hint_ru": "..."}
+    {"satz": "Satz mit _____ Lücke.", "correct": "...", "aliases": ["..."], "erklaerung": "...", "tip": "...", "hint_ru": "..."}
   ]
 }
 Erzeuge genau "count" Aufgaben, alle verschieden, ohne Markdown.
@@ -2899,11 +2903,13 @@ Regeln:
 - "stamm" = das gegebene Ausgangswort.
 - "correct" = die exakte Form, die in die Lücke gehört (inkl. nötiger Endung).
 - "aliases" = nur echte gleichwertige Schreibvarianten, sonst [].
-- "erklaerung" = 1 kurzer Satz auf Russisch (welche Ableitung/Regel).
+- "erklaerung" = „lehrbuchartige“ Erklärung auf Russisch (2–3 Sätze): welche Ableitung
+  (Suffix/Präfix/Nominalisierung) und warum diese Form/Endung. Verständlich, nicht trocken.
+- "tip" = EIN kurzer russischer Merk-Tipp mit Gefühl (Eselsbrücke/Faustregel). Ohne Emoji.
 - "hint_ru" = sehr kurzer russischer Hinweis (z. B. "существительное от глагола").
 
 Gib NUR STRICT JSON:
-{"items":[{"satz":"… _____ …","stamm":"frei","correct":"Freiheit","aliases":[],"erklaerung":"…","hint_ru":"…"}]}
+{"items":[{"satz":"… _____ …","stamm":"frei","correct":"Freiheit","aliases":[],"erklaerung":"…","tip":"…","hint_ru":"…"}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
 "aufgabe_transform": """
@@ -2924,11 +2930,14 @@ Regeln (WICHTIG für faire automatische Bewertung):
 - "accepted" = VOLLSTÄNDIGE Liste ALLER natürlichen korrekten Füllungen der Lücke
   (jede 2–5 Wörter, jede mit dem Schlüsselwort, alle bedeutungsgleich). Nenne wirklich
   alle gängigen Varianten (Wortstellung/Synonyme), damit eine exakte Prüfung fair ist.
-- "erklaerung" = 1 kurzer Satz auf Russisch + der vollständige korrekte Zielsatz.
+- "erklaerung" = „lehrbuchartige“ Erklärung auf Russisch (2–3 Sätze): welche Struktur/Regel
+  (z. B. trotz + Genitiv) und warum sie die Bedeutung erhält; nenne den vollständigen
+  korrekten Zielsatz. Verständlich, nicht trocken.
+- "tip" = EIN kurzer russischer Merk-Tipp mit Gefühl (Eselsbrücke/Faustregel). Ohne Emoji.
 - "hint_ru" = sehr kurzer russischer Hinweis (welche Struktur).
 
 Gib NUR STRICT JSON:
-{"items":[{"original":"…","schluesselwort":"trotz","target_prefix":"","target_suffix":"gingen wir spazieren.","accepted":["Trotz des Regens"],"erklaerung":"…","hint_ru":"…"}]}
+{"items":[{"original":"…","schluesselwort":"trotz","target_prefix":"","target_suffix":"gingen wir spazieren.","accepted":["Trotz des Regens"],"erklaerung":"…","tip":"…","hint_ru":"…"}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
 "aufgabe_error": """
@@ -2947,57 +2956,70 @@ Regeln:
 - "correct_word" = das korrigierte Token (nur dieses eine Wort).
 - "aliases" = echte gleichwertige Korrekturvarianten, sonst [].
 - Es darf NUR EINEN eindeutigen Fehler geben; alle anderen Wörter sind korrekt.
-- "erklaerung" = 1 kurzer Satz auf Russisch: warum falsch + die richtige Form.
+- "erklaerung" = „lehrbuchartige“ Erklärung auf Russisch (2–3 Sätze): warum das Wort falsch
+  ist, welche Regel greift und wie die richtige Form lautet. Verständlich, nicht trocken.
+- "tip" = EIN kurzer russischer Merk-Tipp mit Gefühl (Eselsbrücke/Faustregel). Ohne Emoji.
 - "hint_ru" = sehr kurzer russischer Hinweis (z. B. "падеж после предлога").
 
 Gib NUR STRICT JSON:
-{"items":[{"woerter":["Ich","vertraue","auf","meinem","Freund."],"error_index":3,"correct_word":"meinen","aliases":[],"erklaerung":"…","hint_ru":"…"}]}
+{"items":[{"woerter":["Ich","vertraue","auf","meinem","Freund."],"error_index":3,"correct_word":"meinen","aliases":[],"erklaerung":"…","tip":"…","hint_ru":"…"}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
 "aufgabe_hoerluecke": """
-Du erstellst deutsche Hörlücken-Aufgaben (Audio + ein fehlendes Wort) für B2–C1.
+Du erstellst deutsche Hörlücken-Aufgaben (Audio + mehrere fehlende Wörter) für B2–C1.
 
 Eingabe-JSON: {"count": <int>, "level": "B2"|"C1"}.
 
-Jede Aufgabe: EIN natürlicher, gut hörbarer deutscher Satz (8–16 Wörter). Genau EIN
-inhaltlich/grammatisch tragendes Wort wird zur Lücke. Der/die Lernende HÖRT den
-ganzen Satz und tippt das fehlende Wort.
+Jede Aufgabe: ein kurzer, zusammenhängender, gut hörbarer Text aus 3–4 Sätzen. In
+JEDEM Satz wird GENAU EIN grammatisch tragendes Wort zur Lücke — bevorzugt eine
+Präposition, ein Verb mit Präposition (sich freuen ___ ), ein Kasus-/Artikelwort
+oder ein Konnektor. Es geht um HÖRVERSTEHEN + GRAMMATIK, nicht um Inhaltsvokabeln.
+Der/die Lernende HÖRT den ganzen Text und tippt die fehlenden Wörter der Reihe nach.
 
 Regeln:
-- "satz_voll" = der vollständige Satz (wird als Audio vorgelesen) — OHNE Lücke.
-- "satz_luecke" = derselbe Satz mit "_____" anstelle des einen fehlenden Wortes.
-- "correct" = das fehlende Wort, exakt.
-- "aliases" = echte Schreibvarianten, sonst [].
-- Genau EINE richtige Lösung; das Wort muss aus dem Hören eindeutig erkennbar sein.
-- "erklaerung" = 1 kurzer Satz auf Russisch (Bedeutung/Regel).
+- "satz_voll" = der vollständige Text (3–4 Sätze), wird als Audio vorgelesen — OHNE Lücken.
+- "transcript" = derselbe Text, jede Lücke als "_____" (in derselben Reihenfolge wie "gaps").
+- "gaps" = Liste IN REIHENFOLGE; je Lücke {"correct": "...", "aliases": [...]}. 3–4 Lücken.
+- Jede Lücke hat GENAU EINE richtige Lösung, aus dem Hören eindeutig erkennbar.
+- "erklaerung" = „lehrbuchartige“ Erklärung auf Russisch (2–3 Sätze): welche Grammatik die
+  Lücken prüfen (z. B. Verb+Präposition, Kasus) und warum. Verständlich, nicht trocken.
+- "tip" = EIN kurzer russischer Merk-Tipp mit Gefühl (Eselsbrücke/Faustregel). Ohne Emoji.
 - "hint_ru" = sehr kurzer russischer Hinweis.
 
 Gib NUR STRICT JSON:
-{"items":[{"satz_voll":"Trotz des schlechten Wetters fand das Konzert im Freien statt.","satz_luecke":"Trotz des schlechten Wetters fand das Konzert im _____ statt.","correct":"Freien","aliases":[],"erklaerung":"…","hint_ru":"…"}]}
+{"items":[{"satz_voll":"Ich freue mich sehr auf das Wochenende. Am Samstag treffe ich mich mit Freunden im Park. Wir haben schon lange darüber gesprochen.","transcript":"Ich freue mich sehr _____ das Wochenende. Am Samstag treffe ich mich mit Freunden _____ Park. Wir haben schon lange _____ gesprochen.","gaps":[{"correct":"auf","aliases":[]},{"correct":"im","aliases":[]},{"correct":"darüber","aliases":[]}],"erklaerung":"…","tip":"…","hint_ru":"…"}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
 "aufgabe_pin_blueprint": """
-Du planst "Tippe auf das Objekt"-Bildaufgaben für Deutschlernende (B2).
+Du planst anspruchsvolle "Finde das Objekt"-Bildaufgaben für Deutschlernende (B2+).
 
 Eingabe-JSON: {"count": <int>}.
 
-Jede Aufgabe: eine realistische Alltagsszene, in der EIN bestimmtes Objekt
-("target_label") GROSS, deutlich und eindeutig zu sehen ist. Der/die Lernende soll
-genau auf dieses Objekt tippen. Wähle konkrete, gut sichtbare Substantive (Möbel,
-Werkzeuge, Küchen-/Haushaltsgegenstände, Fahrzeuge, Gebäudeteile usw.).
+Jede Aufgabe: eine realistische, DETAILREICHE Alltagsszene mit MEHREREN Objekten. Der/die
+Lernende soll ein bestimmtes Objekt ("target_label") finden und antippen — UND danach
+dessen Artikel (der/die/das) eingeben. Es soll eine echte Such- und Wortschatzaufgabe sein.
+
+WICHTIG (Schwierigkeit):
+- Das Zielobjekt darf NICHT das größte und NICHT das zentrale/auffälligste Objekt sein.
+  Platziere es eher klein, seitlich oder zwischen anderen Dingen — man muss es SUCHEN.
+- Wähle ein B2+/weniger alltägliches, aber eindeutig erkennbares konkretes Substantiv
+  (z. B. der Wasserkocher, die Steckdose, der Türgriff, die Gießkanne, der Aktenordner) —
+  KEINE trivialen A1-Wörter wie Auto/Tisch/Hund, und nicht riesig in der Mitte.
 
 Regeln:
-- "image_prompt": detaillierter englischer DALL-E-Prompt für eine klare, realistische
-  Szene. Das Zielobjekt muss GROSS und zentral/auffällig sein. KEIN Text, keine
-  Buchstaben, keine Labels im Bild. Nenne 1–2 weitere Kontextobjekte, aber das Ziel
-  bleibt das auffälligste.
-- "target_label": das deutsche Zielobjekt MIT Artikel (z. B. "der Wasserhahn").
-- "question_de": "Tippe auf {target_label} im Bild."
-- "erklaerung": 1 kurzer russischer Satz (Bedeutung des Wortes).
-- "hint_ru": kurzer russischer Hinweis / Übersetzung.
+- "image_prompt": detaillierter englischer DALL-E-Prompt für eine realistische Szene mit
+  mehreren gleichwertig sichtbaren Objekten; das Zielobjekt ist vorhanden, aber NICHT das
+  dominante/zentrale. KEIN Text, keine Buchstaben, keine Labels im Bild.
+- "target_label": das Zielobjekt MIT Artikel (z. B. "der Wasserkocher").
+- "article": nur der Artikel des Zielobjekts: "der" | "die" | "das".
+- "question_de": "Finde {Nomen ohne Artikel} im Bild — tippe darauf und gib den Artikel ein."
+- "erklaerung": „lehrbuchartige“ Erklärung auf Russisch (2–3 Sätze): das Wort, sein Genus und
+  WARUM dieser Artikel (Regel/Endung/Bedeutungsgruppe, z. B. -er oft maskulin). Nicht trocken.
+- "tip": EIN kurzer russischer Merk-Tipp zum Genus (Eselsbrücke/Faustregel). Ohne Emoji.
+- "hint_ru": kurze russische Übersetzung des Wortes.
 
 Gib NUR STRICT JSON:
-{"items":[{"image_prompt":"A modern kitchen counter with a large stainless-steel faucet over the sink, a wooden cutting board nearby, photorealistic, no text","target_label":"der Wasserhahn","question_de":"Tippe auf den Wasserhahn im Bild.","erklaerung":"…","hint_ru":"кран"}]}
+{"items":[{"image_prompt":"A cluttered kitchen counter: a fruit bowl in the center, a cutting board, jars, and a small electric kettle off to the side near the wall, photorealistic, no text","target_label":"der Wasserkocher","article":"der","question_de":"Finde den Wasserkocher im Bild — tippe darauf und gib den Artikel ein.","erklaerung":"…","tip":"…","hint_ru":"чайник (электрический)"}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
 "image_quiz_sentence_fallback": """

@@ -109,11 +109,18 @@ function fmtTime(s) {
 
 function AufgabeHoer({ task, onSubmit, submitting }) {
   const audioRef = useRef(null);
-  const [value, setValue] = useState('');
   const [playing, setPlaying] = useState(false);
   const [cur, setCur] = useState(0);
   const [dur, setDur] = useState(0);
   const hasAudio = !!task.audio_url;
+  const transcript = task.transcript || '';
+  const isMulti = !!transcript;
+  const segments = isMulti ? transcript.split('_____') : null;
+  const gapN = isMulti ? Math.max(1, segments.length - 1) : 1;
+  const [vals, setVals] = useState(() => Array(gapN).fill(''));
+  const setVal = (i, v) => setVals((prev) => { const n = [...prev]; n[i] = v; return n; });
+  const allFilled = vals.every((v) => v.trim());
+
   const toggle = useCallback(() => {
     const a = audioRef.current; if (!a) return; tapHaptic();
     if (a.paused) a.play().catch(() => {}); else a.pause();
@@ -123,8 +130,9 @@ function AufgabeHoer({ task, onSubmit, submitting }) {
     const r = e.currentTarget.getBoundingClientRect();
     a.currentTime = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * dur;
   }, [dur]);
-  const submit = () => { const v = value.trim(); if (v) onSubmit(v); };
+  const submit = () => { if (allFilled) onSubmit(vals.map((v) => v.trim()).join('|')); };
   const pct = dur > 0 ? (cur / dur) * 100 : 0;
+
   return (
     <>
       <audio ref={audioRef} src={task.audio_url || undefined} preload="metadata"
@@ -145,21 +153,39 @@ function AufgabeHoer({ task, onSubmit, submitting }) {
           </>
         ) : <span className="ls-noaudio">🔇 Audio wird vorbereitet — gleich nochmal.</span>}
       </div>
-      <div className="au-satz">{gapSentence(task.satz_luecke)}</div>
+      {isMulti ? (
+        <div className="au-satz au-cloze">
+          {segments.flatMap((seg, i) => {
+            const nodes = [<span key={`s${i}`}>{seg}</span>];
+            if (i < segments.length - 1) {
+              nodes.push(
+                <input key={`g${i}`} className="au-gap-input" value={vals[i] || ''}
+                  onChange={(e) => setVal(i, e.target.value)}
+                  autoCapitalize="off" autoCorrect="off" placeholder="…" />
+              );
+            }
+            return nodes;
+          })}
+        </div>
+      ) : (
+        <>
+          <div className="au-satz">{gapSentence(task.satz_luecke)}</div>
+          <input className="ans-input" value={vals[0] || ''} onChange={(e) => setVal(0, e.target.value)}
+            placeholder="gehörtes Wort …" autoCapitalize="off" autoCorrect="off" enterKeyHint="send"
+            onKeyDown={(e) => { if (e.key === 'Enter') submit(); }} />
+        </>
+      )}
       {task.hint_ru ? <p className="au-hint">💡 {task.hint_ru}</p> : null}
-      <input
-        className="ans-input" value={value} onChange={(e) => setValue(e.target.value)}
-        placeholder="gehörtes Wort …" autoCapitalize="off" autoCorrect="off" enterKeyHint="send"
-        onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
-      />
-      <PrüfenButton disabled={!value.trim()} submitting={submitting} onClick={submit} />
+      <PrüfenButton disabled={!allFilled} submitting={submitting} onClick={submit} />
     </>
   );
 }
 
 function AufgabePin({ task, onSubmit, submitting }) {
   const [tap, setTap] = useState(null); // normalized {x,y}
+  const [article, setArticle] = useState('');
   const hasImg = !!task.image_url;
+  const needsArticle = !!task.needs_article;
   const onImgClick = (e) => {
     const r = e.currentTarget.getBoundingClientRect();
     const x = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
@@ -167,7 +193,12 @@ function AufgabePin({ task, onSubmit, submitting }) {
     setTap({ x, y });
     tapHaptic();
   };
-  const submit = () => { if (tap) onSubmit(`${tap.x.toFixed(4)},${tap.y.toFixed(4)}`); };
+  const ready = tap && (!needsArticle || article.trim());
+  const submit = () => {
+    if (!ready) return;
+    const coords = `${tap.x.toFixed(4)},${tap.y.toFixed(4)}`;
+    onSubmit(needsArticle ? `${coords}|${article.trim()}` : coords);
+  };
   return (
     <>
       <p className="au-question">{task.question_de}</p>
@@ -178,7 +209,15 @@ function AufgabePin({ task, onSubmit, submitting }) {
         </div>
       ) : <div className="au-orig">🖼 Bild wird vorbereitet — gleich nochmal.</div>}
       {task.hint_ru ? <p className="au-hint">💡 {task.hint_ru}</p> : null}
-      <PrüfenButton disabled={!tap} submitting={submitting} onClick={submit} />
+      {needsArticle ? (
+        <input
+          className="ans-input" value={article} onChange={(e) => setArticle(e.target.value)}
+          placeholder={tap ? 'Artikel: der / die / das' : 'erst auf das Objekt tippen …'}
+          autoCapitalize="off" autoCorrect="off" enterKeyHint="send"
+          onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
+        />
+      ) : null}
+      <PrüfenButton disabled={!ready} submitting={submitting} onClick={submit} />
     </>
   );
 }
