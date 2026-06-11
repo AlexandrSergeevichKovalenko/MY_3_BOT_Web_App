@@ -3944,9 +3944,54 @@ def _extract_usage_dict(run_status, *, task_name: str | None = None) -> dict | N
     return result
 
 
+def _log_openai_usage_event(task_name, usage) -> None:
+    """Record one OpenAI request (+ token counts) in the billing ledger for every
+    completed gateway call. This is the bot tier's single OpenAI chokepoint — the
+    web tier logs its own events and does NOT go through here, so there is no
+    double counting. Aggregate (user_id=None); fire-and-forget so it never blocks
+    the call. Without this, all bot-tier OpenAI usage (shortcut, lookups,
+    translations, story, …) was invisible to the economics report."""
+    try:
+        import threading
+        import time as _time
+        tn = str(task_name or "llm").strip() or "llm"
+        u = usage if isinstance(usage, dict) else {}
+        tokens_in = int(u.get("input_tokens") or u.get("prompt_tokens") or 0)
+        tokens_out = int(u.get("output_tokens") or u.get("completion_tokens") or 0)
+
+        def _worker():
+            try:
+                from backend.database import log_billing_event
+                seed = f"llm:{tn}:{_time.time_ns()}"
+                log_billing_event(
+                    idempotency_key=f"req:{seed}", user_id=None, action_type=tn,
+                    provider="openai", units_type="requests", units_value=1.0,
+                    status="estimated",
+                )
+                if tokens_in > 0:
+                    log_billing_event(
+                        idempotency_key=f"tin:{seed}", user_id=None, action_type=tn,
+                        provider="openai", units_type="tokens_in", units_value=float(tokens_in),
+                        status="estimated",
+                    )
+                if tokens_out > 0:
+                    log_billing_event(
+                        idempotency_key=f"tout:{seed}", user_id=None, action_type=tn,
+                        provider="openai", units_type="tokens_out", units_value=float(tokens_out),
+                        status="estimated",
+                    )
+            except Exception:
+                logging.debug("openai usage logging failed task=%s", tn, exc_info=True)
+
+        threading.Thread(target=_worker, daemon=True).start()
+    except Exception:
+        pass
+
+
 def _store_last_usage(run_status, *, task_name: str | None = None) -> dict | None:
     usage = _extract_usage_dict(run_status, task_name=task_name)
     _LAST_LLM_USAGE.set(usage)
+    _log_openai_usage_event(task_name, usage)
     return usage
 
 
