@@ -73,6 +73,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "generate_sentences_multilang",
     "generate_mystery_story",
     "generate_word_quiz",
+    "aufgabe_cloze",
     "image_quiz_sentence_fallback",
     "image_quiz_visual_screen",
     "image_quiz_blueprint",
@@ -2849,6 +2850,33 @@ Ensure the correct answer is fully correct in meaning, register, collocation, an
 Use the provided usage_examples for context if available.
 Return STRICT JSON with keys: question, options (array of strings), correct_option_id (0-based int), quiz_type.
 """,
+"aufgabe_cloze": """
+Du erstellst deutsche Lückentext-Aufgaben (open cloze) für fortgeschrittene Lernende (Niveau B2–C1).
+
+Eingabe-JSON: {"count": <int>, "level": "B2"|"C1"}.
+
+Jede Aufgabe ist EIN natürlicher deutscher Satz mit GENAU EINER Lücke, markiert als "_____".
+Die Lücke prüft ein anspruchsvolles grammatisches/lexikalisches Element auf B2+:
+Konnektoren/Subjunktionen (obwohl, damit, indem, sodass, je…desto), Präpositionen mit
+festem Kasus, Verben mit Präposition (sich verlassen ___ ), Konjunktiv II, Relativpronomen,
+Partikeln, oder feste Kollokationen/Wendungen. KEINE trivialen A1-A2-Wörter.
+
+Regeln:
+- Es muss GENAU EINE eindeutig richtige Lösung geben (open cloze: keine Auswahloptionen).
+- "correct" ist das eine fehlende Wort (oder die kurze feste Wortgruppe), exakt so, wie es in die Lücke gehört.
+- "aliases": zulässige gleichwertige Schreibweisen/Varianten (z. B. Groß-/Kleinschreibung-neutral wird separat behandelt; hier nur echte Synonyme/Varianten, sonst leere Liste).
+- "erklaerung": 1 kurzer Satz auf Russisch, warum diese Lösung korrekt ist (Regel/Grund).
+- "hint_ru": sehr kurzer russischer Hinweis, WAS geprüft wird (z. B. "союз уступки", "предлог с дательным").
+- Der Satz muss ohne Bild verständlich sein und natürlich klingen.
+
+Gib NUR STRICT JSON zurück:
+{
+  "items": [
+    {"satz": "Satz mit _____ Lücke.", "correct": "...", "aliases": ["..."], "erklaerung": "...", "hint_ru": "..."}
+  ]
+}
+Erzeuge genau "count" Aufgaben, alle verschieden, ohne Markdown.
+""",
 "image_quiz_sentence_fallback": """
 You help build a visual language-learning quiz.
 
@@ -5234,6 +5262,29 @@ async def run_generate_word_quiz(prompt_payload: dict) -> dict:
         return json.loads(content)
     except json.JSONDecodeError:
         return {}
+
+
+_AUFGABE_INSTRUCTION_KEYS = {"cloze": "aufgabe_cloze"}
+
+
+async def run_generate_aufgabe(format: str, *, count: int = 6, level: str = "B2") -> list[dict]:
+    """Generate a batch of B2+ text-task items of one format. Returns the items
+    list (each a dict per the format's schema), or [] on parse failure."""
+    key = _AUFGABE_INSTRUCTION_KEYS.get(str(format or "").strip().lower())
+    if not key:
+        return []
+    content = await llm_execute(
+        task_name=key,
+        system_instruction_key=key,
+        user_message=json.dumps({"count": int(count), "level": str(level or "B2")}, ensure_ascii=False),
+        poll_interval_seconds=2.0,
+    )
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        return []
+    items = data.get("items") if isinstance(data, dict) else data
+    return items if isinstance(items, list) else []
 
 
 async def run_image_quiz_sentence_fallback(payload: dict) -> dict:

@@ -428,6 +428,23 @@ html[data-scheme="light"] .rank-card { background: linear-gradient(180deg, rgba(
 html[data-scheme="light"] .rank-row { background: #f4f6fa; }
 html[data-scheme="light"] .rank-row.me { background: #e1ebfd; }
 
+/* ── Aufgabe (B2+ text tasks) ──────────────────────────────────────────────── */
+.au-satz {
+  font-size: 18px; font-weight: 600; line-height: 1.5;
+  color: var(--dmps-text-primary, #F8FAFC);
+  padding: 14px 16px;
+  background: var(--dmps-card-alt, #0B1220);
+  border: 1px solid var(--dmps-border, #334155);
+  border-radius: var(--dmps-radius-button, 16px);
+}
+.au-gap {
+  display: inline-block; min-width: 56px;
+  color: var(--dmps-primary, #2563EB); font-weight: 800; letter-spacing: 1px;
+  border-bottom: 2px solid var(--dmps-primary, #2563EB);
+}
+.au-hint { margin: 0; font-size: 13.5px; color: var(--dmps-text-muted, #94A3B8); }
+html[data-scheme="light"] .au-satz { background: #f4f6fa; }
+
 /* Skeleton loader */
 .ans-skel {
   height: 56px; border-radius: var(--dmps-radius-button, 16px);

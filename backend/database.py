@@ -7828,6 +7828,60 @@ def ensure_webapp_tables() -> None:
             """)
             # ── end challenge results ─────────────────────────────────────
 
+            # ── B2+ text tasks ("Aufgabe": cloze / wortbildung / transform …) ──
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_aufgabe_bank (
+                    aufgabe_id   TEXT PRIMARY KEY,
+                    format       TEXT NOT NULL,
+                    level        TEXT NOT NULL DEFAULT 'B2',
+                    payload      JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    send_count   INTEGER NOT NULL DEFAULT 0,
+                    last_sent_at TIMESTAMPTZ,
+                    fail_count   INTEGER NOT NULL DEFAULT 0,
+                    retired      BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_aufgabe_bank_available
+                ON bt_3_aufgabe_bank (retired, last_sent_at NULLS FIRST, format);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_aufgabe_dispatches (
+                    id                  BIGSERIAL PRIMARY KEY,
+                    slot_date           DATE NOT NULL,
+                    slot_hour           INTEGER NOT NULL,
+                    aufgabe_id          TEXT NOT NULL REFERENCES bt_3_aufgabe_bank(aufgabe_id),
+                    target_user_id      BIGINT NOT NULL,
+                    chat_id             BIGINT NOT NULL,
+                    telegram_message_id BIGINT,
+                    status              TEXT NOT NULL DEFAULT 'sent',
+                    sent_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (target_user_id, slot_date, slot_hour),
+                    CHECK (status IN ('sent', 'failed'))
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_aufgabe_dispatches_user_date
+                ON bt_3_aufgabe_dispatches (target_user_id, slot_date DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_aufgabe_answers (
+                    id          BIGSERIAL PRIMARY KEY,
+                    dispatch_id BIGINT NOT NULL REFERENCES bt_3_aufgabe_dispatches(id),
+                    user_id     BIGINT NOT NULL,
+                    answer      TEXT NOT NULL DEFAULT '',
+                    is_correct  BOOLEAN NOT NULL,
+                    answered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (dispatch_id, user_id)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_aufgabe_answers_user_time
+                ON bt_3_aufgabe_answers (user_id, answered_at DESC);
+            """)
+            # ── end aufgabe tables ────────────────────────────────────────
+
             # ── Hörverständnis (listening comprehension) tables ───────────
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_listening_bank (
@@ -33443,6 +33497,172 @@ def compute_challenge_ranking(*, challenge_key: str, user_id: int) -> dict:
             for c in correct[:3]
         ],
     }
+
+
+# ─── B2+ text tasks ("Aufgabe") DB functions ──────────────────────────────────
+
+def create_aufgabe(*, aufgabe_id: str, format: str, level: str, payload: dict) -> None:
+    import json as _json
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_aufgabe_bank (aufgabe_id, format, level, payload)
+                VALUES (%s, %s, %s, %s::jsonb)
+                ON CONFLICT (aufgabe_id) DO NOTHING
+                """,
+                (str(aufgabe_id), str(format), str(level or "B2"),
+                 _json.dumps(payload or {}, ensure_ascii=False)),
+            )
+        conn.commit()
+
+
+def count_available_aufgaben(*, format: str | None = None) -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if format:
+                cursor.execute(
+                    "SELECT count(*) FROM bt_3_aufgabe_bank WHERE retired=FALSE AND format=%s",
+                    (str(format),),
+                )
+            else:
+                cursor.execute("SELECT count(*) FROM bt_3_aufgabe_bank WHERE retired=FALSE")
+            return int(cursor.fetchone()[0])
+
+
+def pick_next_aufgabe(*, cooldown_days: int = 14, format: str | None = None) -> dict | None:
+    """Oldest unsent (or cooldown-expired) active task, optionally of one format."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT aufgabe_id, format, level, payload
+                FROM bt_3_aufgabe_bank
+                WHERE retired = FALSE
+                  AND (%s IS NULL OR format = %s)
+                  AND (last_sent_at IS NULL OR last_sent_at < NOW() - INTERVAL '1 day' * %s)
+                ORDER BY last_sent_at NULLS FIRST, created_at
+                LIMIT 1
+                """,
+                (format, format, int(cooldown_days)),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {"aufgabe_id": row[0], "format": row[1], "level": row[2],
+            "payload": row[3] if isinstance(row[3], dict) else {}}
+
+
+def mark_aufgabe_sent(aufgabe_id: str) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_aufgabe_bank
+                SET send_count = send_count + 1, last_sent_at = NOW(), fail_count = 0
+                WHERE aufgabe_id = %s
+                """,
+                (str(aufgabe_id),),
+            )
+        conn.commit()
+
+
+def mark_aufgabe_send_failed(aufgabe_id: str, *, retire_after: int = 3) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_aufgabe_bank
+                SET fail_count = fail_count + 1, last_sent_at = NOW(),
+                    retired = (fail_count + 1 >= %s)
+                WHERE aufgabe_id = %s
+                """,
+                (int(retire_after), str(aufgabe_id)),
+            )
+        conn.commit()
+
+
+def record_aufgabe_dispatch(*, slot_date, slot_hour: int, aufgabe_id: str,
+                            target_user_id: int, chat_id: int) -> int | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_aufgabe_dispatches
+                    (slot_date, slot_hour, aufgabe_id, target_user_id, chat_id)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (target_user_id, slot_date, slot_hour) DO NOTHING
+                RETURNING id
+                """,
+                (slot_date, int(slot_hour), str(aufgabe_id), int(target_user_id), int(chat_id)),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return int(row[0]) if row else None
+
+
+def update_aufgabe_dispatch_telegram_id(dispatch_id: int, *, telegram_message_id: int) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_aufgabe_dispatches SET telegram_message_id = %s WHERE id = %s",
+                (int(telegram_message_id), int(dispatch_id)),
+            )
+        conn.commit()
+
+
+def get_aufgabe_dispatch_by_id(dispatch_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT d.id, d.aufgabe_id, d.target_user_id, d.chat_id,
+                       b.format, b.level, b.payload
+                FROM bt_3_aufgabe_dispatches d
+                JOIN bt_3_aufgabe_bank b ON b.aufgabe_id = d.aufgabe_id
+                WHERE d.id = %s
+                """,
+                (int(dispatch_id),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    cols = ["id", "aufgabe_id", "target_user_id", "chat_id", "format", "level", "payload"]
+    d = dict(zip(cols, row))
+    if not isinstance(d.get("payload"), dict):
+        d["payload"] = {}
+    return d
+
+
+def record_aufgabe_answer(*, dispatch_id: int, user_id: int, answer: str, is_correct: bool) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_aufgabe_answers (dispatch_id, user_id, answer, is_correct)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (dispatch_id, user_id) DO NOTHING
+                """,
+                (int(dispatch_id), int(user_id), str(answer)[:300], bool(is_correct)),
+            )
+        conn.commit()
+
+
+def get_aufgabe_answer(*, dispatch_id: int, user_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT answer, is_correct, answered_at
+                FROM bt_3_aufgabe_answers
+                WHERE dispatch_id = %s AND user_id = %s
+                """,
+                (int(dispatch_id), int(user_id)),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {"answer": row[0], "is_correct": bool(row[1]), "answered_at": row[2]}
 
 
 def retire_all_crossword_bank_entries() -> int:

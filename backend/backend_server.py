@@ -22264,7 +22264,7 @@ def get_answer_task():
 
     from backend.answer_eval import (
         load_rebus_task, load_crossword_task, load_anagram_task, load_listening_task,
-        load_freeform_task,
+        load_freeform_task, load_aufgabe_task,
     )
     if kind == "rb":
         meta = load_rebus_task(dispatch_id=dispatch_id, user_id=user_id)
@@ -22276,6 +22276,8 @@ def get_answer_task():
         meta = load_listening_task(dispatch_id=dispatch_id, user_id=user_id)
     elif kind == "qf":
         meta = load_freeform_task(dispatch_id=dispatch_id, user_id=user_id)
+    elif kind == "au":
+        meta = load_aufgabe_task(dispatch_id=dispatch_id, user_id=user_id)
     else:
         return jsonify({"error": "unsupported kind"}), 400
     if meta is None:
@@ -22301,7 +22303,7 @@ def submit_answer():
 
     from backend.answer_eval import (
         evaluate_rebus, evaluate_crossword, evaluate_anagram, start_listening_evaluation,
-        evaluate_freeform,
+        evaluate_freeform, evaluate_aufgabe,
     )
     try:
         if kind == "rb":
@@ -22312,6 +22314,8 @@ def submit_answer():
             result = evaluate_anagram(dispatch_id=dispatch_id, user_id=user_id, assembled=answer)
         elif kind == "qf":
             result = evaluate_freeform(dispatch_id=dispatch_id, user_id=user_id, raw_input=answer)
+        elif kind == "au":
+            result = evaluate_aufgabe(dispatch_id=dispatch_id, user_id=user_id, raw_input=answer)
         elif kind == "ls":
             answers = payload.get("answers")
             result = start_listening_evaluation(

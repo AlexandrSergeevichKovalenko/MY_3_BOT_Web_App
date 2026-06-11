@@ -275,6 +275,13 @@ from backend.database import (
     create_quiz_freeform_dispatch,
     get_pending_freeform_result_cards,
     mark_freeform_card_sent,
+    create_aufgabe,
+    count_available_aufgaben,
+    pick_next_aufgabe,
+    mark_aufgabe_sent,
+    mark_aufgabe_send_failed,
+    record_aufgabe_dispatch,
+    update_aufgabe_dispatch_telegram_id,
 )
 from backend.r2_storage import r2_public_url
 from backend.job_queue import (
@@ -307,6 +314,8 @@ ARTICLE_QUIZ_POOL_TARGET = max(5, int((os.getenv("ARTICLE_QUIZ_POOL_TARGET") or 
 ARTICLE_QUIZ_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("ARTICLE_QUIZ_POOL_TOPUP_TRIGGER") or "5").strip() or "5"))
 CROSSWORD_SLOT_TIMES = {(11, 45), (17, 45)}  # 2x/day at :45
 ANAGRAM_SLOT_TIMES   = {(12, 15), (19, 15)}  # 2x/day — assemble-the-word Mini-App card
+AUFGABE_SLOT_TIMES   = {(10, 30), (16, 30)}  # 2x/day — B2+ text tasks (cloze, …)
+AUFGABE_POOL_TARGET  = max(4, int((os.getenv("AUFGABE_POOL_TARGET") or "12").strip() or "12"))
 LISTENING_SLOT_TIME  = (18, 30)              # once/day at 18:30
 LISTENING_COOLDOWN_DAYS = max(5, int((os.getenv("LISTENING_COOLDOWN_DAYS") or "7").strip() or "7"))
 LISTENING_POOL_TARGET   = max(3, int((os.getenv("LISTENING_POOL_TARGET") or "7").strip() or "7"))
@@ -18926,6 +18935,194 @@ async def admin_anagram_send_command(update: Update, context: CallbackContext) -
         await status_msg.edit_text("Anagram send failed — check logs.")
 
 
+# ─────────────────────────────────────────────────────────────
+#  AUFGABE — B2+ text tasks (cloze, …) Mini-App card, pool, scheduler
+# ─────────────────────────────────────────────────────────────
+
+def _aufgabe_enabled() -> bool:
+    return (os.getenv("AUFGABE_ENABLED") or "true").strip().lower() not in ("0", "false", "no")
+
+
+def _is_aufgabe_slot(slot_dt) -> bool:
+    return (int(slot_dt.hour), int(slot_dt.minute)) in AUFGABE_SLOT_TIMES
+
+
+def _build_aufgabe_caption(entry: dict) -> str:
+    fmt = str(entry.get("format") or "")
+    payload = entry.get("payload") or {}
+    if fmt == "cloze":
+        satz = html.escape(str(payload.get("satz") or "").strip())
+        return (
+            "✏️ <b>Lückentext</b> — B2+\n\n"
+            f"<i>{satz}</i>\n\n"
+            "Fülle die Lücke in der Mini-App 👇"
+        )
+    return "✏️ <b>Aufgabe</b> — B2+\nLöse die Aufgabe in der Mini-App 👇"
+
+
+def _build_aufgabe_keyboard(dispatch_id: int) -> InlineKeyboardMarkup:
+    btn = InlineKeyboardButton(text="✏️ Lösen", url=get_webapp_deeplink(f"ans_au_{dispatch_id}"))
+    return InlineKeyboardMarkup([[btn]])
+
+
+async def send_aufgabe_to_chat(
+    context: CallbackContext, *, entry: dict, slot_date, slot_hour: int,
+    chat_id: int, target_user_id: int,
+) -> bool:
+    """Send one B2+ text task card (no image) + Mini-App deeplink button."""
+    aufgabe_id = str(entry.get("aufgabe_id") or "")
+    try:
+        dispatch_id = await asyncio.to_thread(
+            record_aufgabe_dispatch,
+            slot_date=slot_date, slot_hour=int(slot_hour), aufgabe_id=aufgabe_id,
+            target_user_id=int(target_user_id), chat_id=int(chat_id),
+        )
+    except Exception:
+        logging.warning("au_send: dispatch insert failed aufgabe_id=%s chat_id=%s", aufgabe_id, chat_id, exc_info=True)
+        return False
+    if not dispatch_id:
+        logging.info("au_send: duplicate suppressed aufgabe_id=%s chat_id=%s", aufgabe_id, chat_id)
+        return False
+    try:
+        msg = await context.bot.send_message(
+            chat_id=int(chat_id),
+            text=_build_aufgabe_caption(entry),
+            reply_markup=_build_aufgabe_keyboard(dispatch_id),
+            parse_mode="HTML",
+        )
+    except Exception as exc:
+        logging.warning("au_send_failed aufgabe_id=%s chat_id=%s: %s", aufgabe_id, chat_id, exc)
+        return False
+    try:
+        await asyncio.to_thread(update_aufgabe_dispatch_telegram_id, dispatch_id, telegram_message_id=int(msg.message_id))
+    except Exception:
+        logging.warning("au_send: update telegram_id failed dispatch_id=%s", dispatch_id, exc_info=True)
+    logging.info("au_send_ok dispatch_id=%s aufgabe_id=%s chat_id=%s", dispatch_id, aufgabe_id, chat_id)
+    return True
+
+
+async def prepare_aufgabe_pool_job(context: CallbackContext) -> None:
+    """Startup + periodic: fill the B2+ task pool via LLM (off critical path)."""
+    try:
+        have = await asyncio.to_thread(count_available_aufgaben, format="cloze")
+        if have >= AUFGABE_POOL_TARGET:
+            logging.info("aufgabe_pool: already at target have=%s", have)
+            return
+        need = AUFGABE_POOL_TARGET - have
+        from backend.openai_manager import run_generate_aufgabe
+        items = await run_generate_aufgabe("cloze", count=min(8, need + 2), level="B2")
+        made = 0
+        for it in items:
+            satz = str((it or {}).get("satz") or "").strip()
+            correct = str((it or {}).get("correct") or "").strip()
+            if not satz or not correct or "_____" not in satz:
+                continue
+            payload = {
+                "satz": satz, "correct": correct,
+                "aliases": [str(a) for a in (it.get("aliases") or []) if str(a).strip()],
+                "erklaerung": str(it.get("erklaerung") or "").strip(),
+                "hint_ru": str(it.get("hint_ru") or "").strip(),
+            }
+            await asyncio.to_thread(
+                create_aufgabe, aufgabe_id=str(__import__("uuid").uuid4()),
+                format="cloze", level="B2", payload=payload,
+            )
+            made += 1
+        logging.info("aufgabe_pool_job done: have=%s need=%s made=%s", have, need, made)
+    except Exception:
+        logging.warning("aufgabe_pool_job failed", exc_info=True)
+
+
+async def _send_scheduled_aufgabe(context: CallbackContext) -> None:
+    if not _aufgabe_enabled():
+        return
+    slot_now = _get_quiz_schedule_now()
+    slot_date = slot_now.date()
+    slot_hour = int(slot_now.hour)
+    if not _is_aufgabe_slot(slot_now):
+        return
+    try:
+        entry = await asyncio.to_thread(pick_next_aufgabe, cooldown_days=14)
+    except Exception:
+        logging.warning("au_slot: pick_next_aufgabe failed", exc_info=True)
+        return
+    if not entry:
+        logging.info("au_slot: no ready aufgabe slot=%s/%s", slot_date, slot_hour)
+        return
+    delivery_targets = await _collect_quiz_delivery_user_targets(context)
+    if not delivery_targets:
+        logging.info("au_slot: no delivery targets slot=%s/%s", slot_date, slot_hour)
+        return
+    sent = 0
+    for target in delivery_targets:
+        target_chat_id = int(target.get("chat_id") or 0)
+        if target_chat_id == 0:
+            continue
+        ok = await send_aufgabe_to_chat(
+            context, entry=entry, slot_date=slot_date, slot_hour=slot_hour,
+            chat_id=target_chat_id, target_user_id=target_chat_id,
+        )
+        if ok:
+            sent += 1
+    aufgabe_id = str(entry.get("aufgabe_id") or "")
+    if sent > 0:
+        try:
+            await asyncio.to_thread(mark_aufgabe_sent, aufgabe_id)
+        except Exception:
+            logging.warning("au_slot: mark_sent failed aufgabe_id=%s", aufgabe_id, exc_info=True)
+    else:
+        try:
+            await asyncio.to_thread(mark_aufgabe_send_failed, aufgabe_id)
+        except Exception:
+            logging.warning("au_slot: mark_send_failed failed aufgabe_id=%s", aufgabe_id, exc_info=True)
+    logging.info("au_slot_done slot=%s/%s aufgabe_id=%s sent=%d", slot_date, slot_hour, aufgabe_id, sent)
+
+
+async def admin_aufgabe_send_command(update: Update, context: CallbackContext) -> None:
+    """Send a B2+ text task to this chat immediately (admin test). /admin_aufgabe_send"""
+    user    = update.effective_user
+    chat    = update.effective_chat
+    message = update.effective_message
+    if not user or not chat or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+
+    status_msg = await message.reply_text("Preparing Aufgabe...")
+    # ensure the pool has at least one item
+    try:
+        have = await asyncio.to_thread(count_available_aufgaben, format="cloze")
+    except Exception:
+        have = 0
+    if have == 0:
+        await prepare_aufgabe_pool_job(context)
+
+    slot_now = _get_quiz_schedule_now()
+    last_error = "no ready aufgabe"
+    for _attempt in range(5):
+        try:
+            entry = await asyncio.to_thread(pick_next_aufgabe, cooldown_days=0)
+        except Exception as exc:
+            await status_msg.edit_text(f"pick_next_aufgabe failed: {exc}")
+            return
+        if not entry:
+            await status_msg.edit_text("No ready Aufgabe. Pool empty — try again in a moment.")
+            return
+        ok = await send_aufgabe_to_chat(
+            context, entry=entry, slot_date=slot_now.date(),
+            slot_hour=int(slot_now.hour) * 10000 + int(slot_now.second) + _attempt,
+            chat_id=int(chat.id), target_user_id=int(user.id),
+        )
+        if ok:
+            await asyncio.to_thread(mark_aufgabe_sent, str(entry.get("aufgabe_id") or ""))
+            await status_msg.delete()
+            return
+        last_error = f"send failed for {str(entry.get('aufgabe_id') or '')[:8]}"
+        await asyncio.to_thread(mark_aufgabe_send_failed, str(entry.get("aufgabe_id") or ""))
+    await status_msg.edit_text(f"Aufgabe send failed ({last_error}).")
+
+
 async def admin_crossword_pool_command(update: Update, context: CallbackContext) -> None:
     """Trigger crossword pool generation (admin). /admin_cw_pool"""
     user    = update.effective_user
@@ -20576,6 +20773,7 @@ def main():
     application.add_handler(CommandHandler("admin_aq_pool", admin_article_quiz_pool_command))
     application.add_handler(CommandHandler("admin_cw_send", admin_crossword_send_command))
     application.add_handler(CommandHandler("admin_anagram_send", admin_anagram_send_command))
+    application.add_handler(CommandHandler("admin_aufgabe_send", admin_aufgabe_send_command))
     application.add_handler(CommandHandler("admin_cw_pool", admin_crossword_pool_command))
     application.add_handler(CommandHandler("admin_cw_rerender", admin_crossword_rerender_command))
     application.add_handler(CommandHandler("admin_ls_send", admin_listening_send_command))
@@ -20606,6 +20804,7 @@ def main():
                 application.job_queue.run_once(prepare_article_quiz_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 100),
                 application.job_queue.run_once(prepare_crossword_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 130),
                 application.job_queue.run_once(prepare_listening_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 160),
+                application.job_queue.run_once(prepare_aufgabe_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 190),
                 application.job_queue.run_repeating(_send_pending_freeform_cards_job, interval=8, first=20),
             ),
             enabled=True,
@@ -20889,6 +21088,21 @@ def main():
             sorted(ANAGRAM_SLOT_TIMES),
             QUIZ_SCHEDULE_TZ_NAME,
             _anagram_enabled(),
+        )
+        # -- Aufgabe (B2+ text tasks) slots --
+        for _au_hour, _au_minute in sorted(AUFGABE_SLOT_TIMES):
+            scheduler.add_job(
+                lambda: submit_async(_send_scheduled_aufgabe, CallbackContext(application=application)),
+                "cron",
+                hour=_au_hour,
+                minute=_au_minute,
+                timezone=QUIZ_SCHEDULE_TZ_NAME,
+            )
+        logging.info(
+            "aufgabe_scheduler_slots_registered slots=%s tz=%s enabled=%s",
+            sorted(AUFGABE_SLOT_TIMES),
+            QUIZ_SCHEDULE_TZ_NAME,
+            _aufgabe_enabled(),
         )
         # -- Hörverständnis: daily at 18:30 --
         _ls_hour, _ls_minute = LISTENING_SLOT_TIME

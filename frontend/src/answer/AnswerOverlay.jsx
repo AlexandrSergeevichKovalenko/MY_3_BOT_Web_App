@@ -3,6 +3,7 @@ import './answer.css';
 import AnagramGame from './AnagramGame.jsx';
 import ListeningGame from './ListeningGame.jsx';
 import CrosswordGrid from './CrosswordGrid.jsx';
+import AufgabeGame from './AufgabeGame.jsx';
 
 /**
  * Lightweight in-place answer overlay for in-group tasks (rebus + crossword).
@@ -26,9 +27,9 @@ function getInitData() {
   return '';
 }
 
-// start_param: "ans_rb_123" / "ans_cw_45" / "ans_ag_7" / "ans_ls_3" / "ans_qf_9"
+// start_param: ans_rb_123 / ans_cw_45 / ans_ag_7 / ans_ls_3 / ans_qf_9 / ans_au_2
 function parseStartParam(startParam) {
-  const m = /^ans_(rb|cw|ag|ls|qf)_(\d+)$/.exec(String(startParam || '').trim().toLowerCase());
+  const m = /^ans_(rb|cw|ag|ls|qf|au)_(\d+)$/.exec(String(startParam || '').trim().toLowerCase());
   if (!m) return null;
   return { kind: m[1], id: Number(m[2]) };
 }
@@ -39,6 +40,7 @@ const KIND_META = {
   ag: { eyebrow: '🔤 Anagramm', title: 'Anagramm' },
   ls: { eyebrow: '🎧 Hörverständnis', title: 'Hörverständnis · B2' },
   qf: { eyebrow: '✍️ Antwort', title: 'Eigene Antwort' },
+  au: { eyebrow: '✏️ Lückentext', title: 'Lückentext · B2+' },
 };
 
 function haptic(type) {
@@ -323,6 +325,7 @@ export default function AnswerOverlay({ startParam }) {
   const isListening = kind === 'ls';
   const isFreeform = kind === 'qf';
   const isCrossword = kind === 'cw';
+  const isAufgabe = kind === 'au';
   const { eyebrow, title: heading } = KIND_META[kind] || KIND_META.rb;
 
   // Fatal (bad link / task missing) — only when we have nothing to show.
@@ -345,7 +348,7 @@ export default function AnswerOverlay({ startParam }) {
           <h1 className="ans-title">{heading}</h1>
         </div>
         {isRebus ? <RebusResult result={result} />
-          : (isAnagram || isFreeform) ? <AnagramResult result={result} />
+          : (isAnagram || isFreeform || isAufgabe) ? <AnagramResult result={result} />
           : isListening ? <ListeningResult result={result} />
           : <CrosswordResult result={result} />}
         {result.ranking ? <RankingCard ranking={result.ranking} /> : null}
@@ -375,6 +378,25 @@ export default function AnswerOverlay({ startParam }) {
           <><div className="ans-skel" /><div className="ans-skel sm" /><div className="ans-skel" /></>
         ) : (
           <ListeningGame task={meta} onSubmit={submitListening} submitting={submitting} />
+        )}
+        {error ? <p className="ans-error">{error}</p> : null}
+      </div></div>
+    );
+  }
+
+  // Aufgabe input view — B2+ text task (cloze: sentence with a gap + text input).
+  if (isAufgabe) {
+    return (
+      <div className="ans-root"><div className="ans-card">
+        <div className="ans-head">
+          <span className="ans-eyebrow">{eyebrow}</span>
+          <h1 className="ans-title">{heading}</h1>
+          <p className="ans-sub">Setze das fehlende Wort ein ✍️</p>
+        </div>
+        {metaLoading || !meta ? (
+          <><div className="ans-skel" /><div className="ans-skel sm" /></>
+        ) : (
+          <AufgabeGame task={meta} onSubmit={(a) => submit(a)} submitting={submitting} />
         )}
         {error ? <p className="ans-error">{error}</p> : null}
       </div></div>
