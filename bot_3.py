@@ -19063,6 +19063,138 @@ async def _send_daily_challenge_digest_job(context: CallbackContext) -> None:
     logging.info("daily_challenge_digest sent=%d participants", sent)
 
 
+def _compute_quiz_leaderboard(rows: list) -> dict:
+    """Global quiz leaderboard from challenge results: points = +10 per correct
+    answer + place bonus (🥇+5/🥈+3/🥉+1) on each task. Returns ranked leaders +
+    weekly nominations (fastest / most accurate / most active)."""
+    by_key: dict[str, list] = {}
+    for r in rows:
+        by_key.setdefault(r["challenge_key"], []).append(r)
+    stats: dict[int, dict] = {}
+
+    def st(uid: int, name: str) -> dict:
+        s = stats.setdefault(uid, {"name": name or "Student", "points": 0, "answered": 0,
+                                   "correct": 0, "golds": 0, "ctime_sum": 0, "ctime_n": 0})
+        if name:
+            s["name"] = name
+        return s
+
+    for _key, rs in by_key.items():
+        correct = sorted([r for r in rs if r["is_correct"]], key=lambda x: x["time_ms"])
+        place = {c["user_id"]: i + 1 for i, c in enumerate(correct)}
+        for r in rs:
+            s = st(int(r["user_id"]), str(r["name"] or ""))
+            s["answered"] += 1
+            if r["is_correct"]:
+                s["correct"] += 1
+                pl = place.get(int(r["user_id"]), 99)
+                s["points"] += 10 + (5 if pl == 1 else 3 if pl == 2 else 1 if pl == 3 else 0)
+                if pl == 1:
+                    s["golds"] += 1
+                s["ctime_sum"] += int(r["time_ms"] or 0)
+                s["ctime_n"] += 1
+
+    leaders = [{"user_id": uid, **s} for uid, s in stats.items()]
+    leaders.sort(key=lambda l: (-l["points"], -l["correct"], l["ctime_sum"]))
+    fast_pool = [l for l in leaders if l["ctime_n"] >= 3]
+    acc_pool = [l for l in leaders if l["answered"] >= 3]
+    return {
+        "leaders": leaders,
+        "total_players": len(leaders),
+        "total_tasks": len(by_key),
+        "fastest": min(fast_pool, key=lambda l: l["ctime_sum"] / l["ctime_n"]) if fast_pool else None,
+        "accurate": max(acc_pool, key=lambda l: (l["correct"] / l["answered"], l["answered"])) if acc_pool else None,
+        "active": max(leaders, key=lambda l: l["answered"]) if leaders else None,
+    }
+
+
+def _build_champion_card(lb: dict, *, week_no: int, days: int) -> str | None:
+    leaders = lb.get("leaders") or []
+    if not leaders:
+        return None
+    medal = lambda i: "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else f"{i + 1}."
+    esc = lambda s: html.escape(str(s or "Student"))
+    champ = leaders[0]
+    period = "недели" if days == 7 else f"{days} дн."
+    lines = [
+        f"🏆🏆🏆  <b>ЧЕМПИОН {period.upper()} №{week_no}</b>  🏆🏆🏆",
+        "",
+        f"👑 <b>{esc(champ['name'])}</b>",
+        f"🏅 {champ['points']} очков · {champ['correct']}/{champ['answered']} верно · {champ['golds']}× 🥇",
+        "",
+        "<b>📊 Топ игроков</b>",
+    ]
+    for i, l in enumerate(leaders[:7]):
+        lines.append(f"{medal(i)} <b>{esc(l['name'])}</b> — {l['points']} очк. ({l['correct']}✓)")
+    if len(leaders) > 7:
+        lines.append("⋮")
+
+    noms = []
+    if lb.get("fastest"):
+        f = lb["fastest"]
+        noms.append(f"⚡ <b>Самый быстрый:</b> {esc(f['name'])} ({(f['ctime_sum'] / f['ctime_n'] / 1000):.1f} с в среднем)")
+    if lb.get("accurate"):
+        a = lb["accurate"]
+        noms.append(f"🎯 <b>Самый точный:</b> {esc(a['name'])} ({round(a['correct'] / a['answered'] * 100)}%)")
+    if lb.get("active"):
+        ac = lb["active"]
+        noms.append(f"🔥 <b>Самый активный:</b> {esc(ac['name'])} ({ac['answered']} заданий)")
+    if noms:
+        lines += ["", "✨ <b>Номинации</b>", *noms]
+    lines += ["", f"🌍 Всего игроков: {lb.get('total_players', 0)} · заданий: {lb.get('total_tasks', 0)}",
+              "Решай интерактивы — попади в топ! 🎮"]
+    return "\n".join(lines)
+
+
+async def _post_champion_card(context: CallbackContext, *, days: int, chat_ids: list[int] | None = None) -> int:
+    rows = await asyncio.to_thread(get_challenge_results_since, days * 24)
+    lb = _compute_quiz_leaderboard(rows or [])
+    week_no = _get_quiz_schedule_now().isocalendar()[1]
+    text = _build_champion_card(lb, week_no=week_no, days=days)
+    if not text:
+        return 0
+    if chat_ids is None:
+        targets = await _collect_quiz_delivery_user_targets(context)
+        chat_ids = [int(t.get("chat_id") or 0) for t in (targets or []) if int(t.get("chat_id") or 0)]
+    sent = 0
+    for cid in chat_ids:
+        try:
+            await context.bot.send_message(chat_id=int(cid), text=text, parse_mode="HTML")
+            sent += 1
+        except Exception:
+            logging.warning("champion card: send failed chat_id=%s", cid, exc_info=True)
+    return sent
+
+
+async def _send_weekly_champion_job(context: CallbackContext) -> None:
+    """Weekly: post the global quiz champion card to all delivery chats."""
+    try:
+        sent = await _post_champion_card(context, days=7)
+        logging.info("weekly_champion posted to %d chats", sent)
+    except Exception:
+        logging.warning("weekly_champion job failed", exc_info=True)
+
+
+async def admin_champion_command(update: Update, context: CallbackContext) -> None:
+    """Post the global quiz champion card on demand. /champion [days]"""
+    user    = update.effective_user
+    chat    = update.effective_chat
+    message = update.effective_message
+    if not user or not chat or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    args = context.args or []
+    try:
+        days = max(1, min(365, int(args[0]))) if args else 7
+    except (TypeError, ValueError):
+        days = 7
+    sent = await _post_champion_card(context, days=days, chat_ids=[int(chat.id)])
+    if sent == 0:
+        await message.reply_text("Пока нет данных для рейтинга (никто не отвечал на интерактивы).")
+
+
 async def _send_pending_freeform_cards_job(context: CallbackContext) -> None:
     """Deliver the rich DM result card for freeform answers submitted via the
     Mini-App overlay. The overlay grades + records on the backend tier (which
@@ -21437,6 +21569,7 @@ def main():
     application.add_handler(CommandHandler("admin_aufgabe_send", admin_aufgabe_send_command))
     application.add_handler(CommandHandler("admin_aufgabe_all", admin_aufgabe_all_command))
     application.add_handler(CommandHandler("admin_testalert", admin_testalert_command))
+    application.add_handler(CommandHandler("champion", admin_champion_command))
     application.add_handler(CommandHandler("poolreport", admin_pool_report_command))
     application.add_handler(CommandHandler("admin_cw_pool", admin_crossword_pool_command))
     application.add_handler(CommandHandler("admin_cw_rerender", admin_crossword_rerender_command))
@@ -21803,6 +21936,15 @@ def main():
             "cron",
             hour=21,
             minute=30,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Weekly global quiz champion card (Sunday 20:00) --
+        scheduler.add_job(
+            lambda: submit_async(_send_weekly_champion_job, CallbackContext(application=application)),
+            "cron",
+            day_of_week="sun",
+            hour=20,
+            minute=0,
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
         # -- Hörverständnis: daily at 18:30 --
