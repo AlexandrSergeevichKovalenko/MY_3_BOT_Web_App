@@ -270,6 +270,10 @@ from backend.database import (
     record_crossword_answer,
     get_crossword_answers,
     create_anagram_card,
+    count_available_anagram_cards,
+    pick_next_anagram,
+    mark_anagram_sent,
+    mark_anagram_send_failed,
     record_anagram_dispatch,
     update_anagram_dispatch_telegram_id,
     create_quiz_freeform_dispatch,
@@ -314,8 +318,20 @@ ARTICLE_QUIZ_POOL_TARGET = max(5, int((os.getenv("ARTICLE_QUIZ_POOL_TARGET") or 
 ARTICLE_QUIZ_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("ARTICLE_QUIZ_POOL_TOPUP_TRIGGER") or "5").strip() or "5"))
 CROSSWORD_SLOT_TIMES = {(11, 45), (17, 45)}  # 2x/day at :45
 ANAGRAM_SLOT_TIMES   = {(12, 15), (19, 15)}  # 2x/day — assemble-the-word Mini-App card
-AUFGABE_SLOT_TIMES   = {(10, 30), (16, 30)}  # 2x/day — B2+ text tasks (cloze, …)
-AUFGABE_POOL_TARGET  = max(4, int((os.getenv("AUFGABE_POOL_TARGET") or "12").strip() or "12"))
+ANAGRAM_POOL_TARGET  = max(4, int((os.getenv("ANAGRAM_POOL_TARGET") or "12").strip() or "12"))
+ANAGRAM_COOLDOWN_DAYS = max(1, int((os.getenv("ANAGRAM_COOLDOWN_DAYS") or "10").strip() or "10"))
+# One daily slot pinned to each format → EVERY B2+ format is sent every day.
+AUFGABE_FORMAT_SLOTS = {
+    (9, 30):  "cloze",
+    (11, 30): "wortbildung",
+    (13, 30): "transform",
+    (15, 30): "error",
+    (17, 30): "hoerluecke",
+    (19, 30): "pin",
+}
+# Per-format library target (≥ days of cooldown so a format never repeats within it).
+AUFGABE_PER_FORMAT_TARGET = max(3, int((os.getenv("AUFGABE_PER_FORMAT_TARGET") or "7").strip() or "7"))
+AUFGABE_SEND_COOLDOWN_DAYS = max(1, int((os.getenv("AUFGABE_SEND_COOLDOWN_DAYS") or "6").strip() or "6"))
 LISTENING_SLOT_TIME  = (18, 30)              # once/day at 18:30
 LISTENING_COOLDOWN_DAYS = max(5, int((os.getenv("LISTENING_COOLDOWN_DAYS") or "7").strip() or "7"))
 LISTENING_POOL_TARGET   = max(3, int((os.getenv("LISTENING_POOL_TARGET") or "7").strip() or "7"))
@@ -18835,6 +18851,41 @@ async def send_anagram_to_chat(
     return True
 
 
+async def _ensure_anagram_card() -> dict | None:
+    """Generate one anagram card into the pool and return it (card_id + payload)."""
+    payload = await _generate_anagram_card_payload()
+    if not payload:
+        return None
+    card_id = str(__import__("uuid").uuid4())
+    try:
+        await asyncio.to_thread(
+            create_anagram_card, card_id=card_id, word=payload["word"],
+            hint_ru=payload["hint_ru"], scrambled=payload["scrambled"],
+        )
+    except Exception:
+        logging.warning("ag_pool: create_card failed", exc_info=True)
+        return None
+    return {"card_id": card_id, "word": payload["word"], "hint_ru": payload["hint_ru"],
+            "scrambled": payload["scrambled"], "explanation": ""}
+
+
+async def prepare_anagram_pool_job(context: CallbackContext) -> None:
+    """Startup + nightly: fill the anagram pool to target (off critical path), so a
+    slot is never missed when generation hiccups (like the other games' pools)."""
+    try:
+        have = await asyncio.to_thread(count_available_anagram_cards, cooldown_days=ANAGRAM_COOLDOWN_DAYS)
+    except Exception:
+        have = 0
+    made = 0
+    attempts = 0
+    while have + made < ANAGRAM_POOL_TARGET and attempts < ANAGRAM_POOL_TARGET * 3:
+        attempts += 1
+        entry = await _ensure_anagram_card()
+        if entry:
+            made += 1
+    logging.info("anagram_pool_job done: have=%s made=%s target=%s", have, made, ANAGRAM_POOL_TARGET)
+
+
 async def _send_scheduled_anagram(context: CallbackContext) -> None:
     if not _anagram_enabled():
         logging.info("ag_slot_triggered enabled=False — skipping")
@@ -18845,12 +18896,20 @@ async def _send_scheduled_anagram(context: CallbackContext) -> None:
     if not _is_anagram_slot(slot_now):
         return
 
-    payload = await _generate_anagram_card_payload()
-    if not payload:
-        logging.info("ag_slot: no anagram card generated slot=%s/%s", slot_date, slot_hour)
+    # Pick a ready card from the pool; generate on demand only if the pool is empty.
+    try:
+        entry = await asyncio.to_thread(pick_next_anagram, cooldown_days=ANAGRAM_COOLDOWN_DAYS)
+    except Exception:
+        logging.warning("ag_slot: pick_next_anagram failed", exc_info=True)
+        entry = None
+    if not entry:
+        entry = await _ensure_anagram_card()
+    if not entry:
+        logging.info("ag_slot: no anagram card available slot=%s/%s", slot_date, slot_hour)
         return
 
-    card_id = str(__import__("uuid").uuid4())
+    payload = {"word": entry["word"], "hint_ru": entry["hint_ru"], "scrambled": entry["scrambled"]}
+    card_id = str(entry["card_id"])
     delivery_targets = await _collect_quiz_delivery_user_targets(context)
     if not delivery_targets:
         logging.info("ag_slot: no delivery targets slot=%s/%s", slot_date, slot_hour)
@@ -18868,6 +18927,10 @@ async def _send_scheduled_anagram(context: CallbackContext) -> None:
         )
         if ok:
             sent += 1
+    if sent > 0:
+        await asyncio.to_thread(mark_anagram_sent, card_id)
+    else:
+        await asyncio.to_thread(mark_anagram_send_failed, card_id)
     logging.info("ag_slot_done slot=%s/%s card_id=%s sent=%d", slot_date, slot_hour, card_id, sent)
 
 
@@ -18952,7 +19015,7 @@ def _aufgabe_enabled() -> bool:
 
 
 def _is_aufgabe_slot(slot_dt) -> bool:
-    return (int(slot_dt.hour), int(slot_dt.minute)) in AUFGABE_SLOT_TIMES
+    return (int(slot_dt.hour), int(slot_dt.minute)) in AUFGABE_FORMAT_SLOTS
 
 
 def _build_aufgabe_caption(entry: dict) -> str:
@@ -19140,7 +19203,7 @@ async def _aufgabe_topup_format(fmt: str, level: str, want: int) -> int:
 async def prepare_aufgabe_pool_job(context: CallbackContext) -> None:
     """Startup + nightly: fill the B2+ task pool (all 6 formats) to target via the
     per-format top-up helper, off the critical path."""
-    per_format = max(3, AUFGABE_POOL_TARGET // 5)
+    per_format = AUFGABE_PER_FORMAT_TARGET
     total_made = 0
     for fmt, level in _AUFGABE_FORMATS:
         try:
@@ -19155,21 +19218,42 @@ async def prepare_aufgabe_pool_job(context: CallbackContext) -> None:
     logging.info("aufgabe_pool_job done: total_made=%s", total_made)
 
 
-async def _send_scheduled_aufgabe(context: CallbackContext) -> None:
+async def _seed_billing_prices_job(context: CallbackContext) -> None:
+    """Startup: seed OpenAI price snapshots (public pricing + env) so bot-tier
+    OpenAI cost is computed automatically — no manual sync-env needed. Idempotent
+    (upserts; skips unchanged). The gateway model gpt-4.1-* is in the default
+    public-pricing model list, so its input/output SKUs get priced."""
+    try:
+        from backend.backend_server import _sync_openai_price_snapshots_public_then_env
+        result = await asyncio.to_thread(_sync_openai_price_snapshots_public_then_env)
+        logging.info("billing price seed done: %s", (result or {}).get("summary"))
+    except Exception:
+        logging.warning("billing price seed failed", exc_info=True)
+
+
+async def _send_scheduled_aufgabe(context: CallbackContext, fmt: str | None = None) -> None:
+    """Each daily slot is pinned to ONE format (fmt) so every B2+ variant is sent
+    every day. Picks a fresh item of that format; if the pool is momentarily empty
+    it generates one on the fly so the slot is never missed (no silent skip)."""
     if not _aufgabe_enabled():
         return
     slot_now = _get_quiz_schedule_now()
     slot_date = slot_now.date()
     slot_hour = int(slot_now.hour)
-    if not _is_aufgabe_slot(slot_now):
-        return
     try:
-        entry = await asyncio.to_thread(pick_next_aufgabe, cooldown_days=14)
+        entry = await asyncio.to_thread(pick_next_aufgabe, cooldown_days=AUFGABE_SEND_COOLDOWN_DAYS, format=fmt)
     except Exception:
-        logging.warning("au_slot: pick_next_aufgabe failed", exc_info=True)
+        logging.warning("au_slot: pick_next_aufgabe failed fmt=%s", fmt, exc_info=True)
         return
+    if not entry and fmt:
+        # nothing ready for this format → generate on demand so the slot still fires
+        try:
+            await _aufgabe_topup_format(fmt, _AUFGABE_LEVEL.get(fmt, "B2"), 2)
+            entry = await asyncio.to_thread(pick_next_aufgabe, cooldown_days=0, format=fmt)
+        except Exception:
+            logging.warning("au_slot: on-demand topup failed fmt=%s", fmt, exc_info=True)
     if not entry:
-        logging.info("au_slot: no ready aufgabe slot=%s/%s", slot_date, slot_hour)
+        logging.info("au_slot: no ready aufgabe slot=%s/%s fmt=%s", slot_date, slot_hour, fmt)
         return
     delivery_targets = await _collect_quiz_delivery_user_targets(context)
     if not delivery_targets:
@@ -19329,7 +19413,7 @@ async def build_pool_inventory_report(context: CallbackContext) -> str:
     tonight's top-up will add to reach target. One scannable DM."""
     from backend.database import (
         count_aufgaben_by_format, count_available_rebuses, count_available_article_quiz_entries,
-        count_crossword_bank_entries, count_anagram_cards, count_listening_bank_entries,
+        count_crossword_bank_entries, count_available_anagram_cards, count_listening_bank_entries,
         count_prepared_telegram_quizzes, count_ready_visual_riddle_templates,
         pool_demand_last_24h,
     )
@@ -19355,8 +19439,7 @@ async def build_pool_inventory_report(context: CallbackContext) -> str:
 
     # New B2+ Aufgabe engine — per format
     au = await asyncio.to_thread(count_aufgaben_by_format)
-    au_target = max(3, AUFGABE_POOL_TARGET // 5)
-    au_slots = len(AUFGABE_SLOT_TIMES)
+    au_target = AUFGABE_PER_FORMAT_TARGET
     au_fmts = [
         ("Lückentext", "cloze"), ("Wortbildung", "wortbildung"),
         ("Satztransformation", "transform"), ("Fehler-finden", "error"),
@@ -19364,7 +19447,7 @@ async def build_pool_inventory_report(context: CallbackContext) -> str:
     ]
     au_sum = 0
     au_refill = 0
-    lines.append(f"🆕 <b>Aufgabe (B2+)</b> · слотов {au_slots}/д · цель {au_target}/формат{'' if _aufgabe_enabled() else ' <i>(off)</i>'}")
+    lines.append(f"🆕 <b>Aufgabe (B2+)</b> · 1 слот/формат в день · цель {au_target}/формат{'' if _aufgabe_enabled() else ' <i>(off)</i>'}")
     for label, key in au_fmts:
         c = int(au.get(key, 0))
         au_sum += c
@@ -19378,7 +19461,7 @@ async def build_pool_inventory_report(context: CallbackContext) -> str:
     rebus = await asyncio.to_thread(count_available_rebuses, cooldown_days=30)
     cross = await asyncio.to_thread(count_crossword_bank_entries, exclude_retired=True)
     artic = await asyncio.to_thread(count_available_article_quiz_entries, cooldown_days=14)
-    anag = await asyncio.to_thread(count_anagram_cards)
+    anag = await asyncio.to_thread(count_available_anagram_cards, cooldown_days=ANAGRAM_COOLDOWN_DAYS)
     listen = await asyncio.to_thread(count_listening_bank_entries, exclude_retired=True)
     prep = await asyncio.to_thread(count_prepared_telegram_quizzes)
     vr = await asyncio.to_thread(count_ready_visual_riddle_templates)
@@ -19386,7 +19469,7 @@ async def build_pool_inventory_report(context: CallbackContext) -> str:
     lines.append(row("🧩", "Rebus", rebus, REBUS_POOL_TARGET, len(REBUS_SLOT_TIMES), _rebuses_enabled()))
     lines.append(row("🔤", "Kreuzwort", cross, CROSSWORD_POOL_TARGET, len(CROSSWORD_SLOT_TIMES), _crosswords_enabled()))
     lines.append(row("🇩🇪", "Artikel-Quiz", artic, ARTICLE_QUIZ_POOL_TARGET, len(ARTICLE_QUIZ_SLOT_TIMES), _article_quiz_enabled()))
-    lines.append(row("🔀", "Anagramm", anag, None, len(ANAGRAM_SLOT_TIMES), _anagram_enabled()))
+    lines.append(row("🔀", "Anagramm", anag, ANAGRAM_POOL_TARGET, len(ANAGRAM_SLOT_TIMES), _anagram_enabled()))
     lines.append(row("🎧", "Hörverständnis", listen, LISTENING_POOL_TARGET, 1, _listening_enabled()))
     lines.append(row("🃏", "Prepared-Quiz (poll)", prep, None, "—"))
     lines.append(row("🖼", "Visual-Riddle", vr, VISUAL_RIDDLE_POOL_TARGET, len(VISUAL_RIDDLE_SLOT_TIMES), _visual_riddles_enabled()))
@@ -21131,6 +21214,8 @@ def main():
                 application.job_queue.run_once(prepare_crossword_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 130),
                 application.job_queue.run_once(prepare_listening_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 160),
                 application.job_queue.run_once(prepare_aufgabe_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 190),
+                application.job_queue.run_once(prepare_anagram_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 220),
+                application.job_queue.run_once(_seed_billing_prices_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 10),
                 application.job_queue.run_repeating(_send_pending_freeform_cards_job, interval=8, first=20),
             ),
             enabled=True,
@@ -21409,16 +21494,24 @@ def main():
                 minute=_ag_minute,
                 timezone=QUIZ_SCHEDULE_TZ_NAME,
             )
+        # -- Anagram pool nightly top-up (02:30) --
+        scheduler.add_job(
+            lambda: submit_async(prepare_anagram_pool_job, CallbackContext(application=application)),
+            "cron",
+            hour=2,
+            minute=30,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
         logging.info(
             "anagram_scheduler_slots_registered slots=%s tz=%s enabled=%s",
             sorted(ANAGRAM_SLOT_TIMES),
             QUIZ_SCHEDULE_TZ_NAME,
             _anagram_enabled(),
         )
-        # -- Aufgabe (B2+ text tasks) slots --
-        for _au_hour, _au_minute in sorted(AUFGABE_SLOT_TIMES):
+        # -- Aufgabe (B2+ text tasks): one daily slot per format → all 6 sent daily --
+        for (_au_hour, _au_minute), _au_fmt in sorted(AUFGABE_FORMAT_SLOTS.items()):
             scheduler.add_job(
-                lambda: submit_async(_send_scheduled_aufgabe, CallbackContext(application=application)),
+                (lambda fmt=_au_fmt: submit_async(_send_scheduled_aufgabe, CallbackContext(application=application), fmt)),
                 "cron",
                 hour=_au_hour,
                 minute=_au_minute,
@@ -21426,7 +21519,7 @@ def main():
             )
         logging.info(
             "aufgabe_scheduler_slots_registered slots=%s tz=%s enabled=%s",
-            sorted(AUFGABE_SLOT_TIMES),
+            sorted(AUFGABE_FORMAT_SLOTS.items()),
             QUIZ_SCHEDULE_TZ_NAME,
             _aufgabe_enabled(),
         )

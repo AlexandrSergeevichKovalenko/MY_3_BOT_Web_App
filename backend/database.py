@@ -7882,6 +7882,16 @@ def ensure_webapp_tables() -> None:
             """)
             # ── end aufgabe tables ────────────────────────────────────────
 
+            # Anagram cards: pool columns (pick/cooldown/retire), like other games.
+            cursor.execute("ALTER TABLE bt_3_anagram_cards ADD COLUMN IF NOT EXISTS last_sent_at TIMESTAMPTZ;")
+            cursor.execute("ALTER TABLE bt_3_anagram_cards ADD COLUMN IF NOT EXISTS send_count INTEGER NOT NULL DEFAULT 0;")
+            cursor.execute("ALTER TABLE bt_3_anagram_cards ADD COLUMN IF NOT EXISTS fail_count INTEGER NOT NULL DEFAULT 0;")
+            cursor.execute("ALTER TABLE bt_3_anagram_cards ADD COLUMN IF NOT EXISTS retired BOOLEAN NOT NULL DEFAULT FALSE;")
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_anagram_cards_available
+                ON bt_3_anagram_cards (retired, last_sent_at NULLS FIRST, created_at);
+            """)
+
             # ── Hörverständnis (listening comprehension) tables ───────────
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_listening_bank (
@@ -33760,6 +33770,67 @@ def count_anagram_cards() -> int:
         with conn.cursor() as cursor:
             cursor.execute("SELECT COUNT(*) FROM bt_3_anagram_cards")
             return int((cursor.fetchone() or [0])[0])
+
+
+def count_available_anagram_cards(*, cooldown_days: int = 14) -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM bt_3_anagram_cards
+                WHERE retired = FALSE
+                  AND (last_sent_at IS NULL OR last_sent_at < NOW() - INTERVAL '1 day' * %s)
+                """,
+                (int(cooldown_days),),
+            )
+            return int((cursor.fetchone() or [0])[0])
+
+
+def pick_next_anagram(*, cooldown_days: int = 14) -> dict | None:
+    """Oldest unsent (or cooldown-expired) active anagram card."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT card_id, word, hint_ru, scrambled, explanation
+                FROM bt_3_anagram_cards
+                WHERE retired = FALSE
+                  AND (last_sent_at IS NULL OR last_sent_at < NOW() - INTERVAL '1 day' * %s)
+                ORDER BY last_sent_at NULLS FIRST, created_at
+                LIMIT 1
+                """,
+                (int(cooldown_days),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {"card_id": row[0], "word": row[1], "hint_ru": row[2],
+            "scrambled": row[3], "explanation": row[4] or ""}
+
+
+def mark_anagram_sent(card_id: str) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_anagram_cards SET send_count = send_count + 1, last_sent_at = NOW(), fail_count = 0 WHERE card_id = %s",
+                (str(card_id),),
+            )
+        conn.commit()
+
+
+def mark_anagram_send_failed(card_id: str, *, retire_after: int = 3) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_anagram_cards
+                SET fail_count = fail_count + 1, last_sent_at = NOW(),
+                    retired = (fail_count + 1 >= %s)
+                WHERE card_id = %s
+                """,
+                (int(retire_after), str(card_id)),
+            )
+        conn.commit()
 
 
 def count_aufgaben_by_format() -> dict:
