@@ -40,7 +40,14 @@ const KIND_META = {
   ag: { eyebrow: '🔤 Anagramm', title: 'Anagramm' },
   ls: { eyebrow: '🎧 Hörverständnis', title: 'Hörverständnis · B2' },
   qf: { eyebrow: '✍️ Antwort', title: 'Eigene Antwort' },
-  au: { eyebrow: '✏️ Lückentext', title: 'Lückentext · B2+' },
+  au: { eyebrow: '✏️ Aufgabe', title: 'Aufgabe · B2+' },
+};
+
+// au covers several formats — show the right label per format.
+const AU_LABELS = {
+  cloze: { eyebrow: '✏️ Lückentext', title: 'Lückentext · B2+' },
+  wortbildung: { eyebrow: '🔧 Wortbildung', title: 'Wortbildung · B2+' },
+  transform: { eyebrow: '🔄 Umformung', title: 'Satztransformation · C1' },
 };
 
 function haptic(type) {
@@ -326,7 +333,11 @@ export default function AnswerOverlay({ startParam }) {
   const isFreeform = kind === 'qf';
   const isCrossword = kind === 'cw';
   const isAufgabe = kind === 'au';
-  const { eyebrow, title: heading } = KIND_META[kind] || KIND_META.rb;
+  let { eyebrow, title: heading } = KIND_META[kind] || KIND_META.rb;
+  if (isAufgabe && meta?.format && AU_LABELS[meta.format]) {
+    eyebrow = AU_LABELS[meta.format].eyebrow;
+    heading = AU_LABELS[meta.format].title;
+  }
 
   // Fatal (bad link / task missing) — only when we have nothing to show.
   if (fatal && !result) {
@@ -391,7 +402,11 @@ export default function AnswerOverlay({ startParam }) {
         <div className="ans-head">
           <span className="ans-eyebrow">{eyebrow}</span>
           <h1 className="ans-title">{heading}</h1>
-          <p className="ans-sub">Setze das fehlende Wort ein ✍️</p>
+          <p className="ans-sub">
+            {meta?.format === 'wortbildung' ? 'Bilde die richtige Wortform ✍️'
+              : meta?.format === 'transform' ? 'Forme den Satz mit dem Schlüsselwort um ✍️'
+              : 'Setze das fehlende Wort ein ✍️'}
+          </p>
         </div>
         {metaLoading || !meta ? (
           <><div className="ans-skel" /><div className="ans-skel sm" /></>

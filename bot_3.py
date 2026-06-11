@@ -19001,36 +19001,68 @@ async def send_aufgabe_to_chat(
     return True
 
 
+def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
+    """Validate an LLM-generated item and build its stored payload. Returns None
+    when the item is unusable (we skip it — no silent placeholder/fallback)."""
+    it = it or {}
+    common = {
+        "erklaerung": str(it.get("erklaerung") or "").strip(),
+        "hint_ru": str(it.get("hint_ru") or "").strip(),
+    }
+    if fmt in ("cloze", "wortbildung"):
+        satz = str(it.get("satz") or "").strip()
+        correct = str(it.get("correct") or "").strip()
+        if not satz or not correct or "_____" not in satz:
+            return None
+        payload = {"satz": satz, "correct": correct,
+                   "aliases": [str(a) for a in (it.get("aliases") or []) if str(a).strip()], **common}
+        if fmt == "wortbildung":
+            stamm = str(it.get("stamm") or "").strip()
+            if not stamm:
+                return None
+            payload["stamm"] = stamm
+        return payload
+    if fmt == "transform":
+        original = str(it.get("original") or "").strip()
+        key = str(it.get("schluesselwort") or "").strip()
+        accepted = [str(a).strip() for a in (it.get("accepted") or []) if str(a).strip()]
+        if not original or not key or not accepted:
+            return None
+        return {"original": original, "schluesselwort": key,
+                "target_prefix": str(it.get("target_prefix") or ""),
+                "target_suffix": str(it.get("target_suffix") or ""),
+                "accepted": accepted, **common}
+    return None
+
+
 async def prepare_aufgabe_pool_job(context: CallbackContext) -> None:
-    """Startup + periodic: fill the B2+ task pool via LLM (off critical path)."""
-    try:
-        have = await asyncio.to_thread(count_available_aufgaben, format="cloze")
-        if have >= AUFGABE_POOL_TARGET:
-            logging.info("aufgabe_pool: already at target have=%s", have)
-            return
-        need = AUFGABE_POOL_TARGET - have
-        from backend.openai_manager import run_generate_aufgabe
-        items = await run_generate_aufgabe("cloze", count=min(8, need + 2), level="B2")
-        made = 0
-        for it in items:
-            satz = str((it or {}).get("satz") or "").strip()
-            correct = str((it or {}).get("correct") or "").strip()
-            if not satz or not correct or "_____" not in satz:
+    """Startup + periodic: fill the B2+ task pool (all formats) via LLM, off the
+    critical path. The generator does the heavy work (incl. the full accepted-answer
+    list for transform) so answering stays a fast deterministic check."""
+    from backend.openai_manager import run_generate_aufgabe
+    per_format = max(4, AUFGABE_POOL_TARGET // 3)
+    total_made = 0
+    for fmt, level in (("cloze", "B2"), ("wortbildung", "B2"), ("transform", "C1")):
+        try:
+            have = await asyncio.to_thread(count_available_aufgaben, format=fmt)
+            if have >= per_format:
                 continue
-            payload = {
-                "satz": satz, "correct": correct,
-                "aliases": [str(a) for a in (it.get("aliases") or []) if str(a).strip()],
-                "erklaerung": str(it.get("erklaerung") or "").strip(),
-                "hint_ru": str(it.get("hint_ru") or "").strip(),
-            }
-            await asyncio.to_thread(
-                create_aufgabe, aufgabe_id=str(__import__("uuid").uuid4()),
-                format="cloze", level="B2", payload=payload,
-            )
-            made += 1
-        logging.info("aufgabe_pool_job done: have=%s need=%s made=%s", have, need, made)
-    except Exception:
-        logging.warning("aufgabe_pool_job failed", exc_info=True)
+            items = await run_generate_aufgabe(fmt, count=min(8, per_format - have + 2), level=level)
+            made = 0
+            for it in items:
+                payload = _aufgabe_payload_from_item(fmt, it)
+                if not payload:
+                    continue
+                await asyncio.to_thread(
+                    create_aufgabe, aufgabe_id=str(__import__("uuid").uuid4()),
+                    format=fmt, level=level, payload=payload,
+                )
+                made += 1
+            total_made += made
+            logging.info("aufgabe_pool[%s]: have=%s target=%s made=%s", fmt, have, per_format, made)
+        except Exception:
+            logging.warning("aufgabe_pool_job failed for format=%s", fmt, exc_info=True)
+    logging.info("aufgabe_pool_job done: total_made=%s", total_made)
 
 
 async def _send_scheduled_aufgabe(context: CallbackContext) -> None:
@@ -19090,9 +19122,9 @@ async def admin_aufgabe_send_command(update: Update, context: CallbackContext) -
         return
 
     status_msg = await message.reply_text("Preparing Aufgabe...")
-    # ensure the pool has at least one item
+    # ensure the pool has at least one item (any format)
     try:
-        have = await asyncio.to_thread(count_available_aufgaben, format="cloze")
+        have = await asyncio.to_thread(count_available_aufgaben, format=None)
     except Exception:
         have = 0
     if have == 0:

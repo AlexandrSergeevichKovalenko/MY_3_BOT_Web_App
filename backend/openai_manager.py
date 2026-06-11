@@ -74,6 +74,8 @@ _DEFAULT_RESPONSES_TASKS = {
     "generate_mystery_story",
     "generate_word_quiz",
     "aufgabe_cloze",
+    "aufgabe_wortbildung",
+    "aufgabe_transform",
     "image_quiz_sentence_fallback",
     "image_quiz_visual_screen",
     "image_quiz_blueprint",
@@ -2877,6 +2879,55 @@ Gib NUR STRICT JSON zurück:
 }
 Erzeuge genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
+"aufgabe_wortbildung": """
+Du erstellst deutsche Wortbildungs-Aufgaben für fortgeschrittene Lernende (B2–C1).
+
+Eingabe-JSON: {"count": <int>, "level": "B2"|"C1"}.
+
+Jede Aufgabe: EIN deutscher Satz mit GENAU EINER Lücke "_____", plus ein STAMMWORT.
+Der/die Lernende muss aus dem Stammwort die korrekte abgeleitete Form bilden, die
+grammatisch und inhaltlich in die Lücke passt (z. B. Stamm "frei" → "Freiheit",
+Stamm "entscheiden" → "Entscheidung", Stamm "wirtschaftlich" → "Wirtschaft").
+Geprüft wird Wortbildung (Suffixe/Präfixe/Nominalisierung) + korrekte Form (Kasus,
+Numerus, ggf. Adjektivendung).
+
+Regeln:
+- Genau EINE eindeutig richtige Wortform.
+- "stamm" = das gegebene Ausgangswort.
+- "correct" = die exakte Form, die in die Lücke gehört (inkl. nötiger Endung).
+- "aliases" = nur echte gleichwertige Schreibvarianten, sonst [].
+- "erklaerung" = 1 kurzer Satz auf Russisch (welche Ableitung/Regel).
+- "hint_ru" = sehr kurzer russischer Hinweis (z. B. "существительное от глагола").
+
+Gib NUR STRICT JSON:
+{"items":[{"satz":"… _____ …","stamm":"frei","correct":"Freiheit","aliases":[],"erklaerung":"…","hint_ru":"…"}]}
+Genau "count" Aufgaben, alle verschieden, ohne Markdown.
+""",
+"aufgabe_transform": """
+Du erstellst deutsche Satztransformations-Aufgaben (Key-Word, Cambridge-Stil) für C1.
+
+Eingabe-JSON: {"count": <int>, "level": "C1"}.
+
+Jede Aufgabe: ein ORIGINALSATZ und ein SCHLÜSSELWORT. Der Lernende formt den Satz
+sinn-erhaltend um und MUSS das Schlüsselwort verwenden. Die Zielform ist ein Satz
+mit fester Anfangs- und Endphrase und einer Lücke in der Mitte, in die eine kurze
+Wortgruppe (2–5 Wörter) gehört, die das Schlüsselwort enthält.
+Beispiel: Original "Obwohl es regnete, gingen wir spazieren." Schlüsselwort "trotz"
+→ target_prefix "" , Lücke "Trotz des Regens", target_suffix "gingen wir spazieren."
+
+Regeln (WICHTIG für faire automatische Bewertung):
+- Bedeutung muss exakt erhalten bleiben; Grammatik korrekt; Schlüsselwort zwingend.
+- "target_prefix" und "target_suffix" sind FIX vorgegeben (können leer sein).
+- "accepted" = VOLLSTÄNDIGE Liste ALLER natürlichen korrekten Füllungen der Lücke
+  (jede 2–5 Wörter, jede mit dem Schlüsselwort, alle bedeutungsgleich). Nenne wirklich
+  alle gängigen Varianten (Wortstellung/Synonyme), damit eine exakte Prüfung fair ist.
+- "erklaerung" = 1 kurzer Satz auf Russisch + der vollständige korrekte Zielsatz.
+- "hint_ru" = sehr kurzer russischer Hinweis (welche Struktur).
+
+Gib NUR STRICT JSON:
+{"items":[{"original":"…","schluesselwort":"trotz","target_prefix":"","target_suffix":"gingen wir spazieren.","accepted":["Trotz des Regens"],"erklaerung":"…","hint_ru":"…"}]}
+Genau "count" Aufgaben, alle verschieden, ohne Markdown.
+""",
 "image_quiz_sentence_fallback": """
 You help build a visual language-learning quiz.
 
@@ -5264,7 +5315,11 @@ async def run_generate_word_quiz(prompt_payload: dict) -> dict:
         return {}
 
 
-_AUFGABE_INSTRUCTION_KEYS = {"cloze": "aufgabe_cloze"}
+_AUFGABE_INSTRUCTION_KEYS = {
+    "cloze": "aufgabe_cloze",
+    "wortbildung": "aufgabe_wortbildung",
+    "transform": "aufgabe_transform",
+}
 
 
 async def run_generate_aufgabe(format: str, *, count: int = 6, level: str = "B2") -> list[dict]:

@@ -697,14 +697,22 @@ def evaluate_freeform(*, dispatch_id: int, user_id: int, raw_input: str) -> dict
 
 # ── B2+ text tasks ("Aufgabe": cloze / …): load + evaluate ───────────────────
 
+def _aufgabe_correct_answer(payload: dict) -> str:
+    """The canonical answer to show after answering (per format)."""
+    correct = str(payload.get("correct") or "").strip()
+    if correct:
+        return correct
+    accepted = payload.get("accepted") or []
+    return str(accepted[0]) if accepted else ""
+
+
 def _aufgabe_result_payload(dispatch: dict, *, is_correct: bool, already_answered: bool) -> dict:
     payload = dispatch.get("payload") or {}
-    correct = str(payload.get("correct") or "")
     return {
         "kind": "aufgabe",
         "format": str(dispatch.get("format") or ""),
         "is_correct": bool(is_correct),
-        "correct_word": correct,          # reuses AnagramResult rendering on the FE
+        "correct_word": _aufgabe_correct_answer(payload),  # reuses AnagramResult FE
         "hint_ru": str(payload.get("hint_ru") or ""),
         "explanation": str(payload.get("erklaerung") or payload.get("explanation") or ""),
         "already_answered": bool(already_answered),
@@ -729,6 +737,14 @@ def load_aufgabe_task(*, dispatch_id: int, user_id: int) -> dict | None:
     # Prompt fields shown to the user (never the answer/explanation until answered).
     if fmt == "cloze":
         meta["satz"] = str(payload.get("satz") or "")
+    elif fmt == "wortbildung":
+        meta["satz"] = str(payload.get("satz") or "")
+        meta["stamm"] = str(payload.get("stamm") or "")
+    elif fmt == "transform":
+        meta["original"] = str(payload.get("original") or "")
+        meta["schluesselwort"] = str(payload.get("schluesselwort") or "")
+        meta["target_prefix"] = str(payload.get("target_prefix") or "")
+        meta["target_suffix"] = str(payload.get("target_suffix") or "")
     existing = get_aufgabe_answer(dispatch_id=int(dispatch_id), user_id=int(user_id))
     if existing:
         meta["already_answered"] = True
@@ -742,12 +758,15 @@ def _check_aufgabe(fmt: str, payload: dict, raw_input: str) -> bool:
     answer = str(raw_input or "").strip()
     if not answer:
         return False
-    if fmt == "cloze":
+    if fmt == "transform":
+        candidates = [str(a) for a in (payload.get("accepted") or [])]
+    else:  # cloze, wortbildung
         candidates = [str(payload.get("correct") or "")]
         candidates += [str(a) for a in (payload.get("aliases") or [])]
-        return any(check_quiz_freeform_deterministic(user_text=answer, correct_text=c) for c in candidates if c)
-    # other formats (wortbildung/transform/…) added in later phases
-    return check_quiz_freeform_deterministic(user_text=answer, correct_text=str(payload.get("correct") or ""))
+    return any(
+        check_quiz_freeform_deterministic(user_text=answer, correct_text=c)
+        for c in candidates if str(c).strip()
+    )
 
 
 def evaluate_aufgabe(*, dispatch_id: int, user_id: int, raw_input: str) -> dict | None:

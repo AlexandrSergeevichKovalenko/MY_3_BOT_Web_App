@@ -443,7 +443,19 @@ html[data-scheme="light"] .rank-row.me { background: #e1ebfd; }
   border-bottom: 2px solid var(--dmps-primary, #2563EB);
 }
 .au-hint { margin: 0; font-size: 13.5px; color: var(--dmps-text-muted, #94A3B8); }
+.au-orig {
+  font-size: 16px; font-weight: 500; line-height: 1.45;
+  color: var(--dmps-text-secondary, #CBD5E1);
+  padding: 12px 14px; border-radius: var(--dmps-radius-button, 16px);
+  background: rgba(148,163,184,0.08); border: 1px solid var(--dmps-border, #334155);
+}
+.au-key {
+  font-size: 14px; color: var(--dmps-text-secondary, #CBD5E1);
+  padding: 2px 2px;
+}
+.au-key b { color: var(--dmps-primary, #2563EB); font-weight: 800; }
 html[data-scheme="light"] .au-satz { background: #f4f6fa; }
+html[data-scheme="light"] .au-orig { background: #eef1f7; }
 
 /* Skeleton loader */
 .ans-skel {
