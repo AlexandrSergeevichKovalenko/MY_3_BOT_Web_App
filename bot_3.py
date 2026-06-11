@@ -272,6 +272,7 @@ from backend.database import (
     create_anagram_card,
     record_anagram_dispatch,
     update_anagram_dispatch_telegram_id,
+    create_quiz_freeform_dispatch,
 )
 from backend.r2_storage import r2_public_url
 from backend.job_queue import (
@@ -20143,6 +20144,40 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
             },
             ttl_seconds=QUIZ_FREEFORM_INPUT_TTL_SECONDS,
         )
+        # Offer the in-place Mini-App overlay (type the answer + see the verdict
+        # without leaving the chat). The pending-state DM text flow set above
+        # stays wired as a fallback.
+        qf_dispatch_id = 0
+        try:
+            qf_dispatch_id = await asyncio.to_thread(
+                create_quiz_freeform_dispatch,
+                user_id=int(poll_answer.user.id),
+                poll_id=str(poll_answer.poll_id or ""),
+                chat_id=int(quiz_data.get("chat_id") or 0),
+                correct_text=str(quiz_data.get("correct_text") or ""),
+                word_ru=str(quiz_data.get("word_ru") or ""),
+                explanation=str(quiz_data.get("explanation") or ""),
+                quiz_type=str(quiz_data.get("quiz_type") or ""),
+            )
+        except Exception:
+            logging.warning("quizfreeform: create dispatch failed user_id=%s", poll_answer.user.id, exc_info=True)
+
+        if qf_dispatch_id:
+            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(
+                "✍️ Antworten", url=get_webapp_deeplink(f"ans_qf_{qf_dispatch_id}"),
+            )]])
+            try:
+                await context.bot.send_message(
+                    chat_id=int(quiz_data.get("chat_id") or poll_answer.user.id),
+                    text=f"{poll_answer.user.first_name}, впиши свой вариант — окошко откроется прямо здесь 👇",
+                    reply_to_message_id=quiz_data.get("message_id"),
+                    reply_markup=keyboard,
+                )
+                return
+            except Exception:
+                logging.warning("quizfreeform: button message failed user_id=%s", poll_answer.user.id, exc_info=True)
+
+        # Fallback: legacy DM text prompt.
         try:
             await context.bot.send_message(
                 chat_id=poll_answer.user.id,

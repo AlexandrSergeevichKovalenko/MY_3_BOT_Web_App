@@ -25,9 +25,9 @@ function getInitData() {
   return '';
 }
 
-// start_param: "ans_rb_123" / "ans_cw_45" / "ans_ag_7" / "ans_ls_3"
+// start_param: "ans_rb_123" / "ans_cw_45" / "ans_ag_7" / "ans_ls_3" / "ans_qf_9"
 function parseStartParam(startParam) {
-  const m = /^ans_(rb|cw|ag|ls)_(\d+)$/.exec(String(startParam || '').trim().toLowerCase());
+  const m = /^ans_(rb|cw|ag|ls|qf)_(\d+)$/.exec(String(startParam || '').trim().toLowerCase());
   if (!m) return null;
   return { kind: m[1], id: Number(m[2]) };
 }
@@ -37,6 +37,7 @@ const KIND_META = {
   cw: { eyebrow: '🔤 Kreuzwort', title: 'Kreuzworträtsel' },
   ag: { eyebrow: '🔤 Anagramm', title: 'Anagramm' },
   ls: { eyebrow: '🎧 Hörverständnis', title: 'Hörverständnis · B2' },
+  qf: { eyebrow: '✍️ Antwort', title: 'Eigene Antwort' },
 };
 
 function haptic(type) {
@@ -265,6 +266,7 @@ export default function AnswerOverlay({ startParam }) {
   const isRebus = kind === 'rb';
   const isAnagram = kind === 'ag';
   const isListening = kind === 'ls';
+  const isFreeform = kind === 'qf';
   const { eyebrow, title: heading } = KIND_META[kind] || KIND_META.rb;
 
   // Fatal (bad link / task missing) — only when we have nothing to show.
@@ -287,7 +289,7 @@ export default function AnswerOverlay({ startParam }) {
           <h1 className="ans-title">{heading}</h1>
         </div>
         {isRebus ? <RebusResult result={result} />
-          : isAnagram ? <AnagramResult result={result} />
+          : (isAnagram || isFreeform) ? <AnagramResult result={result} />
           : isListening ? <ListeningResult result={result} />
           : <CrosswordResult result={result} />}
         {meta?.already_answered ? <p className="ans-note">Bereits beantwortet</p> : null}
@@ -318,6 +320,37 @@ export default function AnswerOverlay({ startParam }) {
           <ListeningGame task={meta} onSubmit={submitListening} submitting={submitting} />
         )}
         {error ? <p className="ans-error">{error}</p> : null}
+      </div></div>
+    );
+  }
+
+  // Freeform input view — a single text field (the "keine korrekte Antworten" path).
+  if (isFreeform) {
+    return (
+      <div className="ans-root"><div className="ans-card">
+        <div className="ans-head">
+          <span className="ans-eyebrow">{eyebrow}</span>
+          <h1 className="ans-title">{heading}</h1>
+          <p className="ans-sub">
+            {meta?.hint_ru ? <>Подсказка: <b style={{ color: 'var(--dmps-text-primary, #F8FAFC)' }}>{meta.hint_ru}</b> — </> : null}
+            schreib die richtige Antwort ✍️
+          </p>
+        </div>
+        <input
+          className="ans-input"
+          value={rebusInput}
+          onChange={(e) => setRebusInput(e.target.value)}
+          placeholder="dein Wort …"
+          autoFocus
+          autoCapitalize="off"
+          autoCorrect="off"
+          enterKeyHint="send"
+          onKeyDown={(e) => { if (e.key === 'Enter') submit(rebusInput.trim()); }}
+        />
+        {error ? <p className="ans-error">{error}</p> : null}
+        <button className="ans-btn" disabled={submitting || !rebusInput.trim()} onClick={() => submit(rebusInput.trim())}>
+          {submitting ? 'Prüfe …' : 'Prüfen ✓'}
+        </button>
       </div></div>
     );
   }

@@ -18,7 +18,50 @@ Anti-spoiler / anti-replay contract:
 
 from __future__ import annotations
 
+import re
+
 KNOWN_ARTICLES = {"der", "die", "das"}
+
+# Freeform-quiz answer matching (ported from bot_3 so the bot text handler and
+# the Mini-App endpoint stay one logic).
+_GERMAN_ARTICLE_TOKENS = {
+    "der", "die", "das", "den", "dem", "des",
+    "ein", "eine", "einen", "einem", "einer", "eines",
+}
+
+
+def _normalize_quiz_text(value: str) -> str:
+    lowered = str(value or "").lower()
+    cleaned = re.sub(r"[^a-zäöüßà-ÿ0-9\s'\-]", " ", lowered)
+    cleaned = cleaned.replace("-", " ")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def check_quiz_freeform_deterministic(*, user_text: str, correct_text: str) -> bool:
+    user_norm = _normalize_quiz_text(user_text)
+    correct_norm = _normalize_quiz_text(correct_text)
+    if not user_norm or not correct_norm:
+        return False
+    if user_norm == correct_norm:
+        return True
+    user_tokens = user_norm.split()
+    correct_tokens = correct_norm.split()
+    if not user_tokens or not correct_tokens:
+        return False
+    user_article = user_tokens[0] if user_tokens[0] in _GERMAN_ARTICLE_TOKENS else ""
+    correct_article = correct_tokens[0] if correct_tokens[0] in _GERMAN_ARTICLE_TOKENS else ""
+    allow_article_strip = not (user_article and correct_article and user_article != correct_article)
+
+    def _variants(tokens, strip_article):
+        variants = {" ".join(tokens)}
+        if strip_article and tokens and tokens[0] in _GERMAN_ARTICLE_TOKENS:
+            tail = tokens[1:]
+            if tail:
+                variants.add(" ".join(tail))
+        return {v for v in variants if v}
+
+    return bool(_variants(user_tokens, allow_article_strip) & _variants(correct_tokens, allow_article_strip))
 
 
 # ── Pure correctness checks (no IO) ──────────────────────────────────────────
@@ -518,3 +561,88 @@ def get_listening_status(*, dispatch_id: int, user_id: int) -> dict:
             ),
         }
     return {"kind": "listening", "status": st}
+
+
+# ── Freeform quiz ("keine korrekte Antworten" → type answer): load + evaluate ──
+
+def _quiz_freeform_semantic_match(user_text: str, correct_text: str) -> bool:
+    """Bounded LLM fallback for paraphrases/synonyms (single-word answers).
+
+    Sync wrapper around the async semantic checker — only called when the
+    deterministic match misses, so it's off the hot path for most answers.
+    """
+    canonical = str(correct_text or "").strip()
+    guess = str(user_text or "").strip()
+    if not canonical or not guess:
+        return False
+    if len(canonical.split()) > 5 or len(guess.split()) > 5 or len(canonical) > 80 or len(guess) > 80:
+        return False
+    try:
+        import asyncio
+        from backend.openai_manager import run_check_story_guess_semantic
+        result = asyncio.run(asyncio.wait_for(
+            run_check_story_guess_semantic(canonical_answer=canonical, aliases=[], user_guess=guess),
+            timeout=8.0,
+        ))
+        return bool((result or {}).get("is_correct"))
+    except Exception:
+        return False
+
+
+def _freeform_result_payload(dispatch: dict, *, is_correct: bool, already_answered: bool) -> dict:
+    correct_text = str(dispatch.get("correct_text") or "")
+    word_ru = str(dispatch.get("word_ru") or "")
+    return {
+        "kind": "freeform",
+        "is_correct": bool(is_correct),
+        "correct_word": correct_text,
+        "hint_ru": word_ru,
+        "explanation": str(dispatch.get("explanation") or ""),
+        "already_answered": bool(already_answered),
+        "saveable_words": ([{"source": correct_text, "target": word_ru}] if (correct_text and word_ru) else []),
+    }
+
+
+def load_freeform_task(*, dispatch_id: int, user_id: int) -> dict | None:
+    from backend.database import get_quiz_freeform_dispatch_by_id, get_quiz_freeform_answer
+    dispatch = get_quiz_freeform_dispatch_by_id(int(dispatch_id))
+    if not dispatch:
+        return None
+    existing = get_quiz_freeform_answer(dispatch_id=int(dispatch_id), user_id=int(user_id))
+    meta = {
+        "kind": "freeform",
+        "hint_ru": str(dispatch.get("word_ru") or ""),
+        "already_answered": bool(existing),
+    }
+    if existing:
+        meta["result"] = _freeform_result_payload(
+            dispatch, is_correct=bool(existing.get("is_correct")), already_answered=True,
+        )
+    return meta
+
+
+def evaluate_freeform(*, dispatch_id: int, user_id: int, raw_input: str) -> dict | None:
+    from backend.database import (
+        get_quiz_freeform_dispatch_by_id, get_quiz_freeform_answer, record_quiz_freeform_answer,
+    )
+    dispatch = get_quiz_freeform_dispatch_by_id(int(dispatch_id))
+    if not dispatch:
+        return None
+
+    existing = get_quiz_freeform_answer(dispatch_id=int(dispatch_id), user_id=int(user_id))
+    if existing:
+        return _freeform_result_payload(
+            dispatch, is_correct=bool(existing.get("is_correct")), already_answered=True,
+        )
+
+    correct_text = str(dispatch.get("correct_text") or "")
+    answer = str(raw_input or "").strip()
+    is_correct = check_quiz_freeform_deterministic(user_text=answer, correct_text=correct_text)
+    if not is_correct:
+        is_correct = _quiz_freeform_semantic_match(answer, correct_text)
+
+    record_quiz_freeform_answer(
+        dispatch_id=int(dispatch_id), user_id=int(user_id),
+        answer=answer, is_correct=bool(is_correct),
+    )
+    return _freeform_result_payload(dispatch, is_correct=is_correct, already_answered=False)

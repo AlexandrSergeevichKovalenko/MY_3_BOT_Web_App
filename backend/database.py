@@ -7778,6 +7778,33 @@ def ensure_webapp_tables() -> None:
             """)
             # ── end anagram tables ────────────────────────────────────────
 
+            # ── Freeform quiz ("keine korrekte Antworten" → type answer) ──
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_quiz_freeform_dispatches (
+                    id            BIGSERIAL PRIMARY KEY,
+                    user_id       BIGINT NOT NULL,
+                    poll_id       TEXT NOT NULL DEFAULT '',
+                    chat_id       BIGINT NOT NULL DEFAULT 0,
+                    correct_text  TEXT NOT NULL DEFAULT '',
+                    word_ru       TEXT NOT NULL DEFAULT '',
+                    explanation   TEXT NOT NULL DEFAULT '',
+                    quiz_type     TEXT NOT NULL DEFAULT '',
+                    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_quiz_freeform_answers (
+                    id          BIGSERIAL PRIMARY KEY,
+                    dispatch_id BIGINT NOT NULL REFERENCES bt_3_quiz_freeform_dispatches(id),
+                    user_id     BIGINT NOT NULL,
+                    answer      TEXT NOT NULL DEFAULT '',
+                    is_correct  BOOLEAN NOT NULL,
+                    answered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (dispatch_id, user_id)
+                );
+            """)
+            # ── end freeform quiz tables ──────────────────────────────────
+
             # ── Hörverständnis (listening comprehension) tables ───────────
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_listening_bank (
@@ -33222,6 +33249,77 @@ def get_anagram_answer(*, dispatch_id: int, user_id: int) -> dict | None:
     if not row:
         return None
     return {"assembled": row[0], "is_correct": bool(row[1]), "answered_at": row[2]}
+
+
+# ─── Freeform quiz DB functions ───────────────────────────────────────────────
+
+def create_quiz_freeform_dispatch(*, user_id: int, poll_id: str, chat_id: int,
+                                  correct_text: str, word_ru: str = "",
+                                  explanation: str = "", quiz_type: str = "") -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_quiz_freeform_dispatches
+                    (user_id, poll_id, chat_id, correct_text, word_ru, explanation, quiz_type)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (int(user_id), str(poll_id or ""), int(chat_id or 0), str(correct_text or ""),
+                 str(word_ru or ""), str(explanation or ""), str(quiz_type or "")),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return int(row[0]) if row else 0
+
+
+def get_quiz_freeform_dispatch_by_id(dispatch_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, user_id, poll_id, chat_id, correct_text, word_ru, explanation, quiz_type
+                FROM bt_3_quiz_freeform_dispatches WHERE id = %s
+                """,
+                (int(dispatch_id),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    cols = ["id", "user_id", "poll_id", "chat_id", "correct_text", "word_ru", "explanation", "quiz_type"]
+    return dict(zip(cols, row))
+
+
+def record_quiz_freeform_answer(*, dispatch_id: int, user_id: int,
+                                answer: str, is_correct: bool) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_quiz_freeform_answers (dispatch_id, user_id, answer, is_correct)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (dispatch_id, user_id) DO NOTHING
+                """,
+                (int(dispatch_id), int(user_id), str(answer)[:200], bool(is_correct)),
+            )
+        conn.commit()
+
+
+def get_quiz_freeform_answer(*, dispatch_id: int, user_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT answer, is_correct, answered_at
+                FROM bt_3_quiz_freeform_answers
+                WHERE dispatch_id = %s AND user_id = %s
+                """,
+                (int(dispatch_id), int(user_id)),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {"answer": row[0], "is_correct": bool(row[1]), "answered_at": row[2]}
 
 
 def retire_all_crossword_bank_entries() -> int:
