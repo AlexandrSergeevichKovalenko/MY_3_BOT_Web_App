@@ -18534,6 +18534,12 @@ async def _send_scheduled_crossword(context: CallbackContext) -> None:
             await asyncio.to_thread(mark_crossword_send_failed, crossword_id)
         except Exception:
             logging.warning("cw_slot: mark_crossword_send_failed failed crossword_id=%s", crossword_id, exc_info=True)
+        await _alert_admin_interactive(
+            context,
+            f"⚠️ <b>Kreuzwort: отправка не удалась</b> (0 доставлено, возможно битая картинка) "
+            f"crossword_id={crossword_id}, слот {slot_date} {slot_hour}:00.",
+            throttle_key="cw_send_fail",
+        )
 
     logging.info(
         "cw_slot_done slot=%s/%s crossword_id=%s sent=%d",
@@ -18909,6 +18915,12 @@ async def _send_scheduled_anagram(context: CallbackContext) -> None:
         entry = await _ensure_anagram_card()
     if not entry:
         logging.info("ag_slot: no anagram card available slot=%s/%s", slot_date, slot_hour)
+        await _alert_admin_interactive(
+            context,
+            f"⚠️ <b>Anagramm не отправлена</b> — нет карточки в пуле и генерация не удалась "
+            f"(слот {slot_date} {slot_hour}:00). Проверь логи.",
+            throttle_key="ag_empty",
+        )
         return
 
     payload = {"word": entry["word"], "hint_ru": entry["hint_ru"], "scrambled": entry["scrambled"]}
@@ -18934,6 +18946,11 @@ async def _send_scheduled_anagram(context: CallbackContext) -> None:
         await asyncio.to_thread(mark_anagram_sent, card_id)
     else:
         await asyncio.to_thread(mark_anagram_send_failed, card_id)
+        await _alert_admin_interactive(
+            context,
+            f"⚠️ <b>Anagramm: отправка не удалась</b> (0 доставлено, слот {slot_date} {slot_hour}:00).",
+            throttle_key="ag_send_fail",
+        )
     logging.info("ag_slot_done slot=%s/%s card_id=%s sent=%d", slot_date, slot_hour, card_id, sent)
 
 
@@ -19292,6 +19309,32 @@ _AUFGABE_FORMATS = (
 )
 _AUFGABE_LEVEL = {f: lvl for f, lvl in _AUFGABE_FORMATS}
 
+# Admin failure alerts for interactives (DM). Throttled so a repeating failure
+# doesn't spam — at most one alert per key per window.
+_INTERACTIVE_ALERT_LAST: dict[str, float] = {}
+_INTERACTIVE_ALERT_WINDOW_SECONDS = 1800  # 30 min
+
+
+async def _alert_admin_interactive(context: CallbackContext, text: str, *, throttle_key: str | None = None) -> None:
+    """DM all admins that an interactive failed. Best-effort, never raises."""
+    try:
+        if throttle_key:
+            import time as _t
+            now = _t.time()
+            last = _INTERACTIVE_ALERT_LAST.get(throttle_key, 0.0)
+            if now - last < _INTERACTIVE_ALERT_WINDOW_SECONDS:
+                return
+            _INTERACTIVE_ALERT_LAST[throttle_key] = now
+        from backend.database import get_admin_telegram_ids
+        admin_ids = [int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0]
+        for admin_id in admin_ids:
+            try:
+                await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML")
+            except Exception:
+                logging.warning("interactive alert: DM failed admin_id=%s", admin_id, exc_info=True)
+    except Exception:
+        logging.warning("interactive alert failed", exc_info=True)
+
 
 async def _aufgabe_topup_format(fmt: str, level: str, want: int) -> int:
     """Generate up to `want` ready items of ONE format into the pool. All heavy
@@ -19365,8 +19408,20 @@ async def prepare_aufgabe_pool_job(context: CallbackContext) -> None:
             made = await _aufgabe_topup_format(fmt, level, per_format - have)
             total_made += made
             logging.info("aufgabe_pool[%s]: have=%s target=%s made=%s", fmt, have, per_format, made)
-        except Exception:
+            if have == 0 and made == 0:
+                await _alert_admin_interactive(
+                    context,
+                    f"⚠️ <b>Пул «{fmt}» пуст и не пополнился</b> — генерация этого формата падает "
+                    f"(LLM{'/DALL·E+vision' if fmt == 'pin' else ''}{'/TTS' if fmt == 'hoerluecke' else ''}). "
+                    f"Скоро слот не сможет ничего отправить. Проверь логи.",
+                    throttle_key=f"au_pool_empty:{fmt}",
+                )
+        except Exception as exc:
             logging.warning("aufgabe_pool_job failed for format=%s", fmt, exc_info=True)
+            await _alert_admin_interactive(
+                context, f"❌ <b>Пул «{fmt}» упал</b> при генерации: {html.escape(str(exc))[:200]}",
+                throttle_key=f"au_pool_crash:{fmt}",
+            )
     logging.info("aufgabe_pool_job done: total_made=%s", total_made)
 
 
@@ -19406,6 +19461,12 @@ async def _send_scheduled_aufgabe(context: CallbackContext, fmt: str | None = No
             logging.warning("au_slot: on-demand topup failed fmt=%s", fmt, exc_info=True)
     if not entry:
         logging.info("au_slot: no ready aufgabe slot=%s/%s fmt=%s", slot_date, slot_hour, fmt)
+        await _alert_admin_interactive(
+            context,
+            f"⚠️ <b>Aufgabe «{fmt}» не отправлена</b> — пул пуст и не удалось сгенерировать "
+            f"(слот {slot_date} {slot_hour}:00). Проверь логи генерации этого формата.",
+            throttle_key=f"au_empty:{fmt}",
+        )
         return
     delivery_targets = await _collect_quiz_delivery_user_targets(context)
     if not delivery_targets:
@@ -19433,6 +19494,11 @@ async def _send_scheduled_aufgabe(context: CallbackContext, fmt: str | None = No
             await asyncio.to_thread(mark_aufgabe_send_failed, aufgabe_id)
         except Exception:
             logging.warning("au_slot: mark_send_failed failed aufgabe_id=%s", aufgabe_id, exc_info=True)
+        await _alert_admin_interactive(
+            context,
+            f"⚠️ <b>Aufgabe «{fmt}»: отправка не удалась</b> (0 доставлено, слот {slot_date} {slot_hour}:00).",
+            throttle_key=f"au_send_fail:{fmt}",
+        )
     logging.info("au_slot_done slot=%s/%s aufgabe_id=%s sent=%d", slot_date, slot_hour, aufgabe_id, sent)
 
 
@@ -19512,6 +19578,24 @@ async def _set_billing_user_context(update: Update, context: CallbackContext) ->
         set_llm_billing_user(int(u.id) if u else None)
     except Exception:
         pass
+
+
+async def admin_testalert_command(update: Update, context: CallbackContext) -> None:
+    """Fire a test interactive-failure alert to all admins. /admin_testalert"""
+    user    = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    # bypass throttle for the manual test
+    await _alert_admin_interactive(
+        context,
+        "🔔 <b>Тест уведомления</b>: если интерактив упадёт (пул пуст / ошибка генерации / "
+        "0 доставлено), такое сообщение придёт тебе в личку.",
+    )
+    await message.reply_text("Отправил тестовый алерт всем админам.")
 
 
 async def admin_aufgabe_all_command(update: Update, context: CallbackContext) -> None:
@@ -19921,6 +20005,12 @@ async def _send_scheduled_listening(context: CallbackContext) -> None:
             await asyncio.to_thread(mark_listening_sent, str(entry.get("listening_id") or ""))
         except Exception:
             logging.warning("ls_slot: mark_listening_sent failed", exc_info=True)
+    else:
+        await _alert_admin_interactive(
+            context,
+            f"⚠️ <b>Hörverständnis: отправка не удалась</b> (0 доставлено, слот {slot_date}).",
+            throttle_key="ls_send_fail",
+        )
 
     logging.info("ls_slot_done slot=%s sent=%d", slot_date, sent)
 
@@ -21334,6 +21424,7 @@ def main():
     application.add_handler(CommandHandler("admin_anagram_send", admin_anagram_send_command))
     application.add_handler(CommandHandler("admin_aufgabe_send", admin_aufgabe_send_command))
     application.add_handler(CommandHandler("admin_aufgabe_all", admin_aufgabe_all_command))
+    application.add_handler(CommandHandler("admin_testalert", admin_testalert_command))
     application.add_handler(CommandHandler("poolreport", admin_pool_report_command))
     application.add_handler(CommandHandler("admin_cw_pool", admin_crossword_pool_command))
     application.add_handler(CommandHandler("admin_cw_rerender", admin_crossword_rerender_command))
