@@ -7809,6 +7809,25 @@ def ensure_webapp_tables() -> None:
             """)
             # ── end freeform quiz tables ──────────────────────────────────
 
+            # ── Unified challenge results (ranking / trophy across all games) ──
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_challenge_results (
+                    id            BIGSERIAL PRIMARY KEY,
+                    challenge_key TEXT NOT NULL,
+                    user_id       BIGINT NOT NULL,
+                    user_name     TEXT NOT NULL DEFAULT '',
+                    is_correct    BOOLEAN NOT NULL,
+                    time_ms       INTEGER NOT NULL DEFAULT 0,
+                    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (challenge_key, user_id)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_challenge_results_key
+                ON bt_3_challenge_results (challenge_key);
+            """)
+            # ── end challenge results ─────────────────────────────────────
+
             # ── Hörverständnis (listening comprehension) tables ───────────
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_listening_bank (
@@ -33358,6 +33377,72 @@ def mark_freeform_card_sent(answer_id: int) -> None:
                 (int(answer_id),),
             )
         conn.commit()
+
+
+# ─── Unified challenge ranking (trophy / leaderboard across all games) ────────
+
+def record_challenge_result(*, challenge_key: str, user_id: int, user_name: str,
+                            is_correct: bool, time_ms: int) -> None:
+    """First answer per (challenge, user) counts — anti-replay via DO NOTHING."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_challenge_results
+                    (challenge_key, user_id, user_name, is_correct, time_ms)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (challenge_key, user_id) DO NOTHING
+                """,
+                (str(challenge_key), int(user_id), str(user_name or "")[:64],
+                 bool(is_correct), max(0, int(time_ms or 0))),
+            )
+        conn.commit()
+
+
+def compute_challenge_ranking(*, challenge_key: str, user_id: int) -> dict:
+    """Rank the user among everyone who answered this exact challenge: place by
+    speed among the correct answers, the top-3 (with names), and the correct %."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id, user_name, is_correct, time_ms
+                FROM bt_3_challenge_results
+                WHERE challenge_key = %s
+                """,
+                (str(challenge_key),),
+            )
+            rows = cursor.fetchall()
+
+    total = len(rows)
+    correct = [
+        {"user_id": int(r[0]), "name": str(r[1] or ""), "time_ms": int(r[3] or 0)}
+        for r in rows if bool(r[2])
+    ]
+    correct.sort(key=lambda x: x["time_ms"])
+    for i, c in enumerate(correct):
+        c["place"] = i + 1
+
+    me = next((r for r in rows if int(r[0]) == int(user_id)), None)
+    my_correct = bool(me[2]) if me else False
+    my_time = int(me[3] or 0) if me else 0
+    my_place = next((c["place"] for c in correct if c["user_id"] == int(user_id)), None)
+
+    total_correct = len(correct)
+    pct_correct = round(total_correct / total * 100) if total else 0
+    return {
+        "is_correct": my_correct,
+        "total": total,
+        "total_correct": total_correct,
+        "pct_correct": pct_correct,
+        "your_place": my_place,
+        "your_time_ms": my_time,
+        "your_name": str(me[1] or "") if me else "",
+        "top3": [
+            {"place": c["place"], "name": c["name"], "time_ms": c["time_ms"]}
+            for c in correct[:3]
+        ],
+    }
 
 
 def retire_all_crossword_bank_entries() -> int:

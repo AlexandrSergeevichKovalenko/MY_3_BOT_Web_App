@@ -22222,8 +22222,8 @@ def release_webapp_instance():
     return jsonify({"ok": True, "released": bool(released)})
 
 
-def _answer_auth_user_id() -> tuple[int | None, tuple]:
-    """Shared auth for /api/answer/*. Returns (user_id, error_response).
+def _answer_auth_user_id() -> tuple[int | None, str, tuple]:
+    """Shared auth for /api/answer/*. Returns (user_id, user_name, error_response).
 
     On success error_response is empty; on failure user_id is None and
     error_response is the (jsonify, status) tuple to return directly.
@@ -22231,15 +22231,16 @@ def _answer_auth_user_id() -> tuple[int | None, tuple]:
     payload = request.get_json(silent=True) or {}
     init_data = _extract_request_init_data(payload)
     if not init_data:
-        return None, (jsonify({"error": "initData обязателен"}), 400)
+        return None, "", (jsonify({"error": "initData обязателен"}), 400)
     if not _telegram_hash_is_valid(init_data):
-        return None, (jsonify({"error": "initData не прошёл проверку"}), 401)
+        return None, "", (jsonify({"error": "initData не прошёл проверку"}), 401)
     parsed = _parse_telegram_init_data(init_data)
     user_data = parsed.get("user") or {}
     user_id = user_data.get("id")
     if not user_id:
-        return None, (jsonify({"error": "user_id отсутствует в initData"}), 400)
-    return int(user_id), ()
+        return None, "", (jsonify({"error": "user_id отсутствует в initData"}), 400)
+    user_name = str(user_data.get("first_name") or user_data.get("username") or "").strip()
+    return int(user_id), user_name, ()
 
 
 @app.route("/api/answer/task", methods=["GET", "POST"])
@@ -22249,7 +22250,7 @@ def get_answer_task():
     Never reveals the correct answer unless the user has already answered
     (then the stored verdict is included so reopening shows the result).
     """
-    user_id, err = _answer_auth_user_id()
+    user_id, user_name, err = _answer_auth_user_id()
     if user_id is None:
         return err
 
@@ -22286,7 +22287,7 @@ def get_answer_task():
 def submit_answer():
     """Evaluate a free-text answer in place. user_id comes only from initData;
     a second submission returns the stored verdict (anti-replay)."""
-    user_id, err = _answer_auth_user_id()
+    user_id, user_name, err = _answer_auth_user_id()
     if user_id is None:
         return err
 
@@ -22324,13 +22325,38 @@ def submit_answer():
         return jsonify({"error": "Ошибка проверки"}), 500
     if result is None:
         return jsonify({"error": "Задание не найдено"}), 404
+
+    # Cross-cutting ranking/trophy: record the verdict + time and attach the
+    # standing among everyone who answered this same challenge. Listening (ls) is
+    # graded async, so its ranking is attached later in listening_status.
+    if kind != "ls" and "needs_article" not in result:
+        try:
+            time_ms = int(payload.get("time_ms") or 0)
+        except (TypeError, ValueError):
+            time_ms = 0
+        is_correct = bool(
+            result.get("is_correct")
+            if "is_correct" in result
+            else (result.get("total") and result.get("correct_count") == result.get("total"))
+        )
+        challenge_key = f"{kind}:{dispatch_id}"
+        try:
+            from backend.database import record_challenge_result, compute_challenge_ranking
+            record_challenge_result(
+                challenge_key=challenge_key, user_id=user_id, user_name=user_name,
+                is_correct=is_correct, time_ms=time_ms,
+            )
+            result["ranking"] = compute_challenge_ranking(challenge_key=challenge_key, user_id=user_id)
+        except Exception:
+            logging.warning("challenge ranking failed key=%s user=%s", challenge_key, user_id, exc_info=True)
+
     return jsonify({"ok": True, **result})
 
 
 @app.route("/api/answer/listening_status", methods=["GET", "POST"])
 def listening_status():
     """Poll endpoint for async listening grading: pending → done (+result)."""
-    user_id, err = _answer_auth_user_id()
+    user_id, user_name, err = _answer_auth_user_id()
     if user_id is None:
         return err
 

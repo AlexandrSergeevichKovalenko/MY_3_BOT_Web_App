@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './answer.css';
 import AnagramGame from './AnagramGame.jsx';
 import ListeningGame from './ListeningGame.jsx';
@@ -145,6 +145,49 @@ function ListeningResult({ result }) {
   );
 }
 
+function RankingCard({ ranking }) {
+  if (!ranking || !ranking.total) return null;
+  const { is_correct, total_correct, pct_correct, your_place, your_time_ms, your_name, top3 } = ranking;
+  const fmt = (ms) => `${(ms / 1000).toFixed(1)} с`;
+  const medal = (p) => (p === 1 ? '🥇' : p === 2 ? '🥈' : p === 3 ? '🥉' : `#${p}`);
+
+  if (!is_correct) {
+    return (
+      <div className="rank-card">
+        <div className="rank-head">📊 {pct_correct}% ответили верно</div>
+        <div className="rank-sub">В следующий раз получится! 💪</div>
+      </div>
+    );
+  }
+
+  const inTop3 = your_place && your_place <= 3;
+  return (
+    <div className="rank-card">
+      <div className="rank-trophy">{your_place === 1 ? '🏆' : '⚡'}</div>
+      <div className="rank-head">Место {your_place} из {total_correct} · {fmt(your_time_ms)}</div>
+      <div className="rank-list">
+        {(top3 || []).map((r) => (
+          <div className={`rank-row${r.place === your_place ? ' me' : ''}`} key={r.place}>
+            <span className="rank-medal">{medal(r.place)}</span>
+            <span className="rank-name">{r.name || '—'}</span>
+            <span className="rank-time">{fmt(r.time_ms)}</span>
+          </div>
+        ))}
+        {!inTop3 && your_place ? (
+          <>
+            <div className="rank-dots">⋮</div>
+            <div className="rank-row me">
+              <span className="rank-medal">#{your_place}</span>
+              <span className="rank-name">{your_name || 'Du'}</span>
+              <span className="rank-time">{fmt(your_time_ms)}</span>
+            </div>
+          </>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export default function AnswerOverlay({ startParam }) {
   const parsed = useMemo(() => parseStartParam(startParam), [startParam]);
   const [meta, setMeta] = useState(null);
@@ -156,6 +199,7 @@ export default function AnswerOverlay({ startParam }) {
   const [rebusInput, setRebusInput] = useState('');
   const [cwInputs, setCwInputs] = useState([]);
   const [grading, setGrading] = useState(false);
+  const taskLoadedAt = useRef(0); // for the speed ranking (load → submit)
 
   useEffect(() => {
     try {
@@ -181,6 +225,7 @@ export default function AnswerOverlay({ startParam }) {
         const data = await api('/api/answer/task', { kind: parsed.kind, id: parsed.id });
         if (cancelled) return;
         setMeta(data);
+        taskLoadedAt.current = Date.now(); // start the speed clock
         if (data.already_answered && data.result) setResult(data.result);
         if (parsed.kind === 'cw') setCwInputs((data.words || []).map(() => ''));
       } catch (e) {
@@ -202,7 +247,8 @@ export default function AnswerOverlay({ startParam }) {
     setSubmitting(true);
     setError('');
     try {
-      const data = await api('/api/answer/submit', { kind: parsed.kind, id: parsed.id, answer });
+      const time_ms = taskLoadedAt.current ? Date.now() - taskLoadedAt.current : 0;
+      const data = await api('/api/answer/submit', { kind: parsed.kind, id: parsed.id, answer, time_ms });
       if (data.needs_article) {
         setError('Bitte mit Artikel antworten — der / die / das …');
         haptic('bad');
@@ -302,6 +348,7 @@ export default function AnswerOverlay({ startParam }) {
           : (isAnagram || isFreeform) ? <AnagramResult result={result} />
           : isListening ? <ListeningResult result={result} />
           : <CrosswordResult result={result} />}
+        {result.ranking ? <RankingCard ranking={result.ranking} /> : null}
         {meta?.already_answered ? <p className="ans-note">Bereits beantwortet</p> : null}
         <button className="ans-btn" onClick={close}>Schließen</button>
       </div></div>
