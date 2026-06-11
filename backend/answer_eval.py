@@ -705,6 +705,9 @@ def _aufgabe_correct_answer(payload: dict) -> str:
     cw = str(payload.get("correct_word") or "").strip()
     if cw:
         return cw
+    tl = str(payload.get("target_label") or "").strip()
+    if tl:
+        return tl
     accepted = payload.get("accepted") or []
     return str(accepted[0]) if accepted else ""
 
@@ -760,6 +763,16 @@ def load_aufgabe_task(*, dispatch_id: int, user_id: int) -> dict | None:
                 meta["audio_url"] = r2_public_url(key)
             except Exception:
                 meta["audio_url"] = ""
+    elif fmt == "pin":
+        meta["question_de"] = str(payload.get("question_de") or "")
+        meta["image_url"] = ""
+        key = str(payload.get("image_object_key") or "")
+        if key:
+            try:
+                from backend.r2_storage import r2_public_url
+                meta["image_url"] = r2_public_url(key)
+            except Exception:
+                meta["image_url"] = ""
     existing = get_aufgabe_answer(dispatch_id=int(dispatch_id), user_id=int(user_id))
     if existing:
         meta["already_answered"] = True
@@ -784,6 +797,19 @@ def _check_aufgabe(fmt: str, payload: dict, raw_input: str) -> bool:
             return False
         candidates = [str(payload.get("correct_word") or "")] + [str(a) for a in (payload.get("aliases") or [])]
         return any(check_quiz_freeform_deterministic(user_text=correction, correct_text=c) for c in candidates if str(c).strip())
+    if fmt == "pin":
+        # raw_input = "x,y" normalized tap; correct if inside the target bbox (+margin)
+        bbox = payload.get("bbox")
+        if not (isinstance(bbox, list) and len(bbox) == 4):
+            return False
+        try:
+            x_str, _, y_str = answer.partition(",")
+            x, y = float(x_str), float(y_str)
+            bx, by, bw, bh = (float(v) for v in bbox)
+        except (TypeError, ValueError):
+            return False
+        m = 0.06  # forgiving margin so a near-miss on a clear object still counts
+        return (bx - m) <= x <= (bx + bw + m) and (by - m) <= y <= (by + bh + m)
     if fmt == "transform":
         candidates = [str(a) for a in (payload.get("accepted") or [])]
     else:  # cloze, wortbildung, hoerluecke

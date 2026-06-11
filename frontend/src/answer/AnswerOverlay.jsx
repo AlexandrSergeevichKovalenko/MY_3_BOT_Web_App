@@ -50,6 +50,7 @@ const AU_LABELS = {
   transform: { eyebrow: '🔄 Umformung', title: 'Satztransformation · C1' },
   error: { eyebrow: '🔍 Fehler finden', title: 'Fehler finden · B2+' },
   hoerluecke: { eyebrow: '🎧 Hörlücke', title: 'Hörlücke · B2+' },
+  pin: { eyebrow: '🖼 Finde im Bild', title: 'Finde im Bild · B2' },
 };
 
 const AU_SUBS = {
@@ -57,6 +58,7 @@ const AU_SUBS = {
   transform: 'Forme den Satz mit dem Schlüsselwort um ✍️',
   error: 'Finde und korrigiere den Fehler 🔍',
   hoerluecke: 'Höre und ergänze das fehlende Wort 🎧',
+  pin: 'Tippe auf das gesuchte Objekt 🖼',
   cloze: 'Setze das fehlende Wort ein ✍️',
 };
 

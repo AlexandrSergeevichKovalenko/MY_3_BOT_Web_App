@@ -78,6 +78,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "aufgabe_transform",
     "aufgabe_error",
     "aufgabe_hoerluecke",
+    "aufgabe_pin_blueprint",
     "image_quiz_sentence_fallback",
     "image_quiz_visual_screen",
     "image_quiz_blueprint",
@@ -2975,6 +2976,30 @@ Gib NUR STRICT JSON:
 {"items":[{"satz_voll":"Trotz des schlechten Wetters fand das Konzert im Freien statt.","satz_luecke":"Trotz des schlechten Wetters fand das Konzert im _____ statt.","correct":"Freien","aliases":[],"erklaerung":"…","hint_ru":"…"}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
+"aufgabe_pin_blueprint": """
+Du planst "Tippe auf das Objekt"-Bildaufgaben für Deutschlernende (B2).
+
+Eingabe-JSON: {"count": <int>}.
+
+Jede Aufgabe: eine realistische Alltagsszene, in der EIN bestimmtes Objekt
+("target_label") GROSS, deutlich und eindeutig zu sehen ist. Der/die Lernende soll
+genau auf dieses Objekt tippen. Wähle konkrete, gut sichtbare Substantive (Möbel,
+Werkzeuge, Küchen-/Haushaltsgegenstände, Fahrzeuge, Gebäudeteile usw.).
+
+Regeln:
+- "image_prompt": detaillierter englischer DALL-E-Prompt für eine klare, realistische
+  Szene. Das Zielobjekt muss GROSS und zentral/auffällig sein. KEIN Text, keine
+  Buchstaben, keine Labels im Bild. Nenne 1–2 weitere Kontextobjekte, aber das Ziel
+  bleibt das auffälligste.
+- "target_label": das deutsche Zielobjekt MIT Artikel (z. B. "der Wasserhahn").
+- "question_de": "Tippe auf {target_label} im Bild."
+- "erklaerung": 1 kurzer russischer Satz (Bedeutung des Wortes).
+- "hint_ru": kurzer russischer Hinweis / Übersetzung.
+
+Gib NUR STRICT JSON:
+{"items":[{"image_prompt":"A modern kitchen counter with a large stainless-steel faucet over the sink, a wooden cutting board nearby, photorealistic, no text","target_label":"der Wasserhahn","question_de":"Tippe auf den Wasserhahn im Bild.","erklaerung":"…","hint_ru":"кран"}]}
+Genau "count" Aufgaben, alle verschieden, ohne Markdown.
+""",
 "image_quiz_sentence_fallback": """
 You help build a visual language-learning quiz.
 
@@ -5368,6 +5393,7 @@ _AUFGABE_INSTRUCTION_KEYS = {
     "transform": "aufgabe_transform",
     "error": "aufgabe_error",
     "hoerluecke": "aufgabe_hoerluecke",
+    "pin": "aufgabe_pin_blueprint",
 }
 
 
@@ -5389,6 +5415,60 @@ async def run_generate_aufgabe(format: str, *, count: int = 6, level: str = "B2"
         return []
     items = data.get("items") if isinstance(data, dict) else data
     return items if isinstance(items, list) else []
+
+
+def run_vision_locate(image_bytes: bytes, target_label: str, *, mime: str = "image/png") -> dict:
+    """Vision check + localization for a generated pin-on-image task (pool time,
+    off the critical path). Returns {"present": bool, "bbox": [x,y,w,h] in 0..1}.
+    present=False → the object isn't clearly visible → the item is rejected (no
+    silent fallback). Sync; runs in a thread from the pool job."""
+    import base64
+    from backend.synthetic_load import build_sync_openai_client
+    api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
+    if not api_key or not image_bytes:
+        return {"present": False, "bbox": None}
+    b64 = base64.b64encode(bytes(image_bytes)).decode("ascii")
+    data_url = f"data:{mime};base64,{b64}"
+    prompt = (
+        f"Look at the image. Target object: \"{target_label}\". "
+        "Answer ONLY with strict JSON: "
+        '{"present": true|false, "bbox": [x, y, w, h]}. '
+        "present=true only if exactly this object is clearly and unambiguously visible "
+        "as a prominent object. bbox = the tight bounding box of that object as fractions "
+        "of the image (x,y = top-left, w,h = width/height, all between 0 and 1). "
+        "If it is not clearly visible, return present=false and bbox null."
+    )
+    try:
+        client = build_sync_openai_client(api_key=api_key, timeout=40)
+        resp = client.chat.completions.create(
+            model=_DEFAULT_GATEWAY_MODEL,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        content = str(resp.choices[0].message.content or "").strip()
+        data = json.loads(content)
+    except Exception:
+        logging.warning("run_vision_locate failed for target=%s", target_label, exc_info=True)
+        return {"present": False, "bbox": None}
+    present = bool(data.get("present"))
+    bbox = data.get("bbox")
+    if not present or not isinstance(bbox, list) or len(bbox) != 4:
+        return {"present": False, "bbox": None}
+    try:
+        x, y, w, h = (float(v) for v in bbox)
+    except (TypeError, ValueError):
+        return {"present": False, "bbox": None}
+    # sanity: within [0,1] and non-degenerate
+    if not (0 <= x <= 1 and 0 <= y <= 1 and 0 < w <= 1 and 0 < h <= 1):
+        return {"present": False, "bbox": None}
+    return {"present": True, "bbox": [round(x, 4), round(y, 4), round(w, 4), round(h, 4)]}
 
 
 async def run_image_quiz_sentence_fallback(payload: dict) -> dict:

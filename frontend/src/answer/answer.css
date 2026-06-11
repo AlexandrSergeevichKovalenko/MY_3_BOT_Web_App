@@ -473,6 +473,19 @@ html[data-scheme="light"] .au-satz { background: #f4f6fa; }
 html[data-scheme="light"] .au-orig { background: #eef1f7; }
 html[data-scheme="light"] .au-word { background: #ffffff; border-color: #c9d2e0; }
 html[data-scheme="light"] .au-word.picked { background: #dfe9fd; color: #0f172a; }
+.au-question { font-size: 16px; font-weight: 700; color: var(--dmps-text-primary, #F8FAFC); margin: 0; }
+.pin-wrap {
+  position: relative; width: 100%; border-radius: var(--dmps-radius-inner, 20px);
+  overflow: hidden; cursor: crosshair; border: 1px solid var(--dmps-border, #334155);
+  -webkit-touch-callout: none; user-select: none;
+}
+.pin-img { display: block; width: 100%; height: auto; }
+.pin-marker {
+  position: absolute; width: 26px; height: 26px; margin: -13px 0 0 -13px;
+  border-radius: 50%; border: 3px solid #fff;
+  background: rgba(37,99,235,0.55); box-shadow: 0 0 0 2px rgba(37,99,235,0.9), 0 2px 8px rgba(0,0,0,0.4);
+  pointer-events: none; animation: ag-drop 0.2s ease;
+}
 
 /* Skeleton loader */
 .ans-skel {

@@ -157,9 +157,36 @@ function AufgabeHoer({ task, onSubmit, submitting }) {
   );
 }
 
+function AufgabePin({ task, onSubmit, submitting }) {
+  const [tap, setTap] = useState(null); // normalized {x,y}
+  const hasImg = !!task.image_url;
+  const onImgClick = (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const x = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+    const y = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+    setTap({ x, y });
+    tapHaptic();
+  };
+  const submit = () => { if (tap) onSubmit(`${tap.x.toFixed(4)},${tap.y.toFixed(4)}`); };
+  return (
+    <>
+      <p className="au-question">{task.question_de}</p>
+      {hasImg ? (
+        <div className="pin-wrap" onClick={onImgClick}>
+          <img className="pin-img" src={task.image_url} alt="" draggable="false" />
+          {tap ? <span className="pin-marker" style={{ left: `${tap.x * 100}%`, top: `${tap.y * 100}%` }} /> : null}
+        </div>
+      ) : <div className="au-orig">🖼 Bild wird vorbereitet — gleich nochmal.</div>}
+      {task.hint_ru ? <p className="au-hint">💡 {task.hint_ru}</p> : null}
+      <PrüfenButton disabled={!tap} submitting={submitting} onClick={submit} />
+    </>
+  );
+}
+
 export default function AufgabeGame({ task, onSubmit, submitting }) {
   const fmt = task.format || 'cloze';
   if (fmt === 'error') return <AufgabeError task={task} onSubmit={onSubmit} submitting={submitting} />;
   if (fmt === 'hoerluecke') return <AufgabeHoer task={task} onSubmit={onSubmit} submitting={submitting} />;
+  if (fmt === 'pin') return <AufgabePin task={task} onSubmit={onSubmit} submitting={submitting} />;
   return <AufgabeText task={task} onSubmit={onSubmit} submitting={submitting} />;
 }

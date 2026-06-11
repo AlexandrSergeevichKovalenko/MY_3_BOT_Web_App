@@ -19051,6 +19051,15 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
             return None
         return {"satz_voll": satz_voll, "satz_luecke": satz_luecke, "correct": correct,
                 "aliases": [str(a) for a in (it.get("aliases") or []) if str(a).strip()], **common}
+    if fmt == "pin":
+        # image_object_key + bbox are filled in the pool job (DALL-E + vision).
+        question_de = str(it.get("question_de") or "").strip()
+        target_label = str(it.get("target_label") or "").strip()
+        image_prompt = str(it.get("image_prompt") or "").strip()
+        if not question_de or not target_label or not image_prompt:
+            return None
+        return {"question_de": question_de, "target_label": target_label,
+                "image_prompt": image_prompt, **common}
     return None
 
 
@@ -19063,7 +19072,7 @@ async def prepare_aufgabe_pool_job(context: CallbackContext) -> None:
     per_format = max(3, AUFGABE_POOL_TARGET // 5)
     total_made = 0
     for fmt, level in (("cloze", "B2"), ("wortbildung", "B2"), ("transform", "C1"),
-                       ("error", "B2"), ("hoerluecke", "B2")):
+                       ("error", "B2"), ("hoerluecke", "B2"), ("pin", "B2")):
         try:
             have = await asyncio.to_thread(count_available_aufgaben, format=fmt)
             if have >= per_format:
@@ -19086,6 +19095,33 @@ async def prepare_aufgabe_pool_job(context: CallbackContext) -> None:
                         payload["audio_object_key"] = key
                     except Exception:
                         logging.warning("aufgabe_pool: hoerluecke TTS/R2 failed, skipping item", exc_info=True)
+                        continue
+                elif fmt == "pin":
+                    # DALL-E image → R2, then a vision model verifies the target is
+                    # clearly present and returns its bbox (for tap grading). Reject
+                    # the item if the object isn't there — no silent fallback.
+                    try:
+                        from backend.image_generation_provider import generate_image_bytes
+                        from backend.openai_manager import run_vision_locate
+                        res = await asyncio.to_thread(
+                            generate_image_bytes, prompt=payload["image_prompt"], template_id=0, user_id=0
+                        )
+                        img = bytes(res.get("data") or b"")
+                        mime = str(res.get("mime_type") or "image/png").strip().lower() or "image/png"
+                        if not img:
+                            continue
+                        loc = await asyncio.to_thread(run_vision_locate, img, payload["target_label"], mime=mime)
+                        if not loc.get("present") or not loc.get("bbox"):
+                            logging.info("aufgabe_pool: pin target not located, skipping (%s)", payload["target_label"])
+                            continue
+                        ext = "png" if "png" in mime else ("webp" if "webp" in mime else "jpg")
+                        key = f"aufgabe/images/{aufgabe_id}.{ext}"
+                        await asyncio.to_thread(r2_put_bytes, key, img, content_type=mime)
+                        payload["image_object_key"] = key
+                        payload["bbox"] = loc["bbox"]
+                        payload.pop("image_prompt", None)  # not needed at runtime
+                    except Exception:
+                        logging.warning("aufgabe_pool: pin image/vision failed, skipping item", exc_info=True)
                         continue
                 await asyncio.to_thread(
                     create_aufgabe, aufgabe_id=aufgabe_id, format=fmt, level=level, payload=payload,
