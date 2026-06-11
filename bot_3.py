@@ -279,6 +279,9 @@ from backend.database import (
     create_quiz_freeform_dispatch,
     get_pending_freeform_result_cards,
     mark_freeform_card_sent,
+    get_pending_challenge_notifications,
+    mark_challenge_notification_sent,
+    get_challenge_results_since,
     create_aufgabe,
     count_available_aufgaben,
     pick_next_aufgabe,
@@ -18934,6 +18937,103 @@ async def _send_scheduled_anagram(context: CallbackContext) -> None:
     logging.info("ag_slot_done slot=%s/%s card_id=%s sent=%d", slot_date, slot_hour, card_id, sent)
 
 
+_CHALLENGE_KIND_LABELS = {
+    "rb": "Rätsel 🧩", "cw": "Kreuzwort 🔤", "ag": "Anagramm 🔀",
+    "qf": "Freie Antwort ✍️", "ls": "Hörverständnis 🎧",
+}
+_AU_FORMAT_LABELS = {
+    "cloze": "Lückentext ✏️", "wortbildung": "Wortbildung 🔧",
+    "transform": "Satztransformation 🔄", "error": "Fehler finden 🔍",
+    "hoerluecke": "Hörlücke 🎧", "pin": "Finde im Bild 🖼",
+}
+
+
+async def _challenge_label(challenge_key: str) -> str:
+    kind, _, did = str(challenge_key or "").partition(":")
+    if kind == "au":
+        try:
+            from backend.database import get_aufgabe_dispatch_by_id
+            disp = await asyncio.to_thread(get_aufgabe_dispatch_by_id, int(did))
+            return _AU_FORMAT_LABELS.get(str((disp or {}).get("format") or ""), "Aufgabe ✏️")
+        except Exception:
+            return "Aufgabe ✏️"
+    return _CHALLENGE_KIND_LABELS.get(kind, "Aufgabe")
+
+
+def _fmt_secs(ms) -> str:
+    try:
+        return f"{(int(ms) / 1000):.1f}с"
+    except (TypeError, ValueError):
+        return "—"
+
+
+async def _send_challenge_notifications_job(context: CallbackContext) -> None:
+    """Poll the ranking outbox and DM live pings (e.g. 'you were overtaken')."""
+    try:
+        pending = await asyncio.to_thread(get_pending_challenge_notifications, 20)
+    except Exception:
+        return
+    for n in pending:
+        try:
+            if n.get("kind") != "overtaken":
+                await asyncio.to_thread(mark_challenge_notification_sent, int(n["id"]))
+                continue
+            p = n.get("payload") or {}
+            label = await _challenge_label(n.get("challenge_key") or "")
+            text = (
+                f"⚡ Тебя обошли в «{label}»!\n"
+                f"🥇 <b>{html.escape(str(p.get('winner_name') or 'Кто-то'))}</b> — {_fmt_secs(p.get('winner_time_ms'))} "
+                f"(у тебя {_fmt_secs(p.get('your_time_ms'))}).\n"
+                f"Теперь ты на 2-м месте 🥈"
+            )
+            await context.bot.send_message(chat_id=int(n["user_id"]), text=text, parse_mode="HTML")
+            await asyncio.to_thread(mark_challenge_notification_sent, int(n["id"]))
+        except Exception:
+            logging.warning("challenge notif send failed id=%s", n.get("id"), exc_info=True)
+
+
+async def _send_daily_challenge_digest_job(context: CallbackContext) -> None:
+    """Evening DM: each participant's placements across today's challenges, so they
+    learn where they finished without hunting for tasks in the chat."""
+    try:
+        rows = await asyncio.to_thread(get_challenge_results_since, 24)
+    except Exception:
+        logging.warning("daily digest: fetch failed", exc_info=True)
+        return
+    if not rows:
+        return
+    by_key: dict[str, list] = {}
+    for r in rows:
+        by_key.setdefault(r["challenge_key"], []).append(r)
+
+    user_lines: dict[int, list[str]] = {}
+    for key, rs in by_key.items():
+        correct = sorted([r for r in rs if r["is_correct"]], key=lambda x: x["time_ms"])
+        total_correct = len(correct)
+        place_by_user = {c["user_id"]: i + 1 for i, c in enumerate(correct)}
+        label = await _challenge_label(key)
+        for r in rs:
+            uid = int(r["user_id"])
+            if r["is_correct"]:
+                pl = place_by_user.get(uid, 0)
+                medal = "🥇" if pl == 1 else "🥈" if pl == 2 else "🥉" if pl == 3 else f"#{pl}"
+                tag = " — ты лучший! 🏆" if pl == 1 else ""
+                line = f"{medal} {label}: {pl}/{total_correct} · {_fmt_secs(r['time_ms'])}{tag}"
+            else:
+                line = f"❌ {label}: неверно"
+            user_lines.setdefault(uid, []).append(line)
+
+    sent = 0
+    for uid, lines in user_lines.items():
+        try:
+            text = "🏁 <b>Итоги дня</b> — твои результаты\n\n" + "\n".join(lines)
+            await context.bot.send_message(chat_id=int(uid), text=text, parse_mode="HTML")
+            sent += 1
+        except Exception:
+            logging.warning("daily digest send failed uid=%s", uid, exc_info=True)
+    logging.info("daily_challenge_digest sent=%d participants", sent)
+
+
 async def _send_pending_freeform_cards_job(context: CallbackContext) -> None:
     """Deliver the rich DM result card for freeform answers submitted via the
     Mini-App overlay. The overlay grades + records on the backend tier (which
@@ -21252,6 +21352,7 @@ def main():
                 application.job_queue.run_once(prepare_anagram_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 220),
                 application.job_queue.run_once(_seed_billing_prices_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 10),
                 application.job_queue.run_repeating(_send_pending_freeform_cards_job, interval=8, first=20),
+                application.job_queue.run_repeating(_send_challenge_notifications_job, interval=10, first=25),
             ),
             enabled=True,
             category="housekeeping",
@@ -21574,6 +21675,14 @@ def main():
             "cron",
             hour=7,
             minute=0,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Daily challenge digest → each participant's placements (21:30) --
+        scheduler.add_job(
+            lambda: submit_async(_send_daily_challenge_digest_job, CallbackContext(application=application)),
+            "cron",
+            hour=21,
+            minute=30,
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
         # -- Hörverständnis: daily at 18:30 --

@@ -22356,6 +22356,23 @@ def submit_answer():
                 is_correct=is_correct, time_ms=time_ms,
             )
             result["ranking"] = compute_challenge_ranking(challenge_key=challenge_key, user_id=user_id)
+            # Leader change → outbox an "overtaken" ping for the dethroned player.
+            # Only a cheap insert here; the bot polls the outbox and DMs (no DM on
+            # the user's critical path, no double work).
+            if is_correct and (result.get("ranking") or {}).get("your_place") == 1:
+                from backend.database import get_challenge_top2, enqueue_challenge_notification
+                top2 = get_challenge_top2(challenge_key)
+                if len(top2) >= 2 and int(top2[0]["user_id"]) == int(user_id):
+                    dethroned = top2[1]
+                    enqueue_challenge_notification(
+                        user_id=int(dethroned["user_id"]), kind="overtaken", challenge_key=challenge_key,
+                        payload={
+                            "task_kind": kind,
+                            "winner_name": user_name or "",
+                            "winner_time_ms": int(top2[0]["time_ms"]),
+                            "your_time_ms": int(dethroned["time_ms"]),
+                        },
+                    )
         except Exception:
             logging.warning("challenge ranking failed key=%s user=%s", challenge_key, user_id, exc_info=True)
 

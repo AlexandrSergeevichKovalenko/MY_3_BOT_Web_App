@@ -7826,6 +7826,27 @@ def ensure_webapp_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bt_3_challenge_results_key
                 ON bt_3_challenge_results (challenge_key);
             """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_challenge_results_created
+                ON bt_3_challenge_results (created_at);
+            """)
+            # Outbox for ranking notifications (overtaken pings) — bot polls & DMs.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_challenge_notifications (
+                    id            BIGSERIAL PRIMARY KEY,
+                    user_id       BIGINT NOT NULL,
+                    kind          TEXT NOT NULL,
+                    challenge_key TEXT NOT NULL,
+                    payload       JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    sent_at       TIMESTAMPTZ,
+                    UNIQUE (user_id, kind, challenge_key)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_challenge_notifications_pending
+                ON bt_3_challenge_notifications (sent_at) WHERE sent_at IS NULL;
+            """)
             # ── end challenge results ─────────────────────────────────────
 
             # ── B2+ text tasks ("Aufgabe": cloze / wortbildung / transform …) ──
@@ -33507,6 +33528,96 @@ def compute_challenge_ranking(*, challenge_key: str, user_id: int) -> dict:
             for c in correct[:3]
         ],
     }
+
+
+def get_challenge_top2(challenge_key: str) -> list[dict]:
+    """The two fastest CORRECT answerers of a challenge (with user_id) — used to
+    detect a leader change (overtake) at submit time."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id, user_name, time_ms
+                FROM bt_3_challenge_results
+                WHERE challenge_key = %s AND is_correct = TRUE
+                ORDER BY time_ms ASC
+                LIMIT 2
+                """,
+                (str(challenge_key),),
+            )
+            return [
+                {"user_id": int(r[0]), "name": str(r[1] or ""), "time_ms": int(r[2] or 0)}
+                for r in (cursor.fetchall() or [])
+            ]
+
+
+def enqueue_challenge_notification(*, user_id: int, kind: str, challenge_key: str, payload: dict) -> None:
+    """Outbox a ranking notification (one per user+kind+challenge). Bot DMs it."""
+    import json as _json
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_challenge_notifications (user_id, kind, challenge_key, payload)
+                VALUES (%s, %s, %s, %s::jsonb)
+                ON CONFLICT (user_id, kind, challenge_key) DO NOTHING
+                """,
+                (int(user_id), str(kind), str(challenge_key), _json.dumps(payload or {}, ensure_ascii=False)),
+            )
+        conn.commit()
+
+
+def get_pending_challenge_notifications(limit: int = 20) -> list[dict]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, user_id, kind, challenge_key, payload
+                FROM bt_3_challenge_notifications
+                WHERE sent_at IS NULL
+                ORDER BY created_at
+                LIMIT %s
+                """,
+                (int(limit),),
+            )
+            rows = cursor.fetchall() or []
+    out = []
+    for r in rows:
+        out.append({
+            "id": int(r[0]), "user_id": int(r[1]), "kind": str(r[2]),
+            "challenge_key": str(r[3]), "payload": r[4] if isinstance(r[4], dict) else {},
+        })
+    return out
+
+
+def mark_challenge_notification_sent(notification_id: int) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_challenge_notifications SET sent_at = NOW() WHERE id = %s",
+                (int(notification_id),),
+            )
+        conn.commit()
+
+
+def get_challenge_results_since(since_hours: int = 24) -> list[dict]:
+    """All challenge answers in the recent window — for the end-of-day digest.
+    The caller groups by challenge_key and ranks the correct ones by time."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT challenge_key, user_id, user_name, is_correct, time_ms
+                FROM bt_3_challenge_results
+                WHERE created_at >= NOW() - INTERVAL '1 hour' * %s
+                """,
+                (int(since_hours),),
+            )
+            return [
+                {"challenge_key": str(r[0]), "user_id": int(r[1]), "name": str(r[2] or ""),
+                 "is_correct": bool(r[3]), "time_ms": int(r[4] or 0)}
+                for r in (cursor.fetchall() or [])
+            ]
 
 
 # ─── B2+ text tasks ("Aufgabe") DB functions ──────────────────────────────────
