@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import './answer.css';
 import AnagramGame from './AnagramGame.jsx';
+import ListeningGame from './ListeningGame.jsx';
 
 /**
  * Lightweight in-place answer overlay for in-group tasks (rebus + crossword).
@@ -24,9 +25,9 @@ function getInitData() {
   return '';
 }
 
-// start_param: "ans_rb_123" / "ans_cw_45" / "ans_ag_7"
+// start_param: "ans_rb_123" / "ans_cw_45" / "ans_ag_7" / "ans_ls_3"
 function parseStartParam(startParam) {
-  const m = /^ans_(rb|cw|ag)_(\d+)$/.exec(String(startParam || '').trim().toLowerCase());
+  const m = /^ans_(rb|cw|ag|ls)_(\d+)$/.exec(String(startParam || '').trim().toLowerCase());
   if (!m) return null;
   return { kind: m[1], id: Number(m[2]) };
 }
@@ -35,6 +36,7 @@ const KIND_META = {
   rb: { eyebrow: '🧩 Rätsel', title: 'Deutsches Rätsel' },
   cw: { eyebrow: '🔤 Kreuzwort', title: 'Kreuzworträtsel' },
   ag: { eyebrow: '🔤 Anagramm', title: 'Anagramm' },
+  ls: { eyebrow: '🎧 Hörverständnis', title: 'Hörverständnis · B2' },
 };
 
 function haptic(type) {
@@ -114,6 +116,33 @@ function AnagramResult({ result }) {
   );
 }
 
+function ListeningResult({ result }) {
+  const items = result.items || [];
+  const total = result.total || items.length;
+  const correct = result.correct_count || 0;
+  const allRight = total > 0 && correct === total;
+  const tone = allRight ? 'ok' : (correct > 0 ? 'partial' : 'bad');
+  return (
+    <div className={`ans-result ${tone}`}>
+      <div className="ans-verdict">
+        {allRight ? `🎉 Alle ${total} richtig!` : `🏁 ${correct} / ${total} richtig`}
+      </div>
+      <div className="ls-result-list">
+        {items.map((it) => (
+          <div className="ls-result-item" key={it.number}>
+            <div className="ls-result-q">{it.content_correct ? '✅' : '❌'} {it.number}. {it.question_de}</div>
+            {it.user_answer ? <div className="ls-result-you">Du: {it.user_answer}</div> : null}
+            {!it.content_correct && it.correct_answer_de ? (
+              <div className="ls-result-correct">Korrekt: <b>{it.correct_answer_de}</b></div>
+            ) : null}
+            {it.content_feedback_ru ? <div className="ans-meaning">{it.content_feedback_ru}</div> : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function AnswerOverlay({ startParam }) {
   const parsed = useMemo(() => parseStartParam(startParam), [startParam]);
   const [meta, setMeta] = useState(null);
@@ -124,6 +153,7 @@ export default function AnswerOverlay({ startParam }) {
   const [result, setResult] = useState(null);
   const [rebusInput, setRebusInput] = useState('');
   const [cwInputs, setCwInputs] = useState([]);
+  const [grading, setGrading] = useState(false);
 
   useEffect(() => {
     try {
@@ -179,11 +209,62 @@ export default function AnswerOverlay({ startParam }) {
     }
   }, [parsed, submitting, rebusInput, cwInputs]);
 
+  // Listening: submit kicks off async LLM grading; poll until it's done.
+  const pollListening = useCallback(() => {
+    let tries = 0;
+    const tick = async () => {
+      tries += 1;
+      try {
+        const s = await api('/api/answer/listening_status', { id: parsed.id });
+        if (s.status === 'done' && s.result) {
+          setGrading(false);
+          setResult(s.result);
+          haptic(s.result.correct_count === s.result.total ? 'ok' : 'bad');
+          return;
+        }
+        if (s.status === 'failed') {
+          setGrading(false);
+          setError('Auswertung fehlgeschlagen. Bitte versuche es erneut.');
+          return;
+        }
+      } catch (_e) { /* keep polling */ }
+      if (tries < 30) setTimeout(tick, 2000);
+      else { setGrading(false); setError('Zeitüberschreitung. Bitte versuche es erneut.'); }
+    };
+    setTimeout(tick, 2000);
+  }, [parsed]);
+
+  const submitListening = useCallback(async (answers) => {
+    if (!parsed || submitting || grading) return;
+    haptic('light');
+    setSubmitting(true);
+    setError('');
+    try {
+      const data = await api('/api/answer/submit', { kind: 'ls', id: parsed.id, answers });
+      if (data.items) { // already graded (anti-replay) → direct result
+        setResult(data);
+        haptic(data.correct_count === data.total ? 'ok' : 'bad');
+      } else if (data.status === 'pending') {
+        setGrading(true);
+        pollListening();
+      } else if (data.status === 'failed') {
+        setError('Auswertung fehlgeschlagen. Bitte versuche es erneut.');
+        haptic('bad');
+      }
+    } catch (e) {
+      setError(String(e.message || e));
+      haptic('bad');
+    } finally {
+      setSubmitting(false);
+    }
+  }, [parsed, submitting, grading, pollListening]);
+
   const close = useCallback(() => { try { tg?.close?.(); } catch (_e) { /* ignore */ } }, []);
 
   const kind = parsed?.kind;
   const isRebus = kind === 'rb';
   const isAnagram = kind === 'ag';
+  const isListening = kind === 'ls';
   const { eyebrow, title: heading } = KIND_META[kind] || KIND_META.rb;
 
   // Fatal (bad link / task missing) — only when we have nothing to show.
@@ -207,9 +288,36 @@ export default function AnswerOverlay({ startParam }) {
         </div>
         {isRebus ? <RebusResult result={result} />
           : isAnagram ? <AnagramResult result={result} />
+          : isListening ? <ListeningResult result={result} />
           : <CrosswordResult result={result} />}
         {meta?.already_answered ? <p className="ans-note">Bereits beantwortet</p> : null}
         <button className="ans-btn" onClick={close}>Schließen</button>
+      </div></div>
+    );
+  }
+
+  // Listening input view — custom audio player + answer fields; async grading.
+  if (isListening) {
+    return (
+      <div className="ans-root"><div className="ans-card">
+        <div className="ans-head">
+          <span className="ans-eyebrow">{eyebrow}</span>
+          <h1 className="ans-title">{heading}</h1>
+          {meta?.topic ? <p className="ans-sub">📌 {meta.topic}</p> : null}
+        </div>
+        {grading ? (
+          <div className="ls-grading">
+            <div className="ls-spinner" />
+            <p className="ans-sub" style={{ textAlign: 'center' }}>
+              Werte deine Antworten aus … <br />(10–20&nbsp;Sekunden)
+            </p>
+          </div>
+        ) : metaLoading || !meta ? (
+          <><div className="ans-skel" /><div className="ans-skel sm" /><div className="ans-skel" /></>
+        ) : (
+          <ListeningGame task={meta} onSubmit={submitListening} submitting={submitting} />
+        )}
+        {error ? <p className="ans-error">{error}</p> : null}
       </div></div>
     );
   }

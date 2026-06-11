@@ -375,3 +375,146 @@ def evaluate_anagram(*, dispatch_id: int, user_id: int, assembled: str) -> dict 
         is_correct=bool(is_correct),
     )
     return _anagram_result_payload(card=card, is_correct=is_correct, already_answered=False)
+
+
+# ── Hörverständnis (listening): load + async-graded submit + poll ────────────
+
+def _listening_result_payload(dispatch: dict, answers: list, evaluation: list,
+                              *, already_answered: bool) -> dict:
+    """Merge questions + the user's answers + the LLM evals into one verdict."""
+    questions = list(dispatch.get("questions_json") or [])
+    answers = answers if isinstance(answers, list) else []
+    evaluation = evaluation if isinstance(evaluation, list) else []
+    items = []
+    correct = 0
+    for i, q in enumerate(questions):
+        ev = evaluation[i] if i < len(evaluation) and isinstance(evaluation[i], dict) else {}
+        is_ok = bool(ev.get("content_correct"))
+        if is_ok:
+            correct += 1
+        items.append({
+            "number": int(q.get("number") or (i + 1)),
+            "question_de": str(q.get("question_de") or ""),
+            "user_answer": str(answers[i]) if i < len(answers) else "",
+            "content_correct": is_ok,
+            "content_feedback_ru": str(ev.get("content_feedback_ru") or ""),
+            "correct_answer_de": str(q.get("correct_answer_de") or ""),
+        })
+    return {
+        "kind": "listening",
+        "items": items,
+        "correct_count": correct,
+        "total": len(questions),
+        "already_answered": bool(already_answered),
+    }
+
+
+def load_listening_task(*, dispatch_id: int, user_id: int) -> dict | None:
+    """Audio URL + questions for the player. Never the model answers until graded."""
+    from backend.database import get_listening_dispatch_by_id, get_listening_answer_status
+    dispatch = get_listening_dispatch_by_id(int(dispatch_id))
+    if not dispatch:
+        return None
+
+    audio_url = ""
+    object_key = str(dispatch.get("audio_object_key") or "")
+    if object_key and str(dispatch.get("audio_status") or "") == "ready":
+        try:
+            from backend.r2_storage import r2_public_url
+            audio_url = r2_public_url(object_key)
+        except Exception:
+            audio_url = ""
+
+    questions = list(dispatch.get("questions_json") or [])
+    meta = {
+        "kind": "listening",
+        "topic": str(dispatch.get("topic") or ""),
+        "difficulty": str(dispatch.get("difficulty") or "B2"),
+        "audio_url": audio_url,
+        "questions": [
+            {"number": int(q.get("number") or (i + 1)), "question_de": str(q.get("question_de") or "")}
+            for i, q in enumerate(questions)
+        ],
+        "already_answered": False,
+    }
+    status = get_listening_answer_status(dispatch_id=int(dispatch_id), user_id=int(user_id))
+    if status and status.get("status") == "done" and status.get("evaluation") is not None:
+        meta["already_answered"] = True
+        meta["result"] = _listening_result_payload(
+            dispatch, status.get("answers") or [], status.get("evaluation") or [],
+            already_answered=True,
+        )
+    return meta
+
+
+def _spawn_listening_grader(answer_id: int, german_text: str, questions: list, answers: list) -> None:
+    import threading
+
+    def _run():
+        import logging
+        try:
+            from backend.listening_evaluator import evaluate_listening_answers
+            from backend.database import save_listening_evaluation
+            evals = evaluate_listening_answers(german_text, questions, answers)
+            save_listening_evaluation(answer_id=int(answer_id), evaluation_json=evals)
+        except Exception:
+            logging.warning("listening grader thread failed answer_id=%s", answer_id, exc_info=True)
+            try:
+                from backend.database import mark_listening_evaluation_failed
+                mark_listening_evaluation_failed(int(answer_id))
+            except Exception:
+                logging.warning("listening grader: mark_failed failed answer_id=%s", answer_id, exc_info=True)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def start_listening_evaluation(*, dispatch_id: int, user_id: int, answers: list) -> dict | None:
+    """Save answers and kick off async LLM grading. Returns pending (or the
+    stored result if this attempt was already graded — anti-replay)."""
+    from backend.database import (
+        get_listening_dispatch_by_id, get_listening_answer_status, save_listening_answers,
+    )
+    dispatch = get_listening_dispatch_by_id(int(dispatch_id))
+    if not dispatch:
+        return None
+
+    existing = get_listening_answer_status(dispatch_id=int(dispatch_id), user_id=int(user_id))
+    if existing and existing.get("status") == "done" and existing.get("evaluation") is not None:
+        return _listening_result_payload(
+            dispatch, existing.get("answers") or [], existing.get("evaluation") or [],
+            already_answered=True,
+        )
+
+    clean_answers = [str(a or "").strip() for a in (answers or [])]
+    answer_id = save_listening_answers(
+        dispatch_id=int(dispatch_id), user_id=int(user_id), answers_json=clean_answers,
+    )
+    if not answer_id:
+        return {"kind": "listening", "status": "failed"}
+
+    _spawn_listening_grader(
+        answer_id, str(dispatch.get("german_text") or ""),
+        list(dispatch.get("questions_json") or []), clean_answers,
+    )
+    return {"kind": "listening", "status": "pending"}
+
+
+def get_listening_status(*, dispatch_id: int, user_id: int) -> dict:
+    """Poll endpoint: pending / done (+result) / failed / none."""
+    from backend.database import get_listening_dispatch_by_id, get_listening_answer_status
+    status = get_listening_answer_status(dispatch_id=int(dispatch_id), user_id=int(user_id))
+    if not status:
+        return {"kind": "listening", "status": "none"}
+    st = str(status.get("status") or "pending")
+    if st == "done" and status.get("evaluation") is not None:
+        dispatch = get_listening_dispatch_by_id(int(dispatch_id))
+        if not dispatch:
+            return {"kind": "listening", "status": "failed"}
+        return {
+            "kind": "listening", "status": "done",
+            "result": _listening_result_payload(
+                dispatch, status.get("answers") or [], status.get("evaluation") or [],
+                already_answered=True,
+            ),
+        }
+    return {"kind": "listening", "status": st}

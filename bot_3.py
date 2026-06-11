@@ -261,6 +261,8 @@ from backend.database import (
     record_listening_dispatch,
     update_listening_dispatch_audio_message_id,
     get_listening_dispatch_by_id,
+    mark_listening_audio_ready,
+    get_listening_entries_missing_audio,
     save_listening_answers,
     save_listening_evaluation,
     update_crossword_dispatch_telegram_id,
@@ -2842,6 +2844,15 @@ def _audiosegment_to_mp3_bytes(audio_segment: AudioSegment) -> bytes:
 def _audiosegment_to_ogg_opus_bytes(audio_segment: AudioSegment) -> bytes:
     buf = io.BytesIO()
     audio_segment.export(buf, format="ogg", codec="libopus", bitrate="64k")
+    buf.seek(0)
+    return buf.read()
+
+
+def _audiosegment_to_mp3_bytes(audio_segment: AudioSegment) -> bytes:
+    # MP3 (not OGG/Opus) so HTML5 <audio> works in the Telegram iOS webview,
+    # which can't decode Opus. Used for the listening Mini-App player (R2).
+    buf = io.BytesIO()
+    audio_segment.export(buf, format="mp3", bitrate="64k")
     buf.seek(0)
     return buf.read()
 
@@ -18984,6 +18995,30 @@ def _build_listening_dm_instruction(questions: list) -> str:
     )
 
 
+def _build_listening_card_caption(entry: dict) -> str:
+    topic = html.escape(str(entry.get("topic") or "").strip())
+    n = len(list(entry.get("questions_json") or [])) or 4
+    lines = [
+        "🎧 <b>Hörverständnis</b> — B2",
+    ]
+    if topic:
+        lines.append(f"📌 <i>{topic}</i>")
+    lines += [
+        "",
+        f"🎧 Höre den Text in der Mini-App und beantworte {n} Fragen — "
+        "alles an Ort und Stelle, ohne den Chat zu verlassen. 👇",
+    ]
+    return "\n".join(lines)
+
+
+def _build_listening_keyboard(dispatch_id: int) -> InlineKeyboardMarkup:
+    btn = InlineKeyboardButton(
+        text="🎧 Üben",
+        url=get_webapp_deeplink(f"ans_ls_{dispatch_id}"),
+    )
+    return InlineKeyboardMarkup([[btn]])
+
+
 async def send_listening_to_chat(
     context: CallbackContext,
     *,
@@ -19015,30 +19050,20 @@ async def send_listening_to_chat(
         logging.info("ls_send: duplicate suppressed listening_id=%s chat_id=%s", listening_id, chat_id)
         return False
 
-    # Synthesize voice at send time using the bot's existing TTS engine
-    try:
-        voice_buffer, _ = await _synthesize_telegram_tts_voice("de", german_text)
-    except Exception as exc:
-        logging.warning("ls_send: TTS synthesis failed listening_id=%s: %s", listening_id, exc)
-        return False
-
-    caption, keyboard = _build_listening_group_message(entry, dispatch_id)
+    # Audio now lives inside the Mini-App overlay (R2 MP3, iOS-playable). The
+    # group gets a compact card + deeplink button instead of a voice message.
+    caption  = _build_listening_card_caption(entry)
+    keyboard = _build_listening_keyboard(dispatch_id)
 
     try:
-        voice_msg = await context.bot.send_voice(
+        await context.bot.send_message(
             chat_id=int(chat_id),
-            voice=voice_buffer,
-            caption=caption,
+            text=caption,
             reply_markup=keyboard,
-            parse_mode="Markdown",
-        )
-        await asyncio.to_thread(
-            update_listening_dispatch_audio_message_id,
-            dispatch_id,
-            audio_message_id=int(voice_msg.message_id),
+            parse_mode="HTML",
         )
     except Exception as exc:
-        logging.warning("ls_send: send_voice failed dispatch_id=%s: %s", dispatch_id, exc)
+        logging.warning("ls_send: send card failed dispatch_id=%s: %s", dispatch_id, exc)
         return False
 
     logging.info("ls_send_ok dispatch_id=%s listening_id=%s chat_id=%s", dispatch_id, listening_id, chat_id)
@@ -19219,6 +19244,40 @@ async def _process_listening_answers(
         await message.reply_text(feedback[i:i + chunk_size], parse_mode="Markdown")
 
 
+async def _backfill_listening_audio(limit: int = 10) -> dict:
+    """Synthesize TTS → MP3 → R2 for listening entries missing audio.
+
+    Off the critical path (pool job): the Mini-App player streams the R2 MP3 via
+    r2_public_url, so the audio must be a public, iOS-playable file (not the
+    Telegram voice message). MP3 because the Telegram iOS webview can't decode
+    Opus/OGG.
+    """
+    from backend.r2_storage import r2_put_bytes
+    entries = await asyncio.to_thread(get_listening_entries_missing_audio, limit)
+    made = 0
+    for e in entries:
+        listening_id = str(e.get("listening_id") or "")
+        german_text = str(e.get("german_text") or "").strip()
+        if not listening_id or not german_text:
+            continue
+        try:
+            audio_segment = await asyncio.to_thread(get_or_create_tts_clip, "de", german_text, 0.95)
+            mp3_bytes = await asyncio.to_thread(_audiosegment_to_mp3_bytes, audio_segment)
+            object_key = f"listening/audio/{listening_id}.mp3"
+            await asyncio.to_thread(
+                r2_put_bytes, object_key, mp3_bytes, content_type="audio/mpeg"
+            )
+            await asyncio.to_thread(
+                mark_listening_audio_ready, listening_id, audio_object_key=object_key
+            )
+            made += 1
+        except Exception:
+            logging.warning("ls_audio_backfill failed listening_id=%s", listening_id, exc_info=True)
+    if entries:
+        logging.info("listening_audio_backfill missing=%s made=%s", len(entries), made)
+    return {"missing": len(entries), "made": made}
+
+
 async def prepare_listening_pool_job(context: CallbackContext) -> None:
     """Startup + nightly: generate listening entries until pool is filled."""
     try:
@@ -19231,6 +19290,13 @@ async def prepare_listening_pool_job(context: CallbackContext) -> None:
         logging.info("listening_pool_job done: %s", result)
     except Exception:
         logging.warning("listening_pool_job failed", exc_info=True)
+
+    # Off critical path: make the R2 MP3 the Mini-App player streams.
+    try:
+        audio_result = await _backfill_listening_audio(limit=10)
+        logging.info("listening_audio_backfill done: %s", audio_result)
+    except Exception:
+        logging.warning("listening_audio_backfill job failed", exc_info=True)
 
 
 async def admin_listening_send_command(update: Update, context: CallbackContext) -> None:

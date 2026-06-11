@@ -33396,7 +33396,8 @@ def get_listening_dispatch_by_id(dispatch_id: int) -> dict | None:
                 """
                 SELECT d.id, d.listening_id, d.target_user_id, d.chat_id,
                        d.slot_date, d.audio_message_id,
-                       b.german_text, b.questions_json, b.topic, b.difficulty
+                       b.german_text, b.questions_json, b.topic, b.difficulty,
+                       b.audio_object_key, b.audio_status
                 FROM bt_3_listening_dispatches d
                 JOIN bt_3_listening_bank b ON b.listening_id = d.listening_id
                 WHERE d.id = %s
@@ -33408,8 +33409,66 @@ def get_listening_dispatch_by_id(dispatch_id: int) -> dict | None:
         return None
     cols = ["id", "listening_id", "target_user_id", "chat_id",
             "slot_date", "audio_message_id",
-            "german_text", "questions_json", "topic", "difficulty"]
+            "german_text", "questions_json", "topic", "difficulty",
+            "audio_object_key", "audio_status"]
     return dict(zip(cols, row))
+
+
+def mark_listening_audio_ready(listening_id: str, *, audio_object_key: str) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_listening_bank
+                SET audio_object_key = %s, audio_status = 'ready', updated_at = NOW()
+                WHERE listening_id = %s
+                """,
+                (str(audio_object_key), str(listening_id)),
+            )
+        conn.commit()
+
+
+def get_listening_entries_missing_audio(limit: int = 20) -> list[dict]:
+    """Active listening entries whose audio isn't in R2 yet — for off-path backfill."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT listening_id, german_text
+                FROM bt_3_listening_bank
+                WHERE retired = FALSE
+                  AND german_text <> ''
+                  AND (audio_status <> 'ready' OR COALESCE(audio_object_key, '') = '')
+                ORDER BY created_at
+                LIMIT %s
+                """,
+                (int(limit),),
+            )
+            rows = cursor.fetchall()
+    return [{"listening_id": r[0], "german_text": r[1]} for r in rows]
+
+
+def get_listening_answer_status(*, dispatch_id: int, user_id: int) -> dict | None:
+    """Read a user's listening attempt + grading status (for the Mini-App poll)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT answers_json, evaluation_json, evaluation_status, submitted_at
+                FROM bt_3_listening_answers
+                WHERE dispatch_id = %s AND user_id = %s
+                """,
+                (int(dispatch_id), int(user_id)),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "answers": row[0] if isinstance(row[0], list) else [],
+        "evaluation": row[1] if isinstance(row[1], list) else None,
+        "status": row[2],
+        "submitted_at": row[3],
+    }
 
 
 def save_listening_answers(
@@ -33438,6 +33497,20 @@ def save_listening_answers(
             row = cursor.fetchone()
         conn.commit()
     return int(row[0]) if row else 0
+
+
+def mark_listening_evaluation_failed(answer_id: int) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_listening_answers
+                SET evaluation_status = 'failed', evaluated_at = NOW()
+                WHERE id = %s AND evaluation_status = 'pending'
+                """,
+                (int(answer_id),),
+            )
+        conn.commit()
 
 
 def save_listening_evaluation(

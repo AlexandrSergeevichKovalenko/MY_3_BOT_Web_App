@@ -22261,13 +22261,17 @@ def get_answer_task():
     except (TypeError, ValueError):
         return jsonify({"error": "id обязателен"}), 400
 
-    from backend.answer_eval import load_rebus_task, load_crossword_task, load_anagram_task
+    from backend.answer_eval import (
+        load_rebus_task, load_crossword_task, load_anagram_task, load_listening_task,
+    )
     if kind == "rb":
         meta = load_rebus_task(dispatch_id=dispatch_id, user_id=user_id)
     elif kind == "cw":
         meta = load_crossword_task(dispatch_id=dispatch_id, user_id=user_id)
     elif kind == "ag":
         meta = load_anagram_task(dispatch_id=dispatch_id, user_id=user_id)
+    elif kind == "ls":
+        meta = load_listening_task(dispatch_id=dispatch_id, user_id=user_id)
     else:
         return jsonify({"error": "unsupported kind"}), 400
     if meta is None:
@@ -22291,7 +22295,9 @@ def submit_answer():
         return jsonify({"error": "id обязателен"}), 400
     answer = str(payload.get("answer") or "")
 
-    from backend.answer_eval import evaluate_rebus, evaluate_crossword, evaluate_anagram
+    from backend.answer_eval import (
+        evaluate_rebus, evaluate_crossword, evaluate_anagram, start_listening_evaluation,
+    )
     try:
         if kind == "rb":
             result = evaluate_rebus(dispatch_id=dispatch_id, user_id=user_id, raw_input=answer)
@@ -22299,6 +22305,12 @@ def submit_answer():
             result = evaluate_crossword(dispatch_id=dispatch_id, user_id=user_id, raw_input=answer)
         elif kind == "ag":
             result = evaluate_anagram(dispatch_id=dispatch_id, user_id=user_id, assembled=answer)
+        elif kind == "ls":
+            answers = payload.get("answers")
+            result = start_listening_evaluation(
+                dispatch_id=dispatch_id, user_id=user_id,
+                answers=answers if isinstance(answers, list) else [],
+            )
         else:
             return jsonify({"error": "unsupported kind"}), 400
     except Exception:
@@ -22307,6 +22319,24 @@ def submit_answer():
     if result is None:
         return jsonify({"error": "Задание не найдено"}), 404
     return jsonify({"ok": True, **result})
+
+
+@app.route("/api/answer/listening_status", methods=["GET", "POST"])
+def listening_status():
+    """Poll endpoint for async listening grading: pending → done (+result)."""
+    user_id, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+
+    payload = request.get_json(silent=True) or {}
+    raw_id = request.args.get("id") or payload.get("id")
+    try:
+        dispatch_id = int(raw_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "id обязателен"}), 400
+
+    from backend.answer_eval import get_listening_status as _get_listening_status
+    return jsonify({"ok": True, **_get_listening_status(dispatch_id=dispatch_id, user_id=user_id)})
 
 
 def _load_user_translation_sentence_map(
