@@ -19487,6 +19487,7 @@ _AUFGABE_FORMATS = (
     ("error", "B2"), ("hoerluecke", "B2"), ("pin", "B2"), ("satzbau", "B2"),
 )
 _AUFGABE_LEVEL = {f: lvl for f, lvl in _AUFGABE_FORMATS}
+_ADMIN_AUFGABE_ROTATION = {"i": 0}  # round-robin cursor for /admin_aufgabe_send (no arg)
 
 # Admin failure alerts for interactives (DM). Throttled so a repeating failure
 # doesn't spam — at most one alert per key per window.
@@ -19702,9 +19703,16 @@ async def admin_aufgabe_send_command(update: Update, context: CallbackContext) -
     if fmt and fmt not in valid:
         await message.reply_text(
             "Форматы: " + ", ".join(f for f, _ in _AUFGABE_FORMATS)
-            + "\nБез аргумента — следующий по ротации."
+            + "\nБез аргумента — крутит форматы по кругу."
         )
         return
+    # No arg → round-robin through the formats so each call shows a DIFFERENT one
+    # (picking "next unsent" otherwise favours whatever format has the most spare
+    # items — usually cloze — and repeats it).
+    if not fmt:
+        i = _ADMIN_AUFGABE_ROTATION["i"] % len(_AUFGABE_FORMATS)
+        _ADMIN_AUFGABE_ROTATION["i"] = i + 1
+        fmt = _AUFGABE_FORMATS[i][0]
 
     status_msg = await message.reply_text(f"Preparing Aufgabe{(' · ' + fmt) if fmt else ''}...")
     # Ensure availability of the requested format (or any). For a specific format
