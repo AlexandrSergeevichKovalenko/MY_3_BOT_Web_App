@@ -333,8 +333,10 @@ AUFGABE_FORMAT_SLOTS = {
     (9, 30):  "cloze",
     (10, 30): "satzbau",
     (11, 30): "wortbildung",
+    (12, 0):  "synonym",
     (13, 30): "transform",
     (15, 30): "error",
+    (16, 0):  "antonym",
     (17, 30): "hoerluecke",
     (18, 30): "satzbau",
     (19, 30): "pin",
@@ -19341,6 +19343,16 @@ def _build_aufgabe_caption(entry: dict) -> str:
             "🧩 <b>Satzbau</b> — B2+\n\n"
             "Baue aus den Wort-Kärtchen den richtigen Satz in der Mini-App 👇"
         )
+    if fmt == "synonym":
+        return (
+            "🔄 <b>Synonym</b> — B2+\n\n"
+            f"Finde ein Synonym zu <i>{esc(payload.get('wort'))}</i> — tippe es in der Mini-App 👇"
+        )
+    if fmt == "antonym":
+        return (
+            "↔️ <b>Antonym</b> — B2+\n\n"
+            f"Finde das Gegenteil von <i>{esc(payload.get('wort'))}</i> — tippe es in der Mini-App 👇"
+        )
     if fmt == "hoerluecke":
         return (
             "🎧 <b>Hörlücke</b> — B2+\n\n"
@@ -19446,6 +19458,12 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
         if not satz or len(woerter) < 4:
             return None
         return {"satz": satz, "woerter": woerter, "accepted": accepted or [satz], **common}
+    if fmt in ("synonym", "antonym"):
+        wort = str(it.get("wort") or "").strip()
+        accepted = [str(a).strip() for a in (it.get("accepted") or []) if str(a).strip()]
+        if not wort or len(accepted) < 2:
+            return None
+        return {"wort": wort, "accepted": accepted, **common}
     if fmt == "hoerluecke":
         # New multi-gap format: 3+ sentence text + ordered gaps. The audio (full text)
         # is synthesized in the pool job.
@@ -19485,6 +19503,7 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
 _AUFGABE_FORMATS = (
     ("cloze", "B2"), ("wortbildung", "B2"), ("transform", "C1"),
     ("error", "B2"), ("hoerluecke", "B2"), ("pin", "B2"), ("satzbau", "B2"),
+    ("synonym", "B2"), ("antonym", "B2"),
 )
 _AUFGABE_LEVEL = {f: lvl for f, lvl in _AUFGABE_FORMATS}
 _ADMIN_AUFGABE_ROTATION = {"i": 0}  # round-robin cursor for /admin_aufgabe_send (no arg)

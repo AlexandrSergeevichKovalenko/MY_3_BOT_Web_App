@@ -763,6 +763,8 @@ def evaluate_freeform(*, dispatch_id: int, user_id: int, raw_input: str) -> dict
 
 def _aufgabe_correct_answer(payload: dict) -> str:
     """The canonical answer to show after answering (per format)."""
+    if payload.get("wort") and payload.get("accepted"):  # synonym/antonym: show a few
+        return " · ".join(str(a) for a in (payload.get("accepted") or [])[:3])
     gaps = payload.get("gaps")
     if isinstance(gaps, list) and gaps:  # multi-gap hörlücke
         return " · ".join(str(g.get("correct") or "") for g in gaps)
@@ -822,6 +824,9 @@ def load_aufgabe_task(*, dispatch_id: int, user_id: int) -> dict | None:
         meta["schluesselwort"] = str(payload.get("schluesselwort") or "")
         meta["target_prefix"] = str(payload.get("target_prefix") or "")
         meta["target_suffix"] = str(payload.get("target_suffix") or "")
+    elif fmt in ("synonym", "antonym"):
+        meta["wort"] = str(payload.get("wort") or "")
+        meta["relation"] = fmt
     elif fmt == "error":
         meta["woerter"] = [str(w) for w in (payload.get("woerter") or [])]
     elif fmt == "satzbau":
@@ -877,10 +882,33 @@ def _norm_sentence(s: str) -> str:
     return _re.sub(r"\s+", " ", t).strip()
 
 
+def _synonym_semantic_match(target: str, candidate: str, relation: str) -> bool:
+    """Bounded LLM fallback: only fires when the accepted-list misses, so the hot
+    path stays fast for the common answers."""
+    t, c = str(target or "").strip(), str(candidate or "").strip()
+    if not t or not c or len(c.split()) > 3 or len(c) > 60:
+        return False
+    try:
+        import asyncio
+        from backend.openai_manager import run_check_synonym
+        res = asyncio.run(asyncio.wait_for(
+            run_check_synonym(target_word=t, candidate=c, relation=str(relation or "synonym")),
+            timeout=7.0,
+        ))
+        return bool((res or {}).get("match"))
+    except Exception:
+        return False
+
+
 def _check_aufgabe(fmt: str, payload: dict, raw_input: str) -> bool:
     answer = str(raw_input or "").strip()
     if not answer:
         return False
+    if fmt in ("synonym", "antonym"):
+        accepted = [str(a) for a in (payload.get("accepted") or [])]
+        if any(check_quiz_freeform_deterministic(user_text=answer, correct_text=c) for c in accepted if str(c).strip()):
+            return True
+        return _synonym_semantic_match(str(payload.get("wort") or ""), answer, fmt)
     if fmt == "satzbau":
         accepted = [str(a) for a in (payload.get("accepted") or [])]
         if not accepted:

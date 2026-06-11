@@ -53,6 +53,14 @@ function AufgabeText({ task, onSubmit, submitting }) {
         <div className="au-key">🔧 Stamm: <b>{task.stamm}</b></div>
       </>
     );
+  } else if (fmt === 'synonym' || fmt === 'antonym') {
+    placeholder = fmt === 'antonym' ? 'Gegenteil eintippen …' : 'Synonym eintippen …';
+    body = (
+      <div className="au-syn">
+        <span className="au-syn-label">{fmt === 'antonym' ? '↔️ Antonym zu' : '🔄 Synonym zu'}</span>
+        <div className="au-syn-word">{task.wort}</div>
+      </div>
+    );
   } else {
     body = <div className="au-satz">{gapSentence(task.satz)}</div>;
   }

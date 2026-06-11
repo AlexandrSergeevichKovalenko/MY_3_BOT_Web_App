@@ -451,6 +451,15 @@ html[data-scheme="light"] .rank-row.me { background: #e1ebfd; }
   border-bottom: 2px solid var(--dmps-primary, #2563EB);
 }
 .au-hint { margin: 0; font-size: 13.5px; color: var(--dmps-text-muted, #94A3B8); }
+.au-syn {
+  text-align: center; padding: 22px 16px;
+  background: var(--dmps-card-alt, #0B1220);
+  border: 1px solid var(--dmps-border, #334155);
+  border-radius: var(--dmps-radius-inner, 20px);
+}
+.au-syn-label { font-size: 14px; font-weight: 700; color: var(--dmps-text-muted, #94A3B8); letter-spacing: 0.04em; }
+.au-syn-word { margin-top: 6px; font-size: 30px; font-weight: 800; color: var(--dmps-primary, #2563EB); }
+html[data-scheme="light"] .au-syn { background: #f4f6fa; }
 .au-cloze { line-height: 2.1; }
 .au-gap-input {
   display: inline-block; width: 92px; margin: 0 2px; padding: 2px 8px;

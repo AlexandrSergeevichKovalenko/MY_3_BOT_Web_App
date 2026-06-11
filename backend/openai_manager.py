@@ -80,6 +80,9 @@ _DEFAULT_RESPONSES_TASKS = {
     "aufgabe_hoerluecke",
     "aufgabe_pin_blueprint",
     "aufgabe_satzbau",
+    "aufgabe_synonym",
+    "aufgabe_antonym",
+    "check_synonym",
     "image_quiz_sentence_fallback",
     "image_quiz_visual_screen",
     "image_quiz_blueprint",
@@ -3027,6 +3030,46 @@ Gib NUR STRICT JSON:
 {"items":[{"satz":"Er wurde gestern als bester Student des Kurses anerkannt.","woerter":["Er","wurde","gestern","als","bester","Student","des","Kurses","anerkannt."],"accepted":["Er wurde gestern als bester Student des Kurses anerkannt."],"erklaerung":"…","tip":"…","hint_ru":"…"}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
+"aufgabe_synonym": """
+Du erstellst deutsche Synonym-Aufgaben für B2–C1. Es wird EIN B2+ Zielwort gezeigt; der/die
+Lernende TIPPT ein Synonym.
+
+Regeln:
+- "wort" = das Zielwort. Nomen MIT Artikel (z. B. "die Aussage"); Adjektiv/Adverb/Verb in
+  Grundform. B2+, nicht trivial (kein A1-A2-Allerweltswort).
+- "accepted" = GROSSZÜGIGE Liste gängiger, gültiger Synonyme (8–15), alle wirklich
+  bedeutungsgleich/-nah und im Gebrauch üblich. Nomen mit Artikel. KEINE Antonyme, keine
+  bloß thematisch verwandten Wörter, keine andere Wortart.
+- "erklaerung" = „lehrbuchartig“ auf Russisch (1–2 Sätze): Bedeutung + ggf. Nuance/Register.
+- "tip" = kurzer russischer Merk-Tipp (ohne Emoji). "hint_ru" = kurze russische Übersetzung.
+
+Gib NUR STRICT JSON:
+{"items":[{"wort":"die Aussage","accepted":["die Behauptung","die Äußerung","die Feststellung","die Erklärung","das Statement","die Angabe"],"erklaerung":"…","tip":"…","hint_ru":"высказывание"}]}
+Genau "count" Aufgaben, alle verschieden, ohne Markdown.
+""",
+"aufgabe_antonym": """
+Du erstellst deutsche Antonym-Aufgaben (Gegenteile) für B2–C1. Es wird EIN B2+ Zielwort
+gezeigt; der/die Lernende TIPPT ein Antonym (Gegenteil).
+
+Regeln:
+- "wort" = das Zielwort. Nomen MIT Artikel; Adjektiv/Adverb/Verb in Grundform. B2+, nicht trivial.
+- "accepted" = GROSSZÜGIGE Liste gängiger, gültiger GEGENTEILE (5–12), alle echte Antonyme im
+  üblichen Gebrauch, gleiche Wortart. KEINE Synonyme, keine bloß verwandten Wörter.
+- "erklaerung" = „lehrbuchartig“ auf Russisch (1–2 Sätze): Bedeutung + Gegensatz.
+- "tip" = kurzer russischer Merk-Tipp (ohne Emoji). "hint_ru" = kurze russische Übersetzung.
+
+Gib NUR STRICT JSON:
+{"items":[{"wort":"großzügig","accepted":["geizig","kleinlich","knauserig","sparsam","engherzig"],"erklaerung":"…","tip":"…","hint_ru":"щедрый"}]}
+Genau "count" Aufgaben, alle verschieden, ohne Markdown.
+""",
+"check_synonym": """
+You judge German vocabulary. Input JSON: {"target": "...", "candidate": "...", "relation": "synonym"|"antonym"}.
+Decide whether `candidate` is a VALID German {synonym OR antonym, per relation} of `target` at B2+
+level. Ignore article/case/capitalization/spacing differences. Accept genuine close synonyms (or true
+opposites for antonym); REJECT merely topically related words, wrong part of speech, the same word, or
+a wrong-direction relation. Be reasonably generous for real near-synonyms.
+Return STRICT JSON ONLY: {"match": true} or {"match": false}.
+""",
 "aufgabe_pin_blueprint": """
 Du planst anspruchsvolle "Finde das Objekt"-Bildaufgaben für Deutschlernende (B2+).
 
@@ -5519,6 +5562,8 @@ _AUFGABE_INSTRUCTION_KEYS = {
     "hoerluecke": "aufgabe_hoerluecke",
     "pin": "aufgabe_pin_blueprint",
     "satzbau": "aufgabe_satzbau",
+    "synonym": "aufgabe_synonym",
+    "antonym": "aufgabe_antonym",
 }
 
 
@@ -5540,6 +5585,25 @@ async def run_generate_aufgabe(format: str, *, count: int = 6, level: str = "B2"
         return []
     items = data.get("items") if isinstance(data, dict) else data
     return items if isinstance(items, list) else []
+
+
+async def run_check_synonym(*, target_word: str, candidate: str, relation: str = "synonym") -> dict:
+    """Bounded yes/no LLM check: is `candidate` a valid synonym/antonym of `target`?
+    Only called as a fallback when the deterministic accepted-list misses."""
+    content = await llm_execute(
+        task_name="check_synonym",
+        system_instruction_key="check_synonym",
+        user_message=json.dumps(
+            {"target": str(target_word), "candidate": str(candidate), "relation": str(relation)},
+            ensure_ascii=False,
+        ),
+        poll_interval_seconds=1.0,
+        responses_timeout_seconds=6.0,
+    )
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        return {"match": False}
 
 
 def run_vision_locate(image_bytes: bytes, target_label: str, *, mime: str = "image/png") -> dict:
