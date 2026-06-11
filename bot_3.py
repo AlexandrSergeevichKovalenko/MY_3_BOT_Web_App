@@ -19232,6 +19232,113 @@ async def admin_aufgabe_send_command(update: Update, context: CallbackContext) -
     await status_msg.edit_text(f"Aufgabe send failed ({last_error}).")
 
 
+# ─────────────────────────────────────────────────────────────
+#  Daily pool inventory report (DM to admin at 07:00)
+# ─────────────────────────────────────────────────────────────
+
+async def build_pool_inventory_report(context: CallbackContext) -> str:
+    """Per-game-type snapshot: how many items are in the DB now, the daily burn
+    (1 item per send slot — the same item goes to every recipient), and how many
+    tonight's top-up will add to reach target. One scannable DM."""
+    from backend.database import (
+        count_aufgaben_by_format, count_available_rebuses, count_available_article_quiz_entries,
+        count_crossword_bank_entries, count_anagram_cards, count_listening_bank_entries,
+        count_prepared_telegram_quizzes, count_ready_visual_riddle_templates,
+    )
+    try:
+        targets = await _collect_quiz_delivery_user_targets(context)
+        n_targets = len(targets or [])
+    except Exception:
+        n_targets = 0
+
+    def row(emoji, name, count, target, slots, enabled=True):
+        off = "" if enabled else " <i>(off)</i>"
+        tgt = f"/{target}" if target else ""
+        warn = " ⚠️" if (target and count < target) else ""
+        refill = max(0, (target or 0) - count)
+        refill_s = f" · дозальём ~{refill}" if refill > 0 else ""
+        slots_s = f"{slots}/д" if isinstance(slots, int) else str(slots)
+        return f"{emoji} <b>{name}</b>: {count}{tgt}{warn} · слотов {slots_s}{refill_s}{off}"
+
+    lines = [f"📊 <b>Пул интерактивов</b> — {_get_quiz_schedule_now().strftime('%d.%m.%Y')}"]
+    lines.append(f"Получателей в рассылке: <b>{n_targets}</b>")
+    lines.append("<i>1 слот = 1 задание из базы всем получателям; расход = слотов/день.</i>")
+    lines.append("")
+
+    # New B2+ Aufgabe engine — per format
+    au = await asyncio.to_thread(count_aufgaben_by_format)
+    au_target = max(3, AUFGABE_POOL_TARGET // 5)
+    au_slots = len(AUFGABE_SLOT_TIMES)
+    au_fmts = [
+        ("Lückentext", "cloze"), ("Wortbildung", "wortbildung"),
+        ("Satztransformation", "transform"), ("Fehler-finden", "error"),
+        ("Hör-Lücke", "hoerluecke"), ("Pin-Bild", "pin"),
+    ]
+    au_sum = 0
+    au_refill = 0
+    lines.append(f"🆕 <b>Aufgabe (B2+)</b> · слотов {au_slots}/д · цель {au_target}/формат{'' if _aufgabe_enabled() else ' <i>(off)</i>'}")
+    for label, key in au_fmts:
+        c = int(au.get(key, 0))
+        au_sum += c
+        au_refill += max(0, au_target - c)
+        warn = " ⚠️" if c < au_target else ""
+        lines.append(f"   • {label}: {c}/{au_target}{warn}")
+    lines.append(f"   Σ в базе {au_sum} · ночью дозальём ~{au_refill}")
+    lines.append("")
+
+    # Older games
+    rebus = await asyncio.to_thread(count_available_rebuses, cooldown_days=30)
+    cross = await asyncio.to_thread(count_crossword_bank_entries, exclude_retired=True)
+    artic = await asyncio.to_thread(count_available_article_quiz_entries, cooldown_days=14)
+    anag = await asyncio.to_thread(count_anagram_cards)
+    listen = await asyncio.to_thread(count_listening_bank_entries, exclude_retired=True)
+    prep = await asyncio.to_thread(count_prepared_telegram_quizzes)
+    vr = await asyncio.to_thread(count_ready_visual_riddle_templates)
+
+    lines.append(row("🧩", "Rebus", rebus, REBUS_POOL_TARGET, len(REBUS_SLOT_TIMES), _rebuses_enabled()))
+    lines.append(row("🔤", "Kreuzwort", cross, CROSSWORD_POOL_TARGET, len(CROSSWORD_SLOT_TIMES), _crosswords_enabled()))
+    lines.append(row("🇩🇪", "Artikel-Quiz", artic, ARTICLE_QUIZ_POOL_TARGET, len(ARTICLE_QUIZ_SLOT_TIMES), _article_quiz_enabled()))
+    lines.append(row("🔀", "Anagramm", anag, None, len(ANAGRAM_SLOT_TIMES), _anagram_enabled()))
+    lines.append(row("🎧", "Hörverständnis", listen, LISTENING_POOL_TARGET, 1, _listening_enabled()))
+    lines.append(row("🃏", "Prepared-Quiz (poll)", prep, None, "—"))
+    lines.append(row("🖼", "Visual-Riddle", vr, VISUAL_RIDDLE_POOL_TARGET, len(VISUAL_RIDDLE_SLOT_TIMES), _visual_riddles_enabled()))
+    lines.append("🖼 <b>Image-Quiz</b>: ретайрнут <i>(off)</i>")
+    return "\n".join(lines)
+
+
+async def _send_pool_inventory_report_job(context: CallbackContext) -> None:
+    """07:00 cron: DM the pool inventory report to all admins."""
+    try:
+        admin_ids = [int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0]
+        if not admin_ids:
+            logging.info("pool_report: no admin ids configured")
+            return
+        text = await build_pool_inventory_report(context)
+        for admin_id in admin_ids:
+            try:
+                await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML")
+            except Exception:
+                logging.warning("pool_report: send failed admin_id=%s", admin_id, exc_info=True)
+    except Exception:
+        logging.warning("pool_report job failed", exc_info=True)
+
+
+async def admin_pool_report_command(update: Update, context: CallbackContext) -> None:
+    """On-demand pool inventory report. /poolreport"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    try:
+        text = await build_pool_inventory_report(context)
+        await message.reply_text(text, parse_mode="HTML")
+    except Exception as exc:
+        await message.reply_text(f"❌ pool report failed: {exc}")
+
+
 async def admin_crossword_pool_command(update: Update, context: CallbackContext) -> None:
     """Trigger crossword pool generation (admin). /admin_cw_pool"""
     user    = update.effective_user
@@ -20883,6 +20990,7 @@ def main():
     application.add_handler(CommandHandler("admin_cw_send", admin_crossword_send_command))
     application.add_handler(CommandHandler("admin_anagram_send", admin_anagram_send_command))
     application.add_handler(CommandHandler("admin_aufgabe_send", admin_aufgabe_send_command))
+    application.add_handler(CommandHandler("poolreport", admin_pool_report_command))
     application.add_handler(CommandHandler("admin_cw_pool", admin_crossword_pool_command))
     application.add_handler(CommandHandler("admin_cw_rerender", admin_crossword_rerender_command))
     application.add_handler(CommandHandler("admin_ls_send", admin_listening_send_command))
@@ -21220,6 +21328,14 @@ def main():
             lambda: submit_async(prepare_aufgabe_pool_job, CallbackContext(application=application)),
             "cron",
             hour=3,
+            minute=0,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Daily pool inventory report → admin DM (07:00, after all nightly top-ups) --
+        scheduler.add_job(
+            lambda: submit_async(_send_pool_inventory_report_job, CallbackContext(application=application)),
+            "cron",
+            hour=7,
             minute=0,
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )

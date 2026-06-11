@@ -33754,6 +33754,24 @@ def count_listening_bank_entries(*, exclude_retired: bool = True) -> int:
             return int((cursor.fetchone() or [0])[0])
 
 
+def count_anagram_cards() -> int:
+    """Total anagram cards in the bank (inventory for the daily pool report)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM bt_3_anagram_cards")
+            return int((cursor.fetchone() or [0])[0])
+
+
+def count_aufgaben_by_format() -> dict:
+    """Per-format inventory of active B2+ tasks (for the daily pool report)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT format, COUNT(*) FROM bt_3_aufgabe_bank WHERE retired = FALSE GROUP BY format"
+            )
+            return {str(r[0]): int(r[1]) for r in (cursor.fetchall() or [])}
+
+
 def pick_next_listening(*, cooldown_days: int = 7) -> dict | None:
     """Pick the oldest ready listening entry not sent within cooldown."""
     with get_db_connection_context() as conn:
