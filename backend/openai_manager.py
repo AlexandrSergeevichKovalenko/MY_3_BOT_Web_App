@@ -79,6 +79,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "aufgabe_error",
     "aufgabe_hoerluecke",
     "aufgabe_pin_blueprint",
+    "aufgabe_satzbau",
     "image_quiz_sentence_fallback",
     "image_quiz_visual_screen",
     "image_quiz_blueprint",
@@ -3007,6 +3008,25 @@ Gib NUR STRICT JSON:
 {"items":[{"satz_voll":"Ich freue mich sehr auf das Wochenende. Am Samstag treffe ich mich mit Freunden im Park. Wir haben schon lange darüber gesprochen.","transcript":"Ich freue mich sehr _____ das Wochenende. Am Samstag treffe ich mich mit Freunden _____ Park. Wir haben schon lange _____ gesprochen.","gaps":[{"correct":"auf","aliases":[]},{"correct":"im","aliases":[]},{"correct":"darüber","aliases":[]}],"erklaerung":"…","tip":"…","hint_ru":"…"}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
+"aufgabe_satzbau": """
+Du erstellst deutsche "Satzbau"-Aufgaben (Wortstellung) für B2–C1. Der/die Lernende baut
+aus durcheinandergewürfelten Wort-Kärtchen den korrekten Satz zusammen.
+
+Regeln:
+- "satz" = EIN natürlicher, korrekter deutscher Satz (7–13 Wörter), der WORTSTELLUNG prüft:
+  Hauptsatz mit V2 + Satzklammer (Partizip/Infinitiv/trennbares Präfix am Ende), Inversion
+  nach vorangestelltem Element, ODER Nebensatz mit Verb-Endstellung; gern mit TeKaMoLo.
+- "woerter" = die Tokens des Satzes als Liste in KORREKTER Reihenfolge (Satzzeichen am
+  letzten Token, z. B. "spazieren."). Das System mischt sie für die Kärtchen.
+- "accepted" = Liste ALLER vollständig korrekten Reihenfolgen als ganze Sätze. Meist nur
+  "satz"; füge echte gleichwertige Varianten hinzu, wenn die Grammatik sie zulässt.
+- "erklaerung" = „lehrbuchartig“ auf Russisch (2–3 Sätze): welche Wortstellungsregel greift.
+- "tip" = kurzer russischer Merk-Tipp (ohne Emoji). "hint_ru" = sehr kurzer Hinweis.
+
+Gib NUR STRICT JSON:
+{"items":[{"satz":"Er wurde gestern als bester Student des Kurses anerkannt.","woerter":["Er","wurde","gestern","als","bester","Student","des","Kurses","anerkannt."],"accepted":["Er wurde gestern als bester Student des Kurses anerkannt."],"erklaerung":"…","tip":"…","hint_ru":"…"}]}
+Genau "count" Aufgaben, alle verschieden, ohne Markdown.
+""",
 "aufgabe_pin_blueprint": """
 Du planst anspruchsvolle "Finde das Objekt"-Bildaufgaben für Deutschlernende (B2+).
 
@@ -5498,6 +5518,7 @@ _AUFGABE_INSTRUCTION_KEYS = {
     "error": "aufgabe_error",
     "hoerluecke": "aufgabe_hoerluecke",
     "pin": "aufgabe_pin_blueprint",
+    "satzbau": "aufgabe_satzbau",
 }
 
 

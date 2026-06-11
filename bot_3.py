@@ -328,12 +328,15 @@ ANAGRAM_SLOT_TIMES   = {(12, 15), (19, 15)}  # 2x/day — assemble-the-word Mini
 ANAGRAM_POOL_TARGET  = max(4, int((os.getenv("ANAGRAM_POOL_TARGET") or "12").strip() or "12"))
 ANAGRAM_COOLDOWN_DAYS = max(1, int((os.getenv("ANAGRAM_COOLDOWN_DAYS") or "10").strip() or "10"))
 # One daily slot pinned to each format → EVERY B2+ format is sent every day.
+# Satzbau (assemble-the-sentence) goes 2×/day per the product decision.
 AUFGABE_FORMAT_SLOTS = {
     (9, 30):  "cloze",
+    (10, 30): "satzbau",
     (11, 30): "wortbildung",
     (13, 30): "transform",
     (15, 30): "error",
     (17, 30): "hoerluecke",
+    (18, 30): "satzbau",
     (19, 30): "pin",
 }
 # Per-format library target (≥ days of cooldown so a format never repeats within it).
@@ -19312,6 +19315,11 @@ def _build_aufgabe_caption(entry: dict) -> str:
             f"<i>{satz}</i>\n\n"
             "Finde &amp; korrigiere den Fehler in der Mini-App 👇"
         )
+    if fmt == "satzbau":
+        return (
+            "🧩 <b>Satzbau</b> — B2+\n\n"
+            "Baue aus den Wort-Kärtchen den richtigen Satz in der Mini-App 👇"
+        )
     if fmt == "hoerluecke":
         return (
             "🎧 <b>Hörlücke</b> — B2+\n\n"
@@ -19410,6 +19418,13 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
             return None
         return {"woerter": woerter, "error_index": error_index, "correct_word": correct_word,
                 "aliases": [str(a) for a in (it.get("aliases") or []) if str(a).strip()], **common}
+    if fmt == "satzbau":
+        satz = str(it.get("satz") or "").strip()
+        woerter = [str(w) for w in (it.get("woerter") or []) if str(w).strip()]
+        accepted = [str(a).strip() for a in (it.get("accepted") or []) if str(a).strip()]
+        if not satz or len(woerter) < 4:
+            return None
+        return {"satz": satz, "woerter": woerter, "accepted": accepted or [satz], **common}
     if fmt == "hoerluecke":
         # New multi-gap format: 3+ sentence text + ordered gaps. The audio (full text)
         # is synthesized in the pool job.
@@ -19448,7 +19463,7 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
 
 _AUFGABE_FORMATS = (
     ("cloze", "B2"), ("wortbildung", "B2"), ("transform", "C1"),
-    ("error", "B2"), ("hoerluecke", "B2"), ("pin", "B2"),
+    ("error", "B2"), ("hoerluecke", "B2"), ("pin", "B2"), ("satzbau", "B2"),
 )
 _AUFGABE_LEVEL = {f: lvl for f, lvl in _AUFGABE_FORMATS}
 

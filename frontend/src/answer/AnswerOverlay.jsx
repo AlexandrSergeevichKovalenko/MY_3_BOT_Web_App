@@ -51,6 +51,7 @@ const AU_LABELS = {
   error: { eyebrow: '🔍 Fehler finden', title: 'Fehler finden · B2+' },
   hoerluecke: { eyebrow: '🎧 Hörlücke', title: 'Hörlücke · B2+' },
   pin: { eyebrow: '🖼 Finde im Bild', title: 'Finde im Bild · B2' },
+  satzbau: { eyebrow: '🧩 Satzbau', title: 'Satzbau · B2+' },
 };
 
 const AU_SUBS = {
@@ -59,6 +60,7 @@ const AU_SUBS = {
   error: 'Finde und korrigiere den Fehler 🔍',
   hoerluecke: 'Höre und ergänze das fehlende Wort 🎧',
   pin: 'Tippe auf das gesuchte Objekt 🖼',
+  satzbau: 'Baue den richtigen Satz 🧩',
   cloze: 'Setze das fehlende Wort ein ✍️',
 };
 

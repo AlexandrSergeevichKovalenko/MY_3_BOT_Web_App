@@ -775,6 +775,9 @@ def _aufgabe_correct_answer(payload: dict) -> str:
     tl = str(payload.get("target_label") or "").strip()
     if tl:
         return tl
+    satz = str(payload.get("satz") or "").strip()
+    if satz:
+        return satz
     accepted = payload.get("accepted") or []
     return str(accepted[0]) if accepted else ""
 
@@ -821,6 +824,15 @@ def load_aufgabe_task(*, dispatch_id: int, user_id: int) -> dict | None:
         meta["target_suffix"] = str(payload.get("target_suffix") or "")
     elif fmt == "error":
         meta["woerter"] = [str(w) for w in (payload.get("woerter") or [])]
+    elif fmt == "satzbau":
+        import random as _rnd
+        tiles = [str(w) for w in (payload.get("woerter") or []) if str(w).strip()]
+        shuffled = tiles[:]
+        for _ in range(8):
+            _rnd.shuffle(shuffled)
+            if shuffled != tiles or len(tiles) <= 1:
+                break
+        meta["tiles"] = shuffled
     elif fmt == "hoerluecke":
         gaps = payload.get("gaps")
         if isinstance(gaps, list) and gaps:  # new multi-gap format
@@ -857,10 +869,24 @@ def load_aufgabe_task(*, dispatch_id: int, user_id: int) -> dict | None:
     return meta
 
 
+def _norm_sentence(s: str) -> str:
+    """Order-preserving sentence normalizer for Satzbau: lowercase, collapse spaces,
+    drop punctuation. Same words in the SAME order → equal; wrong order → different."""
+    import re as _re
+    t = _re.sub(r"[^\wäöüß\s]", " ", str(s or "").lower(), flags=_re.UNICODE)
+    return _re.sub(r"\s+", " ", t).strip()
+
+
 def _check_aufgabe(fmt: str, payload: dict, raw_input: str) -> bool:
     answer = str(raw_input or "").strip()
     if not answer:
         return False
+    if fmt == "satzbau":
+        accepted = [str(a) for a in (payload.get("accepted") or [])]
+        if not accepted:
+            accepted = [str(payload.get("satz") or "")]
+        na = _norm_sentence(answer)
+        return any(na and na == _norm_sentence(c) for c in accepted)
     if fmt == "error":
         # raw_input = "{tapped_index}|{correction}"
         idx_str, _, correction = answer.partition("|")

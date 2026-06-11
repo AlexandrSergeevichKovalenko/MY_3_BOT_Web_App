@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 /**
  * B2+ text tasks ("Aufgabe"), all answered in place. Grading is a fast
@@ -222,10 +222,37 @@ function AufgabePin({ task, onSubmit, submitting }) {
   );
 }
 
+function AufgabeSatzbau({ task, onSubmit, submitting }) {
+  const tiles = useMemo(() => (task.tiles || []).map((w, i) => ({ id: i, word: w })), [task.tiles]);
+  const [placed, setPlaced] = useState([]);
+  const placedIds = new Set(placed.map((t) => t.id));
+  const pool = tiles.filter((t) => !placedIds.has(t.id));
+  const allPlaced = tiles.length > 0 && placed.length === tiles.length;
+  const submit = () => { if (allPlaced) onSubmit(placed.map((t) => t.word).join(' ')); };
+  return (
+    <>
+      <p className="au-question">Собери предложение из слов:</p>
+      <div className="sb-answer">
+        {placed.length ? placed.map((t) => (
+          <button className="au-word picked" key={t.id} onClick={() => setPlaced((p) => p.filter((x) => x.id !== t.id))}>{t.word}</button>
+        )) : <span className="sb-ph">нажимай слова по порядку …</span>}
+      </div>
+      <div className="sb-pool">
+        {pool.map((t) => (
+          <button className="au-word" key={t.id} onClick={() => { setPlaced((p) => [...p, t]); tapHaptic(); }}>{t.word}</button>
+        ))}
+      </div>
+      {task.hint_ru ? <p className="au-hint">💡 {task.hint_ru}</p> : null}
+      <PrüfenButton disabled={!allPlaced} submitting={submitting} onClick={submit} />
+    </>
+  );
+}
+
 export default function AufgabeGame({ task, onSubmit, submitting }) {
   const fmt = task.format || 'cloze';
   if (fmt === 'error') return <AufgabeError task={task} onSubmit={onSubmit} submitting={submitting} />;
   if (fmt === 'hoerluecke') return <AufgabeHoer task={task} onSubmit={onSubmit} submitting={submitting} />;
   if (fmt === 'pin') return <AufgabePin task={task} onSubmit={onSubmit} submitting={submitting} />;
+  if (fmt === 'satzbau') return <AufgabeSatzbau task={task} onSubmit={onSubmit} submitting={submitting} />;
   return <AufgabeText task={task} onSubmit={onSubmit} submitting={submitting} />;
 }

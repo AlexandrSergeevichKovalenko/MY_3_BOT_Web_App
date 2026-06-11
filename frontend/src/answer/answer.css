@@ -474,6 +474,16 @@ html[data-scheme="light"] .au-gap-input { color: #0f172a; background: #eef1f7; }
 }
 .au-key b { color: var(--dmps-primary, #2563EB); font-weight: 800; }
 .au-words { display: flex; flex-wrap: wrap; gap: 8px; }
+/* Satzbau assemble zones */
+.sb-answer {
+  display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start;
+  min-height: 64px; padding: 12px; border-radius: var(--dmps-radius-button, 16px);
+  background: var(--dmps-card-alt, #0B1220);
+  border: 1.5px dashed var(--dmps-primary, #2563EB);
+}
+.sb-ph { color: var(--dmps-text-subtle, #64748B); font-size: 14px; align-self: center; }
+.sb-pool { display: flex; flex-wrap: wrap; gap: 8px; }
+html[data-scheme="light"] .sb-answer { background: #f4f6fa; }
 .au-word {
   font-family: inherit; font-size: 16px; font-weight: 600;
   color: var(--dmps-text-primary, #F8FAFC);
