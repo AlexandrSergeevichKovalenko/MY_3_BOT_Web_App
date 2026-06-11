@@ -19039,28 +19039,49 @@ async def _send_daily_challenge_digest_job(context: CallbackContext) -> None:
     for r in rows:
         by_key.setdefault(r["challenge_key"], []).append(r)
 
-    user_lines: dict[int, list[str]] = {}
+    # Aggregate a clean SUMMARY per user (not a wall of per-task lines).
+    agg: dict[int, dict] = {}
     for key, rs in by_key.items():
         correct = sorted([r for r in rs if r["is_correct"]], key=lambda x: x["time_ms"])
-        total_correct = len(correct)
         place_by_user = {c["user_id"]: i + 1 for i, c in enumerate(correct)}
-        label = await _challenge_label(key)
+        label = None
         for r in rs:
             uid = int(r["user_id"])
+            a = agg.setdefault(uid, {"answered": 0, "correct": 0, "golds": 0, "victories": []})
+            a["answered"] += 1
             if r["is_correct"]:
-                pl = place_by_user.get(uid, 0)
-                medal = "🥇" if pl == 1 else "🥈" if pl == 2 else "🥉" if pl == 3 else f"#{pl}"
-                tag = " — ты лучший! 🏆" if pl == 1 else ""
-                line = f"{medal} {label}: {pl}/{total_correct} · {_fmt_secs(r['time_ms'])}{tag}"
-            else:
-                line = f"❌ {label}: неверно"
-            user_lines.setdefault(uid, []).append(line)
+                a["correct"] += 1
+                if place_by_user.get(uid) == 1:
+                    a["golds"] += 1
+                    if label is None:
+                        label = await _challenge_label(key)
+                    a["victories"].append((int(r["time_ms"] or 0), label))
 
     sent = 0
-    for uid, lines in user_lines.items():
+    for uid, a in agg.items():
+        pct = round(a["correct"] / a["answered"] * 100) if a["answered"] else 0
+        lines = [
+            "🏁 <b>Итоги дня</b>",
+            "",
+            f"📊 Решено: <b>{a['answered']}</b> · верно: <b>{a['correct']}</b> · 🥇 побед: <b>{a['golds']}</b>",
+            f"🎯 Точность: <b>{pct}%</b>",
+        ]
+        if a["victories"]:
+            lines.append("")
+            lines.append("🏆 <b>Твои победы</b> (быстрее всех):")
+            for t, label in sorted(a["victories"])[:5]:
+                lines.append(f"🥇 {label} — {_fmt_secs(t)}")
+            extra = len(a["victories"]) - 5
+            if extra > 0:
+                lines.append(f"…и ещё {extra} 🥇")
+        elif a["correct"] > 0:
+            lines.append("")
+            lines.append("💪 Хороший день! Завтра — за золотом 🥇")
+        else:
+            lines.append("")
+            lines.append("💪 Не сдавайся — завтра точно получится!")
         try:
-            text = "🏁 <b>Итоги дня</b> — твои результаты\n\n" + "\n".join(lines)
-            await context.bot.send_message(chat_id=int(uid), text=text, parse_mode="HTML")
+            await context.bot.send_message(chat_id=int(uid), text="\n".join(lines), parse_mode="HTML")
             sent += 1
         except Exception:
             logging.warning("daily digest send failed uid=%s", uid, exc_info=True)
