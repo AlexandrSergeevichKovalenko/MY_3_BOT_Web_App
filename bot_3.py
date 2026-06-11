@@ -19153,13 +19153,28 @@ async def _post_champion_card(context: CallbackContext, *, days: int, chat_ids: 
     text = _build_champion_card(lb, week_no=week_no, days=days)
     if not text:
         return 0
+    # Render the premium PNG poster (vector cup/podium). Falls back to the text card.
+    poster = None
+    try:
+        from backend.champion_poster import render_champion_poster
+        poster = await asyncio.to_thread(render_champion_poster, lb, week_no=week_no, days=days)
+    except Exception:
+        logging.warning("champion poster render failed", exc_info=True)
+    champ = (lb.get("leaders") or [{}])[0]
+    caption = (
+        f"🏆 <b>Чемпион {'недели' if days == 7 else f'{days} дн.'} №{week_no}</b> — "
+        f"<b>{html.escape(str(champ.get('name') or ''))}</b>! 🎉\nРешай интерактивы — попади в топ 🎮"
+    )
     if chat_ids is None:
         targets = await _collect_quiz_delivery_user_targets(context)
         chat_ids = [int(t.get("chat_id") or 0) for t in (targets or []) if int(t.get("chat_id") or 0)]
     sent = 0
     for cid in chat_ids:
         try:
-            await context.bot.send_message(chat_id=int(cid), text=text, parse_mode="HTML")
+            if poster:
+                await context.bot.send_photo(chat_id=int(cid), photo=io.BytesIO(poster), caption=caption, parse_mode="HTML")
+            else:
+                await context.bot.send_message(chat_id=int(cid), text=text, parse_mode="HTML")
             sent += 1
         except Exception:
             logging.warning("champion card: send failed chat_id=%s", cid, exc_info=True)
