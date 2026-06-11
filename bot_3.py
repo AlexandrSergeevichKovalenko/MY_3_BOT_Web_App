@@ -19019,14 +19019,49 @@ def _is_aufgabe_slot(slot_dt) -> bool:
 
 
 def _build_aufgabe_caption(entry: dict) -> str:
+    """Per-format teaser so every variant looks distinct in the chat (the card used
+    to be generic for all non-cloze formats → they all looked the same)."""
     fmt = str(entry.get("format") or "")
     payload = entry.get("payload") or {}
+    esc = lambda s: html.escape(str(s or "").strip())
+
     if fmt == "cloze":
-        satz = html.escape(str(payload.get("satz") or "").strip())
         return (
             "✏️ <b>Lückentext</b> — B2+\n\n"
-            f"<i>{satz}</i>\n\n"
+            f"<i>{esc(payload.get('satz'))}</i>\n\n"
             "Fülle die Lücke in der Mini-App 👇"
+        )
+    if fmt == "wortbildung":
+        return (
+            "🔧 <b>Wortbildung</b> — B2+\n\n"
+            f"<i>{esc(payload.get('satz'))}</i>\n"
+            f"🔧 Stamm: <b>{esc(payload.get('stamm'))}</b>\n\n"
+            "Bilde die richtige Wortform in der Mini-App 👇"
+        )
+    if fmt == "transform":
+        return (
+            "🔄 <b>Satztransformation</b> — C1\n\n"
+            f"<i>{esc(payload.get('original'))}</i>\n"
+            f"🔑 Schlüsselwort: <b>{esc(payload.get('schluesselwort'))}</b>\n\n"
+            "Forme den Satz um in der Mini-App 👇"
+        )
+    if fmt == "error":
+        satz = esc(" ".join(str(w) for w in (payload.get("woerter") or [])))
+        return (
+            "🔍 <b>Fehler finden</b> — B2+\n\n"
+            f"<i>{satz}</i>\n\n"
+            "Finde &amp; korrigiere den Fehler in der Mini-App 👇"
+        )
+    if fmt == "hoerluecke":
+        return (
+            "🎧 <b>Hörlücke</b> — B2+\n\n"
+            "Höre den Satz in der Mini-App und ergänze das fehlende Wort 👇"
+        )
+    if fmt == "pin":
+        return (
+            "🖼 <b>Finde im Bild</b> — B2\n\n"
+            f"<i>{esc(payload.get('question_de'))}</i>\n\n"
+            "Tippe auf das Objekt in der Mini-App 👇"
         )
     return "✏️ <b>Aufgabe</b> — B2+\nLöse die Aufgabe in der Mini-App 👇"
 
