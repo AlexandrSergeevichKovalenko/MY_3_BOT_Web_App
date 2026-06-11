@@ -537,8 +537,42 @@ def load_listening_task(*, dispatch_id: int, user_id: int) -> dict | None:
     return meta
 
 
+_CONTENT_ID_FIELD = {
+    "rb": "compound_id", "cw": "crossword_id", "ag": "card_id",
+    "au": "aufgabe_id", "ls": "listening_id", "qf": "poll_id",
+}
+
+
+def content_ranking_key(kind: str, dispatch_id: int) -> str:
+    """Stable ranking key based on the shared TASK content, not the per-recipient
+    dispatch. The same task is dispatched separately to each chat/user (own
+    dispatch_id), so a dispatch-based key would make every user their own ranking
+    ("1 of 1"). Keying by the content id (compound/crossword/card/aufgabe/listening/
+    poll) aggregates everyone who answered the same task."""
+    from backend.database import (
+        get_rebus_dispatch_by_id, get_crossword_dispatch_by_id, get_anagram_dispatch_by_id,
+        get_aufgabe_dispatch_by_id, get_listening_dispatch_by_id, get_quiz_freeform_dispatch_by_id,
+    )
+    loaders = {
+        "rb": get_rebus_dispatch_by_id, "cw": get_crossword_dispatch_by_id,
+        "ag": get_anagram_dispatch_by_id, "au": get_aufgabe_dispatch_by_id,
+        "ls": get_listening_dispatch_by_id, "qf": get_quiz_freeform_dispatch_by_id,
+    }
+    field = _CONTENT_ID_FIELD.get(kind)
+    loader = loaders.get(kind)
+    if field and loader:
+        try:
+            d = loader(int(dispatch_id))
+            cid = d.get(field) if d else None
+            if cid:
+                return f"{kind}:{cid}"
+        except Exception:
+            pass
+    return f"{kind}:{dispatch_id}"
+
+
 def _spawn_listening_grader(answer_id: int, german_text: str, questions: list, answers: list,
-                            *, dispatch_id: int, user_id: int, user_name: str, time_ms: int) -> None:
+                            *, ranking_key: str, user_id: int, user_name: str, time_ms: int) -> None:
     import threading
 
     def _run():
@@ -554,7 +588,7 @@ def _spawn_listening_grader(answer_id: int, german_text: str, questions: list, a
                 correct = sum(1 for i in range(total)
                               if i < len(evals) and isinstance(evals[i], dict) and evals[i].get("content_correct"))
                 record_challenge_result(
-                    challenge_key=f"ls:{int(dispatch_id)}", user_id=int(user_id),
+                    challenge_key=str(ranking_key), user_id=int(user_id),
                     user_name=str(user_name or ""), is_correct=(total > 0 and correct == total),
                     time_ms=int(time_ms or 0),
                 )
@@ -575,9 +609,10 @@ def _spawn_listening_grader(answer_id: int, german_text: str, questions: list, a
 def _listening_result_with_ranking(dispatch: dict, dispatch_id: int, user_id: int,
                                    answers: list, evaluation: list) -> dict:
     result = _listening_result_payload(dispatch, answers, evaluation, already_answered=True)
+    ranking_key = f"ls:{dispatch.get('listening_id') or dispatch_id}"
     try:
         from backend.database import compute_challenge_ranking
-        result["ranking"] = compute_challenge_ranking(challenge_key=f"ls:{int(dispatch_id)}", user_id=int(user_id))
+        result["ranking"] = compute_challenge_ranking(challenge_key=ranking_key, user_id=int(user_id))
     except Exception:
         pass
     return result
@@ -608,10 +643,11 @@ def start_listening_evaluation(*, dispatch_id: int, user_id: int, answers: list,
     if not answer_id:
         return {"kind": "listening", "status": "failed"}
 
+    ranking_key = f"ls:{dispatch.get('listening_id') or dispatch_id}"
     _spawn_listening_grader(
         answer_id, str(dispatch.get("german_text") or ""),
         list(dispatch.get("questions_json") or []), clean_answers,
-        dispatch_id=int(dispatch_id), user_id=int(user_id),
+        ranking_key=ranking_key, user_id=int(user_id),
         user_name=str(user_name or ""), time_ms=int(time_ms or 0),
     )
     return {"kind": "listening", "status": "pending"}

@@ -22359,7 +22359,11 @@ def submit_answer():
             if "is_correct" in result
             else (result.get("total") and result.get("correct_count") == result.get("total"))
         )
-        challenge_key = f"{kind}:{dispatch_id}"
+        # Key the ranking by the shared TASK content (not the per-recipient dispatch),
+        # so ALL bot users who answered the same task compete in one global ranking
+        # — not isolated "1 of 1" per dispatch.
+        from backend.answer_eval import content_ranking_key
+        challenge_key = content_ranking_key(kind, dispatch_id)
         try:
             from backend.database import record_challenge_result, compute_challenge_ranking
             record_challenge_result(
