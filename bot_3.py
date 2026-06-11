@@ -19706,13 +19706,14 @@ async def admin_aufgabe_send_command(update: Update, context: CallbackContext) -
             + "\nБез аргумента — крутит форматы по кругу."
         )
         return
-    # No arg → round-robin through the formats so each call shows a DIFFERENT one
-    # (picking "next unsent" otherwise favours whatever format has the most spare
-    # items — usually cloze — and repeats it).
+    # No arg → a RANDOM format different from the previous call, so every single
+    # call shows variety (picking "next unsent" otherwise favours whatever format
+    # has the most spare items — usually cloze — and repeats it).
     if not fmt:
-        i = _ADMIN_AUFGABE_ROTATION["i"] % len(_AUFGABE_FORMATS)
-        _ADMIN_AUFGABE_ROTATION["i"] = i + 1
-        fmt = _AUFGABE_FORMATS[i][0]
+        all_fmts = [f for f, _ in _AUFGABE_FORMATS]
+        choices = [f for f in all_fmts if f != _ADMIN_AUFGABE_ROTATION.get("last")] or all_fmts
+        fmt = random.choice(choices)
+        _ADMIN_AUFGABE_ROTATION["last"] = fmt
 
     status_msg = await message.reply_text(f"Preparing Aufgabe{(' · ' + fmt) if fmt else ''}...")
     # Ensure availability of the requested format (or any). For a specific format
