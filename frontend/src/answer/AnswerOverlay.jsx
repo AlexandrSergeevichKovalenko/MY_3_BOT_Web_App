@@ -461,7 +461,7 @@ export default function AnswerOverlay({ startParam }) {
       )}
 
       {error ? <p className="ans-error">{error}</p> : null}
-      <button className="ans-btn" disabled={submitting} onClick={submit}>
+      <button className="ans-btn" disabled={submitting} onClick={() => submit()}>
         {submitting ? 'Prüfe …' : 'Prüfen ✓'}
       </button>
     </div></div>
