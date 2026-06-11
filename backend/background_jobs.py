@@ -1862,6 +1862,27 @@ def run_daily_audio_scheduler_actor() -> None:
     _run_audio_scheduler_job()
 
 
+# Re-homed from the old _start_audio_scheduler (these were not migrated during the
+# scheduler split, so they silently stopped running). All three are DB-only,
+# idempotent, and send NO user messages — safe to run on the worker.
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_dictionary_dedup_actor() -> None:
+    from backend.backend_server import _run_dictionary_dedup_scheduler_job
+    _run_dictionary_dedup_scheduler_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_analytics_snapshot_precompute_actor() -> None:
+    from backend.backend_server import run_analytics_snapshot_precompute_job
+    run_analytics_snapshot_precompute_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_shortcut_pairing_code_cleanup_actor() -> None:
+    from backend.backend_server import _run_shortcut_pairing_code_cleanup_job
+    _run_shortcut_pairing_code_cleanup_job()
+
+
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_private_analytics_scheduler_actor() -> None:
     from backend.backend_server import _run_private_analytics_scheduler_job

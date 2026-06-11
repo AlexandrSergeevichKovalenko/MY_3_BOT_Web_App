@@ -98,6 +98,9 @@ from backend.background_jobs import (  # noqa: E402
     run_translation_check_worker_schedule_control_actor,
     run_service_resource_schedule_control_actor,
     run_autosave_sweep_job,
+    run_dictionary_dedup_actor,
+    run_analytics_snapshot_precompute_actor,
+    run_shortcut_pairing_code_cleanup_actor,
 )
 
 # ---------------------------------------------------------------------------
@@ -197,6 +200,18 @@ def _resource_schedule_windows(service_name: str) -> list[tuple[dt_time, dt_time
 
 def _dispatch_daily_audio() -> None:
     run_daily_audio_scheduler_actor.send()
+
+
+def _dispatch_dictionary_dedup() -> None:
+    run_dictionary_dedup_actor.send()
+
+
+def _dispatch_analytics_snapshot_precompute() -> None:
+    run_analytics_snapshot_precompute_actor.send()
+
+
+def _dispatch_shortcut_pairing_code_cleanup() -> None:
+    run_shortcut_pairing_code_cleanup_actor.send()
 
 
 def _dispatch_private_analytics() -> None:
@@ -409,6 +424,43 @@ def _build_scheduler():
         coalesce=True,
         misfire_grace_time=300,
     )
+
+    # -- Dictionary dedup (re-homed; was dropped in the scheduler migration) --
+    if _enabled("DICT_DEDUP_ENABLED"):
+        scheduler.add_job(
+            _dispatch_dictionary_dedup,
+            "cron",
+            hour=_int_env("DICT_DEDUP_HOUR", 3),
+            minute=_int_env("DICT_DEDUP_MINUTE", 40),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+
+    # -- Analytics snapshot precompute (re-homed) --
+    if _enabled("ANALYTICS_SNAPSHOT_SCHEDULER_ENABLED"):
+        scheduler.add_job(
+            _dispatch_analytics_snapshot_precompute,
+            "cron",
+            hour=_int_env("ANALYTICS_SNAPSHOT_SCHEDULER_HOUR", 4),
+            minute=_int_env("ANALYTICS_SNAPSHOT_SCHEDULER_MINUTE", 0),
+            timezone=_tz(os.getenv("ANALYTICS_SNAPSHOT_SCHEDULER_TZ") or default_tz_name),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+
+    # -- Shortcut pairing-code cleanup (re-homed) --
+    if _enabled("SHORTCUT_PAIRING_CODE_CLEANUP_ENABLED"):
+        scheduler.add_job(
+            _dispatch_shortcut_pairing_code_cleanup,
+            "cron",
+            hour=_int_env("SHORTCUT_PAIRING_CODE_CLEANUP_HOUR", 3),
+            minute=_int_env("SHORTCUT_PAIRING_CODE_CLEANUP_MINUTE", 15),
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
 
     # -- Private analytics --
     if _enabled("ANALYTICS_PRIVATE_SCHEDULER_ENABLED"):
