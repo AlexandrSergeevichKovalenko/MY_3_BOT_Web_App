@@ -18992,17 +18992,25 @@ async def _send_challenge_notifications_job(context: CallbackContext) -> None:
         return
     for n in pending:
         try:
-            if n.get("kind") != "overtaken":
-                await asyncio.to_thread(mark_challenge_notification_sent, int(n["id"]))
-                continue
+            kind = n.get("kind")
             p = n.get("payload") or {}
             label = await _challenge_label(n.get("challenge_key") or "")
-            text = (
-                f"⚡ Тебя обошли в «{label}»!\n"
-                f"🥇 <b>{html.escape(str(p.get('winner_name') or 'Кто-то'))}</b> — {_fmt_secs(p.get('winner_time_ms'))} "
-                f"(у тебя {_fmt_secs(p.get('your_time_ms'))}).\n"
-                f"Теперь ты на 2-м месте 🥈"
-            )
+            if kind == "overtaken":
+                text = (
+                    f"⚡ Тебя обошли в «{label}»!\n"
+                    f"🥇 <b>{html.escape(str(p.get('winner_name') or 'Кто-то'))}</b> — {_fmt_secs(p.get('winner_time_ms'))} "
+                    f"(у тебя {_fmt_secs(p.get('your_time_ms'))}).\n"
+                    f"Теперь ты на 2-м месте 🥈"
+                )
+            elif kind == "admin_alert":
+                text = (
+                    f"❌ <b>Ошибка проверки ответа в Mini-App</b>\n"
+                    f"«{label}» (id {p.get('dispatch_id')})\n"
+                    f"<code>{html.escape(str(p.get('error') or ''))[:200]}</code>"
+                )
+            else:
+                await asyncio.to_thread(mark_challenge_notification_sent, int(n["id"]))
+                continue
             await context.bot.send_message(chat_id=int(n["user_id"]), text=text, parse_mode="HTML")
             await asyncio.to_thread(mark_challenge_notification_sent, int(n["id"]))
         except Exception:

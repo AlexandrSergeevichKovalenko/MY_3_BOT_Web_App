@@ -22329,8 +22329,19 @@ def submit_answer():
             )
         else:
             return jsonify({"error": "unsupported kind"}), 400
-    except Exception:
+    except Exception as exc:
         logging.exception("answer submit failed kind=%s id=%s user=%s", kind, dispatch_id, user_id)
+        # Outbox an admin alert (the bot polls bt_3_challenge_notifications and DMs).
+        # UNIQUE(user_id, kind, challenge_key) → one alert per admin per broken task.
+        try:
+            from backend.database import get_admin_telegram_ids, enqueue_challenge_notification
+            for admin_id in (get_admin_telegram_ids() or []):
+                enqueue_challenge_notification(
+                    user_id=int(admin_id), kind="admin_alert", challenge_key=f"{kind}:{dispatch_id}",
+                    payload={"task_kind": kind, "dispatch_id": dispatch_id, "error": str(exc)[:200]},
+                )
+        except Exception:
+            logging.warning("answer submit: admin alert enqueue failed", exc_info=True)
         return jsonify({"error": "Ошибка проверки"}), 500
     if result is None:
         return jsonify({"error": "Задание не найдено"}), 404
