@@ -119,27 +119,56 @@ def _star(d, cx, cy, r, fill):
     d.polygon(pts, fill=fill)
 
 
-def _podium_bar(d, x, base_y, w, h, top_col, dk_col, rank, name, points, name_font, pts_font, rank_font):
+def _avatar_circle(av_bytes, size, ring):
+    try:
+        im = Image.open(BytesIO(av_bytes)).convert("RGB").resize((size, size))
+    except Exception:
+        return None
+    mask = Image.new("L", (size, size), 0)
+    ImageDraw.Draw(mask).ellipse([0, 0, size, size], fill=255)
+    out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    out.paste(im, (0, 0), mask)
+    ImageDraw.Draw(out).ellipse([2, 2, size - 3, size - 3], outline=ring, width=6)
+    return out
+
+
+def _initials_circle(name, size, ring, bg):
+    out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    dd = ImageDraw.Draw(out)
+    dd.ellipse([0, 0, size, size], fill=bg)
+    dd.ellipse([2, 2, size - 3, size - 3], outline=ring, width=6)
+    initial = (str(name or "?").strip()[:1] or "?").upper()
+    f = _font(int(size * 0.46))
+    bb = dd.textbbox((0, 0), initial, font=f)
+    dd.text((size / 2 - (bb[2] - bb[0]) / 2, size / 2 - (bb[3] - bb[1]) / 2 - bb[1]), initial, font=f, fill=WHITE)
+    return out
+
+
+def _podium_bar(base, d, x, base_y, w, h, top_col, dk_col, rank, name, points, av_bytes):
     top_y = base_y - h
     d.rounded_rectangle([x, top_y, x + w, base_y], radius=14, fill=top_col)
     d.rounded_rectangle([x, top_y, x + w, top_y + 12], radius=14, fill=tuple(min(255, c + 30) for c in top_col))
-    # medal circle
-    mcx, mcy, mr = x + w // 2, top_y - 6, 40
-    d.ellipse([mcx - mr, mcy - mr, mcx + mr, mcy + mr], fill=top_col, outline=dk_col, width=5)
-    _ctext(d, mcx, mcy - 26, str(rank), rank_font, (20, 24, 40))
-    # name above medal
-    nm = _ltext_trunc(name, name_font, d, w + 30)
-    _ctext(d, x + w // 2, top_y - 96, nm, name_font, WHITE)
-    _ctext(d, x + w // 2, base_y - 50, f"{points}", pts_font, (20, 24, 40))
-    _ctext(d, x + w // 2, base_y - 22, "очк.", _font(20, False), (40, 48, 70))
+    _ctext(d, x + w // 2, base_y - 52, f"{points}", _font(40), (20, 24, 40))
+    _ctext(d, x + w // 2, base_y - 24, "очк.", _font(20, False), (40, 48, 70))
+    # avatar above the bar (real photo, else initials), with a rank badge
+    av_size = 104
+    avx, avy = x + w // 2 - av_size // 2, top_y - 40 - av_size
+    av = (_avatar_circle(av_bytes, av_size, top_col) if av_bytes else None) or _initials_circle(name, av_size, top_col, dk_col)
+    base.paste(av, (avx, avy), av)
+    br = 30
+    bcx, bcy = avx + av_size - 12, avy + av_size - 12
+    d.ellipse([bcx - br, bcy - br, bcx + br, bcy + br], fill=top_col, outline=dk_col, width=4)
+    _ctext(d, bcx, bcy - 20, str(rank), _font(28), (20, 24, 40))
+    _ctext(d, x + w // 2, top_y - 34, _ltext_trunc(name, _font(30), d, w + 30), _font(30), WHITE)
 
 
-def render_champion_poster(lb: dict, *, week_no: int, days: int) -> bytes | None:
+def render_champion_poster(lb: dict, *, week_no: int, days: int, avatars: dict | None = None) -> bytes | None:
     if Image is None:
         return None
     leaders = (lb or {}).get("leaders") or []
     if not leaders:
         return None
+    avatars = avatars or {}
 
     base = _vgrad()
     base = _glow(base, W // 2, 420, 360, GOLD, 70)
@@ -172,7 +201,6 @@ def render_champion_poster(lb: dict, *, week_no: int, days: int) -> bytes | None
         (start_x + bw + gap, 250, GOLD, GOLD_DK, 1),
         (start_x + 2 * (bw + gap), 125, BRONZE, BRONZE_DK, 3),
     ]
-    name_f, pts_f, rank_f = _font(30), _font(40), _font(34)
     order = {1: leaders[0] if len(leaders) >= 1 else None,
              2: leaders[1] if len(leaders) >= 2 else None,
              3: leaders[2] if len(leaders) >= 3 else None}
@@ -180,7 +208,8 @@ def render_champion_poster(lb: dict, *, week_no: int, days: int) -> bytes | None
         ldr = order.get(rank)
         if not ldr:
             continue
-        _podium_bar(d, x, base_y, bw, h, col, dk, rank, ldr["name"], ldr["points"], name_f, pts_f, rank_f)
+        _podium_bar(base, d, x, base_y, bw, h, col, dk, rank, ldr["name"], ldr["points"],
+                    avatars.get(int(ldr["user_id"])))
 
     # Nominations
     y = 1205

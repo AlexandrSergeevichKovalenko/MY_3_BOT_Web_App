@@ -19146,6 +19146,22 @@ def _build_champion_card(lb: dict, *, week_no: int, days: int) -> str | None:
     return "\n".join(lines)
 
 
+async def _fetch_user_avatar_png(context: CallbackContext, user_id: int) -> bytes | None:
+    """Best-effort: the user's Telegram profile photo as bytes (for the podium)."""
+    try:
+        photos = await context.bot.get_user_profile_photos(int(user_id), limit=1)
+        if not photos or int(getattr(photos, "total_count", 0)) == 0 or not photos.photos:
+            return None
+        sizes = photos.photos[0]
+        ph = sizes[min(len(sizes) - 1, 1)]  # a small/medium size is plenty for 104px
+        f = await context.bot.get_file(ph.file_id)
+        bio = io.BytesIO()
+        await f.download_to_memory(bio)
+        return bio.getvalue()
+    except Exception:
+        return None
+
+
 async def _post_champion_card(context: CallbackContext, *, days: int, chat_ids: list[int] | None = None) -> int:
     rows = await asyncio.to_thread(get_challenge_results_since, days * 24)
     lb = _compute_quiz_leaderboard(rows or [])
@@ -19153,11 +19169,17 @@ async def _post_champion_card(context: CallbackContext, *, days: int, chat_ids: 
     text = _build_champion_card(lb, week_no=week_no, days=days)
     if not text:
         return 0
+    # Top-3 avatars for the podium (best-effort; falls back to initials).
+    avatars: dict[int, bytes] = {}
+    for ldr in (lb.get("leaders") or [])[:3]:
+        av = await _fetch_user_avatar_png(context, int(ldr["user_id"]))
+        if av:
+            avatars[int(ldr["user_id"])] = av
     # Render the premium PNG poster (vector cup/podium). Falls back to the text card.
     poster = None
     try:
         from backend.champion_poster import render_champion_poster
-        poster = await asyncio.to_thread(render_champion_poster, lb, week_no=week_no, days=days)
+        poster = await asyncio.to_thread(render_champion_poster, lb, week_no=week_no, days=days, avatars=avatars)
     except Exception:
         logging.warning("champion poster render failed", exc_info=True)
     champ = (lb.get("leaders") or [{}])[0]
