@@ -163,10 +163,24 @@ async function bootstrapAnswerOverlay(startParam) {
   );
 }
 
+async function bootstrapLeaderboard(startParam) {
+  try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
+  const { default: Leaderboard } = await import('./leaderboard/Leaderboard.jsx');
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    <React.StrictMode>
+      <Leaderboard startParam={startParam} />
+    </React.StrictMode>,
+  );
+}
+
 async function bootstrapApp() {
   const answerStartParam = getAnswerStartParam();
   if (/^ans_/i.test(answerStartParam)) {
     await bootstrapAnswerOverlay(answerStartParam);
+    return;
+  }
+  if (/^lb/i.test(answerStartParam)) {
+    await bootstrapLeaderboard(answerStartParam);
     return;
   }
   const canRender = await ensureFreshTelegramBundle();

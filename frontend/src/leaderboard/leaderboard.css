@@ -1,0 +1,107 @@
+/* Mini-App global leaderboard — DMPS dark theme (light overrides at the bottom).
+ * theme.css (tokens) is loaded globally in main.jsx. Standalone route (no App.css). */
+
+html, body { margin: 0; padding: 0; }
+body { background: var(--dmps-bg, #0F172A); overflow-x: hidden; }
+#root { min-height: 100vh; }
+.lb-root, .lb-root *, .lb-root *::before, .lb-root *::after { box-sizing: border-box; }
+
+.lb-root {
+  min-height: 100vh; padding: 18px 14px 28px;
+  font-family: 'Manrope', system-ui, sans-serif;
+  background:
+    radial-gradient(120% 60% at 50% -10%, rgba(245,200,70,0.16), transparent 60%),
+    var(--dmps-bg, #0F172A);
+  color: var(--dmps-text-primary, #F8FAFC);
+}
+.lb-card {
+  max-width: 520px; margin: 0 auto;
+  background: var(--dmps-card, #1E293B);
+  border: 1px solid var(--dmps-border, #334155);
+  border-radius: 22px; padding: 18px 16px 16px;
+  box-shadow: 0 14px 40px rgba(0,0,0,0.35);
+  animation: lb-pop 0.32s cubic-bezier(0.22,1,0.36,1);
+}
+@keyframes lb-pop { from { opacity: 0; transform: translateY(8px) scale(0.98); } to { opacity: 1; transform: none; } }
+
+.lb-head { text-align: center; }
+.lb-trophy { font-size: 46px; line-height: 1; animation: lb-bounce 1.4s ease infinite; }
+@keyframes lb-bounce { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
+.lb-title { margin: 4px 0 2px; font-size: 24px; font-weight: 800; }
+.lb-sub { font-size: 13px; color: var(--dmps-text-muted, #94A3B8); }
+
+/* Podium */
+.lb-podium { display: flex; align-items: flex-end; justify-content: center; gap: 7px; margin: 18px 0 6px; min-height: 224px; }
+.lb-podium-col { flex: 1 1 0; min-width: 0; max-width: 116px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; }
+.lb-ava-wrap { position: relative; margin-bottom: 6px; }
+.lb-ava {
+  width: 56px; height: 56px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px; font-weight: 800; color: #0b1220;
+  background: linear-gradient(160deg, #475569, #334155);
+  border: 3px solid var(--dmps-border, #334155);
+  animation: lb-fade 0.4s ease both;
+}
+.lb-ava.sm { width: 34px; height: 34px; font-size: 14px; border-width: 2px; }
+.lb-ava.gold { background: linear-gradient(160deg, #FFE08A, #F5B72E); border-color: #B5841A; }
+.lb-ava.silver { background: linear-gradient(160deg, #E2E8F0, #B6C0CE); border-color: #788496; }
+.lb-ava.bronze { background: linear-gradient(160deg, #E7B187, #C97E4C); border-color: #965C32; }
+.lb-ava-badge {
+  position: absolute; right: -4px; bottom: -4px;
+  width: 24px; height: 24px; border-radius: 50%;
+  background: var(--dmps-card, #1E293B); border: 2px solid var(--dmps-primary, #2563EB);
+  font-size: 13px; font-weight: 800; display: flex; align-items: center; justify-content: center;
+  color: var(--dmps-text-primary, #F8FAFC);
+}
+.lb-podium-name { font-size: 14px; font-weight: 700; margin-bottom: 6px; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-podium-name.me { color: var(--dmps-primary, #2563EB); }
+.lb-bar {
+  width: 100%; border-radius: 12px 12px 0 0;
+  display: flex; align-items: flex-start; justify-content: center; padding-top: 8px;
+  transform-origin: bottom; animation: lb-rise 0.55s cubic-bezier(0.22,1,0.36,1) both;
+}
+@keyframes lb-rise { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+.gold .lb-bar { background: linear-gradient(180deg, #F5C73A, #E0A015); animation-delay: 0.05s; }
+.silver .lb-bar { background: linear-gradient(180deg, #CBD5E1, #94A3B8); animation-delay: 0.15s; }
+.bronze .lb-bar { background: linear-gradient(180deg, #D6925A, #B06A38); animation-delay: 0.25s; }
+.lb-bar-pts { font-size: 20px; font-weight: 800; color: #1a1f33; }
+
+/* List */
+.lb-list { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.lb-row {
+  display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 12px;
+  background: var(--dmps-card-alt, #0B1220); font-size: 15px;
+  animation: lb-fade 0.34s ease both;
+}
+@keyframes lb-fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.lb-row.me { background: rgba(37,99,235,0.20); border: 1px solid var(--dmps-primary, #2563EB); font-weight: 700; }
+.lb-rank { min-width: 28px; font-weight: 800; color: var(--dmps-text-muted, #94A3B8); }
+.lb-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-stat { color: var(--dmps-text-muted, #94A3B8); font-size: 13px; }
+.lb-pts { font-weight: 800; color: var(--dmps-primary, #2563EB); min-width: 40px; text-align: right; }
+
+/* Nominations */
+.lb-noms { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--dmps-border, #334155); }
+.lb-noms-title { text-align: center; font-weight: 800; color: #F5C73A; margin-bottom: 8px; }
+.lb-nom { display: flex; align-items: center; gap: 8px; font-size: 14px; padding: 4px 2px; }
+.lb-nom-ic { font-size: 16px; }
+.lb-nom-label { color: var(--dmps-text-muted, #94A3B8); }
+.lb-nom-who { font-weight: 700; }
+.lb-nom-val { margin-left: auto; color: var(--dmps-text-secondary, #CBD5E1); }
+
+.lb-close {
+  width: 100%; margin-top: 16px; padding: 14px; border: none; border-radius: 16px;
+  background: var(--dmps-primary, #2563EB); color: #fff; font-family: inherit; font-size: 16px; font-weight: 700; cursor: pointer;
+}
+.lb-error { color: #f87171; text-align: center; padding: 20px; }
+.lb-skel { height: 60px; border-radius: 14px; background: linear-gradient(90deg, #1e293b, #243349, #1e293b); background-size: 200% 100%; animation: lb-sh 1.2s infinite; margin: 10px 0; }
+.lb-skel.sm { height: 180px; }
+@keyframes lb-sh { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+/* Light theme */
+html[data-scheme="light"] body { background: #f1f5f9; }
+html[data-scheme="light"] .lb-root { color: #0f172a; background: radial-gradient(120% 60% at 50% -10%, rgba(245,200,70,0.22), transparent 60%), #f1f5f9; }
+html[data-scheme="light"] .lb-card { background: #fff; border-color: #e2e8f0; }
+html[data-scheme="light"] .lb-row { background: #f4f6fa; }
+html[data-scheme="light"] .lb-row.me { background: #e1ebfd; }
+html[data-scheme="light"] .lb-ava-badge { background: #fff; color: #0f172a; }

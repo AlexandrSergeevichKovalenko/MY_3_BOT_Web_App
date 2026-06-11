@@ -22412,6 +22412,37 @@ def listening_status():
     return jsonify({"ok": True, **_get_listening_status(dispatch_id=dispatch_id, user_id=user_id)})
 
 
+@app.route("/api/leaderboard", methods=["GET", "POST"])
+def api_leaderboard():
+    """Global quiz leaderboard for the Mini-App leaderboard screen (initData auth)."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    try:
+        days = max(1, min(365, int(request.args.get("days") or payload.get("days") or 7)))
+    except (TypeError, ValueError):
+        days = 7
+    from backend.quiz_leaderboard import get_quiz_leaderboard
+    lb = get_quiz_leaderboard(days)
+    week_no = datetime.now(ZoneInfo("Europe/Vienna")).isocalendar()[1]
+
+    def _slim(l):
+        return {"user_id": int(l["user_id"]), "name": str(l["name"]), "points": int(l["points"]),
+                "correct": int(l["correct"]), "answered": int(l["answered"]), "golds": int(l["golds"]),
+                "avg_s": round(l["ctime_sum"] / l["ctime_n"] / 1000, 1) if l["ctime_n"] else None}
+
+    def _nom(l):
+        return _slim(l) if l else None
+
+    return jsonify({
+        "ok": True, "days": days, "week_no": week_no, "you": int(user_id),
+        "total_players": int(lb.get("total_players") or 0), "total_tasks": int(lb.get("total_tasks") or 0),
+        "leaders": [_slim(l) for l in (lb.get("leaders") or [])[:50]],
+        "fastest": _nom(lb.get("fastest")), "accurate": _nom(lb.get("accurate")), "active": _nom(lb.get("active")),
+    })
+
+
 def _load_user_translation_sentence_map(
     user_id: int,
     *,

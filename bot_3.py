@@ -19063,49 +19063,7 @@ async def _send_daily_challenge_digest_job(context: CallbackContext) -> None:
     logging.info("daily_challenge_digest sent=%d participants", sent)
 
 
-def _compute_quiz_leaderboard(rows: list) -> dict:
-    """Global quiz leaderboard from challenge results: points = +10 per correct
-    answer + place bonus (🥇+5/🥈+3/🥉+1) on each task. Returns ranked leaders +
-    weekly nominations (fastest / most accurate / most active)."""
-    by_key: dict[str, list] = {}
-    for r in rows:
-        by_key.setdefault(r["challenge_key"], []).append(r)
-    stats: dict[int, dict] = {}
-
-    def st(uid: int, name: str) -> dict:
-        s = stats.setdefault(uid, {"name": name or "Student", "points": 0, "answered": 0,
-                                   "correct": 0, "golds": 0, "ctime_sum": 0, "ctime_n": 0})
-        if name:
-            s["name"] = name
-        return s
-
-    for _key, rs in by_key.items():
-        correct = sorted([r for r in rs if r["is_correct"]], key=lambda x: x["time_ms"])
-        place = {c["user_id"]: i + 1 for i, c in enumerate(correct)}
-        for r in rs:
-            s = st(int(r["user_id"]), str(r["name"] or ""))
-            s["answered"] += 1
-            if r["is_correct"]:
-                s["correct"] += 1
-                pl = place.get(int(r["user_id"]), 99)
-                s["points"] += 10 + (5 if pl == 1 else 3 if pl == 2 else 1 if pl == 3 else 0)
-                if pl == 1:
-                    s["golds"] += 1
-                s["ctime_sum"] += int(r["time_ms"] or 0)
-                s["ctime_n"] += 1
-
-    leaders = [{"user_id": uid, **s} for uid, s in stats.items()]
-    leaders.sort(key=lambda l: (-l["points"], -l["correct"], l["ctime_sum"]))
-    fast_pool = [l for l in leaders if l["ctime_n"] >= 3]
-    acc_pool = [l for l in leaders if l["answered"] >= 3]
-    return {
-        "leaders": leaders,
-        "total_players": len(leaders),
-        "total_tasks": len(by_key),
-        "fastest": min(fast_pool, key=lambda l: l["ctime_sum"] / l["ctime_n"]) if fast_pool else None,
-        "accurate": max(acc_pool, key=lambda l: (l["correct"] / l["answered"], l["answered"])) if acc_pool else None,
-        "active": max(leaders, key=lambda l: l["answered"]) if leaders else None,
-    }
+from backend.quiz_leaderboard import compute_quiz_leaderboard as _compute_quiz_leaderboard
 
 
 def _build_champion_card(lb: dict, *, week_no: int, days: int) -> str | None:
@@ -19190,13 +19148,16 @@ async def _post_champion_card(context: CallbackContext, *, days: int, chat_ids: 
     if chat_ids is None:
         targets = await _collect_quiz_delivery_user_targets(context)
         chat_ids = [int(t.get("chat_id") or 0) for t in (targets or []) if int(t.get("chat_id") or 0)]
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        text="🏅 Полный рейтинг", url=get_webapp_deeplink("lb" if days == 7 else f"lb{days}"))]])
     sent = 0
     for cid in chat_ids:
         try:
             if poster:
-                await context.bot.send_photo(chat_id=int(cid), photo=io.BytesIO(poster), caption=caption, parse_mode="HTML")
+                await context.bot.send_photo(chat_id=int(cid), photo=io.BytesIO(poster),
+                                             caption=caption, parse_mode="HTML", reply_markup=kb)
             else:
-                await context.bot.send_message(chat_id=int(cid), text=text, parse_mode="HTML")
+                await context.bot.send_message(chat_id=int(cid), text=text, parse_mode="HTML", reply_markup=kb)
             sent += 1
         except Exception:
             logging.warning("champion card: send failed chat_id=%s", cid, exc_info=True)
