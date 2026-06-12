@@ -19337,69 +19337,102 @@ async def _send_challenge_notifications_job(context: CallbackContext) -> None:
             logging.warning("challenge notif send failed id=%s", n.get("id"), exc_info=True)
 
 
+# (cat_key, label, dispatch_table | None, fact_kind). cat_key matches the
+# challenge_key prefix (sprint "sp_*" is folded to "sp"; article is its own table).
+_DIGEST_CATEGORIES = [
+    ("art", "🇩🇪 Артикли",        "bt_3_article_quiz_dispatches", "slotHM"),
+    ("rb",  "🧩 Ребус",           "bt_3_rebus_dispatches",        "slotH"),
+    ("cw",  "🔤 Кроссворд",       "bt_3_crossword_dispatches",    "slotH"),
+    ("ag",  "🔀 Анаграмма",       "bt_3_anagram_dispatches",      "slotH"),
+    ("au",  "✏️ Aufgabe",         "bt_3_aufgabe_dispatches",      "slotH"),
+    ("ls",  "🎧 Аудирование",     "bt_3_listening_dispatches",    "listening"),
+    ("sp",  "🏃 Спринт син/ант",  "bt_3_sprint_dispatches",       "slotHM"),
+    ("qf",  "✍️ Свой вариант",    None,                           None),
+]
+
+
 async def _send_daily_challenge_digest_job(context: CallbackContext) -> None:
-    """Evening DM: each participant's placements across today's challenges, so they
-    learn where they finished without hunting for tasks in the chat."""
+    """Evening DM per participant: a clean per-category breakdown (answered/sent ·
+    correct) + the day's totals — no cryptic per-task labels or seconds."""
+    from backend.database import (
+        get_dispatched_slot_hours_today, listening_dispatched_today,
+        get_article_quiz_answers_since,
+    )
     try:
         rows = await asyncio.to_thread(get_challenge_results_since, 24)
+        art_rows = await asyncio.to_thread(get_article_quiz_answers_since, 24)
     except Exception:
         logging.warning("daily digest: fetch failed", exc_info=True)
         return
-    if not rows:
+    if not rows and not art_rows:
         return
-    by_key: dict[str, list] = {}
-    for r in rows:
-        by_key.setdefault(r["challenge_key"], []).append(r)
 
-    # Aggregate a clean SUMMARY per user (not a wall of per-task lines).
+    today = _get_quiz_schedule_now().date()
+    cat_keys = {c for c, _, _, _ in _DIGEST_CATEGORIES}
+
+    # How many of each category were SENT today (same for everyone).
+    sent_by_cat: dict[str, int] = {}
+    for cat, _lbl, table, kind in _DIGEST_CATEGORIES:
+        try:
+            if kind == "listening":
+                sent_by_cat[cat] = 1 if await asyncio.to_thread(listening_dispatched_today, today) else 0
+            elif table:
+                hours = await asyncio.to_thread(get_dispatched_slot_hours_today, table, today)
+                sent_by_cat[cat] = len(hours)
+            else:
+                sent_by_cat[cat] = 0
+        except Exception:
+            sent_by_cat[cat] = 0
+    total_sent = sum(sent_by_cat.values())
+
+    # Per user → per category [answered, correct].
     agg: dict[int, dict] = {}
-    for key, rs in by_key.items():
-        correct = sorted([r for r in rs if r["is_correct"]], key=lambda x: x["time_ms"])
-        place_by_user = {c["user_id"]: i + 1 for i, c in enumerate(correct)}
-        label = None
-        for r in rs:
-            uid = int(r["user_id"])
-            a = agg.setdefault(uid, {"answered": 0, "correct": 0, "golds": 0, "victories": []})
-            a["answered"] += 1
-            if r["is_correct"]:
-                a["correct"] += 1
-                if place_by_user.get(uid) == 1:
-                    a["golds"] += 1
-                    if label is None:
-                        label = await _challenge_label(key)
-                    a["victories"].append((int(r["time_ms"] or 0), label))
 
-    sent = 0
-    for uid, a in agg.items():
-        pct = round(a["correct"] / a["answered"] * 100) if a["answered"] else 0
-        lines = [
-            "🏁 <b>Итоги дня</b>",
-            "",
-            f"📊 Решено: <b>{a['answered']}</b> · верно: <b>{a['correct']}</b> · 🥇 побед: <b>{a['golds']}</b>",
-            f"🎯 Точность: <b>{pct}%</b>",
-        ]
-        if a["victories"]:
-            lines.append("")
-            lines.append("🏆 <b>Твои победы</b> (быстрее всех):")
-            for t, label in sorted(a["victories"])[:5]:
-                lines.append(f"🥇 {label} — {_fmt_secs(t)}")
-            extra = len(a["victories"]) - 5
-            if extra > 0:
-                lines.append(f"…и ещё {extra} 🥇")
-        elif a["correct"] > 0:
-            lines.append("")
-            lines.append("💪 Хороший день! Завтра — за золотом 🥇")
+    def _add(uid: int, cat: str, correct: bool) -> None:
+        cell = agg.setdefault(int(uid), {}).setdefault(cat, [0, 0])
+        cell[0] += 1
+        cell[1] += 1 if correct else 0
+
+    for r in rows:
+        kind = str(r.get("challenge_key") or "").partition(":")[0]
+        cat = "sp" if kind.startswith("sp_") else kind
+        if cat in cat_keys:
+            _add(r["user_id"], cat, r["is_correct"])
+    for r in art_rows:
+        _add(r["user_id"], "art", r["is_correct"])
+
+    labels = {c: lbl for c, lbl, _, _ in _DIGEST_CATEGORIES}
+    order = [c for c, _, _, _ in _DIGEST_CATEGORIES]
+    sent_count = 0
+    for uid, cats in agg.items():
+        answered = sum(v[0] for v in cats.values())
+        correct = sum(v[1] for v in cats.values())
+        denom = total_sent or answered
+        pct_ans = round(answered / denom * 100) if denom else 0
+        acc = round(correct / answered * 100) if answered else 0
+
+        lines = [f"🏁 <b>Итоги дня</b> · {today.strftime('%d.%m.%Y')}", ""]
+        if total_sent:
+            lines.append(f"📤 Отправлено: <b>{total_sent}</b> · ✅ Ты ответил: <b>{answered}</b> ({pct_ans}%)")
         else:
-            lines.append("")
-            lines.append("💪 Не сдавайся — завтра точно получится!")
-        lines.append("")
-        lines.append("👥 Играть командой с друзьями — /group")
+            lines.append(f"✅ Ты ответил: <b>{answered}</b> заданий")
+        lines.append(f"🎯 Верно: <b>{correct}</b> из отвеченных ({acc}%)")
+        lines += ["", "<b>По категориям</b> (ответил / отправлено · ✅ верно):"]
+        for cat in order:
+            s = int(sent_by_cat.get(cat, 0))
+            v = cats.get(cat)
+            a, c = (v[0], v[1]) if v else (0, 0)
+            if s == 0 and a == 0:
+                continue  # nothing sent and nothing answered → hide
+            sent_part = f"/{s}" if s else ""
+            lines.append(f"{labels[cat]} — {a}{sent_part} · ✅ {c}")
+        lines += ["", "👥 Играть командой с друзьями — /group"]
         try:
             await context.bot.send_message(chat_id=int(uid), text="\n".join(lines), parse_mode="HTML")
-            sent += 1
+            sent_count += 1
         except Exception:
             logging.warning("daily digest send failed uid=%s", uid, exc_info=True)
-    logging.info("daily_challenge_digest sent=%d participants", sent)
+    logging.info("daily_challenge_digest sent=%d participants", sent_count)
 
 
 from backend.quiz_leaderboard import compute_quiz_leaderboard as _compute_quiz_leaderboard

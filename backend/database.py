@@ -13952,6 +13952,19 @@ def record_telegram_quiz_delivery(
             )
 
 
+def get_article_quiz_answers_since(since_hours: int = 24) -> list[dict]:
+    """Article-quiz answers in the recent window — for the per-category daily digest
+    (article quiz is answered via inline buttons, not the challenge_results table)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT user_id, is_correct FROM bt_3_article_quiz_answers "
+                "WHERE answered_at >= NOW() - (%s || ' hours')::INTERVAL",
+                (int(since_hours),),
+            )
+            return [{"user_id": int(r[0]), "is_correct": bool(r[1])} for r in (cursor.fetchall() or [])]
+
+
 def get_telegram_quiz_attempt(poll_id: str, user_id: int) -> dict | None:
     """The user's native-poll answer for this quiz (if any), to block a second
     answer via the freeform button."""
