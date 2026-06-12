@@ -1010,6 +1010,22 @@ def _sprint_key(relation: str, sprint_id: str) -> str:
     return f"sp_{relation}:{sprint_id}"
 
 
+def _sprint_core(word: str) -> str:
+    """Normalized core of a word for hashing/matching: lowercase, article-stripped,
+    punctuation removed. MUST stay in sync with the client's normalize() in
+    SprintGame.jsx so live (client-side, no round-trip) checks agree with grading."""
+    toks = _normalize_quiz_text(word).split()
+    if toks and toks[0] in _GERMAN_ARTICLE_TOKENS:
+        toks = toks[1:]
+    return " ".join(toks)
+
+
+def _sprint_hash(word: str) -> str:
+    import hashlib
+    core = _sprint_core(word)
+    return hashlib.sha256(core.encode("utf-8")).hexdigest()[:16] if core else ""
+
+
 def load_sprint_task(*, dispatch_id: int, user_id: int) -> dict | None:
     from backend.database import get_sprint_dispatch_by_id, get_sprint_item, get_sprint_result
     dispatch = get_sprint_dispatch_by_id(int(dispatch_id))
@@ -1021,12 +1037,17 @@ def load_sprint_task(*, dispatch_id: int, user_id: int) -> dict | None:
     relation = str(item.get("relation") or "synonym")
     key = _sprint_key(relation, str(item.get("sprint_id")))
     existing = get_sprint_result(sprint_key=key, user_id=int(user_id))
+    # Hashes (not plaintext) of the accepted answers → the client validates each
+    # typed word LOCALLY (instant, zero round-trips during the 60s), without the
+    # answer key leaking. /finish stays the authoritative grader.
+    hashes = sorted({h for a in (item.get("accepted") or []) if (h := _sprint_hash(str(a)))})
     meta = {
         "kind": "sprint",
         "relation": relation,
         "wort": str(item.get("wort") or ""),
         "hint_ru": str(item.get("hint_ru") or ""),
         "duration_s": SPRINT_DURATION_S,
+        "accepted_hashes": hashes,
         "already_played": bool(existing),
     }
     if existing:

@@ -575,3 +575,34 @@ html[data-scheme="light"] .sp-timer { color: #15803d; }
 html[data-scheme="light"] .sp-count { color: #15803d; }
 html[data-scheme="light"] .sp-bar-fill { background: #15803d; }
 html[data-scheme="light"] .sp-chip.hit { color: #15803d; }
+
+/* ── Sprint polish (hero / pulsing counter / animated chips) ─────────────── */
+.sp-hero { text-align: center; margin: 6px 0 2px; }
+.sp-hero-word {
+  font-size: 34px; font-weight: 900; letter-spacing: -0.01em;
+  color: var(--dmps-text-primary, #F8FAFC);
+  background: linear-gradient(180deg, #34d399, #22c55e);
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+.sp-hero-hint { margin-top: 4px; font-size: 15px; color: var(--dmps-text-muted, #94A3B8); }
+.sp-go { background: linear-gradient(135deg, #22c55e, #16a34a); box-shadow: 0 10px 26px rgba(34,197,94,.38); }
+.sp-counter { text-align: center; margin: 6px 0 12px; line-height: 1; }
+.sp-counter-num {
+  display: inline-block; font-size: 56px; font-weight: 900; color: #22c55e;
+  font-variant-numeric: tabular-nums; animation: sp-pop .32s cubic-bezier(.22,1,.36,1);
+}
+.sp-counter-sub { display: block; margin-top: 2px; font-size: 14px; font-weight: 600; color: var(--dmps-text-muted, #94A3B8); }
+@keyframes sp-pop { 0% { transform: scale(.6); opacity: .4; } 60% { transform: scale(1.18); } 100% { transform: scale(1); opacity: 1; } }
+.sp-timer-s { font-size: 13px; font-weight: 700; margin-left: 1px; }
+.sp-grading { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 30px 0; }
+.sp-score { text-align: center; margin: 8px 0 4px; }
+.sp-score-num {
+  font-size: 64px; font-weight: 900; line-height: 1; color: #22c55e;
+  animation: sp-pop .4s cubic-bezier(.22,1,.36,1);
+}
+.sp-score-sub { font-size: 15px; font-weight: 600; color: var(--dmps-text-muted, #94A3B8); margin-top: 2px; }
+.sp-all-dim { font-weight: 500; color: var(--dmps-text-subtle, #64748B); }
+.sp-chip { animation: sp-chip-in .22s ease-out; }
+@keyframes sp-chip-in { from { transform: translateY(-4px) scale(.92); opacity: 0; } to { transform: none; opacity: 1; } }
+html[data-scheme="light"] .sp-hero-word { background: linear-gradient(180deg, #16a34a, #15803d); -webkit-background-clip: text; background-clip: text; }
+html[data-scheme="light"] .sp-counter-num, html[data-scheme="light"] .sp-score-num { color: #15803d; }
