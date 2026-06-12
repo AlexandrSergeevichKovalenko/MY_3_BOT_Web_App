@@ -21635,7 +21635,7 @@ async def _send_poll_quiz_for_target(
             chat_id=int(target_chat_id),
             message_id=int(poll_message.message_id),
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
-                "✍️ Нет верного? Впиши свой вариант",
+                "✍️ Нет верного? ➡️ ВПИШИ СВОЙ ВАРИАНТ 👈",
                 url=get_webapp_deeplink(f"ans_qfp_{poll_message.poll.id}"),
             )]]),
         )
@@ -22083,31 +22083,13 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
             },
             ttl_seconds=QUIZ_FREEFORM_INPUT_TTL_SECONDS,
         )
-        # If the poll already carries the "✍️ свой вариант" button (attached under
-        # it at send time), don't re-post the answer box. Instead nudge the user to
-        # that button. Picking "keine korrekte" does NOT complete the task — only
-        # the typed answer is graded — so the hint says exactly that.
+        # Inert by design: picking "keine korrekte Antworten" commits nothing and
+        # sends NOTHING (a poll vote cannot show a per-user popup, and we don't
+        # want messages flying around / chat-hopping). The task is completed ONLY
+        # by typing the answer via the prominent "✍️ свой вариант" button right
+        # under the poll. The pending-state above keeps DM-typing as a silent
+        # fallback for anyone who prefers it.
         if quiz_data.get("freeform_button"):
-            hint = (
-                "✅ Верно — готового правильного ответа в списке нет!\n\n"
-                "Теперь нажми кнопку «✍️ Нет верного? Впиши свой вариант» под опросом "
-                "и впиши правильный вариант сам.\n"
-                "⚠️ Задание зачтётся, только если впишешь верно 👇"
-            )
-            try:
-                # DM so confirming "you're right" doesn't spoil the poll for others.
-                await context.bot.send_message(chat_id=int(poll_answer.user.id), text=hint)
-            except Exception:
-                # Can't DM → neutral, spoiler-free nudge as a reply to the poll.
-                try:
-                    await context.bot.send_message(
-                        chat_id=int(quiz_data.get("chat_id") or poll_answer.user.id),
-                        text=f"{poll_answer.user.first_name}, чтобы вписать свой вариант — "
-                             "нажми «✍️ Нет верного? Впиши свой вариант» под опросом 👆",
-                        reply_to_message_id=quiz_data.get("message_id"),
-                    )
-                except Exception:
-                    logging.warning("freeform hint send failed user_id=%s", poll_answer.user.id, exc_info=True)
             return
         # Legacy fallback (poll has no attached button, e.g. attach failed or the
         # poll predates a restart): offer the Mini-App overlay via a reply message.
