@@ -19368,7 +19368,7 @@ def _build_group_daily_report(lb: dict, title: str | None) -> str | None:
     ]
     for i, l in enumerate(leaders[:5]):
         lines.append(f"{medal(i)} {esc(l['name'])} — {l['points']} очк. ({l['correct']}✓)")
-    lines += ["", "🏆 Общий рейтинг и Кубок чемпиона — /champion"]
+    lines += ["", "🏆 Полный рейтинг и Кубок чемпиона — по кнопке ниже 👇"]
     return "\n".join(lines)
 
 
@@ -19403,11 +19403,34 @@ async def _send_group_daily_report_job(context: CallbackContext) -> None:
         grows = [r for r in rows if int(r["user_id"]) in participants]
         if not grows:
             continue
-        text = _build_group_daily_report(_compute_quiz_leaderboard(grows), g.get("chat_title"))
+        lb = _compute_quiz_leaderboard(grows)
+        text = _build_group_daily_report(lb, g.get("chat_title"))
         if not text:
             continue
+        # A ready-made card (rendered PNG) + a Mini-App button that opens the same
+        # leaderboard in the app. No user-facing slash command in the chat.
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+            text="🏅 Открыть рейтинг", url=get_webapp_deeplink("lb1"))]])
+        poster = None
         try:
-            await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+            avatars: dict[int, bytes] = {}
+            for ldr in (lb.get("leaders") or [])[:3]:
+                av = await _fetch_user_avatar_png(context, int(ldr["user_id"]))
+                if av:
+                    avatars[int(ldr["user_id"])] = av
+            from backend.champion_poster import render_champion_poster
+            poster = await asyncio.to_thread(
+                render_champion_poster, lb, week_no=0, days=1, avatars=avatars,
+                header="CHAMPION DES TAGES", subtitle=_get_quiz_schedule_now().strftime("%d.%m.%Y"),
+            )
+        except Exception:
+            logging.warning("group daily report: poster render failed chat_id=%s", chat_id, exc_info=True)
+        try:
+            if poster:
+                await context.bot.send_photo(chat_id=chat_id, photo=io.BytesIO(poster),
+                                             caption=text, parse_mode="HTML", reply_markup=kb)
+            else:
+                await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=kb)
             sent += 1
         except Exception:
             logging.warning("group daily report send failed chat_id=%s", chat_id, exc_info=True)
@@ -22805,12 +22828,12 @@ def main():
             minute=30,
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
-        # -- Group daily report → into each group chat (21:45) --
+        # -- Group daily report → into each group chat (22:57) --
         scheduler.add_job(
             lambda: submit_async(_send_group_daily_report_job, CallbackContext(application=application)),
             "cron",
-            hour=21,
-            minute=45,
+            hour=22,
+            minute=57,
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
         # -- Weekly global quiz champion card (Sunday 20:00) --

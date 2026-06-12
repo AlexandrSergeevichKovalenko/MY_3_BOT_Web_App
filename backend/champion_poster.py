@@ -162,7 +162,8 @@ def _podium_bar(base, d, x, base_y, w, h, top_col, dk_col, rank, name, points, a
     _ctext(d, x + w // 2, top_y - 34, _ltext_trunc(name, _font(30), d, w + 30), _font(30), WHITE)
 
 
-def render_champion_poster(lb: dict, *, week_no: int, days: int, avatars: dict | None = None) -> bytes | None:
+def render_champion_poster(lb: dict, *, week_no: int, days: int, avatars: dict | None = None,
+                           header: str | None = None, subtitle: str | None = None) -> bytes | None:
     if Image is None:
         return None
     leaders = (lb or {}).get("leaders") or []
@@ -174,10 +175,10 @@ def render_champion_poster(lb: dict, *, week_no: int, days: int, avatars: dict |
     base = _glow(base, W // 2, 420, 360, GOLD, 70)
     d = ImageDraw.Draw(base)
 
-    # Header
+    # Header (overridable so a daily card can read "CHAMPION DES TAGES" etc.)
     period = "WOCHE" if days == 7 else f"{days} TAGE"
-    _ctext(d, W // 2, 58, "CHAMPION DER " + period, _font(58), GOLD)
-    _ctext(d, W // 2, 132, f"№ {week_no}", _font(34), MUTED)
+    _ctext(d, W // 2, 58, header or ("CHAMPION DER " + period), _font(58), GOLD)
+    _ctext(d, W // 2, 132, subtitle if subtitle is not None else f"№ {week_no}", _font(34), MUTED)
     d.line([(W // 2 - 150, 180), (W // 2 + 150, 180)], fill=GOLD_DK, width=3)
     for sx in (W // 2 - 168, W // 2 + 168):
         _star(d, sx, 181, 10, GOLD)
