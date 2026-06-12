@@ -33965,6 +33965,21 @@ def mark_aufgabe_send_failed(aufgabe_id: str, *, retire_after: int = 3) -> None:
         conn.commit()
 
 
+def retire_aufgaben_by_format(fmt: str) -> int:
+    """Retire every active aufgabe of a format so the pool refills with freshly
+    generated (fixed-prompt) items. Returns count retired."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_aufgabe_bank SET retired = TRUE "
+                "WHERE format = %s AND retired = FALSE",
+                (str(fmt),),
+            )
+            n = cursor.rowcount
+        conn.commit()
+    return int(n or 0)
+
+
 def record_aufgabe_dispatch(*, slot_date, slot_hour: int, aufgabe_id: str,
                             target_user_id: int, chat_id: int) -> int | None:
     with get_db_connection_context() as conn:

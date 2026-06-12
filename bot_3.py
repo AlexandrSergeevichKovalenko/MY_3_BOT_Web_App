@@ -290,6 +290,7 @@ from backend.database import (
     pick_next_aufgabe,
     mark_aufgabe_sent,
     mark_aufgabe_send_failed,
+    retire_aufgaben_by_format,
     record_aufgabe_dispatch,
     update_aufgabe_dispatch_telegram_id,
 )
@@ -19738,6 +19739,16 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
         accepted = [str(a).strip() for a in (it.get("accepted") or []) if str(a).strip()]
         if not original or not key or not accepted:
             return None
+        # Quality gate: the Lücke must be the full key PHRASE (preposition +
+        # article + keyword, 2–5 words), not the bare Schlüsselwort. Otherwise
+        # the prefix has already done the transformation and the answer is just
+        # the visible keyword (e.g. prefix "Aufgrund seiner" + Lücke
+        # "Überzeugung"). Skip such trivial items — the keyword is shown, so the
+        # gap may not equal it.
+        def _trivial(phrase: str) -> bool:
+            return len(phrase.split()) < 2 or phrase.casefold() == key.casefold()
+        if all(_trivial(a) for a in accepted):
+            return None
         return {"original": original, "schluesselwort": key,
                 "target_prefix": str(it.get("target_prefix") or ""),
                 "target_suffix": str(it.get("target_suffix") or ""),
@@ -20076,6 +20087,39 @@ async def admin_aufgabe_send_command(update: Update, context: CallbackContext) -
         last_error = f"send failed for {str(entry.get('aufgabe_id') or '')[:8]}"
         await asyncio.to_thread(mark_aufgabe_send_failed, str(entry.get("aufgabe_id") or ""))
     await status_msg.edit_text(f"Aufgabe send failed ({last_error}).")
+
+
+async def admin_clear_aufgabe_command(update: Update, context: CallbackContext) -> None:
+    """Retire all items of an Aufgabe format and regenerate them (fixed prompt).
+    /admin_clearaufgabe [format]  — default: transform."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    args = context.args or []
+    fmt = (args[0].strip().lower() if args else "transform")
+    valid = {f for f, _ in _AUFGABE_FORMATS}
+    if fmt not in valid:
+        await message.reply_text("Форматы: " + ", ".join(f for f, _ in _AUFGABE_FORMATS))
+        return
+    status_msg = await message.reply_text(f"Ретайрю «{fmt}» и регенерирую…")
+    try:
+        n = await asyncio.to_thread(retire_aufgaben_by_format, fmt)
+    except Exception as exc:
+        await status_msg.edit_text(f"retire failed: {exc}")
+        return
+    try:
+        made = await _aufgabe_topup_format(fmt, _AUFGABE_LEVEL.get(fmt, "B2"), AUFGABE_PER_FORMAT_TARGET)
+    except Exception as exc:
+        await status_msg.edit_text(f"Ретайрнуто {n}, но регенерация упала: {exc}")
+        return
+    await status_msg.edit_text(
+        f"✅ «{fmt}»: ретайрнуто {n}, сгенерировано {made}. "
+        "Новые айтемы — с исправленным промптом и гейтом качества."
+    )
 
 
 async def _set_billing_user_context(update: Update, context: CallbackContext) -> None:
@@ -21958,6 +22002,7 @@ def main():
     application.add_handler(CommandHandler("admin_anagram_send", admin_anagram_send_command))
     application.add_handler(CommandHandler("admin_aufgabe_send", admin_aufgabe_send_command))
     application.add_handler(CommandHandler("admin_aufgabe_all", admin_aufgabe_all_command))
+    application.add_handler(CommandHandler("admin_clearaufgabe", admin_clear_aufgabe_command))
     application.add_handler(CommandHandler("admin_testalert", admin_testalert_command))
     application.add_handler(CommandHandler("champion", admin_champion_command))
     application.add_handler(CommandHandler("group", group_play_help_command))

@@ -2957,6 +2957,14 @@ Beispiel: Original "Obwohl es regnete, gingen wir spazieren." Schlüsselwort "tr
 Regeln (WICHTIG für faire automatische Bewertung):
 - Bedeutung muss exakt erhalten bleiben; Grammatik korrekt; Schlüsselwort zwingend.
 - "target_prefix" und "target_suffix" sind FIX vorgegeben (können leer sein).
+- KRITISCH — die GANZE umzuformende Konstruktion gehört in die LÜCKE, NICHT in
+  prefix/suffix. Die Lücke MUSS die regierende Präposition + Artikel/Pronomen +
+  das Schlüsselwort enthalten (mind. 2 Wörter, z. B. "Trotz des Regens",
+  "Aufgrund seiner Überzeugung"). Die Lücke darf NIEMALS nur das nackte
+  Schlüsselwort sein. VERBOTEN: die Präposition/den Artikel der Konstruktion in
+  prefix/suffix vorwegnehmen (z. B. prefix "Aufgrund seiner" + Lücke
+  "Überzeugung" ist FALSCH — die Antwort wäre dann das sichtbare Schlüsselwort).
+  prefix/suffix dürfen die Präposition der Zielkonstruktion nicht enthalten.
 - "accepted" = VOLLSTÄNDIGE Liste ALLER natürlichen korrekten Füllungen der Lücke
   (jede 2–5 Wörter, jede mit dem Schlüsselwort, alle bedeutungsgleich). Nenne wirklich
   alle gängigen Varianten (Wortstellung/Synonyme), damit eine exakte Prüfung fair ist.
