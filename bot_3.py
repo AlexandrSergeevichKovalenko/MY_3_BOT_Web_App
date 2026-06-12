@@ -2069,11 +2069,15 @@ async def handle_autosave_digest_save_callback(update: Update, context: Callback
         await query.answer("Отметьте хотя бы одно слово.", show_alert=True)
         return
 
-    # Instant feedback: ack, remove the keyboard, show a status line — the actual saving
-    # (DB writes per word) happens in the BACKGROUND so the user never waits or re-taps.
-    await query.answer("Отправлено на сохранение ✅")
+    # Instant feedback: flip the button IN PLACE to «💾 Сохраняем…» (attached to THIS
+    # message, no second chat message), do the saving in the BACKGROUND, then flip the
+    # same button to «✅ Сохранено (N)».
     try:
-        await query.edit_message_reply_markup(reply_markup=None)
+        await query.answer("Сохраняю…")
+    except Exception:
+        pass
+    try:
+        await query.edit_message_reply_markup(reply_markup=_dict_save_status_keyboard("💾 Сохраняем…"))
     except Exception:
         pass
     _autosave_delete_digest(digest_id)  # consume now → a stray second tap can't double-process
@@ -2082,12 +2086,6 @@ async def handle_autosave_digest_save_callback(update: Update, context: Callback
     src = str(state.get("source_lang") or "de").strip().lower()
     tgt = str(state.get("target_lang") or "ru").strip().lower()
     total = len(chosen_items)
-    status_msg = None
-    if query.message:
-        try:
-            status_msg = await query.message.reply_text(f"⏳ Сохраняю {total} в словарь…")
-        except Exception:
-            status_msg = None
 
     async def _bg_save() -> None:
         saved = 0
@@ -2117,18 +2115,14 @@ async def handle_autosave_digest_save_callback(update: Update, context: Callback
                     saved += 1
             except Exception:
                 logging.exception("autosave digest save failed item=%r", source_text)
-        done_text = f"✅ Сохранено в словарь: {saved} из {total}."
-        if status_msg is not None:
-            try:
-                await status_msg.edit_text(done_text)
-                return
-            except Exception:
-                pass
-        if query.message:
-            try:
-                await query.message.reply_text(done_text)
-            except Exception:
-                pass
+        if saved > 0:
+            label = "✅ Сохранено" if saved == 1 else f"✅ Сохранено ({saved})"
+        else:
+            label = "⚠️ Не удалось — попробуйте ещё раз"
+        try:
+            await query.edit_message_reply_markup(reply_markup=_dict_save_status_keyboard(label))
+        except Exception:
+            logging.debug("autosave digest: status keyboard update failed", exc_info=True)
 
     _coro = _bg_save()
     try:
