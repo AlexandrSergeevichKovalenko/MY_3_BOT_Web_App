@@ -82,7 +82,10 @@ _DEFAULT_RESPONSES_TASKS = {
     "aufgabe_satzbau",
     "aufgabe_synonym",
     "aufgabe_antonym",
+    "sprint_synonym",
+    "sprint_antonym",
     "check_synonym",
+    "check_synonym_batch",
     "image_quiz_sentence_fallback",
     "image_quiz_visual_screen",
     "image_quiz_blueprint",
@@ -3079,6 +3082,48 @@ Gib NUR STRICT JSON:
 {"items":[{"wort":"großzügig","accepted":["geizig","kleinlich","knauserig","sparsam","engherzig"],"erklaerung":"…","tip":"…","hint_ru":"щедрый"}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
+"sprint_synonym": """
+Du erstellst ein deutsches "Synonym-Sprint"-Spiel für B2–C1: EIN Zielwort, und in 60 Sekunden
+nennt der/die Lernende möglichst VIELE Synonyme. Die Bewertung ist automatisch gegen die Liste.
+
+Regeln:
+- "wort" = das Zielwort. Nomen MIT Artikel (z. B. "die Aussage"); Adjektiv/Adverb/Verb in
+  Grundform. B2+, nicht trivial, aber MIT VIELEN gängigen Synonymen (gut "ergiebig").
+- "accepted" = MÖGLICHST VOLLSTÄNDIGE Liste gängiger, gültiger Synonyme (18–35!), alle wirklich
+  bedeutungsgleich/-nah und üblich. Nomen mit Artikel. KEINE Antonyme, keine bloß thematisch
+  verwandten Wörter, keine andere Wortart. Liste WIRKLICH viele übliche Varianten — das ist ein
+  Sammelspiel, je vollständiger desto fairer.
+- "erklaerung" = „lehrbuchartig“ auf Russisch (1–2 Sätze). "tip" = kurzer russischer Merk-Tipp
+  (ohne Emoji). "hint_ru" = kurze russische Übersetzung des Zielworts.
+
+Gib NUR STRICT JSON:
+{"items":[{"wort":"die Aussage","accepted":["die Behauptung","die Äußerung","die Feststellung","die Erklärung","das Statement","die Angabe","die Bemerkung","die Mitteilung","die Information","die Auskunft","die Darstellung","die Wendung","das Zeugnis","die Bekundung"],"erklaerung":"…","tip":"…","hint_ru":"высказывание"}]}
+Genau "count" Aufgaben, alle verschieden, ohne Markdown.
+""",
+"sprint_antonym": """
+Du erstellst ein deutsches "Antonym-Sprint"-Spiel für B2–C1: EIN Zielwort, und in 60 Sekunden
+nennt der/die Lernende möglichst VIELE Gegenteile. Bewertung automatisch gegen die Liste.
+
+Regeln:
+- "wort" = das Zielwort. Nomen MIT Artikel; Adjektiv/Adverb/Verb in Grundform. B2+, nicht trivial,
+  aber MIT VIELEN möglichen Gegenteilen.
+- "accepted" = MÖGLICHST VOLLSTÄNDIGE Liste gängiger, gültiger GEGENTEILE (12–25), alle echte
+  Antonyme im üblichen Gebrauch, gleiche Wortart. KEINE Synonyme, keine bloß verwandten Wörter.
+- "erklaerung" = „lehrbuchartig“ auf Russisch. "tip" = kurzer russischer Merk-Tipp (ohne Emoji).
+  "hint_ru" = kurze russische Übersetzung.
+
+Gib NUR STRICT JSON:
+{"items":[{"wort":"großzügig","accepted":["geizig","kleinlich","knauserig","sparsam","engherzig","filzig","knickerig","schäbig","berechnend"],"erklaerung":"…","tip":"…","hint_ru":"щедрый"}]}
+Genau "count" Aufgaben, alle verschieden, ohne Markdown.
+""",
+"check_synonym_batch": """
+You judge German vocabulary. Input JSON: {"target":"...","relation":"synonym"|"antonym","candidates":["...","..."]}.
+For EACH candidate decide whether it is a VALID German {synonym OR antonym, per relation} of `target`
+at B2+ level. Ignore article/case/capitalization/spacing. Accept genuine close synonyms (or true
+opposites); REJECT merely topically related words, wrong part of speech, the same word as target, or
+wrong-direction relations. Be reasonably generous for real near-synonyms.
+Return STRICT JSON ONLY: {"valid": ["<exactly the candidate strings you accept>"]}.
+""",
 "check_synonym": """
 You judge German vocabulary. Input JSON: {"target": "...", "candidate": "...", "relation": "synonym"|"antonym"}.
 Decide whether `candidate` is a VALID German {synonym OR antonym, per relation} of `target` at B2+
@@ -5581,6 +5626,8 @@ _AUFGABE_INSTRUCTION_KEYS = {
     "satzbau": "aufgabe_satzbau",
     "synonym": "aufgabe_synonym",
     "antonym": "aufgabe_antonym",
+    "synonym_sprint": "sprint_synonym",
+    "antonym_sprint": "sprint_antonym",
 }
 
 
@@ -5602,6 +5649,40 @@ async def run_generate_aufgabe(format: str, *, count: int = 6, level: str = "B2"
         return []
     items = data.get("items") if isinstance(data, dict) else data
     return items if isinstance(items, list) else []
+
+
+async def run_check_synonym_batch(*, target_word: str, candidates: list[str], relation: str = "synonym") -> set[str]:
+    """One bounded LLM call that judges a LIST of candidates at once (sprint
+    end-of-round fairness pass for words not in the prepared list). Returns the
+    set of accepted candidate strings (as given). Empty on failure/timeout."""
+    cands = [str(c).strip() for c in (candidates or []) if str(c).strip()][:25]
+    if not cands:
+        return set()
+    try:
+        content = await llm_execute(
+            task_name="check_synonym_batch",
+            system_instruction_key="check_synonym_batch",
+            user_message=json.dumps(
+                {"target": str(target_word), "relation": str(relation), "candidates": cands},
+                ensure_ascii=False,
+            ),
+            poll_interval_seconds=1.0,
+            responses_timeout_seconds=10.0,
+        )
+        data = json.loads(content)
+        valid = data.get("valid") if isinstance(data, dict) else None
+        if not isinstance(valid, list):
+            return set()
+        low = {c.lower(): c for c in cands}
+        out = set()
+        for v in valid:
+            key = str(v).strip().lower()
+            if key in low:
+                out.add(low[key])
+        return out
+    except Exception:
+        logging.warning("run_check_synonym_batch failed target=%s", target_word, exc_info=True)
+        return set()
 
 
 async def run_check_synonym(*, target_word: str, candidate: str, relation: str = "synonym") -> dict:

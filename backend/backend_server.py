@@ -22444,6 +22444,74 @@ def submit_answer():
     return jsonify({"ok": True, **result})
 
 
+@app.route("/api/sprint/task", methods=["GET", "POST"])
+def sprint_task():
+    user_id, user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    raw_id = request.args.get("id") or payload.get("id")
+    try:
+        dispatch_id = int(raw_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "id обязателен"}), 400
+    from backend.database import ensure_sprint_schema
+    from backend.answer_eval import load_sprint_task
+    ensure_sprint_schema()
+    meta = load_sprint_task(dispatch_id=dispatch_id, user_id=user_id)
+    if meta is None:
+        return jsonify({"error": "Задание не найдено"}), 404
+    return jsonify({"ok": True, **meta})
+
+
+@app.route("/api/sprint/check", methods=["POST"])
+def sprint_check():
+    """Live per-word check during the sprint (fast list membership, no LLM)."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    try:
+        dispatch_id = int(payload.get("id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "id обязателен"}), 400
+    word = str(payload.get("word") or "")
+    from backend.answer_eval import check_sprint_word
+    return jsonify({"ok": True, **check_sprint_word(dispatch_id=dispatch_id, word=word)})
+
+
+@app.route("/api/sprint/finish", methods=["POST"])
+def sprint_finish():
+    """Authoritative end-of-round grading: count correct (list + one LLM batch),
+    record the result, return final count + ranking."""
+    user_id, user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    try:
+        dispatch_id = int(payload.get("id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "id обязателен"}), 400
+    words = payload.get("words")
+    words = words if isinstance(words, list) else []
+    try:
+        time_ms = int(payload.get("time_ms") or 0)
+    except (TypeError, ValueError):
+        time_ms = 0
+    from backend.answer_eval import evaluate_sprint
+    try:
+        result = evaluate_sprint(
+            dispatch_id=dispatch_id, user_id=user_id, words=words,
+            time_ms=time_ms, user_name=user_name,
+        )
+    except Exception:
+        logging.exception("sprint finish failed id=%s user=%s", dispatch_id, user_id)
+        return jsonify({"error": "Ошибка подсчёта"}), 500
+    if result is None:
+        return jsonify({"error": "Задание не найдено"}), 404
+    return jsonify({"ok": True, **result})
+
+
 @app.route("/api/answer/listening_status", methods=["GET", "POST"])
 def listening_status():
     """Poll endpoint for async listening grading: pending → done (+result)."""

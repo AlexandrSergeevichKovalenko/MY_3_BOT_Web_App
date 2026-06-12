@@ -547,3 +547,31 @@ html[data-scheme="light"] .au-word.picked { background: #dfe9fd; color: #0f172a;
 }
 .ans-skel.sm { height: 18px; width: 60%; }
 @keyframes ans-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+/* ── Synonym/Antonym Sprint ─────────────────────────────────────────────── */
+.sp-intro { margin: 14px 0; font-size: 16px; line-height: 1.5; color: var(--dmps-text-secondary, #CBD5E1); }
+.sp-intro-dim { color: var(--dmps-text-muted, #94A3B8); font-size: 14px; margin-top: 6px; }
+.sp-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.sp-word { font-size: 19px; font-weight: 800; color: var(--dmps-text-primary, #F8FAFC); }
+.sp-timer { font-size: 20px; font-weight: 800; color: #22c55e; font-variant-numeric: tabular-nums; }
+.sp-timer.low { color: #f05252; }
+.sp-bar { height: 6px; border-radius: 6px; background: rgba(148,163,184,.25); overflow: hidden; margin-bottom: 12px; }
+.sp-bar-fill { height: 100%; background: #22c55e; border-radius: 6px; transition: width 1s linear; }
+.sp-count { text-align: center; font-size: 40px; font-weight: 900; color: #22c55e; margin: 4px 0 10px; }
+.sp-count-sub { font-size: 15px; font-weight: 600; color: var(--dmps-text-muted, #94A3B8); }
+.sp-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.sp-chip { font-size: 14px; padding: 4px 10px; border-radius: 14px; background: rgba(148,163,184,.18); color: var(--dmps-text-secondary, #CBD5E1); }
+.sp-chip.hit { background: rgba(34,197,94,.20); color: #22c55e; font-weight: 700; }
+.sp-chip.pending { opacity: .7; }
+.sp-chip.missed { opacity: .55; }
+.sp-all { margin-top: 14px; }
+.sp-all-head { font-size: 13px; font-weight: 700; color: var(--dmps-text-muted, #94A3B8); margin-bottom: 4px; }
+.sp-rank { margin-top: 12px; padding: 12px; border-radius: 14px; background: rgba(148,163,184,.10); }
+.sp-rank-head { text-align: center; font-size: 16px; font-weight: 800; color: var(--dmps-text-primary, #F8FAFC); margin-bottom: 8px; }
+.sp-rank-row { display: flex; justify-content: space-between; font-size: 15px; padding: 3px 0; color: var(--dmps-text-secondary, #CBD5E1); }
+.sp-rank-row.me { font-weight: 800; color: var(--dmps-text-primary, #F8FAFC); }
+.sp-rank-n { font-weight: 800; }
+html[data-scheme="light"] .sp-timer { color: #15803d; }
+html[data-scheme="light"] .sp-count { color: #15803d; }
+html[data-scheme="light"] .sp-bar-fill { background: #15803d; }
+html[data-scheme="light"] .sp-chip.hit { color: #15803d; }

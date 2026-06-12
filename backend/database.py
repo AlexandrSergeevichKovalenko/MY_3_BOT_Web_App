@@ -33986,7 +33986,7 @@ def retire_aufgaben_by_format(fmt: str) -> int:
 _PLAN_DISPATCH_TABLES = {
     "bt_3_article_quiz_dispatches", "bt_3_aufgabe_dispatches", "bt_3_rebus_dispatches",
     "bt_3_crossword_dispatches", "bt_3_anagram_dispatches", "bt_3_listening_dispatches",
-    "bt_3_visual_riddle_dispatches", "bt_3_image_quiz_dispatches",
+    "bt_3_visual_riddle_dispatches", "bt_3_image_quiz_dispatches", "bt_3_sprint_dispatches",
 }
 
 
@@ -34067,6 +34067,242 @@ def get_send_plan_message(plan_date) -> dict | None:
             )
             row = cursor.fetchone()
     return {"chat_id": int(row[0]), "message_id": int(row[1])} if row else None
+
+
+# ── Synonym/Antonym SPRINT (60s, type as many as you can, rank by count) ──────
+def ensure_sprint_schema() -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_sprint_bank (
+                    sprint_id    TEXT PRIMARY KEY,
+                    relation     TEXT NOT NULL,
+                    wort         TEXT NOT NULL,
+                    accepted     JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    erklaerung   TEXT NOT NULL DEFAULT '',
+                    tip          TEXT NOT NULL DEFAULT '',
+                    hint_ru      TEXT NOT NULL DEFAULT '',
+                    level        TEXT NOT NULL DEFAULT 'B2',
+                    send_count   INTEGER NOT NULL DEFAULT 0,
+                    last_sent_at TIMESTAMPTZ,
+                    retired      BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_sprint_dispatches (
+                    id                  BIGSERIAL PRIMARY KEY,
+                    sprint_id           TEXT NOT NULL,
+                    relation            TEXT NOT NULL,
+                    slot_date           DATE NOT NULL,
+                    slot_hour           INTEGER NOT NULL,
+                    target_user_id      BIGINT NOT NULL,
+                    chat_id             BIGINT NOT NULL,
+                    telegram_message_id BIGINT,
+                    sent_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (target_user_id, slot_date, slot_hour)
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_sprint_results (
+                    id            BIGSERIAL PRIMARY KEY,
+                    sprint_key    TEXT NOT NULL,
+                    user_id       BIGINT NOT NULL,
+                    user_name     TEXT NOT NULL DEFAULT '',
+                    correct_count INTEGER NOT NULL DEFAULT 0,
+                    time_ms       INTEGER NOT NULL DEFAULT 0,
+                    answered_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (sprint_key, user_id)
+                );
+                """
+            )
+        conn.commit()
+
+
+def upsert_sprint_item(item: dict) -> None:
+    import json as _json
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_sprint_bank
+                    (sprint_id, relation, wort, accepted, erklaerung, tip, hint_ru, level)
+                VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s)
+                ON CONFLICT (sprint_id) DO NOTHING
+                """,
+                (
+                    str(item["sprint_id"]), str(item["relation"]), str(item["wort"]),
+                    _json.dumps(list(item.get("accepted") or []), ensure_ascii=False),
+                    str(item.get("erklaerung") or ""), str(item.get("tip") or ""),
+                    str(item.get("hint_ru") or ""), str(item.get("level") or "B2"),
+                ),
+            )
+        conn.commit()
+
+
+def count_available_sprint_items(*, relation: str, cooldown_days: int = 0) -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM bt_3_sprint_bank WHERE relation = %s AND retired = FALSE "
+                "AND (last_sent_at IS NULL OR last_sent_at < NOW() - (%s || ' days')::INTERVAL)",
+                (str(relation), int(cooldown_days)),
+            )
+            return int((cursor.fetchone() or [0])[0])
+
+
+def pick_next_sprint(*, relation: str, cooldown_days: int = 14) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT sprint_id, relation, wort, accepted, erklaerung, tip, hint_ru
+                FROM bt_3_sprint_bank
+                WHERE relation = %s AND retired = FALSE
+                  AND (last_sent_at IS NULL OR last_sent_at < NOW() - (%s || ' days')::INTERVAL)
+                ORDER BY last_sent_at NULLS FIRST, send_count ASC
+                LIMIT 1
+                """,
+                (str(relation), int(cooldown_days)),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    acc = row[3] if isinstance(row[3], list) else []
+    return {"sprint_id": row[0], "relation": row[1], "wort": row[2], "accepted": acc,
+            "erklaerung": row[4], "tip": row[5], "hint_ru": row[6]}
+
+
+def get_sprint_item(sprint_id: str) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT sprint_id, relation, wort, accepted, erklaerung, tip, hint_ru "
+                "FROM bt_3_sprint_bank WHERE sprint_id = %s",
+                (str(sprint_id),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    acc = row[3] if isinstance(row[3], list) else []
+    return {"sprint_id": row[0], "relation": row[1], "wort": row[2], "accepted": acc,
+            "erklaerung": row[4], "tip": row[5], "hint_ru": row[6]}
+
+
+def mark_sprint_sent(sprint_id: str) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_sprint_bank SET send_count = send_count + 1, last_sent_at = NOW() "
+                "WHERE sprint_id = %s",
+                (str(sprint_id),),
+            )
+        conn.commit()
+
+
+def create_sprint_dispatch(*, sprint_id: str, relation: str, slot_date, slot_hour: int,
+                           target_user_id: int, chat_id: int) -> int | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_sprint_dispatches
+                    (sprint_id, relation, slot_date, slot_hour, target_user_id, chat_id)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (target_user_id, slot_date, slot_hour) DO NOTHING
+                RETURNING id
+                """,
+                (str(sprint_id), str(relation), slot_date, int(slot_hour),
+                 int(target_user_id), int(chat_id)),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return int(row[0]) if row else None
+
+
+def update_sprint_dispatch_message_id(dispatch_id: int, *, telegram_message_id: int) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_sprint_dispatches SET telegram_message_id = %s WHERE id = %s",
+                (int(telegram_message_id), int(dispatch_id)),
+            )
+        conn.commit()
+
+
+def get_sprint_dispatch_by_id(dispatch_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id, sprint_id, relation, target_user_id, chat_id "
+                "FROM bt_3_sprint_dispatches WHERE id = %s",
+                (int(dispatch_id),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {"id": int(row[0]), "sprint_id": row[1], "relation": row[2],
+            "target_user_id": int(row[3]), "chat_id": int(row[4])}
+
+
+def record_sprint_result(*, sprint_key: str, user_id: int, user_name: str,
+                         correct_count: int, time_ms: int) -> bool:
+    """First finished round per (sprint, user) counts (anti-replay). Returns True if recorded."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_sprint_results
+                    (sprint_key, user_id, user_name, correct_count, time_ms)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (sprint_key, user_id) DO NOTHING
+                """,
+                (str(sprint_key), int(user_id), str(user_name or "")[:64],
+                 max(0, int(correct_count)), max(0, int(time_ms or 0))),
+            )
+            recorded = cursor.rowcount > 0
+        conn.commit()
+    return recorded
+
+
+def get_sprint_result(*, sprint_key: str, user_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT correct_count, time_ms FROM bt_3_sprint_results "
+                "WHERE sprint_key = %s AND user_id = %s",
+                (str(sprint_key), int(user_id)),
+            )
+            row = cursor.fetchone()
+    return {"correct_count": int(row[0]), "time_ms": int(row[1])} if row else None
+
+
+def compute_sprint_ranking(*, sprint_key: str, user_id: int) -> dict:
+    """Rank players by count of correct answers (desc), ties broken by time (asc)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT user_id, user_name, correct_count, time_ms FROM bt_3_sprint_results "
+                "WHERE sprint_key = %s ORDER BY correct_count DESC, time_ms ASC",
+                (str(sprint_key),),
+            )
+            rows = cursor.fetchall() or []
+    ranked = [{"user_id": int(r[0]), "name": str(r[1] or ""), "count": int(r[2]), "time_ms": int(r[3])}
+              for r in rows]
+    your_place = next((i + 1 for i, r in enumerate(ranked) if r["user_id"] == int(user_id)), None)
+    me = next((r for r in ranked if r["user_id"] == int(user_id)), None)
+    return {
+        "total": len(ranked),
+        "your_place": your_place,
+        "your_count": me["count"] if me else 0,
+        "your_time_ms": me["time_ms"] if me else 0,
+        "top3": ranked[:3],
+    }
 
 
 def record_aufgabe_dispatch(*, slot_date, slot_hour: int, aufgabe_id: str,

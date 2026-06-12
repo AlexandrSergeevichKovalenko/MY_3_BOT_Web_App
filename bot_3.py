@@ -292,6 +292,13 @@ from backend.database import (
     mark_aufgabe_send_failed,
     retire_aufgaben_by_format,
     record_aufgabe_dispatch,
+    ensure_sprint_schema,
+    upsert_sprint_item,
+    count_available_sprint_items,
+    pick_next_sprint,
+    mark_sprint_sent,
+    create_sprint_dispatch,
+    update_sprint_dispatch_message_id,
     update_aufgabe_dispatch_telegram_id,
 )
 from backend.r2_storage import r2_public_url
@@ -20123,6 +20130,171 @@ async def admin_clear_aufgabe_command(update: Update, context: CallbackContext) 
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# SYNONYM / ANTONYM SPRINT (60s, type as many as you can; winner = most correct)
+# ══════════════════════════════════════════════════════════════════════════════
+SPRINT_SLOT_TIMES = {(14, 15): "synonym", (20, 15): "antonym"}  # 1×/day each
+SPRINT_POOL_TARGET = max(3, int((os.getenv("SPRINT_POOL_TARGET") or "6").strip() or "6"))
+SPRINT_COOLDOWN_DAYS = max(7, int((os.getenv("SPRINT_COOLDOWN_DAYS") or "21").strip() or "21"))
+
+
+def _sprint_enabled() -> bool:
+    return (os.getenv("SPRINT_ENABLED") or "true").strip().lower() not in ("0", "false", "no")
+
+
+async def _sprint_topup(relation: str, want: int) -> int:
+    """Generate up to `want` ready sprint items (rich accepted list) into the bank."""
+    if want <= 0:
+        return 0
+    from backend.openai_manager import run_generate_aufgabe
+    fmt = "synonym_sprint" if relation == "synonym" else "antonym_sprint"
+    min_accepted = 8 if relation == "synonym" else 5
+    try:
+        items = await run_generate_aufgabe(fmt, count=max(2, want), level="B2")
+    except Exception:
+        logging.warning("sprint_topup: generation failed relation=%s", relation, exc_info=True)
+        return 0
+    made = 0
+    for it in (items or []):
+        wort = str((it or {}).get("wort") or "").strip()
+        accepted = [str(a).strip() for a in ((it or {}).get("accepted") or []) if str(a).strip()]
+        if not wort or len(accepted) < min_accepted:
+            continue
+        slug = re.sub(r"[^a-z0-9]+", "_", wort.lower()).strip("_")[:40]
+        sprint_id = f"sp_{relation}_{slug}"
+        try:
+            await asyncio.to_thread(upsert_sprint_item, {
+                "sprint_id": sprint_id, "relation": relation, "wort": wort, "accepted": accepted,
+                "erklaerung": str((it or {}).get("erklaerung") or ""),
+                "tip": str((it or {}).get("tip") or ""),
+                "hint_ru": str((it or {}).get("hint_ru") or ""), "level": "B2",
+            })
+            made += 1
+        except Exception:
+            logging.warning("sprint_topup: upsert failed id=%s", sprint_id, exc_info=True)
+    if made:
+        logging.info("sprint_topup relation=%s made=%s", relation, made)
+    return made
+
+
+async def prepare_sprint_pool_job(context: CallbackContext) -> None:
+    """Startup + nightly: keep both sprint pools topped up."""
+    try:
+        await asyncio.to_thread(ensure_sprint_schema)
+        for relation in ("synonym", "antonym"):
+            have = await asyncio.to_thread(count_available_sprint_items, relation=relation, cooldown_days=0)
+            if have < SPRINT_POOL_TARGET:
+                await _sprint_topup(relation, SPRINT_POOL_TARGET - have + 1)
+        logging.info("sprint_pool_job done")
+    except Exception:
+        logging.warning("sprint_pool_job failed", exc_info=True)
+
+
+async def send_sprint_to_chat(context: CallbackContext, *, entry: dict, relation: str,
+                              slot_date, slot_hour: int, chat_id: int, target_user_id: int) -> bool:
+    try:
+        dispatch_id = await asyncio.to_thread(
+            create_sprint_dispatch, sprint_id=str(entry["sprint_id"]), relation=relation,
+            slot_date=slot_date, slot_hour=int(slot_hour),
+            target_user_id=int(target_user_id), chat_id=int(chat_id),
+        )
+    except Exception:
+        logging.warning("sprint_send: dispatch insert failed chat=%s", chat_id, exc_info=True)
+        return False
+    if dispatch_id is None:
+        return False  # duplicate slot suppressed
+    title = "Синонимы-спринт" if relation == "synonym" else "Антонимы-спринт"
+    word_kind = "синонимов" if relation == "synonym" else "антонимов"
+    emoji = "🟢" if relation == "synonym" else "🔴"
+    hint = f" _{entry.get('hint_ru')}_" if entry.get("hint_ru") else ""
+    caption = (
+        f"{emoji} *{title} · B2+*\n\n"
+        f"Слово: *{entry.get('wort')}*{hint}\n\n"
+        f"За *60 секунд* напиши как можно больше {word_kind}!\n"
+        f"🏆 Победитель — у кого больше правильных."
+    )
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "▶️ Играть (60 секунд)", url=get_webapp_deeplink(f"ans_sp_{dispatch_id}"))]])
+    try:
+        msg = await context.bot.send_message(
+            chat_id=int(chat_id), text=caption, parse_mode="Markdown", reply_markup=keyboard)
+    except Exception as exc:
+        logging.warning("sprint_send failed chat=%s: %s", chat_id, exc)
+        return False
+    try:
+        await asyncio.to_thread(update_sprint_dispatch_message_id, dispatch_id, telegram_message_id=int(msg.message_id))
+    except Exception:
+        pass
+    return True
+
+
+async def _send_scheduled_sprint(context: CallbackContext, relation: str) -> None:
+    if not _sprint_enabled():
+        return
+    slot_now = _get_quiz_schedule_now()
+    slot_date = slot_now.date()
+    slot_hour = int(slot_now.hour) * 100 + int(slot_now.minute)
+    entry = await asyncio.to_thread(pick_next_sprint, relation=relation, cooldown_days=SPRINT_COOLDOWN_DAYS)
+    if not entry:
+        await _sprint_topup(relation, SPRINT_POOL_TARGET)
+        entry = await asyncio.to_thread(pick_next_sprint, relation=relation, cooldown_days=SPRINT_COOLDOWN_DAYS)
+    if not entry:
+        await _alert_admin_interactive(context, f"⚠️ Sprint «{relation}»: пул пуст, не отправлено.", throttle_key=f"sprint_empty_{relation}")
+        return
+    targets = await _collect_quiz_delivery_user_targets(context)
+    if not targets:
+        return
+    sent = 0
+    for t in targets:
+        cid = int(t.get("chat_id") or 0)
+        if cid == 0:
+            continue
+        if await send_sprint_to_chat(context, entry=entry, relation=relation, slot_date=slot_date,
+                                     slot_hour=slot_hour, chat_id=cid, target_user_id=cid):
+            sent += 1
+    if sent > 0:
+        await asyncio.to_thread(mark_sprint_sent, str(entry["sprint_id"]))
+    logging.info("sprint_sent relation=%s sent=%s word=%s", relation, sent, entry.get("wort"))
+
+
+async def admin_sprint_command(update: Update, context: CallbackContext) -> None:
+    """Send a sprint now. /admin_sprint [synonym|antonym] (default synonym)."""
+    user = update.effective_user
+    chat = update.effective_chat
+    message = update.effective_message
+    if not user or not chat or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    args = context.args or []
+    relation = (args[0].strip().lower() if args else "synonym")
+    if relation not in ("synonym", "antonym"):
+        await message.reply_text("Использование: /admin_sprint [synonym|antonym]")
+        return
+    status_msg = await message.reply_text(f"Готовлю {relation}-спринт…")
+    await asyncio.to_thread(ensure_sprint_schema)
+    entry = await asyncio.to_thread(pick_next_sprint, relation=relation, cooldown_days=0)
+    if not entry:
+        await status_msg.edit_text(f"Генерирую {relation}-спринт (LLM)…")
+        await _sprint_topup(relation, SPRINT_POOL_TARGET)
+        entry = await asyncio.to_thread(pick_next_sprint, relation=relation, cooldown_days=0)
+    if not entry:
+        await status_msg.edit_text("Не удалось подготовить спринт (см. логи).")
+        return
+    slot_now = _get_quiz_schedule_now()
+    ok = await send_sprint_to_chat(
+        context, entry=entry, relation=relation, slot_date=slot_now.date(),
+        slot_hour=int(slot_now.hour) * 10000 + int(slot_now.second),
+        chat_id=int(chat.id), target_user_id=int(user.id),
+    )
+    if ok:
+        await asyncio.to_thread(mark_sprint_sent, str(entry["sprint_id"]))
+        await status_msg.delete()
+    else:
+        await status_msg.edit_text("Не удалось отправить спринт — проверь логи.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # DAILY SEND-PLAN DASHBOARD (plan vs fact, pinned, live-updating in place)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -20146,6 +20318,10 @@ def _send_plan_groups() -> list[dict]:
          "table": "bt_3_anagram_dispatches", "kind": "slotH"},
         {"emoji": "🎧", "title": "Аудирование", "slots": [(LISTENING_SLOT_TIME[0], LISTENING_SLOT_TIME[1], "")],
          "table": "bt_3_listening_dispatches", "kind": "listening"},
+        {"emoji": "🏃", "title": "Спринт син/ант",
+         "slots": [(h, m, "Синонимы" if SPRINT_SLOT_TIMES[(h, m)] == "synonym" else "Антонимы")
+                   for (h, m) in sorted(SPRINT_SLOT_TIMES.keys())],
+         "table": "bt_3_sprint_dispatches", "kind": "slotHM"},
         {"emoji": "🖼", "title": "Визуал-ребус", "slots": [(h, m, "") for (h, m) in sorted(VISUAL_RIDDLE_SLOT_TIMES)],
          "table": "bt_3_visual_riddle_dispatches", "kind": "createdH"},
         {"emoji": "🎨", "title": "Картинка-квиз", "slots": [(h, m, "") for (h, m) in sorted(QUIZ_IMAGE_SLOT_TIMES)],
@@ -22159,6 +22335,7 @@ def main():
     application.add_handler(CommandHandler("admin_aufgabe_send", admin_aufgabe_send_command))
     application.add_handler(CommandHandler("admin_aufgabe_all", admin_aufgabe_all_command))
     application.add_handler(CommandHandler("admin_clearaufgabe", admin_clear_aufgabe_command))
+    application.add_handler(CommandHandler("admin_sprint", admin_sprint_command))
     application.add_handler(CommandHandler("plan", admin_plan_command))
     application.add_handler(CommandHandler("admin_testalert", admin_testalert_command))
     application.add_handler(CommandHandler("champion", admin_champion_command))
@@ -22196,6 +22373,7 @@ def main():
                 application.job_queue.run_once(prepare_crossword_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 130),
                 application.job_queue.run_once(prepare_listening_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 160),
                 application.job_queue.run_once(prepare_aufgabe_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 190),
+                application.job_queue.run_once(prepare_sprint_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 250),
                 application.job_queue.run_once(prepare_anagram_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 220),
                 application.job_queue.run_once(_seed_billing_prices_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 10),
                 application.job_queue.run_repeating(_send_pending_freeform_cards_job, interval=FREEFORM_CARD_POLL_SECONDS, first=20),
@@ -22507,6 +22685,24 @@ def main():
             QUIZ_SCHEDULE_TZ_NAME,
             _aufgabe_enabled(),
         )
+        # -- Synonym/Antonym Sprint: 1×/day each --
+        for (_sp_hour, _sp_minute), _sp_rel in sorted(SPRINT_SLOT_TIMES.items()):
+            scheduler.add_job(
+                (lambda rel=_sp_rel: submit_async(_send_scheduled_sprint, CallbackContext(application=application), rel)),
+                "cron",
+                hour=_sp_hour,
+                minute=_sp_minute,
+                timezone=QUIZ_SCHEDULE_TZ_NAME,
+            )
+        # -- Sprint pool nightly top-up (03:20) --
+        scheduler.add_job(
+            lambda: submit_async(prepare_sprint_pool_job, CallbackContext(application=application)),
+            "cron",
+            hour=3,
+            minute=20,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        logging.info("sprint_scheduler_slots_registered slots=%s", sorted(SPRINT_SLOT_TIMES.items()))
         # -- Aufgabe (B2+ text tasks) pool nightly top-up (03:00) --
         # Keeps the library of all 6 formats refilled to target whenever it drops
         # below the lower bound (heavy work — LLM/TTS/DALL-E/vision — runs overnight).

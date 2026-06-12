@@ -1000,3 +1000,132 @@ def evaluate_aufgabe(*, dispatch_id: int, user_id: int, raw_input: str) -> dict 
         dispatch, is_correct=is_correct, already_answered=False,
         user_answer=str(raw_input or ""),
     )
+
+
+# ── Synonym/Antonym SPRINT (60s, list as many as you can; rank by count) ──────
+SPRINT_DURATION_S = 60
+
+
+def _sprint_key(relation: str, sprint_id: str) -> str:
+    return f"sp_{relation}:{sprint_id}"
+
+
+def load_sprint_task(*, dispatch_id: int, user_id: int) -> dict | None:
+    from backend.database import get_sprint_dispatch_by_id, get_sprint_item, get_sprint_result
+    dispatch = get_sprint_dispatch_by_id(int(dispatch_id))
+    if not dispatch:
+        return None
+    item = get_sprint_item(str(dispatch.get("sprint_id") or ""))
+    if not item:
+        return None
+    relation = str(item.get("relation") or "synonym")
+    key = _sprint_key(relation, str(item.get("sprint_id")))
+    existing = get_sprint_result(sprint_key=key, user_id=int(user_id))
+    meta = {
+        "kind": "sprint",
+        "relation": relation,
+        "wort": str(item.get("wort") or ""),
+        "hint_ru": str(item.get("hint_ru") or ""),
+        "duration_s": SPRINT_DURATION_S,
+        "already_played": bool(existing),
+    }
+    if existing:
+        meta["result"] = _sprint_result_view(item, existing.get("correct_count") or 0,
+                                              existing.get("time_ms") or 0,
+                                              user_id=int(user_id), found=None)
+    return meta
+
+
+def check_sprint_word(*, dispatch_id: int, word: str) -> dict:
+    """Fast live check: is `word` in the prepared accepted list? (no LLM)."""
+    from backend.database import get_sprint_dispatch_by_id, get_sprint_item
+    dispatch = get_sprint_dispatch_by_id(int(dispatch_id))
+    if not dispatch:
+        return {"status": "miss"}
+    item = get_sprint_item(str(dispatch.get("sprint_id") or ""))
+    if not item:
+        return {"status": "miss"}
+    accepted = [str(a) for a in (item.get("accepted") or [])]
+    hit = any(check_quiz_freeform_deterministic(user_text=word, correct_text=a)
+              for a in accepted if str(a).strip())
+    return {"status": "hit" if hit else "miss"}
+
+
+def _sprint_result_view(item: dict, count: int, time_ms: int, *, user_id: int, found: list | None) -> dict:
+    from backend.database import compute_sprint_ranking
+    relation = str(item.get("relation") or "synonym")
+    key = _sprint_key(relation, str(item.get("sprint_id")))
+    accepted = [str(a) for a in (item.get("accepted") or [])]
+    return {
+        "kind": "sprint",
+        "relation": relation,
+        "wort": str(item.get("wort") or ""),
+        "count": int(count),
+        "found": found or [],
+        "accepted": accepted,
+        "accepted_total": len(accepted),
+        "erklaerung": str(item.get("erklaerung") or ""),
+        "tip": str(item.get("tip") or ""),
+        "ranking": compute_sprint_ranking(sprint_key=key, user_id=int(user_id)),
+    }
+
+
+def evaluate_sprint(*, dispatch_id: int, user_id: int, words: list, time_ms: int,
+                    user_name: str = "") -> dict | None:
+    """Grade a finished sprint: count distinct correct (prepared list + one LLM
+    batch pass over the misses), record the result (first round counts), rank."""
+    from backend.database import (
+        get_sprint_dispatch_by_id, get_sprint_item, get_sprint_result, record_sprint_result,
+    )
+    dispatch = get_sprint_dispatch_by_id(int(dispatch_id))
+    if not dispatch:
+        return None
+    item = get_sprint_item(str(dispatch.get("sprint_id") or ""))
+    if not item:
+        return None
+    relation = str(item.get("relation") or "synonym")
+    key = _sprint_key(relation, str(item.get("sprint_id")))
+
+    existing = get_sprint_result(sprint_key=key, user_id=int(user_id))
+    if existing:  # anti-replay: keep the first finished round
+        return _sprint_result_view(item, existing.get("correct_count") or 0,
+                                   existing.get("time_ms") or 0, user_id=int(user_id), found=None)
+
+    accepted = [str(a) for a in (item.get("accepted") or [])]
+    # distinct, normalized candidate words
+    seen, candidates = set(), []
+    for w in (words or []):
+        w = str(w or "").strip()
+        norm = _normalize_quiz_text(w)
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        candidates.append(w)
+
+    found, misses = [], []
+    for w in candidates:
+        if any(check_quiz_freeform_deterministic(user_text=w, correct_text=a) for a in accepted if str(a).strip()):
+            found.append(w)
+        else:
+            misses.append(w)
+
+    # One bounded LLM batch over the misses → fair to valid words not in the list.
+    if misses:
+        try:
+            import asyncio
+            from backend.openai_manager import run_check_synonym_batch
+            valid = asyncio.run(asyncio.wait_for(
+                run_check_synonym_batch(target_word=str(item.get("wort") or ""),
+                                        candidates=misses, relation=relation),
+                timeout=11.0,
+            ))
+            for w in misses:
+                if w in valid:
+                    found.append(w)
+        except Exception:
+            pass
+
+    count = len(found)
+    record_sprint_result(sprint_key=key, user_id=int(user_id), user_name=str(user_name or ""),
+                         correct_count=count, time_ms=int(time_ms or 0))
+    return _sprint_result_view(item, count, int(time_ms or 0), user_id=int(user_id), found=found)
