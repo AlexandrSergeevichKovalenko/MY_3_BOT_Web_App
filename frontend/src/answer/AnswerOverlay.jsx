@@ -28,10 +28,12 @@ function getInitData() {
 }
 
 // start_param: ans_rb_123 / ans_cw_45 / ans_ag_7 / ans_ls_3 / ans_qf_9 / ans_au_2
+//   ans_qfp_<poll_id> — poll-scoped freeform (button attached under the poll)
 function parseStartParam(startParam) {
-  const m = /^ans_(rb|cw|ag|ls|qf|au)_(\d+)$/.exec(String(startParam || '').trim().toLowerCase());
+  const m = /^ans_(rb|cw|ag|ls|qf|qfp|au)_(\d+)$/.exec(String(startParam || '').trim().toLowerCase());
   if (!m) return null;
-  return { kind: m[1], id: Number(m[2]) };
+  // qfp's id is a big Telegram poll_id → keep it a string (Number() loses precision).
+  return { kind: m[1], id: m[1] === 'qfp' ? m[2] : Number(m[2]) };
 }
 
 const KIND_META = {
@@ -40,6 +42,7 @@ const KIND_META = {
   ag: { eyebrow: '🔤 Anagramm', title: 'Anagramm' },
   ls: { eyebrow: '🎧 Hörverständnis', title: 'Hörverständnis · B2' },
   qf: { eyebrow: '✍️ Antwort', title: 'Eigene Antwort' },
+  qfp: { eyebrow: '✍️ Antwort', title: 'Eigene Antwort' },
   au: { eyebrow: '✏️ Aufgabe', title: 'Aufgabe · B2+' },
 };
 
@@ -410,7 +413,7 @@ export default function AnswerOverlay({ startParam }) {
   const isRebus = kind === 'rb';
   const isAnagram = kind === 'ag';
   const isListening = kind === 'ls';
-  const isFreeform = kind === 'qf';
+  const isFreeform = kind === 'qf' || kind === 'qfp';
   const isCrossword = kind === 'cw';
   const isAufgabe = kind === 'au';
   let { eyebrow, title: heading } = KIND_META[kind] || KIND_META.rb;

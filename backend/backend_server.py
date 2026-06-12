@@ -22243,6 +22243,29 @@ def _answer_auth_user_id() -> tuple[int | None, str, tuple]:
     return int(user_id), user_name, ()
 
 
+def _resolve_qfp(user_id: int, raw_poll_id) -> tuple:
+    """Resolve a poll-scoped freeform deeplink (ans_qfp_<poll_id>) to a normal
+    'qf' dispatch for this user. Returns (dispatch_id, 'qf', None) or
+    (None, None, error_response). poll_id is a string (big Telegram id)."""
+    poll_id = str(raw_poll_id or "").strip()
+    if not poll_id:
+        return None, None, (jsonify({"error": "id обязателен"}), 400)
+    from backend.database import get_active_quiz, get_or_create_quiz_freeform_dispatch
+    aq = get_active_quiz(poll_id)
+    if not aq:
+        return None, None, (jsonify({"error": "Опрос не найден или устарел"}), 404)
+    did = get_or_create_quiz_freeform_dispatch(
+        user_id=int(user_id), poll_id=poll_id,
+        chat_id=int(aq.get("chat_id") or 0),
+        correct_text=str(aq.get("correct_text") or ""),
+        word_ru=str(aq.get("word_ru") or ""),
+        quiz_type=str(aq.get("quiz_type") or ""),
+    )
+    if not did:
+        return None, None, (jsonify({"error": "Не удалось открыть задание"}), 404)
+    return int(did), "qf", None
+
+
 @app.route("/api/answer/task", methods=["GET", "POST"])
 def get_answer_task():
     """Return render metadata for an in-group task (rebus/crossword).
@@ -22257,10 +22280,15 @@ def get_answer_task():
     payload = request.get_json(silent=True) or {}
     kind = str(request.args.get("kind") or payload.get("kind") or "").strip().lower()
     raw_id = request.args.get("id") or payload.get("id")
-    try:
-        dispatch_id = int(raw_id)
-    except (TypeError, ValueError):
-        return jsonify({"error": "id обязателен"}), 400
+    if kind == "qfp":
+        dispatch_id, kind, qerr = _resolve_qfp(user_id, raw_id)
+        if qerr:
+            return qerr
+    else:
+        try:
+            dispatch_id = int(raw_id)
+        except (TypeError, ValueError):
+            return jsonify({"error": "id обязателен"}), 400
 
     from backend.answer_eval import (
         load_rebus_task, load_crossword_task, load_anagram_task, load_listening_task,
@@ -22295,10 +22323,15 @@ def submit_answer():
 
     payload = request.get_json(silent=True) or {}
     kind = str(payload.get("kind") or "").strip().lower()
-    try:
-        dispatch_id = int(payload.get("id"))
-    except (TypeError, ValueError):
-        return jsonify({"error": "id обязателен"}), 400
+    if kind == "qfp":
+        dispatch_id, kind, qerr = _resolve_qfp(user_id, payload.get("id"))
+        if qerr:
+            return qerr
+    else:
+        try:
+            dispatch_id = int(payload.get("id"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "id обязателен"}), 400
     answer = str(payload.get("answer") or "")
 
     from backend.answer_eval import (

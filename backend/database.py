@@ -33545,6 +33545,38 @@ def create_quiz_freeform_dispatch(*, user_id: int, poll_id: str, chat_id: int,
     return int(row[0]) if row else 0
 
 
+def get_or_create_quiz_freeform_dispatch(*, user_id: int, poll_id: str, chat_id: int,
+                                         correct_text: str, word_ru: str = "",
+                                         explanation: str = "", quiz_type: str = "") -> int:
+    """Idempotent per (user, poll): the poll-attached "✍️ свой вариант" button is
+    shared by the whole group, so each tapper resolves to their own single
+    dispatch. Returns existing id if present, else inserts."""
+    poll_id = str(poll_id or "")
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id FROM bt_3_quiz_freeform_dispatches "
+                "WHERE user_id = %s AND poll_id = %s ORDER BY id LIMIT 1",
+                (int(user_id), poll_id),
+            )
+            row = cursor.fetchone()
+            if row:
+                return int(row[0])
+            cursor.execute(
+                """
+                INSERT INTO bt_3_quiz_freeform_dispatches
+                    (user_id, poll_id, chat_id, correct_text, word_ru, explanation, quiz_type)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (int(user_id), poll_id, int(chat_id or 0), str(correct_text or ""),
+                 str(word_ru or ""), str(explanation or ""), str(quiz_type or "")),
+            )
+            new_row = cursor.fetchone()
+        conn.commit()
+    return int(new_row[0]) if new_row else 0
+
+
 def get_quiz_freeform_dispatch_by_id(dispatch_id: int) -> dict | None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:

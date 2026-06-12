@@ -21109,6 +21109,22 @@ async def _send_poll_quiz_for_target(
         "quiz_type": quiz.get("quiz_type", resolved_quiz_type),
         "word_ru": quiz.get("word_ru"),
     }
+    # Attach the "✍️ свой вариант" entry directly UNDER the poll (URL button →
+    # Mini-App, poll-scoped). This keeps the answer box on the poll itself, so we
+    # no longer post a separate message that lands at the bottom of the chat.
+    try:
+        await context.bot.edit_message_reply_markup(
+            chat_id=int(target_chat_id),
+            message_id=int(poll_message.message_id),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                "✍️ Нет верного? Впиши свой вариант",
+                url=get_webapp_deeplink(f"ans_qfp_{poll_message.poll.id}"),
+            )]]),
+        )
+        active_quizzes[poll_message.poll.id]["freeform_button"] = True
+    except Exception:
+        logging.warning("quiz poll: attach freeform button failed chat=%s", target_chat_id, exc_info=True)
+        active_quizzes[poll_message.poll.id]["freeform_button"] = False
     try:
         await asyncio.to_thread(
             upsert_active_quiz,
@@ -21549,9 +21565,14 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
             },
             ttl_seconds=QUIZ_FREEFORM_INPUT_TTL_SECONDS,
         )
-        # Offer the in-place Mini-App overlay (type the answer + see the verdict
-        # without leaving the chat). The pending-state DM text flow set above
-        # stays wired as a fallback.
+        # If the poll already carries the "✍️ свой вариант" button (attached under
+        # it at send time), don't post a separate message that would land at the
+        # bottom of the chat — the entry point is right under the poll. The
+        # pending-state above keeps DM-typing working as a silent fallback.
+        if quiz_data.get("freeform_button"):
+            return
+        # Legacy fallback (poll has no attached button, e.g. attach failed or the
+        # poll predates a restart): offer the Mini-App overlay via a reply message.
         qf_dispatch_id = 0
         try:
             qf_dispatch_id = await asyncio.to_thread(
