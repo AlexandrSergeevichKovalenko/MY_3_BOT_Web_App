@@ -19417,15 +19417,18 @@ async def _send_daily_challenge_digest_job(context: CallbackContext) -> None:
         else:
             lines.append(f"✅ Ты ответил: <b>{answered}</b> заданий")
         lines.append(f"🎯 Верно: <b>{correct}</b> из отвеченных ({acc}%)")
-        lines += ["", "<b>По категориям</b> (ответил / отправлено · ✅ верно):"]
+        lines += ["", "<b>По категориям</b> — верно/ответил/отправлено · ✅ %верных / %отвеченных:"]
         for cat in order:
             s = int(sent_by_cat.get(cat, 0))
             v = cats.get(cat)
             a, c = (v[0], v[1]) if v else (0, 0)
             if s == 0 and a == 0:
                 continue  # nothing sent and nothing answered → hide
-            sent_part = f"/{s}" if s else ""
-            lines.append(f"{labels[cat]} — {a}{sent_part} · ✅ {c}")
+            c_pct = f"{round(c / a * 100)}%" if a else "—"
+            if s:
+                lines.append(f"{labels[cat]} — {c}/{a}/{s} · ✅ {c_pct} / {round(a / s * 100)}%")
+            else:
+                lines.append(f"{labels[cat]} — {c}/{a} · ✅ {c_pct}")
         lines += ["", "👥 Играть командой с друзьями — /group"]
         try:
             await context.bot.send_message(chat_id=int(uid), text="\n".join(lines), parse_mode="HTML")
