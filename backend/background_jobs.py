@@ -2143,7 +2143,7 @@ _VR_R2_PREFIX = str(
 
 VISUAL_RIDDLE_POOL_TARGET = max(
     1,
-    int((os.getenv("VISUAL_RIDDLE_POOL_TARGET") or "12").strip() or "12"),
+    int((os.getenv("VISUAL_RIDDLE_POOL_TARGET") or "40").strip() or "40"),
 )
 
 _VR_RENDERING_STALE_MINUTES = max(

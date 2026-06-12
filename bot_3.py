@@ -310,7 +310,7 @@ QUIZ_SCHEDULE_MINUTES = [0]
 QUIZ_SCHEDULE_TZ_NAME = (os.getenv("QUIZ_SCHEDULE_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
 QUIZ_IMAGE_SLOT_TIMES = {(9, 0), (12, 0), (18, 0)}
 VISUAL_RIDDLE_SLOT_TIMES = {(7, 30), (12, 30), (15, 30)}
-VISUAL_RIDDLE_POOL_TARGET = max(1, int((os.getenv("VISUAL_RIDDLE_POOL_TARGET") or "12").strip() or "12"))
+VISUAL_RIDDLE_POOL_TARGET = max(1, int((os.getenv("VISUAL_RIDDLE_POOL_TARGET") or "40").strip() or "40"))
 VISUAL_RIDDLE_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("VISUAL_RIDDLE_POOL_TOPUP_TRIGGER") or "5").strip() or "5"))
 REBUS_SLOT_TIMES = {(h, 30) for h in range(8, 21)}  # 8:30–20:30 every hour
 REBUS_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("REBUS_POOL_TOPUP_TRIGGER") or "10").strip() or "10"))
@@ -21043,7 +21043,7 @@ async def _maybe_topup_visual_riddle_pool() -> None:
         ready = await asyncio.to_thread(count_ready_visual_riddle_templates)
         if int(ready or 0) < VISUAL_RIDDLE_POOL_TOPUP_TRIGGER:
             from backend.background_jobs import prepare_visual_riddle_pool
-            result = await asyncio.to_thread(prepare_visual_riddle_pool, topup_limit=3)
+            result = await asyncio.to_thread(prepare_visual_riddle_pool, topup_limit=8)
             logging.info(
                 "vr_pool_selfheal: triggered ready=%s trigger=%s result=%s",
                 ready, VISUAL_RIDDLE_POOL_TOPUP_TRIGGER, result,
@@ -21059,7 +21059,7 @@ async def prepare_visual_riddle_pool_job(context: CallbackContext) -> None:
         return
     try:
         from backend.background_jobs import prepare_visual_riddle_pool
-        result = await asyncio.to_thread(prepare_visual_riddle_pool, topup_limit=3)
+        result = await asyncio.to_thread(prepare_visual_riddle_pool, topup_limit=8)
         logging.info("vr_pool_topup: %s", result)
     except Exception:
         logging.warning("vr_pool_topup: failed", exc_info=True)
@@ -21113,7 +21113,7 @@ async def _startup_visual_riddle_pool_check(context: CallbackContext) -> None:
             result = await asyncio.to_thread(prepare_visual_riddle_pool, topup_limit=bootstrap_limit)
             logging.info("visual_riddle_bootstrap_end result=%s", result)
         else:
-            result = await asyncio.to_thread(prepare_visual_riddle_pool, topup_limit=3)
+            result = await asyncio.to_thread(prepare_visual_riddle_pool, topup_limit=8)
             logging.info("visual_riddle_startup_topup_end result=%s", result)
     except Exception:
         logging.warning("visual_riddle_startup_topup_end failed", exc_info=True)
