@@ -9154,6 +9154,13 @@ def get_admin_telegram_ids() -> set[int]:
 TELEGRAM_ALLOWED_USER_CACHE_TTL_SEC = max(
     0, int(os.getenv("TELEGRAM_ALLOWED_USER_CACHE_TTL_SEC", "86400"))
 )
+# DENIED results are cached only briefly: if a user is granted access out of
+# this process (added straight in the DB, or by another worker), a stale "denied"
+# must NOT lock them out for the full positive TTL (was up to 24h). 60s self-heal.
+TELEGRAM_ALLOWED_USER_NEG_CACHE_TTL_SEC = max(
+    0, min(TELEGRAM_ALLOWED_USER_CACHE_TTL_SEC,
+           int(os.getenv("TELEGRAM_ALLOWED_USER_NEG_CACHE_TTL_SEC", "60")))
+)
 _ALLOWED_USER_CACHE_LOCK = threading.Lock()
 _ALLOWED_USER_CACHE: dict[int, tuple[float, bool]] = {}
 
@@ -9177,11 +9184,13 @@ def _allowed_user_cache_get(user_id: int) -> bool | None:
 def _allowed_user_cache_put(user_id: int, allowed: bool) -> None:
     if TELEGRAM_ALLOWED_USER_CACHE_TTL_SEC <= 0:
         return
+    # Allowed → cache for the full (long) TTL; denied → only the short TTL so a
+    # freshly granted user is never locked out beyond a minute.
+    ttl = TELEGRAM_ALLOWED_USER_CACHE_TTL_SEC if allowed else TELEGRAM_ALLOWED_USER_NEG_CACHE_TTL_SEC
+    if ttl <= 0:
+        return
     with _ALLOWED_USER_CACHE_LOCK:
-        _ALLOWED_USER_CACHE[int(user_id)] = (
-            time.monotonic() + TELEGRAM_ALLOWED_USER_CACHE_TTL_SEC,
-            bool(allowed),
-        )
+        _ALLOWED_USER_CACHE[int(user_id)] = (time.monotonic() + ttl, bool(allowed))
 
 
 def invalidate_telegram_user_allowed_cache(user_id: int | None = None) -> None:
