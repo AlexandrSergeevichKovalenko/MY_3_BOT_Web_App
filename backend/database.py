@@ -31752,6 +31752,63 @@ def mark_visual_riddle_dispatch_failed(
             return _map_vr_dispatch_row(cursor.fetchone())
 
 
+def record_visual_riddle_vote(*, template_id: int, user_id: int, vote: int) -> dict:
+    """Community like/dislike on a visual-riddle image. One vote per user (toggleable).
+    Returns {likes, dislikes}."""
+    v = 1 if int(vote) > 0 else -1
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_visual_riddle_votes (
+                    template_id BIGINT NOT NULL,
+                    user_id     BIGINT NOT NULL,
+                    vote        SMALLINT NOT NULL,
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (template_id, user_id)
+                );
+                """
+            )
+            cursor.execute(
+                """
+                INSERT INTO bt_3_visual_riddle_votes (template_id, user_id, vote)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (template_id, user_id)
+                DO UPDATE SET vote = EXCLUDED.vote, updated_at = NOW()
+                """,
+                (int(template_id), int(user_id), v),
+            )
+            cursor.execute(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE vote > 0) AS likes,
+                    COUNT(*) FILTER (WHERE vote < 0) AS dislikes
+                FROM bt_3_visual_riddle_votes WHERE template_id = %s
+                """,
+                (int(template_id),),
+            )
+            row = cursor.fetchone() or (0, 0)
+        conn.commit()
+    return {"likes": int(row[0] or 0), "dislikes": int(row[1] or 0)}
+
+
+def retire_visual_riddle_template(template_id: int, *, reason: str = "community_downvoted") -> None:
+    """Remove a visual-riddle image from rotation (claim filters require visual_status
+    in unknown/valid, so 'invalid' excludes it from both selection paths)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_visual_riddle_templates
+                SET visual_status = 'invalid', failure_reason = %s, updated_at = NOW()
+                WHERE id = %s
+                """,
+                (str(reason)[:120], int(template_id)),
+            )
+        conn.commit()
+
+
 def record_visual_riddle_answer(
     *,
     dispatch_id: int,

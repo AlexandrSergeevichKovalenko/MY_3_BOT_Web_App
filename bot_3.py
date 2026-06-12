@@ -17138,7 +17138,8 @@ def _shuffle_visual_riddle_answers(
     return shuffled, new_correct_id
 
 
-def _build_visual_riddle_keyboard(dispatch_id: int, shuffled_answers: list[dict]) -> InlineKeyboardMarkup:
+def _build_visual_riddle_keyboard(dispatch_id: int, shuffled_answers: list[dict],
+                                  template_id: int | None = None) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     current_row: list[InlineKeyboardButton] = []
     for idx, _answer in enumerate(shuffled_answers[:4]):
@@ -17153,6 +17154,13 @@ def _build_visual_riddle_keyboard(dispatch_id: int, shuffled_answers: list[dict]
             current_row = []
     if current_row:
         rows.append(current_row)
+    # Community curation of the image: like / dislike (everyone) + admin delete.
+    if template_id is not None:
+        rows.append([
+            InlineKeyboardButton("👍", callback_data=f"vrvote:{int(template_id)}:1"),
+            InlineKeyboardButton("👎", callback_data=f"vrvote:{int(template_id)}:0"),
+            InlineKeyboardButton("🗑", callback_data=f"vrdel:{int(template_id)}"),
+        ])
     return InlineKeyboardMarkup(rows)
 
 
@@ -17273,7 +17281,7 @@ async def send_visual_riddle_template_to_chat(
             chat_id=int(chat_id),
             photo=image_url,
             caption=_build_visual_riddle_caption(template, shuffled_answers),
-            reply_markup=_build_visual_riddle_keyboard(dispatch_id, shuffled_answers),
+            reply_markup=_build_visual_riddle_keyboard(dispatch_id, shuffled_answers, template_id),
         )
     except Exception as exc:
         try:
@@ -17309,6 +17317,68 @@ async def send_visual_riddle_template_to_chat(
         template_id, dispatch_id, chat_id, target_user_id, delivery_slot,
     )
     return True
+
+
+async def handle_vr_vote_callback(update: Update, context: CallbackContext) -> None:
+    """👍/👎 on a visual-riddle image. Anyone can vote (one per user). Retires the
+    image when dislikes > likes AND dislikes >= 2."""
+    query = update.callback_query
+    if not query:
+        return
+    try:
+        _, tid_s, v_s = str(query.data or "").split(":")
+        template_id = int(tid_s)
+        vote = 1 if v_s == "1" else -1
+    except Exception:
+        await query.answer()
+        return
+    uid = int(getattr(query.from_user, "id", 0) or 0)
+    try:
+        from backend.database import record_visual_riddle_vote, retire_visual_riddle_template
+        tally = await asyncio.to_thread(record_visual_riddle_vote, template_id=template_id, user_id=uid, vote=vote)
+    except Exception:
+        await query.answer("Не удалось засчитать голос")
+        return
+    likes, dislikes = int(tally.get("likes") or 0), int(tally.get("dislikes") or 0)
+    if dislikes > likes and dislikes >= 2:
+        try:
+            await asyncio.to_thread(retire_visual_riddle_template, template_id)
+        except Exception:
+            logging.warning("vr retire failed template_id=%s", template_id, exc_info=True)
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await query.answer("🗑 Картинка убрана из ротации (больше дизлайков)", show_alert=True)
+        return
+    await query.answer(f"Голос учтён · 👍 {likes} · 👎 {dislikes}")
+
+
+async def handle_vr_delete_callback(update: Update, context: CallbackContext) -> None:
+    """🗑 admin-only instant removal of a visual-riddle image from rotation."""
+    query = update.callback_query
+    if not query:
+        return
+    uid = int(getattr(query.from_user, "id", 0) or 0)
+    if not _can_use_image_quiz_test_commands(uid):
+        await query.answer("Только для админов", show_alert=True)
+        return
+    try:
+        template_id = int(str(query.data or "").split(":")[1])
+    except Exception:
+        await query.answer()
+        return
+    try:
+        from backend.database import retire_visual_riddle_template
+        await asyncio.to_thread(retire_visual_riddle_template, template_id, reason="admin_deleted")
+    except Exception:
+        await query.answer("Не удалось удалить")
+        return
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await query.answer("🗑 Картинка удалена из ротации", show_alert=True)
 
 
 async def handle_visual_riddle_callback(update: Update, context: CallbackContext) -> None:
@@ -21713,6 +21783,8 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_language_tutor_detail_callback, pattern=r"^langgpt:detail$"))
     application.add_handler(CallbackQueryHandler(handle_image_quiz_callback, pattern=r"^iq:\d+:\d+$"))
     application.add_handler(CallbackQueryHandler(handle_visual_riddle_callback, pattern=r"^vr:\d+:\d+$"))
+    application.add_handler(CallbackQueryHandler(handle_vr_vote_callback, pattern=r"^vrvote:\d+:[01]$"))
+    application.add_handler(CallbackQueryHandler(handle_vr_delete_callback, pattern=r"^vrdel:\d+$"))
     application.add_handler(CallbackQueryHandler(handle_rebus_answer_callback, pattern=r"^rb:start:\d+$"))
     application.add_handler(CallbackQueryHandler(handle_article_quiz_callback, pattern=r"^aq:\d+:(der|die|das)$"))
     application.add_handler(CallbackQueryHandler(handle_crossword_callback, pattern=r"^cw:start:\d+$"))
