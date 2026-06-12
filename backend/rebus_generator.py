@@ -55,13 +55,19 @@ def _object_key_composed(compound_id: str) -> str:
 
 # ─── Step 1: generate one component image ────────────────────────────────────
 
-def generate_component_image(word: str, dalle_prompt: str) -> str:
+def generate_component_image(word: str, dalle_prompt: str, *,
+                             meaning_ru: str = "", forbid: str = "") -> str:
     """
     Generate a DALL-E image for a single component word, cache in R2 + DB.
     Returns the R2 object_key. Raises on failure.
+
+    A vision gate verifies the image actually depicts `word` (its plain literal
+    meaning) and does not reveal `forbid` (the compound answer) before caching —
+    so wrong-object images (e.g. a pine cone for "Konus") never reach players.
     """
     from backend.database import get_rebus_component_image, upsert_rebus_component_image
     from backend.image_generation_provider import generate_image_bytes
+    from backend.openai_manager import run_image_depicts
     from backend.r2_storage import r2_put_bytes
 
     # Already done?
@@ -82,6 +88,15 @@ def generate_component_image(word: str, dalle_prompt: str) -> str:
         mime = str(result.get("mime_type") or "image/png").strip() or "image/png"
         if not img_bytes:
             raise RuntimeError("empty image payload")
+
+        # Vision gate (pool time, off the hot path): the image must clearly show
+        # the part word and must not reveal the compound answer.
+        label = f"{word} ({meaning_ru})" if meaning_ru else word
+        verdict = run_image_depicts(img_bytes, label, forbid=forbid, mime=mime)
+        if not verdict.get("ok"):
+            reason = str(verdict.get("reason") or "vision_rejected")
+            upsert_rebus_component_image(word, generation_status="failed", failure_reason=f"vision: {reason}"[:500])
+            raise RuntimeError(f"vision rejected component '{word}': {reason}")
 
         ext = "png" if "png" in mime else "webp" if "webp" in mime else "png"
         object_key = _object_key_component(word).replace(".png", f".{ext}")
@@ -325,6 +340,7 @@ def prepare_rebus_entry(compound_id: str) -> dict:
     try:
         # Generate component images (cached if already done)
         component_keys: list[str] = []
+        compound_word = str(entry.get("compound") or "").strip()
         for part in parts[:2]:
             word = str(part.get("word") or "").strip()
             if not word:
@@ -336,7 +352,11 @@ def prepare_rebus_entry(compound_id: str) -> dict:
                 prompt = str((cached or {}).get("dalle_prompt") or "").strip()
             if not prompt:
                 raise ValueError(f"no DALL-E prompt for component word '{word}'")
-            key = generate_component_image(word, prompt)
+            key = generate_component_image(
+                word, prompt,
+                meaning_ru=str(part.get("meaning_ru") or ""),
+                forbid=compound_word,
+            )
             component_keys.append(key)
 
         # Compose the card
@@ -461,6 +481,11 @@ STRICT requirements for EVERY entry:
    ✗ WRONG: compound=Schneeball, part=Schnee → "Children throwing snowballs" (reveals the activity)
    ✓ RIGHT: compound=Schneeball, part=Schnee → "A small pile of white snow"
    Rule of thumb: ask yourself — if someone sees ONLY this image with no context, could they guess the compound? If yes, simplify until they cannot.
+8b. CRITICAL — the image must depict the part word's EXACT, PLAIN, DICTIONARY meaning — never a visually-similar but DIFFERENT object, and never the compound's referent itself.
+   ✗ WRONG: part=Konus (geometric cone) → "a pine cone" (a pine cone is a Zapfen/Tannenzapfen, NOT a Konus — and it leaks a fir-cone compound).
+   ✓ RIGHT: part=Konus → "a single plain geometric cone shape (like an orange traffic cone), solid color, white background".
+   ✗ WRONG: part=Birne (pear, the fruit) when compound is Glühbirne → "a light bulb" (that IS Glühbirne). ✓ RIGHT: part=Birne → "a single green pear fruit".
+   A vision model WILL reject the item if the image is the wrong object or reveals the answer — so make the prompt depict the literal word and nothing more. If a part word's literal image would itself be the compound's object, the entry is BAD — do not generate it.
 9. CRITICAL — The dalle_prompt for part 1 must NOT visually contain the object depicted in part 2, and vice versa.
    If the parts are visually related (e.g., Brat=frying + Pfanne=pan), you MUST separate them:
    ✗ WRONG: Brat → "Meat sizzling in a frying pan" (shows the pan which IS part 2!)

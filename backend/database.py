@@ -32508,6 +32508,41 @@ def mark_rebus_composed(compound_id: str, *, image_object_key: str) -> None:
         conn.commit()
 
 
+def list_ready_rebus_component_images(limit: int = 200) -> list[dict]:
+    """Ready component images — for re-verifying them against the vision gate."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT word, image_object_key FROM bt_3_rebus_component_images "
+                "WHERE generation_status = 'ready' AND image_object_key IS NOT NULL "
+                "ORDER BY word LIMIT %s",
+                (int(limit),),
+            )
+            return [{"word": r[0], "image_object_key": r[1]} for r in (cursor.fetchall() or [])]
+
+
+def reset_rebus_compounds_for_part(word: str) -> int:
+    """Mark every ready compound that uses `word` as a part back to 'pending' so it
+    recomposes (and regenerates the now-failed component image with the gate)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_rebus_bank
+                SET composed_status = 'pending', updated_at = NOW()
+                WHERE composed_status = 'ready'
+                  AND EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(parts_json) p
+                    WHERE p->>'word' = %s
+                  )
+                """,
+                (str(word),),
+            )
+            n = cursor.rowcount
+        conn.commit()
+    return int(n or 0)
+
+
 def mark_rebus_compose_failed(compound_id: str) -> None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:

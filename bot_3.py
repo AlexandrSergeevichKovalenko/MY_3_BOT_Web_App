@@ -18038,6 +18038,73 @@ async def admin_rebus_pool_command(update: Update, context: CallbackContext) -> 
         await status_msg.edit_text(f"Error: {exc}")
 
 
+async def admin_rebus_recheck_command(update: Update, context: CallbackContext) -> None:
+    """Re-verify existing rebus component images against the vision gate; bad ones
+    (wrong object / answer-reveal) are failed + their compounds reset to recompose
+    with freshly gated images. /admin_rebus_recheck [limit]"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    args = context.args or []
+    try:
+        limit = max(1, min(300, int(args[0]))) if args else 120
+    except (ValueError, IndexError):
+        limit = 120
+    status_msg = await message.reply_text(f"Перепроверяю до {limit} картинок vision-гейтом…")
+
+    def _recheck(lim: int) -> dict:
+        from backend.database import (
+            list_ready_rebus_component_images, upsert_rebus_component_image,
+            reset_rebus_compounds_for_part,
+        )
+        from backend.openai_manager import run_image_depicts
+        from backend.r2_storage import r2_get_bytes
+        rows = list_ready_rebus_component_images(lim)
+        checked = 0
+        bad: list[str] = []
+        reset = 0
+        for row in rows:
+            word = str(row.get("word") or "")
+            key = str(row.get("image_object_key") or "")
+            if not word or not key:
+                continue
+            try:
+                img = r2_get_bytes(key)
+            except Exception:
+                continue
+            if not img:
+                continue
+            checked += 1
+            mime = "image/webp" if key.endswith(".webp") else "image/png"
+            verdict = run_image_depicts(bytes(img), word, mime=mime)
+            if not verdict.get("ok"):
+                bad.append(f"{word} ({verdict.get('reason') or '?'})")
+                upsert_rebus_component_image(word, generation_status="failed",
+                                             failure_reason=f"recheck vision: {verdict.get('reason') or ''}"[:500])
+                reset += reset_rebus_compounds_for_part(word)
+        return {"checked": checked, "bad": bad, "compounds_reset": reset}
+
+    try:
+        result = await asyncio.to_thread(_recheck, limit)
+    except Exception as exc:
+        await status_msg.edit_text(f"Error: {exc}")
+        return
+    bad = result.get("bad") or []
+    text = (
+        f"✅ Перепроверено: {result.get('checked')}\n"
+        f"🔴 Забраковано: {len(bad)}\n"
+        f"♻️ Слов на перекомпоновку: {result.get('compounds_reset')}\n"
+    )
+    if bad:
+        text += "\nПлохие:\n" + "\n".join(f"• {b}" for b in bad[:25])
+    text += "\n\nЗапусти /admin_rebus_pool — перегенерит забракованные уже с vision-гейтом."
+    await status_msg.edit_text(text[:4000])
+
+
 # ─────────────────────────────────────────────────────────────
 #  ARTICLE QUIZ (der/die/das) — send, callback, scheduler
 # ─────────────────────────────────────────────────────────────
@@ -22327,6 +22394,7 @@ def main():
     application.add_handler(CommandHandler("translate", check_user_translation))  # ✅ Проверка переводов
     application.add_handler(CommandHandler("admin_rebus_send", admin_rebus_send_command))
     application.add_handler(CommandHandler("admin_rebus_pool", admin_rebus_pool_command))
+    application.add_handler(CommandHandler("admin_rebus_recheck", admin_rebus_recheck_command))
     application.add_handler(CommandHandler("admin_aq_send", admin_article_quiz_send_command))
     application.add_handler(CommandHandler("admin_aq_pool", admin_article_quiz_pool_command))
     application.add_handler(CommandHandler("addartikel", admin_add_artikel_command))

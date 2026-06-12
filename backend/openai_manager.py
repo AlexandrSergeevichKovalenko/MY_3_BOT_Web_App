@@ -5758,6 +5758,53 @@ def run_vision_locate(image_bytes: bytes, target_label: str, *, mime: str = "ima
     return {"present": True, "bbox": [round(x, 4), round(y, 4), round(w, 4), round(h, 4)]}
 
 
+def run_image_depicts(image_bytes: bytes, expected: str, *, forbid: str = "", mime: str = "image/png") -> dict:
+    """Vision gate for a generated rebus component image (pool time, off the hot
+    path). Verifies the single main object IS `expected` in its plain literal
+    meaning, and does NOT reveal `forbid` (the puzzle's hidden compound answer).
+    Returns {"ok": bool, "reason": str}. ok=False → reject the item (no silent
+    fallback). On a vision INFRA error we return ok=True (degrade, don't starve
+    the pool) — only a real negative verdict rejects."""
+    import base64
+    from backend.synthetic_load import build_sync_openai_client
+    api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
+    if not api_key or not image_bytes:
+        return {"ok": True, "reason": "no_vision"}
+    b64 = base64.b64encode(bytes(image_bytes)).decode("ascii")
+    data_url = f"data:{mime};base64,{b64}"
+    forbid_line = (
+        f' The image MUST NOT depict, contain, or hint at a "{forbid}" — that is the puzzle\'s hidden answer.'
+        if forbid else ""
+    )
+    prompt = (
+        f'Single illustration for a vocabulary rebus. Intended object: "{expected}". '
+        f'Judge STRICTLY: is the main, prominent object unambiguously a "{expected}" in its plain, '
+        f'literal, dictionary meaning?{forbid_line} '
+        'Reject (ok=false) if the main object is a DIFFERENT thing, a related-but-wrong object '
+        '(e.g. a pine cone when a geometric cone was intended), or if it reveals the forbidden answer. '
+        'Answer ONLY strict JSON: {"ok": true|false, "reason": "<=8 words"}.'
+    )
+    try:
+        client = build_sync_openai_client(api_key=api_key, timeout=40)
+        resp = client.chat.completions.create(
+            model=_DEFAULT_GATEWAY_MODEL,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        data = json.loads(str(resp.choices[0].message.content or "").strip())
+    except Exception:
+        logging.warning("run_image_depicts failed expected=%s", expected, exc_info=True)
+        return {"ok": True, "reason": "vision_error"}
+    return {"ok": bool(data.get("ok")), "reason": str(data.get("reason") or "")[:80]}
+
+
 async def run_image_quiz_sentence_fallback(payload: dict) -> dict:
     return await _run_json_assistant_task(
         task_name="image_quiz_sentence_fallback",
