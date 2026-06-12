@@ -282,6 +282,7 @@ from backend.database import (
     get_pending_challenge_notifications,
     mark_challenge_notification_sent,
     get_challenge_results_since,
+    list_confirmed_group_participants,
     create_aufgabe,
     count_available_aufgaben,
     pick_next_aufgabe,
@@ -2700,6 +2701,8 @@ def _build_private_start_onboarding_text() -> str:
         "→ <b>Быстрый перевод</b> — 2 коротких варианта; <b>детальный</b> — глубокий разбор слова и его частей.\n\n"
         "🔹 <b>Скриншоты, рилсы и любой контент — через Shortcut (iPhone)</b>\n"
         "Смотрите видео в YouTube/Instagram/TikTok → нажимаете кнопку действия или двойной тап по задней крышке → скрин превращается в немецкий текст → прилетает вам в личку для перевода и сохранения.\n\n"
+        "🔹 <b>Игры и квизы — лично или командой</b>\n"
+        "Каждый день бот присылает интерактивные задания (B2+): впиши слово, собери предложение, найди синоним и др. Есть рейтинг и Кубок чемпиона недели. Хотите играть <b>командой с друзьями</b> в общем чате — команда <b>/group</b> подскажет, как настроить.\n\n"
         "➖➖➖\n"
         "📲 Начните с кнопки <b>«Установить Shortcut»</b> внизу.\n"
         "🎬 А как всё это выглядит на практике — кнопка <b>«Как пользоваться»</b>."
@@ -19084,6 +19087,8 @@ async def _send_daily_challenge_digest_job(context: CallbackContext) -> None:
         else:
             lines.append("")
             lines.append("💪 Не сдавайся — завтра точно получится!")
+        lines.append("")
+        lines.append("👥 Играть командой с друзьями — /group")
         try:
             await context.bot.send_message(chat_id=int(uid), text="\n".join(lines), parse_mode="HTML")
             sent += 1
@@ -19093,6 +19098,68 @@ async def _send_daily_challenge_digest_job(context: CallbackContext) -> None:
 
 
 from backend.quiz_leaderboard import compute_quiz_leaderboard as _compute_quiz_leaderboard
+
+
+def _build_group_daily_report(lb: dict, title: str | None) -> str | None:
+    leaders = lb.get("leaders") or []
+    if not leaders:
+        return None
+    esc = lambda s: html.escape(str(s or ""))
+    medal = lambda i: "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else f"{i + 1}."
+    champ = leaders[0]
+    head = f"🏁 <b>Итоги дня — {esc(title)}</b>" if str(title or "").strip() else "🏁 <b>Итоги дня группы</b>"
+    lines = [
+        head, "",
+        f"👥 Активных: <b>{lb.get('total_players', 0)}</b> · 🧩 заданий: <b>{lb.get('total_tasks', 0)}</b>",
+        f"🏆 Чемпион дня: <b>{esc(champ['name'])}</b> — {champ['points']} очк.",
+        "",
+    ]
+    for i, l in enumerate(leaders[:5]):
+        lines.append(f"{medal(i)} {esc(l['name'])} — {l['points']} очк. ({l['correct']}✓)")
+    lines += ["", "🏆 Общий рейтинг и Кубок чемпиона — /champion"]
+    return "\n".join(lines)
+
+
+async def _send_group_daily_report_job(context: CallbackContext) -> None:
+    """Evening: post each group's collective day summary (who solved how much, champion
+    of the day) into the GROUP chat. Personal "Итоги дня" stays in each user's DM."""
+    try:
+        rows = await asyncio.to_thread(get_challenge_results_since, 24)
+    except Exception:
+        logging.warning("group daily report: fetch failed", exc_info=True)
+        return
+    if not rows:
+        return
+    try:
+        groups = await asyncio.to_thread(list_known_webapp_group_chats, 500)
+    except Exception:
+        groups = []
+    sent = 0
+    for g in groups or []:
+        try:
+            chat_id = int(g.get("chat_id") or 0)
+        except Exception:
+            continue
+        if chat_id == 0:
+            continue
+        try:
+            participants = set(await asyncio.to_thread(list_confirmed_group_participants, chat_id))
+        except Exception:
+            participants = set()
+        if not participants:
+            continue
+        grows = [r for r in rows if int(r["user_id"]) in participants]
+        if not grows:
+            continue
+        text = _build_group_daily_report(_compute_quiz_leaderboard(grows), g.get("chat_title"))
+        if not text:
+            continue
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+            sent += 1
+        except Exception:
+            logging.warning("group daily report send failed chat_id=%s", chat_id, exc_info=True)
+    logging.info("group_daily_report sent=%d groups", sent)
 
 
 def _build_champion_card(lb: dict, *, week_no: int, days: int) -> str | None:
@@ -22029,6 +22096,14 @@ def main():
             "cron",
             hour=21,
             minute=30,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Group daily report → into each group chat (21:45) --
+        scheduler.add_job(
+            lambda: submit_async(_send_group_daily_report_job, CallbackContext(application=application)),
+            "cron",
+            hour=21,
+            minute=45,
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
         # -- Weekly global quiz champion card (Sunday 20:00) --

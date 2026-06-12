@@ -11177,6 +11177,22 @@ def list_webapp_group_member_user_ids(
     return result
 
 
+def list_confirmed_group_participants(chat_id: int) -> list[int]:
+    """User ids who confirmed participation in a given group (for the group daily
+    report). Empty list if none."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT DISTINCT user_id
+                FROM bt_3_webapp_group_contexts
+                WHERE chat_id = %s AND participation_confirmed = TRUE AND user_id > 0
+                """,
+                (int(chat_id),),
+            )
+            return [int(r[0]) for r in (cursor.fetchall() or []) if r and r[0] is not None]
+
+
 def list_known_webapp_group_chats(limit: int = 500) -> list[dict]:
     safe_limit = max(1, min(int(limit or 500), 5000))
     with get_db_connection_context() as conn:
