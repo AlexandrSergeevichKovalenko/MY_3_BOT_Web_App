@@ -33980,6 +33980,95 @@ def retire_aufgaben_by_format(fmt: str) -> int:
     return int(n or 0)
 
 
+# ── Daily send-plan dashboard (plan vs fact) ──────────────────────────────────
+# Fact is recomputed from the dispatch tables, so only the pinned message id is
+# persisted. Table names are whitelisted (no injection).
+_PLAN_DISPATCH_TABLES = {
+    "bt_3_article_quiz_dispatches", "bt_3_aufgabe_dispatches", "bt_3_rebus_dispatches",
+    "bt_3_crossword_dispatches", "bt_3_anagram_dispatches", "bt_3_listening_dispatches",
+    "bt_3_visual_riddle_dispatches", "bt_3_image_quiz_dispatches",
+}
+
+
+def init_send_plan_schema() -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_send_plan_msg (
+                    plan_date  DATE PRIMARY KEY,
+                    chat_id    BIGINT NOT NULL,
+                    message_id BIGINT NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+        conn.commit()
+
+
+def get_dispatched_slot_hours_today(table_name: str, plan_date) -> set[int]:
+    """Distinct slot_hour values dispatched on plan_date (for slot-encoded tables)."""
+    if table_name not in _PLAN_DISPATCH_TABLES:
+        return set()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT DISTINCT slot_hour FROM {table_name} WHERE slot_date = %s",
+                (plan_date,),
+            )
+            return {int(r[0]) for r in (cursor.fetchall() or []) if r[0] is not None}
+
+
+def get_dispatched_created_hours_today(table_name: str, plan_date) -> set[int]:
+    """Distinct local-hour of created_at for tables without slot_hour (visual/image)."""
+    if table_name not in _PLAN_DISPATCH_TABLES:
+        return set()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT DISTINCT EXTRACT(HOUR FROM created_at AT TIME ZONE 'Europe/Berlin')::int "
+                f"FROM {table_name} WHERE (created_at AT TIME ZONE 'Europe/Berlin')::date = %s",
+                (plan_date,),
+            )
+            return {int(r[0]) for r in (cursor.fetchall() or []) if r[0] is not None}
+
+
+def listening_dispatched_today(plan_date) -> bool:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM bt_3_listening_dispatches WHERE slot_date = %s LIMIT 1",
+                (plan_date,),
+            )
+            return cursor.fetchone() is not None
+
+
+def set_send_plan_message(plan_date, chat_id: int, message_id: int) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_send_plan_msg (plan_date, chat_id, message_id, updated_at)
+                VALUES (%s, %s, %s, NOW())
+                ON CONFLICT (plan_date) DO UPDATE SET
+                    chat_id = EXCLUDED.chat_id, message_id = EXCLUDED.message_id, updated_at = NOW()
+                """,
+                (plan_date, int(chat_id), int(message_id)),
+            )
+        conn.commit()
+
+
+def get_send_plan_message(plan_date) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT chat_id, message_id FROM bt_3_send_plan_msg WHERE plan_date = %s",
+                (plan_date,),
+            )
+            row = cursor.fetchone()
+    return {"chat_id": int(row[0]), "message_id": int(row[1])} if row else None
+
+
 def record_aufgabe_dispatch(*, slot_date, slot_hour: int, aufgabe_id: str,
                             target_user_id: int, chat_id: int) -> int | None:
     with get_db_connection_context() as conn:

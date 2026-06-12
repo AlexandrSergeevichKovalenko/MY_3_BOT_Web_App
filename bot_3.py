@@ -20122,6 +20122,162 @@ async def admin_clear_aufgabe_command(update: Update, context: CallbackContext) 
     )
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# DAILY SEND-PLAN DASHBOARD (plan vs fact, pinned, live-updating in place)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Each group: (emoji, title, slots[(h,m)], dispatch_table, fact_kind). fact_kind:
+#   "slotHM"   → dispatch slot_hour == h*100+m   (article quiz)
+#   "slotH"    → dispatch slot_hour == h          (rebus/crossword/anagram/aufgabe)
+#   "createdH" → local hour of created_at == h    (visual-riddle / image-quiz)
+#   "listening"→ any row today                    (listening, once/day)
+def _send_plan_groups() -> list[dict]:
+    groups = [
+        {"emoji": "🇩🇪", "title": "Артикль-квиз", "slots": [(h, m, "") for (h, m) in sorted(ARTICLE_QUIZ_SLOT_TIMES)],
+         "table": "bt_3_article_quiz_dispatches", "kind": "slotHM"},
+        {"emoji": "✏️", "title": "Aufgabe (B2+)",
+         "slots": [(h, m, AUFGABE_FORMAT_SLOTS[(h, m)].capitalize()) for (h, m) in sorted(AUFGABE_FORMAT_SLOTS.keys())],
+         "table": "bt_3_aufgabe_dispatches", "kind": "slotH"},
+        {"emoji": "🧩", "title": "Ребус", "slots": [(h, m, "") for (h, m) in sorted(REBUS_SLOT_TIMES)],
+         "table": "bt_3_rebus_dispatches", "kind": "slotH"},
+        {"emoji": "🔤", "title": "Кроссворд", "slots": [(h, m, "") for (h, m) in sorted(CROSSWORD_SLOT_TIMES)],
+         "table": "bt_3_crossword_dispatches", "kind": "slotH"},
+        {"emoji": "🔀", "title": "Анаграмма", "slots": [(h, m, "") for (h, m) in sorted(ANAGRAM_SLOT_TIMES)],
+         "table": "bt_3_anagram_dispatches", "kind": "slotH"},
+        {"emoji": "🎧", "title": "Аудирование", "slots": [(LISTENING_SLOT_TIME[0], LISTENING_SLOT_TIME[1], "")],
+         "table": "bt_3_listening_dispatches", "kind": "listening"},
+        {"emoji": "🖼", "title": "Визуал-ребус", "slots": [(h, m, "") for (h, m) in sorted(VISUAL_RIDDLE_SLOT_TIMES)],
+         "table": "bt_3_visual_riddle_dispatches", "kind": "createdH"},
+        {"emoji": "🎨", "title": "Картинка-квиз", "slots": [(h, m, "") for (h, m) in sorted(QUIZ_IMAGE_SLOT_TIMES)],
+         "table": "bt_3_image_quiz_dispatches", "kind": "createdH"},
+    ]
+    return groups
+
+
+def _plan_slot_status(kind: str, h: int, m: int, dispatched: set, now_minute: int, *, grace: int = 8) -> str:
+    if kind == "listening":
+        sent = bool(dispatched)
+    elif kind == "slotHM":
+        sent = (h * 100 + m) in dispatched
+    else:  # slotH / createdH
+        sent = h in dispatched
+    if sent:
+        return "sent"
+    return "failed" if (h * 60 + m + grace) < now_minute else "planned"
+
+
+def _build_send_plan_text() -> str:
+    """Rebuild the plan-vs-fact dashboard from the schedule + dispatch tables."""
+    from backend.database import (
+        get_dispatched_slot_hours_today, get_dispatched_created_hours_today, listening_dispatched_today,
+    )
+    now = _get_quiz_schedule_now()
+    plan_date = now.date()
+    now_minute = int(now.hour) * 60 + int(now.minute)
+    ic = {"sent": "✅", "planned": "⏳", "failed": "🔴"}
+
+    lines = [f"📋 <b>План отправок · {plan_date.strftime('%d.%m.%Y')}</b>", ""]
+    total = done = failed = 0
+    for g in _send_plan_groups():
+        kind, table = g["kind"], g["table"]
+        try:
+            if kind == "listening":
+                dispatched = listening_dispatched_today(plan_date)
+            elif kind == "createdH":
+                dispatched = get_dispatched_created_hours_today(table, plan_date)
+            else:
+                dispatched = get_dispatched_slot_hours_today(table, plan_date)
+        except Exception:
+            dispatched = set()
+            logging.warning("send_plan: fact query failed table=%s", table, exc_info=True)
+        toks = []
+        for (h, m, label) in g["slots"]:
+            st = _plan_slot_status(kind, h, m, dispatched, now_minute)
+            total += 1
+            done += (st == "sent")
+            failed += (st == "failed")
+            tag = f" {label}" if label else ""
+            toks.append(f"{ic[st]} {h:02d}:{m:02d}{tag}")
+        lines.append(f"{g['emoji']} <b>{g['title']}</b>")
+        lines.append("   " + "  ".join(toks))
+    lines.append("")
+    lines.append(f"Итого: ✅ {done} · 🔴 {failed} · ⏳ {total - done - failed} из {total}")
+    lines.append(f"<i>Обновлено: {now.strftime('%H:%M')} · ✅ ушло · ⏳ ждём · 🔴 не ушло</i>")
+    return "\n".join(lines)
+
+
+def _send_plan_admin_chat_id() -> int | None:
+    try:
+        from backend.database import get_admin_telegram_ids
+        ids = sorted(get_admin_telegram_ids() or [])
+        return int(ids[0]) if ids else None
+    except Exception:
+        return None
+
+
+async def _post_or_refresh_send_plan(context: CallbackContext, *, force_new: bool = False) -> None:
+    from backend.database import (
+        init_send_plan_schema, get_send_plan_message, set_send_plan_message,
+    )
+    chat_id = _send_plan_admin_chat_id()
+    if not chat_id:
+        logging.info("send_plan: no admin chat id — skipping")
+        return
+    now = _get_quiz_schedule_now()
+    plan_date = now.date()
+    try:
+        await asyncio.to_thread(init_send_plan_schema)
+    except Exception:
+        logging.warning("send_plan: schema init failed", exc_info=True)
+    text = _build_send_plan_text()
+    existing = None if force_new else await asyncio.to_thread(get_send_plan_message, plan_date)
+
+    if existing:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=int(existing["chat_id"]), message_id=int(existing["message_id"]),
+                text=text, parse_mode="HTML",
+            )
+            return
+        except Exception as exc:
+            if "not modified" in str(exc).lower():
+                return
+            logging.info("send_plan: edit failed (%s) — posting fresh", exc)
+
+    try:
+        msg = await context.bot.send_message(chat_id=int(chat_id), text=text, parse_mode="HTML")
+        await asyncio.to_thread(set_send_plan_message, plan_date, int(chat_id), int(msg.message_id))
+        try:
+            await context.bot.pin_chat_message(
+                chat_id=int(chat_id), message_id=int(msg.message_id), disable_notification=True)
+        except Exception:
+            logging.info("send_plan: pin failed (non-fatal)", exc_info=True)
+    except Exception:
+        logging.warning("send_plan: post failed", exc_info=True)
+
+
+async def _send_plan_dashboard_job(context: CallbackContext) -> None:
+    """Morning: post the day's plan dashboard (pinned) for the admin."""
+    await _post_or_refresh_send_plan(context, force_new=True)
+
+
+async def _refresh_plan_dashboard_job(context: CallbackContext) -> None:
+    """Periodic: recompute fact and edit the pinned dashboard in place."""
+    await _post_or_refresh_send_plan(context, force_new=False)
+
+
+async def admin_plan_command(update: Update, context: CallbackContext) -> None:
+    """Post/refresh today's send-plan dashboard now. /plan"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    await _post_or_refresh_send_plan(context, force_new=True)
+
+
 async def _set_billing_user_context(update: Update, context: CallbackContext) -> None:
     """group=-1: tag this update's task with the acting user so bot-tier OpenAI
     usage/cost is attributed to them (read by openai_manager._store_last_usage)."""
@@ -22003,6 +22159,7 @@ def main():
     application.add_handler(CommandHandler("admin_aufgabe_send", admin_aufgabe_send_command))
     application.add_handler(CommandHandler("admin_aufgabe_all", admin_aufgabe_all_command))
     application.add_handler(CommandHandler("admin_clearaufgabe", admin_clear_aufgabe_command))
+    application.add_handler(CommandHandler("plan", admin_plan_command))
     application.add_handler(CommandHandler("admin_testalert", admin_testalert_command))
     application.add_handler(CommandHandler("champion", admin_champion_command))
     application.add_handler(CommandHandler("group", group_play_help_command))
@@ -22043,6 +22200,7 @@ def main():
                 application.job_queue.run_once(_seed_billing_prices_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 10),
                 application.job_queue.run_repeating(_send_pending_freeform_cards_job, interval=FREEFORM_CARD_POLL_SECONDS, first=20),
                 application.job_queue.run_repeating(_send_challenge_notifications_job, interval=CHALLENGE_NOTIF_POLL_SECONDS, first=25),
+                application.job_queue.run_repeating(_refresh_plan_dashboard_job, interval=600, first=180),
             ),
             enabled=True,
             category="housekeeping",
@@ -22365,6 +22523,14 @@ def main():
             "cron",
             hour=7,
             minute=0,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Daily send-plan dashboard → pinned plan/fact for the admin (06:45) --
+        scheduler.add_job(
+            lambda: submit_async(_send_plan_dashboard_job, CallbackContext(application=application)),
+            "cron",
+            hour=6,
+            minute=45,
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
         # -- Daily challenge digest → each participant's placements (21:30) --
