@@ -251,6 +251,7 @@ from backend.database import (
     get_article_quiz_dispatch_by_id,
     record_article_quiz_answer,
     mark_article_quiz_answer_feedback_sent,
+    upsert_article_quiz_text_entry,
     pick_next_crossword,
     mark_crossword_sent,
     mark_crossword_send_failed,
@@ -320,7 +321,7 @@ REBUS_COOLDOWN_DAYS = max(7, int((os.getenv("REBUS_COOLDOWN_DAYS") or "30").stri
 # so we keep them gentle to avoid pointless DB churn (most polls find nothing).
 FREEFORM_CARD_POLL_SECONDS = max(5, int((os.getenv("FREEFORM_CARD_POLL_SECONDS") or "15").strip() or "15"))
 CHALLENGE_NOTIF_POLL_SECONDS = max(15, int((os.getenv("CHALLENGE_NOTIF_POLL_SECONDS") or "60").strip() or "60"))
-ARTICLE_QUIZ_SLOT_TIMES = {(9, 15), (13, 15), (17, 15)}  # 3x/day at :15
+ARTICLE_QUIZ_SLOT_TIMES = {(10, 15), (18, 15)}  # 2x/day: morning + evening
 ARTICLE_QUIZ_COOLDOWN_DAYS = max(7, int((os.getenv("ARTICLE_QUIZ_COOLDOWN_DAYS") or "14").strip() or "14"))
 ARTICLE_QUIZ_POOL_TARGET = max(5, int((os.getenv("ARTICLE_QUIZ_POOL_TARGET") or "30").strip() or "30"))
 ARTICLE_QUIZ_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("ARTICLE_QUIZ_POOL_TOPUP_TRIGGER") or "5").strip() or "5"))
@@ -18143,9 +18144,9 @@ async def _send_scheduled_article_quiz(context: CallbackContext) -> None:
 
     logging.info("aq_slot_triggered slot=%s/%s", slot_date, slot_hour)
 
-    # Difficulty routing: middle slot (13:15) → B2/tricky words; others → any
-    # This ensures ~1/3 of quizzes are hard, with fallback to any if pool empty.
-    _AQ_HARD_SLOTS = {(13, 15)}
+    # Difficulty routing: evening slot (18:15) → B2/tricky grammar words;
+    # morning (10:15) → any (mix of photos + grammar). Falls back to any if empty.
+    _AQ_HARD_SLOTS = {(18, 15)}
     difficulty_hint = "B2" if (slot_now.hour, slot_now.minute) in _AQ_HARD_SLOTS else None
 
     try:
@@ -18399,6 +18400,97 @@ async def admin_article_quiz_pool_command(update: Update, context: CallbackConte
         await status_msg.edit_text(f"Article quiz pool done:\n{result}")
     except Exception as exc:
         await status_msg.edit_text(f"Error: {exc}")
+
+
+def _slug_article_word(word: str, article: str) -> str:
+    base = "".join(c if (c.isalnum() or c in "-_") else "_" for c in word.lower())
+    return f"adm_{base}_{article}"
+
+
+async def admin_add_artikel_command(update: Update, context: CallbackContext) -> None:
+    """Add a word to the article-quiz queue as a rendered grammar card.
+
+    Usage:  /addartikel <der|die|das> <Wort> [| значение [| пояснение]]
+    Examples:
+      /addartikel der Gedanke | мысль | -e на конце, но род мужской
+      /addartikel das Verständnis
+    """
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+
+    raw = (message.text or "")
+    # strip the "/addartikel" (and optional @botname) token
+    raw = re.sub(r"^/\S+\s*", "", raw, count=1).strip()
+    if not raw:
+        await message.reply_text(
+            "Использование:\n"
+            "`/addartikel der Gedanke | мысль | -e на конце, но мужской`\n\n"
+            "Минимум: `/addartikel der Gedanke`\n"
+            "Формат: `<der|die|das> <Слово> | значение | пояснение`",
+            parse_mode="Markdown",
+        )
+        return
+
+    parts = [p.strip() for p in raw.split("|")]
+    head = parts[0].split()
+    if len(head) < 2 or head[0].lower() not in ("der", "die", "das"):
+        await message.reply_text(
+            "Не понял. Начни с артикля и слова:\n"
+            "`/addartikel der Gedanke | мысль | -e, но мужской`",
+            parse_mode="Markdown",
+        )
+        return
+
+    article = head[0].lower()
+    word = " ".join(head[1:]).strip()
+    meaning = parts[1] if len(parts) > 1 else ""
+    hint = parts[2] if len(parts) > 2 else ""
+
+    entry = {
+        "id": _slug_article_word(word, article),
+        "word": word,
+        "article": article,
+        "meaning_ru": meaning,
+        "gender_hint": hint,
+        "difficulty": "B2",
+        "category": "Grammatik",
+    }
+
+    status_msg = await message.reply_text(f"⏳ Добавляю {article} {word}…")
+    try:
+        written = await asyncio.to_thread(upsert_article_quiz_text_entry, entry)
+    except Exception as exc:
+        await status_msg.edit_text(f"Ошибка записи: {exc}")
+        return
+    if not written:
+        await status_msg.edit_text(
+            f"⚠️ «{word}» уже есть в банке как картиночное слово — пропустил, "
+            "чтобы не дублировать."
+        )
+        return
+
+    # Render its card now so it's immediately available in the rotation.
+    card_ok = True
+    try:
+        from backend.article_quiz_card import generate_article_quiz_card
+        await asyncio.to_thread(generate_article_quiz_card, entry["id"])
+    except Exception:
+        card_ok = False
+        logging.warning("addartikel: card render failed id=%s", entry["id"], exc_info=True)
+
+    tail = "" if hint else "\n_(пояснение пустое — допишется автоматически ночью)_"
+    card_note = "" if card_ok else "\n⚠️ карточка не отрисовалась — проверь логи / попробуй /admin_aq_pool"
+    await status_msg.edit_text(
+        f"✅ Добавлено в очередь: *{article} {word}*"
+        + (f"\n_{meaning}_" if meaning else "")
+        + tail + card_note,
+        parse_mode="Markdown",
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -21813,6 +21905,7 @@ def main():
     application.add_handler(CommandHandler("admin_rebus_pool", admin_rebus_pool_command))
     application.add_handler(CommandHandler("admin_aq_send", admin_article_quiz_send_command))
     application.add_handler(CommandHandler("admin_aq_pool", admin_article_quiz_pool_command))
+    application.add_handler(CommandHandler("addartikel", admin_add_artikel_command))
     application.add_handler(CommandHandler("admin_cw_send", admin_crossword_send_command))
     application.add_handler(CommandHandler("admin_anagram_send", admin_anagram_send_command))
     application.add_handler(CommandHandler("admin_aufgabe_send", admin_aufgabe_send_command))

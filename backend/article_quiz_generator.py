@@ -67,23 +67,79 @@ def generate_article_quiz_image(word_id: str, dalle_prompt: str) -> str:
         raise RuntimeError(f"article_quiz image gen failed for {word_id}: {exc}") from exc
 
 
+def _render_pending_grammar_cards(*, max_cards: int = 400) -> dict:
+    """Render bright text cards for grammar entries (dalle_prompt IS NULL).
+
+    These are free + instant (no DALL·E), so we always top them all up. They
+    live in the same bank and are picked/sent identically once image_status is
+    'ready' — the photo pool below is counted separately so it never starves."""
+    from backend.article_quiz_card import generate_article_quiz_card
+    from backend.database import get_db_connection_context
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT word_id FROM bt_3_article_quiz_bank
+                WHERE image_status IN ('pending', 'failed')
+                  AND dalle_prompt IS NULL
+                  AND retired = FALSE
+                ORDER BY created_at
+                LIMIT %s
+                """,
+                (int(max_cards),),
+            )
+            rows = [r[0] for r in (cur.fetchall() or [])]
+
+    rendered = failed = 0
+    for word_id in rows:
+        try:
+            generate_article_quiz_card(str(word_id))
+            rendered += 1
+        except Exception:
+            failed += 1
+            logging.warning("article_quiz_card: render failed word_id=%s", word_id, exc_info=True)
+    if rows:
+        logging.info("article_quiz_card: rendered=%s failed=%s pending=%s", rendered, failed, len(rows))
+    return {"rendered": rendered, "failed": failed, "pending": len(rows)}
+
+
 def prepare_article_quiz_pool(*, target_ready: int = 30, max_attempts: int = 40) -> dict:
     """
-    Sync bank from code, then generate missing images until target_ready is reached.
-    Returns stats dict.
+    Sync both banks from code; render all pending grammar (text) cards, then
+    generate missing DALL·E photos until the *photo* pool reaches target_ready.
+    Grammar cards and photos are counted independently so neither starves the
+    other. Returns stats dict.
     """
     from backend.database import (
         sync_article_quiz_bank_from_code,
-        count_available_article_quiz_entries,
+        sync_article_quiz_text_bank_from_code,
         get_db_connection_context,
     )
 
     sync_stats = sync_article_quiz_bank_from_code()
-    logging.info("article_quiz_gen: bank synced %s", sync_stats)
+    text_stats = sync_article_quiz_text_bank_from_code()
+    logging.info("article_quiz_gen: banks synced photo=%s grammar=%s", sync_stats, text_stats)
 
-    already_ready = count_available_article_quiz_entries(cooldown_days=0)
+    # 1) Grammar text cards — cheap, render them all.
+    card_stats = _render_pending_grammar_cards()
+
+    # 2) DALL·E photos — count ONLY photo entries so grammar cards can't starve them.
+    def _photo_ready() -> int:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(*) FROM bt_3_article_quiz_bank
+                    WHERE image_status = 'ready' AND retired = FALSE
+                      AND dalle_prompt IS NOT NULL
+                    """
+                )
+                return int((cur.fetchone() or [0])[0])
+
+    already_ready = _photo_ready()
     if already_ready >= target_ready:
-        return {"status": "sufficient", "ready": already_ready, "generated": 0}
+        return {"status": "sufficient", "photo_ready": already_ready, "generated": 0, "cards": card_stats}
 
     need = max(0, target_ready - already_ready)
     generated = 0
@@ -96,6 +152,7 @@ def prepare_article_quiz_pool(*, target_ready: int = 30, max_attempts: int = 40)
                 """
                 SELECT word_id, dalle_prompt FROM bt_3_article_quiz_bank
                 WHERE image_status IN ('pending', 'failed')
+                  AND dalle_prompt IS NOT NULL
                   AND retired = FALSE
                 ORDER BY word_id
                 LIMIT %s
@@ -112,8 +169,6 @@ def prepare_article_quiz_pool(*, target_ready: int = 30, max_attempts: int = 40)
             break
         attempts += 1
         if not dalle_prompt:
-            logging.warning("article_quiz_gen: no dalle_prompt for word_id=%s", word_id)
-            failed += 1
             continue
         try:
             generate_article_quiz_image(str(word_id), str(dalle_prompt))
@@ -125,10 +180,11 @@ def prepare_article_quiz_pool(*, target_ready: int = 30, max_attempts: int = 40)
 
     return {
         "status": "done",
-        "ready_before": already_ready,
+        "photo_ready_before": already_ready,
         "generated": generated,
         "failed": failed,
         "attempts": attempts,
+        "cards": card_stats,
     }
 
 

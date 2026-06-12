@@ -32794,6 +32794,72 @@ def sync_article_quiz_bank_from_code() -> dict:
     return {"synced": synced, "total": len(ARTICLE_QUIZ_BANK)}
 
 
+def upsert_article_quiz_text_entry(entry: dict) -> bool:
+    """Upsert one GRAMMAR (text-card) entry.
+
+    dalle_prompt stays NULL → prepare_article_quiz_pool renders a bright card
+    instead of calling DALL·E. Skips if the same word already exists as a photo
+    (DALL·E) entry, so a concrete word never shows up twice. Returns True if
+    written, False if skipped. gender_hint is only overwritten when provided
+    (admin/empty adds keep any backfilled hint)."""
+    word = str(entry["word"]).strip()
+    word_id = str(entry["id"])
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT 1 FROM bt_3_article_quiz_bank
+                WHERE LOWER(word) = LOWER(%s) AND word_id <> %s
+                  AND dalle_prompt IS NOT NULL
+                LIMIT 1
+                """,
+                (word, word_id),
+            )
+            if cursor.fetchone():
+                return False
+            cursor.execute(
+                """
+                INSERT INTO bt_3_article_quiz_bank
+                    (word_id, word, article, meaning_ru, difficulty, category,
+                     gender_hint, dalle_prompt, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, NULL, NOW())
+                ON CONFLICT (word_id) DO UPDATE SET
+                    word        = EXCLUDED.word,
+                    article     = EXCLUDED.article,
+                    meaning_ru  = EXCLUDED.meaning_ru,
+                    difficulty  = EXCLUDED.difficulty,
+                    category    = EXCLUDED.category,
+                    gender_hint = CASE WHEN EXCLUDED.gender_hint <> ''
+                                       THEN EXCLUDED.gender_hint
+                                       ELSE bt_3_article_quiz_bank.gender_hint END,
+                    updated_at  = NOW()
+                """,
+                (
+                    word_id, word, str(entry["article"]).lower(),
+                    str(entry.get("meaning_ru") or ""), str(entry.get("difficulty") or "B2"),
+                    str(entry.get("category") or "Grammatik"),
+                    str(entry.get("gender_hint") or "")[:300],
+                ),
+            )
+        conn.commit()
+    return True
+
+
+def sync_article_quiz_text_bank_from_code() -> dict:
+    """Upsert all GRAMMAR entries from ARTICLE_QUIZ_TEXT_BANK."""
+    from backend.article_quiz_text_bank import ARTICLE_QUIZ_TEXT_BANK
+    written = skipped = 0
+    for entry in ARTICLE_QUIZ_TEXT_BANK:
+        try:
+            if upsert_article_quiz_text_entry(entry):
+                written += 1
+            else:
+                skipped += 1
+        except Exception:
+            logging.warning("sync_article_text: failed for %s", entry.get("id"), exc_info=True)
+    return {"written": written, "skipped": skipped, "total": len(ARTICLE_QUIZ_TEXT_BANK)}
+
+
 def get_article_quiz_entry(word_id: str) -> dict | None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
