@@ -190,6 +190,19 @@ html[data-scheme="light"] .cw-key { background: linear-gradient(180deg, #ffffff,
 }
 .ans-answer { margin-top: 10px; font-size: 16px; font-weight: 500; color: var(--dmps-text-secondary, #CBD5E1); }
 .ans-answer b { color: var(--dmps-text-primary, #F8FAFC); font-weight: 700; }
+
+/* Sentence diff (satzbau / transform): green correct over your struck-through */
+.au-diff { margin-top: 10px; }
+.au-diff-label { font-size: 12.5px; font-weight: 700; color: #22c55e; margin: 10px 0 3px; letter-spacing: .01em; }
+.au-diff-label.dim { color: var(--dmps-text-muted, #94A3B8); }
+.au-diff-correct { font-size: 17px; line-height: 1.55; color: #22c55e; font-weight: 600; }
+.au-diff-yours { font-size: 17px; line-height: 1.55; color: var(--dmps-text-secondary, #CBD5E1); }
+.au-tok-fix { background: rgba(34, 197, 94, 0.18); border-radius: 5px; padding: 0 3px; font-weight: 800; }
+.au-tok-bad { color: #f05252; text-decoration: line-through; text-decoration-thickness: 2px; text-decoration-color: #f05252; }
+html[data-scheme="light"] .au-diff-correct { color: #15803d; }
+html[data-scheme="light"] .au-diff-label { color: #15803d; }
+html[data-scheme="light"] .au-tok-fix { background: rgba(21, 128, 61, 0.14); }
+html[data-scheme="light"] .au-tok-bad { color: #dc2626; text-decoration-color: #dc2626; }
 .ans-meaning { color: var(--dmps-text-muted, #94A3B8); font-weight: 500; }
 .ans-explain {
   margin-top: 10px; padding-top: 10px;

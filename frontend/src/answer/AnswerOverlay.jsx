@@ -146,6 +146,66 @@ function AnagramResult({ result }) {
   );
 }
 
+// LCS word alignment for the sentence diff (case/punctuation-insensitive match,
+// original tokens kept for display).
+function wordDiff(userText, correctText) {
+  const norm = (t) => t.toLowerCase().replace(/[.,!?;:»«"'„“”()]/g, '');
+  const a = (userText || '').trim().split(/\s+/).filter(Boolean);
+  const b = (correctText || '').trim().split(/\s+/).filter(Boolean);
+  const na = a.map(norm), nb = b.map(norm);
+  const n = na.length, m = nb.length;
+  const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--)
+      dp[i][j] = na[i] === nb[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const aM = new Set(), bM = new Set();
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (na[i] === nb[j]) { aM.add(i); bM.add(j); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) i++; else j++;
+  }
+  return { a, b, aM, bM };
+}
+
+function AufgabeResult({ result }) {
+  const good = !!result.is_correct;
+  const correct = result.correct_word || '';
+  const mine = result.user_answer || '';
+  const showDiff = !good && result.is_sentence && !!mine && !!correct;
+  const diff = showDiff ? wordDiff(mine, correct) : null;
+  return (
+    <div className={`ans-result ${good ? 'ok' : 'bad'}`}>
+      <div className="ans-verdict">{good ? '✅ Richtig!' : '❌ Falsch'}</div>
+      {good ? (
+        <div className="ans-answer"><b>{correct}</b></div>
+      ) : showDiff ? (
+        <div className="au-diff">
+          <div className="au-diff-label">✅ Richtiger Satz</div>
+          <div className="au-diff-correct">
+            {diff.b.map((w, idx) => (
+              <span key={idx} className={diff.bM.has(idx) ? 'au-tok' : 'au-tok au-tok-fix'}>{w} </span>
+            ))}
+          </div>
+          <div className="au-diff-label dim">✍️ Dein Satz</div>
+          <div className="au-diff-yours">
+            {diff.a.map((w, idx) => (
+              <span key={idx} className={diff.aM.has(idx) ? 'au-tok' : 'au-tok au-tok-bad'}>{w} </span>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="ans-answer">
+          Richtige Antwort: <b>{correct}</b>
+          {result.hint_ru ? <span className="ans-meaning"> · {result.hint_ru}</span> : null}
+        </div>
+      )}
+      {good && result.hint_ru ? <div className="ans-meaning">{result.hint_ru}</div> : null}
+      {result.explanation ? <div className="ans-explain">{result.explanation}</div> : null}
+      {result.tip ? <div className="ans-tip">💡 {result.tip}</div> : null}
+    </div>
+  );
+}
+
 function ListeningResult({ result }) {
   const items = result.items || [];
   const total = result.total || items.length;
@@ -379,7 +439,8 @@ export default function AnswerOverlay({ startParam }) {
           <h1 className="ans-title">{heading}</h1>
         </div>
         {isRebus ? <RebusResult result={result} />
-          : (isAnagram || isFreeform || isAufgabe) ? <AnagramResult result={result} />
+          : isAufgabe ? <AufgabeResult result={result} />
+          : (isAnagram || isFreeform) ? <AnagramResult result={result} />
           : isListening ? <ListeningResult result={result} />
           : <CrosswordResult result={result} />}
         {result.ranking ? <RankingCard ranking={result.ranking} /> : null}

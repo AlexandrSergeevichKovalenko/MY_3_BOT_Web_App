@@ -784,13 +784,21 @@ def _aufgabe_correct_answer(payload: dict) -> str:
     return str(accepted[0]) if accepted else ""
 
 
-def _aufgabe_result_payload(dispatch: dict, *, is_correct: bool, already_answered: bool) -> dict:
+def _aufgabe_result_payload(dispatch: dict, *, is_correct: bool, already_answered: bool,
+                           user_answer: str = "") -> dict:
     payload = dispatch.get("payload") or {}
+    fmt = str(dispatch.get("format") or "")
+    # Sentence formats (satzbau/transform) get a word-level diff in the FE:
+    # the correct sentence in green over the user's sentence with wrong words
+    # struck through. Other formats keep the simple "correct answer" line.
+    is_sentence = fmt in ("satzbau", "transform")
     return {
         "kind": "aufgabe",
-        "format": str(dispatch.get("format") or ""),
+        "format": fmt,
         "is_correct": bool(is_correct),
-        "correct_word": _aufgabe_correct_answer(payload),  # reuses AnagramResult FE
+        "correct_word": _aufgabe_correct_answer(payload),
+        "is_sentence": bool(is_sentence),
+        "user_answer": str(user_answer or "").strip(),
         "hint_ru": str(payload.get("hint_ru") or ""),
         "explanation": str(payload.get("erklaerung") or payload.get("explanation") or ""),
         "tip": str(payload.get("tip") or ""),
@@ -981,10 +989,14 @@ def evaluate_aufgabe(*, dispatch_id: int, user_id: int, raw_input: str) -> dict 
     if existing:
         return _aufgabe_result_payload(
             dispatch, is_correct=bool(existing.get("is_correct")), already_answered=True,
+            user_answer=str(existing.get("answer") or ""),
         )
     is_correct = _check_aufgabe(str(dispatch.get("format") or ""), dispatch.get("payload") or {}, raw_input)
     record_aufgabe_answer(
         dispatch_id=int(dispatch_id), user_id=int(user_id),
         answer=str(raw_input or "").strip(), is_correct=bool(is_correct),
     )
-    return _aufgabe_result_payload(dispatch, is_correct=is_correct, already_answered=False)
+    return _aufgabe_result_payload(
+        dispatch, is_correct=is_correct, already_answered=False,
+        user_answer=str(raw_input or ""),
+    )
