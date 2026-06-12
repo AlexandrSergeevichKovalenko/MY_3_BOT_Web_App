@@ -22084,10 +22084,30 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
             ttl_seconds=QUIZ_FREEFORM_INPUT_TTL_SECONDS,
         )
         # If the poll already carries the "✍️ свой вариант" button (attached under
-        # it at send time), don't post a separate message that would land at the
-        # bottom of the chat — the entry point is right under the poll. The
-        # pending-state above keeps DM-typing working as a silent fallback.
+        # it at send time), don't re-post the answer box. Instead nudge the user to
+        # that button. Picking "keine korrekte" does NOT complete the task — only
+        # the typed answer is graded — so the hint says exactly that.
         if quiz_data.get("freeform_button"):
+            hint = (
+                "✅ Верно — готового правильного ответа в списке нет!\n\n"
+                "Теперь нажми кнопку «✍️ Нет верного? Впиши свой вариант» под опросом "
+                "и впиши правильный вариант сам.\n"
+                "⚠️ Задание зачтётся, только если впишешь верно 👇"
+            )
+            try:
+                # DM so confirming "you're right" doesn't spoil the poll for others.
+                await context.bot.send_message(chat_id=int(poll_answer.user.id), text=hint)
+            except Exception:
+                # Can't DM → neutral, spoiler-free nudge as a reply to the poll.
+                try:
+                    await context.bot.send_message(
+                        chat_id=int(quiz_data.get("chat_id") or poll_answer.user.id),
+                        text=f"{poll_answer.user.first_name}, чтобы вписать свой вариант — "
+                             "нажми «✍️ Нет верного? Впиши свой вариант» под опросом 👆",
+                        reply_to_message_id=quiz_data.get("message_id"),
+                    )
+                except Exception:
+                    logging.warning("freeform hint send failed user_id=%s", poll_answer.user.id, exc_info=True)
             return
         # Legacy fallback (poll has no attached button, e.g. attach failed or the
         # poll predates a restart): offer the Mini-App overlay via a reply message.
