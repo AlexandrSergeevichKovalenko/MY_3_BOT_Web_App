@@ -10111,10 +10111,8 @@ async def handle_quiz_question_save_callback(update: Update, context: CallbackCo
         await query.answer("✅ Сохранено")
     except Exception:
         pass
-    if len(saved_lines) == 1:
-        await query.message.reply_text("✅ Сохранён вариант:\n" + saved_lines[0])
-    else:
-        await query.message.reply_text("✅ Сохранены варианты:\n" + "\n".join(saved_lines))
+    # No separate confirmation message — the in-place keyboard change + the popup above
+    # are the feedback (status stays attached to this card, no chat clutter).
 
 
 async def handle_flashcard_feel_feedback_callback(update: Update, context: CallbackContext) -> None:
@@ -10347,14 +10345,11 @@ async def handle_dictionary_save_option_callback(update: Update, context: Callba
         pending_dictionary_cards[card_key] = card_payload
 
     pending_dictionary_save_options.pop(option_key, None)
-    try:
-        await query.edit_message_reply_markup(reply_markup=None)
+    try:  # in-place status on THIS message — no separate chat message
+        await query.edit_message_reply_markup(reply_markup=_dict_save_status_keyboard("✅ Сохранено"))
     except Exception:
         pass
     await query.answer("✅ Сохранено")
-    source = (chosen.get("source") or "").strip()
-    target = (chosen.get("target") or "").strip()
-    await query.message.reply_text(f"✅ Сохранён вариант: {source} -> {target}")
 
 
 _TAG_FOLDER_META: dict[str, tuple[str, str]] = {
