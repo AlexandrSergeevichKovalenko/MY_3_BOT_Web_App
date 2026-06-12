@@ -86,6 +86,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "sprint_antonym",
     "check_synonym",
     "check_synonym_batch",
+    "word_order_distractors",
     "image_quiz_sentence_fallback",
     "image_quiz_visual_screen",
     "image_quiz_blueprint",
@@ -2861,21 +2862,44 @@ word-salad or obviously ungrammatical options — the learner must APPLY A RULE 
 the only readable option.
 
 Pick ONE format:
-1) WORD ORDER ("word_order"): 4 full German sentences built from the SAME words. The correct one is
-   grammatical; EACH distractor violates exactly ONE common rule and otherwise READS NATURALLY (a real
-   learner mistake), NOT a random word-salad:
-   - V2 violation (finite verb not in position 2 in a main clause),
-   - broken Satzklammer (Partizip/Infinitiv/trennbares Präfix not at the very end),
-   - missing inversion after a fronted element / subordinate clause (subject–verb not swapped),
-   - wrong TeKaMoLo order (temporal–kausal–modal–lokal).
-   STRICT: every option must be a smooth, readable sentence; the 3 wrong ones must look almost right.
-   FORBIDDEN: scrambled garbage where a word is obviously misplaced (e.g. "ich Als reinkam war
-   überrascht", "Als ich war reinkam, ich überrascht") — such options make the answer trivially guessable
-   and are NOT allowed.
-   Beispiel — korrekt: "Als ich reinkam, war ich überrascht." Gute Distraktoren:
-   ✗ "Als ich reinkam, ich war überrascht." (nach Nebensatz fehlt die Inversion: Verb muss vor Subjekt)
-   ✗ "Ich war überrascht, als ich reingekommen bin." (zeitlich/stilistisch unpassende Form — nur EIN Fehler)
-   ✗ "Als ich reingekommen, war ich überrascht." (Partizip ohne Hilfsverb — Satzklammer kaputt)
+1) WORD ORDER ("word_order"): build 4 FULL German sentences from essentially the SAME words. The correct
+   one is perfectly grammatical and natural. EACH of the 3 distractors is ALSO a smooth, natural-reading
+   sentence that a real learner might actually write — it changes EXACTLY ONE thing versus the correct
+   sentence and keeps everything else identical. The learner must FEEL the grammar to choose; they must
+   NOT be able to pick the answer just because it is "the only readable one".
+
+   Each distractor uses ONE (and ONLY one) of these real-learner errors — pick three DIFFERENT ones:
+   - V2 violation: finite verb not in position 2 of a main clause ("Heute er geht …" instead of "Heute geht er …").
+   - Broken Satzklammer: separable prefix / Partizip II / Infinitiv NOT at the very end
+     ("… drückt ein den ganzen Tag" instead of "… drückt den ganzen Tag … ein").
+   - Missing inversion after a fronted element or subordinate clause (subject–verb not swapped:
+     "Als ich kam, ich war müde" instead of "… war ich müde").
+   - Wrong TeKaMoLo order: swap two adverbials (Temporal–Kausal–Modal–Lokal), e.g. local before temporal.
+   - Wrong case/article on a noun phrase ("mit dem Hintern" → "mit den Hintern"; "den ganzen Tag" → "dem ganzen Tag").
+   - Wrong preposition ("mit dem Hintern" → "bei dem Hintern"; "an der Wand" → "auf der Wand").
+   - Wrong verb form/agreement ("er drückt" → "er drücken"; "hat gedrückt" → "hat drücken").
+   - A pronoun/word shifted by ONE position only (still fluent), never dumped at the very start/end.
+
+   STRICT RULES:
+   - All 4 options must read as fluent German at a glance; the 3 wrong ones must look ALMOST right.
+   - Change exactly ONE thing per distractor. NEVER combine errors. NEVER reorder more than necessary.
+   - ABSOLUTELY FORBIDDEN — random word-salad / scrambles where words are dumped out of place. These are
+     ALL forbidden because the answer becomes trivially guessable WITHOUT knowing German:
+       ✗ "Er Hintern dem mit Matratze die Tag ganzen den drückt ein."   (pure scramble)
+       ✗ "drückt den ganzen Tag die Matratze mit dem Hintern ein. Er"   (subject dumped at the end)
+       ✗ "ich Als reinkam war überrascht."                              (words randomly shuffled)
+     If ANY option looks like shuffled tiles rather than a sentence a learner could plausibly write, the
+     whole item is INVALID — discard it and produce a clean one.
+
+   Worked example — Russian hint "Он целый день вдавливает матрас задом":
+   ✓ correct: "Er drückt den ganzen Tag die Matratze mit dem Hintern ein."
+   ✗ "Er drückt den ganzen Tag die Matratze mit dem Hintern."          (Satzklammer kaputt — trennbares "ein" fehlt am Ende)
+   ✗ "Er drückt den ganzen Tag die Matratze mit den Hintern ein."      (falscher Kasus: "mit dem Hintern", nicht "den")
+   ✗ "Den ganzen Tag er drückt die Matratze mit dem Hintern ein."      (Inversion/V2 verletzt: "Den ganzen Tag drückt er …")
+   Worked example — korrekt: "Als ich reinkam, war ich überrascht."
+   ✗ "Als ich reinkam, ich war überrascht."                            (nach Nebensatz fehlt die Inversion)
+   ✗ "Als ich reingekommen, war ich überrascht."                       (Partizip ohne Hilfsverb — Satzklammer kaputt)
+   ✗ "Überrascht war ich, als ich reinkam."                            (markierte Topikalisierung — hier unpassend/umständlich)
 2) WORD CHOICE / cloze ("word_choice"): a German sentence with a gap; 4 words of the SAME class; only
    one fits by collocation/register/case; the other 3 are REAL, plausible words that are subtly wrong here.
 3) TRANSLATION nuance ("translation"): 4 plausible German renderings of the Russian phrase; only one is
@@ -2887,6 +2911,35 @@ answer is right and what the wrong ones get wrong. Concrete and useful, not dry.
 
 Return STRICT JSON with keys: question, options (array of 4 strings), correct_option_id (0-based int),
 quiz_type ("word_order"|"word_choice"|"translation"), explanation.
+""",
+"word_order_distractors": """
+You build a German word-order multiple-choice quiz from ONE given correct sentence.
+Input JSON: {"sentence": "<the correct German sentence>", "hint_ru": "<Russian meaning>"}.
+
+Produce EXACTLY 3 WRONG options. Each MUST be a smooth, natural-reading German sentence that a real learner
+might actually write — it changes EXACTLY ONE thing versus the correct sentence and keeps everything else
+identical. The learner must FEEL the grammar to choose; they must NOT be able to pick the answer simply
+because it is "the only readable one".
+
+Use three DIFFERENT errors from this list:
+- V2 violation: finite verb not in position 2 of a main clause ("Heute er geht …" instead of "Heute geht er …").
+- Broken Satzklammer: separable prefix / Partizip II / Infinitiv NOT at the very end ("… drückt ein den ganzen Tag").
+- Missing inversion after a fronted element or subordinate clause ("Als ich kam, ich war müde").
+- Wrong TeKaMoLo order: swap two adverbials (Temporal–Kausal–Modal–Lokal), e.g. local before temporal.
+- Wrong case/article ("mit dem Hintern" → "mit den Hintern"; "den ganzen Tag" → "dem ganzen Tag").
+- Wrong preposition ("mit dem Hintern" → "bei dem Hintern"; "an der Wand" → "auf der Wand").
+- Wrong verb form/agreement ("er drückt" → "er drücken"; "hat gedrückt" → "hat drücken").
+- One word shifted by exactly ONE position (still fluent).
+
+STRICT:
+- Change exactly ONE thing per distractor. NEVER combine errors.
+- All three must read as fluent German at a glance and look ALMOST right.
+- ABSOLUTELY FORBIDDEN — random word-salad / scrambles where words are dumped out of place
+  ("Er Hintern dem mit Matratze die Tag ganzen den drückt ein.", subject at the very end, shuffled tiles).
+- Do NOT include the correct sentence in options. If you cannot make 3 clean near-miss distractors, return {"options": []}.
+
+Return STRICT JSON ONLY:
+{"options": ["<wrong1>","<wrong2>","<wrong3>"], "explanation": "<short Russian comment, <=180 chars, names the rule>"}
 """,
 "aufgabe_cloze": """
 Du erstellst deutsche Lückentext-Aufgaben (open cloze) für fortgeschrittene Lernende (Niveau B2–C1).
@@ -5683,6 +5736,30 @@ async def run_check_synonym_batch(*, target_word: str, candidates: list[str], re
     except Exception:
         logging.warning("run_check_synonym_batch failed target=%s", target_word, exc_info=True)
         return set()
+
+
+async def run_word_order_distractors(*, sentence: str, hint_ru: str = "") -> dict:
+    """Given a correct German sentence, ask the LLM for 3 PLAUSIBLE near-miss
+    word-order distractors (each one subtle error) + a short Russian rule note.
+    Pool-time work (off the hot path). Returns {"options":[...], "explanation":...}
+    or {"options": []} on failure — the caller skips the item (no scramble fallback)."""
+    try:
+        content = await llm_execute(
+            task_name="word_order_distractors",
+            system_instruction_key="word_order_distractors",
+            user_message=json.dumps({"sentence": str(sentence), "hint_ru": str(hint_ru or "")}, ensure_ascii=False),
+            poll_interval_seconds=1.5,
+            responses_timeout_seconds=18.0,
+        )
+        data = json.loads(content)
+        opts = data.get("options") if isinstance(data, dict) else None
+        if not isinstance(opts, list):
+            return {"options": []}
+        return {"options": [str(o).strip() for o in opts if str(o).strip()],
+                "explanation": str((data or {}).get("explanation") or "")}
+    except Exception:
+        logging.warning("run_word_order_distractors failed", exc_info=True)
+        return {"options": []}
 
 
 async def run_check_synonym(*, target_word: str, candidate: str, relation: str = "synonym") -> dict:

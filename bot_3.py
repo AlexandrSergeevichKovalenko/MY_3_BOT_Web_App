@@ -82,6 +82,7 @@ from backend.openai_manager import (
     run_dictionary_collocations,
     run_dictionary_collocations_multilang,
     run_generate_word_quiz,
+    run_word_order_distractors,
     run_language_learning_private_question,
     run_language_learning_private_question_detailed,
     run_quiz_followup_question,
@@ -16051,6 +16052,35 @@ def _build_word_order_question(hint_text: str) -> str:
     return base
 
 
+def _word_order_lcs_ratio(a_tokens: list[str], b_tokens: list[str]) -> float:
+    n, m = len(a_tokens), len(b_tokens)
+    if not n or not m:
+        return 0.0
+    dp = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n - 1, -1, -1):
+        for j in range(m - 1, -1, -1):
+            dp[i][j] = dp[i + 1][j + 1] + 1 if a_tokens[i] == b_tokens[j] else max(dp[i + 1][j], dp[i][j + 1])
+    return dp[0][0] / max(n, m)
+
+
+def _word_order_distractor_ok(correct: str, distractor: str) -> bool:
+    """Anti-scramble gate (defence in depth even with the LLM): a distractor must
+    read like a real sentence — start capitalised (lowercase start = verb-first
+    salad) — and, if it's a pure reordering of the same words, stay MOSTLY in
+    order (high token-LCS). A word substitution (case/preposition/verb form) is a
+    legit near-miss and passes."""
+    d = (distractor or "").strip()
+    c = (correct or "").strip()
+    if not d or d.lower() == c.lower():
+        return False
+    if not d[:1].isupper():
+        return False
+    ca, da = c.lower().split(), d.lower().split()
+    if sorted(ca) == sorted(da):  # same words → pure reordering
+        return _word_order_lcs_ratio(ca, da) >= 0.55
+    return True
+
+
 async def generate_word_order_quiz(entry: dict) -> dict | None:
     response_json = _coerce_response_json(entry.get("response_json"))
     usage_examples_raw = response_json.get("usage_examples") if response_json else []
@@ -16081,19 +16111,36 @@ async def generate_word_order_quiz(entry: dict) -> dict | None:
         if not sentence or not hint_text:
             continue
 
-        options = _build_word_order_options(sentence)
-        if len(options) < 2:
+        # PLAUSIBLE near-miss distractors via the LLM (pool time, off the hot
+        # path) — NOT a mechanical shuffle. Anti-scramble gate as defence in depth.
+        try:
+            dd = await run_word_order_distractors(sentence=sentence, hint_ru=hint_text)
+        except Exception:
+            logging.warning("word_order: distractor gen failed", exc_info=True)
             continue
-        if len(options) > 4:
-            options = options[:4]
-        correct_option_id = options.index(sentence)
+        seen = {sentence.lower()}
+        clean: list[str] = []
+        for d in (dd.get("options") or []):
+            key = str(d).strip().lower()
+            if key in seen:
+                continue
+            if not _word_order_distractor_ok(sentence, str(d)):
+                continue
+            seen.add(key)
+            clean.append(str(d).strip())
+        if len(clean) < 3:
+            continue  # not enough clean near-misses → skip (no salad fallback)
+
+        options = [sentence] + clean[:3]
+        random.shuffle(options)
         question = _build_word_order_question(hint_text)
         return {
             "question": question,
             "options": options,
-            "correct_option_id": correct_option_id,
+            "correct_option_id": options.index(sentence),
             "quiz_type": "word_order",
             "word_ru": hint_text,
+            "explanation": str(dd.get("explanation") or ""),
         }
 
     return None
