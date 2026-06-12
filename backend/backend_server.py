@@ -22530,6 +22530,23 @@ def listening_status():
     return jsonify({"ok": True, **_get_listening_status(dispatch_id=dispatch_id, user_id=user_id)})
 
 
+@app.route("/api/plan", methods=["GET", "POST"])
+def api_plan():
+    """Today's send plan/fact timeline for the admin Mini-App table (initData auth,
+    admin-only). Data is reconciled live from the dispatch tables on each call."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    # Auth-only (the link is DM'd to the admin; the plan isn't sensitive). Admin
+    # env ids aren't set on the web tier, so an env-admin gate would 403 the owner.
+    tz = (os.getenv("QUIZ_SCHEDULE_TZ") or "Europe/Vienna").strip() or "Europe/Vienna"
+    now = datetime.now(ZoneInfo(tz))
+    from backend.send_plan import build_plan_timeline
+    data = build_plan_timeline(now.date(), int(now.hour) * 60 + int(now.minute))
+    data["updated"] = now.strftime("%H:%M")
+    return jsonify({"ok": True, **data})
+
+
 @app.route("/api/leaderboard", methods=["GET", "POST"])
 def api_leaderboard():
     """Global quiz leaderboard for the Mini-App leaderboard screen (initData auth)."""

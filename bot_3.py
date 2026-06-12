@@ -20596,59 +20596,32 @@ def _send_plan_admin_chat_id() -> int | None:
         return None
 
 
-async def _post_or_refresh_send_plan(context: CallbackContext, *, force_new: bool = False) -> None:
-    from backend.database import (
-        init_send_plan_schema, get_send_plan_message, set_send_plan_message,
-    )
+async def _send_plan_link(context: CallbackContext) -> None:
+    """DM the admin a short message with a button to the LIVE Mini-App plan table.
+    No pinned text / no message editing — the Mini-App fetches fresh data on open."""
     chat_id = _send_plan_admin_chat_id()
     if not chat_id:
         logging.info("send_plan: no admin chat id — skipping")
         return
-    now = _get_quiz_schedule_now()
-    plan_date = now.date()
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "📊 Открыть таблицу плана", url=get_webapp_deeplink("plan"))]])
+    text = (
+        "📊 <b>План отправок на сегодня</b>\n\n"
+        "Открой таблицу — план и факт по каждому интерактиву, обновляется вживую 👇"
+    )
     try:
-        await asyncio.to_thread(init_send_plan_schema)
+        await context.bot.send_message(chat_id=int(chat_id), text=text, parse_mode="HTML", reply_markup=kb)
     except Exception:
-        logging.warning("send_plan: schema init failed", exc_info=True)
-    text = _build_send_plan_text()
-    existing = None if force_new else await asyncio.to_thread(get_send_plan_message, plan_date)
-
-    if existing:
-        try:
-            await context.bot.edit_message_text(
-                chat_id=int(existing["chat_id"]), message_id=int(existing["message_id"]),
-                text=text, parse_mode="HTML",
-            )
-            return
-        except Exception as exc:
-            if "not modified" in str(exc).lower():
-                return
-            logging.info("send_plan: edit failed (%s) — posting fresh", exc)
-
-    try:
-        msg = await context.bot.send_message(chat_id=int(chat_id), text=text, parse_mode="HTML")
-        await asyncio.to_thread(set_send_plan_message, plan_date, int(chat_id), int(msg.message_id))
-        try:
-            await context.bot.pin_chat_message(
-                chat_id=int(chat_id), message_id=int(msg.message_id), disable_notification=True)
-        except Exception:
-            logging.info("send_plan: pin failed (non-fatal)", exc_info=True)
-    except Exception:
-        logging.warning("send_plan: post failed", exc_info=True)
+        logging.warning("send_plan: link send failed", exc_info=True)
 
 
 async def _send_plan_dashboard_job(context: CallbackContext) -> None:
-    """Morning: post the day's plan dashboard (pinned) for the admin."""
-    await _post_or_refresh_send_plan(context, force_new=True)
-
-
-async def _refresh_plan_dashboard_job(context: CallbackContext) -> None:
-    """Periodic: recompute fact and edit the pinned dashboard in place."""
-    await _post_or_refresh_send_plan(context, force_new=False)
+    """Morning: DM the admin the link to today's live plan table."""
+    await _send_plan_link(context)
 
 
 async def admin_plan_command(update: Update, context: CallbackContext) -> None:
-    """Post/refresh today's send-plan dashboard now. /plan"""
+    """DM the link to the live Mini-App plan table. /plan"""
     user = update.effective_user
     message = update.effective_message
     if not user or not message:
@@ -20656,7 +20629,7 @@ async def admin_plan_command(update: Update, context: CallbackContext) -> None:
     if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
         await message.reply_text("Allowed users only.")
         return
-    await _post_or_refresh_send_plan(context, force_new=True)
+    await _send_plan_link(context)
 
 
 async def _set_billing_user_context(update: Update, context: CallbackContext) -> None:
@@ -22587,7 +22560,6 @@ def main():
                 application.job_queue.run_once(_seed_billing_prices_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 10),
                 application.job_queue.run_repeating(_send_pending_freeform_cards_job, interval=FREEFORM_CARD_POLL_SECONDS, first=20),
                 application.job_queue.run_repeating(_send_challenge_notifications_job, interval=CHALLENGE_NOTIF_POLL_SECONDS, first=25),
-                application.job_queue.run_repeating(_refresh_plan_dashboard_job, interval=600, first=180),
             ),
             enabled=True,
             category="housekeeping",

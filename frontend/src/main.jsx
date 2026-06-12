@@ -173,10 +173,24 @@ async function bootstrapLeaderboard(startParam) {
   );
 }
 
+async function bootstrapPlanTable() {
+  try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
+  const { default: PlanTable } = await import('./plan/PlanTable.jsx');
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    <React.StrictMode>
+      <PlanTable />
+    </React.StrictMode>,
+  );
+}
+
 async function bootstrapApp() {
   const answerStartParam = getAnswerStartParam();
   if (/^ans_/i.test(answerStartParam)) {
     await bootstrapAnswerOverlay(answerStartParam);
+    return;
+  }
+  if (/^plan$/i.test(answerStartParam)) {
+    await bootstrapPlanTable();
     return;
   }
   if (/^lb/i.test(answerStartParam)) {
