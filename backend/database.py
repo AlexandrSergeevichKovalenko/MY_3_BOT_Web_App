@@ -28149,6 +28149,32 @@ def store_prepared_telegram_quiz(
     return int(row[0]) if row and row[0] is not None else 0
 
 
+def delete_prepared_telegram_quizzes(
+    quiz_type: str | None = None,
+    *,
+    source_lang: str = "ru",
+    target_lang: str = "de",
+) -> int:
+    """Flush prepared poll quizzes (optionally one quiz_type) so the pool regenerates
+    with the current generator prompt. Returns the number of rows deleted."""
+    normalized_type = str(quiz_type or "").strip().lower()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if normalized_type:
+                cursor.execute(
+                    "DELETE FROM bt_3_prepared_telegram_quizzes WHERE source_lang=%s AND target_lang=%s AND quiz_type=%s",
+                    (source_lang, target_lang, normalized_type),
+                )
+            else:
+                cursor.execute(
+                    "DELETE FROM bt_3_prepared_telegram_quizzes WHERE source_lang=%s AND target_lang=%s",
+                    (source_lang, target_lang),
+                )
+            deleted = cursor.rowcount or 0
+        conn.commit()
+    return int(deleted)
+
+
 def count_prepared_telegram_quizzes(
     quiz_type: str | None = None,
     *,

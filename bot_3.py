@@ -19333,6 +19333,35 @@ async def _send_weekly_champion_job(context: CallbackContext) -> None:
         logging.warning("weekly_champion job failed", exc_info=True)
 
 
+async def admin_clear_quiz_pool_command(update: Update, context: CallbackContext) -> None:
+    """Flush prepared poll quizzes so they regenerate with the current prompt.
+    /admin_clearquizpool [word_order|word_choice|translation]"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    args = context.args or []
+    qtype = str(args[0]).strip().lower() if args else None
+    try:
+        from backend.database import delete_prepared_telegram_quizzes
+        deleted = await asyncio.to_thread(delete_prepared_telegram_quizzes, qtype)
+    except Exception as exc:
+        await message.reply_text(f"❌ Не удалось очистить пул: {exc}")
+        return
+    await message.reply_text(
+        f"🧹 Удалено старых квизов: {deleted}{(' (тип ' + qtype + ')') if qtype else ''}.\n"
+        "Пул пересоздастся новым промптом."
+    )
+    try:
+        await prepare_scheduled_quiz_pool(context, QUIZ_PREPARED_TARGET_PER_TYPE)
+        await message.reply_text("♻️ Запустил пересоздание пула.")
+    except Exception:
+        logging.warning("clearquizpool: regen failed", exc_info=True)
+
+
 async def group_play_help_command(update: Update, context: CallbackContext) -> None:
     """Tell an individual (DM) user they can play as a group, and how. /group"""
     message = update.effective_message
@@ -21796,6 +21825,7 @@ def main():
     application.add_handler(CommandHandler("admin_testalert", admin_testalert_command))
     application.add_handler(CommandHandler("champion", admin_champion_command))
     application.add_handler(CommandHandler("group", group_play_help_command))
+    application.add_handler(CommandHandler("admin_clearquizpool", admin_clear_quiz_pool_command))
     application.add_handler(CommandHandler("poolreport", admin_pool_report_command))
     application.add_handler(CommandHandler("admin_cw_pool", admin_crossword_pool_command))
     application.add_handler(CommandHandler("admin_cw_rerender", admin_crossword_rerender_command))

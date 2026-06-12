@@ -2859,11 +2859,20 @@ the only readable option.
 
 Pick ONE format:
 1) WORD ORDER ("word_order"): 4 full German sentences built from the SAME words. The correct one is
-   grammatical; EACH distractor violates exactly ONE common rule and otherwise looks fine:
+   grammatical; EACH distractor violates exactly ONE common rule and otherwise READS NATURALLY (a real
+   learner mistake), NOT a random word-salad:
    - V2 violation (finite verb not in position 2 in a main clause),
    - broken Satzklammer (Partizip/Infinitiv/trennbares Präfix not at the very end),
-   - missing inversion after a fronted element (subject–verb not swapped),
+   - missing inversion after a fronted element / subordinate clause (subject–verb not swapped),
    - wrong TeKaMoLo order (temporal–kausal–modal–lokal).
+   STRICT: every option must be a smooth, readable sentence; the 3 wrong ones must look almost right.
+   FORBIDDEN: scrambled garbage where a word is obviously misplaced (e.g. "ich Als reinkam war
+   überrascht", "Als ich war reinkam, ich überrascht") — such options make the answer trivially guessable
+   and are NOT allowed.
+   Beispiel — korrekt: "Als ich reinkam, war ich überrascht." Gute Distraktoren:
+   ✗ "Als ich reinkam, ich war überrascht." (nach Nebensatz fehlt die Inversion: Verb muss vor Subjekt)
+   ✗ "Ich war überrascht, als ich reingekommen bin." (zeitlich/stilistisch unpassende Form — nur EIN Fehler)
+   ✗ "Als ich reingekommen, war ich überrascht." (Partizip ohne Hilfsverb — Satzklammer kaputt)
 2) WORD CHOICE / cloze ("word_choice"): a German sentence with a gap; 4 words of the SAME class; only
    one fits by collocation/register/case; the other 3 are REAL, plausible words that are subtly wrong here.
 3) TRANSLATION nuance ("translation"): 4 plausible German renderings of the Russian phrase; only one is
