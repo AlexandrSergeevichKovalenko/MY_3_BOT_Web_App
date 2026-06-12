@@ -518,104 +518,152 @@ def build_admin_economics_report_payload(
     return payload
 
 
+def _num(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def format_admin_economics_report(payload: dict[str, Any]) -> str:
+    """Scan-friendly daily economics report.
+
+    Design: surface signal (active users, cost, who hit limits), hide noise
+    (all the all-zero limit rows are collapsed into a single tail line). Every
+    number is still derivable; nothing is dropped, only zero rows are folded.
+    """
     stats = payload.get("user_stats") or {}
     openai_stats = payload.get("openai_stats") or {}
     helpers = payload.get("gpt_helper_usage") or {}
-    lines = [
-        f"📊 Admin Economics — {payload.get('day')}",
-        f"TZ: {payload.get('tz_name') or ADMIN_ECONOMICS_TZ}",
-        "",
-        "👥 Users",
-        f"FREE active today: {_fmt_num(stats.get('active_free_users'))}",
-        f"PRO active today: {_fmt_num(stats.get('active_pro_users'))}",
-        f"TRIAL active today: {_fmt_num(stats.get('active_trial_users'))}",
-        f"New users today: {_fmt_num(stats.get('new_users_today'))}",
-        f"Total active users: {_fmt_num(stats.get('total_active_users'))}",
-        "",
-        "👤 Activity by user (dict + translations, all plans)",
-    ]
-    activity = payload.get("user_activity") or []
-    if not activity:
-        lines.append("- none")
-    for item in activity:
-        lines.append(
-            f"- {int(item.get('user_id') or 0)} [{str(item.get('plan') or 'free').upper()}] — "
-            f"{_fmt_num(item.get('total'))} actions "
-            f"(dict {_fmt_num(item.get('dict_actions'))}, transl {_fmt_num(item.get('translations'))})"
-        )
-    lines.extend(
-        [
-            "",
-            "🤖 OpenAI",
-        f"Total requests: {_fmt_num(openai_stats.get('total_openai_requests'))}",
-        f"Lookup: {_fmt_num(openai_stats.get('lookup_requests'))}",
-        f"Explain: {_fmt_num(openai_stats.get('explain_requests'))}",
-        f"Story: {_fmt_num(openai_stats.get('story_requests'))}",
-        f"Shortcut split: {_fmt_num(openai_stats.get('shortcut_split_requests'))}",
-        f"Cache hit ratio: {_fmt_num(float(openai_stats.get('estimated_cache_hit_ratio') or 0) * 100)}%",
-        f"DB cache hit ratio: {_fmt_num(float(openai_stats.get('estimated_db_cache_hit_ratio') or 0) * 100)}%",
-        f"OpenAI avoided by cache: {_fmt_num(openai_stats.get('openai_requests_avoided_by_cache'))}",
-        ]
-    )
-    by_user = payload.get("openai_by_user") or []
-    total_cost = sum(float(it.get("cost") or 0.0) for it in by_user)
-    total_reqs = sum(int(it.get("requests") or 0) for it in by_user)
-    lines.extend([
-        "",
-        "💸 OpenAI by user (cost)",
-        f"Σ ${total_cost:.4f} · {total_reqs} req",
-    ])
-    if not by_user:
-        lines.append("- none")
-    for it in by_user:
-        lines.append(
-            f"- {int(it.get('user_id') or 0)} [{str(it.get('plan') or 'free').upper()}] — "
-            f"${float(it.get('cost') or 0.0):.4f} · {_fmt_num(it.get('requests'))} req · {_fmt_num(it.get('tokens'))} tok"
-        )
-    lines.extend(["", "📏 Limits"])
     trend = payload.get("trend_7d") or {}
-    for item in payload.get("limit_utilization") or []:
-        feature = str(item.get("feature_code") or "")
-        title = str(item.get("title") or feature)
-        feature_trend = trend.get(feature) or {}
-        lines.extend(
-            [
-                f"{title} ({feature}): {_fmt_num(item.get('limit_value'))}/{item.get('period') or 'day'}",
-                (
-                    f"users {_fmt_num(item.get('users_who_used'))} | avg {_fmt_num(item.get('average_usage'))} "
-                    f"| med {_fmt_num(item.get('median_usage'))} | p95 {_fmt_num(item.get('p95_usage'))} "
-                    f"| max {_fmt_num(item.get('max_usage'))} | blocked {_fmt_num(item.get('blocked_user_count'))}"
-                ),
-                (
-                    f"7d avg {_fmt_num(feature_trend.get('avg_usage_7d'))} | "
-                    f"7d max {_fmt_num(feature_trend.get('max_usage_7d'))} | "
-                    f"7d blocked {_fmt_num(feature_trend.get('blocked_users_7d'))}"
-                ),
-            ]
-        )
-    lines.extend(
-        [
-            "",
-            "🧠 GPT Helpers",
-            f"Explain: {_fmt_num(helpers.get('explain'))}",
-            f"Explain question: {_fmt_num(helpers.get('explain_question'))}",
-            f"Collocations: {_fmt_num(helpers.get('collocations'))}",
-            f"Story: {_fmt_num(helpers.get('story'))}",
-            f"Reader GPT: {_fmt_num(helpers.get('reader_gpt'))}",
-            f"YouTube GPT: {_fmt_num(helpers.get('youtube_gpt'))}",
-            "",
-            "🔥 Top Consumers",
-        ]
+
+    L: list[str] = []
+
+    # ── Header + users (one line) ────────────────────────────────────────────
+    L.append(f"📊 Экономика · {payload.get('day')}  ({payload.get('tz_name') or ADMIN_ECONOMICS_TZ})")
+    L.append("")
+    L.append(
+        f"👥 Активны: {_fmt_num(stats.get('total_active_users'))}  "
+        f"(FREE {_fmt_num(stats.get('active_free_users'))} · "
+        f"PRO {_fmt_num(stats.get('active_pro_users'))} · "
+        f"TRIAL {_fmt_num(stats.get('active_trial_users'))})  ·  "
+        f"+{_fmt_num(stats.get('new_users_today'))} новых"
     )
+
+    # ── Activity by user (top first, medal for #1) ───────────────────────────
+    activity = sorted(
+        payload.get("user_activity") or [],
+        key=lambda it: int(it.get("total") or 0), reverse=True,
+    )
+    L.append("")
+    L.append("📈 Активность по пользователям")
+    if not activity:
+        L.append("   —")
+    for i, it in enumerate(activity):
+        medal = "🥇" if i == 0 else "  "
+        d, t = int(it.get("dict_actions") or 0), int(it.get("translations") or 0)
+        detail = " ".join(p for p in (f"📖{d}" if d else "", f"🔁{t}" if t else "") if p) or "—"
+        L.append(
+            f"{medal} {int(it.get('user_id') or 0)} {str(it.get('plan') or 'free').upper()} · "
+            f"{_fmt_num(it.get('total'))} ({detail})"
+        )
+
+    # ── OpenAI (one line when silent; expand only when there were calls) ──────
+    by_user = payload.get("openai_by_user") or []
+    total_cost = sum(_num(it.get("cost")) for it in by_user)
+    total_reqs = int(openai_stats.get("total_openai_requests") or 0)
+    L.append("")
+    if total_reqs == 0 and total_cost == 0:
+        L.append("🤖 OpenAI: 0 запросов · $0.0000  (нет вызовов / всё из кэша)")
+    else:
+        L.append(f"🤖 OpenAI: {total_reqs} запросов · ${total_cost:.4f}")
+        sub = []
+        for key, lbl in (("lookup_requests", "lookup"), ("explain_requests", "explain"),
+                         ("story_requests", "story"), ("shortcut_split_requests", "shortcut")):
+            v = int(openai_stats.get(key) or 0)
+            if v:
+                sub.append(f"{lbl} {v}")
+        if sub:
+            L.append("   " + " · ".join(sub))
+        hit = _num(openai_stats.get("estimated_cache_hit_ratio")) * 100
+        avoided = int(openai_stats.get("openai_requests_avoided_by_cache") or 0)
+        if hit or avoided:
+            L.append(f"   кэш: hit {hit:.0f}% · сэкономлено {avoided} запросов")
+        for it in sorted(by_user, key=lambda x: _num(x.get("cost")), reverse=True):
+            if _num(it.get("cost")) <= 0 and int(it.get("requests") or 0) <= 0:
+                continue
+            L.append(
+                f"   💸 {int(it.get('user_id') or 0)} {str(it.get('plan') or 'free').upper()} · "
+                f"${_num(it.get('cost')):.4f} · {_fmt_num(it.get('requests'))} req"
+            )
+
+    # ── Limits: only the ones with activity; the rest folded into one line ────
+    L.append("")
+    L.append("🚦 Лимиты")
+    limits = payload.get("limit_utilization") or []
+    active_rows, idle = [], 0
+    blocked_today = []
+    for it in limits:
+        feature = str(it.get("feature_code") or "")
+        title = str(it.get("title") or feature)
+        ft = trend.get(feature) or {}
+        users = int(it.get("users_who_used") or 0)
+        blocked = int(it.get("blocked_user_count") or 0)
+        mx = int(it.get("max_usage") or 0)
+        t_avg = _num(ft.get("avg_usage_7d"))
+        t_blocked = int(ft.get("blocked_users_7d") or 0)
+        has_activity = users or blocked or mx or t_avg or t_blocked
+        if not has_activity:
+            idle += 1
+            continue
+        if blocked:
+            blocked_today.append(title)
+        parts = []
+        if users or mx:
+            parts.append(f"сегодня {users} польз, max {mx}/{_fmt_num(it.get('limit_value'))}")
+        if blocked:
+            parts.append(f"{blocked} заблокир.")
+        tail7 = []
+        if t_avg:
+            tail7.append(f"avg {t_avg:.1f}")
+        if t_blocked:
+            tail7.append(f"⛔{t_blocked}")
+        if tail7:
+            parts.append("7д: " + " ".join(tail7))
+        icon = "⛔" if blocked else "•"
+        active_rows.append(f" {icon} {title} — " + " · ".join(parts))
+    if blocked_today:
+        L.append(f"⛔ Сегодня упёрлись в лимит: {', '.join(blocked_today)}")
+    elif not active_rows:
+        L.append("   ✅ Никто не упирался в лимиты")
+    L.extend(active_rows)
+    if idle:
+        L.append(f"   …ещё {idle} лимитов — без активности")
+
+    # ── GPT helpers: only non-zero; one line when silent ─────────────────────
+    helper_items = [
+        ("Explain", helpers.get("explain")), ("Explain-Q", helpers.get("explain_question")),
+        ("Kollokationen", helpers.get("collocations")), ("Story", helpers.get("story")),
+        ("Reader", helpers.get("reader_gpt")), ("YouTube", helpers.get("youtube_gpt")),
+    ]
+    used = [f"{lbl} {int(v or 0)}" for lbl, v in helper_items if int(v or 0)]
+    L.append("")
+    L.append("🧠 GPT-хелперы: " + (" · ".join(used) if used else "без вызовов"))
+
+    # ── Top consumers: skip empty buckets entirely ───────────────────────────
     top = payload.get("top_consumers") or {}
+    top_lines = []
     for label, items in (("Lookup", top.get("lookup") or []), ("Shortcut", top.get("shortcut") or []), ("Save", top.get("save") or [])):
-        lines.append(label + ":")
         if not items:
-            lines.append("- none")
-        for index, item in enumerate(items[:10], start=1):
-            lines.append(f"{index}. {int(item.get('user_id') or 0)} — {_fmt_num(item.get('usage'))}")
-    return "\n".join(lines).strip()
+            continue
+        top_lines.append(f"{label}: " + ", ".join(
+            f"{int(it.get('user_id') or 0)}·{_fmt_num(it.get('usage'))}" for it in items[:5]))
+    if top_lines:
+        L.append("")
+        L.append("🔥 Топ потребители")
+        L.extend("   " + t for t in top_lines)
+
+    return "\n".join(L).strip()
 
 
 def build_admin_economics_limits_keyboard() -> dict[str, Any]:
