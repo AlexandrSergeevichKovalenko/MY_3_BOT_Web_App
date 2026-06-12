@@ -7843,6 +7843,12 @@ def ensure_webapp_tables() -> None:
                     UNIQUE (user_id, kind, challenge_key)
                 );
             """)
+            # The overtaken plaque is sent once then EDITED in place as the user
+            # sinks further (2nd → 3rd → …), so we remember its message id.
+            cursor.execute("""
+                ALTER TABLE bt_3_challenge_notifications
+                ADD COLUMN IF NOT EXISTS telegram_message_id BIGINT;
+            """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_challenge_notifications_pending
                 ON bt_3_challenge_notifications (sent_at) WHERE sent_at IS NULL;
@@ -33725,12 +33731,77 @@ def enqueue_challenge_notification(*, user_id: int, kind: str, challenge_key: st
         conn.commit()
 
 
+def upsert_overtaken_notification(*, user_id: int, challenge_key: str, payload: dict) -> None:
+    """Outbox an 'overtaken' plaque for a user, or refresh it in place.
+
+    Unlike enqueue_challenge_notification (DO NOTHING), this UPDATES the payload
+    and re-marks the row pending (sent_at = NULL) on conflict, keeping the same
+    telegram_message_id — so the bot EDITS the existing plaque (new place) rather
+    than spamming a new message each time the user sinks another rank."""
+    import json as _json
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_challenge_notifications (user_id, kind, challenge_key, payload)
+                VALUES (%s, 'overtaken', %s, %s::jsonb)
+                ON CONFLICT (user_id, kind, challenge_key) DO UPDATE SET
+                    payload = EXCLUDED.payload,
+                    sent_at = NULL
+                """,
+                (int(user_id), str(challenge_key), _json.dumps(payload or {}, ensure_ascii=False)),
+            )
+        conn.commit()
+
+
+def get_overtaken_user_ids_for_challenge(challenge_key: str) -> list[int]:
+    """Users who already have an overtaken plaque for this challenge — so a new
+    faster answer can refresh each of their current places."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT user_id FROM bt_3_challenge_notifications "
+                "WHERE kind = 'overtaken' AND challenge_key = %s",
+                (str(challenge_key),),
+            )
+            return [int(r[0]) for r in (cursor.fetchall() or [])]
+
+
+def get_challenge_correct_answers(challenge_key: str) -> list[dict]:
+    """All CORRECT answerers of a challenge, fastest first (full standings)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id, user_name, time_ms
+                FROM bt_3_challenge_results
+                WHERE challenge_key = %s AND is_correct = TRUE
+                ORDER BY time_ms ASC
+                """,
+                (str(challenge_key),),
+            )
+            return [
+                {"user_id": int(r[0]), "name": str(r[1] or ""), "time_ms": int(r[2] or 0)}
+                for r in (cursor.fetchall() or [])
+            ]
+
+
+def set_challenge_notification_message_id(notification_id: int, telegram_message_id: int) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_challenge_notifications SET telegram_message_id = %s WHERE id = %s",
+                (int(telegram_message_id), int(notification_id)),
+            )
+        conn.commit()
+
+
 def get_pending_challenge_notifications(limit: int = 20) -> list[dict]:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id, user_id, kind, challenge_key, payload
+                SELECT id, user_id, kind, challenge_key, payload, telegram_message_id
                 FROM bt_3_challenge_notifications
                 WHERE sent_at IS NULL
                 ORDER BY created_at
@@ -33744,6 +33815,7 @@ def get_pending_challenge_notifications(limit: int = 20) -> list[dict]:
         out.append({
             "id": int(r[0]), "user_id": int(r[1]), "kind": str(r[2]),
             "challenge_key": str(r[3]), "payload": r[4] if isinstance(r[4], dict) else {},
+            "telegram_message_id": int(r[5]) if r[5] is not None else None,
         })
     return out
 

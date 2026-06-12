@@ -22371,21 +22371,38 @@ def submit_answer():
                 is_correct=is_correct, time_ms=time_ms,
             )
             result["ranking"] = compute_challenge_ranking(challenge_key=challenge_key, user_id=user_id)
-            # Leader change → outbox an "overtaken" ping for the dethroned player.
-            # Only a cheap insert here; the bot polls the outbox and DMs (no DM on
-            # the user's critical path, no double work).
-            if is_correct and (result.get("ranking") or {}).get("your_place") == 1:
-                from backend.database import get_challenge_top2, enqueue_challenge_notification
-                top2 = get_challenge_top2(challenge_key)
-                if len(top2) >= 2 and int(top2[0]["user_id"]) == int(user_id):
-                    dethroned = top2[1]
-                    enqueue_challenge_notification(
-                        user_id=int(dethroned["user_id"]), kind="overtaken", challenge_key=challenge_key,
+            # Overtake plaques: a faster correct answer pushes slower players down.
+            # Notify whoever just lost #1, AND refresh the current place on every
+            # plaque already shown for this challenge (2nd → 3rd → …). Each user
+            # answers a task only once, so places only ever drop. Cheap inserts;
+            # the bot polls the outbox and sends/edits the plaque (no DM on the
+            # critical path).
+            if is_correct:
+                from backend.database import (
+                    get_challenge_correct_answers,
+                    get_overtaken_user_ids_for_challenge,
+                    upsert_overtaken_notification,
+                )
+                full = get_challenge_correct_answers(challenge_key)
+                place_of = {int(u["user_id"]): i + 1 for i, u in enumerate(full)}
+                time_of = {int(u["user_id"]): int(u["time_ms"]) for u in full}
+                targets = set(get_overtaken_user_ids_for_challenge(challenge_key))
+                if place_of.get(int(user_id)) == 1 and len(full) >= 2:
+                    targets.add(int(full[1]["user_id"]))  # just dethroned from #1
+                targets.discard(int(user_id))
+                for uid in targets:
+                    p = place_of.get(uid)
+                    if not p or p < 2:
+                        continue
+                    upsert_overtaken_notification(
+                        user_id=uid, challenge_key=challenge_key,
                         payload={
                             "task_kind": kind,
-                            "winner_name": user_name or "",
-                            "winner_time_ms": int(top2[0]["time_ms"]),
-                            "your_time_ms": int(dethroned["time_ms"]),
+                            "place": int(p),
+                            "total_correct": len(full),
+                            "leader_name": str(full[0]["name"] or ""),
+                            "leader_time_ms": int(full[0]["time_ms"]),
+                            "your_time_ms": int(time_of.get(uid, 0)),
                         },
                     )
         except Exception:

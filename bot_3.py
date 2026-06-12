@@ -282,6 +282,7 @@ from backend.database import (
     mark_freeform_card_sent,
     get_pending_challenge_notifications,
     mark_challenge_notification_sent,
+    set_challenge_notification_message_id,
     get_challenge_results_since,
     list_confirmed_group_participants,
     create_aufgabe,
@@ -19170,12 +19171,29 @@ async def _send_challenge_notifications_job(context: CallbackContext) -> None:
             p = n.get("payload") or {}
             label = await _challenge_label(n.get("challenge_key") or "")
             if kind == "overtaken":
-                text = (
-                    f"⚡ Тебя обошли в «{label}»!\n"
-                    f"🥇 <b>{html.escape(str(p.get('winner_name') or 'Кто-то'))}</b> — {_fmt_secs(p.get('winner_time_ms'))} "
-                    f"(у тебя {_fmt_secs(p.get('your_time_ms'))}).\n"
-                    f"Теперь ты на 2-м месте 🥈"
-                )
+                # A single beautiful plaque per (user, challenge): sent once, then
+                # its place button is edited in place as the user sinks further.
+                place = int(p.get("place") or 2)
+                btn = InlineKeyboardMarkup([[InlineKeyboardButton(
+                    f"📉 Сейчас ты на {place}-м месте", callback_data="overtaken_noop")]])
+                mid = n.get("telegram_message_id")
+                if mid:
+                    try:
+                        await context.bot.edit_message_reply_markup(
+                            chat_id=int(n["user_id"]), message_id=int(mid), reply_markup=btn)
+                    except Exception:
+                        logging.warning("overtaken: edit markup failed id=%s", n.get("id"), exc_info=True)
+                else:
+                    from backend.overtaken_card import render_overtaken_card
+                    png = await asyncio.to_thread(render_overtaken_card, label)
+                    msg = await context.bot.send_photo(
+                        chat_id=int(n["user_id"]), photo=io.BytesIO(png),
+                        caption=f"😔 Тебя обошли в «{html.escape(label)}»",
+                        parse_mode="HTML", reply_markup=btn)
+                    await asyncio.to_thread(
+                        set_challenge_notification_message_id, int(n["id"]), int(msg.message_id))
+                await asyncio.to_thread(mark_challenge_notification_sent, int(n["id"]))
+                continue
             elif kind == "admin_alert":
                 text = (
                     f"❌ <b>Ошибка проверки ответа в Mini-App</b>\n"
@@ -21888,6 +21906,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_dictionary_select_toggle_callback, pattern=r"^dictseltoggle:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_select_all_callback, pattern=r"^dictselall:"))
     application.add_handler(CallbackQueryHandler(_noop_callback, pattern=r"^dictsave_noop$"))
+    application.add_handler(CallbackQueryHandler(_noop_callback, pattern=r"^overtaken_noop$"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_save_confirm_callback, pattern=r"^dictsaveconfirm:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_save_option_callback, pattern=r"^dictsaveopt:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_quick_save_callback, pattern=r"^dictquicksave:"))
