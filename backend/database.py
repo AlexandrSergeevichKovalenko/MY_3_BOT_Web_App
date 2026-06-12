@@ -32946,54 +32946,47 @@ def pick_next_article_quiz(
     *,
     cooldown_days: int = 14,
     difficulty_filter: str | None = None,
+    card_kind: str | None = None,
 ) -> dict | None:
     """
     Pick the least-recently-sent ready word, respecting cooldown.
     difficulty_filter: if set, only pick words of that difficulty level.
-    Falls back to any difficulty if no word found with the filter.
+    card_kind: 'photo' (DALL·E entries), 'grammar' (rendered text cards), or
+        None (any). Photo slots and grammar slots use this to stay separate.
+    Falls back progressively: (kind, diff) → (kind, any) → (any, any).
     """
-    def _query(diff_filter: str | None) -> "tuple | None":
+    def _query(diff_filter: str | None, kind: str | None) -> "tuple | None":
+        where = [
+            "image_status = 'ready'",
+            "retired = FALSE",
+            "(last_sent_at IS NULL OR last_sent_at < NOW() - (%s || ' days')::INTERVAL)",
+        ]
+        params: list = [int(cooldown_days)]
+        if kind == "photo":
+            where.append("dalle_prompt IS NOT NULL")
+        elif kind == "grammar":
+            where.append("dalle_prompt IS NULL")
+        if diff_filter:
+            where.append("difficulty = %s")
+            params.append(str(diff_filter))
+        sql = (
+            "SELECT word_id, word, article, meaning_ru, difficulty, category, "
+            "       image_object_key, image_status, send_count, last_sent_at, "
+            "       retired, dalle_prompt "
+            "FROM bt_3_article_quiz_bank "
+            "WHERE " + " AND ".join(where) + " "
+            "ORDER BY last_sent_at NULLS FIRST, send_count ASC LIMIT 1"
+        )
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
-                if diff_filter:
-                    cursor.execute(
-                        """
-                        SELECT word_id, word, article, meaning_ru, difficulty, category,
-                               image_object_key, image_status, send_count, last_sent_at,
-                               retired, dalle_prompt
-                        FROM bt_3_article_quiz_bank
-                        WHERE image_status = 'ready'
-                          AND retired = FALSE
-                          AND difficulty = %s
-                          AND (last_sent_at IS NULL
-                               OR last_sent_at < NOW() - (%s || ' days')::INTERVAL)
-                        ORDER BY last_sent_at NULLS FIRST, send_count ASC
-                        LIMIT 1
-                        """,
-                        (str(diff_filter), int(cooldown_days)),
-                    )
-                else:
-                    cursor.execute(
-                        """
-                        SELECT word_id, word, article, meaning_ru, difficulty, category,
-                               image_object_key, image_status, send_count, last_sent_at,
-                               retired, dalle_prompt
-                        FROM bt_3_article_quiz_bank
-                        WHERE image_status = 'ready'
-                          AND retired = FALSE
-                          AND (last_sent_at IS NULL
-                               OR last_sent_at < NOW() - (%s || ' days')::INTERVAL)
-                        ORDER BY last_sent_at NULLS FIRST, send_count ASC
-                        LIMIT 1
-                        """,
-                        (int(cooldown_days),),
-                    )
+                cursor.execute(sql, tuple(params))
                 return cursor.fetchone()
 
-    row = _query(difficulty_filter)
+    row = _query(difficulty_filter, card_kind)
     if not row and difficulty_filter:
-        # Fallback: no B2 available → pick any
-        row = _query(None)
+        row = _query(None, card_kind)          # relax difficulty, keep kind
+    if not row and card_kind:
+        row = _query(None, None)               # last resort: any ready word
     if not row:
         return None
     return {

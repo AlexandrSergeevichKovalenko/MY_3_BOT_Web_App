@@ -321,7 +321,7 @@ REBUS_COOLDOWN_DAYS = max(7, int((os.getenv("REBUS_COOLDOWN_DAYS") or "30").stri
 # so we keep them gentle to avoid pointless DB churn (most polls find nothing).
 FREEFORM_CARD_POLL_SECONDS = max(5, int((os.getenv("FREEFORM_CARD_POLL_SECONDS") or "15").strip() or "15"))
 CHALLENGE_NOTIF_POLL_SECONDS = max(15, int((os.getenv("CHALLENGE_NOTIF_POLL_SECONDS") or "60").strip() or "60"))
-ARTICLE_QUIZ_SLOT_TIMES = {(10, 15), (18, 15)}  # 2x/day: morning + evening
+ARTICLE_QUIZ_SLOT_TIMES = {(9, 15), (13, 15), (17, 15), (10, 15), (18, 15)}  # 3 photo + 2 grammar slots
 ARTICLE_QUIZ_COOLDOWN_DAYS = max(7, int((os.getenv("ARTICLE_QUIZ_COOLDOWN_DAYS") or "14").strip() or "14"))
 ARTICLE_QUIZ_POOL_TARGET = max(5, int((os.getenv("ARTICLE_QUIZ_POOL_TARGET") or "30").strip() or "30"))
 ARTICLE_QUIZ_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("ARTICLE_QUIZ_POOL_TOPUP_TRIGGER") or "5").strip() or "5"))
@@ -18144,16 +18144,24 @@ async def _send_scheduled_article_quiz(context: CallbackContext) -> None:
 
     logging.info("aq_slot_triggered slot=%s/%s", slot_date, slot_hour)
 
-    # Difficulty routing: evening slot (18:15) → B2/tricky grammar words;
-    # morning (10:15) → any (mix of photos + grammar). Falls back to any if empty.
-    _AQ_HARD_SLOTS = {(18, 15)}
-    difficulty_hint = "B2" if (slot_now.hour, slot_now.minute) in _AQ_HARD_SLOTS else None
+    # Slot → card kind: the 3 original slots send DALL·E photos (13:15 stays the
+    # hard B2 photo slot); the 2 added slots (10:15, 18:15) send the new grammar
+    # text cards. pick_next falls back to any kind if the requested one is empty.
+    slot_key = (slot_now.hour, slot_now.minute)
+    _AQ_GRAMMAR_SLOTS = {(10, 15), (18, 15)}
+    if slot_key in _AQ_GRAMMAR_SLOTS:
+        card_kind = "grammar"
+        difficulty_hint = None
+    else:
+        card_kind = "photo"
+        difficulty_hint = "B2" if slot_key == (13, 15) else None
 
     try:
         entry = await asyncio.to_thread(
             pick_next_article_quiz,
             cooldown_days=ARTICLE_QUIZ_COOLDOWN_DAYS,
             difficulty_filter=difficulty_hint,
+            card_kind=card_kind,
         )
     except Exception:
         logging.warning("aq_slot: pick_next_article_quiz failed", exc_info=True)
