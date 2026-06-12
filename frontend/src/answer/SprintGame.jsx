@@ -47,6 +47,7 @@ export default function SprintGame({ id, api, haptic, onClose }) {
   const [left, setLeft] = useState(60);
   const [input, setInput] = useState('');
   const [result, setResult] = useState(null);
+  const [saved, setSaved] = useState(() => new Set());
   const startRef = useRef(0);
   const wordsRef = useRef([]);
   const timerRef = useRef(null);
@@ -113,6 +114,19 @@ export default function SprintGame({ id, api, haptic, onClose }) {
     setWords(wordsRef.current.slice());
     try { haptic?.(hit ? 'ok' : 'light'); } catch (_e) { /* noop */ }
   }, [input, hashes]);
+
+  const saveChip = useCallback(async (de, ru) => {
+    if (!de || saved.has(de)) return;
+    try {
+      await api('/api/webapp/dictionary/save', {
+        source_text: de, target_text: ru || '',
+        source_lang: 'de', target_lang: 'ru', direction: 'de_to_ru',
+        origin_process: 'synonym_save',
+      });
+      setSaved((s) => new Set(s).add(de));
+      try { haptic?.('ok'); } catch (_e) { /* noop */ }
+    } catch (_e) { try { haptic?.('bad'); } catch (_e2) { /* noop */ } }
+  }, [api, saved, haptic]);
 
   const rel = REL[meta?.relation] || REL.synonym;
   const hits = words.filter((w) => w.status === 'hit').length;
@@ -185,6 +199,7 @@ export default function SprintGame({ id, api, haptic, onClose }) {
   // done
   const r = result || {};
   const foundSet = new Set((r.found || []).map(normalizeCore));
+  const deOf = (a) => (a && typeof a === 'object' ? a.de : a) || '';
   const place = r.ranking?.your_place;
   return shell(
     <>
@@ -196,11 +211,19 @@ export default function SprintGame({ id, api, haptic, onClose }) {
       <SprintRanking ranking={r.ranking} />
       {(r.accepted || []).length ? (
         <div className="sp-all">
-          <div className="sp-all-head">Все варианты <span className="sp-all-dim">(зелёным — что нашёл)</span>:</div>
+          <div className="sp-all-head">Все варианты <span className="sp-all-dim">(зелёным — что нашёл · 👆 нажми, чтобы сохранить в словарь)</span>:</div>
           <div className="sp-chips">
-            {(r.accepted || []).map((a, i) => (
-              <span key={i} className={`sp-chip ${foundSet.has(normalizeCore(a)) ? 'hit' : 'missed'}`}>{a}</span>
-            ))}
+            {(r.accepted || []).map((a, i) => {
+              const de = deOf(a);
+              const ru = (a && typeof a === 'object' ? a.ru : '') || '';
+              const isSaved = saved.has(de);
+              const cls = isSaved ? 'saved' : (foundSet.has(normalizeCore(de)) ? 'hit' : 'missed');
+              return (
+                <button key={i} type="button" className={`sp-chip tap ${cls}`} onClick={() => saveChip(de, ru)}>
+                  {isSaved ? '💾 ' : ''}{de}
+                </button>
+              );
+            })}
           </div>
         </div>
       ) : null}

@@ -3108,16 +3108,18 @@ Du erstellst deutsche Synonym-Aufgaben für B2–C1. Es wird EIN B2+ Zielwort ge
 Lernende TIPPT ein Synonym.
 
 Regeln:
-- "wort" = das Zielwort. Nomen MIT Artikel (z. B. "die Aussage"); Adjektiv/Adverb/Verb in
-  Grundform. B2+, nicht trivial (kein A1-A2-Allerweltswort).
-- "accepted" = GROSSZÜGIGE Liste gängiger, gültiger Synonyme (8–15), alle wirklich
-  bedeutungsgleich/-nah und im Gebrauch üblich. Nomen mit Artikel. KEINE Antonyme, keine
-  bloß thematisch verwandten Wörter, keine andere Wortart.
+- "wort" = das Zielwort. Nomen MIT Artikel (z. B. "die Aussage"); Verb im INFINITIV; Adjektiv/Adverb
+  in Grundform. B2+, nicht trivial (kein A1-A2-Allerweltswort).
+- "accepted" = GROSSZÜGIGE Liste gängiger, gültiger Synonyme (8–15) als OBJEKTE {de, ru}:
+  • "de" = das Synonym im SPEICHER-Format: Nomen MIT Artikel ("die Behauptung"), Verb im INFINITIV
+    ("behaupten"), Adjektiv/Adverb in Grundform. Alle wirklich bedeutungsgleich/-nah und üblich.
+    KEINE Antonyme, keine bloß thematisch verwandten Wörter, keine andere Wortart als das Zielwort.
+  • "ru" = die russische Übersetzung GENAU dieses Synonyms (nicht des Zielworts).
 - "erklaerung" = „lehrbuchartig“ auf Russisch (1–2 Sätze): Bedeutung + ggf. Nuance/Register.
 - "tip" = kurzer russischer Merk-Tipp (ohne Emoji). "hint_ru" = kurze russische Übersetzung.
 
 Gib NUR STRICT JSON:
-{"items":[{"wort":"die Aussage","accepted":["die Behauptung","die Äußerung","die Feststellung","die Erklärung","das Statement","die Angabe"],"erklaerung":"…","tip":"…","hint_ru":"высказывание"}]}
+{"items":[{"wort":"die Aussage","accepted":[{"de":"die Behauptung","ru":"утверждение"},{"de":"die Äußerung","ru":"высказывание"},{"de":"die Feststellung","ru":"констатация"},{"de":"die Erklärung","ru":"заявление"},{"de":"das Statement","ru":"заявление"},{"de":"die Angabe","ru":"сведение"}],"erklaerung":"…","tip":"…","hint_ru":"высказывание"}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
 "aufgabe_antonym": """
@@ -3125,14 +3127,16 @@ Du erstellst deutsche Antonym-Aufgaben (Gegenteile) für B2–C1. Es wird EIN B2
 gezeigt; der/die Lernende TIPPT ein Antonym (Gegenteil).
 
 Regeln:
-- "wort" = das Zielwort. Nomen MIT Artikel; Adjektiv/Adverb/Verb in Grundform. B2+, nicht trivial.
-- "accepted" = GROSSZÜGIGE Liste gängiger, gültiger GEGENTEILE (5–12), alle echte Antonyme im
-  üblichen Gebrauch, gleiche Wortart. KEINE Synonyme, keine bloß verwandten Wörter.
+- "wort" = das Zielwort. Nomen MIT Artikel; Verb im INFINITIV; Adjektiv/Adverb in Grundform. B2+, nicht trivial.
+- "accepted" = GROSSZÜGIGE Liste gängiger, gültiger GEGENTEILE (5–12) als OBJEKTE {de, ru}:
+  • "de" = das Antonym im SPEICHER-Format (Nomen MIT Artikel, Verb im INFINITIV, Adjektiv Grundform),
+    echtes Antonym im üblichen Gebrauch, gleiche Wortart. KEINE Synonyme, keine bloß verwandten Wörter.
+  • "ru" = die russische Übersetzung GENAU dieses Antonyms.
 - "erklaerung" = „lehrbuchartig“ auf Russisch (1–2 Sätze): Bedeutung + Gegensatz.
 - "tip" = kurzer russischer Merk-Tipp (ohne Emoji). "hint_ru" = kurze russische Übersetzung.
 
 Gib NUR STRICT JSON:
-{"items":[{"wort":"großzügig","accepted":["geizig","kleinlich","knauserig","sparsam","engherzig"],"erklaerung":"…","tip":"…","hint_ru":"щедрый"}]}
+{"items":[{"wort":"großzügig","accepted":[{"de":"geizig","ru":"скупой"},{"de":"kleinlich","ru":"мелочный"},{"de":"knauserig","ru":"прижимистый"},{"de":"sparsam","ru":"бережливый"},{"de":"engherzig","ru":"скупой, ограниченный"}],"erklaerung":"…","tip":"…","hint_ru":"щедрый"}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
 "sprint_synonym": """
@@ -3140,17 +3144,18 @@ Du erstellst ein deutsches "Synonym-Sprint"-Spiel für B2–C1: EIN Zielwort, un
 nennt der/die Lernende möglichst VIELE Synonyme. Die Bewertung ist automatisch gegen die Liste.
 
 Regeln:
-- "wort" = das Zielwort. Nomen MIT Artikel (z. B. "die Aussage"); Adjektiv/Adverb/Verb in
-  Grundform. B2+, nicht trivial, aber MIT VIELEN gängigen Synonymen (gut "ergiebig").
-- "accepted" = MÖGLICHST VOLLSTÄNDIGE Liste gängiger, gültiger Synonyme (18–35!), alle wirklich
-  bedeutungsgleich/-nah und üblich. Nomen mit Artikel. KEINE Antonyme, keine bloß thematisch
-  verwandten Wörter, keine andere Wortart. Liste WIRKLICH viele übliche Varianten — das ist ein
-  Sammelspiel, je vollständiger desto fairer.
+- "wort" = das Zielwort. Nomen MIT Artikel (z. B. "die Aussage"); Verb im INFINITIV; Adjektiv/Adverb
+  in Grundform. B2+, nicht trivial, aber MIT VIELEN gängigen Synonymen (gut "ergiebig").
+- "accepted" = MÖGLICHST VOLLSTÄNDIGE Liste gängiger Synonyme (18–35!) als OBJEKTE {de, ru}:
+  • "de" = das Synonym im SPEICHER-Format (Nomen MIT Artikel, Verb im INFINITIV, Adjektiv Grundform),
+    bedeutungsgleich/-nah und üblich. KEINE Antonyme, keine bloß thematisch verwandten Wörter,
+    keine andere Wortart. Liste WIRKLICH viele Varianten — das ist ein Sammelspiel.
+  • "ru" = die russische Übersetzung GENAU dieses Synonyms.
 - "erklaerung" = „lehrbuchartig“ auf Russisch (1–2 Sätze). "tip" = kurzer russischer Merk-Tipp
   (ohne Emoji). "hint_ru" = kurze russische Übersetzung des Zielworts.
 
 Gib NUR STRICT JSON:
-{"items":[{"wort":"die Aussage","accepted":["die Behauptung","die Äußerung","die Feststellung","die Erklärung","das Statement","die Angabe","die Bemerkung","die Mitteilung","die Information","die Auskunft","die Darstellung","die Wendung","das Zeugnis","die Bekundung"],"erklaerung":"…","tip":"…","hint_ru":"высказывание"}]}
+{"items":[{"wort":"die Aussage","accepted":[{"de":"die Behauptung","ru":"утверждение"},{"de":"die Äußerung","ru":"высказывание"},{"de":"die Feststellung","ru":"констатация"},{"de":"die Mitteilung","ru":"сообщение"},{"de":"die Bemerkung","ru":"замечание"}],"erklaerung":"…","tip":"…","hint_ru":"высказывание"}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
 "sprint_antonym": """
@@ -3158,15 +3163,17 @@ Du erstellst ein deutsches "Antonym-Sprint"-Spiel für B2–C1: EIN Zielwort, un
 nennt der/die Lernende möglichst VIELE Gegenteile. Bewertung automatisch gegen die Liste.
 
 Regeln:
-- "wort" = das Zielwort. Nomen MIT Artikel; Adjektiv/Adverb/Verb in Grundform. B2+, nicht trivial,
-  aber MIT VIELEN möglichen Gegenteilen.
-- "accepted" = MÖGLICHST VOLLSTÄNDIGE Liste gängiger, gültiger GEGENTEILE (12–25), alle echte
-  Antonyme im üblichen Gebrauch, gleiche Wortart. KEINE Synonyme, keine bloß verwandten Wörter.
+- "wort" = das Zielwort. Nomen MIT Artikel; Verb im INFINITIV; Adjektiv/Adverb in Grundform. B2+,
+  nicht trivial, aber MIT VIELEN möglichen Gegenteilen.
+- "accepted" = MÖGLICHST VOLLSTÄNDIGE Liste gängiger GEGENTEILE (12–25) als OBJEKTE {de, ru}:
+  • "de" = das Antonym im SPEICHER-Format (Nomen MIT Artikel, Verb im INFINITIV, Adjektiv Grundform),
+    echtes Antonym im üblichen Gebrauch, gleiche Wortart. KEINE Synonyme, keine bloß verwandten Wörter.
+  • "ru" = die russische Übersetzung GENAU dieses Antonyms.
 - "erklaerung" = „lehrbuchartig“ auf Russisch. "tip" = kurzer russischer Merk-Tipp (ohne Emoji).
   "hint_ru" = kurze russische Übersetzung.
 
 Gib NUR STRICT JSON:
-{"items":[{"wort":"großzügig","accepted":["geizig","kleinlich","knauserig","sparsam","engherzig","filzig","knickerig","schäbig","berechnend"],"erklaerung":"…","tip":"…","hint_ru":"щедрый"}]}
+{"items":[{"wort":"großzügig","accepted":[{"de":"geizig","ru":"скупой"},{"de":"kleinlich","ru":"мелочный"},{"de":"knauserig","ru":"прижимистый"},{"de":"sparsam","ru":"бережливый"},{"de":"schäbig","ru":"убогий, жалкий"}],"erklaerung":"…","tip":"…","hint_ru":"щедрый"}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
 "check_synonym_batch": """

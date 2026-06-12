@@ -606,3 +606,9 @@ html[data-scheme="light"] .sp-chip.hit { color: #15803d; }
 @keyframes sp-chip-in { from { transform: translateY(-4px) scale(.92); opacity: 0; } to { transform: none; opacity: 1; } }
 html[data-scheme="light"] .sp-hero-word { background: linear-gradient(180deg, #16a34a, #15803d); -webkit-background-clip: text; background-clip: text; }
 html[data-scheme="light"] .sp-counter-num, html[data-scheme="light"] .sp-score-num { color: #15803d; }
+
+/* Tappable save-chips (synonyms/antonyms → dictionary) */
+.sp-chip.tap { cursor: pointer; border: none; font: inherit; line-height: 1.2; }
+.sp-chip.tap:active { transform: scale(0.94); }
+.sp-chip.saved { background: rgba(37, 99, 235, 0.22); color: #60a5fa; font-weight: 700; }
+html[data-scheme="light"] .sp-chip.saved { background: rgba(37, 99, 235, 0.14); color: #1d4ed8; }

@@ -295,6 +295,7 @@ from backend.database import (
     record_aufgabe_dispatch,
     ensure_sprint_schema,
     upsert_sprint_item,
+    delete_sprint_bank,
     count_available_sprint_items,
     pick_next_sprint,
     mark_sprint_sent,
@@ -19921,11 +19922,12 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
             return None
         return {"satz": satz, "woerter": woerter, "accepted": accepted or [satz], **common}
     if fmt in ("synonym", "antonym"):
+        from backend.answer_eval import accepted_pairs
         wort = str(it.get("wort") or "").strip()
-        accepted = [str(a).strip() for a in (it.get("accepted") or []) if str(a).strip()]
-        if not wort or len(accepted) < 2:
+        pairs = accepted_pairs(it.get("accepted"))  # [{de, ru}] for tappable save
+        if not wort or len(pairs) < 2:
             return None
-        return {"wort": wort, "accepted": accepted, **common}
+        return {"wort": wort, "accepted": pairs, **common}
     if fmt == "hoerluecke":
         # New multi-gap format: 3+ sentence text + ordered gaps. The audio (full text)
         # is synthesized in the pool job.
@@ -20295,17 +20297,18 @@ async def _sprint_topup(relation: str, want: int) -> int:
     except Exception:
         logging.warning("sprint_topup: generation failed relation=%s", relation, exc_info=True)
         return 0
+    from backend.answer_eval import accepted_pairs
     made = 0
     for it in (items or []):
         wort = str((it or {}).get("wort") or "").strip()
-        accepted = [str(a).strip() for a in ((it or {}).get("accepted") or []) if str(a).strip()]
-        if not wort or len(accepted) < min_accepted:
+        pairs = accepted_pairs((it or {}).get("accepted"))  # [{de, ru}]
+        if not wort or len(pairs) < min_accepted:
             continue
         slug = re.sub(r"[^a-z0-9]+", "_", wort.lower()).strip("_")[:40]
         sprint_id = f"sp_{relation}_{slug}"
         try:
             await asyncio.to_thread(upsert_sprint_item, {
-                "sprint_id": sprint_id, "relation": relation, "wort": wort, "accepted": accepted,
+                "sprint_id": sprint_id, "relation": relation, "wort": wort, "accepted": pairs,
                 "erklaerung": str((it or {}).get("erklaerung") or ""),
                 "tip": str((it or {}).get("tip") or ""),
                 "hint_ru": str((it or {}).get("hint_ru") or ""), "level": "B2",
@@ -20396,6 +20399,30 @@ async def _send_scheduled_sprint(context: CallbackContext, relation: str) -> Non
     if sent > 0:
         await asyncio.to_thread(mark_sprint_sent, str(entry["sprint_id"]))
     logging.info("sprint_sent relation=%s sent=%s word=%s", relation, sent, entry.get("wort"))
+
+
+async def admin_clearsprint_command(update: Update, context: CallbackContext) -> None:
+    """Flush the sprint bank and regenerate (so accepted carries per-word RU).
+    /admin_clearsprint [synonym|antonym]"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    args = context.args or []
+    relation = args[0].strip().lower() if args else None
+    if relation and relation not in ("synonym", "antonym"):
+        await message.reply_text("Использование: /admin_clearsprint [synonym|antonym]")
+        return
+    status_msg = await message.reply_text("Чищу sprint-банк и регенерирую…")
+    await asyncio.to_thread(ensure_sprint_schema)
+    deleted = await asyncio.to_thread(delete_sprint_bank, relation=relation)
+    made = 0
+    for rel in ([relation] if relation else ["synonym", "antonym"]):
+        made += await _sprint_topup(rel, SPRINT_POOL_TARGET)
+    await status_msg.edit_text(f"✅ Удалено {deleted}, сгенерировано {made} (с переводами по словам).")
 
 
 async def admin_sprint_command(update: Update, context: CallbackContext) -> None:
@@ -22481,6 +22508,7 @@ def main():
     application.add_handler(CommandHandler("admin_aufgabe_all", admin_aufgabe_all_command))
     application.add_handler(CommandHandler("admin_clearaufgabe", admin_clear_aufgabe_command))
     application.add_handler(CommandHandler("admin_sprint", admin_sprint_command))
+    application.add_handler(CommandHandler("admin_clearsprint", admin_clearsprint_command))
     application.add_handler(CommandHandler("plan", admin_plan_command))
     application.add_handler(CommandHandler("admin_testalert", admin_testalert_command))
     application.add_handler(CommandHandler("champion", admin_champion_command))

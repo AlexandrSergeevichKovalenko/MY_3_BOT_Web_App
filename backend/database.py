@@ -34205,6 +34205,20 @@ def upsert_sprint_item(item: dict) -> None:
         conn.commit()
 
 
+def delete_sprint_bank(*, relation: str | None = None) -> int:
+    """Flush sprint bank items so the pool regenerates with the current prompt
+    (e.g. accepted now carries per-word Russian). Returns rows deleted."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if relation:
+                cursor.execute("DELETE FROM bt_3_sprint_bank WHERE relation = %s", (str(relation),))
+            else:
+                cursor.execute("DELETE FROM bt_3_sprint_bank")
+            n = cursor.rowcount
+        conn.commit()
+    return int(n or 0)
+
+
 def count_available_sprint_items(*, relation: str, cooldown_days: int = 0) -> int:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:

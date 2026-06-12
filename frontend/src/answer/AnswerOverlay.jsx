@@ -172,11 +172,25 @@ function wordDiff(userText, correctText) {
 }
 
 function AufgabeResult({ result }) {
+  const [saved, setSaved] = useState(() => new Set());
+  const saveChip = useCallback(async (de, ru) => {
+    if (!de || saved.has(de)) return;
+    try {
+      await api('/api/webapp/dictionary/save', {
+        source_text: de, target_text: ru || '',
+        source_lang: 'de', target_lang: 'ru', direction: 'de_to_ru',
+        origin_process: 'synonym_save',
+      });
+      setSaved((s) => new Set(s).add(de));
+      haptic('ok');
+    } catch (_e) { haptic('bad'); }
+  }, [saved]);
   const good = !!result.is_correct;
   const correct = result.correct_word || '';
   const mine = result.user_answer || '';
   const showDiff = !good && result.is_sentence && !!mine && !!correct;
   const diff = showDiff ? wordDiff(mine, correct) : null;
+  const saveable = result.saveable || [];
   return (
     <div className={`ans-result ${good ? 'ok' : 'bad'}`}>
       <div className="ans-verdict">{good ? '✅ Richtig!' : '❌ Falsch'}</div>
@@ -204,6 +218,26 @@ function AufgabeResult({ result }) {
         </div>
       )}
       {good && result.hint_ru ? <div className="ans-meaning">{result.hint_ru}</div> : null}
+      {saveable.length ? (
+        <div className="sp-all">
+          <div className="sp-all-head">
+            {result.format === 'antonym' ? 'Антонимы' : 'Синонимы'}{' '}
+            <span className="sp-all-dim">(👆 нажми, чтобы сохранить в словарь)</span>:
+          </div>
+          <div className="sp-chips">
+            {saveable.map((a, i) => {
+              const de = (a && a.de) || '';
+              const ru = (a && a.ru) || '';
+              const isSaved = saved.has(de);
+              return (
+                <button key={i} type="button" className={`sp-chip tap ${isSaved ? 'saved' : ''}`} onClick={() => saveChip(de, ru)}>
+                  {isSaved ? '💾 ' : ''}{de}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
       {result.explanation ? <div className="ans-explain">{result.explanation}</div> : null}
       {result.tip ? <div className="ans-tip">💡 {result.tip}</div> : null}
     </div>

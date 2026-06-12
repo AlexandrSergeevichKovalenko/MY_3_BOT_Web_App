@@ -64,6 +64,27 @@ def check_quiz_freeform_deterministic(*, user_text: str, correct_text: str) -> b
     return bool(_variants(user_tokens, allow_article_strip) & _variants(correct_tokens, allow_article_strip))
 
 
+def accepted_pairs(accepted) -> list[dict]:
+    """Normalize a synonym/antonym 'accepted' list to [{de, ru}] objects.
+    Backward-compatible: old items stored plain German strings (ru = '')."""
+    out: list[dict] = []
+    for a in (accepted or []):
+        if isinstance(a, dict):
+            de = str(a.get("de") or "").strip()
+            ru = str(a.get("ru") or "").strip()
+        else:
+            de = str(a or "").strip()
+            ru = ""
+        if de:
+            out.append({"de": de, "ru": ru})
+    return out
+
+
+def accepted_de(accepted) -> list[str]:
+    """Just the German strings of an 'accepted' list (for matching/hashing)."""
+    return [p["de"] for p in accepted_pairs(accepted)]
+
+
 # ── Pure correctness checks (no IO) ──────────────────────────────────────────
 
 def check_rebus(*, correct_word: str, article: str, raw_input: str) -> dict:
@@ -798,7 +819,7 @@ def evaluate_freeform(*, dispatch_id: int, user_id: int, raw_input: str) -> dict
 def _aufgabe_correct_answer(payload: dict) -> str:
     """The canonical answer to show after answering (per format)."""
     if payload.get("wort") and payload.get("accepted"):  # synonym/antonym: show a few
-        return " · ".join(str(a) for a in (payload.get("accepted") or [])[:3])
+        return " · ".join(accepted_de(payload.get("accepted"))[:3])
     gaps = payload.get("gaps")
     if isinstance(gaps, list) and gaps:  # multi-gap hörlücke
         return " · ".join(str(g.get("correct") or "") for g in gaps)
@@ -826,6 +847,9 @@ def _aufgabe_result_payload(dispatch: dict, *, is_correct: bool, already_answere
     # the correct sentence in green over the user's sentence with wrong words
     # struck through. Other formats keep the simple "correct answer" line.
     is_sentence = fmt in ("satzbau", "transform")
+    # Synonym/antonym: every accepted word is tappable to save to the dictionary
+    # (German in our save format + its own Russian translation).
+    saveable = accepted_pairs(payload.get("accepted")) if fmt in ("synonym", "antonym") else []
     return {
         "kind": "aufgabe",
         "format": fmt,
@@ -833,6 +857,7 @@ def _aufgabe_result_payload(dispatch: dict, *, is_correct: bool, already_answere
         "correct_word": _aufgabe_correct_answer(payload),
         "is_sentence": bool(is_sentence),
         "user_answer": str(user_answer or "").strip(),
+        "saveable": saveable,
         "hint_ru": str(payload.get("hint_ru") or ""),
         "explanation": str(payload.get("erklaerung") or payload.get("explanation") or ""),
         "tip": str(payload.get("tip") or ""),
@@ -947,7 +972,7 @@ def _check_aufgabe(fmt: str, payload: dict, raw_input: str) -> bool:
     if not answer:
         return False
     if fmt in ("synonym", "antonym"):
-        accepted = [str(a) for a in (payload.get("accepted") or [])]
+        accepted = accepted_de(payload.get("accepted"))
         if any(check_quiz_freeform_deterministic(user_text=answer, correct_text=c) for c in accepted if str(c).strip()):
             return True
         return _synonym_semantic_match(str(payload.get("wort") or ""), answer, fmt)
@@ -1074,7 +1099,7 @@ def load_sprint_task(*, dispatch_id: int, user_id: int) -> dict | None:
     # Hashes (not plaintext) of the accepted answers → the client validates each
     # typed word LOCALLY (instant, zero round-trips during the 60s), without the
     # answer key leaking. /finish stays the authoritative grader.
-    hashes = sorted({h for a in (item.get("accepted") or []) if (h := _sprint_hash(str(a)))})
+    hashes = sorted({h for de in accepted_de(item.get("accepted")) if (h := _sprint_hash(de))})
     meta = {
         "kind": "sprint",
         "relation": relation,
@@ -1100,7 +1125,7 @@ def check_sprint_word(*, dispatch_id: int, word: str) -> dict:
     item = get_sprint_item(str(dispatch.get("sprint_id") or ""))
     if not item:
         return {"status": "miss"}
-    accepted = [str(a) for a in (item.get("accepted") or [])]
+    accepted = accepted_de(item.get("accepted"))
     hit = any(check_quiz_freeform_deterministic(user_text=word, correct_text=a)
               for a in accepted if str(a).strip())
     return {"status": "hit" if hit else "miss"}
@@ -1110,15 +1135,15 @@ def _sprint_result_view(item: dict, count: int, time_ms: int, *, user_id: int, f
     from backend.database import compute_sprint_ranking
     relation = str(item.get("relation") or "synonym")
     key = _sprint_key(relation, str(item.get("sprint_id")))
-    accepted = [str(a) for a in (item.get("accepted") or [])]
+    pairs = accepted_pairs(item.get("accepted"))  # [{de, ru}] for tappable save-chips
     return {
         "kind": "sprint",
         "relation": relation,
         "wort": str(item.get("wort") or ""),
         "count": int(count),
         "found": found or [],
-        "accepted": accepted,
-        "accepted_total": len(accepted),
+        "accepted": pairs,
+        "accepted_total": len(pairs),
         "erklaerung": str(item.get("erklaerung") or ""),
         "tip": str(item.get("tip") or ""),
         "ranking": compute_sprint_ranking(sprint_key=key, user_id=int(user_id)),
@@ -1146,7 +1171,7 @@ def evaluate_sprint(*, dispatch_id: int, user_id: int, words: list, time_ms: int
         return _sprint_result_view(item, existing.get("correct_count") or 0,
                                    existing.get("time_ms") or 0, user_id=int(user_id), found=None)
 
-    accepted = [str(a) for a in (item.get("accepted") or [])]
+    accepted = accepted_de(item.get("accepted"))
     # distinct, normalized candidate words
     seen, candidates = set(), []
     for w in (words or []):
