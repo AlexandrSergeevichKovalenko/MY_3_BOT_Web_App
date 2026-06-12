@@ -15560,14 +15560,19 @@ def _apply_quiz_freeform_option(quiz: dict) -> dict:
     correct_option_text = options[correct_option_id]
     # Keep semantic correct_text (e.g. unscrumbled anagram word) if generator provided it.
     correct_text = str(quiz.get("correct_text") or "").strip() or correct_option_text
-    if QUIZ_FREEFORM_OPTION not in options:
-        options.append(QUIZ_FREEFORM_OPTION)
 
     hide_correct = random.random() < QUIZ_HIDE_CORRECT_PROBABILITY
     if hide_correct:
+        # Hide the correct answer → "keine korrekte Antworten" becomes the right
+        # choice; the user must recognise none fit and type their own (via the
+        # "✍️ Впиши свой вариант" button under the poll).
         options = [option for option in options if option != correct_option_text]
         if QUIZ_FREEFORM_OPTION not in options:
             options.append(QUIZ_FREEFORM_OPTION)
+    else:
+        # Correct answer stays visible → do NOT add a redundant "keine korrekte
+        # Antworten" option (the freeform button already covers "type your own").
+        options = [option for option in options if option != QUIZ_FREEFORM_OPTION]
 
     if len(options) > 10:
         trimmed = []
@@ -15577,7 +15582,7 @@ def _apply_quiz_freeform_option(quiz: dict) -> dict:
             trimmed.append(option)
             if len(trimmed) >= 9:
                 break
-        if QUIZ_FREEFORM_OPTION not in trimmed:
+        if hide_correct and QUIZ_FREEFORM_OPTION not in trimmed:
             trimmed.append(QUIZ_FREEFORM_OPTION)
         options = trimmed
 

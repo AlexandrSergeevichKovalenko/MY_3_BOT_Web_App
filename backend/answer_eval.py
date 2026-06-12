@@ -677,25 +677,26 @@ def get_listening_status(*, dispatch_id: int, user_id: int) -> dict:
 # ── Freeform quiz ("keine korrekte Antworten" → type answer): load + evaluate ──
 
 def _quiz_freeform_semantic_match(user_text: str, correct_text: str) -> bool:
-    """Bounded LLM fallback for paraphrases/synonyms (single-word answers).
-
-    Sync wrapper around the async semantic checker — only called when the
-    deterministic match misses, so it's off the hot path for most answers.
+    """STRICT meaning-equivalence fallback (only when the deterministic match
+    misses). Uses the synonym judge — which accepts genuine equivalents but
+    REJECTS different-meaning phrases — NOT the lenient story-guess checker that
+    used to pass clearly-wrong answers (e.g. "er ist gelungen" for "er hat
+    geflunkert").
     """
     canonical = str(correct_text or "").strip()
     guess = str(user_text or "").strip()
     if not canonical or not guess:
         return False
-    if len(canonical.split()) > 5 or len(guess.split()) > 5 or len(canonical) > 80 or len(guess) > 80:
+    if len(canonical.split()) > 6 or len(guess.split()) > 6 or len(canonical) > 80 or len(guess) > 80:
         return False
     try:
         import asyncio
-        from backend.openai_manager import run_check_story_guess_semantic
+        from backend.openai_manager import run_check_synonym
         result = asyncio.run(asyncio.wait_for(
-            run_check_story_guess_semantic(canonical_answer=canonical, aliases=[], user_guess=guess),
-            timeout=8.0,
+            run_check_synonym(target_word=canonical, candidate=guess, relation="synonym"),
+            timeout=7.0,
         ))
-        return bool((result or {}).get("is_correct"))
+        return bool((result or {}).get("match"))
     except Exception:
         return False
 
@@ -714,20 +715,47 @@ def _freeform_result_payload(dispatch: dict, *, is_correct: bool, already_answer
     }
 
 
+# The poll's "no correct answer" option. Picking it is NOT a committed answer —
+# it's the cue to type your own — so it leaves the freeform open. Any OTHER poll
+# choice is a committed answer and blocks the freeform (no second answer).
+_QUIZ_FREEFORM_SENTINEL = "keine korrekte Antworten"
+
+
+def _freeform_committed_via_poll(dispatch: dict, user_id: int) -> dict | None:
+    """The user's committed native-poll answer (a real option, not the
+    'keine korrekte' cue) — if present, the freeform must not accept a 2nd answer."""
+    from backend.database import get_telegram_quiz_attempt
+    poll_id = str(dispatch.get("poll_id") or "").strip()
+    if not poll_id:
+        return None
+    att = get_telegram_quiz_attempt(poll_id, int(user_id))
+    if not att:
+        return None
+    sel = str(att.get("selected_text") or "").strip()
+    if sel and sel != _QUIZ_FREEFORM_SENTINEL:
+        return att
+    return None
+
+
 def load_freeform_task(*, dispatch_id: int, user_id: int) -> dict | None:
     from backend.database import get_quiz_freeform_dispatch_by_id, get_quiz_freeform_answer
     dispatch = get_quiz_freeform_dispatch_by_id(int(dispatch_id))
     if not dispatch:
         return None
     existing = get_quiz_freeform_answer(dispatch_id=int(dispatch_id), user_id=int(user_id))
+    poll_committed = None if existing else _freeform_committed_via_poll(dispatch, user_id)
     meta = {
         "kind": "freeform",
         "hint_ru": str(dispatch.get("word_ru") or ""),
-        "already_answered": bool(existing),
+        "already_answered": bool(existing or poll_committed),
     }
     if existing:
         meta["result"] = _freeform_result_payload(
             dispatch, is_correct=bool(existing.get("is_correct")), already_answered=True,
+        )
+    elif poll_committed:
+        meta["result"] = _freeform_result_payload(
+            dispatch, is_correct=bool(poll_committed.get("is_correct")), already_answered=True,
         )
     return meta
 
@@ -744,6 +772,12 @@ def evaluate_freeform(*, dispatch_id: int, user_id: int, raw_input: str) -> dict
     if existing:
         return _freeform_result_payload(
             dispatch, is_correct=bool(existing.get("is_correct")), already_answered=True,
+        )
+    # Block a second answer if the user already committed via the native poll.
+    poll_committed = _freeform_committed_via_poll(dispatch, user_id)
+    if poll_committed:
+        return _freeform_result_payload(
+            dispatch, is_correct=bool(poll_committed.get("is_correct")), already_answered=True,
         )
 
     correct_text = str(dispatch.get("correct_text") or "")

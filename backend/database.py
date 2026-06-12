@@ -13943,6 +13943,22 @@ def record_telegram_quiz_delivery(
             )
 
 
+def get_telegram_quiz_attempt(poll_id: str, user_id: int) -> dict | None:
+    """The user's native-poll answer for this quiz (if any), to block a second
+    answer via the freeform button."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT selected_text, is_correct FROM bt_3_telegram_quiz_attempts "
+                "WHERE poll_id = %s AND user_id = %s",
+                (str(poll_id or "").strip(), int(user_id)),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {"selected_text": str(row[0] or ""), "is_correct": bool(row[1])}
+
+
 def record_telegram_quiz_attempt(
     poll_id: str,
     *,
