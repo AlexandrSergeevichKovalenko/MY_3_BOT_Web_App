@@ -27416,6 +27416,12 @@ def get_plan_limit(plan_code: str, feature_code: str, period: str = "day") -> di
     }
 
 
+# A free translation set counts as USED only once the user has actually translated
+# the FULL set (this many sentences) — a shown-but-unanswered, hung, or accidentally
+# "finished" session must never burn the daily quota with zero progress.
+_TRANSLATION_SET_COMPLETE_MIN = max(1, _env_int("TRANSLATION_SET_COMPLETE_MIN", 7))
+
+
 def _get_feature_usage_today(user_id: int, feature_code: str, tz: str = TRIAL_POLICY_TZ) -> float:
     feature = str(feature_code or "").strip().lower()
     tz_name = str(tz or TRIAL_POLICY_TZ).strip() or TRIAL_POLICY_TZ
@@ -27488,19 +27494,25 @@ def _get_feature_usage_today(user_id: int, feature_code: str, tz: str = TRIAL_PO
         return float((row or [0])[0] or 0)
 
     if feature == "translation_daily_sets":
+        # Count only COMPLETED sets today: distinct sessions where the user actually
+        # translated >= _TRANSLATION_SET_COMPLETE_MIN sentences (rows in
+        # bt_3_translations). A shown-but-unanswered / hung / accidentally-finished
+        # session has no (or too few) translations → it does NOT burn the quota.
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT COUNT(DISTINCT ds.session_id)
-                    FROM bt_3_daily_sentences ds
-                    WHERE ds.user_id = %s
-                      AND COALESCE(ds.shown_to_user, FALSE) = TRUE
-                      AND (
-                        COALESCE((ds.shown_to_user_at AT TIME ZONE %s)::date, ds.date) = %s
-                      );
+                    SELECT COUNT(*) FROM (
+                        SELECT t.session_id
+                        FROM bt_3_translations t
+                        WHERE t.user_id = %s
+                          AND t.session_id IS NOT NULL
+                          AND (t.timestamp AT TIME ZONE %s)::date = %s
+                        GROUP BY t.session_id
+                        HAVING COUNT(DISTINCT t.sentence_id) >= %s
+                    ) q;
                     """,
-                    (int(user_id), tz_name, day_local),
+                    (int(user_id), tz_name, day_local, _TRANSLATION_SET_COMPLETE_MIN),
                 )
                 row = cursor.fetchone()
         return float((row or [0])[0] or 0)
