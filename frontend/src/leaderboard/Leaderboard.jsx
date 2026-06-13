@@ -85,6 +85,9 @@ export default function Leaderboard({ startParam }) {
           <div className="lb-trophy">🏆</div>
           <h1 className="lb-title">🌍 Глобальный рейтинг</h1>
           <div className="lb-sub">{days === 7 ? 'неделя' : `${days} дн.`} · все игроки приложения · игроков {data.total_players} · заданий {data.total_tasks}</div>
+          {data.min_for_prize ? (
+            <div className="lb-sub">🏅 Для призовых мест нужно ответить ≥ {data.min_for_prize} (≥50% заданий)</div>
+          ) : null}
         </div>
 
         <div className="lb-podium">

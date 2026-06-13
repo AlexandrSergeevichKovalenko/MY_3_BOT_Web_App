@@ -288,7 +288,6 @@ from backend.database import (
     set_challenge_notification_message_id,
     get_challenge_results_since,
     list_confirmed_group_participants,
-    list_group_member_user_ids,
     create_aufgabe,
     count_available_aufgaben,
     pick_next_aufgabe,
@@ -20158,7 +20157,11 @@ def _build_group_daily_report(lb: dict, title: str | None) -> str | None:
         "",
     ]
     for i, l in enumerate(leaders[:5]):
-        lines.append(f"{medal(i)} {esc(l['name'])} — {l['points']} очк. ({l['correct']}✓)")
+        crown = "" if l.get("prize_eligible", True) else " ·💤"
+        lines.append(f"{medal(i)} {esc(l['name'])} — {l['points']} очк. ({l['correct']}✓){crown}")
+    mfp = int(lb.get("min_for_prize") or 0)
+    if mfp:
+        lines += ["", f"🏅 Призовые места — кто ответил ≥ {mfp} (≥50% заданий дня)."]
     lines += ["", "🌍 Глобальный рейтинг и Кубок чемпиона — по кнопке ниже 👇"]
     return "\n".join(lines)
 
@@ -20186,7 +20189,7 @@ async def _send_group_daily_report_job(context: CallbackContext) -> None:
         if chat_id == 0:
             continue
         try:
-            participants = set(await asyncio.to_thread(list_group_member_user_ids, chat_id))
+            participants = set(await asyncio.to_thread(list_confirmed_group_participants, chat_id))
         except Exception:
             participants = set()
         if not participants:

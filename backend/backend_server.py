@@ -22918,6 +22918,7 @@ def api_leaderboard():
     def _slim(l):
         return {"user_id": int(l["user_id"]), "name": str(l["name"]), "points": int(l["points"]),
                 "correct": int(l["correct"]), "answered": int(l["answered"]), "golds": int(l["golds"]),
+                "prize_eligible": bool(l.get("prize_eligible", True)),
                 "avg_s": round(l["ctime_sum"] / l["ctime_n"] / 1000, 1) if l["ctime_n"] else None}
 
     def _nom(l):
@@ -22926,6 +22927,7 @@ def api_leaderboard():
     return jsonify({
         "ok": True, "days": days, "week_no": week_no, "you": int(user_id),
         "total_players": int(lb.get("total_players") or 0), "total_tasks": int(lb.get("total_tasks") or 0),
+        "min_for_prize": int(lb.get("min_for_prize") or 0),
         "leaders": [_slim(l) for l in (lb.get("leaders") or [])[:50]],
         "fastest": _nom(lb.get("fastest")), "accurate": _nom(lb.get("accurate")), "active": _nom(lb.get("active")),
     })
