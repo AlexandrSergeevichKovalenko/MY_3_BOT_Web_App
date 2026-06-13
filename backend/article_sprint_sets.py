@@ -70,3 +70,31 @@ def build_daily_set(play_date, *, size: int = DEFAULT_SET_SIZE) -> dict:
     )
     logging.info("article_sprint: built daily set %s theme=%s words=%s", set_id, theme_key, len(uniq))
     return {"status": "ready", "set_id": set_id, "theme_key": theme_key, "word_count": len(uniq)}
+
+
+PRACTICE_SET_SIZE = 120
+PRACTICE_MIN = 20
+
+
+def build_practice_set(theme_key: str, user_id: int, play_date, *, size: int = PRACTICE_SET_SIZE) -> dict:
+    """Build a fresh personal practice set for a Pro user from one of the 21 themes
+    (solo, not ranked). A new set_id each call → always replayable."""
+    import time
+    from backend.database import get_article_sprint_verified_sample, upsert_article_sprint_set
+    words = get_article_sprint_verified_sample(theme_key, size)
+    seen: set[str] = set()
+    uniq: list[dict] = []
+    for w in words:
+        k = str(w.get("w") or "").lower()
+        if k and k not in seen:
+            seen.add(k)
+            uniq.append({"w": w["w"], "a": str(w["a"]).lower(), "ru": w.get("ru") or ""})
+    random.shuffle(uniq)
+    if len(uniq) < PRACTICE_MIN:
+        return {"status": "insufficient", "theme_key": theme_key, "available": len(uniq)}
+    set_id = f"asp_{int(user_id)}_{theme_key}_{int(time.time())}"
+    upsert_article_sprint_set(
+        set_id=set_id, kind="practice", play_date=play_date,
+        theme_key=theme_key, words=uniq, owner_user_id=int(user_id),
+    )
+    return {"status": "ready", "set_id": set_id, "theme_key": theme_key, "word_count": len(uniq)}

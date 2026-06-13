@@ -18628,8 +18628,10 @@ async def admin_artikel_play_command(update: Update, context: CallbackContext) -
     if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
         await message.reply_text("Allowed users only.")
         return
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-        "⚡ Играть Artikel Sprint", url=get_webapp_deeplink("ans_as_0"))]])
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚡ Играть Artikel Sprint", url=get_webapp_deeplink("ans_as_0"))],
+        [InlineKeyboardButton("🎯 Своя тема (Premium)", url=get_webapp_deeplink("ans_asp_0"))],
+    ])
     await message.reply_text(
         "⚡ <b>Artikel Sprint</b> — 2 минуты, тапай der/die/das как можно быстрее 👇",
         parse_mode="HTML", reply_markup=kb,
@@ -20875,8 +20877,10 @@ async def _send_scheduled_artikel_sprint(context: CallbackContext) -> None:
     targets = await _collect_quiz_delivery_user_targets(context)
     if not targets:
         return
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-        "⚡ Играть (2 минуты)", url=get_webapp_deeplink("ans_as_0"))]])
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚡ Играть (2 минуты)", url=get_webapp_deeplink("ans_as_0"))],
+        [InlineKeyboardButton("🎯 Своя тема (Premium)", url=get_webapp_deeplink("ans_asp_0"))],
+    ])
     caption = (
         "⚡ *Artikel Sprint*\n\n"
         "2 минуты — успей указать *der/die/das* для как можно большего числа слов!\n"

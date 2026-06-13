@@ -670,3 +670,13 @@ html[data-scheme="light"] .ans-why-wrong { color: #92400e; }
 .as-cert-place { font-size: 26px; font-weight: 900; margin-top: 6px; }
 .as-cert-sub { font-size: 15px; opacity: .85; margin-top: 4px; }
 .as-cert-foot { font-size: 12.5px; opacity: .6; margin-top: 10px; letter-spacing: .02em; }
+
+/* Artikel Sprint — theme picker (Pro practice) */
+.as-themes { display: flex; flex-direction: column; gap: 8px; max-height: 55vh; overflow-y: auto; margin: 6px 0 14px; }
+.as-theme-btn {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 14px 16px; border: none; border-radius: 14px; cursor: pointer;
+  background: rgba(148,163,184,.14); color: inherit; font: inherit; font-size: 16px; font-weight: 600;
+}
+.as-theme-btn:active { transform: scale(.98); }
+.as-theme-cnt { font-size: 13px; opacity: .6; }

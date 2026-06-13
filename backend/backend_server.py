@@ -22684,7 +22684,8 @@ def artikel_submit():
         answered = int(prev.get("answered", answered))
     # Overtake plaques: a fresh submission can push others down. Notify whoever
     # dropped — reuses the shared overtaken outbox + Smurf plaque (bot polls + DMs).
-    if recorded:
+    # Only the shared DAILY set is competitive; practice sets are solo (no rank).
+    if recorded and str(s.get("kind") or "") == "daily":
         try:
             from backend.database import (
                 list_article_sprint_results_ranked,
@@ -22716,11 +22717,77 @@ def artikel_submit():
                     )
         except Exception:
             logging.warning("artikel overtake enqueue failed set=%s", set_id, exc_info=True)
-    ranking = compute_article_sprint_ranking(set_id=set_id, user_id=int(user_id))
+    ranking = (compute_article_sprint_ranking(set_id=set_id, user_id=int(user_id))
+               if str(s.get("kind") or "") == "daily" else None)
     return jsonify({
         "ok": True, "correct": correct, "answered": answered, "total": total,
         "pct": round(100 * correct / answered) if answered else 0,
         "items": items, "already_played": (not recorded), "ranking": ranking,
+    })
+
+
+def _artikel_user_is_pro(user_id: int) -> bool:
+    try:
+        ent, _sub = _resolve_user_entitlement(
+            user_id=int(user_id), now_ts_utc=datetime.now(timezone.utc), tz="Europe/Vienna")
+        return str(ent.get("effective_mode") or "free").lower() in {"pro", "trial"}
+    except Exception:
+        return False
+
+
+@app.route("/api/webapp/artikel/themes", methods=["POST"])
+def artikel_themes():
+    """Pro-only: list themes (with enough verified words) for the personal
+    'choose your theme' practice picker."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    if not _artikel_user_is_pro(int(user_id)):
+        return jsonify({"ok": False, "error_code": "pro_required",
+                        "error": "Выбор своей темы доступен на Premium. Системная игра — каждый день для всех."}), 200
+    from backend.database import ensure_article_sprint_schema, list_article_sprint_themes
+    ensure_article_sprint_schema()
+    from backend.article_sprint_sets import PRACTICE_MIN
+    rows = list_article_sprint_themes()
+    themes = [
+        {"theme_key": r["theme_key"], "label_de": r["label_de"], "label_ru": r["label_ru"],
+         "count": int(r["verified_count"])}
+        for r in rows if int(r.get("verified_count") or 0) >= PRACTICE_MIN
+    ]
+    return jsonify({"ok": True, "themes": themes})
+
+
+@app.route("/api/webapp/artikel/practice", methods=["POST"])
+def artikel_practice():
+    """Pro-only: build a fresh solo practice set from one of the 21 themes."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    if not _artikel_user_is_pro(int(user_id)):
+        return jsonify({"ok": False, "error_code": "pro_required",
+                        "error": "Тренировка по своей теме доступна на Premium."}), 200
+    payload = request.get_json(silent=True) or {}
+    theme_key = str(payload.get("theme_key") or "").strip()
+    from backend.database import ensure_article_sprint_schema, get_article_sprint_theme
+    ensure_article_sprint_schema()
+    theme = get_article_sprint_theme(theme_key)
+    if not theme:
+        return jsonify({"ok": False, "error": "Тема не найдена"}), 404
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo
+    from backend.article_sprint_sets import build_practice_set
+    play_date = _dt.now(ZoneInfo("Europe/Vienna")).date()
+    built = build_practice_set(theme_key, int(user_id), play_date)
+    if built.get("status") != "ready":
+        return jsonify({"ok": False, "error_code": "theme_not_ready",
+                        "error": "В этой теме пока мало слов. Выбери другую."}), 200
+    from backend.database import get_article_sprint_set
+    s = get_article_sprint_set(built["set_id"])
+    return jsonify({
+        "ok": True, "set_id": built["set_id"],
+        "theme_label": theme.get("label_de") or theme_key,
+        "words": (s or {}).get("words") or [], "duration_s": 120,
+        "already_played": False, "result": None,
     })
 
 

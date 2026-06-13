@@ -5,9 +5,10 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 // The official score is re-graded server-side on submit.
 const ARTICLES = ['der', 'die', 'das'];
 
-export default function ArtikelSprintGame({ api, haptic, onClose }) {
-  const [phase, setPhase] = useState('loading'); // loading|intro|countdown|playing|done|error
+export default function ArtikelSprintGame({ api, haptic, onClose, practice = false }) {
+  const [phase, setPhase] = useState('loading'); // loading|themepick|intro|countdown|playing|done|error
   const [meta, setMeta] = useState(null);
+  const [themes, setThemes] = useState([]);
   const [error, setError] = useState('');
   const [idx, setIdx] = useState(0);
   const [left, setLeft] = useState(120);
@@ -24,11 +25,15 @@ export default function ArtikelSprintGame({ api, haptic, onClose }) {
     let cancelled = false;
     (async () => {
       try {
+        if (practice) {
+          const data = await api('/api/webapp/artikel/themes', {});
+          if (cancelled) return;
+          if (!data.ok) { setError(data.error || 'Доступно на Premium'); setPhase('error'); return; }
+          setThemes(data.themes || []); setPhase('themepick'); return;
+        }
         const data = await api('/api/webapp/artikel/today', {});
         if (cancelled) return;
-        if (!data.ok) {
-          setError(data.error || 'Набор недоступен'); setPhase('error'); return;
-        }
+        if (!data.ok) { setError(data.error || 'Набор недоступен'); setPhase('error'); return; }
         setMeta(data);
         wordsRef.current = data.words || [];
         if (data.already_played && data.result) { setResult({ ...data.result, items: [] }); setPhase('done'); }
@@ -36,6 +41,18 @@ export default function ArtikelSprintGame({ api, haptic, onClose }) {
       } catch (e) { if (!cancelled) { setError(String(e.message || e)); setPhase('error'); } }
     })();
     return () => { cancelled = true; };
+  }, [api, practice]);
+
+  const pickTheme = useCallback(async (themeKey) => {
+    setPhase('loading');
+    try {
+      const data = await api('/api/webapp/artikel/practice', { theme_key: themeKey });
+      if (!data.ok) { setError(data.error || 'Тема недоступна'); setPhase('error'); return; }
+      setMeta(data);
+      wordsRef.current = data.words || [];
+      setLeft(data.duration_s || 120);
+      setPhase('intro');
+    } catch (e) { setError(String(e.message || e)); setPhase('error'); }
   }, [api]);
 
   useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
@@ -98,6 +115,21 @@ export default function ArtikelSprintGame({ api, haptic, onClose }) {
       <div className="ans-verdict">⚡ Artikel Sprint</div>
       <div className="ans-explain">{error}</div>
       <button className="ans-btn" onClick={onClose}>Schließen</button>
+    </>);
+  } else if (phase === 'themepick') {
+    cls = 'as-themepick';
+    body = (<>
+      <div className="as-eyebrow">⚡ Artikel Sprint · своя тема</div>
+      <div className="as-rules">Выбери тему — 2 минуты тренировки. <b>Premium</b>.</div>
+      <div className="as-themes">
+        {themes.map((t) => (
+          <button key={t.theme_key} type="button" className="as-theme-btn" onClick={() => pickTheme(t.theme_key)}>
+            <span>{t.label_ru || t.label_de}</span>
+            <span className="as-theme-cnt">{t.count}</span>
+          </button>
+        ))}
+      </div>
+      <button className="ans-btn-ghost" onClick={onClose}>Später</button>
     </>);
   } else if (phase === 'intro') {
     cls = 'as-intro';

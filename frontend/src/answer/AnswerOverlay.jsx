@@ -32,7 +32,7 @@ function getInitData() {
 // start_param: ans_rb_123 / ans_cw_45 / ans_ag_7 / ans_ls_3 / ans_qf_9 / ans_au_2
 //   ans_qfp_<poll_id> — poll-scoped freeform (button attached under the poll)
 function parseStartParam(startParam) {
-  const m = /^ans_(rb|cw|ag|ls|qf|qfp|sp|au|as)_(\d+)$/.exec(String(startParam || '').trim().toLowerCase());
+  const m = /^ans_(rb|cw|ag|ls|qf|qfp|sp|au|asp|as)_(\d+)$/.exec(String(startParam || '').trim().toLowerCase());
   if (!m) return null;
   // qfp's id is a big Telegram poll_id → keep it a string (Number() loses precision).
   return { kind: m[1], id: m[1] === 'qfp' ? m[2] : Number(m[2]) };
@@ -363,7 +363,7 @@ export default function AnswerOverlay({ startParam }) {
 
   useEffect(() => {
     if (!parsed) { setFatal('Ungültiger Link.'); setMetaLoading(false); return; }
-    if (parsed.kind === 'sp' || parsed.kind === 'as') { setMetaLoading(false); return; }  // these games load themselves
+    if (parsed.kind === 'sp' || parsed.kind === 'as' || parsed.kind === 'asp') { setMetaLoading(false); return; }  // these games load themselves
     let cancelled = false;
     (async () => {
       try {
@@ -470,6 +470,9 @@ export default function AnswerOverlay({ startParam }) {
   }
   if (kind === 'as') {
     return <ArtikelSprintGame api={api} haptic={haptic} onClose={close} />;
+  }
+  if (kind === 'asp') {
+    return <ArtikelSprintGame practice api={api} haptic={haptic} onClose={close} />;
   }
   const isRebus = kind === 'rb';
   const isAnagram = kind === 'ag';
