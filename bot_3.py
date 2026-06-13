@@ -20661,6 +20661,10 @@ def _send_plan_groups() -> list[dict]:
         {"emoji": "🎨", "title": "Картинка-квиз", "slots": [(h, m, "") for (h, m) in sorted(QUIZ_IMAGE_SLOT_TIMES)],
          "table": "bt_3_image_quiz_dispatches", "kind": "createdH"},
     ]
+    # image_quiz is retired by default (replaced by the Pin-Bild Aufgabe). Hide its
+    # slots from the plan while off, so they don't sit forever as phantom "not sent".
+    if not _image_quiz_enabled():
+        groups = [g for g in groups if g["table"] != "bt_3_image_quiz_dispatches"]
     return groups
 
 

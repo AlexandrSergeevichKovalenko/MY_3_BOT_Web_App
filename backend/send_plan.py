@@ -45,6 +45,24 @@ PLAN_GROUPS = [
 _GRACE_MIN = 8
 
 
+def _image_quiz_enabled() -> bool:
+    # Mirror bot_3._image_quiz_enabled — image_quiz is retired by default
+    # (replaced by the Pin-Bild Aufgabe). Don't show its slots in the plan while
+    # it's off, otherwise they sit forever as a phantom "not sent".
+    import os
+    return (os.getenv("IMAGE_QUIZ_ENABLED") or "false").strip().lower() in ("1", "true", "yes")
+
+
+def _plan_groups_active() -> list:
+    groups = []
+    image_quiz_on = _image_quiz_enabled()
+    for g in PLAN_GROUPS:
+        if g["table"] == "bt_3_image_quiz_dispatches" and not image_quiz_on:
+            continue
+        groups.append(g)
+    return groups
+
+
 def _slot_status(kind: str, h: int, m: int, dispatched, now_minute: int) -> str:
     if kind == "listening":
         sent = bool(dispatched)
@@ -84,7 +102,7 @@ def build_plan_timeline(plan_date, now_minute: int) -> dict:
 
     rows = []
     done = failed = 0
-    for g in PLAN_GROUPS:
+    for g in _plan_groups_active():
         dispatched = _dispatched(g)
         for (h, m, sub) in g["slots"]:
             st = _slot_status(g["kind"], h, m, dispatched, now_minute)
