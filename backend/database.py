@@ -1961,6 +1961,10 @@ CLOUDFLARE_R2_STORAGE_MONTHLY_BASE_LIMIT_MB = max(0, _env_int("CLOUDFLARE_R2_STO
 CLOUDFLARE_R2_STORAGE_MONTHLY_BASE_LIMIT_GB = max(0, _env_int("CLOUDFLARE_R2_STORAGE_MONTHLY_BASE_LIMIT_GB", 10))
 STRIPE_MONTHLY_BASE_LIMIT_PAYMENTS = max(0, _env_int("STRIPE_MONTHLY_BASE_LIMIT_PAYMENTS", 0))
 READER_AUDIO_PRO_MONTHLY_LIMIT_CHARS = max(1, _env_int("READER_AUDIO_PRO_MONTHLY_LIMIT_CHARS", 10_000))
+# Hard ceiling across ALL users for Reader Audio (google_tts) chars per month —
+# protects the external TTS budget no matter how many PRO users there are. Set
+# below the provider's monthly free allotment (e.g. 1M) to be safe.
+READER_AUDIO_GLOBAL_MONTHLY_LIMIT_CHARS = max(1, _env_int("READER_AUDIO_GLOBAL_MONTHLY_LIMIT_CHARS", 900_000))
 
 def _reader_audio_unlimited_user_ids() -> frozenset[int]:
     raw = os.getenv("READER_AUDIO_UNLIMITED_USER_IDS", "")
@@ -27610,6 +27614,99 @@ def enforce_reader_audio_pro_monthly_limit(
             "message": (
                 f"Лимит Reader Audio на месяц исчерпан: {used_out} / {limit_out} chars. "
                 f"Следующий сброс: {_next_local_month_start_iso(now_ts_utc, tz=tz)}"
+            ),
+        }
+    return None
+
+
+def get_global_action_month_usage(
+    action_type: str,
+    *,
+    units_type: str = "chars",
+    provider: str | None = None,
+    period_month: date | datetime | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+) -> float:
+    """Total usage across ALL users for the current month (no user filter).
+    Mirrors get_user_action_month_usage but aggregates globally."""
+    action_value = str(action_type or "").strip().lower()
+    units_type_value = str(units_type or "").strip().lower() or "chars"
+    provider_value = str(provider or "").strip().lower() or None
+    if not action_value:
+        return 0.0
+    period_start = _month_period_start(period_month, tz=tz)
+    if period_start.month == 12:
+        period_end = date(period_start.year + 1, 1, 1)
+    else:
+        period_end = date(period_start.year, period_start.month + 1, 1)
+    provider_sql = ""
+    provider_params: list = []
+    if provider_value:
+        provider_sql = " AND provider = %s"
+        provider_params.append(provider_value)
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT COALESCE(SUM(units_value), 0)
+                FROM bt_3_billing_events
+                WHERE action_type = %s
+                  AND units_type = %s
+                  {provider_sql}
+                  AND event_time >= %s
+                  AND event_time < %s;
+                """,
+                (
+                    action_value,
+                    units_type_value,
+                    *provider_params,
+                    datetime.combine(period_start, dt_time.min, tzinfo=timezone.utc),
+                    datetime.combine(period_end, dt_time.min, tzinfo=timezone.utc),
+                ),
+            )
+            row = cursor.fetchone()
+    return float((row or [0])[0] or 0.0)
+
+
+def enforce_reader_audio_global_monthly_limit(
+    *,
+    user_id: int,
+    requested_units: float = 1.0,
+    now_ts_utc: datetime | None = None,
+    tz: str = TRIAL_POLICY_TZ,
+) -> dict | None:
+    """Hard global ceiling for Reader Audio chars/month across all users. Returns
+    an error dict (→ 429) if this request would push the total over the limit, so
+    one (or many) users cannot drain the external TTS budget. Whitelisted users
+    bypass (trusted admins)."""
+    if int(user_id) in READER_AUDIO_UNLIMITED_USER_IDS:
+        return None
+    used_units = float(
+        get_global_action_month_usage(
+            "reader_audio_tts",
+            units_type="chars",
+            provider="google_tts",
+            period_month=now_ts_utc,
+            tz=tz,
+        )
+    )
+    requested = max(0.0, float(requested_units or 0.0))
+    limit_value = float(READER_AUDIO_GLOBAL_MONTHLY_LIMIT_CHARS)
+    if used_units + requested > limit_value:
+        used_out = int(round(used_units))
+        limit_out = int(round(limit_value))
+        return {
+            "error": "reader_audio_global_monthly_limit_exceeded",
+            "feature": "reader_audio_tts_global_monthly",
+            "limit": limit_out,
+            "used": used_out,
+            "requested": int(round(requested)),
+            "remaining": max(0, limit_out - used_out),
+            "unit": "chars",
+            "reset_at": _next_local_month_start_iso(now_ts_utc, tz=tz),
+            "message": (
+                "Сервис аудио-озвучки временно достиг месячного лимита. "
+                f"Сброс: {_next_local_month_start_iso(now_ts_utc, tz=tz)}"
             ),
         }
     return None

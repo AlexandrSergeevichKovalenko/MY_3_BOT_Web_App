@@ -466,6 +466,7 @@ from backend.database import (
     log_limit_runtime_event,
     build_free_limit_error,
     enforce_reader_audio_pro_monthly_limit,
+    enforce_reader_audio_global_monthly_limit,
     READER_AUDIO_UNLIMITED_USER_IDS,
     get_today_cost_eur,
     get_today_cost_eur_fast,
@@ -44037,6 +44038,20 @@ def reader_audio_export():
     )
     if reader_audio_limit_error:
         return jsonify(reader_audio_limit_error), 429
+    # Hard global ceiling across all users — protects the external TTS budget.
+    reader_audio_global_error = enforce_reader_audio_global_monthly_limit(
+        user_id=user_id_int,
+        requested_units=float(len(text_to_read)),
+        now_ts_utc=now_utc,
+        tz="Europe/Vienna",
+    )
+    if reader_audio_global_error:
+        logging.warning(
+            "reader_audio: GLOBAL monthly limit hit user_id=%s used=%s limit=%s requested=%s",
+            user_id_int, reader_audio_global_error.get("used"),
+            reader_audio_global_error.get("limit"), reader_audio_global_error.get("requested"),
+        )
+        return jsonify(reader_audio_global_error), 429
     language_for_tts = _normalize_short_lang_code(
         requested_language or _detect_reader_language(text_to_read, fallback=target_lang),
         fallback=_normalize_short_lang_code(target_lang, fallback="de"),
