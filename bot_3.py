@@ -22671,6 +22671,22 @@ async def handle_image_quiz_callback(update: Update, context: CallbackContext) -
 
 
 
+def _seed_admins_into_allowlist() -> None:
+    """Durably allow every env-admin via the DB too. is_telegram_user_allowed
+    short-circuits admins on the env var, but if a process ever fails to see
+    BOT_ADMIN_TELEGRAM_IDS (started before it was set / a stale instance), the
+    admin would be denied. Seeding them into bt_3_allowed_users gives a DB
+    fallback so the lookup still allows them. Idempotent (ON CONFLICT)."""
+    from backend.database import get_admin_telegram_ids, allow_telegram_user
+    ids = [int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0]
+    for aid in ids:
+        try:
+            allow_telegram_user(aid, added_by=aid, note="auto-seeded admin (startup)")
+        except Exception:
+            logging.warning("seed admin allowlist failed id=%s", aid, exc_info=True)
+    logging.info("startup: seeded %s admin id(s) into allow-list", len(ids))
+
+
 def main():
     global application
     bot_startup_completed_successfully = False
@@ -22709,6 +22725,13 @@ def main():
         enabled=True,
         category="schema_bootstrap",
         required_before_first_request=True,
+    )
+    _run_bot_startup_phase(
+        "seed_admin_allowlist",
+        _seed_admins_into_allowlist,
+        enabled=True,
+        category="readiness",
+        required_before_first_request=False,
     )
 
     #defaults = Defaults(timeout=60)  # увеличили таймаут до 60 секунд
