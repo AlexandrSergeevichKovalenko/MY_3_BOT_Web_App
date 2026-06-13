@@ -82,6 +82,7 @@ from backend.openai_manager import (
     run_dictionary_collocations,
     run_dictionary_collocations_multilang,
     run_generate_word_quiz,
+    run_quiz_quality_check,
     run_word_order_distractors,
     run_language_learning_private_question,
     run_language_learning_private_question_detailed,
@@ -14492,6 +14493,22 @@ def _normalize_quiz_payload(payload: dict, fallback: dict) -> dict:
     }
 
 
+def _quiz_has_trivial_duplicate_options(options: list[str]) -> bool:
+    """True if two options are identical up to punctuation/spacing/case — a real
+    "looks like the same answer twice". A genuine grammatical difference (e.g. one
+    letter of an adjective ending) survives normalization and is NOT flagged, and
+    pure reorderings differ in letter sequence so they are not flagged here either."""
+    seen: set[str] = set()
+    for opt in options:
+        norm = re.sub(r"[^a-zäöüß]", "", str(opt).lower())
+        if not norm:
+            continue
+        if norm in seen:
+            return True
+        seen.add(norm)
+    return False
+
+
 def _normalize_quiz_text(value: str) -> str:
     lowered = value.lower()
     cleaned = re.sub(r"[^a-zäöüßà-ÿ0-9\s'\-]", " ", lowered)
@@ -16579,13 +16596,35 @@ async def generate_word_quiz(entry: dict) -> dict | None:
         "usage_examples": usage_examples,
     }
 
-    payload = await run_generate_word_quiz(prompt_payload)
-    if not payload:
-        return _apply_quiz_freeform_option(fallback)
+    # Generate, then JUDGE before shipping: an LLM-judge verifies exactly one
+    # option is correct valid German and the distractors are clean near-misses;
+    # a deterministic guard rejects trivial duplicate options. Up to 2 attempts,
+    # else fall back to the basic (always-valid) quiz. Quizzes are prepared in a
+    # pool off the hot path, so the extra judge call is cheap in practice.
+    judge_enabled = os.getenv("WORD_QUIZ_JUDGE_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
+    for _attempt in range(2):
+        payload = await run_generate_word_quiz(prompt_payload)
+        if not payload:
+            continue
+        quiz = _normalize_quiz_payload(payload, fallback)
+        if quiz is fallback:
+            continue
+        if _quiz_has_trivial_duplicate_options(quiz.get("options") or []):
+            logging.info("word_quiz: rejected (trivial duplicate options) word=%s", word_ru)
+            continue
+        if judge_enabled:
+            verdict = await run_quiz_quality_check({
+                "question": quiz.get("question") or "",
+                "options": list(quiz.get("options") or []),
+                "correct_index": int(quiz.get("correct_option_id") or 0),
+                "quiz_type": quiz.get("quiz_type") or "",
+            })
+            if not verdict.get("ok"):
+                logging.info("word_quiz: judge rejected word=%s reason=%s", word_ru, verdict.get("reason"))
+                continue
+        return _apply_quiz_freeform_option(quiz)
 
-    quiz = _normalize_quiz_payload(payload, fallback)
-    quiz = _apply_quiz_freeform_option(quiz)
-    return quiz
+    return _apply_quiz_freeform_option(fallback)
 
 
 async def cleanup_quiz_cache(context: CallbackContext) -> None:

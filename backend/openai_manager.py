@@ -2906,11 +2906,34 @@ Pick ONE format:
    correct in meaning+register+collocation; distractors differ by a REAL nuance (false friend, wrong
    register, wrong collocation), not by being broken.
 
-Also return "explanation": ONE short Russian comment (≤180 chars) stating the RULE — why the correct
-answer is right and what the wrong ones get wrong. Concrete and useful, not dry.
+Also return "explanation": ONE Russian comment (≤180 chars) that NAMES the grammar rule the correct
+answer follows AND tersely flags what EACH wrong option violates, so the learner UNDERSTANDS instead of
+guessing. Example: "Верно: окончание -er (склонение после ein). A: -en неверно; C: 'existierend' не
+сказуемое; D: V2 — 'Derzeit ist es'." Concrete, rule-named, not dry.
 
 Return STRICT JSON with keys: question, options (array of 4 strings), correct_option_id (0-based int),
 quiz_type ("word_order"|"word_choice"|"translation"), explanation.
+""",
+"quiz_quality_check": """
+You are a STRICT validator for a German learning quiz. The question is in Russian; there are 4 German
+options and exactly ONE is marked correct.
+Input JSON: {"question": "...", "options": ["...","...","...","..."], "correct_index": <int>, "quiz_type": "..."}.
+
+Verify ALL of the following:
+1. CORRECT-IS-VALID: the option at correct_index is fully VALID, standard, grammatically correct German and
+   correctly answers the question. It must contain NO non-existent or misspelled German words
+   (e.g. "unterledigt" is NOT a word — the correct option must never contain such an invented word).
+2. EXACTLY-ONE: exactly one option is correct. Each of the other 3 must be clearly WRONG for an identifiable
+   reason (wrong adjective/case ending, wrong word, missing/extra word, wrong word order, etc.) — none may be
+   also-acceptable as a second correct answer.
+3. NO-TRIVIAL-DUPES: no two options are identical up to punctuation/spacing. (A real grammatical difference,
+   e.g. one letter of an adjective ending, is ALLOWED and expected — do NOT fail for that.)
+4. NO-SALAD: distractors are realistic near-misses, NOT random word-salad/scrambles that a non-German-speaker
+   could spot, and NOT obviously broken to the eye.
+
+Return STRICT JSON ONLY:
+{"ok": true|false, "reason": "<=12 words", "correct_is_valid_german": true|false, "exactly_one_correct": true|false}
+ok must be true ONLY if all four checks pass.
 """,
 "word_order_distractors": """
 You build a German grammar multiple-choice quiz from ONE given correct sentence.
@@ -5680,6 +5703,27 @@ async def run_generate_word_quiz(prompt_payload: dict) -> dict:
         return json.loads(content)
     except json.JSONDecodeError:
         return {}
+
+
+async def run_quiz_quality_check(payload: dict) -> dict:
+    """Judge a generated word-quiz before it ships: correct option must be valid
+    standard German, exactly one option correct, no trivial dupes, no salad.
+    Returns {"ok": bool, "reason": str}. On an LLM/parse error returns ok=True
+    (degrade — never block the pool on judge failure)."""
+    try:
+        content = await llm_execute(
+            task_name="quiz_quality_check",
+            system_instruction_key="quiz_quality_check",
+            user_message=json.dumps(payload, ensure_ascii=False),
+            poll_interval_seconds=2.0,
+        )
+        data = json.loads(content)
+    except Exception:
+        logging.warning("run_quiz_quality_check failed", exc_info=True)
+        return {"ok": True, "reason": "judge_error"}
+    if not isinstance(data, dict):
+        return {"ok": True, "reason": "judge_bad_payload"}
+    return {"ok": bool(data.get("ok")), "reason": str(data.get("reason") or "")[:80]}
 
 
 _AUFGABE_INSTRUCTION_KEYS = {
