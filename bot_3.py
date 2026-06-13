@@ -18326,6 +18326,53 @@ async def admin_rebus_reset_command(update: Update, context: CallbackContext) ->
     await status_msg.edit_text(text[:4000])
 
 
+async def admin_overtaken_images_command(update: Update, context: CallbackContext) -> None:
+    """Generate the rotating Smurf-style "you were overtaken" background images
+    (podium / race) via gpt-image-1 and store them in R2. Run once; the overtaken
+    plaque then picks one at random. /admin_overtaken_images"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    status_msg = await message.reply_text("Генерирую смурф-картинки «тебя обошли»…")
+
+    def _gen() -> dict:
+        from backend.image_generation_provider import generate_image_bytes
+        from backend.r2_storage import r2_put_bytes
+        from backend.overtaken_card import OVERTAKEN_IMAGE_PROMPTS, overtaken_bg_keys
+        keys = overtaken_bg_keys()
+        made = 0
+        errs: list[str] = []
+        for i, prompt in enumerate(OVERTAKEN_IMAGE_PROMPTS):
+            if i >= len(keys):
+                break
+            try:
+                res = generate_image_bytes(prompt=prompt, template_id=0, user_id=0)
+                data = bytes(res.get("data") or b"")
+                if not data:
+                    raise RuntimeError("empty image payload")
+                r2_put_bytes(keys[i], data, content_type="image/png",
+                             cache_control="public, max-age=86400")
+                made += 1
+            except Exception as exc:
+                errs.append(f"{i + 1}: {str(exc)[:120]}")
+        return {"made": made, "total": len(OVERTAKEN_IMAGE_PROMPTS), "errs": errs}
+
+    try:
+        result = await asyncio.to_thread(_gen)
+    except Exception as exc:
+        await status_msg.edit_text(f"Error: {exc}")
+        return
+    text = f"✅ Сгенерировано: {result.get('made')}/{result.get('total')} (R2: overtaken/smurf_*.png)"
+    if result.get("errs"):
+        text += "\n🔴 " + "\n".join(result["errs"][:5])
+    text += "\n\nКэш фонов обновится в течение ~10 мин (или после рестарта)."
+    await status_msg.edit_text(text[:4000])
+
+
 # ─────────────────────────────────────────────────────────────
 #  ARTICLE QUIZ (der/die/das) — send, callback, scheduler
 # ─────────────────────────────────────────────────────────────
@@ -19433,7 +19480,25 @@ _AU_FORMAT_LABELS = {
     "cloze": "Lückentext ✏️", "wortbildung": "Wortbildung 🔧",
     "transform": "Satztransformation 🔄", "error": "Fehler finden 🔍",
     "hoerluecke": "Hörlücke 🎧", "pin": "Finde im Bild 🖼",
+    "synonym": "Synonym 🔁", "antonym": "Antonym ↔️",
 }
+
+
+def _au_specific_suffix(fmt: str, payload: dict) -> str:
+    """A short, task-identifying snippet so two tasks of the SAME format are
+    distinguishable on the plaque (e.g. 'Synonym 🔁: bestätigen')."""
+    def _snip(s, n=40):
+        s = re.sub(r"\s+", " ", str(s or "").strip())
+        return (s[: n - 1].rstrip() + "…") if len(s) > n else s
+    if fmt in ("synonym", "antonym"):
+        return _snip(payload.get("wort"), 30)
+    if fmt in ("cloze", "wortbildung"):
+        return _snip(payload.get("satz"))
+    if fmt == "transform":
+        return _snip(payload.get("original"))
+    if fmt == "pin":
+        return _snip(payload.get("question_de"))
+    return ""
 
 
 async def _challenge_label(challenge_key: str) -> str:
@@ -19442,7 +19507,10 @@ async def _challenge_label(challenge_key: str) -> str:
         try:
             from backend.database import get_aufgabe_dispatch_by_id
             disp = await asyncio.to_thread(get_aufgabe_dispatch_by_id, int(did))
-            return _AU_FORMAT_LABELS.get(str((disp or {}).get("format") or ""), "Aufgabe ✏️")
+            fmt = str((disp or {}).get("format") or "")
+            base = _AU_FORMAT_LABELS.get(fmt, "Aufgabe ✏️")
+            suffix = _au_specific_suffix(fmt, (disp or {}).get("payload") or {})
+            return f"{base}: {suffix}" if suffix else base
         except Exception:
             return "Aufgabe ✏️"
     return _CHALLENGE_KIND_LABELS.get(kind, "Aufgabe")
@@ -19453,6 +19521,24 @@ def _fmt_secs(ms) -> str:
         return f"{(int(ms) / 1000):.1f}с"
     except (TypeError, ValueError):
         return "—"
+
+
+async def _fetch_avatar_bytes(context: CallbackContext, user_id: int) -> bytes | None:
+    """Download a Telegram user's current profile photo (largest size). Returns
+    None if they have none or it's not accessible — the card then shows no avatar."""
+    if not user_id:
+        return None
+    try:
+        photos = await context.bot.get_user_profile_photos(int(user_id), limit=1)
+        if getattr(photos, "total_count", 0) and photos.photos:
+            sizes = photos.photos[0]
+            tg_file = await context.bot.get_file(sizes[-1].file_id)
+            buf = io.BytesIO()
+            await tg_file.download_to_memory(buf)
+            return buf.getvalue()
+    except Exception:
+        logging.debug("overtaken: avatar fetch failed uid=%s", user_id, exc_info=True)
+    return None
 
 
 async def _send_challenge_notifications_job(context: CallbackContext) -> None:
@@ -19480,12 +19566,22 @@ async def _send_challenge_notifications_job(context: CallbackContext) -> None:
                     except Exception:
                         logging.warning("overtaken: edit markup failed id=%s", n.get("id"), exc_info=True)
                 else:
-                    from backend.overtaken_card import render_overtaken_card
-                    png = await asyncio.to_thread(render_overtaken_card, label)
+                    from backend.overtaken_card import render_overtaken_card, pick_overtaken_background
+                    overtaker = str(p.get("above_name") or p.get("leader_name") or "").strip()
+                    above_uid = int(p.get("above_user_id") or p.get("leader_user_id") or 0)
+                    avatar = await _fetch_avatar_bytes(context, above_uid) if above_uid else None
+                    bg = await asyncio.to_thread(pick_overtaken_background)
+                    png = await asyncio.to_thread(
+                        render_overtaken_card, label,
+                        overtaker_name=overtaker, avatar_bytes=avatar, background_bytes=bg,
+                    )
+                    cap = (
+                        f"😔 Тебя обошёл <b>{html.escape(overtaker)}</b> в «{html.escape(label)}»"
+                        if overtaker else f"😔 Тебя обошли в «{html.escape(label)}»"
+                    )
                     msg = await context.bot.send_photo(
                         chat_id=int(n["user_id"]), photo=io.BytesIO(png),
-                        caption=f"😔 Тебя обошли в «{html.escape(label)}»",
-                        parse_mode="HTML", reply_markup=btn)
+                        caption=cap, parse_mode="HTML", reply_markup=btn)
                     await asyncio.to_thread(
                         set_challenge_notification_message_id, int(n["id"]), int(msg.message_id))
                 await asyncio.to_thread(mark_challenge_notification_sent, int(n["id"]))
@@ -22682,6 +22778,7 @@ def main():
     application.add_handler(CommandHandler("admin_rebus_recheck", admin_rebus_recheck_command))
     application.add_handler(CommandHandler("admin_rebus_reset", admin_rebus_reset_command))
     application.add_handler(CommandHandler("admin_rebus_audit", admin_rebus_audit_command))
+    application.add_handler(CommandHandler("admin_overtaken_images", admin_overtaken_images_command))
     application.add_handler(CommandHandler("admin_aq_send", admin_article_quiz_send_command))
     application.add_handler(CommandHandler("admin_aq_pool", admin_article_quiz_pool_command))
     application.add_handler(CommandHandler("addartikel", admin_add_artikel_command))

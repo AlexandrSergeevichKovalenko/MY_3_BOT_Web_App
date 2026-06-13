@@ -22427,6 +22427,10 @@ def submit_answer():
                     p = place_of.get(uid)
                     if not p or p < 2:
                         continue
+                    # The player directly ahead (place p-1) is who just overtook
+                    # this user; for 2nd place that's the leader. Carry their name
+                    # + id so the plaque can show "Тебя обошёл <name>" + avatar.
+                    above = full[p - 2] if 0 <= (p - 2) < len(full) else full[0]
                     upsert_overtaken_notification(
                         user_id=uid, challenge_key=challenge_key,
                         payload={
@@ -22434,7 +22438,10 @@ def submit_answer():
                             "place": int(p),
                             "total_correct": len(full),
                             "leader_name": str(full[0]["name"] or ""),
+                            "leader_user_id": int(full[0]["user_id"]),
                             "leader_time_ms": int(full[0]["time_ms"]),
+                            "above_name": str(above["name"] or ""),
+                            "above_user_id": int(above["user_id"]),
                             "your_time_ms": int(time_of.get(uid, 0)),
                         },
                     )
@@ -47668,23 +47675,15 @@ def _dispatch_plan_period_progress(
                 f"Чтение (мин): {m_reading.get('actual', 0)} / {m_reading.get('goal', 0)} (прогноз {m_reading.get('forecast', 0)})"
             )
 
-            target_chat_id = _resolve_user_delivery_chat_id(user_id, job_name=f"_dispatch_plan_period_progress.{normalized_period}")
-            if int(target_chat_id) < 0:
-                _send_group_photo(
-                    image_bytes=chart_png,
-                    filename=f"plan_{normalized_period}_{user_id}_{source_lang}_{target_lang}_{target_date.isoformat()}.png",
-                    caption=caption,
-                    chat_id=int(target_chat_id),
-                )
-                sent_group += 1
-            else:
-                _send_private_photo(
-                    user_id=int(target_chat_id),
-                    image_bytes=chart_png,
-                    filename=f"plan_{normalized_period}_{user_id}_{source_lang}_{target_lang}_{target_date.isoformat()}.png",
-                    caption=caption,
-                )
-                sent_private += 1
+            # Personal goals are per-user and private — always DM them to the
+            # player, never the shared group (even in a group-delivery setup).
+            _send_private_photo(
+                user_id=int(user_id),
+                image_bytes=chart_png,
+                filename=f"plan_{normalized_period}_{user_id}_{source_lang}_{target_lang}_{target_date.isoformat()}.png",
+                caption=caption,
+            )
+            sent_private += 1
         except Exception as exc:
             errors.append(f"user {user_id} {source_lang}->{target_lang}: {exc}")
 
