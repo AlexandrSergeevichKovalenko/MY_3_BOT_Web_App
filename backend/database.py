@@ -34426,8 +34426,9 @@ def ensure_article_sprint_schema() -> None:
 
 
 def sync_article_sprint_themes_from_code() -> dict:
-    """Upsert the theme registry from article_sprint_themes.ARTICLE_SPRINT_THEMES.
-    Idempotent; preserves any subtopics already authored in the DB."""
+    """Upsert the theme registry (incl. subtopics) from
+    article_sprint_themes.ARTICLE_SPRINT_THEMES. Code is the source of truth."""
+    import json
     from backend.article_sprint_themes import article_sprint_themes
     ensure_article_sprint_schema()
     rows = article_sprint_themes()
@@ -34437,15 +34438,19 @@ def sync_article_sprint_themes_from_code() -> dict:
             for t in rows:
                 cursor.execute(
                     """
-                    INSERT INTO bt_3_article_sprint_themes (theme_key, label_de, label_ru, target_count, updated_at)
-                    VALUES (%s, %s, %s, %s, NOW())
+                    INSERT INTO bt_3_article_sprint_themes
+                        (theme_key, label_de, label_ru, subtopics_json, target_count, updated_at)
+                    VALUES (%s, %s, %s, %s::jsonb, %s, NOW())
                     ON CONFLICT (theme_key) DO UPDATE SET
                         label_de = EXCLUDED.label_de,
                         label_ru = EXCLUDED.label_ru,
+                        subtopics_json = EXCLUDED.subtopics_json,
                         target_count = EXCLUDED.target_count,
                         updated_at = NOW();
                     """,
-                    (t["key"], t["label_de"], t["label_ru"], int(t["target_count"])),
+                    (t["key"], t["label_de"], t["label_ru"],
+                     json.dumps(t.get("subtopics") or [], ensure_ascii=False),
+                     int(t["target_count"])),
                 )
                 synced += 1
         conn.commit()
