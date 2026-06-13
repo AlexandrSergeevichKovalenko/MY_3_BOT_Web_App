@@ -32422,10 +32422,20 @@ def sync_rebus_bank_from_code() -> dict:
     otherwise a removed (e.g. broken) entry would linger in the DB and keep
     being scheduled, since pick selection only filters on retired = FALSE.
     """
-    from backend.rebus_bank import REBUS_COMPOUND_BANK
+    from backend.rebus_bank import REBUS_COMPOUND_BANK, validate_rebus_entry_consistency
     inserted = 0
+    skipped_inconsistent = 0
     code_ids = []
     for entry in REBUS_COMPOUND_BANK:
+        # Root-cause guard: never ship an entry whose part word does not match the
+        # compound (image-vs-text desync, e.g. "Birne" mislabelled as «яйцо»).
+        consistency_error = validate_rebus_entry_consistency(entry)
+        if consistency_error:
+            skipped_inconsistent += 1
+            logging.error(
+                "sync_rebus_bank: REJECTED %s — %s", entry.get("id"), consistency_error
+            )
+            continue
         try:
             upsert_rebus_bank_entry(entry)
             inserted += 1
@@ -32450,7 +32460,12 @@ def sync_rebus_bank_from_code() -> dict:
                 conn.commit()
         except Exception:
             logging.warning("sync_rebus_bank: retire-stale failed", exc_info=True)
-    return {"synced": inserted, "total": len(REBUS_COMPOUND_BANK), "retired_stale": retired}
+    return {
+        "synced": inserted,
+        "total": len(REBUS_COMPOUND_BANK),
+        "retired_stale": retired,
+        "skipped_inconsistent": skipped_inconsistent,
+    }
 
 
 def get_rebus_component_image(word: str) -> dict | None:

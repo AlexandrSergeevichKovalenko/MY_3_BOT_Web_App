@@ -2243,9 +2243,15 @@ _VR_GERMAN_STEREOTYPE_TROPES: list[str] = [
 
 # -------------------------------------------------------------------------
 
+# SITUATIONAL_REBUS is intentionally NOT generated anymore: its scenes are
+# rendered by gpt-image-1 with no post-render verification, so ambiguous/contradictory
+# images shipped (e.g. a woman running away from a train while the answer says she is
+# rushing to catch it), and the format drifted into low-value reading comprehension.
+# Only VISUAL_WORD_REBUS (German compound decoding) is generated — unambiguous image,
+# high learning value. It stays in _VR_ALLOWED_QUIZ_TYPES so any already-queued
+# SITUATIONAL blueprint still validates and renders out gracefully.
 _VR_QUIZ_TYPE_WEIGHTS = (
-    ("VISUAL_WORD_REBUS",  65),
-    ("SITUATIONAL_REBUS",  35),
+    ("VISUAL_WORD_REBUS",  100),
 )
 
 _VR_DIFFICULTY_WEIGHTS = (

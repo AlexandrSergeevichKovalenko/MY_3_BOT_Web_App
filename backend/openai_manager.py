@@ -5842,10 +5842,12 @@ def run_vision_locate(image_bytes: bytes, target_label: str, *, mime: str = "ima
     return {"present": True, "bbox": [round(x, 4), round(y, 4), round(w, 4), round(h, 4)]}
 
 
-def run_image_depicts(image_bytes: bytes, expected: str, *, forbid: str = "", mime: str = "image/png") -> dict:
+def run_image_depicts(image_bytes: bytes, expected: str, *, meaning: str = "", forbid: str = "", mime: str = "image/png") -> dict:
     """Vision gate for a generated rebus component image (pool time, off the hot
-    path). Verifies the single main object IS `expected` in its plain literal
-    meaning, and does NOT reveal `forbid` (the puzzle's hidden compound answer).
+    path). Verifies the single main object IS `expected` (the German word) in its
+    plain literal meaning, that `expected` and its Russian `meaning` denote the
+    SAME object (catches word/meaning desync like Birne=pear mislabelled «яйцо»),
+    and that the image does NOT reveal `forbid` (the puzzle's hidden compound answer).
     Returns {"ok": bool, "reason": str}. ok=False → reject the item (no silent
     fallback). On a vision INFRA error we return ok=True (degrade, don't starve
     the pool) — only a real negative verdict rejects."""
@@ -5860,8 +5862,14 @@ def run_image_depicts(image_bytes: bytes, expected: str, *, forbid: str = "", mi
         f' The image MUST NOT depict, contain, or hint at a "{forbid}" — that is the puzzle\'s hidden answer.'
         if forbid else ""
     )
+    meaning_line = (
+        f' In Russian this word means "{meaning}". The German word and its Russian translation MUST denote the '
+        f'SAME physical object; if they clearly denote DIFFERENT objects (data error, e.g. German "Birne"=pear '
+        f'but Russian says egg), reject with reason "word/meaning mismatch".'
+        if str(meaning or "").strip() else ""
+    )
     prompt = (
-        f'Single illustration for a vocabulary rebus. Intended object: "{expected}". '
+        f'Single illustration for a vocabulary rebus. Intended object: "{expected}".{meaning_line} '
         f'Judge STRICTLY: is the main, prominent object unambiguously a "{expected}" in its plain, '
         f'literal, dictionary meaning?{forbid_line} '
         'Reject (ok=false) if the main object is a DIFFERENT thing, a related-but-wrong object '

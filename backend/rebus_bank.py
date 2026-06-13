@@ -65,6 +65,7 @@ COMPONENT_IMAGE_PROMPTS: dict[str, str] = {
     "Rose":         f"A single red rose with stem, {_STYLE}",
     "Apfel":        f"A shiny red apple, {_STYLE}",
     "Birne":        f"A yellow pear, {_STYLE}",
+    "Ei":           f"A single whole white chicken egg, smooth intact shell, standing upright, {_STYLE}",
     "Kirsche":      f"Two red cherries on a stem, {_STYLE}",
     "Orange":       f"A whole orange fruit with leaf, {_STYLE}",
     "Zitrone":      f"A yellow lemon, {_STYLE}",
@@ -880,7 +881,7 @@ REBUS_COMPOUND_BANK: list[dict] = [
         "meaning_ru": "кухонный таймер (яйцевидный)",
         "difficulty": "B1",
         "category": "food",
-        "parts": [{"word": "Birne", "meaning_ru": "яйцо (форма)"}, {"word": "Uhr", "meaning_ru": "часы"}],
+        "parts": [{"word": "Ei", "meaning_ru": "яйцо"}, {"word": "Uhr", "meaning_ru": "часы"}],
         "wrong_options": ["Küchenuhr", "Eierbecher", "Sanduhr"],
         "explanation_ru": "Ei (яйцо) + Uhr (часы) = Eieruhr — таймер в форме яйца",
     },
@@ -990,7 +991,7 @@ REBUS_COMPOUND_BANK: list[dict] = [
         "meaning_ru": "яичница-глазунья",
         "difficulty": "B1",
         "category": "food",
-        "parts": [{"word": "Spiegel", "meaning_ru": "зеркало"}, {"word": "Birne", "meaning_ru": "яйцо"}],
+        "parts": [{"word": "Spiegel", "meaning_ru": "зеркало"}, {"word": "Ei", "meaning_ru": "яйцо"}],
         "wrong_options": ["Rührei", "Spiegelkarpfen", "Omelette"],
         "explanation_ru": "Spiegel (зеркало) + Ei (яйцо) = Spiegelei — яичница-глазунья напоминает зеркало",
     },
@@ -1487,3 +1488,79 @@ def get_rebus_bank_stats() -> dict:
     from collections import Counter
     c = Counter(e["difficulty"] for e in REBUS_COMPOUND_BANK)
     return {"total": len(REBUS_COMPOUND_BANK), "A2": c["A2"], "B1": c["B1"], "B2": c["B2"]}
+
+
+# ─── Root-cause guard against word/meaning/compound desync ─────────────────────
+# A rebus part has THREE coupled fields filled in by hand (or by GPT):
+#   • word        → drives the rendered IMAGE (COMPONENT_IMAGE_PROMPTS[word])
+#   • meaning_ru  → drives the TEXT shown to the learner
+#   • compound    → the answer the two parts must add up to
+# Nothing used to verify these agree, so a missing component (e.g. "Ei") could be
+# faked by reusing a depictable word with a relabelled meaning_ru ("Birne"→«яйцо»):
+# the image renders the real word (a pear) while the text claims an egg. The vision
+# gate only checks image-vs-German-word, so it is blind to this. The guard below
+# enforces that every part word is an actual visual component of the compound.
+
+def _fold_de(value: str) -> str:
+    return (
+        str(value or "").lower()
+        .replace("ä", "a").replace("ö", "o").replace("ü", "u").replace("ß", "ss")
+    )
+
+
+# Documented, intentional visual stand-ins where the part word is NOT a literal
+# substring of the compound but is a deliberate, sensible depiction of the
+# component's meaning. Keep this list TINY and explicit — it is the only escape
+# hatch, so a genuine stub (pear-for-egg) still fails loudly instead of shipping.
+_REBUS_SEMANTIC_PART_EXCEPTIONS: set[tuple[str, str]] = {
+    ("kuehlschrank_001", "Eis"),    # Eis (ice) visually stands in for the Kühl- (cold) part
+    ("leuchtturm_001",   "Licht"),  # Licht (light) visually stands in for the Leucht- part
+}
+
+
+def part_word_matches_compound(compound: str, word: str, *, compound_id: str = "") -> bool:
+    """True if `word` is a real visual component of `compound`.
+
+    Tolerates German Fugen elements and verb-stem first parts (Rollen→Rollstuhl,
+    Waschen→Waschmaschine). Falls back to the explicit semantic-exception list.
+    """
+    comp = _fold_de(compound)
+    wf = _fold_de(word)
+    if not comp or not wf:
+        return False
+    stems = {wf, wf.rstrip("e")}
+    if wf.endswith("en"):
+        stems.add(wf[:-2])
+    elif wf.endswith("n"):
+        stems.add(wf[:-1])
+    candidates: set[str] = set()
+    for stem in stems:
+        if not stem:
+            continue
+        candidates |= {stem, stem + "e", stem + "n", stem + "s", stem + "en", stem + "er"}
+    if any(c in comp for c in candidates):
+        return True
+    return (str(compound_id), str(word)) in _REBUS_SEMANTIC_PART_EXCEPTIONS
+
+
+def validate_rebus_entry_consistency(entry: dict) -> str | None:
+    """Return None if the entry is internally consistent, else an error string.
+
+    Catches the word/meaning/compound desync class of bug at data-entry time so a
+    mislabelled part (image shows X, text claims Y) can never reach a learner.
+    """
+    compound = str(entry.get("compound") or "").strip()
+    compound_id = str(entry.get("id") or "").strip()
+    if not compound:
+        return "missing compound"
+    parts = entry.get("parts") or []
+    for p in parts:
+        word = str(p.get("word") or "").strip()
+        if not word:
+            return "empty part word"
+        if not part_word_matches_compound(compound, word, compound_id=compound_id):
+            return (
+                f"part '{word}' is not a visual component of '{compound}' "
+                f"(suspected mislabelled stub — image would not match the text)"
+            )
+    return None

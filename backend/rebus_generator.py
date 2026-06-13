@@ -90,9 +90,9 @@ def generate_component_image(word: str, dalle_prompt: str, *,
             raise RuntimeError("empty image payload")
 
         # Vision gate (pool time, off the hot path): the image must clearly show
-        # the part word and must not reveal the compound answer.
-        label = f"{word} ({meaning_ru})" if meaning_ru else word
-        verdict = run_image_depicts(img_bytes, label, forbid=forbid, mime=mime)
+        # the part word, must agree with its Russian meaning (catches word/meaning
+        # desync), and must not reveal the compound answer.
+        verdict = run_image_depicts(img_bytes, word, meaning=meaning_ru, forbid=forbid, mime=mime)
         if not verdict.get("ok"):
             reason = str(verdict.get("reason") or "vision_rejected")
             upsert_rebus_component_image(word, generation_status="failed", failure_reason=f"vision: {reason}"[:500])
@@ -599,6 +599,7 @@ def _validate_replenishment_entry(entry: dict, existing_set: set[str]) -> str | 
     parts = entry.get("parts")
     if not isinstance(parts, list) or len(parts) != 2:
         return "parts must be list of exactly 2"
+    from backend.rebus_bank import part_word_matches_compound
     for p in parts:
         word = str(p.get("word") or "").strip()
         if not word:
@@ -606,6 +607,10 @@ def _validate_replenishment_entry(entry: dict, existing_set: set[str]) -> str | 
         # Reject non-depictable parts: a rebus image must show a concrete object.
         if word.lower() in _NON_DEPICTABLE_PARTS:
             return f"non-depictable part: {word}"
+        # Root-cause guard: the part word must be a real visual component of the
+        # compound, never a mislabelled stand-in (image-vs-text desync).
+        if not part_word_matches_compound(compound, word, compound_id=str(entry.get("id") or "")):
+            return f"part '{word}' is not a component of '{compound}'"
     dalle = entry.get("dalle_prompts")
     if not isinstance(dalle, dict) or len(dalle) < 2:
         return "dalle_prompts must map both part words"

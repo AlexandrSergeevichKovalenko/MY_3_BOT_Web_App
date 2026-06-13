@@ -18158,6 +18158,48 @@ async def admin_rebus_recheck_command(update: Update, context: CallbackContext) 
     await status_msg.edit_text(text[:4000])
 
 
+async def admin_rebus_reset_command(update: Update, context: CallbackContext) -> None:
+    """Re-sync the code bank, then force compounds containing the given part word(s)
+    to recompose (drops the cached card) and refill the pool. Use after fixing a
+    mislabelled part so the stale image is rebuilt. /admin_rebus_reset Ei [Wort2 …]"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    words = [w.strip() for w in (context.args or []) if w.strip()] or ["Ei"]
+    status_msg = await message.reply_text(f"Ресинхр банка + сброс для: {', '.join(words)}…")
+
+    def _reset(part_words: list[str]) -> dict:
+        from backend.database import (
+            sync_rebus_bank_from_code, reset_rebus_compounds_for_part,
+        )
+        from backend.rebus_generator import prepare_rebus_pool
+        sync = sync_rebus_bank_from_code()
+        reset = 0
+        for w in part_words:
+            reset += reset_rebus_compounds_for_part(w)
+        pool = prepare_rebus_pool(target_ready=REBUS_POOL_TARGET, max_attempts=40)
+        return {"sync": sync, "reset": reset, "pool": pool}
+
+    try:
+        result = await asyncio.to_thread(_reset, words)
+    except Exception as exc:
+        await status_msg.edit_text(f"Error: {exc}")
+        return
+    sync = result.get("sync") or {}
+    pool = result.get("pool") or {}
+    text = (
+        f"✅ Sync: synced={sync.get('synced')} "
+        f"skipped_inconsistent={sync.get('skipped_inconsistent')}\n"
+        f"♻️ Сброшено на перекомпоновку: {result.get('reset')}\n"
+        f"🧩 Pool: generated={pool.get('generated')} failed={pool.get('failed')}"
+    )
+    await status_msg.edit_text(text[:4000])
+
+
 # ─────────────────────────────────────────────────────────────
 #  ARTICLE QUIZ (der/die/das) — send, callback, scheduler
 # ─────────────────────────────────────────────────────────────
@@ -22508,6 +22550,7 @@ def main():
     application.add_handler(CommandHandler("admin_rebus_send", admin_rebus_send_command))
     application.add_handler(CommandHandler("admin_rebus_pool", admin_rebus_pool_command))
     application.add_handler(CommandHandler("admin_rebus_recheck", admin_rebus_recheck_command))
+    application.add_handler(CommandHandler("admin_rebus_reset", admin_rebus_reset_command))
     application.add_handler(CommandHandler("admin_aq_send", admin_article_quiz_send_command))
     application.add_handler(CommandHandler("admin_aq_pool", admin_article_quiz_pool_command))
     application.add_handler(CommandHandler("addartikel", admin_add_artikel_command))
