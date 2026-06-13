@@ -21075,6 +21075,65 @@ async def _send_scheduled_artikel_sprint(context: CallbackContext) -> None:
         except Exception as exc:
             logging.warning("artikel_sprint: send failed chat=%s: %s", cid, exc)
     logging.info("artikel_sprint reminder sent=%s set=%s", sent, set_id)
+
+
+# Daily admin nudge to pick TOMORROW's Artikel Sprint theme (default 16:00 Vienna).
+ARTIKEL_THEME_REMINDER_SLOT = (
+    max(0, min(23, int((os.getenv("ARTIKEL_THEME_REMINDER_HOUR") or "16").strip() or "16"))),
+    max(0, min(59, int((os.getenv("ARTIKEL_THEME_REMINDER_MINUTE") or "0").strip() or "0"))),
+)
+
+
+async def _send_artikel_theme_reminder_job(context: CallbackContext) -> None:
+    """Daily 16:00 DM to admins: reminder to set tomorrow's Artikel Sprint theme,
+    showing what's already scheduled, the ready-to-use themes, and the command."""
+    if not _artikel_sprint_enabled():
+        return
+    try:
+        admin_ids = [int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0]
+        if not admin_ids:
+            logging.info("artikel_theme_reminder: no admin ids configured")
+            return
+        tomorrow = _get_quiz_schedule_now().date() + timedelta(days=1)
+        tkey = await asyncio.to_thread(get_article_sprint_theme_for_date, tomorrow)
+        rows = await asyncio.to_thread(list_article_sprint_themes)
+        ready = [r for r in (rows or []) if int(r["verified_count"]) >= int(r["target_count"])]
+        lines = [
+            "🗓 <b>Не забудь выбрать тему Artikel Sprint на завтра!</b>",
+            "",
+            f"📅 На завтра ({tomorrow.isoformat()}) сейчас: "
+            + (f"<b>{html.escape(str(tkey))}</b> ✅" if tkey else "<b>— не выбрана —</b> ⚠️"),
+        ]
+        if ready:
+            lines.append("\n<b>Готовые темы</b> (можно ставить):")
+            for r in ready[:25]:
+                lines.append(f"✅ <code>{r['theme_key']}</code> — {html.escape(str(r['label_de']))}")
+        else:
+            lines.append("\n⚠️ Готовых тем нет — сначала наполни: /artikel_fill &lt;тема&gt;")
+        lines.append("\n<b>Поставить тему на завтра:</b>")
+        lines.append("<code>/artikel_settheme tomorrow &lt;theme_key&gt;</code>")
+        lines.append("\nВсе темы и статусы: /artikel_themes")
+        text = "\n".join(lines)[:4000]
+        for admin_id in admin_ids:
+            try:
+                await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML")
+            except Exception:
+                logging.warning("artikel_theme_reminder: send failed admin_id=%s", admin_id, exc_info=True)
+    except Exception:
+        logging.warning("artikel_theme_reminder job failed", exc_info=True)
+
+
+async def admin_artikel_remindtheme_command(update: Update, context: CallbackContext) -> None:
+    """Fire the 'pick tomorrow's theme' reminder DM now (test). /artikel_remindtheme"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    await _send_artikel_theme_reminder_job(context)
+    await message.reply_text("✅ Напоминание отправлено в личку админам.")
 SPRINT_POOL_TARGET = max(3, int((os.getenv("SPRINT_POOL_TARGET") or "6").strip() or "6"))
 SPRINT_COOLDOWN_DAYS = max(7, int((os.getenv("SPRINT_COOLDOWN_DAYS") or "21").strip() or "21"))
 
@@ -23319,6 +23378,7 @@ def main():
     application.add_handler(CommandHandler("admin_rebus_audit", admin_rebus_audit_command))
     application.add_handler(CommandHandler("admin_overtaken_images", admin_overtaken_images_command))
     application.add_handler(CommandHandler("artikel_themes", admin_artikel_themes_command))
+    application.add_handler(CommandHandler("artikel_remindtheme", admin_artikel_remindtheme_command))
     application.add_handler(CommandHandler("artikel_settheme", admin_artikel_settheme_command))
     application.add_handler(CommandHandler("artikel_fill", admin_artikel_fill_command))
     application.add_handler(CommandHandler("artikel_sample", admin_artikel_sample_command))
@@ -23709,6 +23769,14 @@ def main():
             "cron",
             hour=int(ARTIKEL_SPRINT_SLOT[0]),
             minute=int(ARTIKEL_SPRINT_SLOT[1]),
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Artikel Sprint: DM admins to pick TOMORROW's theme (default 16:00) --
+        scheduler.add_job(
+            lambda: submit_async(_send_artikel_theme_reminder_job, CallbackContext(application=application)),
+            "cron",
+            hour=int(ARTIKEL_THEME_REMINDER_SLOT[0]),
+            minute=int(ARTIKEL_THEME_REMINDER_SLOT[1]),
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
         # -- Artikel Sprint: close expired battles + DM results (00:05) --
