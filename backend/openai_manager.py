@@ -5903,6 +5903,64 @@ def run_image_depicts(image_bytes: bytes, expected: str, *, meaning: str = "", f
     return {"ok": bool(data.get("ok")), "reason": str(data.get("reason") or "")[:80]}
 
 
+def run_image_quiz_render_check(
+    image_bytes: bytes,
+    *,
+    correct_answer: str,
+    distractors: list[str] | None = None,
+    question_de: str = "",
+    mime: str = "image/png",
+) -> dict:
+    """Post-render vision gate for an image_quiz: the rendered scene must clearly
+    support `correct_answer` as the single best answer, and must NOT prominently
+    depict any `distractors` (wrong answers) — otherwise the quiz is unanswerable
+    or its picture contradicts the answer (the 'woman running the wrong way' class).
+    Returns {"ok": bool, "reason": str}. On a vision INFRA error returns ok=True
+    (degrade, don't starve the pool) — only a real negative verdict rejects."""
+    import base64
+    from backend.synthetic_load import build_sync_openai_client
+    api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
+    correct = str(correct_answer or "").strip()
+    if not api_key or not image_bytes or not correct:
+        return {"ok": True, "reason": "no_vision"}
+    clean_distractors = [str(d).strip() for d in (distractors or []) if str(d).strip()]
+    b64 = base64.b64encode(bytes(image_bytes)).decode("ascii")
+    data_url = f"data:{mime};base64,{b64}"
+    question_line = f' The quiz question is: "{str(question_de).strip()}".' if str(question_de).strip() else ""
+    distractor_line = (
+        f' The image MUST NOT prominently depict any of these WRONG answers: {", ".join(clean_distractors)}.'
+        if clean_distractors else ""
+    )
+    prompt = (
+        f'This image is used in a German vocabulary quiz.{question_line} The intended CORRECT answer is "{correct}". '
+        f'Judge STRICTLY: does the image clearly and unambiguously depict "{correct}" as the single best, most '
+        f'natural answer for this scene?{distractor_line} '
+        'Reject (ok=false) if the correct answer is not clearly shown, if a DIFFERENT object/action is more prominent, '
+        'if the scene contradicts the intended answer, or if any listed wrong answer is also clearly visible (which '
+        'would make the quiz ambiguous or unanswerable). '
+        'Answer ONLY strict JSON: {"ok": true|false, "reason": "<=10 words"}.'
+    )
+    try:
+        client = build_sync_openai_client(api_key=api_key, timeout=40)
+        resp = client.chat.completions.create(
+            model=_DEFAULT_GATEWAY_MODEL,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        data = json.loads(str(resp.choices[0].message.content or "").strip())
+    except Exception:
+        logging.warning("run_image_quiz_render_check failed correct=%s", correct, exc_info=True)
+        return {"ok": True, "reason": "vision_error"}
+    return {"ok": bool(data.get("ok")), "reason": str(data.get("reason") or "")[:80]}
+
+
 async def run_image_quiz_sentence_fallback(payload: dict) -> dict:
     return await _run_json_assistant_task(
         task_name="image_quiz_sentence_fallback",

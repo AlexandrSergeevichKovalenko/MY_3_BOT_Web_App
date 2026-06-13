@@ -805,6 +805,39 @@ def _render_single_image_quiz_template(
         mime_type = str(render_result.get("mime_type") or "image/png").strip().lower() or "image/png"
         if not image_bytes:
             raise RuntimeError("image_generation_empty_payload")
+
+        # Post-render vision gate: verify the rendered picture actually depicts the
+        # correct answer (and not a distractor) before it can ship — gpt-image-1 may
+        # render an ambiguous or contradictory scene. No silent fallback: a real
+        # negative verdict fails the template; a vision infra error degrades to pass.
+        if str(os.getenv("IMAGE_QUIZ_RENDER_VISION_GATE", "1")).strip().lower() not in ("0", "false", "no", "off"):
+            from backend.openai_manager import run_image_quiz_render_check
+            _options = list(claimed.get("answer_options") or [])
+            _cidx = int(claimed.get("correct_option_index")) if claimed.get("correct_option_index") is not None else -1
+            _correct = _options[_cidx] if 0 <= _cidx < len(_options) else ""
+            if _correct:
+                _verdict = run_image_quiz_render_check(
+                    image_bytes,
+                    correct_answer=str(_correct),
+                    distractors=[str(o) for i, o in enumerate(_options) if i != _cidx],
+                    question_de=str(claimed.get("question_de") or ""),
+                    mime=mime_type,
+                )
+                if not _verdict.get("ok"):
+                    reason = f"render_vision_rejected: {_verdict.get('reason') or ''}".strip()[:300]
+                    mark_image_quiz_template_failed(
+                        template_id,
+                        last_error=reason,
+                        visual_status=str(claimed.get("visual_status") or "").strip().lower() or "valid",
+                        provider_name=provider_name,
+                        provider_meta={"stage": "render_vision_rejected", "verdict": _verdict},
+                    )
+                    logging.info(
+                        "image_quiz render vision rejected template_id=%s reason=%s",
+                        template_id, _verdict.get("reason"),
+                    )
+                    return {"status": "rejected", "template_id": template_id, "reason": reason}
+
         object_key = _build_image_quiz_object_key(
             user_id=int(claimed.get("user_id") or user_id),
             template_id=template_id,
