@@ -22577,6 +22577,107 @@ def sprint_finish():
     return jsonify({"ok": True, **result})
 
 
+@app.route("/api/webapp/artikel/today", methods=["POST"])
+def artikel_today():
+    """Artikel Sprint: load today's shared daily set (preloaded for zero-latency
+    client play). Builds the set on the fly if the nightly job hasn't yet."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo
+    from backend.database import (
+        ensure_article_sprint_schema, get_daily_article_sprint_set_id,
+        get_article_sprint_set, get_article_sprint_theme, get_article_sprint_result,
+    )
+    ensure_article_sprint_schema()
+    play_date = _dt.now(ZoneInfo("Europe/Vienna")).date()
+    set_id = get_daily_article_sprint_set_id(play_date)
+    if not set_id:
+        try:
+            from backend.article_sprint_sets import build_daily_set
+            built = build_daily_set(play_date)
+        except Exception:
+            logging.exception("artikel_today: build failed")
+            built = {"status": "error"}
+        if built.get("status") == "ready":
+            set_id = built["set_id"]
+        else:
+            return jsonify({"ok": False, "error_code": "artikel_set_not_ready",
+                            "error": "Набор Artikel Sprint на сегодня ещё готовится. Загляни чуть позже."}), 200
+    s = get_article_sprint_set(set_id)
+    if not s or not s.get("words"):
+        return jsonify({"ok": False, "error_code": "artikel_set_empty", "error": "Набор пуст."}), 200
+    theme = get_article_sprint_theme(s["theme_key"])
+    existing = get_article_sprint_result(set_id, int(user_id))
+    return jsonify({
+        "ok": True, "set_id": set_id,
+        "theme_label": (theme or {}).get("label_de") or s["theme_key"],
+        "words": s["words"], "duration_s": 120,
+        "already_played": bool(existing), "result": existing,
+    })
+
+
+@app.route("/api/webapp/artikel/submit", methods=["POST"])
+def artikel_submit():
+    """Artikel Sprint: official scoring. Re-grades the user's chosen articles
+    against the stored set (server-side) and records the first attempt."""
+    user_id, user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    set_id = str(payload.get("set_id") or "").strip()
+    answers = payload.get("answers")
+    answers = answers if isinstance(answers, list) else []
+    try:
+        time_ms = int(payload.get("time_ms") or 0)
+    except (TypeError, ValueError):
+        time_ms = 0
+    from backend.database import (
+        get_article_sprint_set, record_article_sprint_result, get_article_sprint_result,
+    )
+    s = get_article_sprint_set(set_id)
+    if not s or not s.get("words"):
+        return jsonify({"error": "Набор не найден"}), 404
+    amap: dict[str, str] = {}
+    rumap: dict[str, str] = {}
+    for w in s["words"]:
+        k = str(w.get("w") or "").strip().lower()
+        if k:
+            amap[k] = str(w.get("a") or "").strip().lower()
+            rumap[k] = w.get("ru") or ""
+    items = []
+    correct = 0
+    answered = 0
+    seen: set[str] = set()
+    for a in answers:
+        w = str((a or {}).get("w") or "").strip()
+        chosen = str((a or {}).get("chosen") or "").strip().lower()
+        k = w.lower()
+        if not w or k not in amap or k in seen:
+            continue
+        seen.add(k)
+        answered += 1
+        ok = chosen == amap[k]
+        if ok:
+            correct += 1
+        items.append({"w": w, "a": amap[k], "chosen": chosen, "ok": ok, "ru": rumap.get(k, "")})
+    total = len(s["words"])
+    recorded = record_article_sprint_result(
+        set_id=set_id, user_id=int(user_id), user_name=user_name or "",
+        correct=correct, answered=answered, total=total, time_ms=time_ms,
+    )
+    if not recorded:
+        prev = get_article_sprint_result(set_id, int(user_id)) or {}
+        correct = int(prev.get("correct", correct))
+        answered = int(prev.get("answered", answered))
+    return jsonify({
+        "ok": True, "correct": correct, "answered": answered, "total": total,
+        "pct": round(100 * correct / answered) if answered else 0,
+        "items": items, "already_played": (not recorded),
+    })
+
+
 @app.route("/api/answer/listening_status", methods=["GET", "POST"])
 def listening_status():
     """Poll endpoint for async listening grading: pending → done (+result)."""

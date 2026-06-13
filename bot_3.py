@@ -18616,6 +18616,24 @@ async def admin_artikel_recheck_command(update: Update, context: CallbackContext
     await status_msg.edit_text(text[:4000])
 
 
+async def admin_artikel_play_command(update: Update, context: CallbackContext) -> None:
+    """DM a button to play today's Artikel Sprint daily set (for testing).
+    /artikel_play"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "⚡ Играть Artikel Sprint", url=get_webapp_deeplink("ans_as_0"))]])
+    await message.reply_text(
+        "⚡ <b>Artikel Sprint</b> — 2 минуты, тапай der/die/das как можно быстрее 👇",
+        parse_mode="HTML", reply_markup=kb,
+    )
+
+
 # ─────────────────────────────────────────────────────────────
 #  ARTICLE QUIZ (der/die/das) — send, callback, scheduler
 # ─────────────────────────────────────────────────────────────
@@ -23106,6 +23124,7 @@ def main():
     application.add_handler(CommandHandler("artikel_sample", admin_artikel_sample_command))
     application.add_handler(CommandHandler("artikel_buildtoday", admin_artikel_buildtoday_command))
     application.add_handler(CommandHandler("artikel_recheck", admin_artikel_recheck_command))
+    application.add_handler(CommandHandler("artikel_play", admin_artikel_play_command))
     application.add_handler(CommandHandler("admin_aq_send", admin_article_quiz_send_command))
     application.add_handler(CommandHandler("admin_aq_pool", admin_article_quiz_pool_command))
     application.add_handler(CommandHandler("addartikel", admin_add_artikel_command))

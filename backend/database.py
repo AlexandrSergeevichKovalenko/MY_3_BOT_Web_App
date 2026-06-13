@@ -34445,7 +34445,61 @@ def ensure_article_sprint_schema() -> None:
                 ON bt_3_article_sprint_sets (play_date) WHERE kind = 'daily';
                 """
             )
+            # One result per (set, user) — first attempt counts (like a real sprint).
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_article_sprint_results (
+                    id             BIGSERIAL PRIMARY KEY,
+                    set_id         TEXT NOT NULL,
+                    user_id        BIGINT NOT NULL,
+                    user_name      TEXT NOT NULL DEFAULT '',
+                    correct_count  INTEGER NOT NULL DEFAULT 0,
+                    answered_count INTEGER NOT NULL DEFAULT 0,
+                    total_count    INTEGER NOT NULL DEFAULT 0,
+                    time_ms        BIGINT NOT NULL DEFAULT 0,
+                    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (set_id, user_id)
+                );
+                """
+            )
         conn.commit()
+
+
+def record_article_sprint_result(*, set_id: str, user_id: int, user_name: str,
+                                 correct: int, answered: int, total: int, time_ms: int) -> bool:
+    """Record a result (first attempt per set/user counts). Returns True if newly
+    recorded, False if the user already had a result for this set."""
+    ensure_article_sprint_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_article_sprint_results
+                    (set_id, user_id, user_name, correct_count, answered_count, total_count, time_ms)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (set_id, user_id) DO NOTHING;
+                """,
+                (str(set_id), int(user_id), str(user_name or ""),
+                 int(correct), int(answered), int(total), int(time_ms)),
+            )
+            recorded = bool(cursor.rowcount and cursor.rowcount > 0)
+        conn.commit()
+    return recorded
+
+
+def get_article_sprint_result(set_id: str, user_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT correct_count, answered_count, total_count, time_ms "
+                "FROM bt_3_article_sprint_results WHERE set_id = %s AND user_id = %s;",
+                (str(set_id), int(user_id)),
+            )
+            r = cursor.fetchone()
+    if not r:
+        return None
+    return {"correct": int(r[0] or 0), "answered": int(r[1] or 0),
+            "total": int(r[2] or 0), "time_ms": int(r[3] or 0)}
 
 
 def sync_article_sprint_themes_from_code() -> dict:

@@ -621,3 +621,41 @@ html[data-scheme="light"] .sp-chip.saved { background: rgba(37, 99, 235, 0.14); 
   font-size: 14px; line-height: 1.35;
 }
 html[data-scheme="light"] .ans-why-wrong { color: #92400e; }
+
+/* ── Artikel Sprint ─────────────────────────────────────────────────────── */
+.as-card { text-align: center; }
+.as-eyebrow { font-size: 15px; opacity: .8; }
+.as-theme { font-size: 22px; font-weight: 800; margin: 6px 0 10px; }
+.as-rules { font-size: 15px; opacity: .85; margin-bottom: 18px; line-height: 1.4; }
+.as-go { font-size: 18px; }
+.as-countdown { display: flex; align-items: center; justify-content: center; min-height: 220px; }
+.as-count { font-size: 96px; font-weight: 900; animation: as-pop .8s ease-out; }
+@keyframes as-pop { from { transform: scale(.4); opacity: 0; } 50% { opacity: 1; } to { transform: scale(1); } }
+.as-play { display: flex; flex-direction: column; gap: 18px; }
+.as-top { display: flex; justify-content: space-between; align-items: center; font-size: 15px; opacity: .85; }
+.as-timer { font-weight: 800; font-variant-numeric: tabular-nums; }
+.as-score { font-weight: 800; color: #22c55e; }
+.as-word {
+  font-size: 40px; font-weight: 900; padding: 28px 12px; border-radius: 18px;
+  background: rgba(148,163,184,.12); min-height: 56px; word-break: break-word;
+}
+.as-word.ok { animation: as-flash-ok .25s ease-out; }
+.as-word.bad { animation: as-flash-bad .25s ease-out; }
+@keyframes as-flash-ok { from { background: rgba(34,197,94,.45); } to { background: rgba(148,163,184,.12); } }
+@keyframes as-flash-bad { from { background: rgba(239,68,68,.45); } to { background: rgba(148,163,184,.12); } }
+.as-buttons { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+.as-btn-art {
+  font-size: 24px; font-weight: 800; padding: 22px 0; border-radius: 16px; border: none;
+  cursor: pointer; color: #fff; transition: transform .06s;
+}
+.as-btn-art:active { transform: scale(.94); }
+.art-der { background: #2563eb; }
+.art-die { background: #db2777; }
+.art-das { background: #059669; }
+.as-done { text-align: left; }
+.as-result-score { font-size: 18px; margin: 8px 0 12px; }
+.as-result-list { max-height: 50vh; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; }
+.as-row { font-size: 15px; }
+.as-row.bad b { text-decoration: line-through; opacity: .8; }
+.as-mine { color: #ef4444; }
+.as-ru { opacity: .65; }
