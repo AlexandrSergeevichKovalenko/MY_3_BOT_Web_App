@@ -298,6 +298,10 @@ from backend.database import (
     ensure_sprint_schema,
     ensure_article_sprint_schema,
     sync_article_sprint_themes_from_code,
+    list_article_sprint_themes,
+    get_article_sprint_theme,
+    set_article_sprint_theme_for_date,
+    get_article_sprint_theme_for_date,
     upsert_sprint_item,
     delete_sprint_bank,
     count_available_sprint_items,
@@ -18381,6 +18385,123 @@ async def admin_overtaken_images_command(update: Update, context: CallbackContex
     await status_msg.edit_text(text[:4000])
 
 
+async def admin_artikel_themes_command(update: Update, context: CallbackContext) -> None:
+    """List Artikel Sprint themes with verified/target counts + tomorrow's theme.
+    /artikel_themes"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    rows = await asyncio.to_thread(list_article_sprint_themes)
+    tomorrow = _get_quiz_schedule_now().date() + timedelta(days=1)
+    tkey = await asyncio.to_thread(get_article_sprint_theme_for_date, tomorrow)
+    lines = ["📚 <b>Artikel Sprint — темы</b> (verified/target):"]
+    for r in rows:
+        ready = int(r["verified_count"]) >= int(r["target_count"])
+        mark = "✅" if ready else ("🟡" if r["verified_count"] else "▫️")
+        lines.append(
+            f"{mark} <code>{r['theme_key']}</code> — {r['label_de']} · "
+            f"{r['verified_count']}/{r['target_count']}"
+        )
+    lines.append(f"\n📅 Тема на завтра: <b>{tkey or '— не выбрана —'}</b>")
+    lines.append("\n<i>/artikel_fill &lt;тема&gt; [кол-во] · /artikel_settheme tomorrow &lt;тема&gt;</i>")
+    await message.reply_text("\n".join(lines)[:4000], parse_mode="HTML")
+
+
+async def admin_artikel_settheme_command(update: Update, context: CallbackContext) -> None:
+    """Pick the theme for a day. /artikel_settheme [tomorrow|today|YYYY-MM-DD] <theme_key>
+    (one arg → defaults to tomorrow)."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    args = [a.strip() for a in (context.args or []) if a.strip()]
+    if not args:
+        await message.reply_text("Использование: /artikel_settheme [tomorrow|today|YYYY-MM-DD] <theme_key>")
+        return
+    today = _get_quiz_schedule_now().date()
+    if len(args) == 1:
+        when, theme_key = "tomorrow", args[0]
+    else:
+        when, theme_key = args[0].lower(), args[1]
+    if when in ("tomorrow", "завтра"):
+        play_date = today + timedelta(days=1)
+    elif when in ("today", "сегодня"):
+        play_date = today
+    else:
+        try:
+            play_date = datetime.strptime(when, "%Y-%m-%d").date()
+        except ValueError:
+            await message.reply_text("Дата: tomorrow | today | YYYY-MM-DD")
+            return
+    theme = await asyncio.to_thread(get_article_sprint_theme, theme_key)
+    if not theme:
+        await message.reply_text(f"Нет темы <code>{html.escape(theme_key)}</code>. Список: /artikel_themes", parse_mode="HTML")
+        return
+    await asyncio.to_thread(set_article_sprint_theme_for_date, play_date, theme_key, set_by=int(user.id))
+    await message.reply_text(
+        f"✅ {play_date.isoformat()} → <b>{html.escape(theme['label_de'])}</b> (<code>{theme_key}</code>)",
+        parse_mode="HTML",
+    )
+
+
+async def admin_artikel_fill_command(update: Update, context: CallbackContext) -> None:
+    """Generate+verify+store nouns for a theme. /artikel_fill <theme_key> [count]
+    (count caps how many NEW words to add this run; omit → up to target)."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    args = [a.strip() for a in (context.args or []) if a.strip()]
+    if not args:
+        await message.reply_text("Использование: /artikel_fill <theme_key> [count]")
+        return
+    theme_key = args[0]
+    try:
+        count = max(1, min(300, int(args[1]))) if len(args) > 1 else None
+    except ValueError:
+        count = None
+    theme = await asyncio.to_thread(get_article_sprint_theme, theme_key)
+    if not theme:
+        await message.reply_text(f"Нет темы <code>{html.escape(theme_key)}</code>. Список: /artikel_themes", parse_mode="HTML")
+        return
+    status_msg = await message.reply_text(
+        f"⏳ Наполняю «{html.escape(theme['label_de'])}»"
+        + (f" (+{count})" if count else " (до target)") + "… (GPT + верификация, это займёт время)"
+    )
+
+    def _fill() -> dict:
+        from backend.article_sprint_generator import fill_theme
+        return fill_theme(theme_key, max_to_add=count)
+
+    try:
+        result = await asyncio.to_thread(_fill)
+    except Exception as exc:
+        await status_msg.edit_text(f"Error: {exc}")
+        return
+    if result.get("error"):
+        await status_msg.edit_text(f"❌ {result['error']}")
+        return
+    text = (
+        f"✅ «{html.escape(theme['label_de'])}»\n"
+        f"Добавлено: {result.get('added')} · забраковано: {result.get('rejected')}\n"
+        f"Всего verified: {result.get('final_verified')}/{result.get('target')}"
+    )
+    by_sub = result.get("by_subtopic") or {}
+    if by_sub:
+        text += "\n\nПо подтемам:\n" + "\n".join(f"• {k}: {v}" for k, v in list(by_sub.items())[:20])
+    await status_msg.edit_text(text[:4000])
+
+
 # ─────────────────────────────────────────────────────────────
 #  ARTICLE QUIZ (der/die/das) — send, callback, scheduler
 # ─────────────────────────────────────────────────────────────
@@ -22865,6 +22986,9 @@ def main():
     application.add_handler(CommandHandler("admin_rebus_reset", admin_rebus_reset_command))
     application.add_handler(CommandHandler("admin_rebus_audit", admin_rebus_audit_command))
     application.add_handler(CommandHandler("admin_overtaken_images", admin_overtaken_images_command))
+    application.add_handler(CommandHandler("artikel_themes", admin_artikel_themes_command))
+    application.add_handler(CommandHandler("artikel_settheme", admin_artikel_settheme_command))
+    application.add_handler(CommandHandler("artikel_fill", admin_artikel_fill_command))
     application.add_handler(CommandHandler("admin_aq_send", admin_article_quiz_send_command))
     application.add_handler(CommandHandler("admin_aq_pool", admin_article_quiz_pool_command))
     application.add_handler(CommandHandler("addartikel", admin_add_artikel_command))

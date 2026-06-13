@@ -34516,6 +34516,18 @@ def count_article_sprint_nouns(theme_key: str, *, verified_only: bool = True) ->
     return int((row or [0])[0] or 0)
 
 
+def list_article_sprint_words(theme_key: str) -> list[str]:
+    """All non-retired words already stored for a theme (for dedup / avoid-list)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT word FROM bt_3_article_sprint_nouns WHERE theme_key = %s AND NOT retired;",
+                (str(theme_key),),
+            )
+            rows = cursor.fetchall() or []
+    return [str(r[0]) for r in rows if r and r[0]]
+
+
 def insert_article_sprint_nouns(theme_key: str, rows: list[dict]) -> dict:
     """Bulk-insert verified nouns for a theme (idempotent: skip dup theme+word).
     Each row: {word, article, meaning_ru, plural?, difficulty?, freq_rank?, subtopic?, source?, verified?}.

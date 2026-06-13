@@ -3223,6 +3223,41 @@ Return STRICT JSON ONLY:
 - if it IS a valid {synonym/antonym}: {"match": true}
 - if NOT: {"match": false, "reason_ru": "<кратко по-русски, ≤90 знаков: что candidate на самом деле значит и почему это НЕ синоним/антоним target, например: 'genehmigen = одобрить/разрешить, а не подтвердить'>"}
 """,
+"article_noun_gen": """
+You are a German lexicographer building data for an article (der/die/das) drill.
+Input JSON: {"theme": "...", "subtopic": "...", "count": <int>, "avoid": ["...","..."]}.
+
+Generate up to `count` REAL, COMMON, standard German NOUNS that belong to the given
+theme + subtopic. For each noun return:
+- "word": the noun in Nominativ Singular, capitalized, WITHOUT article (e.g. "Lunge").
+- "article": exactly one of der/die/das (the correct, standard article).
+- "meaning_ru": short Russian translation.
+- "plural": Nominativ Plural without article (or "" if no/uncommon plural).
+- "difficulty": "A" (very common) | "B" (common) | "C" (less common/specialized).
+
+STRICT:
+- Only nouns whose article is UNAMBIGUOUS. NEVER include nouns whose article depends
+  on meaning (e.g. der/die See, der/das Band) or that have two genders.
+- No proper names, no abstractions that aren't real nouns, no compounds invented ad hoc.
+- Do NOT repeat any word from "avoid".
+- Stay strictly within the subtopic; prefer concrete, learner-relevant vocabulary.
+
+Return STRICT JSON ONLY: {"nouns": [ {"word","article","meaning_ru","plural","difficulty"}, ... ]}.
+""",
+"article_verify": """
+You verify German noun articles for a der/die/das drill. Input JSON:
+{"items": [ {"word": "...", "article": "der|die|das"}, ... ]}.
+
+For EACH item decide whether "<article> <word>" is correct, standard, UNAMBIGUOUS German.
+- ok=true only if `word` is a real standard German noun AND its article is unambiguous
+  (one correct gender). If the proposed article is wrong but the word is fine and
+  unambiguous, set ok=true and return the CORRECT article.
+- ok=false if the word is not a noun, is misspelled/not standard, or its article is
+  AMBIGUOUS (different articles for different meanings, e.g. See, Band, Steuer).
+
+Return STRICT JSON ONLY, same order as input:
+{"results": [ {"ok": true|false, "article": "der|die|das"}, ... ]}.
+""",
 "aufgabe_pin_blueprint": """
 Du planst anspruchsvolle "Finde das Objekt"-Bildaufgaben für Deutschlernende (B2+).
 
@@ -5795,6 +5830,48 @@ async def run_check_synonym_batch(*, target_word: str, candidates: list[str], re
     except Exception:
         logging.warning("run_check_synonym_batch failed target=%s", target_word, exc_info=True)
         return set()
+
+
+async def run_article_noun_gen(*, theme: str, subtopic: str, count: int, avoid: list[str] | None = None) -> list[dict]:
+    """Generate German nouns (word+article+meaning_ru+plural+difficulty) for an
+    Artikel-Sprint theme/subtopic. Returns a list of dicts (or [] on failure)."""
+    try:
+        content = await llm_execute(
+            task_name="article_noun_gen",
+            system_instruction_key="article_noun_gen",
+            user_message=json.dumps({
+                "theme": str(theme), "subtopic": str(subtopic),
+                "count": int(count), "avoid": [str(a) for a in (avoid or [])][:200],
+            }, ensure_ascii=False),
+            poll_interval_seconds=1.5,
+        )
+        data = json.loads(content)
+        nouns = data.get("nouns") if isinstance(data, dict) else None
+        return [n for n in nouns if isinstance(n, dict)] if isinstance(nouns, list) else []
+    except Exception:
+        logging.warning("run_article_noun_gen failed theme=%s subtopic=%s", theme, subtopic, exc_info=True)
+        return []
+
+
+async def run_article_verify(*, items: list[dict]) -> list[dict]:
+    """Verify article correctness/unambiguity for a batch of {word, article}.
+    Returns list aligned to input: [{"ok": bool, "article": str}]. On failure []."""
+    try:
+        content = await llm_execute(
+            task_name="article_verify",
+            system_instruction_key="article_verify",
+            user_message=json.dumps({"items": [
+                {"word": str(i.get("word") or ""), "article": str(i.get("article") or "").lower()}
+                for i in (items or [])
+            ]}, ensure_ascii=False),
+            poll_interval_seconds=1.5,
+        )
+        data = json.loads(content)
+        res = data.get("results") if isinstance(data, dict) else None
+        return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
+    except Exception:
+        logging.warning("run_article_verify failed n=%s", len(items or []), exc_info=True)
+        return []
 
 
 async def run_word_order_distractors(*, sentence: str, hint_ru: str = "") -> dict:
