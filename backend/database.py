@@ -34551,6 +34551,31 @@ def list_article_sprint_words(theme_key: str) -> list[str]:
     return [str(r[0]) for r in rows if r and r[0]]
 
 
+def list_article_sprint_rows(theme_key: str) -> list[dict]:
+    """All non-retired rows of a theme as {id, word, article} (for recheck)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id, word, article FROM bt_3_article_sprint_nouns "
+                "WHERE theme_key = %s AND NOT retired;",
+                (str(theme_key),),
+            )
+            rows = cursor.fetchall() or []
+    return [{"id": int(r[0]), "word": str(r[1]), "article": str(r[2])} for r in rows]
+
+
+def update_article_sprint_article(row_id: int, new_article: str) -> None:
+    if str(new_article).lower() not in ("der", "die", "das"):
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_article_sprint_nouns SET article = %s, updated_at = NOW() WHERE id = %s;",
+                (str(new_article).lower(), int(row_id)),
+            )
+        conn.commit()
+
+
 def insert_article_sprint_nouns(theme_key: str, rows: list[dict]) -> dict:
     """Bulk-insert verified nouns for a theme (idempotent: skip dup theme+word).
     Each row: {word, article, meaning_ru, plural?, difficulty?, freq_rank?, subtopic?, source?, verified?}.

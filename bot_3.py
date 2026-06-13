@@ -18582,6 +18582,39 @@ async def admin_artikel_buildtoday_command(update: Update, context: CallbackCont
     await status_msg.edit_text("\n".join(lines)[:4000], parse_mode="HTML")
 
 
+async def admin_artikel_recheck_command(update: Update, context: CallbackContext) -> None:
+    """Re-apply the deterministic gender guard to a theme's stored nouns and fix
+    any wrong articles (e.g. die→der Schädelbruch). /artikel_recheck <theme_key>"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    args = [a.strip() for a in (context.args or []) if a.strip()]
+    if not args:
+        await message.reply_text("Использование: /artikel_recheck <theme_key>")
+        return
+    theme_key = args[0]
+    status_msg = await message.reply_text(f"Перепроверяю артикли «{html.escape(theme_key)}»…")
+
+    def _recheck() -> dict:
+        from backend.article_sprint_generator import recheck_theme
+        return recheck_theme(theme_key)
+
+    try:
+        result = await asyncio.to_thread(_recheck)
+    except Exception as exc:
+        await status_msg.edit_text(f"Error: {exc}")
+        return
+    text = f"✅ Проверено: {result.get('checked')} · исправлено: {result.get('fixed')}"
+    ex = result.get("examples") or []
+    if ex:
+        text += "\n\n" + "\n".join(f"• {e}" for e in ex)
+    await status_msg.edit_text(text[:4000])
+
+
 # ─────────────────────────────────────────────────────────────
 #  ARTICLE QUIZ (der/die/das) — send, callback, scheduler
 # ─────────────────────────────────────────────────────────────
@@ -23071,6 +23104,7 @@ def main():
     application.add_handler(CommandHandler("artikel_fill", admin_artikel_fill_command))
     application.add_handler(CommandHandler("artikel_sample", admin_artikel_sample_command))
     application.add_handler(CommandHandler("artikel_buildtoday", admin_artikel_buildtoday_command))
+    application.add_handler(CommandHandler("artikel_recheck", admin_artikel_recheck_command))
     application.add_handler(CommandHandler("admin_aq_send", admin_article_quiz_send_command))
     application.add_handler(CommandHandler("admin_aq_pool", admin_article_quiz_pool_command))
     application.add_handler(CommandHandler("addartikel", admin_add_artikel_command))

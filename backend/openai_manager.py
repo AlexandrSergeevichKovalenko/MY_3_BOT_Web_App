@@ -3254,6 +3254,11 @@ For EACH item decide whether "<article> <word>" is correct, standard, UNAMBIGUOU
   unambiguous, set ok=true and return the CORRECT article.
 - ok=false if the word is not a noun, is misspelled/not standard, or its article is
   AMBIGUOUS (different articles for different meanings, e.g. See, Band, Steuer).
+- COMPOUND RULE (apply ALWAYS): a compound noun takes the gender of its LAST element.
+  e.g. der Schädelbruch (← der Bruch), der Bandriss (← der Riss), das Röntgengerät
+  (← das Gerät), die Tagesklinik (← die Klinik). Decide the article from the head word.
+- SUFFIX RULE: -ung/-heit/-keit/-schaft/-ion/-tät/-ität/-ik/-ie/-ur/-enz/-anz → die;
+  -chen/-lein → das; -ling/-ismus → der. These are decisive.
 
 Return STRICT JSON ONLY, same order as input:
 {"results": [ {"ok": true|false, "article": "der|die|das"}, ... ]}.

@@ -17,6 +17,77 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+# ── Deterministic German gender guard ─────────────────────────────────────────
+# High-confidence rules (near-zero exceptions) used to VALIDATE/CORRECT the LLM's
+# article. Compound nouns take the gender of their LAST element; some suffixes are
+# decisive. Only confident matches override — otherwise we trust the verifier.
+_HEAD_GENDER: dict[str, str] = {
+    # der
+    "bruch": "der", "riss": "der", "raum": "der", "saal": "der", "schmerz": "der",
+    "infarkt": "der", "erguss": "der", "pfleger": "der", "arzt": "der", "mann": "der",
+    "stoff": "der", "druck": "der", "lauf": "der", "fall": "der", "gang": "der",
+    "schlag": "der", "knochen": "der", "muskel": "der", "nerv": "der", "finger": "der",
+    "ring": "der", "kasten": "der", "topf": "der", "tisch": "der", "schrank": "der",
+    # das
+    "gerät": "das", "zimmer": "das", "gefühl": "das", "mittel": "das", "fieber": "das",
+    "organ": "das", "system": "das", "gewebe": "das", "herz": "das", "hirn": "das",
+    "bein": "das", "blut": "das", "haus": "das", "buch": "das", "glas": "das",
+    "band": "das",  # das Band (ribbon) — note: only as compound head it's ambiguous; kept out below
+    # die
+    "klinik": "die", "säule": "die", "arterie": "die", "vene": "die", "haut": "die",
+    "zelle": "die", "drüse": "die", "niere": "die", "lunge": "die", "leber": "die",
+    "spritze": "die", "tablette": "die", "salbe": "die", "wunde": "die", "narbe": "die",
+    "ader": "die", "rippe": "die", "schulter": "die", "hand": "die", "nase": "die",
+}
+# "band" is genuinely ambiguous (der/die/das) → don't auto-decide on it.
+_HEAD_GENDER.pop("band", None)
+
+_DIE_SUFFIXES = ("ung", "heit", "keit", "schaft", "ion", "tät", "ität", "ik", "ie",
+                 "ur", "enz", "anz")
+_DAS_SUFFIXES = ("chen", "lein")
+_DER_SUFFIXES = ("ling", "ismus")
+
+
+def strong_gender(word: str) -> str | None:
+    """Return der/die/das if a high-confidence rule decides it, else None."""
+    w = str(word or "").strip().lower()
+    if len(w) < 4:
+        return None
+    # 1) compound head (longest matching head wins)
+    best = None
+    for head, g in _HEAD_GENDER.items():
+        if w.endswith(head) and len(w) > len(head) + 1:
+            if best is None or len(head) > best[0]:
+                best = (len(head), g)
+    if best:
+        return best[1]
+    # 2) decisive suffixes
+    if w.endswith(_DIE_SUFFIXES):
+        return "die"
+    if w.endswith(_DAS_SUFFIXES):
+        return "das"
+    if w.endswith(_DER_SUFFIXES):
+        return "der"
+    return None
+
+
+def recheck_theme(theme_key: str) -> dict:
+    """Apply the deterministic gender guard to already-stored rows; fix mismatches.
+    Returns {"checked": n, "fixed": m, "examples": [...]}."""
+    from backend.database import list_article_sprint_rows, update_article_sprint_article
+    rows = list_article_sprint_rows(theme_key)
+    fixed = 0
+    examples: list[str] = []
+    for r in rows:
+        hint = strong_gender(r["word"])
+        if hint and hint != str(r["article"]).lower():
+            update_article_sprint_article(r["id"], hint)
+            fixed += 1
+            if len(examples) < 20:
+                examples.append(f"{r['article']} → {hint} {r['word']}")
+    return {"checked": len(rows), "fixed": fixed, "examples": examples}
+
+
 def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: int = 30) -> dict:
     """Generate+verify+insert nouns for `theme_key`.
     max_to_add: cap how many NEW words to add this run (None → up to target).
@@ -82,6 +153,11 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
                 continue
             art = str(v.get("article") or n.get("article") or "").strip().lower()
             w = str(n.get("word") or "").strip()
+            # Deterministic guard wins when a high-confidence rule applies (compound
+            # head / decisive suffix) — catches misses like "die Schädelbruch".
+            hint = strong_gender(w)
+            if hint:
+                art = hint
             if art not in ("der", "die", "das") or not w or w.lower() in existing:
                 rejected += 1
                 continue
