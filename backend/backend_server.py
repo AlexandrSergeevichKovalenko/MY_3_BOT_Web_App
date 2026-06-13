@@ -16126,6 +16126,46 @@ def _maybe_send_tts_admin_pending_alert() -> None:
     _send_tts_admin_message(message_text)
 
 
+def _maybe_send_reader_audio_budget_alert() -> None:
+    """Warn admins when the GLOBAL Reader-Audio TTS spend crosses 80/95/100% of
+    the monthly ceiling, so the budget is visible well before it's exhausted.
+    Deduped per (tier, month) via the shared alert cooldown."""
+    try:
+        from backend.database import (
+            get_global_action_month_usage,
+            READER_AUDIO_GLOBAL_MONTHLY_LIMIT_CHARS,
+        )
+        limit = float(READER_AUDIO_GLOBAL_MONTHLY_LIMIT_CHARS)
+        if limit <= 0:
+            return
+        now_utc = datetime.now(timezone.utc)
+        used = float(get_global_action_month_usage(
+            "reader_audio_tts", units_type="chars", provider="google_tts",
+            period_month=now_utc, tz="Europe/Vienna",
+        ))
+        pct = used / limit
+        tier = 100 if pct >= 1.0 else 95 if pct >= 0.95 else 80 if pct >= 0.80 else 0
+        if tier == 0:
+            return
+        month_key = now_utc.strftime("%Y-%m")
+        if not _should_send_tts_admin_alert(f"reader_audio_budget_{tier}:{month_key}"):
+            return
+        icon = "🛑" if tier >= 100 else "⚠️"
+        status_line = (
+            "Достигнут потолок — генерация для не-whitelist пользователей остановлена до сброса.\n"
+            if tier >= 100 else "Приближается к потолку.\n"
+        )
+        _send_tts_admin_message(
+            f"{icon} Reader Audio — глобальный месячный бюджет TTS: {tier}%\n\n"
+            f"Использовано: {int(round(used)):,} / {int(round(limit)):,} символов ({pct * 100:.0f}%)\n"
+            f"Провайдер: google_tts\n"
+            f"{status_line}"
+            "Сброс: начало следующего месяца (Europe/Vienna)."
+        )
+    except Exception:
+        logging.exception("❌ reader audio budget alert failed")
+
+
 def _build_tts_admin_digest() -> str:
     events = _get_tts_admin_monitor_window(int(TTS_ADMIN_DIGEST_WINDOW_MINUTES) * 60)
     enqueue_queued = sum(
@@ -16297,6 +16337,7 @@ def _run_tts_admin_alerts_scheduler_job() -> None:
     try:
         _maybe_send_tts_admin_failure_alert()
         _maybe_send_tts_admin_pending_alert()
+        _maybe_send_reader_audio_budget_alert()
     except Exception:
         logging.exception("❌ TTS admin alerts scheduler failed")
 
