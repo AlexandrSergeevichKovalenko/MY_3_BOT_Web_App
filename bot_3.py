@@ -523,6 +523,34 @@ def _get_quiz_schedule_now() -> datetime:
     return datetime.now(tz)
 
 
+# Quiet window: NO interactive task/quiz (poll, rebus, crossword, article,
+# anagram, aufgabe, sprint, artikel-sprint, listening) is delivered between
+# QUIET_HOURS_START and QUIET_HOURS_END (local schedule tz). Pool-prep, reports,
+# reminders and digests are NOT affected. Default 22:00 → 07:30.
+QUIET_HOURS_START = (
+    max(0, min(23, int((os.getenv("QUIET_HOURS_START_HOUR") or "22").strip() or "22"))),
+    max(0, min(59, int((os.getenv("QUIET_HOURS_START_MINUTE") or "0").strip() or "0"))),
+)
+QUIET_HOURS_END = (
+    max(0, min(23, int((os.getenv("QUIET_HOURS_END_HOUR") or "7").strip() or "7"))),
+    max(0, min(59, int((os.getenv("QUIET_HOURS_END_MINUTE") or "30").strip() or "30"))),
+)
+
+
+def _is_quiet_hours_now(now: datetime | None = None) -> bool:
+    """True when interactive task delivery is paused (default 22:00–07:30, local
+    schedule tz). The window wraps across midnight."""
+    n = now or _get_quiz_schedule_now()
+    cur = n.hour * 60 + n.minute
+    start = QUIET_HOURS_START[0] * 60 + QUIET_HOURS_START[1]
+    end = QUIET_HOURS_END[0] * 60 + QUIET_HOURS_END[1]
+    if start == end:
+        return False
+    if start < end:
+        return start <= cur < end
+    return cur >= start or cur < end  # wraps midnight
+
+
 def _image_quiz_enabled() -> bool:
     # Retired: replaced by the B2+ "Aufgabe" formats (incl. the vision-checked
     # Pin-auf-Bild). Default OFF; set IMAGE_QUIZ_ENABLED=1 to bring it back.
@@ -17903,6 +17931,9 @@ async def send_rebus_to_chat(
 
 
 async def _send_scheduled_rebuses(context: CallbackContext) -> None:
+    if _is_quiet_hours_now():
+        logging.info("quiet_hours: skip rebus")
+        return
     if not _rebuses_enabled():
         logging.info("rebus_slot_triggered enabled=False — skipping")
         return
@@ -18908,6 +18939,9 @@ async def send_article_quiz_to_chat(
 
 
 async def _send_scheduled_article_quiz(context: CallbackContext) -> None:
+    if _is_quiet_hours_now():
+        logging.info("quiet_hours: skip article_quiz")
+        return
     if not _article_quiz_enabled():
         logging.info("aq_slot_triggered enabled=False — skipping")
         return
@@ -19408,6 +19442,9 @@ async def send_crossword_to_chat(
 
 
 async def _send_scheduled_crossword(context: CallbackContext) -> None:
+    if _is_quiet_hours_now():
+        logging.info("quiet_hours: skip crossword")
+        return
     if not _crosswords_enabled():
         logging.info("cw_slot_triggered enabled=False — skipping")
         return
@@ -19844,6 +19881,9 @@ async def prepare_anagram_pool_job(context: CallbackContext) -> None:
 
 
 async def _send_scheduled_anagram(context: CallbackContext) -> None:
+    if _is_quiet_hours_now():
+        logging.info("quiet_hours: skip anagram")
+        return
     if not _anagram_enabled():
         logging.info("ag_slot_triggered enabled=False — skipping")
         return
@@ -20846,6 +20886,9 @@ async def _send_scheduled_aufgabe(context: CallbackContext, fmt: str | None = No
     """Each daily slot is pinned to ONE format (fmt) so every B2+ variant is sent
     every day. Picks a fresh item of that format; if the pool is momentarily empty
     it generates one on the fly so the slot is never missed (no silent skip)."""
+    if _is_quiet_hours_now():
+        logging.info("quiet_hours: skip aufgabe")
+        return
     if not _aufgabe_enabled():
         return
     slot_now = _get_quiz_schedule_now()
@@ -21032,6 +21075,9 @@ def _artikel_sprint_enabled() -> bool:
 async def _send_scheduled_artikel_sprint(context: CallbackContext) -> None:
     """Daily 19:00 reminder: ensure today's shared set exists, then post the play
     button to the delivery targets. Skips quietly if the set isn't ready."""
+    if _is_quiet_hours_now():
+        logging.info("quiet_hours: skip artikel_sprint")
+        return
     if not _artikel_sprint_enabled():
         return
     slot_now = _get_quiz_schedule_now()
@@ -21239,6 +21285,9 @@ async def send_sprint_to_chat(context: CallbackContext, *, entry: dict, relation
 
 
 async def _send_scheduled_sprint(context: CallbackContext, relation: str) -> None:
+    if _is_quiet_hours_now():
+        logging.info("quiet_hours: skip sprint")
+        return
     if not _sprint_enabled():
         return
     slot_now = _get_quiz_schedule_now()
@@ -21900,6 +21949,9 @@ async def send_listening_to_chat(
 
 
 async def _send_scheduled_listening(context: CallbackContext) -> None:
+    if _is_quiet_hours_now():
+        logging.info("quiet_hours: skip listening")
+        return
     if not _listening_enabled():
         return
 
@@ -22788,6 +22840,9 @@ async def _send_scheduled_visual_riddles(
 
 
 async def send_scheduled_quiz(context: CallbackContext) -> None:
+    if _is_quiet_hours_now():
+        logging.info("quiet_hours: skip poll quiz")
+        return
     slot_now = _get_quiz_schedule_now()
     delivery_slot = _format_quiz_delivery_slot(slot_now)
     delivery_date_local = slot_now.date()
