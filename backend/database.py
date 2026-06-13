@@ -34502,6 +34502,29 @@ def get_article_sprint_result(set_id: str, user_id: int) -> dict | None:
             "total": int(r[2] or 0), "time_ms": int(r[3] or 0)}
 
 
+def compute_article_sprint_ranking(*, set_id: str, user_id: int) -> dict:
+    """Rank players of a set by correct_count desc, ties by time asc."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT user_id, user_name, correct_count, time_ms "
+                "FROM bt_3_article_sprint_results WHERE set_id = %s "
+                "ORDER BY correct_count DESC, time_ms ASC;",
+                (str(set_id),),
+            )
+            rows = cursor.fetchall() or []
+    ranked = [{"user_id": int(r[0]), "name": str(r[1] or ""), "count": int(r[2]), "time_ms": int(r[3])}
+              for r in rows]
+    your_place = next((i + 1 for i, r in enumerate(ranked) if r["user_id"] == int(user_id)), None)
+    me = next((r for r in ranked if r["user_id"] == int(user_id)), None)
+    return {
+        "total": len(ranked),
+        "your_place": your_place,
+        "your_count": me["count"] if me else 0,
+        "top3": ranked[:3],
+    }
+
+
 def sync_article_sprint_themes_from_code() -> dict:
     """Upsert the theme registry (incl. subtopics) from
     article_sprint_themes.ARTICLE_SPRINT_THEMES. Code is the source of truth."""

@@ -22589,6 +22589,7 @@ def artikel_today():
     from backend.database import (
         ensure_article_sprint_schema, get_daily_article_sprint_set_id,
         get_article_sprint_set, get_article_sprint_theme, get_article_sprint_result,
+        compute_article_sprint_ranking,
     )
     ensure_article_sprint_schema()
     play_date = _dt.now(ZoneInfo("Europe/Vienna")).date()
@@ -22610,11 +22611,20 @@ def artikel_today():
         return jsonify({"ok": False, "error_code": "artikel_set_empty", "error": "Набор пуст."}), 200
     theme = get_article_sprint_theme(s["theme_key"])
     existing = get_article_sprint_result(set_id, int(user_id))
+    result_payload = None
+    if existing:
+        result_payload = {
+            **existing,
+            "pct": round(100 * existing["correct"] / existing["answered"]) if existing.get("answered") else 0,
+            "items": [],
+            "ranking": compute_article_sprint_ranking(set_id=set_id, user_id=int(user_id)),
+            "already_played": True,
+        }
     return jsonify({
         "ok": True, "set_id": set_id,
         "theme_label": (theme or {}).get("label_de") or s["theme_key"],
         "words": s["words"], "duration_s": 120,
-        "already_played": bool(existing), "result": existing,
+        "already_played": bool(existing), "result": result_payload,
     })
 
 
@@ -22635,6 +22645,7 @@ def artikel_submit():
         time_ms = 0
     from backend.database import (
         get_article_sprint_set, record_article_sprint_result, get_article_sprint_result,
+        compute_article_sprint_ranking,
     )
     s = get_article_sprint_set(set_id)
     if not s or not s.get("words"):
@@ -22671,10 +22682,11 @@ def artikel_submit():
         prev = get_article_sprint_result(set_id, int(user_id)) or {}
         correct = int(prev.get("correct", correct))
         answered = int(prev.get("answered", answered))
+    ranking = compute_article_sprint_ranking(set_id=set_id, user_id=int(user_id))
     return jsonify({
         "ok": True, "correct": correct, "answered": answered, "total": total,
         "pct": round(100 * correct / answered) if answered else 0,
-        "items": items, "already_played": (not recorded),
+        "items": items, "already_played": (not recorded), "ranking": ranking,
     })
 
 

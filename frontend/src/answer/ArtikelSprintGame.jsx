@@ -136,11 +136,23 @@ export default function ArtikelSprintGame({ api, haptic, onClose }) {
   } else {
     const r = result || {};
     const items = r.items || [];
+    const rank = r.ranking || null;
     cls = 'as-done';
     body = (<>
       <div className="ans-verdict">⚡ Artikel Sprint</div>
       <div className="as-result-score"><b>{r.correct || 0}</b> верных из {r.answered || 0} · {r.pct || 0}%</div>
       {r.already_played ? <div className="ans-explain">Ты уже играл этот сет сегодня.</div> : null}
+      {rank && rank.total ? (
+        <div className="sp-rank">
+          <div className="sp-rank-head">🏆 Место {rank.your_place || '—'} из {rank.total} · {rank.your_count} верных</div>
+          {(rank.top3 || []).map((p, i) => (
+            <div className={`sp-rank-row${rank.your_place === i + 1 ? ' me' : ''}`} key={p.user_id || i}>
+              <span>{['🥇', '🥈', '🥉'][i] || '•'} {p.name || 'Игрок'}</span>
+              <span className="sp-rank-n">{p.count}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
       {items.length ? (
         <div className="as-result-list">
           {items.map((it, i) => (
