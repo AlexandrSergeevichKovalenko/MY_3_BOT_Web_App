@@ -5,10 +5,11 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 // The official score is re-graded server-side on submit.
 const ARTICLES = ['der', 'die', 'das'];
 
-export default function ArtikelSprintGame({ api, haptic, onClose, practice = false, battleId = null }) {
-  const [phase, setPhase] = useState('loading'); // loading|themepick|intro|countdown|playing|done|error
+export default function ArtikelSprintGame({ api, haptic, onClose, practice = false, battleId = null, battleList = false }) {
+  const [phase, setPhase] = useState('loading'); // loading|themepick|battlelist|intro|countdown|playing|done|error
   const [meta, setMeta] = useState(null);
   const [themes, setThemes] = useState([]);
+  const [battles, setBattles] = useState([]);
   const [error, setError] = useState('');
   const [idx, setIdx] = useState(0);
   const [left, setLeft] = useState(120);
@@ -25,6 +26,12 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
     let cancelled = false;
     (async () => {
       try {
+        if (battleList) {
+          const data = await api('/api/webapp/artikel/battles', {});
+          if (cancelled) return;
+          if (!data.ok) { setError(data.error || 'Недоступно'); setPhase('error'); return; }
+          setBattles(data.battles || []); setPhase('battlelist'); return;
+        }
         if (practice) {
           const data = await api('/api/webapp/artikel/themes', {});
           if (cancelled) return;
@@ -43,7 +50,20 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
       } catch (e) { if (!cancelled) { setError(String(e.message || e)); setPhase('error'); } }
     })();
     return () => { cancelled = true; };
-  }, [api, practice, battleId]);
+  }, [api, practice, battleId, battleList]);
+
+  const playBattle = useCallback(async (bid) => {
+    setPhase('loading');
+    try {
+      const data = await api('/api/webapp/artikel/battle', { battle_id: bid });
+      if (!data.ok) { setError(data.error || 'Батл недоступен'); setPhase('error'); return; }
+      setMeta(data);
+      wordsRef.current = data.words || [];
+      if (data.already_played && data.result) { setResult({ ...data.result, items: [] }); setPhase('done'); return; }
+      setLeft(data.duration_s || 120);
+      setPhase('intro');
+    } catch (e) { setError(String(e.message || e)); setPhase('error'); }
+  }, [api]);
 
   const pickTheme = useCallback(async (themeKey) => {
     setPhase('loading');
@@ -117,6 +137,25 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
       <div className="ans-verdict">⚡ Artikel Sprint</div>
       <div className="ans-explain">{error}</div>
       <button className="ans-btn" onClick={onClose}>Schließen</button>
+    </>);
+  } else if (phase === 'battlelist') {
+    cls = 'as-themepick';
+    body = (<>
+      <div className="as-eyebrow">⚔️ Мои батлы</div>
+      {battles.length ? (
+        <div className="as-themes">
+          {battles.map((b) => (
+            <button key={b.battle_id} type="button" className="as-theme-btn"
+              disabled={b.played} onClick={() => !b.played && playBattle(b.battle_id)}>
+              <span>⚔️ {b.creator_name || 'Батл'} · {b.theme_label}</span>
+              <span className="as-theme-cnt">{b.played ? '✓ сыграно' : '▶️'}</span>
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div className="ans-explain">Активных батлов нет. Прими вызов в личке или создай свой (/battle, Premium).</div>
+      )}
+      <button className="ans-btn-ghost" onClick={onClose}>Schließen</button>
     </>);
   } else if (phase === 'themepick') {
     cls = 'as-themepick';

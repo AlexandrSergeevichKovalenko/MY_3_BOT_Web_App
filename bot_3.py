@@ -312,6 +312,10 @@ from backend.database import (
     create_article_sprint_battle,
     get_article_sprint_battle,
     add_article_sprint_battle_member,
+    list_article_sprint_battle_members,
+    list_article_sprint_battles_to_close,
+    close_article_sprint_battle,
+    list_article_sprint_results_ranked,
     upsert_sprint_item,
     delete_sprint_bank,
     count_available_sprint_items,
@@ -18704,8 +18708,10 @@ async def artikel_battle_command(update: Update, context: CallbackContext) -> No
             sent += 1
         except Exception:
             pass
-    play_kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-        "⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))]])
+    play_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
+        [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_asbl_0"))],
+    ])
     await message.reply_text(
         f"⚔️ Батл #{battle_id} создан (тема: {theme_key}). Приглашено: {sent}. Дедлайн 23:59.",
         reply_markup=play_kb)
@@ -18730,8 +18736,10 @@ async def artikel_battle_join_callback(update: Update, context: CallbackContext)
     await asyncio.to_thread(add_article_sprint_battle_member,
                             battle_id=battle_id, user_id=int(q.from_user.id), user_name=name)
     await q.answer("Ты в батле! Играй когда удобно до 23:59.", show_alert=True)
-    play_kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-        "⚡ Играть (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))]])
+    play_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚡ Играть (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
+        [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_asbl_0"))],
+    ])
     try:
         await q.edit_message_text(
             f"✅ Ты принял батл #{battle_id} от {html.escape(str(battle.get('creator_name') or ''))}.\n"
@@ -18739,6 +18747,60 @@ async def artikel_battle_join_callback(update: Update, context: CallbackContext)
             reply_markup=play_kb)
     except Exception:
         pass
+
+
+async def artikel_mybattles_command(update: Update, context: CallbackContext) -> None:
+    """DM a button to open the user's active battles. /mybattles"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "📋 Открыть «Мои батлы»", url=get_webapp_deeplink("ans_asbl_0"))]])
+    await message.reply_text("⚔️ Твои активные батлы (играй до дедлайна):", reply_markup=kb)
+
+
+async def _close_article_sprint_battles_job(context: CallbackContext) -> None:
+    """Close battles past their deadline; DM each member their place + the winner."""
+    try:
+        battles = await asyncio.to_thread(list_article_sprint_battles_to_close)
+    except Exception:
+        logging.warning("artikel battle close: list failed", exc_info=True)
+        return
+    for b in battles:
+        bid = int(b["id"])
+        set_id = f"asb_{bid}"
+        try:
+            ranked = await asyncio.to_thread(list_article_sprint_results_ranked, set_id)
+            members = await asyncio.to_thread(list_article_sprint_battle_members, bid)
+        except Exception:
+            logging.warning("artikel battle close: data failed bid=%s", bid, exc_info=True)
+            continue
+        place_of = {int(r["user_id"]): i + 1 for i, r in enumerate(ranked)}
+        winner = ranked[0] if ranked else None
+        total = len(ranked)
+        win_line = (f"🏆 Чемпион: {html.escape(str((winner or {}).get('name') or '—'))} "
+                    f"({(winner or {}).get('count', 0)} верных)") if winner else "Никто не сыграл."
+        for m in members:
+            uid = int(m["user_id"])
+            p = place_of.get(uid)
+            if p:
+                medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(p, "🎖️")
+                you = next((r for r in ranked if int(r["user_id"]) == uid), {})
+                txt = (f"⚔️ Батл #{bid} завершён!\n"
+                       f"{medal} Твоё место: <b>{p} из {total}</b> ({you.get('count', 0)} верных)\n{win_line}")
+            else:
+                txt = f"⚔️ Батл #{bid} завершён — ты не успел сыграть 😔\n{win_line}"
+            try:
+                await context.bot.send_message(chat_id=uid, text=txt, parse_mode="HTML")
+            except Exception:
+                pass
+        try:
+            await asyncio.to_thread(close_article_sprint_battle, bid)
+        except Exception:
+            logging.warning("artikel battle close: mark failed bid=%s", bid, exc_info=True)
+    if battles:
+        logging.info("artikel battles closed: %s", len(battles))
 
 
 # ─────────────────────────────────────────────────────────────
@@ -23305,6 +23367,7 @@ def main():
     application.add_handler(CommandHandler("artikel_recheck", admin_artikel_recheck_command))
     application.add_handler(CommandHandler("artikel_play", admin_artikel_play_command))
     application.add_handler(CommandHandler("battle", artikel_battle_command))
+    application.add_handler(CommandHandler("mybattles", artikel_mybattles_command))
     application.add_handler(CallbackQueryHandler(artikel_battle_join_callback, pattern=r"^asb_join:\d+$"))
     application.add_handler(CommandHandler("admin_aq_send", admin_article_quiz_send_command))
     application.add_handler(CommandHandler("admin_aq_pool", admin_article_quiz_pool_command))
@@ -23687,6 +23750,14 @@ def main():
             "cron",
             hour=int(ARTIKEL_SPRINT_SLOT[0]),
             minute=int(ARTIKEL_SPRINT_SLOT[1]),
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Artikel Sprint: close expired battles + DM results (00:05) --
+        scheduler.add_job(
+            lambda: submit_async(_close_article_sprint_battles_job, CallbackContext(application=application)),
+            "cron",
+            hour=0,
+            minute=5,
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
         logging.info("sprint_scheduler_slots_registered slots=%s", sorted(SPRINT_SLOT_TIMES.items()))

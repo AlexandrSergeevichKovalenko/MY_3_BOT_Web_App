@@ -22840,6 +22840,31 @@ def artikel_battle():
     })
 
 
+@app.route("/api/webapp/artikel/battles", methods=["POST"])
+def artikel_battles():
+    """List the user's open battles (re-entry — 'Мои батлы')."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    from backend.database import (
+        ensure_article_sprint_schema, list_open_battles_for_user,
+        get_article_sprint_theme, get_article_sprint_result,
+    )
+    ensure_article_sprint_schema()
+    out = []
+    for b in list_open_battles_for_user(int(user_id)):
+        theme = get_article_sprint_theme(b["theme_key"])
+        played = bool(get_article_sprint_result(f"asb_{b['id']}", int(user_id)))
+        out.append({
+            "battle_id": int(b["id"]),
+            "creator_name": b.get("creator_name") or "",
+            "theme_label": (theme or {}).get("label_de") or b["theme_key"],
+            "deadline": b["deadline"].isoformat() if b.get("deadline") else "",
+            "played": played,
+        })
+    return jsonify({"ok": True, "battles": out})
+
+
 @app.route("/api/answer/listening_status", methods=["GET", "POST"])
 def listening_status():
     """Poll endpoint for async listening grading: pending → done (+result)."""

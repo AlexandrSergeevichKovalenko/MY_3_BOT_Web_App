@@ -34982,6 +34982,41 @@ def is_article_sprint_battle_member(battle_id: int, user_id: int) -> bool:
             return cursor.fetchone() is not None
 
 
+def list_article_sprint_battle_members(battle_id: int) -> list[dict]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT user_id, user_name FROM bt_3_article_sprint_battle_members "
+                "WHERE battle_id = %s;",
+                (int(battle_id),),
+            )
+            rows = cursor.fetchall() or []
+    return [{"user_id": int(r[0]), "user_name": str(r[1] or "")} for r in rows]
+
+
+def list_article_sprint_battles_to_close() -> list[dict]:
+    """Open battles whose deadline has passed (for the close job)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id, creator_user_id, creator_name, theme_key, deadline "
+                "FROM bt_3_article_sprint_battles WHERE status = 'open' AND deadline <= NOW();"
+            )
+            rows = cursor.fetchall() or []
+    return [{"id": int(r[0]), "creator_user_id": int(r[1]), "creator_name": r[2],
+             "theme_key": r[3], "deadline": r[4]} for r in rows]
+
+
+def close_article_sprint_battle(battle_id: int) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_article_sprint_battles SET status = 'closed' WHERE id = %s;",
+                (int(battle_id),),
+            )
+        conn.commit()
+
+
 def list_open_battles_for_user(user_id: int) -> list[dict]:
     """Battles the user joined that are still open and not past deadline."""
     with get_db_connection_context() as conn:
