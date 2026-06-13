@@ -34360,6 +34360,226 @@ def get_send_plan_message(plan_date) -> dict | None:
     return {"chat_id": int(row[0]), "message_id": int(row[1])} if row else None
 
 
+# ── Artikel Sprint (2-min der/die/das speed game) — themes + noun bank ─────────
+def ensure_article_sprint_schema() -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_article_sprint_themes (
+                    theme_key      TEXT PRIMARY KEY,
+                    label_de       TEXT NOT NULL DEFAULT '',
+                    label_ru       TEXT NOT NULL DEFAULT '',
+                    subtopics_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    target_count   INTEGER NOT NULL DEFAULT 280,
+                    active         BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_article_sprint_nouns (
+                    id          BIGSERIAL PRIMARY KEY,
+                    theme_key   TEXT NOT NULL,
+                    word        TEXT NOT NULL,
+                    article     TEXT NOT NULL CHECK (article IN ('der','die','das')),
+                    meaning_ru  TEXT NOT NULL DEFAULT '',
+                    plural      TEXT NOT NULL DEFAULT '',
+                    difficulty  TEXT NOT NULL DEFAULT 'B',
+                    freq_rank   INTEGER,
+                    subtopic    TEXT NOT NULL DEFAULT '',
+                    source      TEXT NOT NULL DEFAULT 'gpt',
+                    verified    BOOLEAN NOT NULL DEFAULT FALSE,
+                    retired     BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            # One row per (theme, word) — dedup case-insensitively.
+            cursor.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_3_article_sprint_nouns_theme_word
+                ON bt_3_article_sprint_nouns (theme_key, lower(word));
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_bt_3_article_sprint_nouns_theme_ready
+                ON bt_3_article_sprint_nouns (theme_key, verified, retired);
+                """
+            )
+            # Which theme to train on a given day (admin picks today-for-tomorrow).
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_article_sprint_schedule (
+                    play_date   DATE PRIMARY KEY,
+                    theme_key   TEXT NOT NULL,
+                    set_by      BIGINT,
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+        conn.commit()
+
+
+def sync_article_sprint_themes_from_code() -> dict:
+    """Upsert the theme registry from article_sprint_themes.ARTICLE_SPRINT_THEMES.
+    Idempotent; preserves any subtopics already authored in the DB."""
+    from backend.article_sprint_themes import article_sprint_themes
+    ensure_article_sprint_schema()
+    rows = article_sprint_themes()
+    synced = 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            for t in rows:
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_article_sprint_themes (theme_key, label_de, label_ru, target_count, updated_at)
+                    VALUES (%s, %s, %s, %s, NOW())
+                    ON CONFLICT (theme_key) DO UPDATE SET
+                        label_de = EXCLUDED.label_de,
+                        label_ru = EXCLUDED.label_ru,
+                        target_count = EXCLUDED.target_count,
+                        updated_at = NOW();
+                    """,
+                    (t["key"], t["label_de"], t["label_ru"], int(t["target_count"])),
+                )
+                synced += 1
+        conn.commit()
+    return {"synced": synced}
+
+
+def list_article_sprint_themes() -> list[dict]:
+    """Themes + how many verified nouns each currently has (for /artikel_themes)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT t.theme_key, t.label_de, t.label_ru, t.target_count, t.active,
+                       COALESCE(n.verified_count, 0) AS verified_count,
+                       COALESCE(n.total_count, 0) AS total_count
+                FROM bt_3_article_sprint_themes t
+                LEFT JOIN (
+                    SELECT theme_key,
+                           COUNT(*) FILTER (WHERE verified AND NOT retired) AS verified_count,
+                           COUNT(*) FILTER (WHERE NOT retired) AS total_count
+                    FROM bt_3_article_sprint_nouns
+                    GROUP BY theme_key
+                ) n ON n.theme_key = t.theme_key
+                ORDER BY t.theme_key;
+                """
+            )
+            rows = cursor.fetchall() or []
+    return [
+        {
+            "theme_key": r[0], "label_de": r[1], "label_ru": r[2],
+            "target_count": int(r[3] or 0), "active": bool(r[4]),
+            "verified_count": int(r[5] or 0), "total_count": int(r[6] or 0),
+        }
+        for r in rows
+    ]
+
+
+def get_article_sprint_theme(theme_key: str) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT theme_key, label_de, label_ru, target_count, active "
+                "FROM bt_3_article_sprint_themes WHERE theme_key = %s;",
+                (str(theme_key),),
+            )
+            r = cursor.fetchone()
+    if not r:
+        return None
+    return {"theme_key": r[0], "label_de": r[1], "label_ru": r[2],
+            "target_count": int(r[3] or 0), "active": bool(r[4])}
+
+
+def count_article_sprint_nouns(theme_key: str, *, verified_only: bool = True) -> int:
+    clause = "AND verified" if verified_only else ""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT COUNT(*) FROM bt_3_article_sprint_nouns "
+                f"WHERE theme_key = %s AND NOT retired {clause};",
+                (str(theme_key),),
+            )
+            row = cursor.fetchone()
+    return int((row or [0])[0] or 0)
+
+
+def insert_article_sprint_nouns(theme_key: str, rows: list[dict]) -> dict:
+    """Bulk-insert verified nouns for a theme (idempotent: skip dup theme+word).
+    Each row: {word, article, meaning_ru, plural?, difficulty?, freq_rank?, subtopic?, source?, verified?}.
+    Returns {"inserted": n, "skipped": m}."""
+    ensure_article_sprint_schema()
+    inserted = 0
+    skipped = 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            for row in rows or []:
+                word = str(row.get("word") or "").strip()
+                article = str(row.get("article") or "").strip().lower()
+                if not word or article not in ("der", "die", "das"):
+                    skipped += 1
+                    continue
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_article_sprint_nouns
+                        (theme_key, word, article, meaning_ru, plural, difficulty,
+                         freq_rank, subtopic, source, verified)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (theme_key, lower(word)) DO NOTHING;
+                    """,
+                    (
+                        str(theme_key), word, article,
+                        str(row.get("meaning_ru") or ""), str(row.get("plural") or ""),
+                        str(row.get("difficulty") or "B"),
+                        int(row["freq_rank"]) if row.get("freq_rank") is not None else None,
+                        str(row.get("subtopic") or ""), str(row.get("source") or "gpt"),
+                        bool(row.get("verified", True)),
+                    ),
+                )
+                if cursor.rowcount and cursor.rowcount > 0:
+                    inserted += 1
+                else:
+                    skipped += 1
+        conn.commit()
+    return {"inserted": inserted, "skipped": skipped}
+
+
+def set_article_sprint_theme_for_date(play_date, theme_key: str, *, set_by: int | None = None) -> None:
+    ensure_article_sprint_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_article_sprint_schedule (play_date, theme_key, set_by, created_at)
+                VALUES (%s, %s, %s, NOW())
+                ON CONFLICT (play_date) DO UPDATE SET
+                    theme_key = EXCLUDED.theme_key,
+                    set_by = EXCLUDED.set_by,
+                    created_at = NOW();
+                """,
+                (play_date, str(theme_key), int(set_by) if set_by is not None else None),
+            )
+        conn.commit()
+
+
+def get_article_sprint_theme_for_date(play_date) -> str | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT theme_key FROM bt_3_article_sprint_schedule WHERE play_date = %s;",
+                (play_date,),
+            )
+            row = cursor.fetchone()
+    return str(row[0]) if row and row[0] else None
+
+
 # ── Synonym/Antonym SPRINT (60s, type as many as you can, rank by count) ──────
 def ensure_sprint_schema() -> None:
     with get_db_connection_context() as conn:

@@ -296,6 +296,8 @@ from backend.database import (
     retire_aufgaben_by_format,
     record_aufgabe_dispatch,
     ensure_sprint_schema,
+    ensure_article_sprint_schema,
+    sync_article_sprint_themes_from_code,
     upsert_sprint_item,
     delete_sprint_bank,
     count_available_sprint_items,
@@ -22693,6 +22695,17 @@ def _seed_admins_into_allowlist() -> None:
     logging.info("startup: seeded %s admin id(s) into allow-list", len(ids))
 
 
+def _init_article_sprint() -> None:
+    """Ensure the Artikel Sprint schema exists and the theme registry is synced
+    from code (idempotent)."""
+    ensure_article_sprint_schema()
+    try:
+        stats = sync_article_sprint_themes_from_code()
+        logging.info("startup: article sprint themes synced %s", stats)
+    except Exception:
+        logging.warning("startup: article sprint theme sync failed", exc_info=True)
+
+
 def main():
     global application
     bot_startup_completed_successfully = False
@@ -22737,6 +22750,13 @@ def main():
         _seed_admins_into_allowlist,
         enabled=True,
         category="readiness",
+        required_before_first_request=False,
+    )
+    _run_bot_startup_phase(
+        "init_article_sprint",
+        _init_article_sprint,
+        enabled=True,
+        category="schema_bootstrap",
         required_before_first_request=False,
     )
 
