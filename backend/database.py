@@ -34557,6 +34557,129 @@ def get_article_sprint_result(set_id: str, user_id: int) -> dict | None:
             "total": int(r[2] or 0), "time_ms": int(r[3] or 0)}
 
 
+def ensure_article_learn_schema() -> None:
+    """Artikel Trainer (learning deck) — per-answer log driving the review pile
+    (resurface a user's past mistakes) and progress counters."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_article_learn_answers (
+                    id          BIGSERIAL PRIMARY KEY,
+                    user_id     BIGINT NOT NULL,
+                    word        TEXT NOT NULL,
+                    article     TEXT NOT NULL,
+                    theme_key   TEXT NOT NULL DEFAULT '',
+                    set_id      TEXT NOT NULL DEFAULT '',
+                    is_correct  BOOLEAN NOT NULL,
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_article_learn_user_word "
+                "ON bt_3_article_learn_answers (user_id, word, created_at DESC);"
+            )
+        conn.commit()
+
+
+def record_article_learn_answer(*, user_id: int, word: str, article: str,
+                                is_correct: bool, theme_key: str = "",
+                                set_id: str = "") -> None:
+    ensure_article_learn_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_article_learn_answers
+                    (user_id, word, article, theme_key, set_id, is_correct)
+                VALUES (%s, %s, %s, %s, %s, %s);
+                """,
+                (int(user_id), str(word), str(article or "").lower(),
+                 str(theme_key or ""), str(set_id or ""), bool(is_correct)),
+            )
+        conn.commit()
+
+
+def get_article_learn_review_words(user_id: int, limit: int = 8) -> list[dict]:
+    """Words whose MOST RECENT answer by this user was wrong (still not mastered).
+    Returns [{w, a, ru}] shaped like a set word so the deck builder can reuse it."""
+    ensure_article_learn_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT DISTINCT ON (la.word) la.word, la.article, la.theme_key
+                FROM bt_3_article_learn_answers la
+                WHERE la.user_id = %s
+                ORDER BY la.word, la.created_at DESC
+                """,
+                (int(user_id),),
+            )
+            rows = cursor.fetchall() or []
+    wrong = [(str(r[0]), str(r[1] or ""), str(r[2] or "")) for r in rows]
+    # keep only the still-wrong latest answers, newest first is lost by DISTINCT ON;
+    # re-query meaning_ru from the noun bank for a nice card.
+    out: list[dict] = []
+    for word, article, theme_key in wrong:
+        # the DISTINCT ON above returned the latest row per word, but we also need
+        # is_correct of that latest row — fetch it cheaply.
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT is_correct FROM bt_3_article_learn_answers "
+                    "WHERE user_id=%s AND word=%s ORDER BY created_at DESC LIMIT 1;",
+                    (int(user_id), word),
+                )
+                rc = cursor.fetchone()
+        if not rc or bool(rc[0]):
+            continue  # latest answer was correct → mastered, skip
+        ru = ""
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT meaning_ru FROM bt_3_article_sprint_nouns "
+                    "WHERE word=%s AND article=%s LIMIT 1;",
+                    (word, article),
+                )
+                rr = cursor.fetchone()
+                if rr:
+                    ru = str(rr[0] or "")
+        out.append({"w": word, "a": article, "ru": ru})
+        if len(out) >= int(limit):
+            break
+    return out
+
+
+def get_article_learn_progress(user_id: int, theme_key: str | None = None) -> dict:
+    """Distinct words attempted and distinct words mastered (latest answer correct)."""
+    ensure_article_learn_schema()
+    params: list = [int(user_id)]
+    theme_filter = ""
+    if theme_key:
+        theme_filter = "AND theme_key = %s"
+        params.append(str(theme_key))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                WITH latest AS (
+                    SELECT DISTINCT ON (word) word, is_correct
+                    FROM bt_3_article_learn_answers
+                    WHERE user_id = %s {theme_filter}
+                    ORDER BY word, created_at DESC
+                )
+                SELECT COUNT(*) AS attempted,
+                       COUNT(*) FILTER (WHERE is_correct) AS mastered
+                FROM latest;
+                """,
+                tuple(params),
+            )
+            r = cursor.fetchone()
+    return {"attempted": int((r or [0, 0])[0] or 0),
+            "mastered": int((r or [0, 0])[1] or 0)}
+
+
 def delete_article_sprint_result(set_id: str, user_id: int | None = None) -> int:
     """Remove a recorded result so the user can replay a set (testing/admin). If
     user_id is None, clears EVERYONE's result for the set. Returns rows deleted."""

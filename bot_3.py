@@ -18674,6 +18674,54 @@ async def admin_artikel_reset_command(update: Update, context: CallbackContext) 
     )
 
 
+async def admin_artikel_learn_preview_command(update: Update, context: CallbackContext) -> None:
+    """Preview the Artikel Trainer learning deck (words + 'why' tips) so we can judge
+    tip quality before the UI. /artikel_learn_preview [today|YYYY-MM-DD]"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    args = [a.strip() for a in (context.args or []) if a.strip()]
+    play_date = _get_quiz_schedule_now().date()
+    if args and args[0].lower() not in ("today", "сегодня"):
+        try:
+            play_date = datetime.strptime(args[0], "%Y-%m-%d").date()
+        except ValueError:
+            await message.reply_text("Дата: today | YYYY-MM-DD")
+            return
+
+    def _build() -> dict:
+        from backend.article_learn import build_learn_deck
+        return build_learn_deck(play_date, int(user.id))
+
+    try:
+        deck = await asyncio.to_thread(_build)
+    except Exception as exc:
+        await message.reply_text(f"Error: {exc}")
+        return
+    if not deck.get("ok"):
+        await message.reply_text(f"⚠️ {deck.get('error') or deck.get('error_code')}")
+        return
+
+    cards = deck.get("cards") or []
+    lines = [
+        f"📚 <b>Artikel Trainer · превью колоды</b>",
+        f"Тема: {html.escape(str(deck.get('theme_label')))} · "
+        f"новых: {deck.get('new_count')} · повтор: {deck.get('review_count')}",
+        "",
+    ]
+    for c in cards:
+        rv = " 🔁" if c.get("review") else ""
+        lines.append(
+            f"<b>{html.escape(str(c['a']))}</b> {html.escape(str(c['w']))}"
+            f" — {html.escape(str(c.get('ru') or ''))}{rv}\n   <i>{html.escape(str(c.get('tip') or ''))}</i>"
+        )
+    await message.reply_text("\n".join(lines)[:4000], parse_mode="HTML")
+
+
 async def admin_artikel_recheck_command(update: Update, context: CallbackContext) -> None:
     """Re-apply the deterministic gender guard to a theme's stored nouns and fix
     any wrong articles (e.g. die→der Schädelbruch). /artikel_recheck <theme_key>"""
@@ -23494,6 +23542,7 @@ def main():
     application.add_handler(CommandHandler("artikel_themes", admin_artikel_themes_command))
     application.add_handler(CommandHandler("artikel_remindtheme", admin_artikel_remindtheme_command))
     application.add_handler(CommandHandler("artikel_reset", admin_artikel_reset_command))
+    application.add_handler(CommandHandler("artikel_learn_preview", admin_artikel_learn_preview_command))
     application.add_handler(CommandHandler("artikel_settheme", admin_artikel_settheme_command))
     application.add_handler(CommandHandler("artikel_fill", admin_artikel_fill_command))
     application.add_handler(CommandHandler("artikel_sample", admin_artikel_sample_command))
