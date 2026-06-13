@@ -32545,6 +32545,47 @@ def get_rebus_bank_entry(compound_id: str) -> dict | None:
     }
 
 
+def audit_rebus_bank_consistency(*, retire: bool = False) -> dict:
+    """Run the word↔compound consistency guard over EVERY non-retired DB row —
+    including GPT-replenished entries that live only in the DB and never went
+    through the code bank. Reports mislabelled stubs (image would not match text).
+    With retire=True, retires the bad rows so they stop being scheduled."""
+    from backend.rebus_bank import validate_rebus_entry_consistency
+    bad: list[dict] = []
+    checked = 0
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT compound_id, compound_word, parts_json
+                FROM bt_3_rebus_bank
+                WHERE retired = FALSE
+                """
+            )
+            rows = cursor.fetchall() or []
+            for row in rows:
+                checked += 1
+                entry = {
+                    "id": row[0],
+                    "compound": row[1],
+                    "parts": row[2] if isinstance(row[2], list) else [],
+                }
+                err = validate_rebus_entry_consistency(entry)
+                if err:
+                    bad.append({"compound_id": row[0], "compound": row[1], "error": err})
+            retired = 0
+            if retire and bad:
+                bad_ids = [b["compound_id"] for b in bad]
+                cursor.execute(
+                    "UPDATE bt_3_rebus_bank SET retired = TRUE, updated_at = NOW() "
+                    "WHERE compound_id = ANY(%s)",
+                    (bad_ids,),
+                )
+                retired = cursor.rowcount or 0
+        conn.commit()
+    return {"checked": checked, "bad": bad, "retired": retired}
+
+
 def mark_rebus_composed(compound_id: str, *, image_object_key: str) -> None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:

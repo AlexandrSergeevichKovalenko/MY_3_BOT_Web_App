@@ -18158,6 +18158,46 @@ async def admin_rebus_recheck_command(update: Update, context: CallbackContext) 
     await status_msg.edit_text(text[:4000])
 
 
+async def admin_rebus_audit_command(update: Update, context: CallbackContext) -> None:
+    """Audit EVERY live DB rebus (incl. GPT-generated ones not in code) for the
+    word↔compound desync bug. Report-only by default; `/admin_rebus_audit retire`
+    also retires the bad ones so they stop being scheduled."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    do_retire = bool(context.args) and str(context.args[0]).strip().lower() in ("retire", "fix", "1", "yes")
+    status_msg = await message.reply_text(
+        "Аудит всей базы ребусов" + (" + ретайр плохих…" if do_retire else " (только отчёт)…")
+    )
+
+    def _audit(retire: bool) -> dict:
+        from backend.database import audit_rebus_bank_consistency
+        return audit_rebus_bank_consistency(retire=retire)
+
+    try:
+        result = await asyncio.to_thread(_audit, do_retire)
+    except Exception as exc:
+        await status_msg.edit_text(f"Error: {exc}")
+        return
+    bad = result.get("bad") or []
+    text = (
+        f"✅ Проверено: {result.get('checked')}\n"
+        f"🔴 Несогласованных: {len(bad)}\n"
+        f"♻️ Ретайрнуто: {result.get('retired')}\n"
+    )
+    if bad:
+        text += "\n" + "\n".join(f"• {b['compound']} ({b['compound_id']}): {b['error']}" for b in bad[:25])
+        if not do_retire:
+            text += "\n\n`/admin_rebus_audit retire` — чтобы скрыть их от пользователей."
+    else:
+        text += "\nВсё чисто — кривых записей нет. 🎉"
+    await status_msg.edit_text(text[:4000])
+
+
 async def admin_rebus_reset_command(update: Update, context: CallbackContext) -> None:
     """Re-sync the code bank, then force compounds containing the given part word(s)
     to recompose (drops the cached card) and refill the pool. Use after fixing a
@@ -22551,6 +22591,7 @@ def main():
     application.add_handler(CommandHandler("admin_rebus_pool", admin_rebus_pool_command))
     application.add_handler(CommandHandler("admin_rebus_recheck", admin_rebus_recheck_command))
     application.add_handler(CommandHandler("admin_rebus_reset", admin_rebus_reset_command))
+    application.add_handler(CommandHandler("admin_rebus_audit", admin_rebus_audit_command))
     application.add_handler(CommandHandler("admin_aq_send", admin_article_quiz_send_command))
     application.add_handler(CommandHandler("admin_aq_pool", admin_article_quiz_pool_command))
     application.add_handler(CommandHandler("addartikel", admin_add_artikel_command))
