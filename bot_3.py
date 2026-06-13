@@ -22926,60 +22926,19 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
             },
             ttl_seconds=QUIZ_FREEFORM_INPUT_TTL_SECONDS,
         )
-        # Inert by design: picking "keine korrekte Antworten" commits nothing and
-        # sends NOTHING (a poll vote cannot show a per-user popup, and we don't
-        # want messages flying around / chat-hopping). The task is completed ONLY
-        # by typing the answer via the prominent "✍️ свой вариант" button right
-        # under the poll. The pending-state above keeps DM-typing as a silent
-        # fallback for anyone who prefers it.
-        if quiz_data.get("freeform_button"):
-            return
-        # Legacy fallback (poll has no attached button, e.g. attach failed or the
-        # poll predates a restart): offer the Mini-App overlay via a reply message.
-        qf_dispatch_id = 0
-        try:
-            qf_dispatch_id = await asyncio.to_thread(
-                create_quiz_freeform_dispatch,
-                user_id=int(poll_answer.user.id),
-                poll_id=str(poll_answer.poll_id or ""),
-                chat_id=int(quiz_data.get("chat_id") or 0),
-                correct_text=str(quiz_data.get("correct_text") or ""),
-                word_ru=str(quiz_data.get("word_ru") or ""),
-                explanation=str(quiz_data.get("explanation") or ""),
-                quiz_type=str(quiz_data.get("quiz_type") or ""),
-            )
-        except Exception:
-            logging.warning("quizfreeform: create dispatch failed user_id=%s", poll_answer.user.id, exc_info=True)
-
-        if qf_dispatch_id:
-            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(
-                "✍️ Antworten", url=get_webapp_deeplink(f"ans_qf_{qf_dispatch_id}"),
-            )]])
-            try:
-                await context.bot.send_message(
-                    chat_id=int(quiz_data.get("chat_id") or poll_answer.user.id),
-                    text=f"{poll_answer.user.first_name}, впиши свой вариант — окошко откроется прямо здесь 👇",
-                    reply_to_message_id=quiz_data.get("message_id"),
-                    reply_markup=keyboard,
-                )
-                return
-            except Exception:
-                logging.warning("quizfreeform: button message failed user_id=%s", poll_answer.user.id, exc_info=True)
-
-        # Fallback: legacy DM text prompt.
-        try:
-            await context.bot.send_message(
-                chat_id=poll_answer.user.id,
-                text="✍️ Вы выбрали вариант без готового ответа. Напишите ваш вариант одним сообщением здесь, в личке.",
-            )
-        except Exception as exc:
-            logging.warning(f"⚠️ Не удалось отправить freeform-инструкцию в личку user_id={poll_answer.user.id}: {exc}")
-            await context.bot.send_message(
-                chat_id=quiz_data["chat_id"],
-                text=f"{poll_answer.user.first_name}, откройте личку с ботом по кнопке ниже, чтобы получить результат квиза.",
-                reply_to_message_id=quiz_data["message_id"],
-                reply_markup=await _build_open_private_chat_keyboard(context, start="quiz"),
-            )
+        # Inert by design: picking "keine korrekte Antworten" commits NOTHING and
+        # sends NOTHING. A poll vote can't show a per-user popup, and we never want a
+        # message flying to the bottom of the chat (chat-hopping). The task is
+        # answered ONLY via the prominent "✍️ свой вариант" button attached right
+        # under the poll (ans_qfp_<poll_id>, wired for both task + submit). The
+        # pending-state stored above keeps silent DM-typing as a fallback for anyone
+        # who prefers to type in the private chat — but we post no message either way.
+        #
+        # NOTE: the old "legacy fallback" reply message lived here, gated on the
+        # in-memory `freeform_button` flag. That flag is NOT persisted by
+        # upsert_active_quiz, so after a bot restart quiz_data reloaded from the DB
+        # lacked it → the guard went falsy → the bottom message fired again. Removed
+        # entirely: the in-place button under the poll is the single answer path.
         return
 
     is_correct = selected_index == quiz_data["correct_option_id"]
