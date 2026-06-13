@@ -302,6 +302,9 @@ from backend.database import (
     get_article_sprint_theme,
     set_article_sprint_theme_for_date,
     get_article_sprint_theme_for_date,
+    get_article_sprint_verified_sample,
+    get_article_sprint_set,
+    get_daily_article_sprint_set_id,
     upsert_sprint_item,
     delete_sprint_bank,
     count_available_sprint_items,
@@ -18502,6 +18505,83 @@ async def admin_artikel_fill_command(update: Update, context: CallbackContext) -
     await status_msg.edit_text(text[:4000])
 
 
+async def admin_artikel_sample_command(update: Update, context: CallbackContext) -> None:
+    """Show N random verified nouns of a theme to eyeball article quality.
+    /artikel_sample <theme_key> [n]"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    args = [a.strip() for a in (context.args or []) if a.strip()]
+    if not args:
+        await message.reply_text("Использование: /artikel_sample <theme_key> [n]")
+        return
+    theme_key = args[0]
+    try:
+        n = max(1, min(60, int(args[1]))) if len(args) > 1 else 25
+    except ValueError:
+        n = 25
+    rows = await asyncio.to_thread(get_article_sprint_verified_sample, theme_key, n)
+    if not rows:
+        await message.reply_text(f"Нет verified-слов для <code>{html.escape(theme_key)}</code>.", parse_mode="HTML")
+        return
+    lines = [f"🔤 <b>{html.escape(theme_key)}</b> — {len(rows)} случайных verified:"]
+    for r in rows:
+        lines.append(f"<b>{html.escape(str(r['a']))}</b> {html.escape(str(r['w']))} — {html.escape(str(r.get('ru') or ''))}")
+    await message.reply_text("\n".join(lines)[:4000], parse_mode="HTML")
+
+
+async def admin_artikel_buildtoday_command(update: Update, context: CallbackContext) -> None:
+    """Build (or rebuild) today's daily shared set and show a preview.
+    /artikel_buildtoday [YYYY-MM-DD]"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    args = [a.strip() for a in (context.args or []) if a.strip()]
+    play_date = _get_quiz_schedule_now().date()
+    if args:
+        try:
+            play_date = datetime.strptime(args[0], "%Y-%m-%d").date()
+        except ValueError:
+            await message.reply_text("Дата: YYYY-MM-DD")
+            return
+    status_msg = await message.reply_text(f"Собираю дневной сет на {play_date.isoformat()}…")
+
+    def _build() -> dict:
+        from backend.article_sprint_sets import build_daily_set
+        return build_daily_set(play_date)
+
+    try:
+        result = await asyncio.to_thread(_build)
+    except Exception as exc:
+        await status_msg.edit_text(f"Error: {exc}")
+        return
+    if result.get("status") != "ready":
+        await status_msg.edit_text(
+            f"⚠️ Не собрал: {result.get('status')} · тема {result.get('theme_key')} · "
+            f"доступно {result.get('available')}/{result.get('min_playable')}. {result.get('hint','')}"
+        )
+        return
+    set_row = await asyncio.to_thread(get_article_sprint_set, result["set_id"])
+    preview = (set_row.get("words") or [])[:12] if set_row else []
+    lines = [
+        f"✅ Сет <code>{result['set_id']}</code>",
+        f"Тема: {result['theme_key']} · слов: {result['word_count']}",
+        "",
+        "Превью:",
+    ]
+    for w in preview:
+        lines.append(f"<b>{html.escape(str(w.get('a')))}</b> {html.escape(str(w.get('w')))} — {html.escape(str(w.get('ru') or ''))}")
+    await status_msg.edit_text("\n".join(lines)[:4000], parse_mode="HTML")
+
+
 # ─────────────────────────────────────────────────────────────
 #  ARTICLE QUIZ (der/die/das) — send, callback, scheduler
 # ─────────────────────────────────────────────────────────────
@@ -22989,6 +23069,8 @@ def main():
     application.add_handler(CommandHandler("artikel_themes", admin_artikel_themes_command))
     application.add_handler(CommandHandler("artikel_settheme", admin_artikel_settheme_command))
     application.add_handler(CommandHandler("artikel_fill", admin_artikel_fill_command))
+    application.add_handler(CommandHandler("artikel_sample", admin_artikel_sample_command))
+    application.add_handler(CommandHandler("artikel_buildtoday", admin_artikel_buildtoday_command))
     application.add_handler(CommandHandler("admin_aq_send", admin_article_quiz_send_command))
     application.add_handler(CommandHandler("admin_aq_pool", admin_article_quiz_pool_command))
     application.add_handler(CommandHandler("addartikel", admin_add_artikel_command))

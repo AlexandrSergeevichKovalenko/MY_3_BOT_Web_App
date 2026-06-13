@@ -34422,6 +34422,29 @@ def ensure_article_sprint_schema() -> None:
                 );
                 """
             )
+            # A frozen, ordered word set the players answer (daily shared / battle /
+            # folder). words_json = [{"w":..,"a":"der|die|das","ru":..}, ...].
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_article_sprint_sets (
+                    set_id        TEXT PRIMARY KEY,
+                    kind          TEXT NOT NULL DEFAULT 'daily',
+                    play_date     DATE,
+                    theme_key     TEXT NOT NULL DEFAULT '',
+                    owner_user_id BIGINT,
+                    words_json    JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    word_count    INTEGER NOT NULL DEFAULT 0,
+                    deadline      TIMESTAMPTZ,
+                    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_bt_3_article_sprint_sets_daily
+                ON bt_3_article_sprint_sets (play_date) WHERE kind = 'daily';
+                """
+            )
         conn.commit()
 
 
@@ -34566,6 +34589,89 @@ def insert_article_sprint_nouns(theme_key: str, rows: list[dict]) -> dict:
                     skipped += 1
         conn.commit()
     return {"inserted": inserted, "skipped": skipped}
+
+
+def get_article_sprint_verified_sample(theme_key: str | None, n: int, *, exclude_words: list[str] | None = None) -> list[dict]:
+    """Random n verified, non-retired nouns. theme_key=None → from any theme (mix).
+    Returns [{"w":word, "a":article, "ru":meaning_ru}]."""
+    excl = [str(w).strip().lower() for w in (exclude_words or []) if str(w).strip()]
+    where = ["verified", "NOT retired"]
+    params: list = []
+    if theme_key:
+        where.append("theme_key = %s")
+        params.append(str(theme_key))
+    if excl:
+        where.append("lower(word) <> ALL(%s)")
+        params.append(excl)
+    params.append(int(max(0, n)))
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT word, article, meaning_ru
+                FROM bt_3_article_sprint_nouns
+                WHERE {' AND '.join(where)}
+                ORDER BY random()
+                LIMIT %s;
+                """,
+                tuple(params),
+            )
+            rows = cursor.fetchall() or []
+    return [{"w": r[0], "a": r[1], "ru": r[2] or ""} for r in rows]
+
+
+def upsert_article_sprint_set(*, set_id: str, kind: str, play_date, theme_key: str,
+                              words: list[dict], owner_user_id: int | None = None,
+                              deadline=None) -> None:
+    import json
+    ensure_article_sprint_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_article_sprint_sets
+                    (set_id, kind, play_date, theme_key, owner_user_id, words_json, word_count, deadline, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, NOW())
+                ON CONFLICT (set_id) DO UPDATE SET
+                    kind = EXCLUDED.kind, play_date = EXCLUDED.play_date,
+                    theme_key = EXCLUDED.theme_key, owner_user_id = EXCLUDED.owner_user_id,
+                    words_json = EXCLUDED.words_json, word_count = EXCLUDED.word_count,
+                    deadline = EXCLUDED.deadline;
+                """,
+                (str(set_id), str(kind), play_date, str(theme_key),
+                 int(owner_user_id) if owner_user_id is not None else None,
+                 json.dumps(words or [], ensure_ascii=False), len(words or []), deadline),
+            )
+        conn.commit()
+
+
+def get_article_sprint_set(set_id: str) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT set_id, kind, play_date, theme_key, owner_user_id, words_json, word_count, deadline "
+                "FROM bt_3_article_sprint_sets WHERE set_id = %s;",
+                (str(set_id),),
+            )
+            r = cursor.fetchone()
+    if not r:
+        return None
+    return {
+        "set_id": r[0], "kind": r[1], "play_date": r[2], "theme_key": r[3],
+        "owner_user_id": r[4], "words": r[5] if isinstance(r[5], list) else [],
+        "word_count": int(r[6] or 0), "deadline": r[7],
+    }
+
+
+def get_daily_article_sprint_set_id(play_date) -> str | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT set_id FROM bt_3_article_sprint_sets WHERE kind = 'daily' AND play_date = %s;",
+                (play_date,),
+            )
+            r = cursor.fetchone()
+    return str(r[0]) if r and r[0] else None
 
 
 def set_article_sprint_theme_for_date(play_date, theme_key: str, *, set_by: int | None = None) -> None:
