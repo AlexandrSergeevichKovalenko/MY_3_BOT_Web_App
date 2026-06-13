@@ -3550,6 +3550,41 @@ def _build_language_pair_filter(
     clause = f" AND {source_expr} = %s AND {target_expr} = %s"
     return clause, [str(source_lang).lower(), str(target_lang).lower()]
 
+def _ensure_admin_kv(cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS bt_3_admin_kv (
+            k          TEXT PRIMARY KEY,
+            v          TEXT,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """
+    )
+
+
+def admin_kv_get(key: str) -> str | None:
+    """Tiny generic key→value store for bot/admin state (lazy-created)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_admin_kv(cursor)
+            cursor.execute("SELECT v FROM bt_3_admin_kv WHERE k = %s", (str(key),))
+            row = cursor.fetchone()
+        conn.commit()
+    return str(row[0]) if row and row[0] is not None else None
+
+
+def admin_kv_set(key: str, value: str) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            _ensure_admin_kv(cursor)
+            cursor.execute(
+                "INSERT INTO bt_3_admin_kv (k, v, updated_at) VALUES (%s, %s, NOW()) "
+                "ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v, updated_at = NOW()",
+                (str(key), str(value)),
+            )
+        conn.commit()
+
+
 def init_db(): #
     with get_db_connection_context() as conn: #
         with conn.cursor() as cursor: 

@@ -20865,20 +20865,57 @@ def _send_plan_admin_chat_id() -> int | None:
 
 
 async def _send_plan_link(context: CallbackContext) -> None:
-    """DM the admin a short message with a button to the LIVE Mini-App plan table.
-    No pinned text / no message editing — the Mini-App fetches fresh data on open."""
+    """Keep ONE pinned plan message in the admin DM: edit + re-pin the existing
+    one (refreshing the date) instead of spamming a new message daily. The button
+    opens the LIVE Mini-App table, which always shows the current day on open."""
     chat_id = _send_plan_admin_chat_id()
     if not chat_id:
         logging.info("send_plan: no admin chat id — skipping")
         return
+    from backend.database import admin_kv_get, admin_kv_set
+    today = _get_quiz_schedule_now().strftime("%d.%m.%Y")
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(
         "📊 Открыть таблицу плана", url=get_webapp_deeplink("plan"))]])
     text = (
-        "📊 <b>План отправок на сегодня</b>\n\n"
-        "Открой таблицу — план и факт по каждому интерактиву, обновляется вживую 👇"
+        f"📊 <b>План отправок · {today}</b>\n\n"
+        "Открой таблицу — план и факт по каждому интерактиву, обновляется вживую 👇\n"
+        "<i>Это сообщение закреплено и обновляется само — открывай его каждый день.</i>"
     )
+    key = f"plan_pin:{int(chat_id)}"
+
+    async def _pin(mid: int) -> None:
+        try:
+            await context.bot.pin_chat_message(
+                chat_id=int(chat_id), message_id=int(mid), disable_notification=True)
+        except Exception:
+            logging.info("send_plan: pin failed mid=%s", mid, exc_info=True)
+
+    stored = await asyncio.to_thread(admin_kv_get, key)
+    mid = None
+    if stored and "|" in stored:
+        try:
+            mid = int(stored.split("|", 1)[0])
+        except ValueError:
+            mid = None
+    # Try to refresh the existing pinned message in place.
+    if mid:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=int(chat_id), message_id=int(mid), text=text,
+                parse_mode="HTML", reply_markup=kb)
+            await _pin(mid)
+            await asyncio.to_thread(admin_kv_set, key, f"{mid}|{today}")
+            return
+        except Exception as exc:
+            if "not modified" in str(exc).lower():
+                await _pin(mid)  # same text (called twice in a day) — just ensure pinned
+                return
+            # message deleted / uneditable → fall through and send a fresh one
     try:
-        await context.bot.send_message(chat_id=int(chat_id), text=text, parse_mode="HTML", reply_markup=kb)
+        msg = await context.bot.send_message(
+            chat_id=int(chat_id), text=text, parse_mode="HTML", reply_markup=kb)
+        await _pin(int(msg.message_id))
+        await asyncio.to_thread(admin_kv_set, key, f"{int(msg.message_id)}|{today}")
     except Exception:
         logging.warning("send_plan: link send failed", exc_info=True)
 
