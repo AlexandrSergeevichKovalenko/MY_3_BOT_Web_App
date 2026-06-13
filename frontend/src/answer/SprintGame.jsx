@@ -48,6 +48,7 @@ export default function SprintGame({ id, api, haptic, onClose }) {
   const [input, setInput] = useState('');
   const [result, setResult] = useState(null);
   const [saved, setSaved] = useState(() => new Set());
+  const [saving, setSaving] = useState(() => new Set());
   const startRef = useRef(0);
   const wordsRef = useRef([]);
   const timerRef = useRef(null);
@@ -116,7 +117,9 @@ export default function SprintGame({ id, api, haptic, onClose }) {
   }, [input, hashes]);
 
   const saveChip = useCallback(async (de, ru) => {
-    if (!de || saved.has(de)) return;
+    if (!de || saved.has(de) || saving.has(de)) return;
+    setSaving((s) => new Set(s).add(de));   // instant feedback: chip shows "⏳ …"
+    try { haptic?.('light'); } catch (_e) { /* noop */ }
     try {
       await api('/api/webapp/dictionary/save', {
         source_text: de, target_text: ru || '',
@@ -125,8 +128,12 @@ export default function SprintGame({ id, api, haptic, onClose }) {
       });
       setSaved((s) => new Set(s).add(de));
       try { haptic?.('ok'); } catch (_e) { /* noop */ }
-    } catch (_e) { try { haptic?.('bad'); } catch (_e2) { /* noop */ } }
-  }, [api, saved, haptic]);
+    } catch (_e) {
+      try { haptic?.('bad'); } catch (_e2) { /* noop */ }
+    } finally {
+      setSaving((s) => { const n = new Set(s); n.delete(de); return n; });
+    }
+  }, [api, saved, saving, haptic]);
 
   const rel = REL[meta?.relation] || REL.synonym;
   const hits = words.filter((w) => w.status === 'hit').length;
@@ -217,10 +224,17 @@ export default function SprintGame({ id, api, haptic, onClose }) {
               const de = deOf(a);
               const ru = (a && typeof a === 'object' ? a.ru : '') || '';
               const isSaved = saved.has(de);
-              const cls = isSaved ? 'saved' : (foundSet.has(normalizeCore(de)) ? 'hit' : 'missed');
+              const isSaving = saving.has(de);
+              const cls = isSaved ? 'saved' : isSaving ? 'saving' : (foundSet.has(normalizeCore(de)) ? 'hit' : 'missed');
               return (
-                <button key={i} type="button" className={`sp-chip tap ${cls}`} onClick={() => saveChip(de, ru)}>
-                  {isSaved ? '💾 ' : ''}{de}
+                <button
+                  key={i}
+                  type="button"
+                  className={`sp-chip tap ${cls}`}
+                  disabled={isSaved || isSaving}
+                  onClick={() => saveChip(de, ru)}
+                >
+                  {isSaved ? '💾 ' : isSaving ? '⏳ ' : ''}{de}{isSaving ? ' …' : ''}
                 </button>
               );
             })}
