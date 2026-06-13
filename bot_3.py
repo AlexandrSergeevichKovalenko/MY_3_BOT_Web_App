@@ -288,6 +288,7 @@ from backend.database import (
     set_challenge_notification_message_id,
     get_challenge_results_since,
     list_confirmed_group_participants,
+    list_group_member_user_ids,
     create_aufgabe,
     count_available_aufgaben,
     pick_next_aufgabe,
@@ -20144,16 +20145,21 @@ def _build_group_daily_report(lb: dict, title: str | None) -> str | None:
     esc = lambda s: html.escape(str(s or ""))
     medal = lambda i: "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else f"{i + 1}."
     champ = leaders[0]
-    head = f"🏁 <b>Итоги дня — {esc(title)}</b>" if str(title or "").strip() else "🏁 <b>Итоги дня группы</b>"
+    head = (
+        f"🏁 <b>Групповой рейтинг — {esc(title)}</b>" if str(title or "").strip()
+        else "🏁 <b>Групповой рейтинг (итоги дня)</b>"
+    )
     lines = [
-        head, "",
+        head,
+        "<i>Только участники этой группы. Общий рейтинг по всем — в приложении.</i>",
+        "",
         f"👥 Активных: <b>{lb.get('total_players', 0)}</b> · 🧩 заданий: <b>{lb.get('total_tasks', 0)}</b>",
-        f"🏆 Чемпион дня: <b>{esc(champ['name'])}</b> — {champ['points']} очк.",
+        f"🏆 Чемпион дня в группе: <b>{esc(champ['name'])}</b> — {champ['points']} очк.",
         "",
     ]
     for i, l in enumerate(leaders[:5]):
         lines.append(f"{medal(i)} {esc(l['name'])} — {l['points']} очк. ({l['correct']}✓)")
-    lines += ["", "🏆 Полный рейтинг и Кубок чемпиона — по кнопке ниже 👇"]
+    lines += ["", "🌍 Глобальный рейтинг и Кубок чемпиона — по кнопке ниже 👇"]
     return "\n".join(lines)
 
 
@@ -20180,7 +20186,7 @@ async def _send_group_daily_report_job(context: CallbackContext) -> None:
         if chat_id == 0:
             continue
         try:
-            participants = set(await asyncio.to_thread(list_confirmed_group_participants, chat_id))
+            participants = set(await asyncio.to_thread(list_group_member_user_ids, chat_id))
         except Exception:
             participants = set()
         if not participants:
@@ -20206,7 +20212,7 @@ async def _send_group_daily_report_job(context: CallbackContext) -> None:
             from backend.champion_poster import render_champion_poster
             poster = await asyncio.to_thread(
                 render_champion_poster, lb, week_no=0, days=1, avatars=avatars,
-                header="CHAMPION DES TAGES", subtitle=_get_quiz_schedule_now().strftime("%d.%m.%Y"),
+                header="CHAMPION DER GRUPPE", subtitle=_get_quiz_schedule_now().strftime("%d.%m.%Y"),
             )
         except Exception:
             logging.warning("group daily report: poster render failed chat_id=%s", chat_id, exc_info=True)

@@ -83,8 +83,8 @@ export default function Leaderboard({ startParam }) {
       <div className="lb-card">
         <div className="lb-head">
           <div className="lb-trophy">🏆</div>
-          <h1 className="lb-title">Рейтинг {days === 7 ? 'недели' : `${days} дн.`}</h1>
-          <div className="lb-sub">№{data.week_no} · игроков {data.total_players} · заданий {data.total_tasks}</div>
+          <h1 className="lb-title">🌍 Глобальный рейтинг</h1>
+          <div className="lb-sub">{days === 7 ? 'неделя' : `${days} дн.`} · все игроки приложения · игроков {data.total_players} · заданий {data.total_tasks}</div>
         </div>
 
         <div className="lb-podium">
