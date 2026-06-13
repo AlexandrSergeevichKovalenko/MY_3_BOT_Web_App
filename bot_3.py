@@ -145,6 +145,7 @@ from backend.database import (
     purge_telegram_user_personal_data,
     list_allowed_telegram_users,
     create_access_request,
+    has_pending_access_request,
     resolve_access_request,
     resolve_latest_pending_access_request_for_user,
     get_access_request_by_id,
@@ -3064,6 +3065,11 @@ async def _notify_admins_access_request(context: CallbackContext, user) -> None:
 
     user_id = int(user.id)
     username = _display_user_name(user)
+    # Dedup: a single new user hits several entry points (/start, the access-denied
+    # button, /request_access). Notify admins only once while a request is pending.
+    if has_pending_access_request(user_id):
+        logging.info("access request: pending already exists for user_id=%s — skip duplicate notify", user_id)
+        return
     request_id = create_access_request(
         user_id=user_id,
         username=username,

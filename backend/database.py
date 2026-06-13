@@ -11305,6 +11305,18 @@ def create_access_request(
     return int(row[0])
 
 
+def has_pending_access_request(user_id: int) -> bool:
+    """True if this user already has a pending access request — used to dedup the
+    admin notification (one user hits several entry points: /start, the button…)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM bt_3_access_requests WHERE user_id = %s AND status = 'pending' LIMIT 1;",
+                (int(user_id),),
+            )
+            return cursor.fetchone() is not None
+
+
 def get_access_request_by_id(request_id: int) -> dict | None:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:

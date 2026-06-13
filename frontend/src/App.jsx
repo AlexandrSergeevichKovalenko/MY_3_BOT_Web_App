@@ -24446,7 +24446,7 @@ function AppInner() {
         body: JSON.stringify({ initData }),
       });
       if (!response.ok) {
-        throw new Error(await response.text());
+        throw new Error(await readApiError(response, 'Ошибка папок', 'Ordnerfehler'));
       }
       const data = await response.json();
       setFolders(data.items || []);

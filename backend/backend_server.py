@@ -1297,6 +1297,14 @@ WEBAPP_SHARED_ALLOWLIST_CACHE_TTL_SEC = max(
     WEBAPP_ALLOWLIST_CACHE_STALE_TTL_SEC,
     min(21600, int((os.getenv("WEBAPP_SHARED_ALLOWLIST_CACHE_TTL_SEC") or "3600").strip() or "3600")),
 )
+# DENIED decisions are cached only briefly: an admin approval can't reach this
+# process's hot-path cache or the shared Redis key directly, so a long negative
+# TTL would keep a freshly-approved user locked out for up to an hour. 60s = the
+# approved user self-heals within a minute (matches the DB-layer negative cache).
+WEBAPP_ALLOWLIST_NEG_CACHE_TTL_SEC = max(
+    5, min(WEBAPP_ALLOWLIST_CACHE_TTL_SEC,
+           int((os.getenv("WEBAPP_ALLOWLIST_NEG_CACHE_TTL_SEC") or "60").strip() or "60")),
+)
 WEBAPP_INSTANCE_LEASE_CACHE_TTL_SEC = max(
     2,
     min(120, int((os.getenv("WEBAPP_INSTANCE_LEASE_CACHE_TTL_SEC") or "5").strip() or "5")),
@@ -2723,11 +2731,19 @@ def _should_dispatch_shared_snapshot_refresh(*, snapshot_kind: str, user_id: int
 
 
 def _cache_webapp_allowlist(user_id: int, allowed: bool) -> None:
+    # Positive results: full TTL (the allow-list changes rarely). Negative results:
+    # short TTL so a just-approved user is never locked out beyond ~1 min.
+    if allowed:
+        fresh_ttl = WEBAPP_ALLOWLIST_CACHE_TTL_SEC
+        stale_ttl = WEBAPP_ALLOWLIST_CACHE_STALE_TTL_SEC
+        shared_ttl = WEBAPP_SHARED_ALLOWLIST_CACHE_TTL_SEC
+    else:
+        fresh_ttl = stale_ttl = shared_ttl = WEBAPP_ALLOWLIST_NEG_CACHE_TTL_SEC
     _HOTPATH_ALLOWLIST_CACHE.put(
         _allowlist_cache_key(user_id),
         bool(allowed),
-        fresh_ttl_sec=WEBAPP_ALLOWLIST_CACHE_TTL_SEC,
-        stale_ttl_sec=WEBAPP_ALLOWLIST_CACHE_STALE_TTL_SEC,
+        fresh_ttl_sec=fresh_ttl,
+        stale_ttl_sec=stale_ttl,
     )
     _store_shared_json_payload(
         _allowlist_redis_key(int(user_id)),
@@ -2735,7 +2751,7 @@ def _cache_webapp_allowlist(user_id: int, allowed: bool) -> None:
             "allowed": bool(allowed),
             "updated_at_ms": int(time.time() * 1000),
         },
-        ttl_sec=WEBAPP_SHARED_ALLOWLIST_CACHE_TTL_SEC,
+        ttl_sec=shared_ttl,
     )
 
 
