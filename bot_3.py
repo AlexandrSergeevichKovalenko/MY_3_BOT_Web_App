@@ -16047,7 +16047,7 @@ def _normalize_word_order_example(
 
 def _build_word_order_question(hint_text: str) -> str:
     hint = str(hint_text or "").strip()
-    base = "Выберите правильный порядок слов в немецком предложении."
+    base = "Выберите грамматически правильный вариант немецкого предложения."
     if hint:
         return f"{base}\nПодсказка: «{hint}»."
     return base
@@ -16065,20 +16065,24 @@ def _word_order_lcs_ratio(a_tokens: list[str], b_tokens: list[str]) -> float:
 
 
 def _word_order_distractor_ok(correct: str, distractor: str) -> bool:
-    """Anti-scramble gate (defence in depth even with the LLM): a distractor must
-    read like a real sentence — start capitalised (lowercase start = verb-first
-    salad) — and, if it's a pure reordering of the same words, stay MOSTLY in
-    order (high token-LCS). A word substitution (case/preposition/verb form) is a
-    legit near-miss and passes."""
+    """Quality gate: a distractor must read like a real sentence (capitalised start)
+    AND must differ from the correct one by a MEANINGFUL grammatical change — a
+    wrong/missing word: wrong verb or verb form, wrong preposition, wrong case,
+    missing/misplaced "zu", broken "um…zu", dropped separable prefix, etc.
+    A PURE REORDERING of the same words (a visible shuffle the learner can spot
+    without knowing German — e.g. stranding "zu" at the end) is REJECTED."""
     d = (distractor or "").strip()
     c = (correct or "").strip()
     if not d or d.lower() == c.lower():
         return False
     if not d[:1].isupper():
         return False
-    ca, da = c.lower().split(), d.lower().split()
-    if sorted(ca) == sorted(da):  # same words → pure reordering
-        return _word_order_lcs_ratio(ca, da) >= 0.55
+    # Compare letter-only tokens so punctuation moving around (e.g. "zu." vs "zu")
+    # can't disguise a pure reordering as a substitution.
+    ca = re.findall(r"[A-Za-zÄÖÜäöüß]+", c.lower())
+    da = re.findall(r"[A-Za-zÄÖÜäöüß]+", d.lower())
+    if sorted(ca) == sorted(da):  # same multiset of words → pure reordering → reject
+        return False
     return True
 
 
@@ -16400,95 +16404,138 @@ def _extract_prefix_quiz_context(
     }
 
 
+# Prefixes used to PAD the prefix-choice quiz when the base verb has fewer than
+# 4 real documented variants. Any prefix other than the target's is a valid wrong
+# answer, because the question asks which prefix yields ONE specific meaning.
+_PREFIX_CHOICE_POOL = (
+    "ab", "an", "auf", "aus", "ein", "mit", "nach", "vor", "zu",
+    "weg", "los", "bei", "um", "ver", "be", "ent", "er", "zer",
+)
+# Prefixes that may sit in front of the base when splitting variant → prefix+base.
+_PREFIX_SPLIT_SET = frozenset(
+    list(_SEPARABLE_PREFIXES) + ["be", "ent", "er", "ver", "zer", "ge", "miss",
+                                 "über", "ueber", "unter", "durch", "um", "wieder"]
+)
+
+
+def _prefix_item_meaning_ru(item: dict) -> str:
+    """Short Russian gloss of one prefix variant (for the question/explanation).
+    Returns "" if there is no usable Russian meaning — caller then skips it, so we
+    never ship a German-only or empty meaning."""
+    for key in ("meaning_ru", "explanation", "translation_ru", "translation", "translation_de"):
+        val = re.sub(r"\s+", " ", str(item.get(key) or "").strip())
+        if val and re.search(r"[а-яёА-ЯЁ]", val):
+            # keep only the first short clause so the option button stays readable
+            val = re.split(r"[.;]|\s—\s|\s-\s|\(", val)[0].strip()
+            return val[:70].strip()
+    return ""
+
+
+def _prefix_choice_base_candidates(word_de: str) -> list[str]:
+    """Possible base verbs: the headword itself, plus the headword with a leading
+    prefix stripped (so a saved 'ablaufen' can still expose base 'laufen')."""
+    base = _to_letters_only_word(word_de or "").lower()
+    candidates: list[str] = []
+    if base.endswith("en") and len(base) >= 4:
+        candidates.append(base)
+    for prefix in sorted(_PREFIX_SPLIT_SET, key=len, reverse=True):
+        if base.startswith(prefix) and len(base) - len(prefix) >= 4 and base[len(prefix):].endswith("en"):
+            candidates.append(base[len(prefix):])
+            break
+    return list(dict.fromkeys(candidates))
+
+
+def _build_prefix_choice_quiz(entry: dict, response_json: dict, word_ru: str) -> dict | None:
+    """Answerable prefix quiz: given the base verb and a TARGET meaning, choose the
+    prefix that produces it. e.g. base «laufen» (бегать), meaning «истекать» → «ab».
+    Built from the dictionary's `prefixes` array (variant + Russian meaning)."""
+    if not isinstance(response_json, dict) or not re.search(r"[а-яёА-ЯЁ]", word_ru):
+        return None
+    raw_prefixes = response_json.get("prefixes")
+    if not isinstance(raw_prefixes, list) or not raw_prefixes:
+        return None
+
+    word_de = str(response_json.get("word_de") or entry.get("word_de") or response_json.get("translation_de") or "")
+    for base_de in _prefix_choice_base_candidates(word_de):
+        forms: list[tuple[str, str, str]] = []   # (prefix, variant, meaning_ru)
+        seen_prefixes: set[str] = set()
+        for item in raw_prefixes:
+            if not isinstance(item, dict):
+                continue
+            variant = _to_letters_only_word(item.get("variant") or "").lower()
+            if not variant or not variant.endswith(base_de) or len(variant) <= len(base_de):
+                continue
+            prefix = variant[: len(variant) - len(base_de)]
+            if not prefix or len(prefix) > 7 or prefix in seen_prefixes:
+                continue
+            meaning_ru = _prefix_item_meaning_ru(item)
+            if not meaning_ru:
+                continue
+            seen_prefixes.add(prefix)
+            forms.append((prefix, variant, meaning_ru))
+        if not forms:
+            continue
+
+        target_prefix, target_variant, target_meaning = random.choice(forms)
+        distractors = [p for (p, _, _) in forms if p != target_prefix]
+        random.shuffle(distractors)
+        pool = [p for p in _PREFIX_CHOICE_POOL if p != target_prefix and p not in distractors]
+        random.shuffle(pool)
+        distractors = (distractors + pool)[:3]
+        if len(distractors) < 3:
+            continue
+
+        options = [target_prefix] + distractors
+        random.shuffle(options)
+        return {
+            "question": (
+                f"Глагол «{base_de}» — {word_ru}.\n"
+                f"Какую приставку добавить, чтобы получилось «{target_meaning}»?"
+            ),
+            "options": options,
+            "correct_option_id": options.index(target_prefix),
+            "quiz_type": "prefix",
+            "word_ru": word_ru,
+            "correct_text": target_variant,
+            "explanation": f"{target_prefix} + {base_de} = {target_variant} — {target_meaning}",
+        }
+    return None
+
+
 async def generate_prefix_quiz(entry: dict) -> dict | None:
     word_ru = (entry.get("word_ru") or "").strip()
     response_json = _coerce_response_json(entry.get("response_json"))
     if not word_ru:
         return None
 
+    # 1) Preferred: gap-in-sentence quiz (only for specially prepared entries that
+    #    carry sentence_with_gap + 4 options). The sentence makes exactly ONE
+    #    prefixed verb correct, so it is genuinely answerable; its 4 options are
+    #    all real prefix verbs (no random unrelated distractors).
     correct_word = _extract_prefix_correct_word(entry, response_json)
-    if not correct_word:
-        return None
+    if correct_word:
+        context = _extract_prefix_quiz_context(response_json, word_ru, correct_word)
+        options = _extract_prefix_context_options(response_json, correct_word) if context else None
+        if context and options:
+            options = list(options)
+            random.shuffle(options)
+            return {
+                "question": (
+                    "Выберите глагол, который правильно заполняет пропуск.\n"
+                    f"RU: «{context['translation_ru']}»\n"
+                    f"DE: {context['sentence_with_gap']}"
+                ),
+                "options": options,
+                "correct_option_id": options.index(correct_word.lower()),
+                "quiz_type": "prefix",
+                "word_ru": word_ru,
+                "correct_text": correct_word,
+            }
 
-    context = _extract_prefix_quiz_context(response_json, word_ru, correct_word)
-    options = _extract_prefix_context_options(response_json, correct_word) or [correct_word]
-    if len(options) < 4:
-        variants = _extract_prefix_variants(response_json)
-        for variant in variants:
-            if variant.lower() == correct_word.lower():
-                continue
-            options.append(variant)
-            if len(options) >= 4:
-                break
-
-    if len(options) < 4:
-        fallback_distractors = _build_prefix_distractors(correct_word, count=4 - len(options))
-        for candidate in fallback_distractors:
-            if candidate.lower() == correct_word.lower():
-                continue
-            if candidate in options:
-                continue
-            options.append(candidate)
-            if len(options) >= 4:
-                break
-
-    options = list(dict.fromkeys([opt for opt in options if opt]))
-    # Drop any option that isn't a real separable-prefix verb (e.g. "beiden",
-    # a declined adjective that leaked from saved entry variants). Always keep
-    # the correct answer. If too few valid options remain, skip the entry.
-    options = [
-        opt for opt in options
-        if opt.lower() == correct_word.lower() or _is_valid_prefix_quiz_verb(opt)
-    ]
-    if len(options) < 4:
-        return None
-
-    if not context and _is_sentence_like_quiz_hint(word_ru):
-        # Long sentence prompts with one-word options are misleading. Skip this
-        # entry so scheduler can select a contextual quiz or another item.
-        return None
-
-    if not context and correct_word and correct_word.lower() in word_ru.lower():
-        # The answer appears verbatim in the question — trivially guessable. Skip.
-        return None
-
-    # Fix 2: the cue must be a real Russian meaning, not a raw German phrase like
-    # "mich ständig schimpfen". If there is no Cyrillic in word_ru and no gapped
-    # context, the prompt is unusable — skip this entry.
-    if not context and not re.search(r"[а-яёА-ЯЁ]", word_ru):
-        return None
-
-    # Fix 3: leak guard via suffix scan (robust, no dependency on the prefix
-    # list). The base verb of a separable verb is a suffix of it
-    # ("herumschimpfen" → "schimpfen"). If any suffix of length >= 5 of the
-    # answer appears in the cue, the answer is mechanically guessable → skip.
-    if not context:
-        _ans = _to_letters_only_word(correct_word).lower()
-        _cue = word_ru.lower()
-        for _suffix_len in range(len(_ans) - 2, 4, -1):
-            if _ans[-_suffix_len:] in _cue:
-                return None
-
-    random.shuffle(options)
-    correct_option_id = options.index(correct_word)
-    if context:
-        question = (
-            "Выберите глагол, который правильно заполняет пропуск.\n"
-            f"RU: «{context['translation_ru']}»\n"
-            f"DE: {context['sentence_with_gap']}"
-        )
-    else:
-        question = (
-            f"Выберите правильный немецкий глагол с приставкой для «{word_ru}»."
-        )
-    return {
-        "question": question,
-        "options": options,
-        "correct_option_id": correct_option_id,
-        "quiz_type": "prefix",
-        "word_ru": word_ru,
-        "correct_text": correct_word,
-    }
+    # 2) Otherwise: prefix-choice quiz built from the `prefixes` array. Replaces
+    #    the old unanswerable "which prefixed verb = «Бегать»?" (it picked
+    #    variants[0] arbitrarily and padded with RANDOM unrelated verbs).
+    return _build_prefix_choice_quiz(entry, response_json, word_ru)
 
 
 async def generate_word_quiz(entry: dict) -> dict | None:

@@ -2913,30 +2913,36 @@ Return STRICT JSON with keys: question, options (array of 4 strings), correct_op
 quiz_type ("word_order"|"word_choice"|"translation"), explanation.
 """,
 "word_order_distractors": """
-You build a German word-order multiple-choice quiz from ONE given correct sentence.
+You build a German grammar multiple-choice quiz from ONE given correct sentence.
 Input JSON: {"sentence": "<the correct German sentence>", "hint_ru": "<Russian meaning>"}.
 
 Produce EXACTLY 3 WRONG options. Each MUST be a smooth, natural-reading German sentence that a real learner
-might actually write — it changes EXACTLY ONE thing versus the correct sentence and keeps everything else
-identical. The learner must FEEL the grammar to choose; they must NOT be able to pick the answer simply
-because it is "the only readable one".
+might actually write — it changes EXACTLY ONE MEANINGFUL grammatical element versus the correct sentence and
+keeps everything else identical. The learner must KNOW German grammar to reject it; they must NOT be able to
+pick the answer just by eye because the wrong ones look like shuffled tiles.
 
+A wrong option must differ by a WRONG or MISSING WORD (a substitution or omission), NOT by mere reordering.
 Use three DIFFERENT errors from this list:
-- V2 violation: finite verb not in position 2 of a main clause ("Heute er geht …" instead of "Heute geht er …").
-- Broken Satzklammer: separable prefix / Partizip II / Infinitiv NOT at the very end ("… drückt ein den ganzen Tag").
-- Missing inversion after a fronted element or subordinate clause ("Als ich kam, ich war müde").
-- Wrong TeKaMoLo order: swap two adverbials (Temporal–Kausal–Modal–Lokal), e.g. local before temporal.
+- Wrong VERB: a real but semantically wrong verb, or wrong verb form/agreement/auxiliary
+  ("er ist gekommen" → "er hat gekommen"; "er verwirklicht" → "er verwirklichen").
+- Wrong PREPOSITION ("mit dem Hintern" → "bei dem Hintern"; "auf den Zug" → "an den Zug").
+- Missing or misplaced "zu" ("um sich zu verwirklichen" → "um sich verwirklichen"), or a broken
+  "um … zu" / "damit" purpose construction (drop "um", or replace "um…zu" with a wrong connector).
+- Dropped separable prefix or Partizip ("… drückt die Matratze ein" → "… drückt die Matratze").
 - Wrong case/article ("mit dem Hintern" → "mit den Hintern"; "den ganzen Tag" → "dem ganzen Tag").
-- Wrong preposition ("mit dem Hintern" → "bei dem Hintern"; "an der Wand" → "auf der Wand").
-- Wrong verb form/agreement ("er drückt" → "er drücken"; "hat gedrückt" → "hat drücken").
-- One word shifted by exactly ONE position (still fluent).
+- Wrong reflexive/pronoun or wrong connector (subordinating vs coordinating: "weil" → "denn" with wrong order).
 
 STRICT:
-- Change exactly ONE thing per distractor. NEVER combine errors.
+- Change exactly ONE meaningful element per distractor. NEVER combine errors.
 - All three must read as fluent German at a glance and look ALMOST right.
-- ABSOLUTELY FORBIDDEN — random word-salad / scrambles where words are dumped out of place
-  ("Er Hintern dem mit Matratze die Tag ganzen den drückt ein.", subject at the very end, shuffled tiles).
-- Do NOT include the correct sentence in options. If you cannot make 3 clean near-miss distractors, return {"options": []}.
+- ABSOLUTELY FORBIDDEN — pure REORDERINGS of the same words (do not just move "zu", a pronoun, "selbst",
+  a prefix, or any word to another slot). Forbidden because the learner spots them WITHOUT knowing German:
+    ✗ "… um sich selbst verwirklichen zu."   (only moved "zu" — visible shuffle)
+    ✗ "… um sich zu verwirklichen selbst."    (only moved "selbst" — visible shuffle)
+  Every distractor MUST add, drop, or swap a WORD; it must NOT contain the exact same set of words as the
+  correct sentence in a different order.
+- Random word-salad / scrambles are also forbidden.
+- Do NOT include the correct sentence in options. If you cannot make 3 clean meaningful-error distractors, return {"options": []}.
 
 Return STRICT JSON ONLY:
 {"options": ["<wrong1>","<wrong2>","<wrong3>"], "explanation": "<short Russian comment, <=180 chars, names the rule>"}
