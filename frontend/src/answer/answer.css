@@ -612,3 +612,12 @@ html[data-scheme="light"] .sp-counter-num, html[data-scheme="light"] .sp-score-n
 .sp-chip.tap:active { transform: scale(0.94); }
 .sp-chip.saved { background: rgba(37, 99, 235, 0.22); color: #60a5fa; font-weight: 700; }
 html[data-scheme="light"] .sp-chip.saved { background: rgba(37, 99, 235, 0.14); color: #1d4ed8; }
+.sp-chip.saving { opacity: .7; cursor: default; }
+.sp-chip.saving { animation: sp-chip-pulse 1s ease-in-out infinite; }
+@keyframes sp-chip-pulse { 0%,100% { opacity: .55; } 50% { opacity: .9; } }
+.ans-why-wrong {
+  margin-top: 8px; padding: 8px 10px; border-radius: 10px;
+  background: rgba(245, 158, 11, .12); color: var(--dmps-text-secondary, #CBD5E1);
+  font-size: 14px; line-height: 1.35;
+}
+html[data-scheme="light"] .ans-why-wrong { color: #92400e; }

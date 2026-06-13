@@ -840,7 +840,7 @@ def _aufgabe_correct_answer(payload: dict) -> str:
 
 
 def _aufgabe_result_payload(dispatch: dict, *, is_correct: bool, already_answered: bool,
-                           user_answer: str = "") -> dict:
+                           user_answer: str = "", wrong_reason: str = "") -> dict:
     payload = dispatch.get("payload") or {}
     fmt = str(dispatch.get("format") or "")
     # Sentence formats (satzbau/transform) get a word-level diff in the FE:
@@ -861,6 +861,7 @@ def _aufgabe_result_payload(dispatch: dict, *, is_correct: bool, already_answere
         "hint_ru": str(payload.get("hint_ru") or ""),
         "explanation": str(payload.get("erklaerung") or payload.get("explanation") or ""),
         "tip": str(payload.get("tip") or ""),
+        "wrong_reason": str(wrong_reason or ""),
         "already_answered": bool(already_answered),
         "saveable_words": [],
     }
@@ -949,12 +950,14 @@ def _norm_sentence(s: str) -> str:
     return _re.sub(r"\s+", " ", t).strip()
 
 
-def _synonym_semantic_match(target: str, candidate: str, relation: str) -> bool:
-    """Bounded LLM fallback: only fires when the accepted-list misses, so the hot
-    path stays fast for the common answers."""
+def _synonym_judge_full(target: str, candidate: str, relation: str) -> dict:
+    """Bounded LLM judge: {'match': bool, 'reason_ru': str}. reason_ru explains
+    (in Russian) why a wrong candidate is NOT a valid synonym/antonym — shown to
+    the learner so a plausible near-miss (e.g. genehmigen for bestätigen) gets a
+    real explanation, not just the generic correct-answer description."""
     t, c = str(target or "").strip(), str(candidate or "").strip()
     if not t or not c or len(c.split()) > 3 or len(c) > 60:
-        return False
+        return {"match": False, "reason_ru": ""}
     try:
         import asyncio
         from backend.openai_manager import run_check_synonym
@@ -962,9 +965,18 @@ def _synonym_semantic_match(target: str, candidate: str, relation: str) -> bool:
             run_check_synonym(target_word=t, candidate=c, relation=str(relation or "synonym")),
             timeout=7.0,
         ))
-        return bool((res or {}).get("match"))
+        return {
+            "match": bool((res or {}).get("match")),
+            "reason_ru": str((res or {}).get("reason_ru") or "").strip(),
+        }
     except Exception:
-        return False
+        return {"match": False, "reason_ru": ""}
+
+
+def _synonym_semantic_match(target: str, candidate: str, relation: str) -> bool:
+    """Bounded LLM fallback: only fires when the accepted-list misses, so the hot
+    path stays fast for the common answers."""
+    return bool(_synonym_judge_full(target, candidate, relation).get("match"))
 
 
 def _check_aufgabe(fmt: str, payload: dict, raw_input: str) -> bool:
@@ -1050,14 +1062,32 @@ def evaluate_aufgabe(*, dispatch_id: int, user_id: int, raw_input: str) -> dict 
             dispatch, is_correct=bool(existing.get("is_correct")), already_answered=True,
             user_answer=str(existing.get("answer") or ""),
         )
-    is_correct = _check_aufgabe(str(dispatch.get("format") or ""), dispatch.get("payload") or {}, raw_input)
+    fmt = str(dispatch.get("format") or "")
+    payload = dispatch.get("payload") or {}
+    answer = str(raw_input or "").strip()
+    wrong_reason = ""
+    if fmt in ("synonym", "antonym"):
+        # Deterministic accepted-list first; then ONE judge call that also returns
+        # WHY a wrong answer is wrong (so a plausible near-miss gets explained).
+        accepted = accepted_de(payload.get("accepted"))
+        is_correct = bool(answer) and any(
+            check_quiz_freeform_deterministic(user_text=answer, correct_text=c)
+            for c in accepted if str(c).strip()
+        )
+        if not is_correct and answer:
+            judged = _synonym_judge_full(str(payload.get("wort") or ""), answer, fmt)
+            is_correct = bool(judged.get("match"))
+            if not is_correct:
+                wrong_reason = str(judged.get("reason_ru") or "")
+    else:
+        is_correct = _check_aufgabe(fmt, payload, raw_input)
     record_aufgabe_answer(
         dispatch_id=int(dispatch_id), user_id=int(user_id),
-        answer=str(raw_input or "").strip(), is_correct=bool(is_correct),
+        answer=answer, is_correct=bool(is_correct),
     )
     return _aufgabe_result_payload(
         dispatch, is_correct=is_correct, already_answered=False,
-        user_answer=str(raw_input or ""),
+        user_answer=str(raw_input or ""), wrong_reason=wrong_reason,
     )
 
 

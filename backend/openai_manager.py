@@ -3219,7 +3219,9 @@ Decide whether `candidate` is a VALID German {synonym OR antonym, per relation} 
 level. Ignore article/case/capitalization/spacing differences. Accept genuine close synonyms (or true
 opposites for antonym); REJECT merely topically related words, wrong part of speech, the same word, or
 a wrong-direction relation. Be reasonably generous for real near-synonyms.
-Return STRICT JSON ONLY: {"match": true} or {"match": false}.
+Return STRICT JSON ONLY:
+- if it IS a valid {synonym/antonym}: {"match": true}
+- if NOT: {"match": false, "reason_ru": "<кратко по-русски, ≤90 знаков: что candidate на самом деле значит и почему это НЕ синоним/антоним target, например: 'genehmigen = одобрить/разрешить, а не подтвердить'>"}
 """,
 "aufgabe_pin_blueprint": """
 Du planst anspruchsvolle "Finde das Objekt"-Bildaufgaben für Deutschlernende (B2+).
