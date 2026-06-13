@@ -27494,28 +27494,29 @@ def _get_feature_usage_today(user_id: int, feature_code: str, tz: str = TRIAL_PO
         return float((row or [0])[0] or 0)
 
     if feature == "translation_daily_sets":
-        # Count only COMPLETED sets today: distinct sessions where the user actually
-        # translated >= _TRANSLATION_SET_COMPLETE_MIN sentences (rows in
-        # bt_3_translations). A shown-but-unanswered / hung / accidentally-finished
-        # session has no (or too few) translations → it does NOT burn the quota.
+        # SUM the sentences the user actually translated today (across all sessions),
+        # then convert to whole sets (// set size). With free_limit=1 a new set is
+        # blocked once the daily TOTAL reaches the set size. This:
+        #  • never burns the quota for a shown-but-unanswered / hung / accidentally
+        #    "finished" set (0 translations → 0 sets);
+        #  • can't be gamed by stopping at 6 — the per-day total accumulates
+        #    (6 then up to 7 more = ≤13, then blocked; no infinite regeneration).
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
                     SELECT COUNT(*) FROM (
-                        SELECT t.session_id
+                        SELECT DISTINCT t.session_id, t.sentence_id
                         FROM bt_3_translations t
                         WHERE t.user_id = %s
-                          AND t.session_id IS NOT NULL
                           AND (t.timestamp AT TIME ZONE %s)::date = %s
-                        GROUP BY t.session_id
-                        HAVING COUNT(DISTINCT t.sentence_id) >= %s
                     ) q;
                     """,
-                    (int(user_id), tz_name, day_local, _TRANSLATION_SET_COMPLETE_MIN),
+                    (int(user_id), tz_name, day_local),
                 )
                 row = cursor.fetchone()
-        return float((row or [0])[0] or 0)
+        translated_today = int((row or [0])[0] or 0)
+        return float(translated_today // _TRANSLATION_SET_COMPLETE_MIN)
 
     return 0.0
 
