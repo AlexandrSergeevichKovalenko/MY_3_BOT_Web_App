@@ -41,19 +41,37 @@ _HEAD_GENDER: dict[str, str] = {
 }
 # "band" is genuinely ambiguous (der/die/das) → don't auto-decide on it.
 _HEAD_GENDER.pop("band", None)
+# add a few der-heads that are also -ung exceptions, so compounds resolve correctly
+_HEAD_GENDER.update({"sprung": "der", "schwung": "der"})
 
-_DIE_SUFFIXES = ("ung", "heit", "keit", "schaft", "ion", "tät", "ität", "ik", "ie",
-                 "ur", "enz", "anz")
-_DAS_SUFFIXES = ("chen", "lein")
+# Only LOW-EXCEPTION derivational suffixes (dropped the risky -ur/-ik/-chen/-lein
+# which have native root counter-examples: Flur, Kuchen, Knochen, …).
+_DIE_SUFFIXES = ("ung", "heit", "keit", "schaft", "ion", "tät", "ität", "ie", "enz", "anz")
 _DER_SUFFIXES = ("ling", "ismus")
+# Words that match a suffix pattern but DON'T follow the rule (root nouns).
+_SUFFIX_EXCEPTIONS = {"sprung", "schwung", "dung", "schwung"}
+
+# Two-gender / meaning-dependent nouns — ambiguous article → must NOT be in the
+# bank at all (the article isn't decidable). Matched on the BARE word only.
+_AMBIGUOUS_NOUNS = {
+    "flur", "see", "band", "steuer", "tor", "leiter", "kiefer", "bauer", "heide",
+    "mast", "otter", "golf", "erbe", "gehalt", "kunde", "hut", "bund", "verdienst",
+    "schild", "moment", "teil",
+}
+
+
+def is_ambiguous_noun(word: str) -> bool:
+    return str(word or "").strip().lower() in _AMBIGUOUS_NOUNS
 
 
 def strong_gender(word: str) -> str | None:
-    """Return der/die/das if a high-confidence rule decides it, else None."""
+    """Return der/die/das if a HIGH-confidence rule decides it, else None.
+    Conservative: compound-head map first, then only low-exception suffixes with a
+    real stem; never fires for ambiguous/exception roots."""
     w = str(word or "").strip().lower()
-    if len(w) < 4:
+    if len(w) < 4 or w in _AMBIGUOUS_NOUNS or w in _SUFFIX_EXCEPTIONS:
         return None
-    # 1) compound head (longest matching head wins)
+    # 1) compound head (longest matching head wins) — very reliable
     best = None
     for head, g in _HEAD_GENDER.items():
         if w.endswith(head) and len(w) > len(head) + 1:
@@ -61,31 +79,41 @@ def strong_gender(word: str) -> str | None:
                 best = (len(head), g)
     if best:
         return best[1]
-    # 2) decisive suffixes
-    if w.endswith(_DIE_SUFFIXES):
-        return "die"
-    if w.endswith(_DAS_SUFFIXES):
-        return "das"
-    if w.endswith(_DER_SUFFIXES):
-        return "der"
+    # 2) decisive suffixes — require a real stem (>= 3 chars before the suffix)
+    for suf in _DIE_SUFFIXES:
+        if w.endswith(suf) and len(w) - len(suf) >= 3:
+            return "die"
+    for suf in _DER_SUFFIXES:
+        if w.endswith(suf) and len(w) - len(suf) >= 3:
+            return "der"
     return None
 
 
 def recheck_theme(theme_key: str) -> dict:
     """Apply the deterministic gender guard to already-stored rows; fix mismatches.
     Returns {"checked": n, "fixed": m, "examples": [...]}."""
-    from backend.database import list_article_sprint_rows, update_article_sprint_article
+    from backend.database import (
+        list_article_sprint_rows, update_article_sprint_article, retire_article_sprint_noun,
+    )
     rows = list_article_sprint_rows(theme_key)
     fixed = 0
+    retired = 0
     examples: list[str] = []
     for r in rows:
-        hint = strong_gender(r["word"])
+        w = r["word"]
+        if is_ambiguous_noun(w):
+            retire_article_sprint_noun(r["id"])
+            retired += 1
+            if len(examples) < 20:
+                examples.append(f"⊘ retired (ambiguous): {w}")
+            continue
+        hint = strong_gender(w)
         if hint and hint != str(r["article"]).lower():
             update_article_sprint_article(r["id"], hint)
             fixed += 1
             if len(examples) < 20:
-                examples.append(f"{r['article']} → {hint} {r['word']}")
-    return {"checked": len(rows), "fixed": fixed, "examples": examples}
+                examples.append(f"{r['article']} → {hint} {w}")
+    return {"checked": len(rows), "fixed": fixed, "retired": retired, "examples": examples}
 
 
 def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: int = 30) -> dict:
@@ -153,6 +181,10 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
                 continue
             art = str(v.get("article") or n.get("article") or "").strip().lower()
             w = str(n.get("word") or "").strip()
+            # Reject two-gender / meaning-dependent nouns — their article isn't decidable.
+            if is_ambiguous_noun(w):
+                rejected += 1
+                continue
             # Deterministic guard wins when a high-confidence rule applies (compound
             # head / decisive suffix) — catches misses like "die Schädelbruch".
             hint = strong_gender(w)

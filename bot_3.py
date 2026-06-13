@@ -18608,7 +18608,8 @@ async def admin_artikel_recheck_command(update: Update, context: CallbackContext
     except Exception as exc:
         await status_msg.edit_text(f"Error: {exc}")
         return
-    text = f"✅ Проверено: {result.get('checked')} · исправлено: {result.get('fixed')}"
+    text = (f"✅ Проверено: {result.get('checked')} · исправлено: {result.get('fixed')}"
+            f" · ретайрнуто (ambiguous): {result.get('retired', 0)}")
     ex = result.get("examples") or []
     if ex:
         text += "\n\n" + "\n".join(f"• {e}" for e in ex)
