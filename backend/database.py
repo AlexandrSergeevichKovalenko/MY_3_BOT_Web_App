@@ -34278,6 +34278,7 @@ _PLAN_DISPATCH_TABLES = {
     "bt_3_article_quiz_dispatches", "bt_3_aufgabe_dispatches", "bt_3_rebus_dispatches",
     "bt_3_crossword_dispatches", "bt_3_anagram_dispatches", "bt_3_listening_dispatches",
     "bt_3_visual_riddle_dispatches", "bt_3_image_quiz_dispatches", "bt_3_sprint_dispatches",
+    "bt_3_article_sprint_dispatches",
 }
 
 
@@ -34445,6 +34446,21 @@ def ensure_article_sprint_schema() -> None:
                 ON bt_3_article_sprint_sets (play_date) WHERE kind = 'daily';
                 """
             )
+            # Daily reminder dispatches (for the send-plan fact reconciliation).
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_article_sprint_dispatches (
+                    id                  BIGSERIAL PRIMARY KEY,
+                    set_id              TEXT NOT NULL DEFAULT '',
+                    slot_date           DATE NOT NULL,
+                    slot_hour           INTEGER NOT NULL,
+                    chat_id             BIGINT NOT NULL,
+                    telegram_message_id BIGINT,
+                    sent_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (chat_id, slot_date, slot_hour)
+                );
+                """
+            )
             # One result per (set, user) — first attempt counts (like a real sprint).
             cursor.execute(
                 """
@@ -34500,6 +34516,36 @@ def get_article_sprint_result(set_id: str, user_id: int) -> dict | None:
         return None
     return {"correct": int(r[0] or 0), "answered": int(r[1] or 0),
             "total": int(r[2] or 0), "time_ms": int(r[3] or 0)}
+
+
+def create_article_sprint_dispatch(*, set_id: str, slot_date, slot_hour: int, chat_id: int) -> int | None:
+    """Record a daily-reminder dispatch (dedup per chat+date+hour). Returns id or
+    None if the slot was already sent to this chat."""
+    ensure_article_sprint_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_article_sprint_dispatches (set_id, slot_date, slot_hour, chat_id)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (chat_id, slot_date, slot_hour) DO NOTHING
+                RETURNING id;
+                """,
+                (str(set_id), slot_date, int(slot_hour), int(chat_id)),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return int(row[0]) if row else None
+
+
+def update_article_sprint_dispatch_message_id(dispatch_id: int, *, telegram_message_id: int) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_article_sprint_dispatches SET telegram_message_id = %s WHERE id = %s;",
+                (int(telegram_message_id), int(dispatch_id)),
+            )
+        conn.commit()
 
 
 def compute_article_sprint_ranking(*, set_id: str, user_id: int) -> dict:

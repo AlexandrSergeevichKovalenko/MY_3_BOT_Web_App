@@ -305,6 +305,8 @@ from backend.database import (
     get_article_sprint_verified_sample,
     get_article_sprint_set,
     get_daily_article_sprint_set_id,
+    create_article_sprint_dispatch,
+    update_article_sprint_dispatch_message_id,
     upsert_sprint_item,
     delete_sprint_bank,
     count_available_sprint_items,
@@ -20838,6 +20840,70 @@ async def admin_clear_aufgabe_command(update: Update, context: CallbackContext) 
 # SYNONYM / ANTONYM SPRINT (60s, type as many as you can; winner = most correct)
 # ══════════════════════════════════════════════════════════════════════════════
 SPRINT_SLOT_TIMES = {(14, 15): "synonym", (20, 15): "antonym"}  # 1×/day each
+# Artikel Sprint: ONE system daily set, reminded once at 19:00 (configurable).
+ARTIKEL_SPRINT_SLOT = (
+    max(0, min(23, int((os.getenv("ARTIKEL_SPRINT_HOUR") or "19").strip() or "19"))),
+    max(0, min(59, int((os.getenv("ARTIKEL_SPRINT_MINUTE") or "0").strip() or "0"))),
+)
+
+
+def _artikel_sprint_enabled() -> bool:
+    return (os.getenv("ARTIKEL_SPRINT_ENABLED") or "1").strip().lower() in ("1", "true", "yes", "on")
+
+
+async def _send_scheduled_artikel_sprint(context: CallbackContext) -> None:
+    """Daily 19:00 reminder: ensure today's shared set exists, then post the play
+    button to the delivery targets. Skips quietly if the set isn't ready."""
+    if not _artikel_sprint_enabled():
+        return
+    slot_now = _get_quiz_schedule_now()
+    slot_date = slot_now.date()
+    slot_hour = int(ARTIKEL_SPRINT_SLOT[0])
+    set_id = await asyncio.to_thread(get_daily_article_sprint_set_id, slot_date)
+    if not set_id:
+        def _build() -> dict:
+            from backend.article_sprint_sets import build_daily_set
+            return build_daily_set(slot_date)
+        built = await asyncio.to_thread(_build)
+        if built.get("status") == "ready":
+            set_id = built["set_id"]
+        else:
+            logging.info("artikel_sprint: no set for %s (%s) — skip reminder", slot_date, built.get("status"))
+            return
+    targets = await _collect_quiz_delivery_user_targets(context)
+    if not targets:
+        return
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "⚡ Играть (2 минуты)", url=get_webapp_deeplink("ans_as_0"))]])
+    caption = (
+        "⚡ *Artikel Sprint*\n\n"
+        "2 минуты — успей указать *der/die/das* для как можно большего числа слов!\n"
+        "🏆 Победитель — у кого больше верных."
+    )
+    sent = 0
+    for t in targets:
+        cid = int(t.get("chat_id") or 0)
+        if cid == 0:
+            continue
+        try:
+            did = await asyncio.to_thread(
+                create_article_sprint_dispatch,
+                set_id=set_id, slot_date=slot_date, slot_hour=slot_hour, chat_id=cid,
+            )
+        except Exception:
+            logging.warning("artikel_sprint: dispatch insert failed chat=%s", cid, exc_info=True)
+            continue
+        if did is None:
+            continue  # already sent this slot to this chat
+        try:
+            msg = await context.bot.send_message(
+                chat_id=cid, text=caption, parse_mode="Markdown", reply_markup=kb)
+            await asyncio.to_thread(
+                update_article_sprint_dispatch_message_id, int(did), telegram_message_id=int(msg.message_id))
+            sent += 1
+        except Exception as exc:
+            logging.warning("artikel_sprint: send failed chat=%s: %s", cid, exc)
+    logging.info("artikel_sprint reminder sent=%s set=%s", sent, set_id)
 SPRINT_POOL_TARGET = max(3, int((os.getenv("SPRINT_POOL_TARGET") or "6").strip() or "6"))
 SPRINT_COOLDOWN_DAYS = max(7, int((os.getenv("SPRINT_COOLDOWN_DAYS") or "21").strip() or "21"))
 
@@ -21056,11 +21122,15 @@ def _send_plan_groups() -> list[dict]:
          "table": "bt_3_visual_riddle_dispatches", "kind": "createdH"},
         {"emoji": "🎨", "title": "Картинка-квиз", "slots": [(h, m, "") for (h, m) in sorted(QUIZ_IMAGE_SLOT_TIMES)],
          "table": "bt_3_image_quiz_dispatches", "kind": "createdH"},
+        {"emoji": "⚡", "title": "Artikel Sprint", "slots": [(ARTIKEL_SPRINT_SLOT[0], ARTIKEL_SPRINT_SLOT[1], "")],
+         "table": "bt_3_article_sprint_dispatches", "kind": "slotH"},
     ]
     # image_quiz is retired by default (replaced by the Pin-Bild Aufgabe). Hide its
     # slots from the plan while off, so they don't sit forever as phantom "not sent".
     if not _image_quiz_enabled():
         groups = [g for g in groups if g["table"] != "bt_3_image_quiz_dispatches"]
+    if not _artikel_sprint_enabled():
+        groups = [g for g in groups if g["table"] != "bt_3_article_sprint_dispatches"]
     return groups
 
 
@@ -23498,6 +23568,14 @@ def main():
             "cron",
             hour=3,
             minute=20,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Artikel Sprint: one daily reminder (default 19:00) --
+        scheduler.add_job(
+            lambda: submit_async(_send_scheduled_artikel_sprint, CallbackContext(application=application)),
+            "cron",
+            hour=int(ARTIKEL_SPRINT_SLOT[0]),
+            minute=int(ARTIKEL_SPRINT_SLOT[1]),
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
         logging.info("sprint_scheduler_slots_registered slots=%s", sorted(SPRINT_SLOT_TIMES.items()))

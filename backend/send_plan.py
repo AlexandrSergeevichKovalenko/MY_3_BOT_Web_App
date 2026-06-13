@@ -40,6 +40,8 @@ PLAN_GROUPS = [
      "table": "bt_3_visual_riddle_dispatches", "kind": "createdH"},
     {"emoji": "🎨", "title": "Картинка-квиз", "slots": [(9, 0, ""), (12, 0, ""), (18, 0, "")],
      "table": "bt_3_image_quiz_dispatches", "kind": "createdH"},
+    {"emoji": "⚡", "title": "Artikel Sprint", "slots": [(19, 0, "")],
+     "table": "bt_3_article_sprint_dispatches", "kind": "slotH"},
 ]
 
 _GRACE_MIN = 8
@@ -53,11 +55,19 @@ def _image_quiz_enabled() -> bool:
     return (os.getenv("IMAGE_QUIZ_ENABLED") or "false").strip().lower() in ("1", "true", "yes")
 
 
+def _artikel_sprint_enabled() -> bool:
+    import os
+    return (os.getenv("ARTIKEL_SPRINT_ENABLED") or "1").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _plan_groups_active() -> list:
     groups = []
     image_quiz_on = _image_quiz_enabled()
+    artikel_on = _artikel_sprint_enabled()
     for g in PLAN_GROUPS:
         if g["table"] == "bt_3_image_quiz_dispatches" and not image_quiz_on:
+            continue
+        if g["table"] == "bt_3_article_sprint_dispatches" and not artikel_on:
             continue
         groups.append(g)
     return groups
