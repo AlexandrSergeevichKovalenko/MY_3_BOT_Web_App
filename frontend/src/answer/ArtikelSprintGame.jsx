@@ -5,7 +5,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 // The official score is re-graded server-side on submit.
 const ARTICLES = ['der', 'die', 'das'];
 
-export default function ArtikelSprintGame({ api, haptic, onClose, practice = false }) {
+export default function ArtikelSprintGame({ api, haptic, onClose, practice = false, battleId = null }) {
   const [phase, setPhase] = useState('loading'); // loading|themepick|intro|countdown|playing|done|error
   const [meta, setMeta] = useState(null);
   const [themes, setThemes] = useState([]);
@@ -31,7 +31,9 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
           if (!data.ok) { setError(data.error || 'Доступно на Premium'); setPhase('error'); return; }
           setThemes(data.themes || []); setPhase('themepick'); return;
         }
-        const data = await api('/api/webapp/artikel/today', {});
+        const data = battleId
+          ? await api('/api/webapp/artikel/battle', { battle_id: battleId })
+          : await api('/api/webapp/artikel/today', {});
         if (cancelled) return;
         if (!data.ok) { setError(data.error || 'Набор недоступен'); setPhase('error'); return; }
         setMeta(data);
@@ -41,7 +43,7 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
       } catch (e) { if (!cancelled) { setError(String(e.message || e)); setPhase('error'); } }
     })();
     return () => { cancelled = true; };
-  }, [api, practice]);
+  }, [api, practice, battleId]);
 
   const pickTheme = useCallback(async (themeKey) => {
     setPhase('loading');

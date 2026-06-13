@@ -34461,6 +34461,32 @@ def ensure_article_sprint_schema() -> None:
                 );
                 """
             )
+            # Battles: open async rooms (set_id is derived as 'asb_<battle id>').
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_article_sprint_battles (
+                    id              BIGSERIAL PRIMARY KEY,
+                    creator_user_id BIGINT NOT NULL,
+                    creator_name    TEXT NOT NULL DEFAULT '',
+                    theme_key       TEXT NOT NULL DEFAULT '',
+                    deadline        TIMESTAMPTZ NOT NULL,
+                    status          TEXT NOT NULL DEFAULT 'open',
+                    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_article_sprint_battle_members (
+                    id         BIGSERIAL PRIMARY KEY,
+                    battle_id  BIGINT NOT NULL,
+                    user_id    BIGINT NOT NULL,
+                    user_name  TEXT NOT NULL DEFAULT '',
+                    joined_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (battle_id, user_id)
+                );
+                """
+            )
             # One result per (set, user) — first attempt counts (like a real sprint).
             cursor.execute(
                 """
@@ -34874,6 +34900,104 @@ def get_article_sprint_theme_for_date(play_date) -> str | None:
             )
             row = cursor.fetchone()
     return str(row[0]) if row and row[0] else None
+
+
+def is_user_pro(user_id: int) -> bool:
+    """True if the user's effective subscription mode is pro or trial."""
+    try:
+        ent = resolve_entitlement(int(user_id))
+        return str(ent.get("effective_mode") or "free").strip().lower() in ("pro", "trial")
+    except Exception:
+        return False
+
+
+def list_allowed_telegram_user_ids() -> list[int]:
+    """All allow-listed user ids (for battle-invite broadcast)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT user_id FROM bt_3_allowed_users;")
+            rows = cursor.fetchall() or []
+    return [int(r[0]) for r in rows if r and r[0] is not None]
+
+
+def create_article_sprint_battle(*, creator_user_id: int, creator_name: str,
+                                 theme_key: str, deadline) -> int:
+    ensure_article_sprint_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_article_sprint_battles
+                    (creator_user_id, creator_name, theme_key, deadline, status)
+                VALUES (%s, %s, %s, %s, 'open')
+                RETURNING id;
+                """,
+                (int(creator_user_id), str(creator_name or ""), str(theme_key), deadline),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return int(row[0])
+
+
+def get_article_sprint_battle(battle_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id, creator_user_id, creator_name, theme_key, deadline, status "
+                "FROM bt_3_article_sprint_battles WHERE id = %s;",
+                (int(battle_id),),
+            )
+            r = cursor.fetchone()
+    if not r:
+        return None
+    return {"id": int(r[0]), "creator_user_id": int(r[1]), "creator_name": r[2],
+            "theme_key": r[3], "deadline": r[4], "status": r[5]}
+
+
+def add_article_sprint_battle_member(*, battle_id: int, user_id: int, user_name: str) -> bool:
+    ensure_article_sprint_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_article_sprint_battle_members (battle_id, user_id, user_name)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (battle_id, user_id) DO NOTHING;
+                """,
+                (int(battle_id), int(user_id), str(user_name or "")),
+            )
+            added = bool(cursor.rowcount and cursor.rowcount > 0)
+        conn.commit()
+    return added
+
+
+def is_article_sprint_battle_member(battle_id: int, user_id: int) -> bool:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM bt_3_article_sprint_battle_members "
+                "WHERE battle_id = %s AND user_id = %s LIMIT 1;",
+                (int(battle_id), int(user_id)),
+            )
+            return cursor.fetchone() is not None
+
+
+def list_open_battles_for_user(user_id: int) -> list[dict]:
+    """Battles the user joined that are still open and not past deadline."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT b.id, b.creator_name, b.theme_key, b.deadline
+                FROM bt_3_article_sprint_battles b
+                JOIN bt_3_article_sprint_battle_members m ON m.battle_id = b.id
+                WHERE m.user_id = %s AND b.status = 'open' AND b.deadline > NOW()
+                ORDER BY b.deadline ASC;
+                """,
+                (int(user_id),),
+            )
+            rows = cursor.fetchall() or []
+    return [{"id": int(r[0]), "creator_name": r[1], "theme_key": r[2], "deadline": r[3]} for r in rows]
 
 
 # ── Synonym/Antonym SPRINT (60s, type as many as you can, rank by count) ──────

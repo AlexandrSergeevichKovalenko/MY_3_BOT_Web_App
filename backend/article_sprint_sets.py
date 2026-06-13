@@ -98,3 +98,28 @@ def build_practice_set(theme_key: str, user_id: int, play_date, *, size: int = P
         theme_key=theme_key, words=uniq, owner_user_id=int(user_id),
     )
     return {"status": "ready", "set_id": set_id, "theme_key": theme_key, "word_count": len(uniq)}
+
+
+def build_battle_set(theme_key: str, battle_id: int, play_date, *, size: int = DEFAULT_SET_SIZE) -> dict:
+    """One frozen shared set for a battle (set_id = 'asb_<battle_id>'). All members
+    compete on the same words."""
+    from backend.database import get_article_sprint_verified_sample, upsert_article_sprint_set
+    words = get_article_sprint_verified_sample(theme_key, size)
+    if len(words) < size:
+        have = {str(w["w"]).lower() for w in words}
+        words.extend(get_article_sprint_verified_sample(None, size - len(words), exclude_words=list(have)))
+    seen: set[str] = set()
+    uniq: list[dict] = []
+    for w in words:
+        k = str(w.get("w") or "").lower()
+        if k and k not in seen:
+            seen.add(k)
+            uniq.append({"w": w["w"], "a": str(w["a"]).lower(), "ru": w.get("ru") or ""})
+    random.shuffle(uniq)
+    if len(uniq) < PRACTICE_MIN:
+        return {"status": "insufficient", "theme_key": theme_key, "available": len(uniq)}
+    set_id = f"asb_{int(battle_id)}"
+    upsert_article_sprint_set(
+        set_id=set_id, kind="battle", play_date=play_date, theme_key=theme_key, words=uniq,
+    )
+    return {"status": "ready", "set_id": set_id, "theme_key": theme_key, "word_count": len(uniq)}

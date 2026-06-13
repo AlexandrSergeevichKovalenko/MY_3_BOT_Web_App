@@ -22718,7 +22718,7 @@ def artikel_submit():
         except Exception:
             logging.warning("artikel overtake enqueue failed set=%s", set_id, exc_info=True)
     ranking = (compute_article_sprint_ranking(set_id=set_id, user_id=int(user_id))
-               if str(s.get("kind") or "") == "daily" else None)
+               if str(s.get("kind") or "") in ("daily", "battle") else None)
     return jsonify({
         "ok": True, "correct": correct, "answered": answered, "total": total,
         "pct": round(100 * correct / answered) if answered else 0,
@@ -22788,6 +22788,55 @@ def artikel_practice():
         "theme_label": theme.get("label_de") or theme_key,
         "words": (s or {}).get("words") or [], "duration_s": 120,
         "already_played": False, "result": None,
+    })
+
+
+@app.route("/api/webapp/artikel/battle", methods=["POST"])
+def artikel_battle():
+    """Load a battle's shared set. Only accepted members may play; closed/expired
+    battles are refused."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    try:
+        battle_id = int(payload.get("battle_id"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "battle_id обязателен"}), 400
+    from datetime import datetime as _dt, timezone as _tz
+    from backend.database import (
+        ensure_article_sprint_schema, get_article_sprint_battle,
+        is_article_sprint_battle_member, get_article_sprint_set,
+        get_article_sprint_result,
+    )
+    ensure_article_sprint_schema()
+    battle = get_article_sprint_battle(battle_id)
+    if not battle:
+        return jsonify({"ok": False, "error": "Батл не найден"}), 404
+    if str(battle.get("status")) != "open" or (battle.get("deadline") and battle["deadline"] <= _dt.now(_tz.utc)):
+        return jsonify({"ok": False, "error_code": "battle_closed", "error": "Этот батл уже закрыт."}), 200
+    if not is_article_sprint_battle_member(battle_id, int(user_id)):
+        return jsonify({"ok": False, "error_code": "not_member",
+                        "error": "Ты не в этом батле. Прими вызов в личке."}), 200
+    set_id = f"asb_{battle_id}"
+    s = get_article_sprint_set(set_id)
+    if not s or not s.get("words"):
+        return jsonify({"ok": False, "error": "Набор батла пуст."}), 200
+    existing = get_article_sprint_result(set_id, int(user_id))
+    result_payload = None
+    if existing:
+        result_payload = {
+            **existing,
+            "pct": round(100 * existing["correct"] / existing["answered"]) if existing.get("answered") else 0,
+            "items": [],
+            "ranking": compute_article_sprint_ranking(set_id=set_id, user_id=int(user_id)),
+            "already_played": True,
+        }
+    return jsonify({
+        "ok": True, "set_id": set_id,
+        "theme_label": "⚔️ Battle",
+        "words": s["words"], "duration_s": 120,
+        "already_played": bool(existing), "result": result_payload,
     })
 
 

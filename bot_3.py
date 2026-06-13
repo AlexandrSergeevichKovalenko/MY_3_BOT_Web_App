@@ -307,6 +307,11 @@ from backend.database import (
     get_daily_article_sprint_set_id,
     create_article_sprint_dispatch,
     update_article_sprint_dispatch_message_id,
+    is_user_pro,
+    list_allowed_telegram_user_ids,
+    create_article_sprint_battle,
+    get_article_sprint_battle,
+    add_article_sprint_battle_member,
     upsert_sprint_item,
     delete_sprint_bank,
     count_available_sprint_items,
@@ -18638,6 +18643,104 @@ async def admin_artikel_play_command(update: Update, context: CallbackContext) -
     )
 
 
+async def artikel_battle_command(update: Update, context: CallbackContext) -> None:
+    """Create an Artikel Sprint battle (Pro only) and broadcast the invite to all
+    users. /battle [theme_key] — async, open until 23:59."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not await asyncio.to_thread(is_user_pro, int(user.id)):
+        await message.reply_text("⚔️ Создавать батл может только Premium-пользователь. Принять чужой вызов могут все.")
+        return
+    args = [a.strip() for a in (context.args or []) if a.strip()]
+
+    def _resolve_theme():
+        from backend.article_sprint_sets import _pick_fallback_theme, MIN_PLAYABLE
+        today_d = _get_quiz_schedule_now().date()
+        tk = None
+        if args and get_article_sprint_theme(args[0]):
+            tk = args[0]
+        if not tk:
+            tk = get_article_sprint_theme_for_date(today_d)
+        if not tk:
+            tk = _pick_fallback_theme(today_d, MIN_PLAYABLE)
+        return tk, today_d
+
+    theme_key, today_d = await asyncio.to_thread(_resolve_theme)
+    if not theme_key:
+        await message.reply_text("Нет темы с достаточным числом слов. Наполни через /artikel_fill.")
+        return
+    deadline = datetime.now(ZoneInfo("Europe/Vienna")).replace(hour=23, minute=59, second=0, microsecond=0)
+    creator_name = _display_user_name(user)
+
+    def _create_and_build():
+        bid = create_article_sprint_battle(
+            creator_user_id=int(user.id), creator_name=creator_name,
+            theme_key=theme_key, deadline=deadline)
+        from backend.article_sprint_sets import build_battle_set
+        return bid, build_battle_set(theme_key, bid, today_d)
+
+    battle_id, built = await asyncio.to_thread(_create_and_build)
+    if built.get("status") != "ready":
+        await message.reply_text(f"Не удалось собрать набор батла (тема {theme_key}). Наполни тему через /artikel_fill.")
+        return
+    await asyncio.to_thread(add_article_sprint_battle_member,
+                            battle_id=battle_id, user_id=int(user.id), user_name=creator_name)
+    invite_text = (
+        f"⚔️ *{html.escape(creator_name)}* зовёт на *Artikel Sprint* батл!\n"
+        f"2 минуты, der/die/das. Играй когда удобно *до 23:59*. Прими вызов:"
+    )
+    join_kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "✅ Принять вызов", callback_data=f"asb_join:{battle_id}")]])
+    targets = await asyncio.to_thread(list_allowed_telegram_user_ids)
+    sent = 0
+    for uid in targets:
+        if int(uid) == int(user.id):
+            continue
+        try:
+            await context.bot.send_message(chat_id=int(uid), text=invite_text,
+                                            parse_mode="Markdown", reply_markup=join_kb)
+            sent += 1
+        except Exception:
+            pass
+    play_kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))]])
+    await message.reply_text(
+        f"⚔️ Батл #{battle_id} создан (тема: {theme_key}). Приглашено: {sent}. Дедлайн 23:59.",
+        reply_markup=play_kb)
+
+
+async def artikel_battle_join_callback(update: Update, context: CallbackContext) -> None:
+    """Accept a battle invite → join + show the play button."""
+    q = update.callback_query
+    if not q or not q.from_user:
+        return
+    try:
+        battle_id = int(str(q.data or "").split(":", 1)[1])
+    except (ValueError, IndexError):
+        await q.answer()
+        return
+    battle = await asyncio.to_thread(get_article_sprint_battle, battle_id)
+    if (not battle or str(battle.get("status")) != "open"
+            or (battle.get("deadline") and battle["deadline"] <= datetime.now(ZoneInfo("UTC")))):
+        await q.answer("Этот батл уже закрыт.", show_alert=True)
+        return
+    name = _display_user_name(q.from_user)
+    await asyncio.to_thread(add_article_sprint_battle_member,
+                            battle_id=battle_id, user_id=int(q.from_user.id), user_name=name)
+    await q.answer("Ты в батле! Играй когда удобно до 23:59.", show_alert=True)
+    play_kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "⚡ Играть (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))]])
+    try:
+        await q.edit_message_text(
+            f"✅ Ты принял батл #{battle_id} от {html.escape(str(battle.get('creator_name') or ''))}.\n"
+            f"Играй когда удобно до 23:59 👇",
+            reply_markup=play_kb)
+    except Exception:
+        pass
+
+
 # ─────────────────────────────────────────────────────────────
 #  ARTICLE QUIZ (der/die/das) — send, callback, scheduler
 # ─────────────────────────────────────────────────────────────
@@ -23201,6 +23304,8 @@ def main():
     application.add_handler(CommandHandler("artikel_buildtoday", admin_artikel_buildtoday_command))
     application.add_handler(CommandHandler("artikel_recheck", admin_artikel_recheck_command))
     application.add_handler(CommandHandler("artikel_play", admin_artikel_play_command))
+    application.add_handler(CommandHandler("battle", artikel_battle_command))
+    application.add_handler(CallbackQueryHandler(artikel_battle_join_callback, pattern=r"^asb_join:\d+$"))
     application.add_handler(CommandHandler("admin_aq_send", admin_article_quiz_send_command))
     application.add_handler(CommandHandler("admin_aq_pool", admin_article_quiz_pool_command))
     application.add_handler(CommandHandler("addartikel", admin_add_artikel_command))
