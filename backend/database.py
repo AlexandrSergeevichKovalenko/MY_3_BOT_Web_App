@@ -34557,6 +34557,26 @@ def get_article_sprint_result(set_id: str, user_id: int) -> dict | None:
             "total": int(r[2] or 0), "time_ms": int(r[3] or 0)}
 
 
+def delete_article_sprint_result(set_id: str, user_id: int | None = None) -> int:
+    """Remove a recorded result so the user can replay a set (testing/admin). If
+    user_id is None, clears EVERYONE's result for the set. Returns rows deleted."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if user_id is None:
+                cursor.execute(
+                    "DELETE FROM bt_3_article_sprint_results WHERE set_id = %s;",
+                    (str(set_id),),
+                )
+            else:
+                cursor.execute(
+                    "DELETE FROM bt_3_article_sprint_results WHERE set_id = %s AND user_id = %s;",
+                    (str(set_id), int(user_id)),
+                )
+            deleted = int(cursor.rowcount or 0)
+        conn.commit()
+    return deleted
+
+
 def create_article_sprint_dispatch(*, set_id: str, slot_date, slot_hour: int, chat_id: int) -> int | None:
     """Record a daily-reminder dispatch (dedup per chat+date+hour). Returns id or
     None if the slot was already sent to this chat."""

@@ -305,6 +305,7 @@ from backend.database import (
     get_article_sprint_verified_sample,
     get_article_sprint_set,
     get_daily_article_sprint_set_id,
+    delete_article_sprint_result,
     create_article_sprint_dispatch,
     update_article_sprint_dispatch_message_id,
     is_user_pro,
@@ -18624,6 +18625,55 @@ async def admin_artikel_buildtoday_command(update: Update, context: CallbackCont
     await status_msg.edit_text("\n".join(lines)[:4000], parse_mode="HTML")
 
 
+async def admin_artikel_reset_command(update: Update, context: CallbackContext) -> None:
+    """Clear your Artikel Sprint result so you can replay & test a set.
+    /artikel_reset [today|YYYY-MM-DD|<set_id>] [all]
+      • no args        → reset YOUR result for today's daily set
+      • a date         → today's/that day's daily set
+      • a set_id       → that exact set (e.g. a practice/battle set)
+      • trailing 'all' → clear EVERYONE's result for that set (full re-test)"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    args = [a.strip() for a in (context.args or []) if a.strip()]
+    clear_all = bool(args) and args[-1].lower() in ("all", "все", "всех")
+    if clear_all:
+        args = args[:-1]
+
+    target = args[0] if args else "today"
+    set_id = None
+    if target.lower() in ("today", "сегодня", ""):
+        play_date = _get_quiz_schedule_now().date()
+        set_id = await asyncio.to_thread(get_daily_article_sprint_set_id, play_date)
+    else:
+        try:
+            play_date = datetime.strptime(target, "%Y-%m-%d").date()
+            set_id = await asyncio.to_thread(get_daily_article_sprint_set_id, play_date)
+        except ValueError:
+            set_id = target  # treat as an explicit set_id (practice/battle/daily)
+
+    if not set_id:
+        await message.reply_text(
+            "Нет дневного сета на эту дату. Собери его: /artikel_buildtoday, "
+            "или передай явный set_id."
+        )
+        return
+
+    deleted = await asyncio.to_thread(
+        delete_article_sprint_result, set_id, None if clear_all else int(user.id)
+    )
+    who = "у всех" if clear_all else "у тебя"
+    await message.reply_text(
+        f"🧹 Сброшено результатов {who}: <b>{deleted}</b> для сета <code>{html.escape(str(set_id))}</code>.\n"
+        f"Теперь можно пройти заново: /artikel_play",
+        parse_mode="HTML",
+    )
+
+
 async def admin_artikel_recheck_command(update: Update, context: CallbackContext) -> None:
     """Re-apply the deterministic gender guard to a theme's stored nouns and fix
     any wrong articles (e.g. die→der Schädelbruch). /artikel_recheck <theme_key>"""
@@ -23443,6 +23493,7 @@ def main():
     application.add_handler(CommandHandler("admin_overtaken_images", admin_overtaken_images_command))
     application.add_handler(CommandHandler("artikel_themes", admin_artikel_themes_command))
     application.add_handler(CommandHandler("artikel_remindtheme", admin_artikel_remindtheme_command))
+    application.add_handler(CommandHandler("artikel_reset", admin_artikel_reset_command))
     application.add_handler(CommandHandler("artikel_settheme", admin_artikel_settheme_command))
     application.add_handler(CommandHandler("artikel_fill", admin_artikel_fill_command))
     application.add_handler(CommandHandler("artikel_sample", admin_artikel_sample_command))
