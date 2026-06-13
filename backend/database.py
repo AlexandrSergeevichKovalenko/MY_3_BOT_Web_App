@@ -9242,6 +9242,19 @@ def invalidate_telegram_user_allowed_cache(user_id: int | None = None) -> None:
             _ALLOWED_USER_CACHE.pop(int(user_id), None)
 
 
+def _invalidate_webapp_allowlist_redis(user_id: int) -> None:
+    """Delete the shared Redis webapp-allowlist cache key so the web tier
+    re-evaluates this user immediately after an allow/revoke (its hot-path cache
+    then refills from the DB). Key format mirrors backend_server._allowlist_redis_key."""
+    try:
+        from backend.job_queue import get_redis_client
+        client = get_redis_client()
+        if client is not None:
+            client.delete(f"webapp:allowlist:{int(user_id)}")
+    except Exception:
+        logging.debug("invalidate webapp allowlist redis failed uid=%s", user_id, exc_info=True)
+
+
 def is_telegram_user_allowed(user_id: int) -> bool:
     if not user_id:
         return False
@@ -9303,8 +9316,11 @@ def allow_telegram_user(
                 """,
                 (int(user_id), username, added_by, note),
             )
-    # Access just changed — drop any stale cached decision for this user.
+    # Access just changed — drop any stale cached decision for this user, in this
+    # process AND in the shared Redis cache the web tier reads (else a just-approved
+    # user stays denied until the long cache TTL expires).
     invalidate_telegram_user_allowed_cache(int(user_id))
+    _invalidate_webapp_allowlist_redis(int(user_id))
 
 
 def revoke_telegram_user(user_id: int) -> bool:
@@ -9315,8 +9331,10 @@ def revoke_telegram_user(user_id: int) -> bool:
                 (int(user_id),),
             )
             removed = cursor.rowcount > 0
-    # Access just changed — drop any stale cached decision for this user.
+    # Access just changed — drop any stale cached decision for this user, in this
+    # process AND in the shared Redis cache the web tier reads.
     invalidate_telegram_user_allowed_cache(int(user_id))
+    _invalidate_webapp_allowlist_redis(int(user_id))
     return removed
 
 
