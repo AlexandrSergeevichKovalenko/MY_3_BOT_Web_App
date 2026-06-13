@@ -34548,6 +34548,21 @@ def update_article_sprint_dispatch_message_id(dispatch_id: int, *, telegram_mess
         conn.commit()
 
 
+def list_article_sprint_results_ranked(set_id: str) -> list[dict]:
+    """All results for a set, ranked (correct desc, time asc) — for overtake calc."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT user_id, user_name, correct_count, time_ms "
+                "FROM bt_3_article_sprint_results WHERE set_id = %s "
+                "ORDER BY correct_count DESC, time_ms ASC;",
+                (str(set_id),),
+            )
+            rows = cursor.fetchall() or []
+    return [{"user_id": int(r[0]), "name": str(r[1] or ""), "count": int(r[2]), "time_ms": int(r[3])}
+            for r in rows]
+
+
 def compute_article_sprint_ranking(*, set_id: str, user_id: int) -> dict:
     """Rank players of a set by correct_count desc, ties by time asc."""
     with get_db_connection_context() as conn:

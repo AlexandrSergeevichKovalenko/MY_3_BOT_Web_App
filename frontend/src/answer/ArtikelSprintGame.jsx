@@ -137,14 +137,25 @@ export default function ArtikelSprintGame({ api, haptic, onClose }) {
     const r = result || {};
     const items = r.items || [];
     const rank = r.ranking || null;
+    const place = rank?.your_place || null;
+    const medal = place === 1 ? '🥇' : place === 2 ? '🥈' : place === 3 ? '🥉' : '🎖️';
     cls = 'as-done';
     body = (<>
-      <div className="ans-verdict">⚡ Artikel Sprint</div>
-      <div className="as-result-score"><b>{r.correct || 0}</b> верных из {r.answered || 0} · {r.pct || 0}%</div>
+      {place ? (
+        <div className="as-cert">
+          <div className="as-cert-medal">{medal}</div>
+          <div className="as-cert-place">{place} место</div>
+          <div className="as-cert-sub">из {rank.total} · {r.correct || 0} верных ({r.pct || 0}%)</div>
+          <div className="as-cert-foot">⚡ Artikel Sprint{meta?.theme_label ? ` · ${meta.theme_label}` : ''}</div>
+        </div>
+      ) : (<>
+        <div className="ans-verdict">⚡ Artikel Sprint</div>
+        <div className="as-result-score"><b>{r.correct || 0}</b> верных из {r.answered || 0} · {r.pct || 0}%</div>
+      </>)}
       {r.already_played ? <div className="ans-explain">Ты уже играл этот сет сегодня.</div> : null}
       {rank && rank.total ? (
         <div className="sp-rank">
-          <div className="sp-rank-head">🏆 Место {rank.your_place || '—'} из {rank.total} · {rank.your_count} верных</div>
+          <div className="sp-rank-head">🏆 Топ-3</div>
           {(rank.top3 || []).map((p, i) => (
             <div className={`sp-rank-row${rank.your_place === i + 1 ? ' me' : ''}`} key={p.user_id || i}>
               <span>{['🥇', '🥈', '🥉'][i] || '•'} {p.name || 'Игрок'}</span>

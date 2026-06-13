@@ -19776,6 +19776,8 @@ async def _challenge_label(challenge_key: str) -> str:
             return f"{base}: {suffix}" if suffix else base
         except Exception:
             return "Aufgabe ✏️"
+    if kind == "as":
+        return "Artikel Sprint ⚡"
     return _CHALLENGE_KIND_LABELS.get(kind, "Aufgabe")
 
 

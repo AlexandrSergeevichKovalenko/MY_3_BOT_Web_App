@@ -22682,6 +22682,40 @@ def artikel_submit():
         prev = get_article_sprint_result(set_id, int(user_id)) or {}
         correct = int(prev.get("correct", correct))
         answered = int(prev.get("answered", answered))
+    # Overtake plaques: a fresh submission can push others down. Notify whoever
+    # dropped — reuses the shared overtaken outbox + Smurf plaque (bot polls + DMs).
+    if recorded:
+        try:
+            from backend.database import (
+                list_article_sprint_results_ranked,
+                get_overtaken_user_ids_for_challenge, upsert_overtaken_notification,
+            )
+            challenge_key = f"as:{set_id}"
+            full = list_article_sprint_results_ranked(set_id)
+            if len(full) >= 2:
+                place_of = {int(u["user_id"]): i + 1 for i, u in enumerate(full)}
+                targets = set(get_overtaken_user_ids_for_challenge(challenge_key))
+                if place_of.get(int(user_id)) == 1:
+                    targets.add(int(full[1]["user_id"]))  # just dethroned from #1
+                targets.discard(int(user_id))
+                for uid in targets:
+                    p = place_of.get(uid)
+                    if not p or p < 2:
+                        continue
+                    above = full[p - 2]
+                    upsert_overtaken_notification(
+                        user_id=uid, challenge_key=challenge_key,
+                        payload={
+                            "task_kind": "Artikel Sprint", "place": int(p),
+                            "total_correct": len(full),
+                            "leader_name": str(full[0]["name"] or ""),
+                            "leader_user_id": int(full[0]["user_id"]),
+                            "above_name": str(above["name"] or ""),
+                            "above_user_id": int(above["user_id"]),
+                        },
+                    )
+        except Exception:
+            logging.warning("artikel overtake enqueue failed set=%s", set_id, exc_info=True)
     ranking = compute_article_sprint_ranking(set_id=set_id, user_id=int(user_id))
     return jsonify({
         "ok": True, "correct": correct, "answered": answered, "total": total,
