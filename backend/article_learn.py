@@ -214,7 +214,7 @@ def focus_new_words(play_date, theme_key: str, *, new_size: int = LEARN_NEW_SIZE
 
 
 def build_learn_deck(play_date, user_id: int, *, new_size: int = LEARN_NEW_SIZE,
-                     review_size: int = 8, offset: int = 0) -> dict:
+                     review_size: int = 8, offset: int = 0, pick_theme: str | None = None) -> dict:
     """Assemble the day's learning deck: up to `new_size` words from the daily
     Sprint set (so it's aligned with the game) + up to `review_size` of the user's
     past mistakes (resurfaced). Each card carries the gender tip + colour.
@@ -231,31 +231,36 @@ def build_learn_deck(play_date, user_id: int, *, new_size: int = LEARN_NEW_SIZE,
     )
     from backend.r2_storage import r2_public_url
 
-    # Source of NEW words: a Pro user's personal FOCUS theme for this date (picked
-    # the day before, prepped overnight) overrides the shared daily set.
-    focus_theme = None
-    try:
-        focus_theme = get_article_learn_focus(int(user_id), play_date)
-    except Exception:
-        focus_theme = None
-
+    # Source of NEW words, in priority order:
+    #   1) pick_theme  — the theme the user just chose to learn NOW (ad-hoc);
+    #   2) focus theme — a Pro user's personal focus for this date (prepped overnight);
+    #   3) the shared daily Sprint set.
     new_size = max(1, int(new_size))
     offset = max(0, int(offset))
+    pick_theme = (str(pick_theme).strip() or None) if pick_theme else None
+    focus_theme = None
+    if not pick_theme:
+        try:
+            focus_theme = get_article_learn_focus(int(user_id), play_date)
+        except Exception:
+            focus_theme = None
+
     theme_key = None
     new_words: list[dict] = []
     set_id = None
     pool_size = 0
-    if focus_theme:
-        new_words = focus_new_words(play_date, focus_theme, new_size=new_size, offset=offset)
+    active_theme = pick_theme or focus_theme
+    if active_theme:
+        new_words = focus_new_words(play_date, active_theme, new_size=new_size, offset=offset)
         if new_words:
-            from backend.database import count_article_theme_verified as _cnt
-            theme_key = focus_theme
-            pool_size = _cnt(focus_theme)
-            set_id = f"alf_{int(user_id)}_{focus_theme}_{play_date.isoformat()}"
+            theme_key = active_theme
+            pool_size = count_article_theme_verified(active_theme)
+            tag = "aln" if pick_theme else "alf"
+            set_id = f"{tag}_{int(user_id)}_{active_theme}_{play_date.isoformat()}"
         else:
-            focus_theme = None  # focus theme empty → fall back to the shared set
+            active_theme = None  # empty theme → fall back to the shared set
 
-    if not focus_theme:
+    if not active_theme:
         set_id = get_daily_article_sprint_set_id(play_date)
         if not set_id:
             try:

@@ -22645,13 +22645,50 @@ def artikel_learn_today():
         offset = max(0, int(payload.get("offset") or 0))
     except (TypeError, ValueError):
         offset = 0
+    pick_theme = str(payload.get("theme_key") or "").strip() or None
     try:
-        deck = build_learn_deck(play_date, int(user_id), offset=offset)
+        deck = build_learn_deck(play_date, int(user_id), offset=offset, pick_theme=pick_theme)
     except Exception:
         logging.exception("artikel_learn_today failed")
         return jsonify({"ok": False, "error_code": "learn_error",
                         "error": "Не удалось загрузить колоду."}), 200
     return jsonify(deck)
+
+
+@app.route("/api/webapp/artikel/learn/themes", methods=["POST"])
+def artikel_learn_themes():
+    """Themes a user can pick to LEARN now (everyone) — filled themes + today's
+    theme highlighted. Distinct from the Pro 'focus for tomorrow' picker."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo
+    from backend.database import (
+        ensure_article_sprint_schema, list_article_sprint_themes,
+        get_daily_article_sprint_set_id, get_article_sprint_set, get_article_sprint_theme,
+    )
+    from backend.article_sprint_sets import PRACTICE_MIN
+    ensure_article_sprint_schema()
+    rows = list_article_sprint_themes()
+    themes = [
+        {"theme_key": r["theme_key"], "label": r.get("label_ru") or r.get("label_de") or r["theme_key"],
+         "count": int(r["verified_count"])}
+        for r in rows if int(r.get("verified_count") or 0) >= PRACTICE_MIN
+    ]
+    day = _dt.now(ZoneInfo("Europe/Vienna")).date()
+    daily_theme = None
+    sid = get_daily_article_sprint_set_id(day)
+    if sid:
+        s = get_article_sprint_set(sid)
+        if s:
+            daily_theme = s.get("theme_key")
+    daily_label = None
+    if daily_theme:
+        t = get_article_sprint_theme(daily_theme)
+        daily_label = (t or {}).get("label_de") or daily_theme
+    return jsonify({"ok": True, "themes": themes,
+                    "daily_theme": daily_theme, "daily_label": daily_label})
 
 
 @app.route("/api/webapp/artikel/learn/answer", methods=["POST"])

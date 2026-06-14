@@ -17,10 +17,12 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
   const [chosen, setChosen] = useState(null);
   const [stats, setStats] = useState({ correct: 0, answered: 0 });
   const [themes, setThemes] = useState([]);
+  const [daily, setDaily] = useState({ key: null, label: '' });
   const [focusLabel, setFocusLabel] = useState('');
   const touchX = useRef(null);
   const audioRef = useRef(null);
   const wordRef = useRef(null);
+  const pickThemeRef = useRef('');
 
   // Shrink long words so they fit the card on ONE line (no ugly mid-word wrap).
   const fitWord = useCallback(() => {
@@ -45,10 +47,11 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
     } catch (_e) { /* noop */ }
   }, []);
 
-  const loadDeck = useCallback(async (offset = 0) => {
+  const loadDeck = useCallback(async (offset = 0, themeKey = null) => {
+    if (themeKey !== null) pickThemeRef.current = themeKey;
     setPhase('loading');
     try {
-      const data = await api('/api/webapp/artikel/learn/today', { offset });
+      const data = await api('/api/webapp/artikel/learn/today', { offset, theme_key: pickThemeRef.current || '' });
       if (!data.ok) { setError(data.error || 'Недоступно'); setPhase('error'); return; }
       cardsRef.current = data.cards || [];
       setMeta(data);
@@ -69,7 +72,19 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
         } catch (e) { if (!cancelled) { setError(String(e.message || e)); setPhase('error'); } }
         return;
       }
-      if (!cancelled) await loadDeck(0);
+      // Learn-now: let the user pick which theme to study (incl. today's theme).
+      try {
+        const data = await api('/api/webapp/artikel/learn/themes', {});
+        if (cancelled) return;
+        if (!data.ok || !(data.themes || []).length) {
+          // no themes ready → just load the daily deck
+          if (!cancelled) await loadDeck(0, '');
+          return;
+        }
+        setThemes(data.themes || []);
+        setDaily({ key: data.daily_theme || null, label: data.daily_label || '' });
+        setPhase('learnpick');
+      } catch (e) { if (!cancelled) { setError(String(e.message || e)); setPhase('error'); } }
     })();
     return () => { cancelled = true; };
   }, [api, focus, loadDeck]);
@@ -125,6 +140,26 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
       <div className="ans-verdict">📚 Artikel lernen</div>
       <div className="ans-explain">{error}</div>
       <button className="ans-btn" onClick={onClose}>Schließen</button>
+    </>);
+  } else if (phase === 'learnpick') {
+    body = (<>
+      <div className="as-eyebrow">📚 Что учим сегодня?</div>
+      <div className="as-themes">
+        {daily.key ? (
+          <button type="button" className="as-theme-btn al-theme-day" onClick={() => loadDeck(0, '')}>
+            <span>📅 Тема дня{daily.label ? `: ${daily.label}` : ''}</span>
+            <span className="as-theme-cnt">▶️</span>
+          </button>
+        ) : null}
+        {themes.map((t) => (
+          <button key={t.theme_key} type="button" className="as-theme-btn"
+            onClick={() => loadDeck(0, t.theme_key)}>
+            <span>{t.label}</span>
+            <span className="as-theme-cnt">{t.count}</span>
+          </button>
+        ))}
+      </div>
+      <button className="ans-btn-ghost" onClick={onClose}>Später</button>
     </>);
   } else if (phase === 'focuspick') {
     body = (<>
@@ -185,6 +220,9 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
         </button>
       ) : null}
       <button className="ans-btn-ghost" onClick={() => loadDeck(0)}>🔁 Сначала</button>
+      {themes.length || daily.key ? (
+        <button className="ans-btn-ghost" onClick={() => setPhase('learnpick')}>📚 Другая тема</button>
+      ) : null}
       <button className="ans-btn-ghost" onClick={onClose}>Закрыть</button>
     </>);
   } else {
