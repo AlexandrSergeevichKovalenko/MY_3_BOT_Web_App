@@ -34460,6 +34460,11 @@ def ensure_article_sprint_schema() -> None:
                 "ALTER TABLE bt_3_article_sprint_nouns "
                 "ADD COLUMN IF NOT EXISTS mnemonic_head TEXT NOT NULL DEFAULT '';"
             )
+            # Artikel Trainer: cached TTS clip key ("<article> <word>" → MP3 on R2).
+            cursor.execute(
+                "ALTER TABLE bt_3_article_sprint_nouns "
+                "ADD COLUMN IF NOT EXISTS audio_object_key TEXT NOT NULL DEFAULT '';"
+            )
             # Which theme to train on a given day (admin picks today-for-tomorrow).
             cursor.execute(
                 """
@@ -34642,6 +34647,53 @@ def store_article_noun_mnemonic(*, word: str, article: str, mnemonic: str,
             updated = int(cursor.rowcount or 0)
         conn.commit()
     return updated > 0
+
+
+def get_article_nouns_without_audio(theme_key: str, limit: int = 50) -> list[dict]:
+    """Verified, non-retired nouns of a theme that have no cached TTS clip yet."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT word, article FROM bt_3_article_sprint_nouns
+                WHERE theme_key = %s AND verified = TRUE AND retired = FALSE
+                  AND COALESCE(audio_object_key, '') = ''
+                ORDER BY freq_rank NULLS LAST, id
+                LIMIT %s;
+                """,
+                (str(theme_key), int(limit)),
+            )
+            rows = cursor.fetchall() or []
+    return [{"word": str(r[0]), "article": str(r[1])} for r in rows]
+
+
+def store_article_noun_audio(*, word: str, article: str, audio_object_key: str) -> bool:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_article_sprint_nouns SET audio_object_key = %s, updated_at = NOW() "
+                "WHERE lower(word) = lower(%s) AND article = %s;",
+                (str(audio_object_key)[:300], str(word), str(article or "").lower()),
+            )
+            updated = int(cursor.rowcount or 0)
+        conn.commit()
+    return updated > 0
+
+
+def get_article_noun_audio(words: list[str]) -> dict:
+    """Map lower(word) → audio_object_key for a list of words (deck lookup)."""
+    cleaned = [str(w).strip() for w in (words or []) if str(w).strip()]
+    if not cleaned:
+        return {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT lower(word), audio_object_key FROM bt_3_article_sprint_nouns "
+                "WHERE lower(word) = ANY(%s) AND COALESCE(audio_object_key, '') <> '';",
+                ([w.lower() for w in cleaned],),
+            )
+            rows = cursor.fetchall() or []
+    return {str(r[0]): str(r[1] or "") for r in rows}
 
 
 def get_article_noun_mnemonics(words: list[str]) -> dict:

@@ -16,6 +16,16 @@ export default function ArtikelLearnGame({ api, haptic, onClose }) {
   const [chosen, setChosen] = useState(null);
   const [stats, setStats] = useState({ correct: 0, answered: 0 });
   const touchX = useRef(null);
+  const audioRef = useRef(null);
+
+  const playAudio = useCallback((url) => {
+    if (!url) return;
+    try {
+      if (!audioRef.current) audioRef.current = new Audio();
+      audioRef.current.src = url;
+      audioRef.current.play().catch(() => { /* autoplay blocked */ });
+    } catch (_e) { /* noop */ }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -40,11 +50,13 @@ export default function ArtikelLearnGame({ api, haptic, onClose }) {
     setChosen(article);
     setStats((s) => ({ correct: s.correct + (ok ? 1 : 0), answered: s.answered + 1 }));
     try { haptic?.(ok ? 'ok' : 'bad'); } catch (_e) { /* noop */ }
+    // Play "der/die/das + Wort" right on the tap (a user gesture → iOS allows it).
+    playAudio(c.audio);
     api('/api/webapp/artikel/learn/answer', {
       word: c.w, article: c.a, is_correct: ok,
       theme_key: meta?.theme_key || '', set_id: meta?.set_id || '',
     }).catch(() => { /* fire-and-forget */ });
-  }, [chosen, idx, api, haptic, meta]);
+  }, [chosen, idx, api, haptic, meta, playAudio]);
 
   const next = useCallback(() => {
     const ni = idx + 1;
@@ -130,6 +142,10 @@ export default function ArtikelLearnGame({ api, haptic, onClose }) {
           <div className={`al-feedback ${chosen === c.a ? 'ok' : 'bad'}`}>
             {chosen === c.a ? '✅ Верно!' : `❌ Правильно: ${c.a}`}
             <span className="al-ru"> · {c.ru}</span>
+            {c.audio ? (
+              <button type="button" className="al-audio" onClick={() => playAudio(c.audio)}
+                aria-label="Послушать">🔊</button>
+            ) : null}
           </div>
           {c.tip ? <div className="al-tip">{c.tip}</div> : null}
           <button className="ans-btn al-next" onClick={next}>Дальше →</button>

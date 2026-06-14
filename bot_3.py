@@ -308,6 +308,9 @@ from backend.database import (
     delete_article_sprint_result,
     get_article_nouns_without_mnemonic,
     store_article_noun_mnemonic,
+    get_article_nouns_without_audio,
+    store_article_noun_audio,
+    get_article_noun_audio,
     create_article_sprint_dispatch,
     update_article_sprint_dispatch_message_id,
     is_user_pro,
@@ -19080,6 +19083,38 @@ async def admin_artikel_mnemonics_command(update: Update, context: CallbackConte
     await status.edit_text("\n".join(lines)[:4000], parse_mode="HTML")
 
 
+async def admin_artikel_audio_command(update: Update, context: CallbackContext) -> None:
+    """Generate + cache TTS clips ('<article> <word>') for a theme's nouns.
+    /artikel_audio <theme_key> [count]"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    args = [a.strip() for a in (context.args or []) if a.strip()]
+    if not args:
+        await message.reply_text("Использование: /artikel_audio <theme_key> [count]")
+        return
+    theme_key = args[0]
+    try:
+        count = max(1, min(200, int(args[1]))) if len(args) > 1 else 25
+    except ValueError:
+        count = 25
+    theme = await asyncio.to_thread(get_article_sprint_theme, theme_key)
+    if not theme:
+        await message.reply_text(f"Нет темы <code>{html.escape(theme_key)}</code>.", parse_mode="HTML")
+        return
+    todo = await asyncio.to_thread(get_article_nouns_without_audio, theme_key, count)
+    if not todo:
+        await message.reply_text(f"✅ У всех слов темы «{html.escape(theme['label_de'])}» озвучка уже есть.")
+        return
+    status = await message.reply_text(f"⏳ Озвучиваю {len(todo)} слов темы «{html.escape(theme['label_de'])}»…")
+    res = await _backfill_artikel_audio(todo, limit=count)
+    await status.edit_text(f"🔊 «{html.escape(theme['label_de'])}» — озвучено {res.get('made')}/{res.get('requested')}.")
+
+
 async def admin_artikel_recheck_command(update: Update, context: CallbackContext) -> None:
     """Re-apply the deterministic gender guard to a theme's stored nouns and fix
     any wrong articles (e.g. die→der Schädelbruch). /artikel_recheck <theme_key>"""
@@ -21644,13 +21679,19 @@ async def _send_scheduled_artikel_learn(context: CallbackContext) -> None:
         if built.get("status") != "ready":
             logging.info("artikel_learn: no set for %s — skip", slot_date)
             return
-    # Pre-warm mnemonics off the user's path so the first open is instant.
+    # Pre-warm mnemonics + audio off the user's path so the first open is instant.
     try:
         from backend.article_learn import ensure_daily_learn_mnemonics
         n = await asyncio.to_thread(ensure_daily_learn_mnemonics, slot_date)
         logging.info("artikel_learn: prewarmed %s mnemonics", n)
     except Exception:
-        logging.warning("artikel_learn: prewarm failed", exc_info=True)
+        logging.warning("artikel_learn: prewarm mnemonics failed", exc_info=True)
+    try:
+        a = await _backfill_artikel_audio_for_set(set_id or await asyncio.to_thread(
+            get_daily_article_sprint_set_id, slot_date))
+        logging.info("artikel_learn: prewarmed %s audio clips", a)
+    except Exception:
+        logging.warning("artikel_learn: prewarm audio failed", exc_info=True)
     targets = await _collect_quiz_delivery_user_targets(context)
     if not targets:
         return
@@ -22674,6 +22715,57 @@ async def _process_listening_answers(
     chunk_size = 3800
     for i in range(0, len(feedback), chunk_size):
         await message.reply_text(feedback[i:i + chunk_size], parse_mode="Markdown")
+
+
+_ARTIKEL_UMLAUT = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss",
+                                 "Ä": "ae", "Ö": "oe", "Ü": "ue"})
+
+
+def _artikel_audio_key(word: str, article: str) -> str:
+    base = str(word).translate(_ARTIKEL_UMLAUT).lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", base).strip("-")[:48] or "w"
+    return f"artikel/audio/{str(article).lower()}-{slug}.mp3"
+
+
+async def _backfill_artikel_audio(items: list[dict], limit: int = 30) -> dict:
+    """Synthesize '<article> <word>' → MP3 → R2 for nouns missing a clip, and cache
+    the key on the noun bank. Off the hot path (morning pre-warm / admin). The
+    trainer plays this so the learner hears the article fused with the noun."""
+    from backend.r2_storage import r2_put_bytes
+    made = 0
+    for it in (items or [])[:limit]:
+        word = str(it.get("word") or "").strip()
+        article = str(it.get("article") or "").strip().lower()
+        if not word or article not in ("der", "die", "das"):
+            continue
+        try:
+            seg = await asyncio.to_thread(get_or_create_tts_clip, "de", f"{article} {word}", 0.95)
+            mp3 = await asyncio.to_thread(_audiosegment_to_mp3_bytes, seg)
+            key = _artikel_audio_key(word, article)
+            await asyncio.to_thread(r2_put_bytes, key, mp3, content_type="audio/mpeg")
+            await asyncio.to_thread(store_article_noun_audio, word=word, article=article, audio_object_key=key)
+            made += 1
+        except Exception:
+            logging.warning("artikel_audio backfill failed word=%s", word, exc_info=True)
+    return {"requested": len(items or []), "made": made}
+
+
+async def _backfill_artikel_audio_for_set(set_id: str, limit: int = 25) -> int:
+    """Pre-warm TTS for the learning-deck slice of a daily set (first words; the
+    trainer draws ~15 from here)."""
+    try:
+        s = await asyncio.to_thread(get_article_sprint_set, set_id)
+        words = (s or {}).get("words") or []
+        if not words:
+            return 0
+        have = await asyncio.to_thread(get_article_noun_audio, [str(w.get("w") or "") for w in words])
+        missing = [{"word": str(w.get("w") or ""), "article": str(w.get("a") or "")}
+                   for w in words[:limit] if str(w.get("w") or "").lower() not in have]
+        res = await _backfill_artikel_audio(missing, limit=limit)
+        return int(res.get("made") or 0)
+    except Exception:
+        logging.warning("artikel_audio set prewarm failed set=%s", set_id, exc_info=True)
+        return 0
 
 
 async def _backfill_listening_audio(limit: int = 10) -> dict:
@@ -23993,6 +24085,7 @@ def main():
     application.add_handler(CommandHandler("artikel_reset", admin_artikel_reset_command))
     application.add_handler(CommandHandler("artikel_learn_preview", admin_artikel_learn_preview_command))
     application.add_handler(CommandHandler("artikel_mnemonics", admin_artikel_mnemonics_command))
+    application.add_handler(CommandHandler("artikel_audio", admin_artikel_audio_command))
     application.add_handler(CommandHandler("artikel_learn", admin_artikel_learn_command))
     application.add_handler(CommandHandler("artikel_settheme", admin_artikel_settheme_command))
     application.add_handler(CommandHandler("artikel_fill", admin_artikel_fill_command))

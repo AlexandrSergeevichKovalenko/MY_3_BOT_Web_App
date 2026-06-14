@@ -201,8 +201,9 @@ def build_learn_deck(play_date, user_id: int, *, new_size: int = 15,
         get_daily_article_sprint_set_id, get_article_sprint_set,
         get_article_sprint_theme, get_article_learn_review_words,
         get_article_noun_mnemonics, get_article_learn_progress,
-        count_article_theme_verified,
+        count_article_theme_verified, get_article_noun_audio,
     )
+    from backend.r2_storage import r2_public_url
 
     set_id = get_daily_article_sprint_set_id(play_date)
     if not set_id:
@@ -237,6 +238,10 @@ def build_learn_deck(play_date, user_id: int, *, new_size: int = 15,
         mnem = get_article_noun_mnemonics(all_words)
     except Exception:
         mnem = {}
+    try:
+        audio_keys = get_article_noun_audio(all_words)
+    except Exception:
+        audio_keys = {}
 
     # Real LLM mnemonics are the product — generate any missing ones now and cache
     # them, rather than showing a generic 'just memorize' fallback (precision matters
@@ -253,11 +258,13 @@ def build_learn_deck(play_date, user_id: int, *, new_size: int = 15,
         word = str(w.get("w") or "")
         art = str(w.get("a") or "").strip().lower()
         tip = mnem.get(word.lower()) or gender_tip(word, art)
+        akey = audio_keys.get(word.lower())
         return {
             "w": word, "a": art, "ru": str(w.get("ru") or ""),
             "tip": tip,
             "color": GENDER_COLOR.get(art, "blue"),
             "review": review,
+            "audio": r2_public_url(akey) if akey else "",
         }
 
     new_cards = [_card(w, False) for w in new_words]
