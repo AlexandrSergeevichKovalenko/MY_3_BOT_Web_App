@@ -19224,6 +19224,56 @@ async def admin_artikel_images_command(update: Update, context: CallbackContext)
     )
 
 
+async def admin_artikel_learn_prewarm_command(update: Update, context: CallbackContext) -> None:
+    """Prewarm TODAY's learning deck (the exact words shown): mnemonics + audio +
+    images. /artikel_learn_prewarm [YYYY-MM-DD]"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    args = [a.strip() for a in (context.args or []) if a.strip()]
+    play_date = _get_quiz_schedule_now().date()
+    if args:
+        try:
+            play_date = datetime.strptime(args[0], "%Y-%m-%d").date()
+        except ValueError:
+            await message.reply_text("Дата: YYYY-MM-DD")
+            return
+    status = await message.reply_text("⏳ Прогреваю колоду дня (мнемоники + звук + картинки)…")
+    set_id = await asyncio.to_thread(get_daily_article_sprint_set_id, play_date)
+    if not set_id:
+        def _build() -> dict:
+            from backend.article_sprint_sets import build_daily_set
+            return build_daily_set(play_date)
+        built = await asyncio.to_thread(_build)
+        set_id = built.get("set_id") if built.get("status") == "ready" else None
+    if not set_id:
+        await status.edit_text("⚠️ Нет дневного сета — собери /artikel_buildtoday.")
+        return
+
+    from backend.article_learn import ensure_daily_learn_mnemonics
+    try:
+        m = await asyncio.to_thread(ensure_daily_learn_mnemonics, play_date)
+    except Exception:
+        m = 0
+    a = await _backfill_artikel_audio_for_set(set_id)
+    s = await asyncio.to_thread(get_article_sprint_set, set_id)
+    words = (s or {}).get("words") or []
+    items = [{"word": str(w.get("w") or ""), "article": str(w.get("a") or ""),
+              "meaning_ru": str(w.get("ru") or "")} for w in words[:20]]
+    img = await _backfill_artikel_images(items, limit=20)
+    img_line = (f"картинки {img.get('made')}/{img.get('requested')}"
+                if not img.get("skipped") else "картинки: нет PIXABAY_API_KEY")
+    await status.edit_text(
+        f"✅ Колода <code>{html.escape(str(set_id))}</code> прогрета:\n"
+        f"мнемоники +{m} · аудио +{a} · {img_line}",
+        parse_mode="HTML",
+    )
+
+
 async def admin_artikel_recheck_command(update: Update, context: CallbackContext) -> None:
     """Re-apply the deterministic gender guard to a theme's stored nouns and fix
     any wrong articles (e.g. die→der Schädelbruch). /artikel_recheck <theme_key>"""
@@ -24252,6 +24302,7 @@ def main():
     application.add_handler(CommandHandler("artikel_mnemonics", admin_artikel_mnemonics_command))
     application.add_handler(CommandHandler("artikel_audio", admin_artikel_audio_command))
     application.add_handler(CommandHandler("artikel_images", admin_artikel_images_command))
+    application.add_handler(CommandHandler("artikel_learn_prewarm", admin_artikel_learn_prewarm_command))
     application.add_handler(CommandHandler("artikel_learn", admin_artikel_learn_command))
     application.add_handler(CommandHandler("artikel_settheme", admin_artikel_settheme_command))
     application.add_handler(CommandHandler("artikel_fill", admin_artikel_fill_command))
