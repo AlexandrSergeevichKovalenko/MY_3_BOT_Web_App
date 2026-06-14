@@ -30,23 +30,32 @@ def build_daily_set(play_date, *, size: int = DEFAULT_SET_SIZE) -> dict:
     from backend.database import (
         ensure_article_sprint_schema, get_article_sprint_theme_for_date,
         get_article_sprint_verified_sample, upsert_article_sprint_set,
+        count_article_theme_verified,
     )
     ensure_article_sprint_schema()
 
-    theme_key = get_article_sprint_theme_for_date(play_date)
+    # The set's CONTENT must match its LABEL. The scheduled theme is used ONLY if it
+    # actually has enough verified words; otherwise we switch to a theme that does
+    # (and relabel to it) instead of topping up with foreign-theme words — that
+    # top-up was what put medical nouns under a "Technik & Computer" header.
+    scheduled = get_article_sprint_theme_for_date(play_date)
+    theme_key = scheduled
+    if not theme_key or count_article_theme_verified(theme_key) < MIN_PLAYABLE:
+        fallback = _pick_fallback_theme(play_date, min_have=MIN_PLAYABLE)
+        if scheduled and fallback and fallback != scheduled:
+            logging.warning(
+                "article_sprint: scheduled theme '%s' too sparse (<%s verified) → using '%s'",
+                scheduled, MIN_PLAYABLE, fallback,
+            )
+        theme_key = fallback
     if not theme_key:
-        theme_key = _pick_fallback_theme(play_date, min_have=MIN_PLAYABLE)
-    if not theme_key:
-        # No theme has enough verified words yet → try a pure mix across all themes.
+        # No single theme has enough verified words yet → honest mixed set.
         words = get_article_sprint_verified_sample(None, size)
         theme_key = "gemischt"
     else:
+        # Single coherent theme — no cross-theme top-up (a theme with >= MIN_PLAYABLE
+        # words is plenty for a 2-min game and a learning deck).
         words = get_article_sprint_verified_sample(theme_key, size)
-        if len(words) < size:
-            # top up from any theme (mix), excluding already-picked words
-            have = {str(w["w"]).lower() for w in words}
-            extra = get_article_sprint_verified_sample(None, size - len(words), exclude_words=list(have))
-            words.extend(extra)
 
     # dedup (case-insensitive) + shuffle
     seen: set[str] = set()
