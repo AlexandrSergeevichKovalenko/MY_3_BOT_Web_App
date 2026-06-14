@@ -34589,6 +34589,19 @@ def get_article_nouns_without_mnemonic(theme_key: str, limit: int = 50) -> list[
     return [{"word": str(r[0]), "article": str(r[1]), "meaning_ru": str(r[2] or "")} for r in rows]
 
 
+def count_article_theme_verified(theme_key: str) -> int:
+    """How many verified, non-retired nouns a theme has (the learnable total)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM bt_3_article_sprint_nouns "
+                "WHERE theme_key = %s AND verified = TRUE AND retired = FALSE;",
+                (str(theme_key),),
+            )
+            r = cursor.fetchone()
+    return int((r or [0])[0] or 0)
+
+
 def store_article_noun_mnemonic(*, word: str, article: str, mnemonic: str,
                                 method: str = "", head: str = "") -> bool:
     """Cache a generated mnemonic on the noun bank (matched by word+article)."""

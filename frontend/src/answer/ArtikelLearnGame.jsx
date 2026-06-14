@@ -89,6 +89,14 @@ export default function ArtikelLearnGame({ api, haptic, onClose }) {
         <div className="as-cert-sub">{correct} из {answered} верно · {pct}%</div>
         <div className="as-cert-foot">📘 {meta?.theme_label || ''}</div>
       </div>
+      {meta?.progress?.theme_total ? (
+        <div className="al-progress-card">
+          <div>📈 Тема «{meta.theme_label}»: выучено <b>{meta.progress.mastered}</b> из {meta.progress.theme_total}</div>
+          <div className="al-bar">
+            <div className="al-bar-fill" style={{ width: `${Math.min(100, Math.round((100 * meta.progress.mastered) / meta.progress.theme_total))}%` }} />
+          </div>
+        </div>
+      ) : null}
       <button className="ans-btn al-next" onClick={restart}>🔁 Ещё раз</button>
       <button className="ans-btn-ghost" onClick={onClose}>Закрыть</button>
     </>);

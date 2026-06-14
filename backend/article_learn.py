@@ -200,7 +200,8 @@ def build_learn_deck(play_date, user_id: int, *, new_size: int = 15,
     from backend.database import (
         get_daily_article_sprint_set_id, get_article_sprint_set,
         get_article_sprint_theme, get_article_learn_review_words,
-        get_article_noun_mnemonics,
+        get_article_noun_mnemonics, get_article_learn_progress,
+        count_article_theme_verified,
     )
 
     set_id = get_daily_article_sprint_set_id(play_date)
@@ -264,9 +265,19 @@ def build_learn_deck(play_date, user_id: int, *, new_size: int = 15,
     review_cards = [_card(rw, True) for rw in review_raw
                     if str(rw.get("w") or "").lower() not in seen]
 
+    # Theme progress for the done screen ("выучено X из Y").
+    progress = {"mastered": 0, "theme_total": 0}
+    try:
+        prog = get_article_learn_progress(int(user_id), s["theme_key"])
+        progress = {"mastered": int(prog.get("mastered") or 0),
+                    "theme_total": count_article_theme_verified(s["theme_key"])}
+    except Exception:
+        pass
+
     return {
         "ok": True, "set_id": set_id, "theme_key": s["theme_key"],
         "theme_label": theme_label,
         "cards": new_cards + review_cards,
         "new_count": len(new_cards), "review_count": len(review_cards),
+        "progress": progress,
     }
