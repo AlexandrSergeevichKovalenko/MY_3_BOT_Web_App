@@ -17,7 +17,7 @@ from telegram.request import HTTPXRequest
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import CallbackQueryHandler
 import hashlib
 import hmac
@@ -685,6 +685,8 @@ SHORTCUT_INSTALL_BUTTON_TEXT = "📲 Установить Shortcut"
 SHORTCUT_CONNECT_BUTTON_TEXT = "📱 Connect Shortcut"
 DICTIONARY_BATCH_FAST_BUTTON_TEXT = "🇩🇪➡️🇷🇺 Быстрый перевод"
 HOWTO_GUIDE_BUTTON_TEXT = "🎬 Как пользоваться"
+ARTIKEL_LEARN_BUTTON_TEXT = "📚 Учить артикли"
+ARTIKEL_FOCUS_BUTTON_TEXT = "🎯 Тема на завтра"
 SHORTCUT_AUTOSAVE_BUTTON_TEXT = "🌙 Ночной автосейв"  # neutral fallback when user is unknown
 _AUTOSAVE_BUTTON_PREFIX = "🌙 Автосейв:"  # dynamic label prefix used for routing reply-button taps
 # Short-lived cache so rendering the reply keyboard doesn't hit the DB on every menu draw.
@@ -2728,25 +2730,20 @@ def _language_tutor_pair_for_user(user_id: int) -> tuple[str, str]:
         return "ru", "de"
 
 
-def _artikel_webapp_button(text: str, start_param: str) -> KeyboardButton:
-    """A reply-keyboard button (DM only) that opens the Mini-App overlay directly
-    (web_app URL carries ?startapp=<route>, which main.jsx reads)."""
-    sep = "&" if "?" in get_webapp_url() else "?"
-    return KeyboardButton(text, web_app=WebAppInfo(url=f"{get_webapp_url()}{sep}startapp={start_param}"))
-
-
 def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
                                                  is_pro: bool | None = None) -> ReplyKeyboardMarkup:
-    # Persistent Artikel Trainer row: learn (everyone) + focus-theme (Pro only), so
-    # Pro users always have one-tap access without remembering a command.
+    # Artikel Trainer row: learn (everyone) + focus-theme (Pro only). Plain TEXT
+    # buttons — tapping them sends the text, and the button router opens the Mini-App
+    # via the t.me deeplink (the launch that reliably carries signed initData;
+    # reply-keyboard web_app buttons did NOT — Telegram withheld initData).
     if is_pro is None and user_id:
         try:
             is_pro = bool(is_user_pro(int(user_id)))
         except Exception:
             is_pro = False
-    artikel_row = [_artikel_webapp_button("📚 Учить артикли", "ans_al_0")]
+    artikel_row = [ARTIKEL_LEARN_BUTTON_TEXT]
     if is_pro:
-        artikel_row.append(_artikel_webapp_button("🎯 Тема на завтра", "ans_alf_0"))
+        artikel_row.append(ARTIKEL_FOCUS_BUTTON_TEXT)
     return ReplyKeyboardMarkup(
         [
             artikel_row,
@@ -4966,6 +4963,22 @@ async def handle_button_click(update: Update, context: CallbackContext):
         await _send_shortcut_install_prompt(update, context)
     elif text == HOWTO_GUIDE_BUTTON_TEXT:
         await _send_howto_guide_chapter(update, context)
+    elif text == ARTIKEL_LEARN_BUTTON_TEXT:
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+            "📚 Открыть тренажёр", url=get_webapp_deeplink("ans_al_0"))]])
+        await update.message.reply_text(
+            "📚 <b>Artikel Trainer</b> — учим der/die/das в своём темпе 👇",
+            parse_mode="HTML", reply_markup=kb)
+    elif text == ARTIKEL_FOCUS_BUTTON_TEXT:
+        uid = int(update.effective_user.id) if update.effective_user else 0
+        if uid and not await asyncio.to_thread(is_user_pro, uid):
+            await update.message.reply_text("🎯 Свой фокус по теме — на Premium.")
+        else:
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+                "🎯 Выбрать тему на завтра", url=get_webapp_deeplink("ans_alf_0"))]])
+            await update.message.reply_text(
+                "🎯 <b>Своя тема на завтра</b> — подготовим её ночью 👇",
+                parse_mode="HTML", reply_markup=kb)
     elif text == SHORTCUT_AUTOSAVE_BUTTON_TEXT or text.startswith(_AUTOSAVE_BUTTON_PREFIX):
         await _handle_autosave_button_tap(update, context)
     elif text == SHORTCUT_CONNECT_BUTTON_TEXT:
