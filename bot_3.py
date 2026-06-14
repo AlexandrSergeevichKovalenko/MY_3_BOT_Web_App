@@ -4911,6 +4911,8 @@ async def handle_button_click(update: Update, context: CallbackContext):
         DICTIONARY_BATCH_FAST_BUTTON_TEXT,
         SHORTCUT_AUTOSAVE_BUTTON_TEXT,
         HOWTO_GUIDE_BUTTON_TEXT,
+        ARTIKEL_LEARN_BUTTON_TEXT,
+        ARTIKEL_FOCUS_BUTTON_TEXT,
     }
     _msg_text = (update.message.text or "").strip() if update.message else ""
     if not ENABLE_LEGACY_REPLY_KEYBOARD and (
