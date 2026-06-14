@@ -21081,13 +21081,24 @@ async def send_anagram_to_chat(
         )
         return False
 
+    caption  = _build_anagram_caption(payload["hint_ru"])
+    keyboard = _build_anagram_keyboard(dispatch_id)
+    poster = None
     try:
-        msg = await context.bot.send_message(
-            chat_id=int(chat_id),
-            text=_build_anagram_caption(payload["hint_ru"]),
-            reply_markup=_build_anagram_keyboard(dispatch_id),
-            parse_mode="HTML",
-        )
+        from backend.interactive_card import render_anagram_card
+        poster = await asyncio.to_thread(render_anagram_card)
+    except Exception:
+        logging.warning("ag_send: card render failed card_id=%s", card_id, exc_info=True)
+    try:
+        if poster:
+            msg = await context.bot.send_photo(
+                chat_id=int(chat_id), photo=io.BytesIO(poster),
+                caption=caption, reply_markup=keyboard, parse_mode="HTML",
+            )
+        else:
+            msg = await context.bot.send_message(
+                chat_id=int(chat_id), text=caption, reply_markup=keyboard, parse_mode="HTML",
+            )
     except Exception as exc:
         logging.warning("ag_send_failed dispatch_id=%s chat_id=%s: %s", dispatch_id, chat_id, exc)
         return False
@@ -22006,13 +22017,23 @@ def _build_aufgabe_keyboard(dispatch_id: int) -> InlineKeyboardMarkup:
 
 
 def _render_aufgabe_card(entry: dict) -> bytes | None:
-    """Branded hero card for the aufgabe formats that have one (else None → text).
-    Rolling out per format; starts with satzbau."""
+    """Branded hero card for an aufgabe format (else None → text fallback)."""
     fmt = str(entry.get("format") or "")
     try:
-        if fmt == "satzbau":
-            from backend.interactive_card import render_satzbau_card
-            return render_satzbau_card()
+        from backend import interactive_card as ic
+        fn = {
+            "satzbau": ic.render_satzbau_card,
+            "cloze": ic.render_cloze_card,
+            "wortbildung": ic.render_wortbildung_card,
+            "transform": ic.render_transform_card,
+            "error": ic.render_error_card,
+            "hoerluecke": ic.render_hoerluecke_card,
+            "pin": ic.render_pin_card,
+            "synonym": ic.render_synonym_card,
+            "antonym": ic.render_antonym_card,
+        }.get(fmt)
+        if fn:
+            return fn()
     except Exception:
         logging.warning("au_send: card render failed fmt=%s", fmt, exc_info=True)
     return None

@@ -91,6 +91,27 @@ def _footer_cta(d, text, accent):
 
 # ── Motifs ───────────────────────────────────────────────────────────────────
 
+def _tile(d, cx, cy, w, h, label, col, *, fs=46, radius=24, ink=INK):
+    """A rounded word/letter tile with a top sheen and centered label."""
+    x0, y0 = cx - w / 2, cy - h / 2
+    d.rounded_rectangle([x0, y0, x0 + w, y0 + h], radius=radius, fill=col)
+    d.rounded_rectangle([x0, y0, x0 + w, y0 + min(16, h / 3)], radius=radius,
+                        fill=tuple(min(255, c + 38) for c in col))
+    if label:
+        f = _font(fs)
+        tw = f.getlength(label)
+        th, off = _text_h(d, label, f)
+        d.text((cx - tw / 2, cy - th / 2 - off), label, font=f, fill=ink)
+
+
+def _gap_line(d, cx, cy, w, accent):
+    """A sentence baseline with a glowing empty gap box in the middle."""
+    seg = (w - 200) / 2
+    for sx in (cx - w / 2, cx + w / 2 - seg):
+        d.rounded_rectangle([sx, cy - 7, sx + seg, cy + 7], radius=7, fill=(90, 104, 130))
+    d.rounded_rectangle([cx - 100, cy - 46, cx + 100, cy + 46], radius=18, outline=accent, width=6)
+    _ctext(d, cx, cy - 34, "?", _font(54), accent)
+
 def _motif_headphones(base, d, cx, cy, accent):
     """Over-ear headphones + sound waves (Hörverständnis / Hörlücke)."""
     r = 210
@@ -171,6 +192,104 @@ def _motif_stopwatch(base, d, cx, cy, accent):
         x += w + gap
 
 
+def _motif_anagram(base, d, cx, cy, accent):
+    """Scrambled letter tiles above an empty target row (Anagramm)."""
+    scrambled = ["R", "T", "A", "G", "N", "E"]
+    n = len(scrambled)
+    sz, gap = 116, 22
+    total = n * sz + (n - 1) * gap
+    x = cx - total / 2 + sz / 2
+    for i, ch in enumerate(scrambled):
+        dy = (-1) ** i * 22
+        col = accent if i % 2 == 0 else tuple(min(255, c + 28) for c in accent)
+        _tile(d, x, cy - 90 + dy, sz, sz, ch, col, fs=60, radius=22)
+        x += sz + gap
+    # empty target slots they snap into
+    x = cx - total / 2 + sz / 2
+    for _ in range(n):
+        d.rounded_rectangle([x - sz / 2, cy + 95, x + sz / 2, cy + 95 + sz], radius=22,
+                            outline=(110, 124, 150), width=5)
+        x += sz + gap
+
+
+def _motif_blocks(base, d, cx, cy, accent):
+    """Prefix + stem + suffix building blocks (Wortbildung)."""
+    parts = [("un", 150), ("glaub", 230), ("lich", 170)]
+    gap = 70
+    total = sum(w for _, w in parts) + gap * (len(parts) - 1)
+    x = cx - total / 2
+    f = _font(72)
+    for i, (label, w) in enumerate(parts):
+        col = accent if i == 1 else tuple(min(255, c + 26) for c in accent)
+        _tile(d, x + w / 2, cy, w, 150, label, col, fs=50, radius=26)
+        if i < len(parts) - 1:
+            _ctext(d, x + w + gap / 2, cy - 48, "+", f, GOLD)
+        x += w + gap
+
+
+def _motif_transform(base, d, cx, cy, accent):
+    """Two sentence bars with a circular arrow — one form becomes another."""
+    bw, bh = 560, 96
+    _tile(d, cx, cy - 110, bw, bh, "Aktiv", tuple(min(255, c + 20) for c in accent), fs=46, radius=24)
+    _tile(d, cx, cy + 110, bw, bh, "Passiv", accent, fs=46, radius=24)
+    # circular transform arrow in the middle
+    r = 54
+    d.arc([cx - r, cy - r, cx + r, cy + r], start=40, end=320, fill=GOLD, width=12)
+    d.polygon([(cx + r - 6, cy - 30), (cx + r + 18, cy - 36), (cx + r + 6, cy - 8)], fill=GOLD)
+
+
+def _motif_error(base, d, cx, cy, accent):
+    """A sentence bar with one wrong word boxed + wavy underline + magnifier."""
+    bw, bh = 620, 150
+    d.rounded_rectangle([cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2], radius=28, fill=(30, 41, 59))
+    # three "word" bars; the middle one is the error (accent box)
+    words = [(-200, 150, (90, 104, 130)), (0, 170, accent), (190, 130, (90, 104, 130))]
+    for dx, w, col in words:
+        d.rounded_rectangle([cx + dx - w / 2, cy - 22, cx + dx + w / 2, cy + 22], radius=12, fill=col)
+    # wavy underline under the error word
+    import math as _m
+    pts = [(cx - 85 + i * 6, cy + 44 + 7 * _m.sin(i / 2.2)) for i in range(28)]
+    d.line(pts, fill=accent, width=6, joint="curve")
+    # magnifier
+    mx, my, mr = cx + bw / 2 - 6, cy + bh / 2 - 6, 56
+    d.ellipse([mx - mr, my - mr, mx + mr, my + mr], outline=GOLD, width=14)
+    d.line([(mx + mr * 0.7, my + mr * 0.7), (mx + mr * 1.5, my + mr * 1.5)], fill=GOLD, width=18)
+
+
+def _motif_listen_gap(base, d, cx, cy, accent):
+    """Headphones above a gapped sentence line (Hörlücke)."""
+    _motif_headphones(base, d, cx, cy - 150, accent)
+    _gap_line(d, cx, cy + 210, 720, GOLD)
+
+
+def _motif_search_pic(base, d, cx, cy, accent):
+    """A picture frame with small objects + a magnifier/crosshair (Finde im Bild)."""
+    fw, fh = 560, 380
+    x0, y0 = cx - fw / 2, cy - fh / 2
+    d.rounded_rectangle([x0, y0, x0 + fw, y0 + fh], radius=28, fill=(30, 41, 59), outline=accent, width=8)
+    # a few simple "objects" in the scene
+    d.rounded_rectangle([x0 + 60, y0 + fh - 150, x0 + 200, y0 + fh - 40], radius=16, fill=(90, 104, 130))
+    d.ellipse([x0 + 250, y0 + 70, x0 + 340, y0 + 160], fill=(120, 134, 160))
+    d.rounded_rectangle([x0 + fw - 190, y0 + fh - 130, x0 + fw - 70, y0 + fh - 40], radius=12, fill=(110, 124, 150))
+    # small highlighted target object
+    tx, ty = x0 + fw - 150, y0 + 110
+    d.rounded_rectangle([tx - 34, ty - 34, tx + 34, ty + 34], radius=10, fill=GOLD)
+    # magnifier over the target
+    mr = 92
+    d.ellipse([tx - mr, ty - mr, tx + mr, ty + mr], outline=GOLD, width=14)
+    d.line([(tx + mr * 0.7, ty + mr * 0.7), (tx + mr * 1.5, ty + mr * 1.5)], fill=GOLD, width=20)
+
+
+def _motif_relation(base, d, cx, cy, accent, symbol):
+    """Two word bubbles joined by a relation symbol (Synonym '=', Antonym '↔')."""
+    bw, bh = 360, 150
+    _tile(d, cx - bw / 2 - 70, cy, bw, bh, "Wort A", accent, fs=46, radius=34)
+    _tile(d, cx + bw / 2 + 70, cy, bw, bh, "Wort B",
+          tuple(min(255, c + 26) for c in accent), fs=46, radius=34)
+    d.ellipse([cx - 60, cy - 60, cx + 60, cy + 60], fill=INK, outline=GOLD, width=8)
+    _ctext(d, cx, cy - 44, symbol, _font(76), GOLD)
+
+
 def _finish(base) -> bytes:
     out = BytesIO()
     base.convert("RGB").save(out, format="PNG")
@@ -216,3 +335,65 @@ def render_sprint_card(*, level: str = "") -> bytes | None:
     _motif_stopwatch(base, d, W // 2, 628, accent)
     _footer_cta(d, "Wer schafft die meisten?", GOLD)
     return _finish(base)
+
+
+def _card(*, badge, title, subtitle, accent, motif, cta) -> bytes | None:
+    if Image is None:
+        return None
+    base = _base(accent)
+    d = ImageDraw.Draw(base)
+    _header(base, d, badge=badge, title=title, subtitle=subtitle, accent=accent)
+    motif(base, d, W // 2, 640, accent)
+    _footer_cta(d, cta, GOLD)
+    return _finish(base)
+
+
+def render_anagram_card(*, level: str = "B2+") -> bytes | None:
+    return _card(badge="WORTRÄTSEL", title="Anagramm", subtitle=f"Buchstabensalat  ·  {level}",
+                 accent=(167, 139, 250), motif=_motif_anagram, cta="Setz die Buchstaben zusammen")
+
+
+def render_cloze_card(*, level: str = "B2+") -> bytes | None:
+    return _card(badge="LÜCKE", title="Lückentext", subtitle=f"Grammatik  ·  {level}",
+                 accent=(56, 189, 248),
+                 motif=lambda b, d, cx, cy, a: _gap_line(d, cx, cy, 760, a),
+                 cta="Fülle die Lücke")
+
+
+def render_wortbildung_card(*, level: str = "B2+") -> bytes | None:
+    return _card(badge="WORTBILDUNG", title="Wortbildung", subtitle=f"Wortformen  ·  {level}",
+                 accent=(45, 212, 191), motif=_motif_blocks, cta="Bilde die richtige Form")
+
+
+def render_transform_card(*, level: str = "C1") -> bytes | None:
+    return _card(badge="UMFORMEN", title="Satztransformation", subtitle=f"Umformung  ·  {level}",
+                 accent=(129, 140, 248), motif=_motif_transform, cta="Forme den Satz um")
+
+
+def render_error_card(*, level: str = "B2+") -> bytes | None:
+    return _card(badge="FEHLER", title="Fehler finden", subtitle=f"Korrektur  ·  {level}",
+                 accent=(248, 113, 113), motif=_motif_error, cta="Finde & korrigiere den Fehler")
+
+
+def render_hoerluecke_card(*, level: str = "B2+") -> bytes | None:
+    return _card(badge="HÖREN", title="Hörlücke", subtitle=f"Hören + Grammatik  ·  {level}",
+                 accent=(34, 211, 238), motif=_motif_listen_gap, cta="Höre & ergänze die Wörter")
+
+
+def render_pin_card(*, level: str = "B2") -> bytes | None:
+    return _card(badge="SUCHEN", title="Finde im Bild", subtitle=f"Wortschatz  ·  {level}",
+                 accent=(251, 146, 60), motif=_motif_search_pic, cta="Tippe auf das Objekt")
+
+
+def render_synonym_card(*, level: str = "B2+") -> bytes | None:
+    return _card(badge="WORTSCHATZ", title="Synonym", subtitle=f"Bedeutung  ·  {level}",
+                 accent=(52, 211, 153),
+                 motif=lambda b, d, cx, cy, a: _motif_relation(b, d, cx, cy, a, "="),
+                 cta="Finde ein Synonym")
+
+
+def render_antonym_card(*, level: str = "B2+") -> bytes | None:
+    return _card(badge="WORTSCHATZ", title="Antonym", subtitle=f"Gegenteil  ·  {level}",
+                 accent=(244, 114, 182),
+                 motif=lambda b, d, cx, cy, a: _motif_relation(b, d, cx, cy, a, "↔"),
+                 cta="Finde das Gegenteil")
