@@ -34924,6 +34924,69 @@ def list_article_battle_available_user_ids() -> list[int]:
     return [int(r[0]) for r in rows if r and r[0]]
 
 
+def ensure_article_battle_reminder_schema() -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_article_battle_reminders (
+                    id          BIGSERIAL PRIMARY KEY,
+                    user_id     BIGINT NOT NULL,
+                    battle_id   BIGINT NOT NULL,
+                    remind_at   TIMESTAMPTZ NOT NULL,
+                    sent        BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_battle_reminders_due "
+                "ON bt_3_article_battle_reminders (sent, remind_at);"
+            )
+        conn.commit()
+
+
+def schedule_article_battle_reminder(*, user_id: int, battle_id: int, remind_at) -> None:
+    ensure_article_battle_reminder_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            # one pending reminder per (user, battle): replace any existing unsent one
+            cursor.execute(
+                "DELETE FROM bt_3_article_battle_reminders "
+                "WHERE user_id=%s AND battle_id=%s AND sent=FALSE;",
+                (int(user_id), int(battle_id)),
+            )
+            cursor.execute(
+                "INSERT INTO bt_3_article_battle_reminders (user_id, battle_id, remind_at) "
+                "VALUES (%s, %s, %s);",
+                (int(user_id), int(battle_id), remind_at),
+            )
+        conn.commit()
+
+
+def get_due_article_battle_reminders(limit: int = 50) -> list[dict]:
+    ensure_article_battle_reminder_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id, user_id, battle_id FROM bt_3_article_battle_reminders "
+                "WHERE sent=FALSE AND remind_at <= NOW() ORDER BY remind_at LIMIT %s;",
+                (int(limit),),
+            )
+            rows = cursor.fetchall() or []
+    return [{"id": int(r[0]), "user_id": int(r[1]), "battle_id": int(r[2])} for r in rows]
+
+
+def mark_article_battle_reminder_sent(reminder_id: int) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_article_battle_reminders SET sent=TRUE WHERE id=%s;",
+                (int(reminder_id),),
+            )
+        conn.commit()
+
+
 def list_article_battle_available() -> list[dict]:
     """Opted-in users with names, for the individual invite picker. [{user_id, name}]."""
     ensure_article_battle_available_schema()

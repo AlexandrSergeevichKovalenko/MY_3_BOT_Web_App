@@ -317,6 +317,9 @@ from backend.database import (
     is_article_battle_available,
     list_article_battle_available_user_ids,
     list_article_battle_available,
+    schedule_article_battle_reminder,
+    get_due_article_battle_reminders,
+    mark_article_battle_reminder_sent,
     create_article_sprint_dispatch,
     update_article_sprint_dispatch_message_id,
     is_user_pro,
@@ -19519,21 +19522,29 @@ pending_battle_invites: dict[int, dict] = {}
 async def _send_battle_invites(context: CallbackContext, *, battle_id: int,
                                creator_name: str, target_ids: list[int],
                                exclude: int | None = None) -> int:
-    """DM the battle invite (text for now; Step 4 swaps in the Smurf image) to each
-    target. Returns how many were sent."""
-    invite_text = (
-        f"⚔️ *{html.escape(creator_name)}* зовёт на *Artikel Sprint* батл!\n"
-        f"2 минуты, der/die/das. Играй когда удобно *до 23:59*. Прими вызов:"
+    """DM the battle invite (Smurf-knights image if generated, else text) with
+    Accept/Decline buttons. Returns how many were sent."""
+    from backend.battle_card import battle_invite_image_url
+    caption = (
+        f"⚔️ <b>{html.escape(creator_name)}</b> вызывает тебя на батл по артиклям!\n"
+        f"2 минуты · der/die/das · играй когда удобно <b>до 23:59</b>."
     )
-    join_kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-        "✅ Принять вызов", callback_data=f"asb_join:{battle_id}")]])
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Принять", callback_data=f"asb_acc:{battle_id}"),
+        InlineKeyboardButton("❌ Отклонить", callback_data=f"asb_dec:{battle_id}"),
+    ]])
+    img_url = battle_invite_image_url()
     sent = 0
     for uid in target_ids:
         if exclude and int(uid) == int(exclude):
             continue
         try:
-            await context.bot.send_message(chat_id=int(uid), text=invite_text,
-                                            parse_mode="Markdown", reply_markup=join_kb)
+            if img_url:
+                await context.bot.send_photo(chat_id=int(uid), photo=img_url,
+                                             caption=caption, parse_mode="HTML", reply_markup=kb)
+            else:
+                await context.bot.send_message(chat_id=int(uid), text=caption,
+                                               parse_mode="HTML", reply_markup=kb)
             sent += 1
         except Exception:
             pass
@@ -19790,6 +19801,184 @@ async def artikel_battle_join_callback(update: Update, context: CallbackContext)
             reply_markup=play_kb)
     except Exception:
         pass
+
+
+async def _edit_battle_invite(q, text: str, kb) -> None:
+    """Edit the invite message (caption if it's a photo, else text)."""
+    try:
+        if getattr(q.message, "photo", None):
+            await q.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=kb)
+        else:
+            await q.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        pass
+
+
+def _battle_is_open(battle: dict | None) -> bool:
+    return bool(battle and str(battle.get("status")) == "open"
+               and not (battle.get("deadline") and battle["deadline"] <= datetime.now(ZoneInfo("UTC"))))
+
+
+async def artikel_battle_accept_callback(update: Update, context: CallbackContext) -> None:
+    """Accept (asb_acc:<id>) → join + offer play-now / remind-later."""
+    q = update.callback_query
+    if not q or not q.from_user:
+        return
+    try:
+        battle_id = int(str(q.data or "").split(":", 1)[1])
+    except (ValueError, IndexError):
+        await q.answer(); return
+    battle = await asyncio.to_thread(get_article_sprint_battle, battle_id)
+    if not _battle_is_open(battle):
+        await q.answer("Этот батл уже закрыт.", show_alert=True)
+        return
+    name = _display_user_name(q.from_user)
+    await asyncio.to_thread(add_article_sprint_battle_member,
+                            battle_id=battle_id, user_id=int(q.from_user.id), user_name=name)
+    await q.answer("Ты в батле! ⚔️")
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("▶️ Участвовать сейчас", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
+        [InlineKeyboardButton("⏰ Напомнить позже", callback_data=f"asb_later:{battle_id}")],
+    ])
+    await _edit_battle_invite(q, "✅ Вызов принят! Играй сейчас или запланируй на потом 👇", kb)
+
+
+async def artikel_battle_decline_callback(update: Update, context: CallbackContext) -> None:
+    q = update.callback_query
+    if not q:
+        return
+    await q.answer("Вызов отклонён.")
+    await _edit_battle_invite(q, "❌ Вызов отклонён. Передумаешь — попроси повторное приглашение.", None)
+
+
+async def artikel_battle_later_callback(update: Update, context: CallbackContext) -> None:
+    """asb_later:<id> → show preset reminder times."""
+    q = update.callback_query
+    if not q:
+        return
+    try:
+        battle_id = int(str(q.data or "").split(":", 1)[1])
+    except (ValueError, IndexError):
+        await q.answer(); return
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕1 час", callback_data=f"asb_rem:{battle_id}:60"),
+         InlineKeyboardButton("➕2 часа", callback_data=f"asb_rem:{battle_id}:120")],
+        [InlineKeyboardButton("➕3 часа", callback_data=f"asb_rem:{battle_id}:180"),
+         InlineKeyboardButton("🌆 в 21:00", callback_data=f"asb_rem:{battle_id}:at21")],
+        [InlineKeyboardButton("◀️ Назад", callback_data=f"asb_acc:{battle_id}")],
+    ])
+    await _edit_battle_invite(q, "⏰ Когда напомнить о батле? (батл закроется в 23:59)", kb)
+    await q.answer()
+
+
+async def artikel_battle_remind_callback(update: Update, context: CallbackContext) -> None:
+    """asb_rem:<id>:<code> → schedule a reminder before the deadline."""
+    q = update.callback_query
+    if not q or not q.from_user:
+        return
+    parts = str(q.data or "").split(":")
+    if len(parts) != 3:
+        await q.answer(); return
+    try:
+        battle_id = int(parts[1])
+    except ValueError:
+        await q.answer(); return
+    code = parts[2]
+    tz = ZoneInfo("Europe/Vienna")
+    now = datetime.now(tz)
+    if code == "at21":
+        remind_at = now.replace(hour=21, minute=0, second=0, microsecond=0)
+    else:
+        try:
+            remind_at = now + timedelta(minutes=int(code))
+        except ValueError:
+            await q.answer(); return
+    battle = await asyncio.to_thread(get_article_sprint_battle, battle_id)
+    deadline = battle.get("deadline") if battle else None
+    if remind_at <= now:
+        await q.answer("Это время уже прошло 🙂", show_alert=True); return
+    if deadline and remind_at >= deadline:
+        await q.answer("Не успеть — батл закроется в 23:59. Лучше сыграй сейчас!", show_alert=True)
+        return
+    await asyncio.to_thread(schedule_article_battle_reminder,
+                            user_id=int(q.from_user.id), battle_id=battle_id, remind_at=remind_at)
+    hhmm = remind_at.strftime("%H:%M")
+    await q.answer(f"⏰ Напомню в {hhmm}")
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "▶️ Всё же сыграть сейчас", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))]])
+    await _edit_battle_invite(q, f"⏰ Напомню в <b>{hhmm}</b>. До встречи на батле! ⚔️", kb)
+
+
+async def _send_due_battle_reminders_job(context: CallbackContext) -> None:
+    """Every few minutes: DM due battle reminders (Smurf-Lancelot image + play)."""
+    try:
+        due = await asyncio.to_thread(get_due_article_battle_reminders, 50)
+    except Exception:
+        logging.warning("battle reminders fetch failed", exc_info=True)
+        return
+    if not due:
+        return
+    from backend.battle_card import battle_reminder_image_url
+    img = battle_reminder_image_url()
+    for r in due:
+        bid, uid = int(r["battle_id"]), int(r["user_id"])
+        try:
+            await asyncio.to_thread(mark_article_battle_reminder_sent, int(r["id"]))
+            battle = await asyncio.to_thread(get_article_sprint_battle, bid)
+            if not _battle_is_open(battle):
+                continue  # closed meanwhile → skip
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+                "⚔️ В бой! Играть", url=get_webapp_deeplink(f"ans_asb_{bid}"))]])
+            cap = "⚔️ <b>Время батла!</b> Ты планировал сыграть — вперёд, до 23:59! 🛡"
+            if img:
+                await context.bot.send_photo(chat_id=uid, photo=img, caption=cap,
+                                             parse_mode="HTML", reply_markup=kb)
+            else:
+                await context.bot.send_message(chat_id=uid, text=cap, parse_mode="HTML", reply_markup=kb)
+        except Exception:
+            logging.warning("battle reminder send failed uid=%s bid=%s", uid, bid, exc_info=True)
+
+
+async def admin_battle_images_command(update: Update, context: CallbackContext) -> None:
+    """Generate the battle invite + reminder Smurf-knight images (gpt-image-1 → R2).
+    Run once. /admin_battle_images"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    status_msg = await message.reply_text("Генерирую боевые смурф-картинки…")
+
+    def _gen() -> dict:
+        from backend.image_generation_provider import generate_image_bytes
+        from backend.r2_storage import r2_put_bytes
+        from backend.battle_card import BATTLE_IMAGE_PROMPTS
+        made = 0
+        errs: list[str] = []
+        for key, prompt in BATTLE_IMAGE_PROMPTS:
+            try:
+                res = generate_image_bytes(prompt=prompt, template_id=0, user_id=0)
+                data = bytes(res.get("data") or b"")
+                if not data:
+                    raise RuntimeError("empty image payload")
+                r2_put_bytes(key, data, content_type="image/png",
+                             cache_control="public, max-age=86400")
+                made += 1
+            except Exception as exc:
+                errs.append(f"{key}: {str(exc)[:120]}")
+        return {"made": made, "total": len(BATTLE_IMAGE_PROMPTS), "errs": errs}
+
+    try:
+        result = await asyncio.to_thread(_gen)
+    except Exception as exc:
+        await status_msg.edit_text(f"Error: {exc}")
+        return
+    text = f"✅ Сгенерировано: {result.get('made')}/{result.get('total')} (R2: battle/invite.png, battle/reminder.png)"
+    if result.get("errs"):
+        text += "\n🔴 " + "\n".join(result["errs"][:5])
+    await status_msg.edit_text(text[:4000])
 
 
 async def artikel_mybattles_command(update: Update, context: CallbackContext) -> None:
@@ -24709,6 +24898,7 @@ def main():
     application.add_handler(CommandHandler("admin_rebus_reset", admin_rebus_reset_command))
     application.add_handler(CommandHandler("admin_rebus_audit", admin_rebus_audit_command))
     application.add_handler(CommandHandler("admin_overtaken_images", admin_overtaken_images_command))
+    application.add_handler(CommandHandler("admin_battle_images", admin_battle_images_command))
     application.add_handler(CommandHandler("artikel_themes", admin_artikel_themes_command))
     application.add_handler(CommandHandler("artikel_remindtheme", admin_artikel_remindtheme_command))
     application.add_handler(CommandHandler("artikel_reset", admin_artikel_reset_command))
@@ -24730,6 +24920,10 @@ def main():
     application.add_handler(CommandHandler("battle", artikel_battle_command))
     application.add_handler(CommandHandler("mybattles", artikel_mybattles_command))
     application.add_handler(CallbackQueryHandler(artikel_battle_join_callback, pattern=r"^asb_join:\d+$"))
+    application.add_handler(CallbackQueryHandler(artikel_battle_accept_callback, pattern=r"^asb_acc:\d+$"))
+    application.add_handler(CallbackQueryHandler(artikel_battle_decline_callback, pattern=r"^asb_dec:\d+$"))
+    application.add_handler(CallbackQueryHandler(artikel_battle_later_callback, pattern=r"^asb_later:\d+$"))
+    application.add_handler(CallbackQueryHandler(artikel_battle_remind_callback, pattern=r"^asb_rem:\d+:[a-z0-9]+$"))
     application.add_handler(CallbackQueryHandler(handle_battle_wizard_callback, pattern=r"^bw:"))
     application.add_handler(CommandHandler("admin_aq_send", admin_article_quiz_send_command))
     application.add_handler(CommandHandler("admin_aq_pool", admin_article_quiz_pool_command))
@@ -25146,6 +25340,13 @@ def main():
             "cron",
             hour=0,
             minute=5,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Artikel Battle: deliver due "remind me later" reminders (every 5 min) --
+        scheduler.add_job(
+            lambda: submit_async(_send_due_battle_reminders_job, CallbackContext(application=application)),
+            "cron",
+            minute="*/5",
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
         logging.info("sprint_scheduler_slots_registered slots=%s", sorted(SPRINT_SLOT_TIMES.items()))
