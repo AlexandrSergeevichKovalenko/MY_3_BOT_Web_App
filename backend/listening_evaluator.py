@@ -66,7 +66,7 @@ JSON-Format:
 CONTENT_WEIGHT = 0.5
 GRAMMAR_WEIGHT = 0.5
 POINTS_PER_QUESTION = 10
-PASS_PERCENT = 50  # task counts as "solved" for the leaderboard at >= 50%
+PASS_PERCENT = 75  # task counts as "solved" for the leaderboard at >= 75% (3/4)
 
 
 def _clamp01(x) -> float:
