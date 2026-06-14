@@ -17,7 +17,7 @@ from telegram.request import HTTPXRequest
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
 from telegram.ext import CallbackQueryHandler
 import hashlib
 import hmac
@@ -2728,9 +2728,28 @@ def _language_tutor_pair_for_user(user_id: int) -> tuple[str, str]:
         return "ru", "de"
 
 
-def _build_private_language_tutor_reply_keyboard(user_id: int | None = None) -> ReplyKeyboardMarkup:
+def _artikel_webapp_button(text: str, start_param: str) -> KeyboardButton:
+    """A reply-keyboard button (DM only) that opens the Mini-App overlay directly
+    (web_app URL carries ?startapp=<route>, which main.jsx reads)."""
+    sep = "&" if "?" in get_webapp_url() else "?"
+    return KeyboardButton(text, web_app=WebAppInfo(url=f"{get_webapp_url()}{sep}startapp={start_param}"))
+
+
+def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
+                                                 is_pro: bool | None = None) -> ReplyKeyboardMarkup:
+    # Persistent Artikel Trainer row: learn (everyone) + focus-theme (Pro only), so
+    # Pro users always have one-tap access without remembering a command.
+    if is_pro is None and user_id:
+        try:
+            is_pro = bool(is_user_pro(int(user_id)))
+        except Exception:
+            is_pro = False
+    artikel_row = [_artikel_webapp_button("📚 Учить артикли", "ans_al_0")]
+    if is_pro:
+        artikel_row.append(_artikel_webapp_button("🎯 Тема на завтра", "ans_alf_0"))
     return ReplyKeyboardMarkup(
         [
+            artikel_row,
             [LANGUAGE_TUTOR_BUTTON_TEXT],
             [DICTIONARY_BATCH_FAST_BUTTON_TEXT],
             [SHORTCUT_INSTALL_BUTTON_TEXT, SHORTCUT_CONNECT_BUTTON_TEXT],
@@ -2738,7 +2757,7 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None) -> 
             [HOWTO_GUIDE_BUTTON_TEXT],
         ],
         resize_keyboard=True,
-        is_persistent=False,
+        is_persistent=True,
     )
 
 
