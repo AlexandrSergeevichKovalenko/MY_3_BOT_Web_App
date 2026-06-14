@@ -411,6 +411,7 @@ QUIZ_REPEAT_ACCURACY_THRESHOLD = min(
     max(0.0, float(os.getenv("QUIZ_REPEAT_ACCURACY_THRESHOLD", "0.5"))),
 )
 QUIZ_REPEAT_CANDIDATE_LIMIT = max(1, int(os.getenv("QUIZ_REPEAT_CANDIDATE_LIMIT", "8")))
+QUIZ_REPEAT_COOLDOWN_HOURS = max(1, int(os.getenv("QUIZ_REPEAT_COOLDOWN_HOURS", "24")))
 QUIZ_PREPARED_TARGET_PER_TYPE = max(2, int((os.getenv("QUIZ_PREPARED_TARGET_PER_TYPE") or "8").strip() or "8"))
 QUIZ_PREPARED_STARTUP_DELAY_SECONDS = max(10, int((os.getenv("QUIZ_PREPARED_STARTUP_DELAY_SECONDS") or "45").strip() or "45"))
 QUIZ_PREPARED_HOURLY_TOPUP_MINUTE = max(0, min(59, int((os.getenv("QUIZ_PREPARED_HOURLY_TOPUP_MINUTE") or "35").strip() or "35")))
@@ -17057,6 +17058,7 @@ async def _select_repeat_scheduled_quiz(
             source_lang="ru",
             target_lang="de",
             accuracy_threshold=QUIZ_REPEAT_ACCURACY_THRESHOLD,
+            repeat_cooldown_hours=QUIZ_REPEAT_COOLDOWN_HOURS,
             limit=QUIZ_REPEAT_CANDIDATE_LIMIT,
         )
     except Exception:

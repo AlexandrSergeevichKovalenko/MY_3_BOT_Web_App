@@ -13861,10 +13861,12 @@ def list_low_accuracy_telegram_quiz_entries(
     source_lang: str = "ru",
     target_lang: str = "de",
     accuracy_threshold: float = 0.5,
+    repeat_cooldown_hours: int = 24,
     limit: int = 8,
 ) -> list[dict]:
     safe_limit = max(1, min(50, int(limit or 1)))
     safe_threshold = min(1.0, max(0.0, float(accuracy_threshold)))
+    safe_repeat_cooldown_hours = max(1, int(repeat_cooldown_hours or 24))
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -13907,31 +13909,50 @@ def list_low_accuracy_telegram_quiz_entries(
                     WHERE chat_id = %s
                       AND COALESCE(NULLIF(word_ru, ''), '') <> ''
                     GROUP BY word_ru
+                ),
+                candidate_rows AS (
+                    SELECT
+                        q.id,
+                        q.user_id,
+                        q.word_ru,
+                        q.translation_de,
+                        q.response_json,
+                        q.source_lang,
+                        q.target_lang,
+                        COALESCE(latest_quiz_type.quiz_type, 'word') AS preferred_quiz_type,
+                        attempt_stats.attempts,
+                        attempt_stats.correct_attempts,
+                        delivery_stats.first_asked_at,
+                        delivery_stats.last_asked_at,
+                        ROW_NUMBER() OVER (PARTITION BY q.word_ru ORDER BY q.id ASC) AS rn
+                    FROM bt_3_webapp_dictionary_queries q
+                    JOIN attempt_stats
+                      ON attempt_stats.word_ru = q.word_ru
+                    JOIN delivery_stats
+                      ON delivery_stats.word_ru = q.word_ru
+                    LEFT JOIN latest_quiz_type
+                      ON latest_quiz_type.word_ru = q.word_ru
+                    WHERE q.response_json IS NOT NULL
+                      AND COALESCE(NULLIF(q.source_lang, ''), q.response_json->>'source_lang') = %s
+                      AND COALESCE(NULLIF(q.target_lang, ''), q.response_json->>'target_lang') = %s
+                      AND delivery_stats.last_asked_at < NOW() - (%s || ' hours')::INTERVAL
                 )
                 SELECT
-                    q.id,
-                    q.user_id,
-                    q.word_ru,
-                    q.translation_de,
-                    q.response_json,
-                    q.source_lang,
-                    q.target_lang,
-                    COALESCE(latest_quiz_type.quiz_type, 'word') AS preferred_quiz_type,
-                    attempt_stats.attempts,
-                    attempt_stats.correct_attempts,
-                    delivery_stats.first_asked_at,
-                    delivery_stats.last_asked_at
-                FROM bt_3_webapp_dictionary_queries q
-                JOIN attempt_stats
-                  ON attempt_stats.word_ru = q.word_ru
-                JOIN delivery_stats
-                  ON delivery_stats.word_ru = q.word_ru
-                LEFT JOIN latest_quiz_type
-                  ON latest_quiz_type.word_ru = q.word_ru
-                WHERE q.response_json IS NOT NULL
-                  AND COALESCE(NULLIF(q.source_lang, ''), q.response_json->>'source_lang') = %s
-                  AND COALESCE(NULLIF(q.target_lang, ''), q.response_json->>'target_lang') = %s
-                ORDER BY delivery_stats.last_asked_at ASC, attempt_stats.attempts DESC, q.id ASC
+                    id,
+                    user_id,
+                    word_ru,
+                    translation_de,
+                    response_json,
+                    source_lang,
+                    target_lang,
+                    preferred_quiz_type,
+                    attempts,
+                    correct_attempts,
+                    first_asked_at,
+                    last_asked_at
+                FROM candidate_rows
+                WHERE rn = 1
+                ORDER BY last_asked_at ASC, attempts DESC, id ASC
                 LIMIT %s;
                 """,
                 (
@@ -13941,6 +13962,7 @@ def list_low_accuracy_telegram_quiz_entries(
                     int(chat_id),
                     source_lang,
                     target_lang,
+                    safe_repeat_cooldown_hours,
                     safe_limit,
                 ),
             )
