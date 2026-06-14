@@ -20595,27 +20595,16 @@ def _is_crossword_slot(slot_dt) -> bool:
 
 
 def _build_crossword_caption(words_json: list, topic: str, difficulty: str) -> str:
+    # Fairness: the clues are intentionally NOT included in the group message.
+    # Everyone sees the questions only after tapping ✏️ Antworten (inside the
+    # Mini App, where the timer starts) — so nobody can pre-solve from the chat
+    # and then just type answers in. Same starting conditions for all players.
     hidden = [w for w in words_json if w.get("hidden")]
-    across = [w for w in hidden if w.get("direction") == "across"]
-    down   = [w for w in hidden if w.get("direction") == "down"]
+    n = len(hidden)
 
     lines = [f"🧩 *Kreuzworträtsel* — {topic} ({difficulty})", ""]
-
-    if across:
-        lines.append("↔ *По горизонтали:*")
-        for w in sorted(across, key=lambda x: x["number"]):
-            lines.append(f"{w['number']}. {w['clue_de']}")
-            lines.append(f"    _{w['clue_ru']}_")
-        lines.append("")
-
-    if down:
-        lines.append("↕ *По вертикали:*")
-        for w in sorted(down, key=lambda x: x["number"]):
-            lines.append(f"{w['number']}. {w['clue_de']}")
-            lines.append(f"    _{w['clue_ru']}_")
-        lines.append("")
-
-    lines.append("Finde die fehlenden Wörter! 👇")
+    lines.append(f"Es fehlen {n} Wörter im Gitter." if n else "Fülle das Gitter aus.")
+    lines.append("Tippe auf ✏️ *Antworten* — dort siehst du die Fragen und füllst die leeren Felder aus. 👇")
     return "\n".join(lines)
 
 
@@ -21446,23 +21435,27 @@ async def _send_daily_challenge_digest_job(context: CallbackContext) -> None:
 from backend.quiz_leaderboard import compute_quiz_leaderboard as _compute_quiz_leaderboard
 
 
-def _build_group_daily_report(lb: dict, title: str | None) -> str | None:
+def _build_group_daily_report(lb: dict, title: str | None, *, period: str = "day") -> str | None:
     leaders = lb.get("leaders") or []
     if not leaders:
         return None
     esc = lambda s: html.escape(str(s or ""))
     medal = lambda i: "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else f"{i + 1}."
     champ = leaders[0]
+    is_week = period == "week"
+    period_paren = "итоги недели" if is_week else "итоги дня"
+    champ_word   = "недели" if is_week else "дня"
+    tasks_word   = "заданий недели" if is_week else "заданий дня"
     head = (
         f"🏁 <b>Групповой рейтинг — {esc(title)}</b>" if str(title or "").strip()
-        else "🏁 <b>Групповой рейтинг (итоги дня)</b>"
+        else f"🏁 <b>Групповой рейтинг ({period_paren})</b>"
     )
     lines = [
         head,
         "<i>Только участники этой группы. Общий рейтинг по всем — в приложении.</i>",
         "",
         f"👥 Активных: <b>{lb.get('total_players', 0)}</b> · 🧩 заданий: <b>{lb.get('total_tasks', 0)}</b>",
-        f"🏆 Чемпион дня в группе: <b>{esc(champ['name'])}</b> — {champ['points']} очк.",
+        f"🏆 Чемпион {champ_word} в группе: <b>{esc(champ['name'])}</b> — {champ['points']} очк.",
         "",
     ]
     for i, l in enumerate(leaders[:5]):
@@ -21470,7 +21463,7 @@ def _build_group_daily_report(lb: dict, title: str | None) -> str | None:
         lines.append(f"{medal(i)} {esc(l['name'])} — {l['points']} очк. ({l['correct']}✓){crown}")
     mfp = int(lb.get("min_for_prize") or 0)
     if mfp:
-        lines += ["", f"🏅 Призовые места — кто ответил ≥ {mfp} (≥50% заданий дня)."]
+        lines += ["", f"🏅 Призовые места — кто ответил ≥ {mfp} (≥50% {tasks_word})."]
     lines += ["", "🌍 Глобальный рейтинг и Кубок чемпиона — по кнопке ниже 👇"]
     return "\n".join(lines)
 
@@ -21652,13 +21645,136 @@ async def _post_champion_card(context: CallbackContext, *, days: int, chat_ids: 
     return sent
 
 
-async def _send_weekly_champion_job(context: CallbackContext) -> None:
-    """Weekly: post the global quiz champion card to all delivery chats."""
+async def _collect_all_group_participant_ids(context: CallbackContext) -> set[int]:
+    """Union of confirmed participants across ALL known webapp group chats.
+    Used to tell solo (non-group) users apart from group members."""
+    ids: set[int] = set()
     try:
-        sent = await _post_champion_card(context, days=7)
-        logging.info("weekly_champion posted to %d chats", sent)
+        groups = await asyncio.to_thread(list_known_webapp_group_chats, 500)
     except Exception:
-        logging.warning("weekly_champion job failed", exc_info=True)
+        groups = []
+    for g in groups or []:
+        try:
+            chat_id = int(g.get("chat_id") or 0)
+        except Exception:
+            continue
+        if chat_id == 0:
+            continue
+        try:
+            ids |= set(int(u) for u in await asyncio.to_thread(list_confirmed_group_participants, chat_id))
+        except Exception:
+            continue
+    return ids
+
+
+async def _post_weekly_group_champions(context: CallbackContext, *, week_no: int) -> int:
+    """Post each group's WEEKLY champion poster INTO the group, scoped to that
+    group's confirmed participants only (mirrors the daily group report, 7-day
+    window). Outsiders / other-group users are never pulled in — the global
+    ranking lives only behind the Mini-App button."""
+    try:
+        rows = await asyncio.to_thread(get_challenge_results_since, 7 * 24)
+    except Exception:
+        logging.warning("weekly group champion: fetch failed", exc_info=True)
+        return 0
+    if not rows:
+        return 0
+    user_ids = {int(r["user_id"]) for r in rows if r.get("user_id") is not None}
+    raw_names = {int(r["user_id"]): str(r.get("name") or "") for r in rows if r.get("user_id") is not None}
+    display_names = await _resolve_report_display_names(context, user_ids, raw_names)
+    rows = [
+        {**r, "name": display_names.get(int(r["user_id"])) or str(r.get("name") or "")}
+        for r in rows
+    ]
+    try:
+        groups = await asyncio.to_thread(list_known_webapp_group_chats, 500)
+    except Exception:
+        groups = []
+    sent = 0
+    for g in groups or []:
+        try:
+            chat_id = int(g.get("chat_id") or 0)
+        except Exception:
+            continue
+        if chat_id == 0:
+            continue
+        try:
+            participants = set(await asyncio.to_thread(list_confirmed_group_participants, chat_id))
+        except Exception:
+            participants = set()
+        if not participants:
+            continue
+        grows = [r for r in rows if int(r["user_id"]) in participants]
+        if not grows:
+            continue
+        lb = _compute_quiz_leaderboard(grows)
+        text = _build_group_daily_report(lb, g.get("chat_title"), period="week")
+        if not text:
+            continue
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+            text="🏅 Полный рейтинг", url=get_webapp_deeplink("lb"))]])
+        poster = None
+        try:
+            avatars: dict[int, bytes] = {}
+            for ldr in (lb.get("leaders") or [])[:3]:
+                av = await _fetch_user_avatar_png(context, int(ldr["user_id"]))
+                if av:
+                    avatars[int(ldr["user_id"])] = av
+            from backend.champion_poster import render_champion_poster
+            poster = await asyncio.to_thread(
+                render_champion_poster, lb, week_no=week_no, days=7, avatars=avatars,
+                header="CHAMPION DER WOCHE", subtitle=f"№ {week_no}",
+            )
+        except Exception:
+            logging.warning("weekly group champion: poster render failed chat_id=%s", chat_id, exc_info=True)
+        try:
+            if poster:
+                await context.bot.send_photo(chat_id=chat_id, photo=io.BytesIO(poster),
+                                             caption=text, parse_mode="HTML", reply_markup=kb)
+            else:
+                await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=kb)
+            sent += 1
+        except Exception:
+            logging.warning("weekly group champion send failed chat_id=%s", chat_id, exc_info=True)
+    return sent
+
+
+async def _send_weekly_champion_job(context: CallbackContext) -> None:
+    """Weekly champion, split by audience:
+      • GROUP chats  → a group-scoped poster (only that group's members).
+      • SOLO users   → the GLOBAL champion poster in DM + button to the full
+                       ranking (where their own place is highlighted).
+    Group members are NOT also DM'd the global poster — they get the group one.
+    """
+    week_no = _get_quiz_schedule_now().isocalendar()[1]
+
+    # 1) Group-scoped weekly posters into each group.
+    try:
+        g_sent = await _post_weekly_group_champions(context, week_no=week_no)
+    except Exception:
+        g_sent = 0
+        logging.warning("weekly_champion group pass failed", exc_info=True)
+
+    # 2) Global poster to solo (non-group) users in their DM.
+    s_sent = 0
+    try:
+        group_member_ids = await _collect_all_group_participant_ids(context)
+        targets = await _collect_quiz_delivery_user_targets(context)
+        solo_chat_ids: list[int] = []
+        for t in targets:
+            cid = int(t.get("chat_id") or 0)
+            if cid <= 0:  # private DM chats only (groups have negative ids)
+                continue
+            uids = [int(u) for u in (t.get("user_ids") or [])]
+            if any(u in group_member_ids for u in uids):
+                continue  # this user already gets the group poster
+            solo_chat_ids.append(cid)
+        if solo_chat_ids:
+            s_sent = await _post_champion_card(context, days=7, chat_ids=solo_chat_ids)
+    except Exception:
+        logging.warning("weekly_champion solo pass failed", exc_info=True)
+
+    logging.info("weekly_champion posted: groups=%d solos=%d", g_sent, s_sent)
 
 
 async def admin_clear_quiz_pool_command(update: Update, context: CallbackContext) -> None:

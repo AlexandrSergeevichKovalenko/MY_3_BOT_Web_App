@@ -133,7 +133,7 @@ export default function CrosswordGrid({ task, onSubmit, submitting }) {
 
   return (
     <>
-      <div className="cw-grid" style={{ gridTemplateColumns: `repeat(${cols}, 1fr)` }}>
+      <div className="cw-grid" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
         {grid.map((row, r) => row.map((cell, c) => {
           if (!cell) return <div key={k(r, c)} className="cw-cell blocked" />;
           const key = k(r, c);
