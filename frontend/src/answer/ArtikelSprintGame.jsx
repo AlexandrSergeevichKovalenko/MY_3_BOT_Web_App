@@ -241,8 +241,11 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
         <div className="as-result-list">
           {items.map((it, i) => (
             <div key={i} className={`as-row ${it.ok ? 'ok' : 'bad'}`}>
-              {it.ok ? '✅' : '❌'} <b>{it.a}</b> {it.w}
-              {!it.ok ? <span className="as-mine"> (ты: {it.chosen || '—'})</span> : null}
+              {it.ok ? (
+                <>✅ <b>{it.a}</b> {it.w}</>
+              ) : (
+                <>❌ <b className="as-correct-article">{it.a}</b> {it.w}<span className="as-mine"> (ты: {it.chosen || '—'})</span></>
+              )}
               {it.ru ? <span className="as-ru"> · {it.ru}</span> : null}
             </div>
           ))}

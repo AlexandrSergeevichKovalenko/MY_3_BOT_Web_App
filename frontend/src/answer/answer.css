@@ -683,7 +683,8 @@ html[data-scheme="light"] .ans-why-wrong { color: #92400e; }
 .as-result-score { font-size: 18px; margin: 8px 0 12px; }
 .as-result-list { max-height: 50vh; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; }
 .as-row { font-size: 15px; }
-.as-row.bad b { text-decoration: line-through; opacity: .8; }
+.as-row.bad b { text-decoration: none; opacity: 1; }
+.as-row.bad .as-correct-article { color: #22c55e; }
 .as-mine { color: #ef4444; }
 .as-ru { opacity: .65; }
 

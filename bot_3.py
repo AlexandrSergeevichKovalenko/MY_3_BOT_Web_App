@@ -13745,6 +13745,99 @@ async def user_stats(update: Update, context: CallbackContext):
 
 
 
+def _normalize_report_display_name(value: str | None) -> str:
+    label = str(value or "").strip().lstrip("@").strip()
+    if not label:
+        return ""
+    lowered = label.lower()
+    if lowered in {"unknown", "unknown user", "unknown_user", "none", "null", "nan", "неизвестный пользователь"}:
+        return ""
+    if re.fullmatch(r"user[_\-\s]*\d+", lowered):
+        return ""
+    return label
+
+
+def _load_report_display_name_candidates(user_ids: set[int]) -> dict[int, str]:
+    safe_ids = sorted({int(uid) for uid in (user_ids or set()) if int(uid or 0) > 0})
+    if not safe_ids:
+        return {}
+
+    query = """
+        WITH candidates AS (
+            SELECT user_id, username, 1 AS priority, MAX(timestamp) AS seen_at
+            FROM bt_3_translations
+            WHERE user_id = ANY(%s) AND COALESCE(NULLIF(username, ''), '') <> ''
+            GROUP BY user_id, username
+            UNION ALL
+            SELECT user_id, username, 2 AS priority, MAX(start_time) AS seen_at
+            FROM bt_3_user_progress
+            WHERE user_id = ANY(%s) AND COALESCE(NULLIF(username, ''), '') <> ''
+            GROUP BY user_id, username
+            UNION ALL
+            SELECT user_id, username, 3 AS priority, MAX(timestamp) AS seen_at
+            FROM bt_3_messages
+            WHERE user_id = ANY(%s) AND COALESCE(NULLIF(username, ''), '') <> ''
+            GROUP BY user_id, username
+            UNION ALL
+            SELECT user_id, username, 4 AS priority, MAX(updated_at) AS seen_at
+            FROM bt_3_allowed_users
+            WHERE user_id = ANY(%s) AND COALESCE(NULLIF(username, ''), '') <> ''
+            GROUP BY user_id, username
+        ),
+        ranked AS (
+            SELECT user_id, username,
+                   ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY priority ASC, seen_at DESC NULLS LAST) AS rn
+            FROM candidates
+        )
+        SELECT user_id, username
+        FROM ranked
+        WHERE rn = 1;
+    """
+    out: dict[int, str] = {}
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(query, (safe_ids, safe_ids, safe_ids, safe_ids))
+        for uid, label in cursor.fetchall() or []:
+            normalized = _normalize_report_display_name(label)
+            if normalized:
+                out[int(uid)] = normalized
+        cursor.close()
+        conn.close()
+    except Exception:
+        logging.warning("report display-name candidate lookup failed", exc_info=True)
+    return out
+
+
+async def _resolve_report_display_names(
+    context: CallbackContext,
+    user_ids: set[int],
+    seed_names: dict[int, str] | None = None,
+) -> dict[int, str]:
+    safe_ids = {int(uid) for uid in (user_ids or set()) if int(uid or 0) > 0}
+    labels = await asyncio.to_thread(_load_report_display_name_candidates, safe_ids)
+    for uid, raw in (seed_names or {}).items():
+        normalized = _normalize_report_display_name(raw)
+        if normalized:
+            labels.setdefault(int(uid), normalized)
+
+    for uid in sorted(safe_ids):
+        try:
+            chat = await context.bot.get_chat(int(uid))
+        except Exception:
+            continue
+        first = str(getattr(chat, "first_name", "") or "").strip()
+        last = str(getattr(chat, "last_name", "") or "").strip()
+        full_name = _normalize_report_display_name(" ".join(part for part in (first, last) if part))
+        if full_name:
+            labels[int(uid)] = full_name
+            continue
+        username = _normalize_report_display_name(str(getattr(chat, "username", "") or ""))
+        if username:
+            labels.setdefault(int(uid), username)
+    return labels
+
+
 async def send_daily_summary(context: CallbackContext):
 
     conn = get_db_connection()
@@ -13806,10 +13899,12 @@ async def send_daily_summary(context: CallbackContext):
     if not candidate_user_ids:
         candidate_user_ids.update(await _collect_scheduler_candidate_user_ids(lookback_days=30))
 
+    display_names = await _resolve_report_display_names(context, candidate_user_ids, all_users)
     delivery_map = await _build_user_delivery_map(context, candidate_user_ids, job_name="send_daily_summary")
     chat_usernames: dict[int, dict[int, str]] = {}
-    for user_id, username in all_users.items():
+    for user_id in candidate_user_ids:
         target_chat_id = int(delivery_map.get(int(user_id), int(user_id)))
+        username = display_names.get(int(user_id)) or f"User {int(user_id)}"
         chat_usernames.setdefault(target_chat_id, {})[int(user_id)] = username
 
     chat_rows: dict[int, list[tuple]] = {}
@@ -13841,7 +13936,7 @@ async def send_daily_summary(context: CallbackContext):
             summary += "📊 Сегодня никто не перевёл ни одного предложения!\n"
         else:
             for i, (user_id, total_sentences, translated, missed, avg_minutes, total_time_minutes, avg_score, final_score) in enumerate(current_rows):
-                username = all_users.get(int(user_id), 'Неизвестный пользователь')
+                username = display_names.get(int(user_id)) or f"User {int(user_id)}"
                 medal = medals[i] if i < len(medals) else "💩"
                 summary += (
                     f"{medal} {username}\n"
@@ -13927,10 +14022,12 @@ async def send_progress_report(context: CallbackContext):
     if not candidate_user_ids:
         candidate_user_ids.update(await _collect_scheduler_candidate_user_ids(lookback_days=30))
 
+    display_names = await _resolve_report_display_names(context, candidate_user_ids, all_users)
     delivery_map = await _build_user_delivery_map(context, candidate_user_ids, job_name="send_progress_report")
     chat_usernames: dict[int, dict[int, str]] = {}
-    for user_id, username in all_users.items():
+    for user_id in candidate_user_ids:
         target_chat_id = int(delivery_map.get(int(user_id), int(user_id)))
+        username = display_names.get(int(user_id)) or f"User {int(user_id)}"
         chat_usernames.setdefault(target_chat_id, {})[int(user_id)] = username
 
     chat_rows: dict[int, list[tuple]] = {}
@@ -13964,7 +14061,7 @@ async def send_progress_report(context: CallbackContext):
         else:
             for user_id, total, translated, missed, avg_minutes, total_minutes, avg_score, final_score in current_rows:
                 progress_report += (
-                    f"👤 {all_users.get(int(user_id), 'Неизвестный пользователь')}\n"
+                    f"👤 {display_names.get(int(user_id)) or f'User {int(user_id)}'}\n"
                     f"📜 Переведено: {translated}/{total}\n"
                     f"🚨 Не переведено: {missed}\n"
                     f"⏱ Время среднее: {avg_minutes:.1f} мин\n"
@@ -20432,6 +20529,13 @@ async def _send_group_daily_report_job(context: CallbackContext) -> None:
         return
     if not rows:
         return
+    user_ids = {int(r["user_id"]) for r in rows if r.get("user_id") is not None}
+    raw_names = {int(r["user_id"]): str(r.get("name") or "") for r in rows if r.get("user_id") is not None}
+    display_names = await _resolve_report_display_names(context, user_ids, raw_names)
+    rows = [
+        {**r, "name": display_names.get(int(r["user_id"])) or str(r.get("name") or "")}
+        for r in rows
+    ]
     try:
         groups = await asyncio.to_thread(list_known_webapp_group_chats, 500)
     except Exception:
@@ -20543,6 +20647,13 @@ async def _fetch_user_avatar_png(context: CallbackContext, user_id: int) -> byte
 
 async def _post_champion_card(context: CallbackContext, *, days: int, chat_ids: list[int] | None = None) -> int:
     rows = await asyncio.to_thread(get_challenge_results_since, days * 24)
+    user_ids = {int(r["user_id"]) for r in (rows or []) if r.get("user_id") is not None}
+    raw_names = {int(r["user_id"]): str(r.get("name") or "") for r in (rows or []) if r.get("user_id") is not None}
+    display_names = await _resolve_report_display_names(context, user_ids, raw_names)
+    rows = [
+        {**r, "name": display_names.get(int(r["user_id"])) or str(r.get("name") or "")}
+        for r in (rows or [])
+    ]
     lb = _compute_quiz_leaderboard(rows or [])
     week_no = _get_quiz_schedule_now().isocalendar()[1]
     text = _build_champion_card(lb, week_no=week_no, days=days)

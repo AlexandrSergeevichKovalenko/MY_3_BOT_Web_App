@@ -15464,13 +15464,13 @@ def _get_mobile_authenticated_user() -> tuple[int | None, str | None, object | N
 def _extract_display_name(user_data: dict | None) -> str | None:
     if not isinstance(user_data, dict):
         return None
-    username = (user_data.get("username") or "").strip()
-    if username:
-        return username
     first_name = (user_data.get("first_name") or "").strip()
     last_name = (user_data.get("last_name") or "").strip()
     full_name = " ".join(part for part in (first_name, last_name) if part).strip()
-    return full_name or None
+    if full_name:
+        return full_name
+    username = (user_data.get("username") or "").strip()
+    return username or None
 
 
 def _normalize_user_label(raw_value: str | None) -> str:
