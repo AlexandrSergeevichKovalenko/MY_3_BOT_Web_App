@@ -22005,6 +22005,19 @@ def _build_aufgabe_keyboard(dispatch_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[btn]])
 
 
+def _render_aufgabe_card(entry: dict) -> bytes | None:
+    """Branded hero card for the aufgabe formats that have one (else None → text).
+    Rolling out per format; starts with satzbau."""
+    fmt = str(entry.get("format") or "")
+    try:
+        if fmt == "satzbau":
+            from backend.interactive_card import render_satzbau_card
+            return render_satzbau_card()
+    except Exception:
+        logging.warning("au_send: card render failed fmt=%s", fmt, exc_info=True)
+    return None
+
+
 async def send_aufgabe_to_chat(
     context: CallbackContext, *, entry: dict, slot_date, slot_hour: int,
     chat_id: int, target_user_id: int,
@@ -22023,13 +22036,19 @@ async def send_aufgabe_to_chat(
     if not dispatch_id:
         logging.info("au_send: duplicate suppressed aufgabe_id=%s chat_id=%s", aufgabe_id, chat_id)
         return False
+    caption  = _build_aufgabe_caption(entry)
+    keyboard = _build_aufgabe_keyboard(dispatch_id)
+    poster   = await asyncio.to_thread(_render_aufgabe_card, entry)
     try:
-        msg = await context.bot.send_message(
-            chat_id=int(chat_id),
-            text=_build_aufgabe_caption(entry),
-            reply_markup=_build_aufgabe_keyboard(dispatch_id),
-            parse_mode="HTML",
-        )
+        if poster:
+            msg = await context.bot.send_photo(
+                chat_id=int(chat_id), photo=io.BytesIO(poster),
+                caption=caption, reply_markup=keyboard, parse_mode="HTML",
+            )
+        else:
+            msg = await context.bot.send_message(
+                chat_id=int(chat_id), text=caption, reply_markup=keyboard, parse_mode="HTML",
+            )
     except Exception as exc:
         logging.warning("au_send_failed aufgabe_id=%s chat_id=%s: %s", aufgabe_id, chat_id, exc)
         return False
@@ -22505,6 +22524,12 @@ async def _send_scheduled_artikel_sprint(context: CallbackContext) -> None:
         "2 минуты — успей указать *der/die/das* для как можно большего числа слов!\n"
         "🏆 Победитель — у кого больше верных."
     )
+    poster = None
+    try:
+        from backend.interactive_card import render_sprint_card
+        poster = await asyncio.to_thread(render_sprint_card)
+    except Exception:
+        logging.warning("artikel_sprint: card render failed", exc_info=True)
     sent = 0
     for t in targets:
         cid = int(t.get("chat_id") or 0)
@@ -22521,8 +22546,13 @@ async def _send_scheduled_artikel_sprint(context: CallbackContext) -> None:
         if did is None:
             continue  # already sent this slot to this chat
         try:
-            msg = await context.bot.send_message(
-                chat_id=cid, text=caption, parse_mode="Markdown", reply_markup=kb)
+            if poster:
+                msg = await context.bot.send_photo(
+                    chat_id=cid, photo=io.BytesIO(poster), caption=caption,
+                    parse_mode="Markdown", reply_markup=kb)
+            else:
+                msg = await context.bot.send_message(
+                    chat_id=cid, text=caption, parse_mode="Markdown", reply_markup=kb)
             await asyncio.to_thread(
                 update_article_sprint_dispatch_message_id, int(did), telegram_message_id=int(msg.message_id))
             sent += 1
@@ -23463,17 +23493,31 @@ async def send_listening_to_chat(
         return False
 
     # Audio now lives inside the Mini-App overlay (R2 MP3, iOS-playable). The
-    # group gets a compact card + deeplink button instead of a voice message.
+    # group gets a branded hero card + deeplink button instead of a voice message.
     caption  = _build_listening_card_caption(entry)
     keyboard = _build_listening_keyboard(dispatch_id)
+    poster = None
+    try:
+        from backend.interactive_card import render_listening_card
+        poster = await asyncio.to_thread(
+            render_listening_card,
+            topic=str(entry.get("topic") or ""),
+            level=str(entry.get("difficulty") or "B2"),
+            n_questions=len(list(entry.get("questions_json") or [])) or 4,
+        )
+    except Exception:
+        logging.warning("ls_send: card render failed dispatch_id=%s", dispatch_id, exc_info=True)
 
     try:
-        await context.bot.send_message(
-            chat_id=int(chat_id),
-            text=caption,
-            reply_markup=keyboard,
-            parse_mode="HTML",
-        )
+        if poster:
+            await context.bot.send_photo(
+                chat_id=int(chat_id), photo=io.BytesIO(poster),
+                caption=caption, reply_markup=keyboard, parse_mode="HTML",
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=int(chat_id), text=caption, reply_markup=keyboard, parse_mode="HTML",
+            )
     except Exception as exc:
         logging.warning("ls_send: send card failed dispatch_id=%s: %s", dispatch_id, exc)
         return False
