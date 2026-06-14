@@ -7,14 +7,16 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 const ARTICLES = ['der', 'die', 'das'];
 const ART_CLASS = { der: 'art-der', die: 'art-die', das: 'art-das' };
 
-export default function ArtikelLearnGame({ api, haptic, onClose }) {
-  const [phase, setPhase] = useState('loading'); // loading|error|empty|learning|done
+export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }) {
+  const [phase, setPhase] = useState('loading'); // loading|error|empty|learning|done|focuspick|focusdone
   const [error, setError] = useState('');
   const [meta, setMeta] = useState(null);
   const cardsRef = useRef([]);
   const [idx, setIdx] = useState(0);
   const [chosen, setChosen] = useState(null);
   const [stats, setStats] = useState({ correct: 0, answered: 0 });
+  const [themes, setThemes] = useState([]);
+  const [focusLabel, setFocusLabel] = useState('');
   const touchX = useRef(null);
   const audioRef = useRef(null);
 
@@ -31,6 +33,12 @@ export default function ArtikelLearnGame({ api, haptic, onClose }) {
     let cancelled = false;
     (async () => {
       try {
+        if (focus) {
+          const data = await api('/api/webapp/artikel/themes', {});
+          if (cancelled) return;
+          if (!data.ok) { setError(data.error || 'Доступно на Premium'); setPhase('error'); return; }
+          setThemes(data.themes || []); setPhase('focuspick'); return;
+        }
         const data = await api('/api/webapp/artikel/learn/today', {});
         if (cancelled) return;
         if (!data.ok) { setError(data.error || 'Недоступно'); setPhase('error'); return; }
@@ -40,6 +48,16 @@ export default function ArtikelLearnGame({ api, haptic, onClose }) {
       } catch (e) { if (!cancelled) { setError(String(e.message || e)); setPhase('error'); } }
     })();
     return () => { cancelled = true; };
+  }, [api, focus]);
+
+  const pickFocus = useCallback(async (themeKey, label) => {
+    setPhase('loading');
+    try {
+      const data = await api('/api/webapp/artikel/learn/focus', { theme_key: themeKey });
+      if (!data.ok) { setError(data.error || 'Недоступно'); setPhase('error'); return; }
+      setFocusLabel(data.theme_label || label || themeKey);
+      setPhase('focusdone');
+    } catch (e) { setError(String(e.message || e)); setPhase('error'); }
   }, [api]);
 
   const answer = useCallback((article) => {
@@ -84,6 +102,31 @@ export default function ArtikelLearnGame({ api, haptic, onClose }) {
       <div className="ans-verdict">📚 Artikel lernen</div>
       <div className="ans-explain">{error}</div>
       <button className="ans-btn" onClick={onClose}>Schließen</button>
+    </>);
+  } else if (phase === 'focuspick') {
+    body = (<>
+      <div className="as-eyebrow">🎯 Своя тема на завтра · Premium</div>
+      <div className="as-rules">Выбери тему — подготовим её к завтрашнему дню (со звуком и картинками).</div>
+      <div className="as-themes">
+        {themes.map((t) => (
+          <button key={t.theme_key} type="button" className="as-theme-btn"
+            onClick={() => pickFocus(t.theme_key, t.label_ru || t.label_de)}>
+            <span>{t.label_ru || t.label_de}</span>
+            <span className="as-theme-cnt">{t.count}</span>
+          </button>
+        ))}
+      </div>
+      <button className="ans-btn-ghost" onClick={onClose}>Später</button>
+    </>);
+  } else if (phase === 'focusdone') {
+    body = (<>
+      <div className="as-cert">
+        <div className="as-cert-medal">🎯</div>
+        <div className="as-cert-place">Готово!</div>
+        <div className="as-cert-sub">Завтра учишь: <b>{focusLabel}</b></div>
+        <div className="as-cert-foot">Подготовим ночью — со звуком и картинками</div>
+      </div>
+      <button className="ans-btn" onClick={onClose}>Отлично</button>
     </>);
   } else if (phase === 'empty') {
     body = (<>

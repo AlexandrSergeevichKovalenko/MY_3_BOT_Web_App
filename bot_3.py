@@ -21913,6 +21913,35 @@ async def _send_scheduled_artikel_learn(context: CallbackContext) -> None:
     logging.info("artikel_learn reminder sent=%s", sent)
 
 
+async def _prewarm_artikel_focus_job(context: CallbackContext) -> None:
+    """Overnight: for each Pro user's chosen focus theme for TOMORROW, prep the exact
+    deck slice (mnemonics + audio + images) so it opens instantly and with media."""
+    if not _artikel_sprint_enabled():
+        return
+    try:
+        from backend.article_learn import focus_new_words, _generate_and_cache_mnemonics
+        from backend.database import list_article_learn_focus_themes, get_article_noun_mnemonics
+        tomorrow = _get_quiz_schedule_now().date() + timedelta(days=1)
+        themes = await asyncio.to_thread(list_article_learn_focus_themes, tomorrow)
+        for tk in themes:
+            words = await asyncio.to_thread(focus_new_words, tomorrow, tk)
+            if not words:
+                continue
+            items = [{"word": w["w"], "article": w["a"], "meaning_ru": w.get("ru", "")} for w in words]
+            try:
+                have = await asyncio.to_thread(get_article_noun_mnemonics, [w["w"] for w in words])
+                miss = [w for w in words if str(w["w"]).lower() not in have]
+                if miss:
+                    await asyncio.to_thread(_generate_and_cache_mnemonics, miss)
+            except Exception:
+                logging.warning("artikel_focus: mnemonic prewarm failed theme=%s", tk, exc_info=True)
+            await _backfill_artikel_audio(items, limit=len(items))
+            await _backfill_artikel_images(items, limit=len(items))
+        logging.info("artikel_focus prewarm done themes=%s", len(themes))
+    except Exception:
+        logging.warning("artikel_focus prewarm failed", exc_info=True)
+
+
 # Daily admin nudge to pick TOMORROW's Artikel Sprint theme (default 16:00 Vienna).
 ARTIKEL_THEME_REMINDER_SLOT = (
     max(0, min(23, int((os.getenv("ARTIKEL_THEME_REMINDER_HOUR") or "16").strip() or "16"))),
@@ -24733,6 +24762,14 @@ def main():
             "cron",
             hour=int(ARTIKEL_LEARN_SLOT[0]),
             minute=int(ARTIKEL_LEARN_SLOT[1]),
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Artikel Trainer: overnight prep of Pro focus themes for tomorrow (03:40) --
+        scheduler.add_job(
+            lambda: submit_async(_prewarm_artikel_focus_job, CallbackContext(application=application)),
+            "cron",
+            hour=3,
+            minute=40,
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
         # -- Artikel Sprint: DM admins to pick TOMORROW's theme (default 16:00) --

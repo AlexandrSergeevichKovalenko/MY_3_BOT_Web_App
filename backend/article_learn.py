@@ -189,7 +189,30 @@ def ensure_daily_learn_mnemonics(play_date) -> int:
     return len(_generate_and_cache_mnemonics(missing))
 
 
-def build_learn_deck(play_date, user_id: int, *, new_size: int = 15,
+LEARN_NEW_SIZE = 15
+
+
+def focus_new_words(play_date, theme_key: str, *, new_size: int = LEARN_NEW_SIZE) -> list[dict]:
+    """Deterministic daily slice of a focus theme — same for everyone on a given
+    date (so it's prewarmable), cycling through the theme over days. [{w,a,ru}]."""
+    from backend.database import count_article_theme_verified, get_article_theme_words_slice
+    total = count_article_theme_verified(theme_key)
+    if total <= 0:
+        return []
+    span = max(1, total - new_size + 1) if total > new_size else 1
+    offset = (play_date.toordinal() * new_size) % span
+    words = get_article_theme_words_slice(theme_key, offset, new_size)
+    if len(words) < new_size and total > len(words):  # wrap from the start
+        seen = {w["w"].lower() for w in words}
+        for w in get_article_theme_words_slice(theme_key, 0, new_size):
+            if w["w"].lower() not in seen:
+                words.append(w)
+            if len(words) >= new_size:
+                break
+    return words
+
+
+def build_learn_deck(play_date, user_id: int, *, new_size: int = LEARN_NEW_SIZE,
                      review_size: int = 8) -> dict:
     """Assemble the day's learning deck: up to `new_size` words from the daily
     Sprint set (so it's aligned with the game) + up to `review_size` of the user's
@@ -202,31 +225,52 @@ def build_learn_deck(play_date, user_id: int, *, new_size: int = 15,
         get_article_sprint_theme, get_article_learn_review_words,
         get_article_noun_mnemonics, get_article_learn_progress,
         count_article_theme_verified, get_article_noun_audio,
-        get_article_noun_images,
+        get_article_noun_images, get_article_learn_focus,
+        get_article_sprint_verified_sample,
     )
     from backend.r2_storage import r2_public_url
 
-    set_id = get_daily_article_sprint_set_id(play_date)
-    if not set_id:
-        try:
-            from backend.article_sprint_sets import build_daily_set
-            built = build_daily_set(play_date)
-            if built.get("status") == "ready":
-                set_id = built["set_id"]
-        except Exception:
-            set_id = None
-    if not set_id:
-        return {"ok": False, "error_code": "learn_set_not_ready",
-                "error": "Набор на сегодня ещё готовится. Загляни чуть позже."}
+    # Source of NEW words: a Pro user's personal FOCUS theme for this date (picked
+    # the day before, prepped overnight) overrides the shared daily set.
+    focus_theme = None
+    try:
+        focus_theme = get_article_learn_focus(int(user_id), play_date)
+    except Exception:
+        focus_theme = None
 
-    s = get_article_sprint_set(set_id)
-    if not s or not s.get("words"):
-        return {"ok": False, "error_code": "learn_set_empty", "error": "Набор пуст."}
+    theme_key = None
+    new_words: list[dict] = []
+    set_id = None
+    if focus_theme:
+        new_words = focus_new_words(play_date, focus_theme, new_size=max(1, int(new_size)))
+        if new_words:
+            theme_key = focus_theme
+            set_id = f"alf_{int(user_id)}_{focus_theme}_{play_date.isoformat()}"
+        else:
+            focus_theme = None  # focus theme empty → fall back to the shared set
 
-    theme = get_article_sprint_theme(s["theme_key"]) or {}
-    theme_label = theme.get("label_de") or s["theme_key"]
+    if not focus_theme:
+        set_id = get_daily_article_sprint_set_id(play_date)
+        if not set_id:
+            try:
+                from backend.article_sprint_sets import build_daily_set
+                built = build_daily_set(play_date)
+                if built.get("status") == "ready":
+                    set_id = built["set_id"]
+            except Exception:
+                set_id = None
+        if not set_id:
+            return {"ok": False, "error_code": "learn_set_not_ready",
+                    "error": "Набор на сегодня ещё готовится. Загляни чуть позже."}
+        s = get_article_sprint_set(set_id)
+        if not s or not s.get("words"):
+            return {"ok": False, "error_code": "learn_set_empty", "error": "Набор пуст."}
+        theme_key = s["theme_key"]
+        new_words = (s["words"] or [])[: max(1, int(new_size))]
 
-    new_words = (s["words"] or [])[: max(1, int(new_size))]
+    theme = get_article_sprint_theme(theme_key) or {}
+    theme_label = theme.get("label_de") or theme_key
+
     review_raw: list[dict] = []
     try:
         review_raw = get_article_learn_review_words(int(user_id), limit=int(review_size))
@@ -282,15 +326,15 @@ def build_learn_deck(play_date, user_id: int, *, new_size: int = 15,
     # Theme progress for the done screen ("выучено X из Y").
     progress = {"mastered": 0, "theme_total": 0}
     try:
-        prog = get_article_learn_progress(int(user_id), s["theme_key"])
+        prog = get_article_learn_progress(int(user_id), theme_key)
         progress = {"mastered": int(prog.get("mastered") or 0),
-                    "theme_total": count_article_theme_verified(s["theme_key"])}
+                    "theme_total": count_article_theme_verified(theme_key)}
     except Exception:
         pass
 
     return {
-        "ok": True, "set_id": set_id, "theme_key": s["theme_key"],
-        "theme_label": theme_label,
+        "ok": True, "set_id": set_id, "theme_key": theme_key,
+        "theme_label": theme_label, "focus": bool(focus_theme),
         "cards": new_cards + review_cards,
         "new_count": len(new_cards), "review_count": len(review_cards),
         "progress": progress,

@@ -34798,7 +34798,62 @@ def ensure_article_learn_schema() -> None:
                 "CREATE INDEX IF NOT EXISTS idx_article_learn_user_word "
                 "ON bt_3_article_learn_answers (user_id, word, created_at DESC);"
             )
+            # Pro personal learning focus: a theme to learn on a given date (picked
+            # the day before, prepped overnight). Overrides the shared daily set.
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_article_learn_focus (
+                    user_id     BIGINT NOT NULL,
+                    focus_date  DATE NOT NULL,
+                    theme_key   TEXT NOT NULL,
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, focus_date)
+                );
+                """
+            )
         conn.commit()
+
+
+def set_article_learn_focus(*, user_id: int, focus_date, theme_key: str) -> None:
+    ensure_article_learn_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_article_learn_focus (user_id, focus_date, theme_key)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (user_id, focus_date) DO UPDATE
+                SET theme_key = EXCLUDED.theme_key, created_at = NOW();
+                """,
+                (int(user_id), focus_date, str(theme_key)),
+            )
+        conn.commit()
+
+
+def get_article_learn_focus(user_id: int, play_date) -> str | None:
+    ensure_article_learn_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT theme_key FROM bt_3_article_learn_focus "
+                "WHERE user_id = %s AND focus_date = %s;",
+                (int(user_id), play_date),
+            )
+            r = cursor.fetchone()
+    return str(r[0]) if r and r[0] else None
+
+
+def list_article_learn_focus_themes(play_date) -> list[str]:
+    """Distinct focus themes chosen for a date (for the overnight pre-warm job)."""
+    ensure_article_learn_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT DISTINCT theme_key FROM bt_3_article_learn_focus WHERE focus_date = %s;",
+                (play_date,),
+            )
+            rows = cursor.fetchall() or []
+    return [str(r[0]) for r in rows if r and r[0]]
 
 
 def record_article_learn_answer(*, user_id: int, word: str, article: str,
@@ -35191,6 +35246,26 @@ def get_article_sprint_verified_sample(theme_key: str | None, n: int, *, exclude
             )
             rows = cursor.fetchall() or []
     return [{"w": r[0], "a": r[1], "ru": r[2] or ""} for r in rows]
+
+
+def get_article_theme_words_slice(theme_key: str, offset: int, limit: int) -> list[dict]:
+    """Deterministic ordered slice of a theme's verified nouns (by freq_rank, id) —
+    stable per offset, so a focus deck is the same all day and is prewarmable.
+    Returns [{"w","a","ru"}]."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT word, article, meaning_ru
+                FROM bt_3_article_sprint_nouns
+                WHERE theme_key = %s AND verified = TRUE AND retired = FALSE
+                ORDER BY freq_rank NULLS LAST, id
+                OFFSET %s LIMIT %s;
+                """,
+                (str(theme_key), int(max(0, offset)), int(max(0, limit))),
+            )
+            rows = cursor.fetchall() or []
+    return [{"w": r[0], "a": str(r[1]).lower(), "ru": r[2] or ""} for r in rows]
 
 
 def upsert_article_sprint_set(*, set_id: str, kind: str, play_date, theme_key: str,

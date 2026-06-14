@@ -22675,6 +22675,35 @@ def artikel_learn_answer():
     return jsonify({"ok": True})
 
 
+@app.route("/api/webapp/artikel/learn/focus", methods=["POST"])
+def artikel_learn_focus():
+    """Pro: pick a personal LEARN theme for TOMORROW (prepped overnight). Free users
+    get the shared daily theme. No theme_key in the body → returns current focus."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    if not _artikel_user_is_pro(int(user_id)):
+        return jsonify({"ok": False, "error_code": "pro_only",
+                        "error": "Свой фокус по теме — на Premium."}), 200
+    from datetime import datetime as _dt, timedelta as _td
+    from zoneinfo import ZoneInfo
+    from backend.database import (
+        get_article_sprint_theme, set_article_learn_focus, get_article_learn_focus,
+    )
+    payload = request.get_json(silent=True) or {}
+    tomorrow = _dt.now(ZoneInfo("Europe/Vienna")).date() + _td(days=1)
+    theme_key = str(payload.get("theme_key") or "").strip()
+    if not theme_key:
+        return jsonify({"ok": True, "focus_date": tomorrow.isoformat(),
+                        "theme_key": get_article_learn_focus(int(user_id), tomorrow)})
+    theme = get_article_sprint_theme(theme_key)
+    if not theme:
+        return jsonify({"ok": False, "error": "Нет такой темы."}), 200
+    set_article_learn_focus(user_id=int(user_id), focus_date=tomorrow, theme_key=theme_key)
+    return jsonify({"ok": True, "focus_date": tomorrow.isoformat(),
+                    "theme_key": theme_key, "theme_label": theme.get("label_de") or theme_key})
+
+
 @app.route("/api/webapp/artikel/submit", methods=["POST"])
 def artikel_submit():
     """Artikel Sprint: official scoring. Re-grades the user's chosen articles
