@@ -47299,13 +47299,14 @@ def _dispatch_private_analytics(target_date: date) -> dict:
             else:
                 _send_private_message(int(target_chat_id), text)
 
-            chart_png = _build_private_analytics_chart_png(
+            # TEMP (2026-06-14): weekly "📈 График прогресса за неделю" chart disabled
+            # to cut down on notifications. Re-enable by removing `if False and`.
+            if False and (chart_png := _build_private_analytics_chart_png(
                 user_id=user_id,
                 start_date=bounds.start_date,
                 end_date=bounds.end_date,
                 username=name,
-            )
-            if chart_png:
+            )):
                 if int(target_chat_id) < 0:
                     _send_group_photo(
                         image_bytes=chart_png,
