@@ -9,7 +9,7 @@ const ART_CLASS = { der: 'art-der', die: 'art-die', das: 'art-das' };
 const LEARN_BATCH = 15;
 
 export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }) {
-  const [phase, setPhase] = useState('loading'); // loading|error|empty|learning|done|focuspick|focusdone
+  const [phase, setPhase] = useState('loading'); // loading|error|empty|learning|done|focuspick|focusdone|focusalready
   const [error, setError] = useState('');
   const [meta, setMeta] = useState(null);
   const cardsRef = useRef([]);
@@ -68,7 +68,15 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
           const data = await api('/api/webapp/artikel/themes', {});
           if (cancelled) return;
           if (!data.ok) { setError(data.error || 'Доступно на Premium'); setPhase('error'); return; }
-          setThemes(data.themes || []); setPhase('focuspick');
+          setThemes(data.themes || []);
+          // If a focus theme is already set for tomorrow, show it instead of
+          // silently letting the user pick again (they can still change it).
+          if (data.current_focus_key) {
+            setFocusLabel(data.current_focus_label || data.current_focus_key);
+            setPhase('focusalready');
+          } else {
+            setPhase('focuspick');
+          }
         } catch (e) { if (!cancelled) { setError(String(e.message || e)); setPhase('error'); } }
         return;
       }
@@ -160,6 +168,19 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
         ))}
       </div>
       <button className="ans-btn-ghost" onClick={onClose}>Später</button>
+    </>);
+  } else if (phase === 'focusalready') {
+    body = (<>
+      <div className="as-cert">
+        <div className="as-cert-medal">✅</div>
+        <div className="as-cert-place">Тема на завтра уже выбрана</div>
+        <div className="as-cert-sub">Завтра учишь: <b>{focusLabel}</b></div>
+        <div className="as-cert-foot">Подготовим ночью — со звуком и картинками</div>
+      </div>
+      <button className="ans-btn" onClick={() => { try { haptic?.('tap'); } catch (_e) { /* noop */ } setPhase('focuspick'); }}>
+        Изменить тему
+      </button>
+      <button className="ans-btn-ghost" onClick={onClose}>Schließen</button>
     </>);
   } else if (phase === 'focuspick') {
     body = (<>

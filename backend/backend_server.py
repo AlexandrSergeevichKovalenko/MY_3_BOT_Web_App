@@ -22863,7 +22863,9 @@ def artikel_themes():
     if not _artikel_user_is_pro(int(user_id)):
         return jsonify({"ok": False, "error_code": "pro_required",
                         "error": "Выбор своей темы доступен на Premium. Системная игра — каждый день для всех."}), 200
-    from backend.database import ensure_article_sprint_schema, list_article_sprint_themes
+    from backend.database import (
+        ensure_article_sprint_schema, list_article_sprint_themes, get_article_learn_focus,
+    )
     ensure_article_sprint_schema()
     from backend.article_sprint_sets import PRACTICE_MIN
     rows = list_article_sprint_themes()
@@ -22872,7 +22874,18 @@ def artikel_themes():
          "count": int(r["verified_count"])}
         for r in rows if int(r.get("verified_count") or 0) >= PRACTICE_MIN
     ]
-    return jsonify({"ok": True, "themes": themes})
+    # Already-chosen focus theme for tomorrow (so the UI can say "уже выбрана"
+    # instead of silently letting the user pick again).
+    from datetime import datetime as _dt, timedelta as _td
+    from zoneinfo import ZoneInfo
+    tomorrow = _dt.now(ZoneInfo("Europe/Vienna")).date() + _td(days=1)
+    current_key = (get_article_learn_focus(int(user_id), tomorrow) or "").strip()
+    label_by_key = {r["theme_key"]: (r.get("label_ru") or r.get("label_de") or r["theme_key"]) for r in rows}
+    return jsonify({
+        "ok": True, "themes": themes,
+        "current_focus_key": current_key or None,
+        "current_focus_label": (label_by_key.get(current_key) or current_key) if current_key else None,
+    })
 
 
 @app.route("/api/webapp/artikel/practice", methods=["POST"])
@@ -47939,7 +47952,7 @@ def _dispatch_weekly_global_ranking_report(*, tz_name: str = TODAY_PLAN_DEFAULT_
     errors: list[str] = []
     for row in rows[:limit]:
         user_id = int(row.get("user_id") or 0)
-        if user_id <= 0 or not is_telegram_user_allowed(user_id):
+        if user_id <= 0 or not is_telegram_user_allowed(user_id): 
             continue
         try:
             image_bytes = _render_weekly_global_ranking_card_png(row, start_date=start_date, end_date=end_date, top_rows=top_rows)
