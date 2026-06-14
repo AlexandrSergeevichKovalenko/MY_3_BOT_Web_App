@@ -2757,7 +2757,7 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
             [HOWTO_GUIDE_BUTTON_TEXT],
         ],
         resize_keyboard=True,
-        is_persistent=True,
+        is_persistent=False,
     )
 
 
