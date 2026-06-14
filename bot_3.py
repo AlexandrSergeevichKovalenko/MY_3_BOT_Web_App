@@ -20013,18 +20013,50 @@ async def _close_article_sprint_battles_job(context: CallbackContext) -> None:
         total = len(ranked)
         win_line = (f"🏆 Чемпион: {html.escape(str((winner or {}).get('name') or '—'))} "
                     f"({(winner or {}).get('count', 0)} верных)") if winner else "Никто не сыграл."
+
+        # Render a battle podium poster (top-3 + avatars) — sent to ALL members
+        # (whoever accepted), for both global and individual battles.
+        poster = None
+        if ranked:
+            leaders = [{
+                "user_id": int(r["user_id"]), "name": str(r.get("name") or "Игрок"),
+                "points": int(r.get("count") or 0), "correct": int(r.get("count") or 0),
+                "answered": int(r.get("count") or 0), "golds": (1 if i == 0 else 0),
+                "ctime_sum": 0, "ctime_n": 0,
+            } for i, r in enumerate(ranked)]
+            lb = {"leaders": leaders, "total_players": len(leaders), "total_tasks": 0,
+                  "fastest": None, "accurate": None, "active": None}
+            avatars: dict[int, bytes] = {}
+            for ldr in leaders[:3]:
+                av = await _fetch_user_avatar_png(context, int(ldr["user_id"]))
+                if av:
+                    avatars[int(ldr["user_id"])] = av
+            try:
+                from backend.champion_poster import render_champion_poster
+                poster = await asyncio.to_thread(
+                    render_champion_poster, lb, week_no=0, days=1, avatars=avatars,
+                    header="ЛУЧШИЙ АРТИКЛЕВЕД", subtitle=f"⚔️ Батл #{bid}")
+            except Exception:
+                logging.warning("battle podium render failed bid=%s", bid, exc_info=True)
+                poster = None
+
         for m in members:
             uid = int(m["user_id"])
             p = place_of.get(uid)
             if p:
                 medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(p, "🎖️")
                 you = next((r for r in ranked if int(r["user_id"]) == uid), {})
-                txt = (f"⚔️ Батл #{bid} завершён!\n"
-                       f"{medal} Твоё место: <b>{p} из {total}</b> ({you.get('count', 0)} верных)\n{win_line}")
+                caption = (f"⚔️ Батл #{bid} завершён!\n"
+                           f"{medal} Твоё место: <b>{p} из {total}</b> ({you.get('count', 0)} верных)")
             else:
-                txt = f"⚔️ Батл #{bid} завершён — ты не успел сыграть 😔\n{win_line}"
+                caption = f"⚔️ Батл #{bid} завершён — ты не успел сыграть 😔\n{win_line}"
             try:
-                await context.bot.send_message(chat_id=uid, text=txt, parse_mode="HTML")
+                if poster:
+                    await context.bot.send_photo(chat_id=uid, photo=io.BytesIO(poster),
+                                                 caption=caption, parse_mode="HTML")
+                else:
+                    await context.bot.send_message(chat_id=uid, text=caption + ("\n" + win_line if p else ""),
+                                                   parse_mode="HTML")
             except Exception:
                 pass
         try:
