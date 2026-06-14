@@ -265,24 +265,43 @@ function AufgabeResult({ result }) {
 
 function ListeningResult({ result }) {
   const items = result.items || [];
-  const total = result.total || items.length;
-  const correct = result.correct_count || 0;
-  const allRight = total > 0 && correct === total;
-  const tone = allRight ? 'ok' : (correct > 0 ? 'partial' : 'bad');
+  const pts = result.total_points ?? 0;
+  const max = result.max_points ?? (items.length * 10);
+  const pct = result.percent ?? (max > 0 ? Math.round((pts / max) * 100) : 0);
+  const tone = pct >= 75 ? 'ok' : (pct >= 50 ? 'partial' : 'bad');
   return (
     <div className={`ans-result ${tone}`}>
-      <div className="ans-verdict">
-        {allRight ? `🎉 Alle ${total} richtig!` : `🏁 ${correct} / ${total} richtig`}
-      </div>
+      <div className="ans-verdict">🏁 {pts} / {max} Punkte · {pct}%</div>
+      <div className="ls-score-legend">Inhalt 50% + Grammatik 50%</div>
       <div className="ls-result-list">
         {items.map((it) => (
           <div className="ls-result-item" key={it.number}>
-            <div className="ls-result-q">{it.content_correct ? '✅' : '❌'} {it.number}. {it.question_de}</div>
+            <div className="ls-result-q">
+              {it.number}. {it.question_de}
+              <span className="ls-qpts">{it.q_points}/{it.q_max}</span>
+            </div>
             {it.user_answer ? <div className="ls-result-you">Du: {it.user_answer}</div> : null}
-            {!it.content_correct && it.correct_answer_de ? (
+
+            <div className="ls-axis">
+              <span className="ls-axis-tag">{it.content_correct ? '✅' : '❌'} Inhalt {it.content_pts}/5</span>
+              {it.content_feedback_ru ? <span className="ans-meaning"> {it.content_feedback_ru}</span> : null}
+            </div>
+
+            <div className="ls-axis">
+              <span className="ls-axis-tag">📝 Grammatik {it.grammar_pts}/5</span>
+              {it.grammar_errors && it.grammar_errors.length ? (
+                <ul className="ls-gram-errs">
+                  {it.grammar_errors.map((e, k) => <li key={k}>{e}</li>)}
+                </ul>
+              ) : <span className="ans-meaning"> ✅ keine Fehler</span>}
+              {it.grammar_feedback_ru ? <span className="ans-meaning"> {it.grammar_feedback_ru}</span> : null}
+            </div>
+
+            {it.model_answer_de ? (
+              <div className="ls-result-correct">✍️ <b>{it.model_answer_de}</b></div>
+            ) : (!it.content_correct && it.correct_answer_de ? (
               <div className="ls-result-correct">Korrekt: <b>{it.correct_answer_de}</b></div>
-            ) : null}
-            {it.content_feedback_ru ? <div className="ans-meaning">{it.content_feedback_ru}</div> : null}
+            ) : null)}
           </div>
         ))}
       </div>

@@ -492,30 +492,42 @@ def evaluate_anagram(*, dispatch_id: int, user_id: int, assembled: str) -> dict 
 
 def _listening_result_payload(dispatch: dict, answers: list, evaluation: list,
                               *, already_answered: bool) -> dict:
-    """Merge questions + the user's answers + the LLM evals into one verdict."""
+    """Merge questions + the user's answers + the LLM evals into one verdict.
+    Each question is scored on two axes — Inhalt (50%) + Grammatik (50%)."""
+    from backend.listening_evaluator import score_evaluation
     questions = list(dispatch.get("questions_json") or [])
     answers = answers if isinstance(answers, list) else []
     evaluation = evaluation if isinstance(evaluation, list) else []
+    scored = score_evaluation(len(questions), evaluation)
+    per = scored["per"]
     items = []
-    correct = 0
     for i, q in enumerate(questions):
         ev = evaluation[i] if i < len(evaluation) and isinstance(evaluation[i], dict) else {}
-        is_ok = bool(ev.get("content_correct"))
-        if is_ok:
-            correct += 1
+        sc = per[i] if i < len(per) else {}
         items.append({
             "number": int(q.get("number") or (i + 1)),
             "question_de": str(q.get("question_de") or ""),
             "user_answer": str(answers[i]) if i < len(answers) else "",
-            "content_correct": is_ok,
+            "content_correct": bool(sc.get("content_correct")),
+            "content_pts": int(sc.get("content_pts") or 0),
+            "grammar_pts": int(sc.get("grammar_pts") or 0),
+            "q_points": int(sc.get("q_points") or 0),
+            "q_max": int(sc.get("q_max") or 0),
             "content_feedback_ru": str(ev.get("content_feedback_ru") or ""),
+            "grammar_feedback_ru": str(ev.get("grammar_feedback_ru") or ""),
+            "grammar_errors": [str(e) for e in (ev.get("grammar_errors") or [])][:4],
+            "model_answer_de": str(ev.get("model_answer_de") or ""),
             "correct_answer_de": str(q.get("correct_answer_de") or ""),
         })
     return {
         "kind": "listening",
         "items": items,
-        "correct_count": correct,
+        "correct_count": scored["content_correct_count"],
         "total": len(questions),
+        "total_points": scored["total_points"],
+        "max_points": scored["max_points"],
+        "percent": scored["percent"],
+        "passed": scored["passed"],
         "already_answered": bool(already_answered),
     }
 
@@ -599,18 +611,19 @@ def _spawn_listening_grader(answer_id: int, german_text: str, questions: list, a
     def _run():
         import logging
         try:
-            from backend.listening_evaluator import evaluate_listening_answers
+            from backend.listening_evaluator import evaluate_listening_answers, score_evaluation
             from backend.database import save_listening_evaluation, record_challenge_result
             evals = evaluate_listening_answers(german_text, questions, answers)
             # Record the ranking result BEFORE flipping status to 'done', so the
-            # first poll that sees 'done' already has a ranking to show.
+            # first poll that sees 'done' already has a ranking to show. The task
+            # counts as "solved" for the rating when the combined Inhalt+Grammatik
+            # score reaches >= 50% (PASS_PERCENT), not only on a perfect run.
             try:
                 total = len(questions)
-                correct = sum(1 for i in range(total)
-                              if i < len(evals) and isinstance(evals[i], dict) and evals[i].get("content_correct"))
+                scored = score_evaluation(total, evals)
                 record_challenge_result(
                     challenge_key=str(ranking_key), user_id=int(user_id),
-                    user_name=str(user_name or ""), is_correct=(total > 0 and correct == total),
+                    user_name=str(user_name or ""), is_correct=bool(total > 0 and scored["passed"]),
                     time_ms=int(time_ms or 0),
                 )
             except Exception:

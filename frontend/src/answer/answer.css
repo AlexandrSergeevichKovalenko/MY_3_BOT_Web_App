@@ -360,8 +360,15 @@ html[data-scheme="light"] .ans-tip { background: #fff7e6; border-color: #f0d488;
 .ls-result-item { font-size: 14.5px; }
 .ls-result-q { font-weight: 600; color: var(--dmps-text-primary, #F8FAFC); }
 .ls-result-you { margin-top: 3px; font-size: 13.5px; color: var(--dmps-text-subtle, #64748B); }
-.ls-result-correct { margin-top: 3px; font-size: 13.5px; color: var(--dmps-text-secondary, #CBD5E1); }
+.ls-result-correct { margin-top: 5px; font-size: 13.5px; color: var(--dmps-text-secondary, #CBD5E1); }
 .ls-result-correct b { color: var(--dmps-text-primary, #F8FAFC); }
+.ls-score-legend { margin-top: 4px; font-size: 12.5px; font-weight: 600; color: var(--dmps-text-muted, #94A3B8); }
+.ls-result-q { display: flex; align-items: baseline; gap: 8px; justify-content: space-between; }
+.ls-qpts { font-size: 12.5px; font-weight: 800; color: var(--dmps-text-muted, #94A3B8); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ls-axis { margin-top: 5px; font-size: 13.5px; line-height: 1.4; }
+.ls-axis-tag { font-weight: 700; color: var(--dmps-text-secondary, #CBD5E1); }
+.ls-gram-errs { margin: 3px 0 0; padding-left: 18px; color: var(--dmps-text-muted, #94A3B8); font-size: 13px; }
+.ls-gram-errs li { margin: 1px 0; }
 
 /* ── Interactive crossword grid + on-screen keyboard ───────────────────────── */
 .cw-grid {
