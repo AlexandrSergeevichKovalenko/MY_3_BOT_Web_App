@@ -192,17 +192,18 @@ def ensure_daily_learn_mnemonics(play_date) -> int:
 LEARN_NEW_SIZE = 15
 
 
-def focus_new_words(play_date, theme_key: str, *, new_size: int = LEARN_NEW_SIZE) -> list[dict]:
-    """Deterministic daily slice of a focus theme — same for everyone on a given
-    date (so it's prewarmable), cycling through the theme over days. [{w,a,ru}]."""
+def focus_new_words(play_date, theme_key: str, *, new_size: int = LEARN_NEW_SIZE,
+                    offset: int = 0) -> list[dict]:
+    """Deterministic daily slice of a focus theme (same for everyone on a date, so
+    it's prewarmable). `offset` pages forward through the theme (wraps). [{w,a,ru}]."""
     from backend.database import count_article_theme_verified, get_article_theme_words_slice
     total = count_article_theme_verified(theme_key)
     if total <= 0:
         return []
-    span = max(1, total - new_size + 1) if total > new_size else 1
-    offset = (play_date.toordinal() * new_size) % span
-    words = get_article_theme_words_slice(theme_key, offset, new_size)
-    if len(words) < new_size and total > len(words):  # wrap from the start
+    base = (play_date.toordinal() * new_size) % total
+    start = (base + int(offset)) % total
+    words = get_article_theme_words_slice(theme_key, start, new_size)
+    if len(words) < min(new_size, total):  # wrap around the end of the theme
         seen = {w["w"].lower() for w in words}
         for w in get_article_theme_words_slice(theme_key, 0, new_size):
             if w["w"].lower() not in seen:
@@ -213,7 +214,7 @@ def focus_new_words(play_date, theme_key: str, *, new_size: int = LEARN_NEW_SIZE
 
 
 def build_learn_deck(play_date, user_id: int, *, new_size: int = LEARN_NEW_SIZE,
-                     review_size: int = 8) -> dict:
+                     review_size: int = 8, offset: int = 0) -> dict:
     """Assemble the day's learning deck: up to `new_size` words from the daily
     Sprint set (so it's aligned with the game) + up to `review_size` of the user's
     past mistakes (resurfaced). Each card carries the gender tip + colour.
@@ -238,13 +239,18 @@ def build_learn_deck(play_date, user_id: int, *, new_size: int = LEARN_NEW_SIZE,
     except Exception:
         focus_theme = None
 
+    new_size = max(1, int(new_size))
+    offset = max(0, int(offset))
     theme_key = None
     new_words: list[dict] = []
     set_id = None
+    pool_size = 0
     if focus_theme:
-        new_words = focus_new_words(play_date, focus_theme, new_size=max(1, int(new_size)))
+        new_words = focus_new_words(play_date, focus_theme, new_size=new_size, offset=offset)
         if new_words:
+            from backend.database import count_article_theme_verified as _cnt
             theme_key = focus_theme
+            pool_size = _cnt(focus_theme)
             set_id = f"alf_{int(user_id)}_{focus_theme}_{play_date.isoformat()}"
         else:
             focus_theme = None  # focus theme empty → fall back to the shared set
@@ -266,16 +272,21 @@ def build_learn_deck(play_date, user_id: int, *, new_size: int = LEARN_NEW_SIZE,
         if not s or not s.get("words"):
             return {"ok": False, "error_code": "learn_set_empty", "error": "Набор пуст."}
         theme_key = s["theme_key"]
-        new_words = (s["words"] or [])[: max(1, int(new_size))]
+        words_all = s["words"] or []
+        pool_size = len(words_all)
+        # Page through the set, wrapping — so the user can keep doing batches.
+        start = offset % pool_size if pool_size else 0
+        new_words = [words_all[(start + i) % pool_size] for i in range(min(new_size, pool_size))]
 
     theme = get_article_sprint_theme(theme_key) or {}
     theme_label = theme.get("label_de") or theme_key
 
     review_raw: list[dict] = []
-    try:
-        review_raw = get_article_learn_review_words(int(user_id), limit=int(review_size))
-    except Exception:
-        review_raw = []
+    if offset == 0:  # only the first batch resurfaces past mistakes
+        try:
+            review_raw = get_article_learn_review_words(int(user_id), limit=int(review_size))
+        except Exception:
+            review_raw = []
 
     # Cached LLM mnemonics (preferred); deterministic gender_tip is the fallback.
     all_words = [str(w.get("w") or "") for w in (new_words + review_raw)]
@@ -343,4 +354,6 @@ def build_learn_deck(play_date, user_id: int, *, new_size: int = LEARN_NEW_SIZE,
         "cards": new_cards + review_cards,
         "new_count": len(new_cards), "review_count": len(review_cards),
         "progress": progress, "streak": streak,
+        "next_offset": offset + len(new_cards),
+        "has_more": bool(pool_size > new_size),
     }

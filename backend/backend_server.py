@@ -22640,8 +22640,13 @@ def artikel_learn_today():
     from zoneinfo import ZoneInfo
     from backend.article_learn import build_learn_deck
     play_date = _dt.now(ZoneInfo("Europe/Vienna")).date()
+    payload = request.get_json(silent=True) or {}
     try:
-        deck = build_learn_deck(play_date, int(user_id))
+        offset = max(0, int(payload.get("offset") or 0))
+    except (TypeError, ValueError):
+        offset = 0
+    try:
+        deck = build_learn_deck(play_date, int(user_id), offset=offset)
     except Exception:
         logging.exception("artikel_learn_today failed")
         return jsonify({"ok": False, "error_code": "learn_error",

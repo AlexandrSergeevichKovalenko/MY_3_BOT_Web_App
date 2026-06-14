@@ -6,6 +6,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 // competitive); each answer is posted so the user's mistakes resurface later.
 const ARTICLES = ['der', 'die', 'das'];
 const ART_CLASS = { der: 'art-der', die: 'art-die', das: 'art-das' };
+const LEARN_BATCH = 15;
 
 export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }) {
   const [phase, setPhase] = useState('loading'); // loading|error|empty|learning|done|focuspick|focusdone
@@ -44,26 +45,34 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
     } catch (_e) { /* noop */ }
   }, []);
 
+  const loadDeck = useCallback(async (offset = 0) => {
+    setPhase('loading');
+    try {
+      const data = await api('/api/webapp/artikel/learn/today', { offset });
+      if (!data.ok) { setError(data.error || 'Недоступно'); setPhase('error'); return; }
+      cardsRef.current = data.cards || [];
+      setMeta(data);
+      setIdx(0); setChosen(null); setStats({ correct: 0, answered: 0 });
+      setPhase(cardsRef.current.length ? 'learning' : 'empty');
+    } catch (e) { setError(String(e.message || e)); setPhase('error'); }
+  }, [api]);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      try {
-        if (focus) {
+      if (focus) {
+        try {
           const data = await api('/api/webapp/artikel/themes', {});
           if (cancelled) return;
           if (!data.ok) { setError(data.error || 'Доступно на Premium'); setPhase('error'); return; }
-          setThemes(data.themes || []); setPhase('focuspick'); return;
-        }
-        const data = await api('/api/webapp/artikel/learn/today', {});
-        if (cancelled) return;
-        if (!data.ok) { setError(data.error || 'Недоступно'); setPhase('error'); return; }
-        cardsRef.current = data.cards || [];
-        setMeta(data);
-        setPhase(cardsRef.current.length ? 'learning' : 'empty');
-      } catch (e) { if (!cancelled) { setError(String(e.message || e)); setPhase('error'); } }
+          setThemes(data.themes || []); setPhase('focuspick');
+        } catch (e) { if (!cancelled) { setError(String(e.message || e)); setPhase('error'); } }
+        return;
+      }
+      if (!cancelled) await loadDeck(0);
     })();
     return () => { cancelled = true; };
-  }, [api, focus]);
+  }, [api, focus, loadDeck]);
 
   const pickFocus = useCallback(async (themeKey, label) => {
     setPhase('loading');
@@ -98,9 +107,6 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
     setIdx(ni);
   }, [idx]);
 
-  const restart = useCallback(() => {
-    setIdx(0); setChosen(null); setStats({ correct: 0, answered: 0 }); setPhase('learning');
-  }, []);
 
   useLayoutEffect(() => { if (phase === 'learning') fitWord(); }, [idx, phase, fitWord]);
 
@@ -173,7 +179,12 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
           </div>
         </div>
       ) : null}
-      <button className="ans-btn al-next" onClick={restart}>🔁 Ещё раз</button>
+      {meta?.has_more ? (
+        <button className="ans-btn al-next" onClick={() => loadDeck(meta.next_offset || 0)}>
+          ➡️ Ещё {LEARN_BATCH} слов
+        </button>
+      ) : null}
+      <button className="ans-btn-ghost" onClick={() => loadDeck(0)}>🔁 Сначала</button>
       <button className="ans-btn-ghost" onClick={onClose}>Закрыть</button>
     </>);
   } else {
