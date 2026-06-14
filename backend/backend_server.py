@@ -22628,6 +22628,53 @@ def artikel_today():
     })
 
 
+@app.route("/api/webapp/artikel/learn/today", methods=["POST"])
+def artikel_learn_today():
+    """Artikel Trainer: the self-paced LEARNING deck — today's Sprint words (so it's
+    aligned with the game) + the user's review pile, each card carrying a gender
+    mnemonic. No timer; client grades locally and posts each answer to learn/answer."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo
+    from backend.article_learn import build_learn_deck
+    play_date = _dt.now(ZoneInfo("Europe/Vienna")).date()
+    try:
+        deck = build_learn_deck(play_date, int(user_id))
+    except Exception:
+        logging.exception("artikel_learn_today failed")
+        return jsonify({"ok": False, "error_code": "learn_error",
+                        "error": "Не удалось загрузить колоду."}), 200
+    return jsonify(deck)
+
+
+@app.route("/api/webapp/artikel/learn/answer", methods=["POST"])
+def artikel_learn_answer():
+    """Record one learning answer (drives the review pile + progress). The card is
+    graded client-side (not competitive), so this is fire-and-forget. `article` is
+    the CORRECT article; `is_correct` is whether the user's tap matched."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    word = str(payload.get("word") or "").strip()
+    article = str(payload.get("article") or "").strip().lower()
+    if not word or article not in ("der", "die", "das"):
+        return jsonify({"ok": False, "error": "bad payload"}), 200
+    from backend.database import record_article_learn_answer
+    try:
+        record_article_learn_answer(
+            user_id=int(user_id), word=word, article=article,
+            is_correct=bool(payload.get("is_correct")),
+            theme_key=str(payload.get("theme_key") or ""),
+            set_id=str(payload.get("set_id") or ""),
+        )
+    except Exception:
+        logging.warning("artikel_learn_answer record failed", exc_info=True)
+    return jsonify({"ok": True})
+
+
 @app.route("/api/webapp/artikel/submit", methods=["POST"])
 def artikel_submit():
     """Artikel Sprint: official scoring. Re-grades the user's chosen articles

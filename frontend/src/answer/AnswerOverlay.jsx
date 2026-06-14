@@ -6,6 +6,7 @@ import CrosswordGrid from './CrosswordGrid.jsx';
 import AufgabeGame from './AufgabeGame.jsx';
 import SprintGame from './SprintGame.jsx';
 import ArtikelSprintGame from './ArtikelSprintGame.jsx';
+import ArtikelLearnGame from './ArtikelLearnGame.jsx';
 
 /**
  * Lightweight in-place answer overlay for in-group tasks (rebus + crossword).
@@ -32,7 +33,7 @@ function getInitData() {
 // start_param: ans_rb_123 / ans_cw_45 / ans_ag_7 / ans_ls_3 / ans_qf_9 / ans_au_2
 //   ans_qfp_<poll_id> — poll-scoped freeform (button attached under the poll)
 function parseStartParam(startParam) {
-  const m = /^ans_(rb|cw|ag|ls|qf|qfp|sp|au|asbl|asb|asp|as)_(\d+)$/.exec(String(startParam || '').trim().toLowerCase());
+  const m = /^ans_(rb|cw|ag|ls|qf|qfp|sp|au|asbl|asb|asp|as|al)_(\d+)$/.exec(String(startParam || '').trim().toLowerCase());
   if (!m) return null;
   // qfp's id is a big Telegram poll_id → keep it a string (Number() loses precision).
   return { kind: m[1], id: m[1] === 'qfp' ? m[2] : Number(m[2]) };
@@ -467,6 +468,9 @@ export default function AnswerOverlay({ startParam }) {
   // Synonym/Antonym sprint is fully self-contained (own timer/check/finish flow).
   if (kind === 'sp' && parsed?.id != null) {
     return <SprintGame id={parsed.id} api={api} haptic={haptic} onClose={close} />;
+  }
+  if (kind === 'al') {
+    return <ArtikelLearnGame api={api} haptic={haptic} onClose={close} />;
   }
   if (kind === 'as') {
     return <ArtikelSprintGame api={api} haptic={haptic} onClose={close} />;

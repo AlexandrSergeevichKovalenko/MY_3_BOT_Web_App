@@ -18875,6 +18875,25 @@ async def admin_artikel_play_command(update: Update, context: CallbackContext) -
     )
 
 
+async def admin_artikel_learn_command(update: Update, context: CallbackContext) -> None:
+    """DM a button to open the Artikel Trainer (learning swipe-deck). /artikel_learn"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📚 Учить артикли", url=get_webapp_deeplink("ans_al_0"))],
+    ])
+    await message.reply_text(
+        "📚 <b>Artikel Trainer</b> — учим der/die/das в своём темпе: смотри слово, "
+        "выбирай артикль, читай подсказку, свайпай дальше 👇",
+        parse_mode="HTML", reply_markup=kb,
+    )
+
+
 async def artikel_battle_command(update: Update, context: CallbackContext) -> None:
     """Create an Artikel Sprint battle (Pro only) and broadcast the invite to all
     users. /battle [theme_key] — async, open until 23:59."""
@@ -23647,6 +23666,7 @@ def main():
     application.add_handler(CommandHandler("artikel_reset", admin_artikel_reset_command))
     application.add_handler(CommandHandler("artikel_learn_preview", admin_artikel_learn_preview_command))
     application.add_handler(CommandHandler("artikel_mnemonics", admin_artikel_mnemonics_command))
+    application.add_handler(CommandHandler("artikel_learn", admin_artikel_learn_command))
     application.add_handler(CommandHandler("artikel_settheme", admin_artikel_settheme_command))
     application.add_handler(CommandHandler("artikel_fill", admin_artikel_fill_command))
     application.add_handler(CommandHandler("artikel_sample", admin_artikel_sample_command))
