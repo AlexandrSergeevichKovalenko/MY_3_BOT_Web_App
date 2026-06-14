@@ -1065,7 +1065,7 @@ function buildOnboardingSlides(uiLang = 'ru') {
       {
         eyebrow: 'Schritt 1 von 8',
         title: 'Wofuer die App da ist',
-        body: 'DeutschFlow fuehrt dich vom ersten Einstieg bis zur taeglichen Routine: Uebersetzungen, Woerter, Videos, Lesen, Sprechpraxis und Analytik an einem Ort.',
+        body: 'Schlümpfchen fuehrt dich vom ersten Einstieg bis zur taeglichen Routine: Uebersetzungen, Woerter, Videos, Lesen, Sprechpraxis und Analytik an einem Ort.',
         bullets: [
           'Oben stellst du Sprache der Oberflaeche, Theme und dein Sprachpaar ein.',
           'Die stabilste und am tiefsten ausgebaute Lernlogik ist aktuell RU ↔ DE.',
@@ -1149,7 +1149,7 @@ function buildOnboardingSlides(uiLang = 'ru') {
     {
       eyebrow: 'Шаг 1 из 8',
       title: 'Для чего это приложение',
-      body: 'DeutschFlow ведет вас от первого входа до ежедневной рутины: переводы, слова, видео, чтение, разговорная практика и аналитика собраны в одном месте.',
+      body: 'Schlümpfchen ведет вас от первого входа до ежедневной рутины: переводы, слова, видео, чтение, разговорная практика и аналитика собраны в одном месте.',
       bullets: [
         'Вверху вы меняете язык интерфейса, тему и языковую пару.',
         'Самая полная и стабильная логика обучения сейчас собрана вокруг пары RU ↔ DE.',
@@ -1241,7 +1241,7 @@ function buildGuideStepItems(uiLang = 'ru') {
           {
             title: 'Wofuer die App gedacht ist',
             items: [
-              'DeutschFlow verbindet Uebersetzungen, Woerterbuch, Karten, Video, Lesen, Sprechpraxis und Analytik in einem Lernfluss.',
+              'Schlümpfchen verbindet Uebersetzungen, Woerterbuch, Karten, Video, Lesen, Sprechpraxis und Analytik in einem Lernfluss.',
               'Du kannst zwischen Telegram Mini App und Web wechseln, ohne deine Lernlogik zu verlieren.',
               'Die tiefste und am vollstaendigsten ausgebaute Lernstrecke ist aktuell RU ↔ DE.',
             ],
@@ -1804,9 +1804,8 @@ function buildGuideStepItems(uiLang = 'ru') {
         {
           title: 'Для чего нужно приложение',
           items: [
-            'DeutschFlow связывает переводы, словарь, карточки, видео, чтение, разговорную практику и аналитику в один учебный поток.',
-            'Работает как Telegram Mini App и в браузере — прогресс и слова синхронизируются между устройствами.',
-            'Самая глубокая и полноценно собранная траектория сейчас: RU ↔ DE.',
+            'Schlümpfchen — твой помощник в немецком: переводы, словарь, карточки для запоминания, видео, чтение и разговор — всё в одном месте.',
+            'Работает прямо в Telegram и в браузере: твои слова и прогресс сохраняются и доступны с любого устройства.',
           ],
         },
         {
@@ -1829,9 +1828,8 @@ function buildGuideStepItems(uiLang = 'ru') {
         {
           title: 'Как лучше начать',
           items: [
-            'Задайте язык изучения и родной язык в профиле.',
-            'Перейдите в «Сегодня» за готовым маршрутом дня или сразу в «Переводы».',
-            'Если хотите получать уведомления и работать в личке — откройте бота в Telegram и отправьте /start.',
+            'Открой «Сегодня» — там готовый план на день. Или сразу «Переводы».',
+            'Хочешь подсказки и слова прямо в Telegram — напиши боту «Старт».',
           ],
         },
       ],
@@ -30070,7 +30068,7 @@ function AppInner() {
                     >
                       {tr('Back', 'Back')}
                     </button>
-                    <div className="brand-title overlay-brand-title">DeutschFlow</div>
+                    <div className="brand-title overlay-brand-title">Schlümpfchen</div>
                     <button
                       type="button"
                       className="overlay-close-button"
@@ -30838,7 +30836,7 @@ function AppInner() {
               <section className="webapp-section webapp-guide" ref={guideRef}>
                 <div className="guide-hero-card">
                   <div className="guide-hero-copy">
-                    <h2>{tr('Как пользоваться', 'So benutzt du DeutschFlow')}</h2>
+                    <h2>{tr('Как пользоваться', 'So benutzt du Schlümpfchen')}</h2>
                     <p className="guide-hero-subtitle">
                       {tr(
                         'Полная карта приложения по порядку меню: что делает каждый раздел, что приходит в личку и что приходит в группу.',
