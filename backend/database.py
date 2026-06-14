@@ -34874,83 +34874,122 @@ def record_article_learn_answer(*, user_id: int, word: str, article: str,
         conn.commit()
 
 
+# Mastery (spaced-repetition-lite): a word is "mastered" once its LATEST answer is
+# correct AND it has >= this many correct answers total. Below that it keeps coming
+# back in the review pile. Env-tunable.
+_ARTIKEL_MASTERY_CORRECT = max(1, int((os.getenv("ARTIKEL_MASTERY_CORRECT") or "2").strip() or "2"))
+
+
 def get_article_learn_review_words(user_id: int, limit: int = 8) -> list[dict]:
-    """Words whose MOST RECENT answer by this user was wrong (still not mastered).
-    Returns [{w, a, ru}] shaped like a set word so the deck builder can reuse it."""
+    """Words the user has seen but NOT yet mastered (latest wrong, or fewer than
+    _ARTIKEL_MASTERY_CORRECT corrects) — wrong-latest first. [{w, a, ru}]."""
     ensure_article_learn_schema()
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT DISTINCT ON (la.word) la.word, la.article, la.theme_key
-                FROM bt_3_article_learn_answers la
-                WHERE la.user_id = %s
-                ORDER BY la.word, la.created_at DESC
+                WITH per_word AS (
+                    SELECT word, MIN(article) AS article, MIN(theme_key) AS theme_key,
+                           (array_agg(is_correct ORDER BY created_at DESC))[1] AS latest_ok,
+                           COUNT(*) FILTER (WHERE is_correct) AS corrects,
+                           MAX(created_at) AS last_at
+                    FROM bt_3_article_learn_answers
+                    WHERE user_id = %s
+                    GROUP BY word
+                )
+                SELECT word, article, theme_key
+                FROM per_word
+                WHERE NOT (latest_ok AND corrects >= %s)
+                ORDER BY latest_ok ASC, last_at DESC
+                LIMIT %s;
                 """,
-                (int(user_id),),
+                (int(user_id), _ARTIKEL_MASTERY_CORRECT, int(limit)),
             )
             rows = cursor.fetchall() or []
-    wrong = [(str(r[0]), str(r[1] or ""), str(r[2] or "")) for r in rows]
-    # keep only the still-wrong latest answers, newest first is lost by DISTINCT ON;
-    # re-query meaning_ru from the noun bank for a nice card.
     out: list[dict] = []
-    for word, article, theme_key in wrong:
-        # the DISTINCT ON above returned the latest row per word, but we also need
-        # is_correct of that latest row — fetch it cheaply.
-        with get_db_connection_context() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    "SELECT is_correct FROM bt_3_article_learn_answers "
-                    "WHERE user_id=%s AND word=%s ORDER BY created_at DESC LIMIT 1;",
-                    (int(user_id), word),
-                )
-                rc = cursor.fetchone()
-        if not rc or bool(rc[0]):
-            continue  # latest answer was correct → mastered, skip
+    for r in rows:
+        word, article = str(r[0]), str(r[1] or "")
         ru = ""
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
                     "SELECT meaning_ru FROM bt_3_article_sprint_nouns "
-                    "WHERE word=%s AND article=%s LIMIT 1;",
+                    "WHERE lower(word)=lower(%s) AND article=%s LIMIT 1;",
                     (word, article),
                 )
                 rr = cursor.fetchone()
                 if rr:
                     ru = str(rr[0] or "")
         out.append({"w": word, "a": article, "ru": ru})
-        if len(out) >= int(limit):
-            break
     return out
 
 
 def get_article_learn_progress(user_id: int, theme_key: str | None = None) -> dict:
-    """Distinct words attempted and distinct words mastered (latest answer correct)."""
+    """Distinct words attempted and mastered (latest correct AND >= mastery corrects)."""
     ensure_article_learn_schema()
     params: list = [int(user_id)]
     theme_filter = ""
     if theme_key:
         theme_filter = "AND theme_key = %s"
         params.append(str(theme_key))
+    params.append(_ARTIKEL_MASTERY_CORRECT)
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 f"""
-                WITH latest AS (
-                    SELECT DISTINCT ON (word) word, is_correct
+                WITH per_word AS (
+                    SELECT word,
+                           (array_agg(is_correct ORDER BY created_at DESC))[1] AS latest_ok,
+                           COUNT(*) FILTER (WHERE is_correct) AS corrects
                     FROM bt_3_article_learn_answers
                     WHERE user_id = %s {theme_filter}
-                    ORDER BY word, created_at DESC
+                    GROUP BY word
                 )
                 SELECT COUNT(*) AS attempted,
-                       COUNT(*) FILTER (WHERE is_correct) AS mastered
-                FROM latest;
+                       COUNT(*) FILTER (WHERE latest_ok AND corrects >= %s) AS mastered
+                FROM per_word;
                 """,
                 tuple(params),
             )
             r = cursor.fetchone()
     return {"attempted": int((r or [0, 0])[0] or 0),
             "mastered": int((r or [0, 0])[1] or 0)}
+
+
+def get_article_learn_streak(user_id: int, tz: str = "Europe/Vienna") -> int:
+    """Consecutive days (ending today or yesterday) on which the user answered at
+    least one learning card. 0 if none / broken."""
+    ensure_article_learn_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT DISTINCT (created_at AT TIME ZONE %s)::date AS d
+                FROM bt_3_article_learn_answers
+                WHERE user_id = %s
+                ORDER BY d DESC
+                LIMIT 400;
+                """,
+                (tz, int(user_id)),
+            )
+            days = [r[0] for r in (cursor.fetchall() or []) if r and r[0]]
+    if not days:
+        return 0
+    from datetime import datetime as _dt, timedelta as _td
+    from zoneinfo import ZoneInfo
+    today = _dt.now(ZoneInfo(tz)).date()
+    # Streak must include today or yesterday to be "active".
+    if days[0] != today and days[0] != today - _td(days=1):
+        return 0
+    streak = 0
+    expected = days[0]
+    for d in days:
+        if d == expected:
+            streak += 1
+            expected = expected - _td(days=1)
+        elif d < expected:
+            break
+    return streak
 
 
 def delete_article_sprint_result(set_id: str, user_id: int | None = None) -> int:

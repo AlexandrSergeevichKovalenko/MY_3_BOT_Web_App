@@ -161,6 +161,10 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
         <div className="as-cert-sub">{correct} из {answered} верно · {pct}%</div>
         <div className="as-cert-foot">📘 {meta?.theme_label || ''}</div>
       </div>
+      {(() => {
+        const st = Math.max(meta?.streak || 0, answered > 0 ? 1 : 0);
+        return st >= 1 ? <div className="al-streak">🔥 {st} {st === 1 ? 'день' : 'дн.'} подряд</div> : null;
+      })()}
       {meta?.progress?.theme_total ? (
         <div className="al-progress-card">
           <div>📈 Тема «{meta.theme_label}»: выучено <b>{meta.progress.mastered}</b> из {meta.progress.theme_total}</div>

@@ -226,7 +226,7 @@ def build_learn_deck(play_date, user_id: int, *, new_size: int = LEARN_NEW_SIZE,
         get_article_noun_mnemonics, get_article_learn_progress,
         count_article_theme_verified, get_article_noun_audio,
         get_article_noun_images, get_article_learn_focus,
-        get_article_sprint_verified_sample,
+        get_article_sprint_verified_sample, get_article_learn_streak,
     )
     from backend.r2_storage import r2_public_url
 
@@ -332,10 +332,15 @@ def build_learn_deck(play_date, user_id: int, *, new_size: int = LEARN_NEW_SIZE,
     except Exception:
         pass
 
+    try:
+        streak = get_article_learn_streak(int(user_id))
+    except Exception:
+        streak = 0
+
     return {
         "ok": True, "set_id": set_id, "theme_key": theme_key,
         "theme_label": theme_label, "focus": bool(focus_theme),
         "cards": new_cards + review_cards,
         "new_count": len(new_cards), "review_count": len(review_cards),
-        "progress": progress,
+        "progress": progress, "streak": streak,
     }
