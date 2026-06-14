@@ -47321,7 +47321,9 @@ def _dispatch_private_analytics(target_date: date) -> dict:
                         filename=f"analytics_{user_id}_{target_date.isoformat()}.png",
                         caption=f"📈 График прогресса за неделю\n{bounds.start_date} — {bounds.end_date}",
                     )
-            if int(target_chat_id) >= 0:
+            # TEMP (2026-06-14): weekly "📊 Сравнение по final score" chart disabled
+            # to cut down on notifications. Re-enable by removing `False and`.
+            if False and int(target_chat_id) >= 0:
                 compare_rows = fetch_comparison_leaderboard(
                     bounds.start_date,
                     bounds.end_date,
