@@ -397,3 +397,17 @@ def render_antonym_card(*, level: str = "B2+") -> bytes | None:
                  accent=(244, 114, 182),
                  motif=lambda b, d, cx, cy, a: _motif_relation(b, d, cx, cy, a, "↔"),
                  cta="Finde das Gegenteil")
+
+
+def render_sprint_relation_card(relation: str) -> bytes | None:
+    """Card for the 60-second synonym/antonym SPRINT race (distinct from the
+    single-word synonym/antonym aufgabe). relation = 'synonym' | 'antonym'."""
+    is_syn = relation == "synonym"
+    return _card(
+        badge="TEMPO-SPIEL",
+        title="Synonym-Sprint" if is_syn else "Antonym-Sprint",
+        subtitle="60 Sekunden  ·  " + ("möglichst viele" if is_syn else "Gegenteile"),
+        accent=(52, 211, 153) if is_syn else (244, 114, 182),
+        motif=(lambda b, d, cx, cy, a: _motif_relation(b, d, cx, cy, a, "=" if is_syn else "↔")),
+        cta="Wer findet die meisten?",
+    )

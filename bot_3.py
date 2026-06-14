@@ -22879,9 +22879,20 @@ async def send_sprint_to_chat(context: CallbackContext, *, entry: dict, relation
     )
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(
         "▶️ Играть (60 секунд)", url=get_webapp_deeplink(f"ans_sp_{dispatch_id}"))]])
+    poster = None
     try:
-        msg = await context.bot.send_message(
-            chat_id=int(chat_id), text=caption, parse_mode="Markdown", reply_markup=keyboard)
+        from backend.interactive_card import render_sprint_relation_card
+        poster = await asyncio.to_thread(render_sprint_relation_card, relation)
+    except Exception:
+        logging.warning("sprint_send: card render failed chat=%s", chat_id, exc_info=True)
+    try:
+        if poster:
+            msg = await context.bot.send_photo(
+                chat_id=int(chat_id), photo=io.BytesIO(poster),
+                caption=caption, parse_mode="Markdown", reply_markup=keyboard)
+        else:
+            msg = await context.bot.send_message(
+                chat_id=int(chat_id), text=caption, parse_mode="Markdown", reply_markup=keyboard)
     except Exception as exc:
         logging.warning("sprint_send failed chat=%s: %s", chat_id, exc)
         return False
