@@ -61,6 +61,34 @@ _WEAK_SUFFIX_RULES: list[tuple[str, str, str]] = [
 
 _ART_RU = {"der": "мужской (der)", "die": "женский (die)", "das": "средний (das)"}
 
+# Conservative compound-head map: a German compound takes the gender of its LAST
+# noun. Only LONG, low-false-positive heads (≥4 chars) with their RU gloss; we emit
+# the hint ONLY when the head's article equals the word's article (self-validating)
+# and the word is strictly longer than the head (it's really a compound). This is a
+# STOPGAP shown before the LLM mnemonic is generated; the LLM handles splitting far
+# better, so we keep this list short and safe rather than exhaustive.
+_HEAD_NOUNS: dict[str, tuple[str, str]] = {
+    "körper": ("der", "тело"), "knochen": ("der", "кость"), "muskel": ("der", "мышца"),
+    "zahn": ("der", "зуб"), "hals": ("der", "горло/шея"), "kopf": ("der", "голова"),
+    "bogen": ("der", "дуга"), "bruch": ("der", "перелом"), "riss": ("der", "разрыв"),
+    "guss": ("der", "поток"), "nerv": ("der", "нерв"), "kanal": ("der", "канал"),
+    "höhle": ("die", "полость/пещера"), "drüse": ("die", "железа"),
+    "klappe": ("die", "клапан"), "säule": ("die", "столб"), "ader": ("die", "сосуд"),
+    "bein": ("das", "нога/кость"), "gerät": ("das", "прибор"), "organ": ("das", "орган"),
+    "gelenk": ("das", "сустав"), "gewebe": ("das", "ткань"), "fell": ("das", "плёнка/шкура"),
+    "blut": ("das", "кровь"), "herz": ("das", "сердце"), "auge": ("das", "глаз"),
+}
+
+
+def _compound_head_tip(low: str, word: str, article: str) -> str | None:
+    """If `word` ends in a known head noun of the SAME gender (and is longer than
+    it), return a 'der Körper → der Wirbelkörper' style hint, else None."""
+    for head, (art, gloss) in _HEAD_NOUNS.items():
+        if art == article and len(low) > len(head) and low.endswith(head):
+            Head = head.capitalize()
+            return f"🧩 {article} {Head} ({gloss}) → значит {article} {word}. Род — по последнему слову."
+    return None
+
 
 def gender_tip(word: str, article: str) -> str:
     """A short Russian 'why' hint for this noun's gender. Deterministic + instant.
@@ -71,6 +99,11 @@ def gender_tip(word: str, article: str) -> str:
     if not w or a not in ("der", "die", "das"):
         return ""
     low = w.lower()
+
+    # Compound head noun — the strongest, most explanatory hint when it applies.
+    head_tip = _compound_head_tip(low, w, a)
+    if head_tip:
+        return head_tip
 
     # Strong rules: confident, and flag true exceptions.
     for suf, expected, rule in _STRONG_SUFFIX_RULES:
@@ -103,6 +136,7 @@ def build_learn_deck(play_date, user_id: int, *, new_size: int = 15,
     from backend.database import (
         get_daily_article_sprint_set_id, get_article_sprint_set,
         get_article_sprint_theme, get_article_learn_review_words,
+        get_article_noun_mnemonics,
     )
 
     set_id = get_daily_article_sprint_set_id(play_date)
@@ -125,27 +159,35 @@ def build_learn_deck(play_date, user_id: int, *, new_size: int = 15,
     theme = get_article_sprint_theme(s["theme_key"]) or {}
     theme_label = theme.get("label_de") or s["theme_key"]
 
+    new_words = (s["words"] or [])[: max(1, int(new_size))]
+    review_raw: list[dict] = []
+    try:
+        review_raw = get_article_learn_review_words(int(user_id), limit=int(review_size))
+    except Exception:
+        review_raw = []
+
+    # Cached LLM mnemonics (preferred); deterministic gender_tip is the fallback.
+    all_words = [str(w.get("w") or "") for w in (new_words + review_raw)]
+    try:
+        mnem = get_article_noun_mnemonics(all_words)
+    except Exception:
+        mnem = {}
+
     def _card(w: dict, review: bool) -> dict:
         word = str(w.get("w") or "")
         art = str(w.get("a") or "").strip().lower()
+        tip = mnem.get(word.lower()) or gender_tip(word, art)
         return {
             "w": word, "a": art, "ru": str(w.get("ru") or ""),
-            "tip": gender_tip(word, art),
+            "tip": tip,
             "color": GENDER_COLOR.get(art, "blue"),
             "review": review,
         }
 
-    new_cards = [_card(w, False) for w in (s["words"] or [])[: max(1, int(new_size))]]
+    new_cards = [_card(w, False) for w in new_words]
     seen = {c["w"].lower() for c in new_cards}
-
-    review_cards: list[dict] = []
-    try:
-        for rw in get_article_learn_review_words(int(user_id), limit=int(review_size)):
-            if str(rw.get("w") or "").lower() in seen:
-                continue
-            review_cards.append(_card(rw, True))
-    except Exception:
-        review_cards = []
+    review_cards = [_card(rw, True) for rw in review_raw
+                    if str(rw.get("w") or "").lower() not in seen]
 
     return {
         "ok": True, "set_id": set_id, "theme_key": s["theme_key"],

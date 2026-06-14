@@ -306,6 +306,8 @@ from backend.database import (
     get_article_sprint_set,
     get_daily_article_sprint_set_id,
     delete_article_sprint_result,
+    get_article_nouns_without_mnemonic,
+    store_article_noun_mnemonic,
     create_article_sprint_dispatch,
     update_article_sprint_dispatch_message_id,
     is_user_pro,
@@ -567,7 +569,10 @@ def _is_visual_riddle_slot(slot_dt: datetime) -> bool:
 
 
 def _visual_riddles_enabled() -> bool:
-    val = (os.getenv("VISUAL_RIDDLES_ENABLED") or "1").strip().lower()  # default: production ON
+    # Default OFF: the free-form visual-riddle generator has no post-render
+    # semantic gate and can ship ambiguous cards. Keep the stricter `rebus`
+    # pipeline enabled for compound-word practice.
+    val = (os.getenv("VISUAL_RIDDLES_ENABLED") or "0").strip().lower()
     return val in ("1", "true", "yes", "on")
 
 
@@ -17548,7 +17553,7 @@ async def handle_vr_vote_callback(update: Update, context: CallbackContext) -> N
 
 
 async def handle_vr_delete_callback(update: Update, context: CallbackContext) -> None:
-    """🗑 admin-only instant removal of a visual-riddle image from rotation."""
+    """🗑 admin-only instant removal of a visual-riddle image from chat/rotation."""
     query = update.callback_query
     if not query:
         return
@@ -17567,11 +17572,27 @@ async def handle_vr_delete_callback(update: Update, context: CallbackContext) ->
     except Exception:
         await query.answer("Не удалось удалить")
         return
+
+    message_deleted = False
+    try:
+        if query.message:
+            await context.bot.delete_message(
+                chat_id=int(query.message.chat_id),
+                message_id=int(query.message.message_id),
+            )
+            message_deleted = True
+    except Exception:
+        logging.warning("vr_delete: failed to delete telegram message template_id=%s", template_id, exc_info=True)
+
+    if message_deleted:
+        await query.answer("🗑 Сообщение удалено, картинка убрана из ротации", show_alert=True)
+        return
+
     try:
         await query.edit_message_reply_markup(reply_markup=None)
     except Exception:
         pass
-    await query.answer("🗑 Картинка удалена из ротации", show_alert=True)
+    await query.answer("🗑 Убрано из ротации, но Telegram не дал удалить сообщение", show_alert=True)
 
 
 async def handle_visual_riddle_callback(update: Update, context: CallbackContext) -> None:
@@ -18720,6 +18741,84 @@ async def admin_artikel_learn_preview_command(update: Update, context: CallbackC
             f" — {html.escape(str(c.get('ru') or ''))}{rv}\n   <i>{html.escape(str(c.get('tip') or ''))}</i>"
         )
     await message.reply_text("\n".join(lines)[:4000], parse_mode="HTML")
+
+
+async def admin_artikel_mnemonics_command(update: Update, context: CallbackContext) -> None:
+    """Generate + cache Russian gender mnemonics (LLM) for a theme's nouns.
+    /artikel_mnemonics <theme_key> [count]  (count = how many to fill this run)"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    args = [a.strip() for a in (context.args or []) if a.strip()]
+    if not args:
+        await message.reply_text("Использование: /artikel_mnemonics <theme_key> [count]")
+        return
+    theme_key = args[0]
+    try:
+        count = max(1, min(120, int(args[1]))) if len(args) > 1 else 30
+    except ValueError:
+        count = 30
+    theme = await asyncio.to_thread(get_article_sprint_theme, theme_key)
+    if not theme:
+        await message.reply_text(f"Нет темы <code>{html.escape(theme_key)}</code>. Список: /artikel_themes", parse_mode="HTML")
+        return
+    todo = await asyncio.to_thread(get_article_nouns_without_mnemonic, theme_key, count)
+    if not todo:
+        await message.reply_text(f"✅ У всех слов темы «{html.escape(theme['label_de'])}» мнемоники уже есть.")
+        return
+    status = await message.reply_text(
+        f"⏳ Генерирую мнемоники: {len(todo)} слов темы «{html.escape(theme['label_de'])}»…"
+    )
+
+    from backend.openai_manager import run_article_mnemonics
+    by_word = {str(n["word"]).lower(): n for n in todo}
+    stored = rejected = 0
+    samples: list[tuple] = []
+    for i in range(0, len(todo), 15):
+        chunk = todo[i:i + 15]
+        try:
+            results = await run_article_mnemonics(items=chunk)
+        except Exception:
+            logging.warning("artikel mnemonics: batch failed", exc_info=True)
+            results = []
+        for r in results:
+            word = str(r.get("word") or "").strip()
+            src = by_word.get(word.lower())
+            if not src:
+                continue
+            mn = str(r.get("mnemonic") or "").strip()
+            method = str(r.get("method") or "").strip().lower()
+            head = str(r.get("head") or "").strip()
+            # Reject empties and false compound splits (claimed head not in the word).
+            if not mn or len(mn) < 8:
+                rejected += 1
+                continue
+            if method == "compound" and head and head.lower() not in word.lower():
+                rejected += 1
+                continue
+            ok = await asyncio.to_thread(
+                store_article_noun_mnemonic, word=word, article=str(src["article"]),
+                mnemonic=mn, method=method, head=head,
+            )
+            if ok:
+                stored += 1
+                if len(samples) < 8:
+                    samples.append((str(src["article"]), word, mn))
+            else:
+                rejected += 1
+
+    lines = [
+        f"✅ «{html.escape(theme['label_de'])}»",
+        f"Сохранено: <b>{stored}</b> · отклонено: {rejected}",
+        "",
+    ]
+    for art, word, mn in samples:
+        lines.append(f"<b>{html.escape(art)}</b> {html.escape(word)}\n   <i>{html.escape(mn)}</i>")
+    await status.edit_text("\n".join(lines)[:4000], parse_mode="HTML")
 
 
 async def admin_artikel_recheck_command(update: Update, context: CallbackContext) -> None:
@@ -23543,6 +23642,7 @@ def main():
     application.add_handler(CommandHandler("artikel_remindtheme", admin_artikel_remindtheme_command))
     application.add_handler(CommandHandler("artikel_reset", admin_artikel_reset_command))
     application.add_handler(CommandHandler("artikel_learn_preview", admin_artikel_learn_preview_command))
+    application.add_handler(CommandHandler("artikel_mnemonics", admin_artikel_mnemonics_command))
     application.add_handler(CommandHandler("artikel_settheme", admin_artikel_settheme_command))
     application.add_handler(CommandHandler("artikel_fill", admin_artikel_fill_command))
     application.add_handler(CommandHandler("artikel_sample", admin_artikel_sample_command))

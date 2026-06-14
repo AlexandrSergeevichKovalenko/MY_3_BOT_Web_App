@@ -32039,14 +32039,13 @@ def record_visual_riddle_vote(*, template_id: int, user_id: int, vote: int) -> d
 
 
 def retire_visual_riddle_template(template_id: int, *, reason: str = "community_downvoted") -> None:
-    """Remove a visual-riddle image from rotation (claim filters require visual_status
-    in unknown/valid, so 'invalid' excludes it from both selection paths)."""
+    """Remove a visual-riddle image from rotation."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
                 UPDATE bt_3_visual_riddle_templates
-                SET visual_status = 'invalid', failure_reason = %s, updated_at = NOW()
+                SET visual_status = 'rejected', failure_reason = %s, updated_at = NOW()
                 WHERE id = %s
                 """,
                 (str(reason)[:120], int(template_id)),
@@ -34425,6 +34424,20 @@ def ensure_article_sprint_schema() -> None:
                 ON bt_3_article_sprint_nouns (theme_key, verified, retired);
                 """
             )
+            # Artikel Trainer: cached Russian gender-memory hint per noun (generated
+            # off the hot path by the LLM; the deck just reads it).
+            cursor.execute(
+                "ALTER TABLE bt_3_article_sprint_nouns "
+                "ADD COLUMN IF NOT EXISTS mnemonic_ru TEXT NOT NULL DEFAULT '';"
+            )
+            cursor.execute(
+                "ALTER TABLE bt_3_article_sprint_nouns "
+                "ADD COLUMN IF NOT EXISTS mnemonic_method TEXT NOT NULL DEFAULT '';"
+            )
+            cursor.execute(
+                "ALTER TABLE bt_3_article_sprint_nouns "
+                "ADD COLUMN IF NOT EXISTS mnemonic_head TEXT NOT NULL DEFAULT '';"
+            )
             # Which theme to train on a given day (admin picks today-for-tomorrow).
             cursor.execute(
                 """
@@ -34555,6 +34568,64 @@ def get_article_sprint_result(set_id: str, user_id: int) -> dict | None:
         return None
     return {"correct": int(r[0] or 0), "answered": int(r[1] or 0),
             "total": int(r[2] or 0), "time_ms": int(r[3] or 0)}
+
+
+def get_article_nouns_without_mnemonic(theme_key: str, limit: int = 50) -> list[dict]:
+    """Verified, non-retired nouns of a theme that have no cached mnemonic yet."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT word, article, meaning_ru
+                FROM bt_3_article_sprint_nouns
+                WHERE theme_key = %s AND verified = TRUE AND retired = FALSE
+                  AND COALESCE(mnemonic_ru, '') = ''
+                ORDER BY freq_rank NULLS LAST, id
+                LIMIT %s;
+                """,
+                (str(theme_key), int(limit)),
+            )
+            rows = cursor.fetchall() or []
+    return [{"word": str(r[0]), "article": str(r[1]), "meaning_ru": str(r[2] or "")} for r in rows]
+
+
+def store_article_noun_mnemonic(*, word: str, article: str, mnemonic: str,
+                                method: str = "", head: str = "") -> bool:
+    """Cache a generated mnemonic on the noun bank (matched by word+article)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_article_sprint_nouns
+                SET mnemonic_ru = %s, mnemonic_method = %s, mnemonic_head = %s,
+                    updated_at = NOW()
+                WHERE lower(word) = lower(%s) AND article = %s;
+                """,
+                (str(mnemonic)[:600], str(method or "")[:20], str(head or "")[:80],
+                 str(word), str(article or "").lower()),
+            )
+            updated = int(cursor.rowcount or 0)
+        conn.commit()
+    return updated > 0
+
+
+def get_article_noun_mnemonics(words: list[str]) -> dict:
+    """Map lower(word) → mnemonic_ru for a list of words (deck lookup)."""
+    cleaned = [str(w).strip() for w in (words or []) if str(w).strip()]
+    if not cleaned:
+        return {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT lower(word), mnemonic_ru
+                FROM bt_3_article_sprint_nouns
+                WHERE lower(word) = ANY(%s) AND COALESCE(mnemonic_ru, '') <> ''
+                """,
+                ([w.lower() for w in cleaned],),
+            )
+            rows = cursor.fetchall() or []
+    return {str(r[0]): str(r[1] or "") for r in rows}
 
 
 def ensure_article_learn_schema() -> None:

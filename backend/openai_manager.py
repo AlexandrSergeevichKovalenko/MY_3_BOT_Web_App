@@ -3263,6 +3263,35 @@ For EACH item decide whether "<article> <word>" is correct, standard, UNAMBIGUOU
 Return STRICT JSON ONLY, same order as input:
 {"results": [ {"ok": true|false, "article": "der|die|das"}, ... ]}.
 """,
+"article_mnemonic": """
+Ты — преподаватель немецкого. Помогаешь русскоязычному ученику запоминать род
+(der/die/das) существительных НЕ зубрёжкой, а через смысл, ассоциацию или образ.
+
+Вход JSON: {"items": [ {"word": "...", "article": "der|die|das", "ru": "..."}, ... ]}.
+
+Для КАЖДОГО слова дай короткую подсказку (для телефона, до ~240 символов, на «ты»,
+ровно один 💡), используя приёмы В ПОРЯДКЕ ПРИОРИТЕТА:
+1. СОСТАВНОЕ СЛОВО — определи последнее (главное) слово; род наследуется от него.
+   Напиши: «der/die/das ‹Главное› (перевод) → значит der/die/das ‹Слово›».
+   Самый сильный приём — применяй ВСЕГДА, когда слово составное.
+2. КАТЕГОРИЯ/СЕМЕЙСТВО — если слово в группе с устойчивым родом: мышцы → der
+   (Bizeps/Trizeps); болезни → die (Grippe/Bronchitis); приборы → das Gerät;
+   абстрактные свойства → die (Stärke/Schwäche/Länge); кости на -bein → das;
+   части на -fuß → der и т.п.
+3. СУФФИКС-ПРАВИЛО — -ung/-heit/-keit/-tion/-tät → die; -chen/-lein/-ment → das;
+   -ling/-ismus → der.
+4. ЯРКИЙ ОБРАЗ — если правил нет, дай ОДНУ живую визуальную ассоциацию, привязанную
+   к роду (для der — мужской образ, для die — женский, для das — средний/предметный),
+   обыгрывая значение или звучание слова.
+
+Требования: только на русском (немецкие слова в разборе оставляй по-немецки);
+дружелюбно, на «ты»; КОРОТКО; не выдумывай ложного состава слова (не уверен — дай
+образ, а не разбор); НЕ объясняй артикль фразой «просто запомни ‹артикль›».
+
+Верни СТРОГО JSON, в том же порядке, что и вход:
+{"results": [ {"word": "...", "method": "compound|category|suffix|image",
+"head": "‹главное слово или пусто›", "mnemonic": "‹текст с 💡›"}, ... ]}.
+""",
 "aufgabe_pin_blueprint": """
 Du planst anspruchsvolle "Finde das Objekt"-Bildaufgaben für Deutschlernende (B2+).
 
@@ -3592,6 +3621,7 @@ Return STRICT JSON only, no markdown, no code blocks:
   "target_language": "German",
   "target_skill": "vocabulary | speaking_phrase | cultural_context",
   "target_word_or_phrase": "the exact German word or phrase being tested",
+  "compound_parts": ["Part1", "Part2"],  // REQUIRED for VISUAL_WORD_REBUS compounds; both must be real visible German word parts of target_word_or_phrase
   "title": "short catchy title in Russian, max 40 chars",
   "telegram_caption": "short caption in Russian, max 80 chars, include emoji: 🟢 A2 / 🟡 B1 / 🔴 B2",
   "question_text": "question in German",
@@ -5876,6 +5906,30 @@ async def run_article_verify(*, items: list[dict]) -> list[dict]:
         return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
     except Exception:
         logging.warning("run_article_verify failed n=%s", len(items or []), exc_info=True)
+        return []
+
+
+async def run_article_mnemonics(*, items: list[dict]) -> list[dict]:
+    """Generate Russian gender-memory hints for a batch of {word, article, ru}.
+    Returns [{word, method, head, mnemonic}] aligned to input (or [] on failure).
+    Pool-time work (off the hot path); results are cached on the noun bank."""
+    try:
+        content = await llm_execute(
+            task_name="article_mnemonic",
+            system_instruction_key="article_mnemonic",
+            user_message=json.dumps({"items": [
+                {"word": str(i.get("word") or ""),
+                 "article": str(i.get("article") or "").lower(),
+                 "ru": str(i.get("ru") or i.get("meaning_ru") or "")}
+                for i in (items or [])
+            ]}, ensure_ascii=False),
+            poll_interval_seconds=1.5,
+        )
+        data = json.loads(content)
+        res = data.get("results") if isinstance(data, dict) else None
+        return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
+    except Exception:
+        logging.warning("run_article_mnemonics failed n=%s", len(items or []), exc_info=True)
         return []
 
 
