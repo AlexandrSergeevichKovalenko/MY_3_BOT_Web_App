@@ -21459,6 +21459,59 @@ async def _send_scheduled_artikel_sprint(context: CallbackContext) -> None:
     logging.info("artikel_sprint reminder sent=%s set=%s", sent, set_id)
 
 
+# Morning Artikel Trainer (learning) nudge — entry point that stays in the chat all
+# day; the trainer has no completion gate so it's repeatable until the evening game.
+ARTIKEL_LEARN_SLOT = (
+    max(0, min(23, int((os.getenv("ARTIKEL_LEARN_HOUR") or "8").strip() or "8"))),
+    max(0, min(59, int((os.getenv("ARTIKEL_LEARN_MINUTE") or "0").strip() or "0"))),
+)
+
+
+async def _send_scheduled_artikel_learn(context: CallbackContext) -> None:
+    """Morning nudge: ensure today's set + pre-warm its mnemonics (so the trainer
+    opens instantly), then post the '📚 Учить артикли' button to delivery targets."""
+    if not _artikel_sprint_enabled() or _is_quiet_hours_now():
+        return
+    slot_date = _get_quiz_schedule_now().date()
+    set_id = await asyncio.to_thread(get_daily_article_sprint_set_id, slot_date)
+    if not set_id:
+        def _build() -> dict:
+            from backend.article_sprint_sets import build_daily_set
+            return build_daily_set(slot_date)
+        built = await asyncio.to_thread(_build)
+        if built.get("status") != "ready":
+            logging.info("artikel_learn: no set for %s — skip", slot_date)
+            return
+    # Pre-warm mnemonics off the user's path so the first open is instant.
+    try:
+        from backend.article_learn import ensure_daily_learn_mnemonics
+        n = await asyncio.to_thread(ensure_daily_learn_mnemonics, slot_date)
+        logging.info("artikel_learn: prewarmed %s mnemonics", n)
+    except Exception:
+        logging.warning("artikel_learn: prewarm failed", exc_info=True)
+    targets = await _collect_quiz_delivery_user_targets(context)
+    if not targets:
+        return
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "📚 Учить артикли", url=get_webapp_deeplink("ans_al_0"))]])
+    caption = (
+        "📚 *Artikel Trainer*\n\n"
+        "Выучи der/die/das на сегодня — в своём темпе, с подсказками. "
+        "Заходи сколько угодно раз, а вечером проверь себя в игре! 👇"
+    )
+    sent = 0
+    for t in targets:
+        cid = int(t.get("chat_id") or 0)
+        if cid == 0:
+            continue
+        try:
+            await context.bot.send_message(chat_id=cid, text=caption, parse_mode="Markdown", reply_markup=kb)
+            sent += 1
+        except Exception as exc:
+            logging.warning("artikel_learn: send failed chat=%s: %s", cid, exc)
+    logging.info("artikel_learn reminder sent=%s", sent)
+
+
 # Daily admin nudge to pick TOMORROW's Artikel Sprint theme (default 16:00 Vienna).
 ARTIKEL_THEME_REMINDER_SLOT = (
     max(0, min(23, int((os.getenv("ARTIKEL_THEME_REMINDER_HOUR") or "16").strip() or "16"))),
@@ -24170,6 +24223,14 @@ def main():
             "cron",
             hour=int(ARTIKEL_SPRINT_SLOT[0]),
             minute=int(ARTIKEL_SPRINT_SLOT[1]),
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Artikel Trainer: morning learning nudge / all-day entry point (08:00) --
+        scheduler.add_job(
+            lambda: submit_async(_send_scheduled_artikel_learn, CallbackContext(application=application)),
+            "cron",
+            hour=int(ARTIKEL_LEARN_SLOT[0]),
+            minute=int(ARTIKEL_LEARN_SLOT[1]),
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
         # -- Artikel Sprint: DM admins to pick TOMORROW's theme (default 16:00) --

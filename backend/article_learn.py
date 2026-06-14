@@ -13,6 +13,8 @@ This module owns:
 """
 from __future__ import annotations
 
+import logging
+
 
 # der = синий, die = красный, das = зелёный (common German-learner colour code).
 GENDER_COLOR = {"der": "blue", "die": "red", "das": "green"}
@@ -125,6 +127,68 @@ def gender_tip(word: str, article: str) -> str:
     return f"🎨 Запоминай образом и цветом: {_ART_RU[a]}. Простого правила по окончанию нет."
 
 
+def _generate_and_cache_mnemonics(items: list[dict]) -> dict:
+    """Synchronously generate + cache real LLM mnemonics for [{w,a,ru}] words that
+    lack one. Returns {lower(word): mnemonic}. Best-effort (returns {} on failure)
+    so the deck still renders, but the LLM hint is the intended path — the
+    deterministic gender_tip is only a last resort when the LLM is unreachable."""
+    if not items:
+        return {}
+    import asyncio
+    from backend.openai_manager import run_article_mnemonics
+    from backend.database import store_article_noun_mnemonic
+    payload = [{"word": str(i.get("w") or ""), "article": str(i.get("a") or "").lower(),
+                "ru": str(i.get("ru") or "")} for i in items if str(i.get("w") or "")]
+    if not payload:
+        return {}
+    try:
+        results = asyncio.run(asyncio.wait_for(
+            run_article_mnemonics(items=payload), timeout=55))
+    except Exception:
+        logging.warning("learn mnemonic generation failed n=%s", len(payload), exc_info=True)
+        return {}
+    by_word = {str(i.get("w") or "").lower(): i for i in items}
+    out: dict[str, str] = {}
+    for r in results or []:
+        word = str(r.get("word") or "").strip()
+        src = by_word.get(word.lower())
+        if not src:
+            continue
+        mn = str(r.get("mnemonic") or "").strip()
+        method = str(r.get("method") or "").strip().lower()
+        head = str(r.get("head") or "").strip()
+        if not mn or len(mn) < 8:
+            continue
+        if method == "compound" and head and head.lower() not in word.lower():
+            continue  # rejected false compound split
+        try:
+            store_article_noun_mnemonic(word=word, article=str(src.get("a") or "").lower(),
+                                        mnemonic=mn, method=method, head=head)
+        except Exception:
+            pass
+        out[word.lower()] = mn
+    return out
+
+
+def ensure_daily_learn_mnemonics(play_date) -> int:
+    """Pre-warm: generate+cache mnemonics for today's daily-set words that lack one,
+    so the trainer opens instantly. Returns how many were generated."""
+    from backend.database import (
+        get_daily_article_sprint_set_id, get_article_sprint_set,
+        get_article_noun_mnemonics,
+    )
+    set_id = get_daily_article_sprint_set_id(play_date)
+    if not set_id:
+        return 0
+    s = get_article_sprint_set(set_id)
+    words = (s or {}).get("words") or []
+    if not words:
+        return 0
+    have = get_article_noun_mnemonics([str(w.get("w") or "") for w in words])
+    missing = [w for w in words if str(w.get("w") or "").lower() not in have]
+    return len(_generate_and_cache_mnemonics(missing))
+
+
 def build_learn_deck(play_date, user_id: int, *, new_size: int = 15,
                      review_size: int = 8) -> dict:
     """Assemble the day's learning deck: up to `new_size` words from the daily
@@ -172,6 +236,17 @@ def build_learn_deck(play_date, user_id: int, *, new_size: int = 15,
         mnem = get_article_noun_mnemonics(all_words)
     except Exception:
         mnem = {}
+
+    # Real LLM mnemonics are the product — generate any missing ones now and cache
+    # them, rather than showing a generic 'just memorize' fallback (precision matters
+    # for a language app). Usually a no-op because the morning pre-warm filled them.
+    missing = [w for w in (new_words + review_raw)
+               if str(w.get("w") or "").lower() not in mnem]
+    if missing:
+        try:
+            mnem.update(_generate_and_cache_mnemonics(missing))
+        except Exception:
+            logging.warning("build_learn_deck: lazy mnemonic fill failed", exc_info=True)
 
     def _card(w: dict, review: bool) -> dict:
         word = str(w.get("w") or "")

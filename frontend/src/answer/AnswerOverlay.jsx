@@ -351,6 +351,9 @@ export default function AnswerOverlay({ startParam }) {
       tg?.ready?.();
       tg?.expand?.();
       tg?.setHeaderColor?.('secondary_bg_color');
+      // Lock the sheet vertically: a careless swipe-down must NOT close/minimize
+      // the page (Bot API 7.7+). Closing is only via dragging the header.
+      tg?.disableVerticalSwipes?.();
     } catch (_e) { /* ignore */ }
     // Respect the user's Telegram light/dark scheme (default dark).
     const applyScheme = () => {
