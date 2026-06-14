@@ -18554,6 +18554,33 @@ async def admin_rebus_add_command(update: Update, context: CallbackContext) -> N
         await message.reply_text("Слишком много за раз. Максимум 30 слов в одной команде.")
         return
 
+    from backend.database import get_existing_rebus_compound_words
+    existing_words = await asyncio.to_thread(get_existing_rebus_compound_words)
+    existing_keys = {" ".join(str(w or "").strip().lower().split()) for w in existing_words}
+    cleaned_words = [" ".join(str(w or "").strip().split()) for w in words if str(w or "").strip()]
+    unique_words = []
+    seen_keys = set()
+    for word in cleaned_words:
+        key = " ".join(word.lower().split())
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        unique_words.append(word)
+    targets = [w for w in unique_words if " ".join(w.lower().split()) not in existing_keys]
+    if not targets:
+        duplicate_count = len(unique_words)
+        await message.reply_text(
+            "🧩 Rebus import report\n\n"
+            f"Requested: {duplicate_count}\n"
+            "Sent to GPT: 0\n"
+            "Added to DB: 0\n"
+            "Images ready: 0\n"
+            "Image failures: 0\n\n"
+            "All requested words already exist in the bank.\n"
+            "Nothing to import."
+        )
+        return
+
     status_msg = await message.reply_text(
         f"Принял {len(words)} слов. Проверяю дубликаты, генерирую разметку и картинки…"
     )
@@ -21864,8 +21891,10 @@ async def _send_scheduled_artikel_learn(context: CallbackContext) -> None:
     targets = await _collect_quiz_delivery_user_targets(context)
     if not targets:
         return
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-        "📚 Учить артикли", url=get_webapp_deeplink("ans_al_0"))]])
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📚 Учить артикли", url=get_webapp_deeplink("ans_al_0"))],
+        [InlineKeyboardButton("🎯 Своя тема на завтра (Premium)", url=get_webapp_deeplink("ans_alf_0"))],
+    ])
     caption = (
         "📚 *Artikel Trainer*\n\n"
         "Выучи der/die/das на сегодня — в своём темпе, с подсказками. "
