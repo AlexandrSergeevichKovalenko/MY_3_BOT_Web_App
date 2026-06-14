@@ -315,6 +315,7 @@ html[data-scheme="light"] .ans-tip { background: #fff7e6; border-color: #f0d488;
   cursor: pointer; transition: transform 0.1s ease, filter 0.12s ease;
 }
 .ls-play:active { transform: scale(0.93); filter: brightness(0.95); }
+.ls-play:disabled { opacity: 0.4; filter: grayscale(0.5); cursor: default; }
 .ls-player-main { flex: 1; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .ls-bar {
   position: relative; height: 8px; border-radius: 999px;
@@ -331,6 +332,7 @@ html[data-scheme="light"] .ans-tip { background: #fff7e6; border-color: #f0d488;
 }
 .ls-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .ls-time { font-size: 12.5px; font-weight: 600; color: var(--dmps-text-muted, #94A3B8); font-variant-numeric: tabular-nums; }
+.ls-plays { font-size: 12.5px; font-weight: 700; color: var(--dmps-text-muted, #94A3B8); white-space: nowrap; }
 .ls-speeds { display: flex; gap: 5px; }
 .ls-speed {
   min-width: 34px; height: 26px; padding: 0 6px;

@@ -115,11 +115,15 @@ function fmtTime(s) {
   return `${m}:${sec < 10 ? '0' : ''}${sec}`;
 }
 
+const MAX_AUDIO_PLAYS = 2;  // fairness: a Hörlücke clip may be played only twice
+
 function AufgabeHoer({ task, onSubmit, submitting }) {
   const audioRef = useRef(null);
   const [playing, setPlaying] = useState(false);
   const [cur, setCur] = useState(0);
   const [dur, setDur] = useState(0);
+  const [plays, setPlays] = useState(0);
+  const exhausted = plays >= MAX_AUDIO_PLAYS;
   const hasAudio = !!task.audio_url;
   const transcript = task.transcript || '';
   const isMulti = !!transcript;
@@ -131,8 +135,17 @@ function AufgabeHoer({ task, onSubmit, submitting }) {
 
   const toggle = useCallback(() => {
     const a = audioRef.current; if (!a) return; tapHaptic();
-    if (a.paused) a.play().catch(() => {}); else a.pause();
-  }, []);
+    if (!a.paused) { a.pause(); return; }
+    // A "fresh" start (from the beginning or after the clip ended) consumes one
+    // of the limited plays; resuming after a mid-clip pause is free.
+    const fresh = a.ended || a.currentTime < 0.15;
+    if (fresh) {
+      if (exhausted) return;
+      setPlays((p) => p + 1);
+      if (a.ended) { try { a.currentTime = 0; } catch (_e) { /* ignore */ } }
+    }
+    a.play().catch(() => {});
+  }, [exhausted]);
   const seek = useCallback((e) => {
     const a = audioRef.current; if (!a || !dur) return;
     const r = e.currentTarget.getBoundingClientRect();
@@ -150,13 +163,19 @@ function AufgabeHoer({ task, onSubmit, submitting }) {
       <div className="ls-player">
         {hasAudio ? (
           <>
-            <button className="ls-play" onClick={toggle} aria-label="Play">{playing ? '❚❚' : '▶'}</button>
+            <button className="ls-play" onClick={toggle} disabled={exhausted && !playing} aria-label="Play">{playing ? '❚❚' : '▶'}</button>
             <div className="ls-player-main">
               <div className="ls-bar" onClick={seek}>
                 <div className="ls-bar-fill" style={{ width: `${pct}%` }} />
                 <div className="ls-bar-knob" style={{ left: `${pct}%` }} />
               </div>
-              <div className="ls-row"><span className="ls-time">{fmtTime(cur)} / {fmtTime(dur)}</span></div>
+              <div className="ls-row">
+                <span className="ls-time">{fmtTime(cur)} / {fmtTime(dur)}</span>
+                <span className="ls-plays">
+                  {exhausted ? (playing ? '🎧 letzte Wiedergabe' : '🔇 aufgebraucht')
+                    : `🎧 noch ${MAX_AUDIO_PLAYS - plays}×`}
+                </span>
+              </div>
             </div>
           </>
         ) : <span className="ls-noaudio">🔇 Audio wird vorbereitet — gleich nochmal.</span>}

@@ -3093,16 +3093,17 @@ Du erstellst deutsche Hörlücken-Aufgaben (Audio + mehrere fehlende Wörter) f�
 
 Eingabe-JSON: {"count": <int>, "level": "B2"|"C1"}.
 
-Jede Aufgabe: ein kurzer, zusammenhängender, gut hörbarer Text aus 3–4 Sätzen. In
-JEDEM Satz wird GENAU EIN grammatisch tragendes Wort zur Lücke — bevorzugt eine
-Präposition, ein Verb mit Präposition (sich freuen ___ ), ein Kasus-/Artikelwort
-oder ein Konnektor. Es geht um HÖRVERSTEHEN + GRAMMATIK, nicht um Inhaltsvokabeln.
+Jede Aufgabe: ein kurzer, zusammenhängender, gut hörbarer Text aus GENAU 5 Sätzen.
+In mindestens 4 dieser Sätze wird GENAU EIN grammatisch tragendes Wort zur Lücke —
+bevorzugt eine Präposition, ein Verb mit Präposition (sich freuen ___ ), ein
+Kasus-/Artikelwort oder ein Konnektor. Es geht um HÖRVERSTEHEN + GRAMMATIK, nicht
+um Inhaltsvokabeln.
 Der/die Lernende HÖRT den ganzen Text und tippt die fehlenden Wörter der Reihe nach.
 
 Regeln:
-- "satz_voll" = der vollständige Text (3–4 Sätze), wird als Audio vorgelesen — OHNE Lücken.
+- "satz_voll" = der vollständige Text (5 Sätze), wird als Audio vorgelesen — OHNE Lücken.
 - "transcript" = derselbe Text, jede Lücke als "_____" (in derselben Reihenfolge wie "gaps").
-- "gaps" = Liste IN REIHENFOLGE; je Lücke {"correct": "...", "aliases": [...]}. 3–4 Lücken.
+- "gaps" = Liste IN REIHENFOLGE; je Lücke {"correct": "...", "aliases": [...]}. MINDESTENS 4 (4–5) Lücken.
 - Jede Lücke hat GENAU EINE richtige Lösung, aus dem Hören eindeutig erkennbar.
 - "erklaerung" = „lehrbuchartige“ Erklärung auf Russisch (2–3 Sätze): welche Grammatik die
   Lücken prüfen (z. B. Verb+Präposition, Kasus) und warum. Verständlich, nicht trocken.
@@ -3110,7 +3111,7 @@ Regeln:
 - "hint_ru" = sehr kurzer russischer Hinweis.
 
 Gib NUR STRICT JSON:
-{"items":[{"satz_voll":"Ich freue mich sehr auf das Wochenende. Am Samstag treffe ich mich mit Freunden im Park. Wir haben schon lange darüber gesprochen.","transcript":"Ich freue mich sehr _____ das Wochenende. Am Samstag treffe ich mich mit Freunden _____ Park. Wir haben schon lange _____ gesprochen.","gaps":[{"correct":"auf","aliases":[]},{"correct":"im","aliases":[]},{"correct":"darüber","aliases":[]}],"erklaerung":"…","tip":"…","hint_ru":"…"}]}
+{"items":[{"satz_voll":"Ich freue mich sehr auf das Wochenende. Am Samstag treffe ich mich mit Freunden im Park. Wir haben schon lange darüber gesprochen. Trotzdem müssen wir noch entscheiden, wohin wir danach gehen. Vielleicht warten wir einfach auf gutes Wetter.","transcript":"Ich freue mich sehr _____ das Wochenende. Am Samstag treffe ich mich mit Freunden _____ Park. Wir haben schon lange _____ gesprochen. _____ müssen wir noch entscheiden, wohin wir danach gehen. Vielleicht warten wir einfach _____ gutes Wetter.","gaps":[{"correct":"auf","aliases":[]},{"correct":"im","aliases":[]},{"correct":"darüber","aliases":[]},{"correct":"Trotzdem","aliases":[]},{"correct":"auf","aliases":[]}],"erklaerung":"…","tip":"…","hint_ru":"…"}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
 "aufgabe_satzbau": """
