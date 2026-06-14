@@ -311,6 +311,8 @@ from backend.database import (
     get_article_nouns_without_audio,
     store_article_noun_audio,
     get_article_noun_audio,
+    get_article_nouns_for_image,
+    mark_article_noun_image,
     create_article_sprint_dispatch,
     update_article_sprint_dispatch_message_id,
     is_user_pro,
@@ -19183,6 +19185,45 @@ async def admin_artikel_audio_command(update: Update, context: CallbackContext) 
     await status.edit_text(f"🔊 «{html.escape(theme['label_de'])}» — озвучено {res.get('made')}/{res.get('requested')}.")
 
 
+async def admin_artikel_images_command(update: Update, context: CallbackContext) -> None:
+    """Fetch + cache free stock photos for a theme's CONCRETE nouns (abstract ones
+    stay colour cards). /artikel_images <theme_key> [count]"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    from backend.stock_image import stock_image_enabled
+    if not stock_image_enabled():
+        await message.reply_text("⚠️ Не задан PIXABAY_API_KEY — картинки отключены (карточки остаются цветными). Заведи бесплатный ключ на pixabay.com и добавь в env.")
+        return
+    args = [a.strip() for a in (context.args or []) if a.strip()]
+    if not args:
+        await message.reply_text("Использование: /artikel_images <theme_key> [count]")
+        return
+    theme_key = args[0]
+    try:
+        count = max(1, min(60, int(args[1]))) if len(args) > 1 else 20
+    except ValueError:
+        count = 20
+    theme = await asyncio.to_thread(get_article_sprint_theme, theme_key)
+    if not theme:
+        await message.reply_text(f"Нет темы <code>{html.escape(theme_key)}</code>.", parse_mode="HTML")
+        return
+    todo = await asyncio.to_thread(get_article_nouns_for_image, theme_key, count)
+    if not todo:
+        await message.reply_text(f"✅ Все слова темы «{html.escape(theme['label_de'])}» уже оценены на картинки.")
+        return
+    status = await message.reply_text(f"⏳ Подбираю картинки для {len(todo)} слов темы «{html.escape(theme['label_de'])}»…")
+    res = await _backfill_artikel_images(todo, limit=count)
+    await status.edit_text(
+        f"🖼 «{html.escape(theme['label_de'])}» — найдено картинок {res.get('made')}/{res.get('requested')} "
+        f"(остальные — абстрактные или без подходящего фото → цветная карточка)."
+    )
+
+
 async def admin_artikel_recheck_command(update: Update, context: CallbackContext) -> None:
     """Re-apply the deterministic gender guard to a theme's stored nouns and fix
     any wrong articles (e.g. die→der Schädelbruch). /artikel_recheck <theme_key>"""
@@ -21754,12 +21795,22 @@ async def _send_scheduled_artikel_learn(context: CallbackContext) -> None:
         logging.info("artikel_learn: prewarmed %s mnemonics", n)
     except Exception:
         logging.warning("artikel_learn: prewarm mnemonics failed", exc_info=True)
+    real_set_id = set_id or await asyncio.to_thread(get_daily_article_sprint_set_id, slot_date)
     try:
-        a = await _backfill_artikel_audio_for_set(set_id or await asyncio.to_thread(
-            get_daily_article_sprint_set_id, slot_date))
+        a = await _backfill_artikel_audio_for_set(real_set_id)
         logging.info("artikel_learn: prewarmed %s audio clips", a)
     except Exception:
         logging.warning("artikel_learn: prewarm audio failed", exc_info=True)
+    # Pre-warm images for the day's theme (concrete words; bounded per day).
+    try:
+        s = await asyncio.to_thread(get_article_sprint_set, real_set_id)
+        theme_k = (s or {}).get("theme_key") or ""
+        if theme_k:
+            todo = await asyncio.to_thread(get_article_nouns_for_image, theme_k, 15)
+            img = await _backfill_artikel_images(todo, limit=15)
+            logging.info("artikel_learn: prewarmed images %s", img)
+    except Exception:
+        logging.warning("artikel_learn: prewarm images failed", exc_info=True)
     targets = await _collect_quiz_delivery_user_targets(context)
     if not targets:
         return
@@ -22834,6 +22885,52 @@ async def _backfill_artikel_audio_for_set(set_id: str, limit: int = 25) -> int:
     except Exception:
         logging.warning("artikel_audio set prewarm failed set=%s", set_id, exc_info=True)
         return 0
+
+
+def _artikel_image_key(word: str) -> str:
+    base = str(word).translate(_ARTIKEL_UMLAUT).lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", base).strip("-")[:48] or "w"
+    return f"artikel/img/{slug}.jpg"
+
+
+async def _backfill_artikel_images(items: list[dict], limit: int = 15) -> dict:
+    """For nouns not yet evaluated: LLM decides concrete + English query → fetch a
+    free stock photo → R2; abstract/none just marks checked. Off the hot path.
+    No-op (and DOESN'T mark checked) if no PIXABAY_API_KEY, so it processes later."""
+    from backend.stock_image import fetch_stock_image_bytes, stock_image_enabled
+    if not stock_image_enabled():
+        logging.info("artikel_images: PIXABAY_API_KEY not set — skipping image backfill")
+        return {"requested": 0, "made": 0, "skipped": "no_key"}
+    from backend.openai_manager import run_article_image_meta
+    from backend.r2_storage import r2_put_bytes
+    batch = (items or [])[:limit]
+    if not batch:
+        return {"requested": 0, "made": 0}
+    metas = await run_article_image_meta(items=[
+        {"word": i.get("word"), "article": i.get("article"), "ru": i.get("meaning_ru", "")}
+        for i in batch])
+    meta_by_word = {str(m.get("word") or "").lower(): m for m in (metas or [])}
+    made = 0
+    for it in batch:
+        word = str(it.get("word") or "").strip()
+        article = str(it.get("article") or "").strip().lower()
+        if not word:
+            continue
+        m = meta_by_word.get(word.lower()) or {}
+        query = str(m.get("image_query") or "").strip()
+        key = ""
+        if bool(m.get("is_concrete")) and query:
+            img = await asyncio.to_thread(fetch_stock_image_bytes, query)
+            if img:
+                k = _artikel_image_key(word)
+                try:
+                    await asyncio.to_thread(r2_put_bytes, k, img, content_type="image/jpeg")
+                    key = k
+                    made += 1
+                except Exception:
+                    logging.warning("artikel_images: R2 put failed word=%s", word, exc_info=True)
+        await asyncio.to_thread(mark_article_noun_image, word=word, article=article, image_object_key=key)
+    return {"requested": len(batch), "made": made}
 
 
 async def _backfill_listening_audio(limit: int = 10) -> dict:
@@ -24154,6 +24251,7 @@ def main():
     application.add_handler(CommandHandler("artikel_learn_preview", admin_artikel_learn_preview_command))
     application.add_handler(CommandHandler("artikel_mnemonics", admin_artikel_mnemonics_command))
     application.add_handler(CommandHandler("artikel_audio", admin_artikel_audio_command))
+    application.add_handler(CommandHandler("artikel_images", admin_artikel_images_command))
     application.add_handler(CommandHandler("artikel_learn", admin_artikel_learn_command))
     application.add_handler(CommandHandler("artikel_settheme", admin_artikel_settheme_command))
     application.add_handler(CommandHandler("artikel_fill", admin_artikel_fill_command))

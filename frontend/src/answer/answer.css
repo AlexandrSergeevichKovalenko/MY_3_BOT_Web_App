@@ -659,6 +659,8 @@ html[data-scheme="light"] .ans-why-wrong { color: #92400e; }
   align-self: center; font-size: 13px; padding: 3px 12px; border-radius: 999px;
   background: rgba(234,179,8,.18); color: #eab308;
 }
+.al-img { width: 100%; height: 160px; border-radius: 16px; overflow: hidden; background: rgba(148,163,184,.12); }
+.al-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .as-word.der { background: rgba(37,99,235,.28); }
 .as-word.die { background: rgba(219,39,119,.28); }
 .as-word.das { background: rgba(5,150,105,.28); }

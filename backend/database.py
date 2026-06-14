@@ -34465,6 +34465,16 @@ def ensure_article_sprint_schema() -> None:
                 "ALTER TABLE bt_3_article_sprint_nouns "
                 "ADD COLUMN IF NOT EXISTS audio_object_key TEXT NOT NULL DEFAULT '';"
             )
+            # Artikel Trainer: image for CONCRETE nouns (free stock → R2). image_checked
+            # flips once we've evaluated the word (abstract words stay key-less).
+            cursor.execute(
+                "ALTER TABLE bt_3_article_sprint_nouns "
+                "ADD COLUMN IF NOT EXISTS image_object_key TEXT NOT NULL DEFAULT '';"
+            )
+            cursor.execute(
+                "ALTER TABLE bt_3_article_sprint_nouns "
+                "ADD COLUMN IF NOT EXISTS image_checked BOOLEAN NOT NULL DEFAULT FALSE;"
+            )
             # Which theme to train on a given day (admin picks today-for-tomorrow).
             cursor.execute(
                 """
@@ -34647,6 +34657,56 @@ def store_article_noun_mnemonic(*, word: str, article: str, mnemonic: str,
             updated = int(cursor.rowcount or 0)
         conn.commit()
     return updated > 0
+
+
+def get_article_nouns_for_image(theme_key: str, limit: int = 30) -> list[dict]:
+    """Verified, non-retired nouns of a theme not yet evaluated for an image."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT word, article, meaning_ru FROM bt_3_article_sprint_nouns
+                WHERE theme_key = %s AND verified = TRUE AND retired = FALSE
+                  AND image_checked = FALSE
+                ORDER BY freq_rank NULLS LAST, id
+                LIMIT %s;
+                """,
+                (str(theme_key), int(limit)),
+            )
+            rows = cursor.fetchall() or []
+    return [{"word": str(r[0]), "article": str(r[1]), "meaning_ru": str(r[2] or "")} for r in rows]
+
+
+def mark_article_noun_image(*, word: str, article: str, image_object_key: str = "") -> bool:
+    """Record the image evaluation result: stores a key (concrete, found) or just
+    flips image_checked (abstract / not found) so it isn't re-processed."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_article_sprint_nouns "
+                "SET image_object_key = %s, image_checked = TRUE, updated_at = NOW() "
+                "WHERE lower(word) = lower(%s) AND article = %s;",
+                (str(image_object_key or "")[:300], str(word), str(article or "").lower()),
+            )
+            updated = int(cursor.rowcount or 0)
+        conn.commit()
+    return updated > 0
+
+
+def get_article_noun_images(words: list[str]) -> dict:
+    """Map lower(word) → image_object_key for words that have an image (deck lookup)."""
+    cleaned = [str(w).strip() for w in (words or []) if str(w).strip()]
+    if not cleaned:
+        return {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT lower(word), image_object_key FROM bt_3_article_sprint_nouns "
+                "WHERE lower(word) = ANY(%s) AND COALESCE(image_object_key, '') <> '';",
+                ([w.lower() for w in cleaned],),
+            )
+            rows = cursor.fetchall() or []
+    return {str(r[0]): str(r[1] or "") for r in rows}
 
 
 def get_article_nouns_without_audio(theme_key: str, limit: int = 50) -> list[dict]:

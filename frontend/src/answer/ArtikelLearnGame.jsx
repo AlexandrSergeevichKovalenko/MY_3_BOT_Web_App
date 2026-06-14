@@ -122,6 +122,9 @@ export default function ArtikelLearnGame({ api, haptic, onClose }) {
         <span className="as-score">{stats.correct}✓</span>
       </div>
       {c?.review ? <div className="al-review-badge">🔁 повтор твоей ошибки</div> : null}
+      {c?.image ? (
+        <div className="al-img"><img src={c.image} alt="" loading="eager" /></div>
+      ) : null}
       <div className={`as-word ${chosen ? c.a : ''}`}>{c ? c.w : '…'}</div>
       <div className="as-buttons">
         {ARTICLES.map((a) => {

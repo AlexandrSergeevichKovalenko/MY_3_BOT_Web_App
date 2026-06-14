@@ -3292,6 +3292,24 @@ Return STRICT JSON ONLY, same order as input:
 {"results": [ {"word": "...", "method": "compound|category|suffix|image",
 "head": "‹главное слово или пусто›", "mnemonic": "‹текст с 💡›"}, ... ]}.
 """,
+"article_image_meta": """
+You help pick illustration photos for a German vocabulary trainer.
+
+Input JSON: {"items": [ {"word": "...", "article": "der|die|das", "ru": "..."}, ... ]}.
+
+For EACH word decide whether it names a CONCRETE, visually depictable thing that a
+stock photo could clearly show (objects, body parts, animals, food, tools, places).
+Abstract concepts (freedom, weakness, information, illness states) are NOT depictable.
+
+Return for each:
+- "is_concrete": true/false.
+- "image_query": if concrete, a SHORT ENGLISH stock-photo search phrase that yields
+  a clear, unambiguous picture of THIS thing (e.g. "wooden kitchen table",
+  "human shin bone anatomy", "red apple fruit"). If not concrete, "".
+
+Return STRICT JSON, same order as input:
+{"results": [ {"word": "...", "is_concrete": true|false, "image_query": "..."}, ... ]}.
+""",
 "aufgabe_pin_blueprint": """
 Du planst anspruchsvolle "Finde das Objekt"-Bildaufgaben für Deutschlernende (B2+).
 
@@ -5906,6 +5924,29 @@ async def run_article_verify(*, items: list[dict]) -> list[dict]:
         return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
     except Exception:
         logging.warning("run_article_verify failed n=%s", len(items or []), exc_info=True)
+        return []
+
+
+async def run_article_image_meta(*, items: list[dict]) -> list[dict]:
+    """For a batch of {word, article, ru}, decide is_concrete + an English stock
+    search query. Returns [{word, is_concrete, image_query}] (or [] on failure)."""
+    try:
+        content = await llm_execute(
+            task_name="article_image_meta",
+            system_instruction_key="article_image_meta",
+            user_message=json.dumps({"items": [
+                {"word": str(i.get("word") or ""),
+                 "article": str(i.get("article") or "").lower(),
+                 "ru": str(i.get("ru") or i.get("meaning_ru") or "")}
+                for i in (items or [])
+            ]}, ensure_ascii=False),
+            poll_interval_seconds=1.5,
+        )
+        data = json.loads(content)
+        res = data.get("results") if isinstance(data, dict) else None
+        return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
+    except Exception:
+        logging.warning("run_article_image_meta failed n=%s", len(items or []), exc_info=True)
         return []
 
 

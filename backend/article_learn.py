@@ -202,6 +202,7 @@ def build_learn_deck(play_date, user_id: int, *, new_size: int = 15,
         get_article_sprint_theme, get_article_learn_review_words,
         get_article_noun_mnemonics, get_article_learn_progress,
         count_article_theme_verified, get_article_noun_audio,
+        get_article_noun_images,
     )
     from backend.r2_storage import r2_public_url
 
@@ -242,6 +243,10 @@ def build_learn_deck(play_date, user_id: int, *, new_size: int = 15,
         audio_keys = get_article_noun_audio(all_words)
     except Exception:
         audio_keys = {}
+    try:
+        image_keys = get_article_noun_images(all_words)
+    except Exception:
+        image_keys = {}
 
     # Real LLM mnemonics are the product — generate any missing ones now and cache
     # them, rather than showing a generic 'just memorize' fallback (precision matters
@@ -259,12 +264,14 @@ def build_learn_deck(play_date, user_id: int, *, new_size: int = 15,
         art = str(w.get("a") or "").strip().lower()
         tip = mnem.get(word.lower()) or gender_tip(word, art)
         akey = audio_keys.get(word.lower())
+        ikey = image_keys.get(word.lower())
         return {
             "w": word, "a": art, "ru": str(w.get("ru") or ""),
             "tip": tip,
             "color": GENDER_COLOR.get(art, "blue"),
             "review": review,
             "audio": r2_public_url(akey) if akey else "",
+            "image": r2_public_url(ikey) if ikey else "",
         }
 
     new_cards = [_card(w, False) for w in new_words]
