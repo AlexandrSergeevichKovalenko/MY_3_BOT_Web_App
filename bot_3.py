@@ -19374,6 +19374,25 @@ async def admin_artikel_learn_command(update: Update, context: CallbackContext) 
     )
 
 
+async def admin_artikel_focus_command(update: Update, context: CallbackContext) -> None:
+    """DM the Pro focus-theme picker (pick a theme to learn tomorrow). /artikel_focus"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎯 Выбрать тему на завтра", url=get_webapp_deeplink("ans_alf_0"))],
+    ])
+    await message.reply_text(
+        "🎯 <b>Своя тема на завтра</b> (Premium) — выбери тему, подготовим её ночью "
+        "(со звуком и картинками) 👇",
+        parse_mode="HTML", reply_markup=kb,
+    )
+
+
 async def artikel_battle_command(update: Update, context: CallbackContext) -> None:
     """Create an Artikel Sprint battle (Pro only) and broadcast the invite to all
     users. /battle [theme_key] — async, open until 23:59."""
@@ -24362,6 +24381,7 @@ def main():
     application.add_handler(CommandHandler("artikel_images", admin_artikel_images_command))
     application.add_handler(CommandHandler("artikel_learn_prewarm", admin_artikel_learn_prewarm_command))
     application.add_handler(CommandHandler("artikel_learn", admin_artikel_learn_command))
+    application.add_handler(CommandHandler("artikel_focus", admin_artikel_focus_command))
     application.add_handler(CommandHandler("artikel_settheme", admin_artikel_settheme_command))
     application.add_handler(CommandHandler("artikel_fill", admin_artikel_fill_command))
     application.add_handler(CommandHandler("artikel_sample", admin_artikel_sample_command))

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 // Artikel Trainer — the self-paced LEARNING deck (companion to the timed Sprint).
 // Look at a noun, tap der/die/das, get instant ✅/❌ + a memory hint, then swipe
@@ -19,6 +19,21 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
   const [focusLabel, setFocusLabel] = useState('');
   const touchX = useRef(null);
   const audioRef = useRef(null);
+  const wordRef = useRef(null);
+
+  // Shrink long words so they fit the card on ONE line (no ugly mid-word wrap).
+  const fitWord = useCallback(() => {
+    const el = wordRef.current;
+    const box = el?.parentElement;
+    if (!el || !box) return;
+    let size = 40;
+    el.style.fontSize = `${size}px`;
+    const avail = box.clientWidth - 28; // card horizontal padding
+    while (el.scrollWidth > avail && size > 15) {
+      size -= 1;
+      el.style.fontSize = `${size}px`;
+    }
+  }, []);
 
   const playAudio = useCallback((url) => {
     if (!url) return;
@@ -86,6 +101,8 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
   const restart = useCallback(() => {
     setIdx(0); setChosen(null); setStats({ correct: 0, answered: 0 }); setPhase('learning');
   }, []);
+
+  useLayoutEffect(() => { if (phase === 'learning') fitWord(); }, [idx, phase, fitWord]);
 
   const onTouchStart = (e) => { touchX.current = e.touches?.[0]?.clientX ?? null; };
   const onTouchEnd = (e) => {
@@ -168,7 +185,9 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
       {c?.image ? (
         <div className="al-img"><img src={c.image} alt="" loading="eager" /></div>
       ) : null}
-      <div className={`as-word ${chosen ? c.a : ''}`}>{c ? c.w : '…'}</div>
+      <div className={`as-word ${chosen ? c.a : ''}`}>
+        <span className="al-word-text" ref={wordRef}>{c ? c.w : '…'}</span>
+      </div>
       <div className="as-buttons">
         {ARTICLES.map((a) => {
           let cls = `as-btn-art ${ART_CLASS[a]}`;
