@@ -3318,19 +3318,30 @@ Eingabe-JSON: {"count": <int>}.
 
 Jede Aufgabe: eine realistische, DETAILREICHE Alltagsszene mit MEHREREN Objekten. Der/die
 Lernende soll ein bestimmtes Objekt ("target_label") finden und antippen — UND danach
-dessen Artikel (der/die/das) eingeben. Es soll eine echte Such- und Wortschatzaufgabe sein.
+dessen Artikel (der/die/das) eingeben. Es soll eine echte Such- und Wortschatzaufgabe auf
+B2+-Niveau sein, MIT EINEM PFIFF/„подвох".
 
-WICHTIG (Schwierigkeit):
+WICHTIG (Schwierigkeit — B2+ mit Köder):
 - Das Zielobjekt darf NICHT das größte und NICHT das zentrale/auffälligste Objekt sein.
-  Platziere es eher klein, seitlich oder zwischen anderen Dingen — man muss es SUCHEN.
-- Wähle ein B2+/weniger alltägliches, aber eindeutig erkennbares konkretes Substantiv
-  (z. B. der Wasserkocher, die Steckdose, der Türgriff, die Gießkanne, der Aktenordner) —
-  KEINE trivialen A1-Wörter wie Auto/Tisch/Hund, und nicht riesig in der Mitte.
+  Platziere es eher klein, seitlich, teilweise verdeckt oder zwischen anderen Dingen —
+  man muss es SUCHEN.
+- KÖDER (Pflicht): Die Szene MUSS ein auffälliges, größeres, „naheliegendes" Objekt aus
+  derselben Kategorie enthalten, das NICHT das Ziel ist (z. B. Ziel „die Steckdose", aber
+  prominent steht ein Fernseher/eine Lampe da). So ist die offensichtliche Antwort falsch.
+- Wähle ein B2+/weniger alltägliches, aber eindeutig erkennbares konkretes Substantiv,
+  z. B. der Wasserkocher, die Steckdose, der Türgriff, die Gießkanne, der Aktenordner,
+  der Locher, die Sicherung, der Wasserhahn, die Heizung, der Feuerlöscher, die Zange,
+  der Korkenzieher, das Verlängerungskabel, der Aktenvernichter, die Lüftung.
+- VERBOTEN (zu leicht, A1/A2): Sofa, Couch, Sessel, Stuhl, Tisch, Bett, Lampe, Fenster,
+  Tür, Auto, Bus, Hund, Katze, Buch, Ball, Baum, Blume, Apfel, Banane, Uhr, Teller, Tasse,
+  Glas, Flasche, Stift, Schuh, Hut, Brot, Fernseher, Computer, Handy, Telefon, Spiegel,
+  Bild, Kissen, Decke, Topf, Pfanne — und nichts riesig in der Mitte.
 
 Regeln:
 - "image_prompt": detaillierter englischer DALL-E-Prompt für eine realistische Szene mit
   mehreren gleichwertig sichtbaren Objekten; das Zielobjekt ist vorhanden, aber NICHT das
-  dominante/zentrale. KEIN Text, keine Buchstaben, keine Labels im Bild.
+  dominante/zentrale; ein größerer „decoy" derselben Kategorie ist deutlich sichtbar.
+  KEIN Text, keine Buchstaben, keine Labels im Bild.
 - "target_label": das Zielobjekt MIT Artikel (z. B. "der Wasserkocher").
 - "article": nur der Artikel des Zielobjekts: "der" | "die" | "das".
 - "question_de": "Finde {Nomen ohne Artikel} im Bild — tippe darauf und gib den Artikel ein."
@@ -3340,7 +3351,7 @@ Regeln:
 - "hint_ru": kurze russische Übersetzung des Wortes.
 
 Gib NUR STRICT JSON:
-{"items":[{"image_prompt":"A cluttered kitchen counter: a fruit bowl in the center, a cutting board, jars, and a small electric kettle off to the side near the wall, photorealistic, no text","target_label":"der Wasserkocher","article":"der","question_de":"Finde den Wasserkocher im Bild — tippe darauf und gib den Artikel ein.","erklaerung":"…","tip":"…","hint_ru":"чайник (электрический)"}]}
+{"items":[{"image_prompt":"A cluttered kitchen counter: a large shiny toaster prominently in the center, a fruit bowl, a cutting board and jars, and a small electric kettle half-hidden off to the side near the wall, photorealistic, no text","target_label":"der Wasserkocher","article":"der","question_de":"Finde den Wasserkocher im Bild — tippe darauf und gib den Artikel ein.","erklaerung":"…","tip":"…","hint_ru":"чайник (электрический)"}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
 "image_quiz_sentence_fallback": """
@@ -6034,10 +6045,12 @@ def run_vision_locate(image_bytes: bytes, target_label: str, *, mime: str = "ima
         f"Look at the image. Target object: \"{target_label}\". "
         "Answer ONLY with strict JSON: "
         '{"present": true|false, "bbox": [x, y, w, h]}. '
-        "present=true only if exactly this object is clearly and unambiguously visible "
-        "as a prominent object. bbox = the tight bounding box of that object as fractions "
-        "of the image (x,y = top-left, w,h = width/height, all between 0 and 1). "
-        "If it is not clearly visible, return present=false and bbox null."
+        "present=true only if exactly this object is clearly and unambiguously identifiable "
+        "as THIS specific object — it MAY be small, partially shown or off to the side, that is "
+        "fine, as long as you are certain it is this object and not a similar-looking one. "
+        "bbox = the tight bounding box of that object as fractions of the image "
+        "(x,y = top-left, w,h = width/height, all between 0 and 1). "
+        "If you are not certain it is exactly this object, return present=false and bbox null."
     )
     try:
         client = build_sync_openai_client(api_key=api_key, timeout=40)

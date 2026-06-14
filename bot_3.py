@@ -22060,6 +22060,27 @@ async def send_aufgabe_to_chat(
     return True
 
 
+# Trivial A1/A2 nouns that make a "Finde im Bild" target too easy (big/central,
+# everyday). Deterministic gate so an item can't enter the pool even if the LLM
+# ignores the prompt's ban list. Keep lowercase, singular, without article.
+_PIN_TRIVIAL_NOUNS = {
+    "sofa", "couch", "sessel", "stuhl", "tisch", "bett", "lampe", "fenster", "tür",
+    "auto", "bus", "zug", "fahrrad", "hund", "katze", "vogel", "fisch", "buch", "ball",
+    "baum", "blume", "haus", "apfel", "banane", "uhr", "teller", "tasse", "glas",
+    "flasche", "stift", "schuh", "hut", "brot", "fernseher", "computer", "laptop",
+    "handy", "telefon", "spiegel", "bild", "kissen", "decke", "topf", "pfanne",
+    "messer", "gabel", "löffel", "stuhl", "schrank", "regal", "teppich", "vase",
+}
+
+
+def _pin_target_noun(target_label: str) -> str:
+    """The bare noun of a pin target ('der Wasserkocher' → 'wasserkocher')."""
+    parts = str(target_label or "").strip().split()
+    if parts and parts[0].lower() in ("der", "die", "das"):
+        parts = parts[1:]
+    return (parts[-1].lower() if parts else "").strip(".,!?;:")
+
+
 def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
     """Validate an LLM-generated item and build its stored payload. Returns None
     when the item is unusable (we skip it — no silent placeholder/fallback)."""
@@ -22150,6 +22171,11 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
         target_label = str(it.get("target_label") or "").strip()
         image_prompt = str(it.get("image_prompt") or "").strip()
         if not question_de or not target_label or not image_prompt:
+            return None
+        # Difficulty gate: reject trivial A1/A2 targets so the pool stays B2+.
+        noun = _pin_target_noun(target_label)
+        if not noun or noun in _PIN_TRIVIAL_NOUNS:
+            logging.info("aufgabe_pool: pin target too easy/invalid, skipping (%s)", target_label)
             return None
         article = str(it.get("article") or "").strip().lower()
         if article not in ("der", "die", "das"):
