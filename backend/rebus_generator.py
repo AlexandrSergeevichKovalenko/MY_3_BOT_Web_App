@@ -14,6 +14,7 @@ import logging
 import random
 import re
 import time
+from typing import Callable
 
 # ─── PIL ──────────────────────────────────────────────────────────────────────
 try:
@@ -813,7 +814,12 @@ def generate_rebus_replenishment(count: int = 20) -> dict:
     return {"status": "done", "added": added, "skipped": skipped, "errors": errors[:10]}
 
 
-def generate_manual_rebus_entries(requested_words: list[str], *, prepare_images: bool = True) -> dict:
+def generate_manual_rebus_entries(
+    requested_words: list[str],
+    *,
+    prepare_images: bool = True,
+    progress_cb: Callable[[dict], None] | None = None,
+) -> dict:
     """
     Admin-controlled rebus import:
     - accepts an explicit list of target compounds,
@@ -822,6 +828,14 @@ def generate_manual_rebus_entries(requested_words: list[str], *, prepare_images:
     - validates and stores entries,
     - optionally generates component/composed images immediately.
     """
+    def _emit(**payload: object) -> None:
+        if not progress_cb:
+            return
+        try:
+            progress_cb(payload)
+        except Exception:
+            logging.debug("rebus_import progress callback failed", exc_info=True)
+
     from backend.database import get_existing_rebus_compound_words
 
     cleaned: list[str] = []
@@ -844,6 +858,7 @@ def generate_manual_rebus_entries(requested_words: list[str], *, prepare_images:
 
     duplicates_existing = [w for w in cleaned if _normalize_compound_key(w) in existing_keys]
     targets = [w for w in cleaned if _normalize_compound_key(w) not in existing_keys]
+    _emit(stage="validated_input", requested=len(cleaned), targets=len(targets), duplicates_existing=len(duplicates_existing), duplicates_input=len(duplicate_input))
     if not targets:
         return {
             "status": "done",
@@ -857,6 +872,7 @@ def generate_manual_rebus_entries(requested_words: list[str], *, prepare_images:
             "prepared": [],
         }
 
+    _emit(stage="gpt_request", requested=len(targets), added=0, skipped=0)
     raw_entries = _call_gpt_for_manual_rebus_entries(targets, existing_words)
     requested_keys = {_normalize_compound_key(w) for w in targets}
 
@@ -873,6 +889,7 @@ def generate_manual_rebus_entries(requested_words: list[str], *, prepare_images:
             continue
         if compound_id:
             added_entries.append({"compound": compound, "compound_id": compound_id})
+        _emit(stage="annotated", processed=len(added_entries) + len(errors), added=len(added_entries), skipped=len(errors), last_compound=compound)
 
     returned_keys = {_normalize_compound_key(e.get("compound") or "") for e in added_entries}
     omitted = [w for w in targets if _normalize_compound_key(w) not in returned_keys]
@@ -884,10 +901,18 @@ def generate_manual_rebus_entries(requested_words: list[str], *, prepare_images:
     ready = 0
     failed = 0
     if prepare_images:
-        for item in added_entries:
+        for index, item in enumerate(added_entries, start=1):
             compound_id = str(item.get("compound_id") or "")
             if not compound_id:
                 continue
+            _emit(
+                stage="preparing_images",
+                processed=index,
+                total=len(added_entries),
+                compound=item.get("compound"),
+                ready=ready,
+                failed=failed,
+            )
             result = prepare_rebus_entry(compound_id)
             status = str(result.get("status") or "")
             if status == "ready":
@@ -900,7 +925,16 @@ def generate_manual_rebus_entries(requested_words: list[str], *, prepare_images:
                 "status": status or "unknown",
                 "reason": result.get("reason") or "",
             })
+            _emit(
+                stage="image_done",
+                processed=index,
+                total=len(added_entries),
+                compound=item.get("compound"),
+                ready=ready,
+                failed=failed,
+            )
 
+    _emit(stage="done", requested=len(cleaned), sent_to_gpt=len(targets), added=len(added_entries), ready=ready, failed=failed)
     return {
         "status": "done",
         "requested": len(cleaned),

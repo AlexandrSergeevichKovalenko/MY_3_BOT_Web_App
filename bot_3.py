@@ -18475,6 +18475,52 @@ def _format_rebus_manual_import_report(result: dict) -> str:
     return "\n".join(lines)[:3900]
 
 
+def _format_rebus_manual_import_progress(payload: dict) -> str:
+    stage = str(payload.get("stage") or "").strip().lower()
+    if stage == "validated_input":
+        return (
+            "Принял список.\n"
+            f"Уникальных слов: {int(payload.get('requested') or 0)}\n"
+            f"К импорту: {int(payload.get('targets') or 0)}\n"
+            f"Дубликаты в базе: {int(payload.get('duplicates_existing') or 0)}\n"
+            f"Дубликаты в сообщении: {int(payload.get('duplicates_input') or 0)}\n\n"
+            "Запрашиваю разметку у GPT..."
+        )
+    if stage == "gpt_request":
+        return (
+            f"GPT-разметка для {int(payload.get('requested') or 0)} слов запрошена.\n"
+            "Жду ответ и валидирую результат..."
+        )
+    if stage == "preparing_images":
+        compound = str(payload.get("compound") or "").strip()
+        processed = int(payload.get("processed") or 0)
+        total = int(payload.get("total") or 0)
+        ready = int(payload.get("ready") or 0)
+        failed = int(payload.get("failed") or 0)
+        return (
+            f"Генерирую картинки: {processed}/{total}\n"
+            f"Текущий ребус: {compound or '—'}\n"
+            f"Готово: {ready} | Ошибок: {failed}"
+        )
+    if stage == "image_done":
+        compound = str(payload.get("compound") or "").strip()
+        processed = int(payload.get("processed") or 0)
+        total = int(payload.get("total") or 0)
+        ready = int(payload.get("ready") or 0)
+        failed = int(payload.get("failed") or 0)
+        return (
+            f"Картинки готовы: {processed}/{total}\n"
+            f"Последний ребус: {compound or '—'}\n"
+            f"Готово: {ready} | Ошибок: {failed}"
+        )
+    return (
+        f"Импорт завершён.\n"
+        f"Добавлено: {int(payload.get('added') or 0)}\n"
+        f"Готово картинок: {int(payload.get('ready') or 0)}\n"
+        f"Ошибок: {int(payload.get('failed') or 0)}"
+    )
+
+
 async def admin_rebus_add_command(update: Update, context: CallbackContext) -> None:
     """Admin command: import explicit admin-approved rebus words.
 
@@ -18511,7 +18557,29 @@ async def admin_rebus_add_command(update: Update, context: CallbackContext) -> N
     )
     try:
         from backend.rebus_generator import generate_manual_rebus_entries
-        result = await asyncio.to_thread(generate_manual_rebus_entries, words, prepare_images=True)
+        loop = asyncio.get_running_loop()
+        last_sent = {"text": ""}
+
+        def _progress_cb(payload: dict) -> None:
+            stage = str(payload.get("stage") or "").strip().lower()
+            processed = int(payload.get("processed") or 0)
+            total = int(payload.get("total") or 0)
+            if stage not in {"validated_input", "gpt_request", "preparing_images", "image_done", "done"}:
+                return
+            if stage == "image_done" and processed not in {1, total} and processed % 3 != 0:
+                return
+            text = _format_rebus_manual_import_progress(payload)
+            if text == last_sent["text"]:
+                return
+            last_sent["text"] = text
+            asyncio.run_coroutine_threadsafe(status_msg.edit_text(text), loop)
+
+        result = await asyncio.to_thread(
+            generate_manual_rebus_entries,
+            words,
+            prepare_images=True,
+            progress_cb=_progress_cb,
+        )
     except Exception as exc:
         await status_msg.edit_text(f"Rebus import failed: {exc}")
         return
