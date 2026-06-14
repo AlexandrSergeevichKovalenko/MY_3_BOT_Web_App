@@ -21603,8 +21603,9 @@ def _send_plan_groups() -> list[dict]:
          "slots": [(h, m, "Синонимы" if SPRINT_SLOT_TIMES[(h, m)] == "synonym" else "Антонимы")
                    for (h, m) in sorted(SPRINT_SLOT_TIMES.keys())],
          "table": "bt_3_sprint_dispatches", "kind": "slotHM"},
-        {"emoji": "🖼", "title": "Визуал-ребус", "slots": [(h, m, "") for (h, m) in sorted(VISUAL_RIDDLE_SLOT_TIMES)],
-         "table": "bt_3_visual_riddle_dispatches", "kind": "createdH"},
+        # Visual-riddle disabled: free-form image rebuses are too ambiguous.
+        # {"emoji": "🖼", "title": "Визуал-ребус", "slots": [(h, m, "") for (h, m) in sorted(VISUAL_RIDDLE_SLOT_TIMES)],
+        #  "table": "bt_3_visual_riddle_dispatches", "kind": "createdH"},
         {"emoji": "🎨", "title": "Картинка-квиз", "slots": [(h, m, "") for (h, m) in sorted(QUIZ_IMAGE_SLOT_TIMES)],
          "table": "bt_3_image_quiz_dispatches", "kind": "createdH"},
         {"emoji": "⚡", "title": "Artikel Sprint", "slots": [(ARTIKEL_SPRINT_SLOT[0], ARTIKEL_SPRINT_SLOT[1], "")],
@@ -21884,7 +21885,9 @@ async def build_pool_inventory_report(context: CallbackContext) -> str:
     anag = await asyncio.to_thread(count_available_anagram_cards, cooldown_days=ANAGRAM_COOLDOWN_DAYS)
     listen = await asyncio.to_thread(count_listening_bank_entries, exclude_retired=True)
     prep = await asyncio.to_thread(count_prepared_telegram_quizzes)
-    vr = await asyncio.to_thread(count_ready_visual_riddle_templates)
+    # Visual-riddle disabled: keep the pool code available, but hide it from the
+    # Telegram pool report and stop topping it up from the scheduler.
+    # vr = await asyncio.to_thread(count_ready_visual_riddle_templates)
 
     lines.append(row("🧩", "Rebus", rebus, REBUS_POOL_TARGET, len(REBUS_SLOT_TIMES), _rebuses_enabled()))
     lines.append(row("🔤", "Kreuzwort", cross, CROSSWORD_POOL_TARGET, len(CROSSWORD_SLOT_TIMES), _crosswords_enabled()))
@@ -21892,7 +21895,7 @@ async def build_pool_inventory_report(context: CallbackContext) -> str:
     lines.append(row("🔀", "Anagramm", anag, ANAGRAM_POOL_TARGET, len(ANAGRAM_SLOT_TIMES), _anagram_enabled()))
     lines.append(row("🎧", "Hörverständnis", listen, LISTENING_POOL_TARGET, 1, _listening_enabled()))
     lines.append(row("🃏", "Prepared-Quiz (poll)", prep, None, "—"))
-    lines.append(row("🖼", "Visual-Riddle", vr, VISUAL_RIDDLE_POOL_TARGET, len(VISUAL_RIDDLE_SLOT_TIMES), _visual_riddles_enabled()))
+    # lines.append(row("🖼", "Visual-Riddle", vr, VISUAL_RIDDLE_POOL_TARGET, len(VISUAL_RIDDLE_SLOT_TIMES), _visual_riddles_enabled()))
     lines.append("🖼 <b>Image-Quiz</b>: ретайрнут <i>(off)</i>")
 
     # Actual supply vs demand over the last 24h (sent items / answers given)
@@ -23044,13 +23047,14 @@ async def send_scheduled_quiz(context: CallbackContext) -> None:
     delivery_slot = _format_quiz_delivery_slot(slot_now)
     delivery_date_local = slot_now.date()
 
-    if _is_visual_riddle_slot(slot_now):
-        await _send_scheduled_visual_riddles(
-            context,
-            delivery_slot=delivery_slot,
-            delivery_date_local=delivery_date_local,
-        )
-        return
+    # Visual-riddle disabled: free-form image rebuses are too ambiguous.
+    # if _is_visual_riddle_slot(slot_now):
+    #     await _send_scheduled_visual_riddles(
+    #         context,
+    #         delivery_slot=delivery_slot,
+    #         delivery_date_local=delivery_date_local,
+    #     )
+    #     return
 
     ordered = _get_scheduled_quiz_generators(context)
     image_slot = _is_image_quiz_slot(slot_now)
@@ -23693,7 +23697,8 @@ def main():
                 application.job_queue.run_once(backfill_group_enrollment_prompts, when=20),
                 application.job_queue.run_once(prepare_scheduled_quiz_pool, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS),
                 application.job_queue.run_once(prepare_image_quiz_pool, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 20),
-                application.job_queue.run_once(_startup_visual_riddle_pool_check, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 40),
+                # Visual-riddle disabled: do not bootstrap/top up this pool.
+                # application.job_queue.run_once(_startup_visual_riddle_pool_check, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 40),
                 application.job_queue.run_once(prepare_rebus_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 70),
                 application.job_queue.run_once(prepare_article_quiz_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 100),
                 application.job_queue.run_once(prepare_crossword_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 130),
@@ -23881,28 +23886,29 @@ def main():
             minute=IMAGE_QUIZ_POOL_TOPUP_MINUTE,
         )
         # -- Visual riddle slots (07:30, 12:30, 15:30 Europe/Vienna) --
-        for _vr_hour, _vr_minute in sorted(VISUAL_RIDDLE_SLOT_TIMES):
-            scheduler.add_job(
-                lambda: submit_async(send_scheduled_quiz, CallbackContext(application=application)),
-                "cron",
-                hour=_vr_hour,
-                minute=_vr_minute,
-                timezone=QUIZ_SCHEDULE_TZ_NAME,
-            )
-        logging.info(
-            "visual_riddle_scheduler_slots_registered slots=%s tz=%s enabled=%s",
-            sorted(VISUAL_RIDDLE_SLOT_TIMES),
-            QUIZ_SCHEDULE_TZ_NAME,
-            _visual_riddles_enabled(),
-        )
+        # Disabled: free-form visual rebuses are too ambiguous for production.
+        # for _vr_hour, _vr_minute in sorted(VISUAL_RIDDLE_SLOT_TIMES):
+        #     scheduler.add_job(
+        #         lambda: submit_async(send_scheduled_quiz, CallbackContext(application=application)),
+        #         "cron",
+        #         hour=_vr_hour,
+        #         minute=_vr_minute,
+        #         timezone=QUIZ_SCHEDULE_TZ_NAME,
+        #     )
+        # logging.info(
+        #     "visual_riddle_scheduler_slots_registered slots=%s tz=%s enabled=%s",
+        #     sorted(VISUAL_RIDDLE_SLOT_TIMES),
+        #     QUIZ_SCHEDULE_TZ_NAME,
+        #     _visual_riddles_enabled(),
+        # )
         # -- Visual riddle pool topup (daily before first slot) --
-        scheduler.add_job(
-            lambda: submit_async(prepare_visual_riddle_pool_job, CallbackContext(application=application)),
-            "cron",
-            hour=VISUAL_RIDDLE_POOL_TOPUP_HOUR,
-            minute=VISUAL_RIDDLE_POOL_TOPUP_MINUTE,
-            timezone=QUIZ_SCHEDULE_TZ_NAME,
-        )
+        # scheduler.add_job(
+        #     lambda: submit_async(prepare_visual_riddle_pool_job, CallbackContext(application=application)),
+        #     "cron",
+        #     hour=VISUAL_RIDDLE_POOL_TOPUP_HOUR,
+        #     minute=VISUAL_RIDDLE_POOL_TOPUP_MINUTE,
+        #     timezone=QUIZ_SCHEDULE_TZ_NAME,
+        # )
         # -- Rebus (Komposita) hourly slots: 8:30–20:30 Europe/Vienna --
         for _rb_hour, _rb_minute in sorted(REBUS_SLOT_TIMES):
             scheduler.add_job(
