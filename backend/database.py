@@ -34856,6 +34856,66 @@ def list_article_learn_focus_themes(play_date) -> list[str]:
     return [str(r[0]) for r in rows if r and r[0]]
 
 
+def ensure_article_battle_available_schema() -> None:
+    """Opt-in registry: users who agreed to be invited to Artikel battles."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_article_battle_available (
+                    user_id     BIGINT PRIMARY KEY,
+                    opted_in    BOOLEAN NOT NULL DEFAULT TRUE,
+                    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+        conn.commit()
+
+
+def toggle_article_battle_available(user_id: int) -> bool:
+    """Flip the user's opt-in for battle invites. Returns the NEW state."""
+    ensure_article_battle_available_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_article_battle_available (user_id, opted_in, updated_at)
+                VALUES (%s, TRUE, NOW())
+                ON CONFLICT (user_id) DO UPDATE
+                SET opted_in = NOT bt_3_article_battle_available.opted_in, updated_at = NOW()
+                RETURNING opted_in;
+                """,
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return bool(row[0]) if row else True
+
+
+def is_article_battle_available(user_id: int) -> bool:
+    ensure_article_battle_available_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT opted_in FROM bt_3_article_battle_available WHERE user_id = %s;",
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+    return bool(row[0]) if row else False
+
+
+def list_article_battle_available_user_ids() -> list[int]:
+    """User ids who opted in to be invited to battles (for the individual picker)."""
+    ensure_article_battle_available_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT user_id FROM bt_3_article_battle_available WHERE opted_in = TRUE;"
+            )
+            rows = cursor.fetchall() or []
+    return [int(r[0]) for r in rows if r and r[0]]
+
+
 def record_article_learn_answer(*, user_id: int, word: str, article: str,
                                 is_correct: bool, theme_key: str = "",
                                 set_id: str = "") -> None:
