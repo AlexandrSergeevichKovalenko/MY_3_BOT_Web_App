@@ -726,6 +726,18 @@ def _autosave_button_text(user_id: int | None) -> str:
         return SHORTCUT_AUTOSAVE_BUTTON_TEXT
     return f"{_AUTOSAVE_BUTTON_PREFIX} ВКЛ" if _autosave_state_cached(user_id) else f"{_AUTOSAVE_BUTTON_PREFIX} ВЫКЛ"
 
+
+def _battle_available_button_text(user_id: int | None) -> str:
+    """Dynamic label so the user sees their battle-invite opt-in state at a glance.
+    ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT is the routing prefix; '✅' = opted in."""
+    if user_id is None:
+        return ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT
+    try:
+        on = bool(is_article_battle_available(int(user_id)))
+    except Exception:
+        on = False
+    return f"{ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT} ✅" if on else ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT
+
 try:
     from backend.onboarding_assets import ONBOARDING_ASSETS as _ONBOARDING_ASSETS
 except Exception:  # pragma: no cover - assets module optional before first upload
@@ -2756,7 +2768,7 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
     rows = [artikel_row]
     # Creating a battle is Pro-only; opting-in to BE invited is for EVERYONE
     # (otherwise a free user couldn't consent to join the battle invite list).
-    battle_row = ([ARTIKEL_BATTLE_CALL_BUTTON_TEXT] if is_pro else []) + [ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT]
+    battle_row = ([ARTIKEL_BATTLE_CALL_BUTTON_TEXT] if is_pro else []) + [_battle_available_button_text(user_id)]
     rows.append(battle_row)
     return ReplyKeyboardMarkup(
         [
@@ -2808,6 +2820,9 @@ def _build_private_start_onboarding_text() -> str:
         "Смотрите видео в YouTube/Instagram/TikTok → нажимаете кнопку действия или двойной тап по задней крышке → скрин превращается в немецкий текст → прилетает вам в личку для перевода и сохранения.\n\n"
         "🔹 <b>Игры и квизы — лично или командой</b>\n"
         "Каждый день бот присылает интерактивные задания (B2+): впиши слово, собери предложение, найди синоним и др. Есть рейтинг и Кубок чемпиона недели. Хотите играть <b>командой с друзьями</b> в общем чате — команда <b>/group</b> подскажет, как настроить.\n\n"
+        "🔹 <b>Артикли: учим и сражаемся</b>\n"
+        "📚 «Учить артикли» — тренажёр der/die/das с подсказками, звуком и картинками. ⚔️ <b>Батлы</b> — дуэли на скорость: кто-то вызывает, остальные принимают и играют до вечера, а в конце — пьедестал победителей.\n"
+        "👉 Чтобы тебя могли позвать на батл, нажми внизу кнопку <b>«🛡 Готов к батлам»</b> (✅ = ты в списке). А Premium может сам вызывать других кнопкой <b>«⚔️ Вызвать на батл»</b>.\n\n"
         "➖➖➖\n"
         "📲 Начните с кнопки <b>«Установить Shortcut»</b> внизу.\n"
         "🎬 А как всё это выглядит на практике — кнопка <b>«Как пользоваться»</b>."
@@ -4936,6 +4951,7 @@ async def handle_button_click(update: Update, context: CallbackContext):
         or (
             _msg_text not in _allowed_without_legacy_keyboard
             and not _msg_text.startswith(_AUTOSAVE_BUTTON_PREFIX)
+            and not _msg_text.startswith(ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT)
         )
     ):
         return
@@ -4997,16 +5013,17 @@ async def handle_button_click(update: Update, context: CallbackContext):
             await update.message.reply_text(
                 "🎯 <b>Своя тема на завтра</b> — подготовим её ночью 👇",
                 parse_mode="HTML", reply_markup=kb)
-    elif text == ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT:
+    elif text.startswith(ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT):
         uid = int(update.effective_user.id) if update.effective_user else 0
         uname = _display_user_name(update.effective_user)
         new_state = await asyncio.to_thread(toggle_article_battle_available, uid, uname)
-        if new_state:
-            await update.message.reply_text(
-                "🛡 Готово — теперь тебя могут <b>лично пригласить</b> на батл. "
-                "Нажми кнопку ещё раз, чтобы выйти из списка.", parse_mode="HTML")
-        else:
-            await update.message.reply_text("⚪ Ты вышел из списка приглашаемых на батлы.")
+        msg = ("🛡 Готово — теперь тебя могут <b>лично пригласить</b> на батл. "
+               "Нажми кнопку ещё раз, чтобы выйти из списка." if new_state
+               else "⚪ Ты вышел из списка приглашаемых на батлы.")
+        # Re-render the keyboard so the button label reflects the new state (✅).
+        await update.message.reply_text(
+            msg, parse_mode="HTML",
+            reply_markup=_build_private_language_tutor_reply_keyboard(uid))
     elif text == ARTIKEL_BATTLE_CALL_BUTTON_TEXT:
         await _start_battle_wizard(update, context)
     elif text == SHORTCUT_AUTOSAVE_BUTTON_TEXT or text.startswith(_AUTOSAVE_BUTTON_PREFIX):
