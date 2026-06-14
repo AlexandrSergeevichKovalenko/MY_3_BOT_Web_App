@@ -19289,6 +19289,38 @@ async def admin_artikel_images_command(update: Update, context: CallbackContext)
     )
 
 
+async def admin_artikel_fillmedia_command(update: Update, context: CallbackContext) -> None:
+    """Fill mnemonics + audio + images for a whole theme now (bounded per run; rerun
+    to finish a big theme). /artikel_fillmedia <theme_key> [cap]"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    args = [a.strip() for a in (context.args or []) if a.strip()]
+    if not args:
+        await message.reply_text("Использование: /artikel_fillmedia <theme_key> [cap]")
+        return
+    theme_key = args[0]
+    try:
+        cap = max(10, min(300, int(args[1]))) if len(args) > 1 else ARTIKEL_NIGHTLY_MEDIA_CAP
+    except ValueError:
+        cap = ARTIKEL_NIGHTLY_MEDIA_CAP
+    theme = await asyncio.to_thread(get_article_sprint_theme, theme_key)
+    if not theme:
+        await message.reply_text(f"Нет темы <code>{html.escape(theme_key)}</code>.", parse_mode="HTML")
+        return
+    status = await message.reply_text(
+        f"⏳ Готовлю медиа темы «{html.escape(theme['label_de'])}» (до {cap} слов на тип)… это займёт время.")
+    res = await _fill_artikel_theme_media(theme_key, cap=cap)
+    await status.edit_text(
+        f"✅ «{html.escape(theme['label_de'])}» — этот прогон: "
+        f"мнемоники +{res.get('mnemonics')} · аудио +{res.get('audio')} · картинки +{res.get('images')}.\n"
+        f"Повтори команду, пока числа не станут 0 (тема дочистится).")
+
+
 async def admin_artikel_pixtest_command(update: Update, context: CallbackContext) -> None:
     """Direct Pixabay probe to check the key/connection. /artikel_pixtest <query>"""
     user = update.effective_user
@@ -21994,33 +22026,65 @@ async def _send_scheduled_artikel_learn(context: CallbackContext) -> None:
     logging.info("artikel_learn reminder sent=%s", sent)
 
 
+# How many still-undone words per theme per media type to process each night. A
+# theme (~280) completes over ~2 nights at 150; everything is cached forever after.
+ARTIKEL_NIGHTLY_MEDIA_CAP = max(20, int((os.getenv("ARTIKEL_NIGHTLY_MEDIA_CAP") or "150").strip() or "150"))
+
+
+async def _fill_artikel_theme_media(theme_key: str, *, cap: int = ARTIKEL_NIGHTLY_MEDIA_CAP) -> dict:
+    """Fill mnemonics + audio + images for up to `cap` not-yet-done words of a theme
+    (the *_without_* / *_for_image helpers return only undone ones, so nights walk
+    through the whole theme without reprocessing). One-time per word — cached."""
+    from backend.article_learn import _generate_and_cache_mnemonics
+    made = {"mnemonics": 0, "audio": 0, "images": 0}
+    # Mnemonics (chunked LLM calls).
+    todo_m = await asyncio.to_thread(get_article_nouns_without_mnemonic, theme_key, cap)
+    mitems = [{"w": t["word"], "a": t["article"], "ru": t.get("meaning_ru", "")} for t in todo_m]
+    for i in range(0, len(mitems), 20):
+        try:
+            made["mnemonics"] += len(await asyncio.to_thread(_generate_and_cache_mnemonics, mitems[i:i + 20]))
+        except Exception:
+            logging.warning("artikel_media: mnemonic chunk failed theme=%s", theme_key, exc_info=True)
+    # Audio (TTS per word).
+    todo_a = await asyncio.to_thread(get_article_nouns_without_audio, theme_key, cap)
+    made["audio"] = int((await _backfill_artikel_audio(todo_a, limit=cap)).get("made") or 0)
+    # Images (LLM meta chunked inside + Pixabay).
+    todo_i = await asyncio.to_thread(get_article_nouns_for_image, theme_key, cap)
+    made["images"] = int((await _backfill_artikel_images(todo_i, limit=cap)).get("made") or 0)
+    return made
+
+
 async def _prewarm_artikel_focus_job(context: CallbackContext) -> None:
-    """Overnight: for each Pro user's chosen focus theme for TOMORROW, prep the exact
-    deck slice (mnemonics + audio + images) so it opens instantly and with media."""
+    """Overnight: fill media (mnemonics + audio + images) for the WHOLE of each
+    ACTIVE theme — today's daily-set theme + tomorrow's scheduled theme + every Pro
+    focus theme for tomorrow — so any batch a user pages to is ready. Bounded per
+    night (ARTIKEL_NIGHTLY_MEDIA_CAP); themes complete over a couple of nights."""
     if not _artikel_sprint_enabled():
         return
     try:
-        from backend.article_learn import focus_new_words, _generate_and_cache_mnemonics
-        from backend.database import list_article_learn_focus_themes, get_article_noun_mnemonics
-        tomorrow = _get_quiz_schedule_now().date() + timedelta(days=1)
-        themes = await asyncio.to_thread(list_article_learn_focus_themes, tomorrow)
-        for tk in themes:
-            words = await asyncio.to_thread(focus_new_words, tomorrow, tk)
-            if not words:
-                continue
-            items = [{"word": w["w"], "article": w["a"], "meaning_ru": w.get("ru", "")} for w in words]
-            try:
-                have = await asyncio.to_thread(get_article_noun_mnemonics, [w["w"] for w in words])
-                miss = [w for w in words if str(w["w"]).lower() not in have]
-                if miss:
-                    await asyncio.to_thread(_generate_and_cache_mnemonics, miss)
-            except Exception:
-                logging.warning("artikel_focus: mnemonic prewarm failed theme=%s", tk, exc_info=True)
-            await _backfill_artikel_audio(items, limit=len(items))
-            await _backfill_artikel_images(items, limit=len(items))
-        logging.info("artikel_focus prewarm done themes=%s", len(themes))
+        from backend.database import (
+            list_article_learn_focus_themes, get_article_sprint_theme_for_date,
+        )
+        now = _get_quiz_schedule_now().date()
+        tomorrow = now + timedelta(days=1)
+        themes: set[str] = set()
+        for d in (now, tomorrow):
+            sid = await asyncio.to_thread(get_daily_article_sprint_set_id, d)
+            if sid:
+                s = await asyncio.to_thread(get_article_sprint_set, sid)
+                if s and s.get("theme_key"):
+                    themes.add(str(s["theme_key"]))
+        tk = await asyncio.to_thread(get_article_sprint_theme_for_date, tomorrow)
+        if tk:
+            themes.add(str(tk))
+        themes.update(await asyncio.to_thread(list_article_learn_focus_themes, tomorrow))
+        themes.discard("gemischt")
+        for theme_key in themes:
+            res = await _fill_artikel_theme_media(theme_key)
+            logging.info("artikel_media: theme=%s filled %s", theme_key, res)
+        logging.info("artikel_media prewarm done themes=%s", len(themes))
     except Exception:
-        logging.warning("artikel_focus prewarm failed", exc_info=True)
+        logging.warning("artikel_media prewarm failed", exc_info=True)
 
 
 # Daily admin nudge to pick TOMORROW's Artikel Sprint theme (default 16:00 Vienna).
@@ -23095,9 +23159,14 @@ async def _backfill_artikel_images(items: list[dict], limit: int = 15) -> dict:
     batch = (items or [])[:limit]
     if not batch:
         return {"requested": 0, "made": 0}
-    metas = await run_article_image_meta(items=[
-        {"word": i.get("word"), "article": i.get("article"), "ru": i.get("meaning_ru", "")}
-        for i in batch])
+    # LLM image-meta in sub-batches of 20 so a large `limit` doesn't make one huge
+    # (truncation-prone) prompt.
+    metas: list = []
+    for i in range(0, len(batch), 20):
+        chunk = batch[i:i + 20]
+        metas.extend(await run_article_image_meta(items=[
+            {"word": x.get("word"), "article": x.get("article"), "ru": x.get("meaning_ru", "")}
+            for x in chunk]) or [])
     meta_by_word = {str(m.get("word") or "").lower(): m for m in (metas or [])}
     made = concrete = 0
     for it in batch:
@@ -24445,6 +24514,7 @@ def main():
     application.add_handler(CommandHandler("artikel_audio", admin_artikel_audio_command))
     application.add_handler(CommandHandler("artikel_images", admin_artikel_images_command))
     application.add_handler(CommandHandler("artikel_pixtest", admin_artikel_pixtest_command))
+    application.add_handler(CommandHandler("artikel_fillmedia", admin_artikel_fillmedia_command))
     application.add_handler(CommandHandler("artikel_learn_prewarm", admin_artikel_learn_prewarm_command))
     application.add_handler(CommandHandler("artikel_learn", admin_artikel_learn_command))
     application.add_handler(CommandHandler("artikel_focus", admin_artikel_focus_command))
