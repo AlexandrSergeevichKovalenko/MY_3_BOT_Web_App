@@ -19280,9 +19280,37 @@ async def admin_artikel_images_command(update: Update, context: CallbackContext)
     status = await message.reply_text(f"⏳ Подбираю картинки для {len(todo)} слов темы «{html.escape(theme['label_de'])}»…")
     res = await _backfill_artikel_images(todo, limit=count)
     await status.edit_text(
-        f"🖼 «{html.escape(theme['label_de'])}» — найдено картинок {res.get('made')}/{res.get('requested')} "
-        f"(остальные — абстрактные или без подходящего фото → цветная карточка)."
+        f"🖼 «{html.escape(theme['label_de'])}»\n"
+        f"Оценено: {res.get('requested')} · LLM-ответов: {res.get('meta')} · "
+        f"конкретных: {res.get('concrete')} · с фото: <b>{res.get('made')}</b>\n"
+        f"Если конкретных&gt;0, а с фото 0 — Pixabay не нашёл (медицина слабо покрыта). "
+        f"Проверь ключ: /artikel_pixtest dog",
+        parse_mode="HTML",
     )
+
+
+async def admin_artikel_pixtest_command(update: Update, context: CallbackContext) -> None:
+    """Direct Pixabay probe to check the key/connection. /artikel_pixtest <query>"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    from backend.stock_image import stock_image_enabled, fetch_stock_image_bytes
+    if not stock_image_enabled():
+        await message.reply_text("⚠️ PIXABAY_API_KEY не виден этому процессу (MY_3_BOT).")
+        return
+    q = " ".join(a.strip() for a in (context.args or []) if a.strip()) or "dog"
+    img = await asyncio.to_thread(fetch_stock_image_bytes, q)
+    if img:
+        await message.reply_text(f"✅ Pixabay работает: для «{html.escape(q)}» получено фото ({len(img)} байт). Ключ валиден.")
+    else:
+        await message.reply_text(
+            f"❌ Для «{html.escape(q)}» фото не получено. Если даже для 'dog' пусто — ключ "
+            f"невалиден/заблокирован или нет сети (смотри логи: 'pixabay search HTTP ...')."
+        )
 
 
 async def admin_artikel_learn_prewarm_command(update: Update, context: CallbackContext) -> None:
@@ -23071,7 +23099,7 @@ async def _backfill_artikel_images(items: list[dict], limit: int = 15) -> dict:
         {"word": i.get("word"), "article": i.get("article"), "ru": i.get("meaning_ru", "")}
         for i in batch])
     meta_by_word = {str(m.get("word") or "").lower(): m for m in (metas or [])}
-    made = 0
+    made = concrete = 0
     for it in batch:
         word = str(it.get("word") or "").strip()
         article = str(it.get("article") or "").strip().lower()
@@ -23081,6 +23109,7 @@ async def _backfill_artikel_images(items: list[dict], limit: int = 15) -> dict:
         query = str(m.get("image_query") or "").strip()
         key = ""
         if bool(m.get("is_concrete")) and query:
+            concrete += 1
             img = await asyncio.to_thread(fetch_stock_image_bytes, query)
             if img:
                 k = _artikel_image_key(word)
@@ -23091,7 +23120,9 @@ async def _backfill_artikel_images(items: list[dict], limit: int = 15) -> dict:
                 except Exception:
                     logging.warning("artikel_images: R2 put failed word=%s", word, exc_info=True)
         await asyncio.to_thread(mark_article_noun_image, word=word, article=article, image_object_key=key)
-    return {"requested": len(batch), "made": made}
+    logging.info("artikel_images: requested=%s meta=%s concrete=%s made=%s",
+                 len(batch), len(metas or []), concrete, made)
+    return {"requested": len(batch), "meta": len(metas or []), "concrete": concrete, "made": made}
 
 
 async def _backfill_listening_audio(limit: int = 10) -> dict:
@@ -24413,6 +24444,7 @@ def main():
     application.add_handler(CommandHandler("artikel_mnemonics", admin_artikel_mnemonics_command))
     application.add_handler(CommandHandler("artikel_audio", admin_artikel_audio_command))
     application.add_handler(CommandHandler("artikel_images", admin_artikel_images_command))
+    application.add_handler(CommandHandler("artikel_pixtest", admin_artikel_pixtest_command))
     application.add_handler(CommandHandler("artikel_learn_prewarm", admin_artikel_learn_prewarm_command))
     application.add_handler(CommandHandler("artikel_learn", admin_artikel_learn_command))
     application.add_handler(CommandHandler("artikel_focus", admin_artikel_focus_command))
