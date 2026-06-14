@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import logging
 import random
+import re
 import time
 
 # ─── PIL ──────────────────────────────────────────────────────────────────────
@@ -523,6 +524,40 @@ Format (return exactly this structure):
   ]
 }}"""
 
+_MANUAL_REBUS_USER_TMPL = """\
+Create visual rebus entries ONLY for these admin-approved German compound words:
+{requested_words}
+
+ALREADY IN BANK — do NOT repeat, and mark matching requested words as duplicates by omitting them:
+{existing_words}
+
+Return ONLY valid JSON, no markdown. If a requested word is not suitable for a two-part concrete visual rebus,
+omit it rather than forcing a bad split.
+
+Format (return exactly this structure):
+{{
+  "words": [
+    {{
+      "id": "handschuh_manual",
+      "compound": "Handschuh",
+      "article": "der",
+      "meaning_ru": "перчатка",
+      "difficulty": "A2",
+      "category": "Kleidung",
+      "parts": [
+        {{"word": "Hand", "meaning_ru": "рука"}},
+        {{"word": "Schuh", "meaning_ru": "ботинок"}}
+      ],
+      "dalle_prompts": {{
+        "Hand": "An open human hand, palm facing viewer, fingers spread, {style}",
+        "Schuh": "A single classic leather shoe, side view, {style}"
+      }},
+      "wrong_options": ["Hausschuh", "Handtuch", "Handtasche"],
+      "explanation_ru": "Hand (рука) + Schuh (ботинок) = Handschuh (перчатка) — буквально «обувь для руки»"
+    }}
+  ]
+}}"""
+
 
 def _call_gpt_for_replenishment(count: int, existing_words: list[str]) -> list[dict]:
     """Call GPT-4.1-mini to generate new compound entries. Returns validated list."""
@@ -573,6 +608,119 @@ def _call_gpt_for_replenishment(count: int, existing_words: list[str]) -> list[d
     return words
 
 
+def _call_gpt_for_manual_rebus_entries(requested_words: list[str], existing_words: list[str]) -> list[dict]:
+    """Return GPT metadata for admin-approved target compounds only."""
+    import json
+    import os
+    import requests as _requests
+
+    api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY not set")
+    model = (os.getenv("OPENAI_QUIZ_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-4.1-mini").strip()
+
+    existing_str = ", ".join(sorted(existing_words)) if existing_words else "none"
+    requested_str = "\n".join(f"- {word}" for word in requested_words)
+    user_msg = _MANUAL_REBUS_USER_TMPL.format(
+        requested_words=requested_str,
+        existing_words=existing_str,
+        style=_REPLENISHMENT_STYLE,
+    )
+
+    payload = {
+        "model": model,
+        "temperature": 0.2,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": _REPLENISHMENT_SYSTEM},
+            {"role": "user", "content": user_msg},
+        ],
+    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    resp = _requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers=headers,
+        json=payload,
+        timeout=90,
+    )
+    if not resp.ok:
+        raise RuntimeError(f"OpenAI manual rebus HTTP {resp.status_code}: {resp.text[:300]}")
+
+    raw = str((resp.json().get("choices") or [{}])[0].get("message", {}).get("content") or "")
+    try:
+        parsed = json.loads(raw)
+    except Exception as exc:
+        raise RuntimeError(f"manual rebus JSON parse failed: {exc}") from exc
+    words = parsed.get("words") if isinstance(parsed, dict) else None
+    if not isinstance(words, list):
+        raise RuntimeError("manual rebus: missing 'words' array in response")
+    return words
+
+
+def _normalize_compound_key(value: str) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _manual_compound_id(compound: str) -> str:
+    folded = (
+        str(compound or "").strip().lower()
+        .replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
+    )
+    slug = re.sub(r"[^a-z0-9]+", "_", folded).strip("_")
+    return f"manual_{slug or 'rebus'}"
+
+
+def _entry_to_db_entry(entry: dict) -> dict:
+    compound = str(entry.get("compound") or "").strip()
+    compound_id = _manual_compound_id(compound)
+    return {
+        "id": compound_id,
+        "compound": compound,
+        "article": str(entry.get("article") or "").strip(),
+        "meaning_ru": str(entry.get("meaning_ru") or "").strip(),
+        "difficulty": str(entry.get("difficulty") or "B1").strip(),
+        "category": str(entry.get("category") or "").strip(),
+        "parts": [
+            {"word": str(p.get("word") or ""), "meaning_ru": str(p.get("meaning_ru") or "")}
+            for p in (entry.get("parts") or [])
+            if isinstance(p, dict)
+        ],
+        "wrong_options": [str(w) for w in (entry.get("wrong_options") or [])[:3]],
+        "explanation_ru": str(entry.get("explanation_ru") or "").strip(),
+    }
+
+
+def _store_rebus_entry_from_gpt(entry: dict, existing_set: set[str]) -> tuple[str | None, str | None]:
+    """Validate and store one GPT-produced rebus entry. Returns (compound_id, error)."""
+    from backend.database import upsert_rebus_bank_entry, upsert_rebus_component_image
+
+    compound = str(entry.get("compound") or "").strip()
+    err = _validate_replenishment_entry(entry, existing_set)
+    if err:
+        return None, f"{compound or '?'}: {err}"
+
+    dalle_prompts: dict = entry.get("dalle_prompts") or {}
+    for part in entry.get("parts") or []:
+        if not isinstance(part, dict):
+            continue
+        word = str(part.get("word") or "").strip()
+        prompt = str(dalle_prompts.get(word) or "").strip()
+        if word and prompt:
+            upsert_rebus_component_image(
+                word,
+                generation_status="pending",
+                dalle_prompt=prompt,
+            )
+
+    db_entry = _entry_to_db_entry(entry)
+    try:
+        upsert_rebus_bank_entry(db_entry)
+    except Exception as exc:
+        return None, f"{compound}: upsert error {exc}"
+    existing_set.add(compound.lower())
+    return str(db_entry["id"]), None
+
+
 # Parts that cannot be drawn as a single concrete object — numbers, articles,
 # pronouns, prepositions and inseparable prefixes. A rebus needs BOTH parts to
 # be depictable (e.g. Einhorn = "ein"(one) + "Horn" is invalid: "one" can't be
@@ -599,11 +747,13 @@ def _validate_replenishment_entry(entry: dict, existing_set: set[str]) -> str | 
     parts = entry.get("parts")
     if not isinstance(parts, list) or len(parts) != 2:
         return "parts must be list of exactly 2"
-    from backend.rebus_bank import part_word_matches_compound
+    from backend.rebus_bank import is_rebus_compound_blocked, part_word_matches_compound
     for p in parts:
         word = str(p.get("word") or "").strip()
         if not word:
             return "empty part word"
+        if is_rebus_compound_blocked(compound, compound_id=str(entry.get("id") or "")):
+            return f"blocked opaque compound: {compound}"
         # Reject non-depictable parts: a rebus image must show a concrete object.
         if word.lower() in _NON_DEPICTABLE_PARTS:
             return f"non-depictable part: {word}"
@@ -628,8 +778,6 @@ def generate_rebus_replenishment(count: int = 20) -> dict:
     """
     from backend.database import (
         get_existing_rebus_compound_words,
-        upsert_rebus_bank_entry,
-        upsert_rebus_component_image,
     )
 
     existing_words = get_existing_rebus_compound_words()
@@ -646,53 +794,122 @@ def generate_rebus_replenishment(count: int = 20) -> dict:
     added = 0
     skipped = 0
     errors = []
+    prepared: list[dict] = []
 
     for entry in raw_entries:
         compound = str(entry.get("compound") or "").strip()
-        err = _validate_replenishment_entry(entry, existing_set)
+        compound_id, err = _store_rebus_entry_from_gpt(entry, existing_set)
         if err:
             logging.info("rebus_replenishment: skip %s — %s", compound, err)
             skipped += 1
-            errors.append(f"{compound}: {err}")
+            errors.append(err)
             continue
-
-        # Store DALL-E prompts for component words not yet in DB
-        dalle_prompts: dict = entry.get("dalle_prompts") or {}
-        parts = entry.get("parts") or []
-        for part in parts:
-            word = str(part.get("word") or "").strip()
-            if word and dalle_prompts.get(word):
-                upsert_rebus_component_image(
-                    word,
-                    generation_status="pending",
-                    dalle_prompt=str(dalle_prompts[word]),
-                )
-
-        # Build DB entry (same structure as REBUS_COMPOUND_BANK)
-        compound_id = str(entry.get("id") or compound.lower().replace(" ", "_"))
-        db_entry = {
-            "id": compound_id,
-            "compound": compound,
-            "article": str(entry.get("article") or "").strip(),
-            "meaning_ru": str(entry.get("meaning_ru") or "").strip(),
-            "difficulty": str(entry.get("difficulty") or "B1").strip(),
-            "category": str(entry.get("category") or "").strip(),
-            "parts": [
-                {"word": str(p.get("word") or ""), "meaning_ru": str(p.get("meaning_ru") or "")}
-                for p in parts
-            ],
-            "wrong_options": [str(w) for w in (entry.get("wrong_options") or [])[:3]],
-            "explanation_ru": str(entry.get("explanation_ru") or "").strip(),
-        }
-        try:
-            upsert_rebus_bank_entry(db_entry)
-            existing_set.add(compound.lower())
-            added += 1
-            logging.info("rebus_replenishment: added %s", compound)
-        except Exception as exc:
-            logging.warning("rebus_replenishment: upsert failed for %s: %s", compound, exc)
-            errors.append(f"{compound}: upsert error {exc}")
-            skipped += 1
+        added += 1
+        logging.info("rebus_replenishment: added %s", compound)
+        if compound_id:
+            prepared.append({"compound": compound, "compound_id": compound_id})
 
     logging.info("rebus_replenishment: done added=%s skipped=%s", added, skipped)
     return {"status": "done", "added": added, "skipped": skipped, "errors": errors[:10]}
+
+
+def generate_manual_rebus_entries(requested_words: list[str], *, prepare_images: bool = True) -> dict:
+    """
+    Admin-controlled rebus import:
+    - accepts an explicit list of target compounds,
+    - skips duplicates already present in DB or repeated in the request,
+    - asks GPT only to annotate those target compounds,
+    - validates and stores entries,
+    - optionally generates component/composed images immediately.
+    """
+    from backend.database import get_existing_rebus_compound_words
+
+    cleaned: list[str] = []
+    duplicate_input: list[str] = []
+    seen_requested: set[str] = set()
+    for raw in requested_words or []:
+        word = " ".join(str(raw or "").strip().split())
+        if not word:
+            continue
+        key = _normalize_compound_key(word)
+        if key in seen_requested:
+            duplicate_input.append(word)
+            continue
+        seen_requested.add(key)
+        cleaned.append(word)
+
+    existing_words = get_existing_rebus_compound_words()
+    existing_set = {w.lower() for w in existing_words}
+    existing_keys = {_normalize_compound_key(w) for w in existing_words}
+
+    duplicates_existing = [w for w in cleaned if _normalize_compound_key(w) in existing_keys]
+    targets = [w for w in cleaned if _normalize_compound_key(w) not in existing_keys]
+    if not targets:
+        return {
+            "status": "done",
+            "requested": len(cleaned),
+            "added": 0,
+            "prepared_ready": 0,
+            "prepared_failed": 0,
+            "duplicates_existing": duplicates_existing,
+            "duplicates_input": duplicate_input,
+            "errors": [],
+            "prepared": [],
+        }
+
+    raw_entries = _call_gpt_for_manual_rebus_entries(targets, existing_words)
+    requested_keys = {_normalize_compound_key(w) for w in targets}
+
+    added_entries: list[dict] = []
+    errors: list[str] = []
+    for entry in raw_entries:
+        compound = str(entry.get("compound") or "").strip()
+        if _normalize_compound_key(compound) not in requested_keys:
+            errors.append(f"{compound or '?'}: not in requested admin list")
+            continue
+        compound_id, err = _store_rebus_entry_from_gpt(entry, existing_set)
+        if err:
+            errors.append(err)
+            continue
+        if compound_id:
+            added_entries.append({"compound": compound, "compound_id": compound_id})
+
+    returned_keys = {_normalize_compound_key(e.get("compound") or "") for e in added_entries}
+    omitted = [w for w in targets if _normalize_compound_key(w) not in returned_keys]
+    for word in omitted:
+        if not any(str(err).lower().startswith(_normalize_compound_key(word)) for err in errors):
+            errors.append(f"{word}: GPT omitted or marked unsuitable")
+
+    prepared: list[dict] = []
+    ready = 0
+    failed = 0
+    if prepare_images:
+        for item in added_entries:
+            compound_id = str(item.get("compound_id") or "")
+            if not compound_id:
+                continue
+            result = prepare_rebus_entry(compound_id)
+            status = str(result.get("status") or "")
+            if status == "ready":
+                ready += 1
+            else:
+                failed += 1
+            prepared.append({
+                "compound": item.get("compound"),
+                "compound_id": compound_id,
+                "status": status or "unknown",
+                "reason": result.get("reason") or "",
+            })
+
+    return {
+        "status": "done",
+        "requested": len(cleaned),
+        "sent_to_gpt": len(targets),
+        "added": len(added_entries),
+        "prepared_ready": ready,
+        "prepared_failed": failed,
+        "duplicates_existing": duplicates_existing,
+        "duplicates_input": duplicate_input,
+        "errors": errors[:30],
+        "prepared": prepared[:50],
+    }

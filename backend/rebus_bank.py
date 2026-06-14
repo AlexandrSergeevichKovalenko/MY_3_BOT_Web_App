@@ -1216,17 +1216,6 @@ REBUS_COMPOUND_BANK: list[dict] = [
         "explanation_ru": "Kranke (больной) + Wagen (машина) = Krankenwagen — скорая помощь",
     },
     {
-        "id": "zuckerhut_001",
-        "compound": "Zuckerhut",
-        "article": "der",
-        "meaning_ru": "сахарная голова (сахарная конусная форма)",
-        "difficulty": "B1",
-        "category": "food",
-        "parts": [{"word": "Zucker", "meaning_ru": "сахар"}, {"word": "Hut", "meaning_ru": "шляпа"}],
-        "wrong_options": ["Zuckerstange", "Strohhut", "Zuckerbrot"],
-        "explanation_ru": "Zucker (сахар) + Hut (шляпа) = Zuckerhut — сахарная голова в форме конуса",
-    },
-    {
         "id": "honigwabe_001",
         "compound": "Honigwabe",
         "article": "die",
@@ -1517,6 +1506,19 @@ _REBUS_SEMANTIC_PART_EXCEPTIONS: set[tuple[str, str]] = {
     ("leuchtturm_001",   "Licht"),  # Licht (light) visually stands in for the Leucht- part
 }
 
+# Words that are real German compounds but bad learning rebuses because at least
+# one visual component is etymological/shape-based rather than the everyday object
+# the image would show. Example: Zuckerhut is not "sugar + a hat" for learners.
+_REBUS_BLOCKED_COMPOUNDS: set[str] = {
+    "zuckerhut",
+}
+
+
+def is_rebus_compound_blocked(compound: str, *, compound_id: str = "") -> bool:
+    folded_compound = _fold_de(compound).replace(" ", "")
+    folded_id = _fold_de(compound_id).replace(" ", "")
+    return folded_compound in _REBUS_BLOCKED_COMPOUNDS or folded_id in _REBUS_BLOCKED_COMPOUNDS
+
 
 def part_word_matches_compound(compound: str, word: str, *, compound_id: str = "") -> bool:
     """True if `word` is a real visual component of `compound`.
@@ -1553,6 +1555,8 @@ def validate_rebus_entry_consistency(entry: dict) -> str | None:
     compound_id = str(entry.get("id") or "").strip()
     if not compound:
         return "missing compound"
+    if is_rebus_compound_blocked(compound, compound_id=compound_id):
+        return f"blocked opaque compound '{compound}'"
     parts = entry.get("parts") or []
     for p in parts:
         word = str(p.get("word") or "").strip()

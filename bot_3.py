@@ -353,6 +353,13 @@ REBUS_SLOT_TIMES = {(h, 30) for h in range(8, 21)}  # 8:30–20:30 every hour
 REBUS_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("REBUS_POOL_TOPUP_TRIGGER") or "10").strip() or "10"))
 REBUS_POOL_TARGET = max(5, int((os.getenv("REBUS_POOL_TARGET") or "20").strip() or "20"))
 REBUS_COOLDOWN_DAYS = max(7, int((os.getenv("REBUS_COOLDOWN_DAYS") or "30").strip() or "30"))
+REBUS_GPT_REPLENISHMENT_ENABLED = (os.getenv("REBUS_GPT_REPLENISHMENT_ENABLED") or "0").strip().lower() in ("1", "true", "yes", "on")
+REBUS_ADMIN_LOW_POOL_THRESHOLD = max(1, int((os.getenv("REBUS_ADMIN_LOW_POOL_THRESHOLD") or "50").strip() or "50"))
+REBUS_ADMIN_LOW_POOL_ALERT_COOLDOWN_SECONDS = max(
+    300,
+    int((os.getenv("REBUS_ADMIN_LOW_POOL_ALERT_COOLDOWN_SECONDS") or str(6 * 60 * 60)).strip() or str(6 * 60 * 60)),
+)
+_REBUS_LOW_POOL_LAST_ALERT_AT = 0.0
 # Outbox poll intervals (seconds). These DM-delivery pollers are not time-critical,
 # so we keep them gentle to avoid pointless DB churn (most polls find nothing).
 FREEFORM_CARD_POLL_SECONDS = max(5, int((os.getenv("FREEFORM_CARD_POLL_SECONDS") or "15").strip() or "15"))
@@ -14556,8 +14563,22 @@ def _coerce_response_json(response_json: object) -> dict:
     return {}
 
 
-def _build_quiz_fallback(word_ru: str, translation_de: str | None, article: str | None) -> dict:
-    if article and translation_de:
+def _is_single_german_token(value: str | None) -> bool:
+    text = str(value or "").strip()
+    return bool(re.fullmatch(r"[A-Za-zÄÖÜäöüß-]{3,40}", text))
+
+
+def _build_quiz_fallback(
+    word_ru: str,
+    translation_de: str | None,
+    article: str | None,
+    part_of_speech: str | None = None,
+) -> dict | None:
+    pos = str(part_of_speech or "").strip().lower()
+    article = str(article or "").strip().lower()
+    translation_de = str(translation_de or "").strip()
+
+    if article and translation_de and pos == "noun" and _is_single_german_token(translation_de):
         correct_option = f"{article} {translation_de}"
         options = [
             correct_option,
@@ -14567,24 +14588,8 @@ def _build_quiz_fallback(word_ru: str, translation_de: str | None, article: str 
             options.append(translation_de)
         question = f"Какой артикль и перевод правильны для «{word_ru}»?"
         correct_option_id = options.index(correct_option)
-    elif translation_de:
-        options = [
-            translation_de,
-            f"der {translation_de}",
-            f"die {translation_de}",
-            f"das {translation_de}",
-        ]
-        question = f"Как переводится слово «{word_ru}» на немецкий?"
-        correct_option_id = 0
     else:
-        options = [
-            word_ru,
-            f"{word_ru} (DE)",
-            f"die {word_ru}",
-            f"das {word_ru}",
-        ]
-        question = f"Выберите правильный немецкий вариант для «{word_ru}»."
-        correct_option_id = 0
+        return None
 
     return {
         "question": question,
@@ -14594,7 +14599,7 @@ def _build_quiz_fallback(word_ru: str, translation_de: str | None, article: str 
     }
 
 
-def _normalize_quiz_payload(payload: dict, fallback: dict) -> dict:
+def _normalize_quiz_payload(payload: dict, fallback: dict | None) -> dict | None:
     question = payload.get("question")
     options = payload.get("options")
     correct_option_id = payload.get("correct_option_id")
@@ -14633,6 +14638,8 @@ def _normalize_quiz_payload(payload: dict, fallback: dict) -> dict:
         return fallback
 
     if len(cleaned_options) < 4:
+        if not fallback:
+            return None
         for option in fallback["options"]:
             if option not in cleaned_options:
                 cleaned_options.append(option)
@@ -16744,7 +16751,7 @@ async def generate_word_quiz(entry: dict) -> dict | None:
     usage_examples = response_json.get("usage_examples") if response_json else []
     usage_examples = usage_examples or []
 
-    fallback = _build_quiz_fallback(word_ru, translation_de, article)
+    fallback = _build_quiz_fallback(word_ru, translation_de, article, part_of_speech)
 
     prompt_payload = {
         "word_ru": word_ru,
@@ -16765,7 +16772,7 @@ async def generate_word_quiz(entry: dict) -> dict | None:
         if not payload:
             continue
         quiz = _normalize_quiz_payload(payload, fallback)
-        if quiz is fallback:
+        if not quiz or (fallback is not None and quiz is fallback):
             continue
         if _quiz_has_trivial_duplicate_options(quiz.get("options") or []):
             logging.info("word_quiz: rejected (trivial duplicate options) word=%s", word_ru)
@@ -16782,7 +16789,15 @@ async def generate_word_quiz(entry: dict) -> dict | None:
                 continue
         return _apply_quiz_freeform_option(quiz)
 
-    return _apply_quiz_freeform_option(fallback)
+    if fallback:
+        return _apply_quiz_freeform_option(fallback)
+    logging.info(
+        "word_quiz: skipped no safe fallback word=%s translation=%s pos=%s",
+        word_ru,
+        translation_de,
+        part_of_speech,
+    )
+    return None
 
 
 async def cleanup_quiz_cache(context: CallbackContext) -> None:
@@ -17982,6 +17997,24 @@ async def send_rebus_to_chat(
     wrong_options = list(compound_entry.get("wrong_options") or [])
 
     try:
+        from backend.rebus_bank import validate_rebus_entry_consistency
+        consistency_error = validate_rebus_entry_consistency({
+            "id": compound_id,
+            "compound": compound_word,
+            "parts": list(compound_entry.get("parts") or []),
+        })
+    except Exception:
+        consistency_error = "consistency_check_failed"
+    if consistency_error:
+        logging.warning(
+            "rebus_send: rejected inconsistent compound_id=%s compound=%s reason=%s",
+            compound_id,
+            compound_word,
+            consistency_error,
+        )
+        return False
+
+    try:
         dispatch_id = await asyncio.to_thread(
             record_rebus_dispatch,
             slot_date=slot_date,
@@ -18049,6 +18082,39 @@ async def send_rebus_to_chat(
         dispatch_id, compound_id, chat_id, target_user_id,
     )
     return True
+
+
+async def _maybe_alert_admin_rebus_pool_low(context: CallbackContext, *, total_ready: int) -> None:
+    global _REBUS_LOW_POOL_LAST_ALERT_AT
+    if int(total_ready) >= REBUS_ADMIN_LOW_POOL_THRESHOLD:
+        return
+    now = pytime.time()
+    if _REBUS_LOW_POOL_LAST_ALERT_AT and (now - _REBUS_LOW_POOL_LAST_ALERT_AT) < REBUS_ADMIN_LOW_POOL_ALERT_COOLDOWN_SECONDS:
+        return
+    admin_ids = sorted(get_admin_telegram_ids())
+    if not admin_ids:
+        logging.info("rebus_low_pool_alert skipped: no admin ids configured total_ready=%s", total_ready)
+        return
+    text = (
+        "🧩 Rebus pool is low\n\n"
+        f"Ready rebuses: {int(total_ready)}\n"
+        f"Threshold: {REBUS_ADMIN_LOW_POOL_THRESHOLD}\n\n"
+        "Пополнить вручную:\n"
+        "/admin_rebus_add\n"
+        "Handschuh\n"
+        "Apfelbaum\n"
+        "Sonnenbrille\n\n"
+        "Бот проверит дубликаты, разметит слова, подготовит картинки и пришлёт отчёт."
+    )
+    sent = 0
+    for admin_id in admin_ids:
+        try:
+            await context.bot.send_message(chat_id=int(admin_id), text=text)
+            sent += 1
+        except Exception as exc:
+            logging.warning("rebus_low_pool_alert failed admin_id=%s: %s", admin_id, exc)
+    if sent:
+        _REBUS_LOW_POOL_LAST_ALERT_AT = now
 
 
 async def _send_scheduled_rebuses(context: CallbackContext) -> None:
@@ -18160,12 +18226,19 @@ async def _send_scheduled_rebuses(context: CallbackContext) -> None:
             )
             from backend.rebus_generator import prepare_rebus_pool
             await asyncio.to_thread(prepare_rebus_pool, target_ready=REBUS_POOL_TARGET, max_attempts=40)
-        # If total bank is getting small, request GPT to generate new compounds
+        # If total bank is getting small, GPT replenishment must be explicitly
+        # enabled; unreviewed compounds are too risky for production rebuses.
         total = await asyncio.to_thread(count_available_rebuses, cooldown_days=0)
-        if total < 100:
+        await _maybe_alert_admin_rebus_pool_low(context, total_ready=int(total))
+        if total < 100 and REBUS_GPT_REPLENISHMENT_ENABLED:
             logging.info("rebus_bank_small total=%s — triggering GPT replenishment", total)
             from backend.rebus_generator import generate_rebus_replenishment
             await asyncio.to_thread(generate_rebus_replenishment, 25)
+        elif total < 100:
+            logging.info(
+                "rebus_bank_small total=%s — GPT replenishment disabled; using reviewed bank only",
+                total,
+            )
     except Exception:
         logging.warning("rebus_slot: pool top-up check failed", exc_info=True)
 
@@ -18353,6 +18426,93 @@ async def admin_rebus_pool_command(update: Update, context: CallbackContext) -> 
         await status_msg.edit_text(f"Rebus pool done:\n{result}")
     except Exception as exc:
         await status_msg.edit_text(f"Error: {exc}")
+
+
+def _parse_admin_rebus_words(raw_text: str) -> list[str]:
+    text = re.sub(r"^/admin_rebus_add(?:@\w+)?", "", str(raw_text or "").strip(), flags=re.IGNORECASE).strip()
+    if not text:
+        return []
+    candidates: list[str] = []
+    for part in re.split(r"[\n,;]+", text):
+        item = re.sub(r"^\s*[-*•\d.)]+\s*", "", part).strip()
+        if not item:
+            continue
+        item = re.split(r"\s[-–—:]\s", item, maxsplit=1)[0].strip()
+        item = re.sub(r"^(der|die|das)\s+", "", item, flags=re.IGNORECASE).strip()
+        if item and re.search(r"[A-Za-zÄÖÜäöüß]", item):
+            candidates.append(item)
+    return candidates
+
+
+def _format_rebus_manual_import_report(result: dict) -> str:
+    duplicates_existing = list(result.get("duplicates_existing") or [])
+    duplicates_input = list(result.get("duplicates_input") or [])
+    errors = list(result.get("errors") or [])
+    prepared = list(result.get("prepared") or [])
+    lines = [
+        "🧩 Rebus import report",
+        "",
+        f"Requested: {int(result.get('requested') or 0)}",
+        f"Sent to GPT: {int(result.get('sent_to_gpt') or 0)}",
+        f"Added to DB: {int(result.get('added') or 0)}",
+        f"Images ready: {int(result.get('prepared_ready') or 0)}",
+        f"Image failures: {int(result.get('prepared_failed') or 0)}",
+    ]
+    if duplicates_existing:
+        lines.extend(["", "Already existed:"] + [f"• {w}" for w in duplicates_existing[:20]])
+    if duplicates_input:
+        lines.extend(["", "Duplicate in your message:"] + [f"• {w}" for w in duplicates_input[:20]])
+    if prepared:
+        lines.extend(["", "Prepared:"])
+        for item in prepared[:20]:
+            tail = f" — {item.get('reason')}" if item.get("reason") else ""
+            lines.append(f"• {item.get('compound')} ({item.get('status')}){tail}")
+    if errors:
+        lines.extend(["", "Errors / skipped:"] + [f"• {err}" for err in errors[:20]])
+    return "\n".join(lines)[:3900]
+
+
+async def admin_rebus_add_command(update: Update, context: CallbackContext) -> None:
+    """Admin command: import explicit admin-approved rebus words.
+
+    Usage:
+    /admin_rebus_add
+    Handschuh
+    Apfelbaum
+    Sonnenbrille
+    """
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    words = _parse_admin_rebus_words(message.text or "")
+    if not words:
+        await message.reply_text(
+            "Пришли список немецких составных слов после команды, каждое с новой строки.\n\n"
+            "Пример:\n"
+            "/admin_rebus_add\n"
+            "Handschuh\n"
+            "Apfelbaum\n"
+            "Sonnenbrille"
+        )
+        return
+    if len(words) > 30:
+        await message.reply_text("Слишком много за раз. Максимум 30 слов в одной команде.")
+        return
+
+    status_msg = await message.reply_text(
+        f"Принял {len(words)} слов. Проверяю дубликаты, генерирую разметку и картинки…"
+    )
+    try:
+        from backend.rebus_generator import generate_manual_rebus_entries
+        result = await asyncio.to_thread(generate_manual_rebus_entries, words, prepare_images=True)
+    except Exception as exc:
+        await status_msg.edit_text(f"Rebus import failed: {exc}")
+        return
+    await status_msg.edit_text(_format_rebus_manual_import_report(result))
 
 
 async def admin_rebus_recheck_command(update: Update, context: CallbackContext) -> None:
@@ -23823,6 +23983,7 @@ def main():
     application.add_handler(CommandHandler("translate", check_user_translation))  # ✅ Проверка переводов
     application.add_handler(CommandHandler("admin_rebus_send", admin_rebus_send_command))
     application.add_handler(CommandHandler("admin_rebus_pool", admin_rebus_pool_command))
+    application.add_handler(CommandHandler("admin_rebus_add", admin_rebus_add_command))
     application.add_handler(CommandHandler("admin_rebus_recheck", admin_rebus_recheck_command))
     application.add_handler(CommandHandler("admin_rebus_reset", admin_rebus_reset_command))
     application.add_handler(CommandHandler("admin_rebus_audit", admin_rebus_audit_command))

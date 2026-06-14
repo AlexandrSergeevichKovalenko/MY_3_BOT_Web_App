@@ -2577,6 +2577,31 @@ def validate_visual_riddle_blueprint(payload: dict) -> dict:
             f"blueprint_correct_answer_id_mismatch:{correct_answer_id}!={correct_ids[0]}"
         )
 
+    target_word_or_phrase = _normalize_space(payload.get("target_word_or_phrase")) or ""
+    normalized_parts: list[str] = []
+
+    if quiz_type == "VISUAL_WORD_REBUS":
+        raw_parts = payload.get("compound_parts")
+        if not isinstance(raw_parts, list) or len(raw_parts) != 2:
+            raise ValueError("blueprint_visual_word_rebus_missing_compound_parts")
+        if not target_word_or_phrase:
+            raise ValueError("blueprint_visual_word_rebus_missing_target")
+
+        from backend.rebus_bank import part_word_matches_compound
+        from backend.rebus_generator import _NON_DEPICTABLE_PARTS
+
+        for idx, raw_part in enumerate(raw_parts):
+            part = _normalize_space(raw_part)
+            if not part:
+                raise ValueError(f"blueprint_visual_word_rebus_empty_part:{idx}")
+            if part.lower() in _NON_DEPICTABLE_PARTS:
+                raise ValueError(f"blueprint_visual_word_rebus_non_depictable_part:{part}")
+            if not part_word_matches_compound(target_word_or_phrase, part):
+                raise ValueError(
+                    f"blueprint_visual_word_rebus_part_not_in_target:{part}->{target_word_or_phrase}"
+                )
+            normalized_parts.append(part)
+
     # Safety limits: fail loudly, never silently truncate
     telegram_caption_check = _normalize_space(payload.get("telegram_caption")) or ""
     if telegram_caption_check and len(telegram_caption_check) > _VR_MAX_CAPTION_CHARS:
@@ -2598,7 +2623,8 @@ def validate_visual_riddle_blueprint(payload: dict) -> dict:
         "difficulty":            difficulty,
         "target_language":       "German",
         "target_skill":          _normalize_space(payload.get("target_skill")) or "vocabulary",
-        "target_word_or_phrase": _normalize_space(payload.get("target_word_or_phrase")) or None,
+        "target_word_or_phrase": target_word_or_phrase or None,
+        "compound_parts":        normalized_parts if quiz_type == "VISUAL_WORD_REBUS" else None,
         "title":                 _normalize_space(payload.get("title")) or None,
         "telegram_caption":      _normalize_space(payload.get("telegram_caption")) or None,
         "question_text":         question_text,
