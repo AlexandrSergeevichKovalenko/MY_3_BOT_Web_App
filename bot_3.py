@@ -316,6 +316,7 @@ from backend.database import (
     toggle_article_battle_available,
     is_article_battle_available,
     list_article_battle_available_user_ids,
+    list_article_battle_available,
     create_article_sprint_dispatch,
     update_article_sprint_dispatch_message_id,
     is_user_pro,
@@ -2750,8 +2751,10 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
     if is_pro:
         artikel_row.append(ARTIKEL_FOCUS_BUTTON_TEXT)
     rows = [artikel_row]
-    if is_pro:  # battle controls are Pro-only (creating a battle is Premium)
-        rows.append([ARTIKEL_BATTLE_CALL_BUTTON_TEXT, ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT])
+    # Creating a battle is Pro-only; opting-in to BE invited is for EVERYONE
+    # (otherwise a free user couldn't consent to join the battle invite list).
+    battle_row = ([ARTIKEL_BATTLE_CALL_BUTTON_TEXT] if is_pro else []) + [ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT]
+    rows.append(battle_row)
     return ReplyKeyboardMarkup(
         [
             *rows,
@@ -4993,7 +4996,8 @@ async def handle_button_click(update: Update, context: CallbackContext):
                 parse_mode="HTML", reply_markup=kb)
     elif text == ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT:
         uid = int(update.effective_user.id) if update.effective_user else 0
-        new_state = await asyncio.to_thread(toggle_article_battle_available, uid)
+        uname = _display_user_name(update.effective_user)
+        new_state = await asyncio.to_thread(toggle_article_battle_available, uid, uname)
         if new_state:
             await update.message.reply_text(
                 "🛡 Готово — теперь тебя могут <b>лично пригласить</b> на батл. "
@@ -5001,7 +5005,7 @@ async def handle_button_click(update: Update, context: CallbackContext):
         else:
             await update.message.reply_text("⚪ Ты вышел из списка приглашаемых на батлы.")
     elif text == ARTIKEL_BATTLE_CALL_BUTTON_TEXT:
-        await artikel_battle_command(update, context)
+        await _start_battle_wizard(update, context)
     elif text == SHORTCUT_AUTOSAVE_BUTTON_TEXT or text.startswith(_AUTOSAVE_BUTTON_PREFIX):
         await _handle_autosave_button_tap(update, context)
     elif text == SHORTCUT_CONNECT_BUTTON_TEXT:
@@ -19508,6 +19512,184 @@ async def admin_artikel_focus_command(update: Update, context: CallbackContext) 
     )
 
 
+# In-progress battle-invite drafts, keyed by inviter user_id (transient).
+pending_battle_invites: dict[int, dict] = {}
+
+
+async def _send_battle_invites(context: CallbackContext, *, battle_id: int,
+                               creator_name: str, target_ids: list[int],
+                               exclude: int | None = None) -> int:
+    """DM the battle invite (text for now; Step 4 swaps in the Smurf image) to each
+    target. Returns how many were sent."""
+    invite_text = (
+        f"⚔️ *{html.escape(creator_name)}* зовёт на *Artikel Sprint* батл!\n"
+        f"2 минуты, der/die/das. Играй когда удобно *до 23:59*. Прими вызов:"
+    )
+    join_kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "✅ Принять вызов", callback_data=f"asb_join:{battle_id}")]])
+    sent = 0
+    for uid in target_ids:
+        if exclude and int(uid) == int(exclude):
+            continue
+        try:
+            await context.bot.send_message(chat_id=int(uid), text=invite_text,
+                                            parse_mode="Markdown", reply_markup=join_kb)
+            sent += 1
+        except Exception:
+            pass
+    return sent
+
+
+def _battle_wizard_render(draft: dict) -> tuple[str, InlineKeyboardMarkup]:
+    """Build the (text, inline keyboard) for the current wizard view."""
+    view = draft.get("view") or "main"
+    if view == "themes":
+        rows = []
+        for t in (draft.get("_themes_cache") or []):
+            mark = "✅" if t["theme_key"] in draft["themes"] else "⚪"
+            rows.append([InlineKeyboardButton(f"{mark} {t['label']} ({t['count']})",
+                                              callback_data=f"bw:t:{t['theme_key']}")])
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="bw:back")])
+        return ("🏷 <b>Темы батла</b> — отметь одну или несколько (или ни одной = микс по всем):",
+                InlineKeyboardMarkup(rows))
+    if view == "users":
+        people = draft.get("_people_cache") or []
+        if not people:
+            return ("🙋 Пока никто не нажал «🛡 Готов к батлам» — некого выбрать. "
+                    "Можно пригласить всех (кнопка ниже).",
+                    InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="bw:back")]]))
+        rows = []
+        for p in people[:40]:
+            mark = "✅" if int(p["user_id"]) in draft["users"] else "⚪"
+            rows.append([InlineKeyboardButton(f"{mark} {p['name']}", callback_data=f"bw:u:{p['user_id']}")])
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="bw:back")])
+        return ("🙋 <b>Кого пригласить</b> — отметь игроков:", InlineKeyboardMarkup(rows))
+    # main view
+    mode = draft.get("mode") or "all"
+    who = "всех" if mode == "all" else f"выбрано {len(draft['users'])}"
+    themes = draft.get("themes") or set()
+    themes_label = "микс по всем" if not themes else f"выбрано {len(themes)}"
+    text = (
+        "⚔️ <b>Создать батл</b>\n\n"
+        f"👥 Кого зовём: <b>{who}</b>\n"
+        f"🏷 Темы: <b>{themes_label}</b>\n\n"
+        "Настрой и жми «Отправить»."
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(("● " if mode == "all" else "○ ") + "Всех", callback_data="bw:all"),
+         InlineKeyboardButton(("● " if mode == "ind" else "○ ") + "Выбрать кого", callback_data="bw:ind")],
+        [InlineKeyboardButton(f"🏷 Темы ({themes_label})", callback_data="bw:themes")],
+        [InlineKeyboardButton("🚀 Отправить приглашение", callback_data="bw:send")],
+        [InlineKeyboardButton("✖️ Отмена", callback_data="bw:cancel")],
+    ])
+    return text, kb
+
+
+async def _start_battle_wizard(update: Update, context: CallbackContext) -> None:
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not await asyncio.to_thread(is_user_pro, int(user.id)):
+        await message.reply_text("⚔️ Создавать батл может только Premium. Принять чужой вызов могут все.")
+        return
+    draft = {"mode": "all", "users": set(), "themes": set(), "view": "main"}
+    pending_battle_invites[int(user.id)] = draft
+    text, kb = _battle_wizard_render(draft)
+    await message.reply_text(text, parse_mode="HTML", reply_markup=kb)
+
+
+async def handle_battle_wizard_callback(update: Update, context: CallbackContext) -> None:
+    q = update.callback_query
+    if not q or not q.from_user:
+        return
+    uid = int(q.from_user.id)
+    draft = pending_battle_invites.get(uid)
+    data = str(q.data or "")
+    if not draft:
+        await q.answer("Мастер устарел — нажми «⚔️ Вызвать на батл» снова.", show_alert=True)
+        return
+    action = data.split(":", 2)
+
+    if data == "bw:cancel":
+        pending_battle_invites.pop(uid, None)
+        await q.edit_message_text("✖️ Создание батла отменено.")
+        return
+    if data == "bw:all":
+        draft["mode"] = "all"; draft["view"] = "main"
+    elif data == "bw:ind":
+        draft["mode"] = "ind"; draft["view"] = "users"
+        draft["_people_cache"] = await asyncio.to_thread(list_article_battle_available)
+    elif data == "bw:themes":
+        draft["view"] = "themes"
+        from backend.article_sprint_sets import PRACTICE_MIN
+        rows = await asyncio.to_thread(list_article_sprint_themes)
+        draft["_themes_cache"] = [
+            {"theme_key": r["theme_key"], "label": r.get("label_ru") or r.get("label_de") or r["theme_key"],
+             "count": int(r["verified_count"])}
+            for r in rows if int(r.get("verified_count") or 0) >= PRACTICE_MIN
+        ]
+    elif data == "bw:back":
+        draft["view"] = "main"
+    elif action[0] == "bw" and action[1] == "u" and len(action) == 3:
+        tu = int(action[2])
+        draft["users"].discard(tu) if tu in draft["users"] else draft["users"].add(tu)
+    elif action[0] == "bw" and action[1] == "t" and len(action) == 3:
+        tk = action[2]
+        draft["themes"].discard(tk) if tk in draft["themes"] else draft["themes"].add(tk)
+    elif data == "bw:send":
+        await _battle_wizard_send(q, context, draft)
+        return
+
+    text, kb = _battle_wizard_render(draft)
+    try:
+        await q.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        pass
+    await q.answer()
+
+
+async def _battle_wizard_send(q, context: CallbackContext, draft: dict) -> None:
+    user = q.from_user
+    themes = sorted(draft.get("themes") or [])
+    if draft.get("mode") == "ind":
+        targets = sorted(draft.get("users") or [])
+        if not targets:
+            await q.answer("Выбери хотя бы одного игрока.", show_alert=True)
+            return
+    else:
+        targets = await asyncio.to_thread(list_allowed_telegram_user_ids)
+    today_d = _get_quiz_schedule_now().date()
+    deadline = datetime.now(ZoneInfo("Europe/Vienna")).replace(hour=23, minute=59, second=0, microsecond=0)
+    creator_name = _display_user_name(user)
+
+    def _create():
+        bid = create_article_sprint_battle(
+            creator_user_id=int(user.id), creator_name=creator_name,
+            theme_key=(themes[0] if len(themes) == 1 else "gemischt"), deadline=deadline)
+        from backend.article_sprint_sets import build_battle_set_mixed
+        return bid, build_battle_set_mixed(themes, bid, today_d)
+
+    battle_id, built = await asyncio.to_thread(_create)
+    if built.get("status") != "ready":
+        await q.edit_message_text("⚠️ Не удалось собрать набор слов. Наполни темы через /artikel_fill.")
+        pending_battle_invites.pop(int(user.id), None)
+        return
+    await asyncio.to_thread(add_article_sprint_battle_member,
+                            battle_id=battle_id, user_id=int(user.id), user_name=creator_name)
+    sent = await _send_battle_invites(context, battle_id=battle_id, creator_name=creator_name,
+                                      target_ids=targets, exclude=int(user.id))
+    pending_battle_invites.pop(int(user.id), None)
+    themes_txt = "микс по всем темам" if not themes else ", ".join(themes)
+    play_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
+        [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_asbl_0"))],
+    ])
+    await q.edit_message_text(
+        f"⚔️ Батл #{battle_id} создан ({html.escape(themes_txt)}). Приглашено: {sent}. Дедлайн 23:59.",
+        parse_mode="HTML", reply_markup=play_kb)
+
+
 async def artikel_battle_command(update: Update, context: CallbackContext) -> None:
     """Create an Artikel Sprint battle (Pro only) and broadcast the invite to all
     users. /battle [theme_key] — async, open until 23:59."""
@@ -24548,6 +24730,7 @@ def main():
     application.add_handler(CommandHandler("battle", artikel_battle_command))
     application.add_handler(CommandHandler("mybattles", artikel_mybattles_command))
     application.add_handler(CallbackQueryHandler(artikel_battle_join_callback, pattern=r"^asb_join:\d+$"))
+    application.add_handler(CallbackQueryHandler(handle_battle_wizard_callback, pattern=r"^bw:"))
     application.add_handler(CommandHandler("admin_aq_send", admin_article_quiz_send_command))
     application.add_handler(CommandHandler("admin_aq_pool", admin_article_quiz_pool_command))
     application.add_handler(CommandHandler("addartikel", admin_add_artikel_command))

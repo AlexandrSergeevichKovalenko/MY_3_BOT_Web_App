@@ -109,6 +109,52 @@ def build_practice_set(theme_key: str, user_id: int, play_date, *, size: int = P
     return {"status": "ready", "set_id": set_id, "theme_key": theme_key, "word_count": len(uniq)}
 
 
+BATTLE_SET_SIZE = 350   # 2-min battle, ~150 taps/min fast → preload with a buffer
+
+
+def build_battle_set_mixed(theme_keys, battle_id: int, play_date, *, size: int = BATTLE_SET_SIZE) -> dict:
+    """Battle words mixed RANDOMLY (different every time). theme_keys empty/None →
+    sample across ALL themes; otherwise across the selected themes only. ~`size`
+    words preloaded so a 2-min battle never runs out."""
+    from backend.database import get_article_sprint_verified_sample, upsert_article_sprint_set
+    keys = [str(k) for k in (theme_keys or []) if str(k).strip()]
+    words: list[dict] = []
+    if not keys:
+        words = get_article_sprint_verified_sample(None, size)  # ORDER BY random() — fresh mix
+    else:
+        per = max(1, size // len(keys)) + 8
+        have: list[str] = []
+        for tk in keys:
+            for w in get_article_sprint_verified_sample(tk, per, exclude_words=have):
+                words.append(w)
+                have.append(str(w["w"]))
+        if len(words) < size:  # top up from the SAME selected themes (keeps the focus)
+            for tk in keys:
+                if len(words) >= size:
+                    break
+                for w in get_article_sprint_verified_sample(tk, size - len(words), exclude_words=have):
+                    words.append(w)
+                    have.append(str(w["w"]))
+    seen: set[str] = set()
+    uniq: list[dict] = []
+    for w in words:
+        k = str(w.get("w") or "").lower()
+        if k and k not in seen:
+            seen.add(k)
+            uniq.append({"w": w["w"], "a": str(w["a"]).lower(), "ru": w.get("ru") or ""})
+    random.shuffle(uniq)
+    uniq = uniq[:size]
+    if len(uniq) < PRACTICE_MIN:
+        return {"status": "insufficient", "available": len(uniq)}
+    set_id = f"asb_{int(battle_id)}"
+    upsert_article_sprint_set(
+        set_id=set_id, kind="battle", play_date=play_date,
+        theme_key=(keys[0] if len(keys) == 1 else "gemischt"), words=uniq,
+    )
+    return {"status": "ready", "set_id": set_id, "word_count": len(uniq),
+            "themes": keys or ["all"]}
+
+
 def build_battle_set(theme_key: str, battle_id: int, play_date, *, size: int = DEFAULT_SET_SIZE) -> dict:
     """One frozen shared set for a battle (set_id = 'asb_<battle_id>'). All members
     compete on the same words."""
