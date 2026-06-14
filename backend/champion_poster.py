@@ -163,7 +163,8 @@ def _podium_bar(base, d, x, base_y, w, h, top_col, dk_col, rank, name, points, a
 
 
 def render_champion_poster(lb: dict, *, week_no: int, days: int, avatars: dict | None = None,
-                           header: str | None = None, subtitle: str | None = None) -> bytes | None:
+                           header: str | None = None, subtitle: str | None = None,
+                           hero_png: bytes | None = None) -> bytes | None:
     if Image is None:
         return None
     leaders = (lb or {}).get("leaders") or []
@@ -183,8 +184,12 @@ def render_champion_poster(lb: dict, *, week_no: int, days: int, avatars: dict |
     for sx in (W // 2 - 168, W // 2 + 168):
         _star(d, sx, 181, 10, GOLD)
 
-    # Trophy
-    _draw_trophy(d, W // 2, 230, scale=1.15)
+    # Trophy — or a hero medallion (e.g. the battle Smurf-knight) when provided.
+    hero = _avatar_circle(hero_png, 360, GOLD) if hero_png else None
+    if hero:
+        base.paste(hero, (W // 2 - 180, 60), hero)
+    else:
+        _draw_trophy(d, W // 2, 230, scale=1.15)
 
     # Champion
     champ = leaders[0]

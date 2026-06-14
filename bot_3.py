@@ -19853,6 +19853,22 @@ async def artikel_battle_accept_callback(update: Update, context: CallbackContex
     await asyncio.to_thread(add_article_sprint_battle_member,
                             battle_id=battle_id, user_id=int(q.from_user.id), user_name=name)
     await q.answer("Ты в батле! ⚔️")
+    # Feedback to the creator that their challenge was accepted (image so they don't
+    # miss it). Capped to small battles so a broadcast «всех» doesn't spam them.
+    creator_id = int(battle.get("creator_user_id") or 0)
+    if creator_id and creator_id != int(q.from_user.id):
+        try:
+            members = await asyncio.to_thread(list_article_sprint_battle_members, battle_id)
+            if len(members) <= 6:
+                from backend.battle_card import battle_invite_image_url
+                img = battle_invite_image_url()
+                cap = f"✅ <b>{html.escape(name)}</b> принял твой вызов на батл #{battle_id}! ⚔️"
+                if img:
+                    await context.bot.send_photo(chat_id=creator_id, photo=img, caption=cap, parse_mode="HTML")
+                else:
+                    await context.bot.send_message(chat_id=creator_id, text=cap, parse_mode="HTML")
+        except Exception:
+            logging.warning("battle accept: creator notify failed bid=%s", battle_id, exc_info=True)
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("▶️ Участвовать сейчас", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
         [InlineKeyboardButton("⏰ Напомнить позже", callback_data=f"asb_later:{battle_id}")],
@@ -20050,9 +20066,12 @@ async def _close_article_sprint_battles_job(context: CallbackContext) -> None:
                     avatars[int(ldr["user_id"])] = av
             try:
                 from backend.champion_poster import render_champion_poster
+                from backend.battle_card import REMINDER_KEY
+                from backend.r2_storage import r2_get_bytes
+                hero = await asyncio.to_thread(r2_get_bytes, REMINDER_KEY)
                 poster = await asyncio.to_thread(
                     render_champion_poster, lb, week_no=0, days=1, avatars=avatars,
-                    header="ЛУЧШИЙ АРТИКЛЕВЕД", subtitle=f"⚔️ Батл #{bid}")
+                    header="ЛУЧШИЙ АРТИКЛЕВЕД", subtitle=f"⚔️ Батл #{bid}", hero_png=hero)
             except Exception:
                 logging.warning("battle podium render failed bid=%s", bid, exc_info=True)
                 poster = None
