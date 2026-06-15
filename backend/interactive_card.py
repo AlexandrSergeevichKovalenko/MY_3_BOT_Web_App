@@ -280,6 +280,39 @@ def _motif_search_pic(base, d, cx, cy, accent):
     d.line([(tx + mr * 0.7, ty + mr * 0.7), (tx + mr * 1.5, ty + mr * 1.5)], fill=GOLD, width=20)
 
 
+def _motif_flashcard(base, d, cx, cy, accent):
+    """A vocabulary flash-card (stack) with der/die/das pills + swipe chevron
+    (Artikel Trainer — learn der/die/das at your own pace)."""
+    cw, ch = 560, 340
+    x0, y0 = cx - cw / 2, cy - ch / 2
+    # depth: two cards peeking behind
+    for off in (28, 14):
+        d.rounded_rectangle([x0 + off, y0 - off, x0 + cw + off, y0 + ch - off],
+                            radius=30, fill=(22, 31, 52))
+    d.rounded_rectangle([x0, y0, x0 + cw, y0 + ch], radius=30, fill=(30, 41, 59), outline=accent, width=6)
+    # a "word" placeholder line near the top of the card
+    d.rounded_rectangle([x0 + 64, y0 + 64, x0 + cw - 64, y0 + 116], radius=16, fill=(90, 104, 130))
+    # der/die/das pills
+    labels = [("der", (59, 130, 246)), ("die", (239, 68, 68)), ("das", (148, 163, 184))]
+    f = _font(42)
+    widths = [f.getlength(t) + 54 for t, _ in labels]
+    gap = 18
+    total = sum(widths) + gap * (len(labels) - 1)
+    x = cx - total / 2
+    py = y0 + ch - 96
+    for (t, col), w in zip(labels, widths):
+        d.rounded_rectangle([x, py - 36, x + w, py + 36], radius=36, fill=col)
+        tw = f.getlength(t)
+        th, off = _text_h(d, t, f)
+        d.text((x + w / 2 - tw / 2, py - th / 2 - off), t, font=f, fill=WHITE)
+        x += w + gap
+    # swipe chevron to the right (»)
+    chx = x0 + cw + 54
+    for kk in range(2):
+        ox = chx + kk * 24
+        d.line([(ox, cy - 34), (ox + 28, cy), (ox, cy + 34)], fill=GOLD, width=13, joint="curve")
+
+
 def _motif_relation(base, d, cx, cy, accent, symbol):
     """Two word bubbles joined by a relation symbol (Synonym '=', Antonym '↔')."""
     bw, bh = 360, 150
@@ -397,6 +430,13 @@ def render_antonym_card(*, level: str = "B2+") -> bytes | None:
                  accent=(244, 114, 182),
                  motif=lambda b, d, cx, cy, a: _motif_relation(b, d, cx, cy, a, "↔"),
                  cta="Finde das Gegenteil")
+
+
+def render_artikel_learn_card(*, level: str = "") -> bytes | None:
+    return _card(badge="LERNEN", title="Artikel Trainer",
+                 subtitle="der / die / das  ·  в своём темпе",
+                 accent=(96, 165, 250), motif=_motif_flashcard,
+                 cta="Учи артикли с подсказками")
 
 
 def render_sprint_relation_card(relation: str) -> bytes | None:

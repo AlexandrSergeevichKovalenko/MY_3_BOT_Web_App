@@ -4687,6 +4687,36 @@ async def admin_economics_command(update: Update, context: CallbackContext):
         await message.reply_text(f"❌ Не удалось собрать economics report: {exc}")
 
 
+async def admin_dedup_now_command(update: Update, context: CallbackContext):
+    """Run the dictionary dedup job right now and report the result. /dedupnow"""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    status = await message.reply_text("🧹 Запускаю дедуп словаря вручную…")
+    try:
+        from backend.database import run_dictionary_dedup_now
+        res = await asyncio.to_thread(run_dictionary_dedup_now, max_users=500, since_days=7)
+        if not res.get("ok"):
+            await status.edit_text("❌ Не удалось получить список пользователей — см. логи.")
+            return
+        await status.edit_text(
+            "🧹 <b>Дедуп выполнен вручную</b>\n"
+            f"• пользователей обработано: <b>{res['users_processed']}</b> (из {res['users_total']})\n"
+            f"• групп дубликатов: <b>{res['groups_found']}</b>\n"
+            f"• удалено записей: <b>{res['entries_deleted']}</b>\n"
+            f"• SRS перенесено: <b>{res['srs_transferred']}</b>\n\n"
+            "Прогон записан — теперь он виден в /dedupreport.",
+            parse_mode="HTML",
+        )
+    except Exception as exc:
+        logging.exception("admin dedup now command failed user_id=%s", int(sender.id))
+        await status.edit_text(f"❌ Не удалось запустить дедуп: {exc}")
+
+
 async def admin_dedup_report_command(update: Update, context: CallbackContext):
     """On-demand weekly duplicate-removal summary (same numbers as the Monday DM)."""
     sender = update.effective_user
@@ -22704,13 +22734,23 @@ async def _send_scheduled_artikel_learn(context: CallbackContext) -> None:
         "Выучи der/die/das на сегодня — в своём темпе, с подсказками. "
         "Заходи сколько угодно раз, а вечером проверь себя в игре! 👇"
     )
+    poster = None
+    try:
+        from backend.interactive_card import render_artikel_learn_card
+        poster = await asyncio.to_thread(render_artikel_learn_card)
+    except Exception:
+        logging.warning("artikel_learn: card render failed", exc_info=True)
     sent = 0
     for t in targets:
         cid = int(t.get("chat_id") or 0)
         if cid == 0:
             continue
         try:
-            await context.bot.send_message(chat_id=cid, text=caption, parse_mode="Markdown", reply_markup=kb)
+            if poster:
+                await context.bot.send_photo(chat_id=cid, photo=io.BytesIO(poster), caption=caption,
+                                             parse_mode="Markdown", reply_markup=kb)
+            else:
+                await context.bot.send_message(chat_id=cid, text=caption, parse_mode="Markdown", reply_markup=kb)
             sent += 1
         except Exception as exc:
             logging.warning("artikel_learn: send failed chat=%s: %s", cid, exc)
@@ -25151,6 +25191,7 @@ def main():
     application.add_handler(CommandHandler("budgets", budgets_command))
     application.add_handler(CommandHandler("economics", admin_economics_command))
     application.add_handler(CommandHandler("dedupreport", admin_dedup_report_command))
+    application.add_handler(CommandHandler("dedupnow", admin_dedup_now_command))
     application.add_handler(CommandHandler("clearqueue", clear_dictionary_queue_command))
     application.add_handler(CommandHandler("ttsbudget", tts_budget_command))
     application.add_handler(CommandHandler("ttsprewarmquota", tts_prewarm_quota_command))

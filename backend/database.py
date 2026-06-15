@@ -1170,6 +1170,42 @@ def record_dict_dedup_run(
         logging.exception("record_dict_dedup_run failed")
 
 
+def run_dictionary_dedup_now(*, max_users: int = 200, since_days: int = 7) -> dict:
+    """Run the dictionary dedup immediately (admin /dedupnow), independent of the
+    nightly scheduler and of Redis: scans the last `since_days` for up to
+    `max_users` users, dedupes, records the run, and returns totals. Dedup is
+    idempotent, so a fixed window is safe."""
+    from datetime import datetime as _dt, timedelta as _td
+    since = _dt.utcnow() - _td(days=int(since_days))
+    processed = total_groups = total_deleted = total_srs = 0
+    user_ids: list[int] = []
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT DISTINCT user_id FROM bt_3_webapp_dictionary_queries ORDER BY user_id;"
+                )
+                user_ids = [int(r[0]) for r in (cursor.fetchall() or [])]
+    except Exception:
+        logging.exception("run_dictionary_dedup_now: failed to list users")
+        return {"ok": False, "users_total": 0, "users_processed": 0,
+                "groups_found": 0, "entries_deleted": 0, "srs_transferred": 0}
+    for uid in user_ids[: int(max_users)]:
+        try:
+            res = dedupe_user_dictionary_by_source(user_id=uid, since_datetime=since)
+        except Exception:
+            logging.exception("run_dictionary_dedup_now: error user_id=%s", uid)
+            continue
+        total_groups += int(res.get("groups_found") or 0)
+        total_deleted += int(res.get("entries_deleted") or 0)
+        total_srs += int(res.get("srs_transferred") or 0)
+        processed += 1
+    record_dict_dedup_run(users_processed=processed, groups_found=total_groups, entries_deleted=total_deleted)
+    return {"ok": True, "users_total": len(user_ids), "users_processed": processed,
+            "groups_found": total_groups, "entries_deleted": total_deleted,
+            "srs_transferred": total_srs}
+
+
 def get_dict_dedup_report(*, days: int = 7) -> dict:
     """Aggregate dedup-run stats for the weekly admin report.
 
