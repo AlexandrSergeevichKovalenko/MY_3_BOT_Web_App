@@ -16134,7 +16134,7 @@ def _is_valid_anagram_target(raw_word: str) -> bool:
     if not re.fullmatch(r"[A-Za-zÄÖÜäöüß]+", word):
         return False
     normalized = word.lower()
-    if len(normalized) < 4:
+    if len(normalized) < 8:  # anagram words must be at least 8 letters
         return False
     if normalized in _ANAGRAM_EXCLUDED_WORDS:
         return False
@@ -21218,7 +21218,7 @@ def _build_anagram_card_payload(entry: dict) -> dict | None:
 
 
 async def _generate_anagram_card_payload() -> dict | None:
-    for _ in range(15):
+    for _ in range(40):  # 8+ letter words are rarer, so try more dictionary entries
         try:
             entry = await asyncio.to_thread(get_random_dictionary_entry, cooldown_days=0)
         except Exception:
