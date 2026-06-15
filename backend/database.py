@@ -1867,6 +1867,25 @@ def list_user_adjektiv_battles(user_id, limit: int = 20) -> list[dict]:
         return []
 
 
+def list_last_crossword_messages() -> list[dict]:
+    """The most recent crossword message (chat_id, message_id) per chat — for an
+    admin 'delete last crossword everywhere' action."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT DISTINCT ON (chat_id) chat_id, telegram_message_id
+                       FROM bt_3_crossword_dispatches
+                       WHERE telegram_message_id IS NOT NULL
+                       ORDER BY chat_id, sent_at DESC;"""
+                )
+                return [{"chat_id": int(r[0]), "message_id": int(r[1])}
+                        for r in (cur.fetchall() or []) if r and r[1]]
+    except Exception:
+        logging.warning("list_last_crossword_messages failed", exc_info=True)
+        return []
+
+
 def list_user_article_battles(user_id, limit: int = 20) -> list[dict]:
     """All Artikel battles the user is in (open + closed) for the history screen."""
     try:

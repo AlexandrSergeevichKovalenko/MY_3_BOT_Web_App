@@ -21108,6 +21108,80 @@ async def admin_crossword_send_command(update: Update, context: CallbackContext)
     await status_msg.edit_text(f"Crossword send failed after retries ({last_error}).")
 
 
+async def admin_crossword_resend_command(update: Update, context: CallbackContext) -> None:
+    """Delete the last crossword in EVERY chat (groups + DMs) and send one fresh
+    crossword to all delivery targets — an out-of-schedule "everyone re-check the
+    fixed grid" action. The visual fix is in the Mini-App (✏️ Antworten).
+    /admin_cw_resend"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    status = await message.reply_text("⏳ Удаляю последний кроссворд во всех чатах и шлю новый…")
+
+    # 1) Delete the most recent crossword message in each chat.
+    from backend.database import list_last_crossword_messages
+    rows = await asyncio.to_thread(list_last_crossword_messages)
+    deleted = 0
+    for r in rows:
+        try:
+            await context.bot.delete_message(chat_id=int(r["chat_id"]), message_id=int(r["message_id"]))
+            deleted += 1
+        except Exception:
+            pass  # >48h old, no rights, or already gone
+
+    # 2) Pick a ready crossword (self-healing) and broadcast to all targets.
+    last_error = "no ready crossword"
+    entry = None
+    image_url = None
+    for _ in range(6):
+        entry = await asyncio.to_thread(pick_next_crossword, cooldown_days=0)
+        if not entry:
+            break
+        cid = str(entry.get("crossword_id") or "")
+        key = str(entry.get("image_object_key") or "")
+        if not key:
+            last_error = f"no image for {cid[:8]}"
+            await asyncio.to_thread(mark_crossword_send_failed, cid)
+            continue
+        try:
+            image_url = r2_public_url(key)
+            break
+        except Exception as exc:
+            last_error = f"r2_public_url failed: {exc}"
+            await asyncio.to_thread(mark_crossword_send_failed, cid)
+            entry = None
+            continue
+    if not entry or not image_url:
+        await status.edit_text(f"🗑 Удалено старых: {deleted}. Нет готового кроссворда ({last_error}) — запусти /admin_cw_pool.")
+        return
+
+    targets = await _collect_quiz_delivery_user_targets(context)
+    slot_now = _get_quiz_schedule_now()
+    uniq_slot = int(slot_now.hour) * 10000 + int(slot_now.minute) * 100 + int(slot_now.second)
+    sent = 0
+    for t in targets or []:
+        cid = int(t.get("chat_id") or 0)
+        if cid == 0:
+            continue
+        ok = await send_crossword_to_chat(
+            context, crossword_entry=entry, image_url=image_url,
+            slot_date=slot_now.date(), slot_hour=uniq_slot, chat_id=cid, target_user_id=cid)
+        if ok:
+            sent += 1
+    if sent > 0:
+        try:
+            await asyncio.to_thread(mark_crossword_sent, str(entry.get("crossword_id") or ""))
+        except Exception:
+            pass
+    await status.edit_text(
+        f"✅ Удалено старых: {deleted}. Отправлено новых: {sent}.\n"
+        f"Открой «✏️ Antworten» — проверь сетку (буквы/цифры).")
+
+
 # ─────────────────────────────────────────────────────────────
 #  ANAGRAM (assemble-the-word) — Mini-App card, send, scheduler
 # ─────────────────────────────────────────────────────────────
@@ -25716,6 +25790,7 @@ def main():
     application.add_handler(CommandHandler("admin_aq_pool", admin_article_quiz_pool_command))
     application.add_handler(CommandHandler("addartikel", admin_add_artikel_command))
     application.add_handler(CommandHandler("admin_cw_send", admin_crossword_send_command))
+    application.add_handler(CommandHandler("admin_cw_resend", admin_crossword_resend_command))
     application.add_handler(CommandHandler("admin_anagram_send", admin_anagram_send_command))
     application.add_handler(CommandHandler("admin_aufgabe_send", admin_aufgabe_send_command))
     application.add_handler(CommandHandler("admin_aufgabe_all", admin_aufgabe_all_command))
