@@ -1623,6 +1623,42 @@ def add_service_msg_id(context, message_id):
     logging.info(f"DEBUG: Добавлен message_id: {message_id}, текущий список: {context.user_data['service_message_ids']}")
 
 
+async def refresh_dm_menu_keyboard_if_stale(update: Update, context: CallbackContext) -> None:
+    """Re-attach the DM menu reply-keyboard on the user's first private message of
+    the day. Telegram keeps the reply keyboard non-persistent (summoned via the
+    keyboard icon), but after an app restart the toggle can drop — so users had to
+    type /start to get the buttons back. This refreshes it once per day on ANY
+    message (not just /start), without ever auto-popping on simple screen taps.
+    Runs in its own handler group (block=False), so it never interferes with the
+    real handlers."""
+    chat = update.effective_chat
+    user = update.effective_user
+    msg = update.effective_message
+    if not chat or chat.type != "private" or not user or not msg:
+        return
+    try:
+        from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo
+        today = _dt.now(ZoneInfo("Europe/Vienna")).date().isoformat()
+    except Exception:
+        import datetime as _d
+        today = _d.date.today().isoformat()
+    if context.user_data.get("kb_refresh_date") == today:
+        return
+    context.user_data["kb_refresh_date"] = today
+    # /start already shows the menu — just mark the day, don't double-send.
+    if str(getattr(msg, "text", "") or "").strip().lower().startswith("/start"):
+        return
+    try:
+        await context.bot.send_message(
+            chat_id=chat.id,
+            text="📋 Меню снова под рукой 👇",
+            reply_markup=_build_private_language_tutor_reply_keyboard(int(user.id)),
+        )
+    except Exception:
+        logging.warning("kb refresh failed user_id=%s", getattr(user, "id", None), exc_info=True)
+
+
 #Имитация набора текста с typing-индикатором
 async def simulate_typing(context, chat_id, duration=3):
     """Эмулирует набор текста в чате."""
@@ -25129,6 +25165,10 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_autosave_digest_save_callback, pattern=r"^asv_save:"))
     # 🔥 Логирование всех сообщений (группа -1, не блокирует цепочку)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message, block=False), group=-1)
+
+    # Освежает меню-клавиатуру в личке раз в день на любое сообщение (group=5,
+    # отдельная группа, не блокирует и не мешает остальным хендлерам).
+    application.add_handler(MessageHandler(filters.ChatType.PRIVATE, refresh_dm_menu_keyboard_if_stale, block=False), group=5)
 
     application.add_handler(MessageHandler(filters.FORWARDED & filters.TEXT & ~filters.COMMAND, handle_forwarded_message_lookup, block=False), group=0)
 
