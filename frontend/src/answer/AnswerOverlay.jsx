@@ -598,10 +598,12 @@ export default function AnswerOverlay({ startParam }) {
   }
 
   // Crossword input view — interactive grid + on-screen keyboard.
+  // Locked to one screen (no scroll): the grid scales to the space left by the
+  // header / clue / keyboard / button.
   if (isCrossword) {
     return (
-      <div className="ans-root"><div className="ans-card">
-        <div className="ans-head">
+      <div className="ans-root ans-root--cw"><div className="ans-card ans-card--cw">
+        <div className="ans-head ans-head--cw">
           <span className="ans-eyebrow">{eyebrow}</span>
           <h1 className="ans-title">{heading}</h1>
           {meta?.topic ? <p className="ans-sub">📌 {meta.topic} — fülle die leeren Felder ✍️</p> : null}

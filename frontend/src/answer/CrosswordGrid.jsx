@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 /**
  * Interactive crossword: type letters straight into the grid via an on-screen
@@ -20,10 +20,36 @@ const KB_ROWS = [
 
 const k = (r, c) => `${r},${c}`;
 
+const CW_GAP = 3;  // keep in sync with .cw-grid gap in answer.css
+
 export default function CrosswordGrid({ task, onSubmit, submitting }) {
   const grid = task.grid || [];
   const cols = task.cols || (grid[0] ? grid[0].length : 0);
+  const rows = grid.length;
   const words = useMemo(() => task.words || [], [task]);
+
+  // Fit the whole grid into the available box (both axes) so it never needs
+  // scrolling, on any screen. We measure the wrapper and pick the largest cell
+  // size that fits cols×rows; the keyboard/clue/button take their own space.
+  const wrapRef = useRef(null);
+  const [cell, setCell] = useState(0);
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el || !rows || !cols) return undefined;
+    const compute = () => {
+      const w = el.clientWidth;
+      const h = el.clientHeight;
+      if (!w || !h) return;
+      const cw = (w - CW_GAP * (cols - 1)) / cols;
+      const ch = (h - CW_GAP * (rows - 1)) / rows;
+      setCell(Math.max(14, Math.floor(Math.min(cw, ch))));
+    };
+    compute();
+    const ro = new ResizeObserver(compute);
+    ro.observe(el);
+    window.addEventListener('resize', compute);
+    return () => { ro.disconnect(); window.removeEventListener('resize', compute); };
+  }, [rows, cols]);
 
   // cell "r,c" → [wordIdx, ...]
   const cellWords = useMemo(() => {
@@ -133,24 +159,33 @@ export default function CrosswordGrid({ task, onSubmit, submitting }) {
 
   return (
     <>
-      <div className="cw-grid" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
-        {grid.map((row, r) => row.map((cell, c) => {
-          if (!cell) return <div key={k(r, c)} className="cw-cell blocked" />;
-          const key = k(r, c);
-          const letter = cell.l || inputs[key] || '';
-          const active = activeCell && activeCell[0] === r && activeCell[1] === c;
-          const inWord = activeKeySet.has(key);
-          return (
-            <div
-              key={key}
-              className={`cw-cell${cell.l ? ' given' : ' empty'}${inWord ? ' inword' : ''}${active ? ' active' : ''}`}
-              onClick={() => selectCell(r, c)}
-            >
-              {cell.n ? <span className="cw-num">{cell.n}</span> : null}
-              <span className="cw-letter">{letter}</span>
-            </div>
-          );
-        }))}
+      <div className="cw-grid-wrap" ref={wrapRef}>
+        <div
+          className="cw-grid"
+          style={{
+            gridTemplateColumns: `repeat(${cols}, ${cell || 28}px)`,
+            gridAutoRows: `${cell || 28}px`,
+            '--cw-cell': `${cell || 28}px`,
+          }}
+        >
+          {grid.map((row, r) => row.map((c0, c) => {
+            if (!c0) return <div key={k(r, c)} className="cw-cell blocked" />;
+            const key = k(r, c);
+            const letter = c0.l || inputs[key] || '';
+            const active = activeCell && activeCell[0] === r && activeCell[1] === c;
+            const inWord = activeKeySet.has(key);
+            return (
+              <div
+                key={key}
+                className={`cw-cell${c0.l ? ' given' : ' empty'}${inWord ? ' inword' : ''}${active ? ' active' : ''}`}
+                onClick={() => selectCell(r, c)}
+              >
+                {c0.n ? <span className="cw-num">{c0.n}</span> : null}
+                <span className="cw-letter">{letter}</span>
+              </div>
+            );
+          }))}
+        </div>
       </div>
 
       {aw ? (

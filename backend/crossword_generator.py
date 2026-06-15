@@ -411,9 +411,12 @@ def generate_crossword_entry(topic: str | None = None, difficulty: str | None = 
     # 4. Normalize and number words
     grid_2d, words_numbered = _normalize_and_number(raw_grid, placed)
 
-    # 5. Select hidden words — 3 intersecting words when the grid is rich enough,
-    #    falling back to 2 / 1 on sparse grids.
+    # 5. Select hidden words — aim for 4 mutually-intersecting words (each crossing
+    #    the chain so solving one reveals letters of the next), falling back to
+    #    3 / 2 / 1 only on sparser grids.
     if len(words_numbered) >= 6:
+        hidden_count = 4
+    elif len(words_numbered) >= 5:
         hidden_count = 3
     elif len(words_numbered) >= 4:
         hidden_count = 2
