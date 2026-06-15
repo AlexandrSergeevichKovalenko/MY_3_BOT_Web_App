@@ -698,6 +698,7 @@ ARTIKEL_BATTLE_CALL_BUTTON_TEXT = "⚔️ Вызвать на батл"
 ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT = "🛡 Готов к батлам"
 ADJEKTIV_SPRINT_BUTTON_TEXT = "🔠 Adjektiv"
 ADJEKTIV_BATTLE_BUTTON_TEXT = "⚔️ Adjektiv-батл"
+BATTLE_HISTORY_BUTTON_TEXT = "📜 История батлов"
 SHORTCUT_AUTOSAVE_BUTTON_TEXT = "🌙 Ночной автосейв"  # neutral fallback when user is unknown
 _AUTOSAVE_BUTTON_PREFIX = "🌙 Автосейв:"  # dynamic label prefix used for routing reply-button taps
 # Short-lived cache so rendering the reply keyboard doesn't hit the DB on every menu draw.
@@ -2811,6 +2812,7 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
     # Adjektivendungen game: open (everyone) + create battle (Pro only).
     adjektiv_row = [ADJEKTIV_SPRINT_BUTTON_TEXT] + ([ADJEKTIV_BATTLE_BUTTON_TEXT] if is_pro else [])
     rows.append(adjektiv_row)
+    rows.append([BATTLE_HISTORY_BUTTON_TEXT])
     return ReplyKeyboardMarkup(
         [
             *rows,
@@ -5054,6 +5056,7 @@ async def handle_button_click(update: Update, context: CallbackContext):
         ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT,
         ADJEKTIV_SPRINT_BUTTON_TEXT,
         ADJEKTIV_BATTLE_BUTTON_TEXT,
+        BATTLE_HISTORY_BUTTON_TEXT,
     }
     _msg_text = (update.message.text or "").strip() if update.message else ""
     if not ENABLE_LEGACY_REPLY_KEYBOARD and (
@@ -5147,6 +5150,13 @@ async def handle_button_click(update: Update, context: CallbackContext):
             parse_mode="HTML", reply_markup=kb)
     elif text == ADJEKTIV_BATTLE_BUTTON_TEXT:
         await adjektiv_battle_command(update, context)
+    elif text == BATTLE_HISTORY_BUTTON_TEXT:
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+            "📜 Открыть историю", url=get_webapp_deeplink("ans_bh_0"))]])
+        await update.message.reply_text(
+            "📜 <b>История батлов</b> — все твои батлы по разделам (артикли, окончания…) "
+            "с результатами и местами 👇",
+            parse_mode="HTML", reply_markup=kb)
     elif text == SHORTCUT_AUTOSAVE_BUTTON_TEXT or text.startswith(_AUTOSAVE_BUTTON_PREFIX):
         await _handle_autosave_button_tap(update, context)
     elif text == SHORTCUT_CONNECT_BUTTON_TEXT:

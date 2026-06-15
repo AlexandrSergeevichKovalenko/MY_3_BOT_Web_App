@@ -22760,6 +22760,54 @@ def adjektiv_submit():
     })
 
 
+@app.route("/api/webapp/battles/history", methods=["POST"])
+def battles_history():
+    """Unified battle history across all game types (Artikel, Adjektiv, …) — open
+    and finished, with the user's place/score per battle. Grouped into sections so
+    new game types just add another section."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    from backend.database import (
+        list_user_article_battles, list_article_sprint_results_ranked, get_article_sprint_theme,
+        list_user_adjektiv_battles, list_adjektiv_sprint_results_ranked,
+    )
+
+    def _row(bid, creator, label, deadline, status, ranked, play_kind):
+        place = None
+        count = 0
+        for idx, r in enumerate(ranked):
+            if int(r["user_id"]) == int(user_id):
+                place = idx + 1
+                count = int(r["count"])
+                break
+        return {
+            "battle_id": int(bid), "creator_name": str(creator or ""), "label": str(label or ""),
+            "deadline": deadline.isoformat() if deadline else "", "status": str(status or ""),
+            "your_place": place, "your_count": count, "total": len(ranked),
+            "winner": str(ranked[0].get("name") or "") if ranked else "",
+            "play": (f"ans_{play_kind}_{bid}" if str(status) == "open" else ""),
+        }
+
+    art = []
+    for b in list_user_article_battles(int(user_id), 20):
+        ranked = list_article_sprint_results_ranked(f"asb_{b['id']}")
+        theme = get_article_sprint_theme(b.get("theme_key"))
+        label = (theme or {}).get("label_de") or b.get("theme_key") or "Artikel"
+        art.append(_row(b["id"], b.get("creator_name"), label, b.get("deadline"), b.get("status"), ranked, "asb"))
+    adj = []
+    for b in list_user_adjektiv_battles(int(user_id), 20):
+        ranked = list_adjektiv_sprint_results_ranked(b["set_id"])
+        adj.append(_row(b["id"], b.get("creator_name"), "Adjektivendungen", b.get("deadline"), b.get("status"), ranked, "adb"))
+
+    sections = []
+    if art:
+        sections.append({"key": "artikel", "label": "⚡ Artikel", "battles": art})
+    if adj:
+        sections.append({"key": "adjektiv", "label": "🔠 Adjektiv", "battles": adj})
+    return jsonify({"ok": True, "sections": sections})
+
+
 @app.route("/api/webapp/adjektiv/learn", methods=["POST"])
 def adjektiv_learn():
     """Adjektiv Trainer: an endless self-paced deck of ending situations with the

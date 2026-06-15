@@ -730,6 +730,15 @@ html[data-scheme="light"] .ans-why-wrong { color: #92400e; }
 .art-das { background: #059669; }
 /* Adjektiv Sprint (phrase + 5 ending buttons + per-item timer + review) */
 .as-timer.urgent { color: #ef4444; }
+/* Battle history (unified, sectioned) */
+.bh-section { margin-bottom: 14px; }
+.bh-section-head { font-size: 14px; font-weight: 800; color: var(--dmps-text-muted, #94A3B8); margin: 4px 0 8px; letter-spacing: .02em; }
+.bh-row { padding: 10px 12px; border-radius: 12px; background: rgba(148,163,184,.10); margin-bottom: 8px; border-left: 3px solid transparent; }
+.bh-row.open { border-left-color: var(--dmps-primary, #2563EB); }
+.bh-row.ok { border-left-color: #22c55e; }
+.bh-row-title { font-size: 15px; font-weight: 700; color: var(--dmps-text-primary, #F8FAFC); }
+.bh-row-sub { margin-top: 3px; font-size: 13px; color: var(--dmps-text-secondary, #CBD5E1); }
+
 .fit-line { display: inline-block; white-space: nowrap; line-height: 1.15; }
 .fit-line.adj-line { display: inline-flex; align-items: baseline; gap: 4px; }
 .adj-word { font-size: 30px; display: flex; flex-wrap: nowrap; align-items: baseline; justify-content: center; overflow: hidden; }

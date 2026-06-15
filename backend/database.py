@@ -1849,6 +1849,42 @@ def close_adjektiv_sprint_battle(battle_id) -> None:
         conn.commit()
 
 
+def list_user_adjektiv_battles(user_id, limit: int = 20) -> list[dict]:
+    """All Adjektiv battles the user is in (open + closed) for the history screen."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT b.id, b.creator_name, b.set_id, b.deadline, b.status
+                       FROM bt_3_adjektiv_sprint_battles b
+                       JOIN bt_3_adjektiv_sprint_battle_members m ON m.battle_id = b.id
+                       WHERE m.user_id=%s ORDER BY b.deadline DESC LIMIT %s;""",
+                    (int(user_id), int(limit)),
+                )
+                return [{"id": int(r[0]), "creator_name": r[1], "set_id": str(r[2]),
+                         "deadline": r[3], "status": str(r[4])} for r in (cur.fetchall() or [])]
+    except Exception:
+        return []
+
+
+def list_user_article_battles(user_id, limit: int = 20) -> list[dict]:
+    """All Artikel battles the user is in (open + closed) for the history screen."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT b.id, b.creator_name, b.theme_key, b.deadline, b.status
+                       FROM bt_3_article_sprint_battles b
+                       JOIN bt_3_article_sprint_battle_members m ON m.battle_id = b.id
+                       WHERE m.user_id=%s ORDER BY b.deadline DESC LIMIT %s;""",
+                    (int(user_id), int(limit)),
+                )
+                return [{"id": int(r[0]), "creator_name": r[1], "theme_key": r[2],
+                         "deadline": r[3], "status": str(r[4])} for r in (cur.fetchall() or [])]
+    except Exception:
+        return []
+
+
 def get_dict_dedup_report(*, days: int = 7) -> dict:
     """Aggregate dedup-run stats for the weekly admin report.
 
