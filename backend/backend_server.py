@@ -22509,6 +22509,39 @@ def submit_answer():
     return jsonify({"ok": True, **result})
 
 
+@app.route("/api/answer/review/next", methods=["POST"])
+def answer_review_next():
+    """Mistakes review ("работа над ошибками"): next due item for this user."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    from backend.answer_eval import load_review_next
+    return jsonify({"ok": True, **load_review_next(user_id=int(user_id))})
+
+
+@app.route("/api/answer/review/submit", methods=["POST"])
+def answer_review_submit():
+    """Grade a review answer + advance/reset its spaced-repetition schedule."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    try:
+        mistake_id = int(payload.get("mistake_id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "mistake_id обязателен"}), 400
+    answer = str(payload.get("answer") or "")
+    from backend.answer_eval import evaluate_review
+    try:
+        result = evaluate_review(user_id=int(user_id), mistake_id=mistake_id, answer=answer)
+    except Exception:
+        logging.exception("review submit failed id=%s user=%s", mistake_id, user_id)
+        return jsonify({"error": "Ошибка проверки"}), 500
+    if result.get("error") == "not_found":
+        return jsonify({"error": "Задание не найдено"}), 404
+    return jsonify({"ok": True, **result})
+
+
 @app.route("/api/sprint/task", methods=["GET", "POST"])
 def sprint_task():
     user_id, user_name, err = _answer_auth_user_id()

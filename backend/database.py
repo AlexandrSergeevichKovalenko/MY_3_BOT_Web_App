@@ -1206,6 +1206,202 @@ def run_dictionary_dedup_now(*, max_users: int = 200, since_days: int = 7) -> di
             "srs_transferred": total_srs}
 
 
+# ── "Работа над ошибками": durable mistakes store + spaced repetition ─────────
+_MISTAKE_INTERVALS = [1, 3, 7, 16]  # days; a correct review advances; past the top → mastered
+
+
+def ensure_aufgabe_mistakes_schema() -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_aufgabe_mistakes (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    format TEXT NOT NULL,
+                    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    correct_answer TEXT,
+                    last_wrong_answer TEXT,
+                    interval_days INT NOT NULL DEFAULT 1,
+                    review_count INT NOT NULL DEFAULT 0,
+                    mastered BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    due_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cur.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_bt3_mistakes_user_hash "
+                "ON bt_3_aufgabe_mistakes (user_id, content_hash);"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_bt3_mistakes_due "
+                "ON bt_3_aufgabe_mistakes (user_id, mastered, due_at);"
+            )
+        conn.commit()
+
+
+def _mistake_hash(fmt: str, payload: dict, correct_answer: str) -> str:
+    import hashlib
+    p = payload or {}
+    seed = "|".join([
+        str(fmt or ""),
+        str(correct_answer or ""),
+        str(p.get("satz") or p.get("before") or p.get("original")
+            or p.get("wort") or " ".join(p.get("woerter") or [])),
+    ])
+    return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:32]
+
+
+def record_aufgabe_mistake(*, user_id: int, fmt: str, payload: dict,
+                           correct_answer: str, wrong_answer: str) -> None:
+    """Store (or refresh) a wrong answer for spaced-repetition review. Best-effort;
+    one upsert keyed by (user, content) so the same item isn't duplicated."""
+    import json as _json
+    try:
+        ensure_aufgabe_mistakes_schema()
+        h = _mistake_hash(fmt, payload, correct_answer)
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO bt_3_aufgabe_mistakes
+                      (user_id, content_hash, format, payload, correct_answer, last_wrong_answer,
+                       interval_days, review_count, mastered, due_at, updated_at)
+                    VALUES (%s,%s,%s,%s::jsonb,%s,%s, 1, 0, FALSE, NOW() + INTERVAL '1 day', NOW())
+                    ON CONFLICT (user_id, content_hash) DO UPDATE SET
+                      last_wrong_answer = EXCLUDED.last_wrong_answer,
+                      payload           = EXCLUDED.payload,
+                      correct_answer    = EXCLUDED.correct_answer,
+                      format            = EXCLUDED.format,
+                      interval_days     = 1,
+                      mastered          = FALSE,
+                      due_at            = NOW() + INTERVAL '1 day',
+                      updated_at        = NOW();
+                    """,
+                    (int(user_id), h, str(fmt), _json.dumps(payload or {}, ensure_ascii=False),
+                     str(correct_answer or ""), str(wrong_answer or "")),
+                )
+            conn.commit()
+    except Exception:
+        logging.warning("record_aufgabe_mistake failed user_id=%s fmt=%s", user_id, fmt, exc_info=True)
+
+
+def count_due_mistakes(user_id: int) -> int:
+    try:
+        ensure_aufgabe_mistakes_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM bt_3_aufgabe_mistakes "
+                    "WHERE user_id=%s AND mastered=FALSE AND due_at<=NOW();",
+                    (int(user_id),),
+                )
+                return int((cur.fetchone() or [0])[0])
+    except Exception:
+        return 0
+
+
+def get_next_due_mistake(user_id: int) -> dict | None:
+    try:
+        ensure_aufgabe_mistakes_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT id, format, payload, correct_answer
+                       FROM bt_3_aufgabe_mistakes
+                       WHERE user_id=%s AND mastered=FALSE AND due_at<=NOW()
+                       ORDER BY due_at ASC, id ASC LIMIT 1;""",
+                    (int(user_id),),
+                )
+                row = cur.fetchone()
+        if not row:
+            return None
+        return {"id": int(row[0]), "format": str(row[1]),
+                "payload": row[2] or {}, "correct_answer": str(row[3] or "")}
+    except Exception:
+        logging.warning("get_next_due_mistake failed user_id=%s", user_id, exc_info=True)
+        return None
+
+
+def get_aufgabe_mistake(user_id: int, mistake_id: int) -> dict | None:
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, format, payload, correct_answer FROM bt_3_aufgabe_mistakes "
+                    "WHERE id=%s AND user_id=%s;",
+                    (int(mistake_id), int(user_id)),
+                )
+                row = cur.fetchone()
+        if not row:
+            return None
+        return {"id": int(row[0]), "format": str(row[1]),
+                "payload": row[2] or {}, "correct_answer": str(row[3] or "")}
+    except Exception:
+        logging.warning("get_aufgabe_mistake failed id=%s", mistake_id, exc_info=True)
+        return None
+
+
+def reschedule_mistake(*, mistake_id: int, user_id: int, is_correct: bool) -> None:
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                if is_correct:
+                    cur.execute(
+                        "SELECT interval_days FROM bt_3_aufgabe_mistakes WHERE id=%s AND user_id=%s;",
+                        (int(mistake_id), int(user_id)),
+                    )
+                    r = cur.fetchone()
+                    cur_int = int(r[0]) if r else 1
+                    nxt = next((d for d in _MISTAKE_INTERVALS if d > cur_int), None)
+                    if nxt is None:
+                        cur.execute(
+                            "UPDATE bt_3_aufgabe_mistakes SET mastered=TRUE, "
+                            "review_count=review_count+1, updated_at=NOW() WHERE id=%s AND user_id=%s;",
+                            (int(mistake_id), int(user_id)),
+                        )
+                    else:
+                        cur.execute(
+                            "UPDATE bt_3_aufgabe_mistakes SET interval_days=%s, "
+                            "due_at=NOW() + (%s || ' days')::interval, "
+                            "review_count=review_count+1, updated_at=NOW() WHERE id=%s AND user_id=%s;",
+                            (int(nxt), int(nxt), int(mistake_id), int(user_id)),
+                        )
+                else:
+                    cur.execute(
+                        "UPDATE bt_3_aufgabe_mistakes SET interval_days=1, "
+                        "due_at=NOW() + INTERVAL '1 day', review_count=review_count+1, "
+                        "updated_at=NOW() WHERE id=%s AND user_id=%s;",
+                        (int(mistake_id), int(user_id)),
+                    )
+            conn.commit()
+    except Exception:
+        logging.warning("reschedule_mistake failed id=%s", mistake_id, exc_info=True)
+
+
+def list_users_with_due_mistakes(*, min_count: int = 1, limit: int = 5000) -> list[dict]:
+    """For the daily DM reminder: users with >= min_count due (not-mastered) mistakes."""
+    try:
+        ensure_aufgabe_mistakes_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT user_id, COUNT(*) AS n
+                       FROM bt_3_aufgabe_mistakes
+                       WHERE mastered=FALSE AND due_at<=NOW()
+                       GROUP BY user_id HAVING COUNT(*) >= %s
+                       ORDER BY n DESC LIMIT %s;""",
+                    (int(min_count), int(limit)),
+                )
+                return [{"user_id": int(r[0]), "count": int(r[1])} for r in (cur.fetchall() or [])]
+    except Exception:
+        logging.warning("list_users_with_due_mistakes failed", exc_info=True)
+        return []
+
+
 def get_dict_dedup_report(*, days: int = 7) -> dict:
     """Aggregate dedup-run stats for the weekly admin report.
 

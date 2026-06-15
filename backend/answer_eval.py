@@ -885,21 +885,11 @@ def _aufgabe_result_payload(dispatch: dict, *, is_correct: bool, already_answere
     }
 
 
-def load_aufgabe_task(*, dispatch_id: int, user_id: int) -> dict | None:
-    from backend.database import get_aufgabe_dispatch_by_id, get_aufgabe_answer
-    dispatch = get_aufgabe_dispatch_by_id(int(dispatch_id))
-    if not dispatch:
-        return None
-    payload = dispatch.get("payload") or {}
-    fmt = str(dispatch.get("format") or "")
-    meta = {
-        "kind": "aufgabe",
-        "format": fmt,
-        "level": str(dispatch.get("level") or "B2"),
-        "hint_ru": str(payload.get("hint_ru") or ""),
-        "already_answered": False,
-    }
-    # Prompt fields shown to the user (never the answer/explanation until answered).
+def aufgabe_client_meta(fmt: str, payload: dict) -> dict:
+    """Per-format render fields shown to the user — NEVER the answer/explanation.
+    Shared by the live task loader and the mistakes-review session."""
+    payload = payload or {}
+    meta = {"format": fmt, "hint_ru": str(payload.get("hint_ru") or "")}
     if fmt == "cloze":
         meta["satz"] = str(payload.get("satz") or "")
     elif fmt == "wortbildung":
@@ -956,6 +946,22 @@ def load_aufgabe_task(*, dispatch_id: int, user_id: int) -> dict | None:
                 meta["image_url"] = r2_public_url(key)
             except Exception:
                 meta["image_url"] = ""
+    return meta
+
+
+def load_aufgabe_task(*, dispatch_id: int, user_id: int) -> dict | None:
+    from backend.database import get_aufgabe_dispatch_by_id, get_aufgabe_answer
+    dispatch = get_aufgabe_dispatch_by_id(int(dispatch_id))
+    if not dispatch:
+        return None
+    payload = dispatch.get("payload") or {}
+    fmt = str(dispatch.get("format") or "")
+    meta = {
+        "kind": "aufgabe",
+        "level": str(dispatch.get("level") or "B2"),
+        "already_answered": False,
+        **aufgabe_client_meta(fmt, payload),
+    }
     existing = get_aufgabe_answer(dispatch_id=int(dispatch_id), user_id=int(user_id))
     if existing:
         meta["already_answered"] = True
@@ -963,6 +969,46 @@ def load_aufgabe_task(*, dispatch_id: int, user_id: int) -> dict | None:
             dispatch, is_correct=bool(existing.get("is_correct")), already_answered=True,
         )
     return meta
+
+
+# ── Mistakes review ("работа над ошибками"): record + spaced-repetition session ─
+_REVIEW_FORMATS = {"cloze", "wortbildung", "transform", "error", "satzbau", "adjektiv"}
+
+
+def load_review_next(*, user_id: int) -> dict:
+    """Next due mistake for this user as a renderable task (reuses Aufgabe UI)."""
+    from backend.database import get_next_due_mistake, count_due_mistakes
+    remaining = count_due_mistakes(int(user_id))
+    if remaining <= 0:
+        return {"kind": "review", "done": True, "remaining": 0}
+    m = get_next_due_mistake(int(user_id))
+    if not m:
+        return {"kind": "review", "done": True, "remaining": 0}
+    return {
+        "kind": "review",
+        "done": False,
+        "remaining": int(remaining),
+        "mistake_id": int(m["id"]),
+        "task": aufgabe_client_meta(str(m["format"]), m["payload"] or {}),
+    }
+
+
+def evaluate_review(*, user_id: int, mistake_id: int, answer: str) -> dict:
+    """Grade a review answer, advance/reset its spaced-repetition schedule, and
+    return the same rich result (rule + tip) the live task shows."""
+    from backend.database import get_aufgabe_mistake, reschedule_mistake, count_due_mistakes
+    m = get_aufgabe_mistake(int(user_id), int(mistake_id))
+    if not m:
+        return {"kind": "review", "error": "not_found"}
+    fmt = str(m["format"])
+    payload = m["payload"] or {}
+    is_correct = _check_aufgabe(fmt, payload, str(answer or ""))
+    reschedule_mistake(mistake_id=int(mistake_id), user_id=int(user_id), is_correct=bool(is_correct))
+    result = _aufgabe_result_payload(
+        {"payload": payload, "format": fmt},
+        is_correct=is_correct, already_answered=False, user_answer=str(answer or ""),
+    )
+    return {"kind": "review", "result": result, "remaining": count_due_mistakes(int(user_id))}
 
 
 def _norm_sentence(s: str) -> str:
@@ -1108,6 +1154,17 @@ def evaluate_aufgabe(*, dispatch_id: int, user_id: int, raw_input: str) -> dict 
         dispatch_id=int(dispatch_id), user_id=int(user_id),
         answer=answer, is_correct=bool(is_correct),
     )
+    # "Работа над ошибками": remember a wrong grammar answer for spaced-repetition
+    # review (light insert on the main path; never blocks the response).
+    if not is_correct and fmt in _REVIEW_FORMATS:
+        try:
+            from backend.database import record_aufgabe_mistake
+            record_aufgabe_mistake(
+                user_id=int(user_id), fmt=fmt, payload=payload,
+                correct_answer=_aufgabe_correct_answer(payload), wrong_answer=answer,
+            )
+        except Exception:
+            logging.warning("aufgabe: record mistake failed dispatch_id=%s", dispatch_id, exc_info=True)
     return _aufgabe_result_payload(
         dispatch, is_correct=is_correct, already_answered=False,
         user_answer=str(raw_input or ""), wrong_reason=wrong_reason,

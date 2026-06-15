@@ -21853,6 +21853,61 @@ async def _post_weekly_group_champions(context: CallbackContext, *, week_no: int
     return sent
 
 
+async def _send_mistake_review_reminders(context: CallbackContext) -> None:
+    """Daily DM nudge: tell each user who has due 'работа над ошибками' items to
+    review them (spaced repetition). Personal → straight to the user's DM."""
+    if _is_quiet_hours_now():
+        logging.info("quiet_hours: skip mistake review reminders")
+        return
+    try:
+        from backend.database import list_users_with_due_mistakes
+        users = await asyncio.to_thread(list_users_with_due_mistakes, min_count=1, limit=5000)
+    except Exception:
+        logging.warning("mistake reminders: list failed", exc_info=True)
+        return
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "🔁 Разобрать ошибки", url=get_webapp_deeplink("ans_rv_0"))]])
+    sent = 0
+    for u in users or []:
+        uid = int(u.get("user_id") or 0)
+        n = int(u.get("count") or 0)
+        if uid <= 0 or n <= 0:
+            continue
+        caption = (
+            f"🔁 <b>Работа над ошибками</b>\n\n"
+            f"У тебя <b>{n}</b> на повтор — разбери их, пока не закрепились неправильно. "
+            f"Это самый быстрый способ реально подтянуть грамматику 👇"
+        )
+        try:
+            await context.bot.send_message(chat_id=uid, text=caption, parse_mode="HTML", reply_markup=kb)
+            sent += 1
+        except Exception:
+            logging.warning("mistake reminder send failed uid=%s", uid, exc_info=True)
+    logging.info("mistake_review_reminders sent=%d", sent)
+
+
+async def review_mistakes_command(update: Update, context: CallbackContext) -> None:
+    """Open "работа над ошибками" on demand. /review"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    try:
+        from backend.database import count_due_mistakes
+        n = await asyncio.to_thread(count_due_mistakes, int(user.id))
+    except Exception:
+        n = 0
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "🔁 Разобрать ошибки", url=get_webapp_deeplink("ans_rv_0"))]])
+    if n > 0:
+        text = (f"🔁 <b>Работа над ошибками</b>\n\nУ тебя <b>{n}</b> на повтор — "
+                "разбери их, пока не закрепились неправильно 👇")
+    else:
+        text = ("✨ Сейчас ошибок на повтор нет. Решай задания — то, что не получится, "
+                "сюда попадёт и вернётся на повтор в нужный момент.")
+    await message.reply_text(text, parse_mode="HTML", reply_markup=kb)
+
+
 async def _send_weekly_champion_job(context: CallbackContext) -> None:
     """Weekly champion, split by audience:
       • GROUP chats  → a group-scoped poster (only that group's members).
@@ -25246,6 +25301,7 @@ def main():
     application.add_handler(CommandHandler("dedupreport", admin_dedup_report_command))
     application.add_handler(CommandHandler("dedupnow", admin_dedup_now_command))
     application.add_handler(CommandHandler("dedupenqueue", admin_dedup_enqueue_command))
+    application.add_handler(CommandHandler("review", review_mistakes_command))
     application.add_handler(CommandHandler("clearqueue", clear_dictionary_queue_command))
     application.add_handler(CommandHandler("ttsbudget", tts_budget_command))
     application.add_handler(CommandHandler("ttsprewarmquota", tts_prewarm_quota_command))
@@ -25821,6 +25877,14 @@ def main():
             "cron",
             day_of_week="sun",
             hour=20,
+            minute=0,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- "Работа над ошибками": daily DM nudge for due review items (11:00) --
+        scheduler.add_job(
+            lambda: submit_async(_send_mistake_review_reminders, CallbackContext(application=application)),
+            "cron",
+            hour=11,
             minute=0,
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
