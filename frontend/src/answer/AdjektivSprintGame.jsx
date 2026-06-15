@@ -240,8 +240,9 @@ export default function AdjektivSprintGame({ api, haptic, onClose, battleId = nu
                 {it.ok ? '✅' : '❌'} <b>{it.full || `${it.before}${it.a}${it.after}`}</b>
                 {!it.ok ? <span className="as-mine"> (ты: {it.chosen ? `-${it.chosen}` : '—'})</span> : null}
               </div>
-              {it.erklaerung ? <div className="adj-rev-rule">{it.erklaerung}</div> : null}
+              {it.erklaerung ? <div className="adj-rev-rule">📐 {it.erklaerung}</div> : null}
               {it.tip ? <div className="adj-rev-tip">💡 {it.tip}</div> : null}
+              {it.example ? <div className="adj-rev-rule">📝 {it.example}</div> : null}
             </div>
           ))}
         </div>

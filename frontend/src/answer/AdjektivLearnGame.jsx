@@ -82,8 +82,9 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
       {answered ? (
         <div className={`adj-rev ${pick === correct ? 'ok' : 'bad'}`} style={{ marginTop: 14 }}>
           <div className="adj-rev-phrase">{pick === correct ? '✅ Richtig!' : '❌'} <b>{card.full || `${card.before}${correct}${card.after}`}</b></div>
-          {card.erklaerung ? <div className="adj-rev-rule">{card.erklaerung}</div> : null}
+          {card.erklaerung ? <div className="adj-rev-rule">📐 {card.erklaerung}</div> : null}
           {card.tip ? <div className="adj-rev-tip">💡 {card.tip}</div> : null}
+          {card.example ? <div className="adj-rev-rule">📝 {card.example}</div> : null}
         </div>
       ) : null}
       {answered

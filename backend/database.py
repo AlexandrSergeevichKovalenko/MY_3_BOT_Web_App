@@ -1542,6 +1542,7 @@ def _adjektiv_item_for_game(p: dict) -> dict:
         "full": full,
         "erklaerung": str(p.get("erklaerung") or ""),
         "tip": str(p.get("tip") or ""),
+        "example": str(p.get("example") or ""),
         "ru": str(p.get("hint_ru") or ""),
     }
 

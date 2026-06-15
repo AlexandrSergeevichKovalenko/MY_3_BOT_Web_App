@@ -22741,7 +22741,8 @@ def adjektiv_submit():
         items.append({
             "before": it.get("before", ""), "after": it.get("after", ""),
             "full": it.get("full", ""), "a": corr, "chosen": chosen, "ok": ok,
-            "erklaerung": it.get("erklaerung", ""), "tip": it.get("tip", ""), "ru": it.get("ru", ""),
+            "erklaerung": it.get("erklaerung", ""), "tip": it.get("tip", ""),
+            "example": it.get("example", ""), "ru": it.get("ru", ""),
         })
     total = len(set_items)
     recorded = record_adjektiv_sprint_result(
@@ -22832,7 +22833,7 @@ def adjektiv_learn():
         out.append({
             "before": before, "after": after, "a": correct, "full": str(p.get("full") or ""),
             "erklaerung": str(p.get("erklaerung") or ""), "tip": str(p.get("tip") or ""),
-            "ru": str(p.get("hint_ru") or ""),
+            "example": str(p.get("example") or ""), "ru": str(p.get("hint_ru") or ""),
         })
     if not out:
         return jsonify({"ok": False, "error": "Колода пока готовится. Загляни чуть позже."}), 200

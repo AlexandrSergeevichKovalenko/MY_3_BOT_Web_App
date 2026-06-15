@@ -95,12 +95,37 @@ def _load_nouns(limit: int = 400) -> list[tuple]:
     return list(_FALLBACK_NOUNS)
 
 
-def _tip(typ: str, ending: str) -> str:
+# The strong adjective ending "signals" the gender/case like the definite article
+# would: -er↔der, -es↔das, -em↔dem, -e↔die, -en↔den. This is the core "gut feeling".
+_REF_ART = {"er": "der", "es": "das", "em": "dem", "e": "die", "en": "den"}
+# Canonical example words per gender (for the deterministic "пример" line).
+_EX_NOUNS = {"m": ["Wein", "Tag"], "f": ["Suppe", "Idee"], "n": ["Auto", "Kind"]}
+_EX_ADJS = ["neu", "klein"]
+
+
+def _rule(typ: str, case: str, gender: str, ending: str) -> str:
+    base = {"weak": "После der/die/das", "mixed": "После ein/kein", "strong": "Без артикля"}[typ]
+    return f"{base}, {_GEN_RU[gender]}, {_CASE_RU[case]} → окончание -{ending}."
+
+
+def _feeling(typ: str, case: str, gender: str, ending: str) -> str:
+    ref = _REF_ART.get(ending, "der")
     if typ == "weak":
-        return "После der/die/das прилагательное берёт только -e или -en (слабое склонение)."
+        return f"der/die/das уже показал род и падеж → прилагательному легко: -{ending}."
     if typ == "mixed":
-        return "После ein/kein: муж. Nom → -er, ср. Nom/Akk → -es, дальше как слабое (-en)."
-    return "Без артикля прилагательное «работает за артикль» — сильные окончания (-er/-es/-em/-er)."
+        strong_slot = (case == "Nom" and gender in ("m", "n")) or (case == "Akk" and gender == "n")
+        if strong_slot:
+            return f"ein «молчит» о роде → прилагательное досказывает сигнал -{ending} (как {ref})."
+        return f"ein/kein здесь уже показал род/падеж → лёгкое -{ending}."
+    return f"Без артикля прилагательное «надевает шляпу артикля» → копирует -{ending} (как {ref})."
+
+
+def _example(typ: str, case: str, gender: str, ending: str) -> str:
+    det = _DEF[case][gender] if typ == "weak" else (_EIN[case][gender] if typ == "mixed" else "")
+    out = []
+    for adj, noun in zip(_EX_ADJS, _EX_NOUNS[gender]):
+        out.append(" ".join([p for p in (det, adj + ending, noun) if p]))
+    return ", ".join(out)
 
 
 def _build_one(noun: tuple, adjective: str) -> dict:
@@ -123,12 +148,13 @@ def _build_one(noun: tuple, adjective: str) -> dict:
     full = " ".join(pre + [adjective + ending, word])
     before = " ".join(pre + [adjective]).strip()
     after = " " + word
-    erklaerung = (f"{_CASE_RU[case]} падеж, {_GEN_RU[gender]}, {_TYPE_RU[typ]} "
-                  f"→ окончание -{ending}.")
     hint_ru = f"{_CASE_RU[case]}, {_GEN_RU[gender]}, {_TYPE_SHORT[typ]}"
     return {
         "before": before, "after": after, "correct": ending, "full": full,
-        "erklaerung": erklaerung, "tip": _tip(typ, ending), "hint_ru": hint_ru,
+        "erklaerung": _rule(typ, case, gender, ending),
+        "tip": _feeling(typ, case, gender, ending),
+        "example": _example(typ, case, gender, ending),
+        "hint_ru": hint_ru,
     }
 
 
