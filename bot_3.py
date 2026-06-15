@@ -22759,16 +22759,10 @@ async def _send_scheduled_adjektiv_sprint(context: CallbackContext) -> None:
         return
     from backend.database import (
         get_or_create_daily_adjektiv_set, create_adjektiv_sprint_dispatch,
-        update_adjektiv_sprint_dispatch_message_id, count_available_aufgaben,
+        update_adjektiv_sprint_dispatch_message_id,
     )
-    # Ensure a healthy adjektiv pool to draw 15 distinct items from.
-    try:
-        have = await asyncio.to_thread(count_available_aufgaben, format="adjektiv")
-        if have < 30:
-            await _aufgabe_topup_format("adjektiv", "B2", 40 - int(have))
-    except Exception:
-        logging.warning("adjektiv_sprint: bank topup failed", exc_info=True)
-
+    # Items are generated deterministically (backend.adjektiv_endings) — no LLM
+    # top-up needed: the daily set is built instantly from the rule engine.
     slot_now = _get_quiz_schedule_now()
     slot_date = slot_now.date()
     slot_hour = int(slot_now.hour) * 100 + int(slot_now.minute)
@@ -22858,14 +22852,9 @@ async def adjektiv_battle_command(update: Update, context: CallbackContext) -> N
         await message.reply_text("⚔️ Создавать батл может только Premium. Принять чужой вызов могут все.")
         return
     from backend.database import (
-        create_adjektiv_battle_with_set, add_adjektiv_sprint_battle_member, count_available_aufgaben,
+        create_adjektiv_battle_with_set, add_adjektiv_sprint_battle_member,
     )
-    try:
-        have = await asyncio.to_thread(count_available_aufgaben, format="adjektiv")
-        if have < 20:
-            await _aufgabe_topup_format("adjektiv", "B2", 30 - int(have))
-    except Exception:
-        logging.warning("adjbattle: topup failed", exc_info=True)
+    # Battle set is built deterministically (rule engine) — no LLM top-up needed.
     deadline = datetime.now(ZoneInfo("Europe/Vienna")).replace(hour=23, minute=59, second=0, microsecond=0)
     creator_name = _display_user_name(user)
     bid, _set_id = await asyncio.to_thread(

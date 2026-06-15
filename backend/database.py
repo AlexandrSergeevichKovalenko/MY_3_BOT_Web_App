@@ -1457,8 +1457,16 @@ def ensure_adjektiv_sprint_schema() -> None:
 
 
 def pick_adjektiv_payloads(n: int = 15) -> list[dict]:
-    """`n` adjective items sourced from the aufgabe bank (format='adjektiv').
-    Distinct first; if the pool is small, cycle to fill `n`."""
+    """`n` adjective items. Primary source: the DETERMINISTIC rule-based generator
+    (unlimited, 100% correct, no LLM). Falls back to the aufgabe bank only if that
+    ever fails."""
+    try:
+        from backend.adjektiv_endings import build_adjektiv_items
+        items = build_adjektiv_items(int(n))
+        if items:
+            return items
+    except Exception:
+        logging.warning("pick_adjektiv_payloads: deterministic gen failed", exc_info=True)
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
