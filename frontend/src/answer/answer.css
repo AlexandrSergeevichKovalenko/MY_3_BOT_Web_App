@@ -728,6 +728,20 @@ html[data-scheme="light"] .ans-why-wrong { color: #92400e; }
 .art-der { background: #2563eb; }
 .art-die { background: #db2777; }
 .art-das { background: #059669; }
+/* Adjektiv Sprint (phrase + 5 ending buttons + per-item timer + review) */
+.as-timer.urgent { color: #ef4444; }
+.adj-word { font-size: 30px; display: flex; flex-wrap: wrap; align-items: baseline; justify-content: center; gap: 4px; }
+.adj-slot { color: #8b5cf6; font-weight: 900; min-width: 40px; border-bottom: 3px solid #8b5cf6; padding: 0 6px; }
+.adj-hint { margin-top: 10px; font-size: 14px; color: var(--dmps-text-muted, #94A3B8); }
+.adj-buttons { grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 14px; }
+.adj-end { background: linear-gradient(180deg, #6d4ad6, #4f2fb0); font-size: 20px; padding: 20px 0; }
+.adj-skip { margin-top: 12px; }
+.adj-rev { text-align: left; padding: 10px 12px; border-radius: 12px; margin-bottom: 8px; background: rgba(148,163,184,.10); }
+.adj-rev.ok { border-left: 3px solid #22c55e; }
+.adj-rev.bad { border-left: 3px solid #ef4444; }
+.adj-rev-phrase { font-size: 15px; font-weight: 600; }
+.adj-rev-rule { margin-top: 4px; font-size: 13px; color: var(--dmps-text-secondary, #CBD5E1); line-height: 1.4; }
+.adj-rev-tip { margin-top: 3px; font-size: 13px; color: #eab308; }
 /* Artikel Trainer (learning swipe-deck) */
 .al-card { display: flex; flex-direction: column; gap: 16px; }
 .al-progress { font-weight: 700; font-variant-numeric: tabular-nums; opacity: .8; }

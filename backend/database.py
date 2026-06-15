@@ -1402,6 +1402,276 @@ def list_users_with_due_mistakes(*, min_count: int = 1, limit: int = 5000) -> li
         return []
 
 
+# ── Adjektiv Sprint: timed 15-item adjective-ending game (clone of Artikel) ───
+def ensure_adjektiv_sprint_schema() -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS bt_3_adjektiv_sprint_sets (
+                    set_id TEXT PRIMARY KEY,
+                    items_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    total INT NOT NULL DEFAULT 0,
+                    kind TEXT NOT NULL DEFAULT 'daily',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );"""
+            )
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS bt_3_adjektiv_sprint_daily (
+                    play_date DATE NOT NULL,
+                    slot INT NOT NULL DEFAULT 0,
+                    set_id TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (play_date, slot)
+                );"""
+            )
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS bt_3_adjektiv_sprint_dispatches (
+                    id BIGSERIAL PRIMARY KEY,
+                    set_id TEXT NOT NULL,
+                    slot_date DATE NOT NULL,
+                    slot_hour INT NOT NULL,
+                    chat_id BIGINT NOT NULL,
+                    telegram_message_id BIGINT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (slot_date, slot_hour, chat_id)
+                );"""
+            )
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS bt_3_adjektiv_sprint_results (
+                    set_id TEXT NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    user_name TEXT,
+                    correct INT NOT NULL DEFAULT 0,
+                    answered INT NOT NULL DEFAULT 0,
+                    total INT NOT NULL DEFAULT 0,
+                    time_ms BIGINT NOT NULL DEFAULT 0,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (set_id, user_id)
+                );"""
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_adj_sprint_results_rank "
+                "ON bt_3_adjektiv_sprint_results (set_id, correct DESC, time_ms ASC);"
+            )
+        conn.commit()
+
+
+def pick_adjektiv_payloads(n: int = 15) -> list[dict]:
+    """`n` adjective items sourced from the aufgabe bank (format='adjektiv').
+    Distinct first; if the pool is small, cycle to fill `n`."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT payload FROM bt_3_aufgabe_bank "
+                    "WHERE retired=FALSE AND format='adjektiv' ORDER BY random() LIMIT %s;",
+                    (int(n) * 3,),
+                )
+                rows = [r[0] for r in (cur.fetchall() or []) if r and r[0]]
+    except Exception:
+        logging.warning("pick_adjektiv_payloads failed", exc_info=True)
+        return []
+    seen: set[str] = set()
+    uniq: list[dict] = []
+    for p in rows:
+        key = f"{(p or {}).get('before', '')}|{(p or {}).get('correct', '')}"
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(p)
+    if not uniq:
+        return []
+    out: list[dict] = []
+    i = 0
+    while len(out) < int(n):
+        out.append(uniq[i % len(uniq)])
+        i += 1
+    return out[: int(n)]
+
+
+def _adjektiv_item_for_game(p: dict) -> dict:
+    p = p or {}
+    return {
+        "before": str(p.get("before") or ""),
+        "after": str(p.get("after") or ""),
+        "a": str(p.get("correct") or "").lower(),  # correct ending (client local-grades)
+        "full": str(p.get("full") or ""),
+        "erklaerung": str(p.get("erklaerung") or ""),
+        "tip": str(p.get("tip") or ""),
+        "ru": str(p.get("hint_ru") or ""),
+    }
+
+
+def create_adjektiv_sprint_set(items: list[dict], *, kind: str = "daily") -> str:
+    import json as _json
+    import uuid as _uuid
+    ensure_adjektiv_sprint_schema()
+    set_id = str(_uuid.uuid4())
+    game_items = [_adjektiv_item_for_game(p) for p in (items or [])]
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO bt_3_adjektiv_sprint_sets (set_id, items_json, total, kind) "
+                "VALUES (%s,%s::jsonb,%s,%s);",
+                (set_id, _json.dumps(game_items, ensure_ascii=False), len(game_items), str(kind)),
+            )
+        conn.commit()
+    return set_id
+
+
+def get_adjektiv_sprint_set(set_id: str) -> dict | None:
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT set_id, items_json, total, kind FROM bt_3_adjektiv_sprint_sets WHERE set_id=%s;",
+                    (str(set_id),),
+                )
+                r = cur.fetchone()
+        if not r:
+            return None
+        return {"set_id": r[0], "items": r[1] or [], "total": int(r[2] or 0), "kind": str(r[3] or "daily")}
+    except Exception:
+        return None
+
+
+def get_or_create_daily_adjektiv_set(play_date, slot: int) -> str | None:
+    """Set for one (date, slot). Built by picking 15 from the adjektiv bank — fast,
+    no LLM (the scheduled job tops up the bank before broadcasting)."""
+    ensure_adjektiv_sprint_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT set_id FROM bt_3_adjektiv_sprint_daily WHERE play_date=%s AND slot=%s;",
+                (play_date, int(slot)),
+            )
+            r = cur.fetchone()
+            if r:
+                return str(r[0])
+    items = pick_adjektiv_payloads(15)
+    if not items:
+        return None
+    set_id = create_adjektiv_sprint_set(items, kind="daily")
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO bt_3_adjektiv_sprint_daily (play_date, slot, set_id) VALUES (%s,%s,%s) "
+                "ON CONFLICT (play_date, slot) DO NOTHING;",
+                (play_date, int(slot), set_id),
+            )
+        conn.commit()
+    return set_id
+
+
+def get_latest_daily_adjektiv_set(play_date) -> str | None:
+    try:
+        ensure_adjektiv_sprint_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT set_id FROM bt_3_adjektiv_sprint_daily WHERE play_date=%s "
+                    "ORDER BY slot DESC, created_at DESC LIMIT 1;",
+                    (play_date,),
+                )
+                r = cur.fetchone()
+        return str(r[0]) if r else None
+    except Exception:
+        return None
+
+
+def create_adjektiv_sprint_dispatch(*, set_id, slot_date, slot_hour, chat_id) -> int | None:
+    ensure_adjektiv_sprint_schema()
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO bt_3_adjektiv_sprint_dispatches (set_id, slot_date, slot_hour, chat_id)
+                       VALUES (%s,%s,%s,%s)
+                       ON CONFLICT (slot_date, slot_hour, chat_id) DO NOTHING RETURNING id;""",
+                    (str(set_id), slot_date, int(slot_hour), int(chat_id)),
+                )
+                r = cur.fetchone()
+            conn.commit()
+        return int(r[0]) if r else None
+    except Exception:
+        logging.warning("create_adjektiv_sprint_dispatch failed", exc_info=True)
+        return None
+
+
+def update_adjektiv_sprint_dispatch_message_id(dispatch_id, *, telegram_message_id) -> None:
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE bt_3_adjektiv_sprint_dispatches SET telegram_message_id=%s WHERE id=%s;",
+                    (int(telegram_message_id), int(dispatch_id)),
+                )
+            conn.commit()
+    except Exception:
+        pass
+
+
+def record_adjektiv_sprint_result(*, set_id, user_id, user_name, correct, answered, total, time_ms) -> bool:
+    ensure_adjektiv_sprint_schema()
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO bt_3_adjektiv_sprint_results
+                         (set_id,user_id,user_name,correct,answered,total,time_ms)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s)
+                       ON CONFLICT (set_id,user_id) DO NOTHING;""",
+                    (str(set_id), int(user_id), str(user_name or ""), int(correct),
+                     int(answered), int(total), int(time_ms)),
+                )
+                inserted = cur.rowcount > 0
+            conn.commit()
+        return inserted
+    except Exception:
+        logging.warning("record_adjektiv_sprint_result failed", exc_info=True)
+        return False
+
+
+def get_adjektiv_sprint_result(set_id, user_id) -> dict | None:
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT correct,answered,total,time_ms FROM bt_3_adjektiv_sprint_results "
+                    "WHERE set_id=%s AND user_id=%s;",
+                    (str(set_id), int(user_id)),
+                )
+                r = cur.fetchone()
+        if not r:
+            return None
+        return {"correct": int(r[0]), "answered": int(r[1]), "total": int(r[2]), "time_ms": int(r[3])}
+    except Exception:
+        return None
+
+
+def list_adjektiv_sprint_results_ranked(set_id) -> list[dict]:
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT user_id, user_name, correct, time_ms FROM bt_3_adjektiv_sprint_results "
+                    "WHERE set_id=%s ORDER BY correct DESC, time_ms ASC;",
+                    (str(set_id),),
+                )
+                return [{"user_id": int(r[0]), "name": r[1] or "Игрок",
+                         "count": int(r[2]), "time_ms": int(r[3])} for r in (cur.fetchall() or [])]
+    except Exception:
+        return []
+
+
+def compute_adjektiv_sprint_ranking(*, set_id, user_id) -> dict:
+    full = list_adjektiv_sprint_results_ranked(set_id)
+    if not full:
+        return {"total": 0, "your_place": None, "top3": []}
+    place = next((i + 1 for i, u in enumerate(full) if int(u["user_id"]) == int(user_id)), None)
+    return {"total": len(full), "your_place": place, "top3": full[:3]}
+
+
 def get_dict_dedup_report(*, days: int = 7) -> dict:
     """Aggregate dedup-run stats for the weekly admin report.
 

@@ -22661,6 +22661,105 @@ def artikel_today():
     })
 
 
+@app.route("/api/webapp/adjektiv/today", methods=["POST"])
+def adjektiv_today():
+    """Adjektiv Sprint: load today's latest daily set (15 items, preloaded for
+    zero-latency play). The set is built by the scheduled broadcast job."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo
+    from backend.database import (
+        get_latest_daily_adjektiv_set, get_adjektiv_sprint_set,
+        get_adjektiv_sprint_result, compute_adjektiv_sprint_ranking,
+    )
+    play_date = _dt.now(ZoneInfo("Europe/Vienna")).date()
+    set_id = get_latest_daily_adjektiv_set(play_date)
+    if not set_id:
+        return jsonify({"ok": False, "error_code": "adjektiv_set_not_ready",
+                        "error": "Сет Adjektiv Sprint на сегодня ещё готовится. Загляни чуть позже."}), 200
+    s = get_adjektiv_sprint_set(set_id)
+    if not s or not s.get("items"):
+        return jsonify({"ok": False, "error_code": "adjektiv_set_empty", "error": "Сет пуст."}), 200
+    # Slim items for play (the correct ending is included for instant local grading,
+    # like Artikel; explanations stay server-side and come back with the result).
+    slim = [{"before": it.get("before", ""), "after": it.get("after", ""),
+             "a": it.get("a", ""), "ru": it.get("ru", "")} for it in s["items"]]
+    existing = get_adjektiv_sprint_result(set_id, int(user_id))
+    result_payload = None
+    if existing:
+        result_payload = {
+            **existing,
+            "pct": round(100 * existing["correct"] / existing["answered"]) if existing.get("answered") else 0,
+            "items": [],
+            "ranking": compute_adjektiv_sprint_ranking(set_id=set_id, user_id=int(user_id)),
+            "already_played": True,
+        }
+    return jsonify({
+        "ok": True, "set_id": set_id, "theme_label": "Adjektivendungen",
+        "items": slim, "per_item_s": 5,
+        "already_played": bool(existing), "result": result_payload,
+    })
+
+
+@app.route("/api/webapp/adjektiv/submit", methods=["POST"])
+def adjektiv_submit():
+    """Adjektiv Sprint: official scoring — re-grade answers (by item order) against
+    the stored set, record the first attempt, return a detailed per-item review."""
+    user_id, user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    set_id = str(payload.get("set_id") or "").strip()
+    answers = payload.get("answers")
+    answers = answers if isinstance(answers, list) else []
+    try:
+        time_ms = int(payload.get("time_ms") or 0)
+    except (TypeError, ValueError):
+        time_ms = 0
+    from backend.database import (
+        get_adjektiv_sprint_set, record_adjektiv_sprint_result,
+        get_adjektiv_sprint_result, compute_adjektiv_sprint_ranking,
+    )
+    s = get_adjektiv_sprint_set(set_id)
+    if not s or not s.get("items"):
+        return jsonify({"error": "Сет не найден"}), 404
+    set_items = s["items"]
+    items = []
+    correct = 0
+    answered = 0
+    for i, it in enumerate(set_items):
+        ans = answers[i] if i < len(answers) else None
+        chosen = str((ans or {}).get("chosen") or "").strip().lower()
+        corr = str(it.get("a") or "").strip().lower()
+        ok = bool(chosen) and chosen == corr
+        if chosen:
+            answered += 1
+            if ok:
+                correct += 1
+        items.append({
+            "before": it.get("before", ""), "after": it.get("after", ""),
+            "full": it.get("full", ""), "a": corr, "chosen": chosen, "ok": ok,
+            "erklaerung": it.get("erklaerung", ""), "tip": it.get("tip", ""), "ru": it.get("ru", ""),
+        })
+    total = len(set_items)
+    recorded = record_adjektiv_sprint_result(
+        set_id=set_id, user_id=int(user_id), user_name=user_name or "",
+        correct=correct, answered=answered, total=total, time_ms=time_ms,
+    )
+    if not recorded:
+        prev = get_adjektiv_sprint_result(set_id, int(user_id)) or {}
+        correct = int(prev.get("correct", correct))
+        answered = int(prev.get("answered", answered))
+    pct = round(100 * correct / answered) if answered else 0
+    return jsonify({
+        "ok": True, "correct": correct, "answered": answered, "total": total, "pct": pct,
+        "items": items, "already_played": not recorded,
+        "ranking": compute_adjektiv_sprint_ranking(set_id=set_id, user_id=int(user_id)),
+    })
+
+
 @app.route("/api/webapp/artikel/learn/today", methods=["POST"])
 def artikel_learn_today():
     """Artikel Trainer: the self-paced LEARNING deck — today's Sprint words (so it's

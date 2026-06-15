@@ -22713,6 +22713,96 @@ def _artikel_sprint_enabled() -> bool:
     return (os.getenv("ARTIKEL_SPRINT_ENABLED") or "1").strip().lower() in ("1", "true", "yes", "on")
 
 
+# Adjektiv Sprint: two timed sets per day (10:00 + 15:30 Vienna).
+ADJEKTIV_SPRINT_SLOTS = [(10, 0), (15, 30)]
+
+
+def _adjektiv_sprint_enabled() -> bool:
+    return (os.getenv("ADJEKTIV_SPRINT_ENABLED") or "1").strip().lower() in ("1", "true", "yes", "on")
+
+
+async def _send_scheduled_adjektiv_sprint(context: CallbackContext) -> None:
+    """Two daily Adjektiv-Sprint sets. Heavy item generation is kept OFF the user
+    path: here (a scheduled job) we top up the adjektiv bank if low, build the
+    15-item set, then broadcast a hero card + play button. The /today endpoint
+    only reads the prebuilt set."""
+    if _is_quiet_hours_now() or not _adjektiv_sprint_enabled():
+        return
+    from backend.database import (
+        get_or_create_daily_adjektiv_set, create_adjektiv_sprint_dispatch,
+        update_adjektiv_sprint_dispatch_message_id, count_available_aufgaben,
+    )
+    # Ensure a healthy adjektiv pool to draw 15 distinct items from.
+    try:
+        have = await asyncio.to_thread(count_available_aufgaben, format="adjektiv")
+        if have < 30:
+            await _aufgabe_topup_format("adjektiv", "B2", 40 - int(have))
+    except Exception:
+        logging.warning("adjektiv_sprint: bank topup failed", exc_info=True)
+
+    slot_now = _get_quiz_schedule_now()
+    slot_date = slot_now.date()
+    slot_hour = int(slot_now.hour) * 100 + int(slot_now.minute)
+    set_id = await asyncio.to_thread(get_or_create_daily_adjektiv_set, slot_date, slot_hour)
+    if not set_id:
+        await _alert_admin_interactive(
+            context, "⚠️ Adjektiv Sprint: пул пуст, сет не собран.", throttle_key="adj_sprint_empty")
+        return
+    targets = await _collect_quiz_delivery_user_targets(context)
+    if not targets:
+        return
+    poster = None
+    try:
+        from backend.interactive_card import render_adjektiv_card
+        poster = await asyncio.to_thread(render_adjektiv_card)
+    except Exception:
+        logging.warning("adjektiv_sprint: card render failed", exc_info=True)
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "🔠 Играть (15 × 5 сек)", url=get_webapp_deeplink("ans_ad_0"))]])
+    caption = (
+        "🔠 *Adjektiv Sprint*\n\n"
+        "15 ситуаций · по 5 секунд на каждую — выбери правильное окончание прилагательного!\n"
+        "🏆 В конце — разбор по каждому случаю с правилом."
+    )
+    sent = 0
+    for t in targets:
+        cid = int(t.get("chat_id") or 0)
+        if cid == 0:
+            continue
+        did = await asyncio.to_thread(
+            create_adjektiv_sprint_dispatch,
+            set_id=set_id, slot_date=slot_date, slot_hour=slot_hour, chat_id=cid)
+        if did is None:
+            continue  # already sent this slot to this chat
+        try:
+            if poster:
+                msg = await context.bot.send_photo(
+                    chat_id=cid, photo=io.BytesIO(poster), caption=caption,
+                    parse_mode="Markdown", reply_markup=kb)
+            else:
+                msg = await context.bot.send_message(
+                    chat_id=cid, text=caption, parse_mode="Markdown", reply_markup=kb)
+            await asyncio.to_thread(
+                update_adjektiv_sprint_dispatch_message_id, int(did), telegram_message_id=int(msg.message_id))
+            sent += 1
+        except Exception as exc:
+            logging.warning("adjektiv_sprint: send failed chat=%s: %s", cid, exc)
+    logging.info("adjektiv_sprint sent=%s set=%s slot=%s", sent, set_id, slot_hour)
+
+
+async def admin_adjektiv_sprint_command(update: Update, context: CallbackContext) -> None:
+    """Build + broadcast an Adjektiv Sprint set now (test). /adjsprint"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    await message.reply_text("⏳ Собираю и рассылаю Adjektiv Sprint…")
+    await _send_scheduled_adjektiv_sprint(context)
+
+
 async def _send_scheduled_artikel_sprint(context: CallbackContext) -> None:
     """Daily 19:00 reminder: ensure today's shared set exists, then post the play
     button to the delivery targets. Skips quietly if the set isn't ready."""
@@ -25302,6 +25392,7 @@ def main():
     application.add_handler(CommandHandler("dedupnow", admin_dedup_now_command))
     application.add_handler(CommandHandler("dedupenqueue", admin_dedup_enqueue_command))
     application.add_handler(CommandHandler("review", review_mistakes_command))
+    application.add_handler(CommandHandler("adjsprint", admin_adjektiv_sprint_command))
     application.add_handler(CommandHandler("clearqueue", clear_dictionary_queue_command))
     application.add_handler(CommandHandler("ttsbudget", tts_budget_command))
     application.add_handler(CommandHandler("ttsprewarmquota", tts_prewarm_quota_command))
@@ -25789,6 +25880,15 @@ def main():
             minute=int(ARTIKEL_SPRINT_SLOT[1]),
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
+        # -- Adjektiv Sprint: two daily sets (10:00 and 15:30) --
+        for _adj_h, _adj_m in ADJEKTIV_SPRINT_SLOTS:
+            scheduler.add_job(
+                lambda: submit_async(_send_scheduled_adjektiv_sprint, CallbackContext(application=application)),
+                "cron",
+                hour=int(_adj_h),
+                minute=int(_adj_m),
+                timezone=QUIZ_SCHEDULE_TZ_NAME,
+            )
         # -- Artikel Trainer: morning learning nudge / all-day entry point (08:00) --
         scheduler.add_job(
             lambda: submit_async(_send_scheduled_artikel_learn, CallbackContext(application=application)),
