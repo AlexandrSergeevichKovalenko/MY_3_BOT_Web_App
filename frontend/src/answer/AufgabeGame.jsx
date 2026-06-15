@@ -21,7 +21,7 @@ function gapSentence(satz) {
 function PrüfenButton({ disabled, submitting, onClick }) {
   return (
     <button className="ans-btn" disabled={disabled || submitting} onClick={onClick}>
-      {submitting ? 'Проверяю…' : 'Проверить ✓'}
+      {submitting ? 'Prüfe …' : 'Prüfen ✓'}
     </button>
   );
 }
@@ -32,13 +32,13 @@ function AufgabeText({ task, onSubmit, submitting }) {
   const submit = () => { const v = value.trim(); if (v) onSubmit(v); };
 
   let body;
-  let placeholder = 'впиши ответ по-немецки …';
+  let placeholder = 'fehlendes Wort …';
   if (fmt === 'transform') {
-    placeholder = `2–5 слов с «${task.schluesselwort || ''}»`;
+    placeholder = `2–5 Wörter mit „${task.schluesselwort || ''}“`;
     body = (
       <>
         <div className="au-orig">{task.original}</div>
-        <div className="au-key">🔑 Ключевое слово: <b>{task.schluesselwort}</b></div>
+        <div className="au-key">🔑 Schlüsselwort: <b>{task.schluesselwort}</b></div>
         <div className="au-satz">
           {task.target_prefix ? <>{task.target_prefix} </> : null}
           <span className="au-gap">＿＿＿</span>
@@ -47,21 +47,19 @@ function AufgabeText({ task, onSubmit, submitting }) {
       </>
     );
   } else if (fmt === 'wortbildung') {
-    placeholder = 'слово + артикль, напр. Lieferung der …';
+    // Only the Stamm hint is Russian (the stem's RU meaning); everything else
+    // stays German.
     body = (
       <>
         <div className="au-satz">{gapSentence(task.satz)}</div>
-        <div className="au-key">
-          🔧 Корень: <b>{task.stamm}</b>
-          {task.stamm_ru ? <span className="ans-meaning"> · {task.stamm_ru}</span> : null}
-        </div>
+        <div className="au-key">🔧 Stamm: <b>{task.stamm_ru || task.stamm}</b></div>
       </>
     );
   } else if (fmt === 'synonym' || fmt === 'antonym') {
-    placeholder = fmt === 'antonym' ? 'впиши антоним …' : 'впиши синоним …';
+    placeholder = fmt === 'antonym' ? 'Gegenteil eintippen …' : 'Synonym eintippen …';
     body = (
       <div className="au-syn">
-        <span className="au-syn-label">{fmt === 'antonym' ? '↔️ Антоним к' : '🔄 Синоним к'}</span>
+        <span className="au-syn-label">{fmt === 'antonym' ? '↔️ Antonym zu' : '🔄 Synonym zu'}</span>
         <div className="au-syn-word">{task.wort}</div>
       </div>
     );
@@ -91,7 +89,7 @@ function AufgabeError({ task, onSubmit, submitting }) {
   const submit = () => { if (ready) onSubmit(`${picked}|${fix.trim()}`); };
   return (
     <>
-      <p className="au-hint">Нажми на <b>неправильное</b> слово и исправь его:</p>
+      <p className="au-hint">Tippe das <b>falsche</b> Wort an und korrigiere es:</p>
       <div className="au-words">
         {woerter.map((w, i) => (
           <button
@@ -104,7 +102,7 @@ function AufgabeError({ task, onSubmit, submitting }) {
       {task.hint_ru ? <p className="au-hint">💡 {task.hint_ru}</p> : null}
       <input
         className="ans-input" value={fix} onChange={(e) => setFix(e.target.value)}
-        placeholder={picked == null ? 'сначала нажми на слово …' : 'правильная форма …'}
+        placeholder={picked == null ? 'erst ein Wort antippen …' : 'richtige Form …'}
         autoCapitalize="off" autoCorrect="off" enterKeyHint="send"
         onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
       />
@@ -182,7 +180,7 @@ function AufgabeHoer({ task, onSubmit, submitting }) {
               </div>
             </div>
           </>
-        ) : <span className="ls-noaudio">🔇 Аудио готовится — попробуй сейчас ещё раз.</span>}
+        ) : <span className="ls-noaudio">🔇 Audio wird vorbereitet — gleich nochmal.</span>}
       </div>
       {isMulti ? (
         <div className="au-satz au-cloze">
@@ -202,7 +200,7 @@ function AufgabeHoer({ task, onSubmit, submitting }) {
         <>
           <div className="au-satz">{gapSentence(task.satz_luecke)}</div>
           <input className="ans-input" value={vals[0] || ''} onChange={(e) => setVal(0, e.target.value)}
-            placeholder="услышанное слово …" autoCapitalize="off" autoCorrect="off" enterKeyHint="send"
+            placeholder="gehörtes Wort …" autoCapitalize="off" autoCorrect="off" enterKeyHint="send"
             onKeyDown={(e) => { if (e.key === 'Enter') submit(); }} />
         </>
       )}
@@ -238,12 +236,12 @@ function AufgabePin({ task, onSubmit, submitting }) {
           <img className="pin-img" src={task.image_url} alt="" draggable="false" />
           {tap ? <span className="pin-marker" style={{ left: `${tap.x * 100}%`, top: `${tap.y * 100}%` }} /> : null}
         </div>
-      ) : <div className="au-orig">🖼 Картинка готовится — попробуй сейчас ещё раз.</div>}
+      ) : <div className="au-orig">🖼 Bild wird vorbereitet — gleich nochmal.</div>}
       {task.hint_ru ? <p className="au-hint">💡 {task.hint_ru}</p> : null}
       {needsArticle ? (
         <input
           className="ans-input" value={article} onChange={(e) => setArticle(e.target.value)}
-          placeholder={tap ? 'артикль: der / die / das' : 'сначала нажми на объект …'}
+          placeholder={tap ? 'Artikel: der / die / das' : 'erst auf das Objekt tippen …'}
           autoCapitalize="off" autoCorrect="off" enterKeyHint="send"
           onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
         />
