@@ -22949,22 +22949,45 @@ async def adjektiv_battle_command(update: Update, context: CallbackContext) -> N
         return
     await asyncio.to_thread(add_adjektiv_sprint_battle_member,
                             battle_id=bid, user_id=int(user.id), user_name=creator_name)
+    # Reply to the creator INSTANTLY with the play buttons; the heavy part (render
+    # the card + send invites to every user) runs in the background so the button
+    # never makes the creator wait.
+    play_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_adb_{bid}"))],
+        [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_adbl_0"))],
+    ])
+    status = await message.reply_text(
+        f"⚔️ Adjektiv-батл #{bid} создан! Дедлайн 23:59.\nРассылаю приглашения… 📨",
+        reply_markup=play_kb)
+    asyncio.create_task(_broadcast_adjektiv_battle_invites(
+        context, battle_id=bid, creator_id=int(user.id), creator_name=creator_name,
+        status_chat_id=int(message.chat_id), status_msg_id=int(status.message_id)))
+
+
+async def _broadcast_adjektiv_battle_invites(context: CallbackContext, *, battle_id: int,
+                                             creator_id: int, creator_name: str,
+                                             status_chat_id: int, status_msg_id: int) -> None:
+    """Off-critical-path: render the invite card once and DM every allowed user,
+    then update the creator's status message with the count."""
     invite_text = (
         f"⚔️ <b>{html.escape(creator_name)}</b> зовёт на <b>Adjektiv Sprint</b> батл!\n"
         f"15 ситуаций на окончания прилагательных, по 5 сек. Играй когда удобно <b>до 23:59</b>. Прими вызов:"
     )
     join_kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-        "✅ Принять вызов", callback_data=f"adb_join:{bid}")]])
+        "✅ Принять вызов", callback_data=f"adb_join:{battle_id}")]])
     poster = None
     try:
         from backend.interactive_card import render_adjektiv_card
         poster = await asyncio.to_thread(render_adjektiv_card)
     except Exception:
         poster = None
-    targets = await asyncio.to_thread(list_allowed_telegram_user_ids)
+    try:
+        targets = await asyncio.to_thread(list_allowed_telegram_user_ids)
+    except Exception:
+        targets = []
     sent = 0
     for uid in targets or []:
-        if int(uid) == int(user.id):
+        if int(uid) == int(creator_id):
             continue
         try:
             if poster:
@@ -22977,11 +23000,16 @@ async def adjektiv_battle_command(update: Update, context: CallbackContext) -> N
         except Exception:
             pass
     play_kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_adb_{bid}"))],
+        [InlineKeyboardButton("⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_adb_{battle_id}"))],
         [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_adbl_0"))],
     ])
-    await message.reply_text(
-        f"⚔️ Adjektiv-батл #{bid} создан. Приглашено: {sent}. Дедлайн 23:59.", reply_markup=play_kb)
+    try:
+        await context.bot.edit_message_text(
+            chat_id=status_chat_id, message_id=status_msg_id,
+            text=f"⚔️ Adjektiv-батл #{battle_id} создан. Приглашено: {sent}. Дедлайн 23:59.",
+            reply_markup=play_kb)
+    except Exception:
+        pass
 
 
 async def adjektiv_battle_join_callback(update: Update, context: CallbackContext) -> None:
