@@ -277,11 +277,39 @@ function AufgabeSatzbau({ task, onSubmit, submitting }) {
   );
 }
 
+const ADJ_ENDINGS = ['e', 'en', 'er', 'es', 'em'];
+
+function AufgabeAdjektiv({ task, onSubmit, submitting }) {
+  const [pick, setPick] = useState(null);
+  const submit = () => { if (pick) onSubmit(pick); };
+  return (
+    <>
+      <div className="au-satz au-adj">
+        <span>{task.before}</span>
+        <span className={`au-adj-slot${pick ? ' filled' : ''}`}>{pick ? `-${pick}` : '·'}</span>
+        <span>{task.after}</span>
+      </div>
+      <div className="au-adj-opts">
+        {ADJ_ENDINGS.map((e) => (
+          <button
+            key={e} type="button"
+            className={`au-adj-key${pick === e ? ' on' : ''}`}
+            onClick={() => { setPick(e); tapHaptic(); }} disabled={submitting}
+          >-{e}</button>
+        ))}
+      </div>
+      {task.hint_ru ? <p className="au-hint">💡 {task.hint_ru}</p> : null}
+      <PrüfenButton disabled={!pick} submitting={submitting} onClick={submit} />
+    </>
+  );
+}
+
 export default function AufgabeGame({ task, onSubmit, submitting }) {
   const fmt = task.format || 'cloze';
   if (fmt === 'error') return <AufgabeError task={task} onSubmit={onSubmit} submitting={submitting} />;
   if (fmt === 'hoerluecke') return <AufgabeHoer task={task} onSubmit={onSubmit} submitting={submitting} />;
   if (fmt === 'pin') return <AufgabePin task={task} onSubmit={onSubmit} submitting={submitting} />;
   if (fmt === 'satzbau') return <AufgabeSatzbau task={task} onSubmit={onSubmit} submitting={submitting} />;
+  if (fmt === 'adjektiv') return <AufgabeAdjektiv task={task} onSubmit={onSubmit} submitting={submitting} />;
   return <AufgabeText task={task} onSubmit={onSubmit} submitting={submitting} />;
 }

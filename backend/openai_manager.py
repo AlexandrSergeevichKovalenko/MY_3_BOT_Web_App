@@ -80,6 +80,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "aufgabe_hoerluecke",
     "aufgabe_pin_blueprint",
     "aufgabe_satzbau",
+    "aufgabe_adjektiv",
     "aufgabe_synonym",
     "aufgabe_antonym",
     "sprint_synonym",
@@ -3036,6 +3037,35 @@ Gib NUR STRICT JSON:
 {"items":[{"satz":"Die _____ Ware erfolgte sehr schnell.","stamm":"liefern","stamm_ru":"доставлять","correct":"Lieferung der","aliases":[],"erklaerung":"…","tip":"…","hint_ru":"доставка товаров"}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
+"aufgabe_adjektiv": """
+Du erstellst Aufgaben zu ADJEKTIVENDUNGEN (attributive Deklination) für B2–C1.
+
+Eingabe-JSON: {"count": <int>, "level": "B2"|"C1"}.
+
+Jede Aufgabe: EINE realistische deutsche Nominalphrase mit GENAU EINEM attributiven
+Adjektiv, dessen Endung fehlt. Der/die Lernende wählt die richtige Endung
+(-e, -en, -er, -es, -em). Variiere systematisch über Deklinationstyp (schwach mit
+bestimmtem Artikel / gemischt mit ein-/kein-/Possessiv / stark ohne Artikel),
+Genus, Numerus und Kasus (Nom/Akk/Dat/Gen). KEINE prädikativen Fälle ("ist gut" →
+keine Endung) — immer ATTRIBUTIV, also immer eine der fünf Endungen.
+
+Regeln:
+- "before" = der Phrasen-Teil bis UNMITTELBAR vor die Endung, inkl. Adjektiv-Stamm,
+  z. B. "der gut" oder "mit einem alt" oder "trotz des kalt".
+- "after" = der Rest nach der Endung, beginnend mit einem Leerzeichen,
+  z. B. " Wein" oder " Auto".
+- "correct" = NUR die fehlende Endung: genau eine von "e","en","er","es","em".
+- "full" = die vollständige korrekte Phrase, z. B. "der gute Wein".
+- "erklaerung" = russische „lehrbuchartige" Erklärung (2–3 Sätze): Deklinationstyp,
+  Kasus/Genus/Numerus und WARUM diese Endung. Verständlich, nicht trocken.
+- "tip" = EIN kurzer russischer Merk-Tipp (Faustregel zur Endung). Ohne Emoji.
+- "hint_ru" = sehr kurzer russischer Hinweis = Kasus + Genus + Deklinationstyp,
+  z. B. "Nominativ, муж. род, слабое склонение (после der)".
+
+Gib NUR STRICT JSON:
+{"items":[{"before":"der gut","after":" Wein","correct":"e","full":"der gute Wein","erklaerung":"…","tip":"…","hint_ru":"Nominativ, муж., слабое (после der)"}]}
+Genau "count" Aufgaben, alle verschieden, ohne Markdown.
+""",
 "aufgabe_transform": """
 Du erstellst deutsche Satztransformations-Aufgaben (Key-Word, Cambridge-Stil) für C1.
 
@@ -5845,6 +5875,7 @@ _AUFGABE_INSTRUCTION_KEYS = {
     "hoerluecke": "aufgabe_hoerluecke",
     "pin": "aufgabe_pin_blueprint",
     "satzbau": "aufgabe_satzbau",
+    "adjektiv": "aufgabe_adjektiv",
     "synonym": "aufgabe_synonym",
     "antonym": "aufgabe_antonym",
     "synonym_sprint": "sprint_synonym",

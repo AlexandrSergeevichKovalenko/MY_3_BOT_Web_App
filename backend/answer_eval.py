@@ -831,6 +831,11 @@ def evaluate_freeform(*, dispatch_id: int, user_id: int, raw_input: str) -> dict
 
 def _aufgabe_correct_answer(payload: dict) -> str:
     """The canonical answer to show after answering (per format)."""
+    if payload.get("before") is not None and payload.get("after") is not None:  # adjektiv
+        full = str(payload.get("full") or "").strip()
+        if full:
+            return full
+        return f"{payload.get('before','')}{payload.get('correct','')}{payload.get('after','')}".strip()
     if payload.get("wort") and payload.get("accepted"):  # synonym/antonym: show a few
         return " · ".join(accepted_de(payload.get("accepted"))[:3])
     gaps = payload.get("gaps")
@@ -901,6 +906,10 @@ def load_aufgabe_task(*, dispatch_id: int, user_id: int) -> dict | None:
         meta["satz"] = str(payload.get("satz") or "")
         meta["stamm"] = str(payload.get("stamm") or "")
         meta["stamm_ru"] = str(payload.get("stamm_ru") or "")
+    elif fmt == "adjektiv":
+        # Send only the phrase parts (NOT the correct ending) so it can't be read off.
+        meta["before"] = str(payload.get("before") or "")
+        meta["after"] = str(payload.get("after") or "")
     elif fmt == "transform":
         meta["original"] = str(payload.get("original") or "")
         meta["schluesselwort"] = str(payload.get("schluesselwort") or "")

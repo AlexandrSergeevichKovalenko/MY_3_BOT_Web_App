@@ -313,6 +313,35 @@ def _motif_flashcard(base, d, cx, cy, accent):
         d.line([(ox, cy - 34), (ox + 28, cy), (ox, cy + 34)], fill=GOLD, width=13, joint="curve")
 
 
+def _motif_adjektiv(base, d, cx, cy, accent):
+    """An adjective phrase with a highlighted ending slot + ending chips
+    (-e -en -er -es -em) — choose the right adjective ending."""
+    pf = _font(56)
+    parts = [("der gut", WHITE), ("…", GOLD), (" Wein", WHITE)]
+    total = sum(d.textlength(t, font=pf) for t, _ in parts)
+    th, off = _text_h(d, "Ag", pf)
+    x = cx - total / 2
+    py = cy - 150
+    for t, col in parts:
+        d.text((x, py - off), t, font=pf, fill=col)
+        x += d.textlength(t, font=pf)
+    labels = ["-e", "-en", "-er", "-es", "-em"]
+    f = _font(46)
+    widths = [d.textlength(t, font=f) + 46 for t in labels]
+    gap = 18
+    total2 = sum(widths) + gap * (len(labels) - 1)
+    x = cx - total2 / 2
+    ry = cy + 70
+    for t, w in zip(labels, widths):
+        hot = (t == "-en")
+        col = GOLD if hot else (38, 50, 72)
+        d.rounded_rectangle([x, ry - 42, x + w, ry + 42], radius=20, fill=col)
+        tw = d.textlength(t, font=f)
+        tht, o2 = _text_h(d, t, f)
+        d.text((x + w / 2 - tw / 2, ry - tht / 2 - o2), t, font=f, fill=(INK if hot else WHITE))
+        x += w + gap
+
+
 def _motif_relation(base, d, cx, cy, accent, symbol):
     """Two word bubbles joined by a relation symbol (Synonym '=', Antonym '↔')."""
     bw, bh = 360, 150
@@ -430,6 +459,11 @@ def render_antonym_card(*, level: str = "B2+") -> bytes | None:
                  accent=(244, 114, 182),
                  motif=lambda b, d, cx, cy, a: _motif_relation(b, d, cx, cy, a, "↔"),
                  cta="Finde das Gegenteil")
+
+
+def render_adjektiv_card(*, level: str = "B2+") -> bytes | None:
+    return _card(badge="GRAMMATIK", title="Adjektivendungen", subtitle=f"Endungen  ·  {level}",
+                 accent=(139, 92, 246), motif=_motif_adjektiv, cta="Wähle die richtige Endung")
 
 
 def render_artikel_learn_card(*, level: str = "") -> bytes | None:

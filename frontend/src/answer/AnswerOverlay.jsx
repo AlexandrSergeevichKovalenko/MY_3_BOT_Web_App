@@ -58,6 +58,7 @@ const AU_LABELS = {
   hoerluecke: { eyebrow: '🎧 Hörlücke', title: 'Hörlücke · B2+' },
   pin: { eyebrow: '🖼 Finde im Bild', title: 'Finde im Bild · B2' },
   satzbau: { eyebrow: '🧩 Satzbau', title: 'Satzbau · B2+' },
+  adjektiv: { eyebrow: '🔠 Adjektivendungen', title: 'Adjektivendungen · B2+' },
   synonym: { eyebrow: '🔄 Synonym', title: 'Synonym · B2+' },
   antonym: { eyebrow: '↔️ Antonym', title: 'Antonym · B2+' },
 };
@@ -69,6 +70,7 @@ const AU_SUBS = {
   hoerluecke: 'Höre und ergänze das fehlende Wort 🎧',
   pin: 'Tippe auf das gesuchte Objekt 🖼',
   satzbau: 'Baue den richtigen Satz 🧩',
+  adjektiv: 'Wähle die richtige Adjektiv-Endung 🔠',
   synonym: 'Tippe ein Synonym ✍️',
   antonym: 'Tippe das Gegenteil ✍️',
   cloze: 'Setze das fehlende Wort ein ✍️',

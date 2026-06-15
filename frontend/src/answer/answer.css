@@ -545,6 +545,33 @@ html[data-scheme="light"] .au-gap-input { color: #0f172a; background: #eef1f7; }
 }
 .au-key b { color: var(--dmps-primary, #2563EB); font-weight: 800; }
 .au-words { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Adjektivendungen: phrase with a tap-to-fill ending slot + ending chips */
+.au-adj { display: flex; align-items: baseline; justify-content: center; flex-wrap: wrap; gap: 2px; }
+.au-adj-slot {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 44px; padding: 0 8px; margin: 0 2px;
+  border-bottom: 3px solid var(--dmps-primary, #2563EB);
+  color: var(--dmps-text-subtle, #64748B); font-weight: 800;
+}
+.au-adj-slot.filled { color: var(--dmps-primary, #2563EB); }
+.au-adj-opts { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin: 4px 0 2px; }
+.au-adj-key {
+  min-width: 64px; height: 56px;
+  font-family: inherit; font-size: 22px; font-weight: 800;
+  color: var(--dmps-text-primary, #F8FAFC);
+  background: linear-gradient(180deg, #28344b, #1b2740);
+  border: 1px solid rgba(148,163,184,0.2); border-radius: 12px; cursor: pointer;
+  transition: transform 0.08s ease, filter 0.1s ease;
+}
+.au-adj-key:active { transform: translateY(1px) scale(0.96); }
+.au-adj-key.on {
+  background: linear-gradient(180deg, #2f4a86, #21366a);
+  border-color: var(--dmps-primary, #2563EB);
+  box-shadow: 0 0 0 2px rgba(37,99,235,0.45);
+}
+.au-adj-key:disabled { opacity: 0.5; }
+html[data-scheme="light"] .au-adj-key { color: #0f172a; background: #eef1f7; }
 /* Satzbau assemble zones */
 .sb-answer {
   display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start;

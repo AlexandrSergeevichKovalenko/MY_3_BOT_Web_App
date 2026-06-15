@@ -22090,6 +22090,11 @@ def _build_aufgabe_caption(entry: dict) -> str:
             "🧩 <b>Satzbau</b> — B2+\n\n"
             "Baue aus den Wort-Kärtchen den richtigen Satz in der Mini-App 👇"
         )
+    if fmt == "adjektiv":
+        return (
+            "🔠 <b>Adjektivendungen</b> — B2+\n\n"
+            "Wähle die richtige Adjektiv-Endung in der Mini-App 👇"
+        )
     if fmt == "synonym":
         return (
             "🔄 <b>Synonym</b> — B2+\n\n"
@@ -22126,6 +22131,7 @@ def _render_aufgabe_card(entry: dict) -> bytes | None:
         from backend import interactive_card as ic
         fn = {
             "satzbau": ic.render_satzbau_card,
+            "adjektiv": ic.render_adjektiv_card,
             "cloze": ic.render_cloze_card,
             "wortbildung": ic.render_wortbildung_card,
             "transform": ic.render_transform_card,
@@ -22250,6 +22256,15 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
                 "target_prefix": str(it.get("target_prefix") or ""),
                 "target_suffix": str(it.get("target_suffix") or ""),
                 "accepted": accepted, **common}
+    if fmt == "adjektiv":
+        before = str(it.get("before") or "").strip()
+        after = str(it.get("after") or "")
+        correct = str(it.get("correct") or "").strip().lower()
+        if not before or correct not in ("e", "en", "er", "es", "em"):
+            return None
+        full = str(it.get("full") or "").strip()
+        return {"before": before, "after": after, "correct": correct,
+                "full": full, "aliases": [], **common}
     if fmt == "error":
         woerter = [str(w) for w in (it.get("woerter") or []) if str(w).strip()]
         correct_word = str(it.get("correct_word") or "").strip()
@@ -22319,7 +22334,7 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
 _AUFGABE_FORMATS = (
     ("cloze", "B2"), ("wortbildung", "B2"), ("transform", "C1"),
     ("error", "B2"), ("hoerluecke", "B2"), ("pin", "B2"), ("satzbau", "B2"),
-    ("synonym", "B2"), ("antonym", "B2"),
+    ("adjektiv", "B2"), ("synonym", "B2"), ("antonym", "B2"),
 )
 _AUFGABE_LEVEL = {f: lvl for f, lvl in _AUFGABE_FORMATS}
 _ADMIN_AUFGABE_ROTATION = {"i": 0}  # round-robin cursor for /admin_aufgabe_send (no arg)
