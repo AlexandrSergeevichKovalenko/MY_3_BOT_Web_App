@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import useFitText from './useFitText.js';
 
 // Adjektiv Sprint — a set of 15 adjective-ending situations, 5 s each (auto-advance
 // or tap "Weiter"). Same engine/feel as Artikel Sprint: whole set preloaded, each
@@ -22,6 +23,7 @@ export default function AdjektivSprintGame({ api, haptic, onClose, battleId = nu
   const startRef = useRef(0);
   const idxRef = useRef(0);
   const tickRef = useRef(null);
+  const phraseFit = useFitText(idx, { max: 36 });
 
   useEffect(() => {
     let cancelled = false;
@@ -181,11 +183,13 @@ export default function AdjektivSprintGame({ api, haptic, onClose, battleId = nu
         <span className="as-score">{score}</span>
       </div>
       <div className={`as-word adj-word${flash ? (flash.ok ? ' ok' : ' bad') : ''}`} key={idx}>
-        {it ? (<>
-          <span>{it.before}</span>
-          <span className="adj-slot">{flash && it ? `-${it.a}` : '·'}</span>
-          <span>{it.after}</span>
-        </>) : '…'}
+        <span className="fit-line adj-line" ref={phraseFit}>
+          {it ? (<>
+            <span>{it.before}</span>
+            <span className="adj-slot">{flash && it ? `-${it.a}` : '·'}</span>
+            <span>{it.after}</span>
+          </>) : '…'}
+        </span>
       </div>
       {it && it.ru ? <div className="adj-hint">{it.ru}</div> : null}
       <div className="as-buttons adj-buttons">

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import useFitText from './useFitText.js';
 
 // 2-minute der/die/das speed game. The whole word set is preloaded, so each tap
 // is graded LOCALLY (instant green/red flash + auto-advance, zero round-trip).
@@ -21,6 +22,7 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
   const startRef = useRef(0);
   const timerRef = useRef(null);
   const idxRef = useRef(0);
+  const wordFit = useFitText(idx, { max: 44 });
 
   useEffect(() => {
     let cancelled = false;
@@ -194,7 +196,7 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
         <span className="as-score">{answersRef.current.filter((a) => a.ok).length}</span>
       </div>
       <div className={`as-word${flash ? (flash.ok ? ' ok' : ' bad') : ''}`} key={idx}>
-        {w ? w.w : '…'}
+        <span className="fit-line" ref={wordFit}>{w ? w.w : '…'}</span>
       </div>
       <div className="as-buttons">
         {ARTICLES.map((art) => (

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import useFitText from './useFitText.js';
 
 // Adjektiv Trainer — self-paced learning deck for adjective endings (companion to
 // the Adjektiv Sprint, same look). Each card: a phrase with a blanked ending +
@@ -13,6 +14,7 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
   const [pick, setPick] = useState(null);
   const [streak, setStreak] = useState(0);
   const [error, setError] = useState('');
+  const phraseFit = useFitText(i, { max: 36 });
 
   const loadMore = useCallback(async () => {
     try {
@@ -61,9 +63,11 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
         {streak > 1 ? <span className="al-streak">🔥 {streak}</span> : <span />}
       </div>
       <div className={`as-word adj-word${answered ? (pick === correct ? ' ok' : ' bad') : ''}`}>
-        <span>{card.before}</span>
-        <span className="adj-slot">{answered ? `-${correct}` : '·'}</span>
-        <span>{card.after}</span>
+        <span className="fit-line adj-line" ref={phraseFit}>
+          <span>{card.before}</span>
+          <span className="adj-slot">{answered ? `-${correct}` : '·'}</span>
+          <span>{card.after}</span>
+        </span>
       </div>
       {card.ru ? <div className="adj-hint">{card.ru}</div> : null}
       <div className="as-buttons adj-buttons">

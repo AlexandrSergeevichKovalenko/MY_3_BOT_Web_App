@@ -730,7 +730,9 @@ html[data-scheme="light"] .ans-why-wrong { color: #92400e; }
 .art-das { background: #059669; }
 /* Adjektiv Sprint (phrase + 5 ending buttons + per-item timer + review) */
 .as-timer.urgent { color: #ef4444; }
-.adj-word { font-size: 30px; display: flex; flex-wrap: wrap; align-items: baseline; justify-content: center; gap: 4px; }
+.fit-line { display: inline-block; white-space: nowrap; line-height: 1.15; }
+.fit-line.adj-line { display: inline-flex; align-items: baseline; gap: 4px; }
+.adj-word { font-size: 30px; display: flex; flex-wrap: nowrap; align-items: baseline; justify-content: center; overflow: hidden; }
 .adj-slot { color: #8b5cf6; font-weight: 900; min-width: 40px; border-bottom: 3px solid #8b5cf6; padding: 0 6px; }
 .adj-hint { margin-top: 10px; font-size: 14px; color: var(--dmps-text-muted, #94A3B8); }
 .adj-buttons { grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 14px; }
