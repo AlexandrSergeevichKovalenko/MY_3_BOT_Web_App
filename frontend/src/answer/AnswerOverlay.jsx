@@ -63,15 +63,15 @@ const AU_LABELS = {
 };
 
 const AU_SUBS = {
-  wortbildung: 'Bilde die richtige Wortform ✍️',
-  transform: 'Forme den Satz mit dem Schlüsselwort um ✍️',
-  error: 'Finde und korrigiere den Fehler 🔍',
-  hoerluecke: 'Höre und ergänze das fehlende Wort 🎧',
-  pin: 'Tippe auf das gesuchte Objekt 🖼',
-  satzbau: 'Baue den richtigen Satz 🧩',
-  synonym: 'Tippe ein Synonym ✍️',
-  antonym: 'Tippe das Gegenteil ✍️',
-  cloze: 'Setze das fehlende Wort ein ✍️',
+  wortbildung: 'Образуй слово и поставь артикль в нужном падеже ✍️',
+  transform: 'Перефразируй предложение с ключевым словом ✍️',
+  error: 'Найди и исправь ошибку 🔍',
+  hoerluecke: 'Прослушай и впиши пропущенные слова 🎧',
+  pin: 'Нажми на нужный объект 🖼',
+  satzbau: 'Составь правильное предложение 🧩',
+  synonym: 'Впиши синоним ✍️',
+  antonym: 'Впиши антоним ✍️',
+  cloze: 'Впиши пропущенное слово ✍️',
 };
 
 function haptic(type) {

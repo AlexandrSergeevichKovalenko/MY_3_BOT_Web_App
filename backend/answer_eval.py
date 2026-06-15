@@ -900,6 +900,7 @@ def load_aufgabe_task(*, dispatch_id: int, user_id: int) -> dict | None:
     elif fmt == "wortbildung":
         meta["satz"] = str(payload.get("satz") or "")
         meta["stamm"] = str(payload.get("stamm") or "")
+        meta["stamm_ru"] = str(payload.get("stamm_ru") or "")
     elif fmt == "transform":
         meta["original"] = str(payload.get("original") or "")
         meta["schluesselwort"] = str(payload.get("schluesselwort") or "")

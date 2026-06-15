@@ -22226,6 +22226,9 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
             if not stamm:
                 return None
             payload["stamm"] = stamm
+            stamm_ru = str(it.get("stamm_ru") or "").strip()
+            if stamm_ru:
+                payload["stamm_ru"] = stamm_ru
         return payload
     if fmt == "transform":
         original = str(it.get("original") or "").strip()

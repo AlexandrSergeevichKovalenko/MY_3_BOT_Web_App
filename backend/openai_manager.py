@@ -3002,29 +3002,38 @@ Gib NUR STRICT JSON zurück:
 Erzeuge genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
 "aufgabe_wortbildung": """
-Du erstellst deutsche Wortbildungs-Aufgaben für fortgeschrittene Lernende (B2–C1).
+Du erstellst ANSPRUCHSVOLLE deutsche Wortbildungs-Aufgaben für B2–C1.
 
 Eingabe-JSON: {"count": <int>, "level": "B2"|"C1"}.
 
 Jede Aufgabe: EIN deutscher Satz mit GENAU EINER Lücke "_____", plus ein STAMMWORT.
-Der/die Lernende muss aus dem Stammwort die korrekte abgeleitete Form bilden, die
-grammatisch und inhaltlich in die Lücke passt (z. B. Stamm "frei" → "Freiheit",
-Stamm "entscheiden" → "Entscheidung", Stamm "wirtschaftlich" → "Wirtschaft").
-Geprüft wird Wortbildung (Suffixe/Präfixe/Nominalisierung) + korrekte Form (Kasus,
-Numerus, ggf. Adjektivendung).
+Der/die Lernende bildet aus dem Stammwort das abgeleitete NOMEN (Nominalisierung)
+UND muss zusätzlich den ARTIKEL der direkt folgenden Genitiv-/Präpositional-Ergänzung
+in den richtigen Kasus setzen. Es wird NICHT nur ein Wort eingesetzt — die Lücke
+umfasst das Nomen + den nachfolgenden Artikel, damit das KASUS-Verständnis geprüft wird.
+
+So baust du den Satz (WICHTIG):
+- Das abgeleitete Nomen wird von einer Genitiv-Ergänzung begleitet: "… <Nomen> <Artikel> <Nomen2> …".
+- Der Artikel von Nomen2 gehört MIT in die Lücke. Beispiel:
+  Satz: "Die _____ Ware erfolgte sehr schnell."  Stamm: "liefern"  →  correct: "Lieferung der"
+  (gemeint ist „die Lieferung DER Ware" — Genitiv).
+- Weitere Beispiele: "wegen der _____ Mitarbeiter" Stamm "entscheiden" → "Entscheidung der";
+  "trotz der _____ des Marktes" Stamm "schwanken" → "Schwankung des".
 
 Regeln:
-- Genau EINE eindeutig richtige Wortform.
-- "stamm" = das gegebene Ausgangswort.
-- "correct" = die exakte Form, die in die Lücke gehört (inkl. nötiger Endung).
+- Genau EINE eindeutig richtige Lösung; die Lücke = Nomen + folgender Artikel (2 Wörter).
+- "stamm" = das deutsche Ausgangswort (Verb/Adjektiv), aus dem das Nomen gebildet wird.
+- "stamm_ru" = russische Übersetzung des Stammworts (z. B. "доставлять"), als Lernhilfe.
+- "correct" = exakt die zwei Wörter für die Lücke, z. B. "Lieferung der".
 - "aliases" = nur echte gleichwertige Schreibvarianten, sonst [].
-- "erklaerung" = „lehrbuchartige“ Erklärung auf Russisch (2–3 Sätze): welche Ableitung
-  (Suffix/Präfix/Nominalisierung) und warum diese Form/Endung. Verständlich, nicht trocken.
-- "tip" = EIN kurzer russischer Merk-Tipp mit Gefühl (Eselsbrücke/Faustregel). Ohne Emoji.
-- "hint_ru" = sehr kurzer russischer Hinweis (z. B. "существительное от глагола").
+- "erklaerung" = „lehrbuchartige" Erklärung auf Russisch (2–3 Sätze): welche Ableitung
+  und WARUM dieser Kasus/Artikel (z. B. Genitiv-Ergänzung). Verständlich.
+- "tip" = EIN kurzer russischer Merk-Tipp (Eselsbrücke/Faustregel). Ohne Emoji.
+- "hint_ru" = sehr kurzer russischer Hinweis = die BEDEUTUNG der gesuchten Phrase
+  auf Russisch (z. B. "доставка товаров").
 
 Gib NUR STRICT JSON:
-{"items":[{"satz":"… _____ …","stamm":"frei","correct":"Freiheit","aliases":[],"erklaerung":"…","tip":"…","hint_ru":"…"}]}
+{"items":[{"satz":"Die _____ Ware erfolgte sehr schnell.","stamm":"liefern","stamm_ru":"доставлять","correct":"Lieferung der","aliases":[],"erklaerung":"…","tip":"…","hint_ru":"доставка товаров"}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
 "aufgabe_transform": """
