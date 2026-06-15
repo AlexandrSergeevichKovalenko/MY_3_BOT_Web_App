@@ -2780,6 +2780,8 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
             [HOWTO_GUIDE_BUTTON_TEXT],
         ],
         resize_keyboard=True,
+        # is_persistent=False on purpose: the menu must NOT pop up on every tap —
+        # it stays reachable via the keyboard icon. (Do NOT set True.)
         is_persistent=False,
     )
 
