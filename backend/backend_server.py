@@ -51207,10 +51207,13 @@ def _run_dictionary_dedup_scheduler_job() -> None:
     if enabled not in ("1", "true", "yes", "on"):
         return
 
+    # Redis only caches each user's last-checked time. If it's unavailable we
+    # must NOT skip the whole job (that left the dedup never running + the weekly
+    # report stuck at "0 прогонов"); fall back to a 7-day window per user. Dedup
+    # is idempotent, so re-scanning the last 7 days each night is safe.
     redis_client = _get_redis_client()
     if redis_client is None:
-        logging.warning("dict_dedup: Redis unavailable, skipping")
-        return
+        logging.warning("dict_dedup: Redis unavailable — running without last-checked cache (7-day window)")
 
     try:
         # Gather all users who have dictionary entries
@@ -51226,6 +51229,13 @@ def _run_dictionary_dedup_scheduler_job() -> None:
         return
 
     if not all_user_ids:
+        # Still record the run (0/0/0) so the weekly report shows the job ran
+        # rather than "never ran".
+        try:
+            from backend.database import record_dict_dedup_run
+            record_dict_dedup_run(users_processed=0, groups_found=0, entries_deleted=0)
+        except Exception:
+            logging.exception("dict_dedup: failed to record empty run")
         return
 
     now_utc = datetime.utcnow()
@@ -51238,10 +51248,12 @@ def _run_dictionary_dedup_scheduler_job() -> None:
             break
 
         redis_key = f"{_DICT_DEDUP_REDIS_KEY_PREFIX}:{user_id}"
-        try:
-            raw_ts = redis_client.get(redis_key)
-        except Exception:
-            raw_ts = None
+        raw_ts = None
+        if redis_client is not None:
+            try:
+                raw_ts = redis_client.get(redis_key)
+            except Exception:
+                raw_ts = None
 
         if raw_ts:
             try:
@@ -51273,10 +51285,11 @@ def _run_dictionary_dedup_scheduler_job() -> None:
             )
 
         # Update last_checked_at regardless (even if no dupes found)
-        try:
-            redis_client.set(redis_key, now_utc.isoformat(), ex=60 * 60 * 24 * 90)  # 90 days TTL
-        except Exception:
-            pass
+        if redis_client is not None:
+            try:
+                redis_client.set(redis_key, now_utc.isoformat(), ex=60 * 60 * 24 * 90)  # 90 days TTL
+            except Exception:
+                pass
 
         processed += 1
 
