@@ -1489,13 +1489,49 @@ def pick_adjektiv_payloads(n: int = 15) -> list[dict]:
     return out[: int(n)]
 
 
+def derive_adjektiv_split(full: str, correct: str):
+    """Rebuild (before, after) from the full phrase + the ending, so the ending can
+    never leak into `after`/`before` (the LLM sometimes mis-split, e.g.
+    "ein interessant" + "es Buch"). The attributive adjective is the lowercase word
+    right before the final (capitalised) noun and ends with `correct`. Returns
+    (before, after) or None if it can't be derived safely."""
+    full = str(full or "").strip()
+    ending = str(correct or "").strip().lower()
+    if not full or ending not in ("e", "en", "er", "es", "em"):
+        return None
+    tokens = full.split()
+    if len(tokens) < 2:
+        return None
+    noun_idx = None
+    for i in range(len(tokens) - 1, -1, -1):
+        if tokens[i][:1].isupper():
+            noun_idx = i
+            break
+    if not noun_idx:  # no noun, or noun is the first token → can't place an adjective before it
+        return None
+    adj = tokens[noun_idx - 1]
+    if not adj.lower().endswith(ending) or len(adj) <= len(ending):
+        return None
+    stem = adj[: -len(ending)]
+    before = (" ".join(tokens[: noun_idx - 1] + [stem])).strip()
+    after = " " + " ".join(tokens[noun_idx:])
+    return (before, after)
+
+
 def _adjektiv_item_for_game(p: dict) -> dict:
     p = p or {}
+    correct = str(p.get("correct") or "").lower()
+    full = str(p.get("full") or "")
+    before = str(p.get("before") or "")
+    after = str(p.get("after") or "")
+    der = derive_adjektiv_split(full, correct)
+    if der:
+        before, after = der
     return {
-        "before": str(p.get("before") or ""),
-        "after": str(p.get("after") or ""),
-        "a": str(p.get("correct") or "").lower(),  # correct ending (client local-grades)
-        "full": str(p.get("full") or ""),
+        "before": before,
+        "after": after,
+        "a": correct,  # correct ending (client local-grades)
+        "full": full,
         "erklaerung": str(p.get("erklaerung") or ""),
         "tip": str(p.get("tip") or ""),
         "ru": str(p.get("hint_ru") or ""),

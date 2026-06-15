@@ -898,8 +898,17 @@ def aufgabe_client_meta(fmt: str, payload: dict) -> dict:
         meta["stamm_ru"] = str(payload.get("stamm_ru") or "")
     elif fmt == "adjektiv":
         # Send only the phrase parts (NOT the correct ending) so it can't be read off.
-        meta["before"] = str(payload.get("before") or "")
-        meta["after"] = str(payload.get("after") or "")
+        before = str(payload.get("before") or "")
+        after = str(payload.get("after") or "")
+        try:
+            from backend.database import derive_adjektiv_split
+            der = derive_adjektiv_split(str(payload.get("full") or ""), str(payload.get("correct") or ""))
+            if der:
+                before, after = der
+        except Exception:
+            pass
+        meta["before"] = before
+        meta["after"] = after
     elif fmt == "transform":
         meta["original"] = str(payload.get("original") or "")
         meta["schluesselwort"] = str(payload.get("schluesselwort") or "")

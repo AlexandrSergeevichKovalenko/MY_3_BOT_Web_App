@@ -22315,9 +22315,20 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
         before = str(it.get("before") or "").strip()
         after = str(it.get("after") or "")
         correct = str(it.get("correct") or "").strip().lower()
-        if not before or correct not in ("e", "en", "er", "es", "em"):
+        if correct not in ("e", "en", "er", "es", "em"):
             return None
         full = str(it.get("full") or "").strip()
+        # Rebuild the gap from `full` so the ending can never leak into before/after.
+        from backend.database import derive_adjektiv_split
+        der = derive_adjektiv_split(full, correct)
+        if der:
+            before, after = der
+        else:
+            # No reliable split → reject if the ending is visible in before/after.
+            if (not before
+                    or after.strip().lower().startswith(correct)
+                    or before.strip().lower().endswith(correct)):
+                return None
         return {"before": before, "after": after, "correct": correct,
                 "full": full, "aliases": [], **common}
     if fmt == "error":
@@ -22757,8 +22768,10 @@ async def _send_scheduled_adjektiv_sprint(context: CallbackContext) -> None:
         poster = await asyncio.to_thread(render_adjektiv_card)
     except Exception:
         logging.warning("adjektiv_sprint: card render failed", exc_info=True)
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-        "🔠 Играть (15 × 5 сек)", url=get_webapp_deeplink("ans_ad_0"))]])
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔠 Играть (15 × 5 сек)", url=get_webapp_deeplink("ans_ad_0"))],
+        [InlineKeyboardButton("📚 Учить окончания", url=get_webapp_deeplink("ans_adl_0"))],
+    ])
     caption = (
         "🔠 *Adjektiv Sprint*\n\n"
         "15 ситуаций · по 5 секунд на каждую — выбери правильное окончание прилагательного!\n"
@@ -22801,6 +22814,20 @@ async def admin_adjektiv_sprint_command(update: Update, context: CallbackContext
         return
     await message.reply_text("⏳ Собираю и рассылаю Adjektiv Sprint…")
     await _send_scheduled_adjektiv_sprint(context)
+
+
+async def adjektiv_learn_command(update: Update, context: CallbackContext) -> None:
+    """Open the Adjektiv Trainer (self-paced ending deck). /adjlearn"""
+    message = update.effective_message
+    if not message:
+        return
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "📚 Учить окончания", url=get_webapp_deeplink("ans_adl_0"))]])
+    await message.reply_text(
+        "📚 <b>Adjektiv Trainer</b> — учи окончания прилагательных в своём темпе: "
+        "фраза, выбери окончание, читай правило, свайпай дальше 👇",
+        parse_mode="HTML", reply_markup=kb,
+    )
 
 
 async def adjektiv_battle_command(update: Update, context: CallbackContext) -> None:
@@ -25660,6 +25687,7 @@ def main():
     application.add_handler(CommandHandler("battle", artikel_battle_command))
     application.add_handler(CommandHandler("mybattles", artikel_mybattles_command))
     application.add_handler(CommandHandler("adjbattle", adjektiv_battle_command))
+    application.add_handler(CommandHandler("adjlearn", adjektiv_learn_command))
     application.add_handler(CallbackQueryHandler(adjektiv_battle_join_callback, pattern=r"^adb_join:\d+$"))
     application.add_handler(CallbackQueryHandler(artikel_battle_join_callback, pattern=r"^asb_join:\d+$"))
     application.add_handler(CallbackQueryHandler(artikel_battle_accept_callback, pattern=r"^asb_acc:\d+$"))

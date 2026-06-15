@@ -22760,6 +22760,37 @@ def adjektiv_submit():
     })
 
 
+@app.route("/api/webapp/adjektiv/learn", methods=["POST"])
+def adjektiv_learn():
+    """Adjektiv Trainer: an endless self-paced deck of ending situations with the
+    rule + tip revealed after each tap. No timer, no scoring — pure learning."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    from backend.database import pick_adjektiv_payloads, derive_adjektiv_split
+    payload = request.get_json(silent=True) or {}
+    try:
+        n = max(5, min(20, int(payload.get("count") or 12)))
+    except (TypeError, ValueError):
+        n = 12
+    out = []
+    for p in pick_adjektiv_payloads(n):
+        correct = str(p.get("correct") or "").lower()
+        before = str(p.get("before") or "")
+        after = str(p.get("after") or "")
+        der = derive_adjektiv_split(str(p.get("full") or ""), correct)
+        if der:
+            before, after = der
+        out.append({
+            "before": before, "after": after, "a": correct, "full": str(p.get("full") or ""),
+            "erklaerung": str(p.get("erklaerung") or ""), "tip": str(p.get("tip") or ""),
+            "ru": str(p.get("hint_ru") or ""),
+        })
+    if not out:
+        return jsonify({"ok": False, "error": "Колода пока готовится. Загляни чуть позже."}), 200
+    return jsonify({"ok": True, "items": out})
+
+
 @app.route("/api/webapp/adjektiv/battle", methods=["POST"])
 def adjektiv_battle():
     """Load an Adjektiv battle's shared set. Member-gated; closed/expired refused."""
