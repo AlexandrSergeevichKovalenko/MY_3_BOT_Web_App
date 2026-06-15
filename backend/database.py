@@ -1672,6 +1672,139 @@ def compute_adjektiv_sprint_ranking(*, set_id, user_id) -> dict:
     return {"total": len(full), "your_place": place, "top3": full[:3]}
 
 
+# ── Adjektiv Sprint BATTLE (clone of the Artikel battle, theme-free) ──────────
+def ensure_adjektiv_battle_schema() -> None:
+    ensure_adjektiv_sprint_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS bt_3_adjektiv_sprint_battles (
+                    id BIGSERIAL PRIMARY KEY,
+                    creator_user_id BIGINT NOT NULL,
+                    creator_name TEXT,
+                    set_id TEXT NOT NULL,
+                    deadline TIMESTAMPTZ NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );"""
+            )
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS bt_3_adjektiv_sprint_battle_members (
+                    battle_id BIGINT NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    user_name TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (battle_id, user_id)
+                );"""
+            )
+        conn.commit()
+
+
+def create_adjektiv_battle_with_set(*, creator_user_id, creator_name, deadline) -> tuple:
+    """Build a 15-item set + open battle in one go. Returns (battle_id, set_id) or
+    (None, None) if the adjektiv pool is empty."""
+    ensure_adjektiv_battle_schema()
+    items = pick_adjektiv_payloads(15)
+    if not items:
+        return (None, None)
+    set_id = create_adjektiv_sprint_set(items, kind="battle")
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO bt_3_adjektiv_sprint_battles (creator_user_id, creator_name, set_id, deadline, status) "
+                "VALUES (%s,%s,%s,%s,'open') RETURNING id;",
+                (int(creator_user_id), str(creator_name or ""), str(set_id), deadline),
+            )
+            bid = int(cur.fetchone()[0])
+        conn.commit()
+    return (bid, set_id)
+
+
+def get_adjektiv_sprint_battle(battle_id) -> dict | None:
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, creator_user_id, creator_name, set_id, deadline, status "
+                    "FROM bt_3_adjektiv_sprint_battles WHERE id=%s;",
+                    (int(battle_id),),
+                )
+                r = cur.fetchone()
+        if not r:
+            return None
+        return {"id": int(r[0]), "creator_user_id": int(r[1]), "creator_name": r[2],
+                "set_id": str(r[3]), "deadline": r[4], "status": str(r[5])}
+    except Exception:
+        return None
+
+
+def add_adjektiv_sprint_battle_member(*, battle_id, user_id, user_name) -> bool:
+    ensure_adjektiv_battle_schema()
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO bt_3_adjektiv_sprint_battle_members (battle_id, user_id, user_name) "
+                "VALUES (%s,%s,%s) ON CONFLICT (battle_id, user_id) DO NOTHING;",
+                (int(battle_id), int(user_id), str(user_name or "")),
+            )
+            added = bool(cur.rowcount and cur.rowcount > 0)
+        conn.commit()
+    return added
+
+
+def is_adjektiv_sprint_battle_member(battle_id, user_id) -> bool:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM bt_3_adjektiv_sprint_battle_members WHERE battle_id=%s AND user_id=%s LIMIT 1;",
+                (int(battle_id), int(user_id)),
+            )
+            return cur.fetchone() is not None
+
+
+def list_adjektiv_sprint_battle_members(battle_id) -> list[dict]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT user_id, user_name FROM bt_3_adjektiv_sprint_battle_members WHERE battle_id=%s;",
+                (int(battle_id),),
+            )
+            return [{"user_id": int(r[0]), "user_name": str(r[1] or "")} for r in (cur.fetchall() or [])]
+
+
+def list_open_adjektiv_battles_for_user(user_id) -> list[dict]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT b.id, b.creator_name, b.set_id, b.deadline
+                   FROM bt_3_adjektiv_sprint_battles b
+                   JOIN bt_3_adjektiv_sprint_battle_members m ON m.battle_id = b.id
+                   WHERE m.user_id=%s AND b.status='open' AND b.deadline > NOW()
+                   ORDER BY b.deadline ASC;""",
+                (int(user_id),),
+            )
+            return [{"id": int(r[0]), "creator_name": r[1], "set_id": str(r[2]), "deadline": r[3]}
+                    for r in (cur.fetchall() or [])]
+
+
+def list_adjektiv_sprint_battles_to_close() -> list[dict]:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, creator_user_id, creator_name, set_id, deadline "
+                "FROM bt_3_adjektiv_sprint_battles WHERE status='open' AND deadline <= NOW();"
+            )
+            return [{"id": int(r[0]), "creator_user_id": int(r[1]), "creator_name": r[2],
+                     "set_id": str(r[3]), "deadline": r[4]} for r in (cur.fetchall() or [])]
+
+
+def close_adjektiv_sprint_battle(battle_id) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE bt_3_adjektiv_sprint_battles SET status='closed' WHERE id=%s;", (int(battle_id),))
+        conn.commit()
+
+
 def get_dict_dedup_report(*, days: int = 7) -> dict:
     """Aggregate dedup-run stats for the weekly admin report.
 

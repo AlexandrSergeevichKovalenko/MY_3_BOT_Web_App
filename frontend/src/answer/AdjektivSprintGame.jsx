@@ -7,9 +7,10 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 const ENDINGS = ['e', 'en', 'er', 'es', 'em'];
 const PER_ITEM_S = 5;
 
-export default function AdjektivSprintGame({ api, haptic, onClose }) {
-  const [phase, setPhase] = useState('loading'); // loading|intro|countdown|playing|grading|done|error
+export default function AdjektivSprintGame({ api, haptic, onClose, battleId = null, battleList = false }) {
+  const [phase, setPhase] = useState('loading'); // loading|battlelist|intro|countdown|playing|grading|done|error
   const [meta, setMeta] = useState(null);
+  const [battles, setBattles] = useState([]);
   const [error, setError] = useState('');
   const [idx, setIdx] = useState(0);
   const [count, setCount] = useState(3);
@@ -26,7 +27,15 @@ export default function AdjektivSprintGame({ api, haptic, onClose }) {
     let cancelled = false;
     (async () => {
       try {
-        const data = await api('/api/webapp/adjektiv/today', {});
+        if (battleList) {
+          const data = await api('/api/webapp/adjektiv/battles', {});
+          if (cancelled) return;
+          if (!data.ok) { setError(data.error || 'Недоступно'); setPhase('error'); return; }
+          setBattles(data.battles || []); setPhase('battlelist'); return;
+        }
+        const data = battleId
+          ? await api('/api/webapp/adjektiv/battle', { battle_id: battleId })
+          : await api('/api/webapp/adjektiv/today', {});
         if (cancelled) return;
         if (!data.ok) { setError(data.error || 'Сет недоступен'); setPhase('error'); return; }
         setMeta(data);
@@ -36,6 +45,18 @@ export default function AdjektivSprintGame({ api, haptic, onClose }) {
       } catch (e) { if (!cancelled) { setError(String(e.message || e)); setPhase('error'); } }
     })();
     return () => { cancelled = true; };
+  }, [api, battleId, battleList]);
+
+  const playBattle = useCallback(async (bid) => {
+    setPhase('loading');
+    try {
+      const data = await api('/api/webapp/adjektiv/battle', { battle_id: bid });
+      if (!data.ok) { setError(data.error || 'Батл недоступен'); setPhase('error'); return; }
+      setMeta(data);
+      itemsRef.current = data.items || [];
+      if (data.already_played && data.result) { setResult({ ...data.result, items: [] }); setPhase('done'); return; }
+      setPhase('intro');
+    } catch (e) { setError(String(e.message || e)); setPhase('error'); }
   }, [api]);
 
   const clearTick = () => { if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; } };
@@ -118,10 +139,29 @@ export default function AdjektivSprintGame({ api, haptic, onClose }) {
       <div className="ans-explain">{error}</div>
       <button className="ans-btn" onClick={onClose}>Schließen</button>
     </>);
+  } else if (phase === 'battlelist') {
+    cls = 'as-themepick';
+    body = (<>
+      <div className="as-eyebrow">⚔️ Мои батлы (Adjektiv)</div>
+      {battles.length ? (
+        <div className="as-themes">
+          {battles.map((b) => (
+            <button key={b.battle_id} type="button" className="as-theme-btn"
+              disabled={b.played} onClick={() => !b.played && playBattle(b.battle_id)}>
+              <span>⚔️ {b.creator_name || 'Батл'} · {b.theme_label}</span>
+              <span className="as-theme-cnt">{b.played ? '✓ сыграно' : '▶️'}</span>
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div className="ans-explain">Активных батлов нет. Прими вызов в личке или создай свой (/adjbattle, Premium).</div>
+      )}
+      <button className="ans-btn-ghost" onClick={onClose}>Schließen</button>
+    </>);
   } else if (phase === 'intro') {
     cls = 'as-intro';
     body = (<>
-      <div className="as-eyebrow">🔠 Adjektiv Sprint</div>
+      <div className="as-eyebrow">{battleId || meta?.theme_label === '⚔️ Battle' ? '⚔️ Adjektiv Battle' : '🔠 Adjektiv Sprint'}</div>
       <div className="as-theme">Adjektivendungen</div>
       <div className="as-rules">{itemsRef.current.length} Situationen · <b>5 Sek.</b> pro Frage · wähle die Endung!</div>
       <button className="ans-btn as-go" onClick={startCountdown}>▶️ Старт</button>

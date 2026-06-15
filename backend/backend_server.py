@@ -22760,6 +22760,73 @@ def adjektiv_submit():
     })
 
 
+@app.route("/api/webapp/adjektiv/battle", methods=["POST"])
+def adjektiv_battle():
+    """Load an Adjektiv battle's shared set. Member-gated; closed/expired refused."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    try:
+        battle_id = int(payload.get("battle_id"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "battle_id обязателен"}), 400
+    from datetime import datetime as _dt, timezone as _tz
+    from backend.database import (
+        get_adjektiv_sprint_battle, is_adjektiv_sprint_battle_member,
+        get_adjektiv_sprint_set, get_adjektiv_sprint_result, compute_adjektiv_sprint_ranking,
+    )
+    battle = get_adjektiv_sprint_battle(battle_id)
+    if not battle:
+        return jsonify({"ok": False, "error": "Батл не найден"}), 404
+    if str(battle.get("status")) != "open" or (battle.get("deadline") and battle["deadline"] <= _dt.now(_tz.utc)):
+        return jsonify({"ok": False, "error_code": "battle_closed", "error": "Этот батл уже закрыт."}), 200
+    if not is_adjektiv_sprint_battle_member(battle_id, int(user_id)):
+        return jsonify({"ok": False, "error_code": "not_member",
+                        "error": "Ты не в этом батле. Прими вызов в личке."}), 200
+    set_id = str(battle.get("set_id") or "")
+    s = get_adjektiv_sprint_set(set_id)
+    if not s or not s.get("items"):
+        return jsonify({"ok": False, "error": "Набор батла пуст."}), 200
+    slim = [{"before": it.get("before", ""), "after": it.get("after", ""),
+             "a": it.get("a", ""), "ru": it.get("ru", "")} for it in s["items"]]
+    existing = get_adjektiv_sprint_result(set_id, int(user_id))
+    result_payload = None
+    if existing:
+        result_payload = {
+            **existing,
+            "pct": round(100 * existing["correct"] / existing["answered"]) if existing.get("answered") else 0,
+            "items": [],
+            "ranking": compute_adjektiv_sprint_ranking(set_id=set_id, user_id=int(user_id)),
+            "already_played": True,
+        }
+    return jsonify({
+        "ok": True, "set_id": set_id, "theme_label": "⚔️ Battle",
+        "items": slim, "per_item_s": 5,
+        "already_played": bool(existing), "result": result_payload,
+    })
+
+
+@app.route("/api/webapp/adjektiv/battles", methods=["POST"])
+def adjektiv_battles():
+    """List the user's open Adjektiv battles ('Мои батлы')."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    from backend.database import list_open_adjektiv_battles_for_user, get_adjektiv_sprint_result
+    out = []
+    for b in list_open_adjektiv_battles_for_user(int(user_id)):
+        played = bool(get_adjektiv_sprint_result(b["set_id"], int(user_id)))
+        out.append({
+            "battle_id": int(b["id"]),
+            "creator_name": b.get("creator_name") or "",
+            "theme_label": "Adjektivendungen",
+            "deadline": b["deadline"].isoformat() if b.get("deadline") else "",
+            "played": played,
+        })
+    return jsonify({"ok": True, "battles": out})
+
+
 @app.route("/api/webapp/artikel/learn/today", methods=["POST"])
 def artikel_learn_today():
     """Artikel Trainer: the self-paced LEARNING deck — today's Sprint words (so it's

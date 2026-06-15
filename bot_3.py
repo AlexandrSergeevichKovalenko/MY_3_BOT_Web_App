@@ -22803,6 +22803,176 @@ async def admin_adjektiv_sprint_command(update: Update, context: CallbackContext
     await _send_scheduled_adjektiv_sprint(context)
 
 
+async def adjektiv_battle_command(update: Update, context: CallbackContext) -> None:
+    """Create an Adjektiv Sprint battle (Pro only) + broadcast the invite. /adjbattle"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not await asyncio.to_thread(is_user_pro, int(user.id)):
+        await message.reply_text("⚔️ Создавать батл может только Premium. Принять чужой вызов могут все.")
+        return
+    from backend.database import (
+        create_adjektiv_battle_with_set, add_adjektiv_sprint_battle_member, count_available_aufgaben,
+    )
+    try:
+        have = await asyncio.to_thread(count_available_aufgaben, format="adjektiv")
+        if have < 20:
+            await _aufgabe_topup_format("adjektiv", "B2", 30 - int(have))
+    except Exception:
+        logging.warning("adjbattle: topup failed", exc_info=True)
+    deadline = datetime.now(ZoneInfo("Europe/Vienna")).replace(hour=23, minute=59, second=0, microsecond=0)
+    creator_name = _display_user_name(user)
+    bid, _set_id = await asyncio.to_thread(
+        create_adjektiv_battle_with_set, creator_user_id=int(user.id),
+        creator_name=creator_name, deadline=deadline)
+    if not bid:
+        await message.reply_text("Не удалось собрать набор батла — пул прилагательных пуст. Попробуй позже.")
+        return
+    await asyncio.to_thread(add_adjektiv_sprint_battle_member,
+                            battle_id=bid, user_id=int(user.id), user_name=creator_name)
+    invite_text = (
+        f"⚔️ <b>{html.escape(creator_name)}</b> зовёт на <b>Adjektiv Sprint</b> батл!\n"
+        f"15 ситуаций на окончания прилагательных, по 5 сек. Играй когда удобно <b>до 23:59</b>. Прими вызов:"
+    )
+    join_kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "✅ Принять вызов", callback_data=f"adb_join:{bid}")]])
+    poster = None
+    try:
+        from backend.interactive_card import render_adjektiv_card
+        poster = await asyncio.to_thread(render_adjektiv_card)
+    except Exception:
+        poster = None
+    targets = await asyncio.to_thread(list_allowed_telegram_user_ids)
+    sent = 0
+    for uid in targets or []:
+        if int(uid) == int(user.id):
+            continue
+        try:
+            if poster:
+                await context.bot.send_photo(chat_id=int(uid), photo=io.BytesIO(poster),
+                                             caption=invite_text, parse_mode="HTML", reply_markup=join_kb)
+            else:
+                await context.bot.send_message(chat_id=int(uid), text=invite_text,
+                                               parse_mode="HTML", reply_markup=join_kb)
+            sent += 1
+        except Exception:
+            pass
+    play_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_adb_{bid}"))],
+        [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_adbl_0"))],
+    ])
+    await message.reply_text(
+        f"⚔️ Adjektiv-батл #{bid} создан. Приглашено: {sent}. Дедлайн 23:59.", reply_markup=play_kb)
+
+
+async def adjektiv_battle_join_callback(update: Update, context: CallbackContext) -> None:
+    """Accept an Adjektiv battle invite (adb_join:<id>) → join + play button."""
+    q = update.callback_query
+    if not q or not q.from_user:
+        return
+    try:
+        bid = int(str(q.data or "").split(":", 1)[1])
+    except (ValueError, IndexError):
+        await q.answer()
+        return
+    from backend.database import get_adjektiv_sprint_battle, add_adjektiv_sprint_battle_member
+    battle = await asyncio.to_thread(get_adjektiv_sprint_battle, bid)
+    if (not battle or str(battle.get("status")) != "open"
+            or (battle.get("deadline") and battle["deadline"] <= datetime.now(ZoneInfo("UTC")))):
+        await q.answer("Этот батл уже закрыт.", show_alert=True)
+        return
+    name = _display_user_name(q.from_user)
+    await asyncio.to_thread(add_adjektiv_sprint_battle_member,
+                            battle_id=bid, user_id=int(q.from_user.id), user_name=name)
+    await q.answer("Ты в батле! Играй до 23:59.", show_alert=True)
+    play_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚡ Играть (до 23:59)", url=get_webapp_deeplink(f"ans_adb_{bid}"))],
+        [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_adbl_0"))],
+    ])
+    await _edit_battle_invite(
+        q, f"✅ Ты принял Adjektiv-батл #{bid} от {html.escape(str(battle.get('creator_name') or ''))}.\n"
+           f"Играй до 23:59 👇", play_kb)
+
+
+async def _close_adjektiv_sprint_battles_job(context: CallbackContext) -> None:
+    """Close expired Adjektiv battles; DM each member their place + a podium poster."""
+    from backend.database import (
+        list_adjektiv_sprint_battles_to_close, list_adjektiv_sprint_results_ranked,
+        list_adjektiv_sprint_battle_members, close_adjektiv_sprint_battle,
+    )
+    try:
+        battles = await asyncio.to_thread(list_adjektiv_sprint_battles_to_close)
+    except Exception:
+        logging.warning("adjektiv battle close: list failed", exc_info=True)
+        return
+    for b in battles:
+        bid = int(b["id"])
+        set_id = str(b["set_id"])
+        try:
+            ranked = await asyncio.to_thread(list_adjektiv_sprint_results_ranked, set_id)
+            members = await asyncio.to_thread(list_adjektiv_sprint_battle_members, bid)
+        except Exception:
+            logging.warning("adjektiv battle close: data failed bid=%s", bid, exc_info=True)
+            continue
+        place_of = {int(r["user_id"]): i + 1 for i, r in enumerate(ranked)}
+        winner = ranked[0] if ranked else None
+        total = len(ranked)
+        win_line = (f"🏆 Чемпион: {html.escape(str((winner or {}).get('name') or '—'))} "
+                    f"({(winner or {}).get('count', 0)} верных)") if winner else "Никто не сыграл."
+        poster = None
+        if ranked:
+            leaders = [{
+                "user_id": int(r["user_id"]), "name": str(r.get("name") or "Игрок"),
+                "points": int(r.get("count") or 0), "correct": int(r.get("count") or 0),
+                "answered": int(r.get("count") or 0), "golds": (1 if i == 0 else 0),
+                "ctime_sum": 0, "ctime_n": 0,
+            } for i, r in enumerate(ranked)]
+            lb = {"leaders": leaders, "total_players": len(leaders), "total_tasks": 0,
+                  "fastest": None, "accurate": None, "active": None}
+            avatars: dict[int, bytes] = {}
+            for ldr in leaders[:3]:
+                av = await _fetch_user_avatar_png(context, int(ldr["user_id"]))
+                if av:
+                    avatars[int(ldr["user_id"])] = av
+            try:
+                from backend.champion_poster import render_champion_poster
+                from backend.battle_card import REMINDER_KEY
+                from backend.r2_storage import r2_get_bytes
+                hero = await asyncio.to_thread(r2_get_bytes, REMINDER_KEY)
+                poster = await asyncio.to_thread(
+                    render_champion_poster, lb, week_no=0, days=1, avatars=avatars,
+                    header="ADJEKTIV-MEISTER", subtitle=f"⚔️ Батл #{bid}", hero_png=hero)
+            except Exception:
+                logging.warning("adjektiv battle podium render failed bid=%s", bid, exc_info=True)
+                poster = None
+        for m in members:
+            uid = int(m["user_id"])
+            p = place_of.get(uid)
+            if p:
+                medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(p, "🎖️")
+                you = next((r for r in ranked if int(r["user_id"]) == uid), {})
+                caption = (f"⚔️ Adjektiv-батл #{bid} завершён!\n"
+                           f"{medal} Твоё место: <b>{p} из {total}</b> ({you.get('count', 0)} верных)")
+            else:
+                caption = f"⚔️ Adjektiv-батл #{bid} завершён — ты не успел сыграть 😔\n{win_line}"
+            try:
+                if poster:
+                    await context.bot.send_photo(chat_id=uid, photo=io.BytesIO(poster),
+                                                 caption=caption, parse_mode="HTML")
+                else:
+                    await context.bot.send_message(chat_id=uid, text=caption + ("\n" + win_line if p else ""),
+                                                   parse_mode="HTML")
+            except Exception:
+                pass
+        try:
+            await asyncio.to_thread(close_adjektiv_sprint_battle, bid)
+        except Exception:
+            logging.warning("adjektiv battle close: mark failed bid=%s", bid, exc_info=True)
+    if battles:
+        logging.info("adjektiv battles closed: %s", len(battles))
+
+
 async def _send_scheduled_artikel_sprint(context: CallbackContext) -> None:
     """Daily 19:00 reminder: ensure today's shared set exists, then post the play
     button to the delivery targets. Skips quietly if the set isn't ready."""
@@ -25489,6 +25659,8 @@ def main():
     application.add_handler(CommandHandler("artikel_play", admin_artikel_play_command))
     application.add_handler(CommandHandler("battle", artikel_battle_command))
     application.add_handler(CommandHandler("mybattles", artikel_mybattles_command))
+    application.add_handler(CommandHandler("adjbattle", adjektiv_battle_command))
+    application.add_handler(CallbackQueryHandler(adjektiv_battle_join_callback, pattern=r"^adb_join:\d+$"))
     application.add_handler(CallbackQueryHandler(artikel_battle_join_callback, pattern=r"^asb_join:\d+$"))
     application.add_handler(CallbackQueryHandler(artikel_battle_accept_callback, pattern=r"^asb_acc:\d+$"))
     application.add_handler(CallbackQueryHandler(artikel_battle_decline_callback, pattern=r"^asb_dec:\d+$"))
@@ -25919,6 +26091,14 @@ def main():
             "cron",
             hour=0,
             minute=5,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Adjektiv Sprint: close expired battles + DM podium (00:06) --
+        scheduler.add_job(
+            lambda: submit_async(_close_adjektiv_sprint_battles_job, CallbackContext(application=application)),
+            "cron",
+            hour=0,
+            minute=6,
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
         # -- Artikel Battle: deliver due "remind me later" reminders (every 5 min) --
