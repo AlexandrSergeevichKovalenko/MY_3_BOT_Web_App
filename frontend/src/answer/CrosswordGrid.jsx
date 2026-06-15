@@ -28,28 +28,27 @@ export default function CrosswordGrid({ task, onSubmit, submitting }) {
   const rows = grid.length;
   const words = useMemo(() => task.words || [], [task]);
 
-  // Fit the whole grid into the available box (both axes) so it never needs
-  // scrolling, on any screen. We measure the wrapper and pick the largest cell
-  // size that fits cols×rows; the keyboard/clue/button take their own space.
+  // Size cells by WIDTH so letters stay readable and adapt to the phone width
+  // (the grid always fits horizontally; it scrolls vertically if it's tall).
+  // Clamped so cells aren't tiny on wide grids nor huge on small ones.
   const wrapRef = useRef(null);
   const [cell, setCell] = useState(0);
   useEffect(() => {
     const el = wrapRef.current;
-    if (!el || !rows || !cols) return undefined;
+    if (!el || !cols) return undefined;
     const compute = () => {
       const w = el.clientWidth;
-      const h = el.clientHeight;
-      if (!w || !h) return;
-      const cw = (w - CW_GAP * (cols - 1)) / cols;
-      const ch = (h - CW_GAP * (rows - 1)) / rows;
-      setCell(Math.max(14, Math.floor(Math.min(cw, ch))));
+      if (!w) return;
+      const PAD = 14;  // room for the corner number badges on the edge cells
+      const byW = (w - PAD - CW_GAP * (cols - 1)) / cols;
+      setCell(Math.max(20, Math.min(40, Math.floor(byW))));
     };
     compute();
     const ro = new ResizeObserver(compute);
     ro.observe(el);
     window.addEventListener('resize', compute);
     return () => { ro.disconnect(); window.removeEventListener('resize', compute); };
-  }, [rows, cols]);
+  }, [cols]);
 
   // cell "r,c" → [wordIdx, ...]
   const cellWords = useMemo(() => {
