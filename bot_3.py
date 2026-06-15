@@ -4717,6 +4717,41 @@ async def admin_dedup_now_command(update: Update, context: CallbackContext):
         await status.edit_text(f"❌ Не удалось запустить дедуп: {exc}")
 
 
+async def admin_dedup_enqueue_command(update: Update, context: CallbackContext):
+    """Diagnostic: enqueue the REAL nightly dedup actor onto the scheduler_jobs
+    queue (exact worker execution path, minus the cron). /dedupenqueue
+      • if a new run then appears in /dedupreport → the worker consumes
+        scheduler_jobs fine → the problem is the SCHEDULER not enqueuing (cron).
+      • if NO run appears → the worker isn't running scheduler_jobs (queue routing
+        / actor import failure) — check the BACKGROUND_JOBS service."""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    try:
+        def _enqueue() -> None:
+            from backend.job_queue import get_dramatiq_broker
+            get_dramatiq_broker()  # ensure a broker is set before .send()
+            from backend.background_jobs import run_dictionary_dedup_actor
+            run_dictionary_dedup_actor.send()
+        await asyncio.to_thread(_enqueue)
+        await message.reply_text(
+            "📨 Задача дедупа поставлена в очередь <b>scheduler_jobs</b>.\n"
+            "Подожди ~1–2 минуты и проверь /dedupreport:\n"
+            "• появился новый прогон → воркер обрабатывает очередь, проблема в "
+            "кроне SCHEDULER_SERVICE (не ставит задачу);\n"
+            "• нового прогона нет → воркер BACKGROUND_JOBS не слушает scheduler_jobs "
+            "или падает импорт актора.",
+            parse_mode="HTML",
+        )
+    except Exception as exc:
+        logging.exception("admin dedup enqueue failed user_id=%s", int(sender.id))
+        await message.reply_text(f"❌ Не удалось поставить в очередь: {exc}")
+
+
 async def admin_dedup_report_command(update: Update, context: CallbackContext):
     """On-demand weekly duplicate-removal summary (same numbers as the Monday DM)."""
     sender = update.effective_user
@@ -25192,6 +25227,7 @@ def main():
     application.add_handler(CommandHandler("economics", admin_economics_command))
     application.add_handler(CommandHandler("dedupreport", admin_dedup_report_command))
     application.add_handler(CommandHandler("dedupnow", admin_dedup_now_command))
+    application.add_handler(CommandHandler("dedupenqueue", admin_dedup_enqueue_command))
     application.add_handler(CommandHandler("clearqueue", clear_dictionary_queue_command))
     application.add_handler(CommandHandler("ttsbudget", tts_budget_command))
     application.add_handler(CommandHandler("ttsprewarmquota", tts_prewarm_quota_command))
