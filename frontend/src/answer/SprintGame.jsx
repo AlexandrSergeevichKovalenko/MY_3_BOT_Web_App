@@ -53,6 +53,7 @@ export default function SprintGame({ id, api, haptic, onClose }) {
   const wordsRef = useRef([]);
   const timerRef = useRef(null);
   const inputRef = useRef(null);
+  const finishedRef = useRef(false);
 
   const hashes = useMemo(() => new Set(meta?.accepted_hashes || []), [meta]);
 
@@ -73,6 +74,8 @@ export default function SprintGame({ id, api, haptic, onClose }) {
   useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
 
   const finish = useCallback(async () => {
+    if (finishedRef.current) return;   // guard: timer + manual could both fire → 2nd hits anti-replay (found=[])
+    finishedRef.current = true;
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     setPhase('grading');
     const time_ms = startRef.current ? Date.now() - startRef.current : 0;
@@ -207,6 +210,13 @@ export default function SprintGame({ id, api, haptic, onClose }) {
   const r = result || {};
   const foundSet = new Set((r.found || []).map(normalizeCore));
   const deOf = (a) => (a && typeof a === 'object' ? a.de : a) || '';
+  // Words the user found that aren't in the prepared list → show them too (green),
+  // so "зелёным — что нашёл" is always honest.
+  const accNorms = new Set((r.accepted || []).map((a) => normalizeCore(deOf(a))));
+  const extraFound = (r.found || [])
+    .filter((w) => !accNorms.has(normalizeCore(w)))
+    .map((w) => ({ de: w, ru: '' }));
+  const allChips = [...(r.accepted || []), ...extraFound];
   const place = r.ranking?.your_place;
   return shell(
     <>
@@ -216,11 +226,11 @@ export default function SprintGame({ id, api, haptic, onClose }) {
         <div className="sp-score-sub">{r.count === 1 ? rel.one : rel.verb}{r.accepted_total ? ` · из ${r.accepted_total}` : ''}</div>
       </div>
       <SprintRanking ranking={r.ranking} />
-      {(r.accepted || []).length ? (
+      {allChips.length ? (
         <div className="sp-all">
           <div className="sp-all-head">Все варианты <span className="sp-all-dim">(зелёным — что нашёл · 👆 нажми, чтобы сохранить в словарь)</span>:</div>
           <div className="sp-chips">
-            {(r.accepted || []).map((a, i) => {
+            {allChips.map((a, i) => {
               const de = deOf(a);
               const ru = (a && typeof a === 'object' ? a.ru : '') || '';
               const isSaved = saved.has(de);
