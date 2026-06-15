@@ -19836,17 +19836,46 @@ async def _battle_wizard_send(q, context: CallbackContext, draft: dict) -> None:
         return
     await asyncio.to_thread(add_article_sprint_battle_member,
                             battle_id=battle_id, user_id=int(user.id), user_name=creator_name)
-    sent = await _send_battle_invites(context, battle_id=battle_id, creator_name=creator_name,
-                                      target_ids=targets, exclude=int(user.id))
     pending_battle_invites.pop(int(user.id), None)
     themes_txt = "микс по всем темам" if not themes else ", ".join(themes)
     play_kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
         [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_asbl_0"))],
     ])
-    await q.edit_message_text(
-        f"⚔️ Батл #{battle_id} создан ({html.escape(themes_txt)}). Приглашено: {sent}. Дедлайн 23:59.",
-        parse_mode="HTML", reply_markup=play_kb)
+    # Show the result INSTANTLY; render+send Smurf invites in the background.
+    try:
+        await q.edit_message_text(
+            f"⚔️ Батл #{battle_id} создан ({html.escape(themes_txt)})! Дедлайн 23:59.\nРассылаю приглашения… 📨",
+            parse_mode="HTML", reply_markup=play_kb)
+    except Exception:
+        pass
+    asyncio.create_task(_broadcast_artikel_wizard_invites(
+        context, battle_id=battle_id, creator_id=int(user.id), creator_name=creator_name,
+        target_ids=list(targets), themes_txt=themes_txt,
+        status_chat_id=int(q.message.chat.id), status_msg_id=int(q.message.message_id)))
+
+
+async def _broadcast_artikel_wizard_invites(context: CallbackContext, *, battle_id: int, creator_id: int,
+                                            creator_name: str, target_ids: list, themes_txt: str,
+                                            status_chat_id: int, status_msg_id: int) -> None:
+    """Off-critical-path Smurf-invite broadcast for the battle wizard, then count."""
+    try:
+        sent = await _send_battle_invites(context, battle_id=battle_id, creator_name=creator_name,
+                                          target_ids=target_ids, exclude=int(creator_id))
+    except Exception:
+        logging.warning("artikel wizard invites broadcast failed bid=%s", battle_id, exc_info=True)
+        sent = 0
+    play_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
+        [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_asbl_0"))],
+    ])
+    try:
+        await context.bot.edit_message_text(
+            chat_id=status_chat_id, message_id=status_msg_id,
+            text=f"⚔️ Батл #{battle_id} создан ({html.escape(themes_txt)}). Приглашено: {sent}. Дедлайн 23:59.",
+            parse_mode="HTML", reply_markup=play_kb)
+    except Exception:
+        pass
 
 
 async def artikel_battle_command(update: Update, context: CallbackContext) -> None:
@@ -19893,16 +19922,36 @@ async def artikel_battle_command(update: Update, context: CallbackContext) -> No
         return
     await asyncio.to_thread(add_article_sprint_battle_member,
                             battle_id=battle_id, user_id=int(user.id), user_name=creator_name)
+    # Reply INSTANTLY; the invite broadcast (N sends) runs in the background.
+    play_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
+        [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_asbl_0"))],
+    ])
+    status = await message.reply_text(
+        f"⚔️ Батл #{battle_id} создан (тема: {theme_key})! Дедлайн 23:59.\nРассылаю приглашения… 📨",
+        reply_markup=play_kb)
+    asyncio.create_task(_broadcast_artikel_cmd_invites(
+        context, battle_id=battle_id, creator_id=int(user.id), creator_name=creator_name,
+        theme_key=theme_key, status_chat_id=int(message.chat_id), status_msg_id=int(status.message_id)))
+
+
+async def _broadcast_artikel_cmd_invites(context: CallbackContext, *, battle_id: int, creator_id: int,
+                                         creator_name: str, theme_key: str,
+                                         status_chat_id: int, status_msg_id: int) -> None:
+    """Off-critical-path text-invite broadcast for /battle, then update the count."""
     invite_text = (
         f"⚔️ *{html.escape(creator_name)}* зовёт на *Artikel Sprint* батл!\n"
         f"2 минуты, der/die/das. Играй когда удобно *до 23:59*. Прими вызов:"
     )
     join_kb = InlineKeyboardMarkup([[InlineKeyboardButton(
         "✅ Принять вызов", callback_data=f"asb_join:{battle_id}")]])
-    targets = await asyncio.to_thread(list_allowed_telegram_user_ids)
+    try:
+        targets = await asyncio.to_thread(list_allowed_telegram_user_ids)
+    except Exception:
+        targets = []
     sent = 0
-    for uid in targets:
-        if int(uid) == int(user.id):
+    for uid in targets or []:
+        if int(uid) == int(creator_id):
             continue
         try:
             await context.bot.send_message(chat_id=int(uid), text=invite_text,
@@ -19914,9 +19963,13 @@ async def artikel_battle_command(update: Update, context: CallbackContext) -> No
         [InlineKeyboardButton("⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
         [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_asbl_0"))],
     ])
-    await message.reply_text(
-        f"⚔️ Батл #{battle_id} создан (тема: {theme_key}). Приглашено: {sent}. Дедлайн 23:59.",
-        reply_markup=play_kb)
+    try:
+        await context.bot.edit_message_text(
+            chat_id=status_chat_id, message_id=status_msg_id,
+            text=f"⚔️ Батл #{battle_id} создан (тема: {theme_key}). Приглашено: {sent}. Дедлайн 23:59.",
+            reply_markup=play_kb)
+    except Exception:
+        pass
 
 
 async def artikel_battle_join_callback(update: Update, context: CallbackContext) -> None:
