@@ -132,31 +132,47 @@ def get_translation_check_worker_schedule_state(now: datetime | None = None) -> 
 
 
 def count_active_translation_check_sessions() -> dict:
-    from backend.database import get_db_connection_context
+    from backend.database import (
+        get_db_connection_context,
+        get_translation_check_stale_session_max_age_minutes,
+    )
+
+    stale_minutes = get_translation_check_stale_session_max_age_minutes()
 
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
+                WITH active_sessions AS (
+                    SELECT
+                        status,
+                        COALESCE(heartbeat_at, started_at, dispatched_at, created_at) AS activity_at,
+                        COALESCE(heartbeat_at, started_at, dispatched_at, created_at) >= NOW() - (%s * INTERVAL '1 minute') AS is_fresh
+                    FROM bt_3_translation_check_sessions
+                    WHERE finished_at IS NULL
+                      AND status IN ('queued', 'running')
+                )
                 SELECT
-                    COUNT(*) FILTER (WHERE status = 'queued' AND finished_at IS NULL)::INT AS queued_sessions,
-                    COUNT(*) FILTER (WHERE status = 'running' AND finished_at IS NULL)::INT AS running_sessions,
-                    MIN(COALESCE(started_at, dispatched_at, created_at)) AS oldest_activity_at,
-                    MAX(COALESCE(started_at, dispatched_at, created_at)) AS newest_activity_at
-                FROM bt_3_translation_check_sessions
-                WHERE finished_at IS NULL
-                  AND status IN ('queued', 'running');
-                """
+                    COUNT(*) FILTER (WHERE status = 'queued' AND is_fresh)::INT AS queued_sessions,
+                    COUNT(*) FILTER (WHERE status = 'running' AND is_fresh)::INT AS running_sessions,
+                    COUNT(*) FILTER (WHERE is_fresh)::INT AS pending_sessions,
+                    COUNT(*) FILTER (WHERE NOT is_fresh)::INT AS stale_sessions,
+                    MIN(activity_at) FILTER (WHERE is_fresh) AS oldest_activity_at,
+                    MAX(activity_at) FILTER (WHERE is_fresh) AS newest_activity_at
+                FROM active_sessions;
+                """,
+                (int(stale_minutes),),
             )
-            row = cursor.fetchone() or (0, 0, None, None)
+            row = cursor.fetchone() or (0, 0, 0, 0, None, None)
     queued_sessions = int(row[0] or 0)
     running_sessions = int(row[1] or 0)
     return {
         "queued_sessions": queued_sessions,
         "running_sessions": running_sessions,
-        "pending_sessions": queued_sessions + running_sessions,
-        "oldest_activity_at": row[2].isoformat() if row[2] else None,
-        "newest_activity_at": row[3].isoformat() if row[3] else None,
+        "pending_sessions": int(row[2] or 0),
+        "stale_sessions": int(row[3] or 0),
+        "oldest_activity_at": row[4].isoformat() if row[4] else None,
+        "newest_activity_at": row[5].isoformat() if row[5] else None,
     }
 
 
@@ -511,7 +527,7 @@ def _apply_stop(
     active_sessions: dict[str, Any],
 ) -> dict[str, Any]:
     logging.info(
-        "translation_check_worker_schedule_stop_requested source=%s action=%s dry_run=%s now_local=%s inside_window=%s pending_sessions=%s queued_sessions=%s running_sessions=%s active_deployments=%s selected_action=%s",
+        "translation_check_worker_schedule_stop_requested source=%s action=%s dry_run=%s now_local=%s inside_window=%s pending_sessions=%s queued_sessions=%s running_sessions=%s stale_sessions=%s active_deployments=%s selected_action=%s",
         source,
         requested_action,
         dry_run,
@@ -520,17 +536,19 @@ def _apply_stop(
         active_sessions.get("pending_sessions"),
         active_sessions.get("queued_sessions"),
         active_sessions.get("running_sessions"),
+        active_sessions.get("stale_sessions"),
         [item.get("id") for item in active_deployments],
         selected_action,
     )
     if int(active_sessions.get("pending_sessions") or 0) > 0:
         logging.info(
-            "translation_check_worker_stop_skipped_pending_sessions source=%s action=%s pending_sessions=%s queued_sessions=%s running_sessions=%s oldest_activity_at=%s newest_activity_at=%s",
+            "translation_check_worker_stop_skipped_pending_sessions source=%s action=%s pending_sessions=%s queued_sessions=%s running_sessions=%s stale_sessions=%s oldest_activity_at=%s newest_activity_at=%s",
             source,
             requested_action,
             active_sessions.get("pending_sessions"),
             active_sessions.get("queued_sessions"),
             active_sessions.get("running_sessions"),
+            active_sessions.get("stale_sessions"),
             active_sessions.get("oldest_activity_at"),
             active_sessions.get("newest_activity_at"),
         )

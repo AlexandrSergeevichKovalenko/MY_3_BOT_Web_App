@@ -7,6 +7,7 @@ import requests
 
 from backend.database import get_db_connection_context
 from backend.database import delete_stale_tts_db_cache
+from backend.database import cleanup_stale_translation_check_sessions
 from backend.database import get_pending_telegram_system_messages
 from backend.database import mark_telegram_system_message_deleted
 from backend.database import get_admin_telegram_ids
@@ -14,6 +15,7 @@ from backend.database import record_telegram_system_message
 from backend.translation_workflow import finalize_open_translation_sessions
 from backend.tts_cache_cleanup import run_tts_r2_cache_cleanup
 from backend.r2_storage import r2_bucket_usage_summary
+from backend.job_queue import clear_translation_check_session_state
 
 
 def run_translation_sessions_auto_close_job() -> None:
@@ -26,6 +28,34 @@ def run_translation_sessions_auto_close_job() -> None:
         logging.info("✅ Translation sessions auto-close finished: %s", result)
     except Exception:
         logging.exception("❌ Translation sessions auto-close failed")
+        raise
+
+
+def run_translation_check_stale_cleanup_job() -> None:
+    enabled = (os.getenv("TRANSLATION_CHECK_STALE_SESSION_CLEANUP_ENABLED") or "1").strip().lower()
+    if enabled not in ("1", "true", "yes", "on"):
+        logging.info("ℹ️ Translation-check stale cleanup disabled by TRANSLATION_CHECK_STALE_SESSION_CLEANUP_ENABLED")
+        return
+    stale_minutes = int((os.getenv("TRANSLATION_CHECK_STALE_SESSION_MAX_AGE_MINUTES") or "60").strip() or "60")
+    batch_limit = int((os.getenv("TRANSLATION_CHECK_STALE_SESSION_CLEANUP_BATCH_LIMIT") or "100").strip() or "100")
+    try:
+        result = cleanup_stale_translation_check_sessions(
+            stale_minutes=stale_minutes,
+            limit=batch_limit,
+            cleanup_reason="translation_check_session_stale_cleanup",
+        )
+        session_ids = [int(item) for item in list(result.get("session_ids") or []) if str(item).strip()]
+        for session_id in session_ids:
+            clear_translation_check_session_state(session_id)
+        logging.info(
+            "✅ Translation-check stale cleanup finished: stale_minutes=%s session_count=%s item_updates=%s session_ids=%s",
+            stale_minutes,
+            int(result.get("session_count") or 0),
+            int(result.get("item_updates") or 0),
+            session_ids,
+        )
+    except Exception:
+        logging.exception("❌ Translation-check stale cleanup failed")
         raise
 
 

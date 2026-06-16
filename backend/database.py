@@ -12631,22 +12631,139 @@ def list_stale_translation_check_queued_sessions(*, stale_ms: int, limit: int = 
     return [_map_translation_check_session_runtime_row(row) for row in rows if row]
 
 
+def get_translation_check_stale_session_max_age_minutes() -> int:
+    try:
+        return max(5, int((os.getenv("TRANSLATION_CHECK_STALE_SESSION_MAX_AGE_MINUTES") or "60").strip() or "60"))
+    except Exception:
+        return 60
+
+
 def count_active_translation_check_running_sessions() -> int:
+    stale_minutes = get_translation_check_stale_session_max_age_minutes()
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
+                WITH active_sessions AS (
+                    SELECT
+                        COALESCE(heartbeat_at, started_at, dispatched_at, created_at) AS activity_at,
+                        status,
+                        finished_at,
+                        COALESCE(heartbeat_at, started_at, dispatched_at, created_at) >= NOW() - (%s * INTERVAL '1 minute') AS is_fresh
+                    FROM bt_3_translation_check_sessions
+                    WHERE status = 'running'
+                      AND finished_at IS NULL
+                )
                 SELECT COUNT(*)
-                FROM bt_3_translation_check_sessions
-                WHERE status = 'running'
-                  AND finished_at IS NULL;
+                FROM active_sessions
+                WHERE is_fresh;
                 """
+                ,
+                (int(stale_minutes),),
             )
             row = cursor.fetchone()
     try:
         return max(0, int(row[0] or 0)) if row else 0
     except Exception:
         return 0
+
+
+def cleanup_stale_translation_check_sessions(
+    *,
+    stale_minutes: int | None = None,
+    limit: int = 100,
+    cleanup_reason: str | None = None,
+) -> dict[str, object]:
+    normalized_stale_minutes = max(
+        5,
+        int(
+            stale_minutes if stale_minutes is not None else get_translation_check_stale_session_max_age_minutes()
+        ),
+    )
+    normalized_limit = max(1, int(limit or 100))
+    reason = str(cleanup_reason or "translation_check_session_stale_cleanup").strip() or "translation_check_session_stale_cleanup"
+
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id
+                FROM bt_3_translation_check_sessions
+                WHERE status IN ('queued', 'running')
+                  AND finished_at IS NULL
+                  AND COALESCE(heartbeat_at, started_at, dispatched_at, created_at) <= NOW() - (%s * INTERVAL '1 minute')
+                ORDER BY COALESCE(heartbeat_at, started_at, dispatched_at, created_at) ASC, id ASC
+                LIMIT %s;
+                """,
+                (normalized_stale_minutes, normalized_limit),
+            )
+            session_ids = [int(row[0]) for row in (cursor.fetchall() or []) if row and row[0] is not None]
+            if not session_ids:
+                return {
+                    "stale_minutes": normalized_stale_minutes,
+                    "session_count": 0,
+                    "item_updates": 0,
+                    "session_ids": [],
+                    "cleanup_reason": reason,
+                }
+
+            cursor.execute(
+                """
+                UPDATE bt_3_translation_check_items
+                SET
+                    status = 'failed',
+                    error_text = %s,
+                    result_text = COALESCE(NULLIF(result_text, ''), %s),
+                    started_at = COALESCE(started_at, NOW()),
+                    finished_at = NOW(),
+                    updated_at = NOW()
+                WHERE check_session_id = ANY(%s)
+                  AND status NOT IN ('done', 'failed');
+                """,
+                (reason, reason, session_ids),
+            )
+            item_updates = int(cursor.rowcount or 0)
+
+            cursor.execute(
+                """
+                UPDATE bt_3_translation_check_sessions s
+                SET
+                    status = 'failed',
+                    last_error = %s,
+                    total_items = counts.total_items,
+                    completed_items = counts.completed_items,
+                    failed_items = counts.failed_items,
+                    finished_at = NOW(),
+                    heartbeat_at = NOW(),
+                    summary_json = '{}'::jsonb,
+                    completion_side_effects_started_at = NOW(),
+                    completion_side_effects_done_at = NOW(),
+                    updated_at = NOW()
+                FROM (
+                    SELECT
+                        s2.id AS session_id,
+                        COUNT(i.id) AS total_items,
+                        COUNT(*) FILTER (WHERE i.status = 'done') AS completed_items,
+                        COUNT(*) FILTER (WHERE i.status = 'failed') AS failed_items
+                    FROM bt_3_translation_check_sessions s2
+                    LEFT JOIN bt_3_translation_check_items i
+                        ON i.check_session_id = s2.id
+                    WHERE s2.id = ANY(%s)
+                    GROUP BY s2.id
+                ) AS counts
+                WHERE s.id = counts.session_id;
+                """,
+                (reason, session_ids),
+            )
+            session_count = int(cursor.rowcount or 0)
+
+    return {
+        "stale_minutes": normalized_stale_minutes,
+        "session_count": session_count,
+        "item_updates": item_updates,
+        "session_ids": session_ids,
+        "cleanup_reason": reason,
+    }
 
 
 def list_translation_check_items(*, session_id: int) -> list[dict]:

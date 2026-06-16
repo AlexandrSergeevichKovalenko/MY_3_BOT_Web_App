@@ -1088,6 +1088,20 @@ def clear_translation_check_terminal_summary(session_id: int) -> None:
     _delete_json_payload(_translation_check_terminal_summary_key(int(session_id)))
 
 
+def clear_translation_check_session_state(session_id: int) -> None:
+    normalized_session_id = int(session_id)
+    _delete_json_payload(_translation_check_job_key(normalized_session_id))
+    _delete_json_payload(_translation_check_state_key(normalized_session_id))
+    _delete_json_payload(_translation_check_dispatch_state_key(normalized_session_id))
+    _delete_json_payload(_translation_check_completion_state_key(normalized_session_id))
+    _delete_json_payload(_translation_check_poll_hint_key(normalized_session_id))
+    _delete_json_payload(_translation_check_card_key(normalized_session_id))
+    _delete_json_payload(_translation_check_terminal_summary_key(normalized_session_id))
+    _delete_json_payload(_translation_check_staging_key(normalized_session_id))
+    _delete_json_payload(_translation_check_resume_cooldown_key(normalized_session_id))
+    _delete_json_payload(_translation_check_watchdog_requeue_key(normalized_session_id))
+
+
 def get_youtube_transcript_job_status(video_id: str, lang: str | None) -> dict | None:
     client = get_redis_client()
     if client is None:

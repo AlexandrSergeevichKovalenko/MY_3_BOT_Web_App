@@ -76,6 +76,7 @@ from backend.background_jobs import (  # noqa: E402
     run_today_plan_scheduler_actor,
     run_today_evening_reminders_scheduler_actor,
     run_translation_sessions_auto_close_actor,
+    run_translation_check_stale_cleanup_actor,
     run_system_message_cleanup_actor,
     run_flashcard_feel_cleanup_actor,
     run_tts_db_cache_cleanup_actor,
@@ -240,6 +241,10 @@ def _dispatch_today_evening_reminders() -> None:
 
 def _dispatch_translation_sessions_auto_close() -> None:
     run_translation_sessions_auto_close_actor.send()
+
+
+def _dispatch_translation_check_stale_cleanup() -> None:
+    run_translation_check_stale_cleanup_actor.send()
 
 
 def _dispatch_system_message_cleanup() -> None:
@@ -910,6 +915,24 @@ def _build_scheduler():
             logging.warning(
                 "scheduler_service: TRANSLATION_CHECK_WORKER schedule enabled but no valid windows were configured"
             )
+
+    # -- Translation-check stale cleanup (interval) --
+    if _enabled("TRANSLATION_CHECK_STALE_SESSION_CLEANUP_ENABLED", "1"):
+        cleanup_interval_minutes = max(5, _int_env("TRANSLATION_CHECK_STALE_SESSION_CLEANUP_INTERVAL_MINUTES", 15))
+        scheduler.add_job(
+            _dispatch_translation_check_stale_cleanup,
+            "interval",
+            minutes=cleanup_interval_minutes,
+            id="translation_check_stale_cleanup",
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=300,
+        )
+        logging.info(
+            "scheduler_service: translation-check stale cleanup enabled interval_minutes=%s max_age_minutes=%s",
+            cleanup_interval_minutes,
+            int((os.getenv("TRANSLATION_CHECK_STALE_SESSION_MAX_AGE_MINUTES") or "60").strip() or "60"),
+        )
 
     # -- Service resource profile schedules --
     for service_name in ("BACKGROUND_JOBS", "AUX_BACKGROUND_WORKER"):

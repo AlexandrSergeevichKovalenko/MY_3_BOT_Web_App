@@ -1959,6 +1959,12 @@ def run_translation_sessions_auto_close_actor() -> None:
 
 
 @dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
+def run_translation_check_stale_cleanup_actor() -> None:
+    from backend.scheduler_jobs_core import run_translation_check_stale_cleanup_job
+    run_translation_check_stale_cleanup_job()
+
+
+@dramatiq.actor(max_retries=0, queue_name="scheduler_jobs")
 def run_system_message_cleanup_actor() -> None:
     from backend.scheduler_jobs_core import run_system_message_cleanup_job
     run_system_message_cleanup_job()
