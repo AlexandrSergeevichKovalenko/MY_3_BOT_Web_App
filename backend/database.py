@@ -35488,7 +35488,133 @@ _MASTERY_POOL_SPECS = {
     # dedicated mastered_crossword_ids (puzzle = a user got ALL words right).
     "crossword": {"ans": "bt_3_crossword_answers", "disp": "bt_3_crossword_dispatches",
                   "item_col": "crossword_id", "bank": "bt_3_crossword_bank", "id_col": "crossword_id"},
+    # listening: retire/count generic; mastery via listening_mastery_rows (the
+    # answer is graded JSON, so "passed" is computed in Python with score_evaluation).
+    "listening": {"ans": "bt_3_listening_answers", "disp": "bt_3_listening_dispatches",
+                  "item_col": "listening_id", "bank": "bt_3_listening_bank", "id_col": "listening_id"},
 }
+
+
+def listening_mastery_rows() -> list[dict]:
+    """Per done listening answer: {listening_id, n_questions, user_id, evaluation}.
+    The caller scores each with score_evaluation to decide 'passed' (≥75%)."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT d.listening_id,
+                           COALESCE(jsonb_array_length(b.questions_json), 0) AS nq,
+                           a.user_id, a.evaluation_json
+                    FROM bt_3_listening_answers a
+                    JOIN bt_3_listening_dispatches d ON d.id = a.dispatch_id
+                    JOIN bt_3_listening_bank b ON b.listening_id = d.listening_id
+                    WHERE a.evaluation_status = 'done' AND b.retired = FALSE
+                    """
+                )
+                return [{"listening_id": str(r[0]), "n_questions": int(r[1] or 0),
+                         "user_id": int(r[2]), "evaluation": r[3] if isinstance(r[3], list) else []}
+                        for r in (cur.fetchall() or [])]
+    except Exception:
+        logging.warning("listening_mastery_rows failed", exc_info=True)
+        return []
+
+
+# ── Sprint word-bank mastery (der/die/das nouns used by sprint / trainer / battles) ──
+_SPRINT_WORD_ANSWERS_DONE = False
+
+
+def ensure_sprint_word_answers_schema() -> None:
+    global _SPRINT_WORD_ANSWERS_DONE
+    if _SPRINT_WORD_ANSWERS_DONE:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS bt_3_article_sprint_word_answers (
+                    set_id TEXT NOT NULL,
+                    word TEXT NOT NULL,
+                    article TEXT NOT NULL DEFAULT '',
+                    user_id BIGINT NOT NULL,
+                    is_correct BOOLEAN NOT NULL,
+                    answered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (set_id, word, user_id)
+                );"""
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_bt_3_sprint_word_answers_word "
+                "ON bt_3_article_sprint_word_answers (word);"
+            )
+        conn.commit()
+    _SPRINT_WORD_ANSWERS_DONE = True
+
+
+def record_article_sprint_word_answers(*, set_id: str, user_id: int, items: list[dict]) -> None:
+    """Log per-word der/die/das correctness (first attempt per user/set/word) so the
+    crowd-mastery rotation can retire words everyone aces. Off the critical path."""
+    rows = [(str(set_id), str(it.get("word") or "").strip().lower(),
+             str(it.get("article") or "").strip().lower(), int(user_id), bool(it.get("is_correct")))
+            for it in (items or []) if str(it.get("word") or "").strip()]
+    if not rows:
+        return
+    try:
+        ensure_sprint_word_answers_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(
+                    "INSERT INTO bt_3_article_sprint_word_answers "
+                    "(set_id, word, article, user_id, is_correct) VALUES (%s, %s, %s, %s, %s) "
+                    "ON CONFLICT (set_id, word, user_id) DO NOTHING;",
+                    rows,
+                )
+            conn.commit()
+    except Exception:
+        logging.warning("record_article_sprint_word_answers failed set=%s", set_id, exc_info=True)
+
+
+def mastered_article_sprint_words(*, min_answerers: int, ratio: float = 0.60) -> list[str]:
+    """Lowercased words the crowd has mastered across all sets (≥ min distinct users,
+    ≥ ratio of them correct)."""
+    try:
+        ensure_sprint_word_answers_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT word
+                    FROM bt_3_article_sprint_word_answers
+                    GROUP BY word
+                    HAVING COUNT(DISTINCT user_id) >= %s
+                       AND COUNT(DISTINCT user_id) FILTER (WHERE is_correct)::float
+                           / NULLIF(COUNT(DISTINCT user_id), 0) >= %s
+                    """,
+                    (int(min_answerers), float(ratio)),
+                )
+                return [str(r[0]) for r in (cur.fetchall() or [])]
+    except Exception:
+        logging.warning("mastered_article_sprint_words failed", exc_info=True)
+        return []
+
+
+def retire_article_sprint_nouns_by_words(words: list[str]) -> int:
+    """Retire verified nouns whose word the crowd mastered (autofill refills fresh)."""
+    norm = [str(w).strip().lower() for w in (words or []) if str(w).strip()]
+    if not norm:
+        return 0
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE bt_3_article_sprint_nouns SET retired = TRUE, updated_at = NOW() "
+                    "WHERE lower(word) = ANY(%s) AND retired = FALSE",
+                    (norm,),
+                )
+                n = cur.rowcount
+            conn.commit()
+        return int(n or 0)
+    except Exception:
+        logging.warning("retire_article_sprint_nouns_by_words failed", exc_info=True)
+        return 0
 
 
 def mastered_crossword_ids(*, min_answerers: int, ratio: float = 0.60) -> list[str]:

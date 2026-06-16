@@ -23187,6 +23187,21 @@ def artikel_submit():
         correct=correct, answered=answered, total=total, time_ms=time_ms,
     )
     _unpin_battle_invite_async(int(user_id), set_id)  # event-driven: result → unpin
+    if recorded:
+        # Log per-word der/die/das correctness (first attempt) → feeds crowd-mastery
+        # rotation of the noun bank. Off the critical path (own thread).
+        try:
+            word_items = [{"word": it["w"], "article": it["a"], "is_correct": it["ok"]} for it in items]
+
+            def _log_words():
+                try:
+                    from backend.database import record_article_sprint_word_answers
+                    record_article_sprint_word_answers(set_id=set_id, user_id=int(user_id), items=word_items)
+                except Exception:
+                    logging.warning("sprint word-answer log failed set=%s", set_id, exc_info=True)
+            threading.Thread(target=_log_words, daemon=True).start()
+        except Exception:
+            pass
     if not recorded:
         prev = get_article_sprint_result(set_id, int(user_id)) or {}
         correct = int(prev.get("correct", correct))

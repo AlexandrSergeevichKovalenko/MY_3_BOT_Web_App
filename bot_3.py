@@ -23249,6 +23249,59 @@ async def _rotate_crossword_domain(context: CallbackContext, *, min_answerers: i
     return retired, added
 
 
+async def _rotate_listening_domain(context: CallbackContext, *, min_answerers: int) -> tuple[int, int]:
+    """Retire listening items the crowd passed (≥75% graded) and refill. Mastery is
+    computed in Python because the answer is graded JSON (Inhalt+Grammatik)."""
+    from backend.database import (listening_mastery_rows, retire_pool_item_ids, count_pool_non_retired)
+    from backend.listening_evaluator import score_evaluation
+    rows = await asyncio.to_thread(listening_mastery_rows)
+    # per listening_id → {users:set, passed:set}
+    agg: dict[str, dict] = {}
+    for r in rows:
+        lid = r["listening_id"]
+        a = agg.setdefault(lid, {"users": set(), "passed": set()})
+        a["users"].add(r["user_id"])
+        try:
+            if score_evaluation(int(r["n_questions"]), r["evaluation"]).get("passed"):
+                a["passed"].add(r["user_id"])
+        except Exception:
+            pass
+    ids = [lid for lid, a in agg.items()
+           if len(a["users"]) >= min_answerers and len(a["passed"]) / max(1, len(a["users"])) >= MASTERY_CORRECT_RATIO]
+    n0 = await asyncio.to_thread(count_pool_non_retired, "listening")
+    retired = await asyncio.to_thread(retire_pool_item_ids, "listening", ids)
+    added = 0
+    if retired:
+        try:
+            await prepare_listening_pool_job(context)
+        except Exception:
+            logging.warning("rotation: listening regen failed", exc_info=True)
+        n1 = await asyncio.to_thread(count_pool_non_retired, "listening")
+        added = max(0, n1 - (n0 - retired))
+    return retired, added
+
+
+async def _rotate_article_words_domain(context: CallbackContext, *, min_answerers: int) -> tuple[int, int]:
+    """Retire der/die/das nouns the crowd mastered (across sprint/trainer/battles) and
+    regenerate fresh via the nightly auto-grow. Returns (retired, added)."""
+    from backend.database import mastered_article_sprint_words, retire_article_sprint_nouns_by_words
+    words = await asyncio.to_thread(mastered_article_sprint_words,
+                                    min_answerers=min_answerers, ratio=MASTERY_CORRECT_RATIO)
+    retired = await asyncio.to_thread(retire_article_sprint_nouns_by_words, words)
+    added = 0
+    if retired:
+        try:
+            from backend.article_sprint_generator import autofill_themes_below_target
+            res = await asyncio.to_thread(
+                autofill_themes_below_target,
+                per_theme_cap=ARTIKEL_AUTOFILL_PER_THEME,
+                total_cap=max(ARTIKEL_AUTOFILL_TOTAL, retired))
+            added = int(res.get("total_added") or 0)
+        except Exception:
+            logging.warning("rotation: article-words regen failed", exc_info=True)
+    return retired, added
+
+
 async def _mastery_rotation_job(context: CallbackContext) -> list[tuple[str, int, int]]:
     """Nightly: per domain, retire what the active crowd has mastered and regenerate
     fresh replacements (deduped), logging the churn for the weekly report. Returns
@@ -23291,6 +23344,22 @@ async def _mastery_rotation_job(context: CallbackContext) -> list[tuple[str, int
         logging.info("mastery rotation[crossword]: retired=%s added=%s", retired, added)
     except Exception:
         logging.warning("mastery rotation[crossword] failed", exc_info=True)
+    # Listening (graded-JSON mastery, passed ≥75%).
+    try:
+        retired, added = await _rotate_listening_domain(context, min_answerers=min_answerers)
+        await asyncio.to_thread(record_rotation_run, "listening", retired, added)
+        results.append(("listening", retired, added))
+        logging.info("mastery rotation[listening]: retired=%s added=%s", retired, added)
+    except Exception:
+        logging.warning("mastery rotation[listening] failed", exc_info=True)
+    # Word banks (der/die/das nouns used by sprint / trainer / battles).
+    try:
+        retired, added = await _rotate_article_words_domain(context, min_answerers=min_answerers)
+        await asyncio.to_thread(record_rotation_run, "article_words", retired, added)
+        results.append(("article_words", retired, added))
+        logging.info("mastery rotation[article_words]: retired=%s added=%s", retired, added)
+    except Exception:
+        logging.warning("mastery rotation[article_words] failed", exc_info=True)
     return results
 
 
