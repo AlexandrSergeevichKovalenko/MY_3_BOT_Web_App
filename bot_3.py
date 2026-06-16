@@ -23210,6 +23210,26 @@ async def _rotate_aufgabe_domain(context: CallbackContext, *, min_answerers: int
     return retired, added
 
 
+async def _rotate_pool_domain(context: CallbackContext, domain: str, regen_job, *, min_answerers: int) -> tuple[int, int]:
+    """Generic single-item-pool rotation: retire crowd-mastered bank items, then run
+    the domain's existing top-up job to refill to target. `added` is measured from
+    the non-retired count delta (so dedup-on-conflict is honestly reflected)."""
+    from backend.database import (mastered_pool_item_ids, retire_pool_item_ids, count_pool_non_retired)
+    ids = await asyncio.to_thread(mastered_pool_item_ids, domain,
+                                  min_answerers=min_answerers, ratio=MASTERY_CORRECT_RATIO)
+    n0 = await asyncio.to_thread(count_pool_non_retired, domain)
+    retired = await asyncio.to_thread(retire_pool_item_ids, domain, ids)
+    added = 0
+    if retired:
+        try:
+            await regen_job(context)
+        except Exception:
+            logging.warning("rotation: regen failed domain=%s", domain, exc_info=True)
+        n1 = await asyncio.to_thread(count_pool_non_retired, domain)
+        added = max(0, n1 - (n0 - retired))
+    return retired, added
+
+
 async def _mastery_rotation_job(context: CallbackContext) -> None:
     """Nightly: per domain, retire what the active crowd has mastered and regenerate
     fresh replacements (deduped), logging the churn for the weekly report."""
@@ -23223,13 +23243,23 @@ async def _mastery_rotation_job(context: CallbackContext) -> None:
     min_answerers = _mastery_min_answerers(active)
     logging.info("mastery rotation: active=%s min_answerers=%s ratio=%s",
                  active, min_answerers, MASTERY_CORRECT_RATIO)
-    # Aufgabe (Phase 1 domain).
+    # Aufgabe (multi-format, own refill path).
     try:
         retired, added = await _rotate_aufgabe_domain(context, min_answerers=min_answerers)
         await asyncio.to_thread(record_rotation_run, "aufgabe", retired, added)
         logging.info("mastery rotation[aufgabe]: retired=%s added=%s", retired, added)
     except Exception:
         logging.warning("mastery rotation[aufgabe] failed", exc_info=True)
+    # Single-item pool domains (answers→dispatch→bank, one item per dispatch).
+    for domain, regen_job in (("rebus", prepare_rebus_pool_job),
+                              ("anagram", prepare_anagram_pool_job),
+                              ("article_quiz", prepare_article_quiz_pool_job)):
+        try:
+            retired, added = await _rotate_pool_domain(context, domain, regen_job, min_answerers=min_answerers)
+            await asyncio.to_thread(record_rotation_run, domain, retired, added)
+            logging.info("mastery rotation[%s]: retired=%s added=%s", domain, retired, added)
+        except Exception:
+            logging.warning("mastery rotation[%s] failed", domain, exc_info=True)
 
 
 _ROTATION_DOMAIN_LABELS = {

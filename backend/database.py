@@ -35475,6 +35475,79 @@ def retire_aufgabe_ids(ids: list[str]) -> int:
         return 0
 
 
+# Single-item pool domains: answers → dispatches → bank, one bank item per dispatch.
+# Names are a fixed whitelist (no injection) so the mastery query is generic.
+_MASTERY_POOL_SPECS = {
+    "rebus": {"ans": "bt_3_rebus_answers", "disp": "bt_3_rebus_dispatches",
+              "item_col": "compound_id", "bank": "bt_3_rebus_bank", "id_col": "compound_id"},
+    "anagram": {"ans": "bt_3_anagram_answers", "disp": "bt_3_anagram_dispatches",
+                "item_col": "card_id", "bank": "bt_3_anagram_cards", "id_col": "card_id"},
+    "article_quiz": {"ans": "bt_3_article_quiz_answers", "disp": "bt_3_article_quiz_dispatches",
+                     "item_col": "word_id", "bank": "bt_3_article_quiz_bank", "id_col": "word_id"},
+}
+
+
+def mastered_pool_item_ids(domain: str, *, min_answerers: int, ratio: float = 0.60) -> list[str]:
+    """Crowd-mastered bank items of a single-item pool domain (same rule as aufgabe)."""
+    spec = _MASTERY_POOL_SPECS.get(domain)
+    if not spec:
+        return []
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT d.{spec['item_col']}
+                    FROM {spec['ans']} a
+                    JOIN {spec['disp']} d ON d.id = a.dispatch_id
+                    JOIN {spec['bank']} b ON b.{spec['id_col']} = d.{spec['item_col']}
+                    WHERE b.retired = FALSE
+                    GROUP BY d.{spec['item_col']}
+                    HAVING COUNT(DISTINCT a.user_id) >= %s
+                       AND COUNT(DISTINCT a.user_id) FILTER (WHERE a.is_correct)::float
+                           / NULLIF(COUNT(DISTINCT a.user_id), 0) >= %s
+                    """,  # noqa: S608 (identifiers come from the whitelist above)
+                    (int(min_answerers), float(ratio)),
+                )
+                return [str(r[0]) for r in (cur.fetchall() or [])]
+    except Exception:
+        logging.warning("mastered_pool_item_ids failed domain=%s", domain, exc_info=True)
+        return []
+
+
+def retire_pool_item_ids(domain: str, ids: list[str]) -> int:
+    spec = _MASTERY_POOL_SPECS.get(domain)
+    if not spec or not ids:
+        return 0
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE {spec['bank']} SET retired = TRUE "
+                    f"WHERE {spec['id_col']} = ANY(%s) AND retired = FALSE",  # noqa: S608
+                    (list(ids),),
+                )
+                n = cur.rowcount
+            conn.commit()
+        return int(n or 0)
+    except Exception:
+        logging.warning("retire_pool_item_ids failed domain=%s", domain, exc_info=True)
+        return 0
+
+
+def count_pool_non_retired(domain: str) -> int:
+    spec = _MASTERY_POOL_SPECS.get(domain)
+    if not spec:
+        return 0
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT count(*) FROM {spec['bank']} WHERE retired = FALSE")  # noqa: S608
+                return int(cur.fetchone()[0])
+    except Exception:
+        return 0
+
+
 _ROTATION_LOG_DONE = False
 
 
