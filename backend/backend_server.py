@@ -48231,7 +48231,7 @@ def _dispatch_weekly_global_ranking_report(*, tz_name: str = TODAY_PLAN_DEFAULT_
     errors: list[str] = []
     for row in rows[:limit]:
         user_id = int(row.get("user_id") or 0)
-        if user_id <= 0 or not is_telegram_user_allowed(user_id): 
+        if user_id <= 0 or not is_telegram_user_allowed(user_id):
             continue
         try:
             image_bytes = _render_weekly_global_ranking_card_png(row, start_date=start_date, end_date=end_date, top_rows=top_rows)
