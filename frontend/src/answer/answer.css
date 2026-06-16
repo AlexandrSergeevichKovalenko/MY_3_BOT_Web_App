@@ -741,9 +741,13 @@ html[data-scheme="light"] .ans-why-wrong { color: #92400e; }
 .bh-row-sub { margin-top: 3px; font-size: 13px; color: var(--dmps-text-secondary, #CBD5E1); }
 
 .fit-line { display: inline-block; white-space: nowrap; line-height: 1.15; }
-.fit-line.adj-line { display: inline-flex; align-items: baseline; gap: 4px; }
-.adj-word { font-size: 30px; display: flex; flex-wrap: nowrap; align-items: baseline; justify-content: center; overflow: hidden; }
-.adj-slot { color: #8b5cf6; font-weight: 900; min-width: 40px; border-bottom: 3px solid #8b5cf6; padding: 0 6px; }
+/* Keep the phrase line a plain inline-block: useFitText shrinks the font by
+   reading el.scrollWidth, which only reports overflow on a block box. An
+   inline-flex line becomes a shrinkable flex item, so scrollWidth never exceeds
+   its box → the font never shrinks and the text gets clipped by overflow:hidden. */
+.fit-line.adj-line { display: inline-block; white-space: nowrap; }
+.adj-word { font-size: 30px; text-align: center; overflow: hidden; }
+.adj-slot { display: inline-block; vertical-align: baseline; margin: 0 4px; color: #8b5cf6; font-weight: 900; min-width: 40px; text-align: center; border-bottom: 3px solid #8b5cf6; padding: 0 6px; }
 .adj-hint { margin-top: 10px; font-size: 14px; color: var(--dmps-text-muted, #94A3B8); }
 .adj-buttons { grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 14px; }
 .adj-end { background: linear-gradient(180deg, #6d4ad6, #4f2fb0); font-size: 20px; padding: 20px 0; }
