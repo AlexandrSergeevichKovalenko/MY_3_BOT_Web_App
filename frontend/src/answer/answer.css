@@ -771,7 +771,17 @@ html[data-scheme="light"] .ans-why-wrong { color: #92400e; }
 }
 .al-word-text { display: inline-block; white-space: nowrap; line-height: 1.1; }
 .al-streak { text-align: center; font-size: 16px; font-weight: 800; color: #f97316; }
-.al-theme-day { outline: 2px solid rgba(37,99,235,.55); }
+/* "Тема дня" — neat highlighted card. A real border (box-sizing: border-box, so
+   it sits INSIDE the button) + tinted gradient, instead of an outline which the
+   scrolling .as-themes container (overflow:auto) clipped → "рамка уехала". */
+.al-theme-day {
+  background: linear-gradient(135deg, rgba(37,99,235,.20), rgba(37,99,235,.06));
+  border: 1.5px solid rgba(37,99,235,.55);
+  font-weight: 800;
+}
+.al-theme-day .as-theme-cnt {
+  opacity: 1; color: #2563eb; font-size: 18px;
+}
 .al-img { width: 100%; height: 160px; border-radius: 16px; overflow: hidden; background: rgba(148,163,184,.12); }
 .al-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .as-word.der { background: rgba(37,99,235,.28); }
