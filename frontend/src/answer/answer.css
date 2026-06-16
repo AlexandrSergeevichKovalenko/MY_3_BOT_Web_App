@@ -723,6 +723,18 @@ html[data-scheme="light"] .ans-why-wrong { color: #92400e; }
 .bh-section { margin-bottom: 14px; }
 .bh-section-head { font-size: 14px; font-weight: 800; color: var(--dmps-text-muted, #94A3B8); margin: 4px 0 8px; letter-spacing: .02em; }
 .bh-row { padding: 10px 12px; border-radius: 12px; background: rgba(148,163,184,.10); margin-bottom: 8px; border-left: 3px solid transparent; }
+.bh-row-btn {
+  width: 100%;
+  text-align: left;
+  border: 0;
+  appearance: none;
+  font: inherit;
+  color: inherit;
+  cursor: default;
+}
+.bh-row-btn.can-open { cursor: pointer; }
+.bh-row-btn:disabled { opacity: 0.92; }
+.bh-row-btn.can-open:active { transform: scale(0.995); }
 .bh-row.open { border-left-color: var(--dmps-primary, #2563EB); }
 .bh-row.ok { border-left-color: #22c55e; }
 .bh-row-title { font-size: 15px; font-weight: 700; color: var(--dmps-text-primary, #F8FAFC); }

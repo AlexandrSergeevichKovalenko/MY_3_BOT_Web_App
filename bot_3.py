@@ -19938,13 +19938,22 @@ async def artikel_battle_command(update: Update, context: CallbackContext) -> No
 async def _broadcast_artikel_cmd_invites(context: CallbackContext, *, battle_id: int, creator_id: int,
                                          creator_name: str, theme_key: str,
                                          status_chat_id: int, status_msg_id: int) -> None:
-    """Off-critical-path text-invite broadcast for /battle, then update the count."""
+    """Off-critical-path invite broadcast for /battle, then update the count."""
     invite_text = (
-        f"⚔️ *{html.escape(creator_name)}* зовёт на *Artikel Sprint* батл!\n"
-        f"2 минуты, der/die/das. Играй когда удобно *до 23:59*. Прими вызов:"
+        f"⚔️ <b>{html.escape(creator_name)}</b> зовёт на <b>Artikel Sprint</b> батл!\n"
+        f"2 минуты, der/die/das. Играй когда удобно <b>до 23:59</b>.\n"
+        "Прими вызов:"
     )
-    join_kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-        "✅ Принять вызов", callback_data=f"asb_join:{battle_id}")]])
+    join_kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Принять", callback_data=f"asb_acc:{battle_id}"),
+        InlineKeyboardButton("❌ Отклонить", callback_data=f"asb_dec:{battle_id}"),
+    ]])
+    invite_img = None
+    try:
+        from backend.battle_card import battle_invite_image_url
+        invite_img = battle_invite_image_url()
+    except Exception:
+        invite_img = None
     try:
         targets = await asyncio.to_thread(list_allowed_telegram_user_ids)
     except Exception:
@@ -19954,8 +19963,21 @@ async def _broadcast_artikel_cmd_invites(context: CallbackContext, *, battle_id:
         if int(uid) == int(creator_id):
             continue
         try:
-            await context.bot.send_message(chat_id=int(uid), text=invite_text,
-                                            parse_mode="Markdown", reply_markup=join_kb)
+            if invite_img:
+                await context.bot.send_photo(
+                    chat_id=int(uid),
+                    photo=invite_img,
+                    caption=invite_text,
+                    parse_mode="HTML",
+                    reply_markup=join_kb,
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=int(uid),
+                    text=invite_text,
+                    parse_mode="HTML",
+                    reply_markup=join_kb,
+                )
             sent += 1
         except Exception:
             pass

@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 // each battle showing the user's place + score; open ones are flagged "идёт".
 const medal = (p) => (p === 1 ? '🥇' : p === 2 ? '🥈' : p === 3 ? '🥉' : p ? '🎖️' : '');
 
-export default function BattleHistory({ api, onClose }) {
+export default function BattleHistory({ api, onClose, onOpenBattle }) {
   const [phase, setPhase] = useState('loading'); // loading|ready|error
   const [sections, setSections] = useState([]);
   const [error, setError] = useState('');
@@ -44,8 +44,15 @@ export default function BattleHistory({ api, onClose }) {
           {sec.battles.map((b) => {
             const open_ = b.status === 'open';
             const played = b.your_place != null;
+            const canOpen = open_ && typeof onOpenBattle === 'function';
             return (
-              <div className={`bh-row${open_ ? ' open' : (played ? ' ok' : '')}`} key={`${sec.key}-${b.battle_id}`}>
+              <button
+                key={`${sec.key}-${b.battle_id}`}
+                type="button"
+                className={`bh-row bh-row-btn${open_ ? ' open' : (played ? ' ok' : '')}${canOpen ? ' can-open' : ''}`}
+                onClick={canOpen ? () => onOpenBattle(sec.key, b.battle_id) : undefined}
+                disabled={!canOpen}
+              >
                 <div className="bh-row-title">
                   {open_ ? '⚔️' : (played ? medal(b.your_place) : '🏁')} #{b.battle_id} · {b.label}
                 </div>
@@ -56,7 +63,7 @@ export default function BattleHistory({ api, onClose }) {
                       ? `место ${b.your_place} из ${b.total} · ${b.your_count} верных`
                       : `не сыграно · 🏆 ${b.winner || '—'}`)}
                 </div>
-              </div>
+              </button>
             );
           })}
         </div>

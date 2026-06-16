@@ -360,6 +360,7 @@ function RankingCard({ ranking }) {
 
 export default function AnswerOverlay({ startParam }) {
   const parsed = useMemo(() => parseStartParam(startParam), [startParam]);
+  const [battleLaunch, setBattleLaunch] = useState(null);
   const [meta, setMeta] = useState(null);
   const [metaLoading, setMetaLoading] = useState(true);
   const [error, setError] = useState('');
@@ -491,8 +492,19 @@ export default function AnswerOverlay({ startParam }) {
   }, [parsed, submitting, grading, pollListening]);
 
   const close = useCallback(() => { try { tg?.close?.(); } catch (_e) { /* ignore */ } }, []);
+  const closeBattleLaunch = useCallback(() => { setBattleLaunch(null); }, []);
+  const openBattleFromHistory = useCallback((kind, battleId) => {
+    if (!kind || !battleId) return;
+    setBattleLaunch({ kind: String(kind), battleId: Number(battleId) });
+  }, []);
 
   const kind = parsed?.kind;
+  if (battleLaunch?.kind === 'artikel') {
+    return <ArtikelSprintGame battleId={battleLaunch.battleId} api={api} haptic={haptic} onClose={closeBattleLaunch} />;
+  }
+  if (battleLaunch?.kind === 'adjektiv') {
+    return <AdjektivSprintGame battleId={battleLaunch.battleId} api={api} haptic={haptic} onClose={closeBattleLaunch} />;
+  }
   // Synonym/Antonym sprint is fully self-contained (own timer/check/finish flow).
   if (kind === 'sp' && parsed?.id != null) {
     return <SprintGame id={parsed.id} api={api} haptic={haptic} onClose={close} />;
@@ -531,7 +543,7 @@ export default function AnswerOverlay({ startParam }) {
     return <AdjektivLearnGame api={api} haptic={haptic} onClose={close} />;
   }
   if (kind === 'bh') {
-    return <BattleHistory api={api} onClose={close} />;
+    return <BattleHistory api={api} onClose={close} onOpenBattle={openBattleFromHistory} />;
   }
   const isRebus = kind === 'rb';
   const isAnagram = kind === 'ag';
