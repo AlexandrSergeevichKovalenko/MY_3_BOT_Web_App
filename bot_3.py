@@ -1125,6 +1125,22 @@ class TrackingExtBot(ExtBot):
 
     async def send_message(self, *args, **kwargs):
         kwargs = self._strip_internal_kwargs(kwargs)
+        # Keep the DM reply-keyboard alive silently: piggyback it onto ordinary DM
+        # text replies that don't already carry a markup (throttled per user), so
+        # users never lose the buttons and we never send standalone "menu" messages.
+        try:
+            chat_id = kwargs.get("chat_id")
+            if chat_id is None and args:
+                chat_id = args[0]
+            if isinstance(chat_id, int) and chat_id > 0:
+                rm = kwargs.get("reply_markup")
+                if rm is None:
+                    if _kb_should_attach(int(chat_id)):
+                        kwargs["reply_markup"] = _build_private_language_tutor_reply_keyboard(int(chat_id))
+                elif isinstance(rm, ReplyKeyboardMarkup):
+                    _kb_last_attach[int(chat_id)] = pytime.time()
+        except Exception:
+            pass
         msg = await super().send_message(*args, **kwargs)
         return await self._track_single(msg, "text")
 
@@ -1628,7 +1644,7 @@ def add_service_msg_id(context, message_id):
 
 
 # NOTE: the old once-a-day "📋 Меню снова под рукой" refresh handler was removed —
-# the DM reply-keyboard is now kept fresh silently by _install_silent_keyboard_reattach
+# the DM reply-keyboard is now kept fresh silently by TrackingExtBot.send_message
 # (it piggybacks the keyboard onto the bot's ordinary DM replies), so users never lose
 # the buttons and we never add standalone menu messages to the chat.
 
@@ -2820,32 +2836,9 @@ def _kb_should_attach(user_id: int) -> bool:
         _kb_last_attach[int(user_id)] = now
         return True
     return False
-
-
-def _install_silent_keyboard_reattach(app) -> None:
-    """Wrap bot.send_message so DM replies silently keep the reply-keyboard fresh.
-    Covers update.message.reply_text too (it routes through bot.send_message)."""
-    orig_send_message = app.bot.send_message
-
-    async def _send_message_with_kb(*args, **kwargs):
-        try:
-            chat_id = kwargs.get("chat_id")
-            if chat_id is None and args:
-                chat_id = args[0]
-            # Positive chat_id == a private chat with a user (groups are negative).
-            if isinstance(chat_id, int) and chat_id > 0:
-                rm = kwargs.get("reply_markup")
-                if rm is None:
-                    if _kb_should_attach(int(chat_id)):
-                        kwargs["reply_markup"] = _build_private_language_tutor_reply_keyboard(int(chat_id))
-                elif isinstance(rm, ReplyKeyboardMarkup):
-                    # An explicit menu send already refreshed it — reset the window.
-                    _kb_last_attach[int(chat_id)] = pytime.time()
-        except Exception:
-            pass
-        return await orig_send_message(*args, **kwargs)
-
-    app.bot.send_message = _send_message_with_kb
+# NOTE: the actual piggyback lives in TrackingExtBot.send_message — PTB's Bot uses
+# __slots__ and forbids reassigning bot.send_message on the instance, so it must be
+# a subclass method, not a monkey-patch.
 
 
 def _format_shortcut_pairing_code_ttl_note() -> str:
@@ -26023,8 +26016,6 @@ def main():
         required_before_first_request=True,
     )
     application.bot.request.timeout = 60
-    # Keep the DM reply-keyboard alive silently (rides ordinary replies, no spam).
-    _install_silent_keyboard_reattach(application)
 
     # 🔹 Добавляем обработчики команд (исправленный порядок)
     application.add_handler(ChatMemberHandler(handle_bot_group_membership, chat_member_types=ChatMemberHandler.MY_CHAT_MEMBER), group=-4)
@@ -26063,7 +26054,7 @@ def main():
     # 🔥 Логирование всех сообщений (группа -1, не блокирует цепочку)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message, block=False), group=-1)
 
-    # (DM menu keyboard now stays fresh silently via _install_silent_keyboard_reattach
+    # (DM menu keyboard now stays fresh silently via TrackingExtBot.send_message
     #  — it rides ordinary replies, so no standalone "menu" refresh message is sent.)
 
     application.add_handler(MessageHandler(filters.FORWARDED & filters.TEXT & ~filters.COMMAND, handle_forwarded_message_lookup, block=False), group=0)
