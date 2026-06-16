@@ -3344,6 +3344,13 @@ For EACH item decide whether "<article> <word>" is correct, standard, UNAMBIGUOU
 Return STRICT JSON ONLY, same order as input:
 {"results": [ {"ok": true|false, "article": "der|die|das"}, ... ]}.
 """,
+"article_translate": """
+You translate German nouns to short Russian meanings for a der/die/das drill.
+Input JSON: {"words": ["Hund", "Katze", ...]}.
+For EACH word give a concise Russian meaning (1-3 words, the common everyday sense;
+no article, no extra notes). Return STRICT JSON ONLY, same order as input:
+{"results": [ {"word": "Hund", "meaning_ru": "собака"}, ... ]}.
+""",
 "article_mnemonic": """
 Ты — преподаватель немецкого. Помогаешь русскоязычному ученику запоминать род
 (der/die/das) существительных НЕ зубрёжкой, а через смысл, ассоциацию или образ.
@@ -6019,6 +6026,29 @@ async def run_article_verify(*, items: list[dict]) -> list[dict]:
     except Exception:
         logging.warning("run_article_verify failed n=%s", len(items or []), exc_info=True)
         return []
+
+
+async def run_article_translate(*, words: list[str]) -> dict:
+    """Batch-translate German nouns → short RU meanings. Returns {lower(word): ru}.
+    Used when a user pastes their own words without a translation."""
+    try:
+        content = await llm_execute(
+            task_name="article_translate",
+            system_instruction_key="article_translate",
+            user_message=json.dumps({"words": [str(w or "") for w in (words or [])]}, ensure_ascii=False),
+            poll_interval_seconds=1.5,
+        )
+        data = json.loads(content)
+        res = data.get("results") if isinstance(data, dict) else None
+        out: dict = {}
+        if isinstance(res, list):
+            for r in res:
+                if isinstance(r, dict) and r.get("word"):
+                    out[str(r["word"]).strip().lower()] = str(r.get("meaning_ru") or "").strip()
+        return out
+    except Exception:
+        logging.warning("run_article_translate failed n=%s", len(words or []), exc_info=True)
+        return {}
 
 
 async def run_article_image_meta(*, items: list[dict]) -> list[dict]:

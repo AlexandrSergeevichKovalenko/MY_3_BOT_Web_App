@@ -19150,6 +19150,122 @@ async def admin_artikel_fill_command(update: Update, context: CallbackContext) -
     await status_msg.edit_text(text[:4000])
 
 
+def _parse_addword_line(line: str) -> dict | None:
+    """Parse one pasted line into {word, article, meaning_ru}. Accepts:
+    «der Hund», «Hund», «die Katze = кошка», «Haus - дом» (sep = / : / - / — with spaces)."""
+    s = str(line or "").strip()
+    if not s:
+        return None
+    meaning = ""
+    m = re.split(r"\s+[=:—–-]\s+", s, maxsplit=1)
+    if len(m) == 2:
+        s, meaning = m[0].strip(), m[1].strip()
+    toks = s.split()
+    article = ""
+    if toks and toks[0].lower() in ("der", "die", "das"):
+        article = toks[0].lower()
+        toks = toks[1:]
+    word = " ".join(toks).strip()
+    if not word:
+        return None
+    return {"word": word, "article": article, "meaning_ru": meaning}
+
+
+async def admin_artikel_addwords_command(update: Update, context: CallbackContext) -> None:
+    """Add YOUR OWN nouns to a theme (verified + auto-translated, same bank as the
+    generator). /artikel_addwords <theme_key> then each word on its own line
+    (optionally «der/die/das Слово» and «= перевод»)."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    lines = [ln.strip() for ln in str(message.text or "").splitlines()]
+    first = (lines[0] if lines else "").split()
+    if len(first) < 2:
+        await message.reply_text(
+            "Использование: <code>/artikel_addwords &lt;theme_key&gt;</code>\n"
+            "далее каждое слово с новой строки. Примеры строк:\n"
+            "<code>der Hund</code> · <code>die Katze = кошка</code> · <code>Haus</code>",
+            parse_mode="HTML")
+        return
+    theme_key = first[1]
+    word_lines = [ln for ln in lines[1:] if ln]
+    if not word_lines:
+        await message.reply_text("Добавь слова: каждое с новой строки под командой.")
+        return
+    theme = await asyncio.to_thread(get_article_sprint_theme, theme_key)
+    if not theme:
+        await message.reply_text(
+            f"Нет темы <code>{html.escape(theme_key)}</code>. Список: /artikel_themes", parse_mode="HTML")
+        return
+    entries = [e for e in (_parse_addword_line(ln) for ln in word_lines) if e]
+    if not entries:
+        await message.reply_text("Не распознал ни одного слова.")
+        return
+    status_msg = await message.reply_text(
+        f"⏳ Добавляю {len(entries)} слов(а) в «{html.escape(theme['label_de'])}» "
+        "(верификация артикля + перевод)…")
+
+    def _add() -> dict:
+        from backend.article_sprint_generator import add_manual_words
+        return add_manual_words(theme_key, entries)
+
+    try:
+        res = await asyncio.to_thread(_add)
+    except Exception as exc:
+        await status_msg.edit_text(f"Error: {exc}")
+        return
+    if res.get("error"):
+        await status_msg.edit_text(f"❌ {res['error']}")
+        return
+    await status_msg.edit_text(
+        f"✅ «{html.escape(theme['label_de'])}»\n"
+        f"Добавлено: {res.get('added')} · забраковано: {res.get('rejected')} · "
+        f"дубли: {res.get('skipped_dup')}\n"
+        f"Всего verified: {res.get('final_verified')}/{res.get('target')}")
+
+
+async def admin_artikel_autofill_command(update: Update, context: CallbackContext) -> None:
+    """Manually run the auto-grow (top up themes below target via GPT). Same job that
+    runs nightly. /artikel_autofill [total_cap]"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    args = [a for a in (context.args or []) if a.strip()]
+    try:
+        total = max(1, min(500, int(args[0]))) if args else None
+    except ValueError:
+        total = None
+    status_msg = await message.reply_text(
+        "⏳ Догенерирую слова в темах ниже target (GPT + верификация, это займёт время)…")
+
+    def _go() -> dict:
+        from backend.article_sprint_generator import autofill_themes_below_target
+        kw = {"per_theme_cap": ARTIKEL_AUTOFILL_PER_THEME, "total_cap": ARTIKEL_AUTOFILL_TOTAL}
+        if total:
+            kw["total_cap"] = total
+        return autofill_themes_below_target(**kw)
+
+    try:
+        res = await asyncio.to_thread(_go)
+    except Exception as exc:
+        await status_msg.edit_text(f"Error: {exc}")
+        return
+    out = [f"✅ Авто-наполнение: добавлено {res.get('total_added')} слов(а)."]
+    for t in (res.get("themes") or [])[:25]:
+        out.append(f"• {t['theme']}: +{t.get('added')} → {t.get('final_verified')}/{t.get('target')}")
+    if len(out) == 1:
+        out.append("Все темы уже на target 🎉")
+    await status_msg.edit_text("\n".join(out)[:4000])
+
+
 async def admin_artikel_sample_command(update: Update, context: CallbackContext) -> None:
     """Show N random verified nouns of a theme to eyeball article quality.
     /artikel_sample <theme_key> [n]"""
@@ -23551,6 +23667,29 @@ async def _prewarm_artikel_focus_job(context: CallbackContext) -> None:
         logging.warning("artikel_media prewarm failed", exc_info=True)
 
 
+# Nightly auto-grow of the noun bank toward each theme's target (~300). Bounded so
+# LLM cost stays predictable; themes reach target over several nights. Env-tunable.
+ARTIKEL_AUTOFILL_ENABLED = (os.getenv("ARTIKEL_AUTOFILL_ENABLED", "1").strip().lower() not in ("0", "false", "no"))
+ARTIKEL_AUTOFILL_PER_THEME = max(1, int((os.getenv("ARTIKEL_AUTOFILL_PER_THEME") or "40").strip() or "40"))
+ARTIKEL_AUTOFILL_TOTAL = max(1, int((os.getenv("ARTIKEL_AUTOFILL_TOTAL") or "120").strip() or "120"))
+
+
+async def _artikel_autofill_nightly_job(context: CallbackContext) -> None:
+    """Overnight: top up themes below target via GPT (generate+verify+insert),
+    bounded by ARTIKEL_AUTOFILL_PER_THEME / _TOTAL. Runs BEFORE the media prewarm so
+    today's/tomorrow's active themes get media for the fresh words the same night."""
+    if not _artikel_sprint_enabled() or not ARTIKEL_AUTOFILL_ENABLED:
+        return
+    try:
+        from backend.article_sprint_generator import autofill_themes_below_target
+        res = await asyncio.to_thread(
+            autofill_themes_below_target,
+            per_theme_cap=ARTIKEL_AUTOFILL_PER_THEME, total_cap=ARTIKEL_AUTOFILL_TOTAL)
+        logging.info("artikel autofill nightly: %s", res)
+    except Exception:
+        logging.warning("artikel autofill nightly failed", exc_info=True)
+
+
 # Daily admin nudge to pick TOMORROW's Artikel Sprint theme (default 16:00 Vienna).
 ARTIKEL_THEME_REMINDER_SLOT = (
     max(0, min(23, int((os.getenv("ARTIKEL_THEME_REMINDER_HOUR") or "16").strip() or "16"))),
@@ -26128,6 +26267,8 @@ def main():
     application.add_handler(CommandHandler("artikel_focus", admin_artikel_focus_command))
     application.add_handler(CommandHandler("artikel_settheme", admin_artikel_settheme_command))
     application.add_handler(CommandHandler("artikel_fill", admin_artikel_fill_command))
+    application.add_handler(CommandHandler("artikel_addwords", admin_artikel_addwords_command))
+    application.add_handler(CommandHandler("artikel_autofill", admin_artikel_autofill_command))
     application.add_handler(CommandHandler("artikel_sample", admin_artikel_sample_command))
     application.add_handler(CommandHandler("artikel_buildtoday", admin_artikel_buildtoday_command))
     application.add_handler(CommandHandler("artikel_recheck", admin_artikel_recheck_command))
@@ -26546,6 +26687,15 @@ def main():
             "cron",
             hour=int(ARTIKEL_LEARN_SLOT[0]),
             minute=int(ARTIKEL_LEARN_SLOT[1]),
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Artikel Sprint: nightly auto-grow of the noun bank toward target (02:30,
+        #    BEFORE the media prewarm so fresh active-theme words get media tonight) --
+        scheduler.add_job(
+            lambda: submit_async(_artikel_autofill_nightly_job, CallbackContext(application=application)),
+            "cron",
+            hour=2,
+            minute=30,
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
         # -- Artikel Trainer: overnight prep of Pro focus themes for tomorrow (03:40) --

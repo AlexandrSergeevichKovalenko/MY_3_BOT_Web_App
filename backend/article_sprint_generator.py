@@ -214,3 +214,127 @@ def fill_theme(theme_key: str, *, max_to_add: int | None = None, per_subtopic: i
         "theme": theme_key, "added": added, "rejected": rejected,
         "final_verified": final, "target": target, "by_subtopic": by_subtopic,
     }
+
+
+def add_manual_words(theme_key: str, entries: list[dict]) -> dict:
+    """Insert a user-supplied list of nouns into a theme — same bank, same quality
+    gate as the generator. Each entry: {word, article?(der/die/das), meaning_ru?}.
+
+    The article is VERIFIED/CORRECTED via the same LLM + deterministic guard as
+    fill_theme (so a wrong/missing article is fixed, ambiguous/non-nouns rejected);
+    a missing meaning_ru is auto-translated. Rows are stored source='manual',
+    verified=True → they feed every game and pick up media (audio/images/mnemonics)
+    through the existing media jobs, exactly like generated words. No target cap —
+    you can grow a theme beyond 300 if you want."""
+    from backend.article_sprint_themes import article_sprint_themes
+    from backend.openai_manager import run_article_verify, run_article_translate
+    from backend.database import (
+        ensure_article_sprint_schema, count_article_sprint_nouns,
+        insert_article_sprint_nouns, list_article_sprint_words,
+    )
+
+    theme = next((t for t in article_sprint_themes() if t["key"] == theme_key), None)
+    if not theme:
+        return {"error": "unknown_theme", "theme": theme_key}
+    ensure_article_sprint_schema()
+
+    existing = {w.lower() for w in list_article_sprint_words(theme_key)}
+    cleaned: list[dict] = []
+    seen: set[str] = set()
+    for e in entries or []:
+        w = str((e or {}).get("word") or "").strip()
+        if not w or w.lower() in seen:
+            continue
+        seen.add(w.lower())
+        cleaned.append({
+            "word": w,
+            "article": str((e or {}).get("article") or "").strip().lower(),
+            "meaning_ru": str((e or {}).get("meaning_ru") or "").strip(),
+        })
+    if not cleaned:
+        return {"theme": theme_key, "added": 0, "rejected": 0, "skipped_dup": 0,
+                "final_verified": count_article_sprint_nouns(theme_key, verified_only=True),
+                "target": int(theme["target_count"])}
+
+    try:
+        verdicts = _run(run_article_verify(
+            items=[{"word": c["word"], "article": c["article"] or "der"} for c in cleaned]))
+    except Exception:
+        logging.warning("add_manual_words: verify failed theme=%s", theme_key, exc_info=True)
+        verdicts = []
+    need_tr = [c["word"] for c in cleaned if not c["meaning_ru"]]
+    try:
+        trmap = _run(run_article_translate(words=need_tr)) if need_tr else {}
+    except Exception:
+        trmap = {}
+
+    rows: list[dict] = []
+    rejected = 0
+    skipped_dup = 0
+    for i, c in enumerate(cleaned):
+        w = c["word"]
+        if w.lower() in existing:
+            skipped_dup += 1
+            continue
+        if is_ambiguous_noun(w):
+            rejected += 1
+            continue
+        v = verdicts[i] if i < len(verdicts) else None
+        art = c["article"]
+        if isinstance(v, dict):
+            if not v.get("ok"):
+                rejected += 1
+                continue
+            art = str(v.get("article") or art).strip().lower()
+        # Deterministic guard wins for high-confidence rules (compound head / suffix).
+        hint = strong_gender(w)
+        if hint:
+            art = hint
+        if art not in ("der", "die", "das"):
+            rejected += 1
+            continue
+        rows.append({
+            "word": w, "article": art,
+            "meaning_ru": c["meaning_ru"] or trmap.get(w.lower(), ""),
+            "plural": "", "difficulty": "B",
+            "subtopic": "manual", "source": "manual", "verified": True,
+        })
+        existing.add(w.lower())
+
+    inserted = 0
+    if rows:
+        res = insert_article_sprint_nouns(theme_key, rows)
+        inserted = int(res.get("inserted") or 0)
+    final = count_article_sprint_nouns(theme_key, verified_only=True)
+    return {"theme": theme_key, "added": inserted, "rejected": rejected,
+            "skipped_dup": skipped_dup, "final_verified": final,
+            "target": int(theme["target_count"])}
+
+
+def autofill_themes_below_target(*, per_theme_cap: int = 40, total_cap: int = 120) -> dict:
+    """Nightly auto-grow: top up every theme that's below its target via fill_theme,
+    bounded per theme and overall (budget guard) so it walks all themes to ~target
+    over several nights. Reuses the full generate+verify pipeline."""
+    from backend.article_sprint_themes import article_sprint_themes
+    from backend.database import count_article_sprint_nouns
+
+    results: list[dict] = []
+    total_added = 0
+    for t in article_sprint_themes():
+        if total_added >= total_cap:
+            break
+        key = str(t["key"])
+        target = int(t.get("target_count") or 0)
+        have = count_article_sprint_nouns(key, verified_only=True)
+        room = min(int(per_theme_cap), target - have, total_cap - total_added)
+        if room <= 0:
+            continue
+        try:
+            res = fill_theme(key, max_to_add=room)
+        except Exception:
+            logging.warning("autofill: fill_theme failed theme=%s", key, exc_info=True)
+            continue
+        total_added += int(res.get("added") or 0)
+        results.append({"theme": key, "added": int(res.get("added") or 0),
+                        "final_verified": res.get("final_verified"), "target": target})
+    return {"total_added": total_added, "themes": results}
