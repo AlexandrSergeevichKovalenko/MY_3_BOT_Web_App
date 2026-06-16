@@ -48538,7 +48538,10 @@ def _dispatch_plan_period_progress(
         except Exception as exc:
             errors.append(f"user {user_id} {source_lang}->{target_lang}: {exc}")
 
-    if normalized_period == "week" and target_date.weekday() == 0:
+    # TEMP (2026-06-16): Monday «Новый понедельник — поставь личный план» reminder
+    # disabled per request. Re-enable by restoring the original condition (drop
+    # `False and`). The block below is intentionally kept.
+    if False and normalized_period == "week" and target_date.weekday() == 0:
         active_users = _collect_active_users_for_plan_reminders(target_date=target_date)
         for user_id, username in active_users.items():
             if not is_telegram_user_allowed(user_id):
@@ -48982,6 +48985,17 @@ def _dispatch_weekly_group_badges(
     tz_name: str = TODAY_PLAN_DEFAULT_TZ,
     include_current_week: bool = False,
 ) -> dict:
+    # TEMP (2026-06-16): weekly leaderboard message disabled per request.
+    # Re-enable by removing this early return. Code below is intentionally kept.
+    if True:
+        return {
+            "ok": True,
+            "date": target_date.isoformat(),
+            "disabled": True,
+            "sent_group": 0,
+            "sent_private": 0,
+            "tz": tz_name,
+        }
     if include_current_week:
         week_start = target_date - timedelta(days=target_date.weekday())
         week_end = week_start + timedelta(days=6)
