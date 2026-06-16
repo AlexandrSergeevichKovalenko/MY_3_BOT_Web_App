@@ -21812,10 +21812,21 @@ async def _send_challenge_notifications_job(context: CallbackContext) -> None:
             label = await _challenge_label(n.get("challenge_key") or "")
             if kind == "overtaken":
                 # A single beautiful plaque per (user, challenge): sent once, then
-                # its place button is edited in place as the user sinks further.
+                # its button is edited in place as the user sinks further. For BATTLES
+                # the button is a deeplink back into that battle (see who overtook you
+                # + the results); otherwise a plain "ты на N-м месте" chip.
                 place = int(p.get("place") or 2)
-                btn = InlineKeyboardMarkup([[InlineKeyboardButton(
-                    f"📉 Сейчас ты на {place}-м месте", callback_data="overtaken_noop")]])
+                # Prefer the human task label from the payload (e.g. "Artikel Battle").
+                label = str(p.get("task_kind") or label)
+                open_kind = str(p.get("open_kind") or "").strip()
+                battle_id = int(p.get("battle_id") or 0)
+                if open_kind and battle_id:
+                    btn = InlineKeyboardMarkup([[InlineKeyboardButton(
+                        f"🏆 Открыть батл (ты {place}-й) — кто обошёл",
+                        url=get_webapp_deeplink(f"ans_{open_kind}_{battle_id}"))]])
+                else:
+                    btn = InlineKeyboardMarkup([[InlineKeyboardButton(
+                        f"📉 Сейчас ты на {place}-м месте", callback_data="overtaken_noop")]])
                 mid = n.get("telegram_message_id")
                 if mid:
                     try:

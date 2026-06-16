@@ -1823,6 +1823,22 @@ def is_adjektiv_sprint_battle_member(battle_id, user_id) -> bool:
             return cur.fetchone() is not None
 
 
+def get_adjektiv_battle_id_by_set_id(set_id) -> int | None:
+    """The Adjektiv battle id for a given set_id (None if the set isn't a battle) —
+    lets the submit endpoint detect battle play + build a deeplink back to it."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id FROM bt_3_adjektiv_sprint_battles WHERE set_id=%s ORDER BY id DESC LIMIT 1;",
+                    (str(set_id),),
+                )
+                r = cur.fetchone()
+        return int(r[0]) if r else None
+    except Exception:
+        return None
+
+
 def list_adjektiv_sprint_battle_members(battle_id) -> list[dict]:
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:

@@ -22834,6 +22834,42 @@ def adjektiv_submit():
         prev = get_adjektiv_sprint_result(set_id, int(user_id)) or {}
         correct = int(prev.get("correct", correct))
         answered = int(prev.get("answered", answered))
+    # Overtake plaque for Adjektiv BATTLES: beating someone DMs them the crying-Smurf
+    # card with a deeplink back into that battle (who beat them + results).
+    if recorded:
+        try:
+            from backend.database import (
+                get_adjektiv_battle_id_by_set_id, list_adjektiv_sprint_results_ranked,
+                get_overtaken_user_ids_for_challenge, upsert_overtaken_notification,
+            )
+            battle_id = get_adjektiv_battle_id_by_set_id(set_id)
+            if battle_id:
+                challenge_key = f"adb:{set_id}"
+                full = list_adjektiv_sprint_results_ranked(set_id)
+                if len(full) >= 2:
+                    place_of = {int(u["user_id"]): i + 1 for i, u in enumerate(full)}
+                    targets = set(get_overtaken_user_ids_for_challenge(challenge_key))
+                    if place_of.get(int(user_id)) == 1:
+                        targets.add(int(full[1]["user_id"]))
+                    targets.discard(int(user_id))
+                    for uid in targets:
+                        p = place_of.get(uid)
+                        if not p or p < 2:
+                            continue
+                        above = full[p - 2]
+                        upsert_overtaken_notification(
+                            user_id=uid, challenge_key=challenge_key,
+                            payload={
+                                "task_kind": "Adjektiv Battle", "place": int(p),
+                                "total_correct": len(full),
+                                "leader_name": str(full[0]["name"] or ""),
+                                "leader_user_id": int(full[0]["user_id"]),
+                                "above_name": str(above["name"] or ""),
+                                "above_user_id": int(above["user_id"]),
+                                "open_kind": "adb", "battle_id": int(battle_id),
+                            })
+        except Exception:
+            logging.warning("adjektiv overtake enqueue failed set=%s", set_id, exc_info=True)
     pct = round(100 * correct / answered) if answered else 0
     return jsonify({
         "ok": True, "correct": correct, "answered": answered, "total": total, "pct": pct,
@@ -23157,14 +23193,23 @@ def artikel_submit():
         answered = int(prev.get("answered", answered))
     # Overtake plaques: a fresh submission can push others down. Notify whoever
     # dropped — reuses the shared overtaken outbox + Smurf plaque (bot polls + DMs).
-    # Only the shared DAILY set is competitive; practice sets are solo (no rank).
-    if recorded and str(s.get("kind") or "") == "daily":
+    # Competitive sets: the shared DAILY set + BATTLE sets (practice = solo, no rank).
+    _kind = str(s.get("kind") or "")
+    if recorded and _kind in ("daily", "battle"):
         try:
             from backend.database import (
                 list_article_sprint_results_ranked,
                 get_overtaken_user_ids_for_challenge, upsert_overtaken_notification,
             )
-            challenge_key = f"as:{set_id}"
+            is_battle = _kind == "battle"
+            challenge_key = (f"asb:{set_id}" if is_battle else f"as:{set_id}")
+            # asb_<id> → the battle id for a deeplink back into that battle.
+            battle_id = 0
+            if is_battle and set_id.startswith("asb_"):
+                try:
+                    battle_id = int(set_id.split("_", 1)[1])
+                except (ValueError, IndexError):
+                    battle_id = 0
             full = list_article_sprint_results_ranked(set_id)
             if len(full) >= 2:
                 place_of = {int(u["user_id"]): i + 1 for i, u in enumerate(full)}
@@ -23177,17 +23222,19 @@ def artikel_submit():
                     if not p or p < 2:
                         continue
                     above = full[p - 2]
+                    payload = {
+                        "task_kind": "Artikel Battle" if is_battle else "Artikel Sprint",
+                        "place": int(p), "total_correct": len(full),
+                        "leader_name": str(full[0]["name"] or ""),
+                        "leader_user_id": int(full[0]["user_id"]),
+                        "above_name": str(above["name"] or ""),
+                        "above_user_id": int(above["user_id"]),
+                    }
+                    if is_battle and battle_id:
+                        payload["open_kind"] = "asb"
+                        payload["battle_id"] = battle_id
                     upsert_overtaken_notification(
-                        user_id=uid, challenge_key=challenge_key,
-                        payload={
-                            "task_kind": "Artikel Sprint", "place": int(p),
-                            "total_correct": len(full),
-                            "leader_name": str(full[0]["name"] or ""),
-                            "leader_user_id": int(full[0]["user_id"]),
-                            "above_name": str(above["name"] or ""),
-                            "above_user_id": int(above["user_id"]),
-                        },
-                    )
+                        user_id=uid, challenge_key=challenge_key, payload=payload)
         except Exception:
             logging.warning("artikel overtake enqueue failed set=%s", set_id, exc_info=True)
     ranking = (compute_article_sprint_ranking(set_id=set_id, user_id=int(user_id))
