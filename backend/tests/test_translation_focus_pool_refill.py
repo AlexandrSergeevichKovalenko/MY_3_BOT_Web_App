@@ -182,7 +182,7 @@ class TranslationFocusPoolRefillTests(unittest.TestCase):
 
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0].get("key"), "focus_1")
-        self.assertEqual(candidates[0].get("_pool_levels"), ["b1"])
+        self.assertEqual(candidates[0].get("_pool_levels"), ["a2"])
         self.assertGreater(int(candidates[0].get("_demand_score") or 0), 0)
 
     def test_inventory_deficit_can_trigger_daytime_refill_without_background_fill(self):

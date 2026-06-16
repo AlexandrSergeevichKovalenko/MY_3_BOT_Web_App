@@ -4022,6 +4022,7 @@ async def _generate_sentence_entries_with_profiles(
     level_key = _normalize_level(level)
     best_partial_entries: list[dict[str, Any]] = []
     for attempt in range(5):
+        content: str | None = None
         try:
             async with _sentence_generation_slot(task_name) as wait_duration_ms:
                 if wait_duration_ms >= 500:
@@ -4033,12 +4034,20 @@ async def _generate_sentence_entries_with_profiles(
                         level_key,
                         attempt + 1,
                     )
-                content = await llm_execute(
-                    task_name=task_name,
-                    system_instruction_key=system_instruction_key,
-                    user_message=user_message,
-                    poll_interval_seconds=1.0,
-                )
+            content = await llm_execute(
+                task_name=task_name,
+                system_instruction_key=system_instruction_key,
+                user_message=user_message,
+                poll_interval_seconds=1.0,
+            )
+            logging.info(
+                "Structured sentence generation raw response received: task=%s level=%s attempt=%s content_chars=%s preview=%r",
+                task_name,
+                level_key,
+                attempt + 1,
+                len(content or ""),
+                (content or "")[:400],
+            )
             parsed_entries = _parse_generated_sentence_entries_payload(
                 content,
                 valid_skill_ids=valid_skill_ids,
@@ -4054,6 +4063,28 @@ async def _generate_sentence_entries_with_profiles(
                 item for item in filtered_entries
                 if item.get("tested_skill_profile")
             ]
+            logging.info(
+                "Structured sentence generation parsed result: task=%s level=%s attempt=%s parsed_count=%s normalized_count=%s filtered_count=%s valid_profile_count=%s allow_partial_return=%s",
+                task_name,
+                level_key,
+                attempt + 1,
+                len(list(parsed_entries or [])),
+                len(list(normalized_entries or [])),
+                len(list(filtered_entries or [])),
+                len(list(valid_profile_entries or [])),
+                bool(allow_partial_return),
+            )
+            if not valid_profile_entries:
+                logging.warning(
+                    "Structured sentence generation yielded no usable entries: task=%s level=%s attempt=%s target_count=%s parsed_count=%s normalized_count=%s filtered_count=%s",
+                    task_name,
+                    level_key,
+                    attempt + 1,
+                    int(target_count or 0),
+                    len(list(parsed_entries or [])),
+                    len(list(normalized_entries or [])),
+                    len(list(filtered_entries or [])),
+                )
             if len(valid_profile_entries) > len(best_partial_entries):
                 best_partial_entries = valid_profile_entries[:target_count]
             if allow_partial_return and valid_profile_entries:
@@ -4063,8 +4094,24 @@ async def _generate_sentence_entries_with_profiles(
         except openai.RateLimitError:
             wait_time = (attempt + 1) * 2
             await asyncio.sleep(wait_time)
-        except Exception:
-            logging.exception("Structured sentence generation attempt failed")
+        except Exception as exc:
+            logging.exception(
+                "Structured sentence generation attempt failed: task=%s level=%s attempt=%s error_type=%s error_message=%s",
+                task_name,
+                level_key,
+                attempt + 1,
+                exc.__class__.__name__,
+                str(exc),
+            )
+            if content is not None:
+                logging.warning(
+                    "Structured sentence generation failure payload: task=%s level=%s attempt=%s content_chars=%s preview=%r",
+                    task_name,
+                    level_key,
+                    attempt + 1,
+                    len(content or ""),
+                    (content or "")[:500],
+                )
     return best_partial_entries[:target_count]
 
 
@@ -4102,7 +4149,7 @@ async def _generate_legacy_sentence_entries_with_profiles(
         },
         ensure_ascii=False,
     )
-    return await _generate_sentence_entries_with_profiles(
+    entries = await _generate_sentence_entries_with_profiles(
         task_name=task_name,
         system_instruction_key=system_instruction_key,
         user_message=user_message,
@@ -4111,6 +4158,16 @@ async def _generate_legacy_sentence_entries_with_profiles(
         valid_skill_ids={str(item.get("skill_id") or "").strip() for item in skill_catalog if str(item.get("skill_id") or "").strip()},
         allow_partial_return=allow_partial_return,
     )
+    if not entries:
+        logging.warning(
+            "Legacy sentence generation returned no usable entries: topic=%s level=%s target_count=%s skill_catalog_count=%s focus_hint_key=%s",
+            str(topic or "").strip(),
+            level_key,
+            int(target_count or 0),
+            len(list(skill_catalog or [])),
+            str((focus_hint or {}).get("key") or "").strip() if isinstance(focus_hint, dict) else None,
+        )
+    return entries
 
 
 async def get_original_sentences_webapp(
