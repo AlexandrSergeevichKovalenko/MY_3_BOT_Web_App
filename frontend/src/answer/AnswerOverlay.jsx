@@ -160,6 +160,48 @@ function AnagramResult({ result }) {
   );
 }
 
+function BattleSummaryCard({ kind, battle, onClose, onOpenBattle }) {
+  const label = battle?.label || battle?.theme_label || 'Батл';
+  const creator = battle?.creator_name || '—';
+  const played = battle?.your_place != null;
+  const open = !!battle?.play;
+  const place = battle?.your_place || null;
+  const medal = place === 1 ? '🥇' : place === 2 ? '🥈' : place === 3 ? '🥉' : '🎖️';
+  const total = Number(battle?.total || 0);
+  const winner = battle?.winner || '—';
+  return (
+    <div className="ans-root">
+      <div className="ans-card as-card as-done">
+        <div className="ans-verdict">{kind === 'adjektiv' ? '🔠 Adjektiv Battle' : '⚡ Artikel Battle'}</div>
+        <div className="ans-answer"><b>#{battle?.battle_id}</b> · {label}</div>
+        <div className="ans-explain">
+          {open ? 'Батл сейчас открыт.' : 'Батл закрыт.'} От {creator}.
+        </div>
+        {played ? (
+          <div className="as-cert" style={{ marginTop: 10 }}>
+            <div className="as-cert-medal">{medal}</div>
+            <div className="as-cert-place">{place} место</div>
+            <div className="as-cert-sub">из {total} · {battle?.your_count || 0} верных</div>
+            <div className="as-cert-foot">🏆 Победитель: {winner}</div>
+          </div>
+        ) : (
+          <div className="ans-result bad" style={{ marginTop: 10 }}>
+            <div className="ans-verdict">🏁 Нет твоего результата</div>
+            <div className="ans-explain">Этот батл ты не проходил. {open ? 'Можешь сыграть сейчас из активного батла.' : 'Он уже завершён.'}</div>
+            <div className="ans-answer"><b>Победитель:</b> {winner}</div>
+          </div>
+        )}
+        {open && !played && typeof onOpenBattle === 'function' ? (
+          <button className="ans-btn" onClick={() => onOpenBattle(kind, battle?.battle_id, { mode: 'play', battle })}>
+            ▶️ Играть сейчас
+          </button>
+        ) : null}
+        <button className="ans-btn-ghost" onClick={onClose}>Schließen</button>
+      </div>
+    </div>
+  );
+}
+
 // LCS word alignment for the sentence diff (case/punctuation-insensitive match,
 // original tokens kept for display).
 function wordDiff(userText, correctText) {
@@ -495,12 +537,22 @@ export default function AnswerOverlay({ startParam }) {
 
   const close = useCallback(() => { try { tg?.close?.(); } catch (_e) { /* ignore */ } }, []);
   const closeBattleLaunch = useCallback(() => { setBattleLaunch(null); }, []);
-  const openBattleFromHistory = useCallback((kind, battleId) => {
+  const openBattleFromHistory = useCallback((kind, battleId, opts = {}) => {
     if (!kind || !battleId) return;
-    setBattleLaunch({ kind: String(kind), battleId: Number(battleId) });
+    setBattleLaunch({ kind: String(kind), battleId: Number(battleId), ...opts });
   }, []);
 
   const kind = parsed?.kind;
+  if (battleLaunch?.mode === 'summary') {
+    return (
+      <BattleSummaryCard
+        kind={battleLaunch.kind}
+        battle={battleLaunch.battle || {}}
+        onClose={closeBattleLaunch}
+        onOpenBattle={openBattleFromHistory}
+      />
+    );
+  }
   if (battleLaunch?.kind === 'artikel') {
     return <ArtikelSprintGame battleId={battleLaunch.battleId} api={api} haptic={haptic} onClose={closeBattleLaunch} />;
   }

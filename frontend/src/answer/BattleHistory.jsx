@@ -44,22 +44,28 @@ export default function BattleHistory({ api, onClose, onOpenBattle }) {
           {sec.battles.map((b) => {
             const played = b.your_place != null;
             const playable = !!b.play;
-            const canOpen = playable && typeof onOpenBattle === 'function';
             const titleIcon = playable ? '⚔️' : (played ? medal(b.your_place) : '🏁');
             const sub = playable
               ? (played
                 ? `идёт · ты уже сыграл · до 23:59 · от ${b.creator_name || '—'}`
-                : `идёт · до 23:59 · от ${b.creator_name || '—'}`)
+                : `идёт · можно сыграть · до 23:59 · от ${b.creator_name || '—'}`)
               : (played
-                ? `не сыграно тобой · место ${b.your_place} из ${b.total} · ${b.your_count} верных`
+                ? `закрыт · ты сыграл · место ${b.your_place} из ${b.total} · ${b.your_count} верных`
                 : `закрыт без результата · 🏆 ${b.winner || '—'}`);
+            const handleOpen = () => {
+              if (typeof onOpenBattle !== 'function') return;
+              if (playable && !played) {
+                onOpenBattle(sec.key, b.battle_id, { mode: 'play', battle: b });
+                return;
+              }
+              onOpenBattle(sec.key, b.battle_id, { mode: 'summary', battle: b });
+            };
             return (
               <button
                 key={`${sec.key}-${b.battle_id}`}
                 type="button"
-                className={`bh-row bh-row-btn${playable ? ' open' : (played ? ' ok' : '')}${canOpen ? ' can-open' : ''}`}
-                onClick={canOpen ? () => onOpenBattle(sec.key, b.battle_id) : undefined}
-                disabled={!canOpen}
+                className={`bh-row bh-row-btn${playable ? ' open' : (played ? ' ok' : '')} can-open`}
+                onClick={handleOpen}
               >
                 <div className="bh-row-title">
                   {titleIcon} #{b.battle_id} · {b.label}
