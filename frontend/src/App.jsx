@@ -5954,6 +5954,7 @@ function AppInner() {
   const [billingStatusLoading, setBillingStatusLoading] = useState(false);
   const [billingStatusError, setBillingStatusError] = useState('');
   const [billingStatus, setBillingStatus] = useState(null);
+  const billingStatusPrefetchStartedRef = useRef(false);
   const [billingPlansLoading, setBillingPlansLoading] = useState(false);
   const [billingPlansError, setBillingPlansError] = useState('');
   const [billingPlans, setBillingPlans] = useState([]);
@@ -14127,6 +14128,14 @@ function AppInner() {
   };
 
   const openSingleSectionAndScroll = (key, ref) => {
+    if (isKnownFreePaidSurfaceMode && ['home_today', 'home_weekly_plan', 'home_skills'].includes(key)) {
+      showInlineToast(
+        tr('Доступно по подписке', 'Nur im Abo verfuegbar.'),
+        3000,
+        'paywall'
+      );
+      return;
+    }
     if (key === 'flashcards') {
       setFlashcardsVisible(true);
       setFlashcardsOnly(false);
@@ -29460,6 +29469,10 @@ function AppInner() {
   useEffect(() => {
     if (!isWebAppMode || !initData) {
       return;
+    }
+    if (!billingStatusPrefetchStartedRef.current && !billingStatus && !billingStatusLoading) {
+      billingStatusPrefetchStartedRef.current = true;
+      void loadBillingStatus();
     }
     const subscriptionSectionVisible = !flashcardsOnly && isSectionVisible('subscription');
     const readerSectionVisible = !flashcardsOnly && isSectionVisible('reader');
