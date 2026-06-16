@@ -19,32 +19,88 @@ function fmtTime(s) {
 }
 
 const SPEEDS = [0.75, 1, 1.25];
+const MAX_PLAYBACK_USES = 2;
+
+function getPlaybackQuotaKey(task) {
+  const dispatchId = task?.dispatch_id ?? task?.id ?? task?.dispatchId ?? '';
+  return dispatchId ? `ls_playback_uses_left:${dispatchId}` : '';
+}
 
 export default function ListeningGame({ task, onSubmit, submitting }) {
   const audioRef = useRef(null);
+  const sessionConsumedRef = useRef(false);
+  const playbackKey = useMemo(() => getPlaybackQuotaKey(task), [task]);
   const questions = useMemo(() => task.questions || [], [task]);
   const [answers, setAnswers] = useState(() => questions.map(() => ''));
   const [playing, setPlaying] = useState(false);
   const [cur, setCur] = useState(0);
   const [dur, setDur] = useState(0);
   const [rate, setRate] = useState(1);
+  const [playsLeft, setPlaysLeft] = useState(MAX_PLAYBACK_USES);
 
   useEffect(() => { setAnswers(questions.map(() => '')); }, [questions]);
+  useEffect(() => {
+    sessionConsumedRef.current = false;
+    setCur(0);
+    setDur(0);
+    setPlaying(false);
+  }, [playbackKey]);
+  useEffect(() => {
+    if (!playbackKey || typeof window === 'undefined') {
+      setPlaysLeft(MAX_PLAYBACK_USES);
+      return;
+    }
+    try {
+      const raw = window.localStorage.getItem(playbackKey);
+      const stored = Number.parseInt(String(raw || '').trim(), 10);
+      setPlaysLeft(Number.isFinite(stored) ? Math.max(0, Math.min(MAX_PLAYBACK_USES, stored)) : MAX_PLAYBACK_USES);
+    } catch (_e) {
+      setPlaysLeft(MAX_PLAYBACK_USES);
+    }
+  }, [playbackKey]);
+  useEffect(() => {
+    if (!playbackKey || typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(playbackKey, String(playsLeft));
+    } catch (_e) { /* ignore */ }
+  }, [playbackKey, playsLeft]);
+
+  const consumePlayback = useCallback(() => {
+    setPlaysLeft((prev) => {
+      const next = Math.max(0, prev - 1);
+      if (next < prev) sessionConsumedRef.current = true;
+      return next;
+    });
+  }, []);
+
+  const canStartPlayback = playsLeft > 0 || sessionConsumedRef.current;
 
   const toggle = useCallback(() => {
     const a = audioRef.current;
     if (!a) return;
+    if (!canStartPlayback && a.paused) return;
     tapHaptic();
-    if (a.paused) a.play().catch(() => {}); else a.pause();
-  }, []);
+    if (a.paused) {
+      if (!sessionConsumedRef.current) {
+        if (playsLeft <= 0) return;
+        consumePlayback();
+      }
+      a.play().catch(() => {});
+    } else {
+      a.pause();
+    }
+  }, [canStartPlayback, consumePlayback, playsLeft]);
 
   const replay = useCallback(() => {
     const a = audioRef.current;
     if (!a) return;
+    if (playsLeft <= 0) return;
     tapHaptic();
+    sessionConsumedRef.current = false;
+    consumePlayback();
     a.currentTime = 0;
     a.play().catch(() => {});
-  }, []);
+  }, [consumePlayback, playsLeft]);
 
   const setSpeed = useCallback((r) => {
     setRate(r);
@@ -54,12 +110,12 @@ export default function ListeningGame({ task, onSubmit, submitting }) {
 
   const seek = useCallback((e) => {
     const a = audioRef.current;
-    if (!a || !dur) return;
+    if (!a || !dur || playsLeft <= 0) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const pct = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
     a.currentTime = pct * dur;
     setCur(a.currentTime);
-  }, [dur]);
+  }, [dur, playsLeft]);
 
   const allAnswered = answers.length > 0 && answers.every((s) => s.trim().length > 0);
   const pct = dur > 0 ? (cur / dur) * 100 : 0;
@@ -75,17 +131,20 @@ export default function ListeningGame({ task, onSubmit, submitting }) {
         onTimeUpdate={(e) => setCur(e.currentTarget.currentTime || 0)}
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
-        onEnded={() => setPlaying(false)}
+        onEnded={() => {
+          setPlaying(false);
+          sessionConsumedRef.current = false;
+        }}
       />
 
       <div className="ls-player">
         {hasAudio ? (
           <>
-            <button className="ls-play" onClick={toggle} aria-label="Play">
+            <button className="ls-play" onClick={toggle} aria-label="Play" disabled={playsLeft <= 0}>
               {playing ? '❚❚' : '▶'}
             </button>
             <div className="ls-player-main">
-              <div className="ls-bar" onClick={seek}>
+              <div className={`ls-bar${playsLeft <= 0 ? ' is-locked' : ''}`} onClick={seek}>
                 <div className="ls-bar-fill" style={{ width: `${pct}%` }} />
                 <div className="ls-bar-knob" style={{ left: `${pct}%` }} />
               </div>
@@ -96,10 +155,11 @@ export default function ListeningGame({ task, onSubmit, submitting }) {
                     <button
                       key={r}
                       className={`ls-speed${rate === r ? ' on' : ''}`}
+                      disabled={playsLeft <= 0}
                       onClick={() => setSpeed(r)}
                     >{r}×</button>
                   ))}
-                  <button className="ls-speed" onClick={replay} title="Wiederholen">⟳</button>
+                  <button className="ls-speed" onClick={replay} title="Wiederholen" disabled={playsLeft <= 0}>⟳</button>
                 </span>
               </div>
             </div>

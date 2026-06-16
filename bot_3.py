@@ -24879,6 +24879,7 @@ def _build_listening_dm_instruction(questions: list) -> str:
         "4. Deine Antwort auf Frage 4\n"
         "```\n\n"
         "💡 *Tipp:* Achte auf genaue Uhrzeiten, Bedingungen und Ausnahmen!\n"
+        "✍️ *Wichtig:* Jede Antwort muss mindestens ein vollständiger deutscher Satz sein.\n"
         f"⏳ Du hast 45 Minuten Zeit."
     )
 

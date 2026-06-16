@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 
 _EVAL_SYSTEM = """\
 Du bist ein strenger, aber fairer Deutschlehrer und bewertest Hörverständnis-Antworten auf B2-Niveau.
@@ -32,6 +33,9 @@ auf ZWEI getrennten Achsen. WICHTIG: Diese beiden Achsen sind VOLLSTÄNDIG UNABH
      Präpositionen, Rechtschreibung, Wortwahl)?
    - 1.0 = fehlerfrei; sinkt mit jedem Fehler (ein kleiner Fehler ≈ 0.8, mehrere
      Fehler / unklarer Satzbau ≈ 0.4, kaum verständlich ≈ 0.1).
+   - Wenn die Antwort KEIN vollständiger deutscher Satz ist, sondern nur eine kurze
+     Wortgruppe, ein Zahlenfragment, ein Datum, ein einzelnes Wort oder eine
+     halbe Phrase, dann setze grammar_score = 0.0.
    - grammar_errors: konkrete Fehler als Liste ["'...' → '...'", ...]; keine Fehler → [].
    - grammar_feedback_ru: 1 kurzer Satz auf Russisch zur Sprache (oder "").
 
@@ -75,6 +79,20 @@ def _clamp01(x) -> float:
     except (TypeError, ValueError):
         return 0.0
     return 0.0 if x < 0 else 1.0 if x > 1 else x
+
+
+def _token_count(text: str) -> int:
+    tokens = re.findall(r"[A-Za-zÄÖÜäöüß0-9]+(?:[-'][A-Za-zÄÖÜäöüß0-9]+)*", str(text or "").strip())
+    return len(tokens)
+
+
+def _is_fragmentary_listening_answer(answer: str) -> bool:
+    normalized = str(answer or "").strip()
+    if not normalized:
+        return True
+    if _token_count(normalized) < 5:
+        return True
+    return False
 
 
 def _score_one(ev: dict) -> dict:
@@ -182,6 +200,21 @@ def evaluate_listening_answers(
     evals = data.get("evaluations")
     if not isinstance(evals, list) or len(evals) == 0:
         raise RuntimeError("No evaluations in GPT response")
+
+    user_answers_norm = [str(item or "").strip() for item in (user_answers or [])]
+    for idx, ev in enumerate(evals):
+        if not isinstance(ev, dict):
+            continue
+        if idx >= len(user_answers_norm):
+            continue
+        if _is_fragmentary_listening_answer(user_answers_norm[idx]):
+            ev["grammar_score"] = 0.0
+            grammar_errors = list(ev.get("grammar_errors") or [])
+            marker = "Ответ не является полноценным немецким предложением → Grammatik = 0/5"
+            if marker not in grammar_errors:
+                grammar_errors.insert(0, marker)
+            ev["grammar_errors"] = grammar_errors[:4]
+            ev["grammar_feedback_ru"] = "Нужен полный немецкий Satz, а не короткая фраза."
     return evals
 
 

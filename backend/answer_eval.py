@@ -558,6 +558,8 @@ def load_listening_task(*, dispatch_id: int, user_id: int) -> dict | None:
     questions = list(dispatch.get("questions_json") or [])
     meta = {
         "kind": "listening",
+        "id": int(dispatch_id),
+        "dispatch_id": int(dispatch_id),
         "topic": str(dispatch.get("topic") or ""),
         "difficulty": str(dispatch.get("difficulty") or "B2"),
         "audio_url": audio_url,
