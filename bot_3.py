@@ -20027,6 +20027,48 @@ async def artikel_battle_join_callback(update: Update, context: CallbackContext)
         pass
 
 
+async def _notify_battle_creator_accepted(context: CallbackContext, *, creator_id: int,
+                                          accepter_name: str, battle_id: int, kind: str) -> None:
+    """DM the battle creator a 'вызов принят' card when someone joins.
+
+    Robust by design — the ping must never silently vanish: try the Smurf-knight
+    invite image (what creators saw before) by R2 URL, then an in-memory brand
+    card (no external fetch, always available), then plain text as last resort.
+    The earlier version sent only send_photo(url) inside a try with no fallback,
+    so when the R2 asset was missing Telegram's fetch failed and the creator got
+    nothing at all.
+    """
+    if not creator_id:
+        return
+    label = "Adjektiv-батл" if kind == "adjektiv" else "батл"
+    cap = (f"✅ <b>{html.escape(str(accepter_name or ''))}</b> принял твой вызов "
+           f"на {label} #{battle_id}! ⚔️")
+    # 1) Smurf-knight invite image by R2 URL.
+    try:
+        from backend.battle_card import battle_invite_image_url
+        url = battle_invite_image_url()
+        if url:
+            await context.bot.send_photo(chat_id=creator_id, photo=url, caption=cap, parse_mode="HTML")
+            return
+    except Exception:
+        logging.info("battle accept notify: R2 image failed bid=%s, trying rendered card", battle_id)
+    # 2) In-memory brand card (no external fetch).
+    try:
+        from backend.interactive_card import render_adjektiv_card, render_sprint_card
+        png = render_adjektiv_card() if kind == "adjektiv" else render_sprint_card()
+        if png:
+            await context.bot.send_photo(chat_id=creator_id, photo=io.BytesIO(png),
+                                         caption=cap, parse_mode="HTML")
+            return
+    except Exception:
+        logging.info("battle accept notify: rendered card failed bid=%s, trying text", battle_id)
+    # 3) Plain text — never lose the ping.
+    try:
+        await context.bot.send_message(chat_id=creator_id, text=cap, parse_mode="HTML")
+    except Exception:
+        logging.warning("battle accept notify: all delivery failed bid=%s", battle_id, exc_info=True)
+
+
 async def _edit_battle_invite(q, text: str, kb) -> None:
     """Edit the invite message (caption if it's a photo, else text)."""
     try:
@@ -20067,13 +20109,9 @@ async def artikel_battle_accept_callback(update: Update, context: CallbackContex
         try:
             members = await asyncio.to_thread(list_article_sprint_battle_members, battle_id)
             if len(members) <= 6:
-                from backend.battle_card import battle_invite_image_url
-                img = battle_invite_image_url()
-                cap = f"✅ <b>{html.escape(name)}</b> принял твой вызов на батл #{battle_id}! ⚔️"
-                if img:
-                    await context.bot.send_photo(chat_id=creator_id, photo=img, caption=cap, parse_mode="HTML")
-                else:
-                    await context.bot.send_message(chat_id=creator_id, text=cap, parse_mode="HTML")
+                await _notify_battle_creator_accepted(
+                    context, creator_id=creator_id, accepter_name=name,
+                    battle_id=battle_id, kind="artikel")
         except Exception:
             logging.warning("battle accept: creator notify failed bid=%s", battle_id, exc_info=True)
     kb = InlineKeyboardMarkup([
@@ -23106,7 +23144,8 @@ async def adjektiv_battle_join_callback(update: Update, context: CallbackContext
     except (ValueError, IndexError):
         await q.answer()
         return
-    from backend.database import get_adjektiv_sprint_battle, add_adjektiv_sprint_battle_member
+    from backend.database import (get_adjektiv_sprint_battle, add_adjektiv_sprint_battle_member,
+                                   list_adjektiv_sprint_battle_members)
     battle = await asyncio.to_thread(get_adjektiv_sprint_battle, bid)
     if (not battle or str(battle.get("status")) != "open"
             or (battle.get("deadline") and battle["deadline"] <= datetime.now(ZoneInfo("UTC")))):
@@ -23116,6 +23155,18 @@ async def adjektiv_battle_join_callback(update: Update, context: CallbackContext
     await asyncio.to_thread(add_adjektiv_sprint_battle_member,
                             battle_id=bid, user_id=int(q.from_user.id), user_name=name)
     await q.answer("Ты в батле! Играй до 23:59.", show_alert=True)
+    # Ping the creator with a card that their challenge was accepted (same as
+    # Artikel). Capped to small battles so a broadcast «всех» doesn't spam them.
+    creator_id = int(battle.get("creator_user_id") or 0)
+    if creator_id and creator_id != int(q.from_user.id):
+        try:
+            members = await asyncio.to_thread(list_adjektiv_sprint_battle_members, bid)
+            if len(members) <= 6:
+                await _notify_battle_creator_accepted(
+                    context, creator_id=creator_id, accepter_name=name,
+                    battle_id=bid, kind="adjektiv")
+        except Exception:
+            logging.warning("adjektiv accept: creator notify failed bid=%s", bid, exc_info=True)
     play_kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("⚡ Играть (до 23:59)", url=get_webapp_deeplink(f"ans_adb_{bid}"))],
         [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_adbl_0"))],
