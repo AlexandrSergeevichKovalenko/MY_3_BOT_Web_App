@@ -4,18 +4,42 @@ import React, { useCallback, useEffect, useState } from 'react';
 // each battle showing the user's place + score; open ones are flagged "идёт".
 const medal = (p) => (p === 1 ? '🥇' : p === 2 ? '🥈' : p === 3 ? '🥉' : p ? '🎖️' : '');
 
+const SNAP_KEY = 'bh_snapshot_v1';
+function readSnapshot() {
+  try { const s = JSON.parse(localStorage.getItem(SNAP_KEY) || 'null'); return Array.isArray(s?.sections) ? s.sections : null; }
+  catch (_e) { return null; }
+}
+function writeSnapshot(sections) {
+  try { localStorage.setItem(SNAP_KEY, JSON.stringify({ sections, at: Date.now() })); } catch (_e) { /* ignore */ }
+}
+
 export default function BattleHistory({ api, onClose, onOpenBattle }) {
-  const [phase, setPhase] = useState('loading'); // loading|ready|error
-  const [sections, setSections] = useState([]);
+  const snap = readSnapshot();
+  // Render the last known list INSTANTLY from a local snapshot (closed battles
+  // never change), then refresh in the background — so the screen never shows a
+  // 10 s spinner on reopen.
+  const [phase, setPhase] = useState(snap ? 'ready' : 'loading'); // loading|ready|error
+  const [sections, setSections] = useState(snap || []);
+  const [refreshing, setRefreshing] = useState(true);
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
+    setRefreshing(true);
     try {
       const d = await api('/api/webapp/battles/history', {});
-      if (!d.ok) { setError(d.error || 'Недоступно'); setPhase('error'); return; }
+      if (!d.ok) {
+        // Keep showing the snapshot if we have one; only hard-fail on a cold load.
+        if (!readSnapshot()) { setError(d.error || 'Недоступно'); setPhase('error'); }
+        return;
+      }
       setSections(d.sections || []);
+      writeSnapshot(d.sections || []);
       setPhase('ready');
-    } catch (e) { setError(String(e.message || e)); setPhase('error'); }
+    } catch (e) {
+      if (!readSnapshot()) { setError(String(e.message || e)); setPhase('error'); }
+    } finally {
+      setRefreshing(false);
+    }
   }, [api]);
   useEffect(() => { load(); }, [load]);
 
@@ -37,7 +61,9 @@ export default function BattleHistory({ api, onClose, onOpenBattle }) {
     </>);
   } else {
     body = (<>
-      <div className="ans-head"><h1 className="ans-title">📜 История батлов</h1></div>
+      <div className="ans-head">
+        <h1 className="ans-title">📜 История батлов{refreshing ? <span className="bh-refresh"> · обновляю…</span> : null}</h1>
+      </div>
       {sections.map((sec) => (
         <div className="bh-section" key={sec.key}>
           <div className="bh-section-head">{sec.label}</div>

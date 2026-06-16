@@ -22770,36 +22770,23 @@ def battles_history():
     if user_id is None:
         return err
     from backend.database import (
-        list_user_article_battles, list_article_sprint_results_ranked, get_article_sprint_theme,
-        list_user_adjektiv_battles, list_adjektiv_sprint_results_ranked,
+        list_user_article_battles_with_standing, list_user_adjektiv_battles_with_standing,
     )
 
-    def _row(bid, creator, label, deadline, status, ranked, play_kind):
-        place = None
-        count = 0
-        for idx, r in enumerate(ranked):
-            if int(r["user_id"]) == int(user_id):
-                place = idx + 1
-                count = int(r["count"])
-                break
+    def _row(b, play_kind):
+        status = str(b.get("status") or "")
         return {
-            "battle_id": int(bid), "creator_name": str(creator or ""), "label": str(label or ""),
-            "deadline": deadline.isoformat() if deadline else "", "status": str(status or ""),
-            "your_place": place, "your_count": count, "total": len(ranked),
-            "winner": str(ranked[0].get("name") or "") if ranked else "",
-            "play": (f"ans_{play_kind}_{bid}" if str(status) == "open" else ""),
+            "battle_id": int(b["id"]), "creator_name": str(b.get("creator_name") or ""),
+            "label": str(b.get("label") or ""),
+            "deadline": b["deadline"].isoformat() if b.get("deadline") else "", "status": status,
+            "your_place": b.get("your_place"), "your_count": int(b.get("your_count") or 0),
+            "total": int(b.get("total") or 0), "winner": str(b.get("winner") or ""),
+            "play": (f"ans_{play_kind}_{b['id']}" if status == "open" else ""),
         }
 
-    art = []
-    for b in list_user_article_battles(int(user_id), 20):
-        ranked = list_article_sprint_results_ranked(f"asb_{b['id']}")
-        theme = get_article_sprint_theme(b.get("theme_key"))
-        label = (theme or {}).get("label_de") or b.get("theme_key") or "Artikel"
-        art.append(_row(b["id"], b.get("creator_name"), label, b.get("deadline"), b.get("status"), ranked, "asb"))
-    adj = []
-    for b in list_user_adjektiv_battles(int(user_id), 20):
-        ranked = list_adjektiv_sprint_results_ranked(b["set_id"])
-        adj.append(_row(b["id"], b.get("creator_name"), "Adjektivendungen", b.get("deadline"), b.get("status"), ranked, "adb"))
+    # One window-function query per game type (was an N+1 of ~40-80 round-trips).
+    art = [_row(b, "asb") for b in list_user_article_battles_with_standing(int(user_id), 20)]
+    adj = [_row(b, "adb") for b in list_user_adjektiv_battles_with_standing(int(user_id), 20)]
 
     sections = []
     if art:

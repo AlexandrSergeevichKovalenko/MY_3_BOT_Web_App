@@ -1403,7 +1403,15 @@ def list_users_with_due_mistakes(*, min_count: int = 1, limit: int = 5000) -> li
 
 
 # ── Adjektiv Sprint: timed 15-item adjective-ending game (clone of Artikel) ───
+_ADJEKTIV_SPRINT_SCHEMA_DONE = False
+
+
 def ensure_adjektiv_sprint_schema() -> None:
+    # DDL (CREATE TABLE/INDEX IF NOT EXISTS) only needs to run once per process;
+    # the endpoints call this on the hot path, so skip after the first success.
+    global _ADJEKTIV_SPRINT_SCHEMA_DONE
+    if _ADJEKTIV_SPRINT_SCHEMA_DONE:
+        return
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -1454,6 +1462,7 @@ def ensure_adjektiv_sprint_schema() -> None:
                 "ON bt_3_adjektiv_sprint_results (set_id, correct DESC, time_ms ASC);"
             )
         conn.commit()
+    _ADJEKTIV_SPRINT_SCHEMA_DONE = True
 
 
 def pick_adjektiv_payloads(n: int = 15) -> list[dict]:
@@ -1718,7 +1727,13 @@ def compute_adjektiv_sprint_ranking(*, set_id, user_id) -> dict:
 
 
 # ── Adjektiv Sprint BATTLE (clone of the Artikel battle, theme-free) ──────────
+_ADJEKTIV_BATTLE_SCHEMA_DONE = False
+
+
 def ensure_adjektiv_battle_schema() -> None:
+    global _ADJEKTIV_BATTLE_SCHEMA_DONE
+    if _ADJEKTIV_BATTLE_SCHEMA_DONE:
+        return
     ensure_adjektiv_sprint_schema()
     with get_db_connection_context() as conn:
         with conn.cursor() as cur:
@@ -1743,6 +1758,7 @@ def ensure_adjektiv_battle_schema() -> None:
                 );"""
             )
         conn.commit()
+    _ADJEKTIV_BATTLE_SCHEMA_DONE = True
 
 
 def create_adjektiv_battle_with_set(*, creator_user_id, creator_name, deadline) -> tuple:
@@ -1865,6 +1881,122 @@ def list_user_adjektiv_battles(user_id, limit: int = 20) -> list[dict]:
                 return [{"id": int(r[0]), "creator_name": r[1], "set_id": str(r[2]),
                          "deadline": r[3], "status": str(r[4])} for r in (cur.fetchall() or [])]
     except Exception:
+        return []
+
+
+def list_user_article_battles_with_standing(user_id, limit: int = 20) -> list[dict]:
+    """Artikel battle history with the user's place + winner + total in ONE query.
+
+    Replaces the old N+1 (a fresh ranking query + theme lookup per battle, ~40
+    round-trips for the history screen) with a single window-function query:
+    a per-set summary (total players + winner via ARRAY_AGG) and the caller's
+    own rank, joined onto the user's battles + theme labels."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    WITH my AS (
+                        SELECT b.id, b.creator_name, b.theme_key, b.deadline, b.status
+                        FROM bt_3_article_sprint_battles b
+                        JOIN bt_3_article_sprint_battle_members m ON m.battle_id = b.id
+                        WHERE m.user_id = %s
+                        ORDER BY b.deadline DESC
+                        LIMIT %s
+                    ),
+                    summary AS (
+                        SELECT set_id, COUNT(*) AS total,
+                               (ARRAY_AGG(user_name ORDER BY correct_count DESC, time_ms ASC))[1] AS winner
+                        FROM bt_3_article_sprint_results
+                        WHERE set_id IN (SELECT 'asb_' || id FROM my)
+                        GROUP BY set_id
+                    ),
+                    mine AS (
+                        SELECT set_id, place, correct_count FROM (
+                            SELECT set_id, user_id, correct_count,
+                                   RANK() OVER (PARTITION BY set_id
+                                                ORDER BY correct_count DESC, time_ms ASC) AS place
+                            FROM bt_3_article_sprint_results
+                            WHERE set_id IN (SELECT 'asb_' || id FROM my)
+                        ) z WHERE user_id = %s
+                    )
+                    SELECT my.id, my.creator_name, my.theme_key, my.deadline, my.status,
+                           t.label_de, mine.place, mine.correct_count,
+                           COALESCE(summary.total, 0), summary.winner
+                    FROM my
+                    LEFT JOIN bt_3_article_sprint_themes t ON t.theme_key = my.theme_key
+                    LEFT JOIN summary ON summary.set_id = 'asb_' || my.id
+                    LEFT JOIN mine ON mine.set_id = 'asb_' || my.id
+                    ORDER BY my.deadline DESC;
+                    """,
+                    (int(user_id), int(limit), int(user_id)),
+                )
+                rows = cur.fetchall() or []
+        return [{
+            "id": int(r[0]), "creator_name": r[1], "theme_key": r[2],
+            "deadline": r[3], "status": str(r[4]),
+            "label": (r[5] or r[2] or "Artikel"),
+            "your_place": int(r[6]) if r[6] is not None else None,
+            "your_count": int(r[7] or 0), "total": int(r[8] or 0),
+            "winner": str(r[9] or ""),
+        } for r in rows]
+    except Exception:
+        logging.warning("list_user_article_battles_with_standing failed", exc_info=True)
+        return []
+
+
+def list_user_adjektiv_battles_with_standing(user_id, limit: int = 20) -> list[dict]:
+    """Adjektiv battle history with the user's place + winner + total in ONE query
+    (same shape/intent as the Artikel version, set_id stored on the battle row)."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    WITH my AS (
+                        SELECT b.id, b.creator_name, b.set_id, b.deadline, b.status
+                        FROM bt_3_adjektiv_sprint_battles b
+                        JOIN bt_3_adjektiv_sprint_battle_members m ON m.battle_id = b.id
+                        WHERE m.user_id = %s
+                        ORDER BY b.deadline DESC
+                        LIMIT %s
+                    ),
+                    summary AS (
+                        SELECT set_id, COUNT(*) AS total,
+                               (ARRAY_AGG(user_name ORDER BY correct DESC, time_ms ASC))[1] AS winner
+                        FROM bt_3_adjektiv_sprint_results
+                        WHERE set_id IN (SELECT set_id FROM my)
+                        GROUP BY set_id
+                    ),
+                    mine AS (
+                        SELECT set_id, place, correct FROM (
+                            SELECT set_id, user_id, correct,
+                                   RANK() OVER (PARTITION BY set_id
+                                                ORDER BY correct DESC, time_ms ASC) AS place
+                            FROM bt_3_adjektiv_sprint_results
+                            WHERE set_id IN (SELECT set_id FROM my)
+                        ) z WHERE user_id = %s
+                    )
+                    SELECT my.id, my.creator_name, my.set_id, my.deadline, my.status,
+                           mine.place, mine.correct,
+                           COALESCE(summary.total, 0), summary.winner
+                    FROM my
+                    LEFT JOIN summary ON summary.set_id = my.set_id
+                    LEFT JOIN mine ON mine.set_id = my.set_id
+                    ORDER BY my.deadline DESC;
+                    """,
+                    (int(user_id), int(limit), int(user_id)),
+                )
+                rows = cur.fetchall() or []
+        return [{
+            "id": int(r[0]), "creator_name": r[1], "set_id": str(r[2]),
+            "deadline": r[3], "status": str(r[4]), "label": "Adjektivendungen",
+            "your_place": int(r[5]) if r[5] is not None else None,
+            "your_count": int(r[6] or 0), "total": int(r[7] or 0),
+            "winner": str(r[8] or ""),
+        } for r in rows]
+    except Exception:
+        logging.warning("list_user_adjektiv_battles_with_standing failed", exc_info=True)
         return []
 
 
@@ -35248,7 +35380,15 @@ def get_send_plan_message(plan_date) -> dict | None:
 
 
 # ── Artikel Sprint (2-min der/die/das speed game) — themes + noun bank ─────────
+_ARTICLE_SPRINT_SCHEMA_DONE = False
+
+
 def ensure_article_sprint_schema() -> None:
+    # Run the CREATE TABLE/INDEX IF NOT EXISTS DDL once per process — endpoints
+    # call this on the hot battle-load path, so skip after the first success.
+    global _ARTICLE_SPRINT_SCHEMA_DONE
+    if _ARTICLE_SPRINT_SCHEMA_DONE:
+        return
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -35420,6 +35560,7 @@ def ensure_article_sprint_schema() -> None:
                 """
             )
         conn.commit()
+    _ARTICLE_SPRINT_SCHEMA_DONE = True
 
 
 def record_article_sprint_result(*, set_id: str, user_id: int, user_name: str,
