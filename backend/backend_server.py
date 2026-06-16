@@ -15498,6 +15498,30 @@ def _format_today_group_user_label(raw_value: str | None) -> str:
     return label
 
 
+def _unpin_battle_invite_async(user_id: int, set_id: str) -> None:
+    """Event-driven unpin: when a participant records a battle result, drop the
+    pinned play message in their DM. Fire-and-forget (own thread) so it never
+    slows the submit response. No-op when there's no pin for this set."""
+    def _run():
+        try:
+            from backend.database import get_battle_invite_pin, mark_battle_invite_unpinned
+            pin = get_battle_invite_pin(int(user_id), str(set_id))
+            if not pin or pin.get("unpinned"):
+                return
+            if not TELEGRAM_Deutsch_BOT_TOKEN:
+                return
+            url = f"https://api.telegram.org/bot{TELEGRAM_Deutsch_BOT_TOKEN}/unpinChatMessage"
+            requests.post(url, json={"chat_id": int(pin["chat_id"]),
+                                     "message_id": int(pin["message_id"])}, timeout=8)
+            mark_battle_invite_unpinned(int(user_id), str(set_id))
+        except Exception:
+            logging.warning("unpin battle invite failed user=%s set=%s", user_id, set_id, exc_info=True)
+    try:
+        threading.Thread(target=_run, daemon=True).start()
+    except Exception:
+        _run()
+
+
 def _fetch_telegram_chat_display_name(user_id: int) -> str | None:
     url = f"https://api.telegram.org/bot{TELEGRAM_Deutsch_BOT_TOKEN}/getChat"
     try:
@@ -22749,6 +22773,7 @@ def adjektiv_submit():
         set_id=set_id, user_id=int(user_id), user_name=user_name or "",
         correct=correct, answered=answered, total=total, time_ms=time_ms,
     )
+    _unpin_battle_invite_async(int(user_id), set_id)  # event-driven: result → unpin
     if not recorded:
         prev = get_adjektiv_sprint_result(set_id, int(user_id)) or {}
         correct = int(prev.get("correct", correct))
@@ -23062,6 +23087,7 @@ def artikel_submit():
         set_id=set_id, user_id=int(user_id), user_name=user_name or "",
         correct=correct, answered=answered, total=total, time_ms=time_ms,
     )
+    _unpin_battle_invite_async(int(user_id), set_id)  # event-driven: result → unpin
     if not recorded:
         prev = get_article_sprint_result(set_id, int(user_id)) or {}
         correct = int(prev.get("correct", correct))

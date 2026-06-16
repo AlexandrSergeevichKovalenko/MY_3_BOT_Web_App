@@ -2000,6 +2000,103 @@ def list_user_adjektiv_battles_with_standing(user_id, limit: int = 20) -> list[d
         return []
 
 
+# ── Battle invite pins (keep the play message pinned per participant until they
+#    play; unpinned event-driven on result — no screen polling) ─────────────────
+_BATTLE_PIN_SCHEMA_DONE = False
+
+
+def ensure_battle_invite_pin_schema() -> None:
+    global _BATTLE_PIN_SCHEMA_DONE
+    if _BATTLE_PIN_SCHEMA_DONE:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS bt_3_battle_invite_pins (
+                    user_id BIGINT NOT NULL,
+                    set_id TEXT NOT NULL,
+                    chat_id BIGINT NOT NULL,
+                    message_id BIGINT NOT NULL,
+                    kind TEXT NOT NULL DEFAULT 'artikel',
+                    unpinned BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, set_id)
+                );"""
+            )
+        conn.commit()
+    _BATTLE_PIN_SCHEMA_DONE = True
+
+
+def record_battle_invite_pin(*, user_id: int, set_id: str, chat_id: int,
+                             message_id: int, kind: str = "artikel") -> None:
+    """Remember the pinned play message for (user, set) so it can be unpinned on
+    result. Upsert: re-pinning the same battle overwrites the stored message."""
+    try:
+        ensure_battle_invite_pin_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO bt_3_battle_invite_pins
+                           (user_id, set_id, chat_id, message_id, kind, unpinned)
+                       VALUES (%s, %s, %s, %s, %s, FALSE)
+                       ON CONFLICT (user_id, set_id) DO UPDATE
+                       SET chat_id = EXCLUDED.chat_id, message_id = EXCLUDED.message_id,
+                           kind = EXCLUDED.kind, unpinned = FALSE;""",
+                    (int(user_id), str(set_id), int(chat_id), int(message_id), str(kind)),
+                )
+            conn.commit()
+    except Exception:
+        logging.warning("record_battle_invite_pin failed user=%s set=%s", user_id, set_id, exc_info=True)
+
+
+def get_battle_invite_pin(user_id: int, set_id: str) -> dict | None:
+    try:
+        ensure_battle_invite_pin_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT chat_id, message_id, kind, unpinned FROM bt_3_battle_invite_pins "
+                    "WHERE user_id=%s AND set_id=%s;",
+                    (int(user_id), str(set_id)),
+                )
+                r = cur.fetchone()
+        if not r:
+            return None
+        return {"chat_id": int(r[0]), "message_id": int(r[1]), "kind": str(r[2]), "unpinned": bool(r[3])}
+    except Exception:
+        return None
+
+
+def mark_battle_invite_unpinned(user_id: int, set_id: str) -> None:
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE bt_3_battle_invite_pins SET unpinned=TRUE WHERE user_id=%s AND set_id=%s;",
+                    (int(user_id), str(set_id)),
+                )
+            conn.commit()
+    except Exception:
+        logging.warning("mark_battle_invite_unpinned failed user=%s set=%s", user_id, set_id, exc_info=True)
+
+
+def list_battle_invite_pins_for_set(set_id: str) -> list[dict]:
+    """All still-pinned messages for a set — used to clear leftovers at close."""
+    try:
+        ensure_battle_invite_pin_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT user_id, chat_id, message_id FROM bt_3_battle_invite_pins "
+                    "WHERE set_id=%s AND NOT unpinned;",
+                    (str(set_id),),
+                )
+                return [{"user_id": int(r[0]), "chat_id": int(r[1]), "message_id": int(r[2])}
+                        for r in (cur.fetchall() or [])]
+    except Exception:
+        return []
+
+
 def list_last_crossword_messages() -> list[dict]:
     """The most recent crossword message (chat_id, message_id) per chat — for an
     admin 'delete last crossword everywhere' action."""

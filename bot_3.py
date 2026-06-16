@@ -19812,57 +19812,64 @@ async def handle_battle_wizard_callback(update: Update, context: CallbackContext
 async def _battle_wizard_send(q, context: CallbackContext, draft: dict) -> None:
     user = q.from_user
     themes = sorted(draft.get("themes") or [])
-    if draft.get("mode") == "ind":
-        targets = sorted(draft.get("users") or [])
-        if not targets:
-            await q.answer("Выбери хотя бы одного игрока.", show_alert=True)
-            return
-    else:
-        targets = await asyncio.to_thread(list_allowed_telegram_user_ids)
+    mode = draft.get("mode")
+    ind_targets = sorted(draft.get("users") or []) if mode == "ind" else None
+    if mode == "ind" and not ind_targets:
+        await q.answer("Выбери хотя бы одного игрока.", show_alert=True)
+        return
+    creator_name = _display_user_name(user)
+    themes_txt = "микс по всем темам" if not themes else ", ".join(themes)
+    pending_battle_invites.pop(int(user.id), None)
+    # Ack INSTANTLY — building the word set (random sampling + top-ups) and the
+    # invite broadcast both run off the critical path so the button never waits.
+    await q.answer("Собираю батл… ⚔️")
+    try:
+        await q.edit_message_text(
+            f"⚔️ Собираю батл ({html.escape(themes_txt)}) и рассылаю приглашения… 📨",
+            parse_mode="HTML")
+    except Exception:
+        pass
+    asyncio.create_task(_create_and_broadcast_artikel_wizard(
+        context, creator_id=int(user.id), creator_name=creator_name, themes=themes,
+        ind_targets=ind_targets, themes_txt=themes_txt,
+        status_chat_id=int(q.message.chat.id), status_msg_id=int(q.message.message_id)))
+
+
+async def _create_and_broadcast_artikel_wizard(context: CallbackContext, *, creator_id: int,
+                                               creator_name: str, themes: list, ind_targets,
+                                               themes_txt: str, status_chat_id: int,
+                                               status_msg_id: int) -> None:
+    """Off-critical-path: create the battle, build the mixed word set, add the
+    creator, then broadcast invites — editing the status message when done."""
     today_d = _get_quiz_schedule_now().date()
     deadline = datetime.now(ZoneInfo("Europe/Vienna")).replace(hour=23, minute=59, second=0, microsecond=0)
-    creator_name = _display_user_name(user)
 
     def _create():
         bid = create_article_sprint_battle(
-            creator_user_id=int(user.id), creator_name=creator_name,
+            creator_user_id=int(creator_id), creator_name=creator_name,
             theme_key=(themes[0] if len(themes) == 1 else "gemischt"), deadline=deadline)
         from backend.article_sprint_sets import build_battle_set_mixed
         return bid, build_battle_set_mixed(themes, bid, today_d)
 
-    battle_id, built = await asyncio.to_thread(_create)
-    if built.get("status") != "ready":
-        await q.edit_message_text("⚠️ Не удалось собрать набор слов. Наполни темы через /artikel_fill.")
-        pending_battle_invites.pop(int(user.id), None)
+    try:
+        battle_id, built = await asyncio.to_thread(_create)
+    except Exception:
+        logging.warning("artikel wizard create failed creator=%s", creator_id, exc_info=True)
+        battle_id, built = None, {"status": "error"}
+    if not battle_id or built.get("status") != "ready":
+        try:
+            await context.bot.edit_message_text(
+                chat_id=status_chat_id, message_id=status_msg_id,
+                text="⚠️ Не удалось собрать набор слов. Наполни темы через /artikel_fill.")
+        except Exception:
+            pass
         return
     await asyncio.to_thread(add_article_sprint_battle_member,
-                            battle_id=battle_id, user_id=int(user.id), user_name=creator_name)
-    pending_battle_invites.pop(int(user.id), None)
-    themes_txt = "микс по всем темам" if not themes else ", ".join(themes)
-    play_kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚡ Играть свой батл (до 23:59)", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
-        [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_asbl_0"))],
-    ])
-    # Show the result INSTANTLY; render+send Smurf invites in the background.
-    try:
-        await q.edit_message_text(
-            f"⚔️ Батл #{battle_id} создан ({html.escape(themes_txt)})! Дедлайн 23:59.\nРассылаю приглашения… 📨",
-            parse_mode="HTML", reply_markup=play_kb)
-    except Exception:
-        pass
-    asyncio.create_task(_broadcast_artikel_wizard_invites(
-        context, battle_id=battle_id, creator_id=int(user.id), creator_name=creator_name,
-        target_ids=list(targets), themes_txt=themes_txt,
-        status_chat_id=int(q.message.chat.id), status_msg_id=int(q.message.message_id)))
-
-
-async def _broadcast_artikel_wizard_invites(context: CallbackContext, *, battle_id: int, creator_id: int,
-                                            creator_name: str, target_ids: list, themes_txt: str,
-                                            status_chat_id: int, status_msg_id: int) -> None:
-    """Off-critical-path Smurf-invite broadcast for the battle wizard, then count."""
+                            battle_id=battle_id, user_id=int(creator_id), user_name=creator_name)
+    targets = ind_targets if ind_targets is not None else await asyncio.to_thread(list_allowed_telegram_user_ids)
     try:
         sent = await _send_battle_invites(context, battle_id=battle_id, creator_name=creator_name,
-                                          target_ids=target_ids, exclude=int(creator_id))
+                                          target_ids=list(targets), exclude=int(creator_id))
     except Exception:
         logging.warning("artikel wizard invites broadcast failed bid=%s", battle_id, exc_info=True)
         sent = 0
@@ -19877,6 +19884,9 @@ async def _broadcast_artikel_wizard_invites(context: CallbackContext, *, battle_
             parse_mode="HTML", reply_markup=play_kb)
     except Exception:
         pass
+    # Pin the creator's own play message until they play their battle.
+    await _pin_battle_play_message(context, user_id=int(creator_id), set_id=f"asb_{battle_id}",
+                                   chat_id=int(status_chat_id), message_id=int(status_msg_id), kind="artikel")
 
 
 async def artikel_battle_command(update: Update, context: CallbackContext) -> None:
@@ -20025,6 +20035,10 @@ async def artikel_battle_join_callback(update: Update, context: CallbackContext)
             reply_markup=play_kb)
     except Exception:
         pass
+    if q.message:
+        asyncio.create_task(_pin_battle_play_message(
+            context, user_id=int(q.from_user.id), set_id=f"asb_{battle_id}",
+            chat_id=int(q.message.chat.id), message_id=int(q.message.message_id), kind="artikel"))
 
 
 async def _notify_battle_creator_accepted(context: CallbackContext, *, creator_id: int,
@@ -20069,6 +20083,62 @@ async def _notify_battle_creator_accepted(context: CallbackContext, *, creator_i
         logging.warning("battle accept notify: all delivery failed bid=%s", battle_id, exc_info=True)
 
 
+async def _notify_creator_accepted_capped(context: CallbackContext, *, kind: str, battle_id: int,
+                                          creator_id: int, accepter_name: str) -> None:
+    """Off-critical-path creator ping: count members (capped so a broadcast «всех»
+    doesn't spam the creator), then send the 'вызов принят' card. Run via
+    asyncio.create_task so the accepter's tap is never blocked by the network send."""
+    try:
+        if kind == "adjektiv":
+            from backend.database import list_adjektiv_sprint_battle_members as _members
+        else:
+            _members = list_article_sprint_battle_members
+        members = await asyncio.to_thread(_members, battle_id)
+        if len(members) <= 6:
+            await _notify_battle_creator_accepted(
+                context, creator_id=creator_id, accepter_name=accepter_name,
+                battle_id=battle_id, kind=kind)
+    except Exception:
+        logging.warning("creator-accepted notify (bg) failed bid=%s kind=%s", battle_id, kind, exc_info=True)
+
+
+async def _pin_battle_play_message(context: CallbackContext, *, user_id: int, set_id: str,
+                                   chat_id: int, message_id: int, kind: str) -> None:
+    """Pin a participant's play message in their DM and remember it, so the battle
+    stays pinned until they record a result. Unpinning is event-driven (done by the
+    submit endpoint when the result lands) — no screen polling."""
+    try:
+        await context.bot.pin_chat_message(chat_id=int(chat_id), message_id=int(message_id),
+                                           disable_notification=True)
+    except Exception:
+        logging.info("battle pin: pin failed chat=%s msg=%s", chat_id, message_id)
+        return
+    try:
+        from backend.database import record_battle_invite_pin
+        await asyncio.to_thread(record_battle_invite_pin, user_id=int(user_id), set_id=str(set_id),
+                                chat_id=int(chat_id), message_id=int(message_id), kind=str(kind))
+    except Exception:
+        logging.warning("battle pin: record failed user=%s set=%s", user_id, set_id, exc_info=True)
+
+
+async def _unpin_battle_pins_for_set(context: CallbackContext, set_id: str) -> None:
+    """Clear any leftover pins for a set (safety net at battle close)."""
+    try:
+        from backend.database import list_battle_invite_pins_for_set, mark_battle_invite_unpinned
+        pins = await asyncio.to_thread(list_battle_invite_pins_for_set, str(set_id))
+    except Exception:
+        return
+    for p in pins:
+        try:
+            await context.bot.unpin_chat_message(chat_id=int(p["chat_id"]), message_id=int(p["message_id"]))
+        except Exception:
+            pass
+        try:
+            await asyncio.to_thread(mark_battle_invite_unpinned, int(p["user_id"]), str(set_id))
+        except Exception:
+            pass
+
+
 async def _edit_battle_invite(q, text: str, kb) -> None:
     """Edit the invite message (caption if it's a photo, else text)."""
     try:
@@ -20102,23 +20172,22 @@ async def artikel_battle_accept_callback(update: Update, context: CallbackContex
     await asyncio.to_thread(add_article_sprint_battle_member,
                             battle_id=battle_id, user_id=int(q.from_user.id), user_name=name)
     await q.answer("Ты в батле! ⚔️")
-    # Feedback to the creator that their challenge was accepted (image so they don't
-    # miss it). Capped to small battles so a broadcast «всех» doesn't spam them.
-    creator_id = int(battle.get("creator_user_id") or 0)
-    if creator_id and creator_id != int(q.from_user.id):
-        try:
-            members = await asyncio.to_thread(list_article_sprint_battle_members, battle_id)
-            if len(members) <= 6:
-                await _notify_battle_creator_accepted(
-                    context, creator_id=creator_id, accepter_name=name,
-                    battle_id=battle_id, kind="artikel")
-        except Exception:
-            logging.warning("battle accept: creator notify failed bid=%s", battle_id, exc_info=True)
+    # Release the accepter instantly: update their invite message now, then ping
+    # the creator OFF the critical path (the card send is a network call).
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("▶️ Участвовать сейчас", url=get_webapp_deeplink(f"ans_asb_{battle_id}"))],
         [InlineKeyboardButton("⏰ Напомнить позже", callback_data=f"asb_later:{battle_id}")],
     ])
     await _edit_battle_invite(q, "✅ Вызов принят! Играй сейчас или запланируй на потом 👇", kb)
+    if q.message:
+        asyncio.create_task(_pin_battle_play_message(
+            context, user_id=int(q.from_user.id), set_id=f"asb_{battle_id}",
+            chat_id=int(q.message.chat.id), message_id=int(q.message.message_id), kind="artikel"))
+    creator_id = int(battle.get("creator_user_id") or 0)
+    if creator_id and creator_id != int(q.from_user.id):
+        asyncio.create_task(_notify_creator_accepted_capped(
+            context, kind="artikel", battle_id=battle_id,
+            creator_id=creator_id, accepter_name=name))
 
 
 async def artikel_battle_decline_callback(update: Update, context: CallbackContext) -> None:
@@ -20340,6 +20409,7 @@ async def _close_article_sprint_battles_job(context: CallbackContext) -> None:
                                                    parse_mode="HTML")
             except Exception:
                 pass
+        await _unpin_battle_pins_for_set(context, set_id)
         try:
             await asyncio.to_thread(close_article_sprint_battle, bid)
         except Exception:
@@ -23081,6 +23151,10 @@ async def adjektiv_battle_command(update: Update, context: CallbackContext) -> N
     status = await message.reply_text(
         f"⚔️ Adjektiv-батл #{bid} создан! Дедлайн 23:59.\nРассылаю приглашения… 📨",
         reply_markup=play_kb)
+    if _set_id:
+        asyncio.create_task(_pin_battle_play_message(
+            context, user_id=int(user.id), set_id=str(_set_id),
+            chat_id=int(message.chat_id), message_id=int(status.message_id), kind="adjektiv"))
     asyncio.create_task(_broadcast_adjektiv_battle_invites(
         context, battle_id=bid, creator_id=int(user.id), creator_name=creator_name,
         status_chat_id=int(message.chat_id), status_msg_id=int(status.message_id)))
@@ -23144,8 +23218,7 @@ async def adjektiv_battle_join_callback(update: Update, context: CallbackContext
     except (ValueError, IndexError):
         await q.answer()
         return
-    from backend.database import (get_adjektiv_sprint_battle, add_adjektiv_sprint_battle_member,
-                                   list_adjektiv_sprint_battle_members)
+    from backend.database import get_adjektiv_sprint_battle, add_adjektiv_sprint_battle_member
     battle = await asyncio.to_thread(get_adjektiv_sprint_battle, bid)
     if (not battle or str(battle.get("status")) != "open"
             or (battle.get("deadline") and battle["deadline"] <= datetime.now(ZoneInfo("UTC")))):
@@ -23155,18 +23228,7 @@ async def adjektiv_battle_join_callback(update: Update, context: CallbackContext
     await asyncio.to_thread(add_adjektiv_sprint_battle_member,
                             battle_id=bid, user_id=int(q.from_user.id), user_name=name)
     await q.answer("Ты в батле! Играй до 23:59.", show_alert=True)
-    # Ping the creator with a card that their challenge was accepted (same as
-    # Artikel). Capped to small battles so a broadcast «всех» doesn't spam them.
-    creator_id = int(battle.get("creator_user_id") or 0)
-    if creator_id and creator_id != int(q.from_user.id):
-        try:
-            members = await asyncio.to_thread(list_adjektiv_sprint_battle_members, bid)
-            if len(members) <= 6:
-                await _notify_battle_creator_accepted(
-                    context, creator_id=creator_id, accepter_name=name,
-                    battle_id=bid, kind="adjektiv")
-        except Exception:
-            logging.warning("adjektiv accept: creator notify failed bid=%s", bid, exc_info=True)
+    # Release the accepter instantly; ping the creator OFF the critical path.
     play_kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("⚡ Играть (до 23:59)", url=get_webapp_deeplink(f"ans_adb_{bid}"))],
         [InlineKeyboardButton("📋 Мои батлы", url=get_webapp_deeplink("ans_adbl_0"))],
@@ -23174,6 +23236,16 @@ async def adjektiv_battle_join_callback(update: Update, context: CallbackContext
     await _edit_battle_invite(
         q, f"✅ Ты принял Adjektiv-батл #{bid} от {html.escape(str(battle.get('creator_name') or ''))}.\n"
            f"Играй до 23:59 👇", play_kb)
+    set_id = str(battle.get("set_id") or "")
+    if q.message and set_id:
+        asyncio.create_task(_pin_battle_play_message(
+            context, user_id=int(q.from_user.id), set_id=set_id,
+            chat_id=int(q.message.chat.id), message_id=int(q.message.message_id), kind="adjektiv"))
+    creator_id = int(battle.get("creator_user_id") or 0)
+    if creator_id and creator_id != int(q.from_user.id):
+        asyncio.create_task(_notify_creator_accepted_capped(
+            context, kind="adjektiv", battle_id=bid,
+            creator_id=creator_id, accepter_name=name))
 
 
 async def _close_adjektiv_sprint_battles_job(context: CallbackContext) -> None:
@@ -23246,6 +23318,7 @@ async def _close_adjektiv_sprint_battles_job(context: CallbackContext) -> None:
                                                    parse_mode="HTML")
             except Exception:
                 pass
+        await _unpin_battle_pins_for_set(context, set_id)
         try:
             await asyncio.to_thread(close_adjektiv_sprint_battle, bid)
         except Exception:
