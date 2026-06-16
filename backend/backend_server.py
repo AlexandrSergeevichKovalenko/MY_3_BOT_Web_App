@@ -50406,20 +50406,22 @@ def _dispatch_weekly_group_summary(*, target_date: date, tz_name: str = TODAY_PL
                 rows=labeled_rows,
             )
             _send_group_message(text=text, chat_id=chat_id)
-            chart_png = _build_compare_leaderboard_chart_png(
-                rows=labeled_rows,
-                title="Итоги недели на текущий момент",
-                subtitle=f"{bounds.start_date} — {bounds.end_date}",
-                highlight_user_id=None,
-                max_items=8,
-            )
-            if chart_png:
-                _send_group_photo(
-                    image_bytes=chart_png,
-                    filename=f"group_weekly_compare_{abs(chat_id)}_{bounds.end_date.isoformat()}.png",
-                    caption=f"📊 Диаграмма сравнения за неделю\n{bounds.start_date} — {bounds.end_date}",
-                    chat_id=chat_id,
-                )
+            # Chart disabled by request: keep the textual weekly summary, skip the
+            # comparison diagram/photo payload.
+            # chart_png = _build_compare_leaderboard_chart_png(
+            #     rows=labeled_rows,
+            #     title="Итоги недели на текущий момент",
+            #     subtitle=f"{bounds.start_date} — {bounds.end_date}",
+            #     highlight_user_id=None,
+            #     max_items=8,
+            # )
+            # if chart_png:
+            #     _send_group_photo(
+            #         image_bytes=chart_png,
+            #         filename=f"group_weekly_compare_{abs(chat_id)}_{bounds.end_date.isoformat()}.png",
+            #         caption=f"📊 Диаграмма сравнения за неделю\n{bounds.start_date} — {bounds.end_date}",
+            #         chat_id=chat_id,
+            #     )
             sent += 1
         except Exception as exc:
             errors.append(f"chat {chat_id}: {exc}")
