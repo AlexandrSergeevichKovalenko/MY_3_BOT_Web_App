@@ -24049,6 +24049,55 @@ async def admin_pool_report_command(update: Update, context: CallbackContext) ->
         await message.reply_text(f"❌ pool report failed: {exc}")
 
 
+async def admin_pool_remind_command(update: Update, context: CallbackContext) -> None:
+    """DM all admins an early pool reminder. /admin_pool_remind"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    try:
+        admin_ids = [int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0]
+        if not admin_ids:
+            await message.reply_text("❌ No admin ids configured.")
+            return
+        text = await build_pool_inventory_report(context)
+        text = "⏰ <b>Предварительное напоминание о пуле</b>\n\n" + text
+        sent = 0
+        for admin_id in admin_ids:
+            try:
+                await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML")
+                sent += 1
+            except Exception:
+                logging.warning("pool_remind: send failed admin_id=%s", admin_id, exc_info=True)
+        await message.reply_text(f"✅ Напоминание отправлено: {sent}/{len(admin_ids)}.")
+    except Exception as exc:
+        await message.reply_text(f"❌ pool reminder failed: {exc}")
+
+
+async def admin_aufgabe_pool_command(update: Update, context: CallbackContext) -> None:
+    """Run the Aufgabe pool top-up immediately. /admin_aufgabe_pool"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    try:
+        await message.reply_text("⏳ Запускаю ручное пополнение пула Aufgabe...")
+        await prepare_aufgabe_pool_job(context)
+        try:
+            text = await build_pool_inventory_report(context)
+            await message.reply_text("✅ Ручное пополнение пула Aufgabe завершено.\n\n" + text, parse_mode="HTML")
+        except Exception:
+            await message.reply_text("✅ Ручное пополнение пула Aufgabe завершено.")
+    except Exception as exc:
+        await message.reply_text(f"❌ manual aufgabe pool refill failed: {exc}")
+
+
 async def admin_crossword_pool_command(update: Update, context: CallbackContext) -> None:
     """Trigger crossword pool generation (admin). /admin_cw_pool"""
     user    = update.effective_user
@@ -25915,6 +25964,8 @@ def main():
     application.add_handler(CommandHandler("group", group_play_help_command))
     application.add_handler(CommandHandler("admin_clearquizpool", admin_clear_quiz_pool_command))
     application.add_handler(CommandHandler("poolreport", admin_pool_report_command))
+    application.add_handler(CommandHandler("admin_pool_remind", admin_pool_remind_command))
+    application.add_handler(CommandHandler("admin_aufgabe_pool", admin_aufgabe_pool_command))
     application.add_handler(CommandHandler("admin_cw_pool", admin_crossword_pool_command))
     application.add_handler(CommandHandler("admin_cw_rerender", admin_crossword_rerender_command))
     application.add_handler(CommandHandler("admin_ls_send", admin_listening_send_command))
