@@ -35387,6 +35387,148 @@ def mark_aufgabe_send_failed(aufgabe_id: str, *, retire_after: int = 3) -> None:
         conn.commit()
 
 
+# ── Crowd-mastery rotation ────────────────────────────────────────────────────
+# When the active crowd has clearly mastered an item (enough distinct answerers and
+# ≥ correct-ratio of them right), retire it and regenerate a fresh one — so content
+# stays fresh and users don't keep seeing what everyone already knows. The retire is
+# logical (retired=TRUE) so the row stays for stats + dedup history.
+
+_ACTIVE_USER_SOURCES = [
+    ("bt_3_challenge_results", "created_at"),
+    ("bt_3_aufgabe_answers", "answered_at"),
+    ("bt_3_rebus_answers", "answered_at"),
+    ("bt_3_crossword_answers", "answered_at"),
+    ("bt_3_anagram_answers", "answered_at"),
+    ("bt_3_article_quiz_answers", "answered_at"),
+    ("bt_3_image_quiz_answers", "answered_at"),
+    ("bt_3_visual_riddle_answers", "answered_at"),
+    ("bt_3_listening_answers", "submitted_at"),
+    ("bt_3_article_sprint_results", "created_at"),
+    ("bt_3_adjektiv_sprint_results", "created_at"),
+]
+
+
+def count_active_users(days: int = 30) -> int:
+    """Distinct users who answered ANY interactive in the last `days`. Used to size
+    the mastery threshold off ACTIVE users (passive/nominal members don't block
+    rotation). Each source queried independently so a missing table is skipped."""
+    users: set[int] = set()
+    for tbl, ts in _ACTIVE_USER_SOURCES:
+        try:
+            with get_db_connection_context() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"SELECT DISTINCT user_id FROM {tbl} "
+                        f"WHERE {ts} >= NOW() - INTERVAL '1 day' * %s",  # noqa: S608 (names are constants)
+                        (int(days),),
+                    )
+                    for r in cur.fetchall() or []:
+                        if r[0] is not None:
+                            users.add(int(r[0]))
+        except Exception:
+            continue
+    return len(users)
+
+
+def mastered_aufgabe_ids(*, min_answerers: int, ratio: float = 0.60) -> list[str]:
+    """Active aufgaben the crowd has mastered: ≥ min_answerers distinct users answered
+    and ≥ ratio of them got it right (a user counts as correct if they ever were)."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT d.aufgabe_id
+                    FROM bt_3_aufgabe_answers a
+                    JOIN bt_3_aufgabe_dispatches d ON d.id = a.dispatch_id
+                    JOIN bt_3_aufgabe_bank b ON b.aufgabe_id = d.aufgabe_id
+                    WHERE b.retired = FALSE
+                    GROUP BY d.aufgabe_id
+                    HAVING COUNT(DISTINCT a.user_id) >= %s
+                       AND COUNT(DISTINCT a.user_id) FILTER (WHERE a.is_correct)::float
+                           / NULLIF(COUNT(DISTINCT a.user_id), 0) >= %s
+                    """,
+                    (int(min_answerers), float(ratio)),
+                )
+                return [str(r[0]) for r in (cur.fetchall() or [])]
+    except Exception:
+        logging.warning("mastered_aufgabe_ids failed", exc_info=True)
+        return []
+
+
+def retire_aufgabe_ids(ids: list[str]) -> int:
+    if not ids:
+        return 0
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE bt_3_aufgabe_bank SET retired = TRUE "
+                    "WHERE aufgabe_id = ANY(%s) AND retired = FALSE",
+                    (list(ids),),
+                )
+                n = cur.rowcount
+            conn.commit()
+        return int(n or 0)
+    except Exception:
+        logging.warning("retire_aufgabe_ids failed", exc_info=True)
+        return 0
+
+
+_ROTATION_LOG_DONE = False
+
+
+def ensure_rotation_log_schema() -> None:
+    global _ROTATION_LOG_DONE
+    if _ROTATION_LOG_DONE:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS bt_3_rotation_log (
+                    id BIGSERIAL PRIMARY KEY,
+                    domain TEXT NOT NULL,
+                    retired INTEGER NOT NULL DEFAULT 0,
+                    added INTEGER NOT NULL DEFAULT 0,
+                    ran_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );"""
+            )
+        conn.commit()
+    _ROTATION_LOG_DONE = True
+
+
+def record_rotation_run(domain: str, retired: int, added: int) -> None:
+    try:
+        ensure_rotation_log_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO bt_3_rotation_log (domain, retired, added) VALUES (%s, %s, %s);",
+                    (str(domain), int(retired), int(added)),
+                )
+            conn.commit()
+    except Exception:
+        logging.warning("record_rotation_run failed domain=%s", domain, exc_info=True)
+
+
+def get_rotation_summary(days: int = 7) -> list[dict]:
+    """Per-domain retired/added totals over the window — for the weekly admin report."""
+    try:
+        ensure_rotation_log_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT domain, COALESCE(SUM(retired),0), COALESCE(SUM(added),0), MAX(ran_at) "
+                    "FROM bt_3_rotation_log WHERE ran_at >= NOW() - INTERVAL '1 day' * %s "
+                    "GROUP BY domain ORDER BY domain;",
+                    (int(days),),
+                )
+                return [{"domain": r[0], "retired": int(r[1] or 0), "added": int(r[2] or 0),
+                         "last_run": r[3]} for r in (cur.fetchall() or [])]
+    except Exception:
+        return []
+
+
 def retire_aufgaben_by_format(fmt: str) -> int:
     """Retire every active aufgabe of a format so the pool refills with freshly
     generated (fixed-prompt) items. Returns count retired."""

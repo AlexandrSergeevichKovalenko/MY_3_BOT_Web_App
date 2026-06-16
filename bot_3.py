@@ -400,8 +400,18 @@ AUFGABE_FORMAT_SLOTS = {
     (19, 30): "pin",
 }
 # Per-format library target (≥ days of cooldown so a format never repeats within it).
-AUFGABE_PER_FORMAT_TARGET = max(3, int((os.getenv("AUFGABE_PER_FORMAT_TARGET") or "7").strip() or "7"))
-AUFGABE_SEND_COOLDOWN_DAYS = max(1, int((os.getenv("AUFGABE_SEND_COOLDOWN_DAYS") or "6").strip() or "6"))
+AUFGABE_PER_FORMAT_TARGET = max(3, int((os.getenv("AUFGABE_PER_FORMAT_TARGET") or "12").strip() or "12"))
+# Repeat cooldown raised to 15 days (was 6) so users rarely re-see an item; the
+# per-format target above is sized to cover ~15 days of sends.
+AUFGABE_SEND_COOLDOWN_DAYS = max(1, int((os.getenv("AUFGABE_SEND_COOLDOWN_DAYS") or "15").strip() or "15"))
+
+# ── Crowd-mastery rotation knobs (retire items the active crowd has mastered →
+#    regenerate fresh). Threshold is sized off ACTIVE users, not nominal members. ──
+MASTERY_ROTATION_ENABLED = (os.getenv("MASTERY_ROTATION_ENABLED", "1").strip().lower() not in ("0", "false", "no"))
+MASTERY_ACTIVE_FRACTION = max(0.05, min(1.0, float((os.getenv("MASTERY_ACTIVE_FRACTION") or "0.5").strip() or "0.5")))
+MASTERY_MIN_ANSWERERS_FLOOR = max(2, int((os.getenv("MASTERY_MIN_ANSWERERS_FLOOR") or "3").strip() or "3"))
+MASTERY_CORRECT_RATIO = max(0.1, min(1.0, float((os.getenv("MASTERY_CORRECT_RATIO") or "0.6").strip() or "0.6")))
+MASTERY_ACTIVE_WINDOW_DAYS = max(7, int((os.getenv("MASTERY_ACTIVE_WINDOW_DAYS") or "30").strip() or "30"))
 LISTENING_SLOT_TIME  = (18, 30)              # once/day at 18:30
 LISTENING_COOLDOWN_DAYS = max(5, int((os.getenv("LISTENING_COOLDOWN_DAYS") or "7").strip() or "7"))
 LISTENING_POOL_TARGET   = max(3, int((os.getenv("LISTENING_POOL_TARGET") or "7").strip() or "7"))
@@ -22953,6 +22963,128 @@ async def prepare_aufgabe_pool_job(context: CallbackContext) -> None:
     logging.info("aufgabe_pool_job done: total_made=%s", total_made)
 
 
+# ── Crowd-mastery rotation ────────────────────────────────────────────────────
+# Domains plug in here: each gives a function to find crowd-mastered item ids, a
+# retire function, and an async regenerate(count) that refills with fresh, deduped
+# items. Phase 1 wires Aufgabe; rebus/crossword/anagram/etc. plug in next.
+def _mastery_min_answerers(active_users: int) -> int:
+    """Threshold sized off ACTIVE users: ≥ fraction of them, with an absolute floor
+    so tiny audiences still rotate (and passive members never block it)."""
+    import math
+    return max(MASTERY_MIN_ANSWERERS_FLOOR,
+               math.ceil(MASTERY_ACTIVE_FRACTION * max(0, int(active_users))))
+
+
+async def _rotate_aufgabe_domain(context: CallbackContext, *, min_answerers: int) -> tuple[int, int]:
+    """Retire crowd-mastered aufgaben, then refill every format to target with fresh
+    items. Returns (retired, added)."""
+    from backend.database import mastered_aufgabe_ids, retire_aufgabe_ids
+    ids = await asyncio.to_thread(mastered_aufgabe_ids,
+                                  min_answerers=min_answerers, ratio=MASTERY_CORRECT_RATIO)
+    retired = await asyncio.to_thread(retire_aufgabe_ids, ids)
+    added = 0
+    if retired:
+        for fmt, level in _AUFGABE_FORMATS:
+            try:
+                have = await asyncio.to_thread(count_available_aufgaben, format=fmt)
+                if have < AUFGABE_PER_FORMAT_TARGET:
+                    added += await _aufgabe_topup_format(fmt, level, AUFGABE_PER_FORMAT_TARGET - have)
+            except Exception:
+                logging.warning("rotation: aufgabe refill failed fmt=%s", fmt, exc_info=True)
+    return retired, added
+
+
+async def _mastery_rotation_job(context: CallbackContext) -> None:
+    """Nightly: per domain, retire what the active crowd has mastered and regenerate
+    fresh replacements (deduped), logging the churn for the weekly report."""
+    if not MASTERY_ROTATION_ENABLED:
+        return
+    from backend.database import count_active_users, record_rotation_run
+    try:
+        active = await asyncio.to_thread(count_active_users, MASTERY_ACTIVE_WINDOW_DAYS)
+    except Exception:
+        active = 0
+    min_answerers = _mastery_min_answerers(active)
+    logging.info("mastery rotation: active=%s min_answerers=%s ratio=%s",
+                 active, min_answerers, MASTERY_CORRECT_RATIO)
+    # Aufgabe (Phase 1 domain).
+    try:
+        retired, added = await _rotate_aufgabe_domain(context, min_answerers=min_answerers)
+        await asyncio.to_thread(record_rotation_run, "aufgabe", retired, added)
+        logging.info("mastery rotation[aufgabe]: retired=%s added=%s", retired, added)
+    except Exception:
+        logging.warning("mastery rotation[aufgabe] failed", exc_info=True)
+
+
+_ROTATION_DOMAIN_LABELS = {
+    "aufgabe": "✏️ Aufgabe (B2+ задания)",
+    "rebus": "🧩 Ребусы",
+    "crossword": "🔤 Кроссворды",
+    "anagram": "🔀 Анаграммы",
+    "article_quiz": "🇩🇪 Артикль-квиз",
+    "listening": "🎧 Аудирование",
+    "image_quiz": "🖼 Картинки-квиз",
+    "visual_riddle": "🖼 Визуальные загадки",
+    "article_words": "🔤 Слова артиклей",
+}
+
+
+async def _mastery_rotation_weekly_report_job(context: CallbackContext) -> None:
+    """Weekly DM to admins: how much content the crowd mastered (retired) and how
+    much fresh was generated to replace it, per domain."""
+    from backend.database import get_rotation_summary, get_admin_telegram_ids
+    try:
+        rows = await asyncio.to_thread(get_rotation_summary, 7)
+    except Exception:
+        rows = []
+    total_r = sum(int(r.get("retired") or 0) for r in rows)
+    total_a = sum(int(r.get("added") or 0) for r in rows)
+    lines = ["🔄 <b>Ротация контента за неделю</b>",
+             "Освоено активной аудиторией → списано и заменено свежим:", ""]
+    if rows:
+        for r in rows:
+            label = _ROTATION_DOMAIN_LABELS.get(str(r.get("domain")), str(r.get("domain")))
+            lines.append(f"• {label}: −{int(r.get('retired') or 0)} / +{int(r.get('added') or 0)}")
+        lines.append("")
+        lines.append(f"<b>Итого:</b> −{total_r} списано / +{total_a} добавлено")
+    else:
+        lines.append("За эту неделю ротаций не было (никто пока не «освоил» элементы до порога).")
+    text = "\n".join(lines)
+    try:
+        admin_ids = [int(a) for a in (await asyncio.to_thread(get_admin_telegram_ids) or []) if int(a) > 0]
+    except Exception:
+        admin_ids = []
+    for admin_id in admin_ids:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML")
+        except Exception:
+            logging.warning("rotation weekly report: DM failed admin=%s", admin_id, exc_info=True)
+
+
+async def admin_rotate_command(update: Update, context: CallbackContext) -> None:
+    """Run the crowd-mastery rotation now (admin/testing). /admin_rotate"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    from backend.database import count_active_users
+    active = await asyncio.to_thread(count_active_users, MASTERY_ACTIVE_WINDOW_DAYS)
+    min_answerers = _mastery_min_answerers(active)
+    status = await message.reply_text(
+        f"⏳ Ротация: активных пользователей {active}, порог ≥{min_answerers} ответивших и "
+        f"≥{int(MASTERY_CORRECT_RATIO * 100)}% верно…")
+    await _mastery_rotation_job(context)
+    from backend.database import get_rotation_summary
+    rows = await asyncio.to_thread(get_rotation_summary, 1)
+    out = ["✅ Ротация выполнена."]
+    for r in rows:
+        out.append(f"• {r['domain']}: −{r['retired']} / +{r['added']}")
+    await status.edit_text("\n".join(out)[:4000])
+
+
 async def _seed_billing_prices_job(context: CallbackContext) -> None:
     """Startup: seed OpenAI price snapshots (public pricing + env) so bot-tier
     OpenAI cost is computed automatically — no manual sync-env needed. Idempotent
@@ -26280,6 +26412,7 @@ def main():
     application.add_handler(CommandHandler("artikel_fill", admin_artikel_fill_command))
     application.add_handler(CommandHandler("artikel_addwords", admin_artikel_addwords_command))
     application.add_handler(CommandHandler("artikel_autofill", admin_artikel_autofill_command))
+    application.add_handler(CommandHandler("admin_rotate", admin_rotate_command))
     application.add_handler(CommandHandler("artikel_sample", admin_artikel_sample_command))
     application.add_handler(CommandHandler("artikel_buildtoday", admin_artikel_buildtoday_command))
     application.add_handler(CommandHandler("artikel_recheck", admin_artikel_recheck_command))
@@ -26757,6 +26890,24 @@ def main():
             "cron",
             hour=3,
             minute=0,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Crowd-mastery rotation: retire what the active crowd mastered + regen
+        #    fresh (03:20, after the pool top-ups) --
+        scheduler.add_job(
+            lambda: submit_async(_mastery_rotation_job, CallbackContext(application=application)),
+            "cron",
+            hour=3,
+            minute=20,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Weekly rotation report → admin DM (Mon 10:10) --
+        scheduler.add_job(
+            lambda: submit_async(_mastery_rotation_weekly_report_job, CallbackContext(application=application)),
+            "cron",
+            day_of_week="mon",
+            hour=10,
+            minute=10,
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
         # -- Daily pool inventory report → admin DM (07:00, after all nightly top-ups) --
