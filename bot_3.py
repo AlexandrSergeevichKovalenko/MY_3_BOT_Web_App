@@ -25530,6 +25530,67 @@ async def test_image_quiz_command(update: Update, context: CallbackContext) -> N
         await message.reply_text("Image quiz test did not send. No ready template or send failed.")
 
 
+async def admin_image_quiz_batch_command(update: Update, context: CallbackContext) -> None:
+    user = update.effective_user
+    chat = update.effective_chat
+    message = update.effective_message
+    if not user or not chat or not message:
+        return
+
+    logging.info(
+        "🧪 /admin_image_quiz_batch invoked: user_id=%s chat_id=%s chat_type=%s args=%s",
+        int(user.id),
+        int(chat.id),
+        str(getattr(chat, "type", "") or ""),
+        list(getattr(context, "args", []) or []),
+    )
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+
+    requested_count = 20
+    if getattr(context, "args", None):
+        try:
+            requested_count = max(1, min(50, int(str(context.args[0]).strip())))
+        except Exception:
+            requested_count = 20
+
+    delivery_date_local = _get_quiz_schedule_now().date()
+    sent_count = 0
+    failed_count = 0
+    for index in range(requested_count):
+        slot = _build_manual_test_delivery_slot(f"manual_image_batch_{index + 1:02d}")
+        ok = await _send_image_quiz_for_target(
+            context,
+            target_chat_id=int(chat.id),
+            candidate_user_ids=[int(user.id)],
+            delivery_slot=slot,
+            delivery_date_local=delivery_date_local,
+        )
+        if ok:
+            sent_count += 1
+            continue
+        failed_count += 1
+        break
+
+    if sent_count > 0:
+        await message.reply_text(
+            f"Image quiz batch sent: {sent_count}/{requested_count}."
+        )
+    else:
+        await message.reply_text(
+            "Image quiz batch did not send. No ready template or send failed."
+        )
+    if failed_count > 0 and sent_count < requested_count:
+        logging.info(
+            "image_quiz_batch_stopped user_id=%s chat_id=%s sent=%s requested=%s",
+            int(user.id),
+            int(chat.id),
+            sent_count,
+            requested_count,
+        )
+
+
 async def test_image_quiz_fallback_command(update: Update, context: CallbackContext) -> None:
     user = update.effective_user
     chat = update.effective_chat
@@ -25970,6 +26031,7 @@ def main():
     application.add_handler(CommandHandler("ttsbudget", tts_budget_command))
     application.add_handler(CommandHandler("ttsprewarmquota", tts_prewarm_quota_command))
     application.add_handler(CommandHandler("test_image_quiz", test_image_quiz_command))
+    application.add_handler(CommandHandler("admin_image_quiz_batch", admin_image_quiz_batch_command))
     application.add_handler(CommandHandler("test_image_quiz_fallback", test_image_quiz_fallback_command))
     application.add_handler(CommandHandler("admin_riddle_send", admin_riddle_send_command))
     application.add_handler(CommandHandler("admin_riddle_health", admin_visual_riddle_health_command))
