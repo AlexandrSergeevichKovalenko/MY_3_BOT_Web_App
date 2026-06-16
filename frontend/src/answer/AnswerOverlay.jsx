@@ -121,6 +121,66 @@ function RebusResult({ result }) {
   );
 }
 
+// "Save the words you got wrong" — a tidy checkbox list (all pre-checked) + one
+// Save button. The user can uncheck any, or just save all. Used on result screens
+// where there's a clear set of missed German words (e.g. crossword).
+function SaveWrongWords({ items, originProcess = 'crossword_save',
+                         title = 'Сохранить слова, которые вы неверно перевели:' }) {
+  const words = useMemo(() => (items || [])
+    .map((w) => ({
+      de: String((w && (w.de ?? w.source)) || '').trim(),
+      ru: String((w && (w.ru ?? w.target)) || '').trim(),
+    }))
+    .filter((w) => w.de), [items]);
+  const [checked, setChecked] = useState(() => new Set(words.map((_, i) => i)));
+  const [phase, setPhase] = useState('idle'); // idle|saving|done
+  const [okCount, setOkCount] = useState(0);
+  if (!words.length) return null;
+  const toggle = (i) => setChecked((s) => {
+    const n = new Set(s); if (n.has(i)) n.delete(i); else n.add(i); return n;
+  });
+  const save = async () => {
+    if (phase !== 'idle' || !checked.size) return;
+    setPhase('saving'); haptic('tap');
+    let ok = 0;
+    for (let i = 0; i < words.length; i += 1) {
+      if (!checked.has(i)) continue;
+      try {
+        await api('/api/webapp/dictionary/save', {
+          source_text: words[i].de, target_text: words[i].ru || '',
+          source_lang: 'de', target_lang: 'ru', direction: 'de_to_ru',
+          origin_process: originProcess,
+        });
+        ok += 1;
+      } catch (_e) { /* keep going — save the rest */ }
+    }
+    setOkCount(ok); setPhase('done'); haptic(ok ? 'ok' : 'bad');
+  };
+  return (
+    <div className="sv-save">
+      <div className="sv-save-head">💾 {title}</div>
+      <div className="sv-save-list">
+        {words.map((w, i) => (
+          <label key={i} className={`sv-save-row${checked.has(i) ? ' on' : ''}`}>
+            <input type="checkbox" checked={checked.has(i)} disabled={phase !== 'idle'}
+              onChange={() => toggle(i)} />
+            <span className="sv-save-de">{w.de}</span>
+            {w.ru ? <span className="sv-save-ru"> · {w.ru}</span> : null}
+          </label>
+        ))}
+      </div>
+      {phase === 'done' ? (
+        <div className="sv-save-done">✅ Сохранено: {okCount}</div>
+      ) : (
+        <button type="button" className="sv-save-btn" disabled={phase === 'saving' || !checked.size}
+          onClick={save}>
+          {phase === 'saving' ? 'Сохраняю …' : `Сохранить${checked.size ? ` · ${checked.size}` : ''}`}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function CrosswordResult({ result }) {
   const rows = result.results || [];
   const total = result.total || rows.length;
@@ -140,6 +200,7 @@ function CrosswordResult({ result }) {
           </div>
         ))}
       </div>
+      <SaveWrongWords items={result.saveable_words} originProcess="crossword_save" />
     </div>
   );
 }
