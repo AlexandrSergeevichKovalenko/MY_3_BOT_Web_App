@@ -22461,7 +22461,7 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
         "tip": str(it.get("tip") or "").strip(),
         "hint_ru": str(it.get("hint_ru") or "").strip(),
     }
-    if fmt in ("cloze", "wortbildung"):
+    if fmt in ("cloze", "wortbildung", "wortgruppe"):
         satz = str(it.get("satz") or "").strip()
         correct = str(it.get("correct") or "").strip()
         if not satz or not correct or "_____" not in satz:
