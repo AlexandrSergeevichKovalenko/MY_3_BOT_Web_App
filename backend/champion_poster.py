@@ -187,7 +187,9 @@ def render_champion_poster(lb: dict, *, week_no: int, days: int, avatars: dict |
     # Trophy — or a hero medallion (e.g. the battle Smurf-knight) when provided.
     hero = _avatar_circle(hero_png, 360, GOLD) if hero_png else None
     if hero:
-        base.paste(hero, (W // 2 - 180, 60), hero)
+        # Sit fully below the title/subtitle/divider block (which ends at y≈181)
+        # so the medallion never overlaps the header text.
+        base.paste(hero, (W // 2 - 180, 205), hero)
     else:
         _draw_trophy(d, W // 2, 230, scale=1.15)
 
