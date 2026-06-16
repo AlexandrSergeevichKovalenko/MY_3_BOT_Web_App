@@ -42,27 +42,29 @@ export default function BattleHistory({ api, onClose, onOpenBattle }) {
         <div className="bh-section" key={sec.key}>
           <div className="bh-section-head">{sec.label}</div>
           {sec.battles.map((b) => {
-            const open_ = b.status === 'open';
             const played = b.your_place != null;
-            const canOpen = open_ && typeof onOpenBattle === 'function';
+            const playable = !!b.play;
+            const canOpen = playable && typeof onOpenBattle === 'function';
+            const titleIcon = playable ? '⚔️' : (played ? medal(b.your_place) : '🏁');
+            const sub = playable
+              ? (played
+                ? `идёт · ты уже сыграл · до 23:59 · от ${b.creator_name || '—'}`
+                : `идёт · до 23:59 · от ${b.creator_name || '—'}`)
+              : (played
+                ? `не сыграно тобой · место ${b.your_place} из ${b.total} · ${b.your_count} верных`
+                : `закрыт без результата · 🏆 ${b.winner || '—'}`);
             return (
               <button
                 key={`${sec.key}-${b.battle_id}`}
                 type="button"
-                className={`bh-row bh-row-btn${open_ ? ' open' : (played ? ' ok' : '')}${canOpen ? ' can-open' : ''}`}
+                className={`bh-row bh-row-btn${playable ? ' open' : (played ? ' ok' : '')}${canOpen ? ' can-open' : ''}`}
                 onClick={canOpen ? () => onOpenBattle(sec.key, b.battle_id) : undefined}
                 disabled={!canOpen}
               >
                 <div className="bh-row-title">
-                  {open_ ? '⚔️' : (played ? medal(b.your_place) : '🏁')} #{b.battle_id} · {b.label}
+                  {titleIcon} #{b.battle_id} · {b.label}
                 </div>
-                <div className="bh-row-sub">
-                  {open_
-                    ? `идёт · до 23:59 · от ${b.creator_name || '—'}`
-                    : (played
-                      ? `место ${b.your_place} из ${b.total} · ${b.your_count} верных`
-                      : `не сыграно · 🏆 ${b.winner || '—'}`)}
-                </div>
+                <div className="bh-row-sub">{sub}</div>
               </button>
             );
           })}

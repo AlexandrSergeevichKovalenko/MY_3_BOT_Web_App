@@ -23217,7 +23217,7 @@ def artikel_battle():
     from backend.database import (
         ensure_article_sprint_schema, get_article_sprint_battle,
         is_article_sprint_battle_member, get_article_sprint_set,
-        get_article_sprint_result,
+        get_article_sprint_result, compute_article_sprint_ranking,
     )
     ensure_article_sprint_schema()
     battle = get_article_sprint_battle(battle_id)
