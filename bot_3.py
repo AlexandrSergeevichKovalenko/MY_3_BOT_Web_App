@@ -1627,40 +1627,10 @@ def add_service_msg_id(context, message_id):
     logging.info(f"DEBUG: Добавлен message_id: {message_id}, текущий список: {context.user_data['service_message_ids']}")
 
 
-async def refresh_dm_menu_keyboard_if_stale(update: Update, context: CallbackContext) -> None:
-    """Re-attach the DM menu reply-keyboard on the user's first private message of
-    the day. Telegram keeps the reply keyboard non-persistent (summoned via the
-    keyboard icon), but after an app restart the toggle can drop — so users had to
-    type /start to get the buttons back. This refreshes it once per day on ANY
-    message (not just /start), without ever auto-popping on simple screen taps.
-    Runs in its own handler group (block=False), so it never interferes with the
-    real handlers."""
-    chat = update.effective_chat
-    user = update.effective_user
-    msg = update.effective_message
-    if not chat or chat.type != "private" or not user or not msg:
-        return
-    try:
-        from datetime import datetime as _dt
-        from zoneinfo import ZoneInfo
-        today = _dt.now(ZoneInfo("Europe/Vienna")).date().isoformat()
-    except Exception:
-        import datetime as _d
-        today = _d.date.today().isoformat()
-    if context.user_data.get("kb_refresh_date") == today:
-        return
-    context.user_data["kb_refresh_date"] = today
-    # /start already shows the menu — just mark the day, don't double-send.
-    if str(getattr(msg, "text", "") or "").strip().lower().startswith("/start"):
-        return
-    try:
-        await context.bot.send_message(
-            chat_id=chat.id,
-            text="📋 Меню снова под рукой 👇",
-            reply_markup=_build_private_language_tutor_reply_keyboard(int(user.id)),
-        )
-    except Exception:
-        logging.warning("kb refresh failed user_id=%s", getattr(user, "id", None), exc_info=True)
+# NOTE: the old once-a-day "📋 Меню снова под рукой" refresh handler was removed —
+# the DM reply-keyboard is now kept fresh silently by _install_silent_keyboard_reattach
+# (it piggybacks the keyboard onto the bot's ordinary DM replies), so users never lose
+# the buttons and we never add standalone menu messages to the chat.
 
 
 #Имитация набора текста с typing-индикатором
@@ -2828,6 +2798,54 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
         # it stays reachable via the keyboard icon. (Do NOT set True.)
         is_persistent=False,
     )
+
+
+# ── Silent keyboard re-attach ────────────────────────────────────────────────
+# The DM reply-keyboard lives on Telegram's side and survives restarts, but with
+# is_persistent=False it collapses to the keyboard icon and users perceive it as
+# "gone" (and type /start). Instead of spamming standalone "menu" messages, we
+# piggyback the keyboard onto the bot's OWN ordinary DM replies (only ones that
+# don't already carry a markup), throttled so it refreshes at most once per window
+# per user — and once on the first reply after every redeploy, so a changed
+# layout updates itself automatically. In-memory by design: a fresh process →
+# empty map → re-attaches on each user's next reply.
+_KB_REATTACH_SECONDS = 6 * 3600
+_kb_last_attach: dict[int, float] = {}
+
+
+def _kb_should_attach(user_id: int) -> bool:
+    now = pytime.time()
+    last = _kb_last_attach.get(int(user_id))
+    if last is None or (now - last) >= _KB_REATTACH_SECONDS:
+        _kb_last_attach[int(user_id)] = now
+        return True
+    return False
+
+
+def _install_silent_keyboard_reattach(app) -> None:
+    """Wrap bot.send_message so DM replies silently keep the reply-keyboard fresh.
+    Covers update.message.reply_text too (it routes through bot.send_message)."""
+    orig_send_message = app.bot.send_message
+
+    async def _send_message_with_kb(*args, **kwargs):
+        try:
+            chat_id = kwargs.get("chat_id")
+            if chat_id is None and args:
+                chat_id = args[0]
+            # Positive chat_id == a private chat with a user (groups are negative).
+            if isinstance(chat_id, int) and chat_id > 0:
+                rm = kwargs.get("reply_markup")
+                if rm is None:
+                    if _kb_should_attach(int(chat_id)):
+                        kwargs["reply_markup"] = _build_private_language_tutor_reply_keyboard(int(chat_id))
+                elif isinstance(rm, ReplyKeyboardMarkup):
+                    # An explicit menu send already refreshed it — reset the window.
+                    _kb_last_attach[int(chat_id)] = pytime.time()
+        except Exception:
+            pass
+        return await orig_send_message(*args, **kwargs)
+
+    app.bot.send_message = _send_message_with_kb
 
 
 def _format_shortcut_pairing_code_ttl_note() -> str:
@@ -26005,6 +26023,8 @@ def main():
         required_before_first_request=True,
     )
     application.bot.request.timeout = 60
+    # Keep the DM reply-keyboard alive silently (rides ordinary replies, no spam).
+    _install_silent_keyboard_reattach(application)
 
     # 🔹 Добавляем обработчики команд (исправленный порядок)
     application.add_handler(ChatMemberHandler(handle_bot_group_membership, chat_member_types=ChatMemberHandler.MY_CHAT_MEMBER), group=-4)
@@ -26043,9 +26063,8 @@ def main():
     # 🔥 Логирование всех сообщений (группа -1, не блокирует цепочку)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message, block=False), group=-1)
 
-    # Освежает меню-клавиатуру в личке раз в день на любое сообщение (group=5,
-    # отдельная группа, не блокирует и не мешает остальным хендлерам).
-    application.add_handler(MessageHandler(filters.ChatType.PRIVATE, refresh_dm_menu_keyboard_if_stale, block=False), group=5)
+    # (DM menu keyboard now stays fresh silently via _install_silent_keyboard_reattach
+    #  — it rides ordinary replies, so no standalone "menu" refresh message is sent.)
 
     application.add_handler(MessageHandler(filters.FORWARDED & filters.TEXT & ~filters.COMMAND, handle_forwarded_message_lookup, block=False), group=0)
 
