@@ -156,7 +156,7 @@ export default function AdjektivSprintGame({ api, haptic, onClose, battleId = nu
           ))}
         </div>
       ) : (
-        <div className="ans-explain">Активных батлов нет. Прими вызов в личке или создай свой (/adjbattle, Premium).</div>
+        <div className="ans-explain">Активных батлов нет. Чтобы поучаствовать, жди приглашение в личке. Premium-пользователь может создать новый батл.</div>
       )}
       <button className="ans-btn-ghost" onClick={onClose}>Schließen</button>
     </>);
