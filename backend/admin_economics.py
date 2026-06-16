@@ -30,6 +30,10 @@ from backend.database import (
 
 ADMIN_ECONOMICS_TZ = "Europe/Vienna"
 ADMIN_ECONOMICS_JOB_KEY = "admin_economics_daily_report"
+SYNTHETIC_TELEGRAM_USER_ID_MIN = max(
+    1,
+    int((os.getenv("SYNTHETIC_TELEGRAM_USER_ID_MIN") or "9100000001").strip() or "9100000001"),
+)
 
 _LIMIT_BUTTON_DELTAS: dict[str, tuple[int, ...]] = {
     "dictionary_lookup_daily": (-10, -5, 5, 10),
@@ -83,6 +87,14 @@ def _day_bounds(target_day: date, tz_name: str = ADMIN_ECONOMICS_TZ) -> tuple[da
     return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
 
 
+def _is_synthetic_telegram_user_id(user_id: int) -> bool:
+    try:
+        candidate = int(user_id)
+    except Exception:
+        return False
+    return candidate >= SYNTHETIC_TELEGRAM_USER_ID_MIN
+
+
 def _fetch_active_user_ids(target_day: date, tz_name: str) -> set[int]:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
@@ -114,7 +126,11 @@ def _fetch_active_user_ids(target_day: date, tz_name: str) -> set[int]:
                 """,
                 (tz_name, target_day, tz_name, target_day, tz_name, target_day),
             )
-            return {int(row[0]) for row in cursor.fetchall() or [] if row and row[0] is not None}
+            return {
+                int(row[0])
+                for row in cursor.fetchall() or []
+                if row and row[0] is not None and not _is_synthetic_telegram_user_id(int(row[0]))
+            }
 
 
 def _user_stats(target_day: date, tz_name: str) -> dict[str, Any]:
@@ -140,9 +156,10 @@ def _user_stats(target_day: date, tz_name: str) -> dict[str, Any]:
                 """
                 SELECT COUNT(*)
                 FROM bt_3_allowed_users
-                WHERE (created_at AT TIME ZONE %s)::date = %s;
+                WHERE (created_at AT TIME ZONE %s)::date = %s
+                  AND user_id < %s;
                 """,
-                (tz_name, target_day),
+                (tz_name, target_day, SYNTHETIC_TELEGRAM_USER_ID_MIN),
             )
             row = cursor.fetchone()
     return {
@@ -166,10 +183,11 @@ def _openai_stats(target_day: date, tz_name: str) -> dict[str, Any]:
                 FROM bt_3_billing_events
                 WHERE (event_time AT TIME ZONE %s)::date = %s
                   AND provider = 'openai'
+                  AND (user_id IS NULL OR user_id < %s)
                 GROUP BY action_type
                 ORDER BY action_type;
                 """,
-                (tz_name, target_day),
+                (tz_name, target_day, SYNTHETIC_TELEGRAM_USER_ID_MIN),
             )
             action_rows = cursor.fetchall() or []
             cursor.execute(
@@ -218,11 +236,12 @@ def _limit_usage_values(feature_code: str, target_day: date, tz_name: str) -> di
                     SELECT user_id, COUNT(DISTINCT session_id)::float
                     FROM bt_3_daily_sentences
                     WHERE user_id IS NOT NULL
+                      AND user_id < %s
                       AND COALESCE(shown_to_user, FALSE) = TRUE
                       AND (shown_to_user_at AT TIME ZONE %s)::date = %s
                     GROUP BY user_id;
                     """,
-                    (tz_name, target_day),
+                    (SYNTHETIC_TELEGRAM_USER_ID_MIN, tz_name, target_day),
                 )
             elif feature == "feel_word_daily":
                 cursor.execute(
@@ -230,12 +249,13 @@ def _limit_usage_values(feature_code: str, target_day: date, tz_name: str) -> di
                     SELECT user_id, COUNT(*)::float
                     FROM bt_3_billing_events
                     WHERE user_id IS NOT NULL
+                      AND user_id < %s
                       AND action_type = 'flashcards_feel_request'
                       AND units_type = 'requests'
                       AND (event_time AT TIME ZONE %s)::date = %s
                     GROUP BY user_id;
                     """,
-                    (tz_name, target_day),
+                    (SYNTHETIC_TELEGRAM_USER_ID_MIN, tz_name, target_day),
                 )
             else:
                 cursor.execute(
@@ -243,12 +263,13 @@ def _limit_usage_values(feature_code: str, target_day: date, tz_name: str) -> di
                     SELECT user_id, COALESCE(SUM(units_value), 0)::float
                     FROM bt_3_billing_events
                     WHERE user_id IS NOT NULL
+                      AND user_id < %s
                       AND action_type = %s
                       AND units_type = 'requests'
                       AND (event_time AT TIME ZONE %s)::date = %s
                     GROUP BY user_id;
                     """,
-                    (feature, tz_name, target_day),
+                    (SYNTHETIC_TELEGRAM_USER_ID_MIN, feature, tz_name, target_day),
                 )
             rows = cursor.fetchall() or []
     return {int(row[0]): float(row[1] or 0.0) for row in rows if row and row[0] is not None}
@@ -264,9 +285,10 @@ def _blocked_users(feature_code: str, target_day: date, tz_name: str) -> int:
                 WHERE feature_code = %s
                   AND event_type = 'blocked'
                   AND user_id IS NOT NULL
+                  AND user_id < %s
                   AND (event_time AT TIME ZONE %s)::date = %s;
                 """,
-                (str(feature_code or "").strip().lower(), tz_name, target_day),
+                (str(feature_code or "").strip().lower(), SYNTHETIC_TELEGRAM_USER_ID_MIN, tz_name, target_day),
             )
             row = cursor.fetchone()
     return int((row or [0])[0] or 0)
@@ -309,10 +331,11 @@ def _user_activity(target_day: date, tz_name: str, *, limit: int = 15) -> list[d
                 SELECT user_id, COUNT(*)
                 FROM bt_3_webapp_dictionary_queries
                 WHERE user_id IS NOT NULL
+                  AND user_id < %s
                   AND (created_at AT TIME ZONE %s)::date = %s
                 GROUP BY user_id;
                 """,
-                (tz_name, target_day),
+                (SYNTHETIC_TELEGRAM_USER_ID_MIN, tz_name, target_day),
             )
             for row in cursor.fetchall() or []:
                 if row and row[0] is not None:
@@ -322,11 +345,12 @@ def _user_activity(target_day: date, tz_name: str, *, limit: int = 15) -> list[d
                 SELECT user_id, COUNT(*)
                 FROM bt_3_daily_sentences
                 WHERE user_id IS NOT NULL
+                  AND user_id < %s
                   AND COALESCE(shown_to_user, FALSE) = TRUE
                   AND (shown_to_user_at AT TIME ZONE %s)::date = %s
                 GROUP BY user_id;
                 """,
-                (tz_name, target_day),
+                (SYNTHETIC_TELEGRAM_USER_ID_MIN, tz_name, target_day),
             )
             for row in cursor.fetchall() or []:
                 if row and row[0] is not None:
@@ -371,12 +395,13 @@ def _openai_by_user(target_day: date, tz_name: str, *, limit: int = 15) -> list[
                 FROM bt_3_billing_events
                 WHERE provider = 'openai'
                   AND user_id IS NOT NULL
+                  AND user_id < %s
                   AND (event_time AT TIME ZONE %s)::date = %s
                 GROUP BY user_id
                 ORDER BY cost DESC, requests DESC
                 LIMIT %s;
                 """,
-                (tz_name, target_day, int(limit)),
+                (SYNTHETIC_TELEGRAM_USER_ID_MIN, tz_name, target_day, int(limit)),
             )
             for row in cursor.fetchall() or []:
                 if not row or row[0] is None:
@@ -402,10 +427,11 @@ def _gpt_helper_usage(target_day: date, tz_name: str) -> dict[str, int]:
                 FROM bt_3_billing_events
                 WHERE provider = 'openai'
                   AND units_type = 'requests'
+                  AND (user_id IS NULL OR user_id < %s)
                   AND (event_time AT TIME ZONE %s)::date = %s
                 GROUP BY action_type;
                 """,
-                (tz_name, target_day),
+                (SYNTHETIC_TELEGRAM_USER_ID_MIN, tz_name, target_day),
             )
             rows = cursor.fetchall() or []
     by_action = {str(row[0] or ""): int(row[1] or 0) for row in rows}

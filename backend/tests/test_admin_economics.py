@@ -1,7 +1,72 @@
 import unittest
+from contextlib import contextmanager
 from unittest.mock import patch
 
 from backend import admin_economics
+
+
+class _FakeCursor:
+    def __init__(self, rows_by_call):
+        self.rows_by_call = list(rows_by_call)
+        self.executed = []
+        self._index = -1
+        self._last_query = ""
+        self._last_params = ()
+
+    def execute(self, query, params=None):
+        self.executed.append((query, params))
+        self._last_query = str(query or "")
+        self._last_params = tuple(params or ())
+        self._index += 1
+
+    def fetchall(self):
+        if 0 <= self._index < len(self.rows_by_call):
+            rows = self.rows_by_call[self._index]
+            if "user_id < %s" in self._last_query and self._last_params:
+                threshold = 0
+                for value in self._last_params:
+                    try:
+                        candidate = int(value or 0)
+                    except Exception:
+                        continue
+                    if candidate >= 1_000_000_000:
+                        threshold = candidate
+                        break
+                filtered = []
+                for row in rows:
+                    try:
+                        user_id = int(row[0])
+                    except Exception:
+                        continue
+                    if user_id < threshold:
+                        filtered.append(row)
+                return filtered
+            return rows
+        return []
+
+    def fetchone(self):
+        rows = self.fetchall()
+        return rows[0] if rows else None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeConn:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def cursor(self):
+        return self._cursor
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
 
 
 class AdminEconomicsFormattingTests(unittest.TestCase):
@@ -64,13 +129,13 @@ class AdminEconomicsFormattingTests(unittest.TestCase):
 
         text = admin_economics.format_admin_economics_report(payload)
 
-        self.assertIn("📊 Admin Economics", text)
-        self.assertIn("👥 Users", text)
+        self.assertIn("📊 Экономика", text)
+        self.assertIn("👥 Активны", text)
         self.assertIn("🤖 OpenAI", text)
-        self.assertIn("📏 Limits", text)
-        self.assertIn("🧠 GPT Helpers", text)
-        self.assertIn("🔥 Top Consumers", text)
-        self.assertIn("dictionary_lookup_daily", text)
+        self.assertIn("🚦 Лимиты", text)
+        self.assertIn("🧠 GPT-хелперы", text)
+        self.assertIn("🔥 Топ потребители", text)
+        self.assertIn("Словарные запросы", text)
 
     def test_limits_keyboard_contains_preview_callbacks_for_all_limits(self):
         with patch(
@@ -110,6 +175,52 @@ class AdminEconomicsFormattingTests(unittest.TestCase):
         self.assertIn("Proposed", text)
         callbacks = [button["callback_data"] for row in keyboard["inline_keyboard"] for button in row]
         self.assertEqual(callbacks, ["admecon:apply:abc", "admecon:cancel:abc"])
+
+    def test_active_users_exclude_synthetic_ids(self):
+        fake_cursor = _FakeCursor([
+            [(1450575292,), (9937001856,), (9100000001,)],
+            [(3,)],
+        ])
+
+        @contextmanager
+        def fake_db():
+            yield _FakeConn(fake_cursor)
+
+        with patch("backend.admin_economics.get_db_connection_context", side_effect=fake_db):
+            active_ids = admin_economics._fetch_active_user_ids(
+                target_day=admin_economics.date(2026, 6, 14),
+                tz_name="Europe/Vienna",
+            )
+            user_stats = admin_economics._user_stats(
+                target_day=admin_economics.date(2026, 6, 14),
+                tz_name="Europe/Vienna",
+            )
+
+        self.assertEqual(active_ids, {1450575292})
+        self.assertEqual(user_stats["total_active_users"], 1)
+        self.assertEqual(user_stats["new_users_today"], 0)
+
+    def test_openai_by_user_passes_synthetic_floor_to_sql(self):
+        fake_cursor = _FakeCursor([
+            [(1450575292, 7, 70, 0.42), (9937001856, 99, 990, 9.9)],
+        ])
+
+        @contextmanager
+        def fake_db():
+            yield _FakeConn(fake_cursor)
+
+        with patch("backend.admin_economics.get_db_connection_context", side_effect=fake_db):
+            rows = admin_economics._openai_by_user(
+                target_day=admin_economics.date(2026, 6, 14),
+                tz_name="Europe/Vienna",
+                limit=15,
+            )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["user_id"], 1450575292)
+        executed_query, executed_params = fake_cursor.executed[0]
+        self.assertIn("user_id < %s", executed_query)
+        self.assertEqual(executed_params[0], admin_economics.SYNTHETIC_TELEGRAM_USER_ID_MIN)
 
 
 if __name__ == "__main__":
