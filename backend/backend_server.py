@@ -17236,6 +17236,62 @@ def _get_silence(ms: int) -> AudioSegment:
     return segment
 
 
+_ARTIKEL_UMLAUT = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss",
+                                 "Ä": "ae", "Ö": "oe", "Ü": "ue"})
+_artikel_audio_inflight: set[str] = set()
+_artikel_audio_inflight_lock = threading.Lock()
+
+
+def _artikel_audio_key(word: str, article: str) -> str:
+    base = str(word).translate(_ARTIKEL_UMLAUT).lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", base).strip("-")[:48] or "w"
+    return f"artikel/audio/{str(article).lower()}-{slug}.mp3"
+
+
+def _ensure_artikel_audio_async(cards: list[dict]) -> None:
+    """Lazily synthesize '<article> <word>' → MP3 → R2 for trainer cards missing
+    audio, in a background thread (so the learn deck responds instantly).
+
+    Why this exists: audio is pre-warmed overnight only for ACTIVE themes (today's
+    set / tomorrow / Pro focus). Since the Trainer now lets users learn ANY theme
+    on demand, an ad-hoc theme's words had no audio at all. This fills the words of
+    whatever batch the user actually opens — cached forever — so by the next pass
+    through the theme they all speak. Mnemonics already had a lazy fill; audio did
+    not — this closes that gap."""
+    missing = [(str(c.get("w") or ""), str(c.get("a") or "").lower())
+               for c in (cards or [])
+               if not c.get("audio") and c.get("w") and str(c.get("a") or "").lower() in ("der", "die", "das")]
+    if not missing:
+        return
+
+    def _run():
+        from backend.r2_storage import r2_put_bytes
+        from backend.database import store_article_noun_audio
+        for word, article in missing[:20]:
+            guard = f"{article} {word}".lower()
+            with _artikel_audio_inflight_lock:
+                if guard in _artikel_audio_inflight:
+                    continue
+                _artikel_audio_inflight.add(guard)
+            try:
+                seg = get_or_create_tts_clip("de", f"{article} {word}", 0.95)
+                buf = io.BytesIO()
+                seg.export(buf, format="mp3")
+                key = _artikel_audio_key(word, article)
+                r2_put_bytes(key, buf.getvalue(), content_type="audio/mpeg")
+                store_article_noun_audio(word=word, article=article, audio_object_key=key)
+            except Exception:
+                logging.warning("artikel audio lazy-fill failed word=%s", word, exc_info=True)
+            finally:
+                with _artikel_audio_inflight_lock:
+                    _artikel_audio_inflight.discard(guard)
+
+    try:
+        threading.Thread(target=_run, daemon=True).start()
+    except Exception:
+        logging.warning("artikel audio lazy-fill: thread start failed", exc_info=True)
+
+
 def get_or_create_tts_clip(lang: str, text: str, speed: float = _TTS_SPEED_DEFAULT) -> AudioSegment:
     voice = _TTS_VOICES.get(lang, _TTS_VOICES["de"])
     language_code = _TTS_LANG_CODES.get(lang, "en-US")
@@ -22943,6 +22999,13 @@ def artikel_learn_today():
         logging.exception("artikel_learn_today failed")
         return jsonify({"ok": False, "error_code": "learn_error",
                         "error": "Не удалось загрузить колоду."}), 200
+    # Backfill audio for any cards that lack it (ad-hoc themes aren't pre-warmed) —
+    # background, so the next pass through this theme speaks every word.
+    try:
+        if deck.get("ok"):
+            _ensure_artikel_audio_async((deck.get("cards") or []))
+    except Exception:
+        logging.warning("artikel_learn_today: audio backfill trigger failed", exc_info=True)
     return jsonify(deck)
 
 
