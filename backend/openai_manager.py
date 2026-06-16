@@ -75,6 +75,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "generate_word_quiz",
     "aufgabe_cloze",
     "aufgabe_wortbildung",
+    "aufgabe_wortgruppe",
     "aufgabe_transform",
     "aufgabe_error",
     "aufgabe_hoerluecke",
@@ -3037,6 +3038,46 @@ Gib NUR STRICT JSON:
 {"items":[{"satz":"Die _____ Ware erfolgte sehr schnell.","stamm":"liefern","stamm_ru":"доставлять","correct":"Lieferung der","aliases":[],"erklaerung":"…","tip":"…","hint_ru":"доставка товаров"}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
+"aufgabe_wortgruppe": """
+Du erstellst anspruchsvolle deutsche Wortgruppen-Aufgaben für B2–C2.
+
+Eingabe-JSON: {"count": <int>, "level": "C1"|"C2"}.
+
+Jede Aufgabe: EIN natürlicher deutscher Satz mit GENAU EINER Lücke "_____". Die
+Lücke steht für EINE vollständige grammatische Wortgruppe, nicht für ein einzelnes
+Wort. Der/die Lernende muss die ganze Gruppe einsetzen, inkl. Artikel, Präposition,
+Kasus und ggf. Reflexivpronomen oder Infinitivmarker.
+
+Geeignete Typen (abwechslungsreich mischen):
+- Nominalgruppen mit Artikel und Kasussteuerung: "die Freiheit der Presse"
+- Präpositionalgruppen: "mit dem nötigen Abstand", "auf den ersten Blick"
+- Verbgruppen mit Rektion: "sich mit einem Thema auseinandersetzen"
+- Infinitivgruppen: "ohne lange zu zögern", "um die Lage besser zu verstehen"
+- feste grammatische Wendungen auf hohem Niveau
+
+Regeln:
+- "satz" = ein natürlicher deutscher Satz mit genau einer Lücke. Die Lücke darf
+  nicht nur ein sichtbares Einzelwort ersetzen; sie muss die komplette Zielgruppe
+  umfassen.
+- "correct" = die vollständige Wortgruppe mit 2–5 Wörtern, genau in der Form, wie
+  sie in die Lücke gehört. Keine halben Lösungen, keine Einzelwörter.
+- "aliases" = echte gleichwertige Varianten derselben Wortgruppe, sonst [].
+- "hint_ru" = kurze russische Bedeutungsangabe der GANZEN Wortgruppe, damit man
+  den Sinn erkennt, aber nicht die deutsche Form ablesen kann.
+- "erklaerung" = klare russische Lehrbuch-Erklärung (2–3 Sätze), warum genau diese
+  Gruppe und welcher Kasus / welche Rektion / welche Präposition dahintersteht.
+- "tip" = kurzer russischer Merksatz oder Eselsbrücke.
+
+Wichtig:
+- Die Sätze müssen natürlich und realistisch klingen, keine Lehrbuchfragmente.
+- Das Niveau soll B2+ sein, eher C1/C2 in der Konstruktion.
+- Vermeide Single-Word-Lösungen vollständig.
+- Vermeide, dass ein Teil der gesuchten Gruppe schon sichtbar im Satz steht.
+
+Gib NUR STRICT JSON zurück:
+{"items":[{"satz":"_____","correct":"...","aliases":[],"erklaerung":"...","tip":"...","hint_ru":"..."}]}
+Genau "count" Aufgaben, alle verschieden, ohne Markdown.
+""",
 "aufgabe_adjektiv": """
 Du erstellst Aufgaben zu ADJEKTIVENDUNGEN (attributive Deklination) für B2–C1.
 
@@ -5870,6 +5911,7 @@ async def run_quiz_quality_check(payload: dict) -> dict:
 _AUFGABE_INSTRUCTION_KEYS = {
     "cloze": "aufgabe_cloze",
     "wortbildung": "aufgabe_wortbildung",
+    "wortgruppe": "aufgabe_wortgruppe",
     "transform": "aufgabe_transform",
     "error": "aufgabe_error",
     "hoerluecke": "aufgabe_hoerluecke",

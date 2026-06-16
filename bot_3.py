@@ -392,6 +392,7 @@ AUFGABE_FORMAT_SLOTS = {
     (11, 30): "wortbildung",
     (12, 0):  "synonym",
     (13, 30): "transform",
+    (14, 30): "wortgruppe",
     (15, 30): "error",
     (16, 0):  "antonym",
     (17, 30): "hoerluecke",
@@ -21497,6 +21498,7 @@ _CHALLENGE_KIND_LABELS = {
 }
 _AU_FORMAT_LABELS = {
     "cloze": "Lückentext ✏️", "wortbildung": "Wortbildung 🔧",
+    "wortgruppe": "Wortgruppe 🧱",
     "transform": "Satztransformation 🔄", "error": "Fehler finden 🔍",
     "hoerluecke": "Hörlücke 🎧", "pin": "Finde im Bild 🖼",
     "synonym": "Synonym 🔁", "antonym": "Antonym ↔️",
@@ -21511,7 +21513,7 @@ def _au_specific_suffix(fmt: str, payload: dict) -> str:
         return (s[: n - 1].rstrip() + "…") if len(s) > n else s
     if fmt in ("synonym", "antonym"):
         return _snip(payload.get("wort"), 30)
-    if fmt in ("cloze", "wortbildung"):
+    if fmt in ("cloze", "wortbildung", "wortgruppe"):
         return _snip(payload.get("satz"))
     if fmt == "transform":
         return _snip(payload.get("original"))
@@ -22303,6 +22305,12 @@ def _build_aufgabe_caption(entry: dict) -> str:
             f"🔧 Stamm: <b>{esc(payload.get('stamm'))}</b>\n\n"
             "Bilde die richtige Wortform in der Mini-App 👇"
         )
+    if fmt == "wortgruppe":
+        return (
+            "🧱 <b>Wortgruppe</b> — C1+\n\n"
+            f"<i>{esc(payload.get('satz'))}</i>\n\n"
+            "Setze die ganze Wortgruppe in der Mini-App ein 👇"
+        )
     if fmt == "transform":
         return (
             "🔄 <b>Satztransformation</b> — C1\n\n"
@@ -22366,6 +22374,7 @@ def _render_aufgabe_card(entry: dict) -> bytes | None:
             "adjektiv": ic.render_adjektiv_card,
             "cloze": ic.render_cloze_card,
             "wortbildung": ic.render_wortbildung_card,
+            "wortgruppe": ic.render_wortgruppe_card,
             "transform": ic.render_transform_card,
             "error": ic.render_error_card,
             "hoerluecke": ic.render_hoerluecke_card,
@@ -22575,7 +22584,7 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
 
 
 _AUFGABE_FORMATS = (
-    ("cloze", "B2"), ("wortbildung", "B2"), ("transform", "C1"),
+    ("cloze", "B2"), ("wortbildung", "B2"), ("wortgruppe", "C1"), ("transform", "C1"),
     ("error", "B2"), ("hoerluecke", "B2"), ("pin", "B2"), ("satzbau", "B2"),
     ("adjektiv", "B2"), ("synonym", "B2"), ("antonym", "B2"),
 )
@@ -22669,7 +22678,7 @@ async def _aufgabe_topup_format(fmt: str, level: str, want: int) -> int:
 
 
 async def prepare_aufgabe_pool_job(context: CallbackContext) -> None:
-    """Startup + nightly: fill the B2+ task pool (all 6 formats) to target via the
+    """Startup + nightly: fill the B2+ task pool (all formats) to target via the
     per-format top-up helper, off the critical path."""
     per_format = AUFGABE_PER_FORMAT_TARGET
     total_made = 0
@@ -23874,7 +23883,7 @@ async def admin_testalert_command(update: Update, context: CallbackContext) -> N
 
 async def admin_aufgabe_all_command(update: Update, context: CallbackContext) -> None:
     """Send ONE task of EACH B2+ format (admin showcase). /admin_aufgabe_all
-    Generates a missing format on the fly so all 6 variants can be reviewed."""
+    Generates a missing format on the fly so all variants can be reviewed."""
     user    = update.effective_user
     chat    = update.effective_chat
     message = update.effective_message
@@ -23951,7 +23960,7 @@ async def build_pool_inventory_report(context: CallbackContext) -> str:
     au = await asyncio.to_thread(count_aufgaben_by_format)
     au_target = AUFGABE_PER_FORMAT_TARGET
     au_fmts = [
-        ("Lückentext", "cloze"), ("Wortbildung", "wortbildung"),
+        ("Lückentext", "cloze"), ("Wortbildung", "wortbildung"), ("Wortgruppe", "wortgruppe"),
         ("Satztransformation", "transform"), ("Fehler-finden", "error"),
         ("Hör-Lücke", "hoerluecke"), ("Pin-Bild", "pin"),
     ]
@@ -26235,7 +26244,7 @@ def main():
             QUIZ_SCHEDULE_TZ_NAME,
             _anagram_enabled(),
         )
-        # -- Aufgabe (B2+ text tasks): one daily slot per format → all 6 sent daily --
+        # -- Aufgabe (B2+ text tasks): one daily slot per format → all formats sent daily --
         for (_au_hour, _au_minute), _au_fmt in sorted(AUFGABE_FORMAT_SLOTS.items()):
             scheduler.add_job(
                 (lambda fmt=_au_fmt: submit_async(_send_scheduled_aufgabe, CallbackContext(application=application), fmt)),
@@ -26333,7 +26342,7 @@ def main():
         )
         logging.info("sprint_scheduler_slots_registered slots=%s", sorted(SPRINT_SLOT_TIMES.items()))
         # -- Aufgabe (B2+ text tasks) pool nightly top-up (03:00) --
-        # Keeps the library of all 6 formats refilled to target whenever it drops
+        # Keeps the library of all formats refilled to target whenever it drops
         # below the lower bound (heavy work — LLM/TTS/DALL-E/vision — runs overnight).
         scheduler.add_job(
             lambda: submit_async(prepare_aufgabe_pool_job, CallbackContext(application=application)),

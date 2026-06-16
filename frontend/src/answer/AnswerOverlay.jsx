@@ -57,6 +57,7 @@ const KIND_META = {
 const AU_LABELS = {
   cloze: { eyebrow: '✏️ Lückentext', title: 'Lückentext · B2+' },
   wortbildung: { eyebrow: '🔧 Wortbildung', title: 'Wortbildung · B2+' },
+  wortgruppe: { eyebrow: '🧱 Wortgruppe', title: 'Wortgruppen · C1' },
   transform: { eyebrow: '🔄 Umformung', title: 'Satztransformation · C1' },
   error: { eyebrow: '🔍 Fehler finden', title: 'Fehler finden · B2+' },
   hoerluecke: { eyebrow: '🎧 Hörlücke', title: 'Hörlücke · B2+' },
@@ -69,6 +70,7 @@ const AU_LABELS = {
 
 const AU_SUBS = {
   wortbildung: 'Bilde die richtige Wortform ✍️',
+  wortgruppe: 'Setze die ganze Wortgruppe ein ✍️',
   transform: 'Forme den Satz mit dem Schlüsselwort um ✍️',
   error: 'Finde und korrigiere den Fehler 🔍',
   hoerluecke: 'Höre und ergänze das fehlende Wort 🎧',

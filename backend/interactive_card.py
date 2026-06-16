@@ -427,6 +427,11 @@ def render_wortbildung_card(*, level: str = "B2+") -> bytes | None:
                  accent=(45, 212, 191), motif=_motif_blocks, cta="Bilde die richtige Form")
 
 
+def render_wortgruppe_card(*, level: str = "C1") -> bytes | None:
+    return _card(badge="GRAMMATIK", title="Wortgruppen", subtitle=f"Strukturen  ·  {level}",
+                 accent=(59, 130, 246), motif=_motif_blocks, cta="Setze die ganze Wortgruppe ein")
+
+
 def render_transform_card(*, level: str = "C1") -> bytes | None:
     return _card(badge="UMFORMEN", title="Satztransformation", subtitle=f"Umformung  ·  {level}",
                  accent=(129, 140, 248), motif=_motif_transform, cta="Forme den Satz um")

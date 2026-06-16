@@ -26,6 +26,12 @@ class OpenAIManagerPromptingTests(unittest.TestCase):
         self.assertIn("Prefer natural collocations and characteristic real usage", prompt)
         self.assertIn("Never output broken fragments, literal translations, or awkward artificial phrases.", prompt)
 
+    def test_wortgruppe_prompt_requires_full_phrase(self) -> None:
+        prompt = system_message["aufgabe_wortgruppe"]
+        self.assertIn("vollständige grammatische Wortgruppe", prompt)
+        self.assertIn("Vermeide Single-Word-Lösungen vollständig.", prompt)
+        self.assertIn("hint_ru", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

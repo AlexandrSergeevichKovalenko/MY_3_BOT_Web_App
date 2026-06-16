@@ -38,6 +38,13 @@ def _normalize_quiz_text(value: str) -> str:
     return cleaned
 
 
+def check_quiz_freeform_exact(*, user_text: str, correct_text: str) -> bool:
+    """Lightly normalized exact comparison for full phrases/groups."""
+    user_norm = _normalize_quiz_text(user_text)
+    correct_norm = _normalize_quiz_text(correct_text)
+    return bool(user_norm and correct_norm and user_norm == correct_norm)
+
+
 def check_quiz_freeform_deterministic(*, user_text: str, correct_text: str) -> bool:
     user_norm = _normalize_quiz_text(user_text)
     correct_norm = _normalize_quiz_text(correct_text)
@@ -896,6 +903,8 @@ def aufgabe_client_meta(fmt: str, payload: dict) -> dict:
         meta["satz"] = str(payload.get("satz") or "")
         meta["stamm"] = str(payload.get("stamm") or "")
         meta["stamm_ru"] = str(payload.get("stamm_ru") or "")
+    elif fmt == "wortgruppe":
+        meta["satz"] = str(payload.get("satz") or "")
     elif fmt == "adjektiv":
         # Send only the phrase parts (NOT the correct ending) so it can't be read off.
         before = str(payload.get("before") or "")
@@ -981,7 +990,7 @@ def load_aufgabe_task(*, dispatch_id: int, user_id: int) -> dict | None:
 
 
 # ── Mistakes review ("работа над ошибками"): record + spaced-repetition session ─
-_REVIEW_FORMATS = {"cloze", "wortbildung", "transform", "error", "satzbau", "adjektiv"}
+_REVIEW_FORMATS = {"cloze", "wortbildung", "wortgruppe", "transform", "error", "satzbau", "adjektiv"}
 
 
 def load_review_next(*, user_id: int) -> dict:
@@ -1116,6 +1125,9 @@ def _check_aufgabe(fmt: str, payload: dict, raw_input: str) -> bool:
         # backward-compat single gap
         candidates = [str(payload.get("correct") or "")] + [str(a) for a in (payload.get("aliases") or [])]
         return any(check_quiz_freeform_deterministic(user_text=answer, correct_text=c) for c in candidates if str(c).strip())
+    if fmt == "wortgruppe":
+        candidates = [str(payload.get("correct") or "")] + [str(a) for a in (payload.get("aliases") or [])]
+        return any(check_quiz_freeform_exact(user_text=answer, correct_text=c) for c in candidates if str(c).strip())
     if fmt == "transform":
         candidates = [str(a) for a in (payload.get("accepted") or [])]
     else:  # cloze, wortbildung
