@@ -35484,7 +35484,41 @@ _MASTERY_POOL_SPECS = {
                 "item_col": "card_id", "bank": "bt_3_anagram_cards", "id_col": "card_id"},
     "article_quiz": {"ans": "bt_3_article_quiz_answers", "disp": "bt_3_article_quiz_dispatches",
                      "item_col": "word_id", "bank": "bt_3_article_quiz_bank", "id_col": "word_id"},
+    # crossword: retire/count use the generic spec; mastery is computed by the
+    # dedicated mastered_crossword_ids (puzzle = a user got ALL words right).
+    "crossword": {"ans": "bt_3_crossword_answers", "disp": "bt_3_crossword_dispatches",
+                  "item_col": "crossword_id", "bank": "bt_3_crossword_bank", "id_col": "crossword_id"},
 }
+
+
+def mastered_crossword_ids(*, min_answerers: int, ratio: float = 0.60) -> list[str]:
+    """Crossword puzzles the crowd mastered. A user 'mastered' a puzzle if every word
+    they submitted for it was correct (BOOL_AND); retire when ≥ min_answerers distinct
+    users tried it and ≥ ratio of them got the WHOLE puzzle right."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    WITH per_user AS (
+                        SELECT d.crossword_id, a.user_id, BOOL_AND(a.is_correct) AS all_right
+                        FROM bt_3_crossword_answers a
+                        JOIN bt_3_crossword_dispatches d ON d.id = a.dispatch_id
+                        JOIN bt_3_crossword_bank b ON b.crossword_id = d.crossword_id
+                        WHERE b.retired = FALSE
+                        GROUP BY d.crossword_id, a.user_id
+                    )
+                    SELECT crossword_id FROM per_user
+                    GROUP BY crossword_id
+                    HAVING COUNT(*) >= %s
+                       AND COUNT(*) FILTER (WHERE all_right)::float / NULLIF(COUNT(*), 0) >= %s
+                    """,
+                    (int(min_answerers), float(ratio)),
+                )
+                return [str(r[0]) for r in (cur.fetchall() or [])]
+    except Exception:
+        logging.warning("mastered_crossword_ids failed", exc_info=True)
+        return []
 
 
 def mastered_pool_item_ids(domain: str, *, min_answerers: int, ratio: float = 0.60) -> list[str]:

@@ -23230,11 +23230,32 @@ async def _rotate_pool_domain(context: CallbackContext, domain: str, regen_job, 
     return retired, added
 
 
-async def _mastery_rotation_job(context: CallbackContext) -> None:
+async def _rotate_crossword_domain(context: CallbackContext, *, min_answerers: int) -> tuple[int, int]:
+    """Retire crowd-mastered crosswords (whole puzzle solved by the crowd), then
+    refill via the existing crossword pool job. Returns (retired, added)."""
+    from backend.database import (mastered_crossword_ids, retire_pool_item_ids, count_pool_non_retired)
+    ids = await asyncio.to_thread(mastered_crossword_ids,
+                                  min_answerers=min_answerers, ratio=MASTERY_CORRECT_RATIO)
+    n0 = await asyncio.to_thread(count_pool_non_retired, "crossword")
+    retired = await asyncio.to_thread(retire_pool_item_ids, "crossword", ids)
+    added = 0
+    if retired:
+        try:
+            await prepare_crossword_pool_job(context)
+        except Exception:
+            logging.warning("rotation: crossword regen failed", exc_info=True)
+        n1 = await asyncio.to_thread(count_pool_non_retired, "crossword")
+        added = max(0, n1 - (n0 - retired))
+    return retired, added
+
+
+async def _mastery_rotation_job(context: CallbackContext) -> list[tuple[str, int, int]]:
     """Nightly: per domain, retire what the active crowd has mastered and regenerate
-    fresh replacements (deduped), logging the churn for the weekly report."""
+    fresh replacements (deduped), logging the churn for the weekly report. Returns
+    [(domain, retired, added)] so callers (/admin_rotate) can report this run."""
+    results: list[tuple[str, int, int]] = []
     if not MASTERY_ROTATION_ENABLED:
-        return
+        return results
     from backend.database import count_active_users, record_rotation_run
     try:
         active = await asyncio.to_thread(count_active_users, MASTERY_ACTIVE_WINDOW_DAYS)
@@ -23247,6 +23268,7 @@ async def _mastery_rotation_job(context: CallbackContext) -> None:
     try:
         retired, added = await _rotate_aufgabe_domain(context, min_answerers=min_answerers)
         await asyncio.to_thread(record_rotation_run, "aufgabe", retired, added)
+        results.append(("aufgabe", retired, added))
         logging.info("mastery rotation[aufgabe]: retired=%s added=%s", retired, added)
     except Exception:
         logging.warning("mastery rotation[aufgabe] failed", exc_info=True)
@@ -23257,9 +23279,19 @@ async def _mastery_rotation_job(context: CallbackContext) -> None:
         try:
             retired, added = await _rotate_pool_domain(context, domain, regen_job, min_answerers=min_answerers)
             await asyncio.to_thread(record_rotation_run, domain, retired, added)
+            results.append((domain, retired, added))
             logging.info("mastery rotation[%s]: retired=%s added=%s", domain, retired, added)
         except Exception:
             logging.warning("mastery rotation[%s] failed", domain, exc_info=True)
+    # Crossword (puzzle-level mastery).
+    try:
+        retired, added = await _rotate_crossword_domain(context, min_answerers=min_answerers)
+        await asyncio.to_thread(record_rotation_run, "crossword", retired, added)
+        results.append(("crossword", retired, added))
+        logging.info("mastery rotation[crossword]: retired=%s added=%s", retired, added)
+    except Exception:
+        logging.warning("mastery rotation[crossword] failed", exc_info=True)
+    return results
 
 
 _ROTATION_DOMAIN_LABELS = {
@@ -23307,8 +23339,40 @@ async def _mastery_rotation_weekly_report_job(context: CallbackContext) -> None:
             logging.warning("rotation weekly report: DM failed admin=%s", admin_id, exc_info=True)
 
 
+async def _run_rotation_and_report(context: CallbackContext, *, chat_id: int) -> None:
+    """Background: run the rotation (heavy regeneration off the command path) and
+    DM a per-domain report when done."""
+    try:
+        results = await _mastery_rotation_job(context)
+    except Exception:
+        logging.warning("admin rotate (bg) failed", exc_info=True)
+        try:
+            await context.bot.send_message(chat_id=chat_id, text="❌ Ротация упала — см. логи.")
+        except Exception:
+            pass
+        return
+    out = ["✅ <b>Ротация завершена.</b>"]
+    if results:
+        for domain, retired, added in results:
+            label = _ROTATION_DOMAIN_LABELS.get(domain, domain)
+            out.append(f"• {label}: −{retired} / +{added}")
+        total_r = sum(r for _, r, _ in results)
+        total_a = sum(a for _, _, a in results)
+        out.append(f"\n<b>Итого:</b> −{total_r} списано / +{total_a} добавлено")
+        if total_r == 0:
+            out.append("(пока никто не «освоил» элементы до порога — это нормально)")
+    else:
+        out.append("Ротация отключена (MASTERY_ROTATION_ENABLED).")
+    try:
+        await context.bot.send_message(chat_id=chat_id, text="\n".join(out)[:4000], parse_mode="HTML")
+    except Exception:
+        logging.warning("admin rotate report DM failed", exc_info=True)
+
+
 async def admin_rotate_command(update: Update, context: CallbackContext) -> None:
-    """Run the crowd-mastery rotation now (admin/testing). /admin_rotate"""
+    """Run the crowd-mastery rotation now (admin/testing). /admin_rotate
+    Acks instantly; the heavy regeneration runs in the background and a report
+    is DMed when finished (can take a few minutes if items were retired)."""
     user = update.effective_user
     message = update.effective_message
     if not user or not message:
@@ -23319,16 +23383,11 @@ async def admin_rotate_command(update: Update, context: CallbackContext) -> None
     from backend.database import count_active_users
     active = await asyncio.to_thread(count_active_users, MASTERY_ACTIVE_WINDOW_DAYS)
     min_answerers = _mastery_min_answerers(active)
-    status = await message.reply_text(
-        f"⏳ Ротация: активных пользователей {active}, порог ≥{min_answerers} ответивших и "
-        f"≥{int(MASTERY_CORRECT_RATIO * 100)}% верно…")
-    await _mastery_rotation_job(context)
-    from backend.database import get_rotation_summary
-    rows = await asyncio.to_thread(get_rotation_summary, 1)
-    out = ["✅ Ротация выполнена."]
-    for r in rows:
-        out.append(f"• {r['domain']}: −{r['retired']} / +{r['added']}")
-    await status.edit_text("\n".join(out)[:4000])
+    await message.reply_text(
+        f"🔄 Ротация запущена.\nАктивных: {active} · порог: ≥{min_answerers} ответивших и "
+        f"≥{int(MASTERY_CORRECT_RATIO * 100)}% верно.\n"
+        f"Отчёт пришлю по завершении (если что-то списалось — идёт генерация свежего, это пара минут).")
+    asyncio.create_task(_run_rotation_and_report(context, chat_id=int(message.chat_id)))
 
 
 async def _seed_billing_prices_job(context: CallbackContext) -> None:
