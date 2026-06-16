@@ -39,9 +39,14 @@ export default function CrosswordGrid({ task, onSubmit, submitting }) {
     const compute = () => {
       const w = el.clientWidth;
       if (!w) return;
-      const PAD = 14;  // room for the corner number badges on the edge cells
-      const byW = (w - PAD - CW_GAP * (cols - 1)) / cols;
-      setCell(Math.max(20, Math.min(40, Math.floor(byW))));
+      const PAD = 16;  // room for the corner number badges + edge breathing
+      const fitW = Math.floor((w - PAD - CW_GAP * (cols - 1)) / cols);
+      // Use the largest size that FITS the card width (capped at 40). Never force a
+      // hard minimum that could exceed the width — that pushed the last column out
+      // of the card on wide grids / narrow phones. Only shrink below 16 for
+      // unusually wide grids, so the whole grid always stays inside the card.
+      const size = fitW >= 16 ? Math.min(40, fitW) : Math.max(12, fitW);
+      setCell(size);
     };
     compute();
     const ro = new ResizeObserver(compute);
