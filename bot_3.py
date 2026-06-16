@@ -682,12 +682,15 @@ def _persist_message_activity_touch(user_id: int, username: str) -> None:
         conn.close()
 pending_language_tutor_input = {}
 pending_tts_budget_custom = {}
+pending_admin_broadcast = {}
 TTS_BUDGET_CUSTOM_TTL_SECONDS = 60 * 5
 LANGUAGE_TUTOR_INPUT_TTL_SECONDS = 60 * 20
 QUIZ_FREEFORM_INPUT_TTL_SECONDS = 60 * 60 * 48
 PENDING_INPUT_STATE_QUIZ_FREEFORM = "quiz_freeform"
 PENDING_INPUT_STATE_LANGUAGE_TUTOR = "language_tutor_input"
 PENDING_INPUT_STATE_TTS_BUDGET_CUSTOM = "tts_budget_custom"
+PENDING_INPUT_STATE_ADMIN_BROADCAST = "admin_broadcast"
+ADMIN_BROADCAST_INPUT_TTL_SECONDS = 60 * 15
 PENDING_INPUT_STATE_CROSSWORD = "crossword_answer"
 CROSSWORD_ANSWER_TTL_SECONDS = 60 * 30  # 30 minutes
 PENDING_INPUT_STATE_REBUS = "rebus_answer"
@@ -710,6 +713,7 @@ ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT = "🛡 Готов к батлам"
 ADJEKTIV_SPRINT_BUTTON_TEXT = "🔠 Adjektiv"
 ADJEKTIV_BATTLE_BUTTON_TEXT = "⚔️ Adjektiv-батл"
 BATTLE_HISTORY_BUTTON_TEXT = "📜 История батлов"
+ADMIN_BROADCAST_BUTTON_TEXT = "📣 Рассылка всем"
 SHORTCUT_AUTOSAVE_BUTTON_TEXT = "🌙 Ночной автосейв"  # neutral fallback when user is unknown
 _AUTOSAVE_BUTTON_PREFIX = "🌙 Автосейв:"  # dynamic label prefix used for routing reply-button taps
 # Short-lived cache so rendering the reply keyboard doesn't hit the DB on every menu draw.
@@ -1131,9 +1135,11 @@ class TrackingExtBot(ExtBot):
     @staticmethod
     def _strip_internal_kwargs(kwargs):
         kwargs.pop("language_tutor_button", None)
+        kwargs.pop("suppress_private_keyboard_attach", None)
         return kwargs
 
     async def send_message(self, *args, **kwargs):
+        suppress_private_keyboard_attach = bool(kwargs.get("suppress_private_keyboard_attach"))
         kwargs = self._strip_internal_kwargs(kwargs)
         # Keep the DM reply-keyboard alive silently: piggyback it onto ordinary DM
         # text replies that don't already carry a markup (throttled per user), so
@@ -1142,7 +1148,7 @@ class TrackingExtBot(ExtBot):
             chat_id = kwargs.get("chat_id")
             if chat_id is None and args:
                 chat_id = args[0]
-            if isinstance(chat_id, int) and chat_id > 0:
+            if isinstance(chat_id, int) and chat_id > 0 and not suppress_private_keyboard_attach:
                 rm = kwargs.get("reply_markup")
                 if rm is None:
                     if _kb_should_attach(int(chat_id)):
@@ -2810,6 +2816,8 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
     adjektiv_row = [ADJEKTIV_SPRINT_BUTTON_TEXT] + ([ADJEKTIV_BATTLE_BUTTON_TEXT] if is_pro else [])
     rows.append(adjektiv_row)
     rows.append([BATTLE_HISTORY_BUTTON_TEXT])
+    if user_id is not None and _is_admin_user(int(user_id)):
+        rows.append([ADMIN_BROADCAST_BUTTON_TEXT])
     return ReplyKeyboardMarkup(
         [
             *rows,
@@ -5758,6 +5766,54 @@ async def handle_user_message(update: Update, context: CallbackContext):
 
     if _is_admin_user(user_id):
         if await _try_handle_admin_support_reply(update, context, text):
+            return
+        if update.effective_chat and update.effective_chat.type == "private" and text == ADMIN_BROADCAST_BUTTON_TEXT:
+            _start_admin_broadcast_input(int(user_id))
+            await update.message.reply_text(
+                "Введите текст сообщения, которое нужно разослать всем пользователям.\n"
+                "Чтобы отменить, отправьте `cancel`.",
+                parse_mode="Markdown",
+                reply_markup=_build_private_language_tutor_reply_keyboard(int(user_id)),
+            )
+            return
+        pending_broadcast = _restore_admin_broadcast_input(int(user_id))
+        if pending_broadcast and update.effective_chat and update.effective_chat.type == "private":
+            started_at = float((pending_broadcast or {}).get("started_at") or 0.0)
+            state_key = str((pending_broadcast or {}).get("state_key") or f"admin_broadcast:{int(user_id)}").strip()
+            if started_at > 0 and (pytime.time() - started_at) > ADMIN_BROADCAST_INPUT_TTL_SECONDS:
+                _clear_admin_broadcast_input(int(user_id), state_key=state_key)
+                await update.message.reply_text(
+                    "Окно рассылки истекло. Нажмите `📣 Рассылка всем` ещё раз.",
+                    parse_mode="Markdown",
+                    reply_markup=_build_private_language_tutor_reply_keyboard(int(user_id)),
+                )
+                return
+            lowered = str(text or "").strip().lower()
+            if lowered in {"cancel", "/cancel", "отмена"}:
+                _clear_admin_broadcast_input(int(user_id), state_key=state_key)
+                await update.message.reply_text(
+                    "Ок, рассылку отменил.",
+                    reply_markup=_build_private_language_tutor_reply_keyboard(int(user_id)),
+                )
+                return
+            if len(text or "") > 3900:
+                await update.message.reply_text(
+                    "Сообщение слишком длинное. Сократите его до 3900 символов и отправьте ещё раз.",
+                    reply_markup=_build_private_language_tutor_reply_keyboard(int(user_id)),
+                )
+                return
+            _clear_admin_broadcast_input(int(user_id), state_key=state_key)
+            status = await update.message.reply_text(
+                "⏳ Принял текст. Рассылаю всем пользователям…",
+                reply_markup=_build_private_language_tutor_reply_keyboard(int(user_id)),
+            )
+            asyncio.create_task(_broadcast_admin_text_to_all_allowed_users(
+                context,
+                admin_user_id=int(user_id),
+                text=text,
+                status_chat_id=int(update.effective_chat.id),
+                status_msg_id=int(status.message_id),
+            ))
             return
         pending_budget = pending_tts_budget_custom.get(int(user_id))
         if not pending_budget:
@@ -15157,6 +15213,166 @@ def _clear_active_pending_input_state_for_user(*, user_id: int, state_type: str)
     if not state_key:
         return
     _clear_pending_input_state(state_key=state_key, user_id=int(user_id))
+
+
+def _restore_admin_broadcast_input(user_id: int) -> dict | None:
+    payload = pending_admin_broadcast.get(int(user_id))
+    if payload:
+        return payload
+    try:
+        persisted = get_active_pending_telegram_input_state_for_user(
+            int(user_id),
+            PENDING_INPUT_STATE_ADMIN_BROADCAST,
+        )
+    except Exception:
+        logging.warning(
+            "⚠️ Не удалось восстановить active admin broadcast input user_id=%s",
+            int(user_id),
+            exc_info=True,
+        )
+        return None
+    if not persisted:
+        return None
+    restored = {
+        "started_at": float(persisted.get("started_at") or 0.0),
+        "state_key": str(persisted.get("state_key") or "").strip(),
+    }
+    pending_admin_broadcast[int(user_id)] = restored
+    return restored
+
+
+def _start_admin_broadcast_input(user_id: int) -> dict:
+    state_key = f"admin_broadcast:{int(user_id)}"
+    payload = {
+        "started_at": pytime.time(),
+        "state_key": state_key,
+    }
+    pending_admin_broadcast[int(user_id)] = payload
+    _store_pending_input_state(
+        state_key=state_key,
+        user_id=int(user_id),
+        state_type=PENDING_INPUT_STATE_ADMIN_BROADCAST,
+        payload={},
+        ttl_seconds=ADMIN_BROADCAST_INPUT_TTL_SECONDS,
+    )
+    return payload
+
+
+def _clear_admin_broadcast_input(user_id: int, state_key: str | None = None) -> None:
+    pending_admin_broadcast.pop(int(user_id), None)
+    key = str(state_key or "").strip()
+    if key:
+        _clear_pending_input_state(state_key=key, user_id=int(user_id))
+
+
+async def _broadcast_admin_text_to_all_allowed_users(
+    context: CallbackContext,
+    *,
+    admin_user_id: int,
+    text: str,
+    status_chat_id: int,
+    status_msg_id: int,
+) -> None:
+    """Send one admin text to all allow-listed Telegram users.
+
+    Uses plain text only and suppresses the private reply-keyboard auto-attach so
+    recipients do not receive unrelated menus.
+    """
+    try:
+        allowed_user_ids = await asyncio.to_thread(list_allowed_telegram_user_ids)
+    except Exception:
+        allowed_user_ids = []
+    admin_ids = {int(admin_user_id)}
+    try:
+        admin_ids.update(int(item) for item in get_admin_telegram_ids() if int(item) > 0)
+    except Exception:
+        pass
+    targets: list[int] = []
+    seen: set[int] = set()
+    for raw_uid in allowed_user_ids:
+        try:
+            uid = int(raw_uid)
+        except Exception:
+            continue
+        if uid <= 0:
+            continue
+        if uid in admin_ids:
+            continue
+        if _is_synthetic_telegram_user_id(uid):
+            continue
+        if uid in seen:
+            continue
+        seen.add(uid)
+        targets.append(uid)
+
+    sent = 0
+    failed = 0
+    skipped = max(0, len(allowed_user_ids) - len(targets))
+    errors: list[str] = []
+    if not targets:
+        summary = "⚠️ Рассылка не выполнена: не нашёл получателей."
+        try:
+            await context.bot.edit_message_text(chat_id=status_chat_id, message_id=status_msg_id, text=summary)
+        except Exception:
+            await context.bot.send_message(chat_id=admin_user_id, text=summary)
+        _clear_admin_broadcast_input(admin_user_id)
+        return
+
+    for idx, uid in enumerate(targets, start=1):
+        try:
+            await context.bot.send_message(
+                chat_id=int(uid),
+                text=text,
+                suppress_private_keyboard_attach=True,
+            )
+            sent += 1
+        except RetryAfter as exc:
+            delay = max(1, int(getattr(exc, "retry_after", 1)))
+            logging.warning(
+                "admin broadcast RetryAfter user_id=%s sleep=%ss",
+                uid,
+                delay,
+            )
+            await asyncio.sleep(delay)
+            try:
+                await context.bot.send_message(
+                    chat_id=int(uid),
+                    text=text,
+                    suppress_private_keyboard_attach=True,
+                )
+                sent += 1
+            except Exception as retry_exc:
+                failed += 1
+                if len(errors) < 3:
+                    errors.append(f"{uid}: {type(retry_exc).__name__}")
+        except (TimedOut, BadRequest, Forbidden) as exc:
+            failed += 1
+            if len(errors) < 3:
+                errors.append(f"{uid}: {type(exc).__name__}")
+        except Exception as exc:
+            failed += 1
+            if len(errors) < 3:
+                errors.append(f"{uid}: {type(exc).__name__}")
+
+        if idx % 20 == 0:
+            await asyncio.sleep(1.0)
+
+    summary_lines = [
+        "✅ Рассылка завершена.",
+        f"Получатели: {len(targets)}",
+        f"Отправлено: {sent}",
+        f"Ошибки: {failed}",
+    ]
+    if skipped:
+        summary_lines.append(f"Пропущено нецелевых/синтетических: {skipped}")
+    if errors:
+        summary_lines.append("Примеры ошибок: " + ", ".join(errors))
+    summary = "\n".join(summary_lines)
+    try:
+        await context.bot.edit_message_text(chat_id=status_chat_id, message_id=status_msg_id, text=summary)
+    except Exception:
+        await context.bot.send_message(chat_id=admin_user_id, text=summary)
+    _clear_admin_broadcast_input(admin_user_id)
 
 
 def _restore_pending_quiz_question_request(request_key: str) -> dict | None:
