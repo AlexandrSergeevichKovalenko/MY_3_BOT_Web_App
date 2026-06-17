@@ -787,6 +787,10 @@ SYSTEM_MESSAGE_CLEANUP_EXCLUDE_TYPES = [
     for item in (os.getenv("SYSTEM_MESSAGE_CLEANUP_EXCLUDE_TYPES") or "").split(",")
     if item.strip()
 ]
+# Achievement keepsakes — грамоты и пьедесталы батлов: these are awards users want
+# to keep, so the nightly system-message cleanup must NEVER delete them, regardless
+# of how SYSTEM_MESSAGE_CLEANUP_EXCLUDE_TYPES is configured in the environment.
+ALWAYS_PRESERVE_MESSAGE_TYPES = ["certificate", "battle_podium"]
 ENABLE_LEGACY_REPLY_KEYBOARD = (os.getenv("ENABLE_LEGACY_REPLY_KEYBOARD") or "0").strip().lower() in {"1", "true", "yes", "on"}
 ENABLE_LEGACY_TRANSLATION_TEXT_CAPTURE = (
     os.getenv("ENABLE_LEGACY_TRANSLATION_TEXT_CAPTURE") or "0"
@@ -1122,6 +1126,23 @@ async def _track_telegram_message_async(message, message_type: str = "text") -> 
         logging.debug("Failed to track telegram system message", exc_info=True)
 
 
+async def _preserve_system_message(message, message_type: str) -> None:
+    """Re-tag an already-sent message so the nightly cleanup never deletes it.
+    Used for achievement keepsakes (грамоты / battle podiums) — see
+    ALWAYS_PRESERVE_MESSAGE_TYPES."""
+    try:
+        if not message:
+            return
+        await asyncio.to_thread(
+            update_telegram_system_message_type,
+            chat_id=int(message.chat_id),
+            message_id=int(message.message_id),
+            message_type=message_type,
+        )
+    except Exception:
+        logging.debug("Failed to preserve system message", exc_info=True)
+
+
 def _install_tracked_send_wrappers(app: Application) -> None:
     # Backward-compatible no-op: tracking is implemented in TrackingExtBot below.
     return
@@ -1238,7 +1259,7 @@ async def cleanup_system_messages(context: CallbackContext) -> None:
         SYSTEM_MESSAGE_CLEANUP_TZ,
         SYSTEM_MESSAGE_CLEANUP_MAX_DAYS_BACK,
         10000,
-        SYSTEM_MESSAGE_CLEANUP_EXCLUDE_TYPES,
+        SYSTEM_MESSAGE_CLEANUP_EXCLUDE_TYPES + ALWAYS_PRESERVE_MESSAGE_TYPES,
     )
     deleted = 0
     failed = 0
@@ -20755,8 +20776,9 @@ async def _close_article_sprint_battles_job(context: CallbackContext) -> None:
                 caption = f"⚔️ Батл #{bid} завершён — ты не успел сыграть 😔\n{win_line}"
             try:
                 if poster:
-                    await context.bot.send_photo(chat_id=uid, photo=io.BytesIO(poster),
+                    sent_msg = await context.bot.send_photo(chat_id=uid, photo=io.BytesIO(poster),
                                                  caption=caption, parse_mode="HTML")
+                    await _preserve_system_message(sent_msg, "battle_podium")
                 else:
                     await context.bot.send_message(chat_id=uid, text=caption + ("\n" + win_line if p else ""),
                                                    parse_mode="HTML")
@@ -23492,7 +23514,8 @@ async def _send_period_certificates(context: CallbackContext, *, days: int, titl
                 col_now=col_now, col_prev=col_prev, footer=footer, hero_png=hero)
             if not png:
                 continue
-            await context.bot.send_photo(chat_id=int(uid), photo=io.BytesIO(png))
+            cert_msg = await context.bot.send_photo(chat_id=int(uid), photo=io.BytesIO(png))
+            await _preserve_system_message(cert_msg, "certificate")
             sent += 1
         except Exception:
             logging.warning("certificate send failed uid=%s", uid, exc_info=True)
@@ -24086,8 +24109,9 @@ async def _close_adjektiv_sprint_battles_job(context: CallbackContext) -> None:
                 caption = f"⚔️ Adjektiv-батл #{bid} завершён — ты не успел сыграть 😔\n{win_line}"
             try:
                 if poster:
-                    await context.bot.send_photo(chat_id=uid, photo=io.BytesIO(poster),
+                    sent_msg = await context.bot.send_photo(chat_id=uid, photo=io.BytesIO(poster),
                                                  caption=caption, parse_mode="HTML")
+                    await _preserve_system_message(sent_msg, "battle_podium")
                 else:
                     await context.bot.send_message(chat_id=uid, text=caption + ("\n" + win_line if p else ""),
                                                    parse_mode="HTML")
