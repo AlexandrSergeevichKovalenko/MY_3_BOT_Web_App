@@ -127,6 +127,7 @@ from backend.database import (
     record_quiz_word,
     record_telegram_quiz_delivery,
     record_telegram_quiz_attempt,
+    get_telegram_quiz_poll_stats,
     is_telegram_quiz_word_mastered,
     get_admin_telegram_ids,
     is_telegram_user_allowed,
@@ -6029,6 +6030,7 @@ async def handle_user_message(update: Update, context: CallbackContext):
             quiz_data=pending.get("quiz_data") or {},
             is_correct=is_correct,
             selected_text=text,
+            poll_id=str(pending.get("poll_id") or "").strip() or None,
         )
         pending_payload = pending_quiz_freeform.pop(user_id, None) or pending
         _clear_pending_input_state(
@@ -16012,12 +16014,57 @@ async def _build_quiz_result_commentary_items(
     return _normalize_quiz_result_commentary(payload)
 
 
+def _build_quiz_poll_stats_lines(*, quiz_data: dict, poll_stats: dict | None, selected_index: int | None) -> list[str]:
+    if not isinstance(poll_stats, dict):
+        return []
+
+    total_answers = int(poll_stats.get("total_answers") or 0)
+    if total_answers <= 0:
+        return []
+
+    correct_answers = int(poll_stats.get("correct_answers") or 0)
+    wrong_answers = max(0, int(poll_stats.get("wrong_answers") or 0))
+    freeform_answers = int(poll_stats.get("freeform_answers") or 0)
+    option_counts = {
+        int(row.get("selected_option_index")): int(row.get("votes") or 0)
+        for row in (poll_stats.get("option_rows") or [])
+        if isinstance(row, dict) and row.get("selected_option_index") is not None
+    }
+    options = [str(option).strip() for option in (quiz_data.get("options") or []) if str(option).strip()]
+    correct_option_id = quiz_data.get("correct_option_id")
+    lines = [
+        "",
+        "📊 <b>Как отвечают все:</b>",
+    ]
+    for index, option in enumerate(options):
+        votes = int(option_counts.get(index) or 0)
+        pct = int(round((votes / total_answers) * 100)) if total_answers else 0
+        markers = []
+        if isinstance(correct_option_id, int) and index == int(correct_option_id):
+            markers.append("✅")
+        if selected_index is not None and index == int(selected_index):
+            markers.append("🙋")
+        marker_text = " ".join(markers).strip()
+        prefix = f"{marker_text} " if marker_text else ""
+        lines.append(f"{prefix}{index + 1}. {html.escape(option)} — {votes} ({pct}%)")
+
+    if freeform_answers > 0:
+        pct = int(round((freeform_answers / total_answers) * 100)) if total_answers else 0
+        lines.append(f"✍️ Свой вариант — {freeform_answers} ({pct}%)")
+
+    correct_pct = int(round((correct_answers / total_answers) * 100)) if total_answers else 0
+    wrong_pct = int(round((wrong_answers / total_answers) * 100)) if total_answers else 0
+    lines.append(f"Верно: {correct_answers}/{total_answers} ({correct_pct}%) · Неверно: {wrong_answers}/{total_answers} ({wrong_pct}%)")
+    return lines
+
+
 async def _send_quiz_result_private(
     context: ContextTypes.DEFAULT_TYPE,
     user_id: int,
     quiz_data: dict,
     is_correct: bool,
     selected_text: str | None = None,
+    poll_id: str | None = None,
 ) -> bool:
     options = quiz_data.get("options") or []
     correct_option_id = quiz_data.get("correct_option_id")
@@ -16067,6 +16114,23 @@ async def _send_quiz_result_private(
             "",
             f"💡 <b>Пояснение:</b> {html.escape(explanation_text)}",
         ])
+    if poll_id:
+        try:
+            poll_stats = await asyncio.to_thread(get_telegram_quiz_poll_stats, str(poll_id))
+            selected_index = None
+            try:
+                selected_index = int(options.index(selected_text)) if selected_text and selected_text in options else None
+            except Exception:
+                selected_index = None
+            lines.extend(
+                _build_quiz_poll_stats_lines(
+                    quiz_data=quiz_data if isinstance(quiz_data, dict) else {},
+                    poll_stats=poll_stats,
+                    selected_index=selected_index,
+                )
+            )
+        except Exception:
+            logging.warning("⚠️ Не удалось собрать статистику ответов квиза poll_id=%s", poll_id, exc_info=True)
     commentary_items = await _build_quiz_result_commentary_items(
         quiz_data=quiz_data if isinstance(quiz_data, dict) else {},
         correct_de=de_text,
@@ -22722,6 +22786,7 @@ async def _send_pending_freeform_cards_job(context: CallbackContext) -> None:
                 quiz_data=quiz_data,
                 is_correct=bool(row.get("is_correct")),
                 selected_text=str(row.get("answer") or ""),
+                poll_id=None,
             )
         except Exception:
             logging.warning(
@@ -26654,6 +26719,7 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
         quiz_data=quiz_data,
         is_correct=is_correct,
         selected_text=selected_text,
+        poll_id=str(poll_answer.poll_id or "").strip() or None,
     )
     logging.info(
         "📨 Quiz private result completed: poll_id=%s user_id=%s sent_private=%s",

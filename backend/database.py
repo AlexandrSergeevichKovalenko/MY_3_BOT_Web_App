@@ -15169,6 +15169,56 @@ def get_telegram_quiz_attempt(poll_id: str, user_id: int) -> dict | None:
     return {"selected_text": str(row[0] or ""), "is_correct": bool(row[1])}
 
 
+def get_telegram_quiz_poll_stats(poll_id: str) -> dict | None:
+    normalized_poll_id = str(poll_id or "").strip()
+    if not normalized_poll_id:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    COUNT(*)::int AS total_answers,
+                    COALESCE(SUM(CASE WHEN is_correct THEN 1 ELSE 0 END), 0)::int AS correct_answers,
+                    COALESCE(SUM(CASE WHEN selected_option_index IS NULL THEN 1 ELSE 0 END), 0)::int AS freeform_answers
+                FROM bt_3_telegram_quiz_attempts
+                WHERE poll_id = %s;
+                """,
+                (normalized_poll_id,),
+            )
+            totals_row = cursor.fetchone()
+            cursor.execute(
+                """
+                SELECT
+                    selected_option_index,
+                    COUNT(*)::int AS votes
+                FROM bt_3_telegram_quiz_attempts
+                WHERE poll_id = %s
+                  AND selected_option_index IS NOT NULL
+                GROUP BY selected_option_index
+                ORDER BY selected_option_index;
+                """,
+                (normalized_poll_id,),
+            )
+            option_rows = cursor.fetchall() or []
+    if not totals_row:
+        return None
+    return {
+        "poll_id": normalized_poll_id,
+        "total_answers": int(totals_row[0] or 0),
+        "correct_answers": int(totals_row[1] or 0),
+        "wrong_answers": max(0, int(totals_row[0] or 0) - int(totals_row[1] or 0)),
+        "freeform_answers": int(totals_row[2] or 0),
+        "option_rows": [
+            {
+                "selected_option_index": int(row[0]),
+                "votes": int(row[1] or 0),
+            }
+            for row in option_rows
+        ],
+    }
+
+
 def record_telegram_quiz_attempt(
     poll_id: str,
     *,
