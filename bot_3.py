@@ -24467,15 +24467,18 @@ async def _send_scheduled_artikel_learn(context: CallbackContext) -> None:
             logging.info("artikel_learn: no set for %s — skip", slot_date)
             return
     # Pre-warm mnemonics + audio off the user's path so the first open is instant.
+    pw = {"mnemonics": 0, "audio": 0, "images": 0}
     try:
         from backend.article_learn import ensure_daily_learn_mnemonics
         n = await asyncio.to_thread(ensure_daily_learn_mnemonics, slot_date)
+        pw["mnemonics"] = int(n or 0)
         logging.info("artikel_learn: prewarmed %s mnemonics", n)
     except Exception:
         logging.warning("artikel_learn: prewarm mnemonics failed", exc_info=True)
     real_set_id = set_id or await asyncio.to_thread(get_daily_article_sprint_set_id, slot_date)
     try:
         a = await _backfill_artikel_audio_for_set(real_set_id)
+        pw["audio"] = int(a or 0)
         logging.info("artikel_learn: prewarmed %s audio clips", a)
     except Exception:
         logging.warning("artikel_learn: prewarm audio failed", exc_info=True)
@@ -24486,9 +24489,17 @@ async def _send_scheduled_artikel_learn(context: CallbackContext) -> None:
         if theme_k:
             todo = await asyncio.to_thread(get_article_nouns_for_image, theme_k, 15)
             img = await _backfill_artikel_images(todo, limit=15)
+            pw["images"] = int(img or 0)
             logging.info("artikel_learn: prewarmed images %s", img)
     except Exception:
         logging.warning("artikel_learn: prewarm images failed", exc_info=True)
+    try:
+        from backend.database import record_artikel_nightly_metrics
+        await asyncio.to_thread(
+            record_artikel_nightly_metrics, run_date=slot_date,
+            mnemonics=pw["mnemonics"], audio=pw["audio"], images=pw["images"])
+    except Exception:
+        logging.warning("artikel_learn: metrics record failed", exc_info=True)
     targets = await _collect_quiz_delivery_user_targets(context)
     if not targets:
         return
@@ -24577,10 +24588,20 @@ async def _prewarm_artikel_focus_job(context: CallbackContext) -> None:
             themes.add(str(tk))
         themes.update(await asyncio.to_thread(list_article_learn_focus_themes, tomorrow))
         themes.discard("gemischt")
+        totals = {"mnemonics": 0, "audio": 0, "images": 0}
         for theme_key in themes:
             res = await _fill_artikel_theme_media(theme_key)
+            for k in totals:
+                totals[k] += int(res.get(k) or 0)
             logging.info("artikel_media: theme=%s filled %s", theme_key, res)
         logging.info("artikel_media prewarm done themes=%s", len(themes))
+        try:
+            from backend.database import record_artikel_nightly_metrics
+            await asyncio.to_thread(
+                record_artikel_nightly_metrics, run_date=now,
+                mnemonics=totals["mnemonics"], audio=totals["audio"], images=totals["images"])
+        except Exception:
+            logging.warning("artikel_media: metrics record failed", exc_info=True)
     except Exception:
         logging.warning("artikel_media prewarm failed", exc_info=True)
 
@@ -24604,6 +24625,16 @@ async def _artikel_autofill_nightly_job(context: CallbackContext) -> None:
             autofill_themes_below_target,
             per_theme_cap=ARTIKEL_AUTOFILL_PER_THEME, total_cap=ARTIKEL_AUTOFILL_TOTAL)
         logging.info("artikel autofill nightly: %s", res)
+        try:
+            from backend.database import record_artikel_nightly_metrics
+            wa = {str(t.get("theme")): int(t.get("added") or 0)
+                  for t in (res.get("themes") or []) if int(t.get("added") or 0) > 0}
+            await asyncio.to_thread(
+                record_artikel_nightly_metrics,
+                run_date=_get_quiz_schedule_now().date(),
+                words_added=wa, words_total=int(res.get("total_added") or 0))
+        except Exception:
+            logging.warning("artikel autofill: metrics record failed", exc_info=True)
     except Exception:
         logging.warning("artikel autofill nightly failed", exc_info=True)
 
@@ -24665,6 +24696,83 @@ async def admin_artikel_remindtheme_command(update: Update, context: CallbackCon
         return
     await _send_artikel_theme_reminder_job(context)
     await message.reply_text("✅ Напоминание отправлено в личку админам.")
+
+
+def _build_artikel_nightly_report_text() -> str:
+    """Morning admin report: what the overnight Artikel-Trainer jobs added/generated
+    (words per theme + media counts), plus a bank-fill snapshot. Sync (call via thread)."""
+    from backend.database import get_artikel_nightly_metrics, list_article_sprint_themes
+    m = get_artikel_nightly_metrics()
+    rows = list_article_sprint_themes() or []
+    by_key = {str(r["theme_key"]): r for r in rows}
+    lines = ["🧱 <b>Artikel Trainer — итоги ночи</b>"]
+    if not m:
+        lines.append("\nПока нет данных (ночные джобы ещё не отрабатывали).")
+        return "\n".join(lines)
+    lines[0] = f"🧱 <b>Artikel Trainer — итоги ночи</b> ({m['run_date']})"
+    lines.append("")
+    wa = m.get("words_added") or {}
+    lines.append(f"📥 <b>Слов добавлено: {int(m.get('words_total') or 0)}</b>")
+    if wa:
+        for key, n in sorted(wa.items(), key=lambda kv: -int(kv[1] or 0)):
+            r = by_key.get(str(key))
+            label = (r.get("label_ru") or r.get("label_de") or key) if r else key
+            prog = f" ({int(r['verified_count'])}/{int(r['target_count'])})" if r else ""
+            lines.append(f"  • {html.escape(str(label))}: +{int(n or 0)}{prog}")
+    else:
+        lines.append("  • за ночь новых слов не добавлялось")
+    lines += [
+        "",
+        "🎛 <b>Сгенерировано медиа:</b>",
+        f"  • Мнемоники: {int(m.get('mnemonics') or 0)}",
+        f"  • Аудио: {int(m.get('audio') or 0)}",
+        f"  • Картинки: {int(m.get('images') or 0)}",
+    ]
+    if rows:
+        total_v = sum(int(r.get("verified_count") or 0) for r in rows)
+        total_t = sum(int(r.get("target_count") or 0) for r in rows)
+        full = sum(1 for r in rows if int(r.get("verified_count") or 0) >= int(r.get("target_count") or 0))
+        lines += ["", f"📊 Банк: {total_v}/{total_t} слов · тем готово {full}/{len(rows)}"]
+    return "\n".join(lines)[:4000]
+
+
+ARTIKEL_REPORT_SLOT = (
+    max(0, min(23, int((os.getenv("ARTIKEL_REPORT_HOUR") or "9").strip() or "9"))),
+    max(0, min(59, int((os.getenv("ARTIKEL_REPORT_MINUTE") or "0").strip() or "0"))),
+)
+
+
+async def _send_artikel_nightly_report_job(context: CallbackContext) -> None:
+    """Daily 09:00 DM to admins: overnight Artikel-Trainer generation totals."""
+    if not _artikel_sprint_enabled():
+        return
+    try:
+        admin_ids = [int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0]
+        if not admin_ids:
+            return
+        text = await asyncio.to_thread(_build_artikel_nightly_report_text)
+        for admin_id in admin_ids:
+            try:
+                await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML")
+            except Exception:
+                logging.warning("artikel_report: send failed admin_id=%s", admin_id, exc_info=True)
+    except Exception:
+        logging.warning("artikel nightly report job failed", exc_info=True)
+
+
+async def admin_artikel_report_command(update: Update, context: CallbackContext) -> None:
+    """On-demand overnight Artikel-Trainer report. /artikelreport"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    text = await asyncio.to_thread(_build_artikel_nightly_report_text)
+    await message.reply_text(text, parse_mode="HTML")
+
+
 SPRINT_POOL_TARGET = max(3, int((os.getenv("SPRINT_POOL_TARGET") or "6").strip() or "6"))
 SPRINT_COOLDOWN_DAYS = max(7, int((os.getenv("SPRINT_COOLDOWN_DAYS") or "21").strip() or "21"))
 
@@ -27175,6 +27283,7 @@ def main():
     application.add_handler(CommandHandler("admin_battle_images", admin_battle_images_command))
     application.add_handler(CommandHandler("artikel_themes", admin_artikel_themes_command))
     application.add_handler(CommandHandler("artikel_remindtheme", admin_artikel_remindtheme_command))
+    application.add_handler(CommandHandler("artikelreport", admin_artikel_report_command))
     application.add_handler(CommandHandler("artikel_reset", admin_artikel_reset_command))
     application.add_handler(CommandHandler("artikel_learn_preview", admin_artikel_learn_preview_command))
     application.add_handler(CommandHandler("artikel_mnemonics", admin_artikel_mnemonics_command))
@@ -27634,6 +27743,14 @@ def main():
             "cron",
             hour=int(ARTIKEL_THEME_REMINDER_SLOT[0]),
             minute=int(ARTIKEL_THEME_REMINDER_SLOT[1]),
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Artikel Trainer: morning DM with last night's generation totals (09:00) --
+        scheduler.add_job(
+            lambda: submit_async(_send_artikel_nightly_report_job, CallbackContext(application=application)),
+            "cron",
+            hour=int(ARTIKEL_REPORT_SLOT[0]),
+            minute=int(ARTIKEL_REPORT_SLOT[1]),
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
         # -- Artikel Sprint: close expired battles + DM results (00:05) --

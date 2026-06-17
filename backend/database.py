@@ -1170,6 +1170,100 @@ def record_dict_dedup_run(
         logging.exception("record_dict_dedup_run failed")
 
 
+def record_artikel_nightly_metrics(
+    *,
+    run_date,
+    words_added: dict | None = None,
+    words_total: int = 0,
+    mnemonics: int = 0,
+    audio: int = 0,
+    images: int = 0,
+) -> None:
+    """Accumulate one date's Artikel-Trainer nightly generation totals (for the
+    morning admin report). Several jobs contribute on the same Vienna date (02:30
+    word autofill, 03:40 + 08:00 media prewarm), so MEDIA counters add up while the
+    word fields are set once by the autofill job. One row per run_date. Best-effort;
+    never raises into a scheduler job."""
+    try:
+        import json as _json
+        wa_json = _json.dumps(words_added or {}, ensure_ascii=False)
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS bt_3_artikel_nightly_runs (
+                        run_date    DATE PRIMARY KEY,
+                        words_added JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        words_total INTEGER NOT NULL DEFAULT 0,
+                        mnemonics   INTEGER NOT NULL DEFAULT 0,
+                        audio       INTEGER NOT NULL DEFAULT 0,
+                        images      INTEGER NOT NULL DEFAULT 0,
+                        updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                    """
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_artikel_nightly_runs
+                        (run_date, words_added, words_total, mnemonics, audio, images, updated_at)
+                    VALUES (%s, %s::jsonb, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (run_date) DO UPDATE SET
+                        words_added = CASE WHEN EXCLUDED.words_added <> '{}'::jsonb
+                                          THEN EXCLUDED.words_added
+                                          ELSE bt_3_artikel_nightly_runs.words_added END,
+                        words_total = CASE WHEN EXCLUDED.words_total > 0
+                                          THEN EXCLUDED.words_total
+                                          ELSE bt_3_artikel_nightly_runs.words_total END,
+                        mnemonics   = bt_3_artikel_nightly_runs.mnemonics + EXCLUDED.mnemonics,
+                        audio       = bt_3_artikel_nightly_runs.audio     + EXCLUDED.audio,
+                        images      = bt_3_artikel_nightly_runs.images    + EXCLUDED.images,
+                        updated_at  = NOW();
+                    """,
+                    (run_date, wa_json, int(words_total),
+                     int(mnemonics), int(audio), int(images)),
+                )
+            conn.commit()
+    except Exception:
+        logging.exception("record_artikel_nightly_metrics failed")
+
+
+def get_artikel_nightly_metrics(run_date=None) -> dict | None:
+    """The Artikel-Trainer nightly totals for a date (default: the most recent run).
+    Returns {run_date, words_added:{theme:n}, words_total, mnemonics, audio, images}
+    or None when there's no data yet."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT to_regclass('public.bt_3_artikel_nightly_runs');")
+                if not (cursor.fetchone() or [None])[0]:
+                    return None
+                cursor.execute(
+                    """
+                    SELECT run_date, words_added, words_total, mnemonics, audio, images
+                    FROM bt_3_artikel_nightly_runs
+                    WHERE (%s::date IS NULL OR run_date = %s::date)
+                    ORDER BY run_date DESC
+                    LIMIT 1;
+                    """,
+                    (run_date, run_date),
+                )
+                r = cursor.fetchone()
+        if not r:
+            return None
+        wa = r[1]
+        if isinstance(wa, str):
+            import json as _json
+            try:
+                wa = _json.loads(wa)
+            except Exception:
+                wa = {}
+        return {"run_date": r[0], "words_added": wa or {}, "words_total": int(r[2] or 0),
+                "mnemonics": int(r[3] or 0), "audio": int(r[4] or 0), "images": int(r[5] or 0)}
+    except Exception:
+        logging.exception("get_artikel_nightly_metrics failed")
+        return None
+
+
 def run_dictionary_dedup_now(*, max_users: int = 200, since_days: int = 7) -> dict:
     """Run the dictionary dedup immediately (admin /dedupnow), independent of the
     nightly scheduler and of Redis: scans the last `since_days` for up to
