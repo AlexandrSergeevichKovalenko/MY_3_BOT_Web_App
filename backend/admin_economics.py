@@ -56,6 +56,11 @@ _PROVIDER_LABELS: dict[str, str] = {
 # excluded from the "Затраты" (cost) breakdown so it reflects real API/content cost.
 _NON_COST_PROVIDERS: tuple[str, ...] = ("stripe", "app_internal")
 
+# Dictionary rows we write FOR the user (starter "Базовый словарь" import, GPT seed
+# sentences), not actions the user took. Counted separately so a 1000-word starter
+# import doesn't masquerade as engagement in the activity ranking.
+_SYSTEM_DICT_ORIGINS: tuple[str, ...] = ("import", "sentence_gpt_seed")
+
 _LIMIT_BUTTON_DELTAS: dict[str, tuple[int, ...]] = {
     "dictionary_lookup_daily": (-10, -5, 5, 10),
     "shortcut_forwarded_message_daily": (-5, 5),
@@ -344,23 +349,29 @@ def _user_activity(target_day: date, tz_name: str, *, limit: int = 15) -> list[d
     never hit the free-limit billing ledger — are still visible.
     """
     dict_counts: dict[int, int] = {}
+    imported_counts: dict[int, int] = {}
     translation_counts: dict[int, int] = {}
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT user_id, COUNT(*)
+                SELECT
+                    user_id,
+                    COUNT(*) FILTER (WHERE COALESCE(origin_process, '') <> ALL(%s)) AS real_actions,
+                    COUNT(*) FILTER (WHERE COALESCE(origin_process, '') = ANY(%s)) AS imported
                 FROM bt_3_webapp_dictionary_queries
                 WHERE user_id IS NOT NULL
                   AND user_id < %s
                   AND (created_at AT TIME ZONE %s)::date = %s
                 GROUP BY user_id;
                 """,
-                (SYNTHETIC_TELEGRAM_USER_ID_MIN, tz_name, target_day),
+                (list(_SYSTEM_DICT_ORIGINS), list(_SYSTEM_DICT_ORIGINS),
+                 SYNTHETIC_TELEGRAM_USER_ID_MIN, tz_name, target_day),
             )
             for row in cursor.fetchall() or []:
                 if row and row[0] is not None:
                     dict_counts[int(row[0])] = int(row[1] or 0)
+                    imported_counts[int(row[0])] = int(row[2] or 0)
             cursor.execute(
                 """
                 SELECT user_id, COUNT(*)
@@ -378,8 +389,9 @@ def _user_activity(target_day: date, tz_name: str, *, limit: int = 15) -> list[d
                     translation_counts[int(row[0])] = int(row[1] or 0)
 
     result = []
-    for user_id in set(dict_counts) | set(translation_counts):
+    for user_id in set(dict_counts) | set(translation_counts) | set(imported_counts):
         dict_actions = dict_counts.get(user_id, 0)
+        imported = imported_counts.get(user_id, 0)
         translations = translation_counts.get(user_id, 0)
         try:
             entitlement = resolve_entitlement(user_id=int(user_id), tz=tz_name)
@@ -391,7 +403,10 @@ def _user_activity(target_day: date, tz_name: str, *, limit: int = 15) -> list[d
                 "user_id": int(user_id),
                 "plan": plan,
                 "dict_actions": dict_actions,
+                "imported": imported,
                 "translations": translations,
+                # total = real engagement only; starter-import words are tracked
+                # separately and must not inflate the activity ranking.
                 "total": dict_actions + translations,
             }
         )
@@ -697,10 +712,12 @@ def format_admin_economics_report(payload: dict[str, Any]) -> str:
     for i, it in enumerate(activity):
         medal = "🥇" if i == 0 else "  "
         d, t = int(it.get("dict_actions") or 0), int(it.get("translations") or 0)
+        imported = int(it.get("imported") or 0)
         detail = " ".join(p for p in (f"📖{d}" if d else "", f"🔁{t}" if t else "") if p) or "—"
+        suffix = f"  +{imported} базовый словарь" if imported else ""
         L.append(
             f"{medal} {int(it.get('user_id') or 0)} {str(it.get('plan') or 'free').upper()} · "
-            f"{_fmt_num(it.get('total'))} ({detail})"
+            f"{_fmt_num(it.get('total'))} ({detail}){suffix}"
         )
 
     # ── OpenAI (one line when silent; expand only when there were calls) ──────

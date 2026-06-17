@@ -81,6 +81,12 @@ class AdminEconomicsFormattingTests(unittest.TestCase):
                 "new_users_today": 3,
                 "total_active_users": 13,
             },
+            "user_activity": [
+                {"user_id": 514237932, "plan": "free", "dict_actions": 9,
+                 "imported": 1000, "translations": 7, "total": 16},
+                {"user_id": 117649764, "plan": "pro", "dict_actions": 63,
+                 "imported": 0, "translations": 0, "total": 63},
+            ],
             "cost_breakdown": {
                 "library_cost": 0.0931,
                 "library_requests": 814,
@@ -146,6 +152,10 @@ class AdminEconomicsFormattingTests(unittest.TestCase):
         self.assertIn("🏭 Контент (мы)", text)
         self.assertIn("👤 Пользователи", text)
         self.assertIn("TTS-аудио", text)
+        # Starter-dictionary import is shown separately, not folded into engagement.
+        self.assertIn("+1000 базовый словарь", text)
+        # Real engagement (PRO 63) outranks the freshly-imported FREE user (16).
+        self.assertLess(text.index("117649764"), text.index("514237932"))
         self.assertIn("🤖 OpenAI", text)
         self.assertIn("🚦 Лимиты", text)
         self.assertIn("🧠 GPT-хелперы", text)
