@@ -35,6 +35,16 @@ _DEFAULT_GATEWAY_MODEL = "gpt-4.1-2025-04-14"
 _DEFAULT_TASK_MODELS = {
     "shortcut_split": "gpt-4.1-mini",
     "shortcut_split_fallback": "gpt-4.1-2025-04-14",
+    # Translation-sentence generation is a simple, high-volume task — gpt-4.1-mini
+    # is ~5x cheaper than gpt-4.1 and more than enough for A2–C2 sentences. This was
+    # the single biggest cost line. Override per-task via env LLM_TASK_MODEL_<TASK>.
+    "generate_sentences": "gpt-4.1-mini",
+    "generate_sentences_a2": "gpt-4.1-mini",
+    "generate_sentences_b1": "gpt-4.1-mini",
+    "generate_sentences_b2": "gpt-4.1-mini",
+    "generate_sentences_c1": "gpt-4.1-mini",
+    "generate_sentences_c2": "gpt-4.1-mini",
+    "generate_sentences_multilang": "gpt-4.1-mini",
 }
 _DEFAULT_RESPONSES_TASKS = {
     "dictionary_assistant",
@@ -4456,7 +4466,11 @@ def _log_openai_usage_event(task_name, usage, user_id) -> None:
         u = usage if isinstance(usage, dict) else {}
         tokens_in = int(u.get("input_tokens") or u.get("prompt_tokens") or 0)
         tokens_out = int(u.get("output_tokens") or u.get("completion_tokens") or 0)
-        model = _get_gateway_model()
+        # Price by the model this TASK actually used (e.g. generate_sentences → mini),
+        # not the default gateway model — otherwise the ledger over/under-prices when a
+        # task is routed to a cheaper/dearer model. Clean override name matches the
+        # seeded public-pricing SKUs (gpt-4.1-mini / gpt-4.1-*).
+        model = _get_task_gateway_model(task_name)
 
         def _worker():
             try:
