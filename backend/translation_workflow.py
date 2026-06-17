@@ -2,6 +2,7 @@ import asyncio
 import ast
 import hashlib
 import logging
+import math
 import os
 import re
 import json
@@ -75,6 +76,11 @@ PHASE1_CATASTROPHIC_FAIL_SCORE_THRESHOLD = 20
 PHASE1_CATASTROPHIC_FAIL_MAP_WEIGHT = 0.6
 AUTHORED_PROFILE_SOURCE = "authored_generation"
 AUTHORED_PROFILE_CONFIDENCE = 1.0
+# "Good enough" fill: treat a bucket as satisfied at this fraction of its target
+# (never below its low watermark), so we don't burn tokens chasing the last few
+# sentences the model keeps producing as duplicates for a narrow grammar focus.
+TRANSLATION_FOCUS_POOL_SATISFY_RATIO = max(
+    0.5, min(1.0, float((os.getenv("TRANSLATION_FOCUS_POOL_SATISFY_RATIO") or "0.85").strip() or "0.85")))
 REMEDIATION_PROFILE_SOURCE = "remediation_history"
 REMEDIATION_PROFILE_CONFIDENCE = 0.85
 TRANSLATION_SENTENCE_LLM_GLOBAL_CONCURRENCY = max(
@@ -3107,7 +3113,13 @@ async def prewarm_shared_translation_sentence_pool(
                     )
                     if skill_catalog is None:
                         skill_catalog = loaded_skill_catalog or []
-                    if ready_before >= int(target_ready_for_bucket):
+                    # "Good enough": stop at ~85% of target (but never below the low
+                    # watermark) instead of chasing the last few near-duplicates.
+                    satisfied_ready_for_bucket = max(
+                        int(min_ready_for_bucket),
+                        math.ceil(int(target_ready_for_bucket) * TRANSLATION_FOCUS_POOL_SATISFY_RATIO),
+                    )
+                    if ready_before >= int(satisfied_ready_for_bucket):
                         _log_flow_observation(
                             "translation_focus_pool_refill",
                             "bucket_skip_already_ready",
