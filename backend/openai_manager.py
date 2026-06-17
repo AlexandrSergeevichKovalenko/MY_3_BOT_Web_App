@@ -3024,9 +3024,15 @@ So baust du den Satz (WICHTIG):
 
 Regeln:
 - Genau EINE eindeutig richtige Lösung; die Lücke = Nomen + folgender Artikel (2 Wörter).
-- "stamm" = das deutsche Ausgangswort (Verb/Adjektiv), aus dem das Nomen gebildet wird.
+- "stamm" = das deutsche Ausgangswort, AUS DEM das Nomen erst GEBILDET wird. Es MUSS
+  ein VERB oder ADJEKTIV sein (z. B. "liefern", "entscheiden", "schwanken", "frei") —
+  NIEMALS das gesuchte Nomen selbst und NIEMALS ein Nomen ohne verbalen/adjektivischen
+  Stamm (z. B. "Krise", "Pizza"). Das abgeleitete Nomen MUSS sich vom "stamm" als
+  Wortform UNTERSCHEIDEN (echte Wortbildung, keine Identität). Wenn dir zu einem Wort
+  keine echte Nominalisierung einfällt, nimm ein anderes Stammwort.
 - "stamm_ru" = russische Übersetzung des Stammworts (z. B. "доставлять"), als Lernhilfe.
-- "correct" = exakt die zwei Wörter für die Lücke, z. B. "Lieferung der".
+- "correct" = exakt die zwei Wörter für die Lücke, z. B. "Lieferung der". Das erste Wort
+  ist das abgeleitete Nomen (≠ stamm), das zweite ist der Artikel.
 - "aliases" = nur echte gleichwertige Schreibvarianten, sonst [].
 - "erklaerung" = „lehrbuchartige" Erklärung auf Russisch (2–3 Sätze): welche Ableitung
   und WARUM dieser Kasus/Artikel (z. B. Genitiv-Ergänzung). Verständlich.

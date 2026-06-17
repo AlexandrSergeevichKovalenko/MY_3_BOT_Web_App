@@ -23040,6 +23040,20 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
             stamm = str(it.get("stamm") or "").strip()
             if not stamm:
                 return None
+            # Quality gate: this is "derive a noun from a verb/adjective stem +
+            # set the following article's case". Reject degenerate items where
+            #  (a) the answer isn't "Nomen + Artikel" (≥2 words, last = article), or
+            #  (b) the shown stem equals/leaks the answer noun (the Stamm hint is
+            #      displayed, so stem == answer gives the answer away — the "Krise"
+            #      bug, where no word-formation happened at all).
+            _ARTICLES = {"der", "die", "das", "des", "dem", "den"}
+            tokens = correct.split()
+            if len(tokens) < 2 or tokens[-1].casefold() not in _ARTICLES:
+                return None
+            noun = tokens[0]
+            stamm_cf = stamm.casefold()
+            if noun.casefold() == stamm_cf or any(t.casefold() == stamm_cf for t in tokens):
+                return None
             payload["stamm"] = stamm
             stamm_ru = str(it.get("stamm_ru") or "").strip()
             if stamm_ru:
