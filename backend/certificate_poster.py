@@ -1,0 +1,135 @@
+"""Light "грамота" (achievement certificate) PNG — a bright, diploma-style card
+showing a user's stats for a period in three columns: this period · previous ·
+Δ (green ▲ up / red ▼ down). Deliberately light/airy so the numbers and labels
+pop. No color-emoji in drawn text (server font has none) — icons are vector; our
+Smurf appears as a small circular seal. Rendered in-memory; sent via send_photo.
+"""
+from __future__ import annotations
+
+from io import BytesIO
+
+try:
+    from PIL import Image, ImageDraw, ImageFilter
+except Exception:  # pragma: no cover
+    Image = None
+
+from backend.champion_poster import _font, _avatar_circle  # noqa: F401
+
+W, H = 1080, 1380
+CREAM_TOP = (255, 251, 241)
+CREAM_BOT = (248, 240, 222)
+INK = (31, 41, 55)
+MUTED = (120, 113, 100)
+GOLD = (176, 137, 38)
+GOLD_LT = (212, 175, 75)
+BLUE = (37, 99, 235)
+GREEN = (22, 163, 74)
+RED = (220, 38, 38)
+LINE = (228, 219, 198)
+
+
+def _lerp(a, b, t):
+    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+
+def _rtext(d, right_x, y, text, font, fill):
+    tw = d.textlength(text, font=font)
+    d.text((right_x - tw, y), text, font=font, fill=fill)
+
+
+def _ctext(d, cx, y, text, font, fill):
+    tw = d.textlength(text, font=font)
+    d.text((cx - tw / 2, y), text, font=font, fill=fill)
+
+
+def _tri(d, cx, cy, size, up, fill):
+    if up:
+        d.polygon([(cx, cy - size), (cx - size, cy + size), (cx + size, cy + size)], fill=fill)
+    else:
+        d.polygon([(cx, cy + size), (cx - size, cy - size), (cx + size, cy - size)], fill=fill)
+
+
+def _medal(d, cx, cy, r):
+    """A small gold medal/star seal (vector)."""
+    # ribbon
+    d.polygon([(cx - 26, cy + r - 6), (cx - 10, cy + r + 60), (cx, cy + r + 30),
+               (cx + 10, cy + r + 60), (cx + 26, cy + r - 6)], fill=(193, 60, 60))
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=GOLD_LT, outline=GOLD, width=6)
+    d.ellipse([cx - r + 12, cy - r + 12, cx + r - 12, cy + r - 12], outline=GOLD, width=3)
+    # star
+    import math
+    pts = []
+    for i in range(10):
+        ang = -math.pi / 2 + i * math.pi / 5
+        rad = (r - 26) if i % 2 == 0 else (r - 26) * 0.45
+        pts.append((cx + rad * math.cos(ang), cy + rad * math.sin(ang)))
+    d.polygon(pts, fill=GOLD)
+
+
+def render_certificate(*, name: str, title: str, subtitle: str, rows: list[dict],
+                       col_now: str = "Сейчас", col_prev: str = "Раньше",
+                       footer: str = "", hero_png: bytes | None = None) -> bytes | None:
+    """rows: [{label, now, prev, dir}] where now/prev are display strings and dir is
+    +1 / 0 / -1 (improvement vs the previous period). Returns PNG bytes."""
+    if Image is None:
+        return None
+    img = Image.new("RGB", (W, H))
+    d = ImageDraw.Draw(img)
+    for y in range(H):
+        d.line([(0, y), (W, y)], fill=_lerp(CREAM_TOP, CREAM_BOT, y / H))
+
+    # Ornate double border.
+    d.rounded_rectangle([26, 26, W - 26, H - 26], radius=34, outline=GOLD, width=6)
+    d.rounded_rectangle([44, 44, W - 44, H - 44], radius=26, outline=GOLD_LT, width=2)
+
+    # Header.
+    _medal(d, W // 2, 150, 52)
+    _ctext(d, W // 2, 250, title, _font(82), GOLD)
+    _ctext(d, W // 2, 352, subtitle, _font(34, False), MUTED)
+    _ctext(d, W // 2, 410, name, _font(58), INK)
+    d.line([(W // 2 - 180, 492), (W // 2 + 180, 492)], fill=GOLD, width=3)
+
+    # Column geometry.
+    label_x = 96
+    now_r = 720
+    prev_r = 884
+    delta_cx = 980
+    head_y = 530
+    f_head = _font(26, False)
+    _rtext(d, now_r, head_y, col_now, f_head, MUTED)
+    _rtext(d, prev_r, head_y, col_prev, f_head, MUTED)
+    _ctext(d, delta_cx, head_y, "Δ", f_head, MUTED)
+
+    f_label = _font(36)
+    f_now = _font(44)
+    f_prev = _font(34, False)
+    y = 588
+    row_h = 104
+    for r in (rows or [])[:7]:
+        d.line([(label_x, y - 14), (W - 80, y - 14)], fill=LINE, width=2)
+        d.text((label_x, y + 18), str(r.get("label") or ""), font=f_label, fill=INK)
+        _rtext(d, now_r, y + 10, str(r.get("now") or "—"), f_now, BLUE)
+        _rtext(d, prev_r, y + 18, str(r.get("prev") or "—"), f_prev, MUTED)
+        dirv = int(r.get("dir") or 0)
+        if dirv > 0:
+            _tri(d, delta_cx, y + 36, 18, True, GREEN)
+        elif dirv < 0:
+            _tri(d, delta_cx, y + 36, 18, False, RED)
+        else:
+            d.line([(delta_cx - 16, y + 36), (delta_cx + 16, y + 36)], fill=MUTED, width=5)
+        y += row_h
+
+    d.line([(label_x, y - 14), (W - 80, y - 14)], fill=LINE, width=2)
+
+    # Smurf seal in the free top-right corner (won't collide with the rows/numbers).
+    if hero_png:
+        seal = _avatar_circle(hero_png, 150, GOLD)
+        if seal:
+            img.paste(seal, (W - 214, 70), seal)
+
+    if footer:
+        _ctext(d, W // 2, H - 92, footer, _font(34, False), MUTED)
+
+    out = BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()

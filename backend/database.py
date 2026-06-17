@@ -35762,6 +35762,141 @@ def get_rotation_summary(days: int = 7) -> list[dict]:
         return []
 
 
+# ── Personal achievement certificate (грамота) — per-user period stats ────────
+def _cert_count_by_user(table: str, ts_col: str, start, end, *,
+                        distinct_col: str | None = None, extra_where: str | None = None) -> dict:
+    sel = f"COUNT(DISTINCT {distinct_col})" if distinct_col else "COUNT(*)"
+    where = f"{ts_col} >= %s AND {ts_col} < %s" + (f" AND {extra_where}" if extra_where else "")
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT user_id, {sel} FROM {table} WHERE {where} GROUP BY user_id",  # noqa: S608
+                    (start, end),
+                )
+                return {int(r[0]): int(r[1]) for r in (cur.fetchall() or []) if r[0] is not None}
+    except Exception:
+        return {}
+
+
+def _cert_ratio_by_user(table: str, ts_col: str, correct_expr: str, total_expr: str, start, end) -> dict:
+    """Returns {user_id: (correct, total)} for accuracy metrics."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT user_id, {correct_expr}, {total_expr} FROM {table} "  # noqa: S608
+                    f"WHERE {ts_col} >= %s AND {ts_col} < %s GROUP BY user_id",
+                    (start, end),
+                )
+                return {int(r[0]): (int(r[1] or 0), int(r[2] or 0))
+                        for r in (cur.fetchall() or []) if r[0] is not None}
+    except Exception:
+        return {}
+
+
+def _cert_battle_wins_by_user(start, end) -> dict:
+    """Battles (Artikel + Adjektiv) whose deadline falls in the window and the user
+    finished 1st. {user_id: wins}."""
+    wins: dict[int, int] = {}
+    queries = [
+        # Artikel: set_id = 'asb_'||id, correct_count/time_ms
+        """
+        WITH closed AS (SELECT id, 'asb_' || id AS set_id FROM bt_3_article_sprint_battles
+                        WHERE status='closed' AND deadline >= %s AND deadline < %s),
+             ranked AS (SELECT r.user_id,
+                               RANK() OVER (PARTITION BY r.set_id ORDER BY r.correct_count DESC, r.time_ms ASC) rk
+                        FROM bt_3_article_sprint_results r WHERE r.set_id IN (SELECT set_id FROM closed))
+        SELECT user_id, COUNT(*) FROM ranked WHERE rk=1 GROUP BY user_id
+        """,
+        # Adjektiv: set_id stored on the battle, correct/time_ms
+        """
+        WITH closed AS (SELECT set_id FROM bt_3_adjektiv_sprint_battles
+                        WHERE status='closed' AND deadline >= %s AND deadline < %s),
+             ranked AS (SELECT r.user_id,
+                               RANK() OVER (PARTITION BY r.set_id ORDER BY r.correct DESC, r.time_ms ASC) rk
+                        FROM bt_3_adjektiv_sprint_results r WHERE r.set_id IN (SELECT set_id FROM closed))
+        SELECT user_id, COUNT(*) FROM ranked WHERE rk=1 GROUP BY user_id
+        """,
+    ]
+    for q in queries:
+        try:
+            with get_db_connection_context() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(q, (start, end))
+                    for r in cur.fetchall() or []:
+                        if r[0] is not None:
+                            wins[int(r[0])] = wins.get(int(r[0]), 0) + int(r[1] or 0)
+        except Exception:
+            continue
+    return wins
+
+
+def active_user_ids_in_window(start, end) -> set[int]:
+    """Distinct users who did anything trackable in [start, end)."""
+    users: set[int] = set()
+    for tbl, ts in _ACTIVE_USER_SOURCES:
+        try:
+            with get_db_connection_context() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"SELECT DISTINCT user_id FROM {tbl} WHERE {ts} >= %s AND {ts} < %s",  # noqa: S608
+                        (start, end),
+                    )
+                    for r in cur.fetchall() or []:
+                        if r[0] is not None:
+                            users.add(int(r[0]))
+        except Exception:
+            continue
+    return users
+
+
+def certificate_stats_for_window(start, end) -> dict:
+    """Per-user achievement metrics for [start, end). Each metric is one grouped
+    query (scalable), merged in Python. Returns {user_id: {...}}."""
+    games_tables = [
+        ("bt_3_rebus_answers", "answered_at", None),
+        ("bt_3_anagram_answers", "answered_at", None),
+        ("bt_3_aufgabe_answers", "answered_at", None),
+        ("bt_3_article_quiz_answers", "answered_at", None),
+        ("bt_3_crossword_answers", "answered_at", "dispatch_id"),  # per puzzle
+        ("bt_3_article_sprint_results", "created_at", None),
+        ("bt_3_adjektiv_sprint_results", "created_at", None),
+    ]
+    games: dict[int, int] = {}
+    for tbl, ts, dcol in games_tables:
+        for uid, n in _cert_count_by_user(tbl, ts, start, end, distinct_col=dcol).items():
+            games[uid] = games.get(uid, 0) + n
+    translations = _cert_count_by_user("bt_3_translations", "timestamp", start, end, distinct_col="sentence_id")
+    words = _cert_count_by_user("bt_3_webapp_dictionary_queries", "created_at", start, end)
+    audio = _cert_count_by_user("bt_3_listening_answers", "submitted_at", start, end)
+    wins = _cert_battle_wins_by_user(start, end)
+    # Article accuracy = quiz + sprint per-word answers combined.
+    art_q = _cert_ratio_by_user("bt_3_article_quiz_answers", "answered_at",
+                                "COUNT(*) FILTER (WHERE is_correct)", "COUNT(*)", start, end)
+    art_w = _cert_ratio_by_user("bt_3_article_sprint_word_answers", "answered_at",
+                                "COUNT(*) FILTER (WHERE is_correct)", "COUNT(*)", start, end)
+    adj = _cert_ratio_by_user("bt_3_adjektiv_sprint_results", "created_at",
+                              "SUM(correct)", "SUM(answered)", start, end)
+
+    out: dict[int, dict] = {}
+    all_ids = set(games) | set(translations) | set(words) | set(audio) | set(wins) | set(art_q) | set(art_w) | set(adj)
+    for uid in all_ids:
+        aqc, aqt = art_q.get(uid, (0, 0))
+        awc, awt = art_w.get(uid, (0, 0))
+        adc, adt = adj.get(uid, (0, 0))
+        out[uid] = {
+            "translations": int(translations.get(uid, 0)),
+            "words": int(words.get(uid, 0)),
+            "games": int(games.get(uid, 0)),
+            "audio": int(audio.get(uid, 0)),
+            "battle_wins": int(wins.get(uid, 0)),
+            "art_correct": aqc + awc, "art_total": aqt + awt,
+            "adj_correct": adc, "adj_total": adt,
+        }
+    return out
+
+
 def retire_aufgaben_by_format(fmt: str) -> int:
     """Retire every active aufgabe of a format so the pool refills with freshly
     generated (fixed-prompt) items. Returns count retired."""

@@ -23408,6 +23408,137 @@ async def _mastery_rotation_weekly_report_job(context: CallbackContext) -> None:
             logging.warning("rotation weekly report: DM failed admin=%s", admin_id, exc_info=True)
 
 
+# ── Personal achievement certificate (грамота) ────────────────────────────────
+def _build_cert_rows(cur: dict, prev: dict) -> list[dict]:
+    """Build the certificate rows (skip metrics that are zero in BOTH periods so
+    there's no wall of zeros). dir = improvement vs previous."""
+    rows: list[dict] = []
+
+    def add_int(label, key):
+        a = int(cur.get(key, 0))
+        b = int(prev.get(key, 0))
+        if a == 0 and b == 0:
+            return
+        rows.append({"label": label, "now": str(a), "prev": str(b),
+                     "dir": (1 if a > b else (-1 if a < b else 0))})
+
+    add_int("Переводы предложений", "translations")
+    add_int("Новых слов", "words")
+    add_int("Пройдено игр", "games")
+    add_int("Аудио-заданий", "audio")
+    add_int("Побед в батлах", "battle_wins")
+
+    def add_pct(label, ck, tk):
+        ac, at = int(cur.get(ck, 0)), int(cur.get(tk, 0))
+        bc, bt = int(prev.get(ck, 0)), int(prev.get(tk, 0))
+        if at == 0 and bt == 0:
+            return
+        an = round(100 * ac / at) if at else None
+        bn = round(100 * bc / bt) if bt else None
+        dirv = 0
+        if an is not None and bn is not None:
+            dirv = 1 if an > bn else (-1 if an < bn else 0)
+        elif an is not None:
+            dirv = 1
+        rows.append({"label": label, "now": (f"{an}%" if an is not None else "—"),
+                     "prev": (f"{bn}%" if bn is not None else "—"), "dir": dirv})
+
+    add_pct("Артикли — точность", "art_correct", "art_total")
+    add_pct("Окончания — точность", "adj_correct", "adj_total")
+    return rows
+
+
+async def _cert_user_name(context: CallbackContext, uid: int) -> str:
+    try:
+        chat = await context.bot.get_chat(int(uid))
+        return str(getattr(chat, "first_name", None) or getattr(chat, "username", None) or "Schlumpf")
+    except Exception:
+        return "Schlumpf"
+
+
+async def _send_period_certificates(context: CallbackContext, *, days: int, title: str,
+                                    subtitle_prefix: str, col_now: str, col_prev: str,
+                                    footer: str = "Так держать!") -> int:
+    """Render + DM a light achievement certificate to every active user: this period
+    (last `days`) vs the previous one, with green/red deltas. Returns how many sent."""
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    from backend.database import certificate_stats_for_window, active_user_ids_in_window
+    from backend.certificate_poster import render_certificate
+    now = _dt.now(_tz.utc)
+    cur_start = now - _td(days=days)
+    prev_start = now - _td(days=2 * days)
+    stats_now = await asyncio.to_thread(certificate_stats_for_window, cur_start, now)
+    stats_prev = await asyncio.to_thread(certificate_stats_for_window, prev_start, cur_start)
+    active = await asyncio.to_thread(active_user_ids_in_window, cur_start, now)
+    if not active:
+        return 0
+    hero = None
+    try:
+        from backend.battle_card import REMINDER_KEY
+        from backend.r2_storage import r2_get_bytes
+        hero = await asyncio.to_thread(r2_get_bytes, REMINDER_KEY)
+    except Exception:
+        hero = None
+    subtitle = f"{subtitle_prefix} · {cur_start.date().isoformat()} — {now.date().isoformat()}"
+    sent = 0
+    for uid in active:
+        try:
+            rows = _build_cert_rows(stats_now.get(uid, {}), stats_prev.get(uid, {}))
+            if not rows:
+                continue
+            name = await _cert_user_name(context, uid)
+            png = await asyncio.to_thread(
+                render_certificate, name=name, title=title, subtitle=subtitle, rows=rows,
+                col_now=col_now, col_prev=col_prev, footer=footer, hero_png=hero)
+            if not png:
+                continue
+            await context.bot.send_photo(chat_id=int(uid), photo=io.BytesIO(png))
+            sent += 1
+        except Exception:
+            logging.warning("certificate send failed uid=%s", uid, exc_info=True)
+    logging.info("certificates sent=%s (days=%s)", sent, days)
+    return sent
+
+
+async def _send_weekly_certificate_job(context: CallbackContext) -> None:
+    await _send_period_certificates(
+        context, days=7, title="ГРАМОТА", subtitle_prefix="Твои успехи за неделю",
+        col_now="Эта неделя", col_prev="Прошлая")
+
+
+async def admin_certificate_command(update: Update, context: CallbackContext) -> None:
+    """Preview your own weekly certificate. /admin_certificate"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    from backend.database import certificate_stats_for_window
+    from backend.certificate_poster import render_certificate
+    now = _dt.now(_tz.utc)
+    cur = await asyncio.to_thread(certificate_stats_for_window, now - _td(days=7), now)
+    prev = await asyncio.to_thread(certificate_stats_for_window, now - _td(days=14), now - _td(days=7))
+    rows = _build_cert_rows(cur.get(int(user.id), {}), prev.get(int(user.id), {}))
+    if not rows:
+        await message.reply_text("Пока нет данных за неделю для грамоты — поиграй немного и повтори.")
+        return
+    hero = None
+    try:
+        from backend.battle_card import REMINDER_KEY
+        from backend.r2_storage import r2_get_bytes
+        hero = await asyncio.to_thread(r2_get_bytes, REMINDER_KEY)
+    except Exception:
+        hero = None
+    png = await asyncio.to_thread(
+        render_certificate, name=_display_user_name(user), title="ГРАМОТА",
+        subtitle="Твои успехи за неделю (превью)", rows=rows,
+        col_now="Эта неделя", col_prev="Прошлая", footer="Так держать!", hero_png=hero)
+    await message.reply_photo(photo=io.BytesIO(png))
+
+
 async def _run_rotation_and_report(context: CallbackContext, *, chat_id: int) -> None:
     """Background: run the rotation (heavy regeneration off the command path) and
     DM a per-domain report when done."""
@@ -26788,6 +26919,7 @@ def main():
     application.add_handler(CommandHandler("artikel_addwords", admin_artikel_addwords_command))
     application.add_handler(CommandHandler("artikel_autofill", admin_artikel_autofill_command))
     application.add_handler(CommandHandler("admin_rotate", admin_rotate_command))
+    application.add_handler(CommandHandler("admin_certificate", admin_certificate_command))
     application.add_handler(CommandHandler("artikel_sample", admin_artikel_sample_command))
     application.add_handler(CommandHandler("artikel_buildtoday", admin_artikel_buildtoday_command))
     application.add_handler(CommandHandler("artikel_recheck", admin_artikel_recheck_command))
@@ -27283,6 +27415,15 @@ def main():
             day_of_week="mon",
             hour=10,
             minute=10,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Personal weekly achievement certificate → active users (Sun 17:00) --
+        scheduler.add_job(
+            lambda: submit_async(_send_weekly_certificate_job, CallbackContext(application=application)),
+            "cron",
+            day_of_week="sun",
+            hour=17,
+            minute=0,
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
         # -- Daily pool inventory report → admin DM (07:00, after all nightly top-ups) --
