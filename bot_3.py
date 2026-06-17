@@ -23085,8 +23085,20 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
             return None
         if len(woerter) < 3 or not correct_word or not (0 <= error_index < len(woerter)):
             return None
+        aliases = [str(a) for a in (it.get("aliases") or []) if str(a).strip()]
+        # Quality gate: the shown token at error_index MUST actually be wrong —
+        # i.e. differ from the correction. If it already equals correct_word (or
+        # an alias), the displayed sentence is already correct and there is NO
+        # findable error (the "Infinitiv am Ende / Wortstellung" failure mode,
+        # where the word is only at the wrong place, not misspelled, so it can't
+        # be fixed by retyping one token). Skip such impossible items.
+        def _bare(s: str) -> str:
+            return str(s or "").strip().strip(".,;:!?»«„“\"'()").casefold()
+        shown = _bare(woerter[error_index])
+        if shown and (shown == _bare(correct_word) or any(shown == _bare(a) for a in aliases)):
+            return None
         return {"woerter": woerter, "error_index": error_index, "correct_word": correct_word,
-                "aliases": [str(a) for a in (it.get("aliases") or []) if str(a).strip()], **common}
+                "aliases": aliases, **common}
     if fmt == "satzbau":
         satz = str(it.get("satz") or "").strip()
         woerter = [str(w) for w in (it.get("woerter") or []) if str(w).strip()]

@@ -3148,9 +3148,25 @@ Du erstellst deutsche "Finde den Fehler"-Aufgaben für fortgeschrittene Lernende
 
 Eingabe-JSON: {"count": <int>, "level": "B2"|"C1"}.
 
-Jede Aufgabe: EIN deutscher Satz mit GENAU EINEM klaren grammatischen Fehler in
-EINEM einzigen Wort (falscher Kasus, falsche Adjektivendung, falsche Verbform,
-falsche Präposition, falsche Wortstellung des einen Wortes). Der Rest ist korrekt.
+Jede Aufgabe: EIN deutscher Satz mit GENAU EINEM klaren Fehler an EINEM EINZIGEN
+Wort, der sich behebt, indem man GENAU DIESES eine Wort an DERSELBEN Stelle durch
+die richtige Form ERSETZT. Erlaubte Fehlertypen: falscher Kasus, falsche
+Adjektivendung, falsche Verbform/Konjugation, falsche Präposition, falscher
+Artikel, falsches Genus, falsches Hilfsverb, Rechtschreib-/Wortformfehler.
+Der Rest des Satzes ist korrekt.
+
+STRENG VERBOTEN (mit diesem Antwortformat — der Lernende tippt nur EIN Wort an und
+schreibt dessen korrekte Form — NICHT lösbar):
+- Wortstellungs-/Satzstellungsfehler JEDER Art: trennbares Präfix, Partizip II oder
+  Infinitiv NICHT am Satzende, Verbstellung im Neben-/Hauptsatz, ein Wort an der
+  falschen Position. Dort ist das Wort nur am falschen PLATZ, nicht falsch
+  geschrieben — das lässt sich durch Neutippen eines Wortes NICHT korrigieren.
+- Fehlende oder überzählige Wörter.
+
+PFLICHT: Das Wort an "error_index" (ohne Satzzeichen) und "correct_word" MÜSSEN
+unterschiedliche Wortformen sein. Ist das angezeigte Wort bereits korrekt, gibt es
+keinen findbaren Fehler — eine solche Aufgabe ist UNGÜLTIG und darf nicht erzeugt
+werden.
 
 Regeln:
 - "woerter" = der fehlerhafte Satz als Liste von Tokens (Wörter inkl. anhängender
