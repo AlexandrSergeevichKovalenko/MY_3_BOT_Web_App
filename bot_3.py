@@ -22643,6 +22643,13 @@ async def _send_mistake_review_reminders(context: CallbackContext) -> None:
         return
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(
         "🔁 Разобрать ошибки", url=get_webapp_deeplink("ans_rv_0"))]])
+    # Branded hero card (same for everyone) so the nudge stands out like other tasks.
+    poster = None
+    try:
+        from backend.interactive_card import render_review_card
+        poster = await asyncio.to_thread(render_review_card)
+    except Exception:
+        logging.warning("mistake reminder: card render failed", exc_info=True)
     sent = 0
     for u in users or []:
         uid = int(u.get("user_id") or 0)
@@ -22655,7 +22662,11 @@ async def _send_mistake_review_reminders(context: CallbackContext) -> None:
             f"Это самый быстрый способ реально подтянуть грамматику 👇"
         )
         try:
-            await context.bot.send_message(chat_id=uid, text=caption, parse_mode="HTML", reply_markup=kb)
+            if poster:
+                await context.bot.send_photo(chat_id=uid, photo=io.BytesIO(poster),
+                                             caption=caption, parse_mode="HTML", reply_markup=kb)
+            else:
+                await context.bot.send_message(chat_id=uid, text=caption, parse_mode="HTML", reply_markup=kb)
             sent += 1
         except Exception:
             logging.warning("mistake reminder send failed uid=%s", uid, exc_info=True)
@@ -22676,12 +22687,23 @@ async def review_mistakes_command(update: Update, context: CallbackContext) -> N
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(
         "🔁 Разобрать ошибки", url=get_webapp_deeplink("ans_rv_0"))]])
     if n > 0:
-        text = (f"🔁 <b>Работа над ошибками</b>\n\nУ тебя <b>{n}</b> на повтор — "
-                "разбери их, пока не закрепились неправильно 👇")
+        caption = (f"🔁 <b>Работа над ошибками</b>\n\nУ тебя <b>{n}</b> на повтор — "
+                   "разбери их, пока не закрепились неправильно 👇")
+        poster = None
+        try:
+            from backend.interactive_card import render_review_card
+            poster = await asyncio.to_thread(render_review_card)
+        except Exception:
+            logging.warning("review cmd: card render failed", exc_info=True)
+        if poster:
+            await message.reply_photo(photo=io.BytesIO(poster), caption=caption,
+                                      parse_mode="HTML", reply_markup=kb)
+        else:
+            await message.reply_text(caption, parse_mode="HTML", reply_markup=kb)
     else:
         text = ("✨ Сейчас ошибок на повтор нет. Решай задания — то, что не получится, "
                 "сюда попадёт и вернётся на повтор в нужный момент.")
-    await message.reply_text(text, parse_mode="HTML", reply_markup=kb)
+        await message.reply_text(text, parse_mode="HTML", reply_markup=kb)
 
 
 async def _send_weekly_champion_job(context: CallbackContext) -> None:

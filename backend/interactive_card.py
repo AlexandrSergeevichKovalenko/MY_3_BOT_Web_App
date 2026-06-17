@@ -478,6 +478,15 @@ def render_artikel_learn_card(*, level: str = "") -> bytes | None:
                  cta="Учи артикли с подсказками")
 
 
+def render_review_card(*, level: str = "") -> bytes | None:
+    """Branded card for the "Работа над ошибками" (spaced-repetition) nudge, so it
+    stands out among plain chat messages like every other task does."""
+    return _card(badge="WIEDERHOLEN", title="Работа над ошибками",
+                 subtitle="Повтори, пока не закрепилось неправильно",
+                 accent=(249, 115, 22), motif=_motif_error,
+                 cta="Разбери ошибки — быстрый путь к грамматике")
+
+
 def render_sprint_relation_card(relation: str) -> bytes | None:
     """Card for the 60-second synonym/antonym SPRINT race (distinct from the
     single-word synonym/antonym aufgabe). relation = 'synonym' | 'antonym'."""
