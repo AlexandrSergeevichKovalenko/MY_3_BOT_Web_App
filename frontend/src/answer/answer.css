@@ -558,6 +558,25 @@ html[data-scheme="light"] .au-gap-input { color: #0f172a; background: #eef1f7; }
 .au-key b { color: var(--dmps-primary, #2563EB); font-weight: 800; }
 .au-words { display: flex; flex-wrap: wrap; gap: 8px; }
 
+/* Wortgruppe: base-form lemmas the learner must inflect (preposition is hidden) */
+.au-lemmas { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.au-lemmas-label { font-size: 13px; font-weight: 700; color: var(--dmps-text-muted, #94A3B8); }
+.au-lemma {
+  font-family: inherit; font-size: 15px; font-weight: 700;
+  color: var(--dmps-text-primary, #F8FAFC);
+  background: rgba(37,99,235,0.12);
+  border: 1.5px solid var(--dmps-primary, #2563EB);
+  border-radius: 10px; padding: 6px 11px;
+}
+.au-lemma-tense {
+  color: var(--dmps-text-primary, #F8FAFC);
+  background: rgba(148,163,184,0.14);
+  border-color: var(--dmps-border, #334155);
+  font-style: italic;
+}
+html[data-scheme="light"] .au-lemma { background: #e8eefc; color: #0f172a; }
+html[data-scheme="light"] .au-lemma-tense { background: #eef1f7; }
+
 /* Adjektivendungen: phrase with a tap-to-fill ending slot + ending chips */
 .au-adj { display: flex; align-items: baseline; justify-content: center; flex-wrap: wrap; gap: 2px; }
 .au-adj-slot {

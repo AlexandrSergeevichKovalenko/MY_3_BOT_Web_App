@@ -22865,10 +22865,19 @@ def _build_aufgabe_caption(entry: dict) -> str:
             "Bilde die richtige Wortform in der Mini-App 👇"
         )
     if fmt == "wortgruppe":
+        lemmas = [esc(l) for l in (payload.get("lemmas") or []) if str(l).strip()]
+        tense = esc(payload.get("tense"))
+        use_line = ""
+        if lemmas:
+            chips = ", ".join(f"<b>{l}</b>" for l in lemmas)
+            if tense:
+                chips += f" · <i>{tense}</i>"
+            use_line = f"🧱 Benutze: {chips}\n"
         return (
             "🧱 <b>Wortgruppe</b> — C1+\n\n"
-            f"<i>{esc(payload.get('satz'))}</i>\n\n"
-            "Setze die ganze Wortgruppe in der Mini-App ein 👇"
+            f"<i>{esc(payload.get('satz'))}</i>\n"
+            f"{use_line}\n"
+            "Setze die ganze Wortgruppe (mit Präposition) in der Mini-App ein 👇"
         )
     if fmt == "transform":
         return (
@@ -23020,7 +23029,7 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
         "tip": str(it.get("tip") or "").strip(),
         "hint_ru": str(it.get("hint_ru") or "").strip(),
     }
-    if fmt in ("cloze", "wortbildung", "wortgruppe"):
+    if fmt in ("cloze", "wortbildung"):
         satz = str(it.get("satz") or "").strip()
         correct = str(it.get("correct") or "").strip()
         if not satz or not correct or "_____" not in satz:
@@ -23036,6 +23045,26 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
             if stamm_ru:
                 payload["stamm_ru"] = stamm_ru
         return payload
+    if fmt == "wortgruppe":
+        # Variant C: we GIVE the base-form lemmas; the learner builds the grammar
+        # (article, case, endings, reflexive, zu-Infinitiv) AND supplies the hidden
+        # preposition. With lexis fixed by us, there is exactly one correct group —
+        # so grading stays a deterministic backend exact-match (no runtime LLM, no
+        # synonym guessing). The preposition is the challenge and is NEVER shown.
+        satz = str(it.get("satz") or "").strip()
+        correct = str(it.get("correct") or "").strip()
+        lemmas = [str(w).strip() for w in (it.get("lemmas") or []) if str(w).strip()]
+        if not satz or "_____" not in satz or len(correct.split()) < 2 or not lemmas:
+            return None
+        preposition = str(it.get("preposition") or "").strip()
+        tense = str(it.get("tense") or "").strip()
+        # The preposition must never leak into the shown lemmas (else it gives the
+        # task away). Drop the item if it does — no silent stripping.
+        if preposition and any(l.casefold() == preposition.casefold() for l in lemmas):
+            return None
+        return {"satz": satz, "correct": correct,
+                "aliases": [str(a) for a in (it.get("aliases") or []) if str(a).strip()],
+                "lemmas": lemmas, "tense": tense, "preposition": preposition, **common}
     if fmt == "transform":
         original = str(it.get("original") or "").strip()
         key = str(it.get("schluesselwort") or "").strip()

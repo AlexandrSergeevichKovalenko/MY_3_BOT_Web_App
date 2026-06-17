@@ -3044,9 +3044,14 @@ Du erstellst anspruchsvolle deutsche Wortgruppen-Aufgaben für B2–C2.
 Eingabe-JSON: {"count": <int>, "level": "C1"|"C2"}.
 
 Jede Aufgabe: EIN natürlicher deutscher Satz mit GENAU EINER Lücke "_____". Die
-Lücke steht für EINE vollständige grammatische Wortgruppe, nicht für ein einzelnes
-Wort. Der/die Lernende muss die ganze Gruppe einsetzen, inkl. Artikel, Präposition,
-Kasus und ggf. Reflexivpronomen oder Infinitivmarker.
+Lücke steht für EINE vollständige grammatische Wortgruppe (2–5 Wörter), nicht für
+ein einzelnes Wort.
+
+KONZEPT: Der/die Lernende bekommt die GRUNDFORMEN der Inhaltswörter vorgegeben
+("lemmas") und muss daraus selbst die korrekte Gruppe bauen — also Artikel,
+Kasus/Endungen, Reflexivpronomen, zu-Infinitiv UND vor allem die richtige
+PRÄPOSITION ergänzen. Die Grammatik macht der Lernende; die Wörter geben WIR vor,
+damit die Lösung eindeutig ist und ohne Synonym-Raten geprüft werden kann.
 
 Geeignete Typen (abwechslungsreich mischen):
 - Nominalgruppen mit Artikel und Kasussteuerung: "die Freiheit der Presse"
@@ -3055,27 +3060,43 @@ Geeignete Typen (abwechslungsreich mischen):
 - Infinitivgruppen: "ohne lange zu zögern", "um die Lage besser zu verstehen"
 - feste grammatische Wendungen auf hohem Niveau
 
-Regeln:
-- "satz" = ein natürlicher deutscher Satz mit genau einer Lücke. Die Lücke darf
-  nicht nur ein sichtbares Einzelwort ersetzen; sie muss die komplette Zielgruppe
-  umfassen.
-- "correct" = die vollständige Wortgruppe mit 2–5 Wörtern, genau in der Form, wie
-  sie in die Lücke gehört. Keine halben Lösungen, keine Einzelwörter.
-- "aliases" = echte gleichwertige Varianten derselben Wortgruppe, sonst [].
-- "hint_ru" = kurze russische Bedeutungsangabe der GANZEN Wortgruppe, damit man
-  den Sinn erkennt, aber nicht die deutsche Form ablesen kann.
-- "erklaerung" = klare russische Lehrbuch-Erklärung (2–3 Sätze), warum genau diese
-  Gruppe und welcher Kasus / welche Rektion / welche Präposition dahintersteht.
+Felder pro Aufgabe:
+- "satz" = ein natürlicher Satz mit genau einer Lücke "_____", die die KOMPLETTE
+  Zielgruppe zusammenhängend (an EINER Stelle) umfasst (kein Teil der Gruppe steht
+  schon sichtbar im Satz). WENN die Gruppe ein FINITES (gebeugtes) Verb enthält:
+  baue den Satz so, dass die ganze Gruppe ohne Satzklammer-Trennung in EINER Lücke
+  steht (z. B. im Nebensatz mit Verb am Ende) — sonst würde das Verb zerrissen.
+  REFLEXIVE Verben am besten als zu-Infinitivgruppe ("sich … zu …"), damit "sich"
+  zusammenhängend in der Lücke bleibt; ein FINITES reflexives Verb zieht "sich" nach
+  vorne (Gruppe zerrissen) — solche Gruppen NICHT verwenden.
+- "lemmas" = Liste der vorzugebenden Inhaltswörter in der GRUNDFORM:
+  • Nomen OHNE Artikel ("Thema", "Presse").
+  • Verb im INFINITIV, reflexive Verben mit "sich" ("sich auseinandersetzen").
+  • Adjektiv/Adverb in der Grundform OHNE Endung ("nötig", "erst").
+  • Die PRÄPOSITION NIEMALS in die lemmas aufnehmen — sie zu finden ist die Aufgabe.
+  • Keine Funktionswörter (Artikel, Hilfsverben, "zu") in die lemmas.
+- "tense" = NUR wenn die Gruppe ein finites Verb verlangt, das gewünschte Tempus
+  als deutsches Etikett: "Präsens" | "Präteritum" | "Perfekt" | "Plusquamperfekt".
+  Bei Gruppen OHNE finites Verb (Nominal-/Präpositional-/zu-Infinitivgruppe): "".
+- "preposition" = die in der Lücke benötigte Präposition (z. B. "mit"); "" wenn keine.
+- "correct" = die vollständige, korrekt gebeugte Wortgruppe genau so, wie sie in die
+  Lücke gehört (inkl. Artikel, Präposition, Endungen, ggf. "zu"/Reflexivpronomen).
+- "aliases" = nur ECHTE gleichwertige Varianten DERSELBEN Wörter (z. B. zulässige
+  Umstellungen), sonst []. KEINE lexikalischen Synonyme — die Wörter sind fix.
+- "hint_ru" = kurze russische Bedeutungsangabe der GANZEN Gruppe (Sinn erkennbar,
+  aber die deutsche Form nicht ablesbar).
+- "erklaerung" = klare russische Lehrbuch-Erklärung (2–3 Sätze): welcher Kasus /
+  welche Rektion / welche Präposition und warum.
 - "tip" = kurzer russischer Merksatz oder Eselsbrücke.
 
-Wichtig:
-- Die Sätze müssen natürlich und realistisch klingen, keine Lehrbuchfragmente.
-- Das Niveau soll B2+ sein, eher C1/C2 in der Konstruktion.
-- Vermeide Single-Word-Lösungen vollständig.
-- Vermeide, dass ein Teil der gesuchten Gruppe schon sichtbar im Satz steht.
+Pflichten / Qualität:
+- Mit den vorgegebenen lemmas + der gesuchten Präposition + der geforderten Grammatik
+  (und ggf. "tense") muss "correct" die EINZIGE richtige Lösung sein.
+- Die lemmas decken GENAU die Inhaltswörter von "correct" ab (keines fehlt, keines zu viel).
+- Sätze natürlich und realistisch, Niveau C1/C2 in der Konstruktion.
 
 Gib NUR STRICT JSON zurück:
-{"items":[{"satz":"_____","correct":"...","aliases":[],"erklaerung":"...","tip":"...","hint_ru":"..."}]}
+{"items":[{"satz":"Es ist wichtig, _____ und nicht alles oberflächlich zu betrachten.","lemmas":["sich auseinandersetzen","Thema"],"tense":"","preposition":"mit","correct":"sich mit dem Thema auseinanderzusetzen","aliases":[],"erklaerung":"…","tip":"…","hint_ru":"…"}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
 "aufgabe_adjektiv": """

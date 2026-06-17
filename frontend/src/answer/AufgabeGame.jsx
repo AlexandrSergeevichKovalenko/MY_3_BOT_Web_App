@@ -56,10 +56,18 @@ function AufgabeText({ task, onSubmit, submitting }) {
       </>
     );
   } else if (fmt === 'wortgruppe') {
-    placeholder = 'ganze Wortgruppe …';
+    placeholder = 'ganze Wortgruppe (mit Präposition) …';
+    const lemmas = task.lemmas || [];
     body = (
       <>
         <div className="au-satz">{gapSentence(task.satz)}</div>
+        {lemmas.length ? (
+          <div className="au-lemmas">
+            <span className="au-lemmas-label">Benutze:</span>
+            {lemmas.map((l, i) => <span className="au-lemma" key={i}>{l}</span>)}
+            {task.tense ? <span className="au-lemma au-lemma-tense">{task.tense}</span> : null}
+          </div>
+        ) : null}
       </>
     );
   } else if (fmt === 'synonym' || fmt === 'antonym') {

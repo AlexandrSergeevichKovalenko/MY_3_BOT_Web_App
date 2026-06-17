@@ -906,7 +906,12 @@ def aufgabe_client_meta(fmt: str, payload: dict) -> dict:
         meta["stamm"] = str(payload.get("stamm") or "")
         meta["stamm_ru"] = str(payload.get("stamm_ru") or "")
     elif fmt == "wortgruppe":
+        # Send the sentence + the base-form lemmas + (optional) required tense.
+        # NEVER send preposition/correct/aliases — finding the preposition and
+        # building the correct form is the task.
         meta["satz"] = str(payload.get("satz") or "")
+        meta["lemmas"] = [str(w) for w in (payload.get("lemmas") or []) if str(w).strip()]
+        meta["tense"] = str(payload.get("tense") or "")
     elif fmt == "adjektiv":
         # Send only the phrase parts (NOT the correct ending) so it can't be read off.
         before = str(payload.get("before") or "")
