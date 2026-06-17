@@ -20529,6 +20529,18 @@ def _dispatch_sentence_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN
         return {"ok": True, "skipped": True, "reason": "disabled"}
     if not force and not _should_run_sentence_prewarm_now(tz_name):
         return {"ok": True, "skipped": True, "reason": "outside_offpeak_window"}
+    # Run the heavy generation at most ONCE per day, not every hour. The scheduler
+    # fires hourly inside the off-peak window, but re-generating the pool ~8×/night
+    # for a tiny user base just burns tokens on duplicates — one demand-forecast fill
+    # per night is enough (the 23:00 forced refill remains the explicit nightly pass).
+    if not force:
+        _prewarm_run_period = _get_local_today_date(tz_name).isoformat()
+        if not claim_scheduler_run_guard(
+            job_key="sentence_prewarm_daily",
+            run_period=_prewarm_run_period,
+            target_scope="global",
+        ):
+            return {"ok": True, "skipped": True, "reason": "already_ran_today"}
     if not _SENTENCE_PREWARM_LOCK.acquire(blocking=False):
         return {"ok": True, "skipped": True, "reason": "already_running"}
 
@@ -20615,6 +20627,18 @@ def _dispatch_sentence_prewarm(*, force: bool = False, tz_name: str = TODAY_PLAN
             "tz": tz_name,
         }
         logging.info("✅ Sentence prewarm finished: %s", result)
+        if not force:
+            try:
+                finish_scheduler_run_guard(
+                    job_key="sentence_prewarm_daily",
+                    run_period=_get_local_today_date(tz_name).isoformat(),
+                    target_scope="global",
+                    status="completed",
+                    metadata={"generated": int(generated_total),
+                              "focus_pool_generated": int(focus_pool_result.get("generated") or 0)},
+                )
+            except Exception:
+                logging.debug("sentence_prewarm_daily guard finish failed", exc_info=True)
         return result
     finally:
         _SENTENCE_PREWARM_LOCK.release()
