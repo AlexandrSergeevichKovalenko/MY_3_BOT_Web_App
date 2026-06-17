@@ -122,6 +122,39 @@ if (shouldTreatAsTelegram) {
 
 installTelegramRuntimeRecovery();
 
+// Lock-screen "Now Playing" branding: without MediaSession metadata iOS falls back
+// to the page <title> ("Vite + React") for any audio we play (TTS / Hörverständnis /
+// Reader). Set our title + mascot artwork once at startup, and re-assert on the first
+// media `play` (some engines reset metadata when a new media element starts).
+function setupMediaSession() {
+  if (typeof navigator === 'undefined' || !('mediaSession' in navigator)
+      || typeof window === 'undefined' || typeof window.MediaMetadata !== 'function') {
+    return;
+  }
+  const apply = () => {
+    try {
+      navigator.mediaSession.metadata = new window.MediaMetadata({
+        title: 'Das Deutsche Schlümpfchen',
+        artist: 'Deutsch lernen',
+        artwork: [
+          { src: '/hero_sticker.webp', sizes: '512x512', type: 'image/webp' },
+          { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
+        ],
+      });
+    } catch (_error) {
+      // ignore — metadata is best-effort branding
+    }
+  };
+  apply();
+  try {
+    document.addEventListener('play', apply, true);
+  } catch (_error) {
+    // ignore
+  }
+}
+
+setupMediaSession();
+
 async function loadAppComponent() {
   try {
     const module = await import('./App.jsx');
