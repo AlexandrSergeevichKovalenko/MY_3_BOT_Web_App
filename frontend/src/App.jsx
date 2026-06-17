@@ -3683,10 +3683,13 @@ const TranslationsSection = React.memo(function TranslationsSection({
                       onRegisterValueAccessor={registerTranslationDraftValueAccessor}
                       onDebugEvent={recordTranslationDraftAndroidDebugEvent}
                       onCheckTranslation={handleSingleSentenceCheck}
-                      checkDisabled={
-                        webappLoading
-                        || !String(draft || '').trim()
-                      }
+                      // Do NOT gate on `draft` emptiness: the textarea is uncontrolled
+                      // (perf) and its value only reaches `translationDrafts` state on
+                      // blur, so a freshly-typed sentence still reads empty here and the
+                      // button would be wrongly disabled (intermittent "check does
+                      // nothing"). handleSingleSentenceCheck validates the LIVE value
+                      // (getActiveTranslationDraftMap) and shows a hint if truly empty.
+                      checkDisabled={webappLoading}
                       checkLoading={Number(singleSentenceCheckLoadingId || 0) === Number(item.id_for_mistake_table || 0)}
                       checkStatusText={tr('Проверяем это предложение. Результат появится ниже.', 'Dieser Satz wird geprueft. Das Ergebnis erscheint weiter unten.')}
                       onJumpToDictionary={jumpToDictionaryFromSentence}
