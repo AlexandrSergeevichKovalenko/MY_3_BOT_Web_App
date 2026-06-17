@@ -362,10 +362,13 @@ QUIZ_IMAGE_SLOT_TIMES = {(9, 0), (12, 0), (18, 0)}
 VISUAL_RIDDLE_SLOT_TIMES = {(7, 30), (12, 30), (15, 30)}
 VISUAL_RIDDLE_POOL_TARGET = max(1, int((os.getenv("VISUAL_RIDDLE_POOL_TARGET") or "40").strip() or "40"))
 VISUAL_RIDDLE_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("VISUAL_RIDDLE_POOL_TOPUP_TRIGGER") or "5").strip() or "5"))
-REBUS_SLOT_TIMES = {(h, 30) for h in range(8, 21)}  # 8:30–20:30 every hour
+# 1 rebus/day (12:30). The drawable bank is ~108 cards; at a 15-day cooldown that
+# sustains comfortably (108/15 ≈ 7/day max). The old 13 slots/day exhausted the pool
+# in ~8 days and then sat empty for the rest of the cooldown window.
+REBUS_SLOT_TIMES = {(12, 30)}
 REBUS_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("REBUS_POOL_TOPUP_TRIGGER") or "10").strip() or "10"))
 REBUS_POOL_TARGET = max(5, int((os.getenv("REBUS_POOL_TARGET") or "20").strip() or "20"))
-REBUS_COOLDOWN_DAYS = max(7, int((os.getenv("REBUS_COOLDOWN_DAYS") or "30").strip() or "30"))
+REBUS_COOLDOWN_DAYS = max(7, int((os.getenv("REBUS_COOLDOWN_DAYS") or "15").strip() or "15"))
 REBUS_GPT_REPLENISHMENT_ENABLED = (os.getenv("REBUS_GPT_REPLENISHMENT_ENABLED") or "0").strip().lower() in ("1", "true", "yes", "on")
 REBUS_ADMIN_LOW_POOL_THRESHOLD = max(1, int((os.getenv("REBUS_ADMIN_LOW_POOL_THRESHOLD") or "50").strip() or "50"))
 REBUS_ADMIN_LOW_POOL_ALERT_COOLDOWN_SECONDS = max(
@@ -25299,7 +25302,8 @@ async def build_pool_inventory_report(context: CallbackContext) -> str:
     lines.append("")
 
     # Older games
-    rebus = await asyncio.to_thread(count_available_rebuses, cooldown_days=30)
+    rebus = await asyncio.to_thread(count_available_rebuses, cooldown_days=REBUS_COOLDOWN_DAYS)
+    rebus_ready_total = await asyncio.to_thread(count_available_rebuses, cooldown_days=0)
     cross = await asyncio.to_thread(count_crossword_bank_entries, exclude_retired=True)
     artic = await asyncio.to_thread(count_available_article_quiz_entries, cooldown_days=14)
     anag = await asyncio.to_thread(count_available_anagram_cards, cooldown_days=ANAGRAM_COOLDOWN_DAYS)
@@ -25309,7 +25313,14 @@ async def build_pool_inventory_report(context: CallbackContext) -> str:
     # Telegram pool report and stop topping it up from the scheduler.
     # vr = await asyncio.to_thread(count_ready_visual_riddle_templates)
 
-    lines.append(row("🧩", "Rebus", rebus, REBUS_POOL_TARGET, len(REBUS_SLOT_TIMES), _rebuses_enabled()))
+    # Rebus refills from cooldown, not generation (the bank is fully generated), so
+    # show ready-total + currently-sendable instead of a misleading "дозальём ~N".
+    rb_cd = max(0, int(rebus_ready_total) - int(rebus))
+    rb_off = "" if _rebuses_enabled() else " <i>(off)</i>"
+    lines.append(
+        f"🧩 <b>Rebus</b>: готово {int(rebus_ready_total)} · доступно сейчас {int(rebus)}"
+        f" (в cooldown {rb_cd}, {REBUS_COOLDOWN_DAYS}д) · слотов {len(REBUS_SLOT_TIMES)}/д{rb_off}"
+    )
     lines.append(row("🔤", "Kreuzwort", cross, CROSSWORD_POOL_TARGET, len(CROSSWORD_SLOT_TIMES), _crosswords_enabled()))
     lines.append(row("🇩🇪", "Artikel-Quiz", artic, ARTICLE_QUIZ_POOL_TARGET, len(ARTICLE_QUIZ_SLOT_TIMES), _article_quiz_enabled()))
     lines.append(row("🔀", "Anagramm", anag, ANAGRAM_POOL_TARGET, len(ANAGRAM_SLOT_TIMES), _anagram_enabled()))
