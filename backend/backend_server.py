@@ -17293,6 +17293,57 @@ def _ensure_artikel_audio_async(cards: list[dict]) -> None:
         logging.warning("artikel audio lazy-fill: thread start failed", exc_info=True)
 
 
+_artikel_mnem_inflight: set[str] = set()
+_artikel_mnem_inflight_lock = threading.Lock()
+
+
+def _ensure_artikel_mnemonics_async(cards: list[dict]) -> None:
+    """Generate + cache real LLM gender-mnemonics for trainer cards missing one, in a
+    background thread — so the learn deck responds instantly (the LLM call can take up
+    to ~55s). The deck already ships the deterministic gender_tip as fallback; once the
+    real mnemonic is cached, the next pass through the theme shows it. Mirrors the audio
+    backfill. Pre-warmed (active) themes are a no-op; this covers ad-hoc themes a user
+    opens on demand, which morning pre-warm never touched."""
+    items = [{"w": str(c.get("w") or ""), "a": str(c.get("a") or "").lower(), "ru": str(c.get("ru") or "")}
+             for c in (cards or [])
+             if c.get("w") and str(c.get("a") or "").lower() in ("der", "die", "das")]
+    if not items:
+        return
+
+    def _run():
+        from backend.database import get_article_noun_mnemonics
+        from backend.article_learn import _generate_and_cache_mnemonics
+        try:
+            cached = get_article_noun_mnemonics([it["w"] for it in items])
+        except Exception:
+            cached = {}
+        todo = []
+        for it in items[:30]:
+            low = it["w"].lower()
+            if low in cached:
+                continue
+            with _artikel_mnem_inflight_lock:
+                if low in _artikel_mnem_inflight:
+                    continue
+                _artikel_mnem_inflight.add(low)
+            todo.append(it)
+        if not todo:
+            return
+        try:
+            _generate_and_cache_mnemonics(todo)
+        except Exception:
+            logging.warning("artikel mnemonic lazy-fill failed n=%s", len(todo), exc_info=True)
+        finally:
+            with _artikel_mnem_inflight_lock:
+                for it in todo:
+                    _artikel_mnem_inflight.discard(it["w"].lower())
+
+    try:
+        threading.Thread(target=_run, daemon=True).start()
+    except Exception:
+        logging.warning("artikel mnemonic lazy-fill: thread start failed", exc_info=True)
+
+
 def get_or_create_tts_clip(lang: str, text: str, speed: float = _TTS_SPEED_DEFAULT) -> AudioSegment:
     voice = _TTS_VOICES.get(lang, _TTS_VOICES["de"])
     language_code = _TTS_LANG_CODES.get(lang, "en-US")
@@ -23158,13 +23209,16 @@ def artikel_learn_today():
         logging.exception("artikel_learn_today failed")
         return jsonify({"ok": False, "error_code": "learn_error",
                         "error": "Не удалось загрузить колоду."}), 200
-    # Backfill audio for any cards that lack it (ad-hoc themes aren't pre-warmed) —
-    # background, so the next pass through this theme speaks every word.
+    # Backfill audio + LLM mnemonics for any cards that lack them (ad-hoc themes aren't
+    # pre-warmed) — both in the background, so the deck responds instantly and the next
+    # pass through this theme speaks every word and shows the real mnemonic.
     try:
         if deck.get("ok"):
-            _ensure_artikel_audio_async((deck.get("cards") or []))
+            cards = deck.get("cards") or []
+            _ensure_artikel_audio_async(cards)
+            _ensure_artikel_mnemonics_async(cards)
     except Exception:
-        logging.warning("artikel_learn_today: audio backfill trigger failed", exc_info=True)
+        logging.warning("artikel_learn_today: media backfill trigger failed", exc_info=True)
     return jsonify(deck)
 
 

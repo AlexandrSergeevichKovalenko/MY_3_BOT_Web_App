@@ -308,16 +308,12 @@ def build_learn_deck(play_date, user_id: int, *, new_size: int = LEARN_NEW_SIZE,
     except Exception:
         image_keys = {}
 
-    # Real LLM mnemonics are the product — generate any missing ones now and cache
-    # them, rather than showing a generic 'just memorize' fallback (precision matters
-    # for a language app). Usually a no-op because the morning pre-warm filled them.
-    missing = [w for w in (new_words + review_raw)
-               if str(w.get("w") or "").lower() not in mnem]
-    if missing:
-        try:
-            mnem.update(_generate_and_cache_mnemonics(missing))
-        except Exception:
-            logging.warning("build_learn_deck: lazy mnemonic fill failed", exc_info=True)
+    # Real LLM mnemonics are the product, but generating them is a slow LLM call
+    # (up to ~55s) — NEVER block the user on it. We serve whatever is cached now and
+    # fall back to the deterministic gender_tip for any word still missing; the caller
+    # fills the missing mnemonics in a background thread (like the audio backfill), so
+    # the next pass through this theme shows the real mnemonic. Usually a no-op anyway
+    # because the morning pre-warm filled them.
 
     def _card(w: dict, review: bool) -> dict:
         word = str(w.get("w") or "")
