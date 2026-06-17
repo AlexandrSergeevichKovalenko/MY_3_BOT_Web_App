@@ -23708,7 +23708,7 @@ async def _send_weekly_certificate_job(context: CallbackContext) -> None:
         context, cur_start=now - _td(days=7), cur_end=now,
         prev_start=now - _td(days=14), prev_end=now - _td(days=7),
         title="ГРАМОТА", subtitle_prefix="Твои успехи за неделю",
-        col_now="Эта неделя", col_prev="Прошлая")
+        col_now="Текущий", col_prev="Прошлый")
 
 
 # ── Calendar-period certificates (month / quarter / half-year / year) ──────────
@@ -23716,10 +23716,10 @@ async def _send_weekly_certificate_job(context: CallbackContext) -> None:
 # ending today is sent (Dec 31 → year, Jun 30 → half-year, Mar 31/Sep 30 → quarter,
 # other month-ends → month). "This period vs the previous same-length period."
 _CERT_PERIOD_META = {
-    "month":   ("ГРАМОТА МЕСЯЦА", "Твои успехи за месяц", "Этот месяц", "Прошлый месяц"),
-    "quarter": ("ГРАМОТА КВАРТАЛА", "Твои успехи за квартал", "Этот квартал", "Прошлый квартал"),
-    "half":    ("ГРАМОТА ПОЛУГОДИЯ", "Твои успехи за полугодие", "Это полугодие", "Прошлое полугодие"),
-    "year":    ("ГРАМОТА ГОДА", "Твои успехи за год", "Этот год", "Прошлый год"),
+    "month":   ("ГРАМОТА МЕСЯЦА", "Твои успехи за месяц", "Текущий", "Прошлый"),
+    "quarter": ("ГРАМОТА КВАРТАЛА", "Твои успехи за квартал", "Текущий", "Прошлый"),
+    "half":    ("ГРАМОТА ПОЛУГОДИЯ", "Твои успехи за полугодие", "Текущий", "Прошлый"),
+    "year":    ("ГРАМОТА ГОДА", "Твои успехи за год", "Текущий", "Прошлый"),
 }
 
 
@@ -23797,7 +23797,7 @@ async def admin_certificate_command(update: Update, context: CallbackContext) ->
     now = _dt.now(_tz.utc)
     if arg == "week":
         cur_start, prev_start, prev_end = now - _td(days=7), now - _td(days=14), now - _td(days=7)
-        title, subtitle_prefix, col_now, col_prev = "ГРАМОТА", "Твои успехи за неделю", "Эта неделя", "Прошлая"
+        title, subtitle_prefix, col_now, col_prev = "ГРАМОТА", "Твои успехи за неделю", "Текущий", "Прошлый"
     else:
         period = arg if arg in _CERT_PERIOD_META else "month"
         title, subtitle_prefix, col_now, col_prev = _CERT_PERIOD_META[period]
