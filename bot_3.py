@@ -6267,6 +6267,7 @@ async def handle_user_message(update: Update, context: CallbackContext):
                 clue_de      = w["clue_de"]
                 if not correct_word or not clue_ru:
                     continue
+                save_lookup = await _resolve_crossword_save_lookup(clue_ru)
                 # Build save payload: DE word → RU translation from clue
                 card_key  = f"cw_{dispatch_id}_{w['number']}"
                 save_opts = [{"source": correct_word, "target": clue_ru, "is_original": True}]
@@ -6274,7 +6275,7 @@ async def handle_user_message(update: Update, context: CallbackContext):
                     user_id=int(user_id),
                     card_key=card_key,
                     options=save_opts,
-                    lookup={},
+                    lookup=save_lookup,
                     source_lang="de",
                     target_lang="ru",
                     keyboard_mode="quick",
@@ -7862,8 +7863,29 @@ def _apply_article_for_save_option(value: str, lookup: dict, lang: str) -> str:
     # Only patch standalone nouns. For phrases/sentences, adding a nominative
     # article would corrupt case or word order.
     if len(tokens) == 1:
-        return f"{article} {text}".strip()
+        noun = tokens[0]
+        if noun.isupper() or noun.islower():
+            noun = noun[:1].upper() + noun[1:].lower()
+        return f"{article} {noun}".strip()
     return text
+
+
+async def _resolve_crossword_save_lookup(clue_ru: str) -> dict:
+    clue = str(clue_ru or "").strip()
+    if not clue:
+        return {}
+    cached_lookup = await asyncio.to_thread(get_dictionary_cache, clue)
+    if isinstance(cached_lookup, dict):
+        article = str(cached_lookup.get("article") or "").strip().lower()
+        pos = str(cached_lookup.get("part_of_speech") or "").strip().lower()
+        if article in {"der", "die", "das"} and pos in {"noun", "substantiv", "nomen"}:
+            return cached_lookup
+    try:
+        lookup = await asyncio.wait_for(run_dictionary_lookup(clue), timeout=8.0)
+    except Exception:
+        logging.debug("crossword save lookup failed for clue_ru=%s", clue, exc_info=True)
+        return cached_lookup if isinstance(cached_lookup, dict) else {}
+    return lookup if isinstance(lookup, dict) else (cached_lookup if isinstance(cached_lookup, dict) else {})
 
 
 def _extract_learning_notes(lookup: dict) -> dict:
