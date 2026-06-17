@@ -600,6 +600,89 @@ def _cost_breakdown(target_day: date, tz_name: str) -> dict[str, Any]:
     }
 
 
+def cost_breakdown_by_activity(*, days: int = 7, limit: int = 40) -> dict[str, Any]:
+    """Per-activity provider spend over the last `days` days, grouped by action_type
+    (the task tag every LLM call carries) and split into library (under-the-hood,
+    user_id IS NULL) vs user-driven. This is the breakdown the daily aggregate hides —
+    it shows which interactive/maintenance task actually costs money. Payment
+    providers are excluded so it reflects real generation cost."""
+    cutoff_days = max(1, int(days))
+    agg: dict[str, dict[str, Any]] = {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COALESCE(action_type, '—') AS action_type,
+                       COALESCE(provider, '') AS provider,
+                       COALESCE(SUM(cost_amount) FILTER (WHERE user_id IS NULL), 0) AS lib_cost,
+                       COALESCE(SUM(cost_amount) FILTER (WHERE user_id IS NOT NULL), 0) AS usr_cost,
+                       COUNT(*) FILTER (WHERE units_type = 'requests') AS reqs
+                FROM bt_3_billing_events
+                WHERE event_time >= NOW() - (%s || ' days')::interval
+                  AND COALESCE(provider, '') <> ALL(%s)
+                GROUP BY COALESCE(action_type, '—'), COALESCE(provider, '');
+                """,
+                (cutoff_days, list(_NON_COST_PROVIDERS)),
+            )
+            rows = cursor.fetchall() or []
+    total_cost = total_lib = total_usr = 0.0
+    for action_type, provider, lib_cost, usr_cost, reqs in rows:
+        slot = agg.setdefault(str(action_type), {"lib": 0.0, "usr": 0.0, "reqs": 0, "providers": set()})
+        slot["lib"] += float(lib_cost or 0.0)
+        slot["usr"] += float(usr_cost or 0.0)
+        slot["reqs"] += int(reqs or 0)
+        if provider:
+            slot["providers"].add(str(provider))
+    out_rows = []
+    for action_type, v in agg.items():
+        cost = float(v["lib"]) + float(v["usr"])
+        total_cost += cost
+        total_lib += float(v["lib"])
+        total_usr += float(v["usr"])
+        out_rows.append({
+            "action_type": action_type,
+            "cost": cost,
+            "lib_cost": float(v["lib"]),
+            "usr_cost": float(v["usr"]),
+            "requests": int(v["reqs"]),
+            "providers": sorted(v["providers"]),
+        })
+    out_rows.sort(key=lambda r: r["cost"], reverse=True)
+    return {
+        "days": cutoff_days,
+        "total_cost": total_cost,
+        "library_cost": total_lib,
+        "user_cost": total_usr,
+        "rows": out_rows[: max(1, int(limit))],
+        "row_count": len(out_rows),
+    }
+
+
+def build_cost_breakdown_text(*, days: int = 7, limit: int = 25) -> str:
+    """HTML text of the per-activity cost breakdown for the admin DM / /costs."""
+    data = cost_breakdown_by_activity(days=days, limit=limit)
+    L = [
+        f"💸 <b>Затраты OpenAI по активностям</b> · {int(data['days'])}д",
+        f"Всего: <b>${data['total_cost']:.2f}</b> "
+        f"(🏭 под капотом ${data['library_cost']:.2f} · 👤 пользователи ${data['user_cost']:.2f})",
+        "",
+    ]
+    rows = [r for r in data["rows"] if r["cost"] > 0 or r["requests"] > 0]
+    if not rows:
+        L.append("Нет данных за период.")
+        return "\n".join(L)
+    for r in rows:
+        tag = "🏭" if r["lib_cost"] >= r["usr_cost"] else "👤"
+        L.append(f"{tag} <code>{html.escape(r['action_type'])}</code> — "
+                 f"<b>${r['cost']:.3f}</b> · {r['requests']} зап.")
+    L += [
+        "",
+        "🏭 = наша генерация/поддержание · 👤 = от пользователей",
+        "⚠️ Генерация картинок (gpt-image-1) пока не в учёте — добавляется отдельно.",
+    ]
+    return "\n".join(L)[:4000]
+
+
 def build_admin_economics_report_payload(
     *,
     target_day: date | None = None,
@@ -882,6 +965,30 @@ def _send_telegram_message(
         raise RuntimeError(f"Telegram API error: {response.text}")
     payload = response.json() if response.content else {}
     return (payload.get("result") or {}).get("message_id")
+
+
+def send_cost_breakdown_report(*, days: int = 7, limit: int = 30) -> dict[str, Any]:
+    """DM the per-activity cost breakdown to all admins (HTML). Used by the nightly
+    job alongside the economics report and by /costs."""
+    admin_ids = [int(a) for a in (get_admin_telegram_ids() or []) if int(a) > 0]
+    token = os.getenv("TELEGRAM_Deutsch_BOT_TOKEN")
+    if not token or not admin_ids:
+        return {"ok": False, "sent": 0, "reason": "no_token_or_admins"}
+    text = build_cost_breakdown_text(days=days, limit=limit)
+    sent = 0
+    for uid in admin_ids:
+        for part in _split_telegram_text(text):
+            try:
+                requests.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": uid, "text": part, "parse_mode": "HTML",
+                          "disable_web_page_preview": True},
+                    timeout=20,
+                )
+            except Exception:
+                logging.warning("cost breakdown DM failed uid=%s", uid, exc_info=True)
+        sent += 1
+    return {"ok": True, "sent": sent, "days": int(days)}
 
 
 def _split_telegram_text(text: str, limit: int = 3800) -> list[str]:

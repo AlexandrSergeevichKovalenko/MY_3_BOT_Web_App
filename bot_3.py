@@ -103,12 +103,14 @@ from backend.admin_economics import (
     build_admin_economics_limits_keyboard,
     build_admin_limit_preview_keyboard,
     build_admin_economics_report_payload,
+    build_cost_breakdown_text,
     cancel_admin_limit_change,
     create_admin_limit_change_preview,
     format_admin_economics_report,
     format_admin_limit_preview,
     format_dict_dedup_weekly_report,
     send_admin_economics_report,
+    send_cost_breakdown_report,
     send_dict_dedup_weekly_report,
 )
 from backend.database import (
@@ -4710,6 +4712,11 @@ def _run_admin_economics_report_safe() -> None:
         logging.info("admin economics report (bot scheduler) result=%s", result)
     except Exception:
         logging.exception("admin economics report (bot scheduler) failed")
+    try:
+        cb = send_cost_breakdown_report(days=7)
+        logging.info("admin cost breakdown report (bot scheduler) result=%s", cb)
+    except Exception:
+        logging.exception("admin cost breakdown report (bot scheduler) failed")
 
 
 def _run_dict_dedup_weekly_report_safe() -> None:
@@ -4747,6 +4754,29 @@ async def admin_economics_command(update: Update, context: CallbackContext):
     except Exception as exc:
         logging.exception("admin economics command failed user_id=%s", int(sender.id))
         await message.reply_text(f"❌ Не удалось собрать economics report: {exc}")
+
+
+async def admin_costs_command(update: Update, context: CallbackContext):
+    """Per-activity OpenAI cost breakdown (which interactive/maintenance task costs
+    money). /costs [days] — default 7."""
+    sender = update.effective_user
+    message = update.effective_message
+    if not sender or not message:
+        return
+    if not _is_admin_user(sender.id):
+        await message.reply_text("⛔️ Команда доступна только администратору.")
+        return
+    try:
+        days = max(1, min(90, int((context.args or ["7"])[0])))
+    except (ValueError, IndexError):
+        days = 7
+    try:
+        text = await asyncio.to_thread(build_cost_breakdown_text, days=days, limit=30)
+        for part in _split_telegram_text(text):
+            await message.reply_text(part, parse_mode="HTML", disable_web_page_preview=True)
+    except Exception as exc:
+        logging.exception("admin costs command failed user_id=%s", int(sender.id))
+        await message.reply_text(f"❌ Не удалось собрать разбивку затрат: {exc}")
 
 
 async def admin_dedup_now_command(update: Update, context: CallbackContext):
@@ -27256,6 +27286,7 @@ def main():
     application.add_handler(CommandHandler("mobile_token", mobile_token_command))
     application.add_handler(CommandHandler("budgets", budgets_command))
     application.add_handler(CommandHandler("economics", admin_economics_command))
+    application.add_handler(CommandHandler("costs", admin_costs_command))
     application.add_handler(CommandHandler("dedupreport", admin_dedup_report_command))
     application.add_handler(CommandHandler("dedupnow", admin_dedup_now_command))
     application.add_handler(CommandHandler("dedupenqueue", admin_dedup_enqueue_command))
