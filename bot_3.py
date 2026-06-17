@@ -23478,20 +23478,17 @@ async def _cert_user_name(context: CallbackContext, uid: int) -> str:
         return "Schlumpf"
 
 
-async def _send_period_certificates(context: CallbackContext, *, days: int, title: str,
-                                    subtitle_prefix: str, col_now: str, col_prev: str,
+async def _send_certificates_window(context: CallbackContext, *, cur_start, cur_end,
+                                    prev_start, prev_end, title: str, subtitle_prefix: str,
+                                    col_now: str, col_prev: str,
                                     footer: str = "Так держать!") -> int:
-    """Render + DM a light achievement certificate to every active user: this period
-    (last `days`) vs the previous one, with green/red deltas. Returns how many sent."""
-    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    """Core: render + DM a certificate to every user active in [cur_start, cur_end),
+    comparing this period to [prev_start, prev_end). Returns how many were sent."""
     from backend.database import certificate_stats_for_window, active_user_ids_in_window
     from backend.certificate_poster import render_certificate
-    now = _dt.now(_tz.utc)
-    cur_start = now - _td(days=days)
-    prev_start = now - _td(days=2 * days)
-    stats_now = await asyncio.to_thread(certificate_stats_for_window, cur_start, now)
-    stats_prev = await asyncio.to_thread(certificate_stats_for_window, prev_start, cur_start)
-    active = await asyncio.to_thread(active_user_ids_in_window, cur_start, now)
+    stats_now = await asyncio.to_thread(certificate_stats_for_window, cur_start, cur_end)
+    stats_prev = await asyncio.to_thread(certificate_stats_for_window, prev_start, prev_end)
+    active = await asyncio.to_thread(active_user_ids_in_window, cur_start, cur_end)
     if not active:
         return 0
     hero = None
@@ -23501,7 +23498,7 @@ async def _send_period_certificates(context: CallbackContext, *, days: int, titl
         hero = await asyncio.to_thread(r2_get_bytes, REMINDER_KEY)
     except Exception:
         hero = None
-    subtitle = f"{subtitle_prefix} · {cur_start.date().isoformat()} — {now.date().isoformat()}"
+    subtitle = f"{subtitle_prefix} · {cur_start.date().isoformat()} — {cur_end.date().isoformat()}"
     sent = 0
     for uid in active:
         try:
@@ -23519,18 +23516,91 @@ async def _send_period_certificates(context: CallbackContext, *, days: int, titl
             sent += 1
         except Exception:
             logging.warning("certificate send failed uid=%s", uid, exc_info=True)
-    logging.info("certificates sent=%s (days=%s)", sent, days)
+    logging.info("certificates sent=%s title=%s", sent, title)
     return sent
 
 
 async def _send_weekly_certificate_job(context: CallbackContext) -> None:
-    await _send_period_certificates(
-        context, days=7, title="ГРАМОТА", subtitle_prefix="Твои успехи за неделю",
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    now = _dt.now(_tz.utc)
+    await _send_certificates_window(
+        context, cur_start=now - _td(days=7), cur_end=now,
+        prev_start=now - _td(days=14), prev_end=now - _td(days=7),
+        title="ГРАМОТА", subtitle_prefix="Твои успехи за неделю",
         col_now="Эта неделя", col_prev="Прошлая")
 
 
+# ── Calendar-period certificates (month / quarter / half-year / year) ──────────
+# Fire on the LAST day of a period at 17:00; to avoid spam, only the LARGEST period
+# ending today is sent (Dec 31 → year, Jun 30 → half-year, Mar 31/Sep 30 → quarter,
+# other month-ends → month). "This period vs the previous same-length period."
+_CERT_PERIOD_META = {
+    "month":   ("ГРАМОТА МЕСЯЦА", "Твои успехи за месяц", "Этот месяц", "Прошлый месяц"),
+    "quarter": ("ГРАМОТА КВАРТАЛА", "Твои успехи за квартал", "Этот квартал", "Прошлый квартал"),
+    "half":    ("ГРАМОТА ПОЛУГОДИЯ", "Твои успехи за полугодие", "Это полугодие", "Прошлое полугодие"),
+    "year":    ("ГРАМОТА ГОДА", "Твои успехи за год", "Этот год", "Прошлый год"),
+}
+
+
+def _calendar_period_ending(today) -> str | None:
+    """Which (largest) calendar period ends on `today` (a Vienna-local date), if any."""
+    import calendar as _cal
+    if today.day != _cal.monthrange(today.year, today.month)[1]:
+        return None  # not a month end → nothing ends today
+    m = today.month
+    if m == 12:
+        return "year"
+    if m == 6:
+        return "half"
+    if m in (3, 9):
+        return "quarter"
+    return "month"
+
+
+def _calendar_period_starts(period: str, today):
+    """(cur_start_date, prev_start_date) for the period ending on `today`."""
+    from datetime import date as _date
+    y, m = today.year, today.month
+    if period == "year":
+        return _date(y, 1, 1), _date(y - 1, 1, 1)
+    if period == "half":
+        # Start of the half-year CONTAINING today (works for any month, incl. preview).
+        if m <= 6:
+            return _date(y, 1, 1), _date(y - 1, 7, 1)
+        return _date(y, 7, 1), _date(y, 1, 1)
+    if period == "quarter":
+        cur_m = ((m - 1) // 3) * 3 + 1
+        cur = _date(y, cur_m, 1)
+        prev = _date(y - 1, 10, 1) if cur_m == 1 else _date(y, cur_m - 3, 1)
+        return cur, prev
+    # month
+    cur = _date(y, m, 1)
+    prev = _date(y - 1, 12, 1) if m == 1 else _date(y, m - 1, 1)
+    return cur, prev
+
+
+async def _send_calendar_certificate_job(context: CallbackContext) -> None:
+    """Daily 17:00: if a calendar period ends today, DM that period's certificate."""
+    from datetime import datetime as _dt, time as _time, timezone as _tz
+    from zoneinfo import ZoneInfo as _ZI
+    tz = _ZI("Europe/Vienna")
+    today = _dt.now(tz).date()
+    period = _calendar_period_ending(today)
+    if not period:
+        return
+    title, subtitle_prefix, col_now, col_prev = _CERT_PERIOD_META[period]
+    cur_d, prev_d = _calendar_period_starts(period, today)
+    cur_start = _dt.combine(cur_d, _time.min, tzinfo=tz).astimezone(_tz.utc)
+    prev_start = _dt.combine(prev_d, _time.min, tzinfo=tz).astimezone(_tz.utc)
+    now = _dt.now(_tz.utc)
+    await _send_certificates_window(
+        context, cur_start=cur_start, cur_end=now,
+        prev_start=prev_start, prev_end=cur_start,
+        title=title, subtitle_prefix=subtitle_prefix, col_now=col_now, col_prev=col_prev)
+
+
 async def admin_certificate_command(update: Update, context: CallbackContext) -> None:
-    """Preview your own weekly certificate. /admin_certificate"""
+    """Preview your own certificate. /admin_certificate [week|month|quarter|half|year]"""
     user = update.effective_user
     message = update.effective_message
     if not user or not message:
@@ -23538,15 +23608,31 @@ async def admin_certificate_command(update: Update, context: CallbackContext) ->
     if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
         await message.reply_text("Allowed users only.")
         return
-    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td, time as _time
+    from zoneinfo import ZoneInfo as _ZI
     from backend.database import certificate_stats_for_window
     from backend.certificate_poster import render_certificate
+    arg = (context.args[0].strip().lower() if context.args else "week")
     now = _dt.now(_tz.utc)
-    cur = await asyncio.to_thread(certificate_stats_for_window, now - _td(days=7), now)
-    prev = await asyncio.to_thread(certificate_stats_for_window, now - _td(days=14), now - _td(days=7))
+    if arg == "week":
+        cur_start, prev_start, prev_end = now - _td(days=7), now - _td(days=14), now - _td(days=7)
+        title, subtitle_prefix, col_now, col_prev = "ГРАМОТА", "Твои успехи за неделю", "Эта неделя", "Прошлая"
+    else:
+        period = arg if arg in _CERT_PERIOD_META else "month"
+        title, subtitle_prefix, col_now, col_prev = _CERT_PERIOD_META[period]
+        tz = _ZI("Europe/Vienna")
+        # Preview as if the current period ended today.
+        today = _dt.now(tz).date()
+        # _calendar_period_starts gives the start of the period CONTAINING today.
+        cur_d, prev_d = _calendar_period_starts(period, today)
+        cur_start = _dt.combine(cur_d, _time.min, tzinfo=tz).astimezone(_tz.utc)
+        prev_start = _dt.combine(prev_d, _time.min, tzinfo=tz).astimezone(_tz.utc)
+        prev_end = cur_start
+    cur = await asyncio.to_thread(certificate_stats_for_window, cur_start, now)
+    prev = await asyncio.to_thread(certificate_stats_for_window, prev_start, prev_end)
     rows = _build_cert_rows(cur.get(int(user.id), {}), prev.get(int(user.id), {}))
     if not rows:
-        await message.reply_text("Пока нет данных за неделю для грамоты — поиграй немного и повтори.")
+        await message.reply_text("Пока нет данных за этот период для грамоты — поиграй немного и повтори.")
         return
     hero = None
     try:
@@ -23555,10 +23641,11 @@ async def admin_certificate_command(update: Update, context: CallbackContext) ->
         hero = await asyncio.to_thread(r2_get_bytes, REMINDER_KEY)
     except Exception:
         hero = None
+    subtitle = f"{subtitle_prefix} · {cur_start.date().isoformat()} — {now.date().isoformat()} (превью)"
     png = await asyncio.to_thread(
-        render_certificate, name=_display_user_name(user), title="ГРАМОТА",
-        subtitle="Твои успехи за неделю (превью)", rows=rows,
-        col_now="Эта неделя", col_prev="Прошлая", footer="Так держать!", hero_png=hero)
+        render_certificate, name=_display_user_name(user), title=title,
+        subtitle=subtitle, rows=rows, col_now=col_now, col_prev=col_prev,
+        footer="Так держать!", hero_png=hero)
     await message.reply_photo(photo=io.BytesIO(png))
 
 
@@ -27448,6 +27535,15 @@ def main():
             day_of_week="sun",
             hour=17,
             minute=0,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Calendar-period certificate (month/quarter/half/year) at 17:00 daily;
+        #    the job itself fires only on the LAST day of a period (largest wins) --
+        scheduler.add_job(
+            lambda: submit_async(_send_calendar_certificate_job, CallbackContext(application=application)),
+            "cron",
+            hour=17,
+            minute=5,
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
         # -- Daily pool inventory report → admin DM (07:00, after all nightly top-ups) --
