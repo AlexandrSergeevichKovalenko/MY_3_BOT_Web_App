@@ -22746,7 +22746,10 @@ def submit_answer():
                     upsert_overtaken_notification(
                         user_id=uid, challenge_key=challenge_key,
                         payload={
-                            "task_kind": kind,
+                            # No task_kind here: it would be the raw kind code
+                            # ("au", "rb", …) and leak into the plaque text. The bot
+                            # derives a human label from challenge_key via
+                            # _challenge_label(). (Battle paths set a real task_kind.)
                             "place": int(p),
                             "total_correct": len(full),
                             "leader_name": str(full[0]["name"] or ""),

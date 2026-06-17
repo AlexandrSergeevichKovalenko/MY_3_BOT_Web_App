@@ -129,7 +129,13 @@ def render_overtaken_card(
     """Render the 'you were overtaken' plaque. Returns PNG bytes."""
     from PIL import Image, ImageDraw, ImageOps
 
-    label = (label or "задании").strip()
+    # The server font has no color-emoji glyphs → strip emoji/symbols so the drawn
+    # label never shows tofu boxes (the Telegram caption keeps the emoji). Labels
+    # come in as e.g. "Fehler finden 🔍: <satz>" / "Rätsel 🧩".
+    import re as _re
+    label = _re.sub(r"[\U0001F000-\U0001FAFF☀-➿←-⇿️‍]", "", str(label or ""))
+    label = _re.sub(r"\s+", " ", label).strip()
+    label = _re.sub(r"\s+([:·])", r"\1", label).strip(" :·-") or "задании"
     name = (overtaker_name or "").strip()
 
     if background_bytes:

@@ -35539,6 +35539,22 @@ def create_aufgabe(*, aufgabe_id: str, format: str, level: str, payload: dict) -
         conn.commit()
 
 
+def get_aufgabe_by_id(aufgabe_id: str) -> dict | None:
+    """The bank entry (format + payload) for an aufgabe content id, or None. Used to
+    label the 'тебя обошли' plaque with the specific task (challenge keys are content-
+    keyed, e.g. 'au:<aufgabe_id>')."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT format, payload FROM bt_3_aufgabe_bank WHERE aufgabe_id=%s;",
+                (str(aufgabe_id),),
+            )
+            r = cursor.fetchone()
+    if not r:
+        return None
+    return {"format": str(r[0] or ""), "payload": r[1] or {}}
+
+
 def count_available_aufgaben(*, format: str | None = None) -> int:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:

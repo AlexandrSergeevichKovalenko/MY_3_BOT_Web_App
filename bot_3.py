@@ -22114,12 +22114,13 @@ def _au_specific_suffix(fmt: str, payload: dict) -> str:
 async def _challenge_label(challenge_key: str) -> str:
     kind, _, did = str(challenge_key or "").partition(":")
     if kind == "au":
+        # challenge_key is content-keyed ("au:<aufgabe_id>"), not a dispatch id.
         try:
-            from backend.database import get_aufgabe_dispatch_by_id
-            disp = await asyncio.to_thread(get_aufgabe_dispatch_by_id, int(did))
-            fmt = str((disp or {}).get("format") or "")
+            from backend.database import get_aufgabe_by_id
+            entry = await asyncio.to_thread(get_aufgabe_by_id, did)
+            fmt = str((entry or {}).get("format") or "")
             base = _AU_FORMAT_LABELS.get(fmt, "Aufgabe ✏️")
-            suffix = _au_specific_suffix(fmt, (disp or {}).get("payload") or {})
+            suffix = _au_specific_suffix(fmt, (entry or {}).get("payload") or {})
             return f"{base}: {suffix}" if suffix else base
         except Exception:
             return "Aufgabe ✏️"
