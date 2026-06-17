@@ -81,6 +81,17 @@ class AdminEconomicsFormattingTests(unittest.TestCase):
                 "new_users_today": 3,
                 "total_active_users": 13,
             },
+            "cost_breakdown": {
+                "library_cost": 0.0931,
+                "library_requests": 814,
+                "user_cost": 0.1446,
+                "user_requests": 46,
+                "total_cost": 0.2377,
+                "by_provider": [
+                    {"provider": "openai", "label": "OpenAI", "cost": 0.2335, "requests": 858},
+                    {"provider": "google_tts", "label": "TTS-аудио", "cost": 0.0042, "requests": 12},
+                ],
+            },
             "openai_stats": {
                 "total_openai_requests": 25,
                 "lookup_requests": 12,
@@ -131,6 +142,10 @@ class AdminEconomicsFormattingTests(unittest.TestCase):
 
         self.assertIn("📊 Экономика", text)
         self.assertIn("👥 Активны", text)
+        self.assertIn("💰 Затраты", text)
+        self.assertIn("🏭 Контент (мы)", text)
+        self.assertIn("👤 Пользователи", text)
+        self.assertIn("TTS-аудио", text)
         self.assertIn("🤖 OpenAI", text)
         self.assertIn("🚦 Лимиты", text)
         self.assertIn("🧠 GPT-хелперы", text)

@@ -35,6 +35,27 @@ SYNTHETIC_TELEGRAM_USER_ID_MIN = max(
     int((os.getenv("SYNTHETIC_TELEGRAM_USER_ID_MIN") or "9100000001").strip() or "9100000001"),
 )
 
+# Human labels for billing providers in the cost-breakdown section.
+_PROVIDER_LABELS: dict[str, str] = {
+    "openai": "OpenAI",
+    "google_tts": "TTS-аудио",
+    "agent_tts": "TTS-голос",
+    "offline_tts": "TTS-оффлайн",
+    "perplexity": "Perplexity",
+    "youtube_api": "YouTube",
+    "youtube_proxy": "YouTube",
+    "youtube_manual_search": "YouTube",
+    "livekit": "LiveKit",
+    "deepl_free": "Переводчик",
+    "google_translate": "Переводчик",
+    "mymemory": "Переводчик",
+    "azure_translator": "Переводчик",
+}
+
+# Providers that represent payments/bookkeeping, not content-generation spend —
+# excluded from the "Затраты" (cost) breakdown so it reflects real API/content cost.
+_NON_COST_PROVIDERS: tuple[str, ...] = ("stripe", "app_internal")
+
 _LIMIT_BUTTON_DELTAS: dict[str, tuple[int, ...]] = {
     "dictionary_lookup_daily": (-10, -5, 5, 10),
     "shortcut_forwarded_message_daily": (-5, 5),
@@ -500,6 +521,70 @@ def _trend_from_snapshots(target_day: date) -> dict[str, Any]:
     return trend
 
 
+def _cost_breakdown(target_day: date, tz_name: str) -> dict[str, Any]:
+    """Split the day's API/content spend into two buckets, across ALL providers.
+
+    - Контент (мы): rows with ``user_id IS NULL`` — system generation we run
+      ourselves (cron pool-prep, content prewarm, library rotation). This is the
+      cost of *building the library*, regardless of any user request.
+    - Пользователи: rows with a real ``user_id`` — spend triggered by user actions.
+
+    Payments/bookkeeping providers (stripe, app_internal) are excluded so the
+    numbers reflect real generation cost. ``by_provider`` lets us show where the
+    money went (OpenAI text vs TTS audio vs translation vs …) and sums to the same
+    total as the two buckets.
+    """
+    library = {"cost": 0.0, "requests": 0}
+    users = {"cost": 0.0, "requests": 0}
+    by_provider: dict[str, dict[str, float]] = {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    (user_id IS NULL) AS is_library,
+                    COALESCE(provider, '') AS provider,
+                    COALESCE(SUM(cost_amount), 0) AS cost,
+                    COUNT(*) FILTER (WHERE units_type = 'requests') AS requests
+                FROM bt_3_billing_events
+                WHERE (event_time AT TIME ZONE %s)::date = %s
+                  AND (user_id IS NULL OR user_id < %s)
+                  AND COALESCE(provider, '') <> ALL(%s)
+                GROUP BY (user_id IS NULL), COALESCE(provider, '');
+                """,
+                (tz_name, target_day, SYNTHETIC_TELEGRAM_USER_ID_MIN, list(_NON_COST_PROVIDERS)),
+            )
+            rows = cursor.fetchall() or []
+    for is_library, provider, cost, requests in rows:
+        bucket = library if is_library else users
+        bucket["cost"] += float(cost or 0.0)
+        bucket["requests"] += int(requests or 0)
+        slot = by_provider.setdefault(str(provider or ""), {"cost": 0.0, "requests": 0})
+        slot["cost"] += float(cost or 0.0)
+        slot["requests"] += int(requests or 0)
+    providers = sorted(
+        (
+            {
+                "provider": key,
+                "label": _PROVIDER_LABELS.get(key, key or "—"),
+                "cost": float(val["cost"]),
+                "requests": int(val["requests"]),
+            }
+            for key, val in by_provider.items()
+        ),
+        key=lambda it: it["cost"],
+        reverse=True,
+    )
+    return {
+        "library_cost": float(library["cost"]),
+        "library_requests": int(library["requests"]),
+        "user_cost": float(users["cost"]),
+        "user_requests": int(users["requests"]),
+        "total_cost": float(library["cost"] + users["cost"]),
+        "by_provider": providers,
+    }
+
+
 def build_admin_economics_report_payload(
     *,
     target_day: date | None = None,
@@ -514,6 +599,7 @@ def build_admin_economics_report_payload(
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "user_stats": _user_stats(day, tz_name),
         "user_activity": _user_activity(day, tz_name),
+        "cost_breakdown": _cost_breakdown(day, tz_name),
         "openai_stats": _openai_stats(day, tz_name),
         "openai_by_user": _openai_by_user(day, tz_name),
         "limit_utilization": _limit_utilization(day, tz_name),
@@ -560,6 +646,7 @@ def format_admin_economics_report(payload: dict[str, Any]) -> str:
     """
     stats = payload.get("user_stats") or {}
     openai_stats = payload.get("openai_stats") or {}
+    cost = payload.get("cost_breakdown") or {}
     helpers = payload.get("gpt_helper_usage") or {}
     trend = payload.get("trend_7d") or {}
 
@@ -575,6 +662,28 @@ def format_admin_economics_report(payload: dict[str, Any]) -> str:
         f"TRIAL {_fmt_num(stats.get('active_trial_users'))})  ·  "
         f"+{_fmt_num(stats.get('new_users_today'))} новых"
     )
+
+    # ── Costs: library (we generate) vs users, + where the money went ────────
+    lib_cost = _num(cost.get("library_cost"))
+    usr_cost = _num(cost.get("user_cost"))
+    total_cost = _num(cost.get("total_cost"))
+    L.append("")
+    if total_cost <= 0:
+        L.append("💰 Затраты: $0.0000  (нет платных вызовов / всё из кэша)")
+    else:
+        L.append(f"💰 Затраты: ${total_cost:.4f}")
+        L.append(
+            f"   🏭 Контент (мы)  ${lib_cost:.4f} · {int(cost.get('library_requests') or 0)} req"
+        )
+        L.append(
+            f"   👤 Пользователи  ${usr_cost:.4f} · {int(cost.get('user_requests') or 0)} req"
+        )
+        providers = [p for p in (cost.get("by_provider") or []) if _num(p.get("cost")) > 0]
+        if providers:
+            L.append(
+                "   по сервисам: "
+                + " · ".join(f"{p.get('label')} ${_num(p.get('cost')):.4f}" for p in providers)
+            )
 
     # ── Activity by user (top first, medal for #1) ───────────────────────────
     activity = sorted(
@@ -596,13 +705,16 @@ def format_admin_economics_report(payload: dict[str, Any]) -> str:
 
     # ── OpenAI (one line when silent; expand only when there were calls) ──────
     by_user = payload.get("openai_by_user") or []
-    total_cost = sum(_num(it.get("cost")) for it in by_user)
+    openai_cost = next(
+        (_num(p.get("cost")) for p in (cost.get("by_provider") or []) if p.get("provider") == "openai"),
+        0.0,
+    )
     total_reqs = int(openai_stats.get("total_openai_requests") or 0)
     L.append("")
-    if total_reqs == 0 and total_cost == 0:
+    if total_reqs == 0 and openai_cost == 0:
         L.append("🤖 OpenAI: 0 запросов · $0.0000  (нет вызовов / всё из кэша)")
     else:
-        L.append(f"🤖 OpenAI: {total_reqs} запросов · ${total_cost:.4f}")
+        L.append(f"🤖 OpenAI: {total_reqs} запросов · ${openai_cost:.4f}")
         sub = []
         for key, lbl in (("lookup_requests", "lookup"), ("explain_requests", "explain"),
                          ("story_requests", "story"), ("shortcut_split_requests", "shortcut")):
