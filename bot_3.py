@@ -19415,7 +19415,7 @@ async def admin_overtaken_images_command(update: Update, context: CallbackContex
             if i >= len(keys):
                 break
             try:
-                res = generate_image_bytes(prompt=prompt, template_id=0, user_id=0)
+                res = generate_image_bytes(prompt=prompt, template_id=0, user_id=0, action_type="overtaken_image")
                 data = bytes(res.get("data") or b"")
                 if not data:
                     raise RuntimeError("empty image payload")
@@ -20838,7 +20838,7 @@ async def admin_battle_images_command(update: Update, context: CallbackContext) 
         errs: list[str] = []
         for key, prompt in BATTLE_IMAGE_PROMPTS:
             try:
-                res = generate_image_bytes(prompt=prompt, template_id=0, user_id=0)
+                res = generate_image_bytes(prompt=prompt, template_id=0, user_id=0, action_type="battle_image")
                 data = bytes(res.get("data") or b"")
                 if not data:
                     raise RuntimeError("empty image payload")
@@ -23382,7 +23382,8 @@ async def _aufgabe_topup_format(fmt: str, level: str, want: int) -> int:
                 from backend.image_generation_provider import generate_image_bytes
                 from backend.openai_manager import run_vision_locate
                 res = await asyncio.to_thread(
-                    generate_image_bytes, prompt=payload["image_prompt"], template_id=0, user_id=0
+                    generate_image_bytes, prompt=payload["image_prompt"], template_id=0, user_id=0,
+                    action_type="aufgabe_pin_image",
                 )
                 img = bytes(res.get("data") or b"")
                 mime = str(res.get("mime_type") or "image/png").strip().lower() or "image/png"

@@ -800,6 +800,7 @@ def _render_single_image_quiz_template(
             prompt=str(claimed.get("image_prompt") or ""),
             template_id=template_id,
             user_id=int(claimed.get("user_id") or user_id),
+            action_type="image_quiz_render",
         )
         image_bytes = bytes(render_result.get("data") or b"")
         mime_type = str(render_result.get("mime_type") or "image/png").strip().lower() or "image/png"
@@ -2807,6 +2808,7 @@ def _render_single_vr_template() -> dict:
             prompt=image_prompt,
             template_id=template_id,
             user_id=0,
+            action_type="visual_riddle_image",
         )
         image_bytes = bytes(render_result.get("data") or b"")
         mime_type = str(render_result.get("mime_type") or "image/png").strip().lower() or "image/png"

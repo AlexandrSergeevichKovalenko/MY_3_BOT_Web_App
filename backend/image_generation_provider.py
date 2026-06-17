@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import logging
 import os
 from pathlib import Path
 
@@ -62,11 +63,46 @@ def get_image_generation_provider_name() -> str:
     return IMAGE_GENERATION_PROVIDER
 
 
+def _log_image_billing_event(*, action_type: str, user_id: int, quality: str) -> None:
+    """Record one gpt-image-1 image in the cost ledger (best-effort, background) so
+    image generation shows up in the per-activity cost breakdown — it used to be a
+    blind spot. Priced per-image by quality via seeded 'gpt-image-1_<quality>' SKUs."""
+    try:
+        import threading
+        import time as _time
+
+        def _worker():
+            try:
+                from backend.database import log_billing_event
+                tn = str(action_type or "image_generation").strip() or "image_generation"
+                uid = int(user_id) if user_id and int(user_id) > 0 else None
+                q = str(quality or "medium").strip().lower() or "medium"
+                seed = f"img:{tn}:{_time.time_ns()}"
+                log_billing_event(
+                    idempotency_key=f"req:{seed}", user_id=uid, action_type=tn,
+                    provider="openai", units_type="requests", units_value=1.0,
+                    status="estimated", metadata={"model": IMAGE_GENERATION_MODEL, "kind": "image"},
+                )
+                log_billing_event(
+                    idempotency_key=f"img:{seed}", user_id=uid, action_type=tn,
+                    provider="openai", units_type="images", units_value=1.0,
+                    price_provider="openai", price_sku=f"{IMAGE_GENERATION_MODEL}_{q}", price_unit="images",
+                    status="estimated", metadata={"model": IMAGE_GENERATION_MODEL, "quality": q},
+                )
+            except Exception:
+                logging.debug("image billing log failed task=%s", action_type, exc_info=True)
+
+        threading.Thread(target=_worker, daemon=True).start()
+    except Exception:
+        pass
+
+
 def generate_image_bytes(
     *,
     prompt: str,
     template_id: int,
     user_id: int,
+    action_type: str = "image_generation",
 ) -> dict:
     normalized_prompt = str(prompt or "").strip()
     if not normalized_prompt:
@@ -118,6 +154,7 @@ def generate_image_bytes(
         "revised_prompt": str(getattr(first_item, "revised_prompt", "") or "").strip() or None,
         "prompt_sha1": hashlib.sha1(normalized_prompt.encode("utf-8")).hexdigest(),
     }
+    _log_image_billing_event(action_type=action_type, user_id=int(user_id), quality=IMAGE_GENERATION_QUALITY)
     return {
         "provider_name": IMAGE_GENERATION_PROVIDER,
         "mime_type": _mime_type_for_output_format(IMAGE_GENERATION_OUTPUT_FORMAT),

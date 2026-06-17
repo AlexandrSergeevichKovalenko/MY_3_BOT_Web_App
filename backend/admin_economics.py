@@ -678,7 +678,7 @@ def build_cost_breakdown_text(*, days: int = 7, limit: int = 25) -> str:
     L += [
         "",
         "🏭 = наша генерация/поддержание · 👤 = от пользователей",
-        "⚠️ Генерация картинок (gpt-image-1) пока не в учёте — добавляется отдельно.",
+        "🖼 Картинки gpt-image-1 учитываются по оценке за изображение (*_image).",
     ]
     return "\n".join(L)[:4000]
 
@@ -815,6 +815,15 @@ def format_admin_economics_report(payload: dict[str, Any]) -> str:
         L.append("🤖 OpenAI: 0 запросов · $0.0000  (нет вызовов / всё из кэша)")
     else:
         L.append(f"🤖 OpenAI: {total_reqs} запросов · ${openai_cost:.4f}")
+        try:
+            top = cost_breakdown_by_activity(days=7, limit=3).get("rows") or []
+            top = [r for r in top if r.get("cost", 0) > 0]
+            if top:
+                L.append("   💸 топ-3/7д: "
+                         + " · ".join(f"{html.escape(r['action_type'])} ${r['cost']:.2f}" for r in top)
+                         + "  (разбивка: /costs)")
+        except Exception:
+            pass
         sub = []
         for key, lbl in (("lookup_requests", "lookup"), ("explain_requests", "explain"),
                          ("story_requests", "story"), ("shortcut_split_requests", "shortcut")):

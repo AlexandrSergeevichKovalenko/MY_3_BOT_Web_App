@@ -41,6 +41,7 @@ def generate_article_quiz_image(word_id: str, dalle_prompt: str) -> str:
             prompt=dalle_prompt,
             template_id=0,
             user_id=0,
+            action_type="article_quiz_image",
         )
         img_bytes = bytes(result.get("data") or b"")
         mime = str(result.get("mime_type") or "image/png").strip() or "image/png"

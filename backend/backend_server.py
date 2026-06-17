@@ -11445,7 +11445,31 @@ def _sync_aux_price_snapshots_from_env() -> dict:
     }
 
 
+def _seed_gpt_image_price_snapshots() -> dict:
+    """Per-image flat-rate estimates for gpt-image-1 (1024², by quality, USD), so
+    image-generation cost is computed and shows up in the per-activity breakdown.
+    gpt-image-1 isn't on the public-pricing scraper list. Env-overridable via
+    BILLING_GPT_IMAGE_1_<QUALITY>_USD."""
+    defaults = {"low": 0.011, "medium": 0.042, "high": 0.167, "auto": 0.042}
+    created = 0
+    for quality, default_price in defaults.items():
+        try:
+            price = float((os.getenv(f"BILLING_GPT_IMAGE_1_{quality.upper()}_USD") or str(default_price)).strip() or default_price)
+        except Exception:
+            price = float(default_price)
+        try:
+            if upsert_billing_price_snapshot(
+                provider="openai", sku=f"gpt-image-1_{quality}", unit="images",
+                price_per_unit=price, currency="USD", source="manual_image_estimate",
+            ):
+                created += 1
+        except Exception:
+            logging.debug("gpt-image price seed failed q=%s", quality, exc_info=True)
+    return {"created": created}
+
+
 def _sync_openai_price_snapshots_public_then_env() -> dict:
+    image_result = _seed_gpt_image_price_snapshots()
     public_enabled = str(os.getenv("BILLING_OPENAI_PUBLIC_PRICING_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
     public_result = {"enabled": False}
     if public_enabled:
@@ -11457,8 +11481,9 @@ def _sync_openai_price_snapshots_public_then_env() -> dict:
         "public": public_result,
         "env": env_result,
         "aux_env": aux_env_result,
+        "image": image_result,
         "summary": {
-            "created_count": int((public_result.get("created_count") or 0) + (env_result.get("created_count") or 0) + (aux_env_result.get("created_count") or 0)),
+            "created_count": int((public_result.get("created_count") or 0) + (env_result.get("created_count") or 0) + (aux_env_result.get("created_count") or 0) + (image_result.get("created") or 0)),
             "skipped_count": int((public_result.get("skipped_count") or 0) + (env_result.get("skipped_count") or 0) + (aux_env_result.get("skipped_count") or 0)),
             "errors_count": int((public_result.get("errors_count") or 0) + (env_result.get("errors_count") or 0) + (aux_env_result.get("errors_count") or 0)),
         },

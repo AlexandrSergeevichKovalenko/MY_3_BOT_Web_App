@@ -82,6 +82,7 @@ def generate_component_image(word: str, dalle_prompt: str, *,
 
     try:
         result = generate_image_bytes(
+            action_type="rebus_component",
             prompt=dalle_prompt,
             template_id=0,          # system-level, no template_id
             user_id=0,
