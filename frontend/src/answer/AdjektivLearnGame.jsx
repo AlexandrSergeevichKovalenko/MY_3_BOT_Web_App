@@ -14,7 +14,14 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
   const [pick, setPick] = useState(null);
   const [streak, setStreak] = useState(0);
   const [error, setError] = useState('');
-  const phraseFit = useFitText(i, { max: 36 });
+  // Re-fit when the actual phrase content arrives (async) or the slot widens after
+  // answering — not just on index change, or the first card measures stale/empty text
+  // and overflows.
+  const _cur = deck[i];
+  const phraseFit = useFitText(
+    _cur ? `${_cur.before}${_cur.after}${pick || ''}` : i,
+    { max: 36 },
+  );
 
   const loadMore = useCallback(async () => {
     try {

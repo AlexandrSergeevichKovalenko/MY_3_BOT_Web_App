@@ -23,7 +23,14 @@ export default function AdjektivSprintGame({ api, haptic, onClose, battleId = nu
   const startRef = useRef(0);
   const idxRef = useRef(0);
   const tickRef = useRef(null);
-  const phraseFit = useFitText(idx, { max: 36 });
+  // Depend on the actual phrase content (+ flash, which widens the slot), not just
+  // the index — items load into a ref async, so an index-only dep can measure stale
+  // text and overflow on the first item.
+  const _it = itemsRef.current[idx];
+  const phraseFit = useFitText(
+    _it ? `${_it.before}${_it.after}${flash ? _it.a : ''}` : idx,
+    { max: 36 },
+  );
 
   useEffect(() => {
     let cancelled = false;

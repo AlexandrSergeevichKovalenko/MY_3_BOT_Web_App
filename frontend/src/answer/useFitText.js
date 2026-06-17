@@ -23,10 +23,19 @@ export default function useFitText(dep, { max = 40, min = 14, padding = 28 } = {
 
   // re-fit on content change (next item) — layout effect avoids a flash
   useLayoutEffect(() => { fit(); }, [dep, fit]);
-  // re-fit on viewport resize / rotation
+  // re-fit on viewport resize / rotation AND whenever the container's own width
+  // settles (Telegram WebApp sheet animates in → the box width isn't final on first
+  // layout; a plain window-resize listener doesn't catch that). ResizeObserver fires
+  // an initial callback on observe, so this also covers the post-mount width.
   useLayoutEffect(() => {
     window.addEventListener('resize', fit);
-    return () => window.removeEventListener('resize', fit);
+    let ro;
+    const box = ref.current?.parentElement;
+    if (box && typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(() => fit());
+      ro.observe(box);
+    }
+    return () => { window.removeEventListener('resize', fit); ro?.disconnect(); };
   }, [fit]);
 
   return ref;
