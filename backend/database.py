@@ -20291,6 +20291,79 @@ def finish_scheduler_run_guard(
             )
 
 
+def get_latest_scheduler_run_guard(
+    *,
+    job_key: str,
+    target_scope: str = "global",
+    status: str | None = None,
+) -> dict | None:
+    normalized_status = str(status or "").strip().lower() or None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if normalized_status:
+                cursor.execute(
+                    """
+                    SELECT
+                        job_key,
+                        run_period,
+                        target_scope,
+                        status,
+                        metadata,
+                        claimed_at,
+                        finished_at,
+                        updated_at
+                    FROM bt_3_scheduler_run_guards
+                    WHERE job_key = %s
+                      AND target_scope = %s
+                      AND status = %s
+                    ORDER BY COALESCE(finished_at, updated_at, claimed_at) DESC
+                    LIMIT 1;
+                    """,
+                    (
+                        str(job_key or "").strip()[:80],
+                        str(target_scope or "global").strip()[:80] or "global",
+                        normalized_status,
+                    ),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT
+                        job_key,
+                        run_period,
+                        target_scope,
+                        status,
+                        metadata,
+                        claimed_at,
+                        finished_at,
+                        updated_at
+                    FROM bt_3_scheduler_run_guards
+                    WHERE job_key = %s
+                      AND target_scope = %s
+                    ORDER BY COALESCE(finished_at, updated_at, claimed_at) DESC
+                    LIMIT 1;
+                    """,
+                    (
+                        str(job_key or "").strip()[:80],
+                        str(target_scope or "global").strip()[:80] or "global",
+                    ),
+                )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    metadata = row[4] if isinstance(row[4], dict) else {}
+    return {
+        "job_key": str(row[0] or "").strip(),
+        "run_period": str(row[1] or "").strip(),
+        "target_scope": str(row[2] or "").strip(),
+        "status": str(row[3] or "").strip(),
+        "metadata": metadata,
+        "claimed_at": row[5],
+        "finished_at": row[6],
+        "updated_at": row[7],
+    }
+
+
 def _map_semantic_benchmark_library_row(row: tuple | None) -> dict | None:
     if not row:
         return None

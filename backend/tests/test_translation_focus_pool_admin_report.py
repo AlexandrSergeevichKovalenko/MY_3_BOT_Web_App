@@ -63,23 +63,27 @@ class TranslationFocusPoolAdminReportTextTests(unittest.TestCase):
                 "ready_count_eq_0_pct": 0.25,
                 "background_fill_required_rate": 0.5,
             },
+            "refill_state": {
+                "today_completed": False,
+                "latest_completed_run_period": "2026-05-06",
+                "latest_completed_finished_at": "2026-05-06 23:00:00+02:00",
+            },
         }
 
-        report = server._build_translation_focus_pool_admin_report_text(
+        report = server._build_translation_focus_pool_admin_report_caption(
             rows=rows,
             summary=summary,
             snapshot_date=date(2026, 5, 7),
             tz_name="Europe/Vienna",
         )
 
-        self.assertIn("Translation focus pool report", report)
-        self.assertIn("Total ready now: 19 | Yesterday: 12 | Delta: +7", report)
-        self.assertIn("Readiness 30d: sessions=44, zero-ready=25.0%, fill-required=50.0%", report)
-        self.assertIn("1. Praepositionen | today 10 | yesterday 7 | delta +3 | gap 9", report)
-        self.assertIn("B1: today 6 | yesterday 6 | delta +0 | low 7 | target 10", report)
-        self.assertIn("C1: today 4 | yesterday 1 | delta +3 | low 6 | target 9", report)
-        self.assertIn("2. Nebensaetze | today 9 | yesterday 5 | delta +4 | gap 3", report)
-        self.assertIn("B2: today 9 | yesterday 5 | delta +4 | low 8 | target 12", report)
+        self.assertIn("📊 Translation pool · 2026-05-07 (Europe/Vienna)", report)
+        self.assertIn("RU → DE  ·  Сегодня: 19  |  Вчера: 12  |  Δ +7", report)
+        self.assertIn("Readiness: zero-ready 25%  ·  fill-required 50%", report)
+        self.assertIn("Refill: today no · last 2026-05-06 · finished 2026-05-06 23:00:00+02:00", report)
+        self.assertIn("🔴 Дефицит (топ тем):", report)
+        self.assertIn("Praepositionen: 10/19  Δ +3  gap −9", report)
+        self.assertIn("Nebensaetze: 9/12  Δ +4  gap −3", report)
 
 
 if __name__ == "__main__":

@@ -486,6 +486,7 @@ from backend.database import (
     upsert_today_reminder_settings,
     list_today_reminder_users,
     get_admin_telegram_ids,
+    get_latest_scheduler_run_guard,
     list_recent_semantic_audit_runs,
     update_semantic_audit_run_delivery,
     create_support_message,
@@ -950,8 +951,8 @@ TRANSLATION_FOCUS_POOL_HOT_BUCKET_OVERRIDES: dict[tuple[str, str], dict[str, int
     },
 }
 TRANSLATION_FOCUS_POOL_REFILL_ENABLED = str(os.getenv("TRANSLATION_FOCUS_POOL_REFILL_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
-TRANSLATION_FOCUS_POOL_REFILL_HOUR = max(0, min(23, int((os.getenv("TRANSLATION_FOCUS_POOL_REFILL_HOUR") or "2").strip() or "2")))
-TRANSLATION_FOCUS_POOL_REFILL_MINUTE = max(0, min(59, int((os.getenv("TRANSLATION_FOCUS_POOL_REFILL_MINUTE") or "15").strip() or "15")))
+TRANSLATION_FOCUS_POOL_REFILL_HOUR = max(0, min(23, int((os.getenv("TRANSLATION_FOCUS_POOL_REFILL_HOUR") or "23").strip() or "23")))
+TRANSLATION_FOCUS_POOL_REFILL_MINUTE = max(0, min(59, int((os.getenv("TRANSLATION_FOCUS_POOL_REFILL_MINUTE") or "0").strip() or "0")))
 TRANSLATION_FOCUS_POOL_REFILL_TZ = (os.getenv("TRANSLATION_FOCUS_POOL_REFILL_TZ") or TODAY_PLAN_DEFAULT_TZ).strip() or TODAY_PLAN_DEFAULT_TZ
 TRANSLATION_FOCUS_POOL_ADMIN_REPORT_ENABLED = str(os.getenv("TRANSLATION_FOCUS_POOL_ADMIN_REPORT_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
 TRANSLATION_FOCUS_POOL_ADMIN_REPORT_HOUR = max(0, min(23, int((os.getenv("TRANSLATION_FOCUS_POOL_ADMIN_REPORT_HOUR") or "6").strip() or "6")))
@@ -19318,6 +19319,15 @@ def _dispatch_translation_focus_pool_refill(*, force: bool = False, tz_name: str
         local_now_iso = datetime.utcnow().isoformat()
         local_hour = -1
     offpeak_allowed = bool(_should_run_sentence_prewarm_now(normalized_tz_name))
+    scheduled_hour = int(TRANSLATION_FOCUS_POOL_REFILL_HOUR)
+    scheduled_minute = int(TRANSLATION_FOCUS_POOL_REFILL_MINUTE)
+    scheduled_inside_offpeak = _hour_in_window(
+        scheduled_hour,
+        int(SENTENCE_PREWARM_OFFPEAK_START_HOUR),
+        int(SENTENCE_PREWARM_OFFPEAK_END_HOUR),
+    )
+    allow_outside_offpeak_for_schedule = not bool(scheduled_inside_offpeak)
+    effective_offpeak_allowed = bool(offpeak_allowed or allow_outside_offpeak_for_schedule)
     _log_translation_focus_pool_refill_stage(
         "dispatch_start",
         force=bool(force),
@@ -19328,9 +19338,11 @@ def _dispatch_translation_focus_pool_refill(*, force: bool = False, tz_name: str
         prewarm_enabled=bool(TRANSLATION_FOCUS_POOL_PREWARM_ENABLED),
         refill_enabled=bool(TRANSLATION_FOCUS_POOL_REFILL_ENABLED),
         offpeak_allowed=bool(offpeak_allowed),
+        scheduled_inside_offpeak=bool(scheduled_inside_offpeak),
+        effective_offpeak_allowed=bool(effective_offpeak_allowed),
         sentence_prewarm_allow_daytime=bool(SENTENCE_PREWARM_ALLOW_DAYTIME),
-        configured_refill_hour=int(TRANSLATION_FOCUS_POOL_REFILL_HOUR),
-        configured_refill_minute=int(TRANSLATION_FOCUS_POOL_REFILL_MINUTE),
+        configured_refill_hour=scheduled_hour,
+        configured_refill_minute=scheduled_minute,
         target_per_bucket=int(TRANSLATION_FOCUS_POOL_PREWARM_TARGET_PER_BUCKET),
         base_target_per_bucket=int(TRANSLATION_FOCUS_POOL_PREWARM_BASE_TARGET_PER_BUCKET),
         forecast_target_cap=int(TRANSLATION_FOCUS_POOL_PREWARM_FORECAST_TARGET_CAP),
@@ -19338,11 +19350,13 @@ def _dispatch_translation_focus_pool_refill(*, force: bool = False, tz_name: str
         levels=list(TRANSLATION_FOCUS_POOL_PREWARM_LEVELS or []),
     )
     logging.info(
-        "translation_focus_pool_refill dispatch_start force=%s tz=%s local_now=%s offpeak_allowed=%s prewarm_enabled=%s refill_enabled=%s targets={low:%s,base:%s,bonus_cap:%s,forecast_cap:%s,max_generate:%s,levels:%s}",
+        "translation_focus_pool_refill dispatch_start force=%s tz=%s local_now=%s offpeak_allowed=%s scheduled_inside_offpeak=%s effective_offpeak_allowed=%s prewarm_enabled=%s refill_enabled=%s targets={low:%s,base:%s,bonus_cap:%s,forecast_cap:%s,max_generate:%s,levels:%s}",
         bool(force),
         normalized_tz_name,
         local_now_iso,
         bool(offpeak_allowed),
+        bool(scheduled_inside_offpeak),
+        bool(effective_offpeak_allowed),
         bool(TRANSLATION_FOCUS_POOL_PREWARM_ENABLED),
         bool(TRANSLATION_FOCUS_POOL_REFILL_ENABLED),
         int(TRANSLATION_FOCUS_POOL_PREWARM_TARGET_PER_BUCKET),
@@ -19396,7 +19410,7 @@ def _dispatch_translation_focus_pool_refill(*, force: bool = False, tz_name: str
             _elapsed_ms_since(started_perf),
         )
         return {"ok": True, "skipped": True, "reason": "disabled", "generated": 0, "upserted": 0, "focuses": 0}
-    if not force and not offpeak_allowed:
+    if not force and not effective_offpeak_allowed:
         _persist_daily_snapshot()
         _log_translation_focus_pool_refill_stage(
             "dispatch_finish",
@@ -19406,15 +19420,19 @@ def _dispatch_translation_focus_pool_refill(*, force: bool = False, tz_name: str
             tz_name=normalized_tz_name,
             local_now=local_now_iso,
             local_hour=local_hour,
+            scheduled_inside_offpeak=bool(scheduled_inside_offpeak),
+            effective_offpeak_allowed=bool(effective_offpeak_allowed),
             generated=0,
             upserted=0,
             focuses=0,
         )
         logging.info(
-            "translation_focus_pool_refill dispatch_finish skipped=True reason=outside_offpeak_window tz=%s local_now=%s local_hour=%s generated=0 upserted=0 focuses=0 duration_ms=%s",
+            "translation_focus_pool_refill dispatch_finish skipped=True reason=outside_offpeak_window tz=%s local_now=%s local_hour=%s scheduled_inside_offpeak=%s effective_offpeak_allowed=%s generated=0 upserted=0 focuses=0 duration_ms=%s",
             normalized_tz_name,
             local_now_iso,
             local_hour,
+            bool(scheduled_inside_offpeak),
+            bool(effective_offpeak_allowed),
             _elapsed_ms_since(started_perf),
         )
         return {"ok": True, "skipped": True, "reason": "outside_offpeak_window", "generated": 0, "upserted": 0, "focuses": 0}
@@ -19530,6 +19548,33 @@ def _dispatch_translation_focus_pool_refill(*, force: bool = False, tz_name: str
             int(focus_pool_result.get("focuses") or 0),
             _elapsed_ms_since(started_perf),
         )
+        bucket_results_sorted = sorted(
+            bucket_results,
+            key=lambda item: (
+                -int((item or {}).get("deficit_after") or 0),
+                -int((item or {}).get("ready_before") or 0),
+                str((item or {}).get("focus_key") or ""),
+                str((item or {}).get("level") or ""),
+            ),
+        )
+        logging.info(
+            "translation_focus_pool_refill summary snapshot_date=%s generated=%s upserted=%s focuses=%s top_buckets=%s",
+            snapshot_date.isoformat(),
+            int(focus_pool_result.get("generated") or 0),
+            int(focus_pool_result.get("upserted") or 0),
+            int(focus_pool_result.get("focuses") or 0),
+            [
+                {
+                    "focus_key": str((item or {}).get("focus_key") or "").strip(),
+                    "level": str((item or {}).get("level") or "").strip(),
+                    "ready_before": int((item or {}).get("ready_before") or 0),
+                    "ready_after": int((item or {}).get("ready_after") or 0),
+                    "deficit_after": int((item or {}).get("deficit_after") or 0),
+                    "finish_reason": str((item or {}).get("finish_reason") or "").strip(),
+                }
+                for item in bucket_results_sorted[:5]
+            ],
+        )
         return focus_pool_result
     except Exception:
         logging.exception("Translation focus pool refill failed")
@@ -19633,6 +19678,42 @@ def _build_translation_focus_pool_report_themes(
     return ordered_themes[: max(1, int(top_limit or 1))]
 
 
+def _get_translation_focus_pool_refill_state(*, tz_name: str) -> dict[str, Any]:
+    today_local = _today_local_date(tz_name)
+    latest_completed = get_latest_scheduler_run_guard(
+        job_key="translation_focus_pool_refill",
+        target_scope="global",
+        status="completed",
+    )
+    latest_any = get_latest_scheduler_run_guard(
+        job_key="translation_focus_pool_refill",
+        target_scope="global",
+    )
+    def _fmt_local_dt(value: Any) -> str | None:
+        if not isinstance(value, datetime):
+            return None
+        try:
+            if getattr(value, "tzinfo", None):
+                return value.astimezone(ZoneInfo(tz_name)).isoformat()
+            return value.isoformat()
+        except Exception:
+            return value.isoformat()
+
+    last_finished_at = latest_completed.get("finished_at") if isinstance(latest_completed, dict) else None
+    last_run_period = str((latest_completed or {}).get("run_period") or "").strip() if isinstance(latest_completed, dict) else ""
+    today_completed = last_run_period == today_local.isoformat() if last_run_period else False
+    return {
+        "today_local": today_local.isoformat(),
+        "today_completed": bool(today_completed),
+        "latest_completed_run_period": last_run_period or None,
+        "latest_completed_finished_at": _fmt_local_dt(last_finished_at),
+        "latest_completed_status": str((latest_completed or {}).get("status") or "").strip() or None,
+        "latest_any_status": str((latest_any or {}).get("status") or "").strip() or None,
+        "latest_any_run_period": str((latest_any or {}).get("run_period") or "").strip() or None,
+        "latest_any_finished_at": _fmt_local_dt((latest_any or {}).get("finished_at") if isinstance(latest_any, dict) else None),
+    }
+
+
 def _build_translation_focus_pool_report_rows(
     *,
     snapshot_date: date,
@@ -19670,6 +19751,9 @@ def _build_translation_focus_pool_report_rows(
         for focus in candidate_focuses
         if str((focus or {}).get("key") or "").strip()
     }
+    refill_state = _get_translation_focus_pool_refill_state(
+        tz_name=TRANSLATION_FOCUS_POOL_ADMIN_REPORT_TZ,
+    )
     candidate_rank_map = {
         str((focus or {}).get("key") or "").strip(): index
         for index, focus in enumerate(candidate_focuses)
@@ -19817,6 +19901,7 @@ def _build_translation_focus_pool_report_rows(
         "candidate_focuses": int(len(candidate_map)),
         "missing_previous_snapshot": not bool(previous_rows),
         "readiness": readiness_report,
+        "refill_state": refill_state,
     }
     return report_rows, summary
 
@@ -19876,6 +19961,7 @@ def _build_translation_focus_pool_admin_report_png(
     rendered_delta = rendered_today - rendered_yesterday
     rendered_below_target = sum(int(theme.get("buckets_below_target") or 0) for theme in top_themes)
     rendered_bucket_count = sum(len(list(theme.get("levels") or [])) for theme in top_themes)
+    refill_state = summary.get("refill_state") if isinstance(summary.get("refill_state"), dict) else {}
     summary_ax.text(
         0.0,
         0.90,
@@ -19916,6 +20002,29 @@ def _build_translation_focus_pool_admin_report_png(
         color="#6b7280",
         transform=summary_ax.transAxes,
     )
+    if refill_state:
+        refill_note = (
+            "Refill: today yes" if bool(refill_state.get("today_completed")) else "Refill: today no"
+        )
+        last_success_period = str(refill_state.get("latest_completed_run_period") or "").strip()
+        last_success_finished = str(refill_state.get("latest_completed_finished_at") or "").strip()
+        last_bits = []
+        if last_success_period:
+            last_bits.append(f"period {last_success_period}")
+        if last_success_finished:
+            last_bits.append(f"at {last_success_finished}")
+        if last_bits:
+            refill_note += " · " + " · ".join(last_bits)
+        summary_ax.text(
+            0.0,
+            0.0,
+            refill_note,
+            ha="left",
+            va="top",
+            fontsize=9,
+            color="#92400e" if not bool(refill_state.get("today_completed")) else "#047857",
+            transform=summary_ax.transAxes,
+        )
 
     for theme_index, theme in enumerate(top_themes, start=1):
         ax = axes[theme_index]
@@ -20056,6 +20165,16 @@ def _build_translation_focus_pool_admin_report_caption(
         zero_pct = float(readiness.get("ready_count_eq_0_pct") or 0.0) * 100
         fill_pct = float(readiness.get("background_fill_required_rate") or 0.0) * 100
         lines.append(f"Readiness: zero-ready {zero_pct:.0f}%  ·  fill-required {fill_pct:.0f}%")
+    refill_state = summary.get("refill_state") if isinstance(summary.get("refill_state"), dict) else {}
+    if refill_state:
+        refill_line = "Refill: today yes" if bool(refill_state.get("today_completed")) else "Refill: today no"
+        last_period = str(refill_state.get("latest_completed_run_period") or "").strip()
+        last_finished = str(refill_state.get("latest_completed_finished_at") or "").strip()
+        if last_period:
+            refill_line += f" · last {last_period}"
+        if last_finished:
+            refill_line += f" · finished {last_finished}"
+        lines.append(refill_line)
     if bool(summary.get("missing_previous_snapshot")):
         lines.append("⚠️ Снэпшот вчерашнего дня отсутствует — дельта от нулевой базы")
 
@@ -20146,6 +20265,7 @@ def _send_translation_focus_pool_admin_report(*, force: bool = False) -> dict[st
             source_lang=TRANSLATION_FOCUS_POOL_ADMIN_REPORT_SOURCE_LANG,
             target_lang=TRANSLATION_FOCUS_POOL_ADMIN_REPORT_TARGET_LANG,
         )
+        refill_state = summary.get("refill_state") if isinstance(summary.get("refill_state"), dict) else {}
         _log_translation_focus_pool_admin_report_stage(
             "rows_ready",
             snapshot_date=run_period,
@@ -20154,6 +20274,9 @@ def _send_translation_focus_pool_admin_report(*, force: bool = False) -> dict[st
             total_today=int(summary.get("total_today") or 0),
             total_yesterday=int(summary.get("total_yesterday") or 0),
             delta_total=int(summary.get("delta_total") or 0),
+            refill_today_completed=bool(refill_state.get("today_completed")) if refill_state else False,
+            refill_last_period=str(refill_state.get("latest_completed_run_period") or "").strip() if refill_state else None,
+            refill_last_finished_at=str(refill_state.get("latest_completed_finished_at") or "").strip() if refill_state else None,
         )
         admin_ids = sorted(int(item) for item in get_admin_telegram_ids() if int(item) > 0)
         _log_translation_focus_pool_admin_report_stage(

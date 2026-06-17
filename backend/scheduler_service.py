@@ -50,6 +50,7 @@ import os
 import signal
 import sys
 import time
+from datetime import datetime
 from datetime import time as dt_time
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -103,6 +104,7 @@ from backend.background_jobs import (  # noqa: E402
     run_analytics_snapshot_precompute_actor,
     run_shortcut_pairing_code_cleanup_actor,
 )
+from backend.database import get_latest_scheduler_run_guard  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -750,7 +752,7 @@ def _build_scheduler():
         scheduler.add_job(
             _dispatch_translation_focus_pool_refill,
             "cron",
-            hour=_int_env("TRANSLATION_FOCUS_POOL_REFILL_HOUR", 3),
+            hour=_int_env("TRANSLATION_FOCUS_POOL_REFILL_HOUR", 23),
             minute=_int_env("TRANSLATION_FOCUS_POOL_REFILL_MINUTE", 0),
             timezone=_tz(os.getenv("TRANSLATION_FOCUS_POOL_REFILL_TZ") or default_tz_name),
             max_instances=1,
@@ -1024,6 +1026,28 @@ def main() -> int:
 
     scheduler.start()
     logging.info("scheduler_service: APScheduler started with %d jobs", len(scheduler.get_jobs()))
+    try:
+        refill_tz_name = (os.getenv("TRANSLATION_FOCUS_POOL_REFILL_TZ") or default_tz_name).strip() or default_tz_name
+        today_local = datetime.now(_tz(refill_tz_name, default_tz_name)).date().isoformat()
+        latest_refill = get_latest_scheduler_run_guard(
+            job_key="translation_focus_pool_refill",
+            target_scope="global",
+            status="completed",
+        )
+        last_run_period = str((latest_refill or {}).get("run_period") or "").strip() or None
+        last_finished_at = (latest_refill or {}).get("finished_at")
+        logging.info(
+            "scheduler_service: translation_focus_pool_refill startup_check today=%s last_success=%s last_finished_at=%s today_completed=%s schedule=%02d:%02d tz=%s",
+            today_local,
+            last_run_period or "none",
+            last_finished_at.isoformat() if hasattr(last_finished_at, "isoformat") else None,
+            bool(last_run_period == today_local),
+            _int_env("TRANSLATION_FOCUS_POOL_REFILL_HOUR", 23),
+            _int_env("TRANSLATION_FOCUS_POOL_REFILL_MINUTE", 0),
+            refill_tz_name,
+        )
+    except Exception:
+        logging.exception("scheduler_service: translation_focus_pool_refill startup_check failed")
 
     while not should_stop["value"]:
         time.sleep(1)
