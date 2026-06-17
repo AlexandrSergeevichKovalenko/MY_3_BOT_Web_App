@@ -5998,6 +5998,16 @@ async def handle_user_message(update: Update, context: CallbackContext):
                 "state_key": str(restored_freeform.get("state_key") or "").strip(),
             }
             pending_quiz_freeform[user_id] = pending
+    if pending and _is_quiz_freeform_navigation_text(text):
+        pending_payload = pending_quiz_freeform.pop(user_id, None) or pending
+        state_key = str((pending_payload or {}).get("state_key") or "").strip()
+        if not state_key:
+            state_key = f"quizfreeform:{int(user_id)}:{str((pending_payload or {}).get('poll_id') or '').strip()}"
+        try:
+            _clear_pending_input_state(state_key=state_key, user_id=int(user_id))
+        except Exception:
+            logging.warning("⚠️ Не удалось очистить quiz freeform state перед навигацией user_id=%s", user_id, exc_info=True)
+        pending = None
     if pending:
         if update.effective_chat and update.effective_chat.type != "private":
             await update.message.reply_text("Ответ на этот квиз отправьте в личку с ботом.")
@@ -6666,6 +6676,35 @@ def _is_menu_button_text(text: str) -> bool:
         SHORTCUT_INSTALL_BUTTON_TEXT,
         SHORTCUT_CONNECT_BUTTON_TEXT,
         LANGUAGE_TUTOR_BUTTON_TEXT,
+    }
+
+
+def _is_quiz_freeform_navigation_text(text: str) -> bool:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return False
+    return normalized in {
+        SHORTCUT_INSTALL_BUTTON_TEXT,
+        SHORTCUT_CONNECT_BUTTON_TEXT,
+        DICTIONARY_BATCH_FAST_BUTTON_TEXT,
+        SHORTCUT_AUTOSAVE_BUTTON_TEXT,
+        HOWTO_GUIDE_BUTTON_TEXT,
+        ARTIKEL_LEARN_BUTTON_TEXT,
+        ARTIKEL_FOCUS_BUTTON_TEXT,
+        ARTIKEL_BATTLE_CALL_BUTTON_TEXT,
+        ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT,
+        ADJEKTIV_SPRINT_BUTTON_TEXT,
+        ADJEKTIV_BATTLE_BUTTON_TEXT,
+        BATTLE_HISTORY_BUTTON_TEXT,
+        ADMIN_BROADCAST_BUTTON_TEXT,
+        LANGUAGE_TUTOR_BUTTON_TEXT,
+        "📌 Выбрать тему",
+        "🚀 Начать перевод",
+        "✅ Завершить перевод",
+        "🟡 Посмотреть свою статистику",
+        "📜 Проверить перевод",
+        "💬 Перейти в личку",
+        "🎙 Начать урок",
     }
 
 
