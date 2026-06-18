@@ -7055,6 +7055,28 @@ def _is_missing_dictionary_schema_error(exc: Exception) -> bool:
     )
 
 
+_BILINGUAL_RU_COMBO_RE = re.compile(r"^(?P<pre>[^—]*?)\s+—\s+(?P<post>.+)$", re.DOTALL)
+
+
+def _strip_bilingual_ru_combo(value):
+    """Guard against the reader bilingual selection saving 'German — Russian' into a
+    Russian field (word_ru/translation_ru) — the front of the SRS card then shows both
+    languages. Conservative: only strip the German prefix when the text before ' — ' is
+    Latin/German (no Cyrillic) and the part after has Cyrillic; otherwise leave as-is."""
+    s = value if isinstance(value, str) else (str(value) if value else "")
+    if not s or " — " not in s:
+        return value
+    m = _BILINGUAL_RU_COMBO_RE.match(s.strip())
+    if not m:
+        return value
+    pre, post = m.group("pre"), m.group("post").strip()
+    has_cyr = lambda x: bool(re.search(r"[А-Яа-яЁё]", x))
+    has_lat = lambda x: bool(re.search(r"[A-Za-zÄÖÜäöüß]", x))
+    if pre and has_lat(pre) and not has_cyr(pre) and has_cyr(post):
+        return post
+    return value
+
+
 def _save_dictionary_entry_with_schema_retry(**kwargs) -> None:
     try:
         return save_webapp_dictionary_query_returning_id(**kwargs)
@@ -36986,10 +37008,10 @@ def save_webapp_dictionary_entry():
         origin_meta["direction"] = str(payload_direction)
 
     try:
-        resolved_word_ru = word_ru or response_json.get("word_ru")
+        resolved_word_ru = _strip_bilingual_ru_combo(word_ru or response_json.get("word_ru"))
         resolved_word_de = word_de or response_json.get("word_de")
         resolved_translation_de = translation_de or response_json.get("translation_de")
-        resolved_translation_ru = translation_ru or response_json.get("translation_ru")
+        resolved_translation_ru = _strip_bilingual_ru_combo(translation_ru or response_json.get("translation_ru"))
         response_json = _prepare_dictionary_response_json_for_save(
             response_json=response_json if isinstance(response_json, dict) else {},
             source_text=source_text or resolved_word_ru or resolved_word_de or "",
