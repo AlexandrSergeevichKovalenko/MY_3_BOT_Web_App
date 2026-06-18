@@ -297,6 +297,7 @@ from backend.openai_manager import (
     run_theory_check_feedback,
     run_beginner_topic,
     run_language_learning_private_question_detailed,
+    run_quick_ask,
     run_tts_chunk_de,
     get_last_llm_usage,
 )
@@ -22899,6 +22900,30 @@ def deepdive_load():
     if meta is None:
         return jsonify({"error": "Карточка не найдена"}), 404
     return jsonify({"ok": True, **meta})
+
+
+@app.route("/api/answer/deepdive/from_text", methods=["POST"])
+def deepdive_from_text():
+    """Mint a deep-dive card from raw words (for results that have no card yet,
+    e.g. the MC quiz) so 📌/🧩 can run on the correct answer. Returns its id."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    source_text = str(payload.get("source_text") or "").strip()
+    target_text = str(payload.get("target_text") or "").strip()
+    source_lang = str(payload.get("source_lang") or "de").strip().lower() or "de"
+    target_lang = str(payload.get("target_lang") or "ru").strip().lower() or "ru"
+    if not source_text:
+        return jsonify({"error": "source_text обязателен"}), 400
+    from backend.database import create_deepdive_card
+    card_id = create_deepdive_card(
+        user_id=user_id, source_text=source_text, target_text=target_text,
+        source_lang=source_lang, target_lang=target_lang,
+    )
+    if not card_id:
+        return jsonify({"error": "Не удалось создать карточку"}), 500
+    return jsonify({"ok": True, "id": int(card_id)})
 
 
 @app.route("/api/answer/deepdive/feel", methods=["POST"])
@@ -54371,18 +54396,10 @@ def webapp_ask_about_task():
     prev_answer = "\n\n".join(prev_answer_parts) or "—"
 
     try:
-        followup_payload = asyncio.run(
-            run_language_learning_private_question_detailed(
-                {
-                    "learner_question": learner_question,
-                    "source_language": source_lang,
-                    "target_language": target_lang,
-                    "conversation_context": {
-                        "previous_question": prev_question,
-                        "previous_answer": prev_answer,
-                    },
-                }
-            )
+        # Fast single-call ask (no Assistants polling) → answers in ~1-2s.
+        answer = run_quick_ask(
+            question=learner_question, context_text=context_text,
+            source_lang=source_lang, target_lang=target_lang, history=history,
         )
         usage_question = get_last_llm_usage(reset=True)
         _billing_log_event_safe(
@@ -54400,9 +54417,7 @@ def webapp_ask_about_task():
     except Exception as exc:
         return jsonify({"error": f"Ошибка вопроса: {exc}"}), 500
 
-    if not isinstance(followup_payload, dict):
-        return jsonify({"error": "Некорректный ответ модели"}), 500
-    answer = str(followup_payload.get("answer") or "").strip()
+    answer = str(answer or "").strip()
     if not answer:
         return jsonify({"error": "Модель не вернула ответ"}), 500
     return jsonify({"ok": True, "answer": answer})

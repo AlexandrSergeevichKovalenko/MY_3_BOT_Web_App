@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './answer.css';
 import AnagramGame from './AnagramGame.jsx';
 import MCGame from './MCGame.jsx';
+import DeepDiveActions from './DeepDiveActions.jsx';
 import ListeningGame from './ListeningGame.jsx';
 import CrosswordGrid from './CrosswordGrid.jsx';
 import AufgabeGame from './AufgabeGame.jsx';
@@ -129,20 +130,6 @@ async function playWordTts(text) {
   throw new Error('Zeitüberschreitung');
 }
 
-function ListenButton({ text }) {
-  const [state, setState] = useState('idle'); // idle|loading|error
-  const play = async () => {
-    if (state === 'loading' || !text) return;
-    setState('loading'); haptic('light');
-    try { await playWordTts(text); setState('idle'); }
-    catch (_e) { setState('error'); haptic('bad'); }
-  };
-  return (
-    <button type="button" className="mc-listen" disabled={state === 'loading'} onClick={play}>
-      {state === 'loading' ? '🔊 Готовлю…' : state === 'error' ? '🔊 Ещё раз' : '🔊 Прослушать'}
-    </button>
-  );
-}
 
 function RebusResult({ result }) {
   const good = !!result.is_correct;
@@ -262,21 +249,42 @@ function AnagramResult({ result }) {
   );
 }
 
-function MCResult({ result }) {
+function MCResult({ result, api }) {
   const good = !!result.is_correct;
+  const germanText = result.correct_de || result.correct_text || '';
+  const russianText = result.word_ru || '';
+  const [cardId, setCardId] = useState(null);
+  // Mint a deep-dive card from the correct word so 📌/🧩 can run on it.
+  useEffect(() => {
+    if (!germanText) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const d = await api('/api/answer/deepdive/from_text', {
+          source_text: germanText, target_text: russianText,
+          source_lang: 'de', target_lang: 'ru',
+        });
+        if (!cancelled && d && d.id) setCardId(d.id);
+      } catch (_e) { /* listen still works without a card */ }
+    })();
+    return () => { cancelled = true; };
+  }, [germanText, russianText, api]);
   return (
     <div className={`ans-result ${good ? 'ok' : 'bad'}`}>
       <div className="ans-verdict">{good ? '✅ Richtig!' : '❌ Falsch'}</div>
       <div className="ans-answer">
         {good ? '' : 'Richtige Antwort: '}
-        <b>{result.correct_text}</b>
+        <b>{germanText}</b>
         {result.hint_ru ? <span className="ans-meaning"> · {result.hint_ru}</span> : null}
       </div>
       {!good && result.your_answer ? (
         <div className="ans-meaning" style={{ marginTop: 4 }}>Deine Antwort: {result.your_answer}</div>
       ) : null}
       {result.explanation ? <div className="ans-explain">{result.explanation}</div> : null}
-      {result.correct_text ? <ListenButton text={result.correct_text} /> : null}
+      {germanText ? (
+        <DeepDiveActions api={api} haptic={haptic} cardId={cardId}
+          germanText={germanText} playTts={playWordTts} />
+      ) : null}
     </div>
   );
 }
@@ -790,7 +798,7 @@ export default function AnswerOverlay({ startParam }) {
         </div>
         {isRebus ? <RebusResult result={result} />
           : isAufgabe ? <AufgabeResult result={result} />
-          : isMC ? <MCResult result={result} />
+          : isMC ? <MCResult result={result} api={api} />
           : (isAnagram || isFreeform) ? <AnagramResult result={result} />
           : isListening ? <ListeningResult result={result} />
           : <CrosswordResult result={result} />}

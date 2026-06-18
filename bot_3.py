@@ -26801,16 +26801,26 @@ async def _send_poll_quiz_for_target(
         f"{html.escape(str(quiz.get('question') or '').strip())}\n\n"
         "Antworte in der Mini-App 👇"
     )
+    quiz_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "🎯 Quiz lösen", url=get_webapp_deeplink(f"ans_mc_{dispatch_id}"),
+    )]])
+    poster = None
     try:
-        sent_message = await context.bot.send_message(
-            chat_id=int(target_chat_id),
-            text=card_text,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
-                "🎯 Quiz lösen", url=get_webapp_deeplink(f"ans_mc_{dispatch_id}"),
-            )]]),
-        )
+        from backend.interactive_card import render_quiz_card
+        poster = await asyncio.to_thread(render_quiz_card)
+    except Exception:
+        logging.debug("mc quiz: card render failed", exc_info=True)
+    try:
+        if poster:
+            sent_message = await context.bot.send_photo(
+                chat_id=int(target_chat_id), photo=io.BytesIO(poster),
+                caption=card_text, parse_mode="HTML", reply_markup=quiz_keyboard,
+            )
+        else:
+            sent_message = await context.bot.send_message(
+                chat_id=int(target_chat_id), text=card_text, parse_mode="HTML",
+                disable_web_page_preview=True, reply_markup=quiz_keyboard,
+            )
     except Exception as exc:
         if _is_permanent_quiz_delivery_error(exc):
             _suppress_quiz_delivery_target(int(target_chat_id))

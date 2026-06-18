@@ -6277,6 +6277,58 @@ def run_vision_locate(image_bytes: bytes, target_label: str, *, mime: str = "ima
     return {"present": True, "bbox": [round(x, 4), round(y, 4), round(w, 4), round(h, 4)]}
 
 
+def run_quick_ask(*, question: str, context_text: str = "", source_lang: str = "ru",
+                  target_lang: str = "de", history: list | None = None) -> str:
+    """Fast in-app "ask the model" for the floating ask-window. A SINGLE
+    chat.completions call (no Assistants thread/run/poll) so it answers in ~1-2s
+    instead of many seconds. Uses gpt-4.1-mini and Telegram markdown in the reply.
+    Sets _LAST_LLM_USAGE so the caller's billing logging still works."""
+    from backend.synthetic_load import build_sync_openai_client
+    api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
+    q = str(question or "").strip()
+    if not api_key or not q:
+        return ""
+    system = (
+        "Ты дружелюбный преподаватель немецкого языка. Пользователь выполняет учебное "
+        "задание и задаёт по нему вопрос. Ответь кратко, по делу и понятно, на русском "
+        "(немецкие примеры оставляй на немецком). Для выделения используй разметку "
+        "Telegram: *жирный* для ключевых слов и _курсив_ для немецких примеров. "
+        "Опирайся на контекст задания ниже."
+    )
+    lines: list[str] = []
+    if str(context_text or "").strip():
+        lines.append(f"Контекст задания:\n{str(context_text)[:1500]}")
+    for turn in (history or [])[-4:]:
+        tq = str((turn or {}).get("q") or "").strip()
+        ta = str((turn or {}).get("a") or "").strip()
+        if tq:
+            lines.append(f"Ранее спросили: {tq}")
+        if ta:
+            lines.append(f"Ответ: {ta}")
+    lines.append(f"Вопрос: {q}")
+    client = build_sync_openai_client(api_key=api_key, timeout=40)
+    resp = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": "\n\n".join(lines)},
+        ],
+        temperature=0.3,
+    )
+    try:
+        u = getattr(resp, "usage", None)
+        if u:
+            _LAST_LLM_USAGE.set({
+                "model": "gpt-4.1-mini",
+                "prompt_tokens": int(getattr(u, "prompt_tokens", 0) or 0),
+                "completion_tokens": int(getattr(u, "completion_tokens", 0) or 0),
+                "total_tokens": int(getattr(u, "total_tokens", 0) or 0),
+            })
+    except Exception:
+        pass
+    return str(resp.choices[0].message.content or "").strip()
+
+
 def run_image_depicts(image_bytes: bytes, expected: str, *, meaning: str = "", forbid: str = "", mime: str = "image/png") -> dict:
     """Vision gate for a generated rebus component image (pool time, off the hot
     path). Verifies the single main object IS `expected` (the German word) in its

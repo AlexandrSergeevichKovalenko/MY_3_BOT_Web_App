@@ -503,6 +503,14 @@ def _mc_result_payload(dispatch: dict, *, is_correct: bool, selected_option_id: 
     options = list(dispatch.get("options") or [])
     correct_id = int(dispatch.get("correct_option_id") or 0)
     correct_text = str(dispatch.get("correct_text") or "")
+    hide_correct = bool(dispatch.get("hide_correct"))
+    # The answer to SHOW: the correct option (the German sentence/word the user
+    # should have picked). Only in hide-correct mode is the right answer not among
+    # the options → fall back to the stored correct_text (the hidden German answer).
+    if not hide_correct and 0 <= correct_id < len(options):
+        correct_display = str(options[correct_id])
+    else:
+        correct_display = correct_text
     your_text = freeform_text or (
         options[selected_option_id] if 0 <= selected_option_id < len(options) else ""
     )
@@ -511,7 +519,9 @@ def _mc_result_payload(dispatch: dict, *, is_correct: bool, selected_option_id: 
         "kind": "mc",
         "is_correct": bool(is_correct),
         "correct_option_id": correct_id,
-        "correct_text": correct_text,
+        "correct_text": correct_display,
+        "correct_de": correct_display,
+        "word_ru": word_ru,
         "your_answer": your_text,
         "selected_option_id": int(selected_option_id),
         "explanation": str(dispatch.get("explanation") or ""),

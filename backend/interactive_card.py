@@ -156,6 +156,32 @@ def _motif_word_tiles(base, d, cx, cy, accent):
                         radius=8, fill=GOLD)
 
 
+def _motif_quiz(base, d, cx, cy, accent):
+    """Three answer options stacked, the correct one highlighted with a check."""
+    w, h, gap = 620, 116, 34
+    total = h * 3 + gap * 2
+    y = cy - total / 2
+    for i in range(3):
+        correct = (i == 1)
+        col = accent if correct else (40, 52, 78)
+        x0 = cx - w / 2
+        d.rounded_rectangle([x0, y, x0 + w, y + h], radius=28, fill=col)
+        # marker circle on the left
+        mr = 30
+        mcx, mcy = x0 + 56, y + h / 2
+        d.ellipse([mcx - mr, mcy - mr, mcx + mr, mcy + mr],
+                  fill=GOLD if correct else (24, 34, 56),
+                  outline=GOLD if correct else MUTED, width=5)
+        if correct:
+            d.line([(mcx - 14, mcy + 2), (mcx - 3, mcy + 14)], fill=INK, width=9)
+            d.line([(mcx - 3, mcy + 14), (mcx + 16, mcy - 12)], fill=INK, width=9)
+        # answer line placeholder
+        ly = mcy
+        d.rounded_rectangle([mcx + 50, ly - 9, x0 + w - 46, ly + 9], radius=9,
+                            fill=INK if correct else MUTED)
+        y += h + gap
+
+
 def _motif_stopwatch(base, d, cx, cy, accent):
     """Stopwatch + der/die/das pills + a spark (Artikel Sprint)."""
     r = 150
@@ -413,6 +439,12 @@ def _card(*, badge, title, subtitle, accent, motif, cta) -> bytes | None:
 def render_anagram_card(*, level: str = "B2+") -> bytes | None:
     return _card(badge="WORTRÄTSEL", title="Anagramm", subtitle=f"Buchstabensalat  ·  {level}",
                  accent=(167, 139, 250), motif=_motif_anagram, cta="Setz die Buchstaben zusammen")
+
+
+def render_quiz_card(*, level: str = "") -> bytes | None:
+    sub = "Wähle die richtige Antwort" + (f"  ·  {level}" if level else "")
+    return _card(badge="QUIZ", title="Quiz", subtitle=sub,
+                 accent=(96, 165, 250), motif=_motif_quiz, cta="Antworte in der Mini-App")
 
 
 def render_cloze_card(*, level: str = "B2+") -> bytes | None:
