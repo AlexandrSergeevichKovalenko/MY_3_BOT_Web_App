@@ -284,6 +284,12 @@ from backend.database import (
     record_anagram_dispatch,
     update_anagram_dispatch_telegram_id,
     create_quiz_freeform_dispatch,
+    create_deepdive_card,
+    create_mc_dispatch,
+    update_mc_dispatch_telegram_id,
+    record_interactive_inbox,
+    get_oldest_unanswered_inbox,
+    count_open_inbox,
     get_pending_freeform_result_cards,
     mark_freeform_card_sent,
     get_pending_challenge_notifications,
@@ -712,6 +718,7 @@ SHORTCUT_INSTALL_BUTTON_TEXT = "📲 Установить Shortcut"
 SHORTCUT_CONNECT_BUTTON_TEXT = "📱 Connect Shortcut"
 DICTIONARY_BATCH_FAST_BUTTON_TEXT = "🇩🇪➡️🇷🇺 Быстрый перевод"
 HOWTO_GUIDE_BUTTON_TEXT = "🎬 Как пользоваться"
+NEXT_TASK_BUTTON_TEXT = "▶️ Следующее задание"
 ARTIKEL_LEARN_BUTTON_TEXT = "📚 Учить артикли"
 ARTIKEL_FOCUS_BUTTON_TEXT = "🎯 Тема на завтра"
 ARTIKEL_BATTLE_CALL_BUTTON_TEXT = "⚔️ Вызвать на батл"
@@ -1945,6 +1952,31 @@ async def _send_shortcut_install_prompt(update: Update, context: CallbackContext
     )
 
 
+async def _send_next_open_task(update: Update, context: CallbackContext) -> None:
+    """«▶️ Следующее задание» — jump to the oldest still-open interactive in the
+    user's DM feed, so they don't scroll back through the chat to find it."""
+    if not update.effective_message or not update.effective_user:
+        return
+    user_id = int(update.effective_user.id)
+    try:
+        nxt = await asyncio.to_thread(get_oldest_unanswered_inbox, user_id)
+        open_count = await asyncio.to_thread(count_open_inbox, user_id)
+    except Exception:
+        logging.warning("next-task lookup failed user=%s", user_id, exc_info=True)
+        nxt, open_count = None, 0
+    if not nxt or not nxt.get("deeplink"):
+        await update.message.reply_text("🎉 Все задания выполнены! Новые придут по расписанию.")
+        return
+    title = str(nxt.get("title") or "Задание").strip() or "Задание"
+    more = f"\n\nОсталось невыполненных: {open_count}" if open_count > 1 else ""
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        f"▶️ Открыть: {title}", url=get_webapp_deeplink(str(nxt["deeplink"])))]])
+    await update.message.reply_text(
+        f"▶️ <b>Самое старое невыполненное задание</b>{more}",
+        parse_mode="HTML", reply_markup=kb,
+    )
+
+
 async def _send_howto_guide_chapter(update: Update, context: CallbackContext) -> None:
     """«🎬 Как пользоваться» — глава с видео о работе бота и приложения."""
     if not update.effective_message:
@@ -2848,6 +2880,7 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
     return ReplyKeyboardMarkup(
         [
             *rows,
+            [NEXT_TASK_BUTTON_TEXT],
             [LANGUAGE_TUTOR_BUTTON_TEXT],
             [DICTIONARY_BATCH_FAST_BUTTON_TEXT],
             [SHORTCUT_INSTALL_BUTTON_TEXT, SHORTCUT_CONNECT_BUTTON_TEXT],
@@ -3234,13 +3267,16 @@ async def handle_language_tutor_detail_callback(update: Update, context: Callbac
         normalized["answer"] = answer
         save_key = None
         save_variants = normalized.get("save_variants") or []
+        deepdive_card_id = None
         if save_variants:
             primary = save_variants[0]
+            dd_src = str(primary.get("source_text") or "").strip()
+            dd_tgt = str(primary.get("target_text") or "").strip()
             save_key = _store_pending_quiz_question_save_request(
                 user_id=user_id,
                 request_key=f"langgpt_detail:{user_id}",
-                source_text=str(primary.get("source_text") or "").strip(),
-                target_text=str(primary.get("target_text") or "").strip(),
+                source_text=dd_src,
+                target_text=dd_tgt,
                 source_lang=normalized["source_lang"],
                 target_lang=normalized["target_lang"],
                 options=[
@@ -3254,6 +3290,19 @@ async def handle_language_tutor_detail_callback(update: Update, context: Callbac
                 continue_callback_data="langgpt:continue",
                 continue_button_text="❓ Задать вопрос",
             )
+            if dd_src and dd_tgt:
+                try:
+                    deepdive_card_id = await asyncio.to_thread(
+                        create_deepdive_card,
+                        user_id=int(user_id), source_text=dd_src, target_text=dd_tgt,
+                        source_lang=normalized["source_lang"], target_lang=normalized["target_lang"],
+                    )
+                except Exception:
+                    logging.exception("❌ deep-dive карточка (tutor detail) user_id=%s", user_id)
+            if save_key and deepdive_card_id:
+                _req = pending_quiz_question_save_requests.get(save_key)
+                if _req is not None:
+                    _req["deepdive_card_id"] = int(deepdive_card_id)
         await query.message.reply_text(
             _build_language_tutor_reply_message(normalized, max_chars=3000),
             parse_mode="Markdown",
@@ -3261,6 +3310,7 @@ async def handle_language_tutor_detail_callback(update: Update, context: Callbac
             reply_markup=_build_language_tutor_answer_keyboard(
                 save_key=save_key,
                 save_options_count=len(save_variants),
+                deepdive_card_id=deepdive_card_id,
             ),
         )
     except Exception:
@@ -5195,6 +5245,8 @@ async def handle_button_click(update: Update, context: CallbackContext):
         await _send_shortcut_install_prompt(update, context)
     elif text == HOWTO_GUIDE_BUTTON_TEXT:
         await _send_howto_guide_chapter(update, context)
+    elif text == NEXT_TASK_BUTTON_TEXT:
+        await _send_next_open_task(update, context)
     elif text == ARTIKEL_LEARN_BUTTON_TEXT:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(
             "📚 Открыть тренажёр", url=get_webapp_deeplink("ans_al_0"))]])
@@ -6301,7 +6353,7 @@ async def handle_user_message(update: Update, context: CallbackContext):
                 # Build save payload: DE word → RU translation from clue
                 card_key  = f"cw_{dispatch_id}_{w['number']}"
                 save_opts = [{"source": correct_word, "target": clue_ru, "is_original": True}]
-                option_key = _store_pending_dictionary_save_options(
+                option_key = await _store_pending_dictionary_save_options(
                     user_id=int(user_id),
                     card_key=card_key,
                     options=save_opts,
@@ -6410,14 +6462,19 @@ async def handle_user_message(update: Update, context: CallbackContext):
             save_key = None
             save_variants = normalized.get("save_variants") or []
             feel_key = None
+            dd_src = dd_tgt = dd_sl = dd_tl = ""
             if save_variants:
                 primary_variant = save_variants[0]
+                dd_src = str(primary_variant.get("source_text") or "").strip()
+                dd_tgt = str(primary_variant.get("target_text") or "").strip()
+                dd_sl = normalized["source_lang"]
+                dd_tl = normalized["target_lang"]
                 feel_key = _store_pending_quiz_feel_request(
                     user_id=int(user_id),
-                    source_text=str(primary_variant.get("source_text") or "").strip(),
-                    target_text=str(primary_variant.get("target_text") or "").strip(),
-                    source_lang=normalized["source_lang"],
-                    target_lang=normalized["target_lang"],
+                    source_text=dd_src,
+                    target_text=dd_tgt,
+                    source_lang=dd_sl,
+                    target_lang=dd_tl,
                 )
                 save_key = _store_pending_quiz_question_save_request(
                     user_id=int(user_id),
@@ -6438,13 +6495,33 @@ async def handle_user_message(update: Update, context: CallbackContext):
                     speak_key=feel_key,
                 )
             elif str(request_payload.get("source_text") or "").strip() and str(request_payload.get("target_text") or "").strip():
+                dd_src = str(request_payload.get("source_text") or "").strip()
+                dd_tgt = str(request_payload.get("target_text") or "").strip()
+                dd_sl = str(request_payload.get("source_lang") or "").strip().lower()
+                dd_tl = str(request_payload.get("target_lang") or "").strip().lower()
                 feel_key = _store_pending_quiz_feel_request(
                     user_id=int(user_id),
-                    source_text=str(request_payload.get("source_text") or "").strip(),
-                    target_text=str(request_payload.get("target_text") or "").strip(),
-                    source_lang=str(request_payload.get("source_lang") or "").strip().lower(),
-                    target_lang=str(request_payload.get("target_lang") or "").strip().lower(),
+                    source_text=dd_src,
+                    target_text=dd_tgt,
+                    source_lang=dd_sl,
+                    target_lang=dd_tl,
                 )
+            deepdive_card_id = None
+            if dd_src and dd_tgt and dd_sl and dd_tl:
+                try:
+                    deepdive_card_id = await asyncio.to_thread(
+                        create_deepdive_card,
+                        user_id=int(user_id), source_text=dd_src, target_text=dd_tgt,
+                        source_lang=dd_sl, target_lang=dd_tl,
+                    )
+                except Exception:
+                    logging.exception("❌ deep-dive карточка (quiz follow-up) user_id=%s", user_id)
+            # Carry the card into the save payload so the post-save keyboard rebuild
+            # keeps the one deep-dive button (not the legacy 🔊/📌 pair).
+            if save_key and deepdive_card_id:
+                _req = pending_quiz_question_save_requests.get(save_key)
+                if _req is not None:
+                    _req["deepdive_card_id"] = int(deepdive_card_id)
             reply_text = _build_quiz_question_reply_message(normalized)
             await update.message.reply_text(
                 reply_text,
@@ -6455,6 +6532,7 @@ async def handle_user_message(update: Update, context: CallbackContext):
                     save_options_count=len(save_variants),
                     feel_key=feel_key,
                     speak_key=feel_key,
+                    deepdive_card_id=deepdive_card_id,
                 ),
             )
         except Exception:
@@ -6606,14 +6684,19 @@ async def handle_user_message(update: Update, context: CallbackContext):
             save_key = None
             save_variants = normalized_tutor.get("save_variants") or []
             feel_key = None
+            dd_src = dd_tgt = dd_sl = dd_tl = ""
             if save_variants:
                 primary_variant = save_variants[0]
+                dd_src = str(primary_variant.get("source_text") or "").strip()
+                dd_tgt = str(primary_variant.get("target_text") or "").strip()
+                dd_sl = normalized_tutor["source_lang"]
+                dd_tl = normalized_tutor["target_lang"]
                 feel_key = _store_pending_quiz_feel_request(
                     user_id=int(user_id),
-                    source_text=str(primary_variant.get("source_text") or "").strip(),
-                    target_text=str(primary_variant.get("target_text") or "").strip(),
-                    source_lang=normalized_tutor["source_lang"],
-                    target_lang=normalized_tutor["target_lang"],
+                    source_text=dd_src,
+                    target_text=dd_tgt,
+                    source_lang=dd_sl,
+                    target_lang=dd_tl,
                 )
                 save_key = _store_pending_quiz_question_save_request(
                     user_id=int(user_id),
@@ -6636,6 +6719,20 @@ async def handle_user_message(update: Update, context: CallbackContext):
                     speak_key=feel_key,
                 )
             normalized_tutor["answer"] = answer
+            deepdive_card_id = None
+            if dd_src and dd_tgt and dd_sl and dd_tl:
+                try:
+                    deepdive_card_id = await asyncio.to_thread(
+                        create_deepdive_card,
+                        user_id=int(user_id), source_text=dd_src, target_text=dd_tgt,
+                        source_lang=dd_sl, target_lang=dd_tl,
+                    )
+                except Exception:
+                    logging.exception("❌ deep-dive карточка (tutor) user_id=%s", user_id)
+            if save_key and deepdive_card_id:
+                _req = pending_quiz_question_save_requests.get(save_key)
+                if _req is not None:
+                    _req["deepdive_card_id"] = int(deepdive_card_id)
             await update.message.reply_text(
                 _build_language_tutor_reply_message(normalized_tutor, max_chars=3000),
                 parse_mode="Markdown",
@@ -6645,6 +6742,7 @@ async def handle_user_message(update: Update, context: CallbackContext):
                     save_options_count=len(save_variants),
                     feel_key=feel_key,
                     speak_key=feel_key,
+                    deepdive_card_id=deepdive_card_id,
                 ),
             )
         except Exception:
@@ -8274,7 +8372,7 @@ def _resolve_private_dictionary_save_folder(
     return folder_payload
 
 
-def _store_pending_dictionary_save_options(
+async def _store_pending_dictionary_save_options(
     user_id: int,
     card_key: str,
     options: list[dict],
@@ -8294,6 +8392,26 @@ def _store_pending_dictionary_save_options(
         source_lang=source_lang,
         target_lang=target_lang,
     )
+    # One deep-dive card for the in-place 🔊/📌/🧩/❓ overlay (replaces the three
+    # callback buttons that used to send messages to the chat bottom). Created
+    # once per lookup; the keyboard just links to it.
+    primary_option = options[0] if options else {}
+    dd_source = str(primary_option.get("source") or lookup.get("word_source") or "").strip()
+    dd_target = str(primary_option.get("target") or lookup.get("word_target") or "").strip()
+    deepdive_card_id = None
+    if dd_source:
+        try:
+            # Off the event loop — keeps the user↔server path fast under load.
+            deepdive_card_id = await asyncio.to_thread(
+                create_deepdive_card,
+                user_id=int(user_id),
+                source_text=dd_source,
+                target_text=dd_target,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+        except Exception:
+            logging.exception("❌ Не удалось сохранить deep-dive карточку (словарь) user_id=%s", user_id)
     pending_dictionary_save_options[key] = {
         "user_id": user_id,
         "card_key": card_key,
@@ -8309,6 +8427,7 @@ def _store_pending_dictionary_save_options(
         "folder_name": str(resolved_folder_payload.get("name") or "").strip(),
         "folder_icon": str(resolved_folder_payload.get("icon") or "").strip(),
         "folder_is_none": bool(resolved_folder_payload.get("is_none")),
+        "deepdive_card_id": deepdive_card_id,
     }
     if len(pending_dictionary_save_options) > 500:
         oldest_key = next(iter(pending_dictionary_save_options))
@@ -8383,12 +8502,18 @@ def _build_dictionary_save_keyboard_for_payload(
     rows.append([InlineKeyboardButton("✅ Сохранить выбранные", callback_data=f"dictsaveconfirm:{option_key}")])
     rows.append([InlineKeyboardButton("☑️ Выбрать все", callback_data=f"dictselall:{option_key}")])
     rows.append(folder_button)
-    if speak_card_key:
-        rows.append([InlineKeyboardButton("🔊 Прослушать", callback_data=f"dictspeak:{speak_card_key}")])
-    if feel_card_key:
-        rows.append([InlineKeyboardButton("📌 Почувствовать слово", callback_data=f"dictfeel:{feel_card_key}")])
-    if question_request_key:
-        rows.append([InlineKeyboardButton("❓ Задать свой вопрос", callback_data=f"quizask:{question_request_key}")])
+    # One in-place Mini-App button replaces the 🔊/📌/❓ trio (no message dumped at
+    # the chat bottom). Legacy callback buttons stay only as a fallback.
+    deepdive_card_id = payload.get("deepdive_card_id")
+    if deepdive_card_id:
+        rows.append([InlineKeyboardButton("🔍 Разобрать слово", url=get_webapp_deeplink(f"dive_{int(deepdive_card_id)}"))])
+    else:
+        if speak_card_key:
+            rows.append([InlineKeyboardButton("🔊 Прослушать", callback_data=f"dictspeak:{speak_card_key}")])
+        if feel_card_key:
+            rows.append([InlineKeyboardButton("📌 Почувствовать слово", callback_data=f"dictfeel:{feel_card_key}")])
+        if question_request_key:
+            rows.append([InlineKeyboardButton("❓ Задать свой вопрос", callback_data=f"quizask:{question_request_key}")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -9373,7 +9498,7 @@ async def _prepare_dictionary_lookup_response(
         target_lang=target_lang,
     )
     folder_ms = int((pytime.perf_counter() - folder_started_perf) * 1000)
-    option_key = _store_pending_dictionary_save_options(
+    option_key = await _store_pending_dictionary_save_options(
         user_id=int(user_id),
         card_key=card_key,
         options=trimmed_options,
@@ -10594,6 +10719,7 @@ async def handle_quiz_question_save_callback(update: Update, context: CallbackCo
                         save_options_count=0,
                         feel_key=str(payload.get("feel_key") or "").strip() or None,
                         speak_key=str(payload.get("speak_key") or "").strip() or None,
+                        deepdive_card_id=payload.get("deepdive_card_id"),
                     )
                 )
     except Exception:
@@ -10726,7 +10852,7 @@ async def handle_dictionary_save_callback(update: Update, context: CallbackConte
     if (not source_lang or not target_lang) and "-" in str(payload.get("direction") or ""):
         source_lang, target_lang = [x.strip().lower() for x in str(payload.get("direction")).split("-", 1)]
 
-    option_key = _store_pending_dictionary_save_options(
+    option_key = await _store_pending_dictionary_save_options(
         user_id=int(user.id),
         card_key=key,
         options=options,
@@ -15664,6 +15790,7 @@ def _store_pending_quiz_question_save_request(
     hide_continue_after_save: bool = False,
     feel_key: str | None = None,
     speak_key: str | None = None,
+    deepdive_card_id: int | None = None,
 ) -> str:
     normalized_options: list[dict[str, str]] = []
     seen_options: set[tuple[str, str]] = set()
@@ -15724,6 +15851,7 @@ def _store_pending_quiz_question_save_request(
         "hide_continue_after_save": bool(hide_continue_after_save),
         "feel_key": str(feel_key or "").strip(),
         "speak_key": str(speak_key or "").strip(),
+        "deepdive_card_id": int(deepdive_card_id) if deepdive_card_id else None,
         "started_at": pytime.time(),
         "saved": False,
     }
@@ -15741,6 +15869,7 @@ def _build_followup_answer_keyboard(
     save_options_count: int = 0,
     feel_key: str | None = None,
     speak_key: str | None = None,
+    deepdive_card_id: int | None = None,
 ) -> InlineKeyboardMarkup:
     rows = []
     if save_key:
@@ -15750,10 +15879,15 @@ def _build_followup_answer_keyboard(
             rows.append([InlineKeyboardButton("💾 Сохранить обе", callback_data=f"quizqsave:{save_key}:all")])
         else:
             rows.append([InlineKeyboardButton("💾 Сохранить эту фразу", callback_data=f"quizqsave:{save_key}:0")])
-    if speak_key:
-        rows.append([InlineKeyboardButton("🔊 Прослушать", callback_data=f"quizspeak:{speak_key}")])
-    if feel_key:
-        rows.append([InlineKeyboardButton("📌 Почувствовать слово", callback_data=f"quizfeel:{feel_key}")])
+    # In-place deep-dive: one Mini-App button instead of the 🔊/📌 callbacks (which
+    # sent messages to the chat bottom). Legacy buttons stay as a fallback.
+    if deepdive_card_id:
+        rows.append([InlineKeyboardButton("🔍 Разобрать слово", url=get_webapp_deeplink(f"dive_{int(deepdive_card_id)}"))])
+    else:
+        if speak_key:
+            rows.append([InlineKeyboardButton("🔊 Прослушать", callback_data=f"quizspeak:{speak_key}")])
+        if feel_key:
+            rows.append([InlineKeyboardButton("📌 Почувствовать слово", callback_data=f"quizfeel:{feel_key}")])
     rows.append([InlineKeyboardButton(str(continue_button_text or "❓ Ещё вопрос"), callback_data=str(continue_callback_data or "langgpt:continue"))])
     return InlineKeyboardMarkup(rows)
 
@@ -15785,6 +15919,17 @@ def _build_quiz_result_keyboard(
     return InlineKeyboardMarkup(rows)
 
 
+def _build_quiz_deepdive_keyboard(card_id: int) -> InlineKeyboardMarkup:
+    """One Mini-App button replacing the four 🔊/📌/🧩/❓ callback buttons.
+
+    Opens the deep-dive overlay in place (?startapp=dive_<id>) so the listen /
+    feel / collocation / ask actions happen over the chat instead of dumping a
+    new message at the bottom that the user has to scroll down to find."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔍 Разобрать слово", url=get_webapp_deeplink(f"dive_{int(card_id)}"))]
+    ])
+
+
 def _build_quiz_question_answer_keyboard(
     *,
     request_key: str,
@@ -15792,6 +15937,7 @@ def _build_quiz_question_answer_keyboard(
     save_options_count: int = 0,
     feel_key: str | None = None,
     speak_key: str | None = None,
+    deepdive_card_id: int | None = None,
 ) -> InlineKeyboardMarkup:
     return _build_followup_answer_keyboard(
         continue_callback_data=f"quizask:{request_key}",
@@ -15800,6 +15946,7 @@ def _build_quiz_question_answer_keyboard(
         save_options_count=save_options_count,
         feel_key=feel_key,
         speak_key=speak_key,
+        deepdive_card_id=deepdive_card_id,
     )
 
 
@@ -15809,6 +15956,7 @@ def _build_language_tutor_answer_keyboard(
     save_options_count: int = 0,
     feel_key: str | None = None,
     speak_key: str | None = None,
+    deepdive_card_id: int | None = None,
 ) -> InlineKeyboardMarkup:
     return _build_followup_answer_keyboard(
         continue_callback_data="langgpt:continue",
@@ -15817,6 +15965,7 @@ def _build_language_tutor_answer_keyboard(
         save_options_count=save_options_count,
         feel_key=feel_key,
         speak_key=speak_key,
+        deepdive_card_id=deepdive_card_id,
     )
 
 
@@ -16309,54 +16458,49 @@ async def _send_quiz_result_private(
 
     reply_markup = None
     fallback_reply_markup = None
-    question_key = None
-    phrase_key = None
     feel_source_text = (de_text or correct_text or "").strip()
     feel_target_text = (ru_text or fallback_ru or "").strip()
     if feel_source_text:
-        feel_key = hashlib.sha1(
-            f"{user_id}:{feel_source_text}:{datetime.utcnow().isoformat()}".encode("utf-8")
-        ).hexdigest()[:20]
-        pending_quiz_feel_requests[feel_key] = {
-            "user_id": int(user_id),
-            "source_text": feel_source_text,
-            "target_text": feel_target_text,
-            "source_lang": "de",
-            "target_lang": "ru",
-        }
-        if len(pending_quiz_feel_requests) > 500:
-            oldest_key = next(iter(pending_quiz_feel_requests))
-            pending_quiz_feel_requests.pop(oldest_key, None)
-        fallback_reply_markup = _build_quiz_result_keyboard(
-            feel_key=feel_key,
-            question_key=None,
-            speak_key=feel_key,
-            phrase_key=None,
-        )
-        reply_markup = fallback_reply_markup
+        # In-place deep-dive: persist the word context once and attach ONE Mini-App
+        # button. The overlay runs 🔊/📌/🧩/❓ over the chat (no message dumped at the
+        # bottom). Legacy in-memory callback keyboard kept only as a fallback if the
+        # card row can't be written.
         try:
-            phrase_key = _store_pending_quiz_phrase_request(
+            deepdive_card_id = await asyncio.to_thread(
+                create_deepdive_card,
                 user_id=int(user_id),
                 source_text=feel_source_text,
                 target_text=feel_target_text,
                 source_lang="de",
                 target_lang="ru",
-            )
-            question_key = _store_pending_quiz_question_request(
-                user_id=int(user_id),
-                source_text=feel_source_text,
-                target_text=feel_target_text,
-                source_lang="de",
-                target_lang="ru",
-            )
-            reply_markup = _build_quiz_result_keyboard(
-                feel_key=feel_key,
-                question_key=question_key,
-                speak_key=feel_key,
-                phrase_key=phrase_key,
+                context_text="\n".join(lines)[:1500],
             )
         except Exception:
-            logging.exception("❌ Не удалось подготовить кнопку quiz follow-up user_id=%s", user_id)
+            logging.exception("❌ Не удалось сохранить deep-dive карточку user_id=%s", user_id)
+            deepdive_card_id = None
+
+        if deepdive_card_id:
+            reply_markup = _build_quiz_deepdive_keyboard(deepdive_card_id)
+        else:
+            feel_key = hashlib.sha1(
+                f"{user_id}:{feel_source_text}:{datetime.utcnow().isoformat()}".encode("utf-8")
+            ).hexdigest()[:20]
+            pending_quiz_feel_requests[feel_key] = {
+                "user_id": int(user_id),
+                "source_text": feel_source_text,
+                "target_text": feel_target_text,
+                "source_lang": "de",
+                "target_lang": "ru",
+            }
+            if len(pending_quiz_feel_requests) > 500:
+                oldest_key = next(iter(pending_quiz_feel_requests))
+                pending_quiz_feel_requests.pop(oldest_key, None)
+            fallback_reply_markup = _build_quiz_result_keyboard(
+                feel_key=feel_key,
+                question_key=None,
+                speak_key=feel_key,
+                phrase_key=None,
+            )
             reply_markup = fallback_reply_markup
 
     # Attach the result to the quiz itself (reply) when the poll is in this same DM,
@@ -18769,6 +18913,17 @@ async def send_rebus_to_chat(
         logging.warning(
             "rebus_send: could not update telegram_message_id dispatch_id=%s", dispatch_id, exc_info=True,
         )
+
+    if int(chat_id) == int(target_user_id):  # DM feed only
+        try:
+            await asyncio.to_thread(
+                record_interactive_inbox,
+                user_id=int(target_user_id), kind="rb", dispatch_id=int(dispatch_id),
+                chat_id=int(chat_id), telegram_message_id=int(photo_message.message_id),
+                deeplink=f"ans_rb_{dispatch_id}", title="🧩 Rätsel",
+            )
+        except Exception:
+            logging.debug("rebus_send: inbox record failed dispatch_id=%s", dispatch_id, exc_info=True)
 
     logging.info(
         "rebus_send_ok dispatch_id=%s compound_id=%s chat_id=%s user_id=%s",
@@ -21664,6 +21819,17 @@ async def send_crossword_to_chat(
             "cw_send: update telegram_id failed dispatch_id=%s", dispatch_id, exc_info=True,
         )
 
+    if int(chat_id) == int(target_user_id):  # DM feed only
+        try:
+            await asyncio.to_thread(
+                record_interactive_inbox,
+                user_id=int(target_user_id), kind="cw", dispatch_id=int(dispatch_id),
+                chat_id=int(chat_id), telegram_message_id=int(msg.message_id),
+                deeplink=f"ans_cw_{dispatch_id}", title="🔤 Kreuzwort",
+            )
+        except Exception:
+            logging.debug("cw_send: inbox record failed dispatch_id=%s", dispatch_id, exc_info=True)
+
     logging.info("cw_send_ok dispatch_id=%s crossword_id=%s chat_id=%s", dispatch_id, crossword_id, chat_id)
     return True
 
@@ -22153,6 +22319,17 @@ async def send_anagram_to_chat(
     except Exception:
         logging.warning("ag_send: update telegram_id failed dispatch_id=%s", dispatch_id, exc_info=True)
 
+    if int(chat_id) == int(target_user_id):  # DM feed only
+        try:
+            await asyncio.to_thread(
+                record_interactive_inbox,
+                user_id=int(target_user_id), kind="ag", dispatch_id=int(dispatch_id),
+                chat_id=int(chat_id), telegram_message_id=int(msg.message_id),
+                deeplink=f"ans_ag_{dispatch_id}", title="🔤 Anagramm",
+            )
+        except Exception:
+            logging.debug("ag_send: inbox record failed dispatch_id=%s", dispatch_id, exc_info=True)
+
     logging.info("ag_send_ok dispatch_id=%s card_id=%s chat_id=%s", dispatch_id, card_id, chat_id)
     return True
 
@@ -22381,6 +22558,27 @@ async def _send_challenge_notifications_job(context: CallbackContext) -> None:
                         caption=cap, parse_mode="HTML", reply_markup=btn)
                     await asyncio.to_thread(
                         set_challenge_notification_message_id, int(n["id"]), int(msg.message_id))
+                await asyncio.to_thread(mark_challenge_notification_sent, int(n["id"]))
+                continue
+            elif kind == "inbox_done":
+                # Mark the task message ✅ in place (DM feed) — keeps the deeplink so
+                # the user can reopen and see their stored verdict.
+                chat_id = int(p.get("chat_id") or 0)
+                message_id = int(p.get("message_id") or 0)
+                deeplink = str(p.get("deeplink") or "").strip()
+                if chat_id and message_id:
+                    done_btn = (
+                        InlineKeyboardMarkup([[InlineKeyboardButton(
+                            "✅ Выполнено · открыть снова", url=get_webapp_deeplink(deeplink))]])
+                        if deeplink else
+                        InlineKeyboardMarkup([[InlineKeyboardButton(
+                            "✅ Выполнено", callback_data="inbox_done_noop")]])
+                    )
+                    try:
+                        await context.bot.edit_message_reply_markup(
+                            chat_id=chat_id, message_id=message_id, reply_markup=done_btn)
+                    except Exception:
+                        logging.debug("inbox_done: edit markup failed id=%s", n.get("id"), exc_info=True)
                 await asyncio.to_thread(mark_challenge_notification_sent, int(n["id"]))
                 continue
             elif kind == "admin_alert":
@@ -23233,6 +23431,16 @@ async def send_aufgabe_to_chat(
         await asyncio.to_thread(update_aufgabe_dispatch_telegram_id, dispatch_id, telegram_message_id=int(msg.message_id))
     except Exception:
         logging.warning("au_send: update telegram_id failed dispatch_id=%s", dispatch_id, exc_info=True)
+    if int(chat_id) == int(target_user_id):  # DM feed only
+        try:
+            await asyncio.to_thread(
+                record_interactive_inbox,
+                user_id=int(target_user_id), kind="au", dispatch_id=int(dispatch_id),
+                chat_id=int(chat_id), telegram_message_id=int(msg.message_id),
+                deeplink=f"ans_au_{dispatch_id}", title="✏️ Aufgabe",
+            )
+        except Exception:
+            logging.debug("au_send: inbox record failed dispatch_id=%s", dispatch_id, exc_info=True)
     logging.info("au_send_ok dispatch_id=%s aufgabe_id=%s chat_id=%s", dispatch_id, aufgabe_id, chat_id)
     return True
 
@@ -25802,17 +26010,28 @@ async def send_listening_to_chat(
 
     try:
         if poster:
-            await context.bot.send_photo(
+            sent_msg = await context.bot.send_photo(
                 chat_id=int(chat_id), photo=io.BytesIO(poster),
                 caption=caption, reply_markup=keyboard, parse_mode="HTML",
             )
         else:
-            await context.bot.send_message(
+            sent_msg = await context.bot.send_message(
                 chat_id=int(chat_id), text=caption, reply_markup=keyboard, parse_mode="HTML",
             )
     except Exception as exc:
         logging.warning("ls_send: send card failed dispatch_id=%s: %s", dispatch_id, exc)
         return False
+
+    if int(chat_id) == int(target_user_id):  # DM feed only
+        try:
+            await asyncio.to_thread(
+                record_interactive_inbox,
+                user_id=int(target_user_id), kind="ls", dispatch_id=int(dispatch_id),
+                chat_id=int(chat_id), telegram_message_id=int(sent_msg.message_id),
+                deeplink=f"ans_ls_{dispatch_id}", title="🎧 Hörverständnis",
+            )
+        except Exception:
+            logging.debug("ls_send: inbox record failed dispatch_id=%s", dispatch_id, exc_info=True)
 
     logging.info("ls_send_ok dispatch_id=%s listening_id=%s chat_id=%s", dispatch_id, listening_id, chat_id)
     return True
@@ -26549,83 +26768,80 @@ async def _send_poll_quiz_for_target(
     shuffled_quiz = _shuffle_quiz_options(quiz)
     if shuffled_quiz:
         quiz = shuffled_quiz
-    # In-place feedback popup after answering (Telegram quiz explanation, ≤200).
-    poll_explanation = _build_quiz_poll_explanation(quiz) or None
+    # Multiple-choice quiz as a Mini-App interactive (kind="mc"): instead of a
+    # native Telegram poll (whose result lands at the chat bottom), send a card
+    # with one deeplink → overlay that grades + explains in place.
+    options = [str(option) for option in (quiz.get("options") or [])]
+    correct_text = str(quiz.get("correct_text") or "")
+    word_ru = str(quiz.get("word_ru") or chosen_entry.get("word_ru") or "")
+    quiz_type_resolved = str(quiz.get("quiz_type") or resolved_quiz_type or "generated")
     try:
-        poll_message = await context.bot.send_poll(
+        dispatch_id = await asyncio.to_thread(
+            create_mc_dispatch,
+            user_id=int(target_chat_id),
             chat_id=int(target_chat_id),
-            question=quiz["question"],
-            options=quiz["options"],
-            type=Poll.QUIZ,
-            correct_option_id=quiz["correct_option_id"],
-            is_anonymous=False,
-            allows_multiple_answers=False,
-            explanation=poll_explanation,
+            question=str(quiz.get("question") or ""),
+            options=options,
+            correct_option_id=int(quiz["correct_option_id"]),
+            correct_text=correct_text,
+            explanation=str(_build_quiz_poll_explanation(quiz) or quiz.get("explanation") or ""),
+            quiz_type=quiz_type_resolved,
+            word_ru=word_ru,
+            freeform_option=QUIZ_FREEFORM_OPTION,
+            hide_correct=bool(quiz.get("hide_correct")),
+        )
+    except Exception:
+        logging.warning("⚠️ Не удалось создать mc-квиз chat_id=%s", target_chat_id, exc_info=True)
+        dispatch_id = None
+    if not dispatch_id:
+        return False
+
+    card_text = (
+        "🎯 <b>Quiz</b>\n\n"
+        f"{html.escape(str(quiz.get('question') or '').strip())}\n\n"
+        "Antworte in der Mini-App 👇"
+    )
+    try:
+        sent_message = await context.bot.send_message(
+            chat_id=int(target_chat_id),
+            text=card_text,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                "🎯 Quiz lösen", url=get_webapp_deeplink(f"ans_mc_{dispatch_id}"),
+            )]]),
         )
     except Exception as exc:
         if _is_permanent_quiz_delivery_error(exc):
             _suppress_quiz_delivery_target(int(target_chat_id))
             logging.warning(
-                "⚠️ suppressing scheduled quiz target chat_id=%s for %ss after permanent sendPoll failure: %s",
-                int(target_chat_id),
-                QUIZ_DELIVERY_SUPPRESS_SECONDS,
-                exc,
+                "⚠️ suppressing scheduled quiz target chat_id=%s for %ss after permanent send failure: %s",
+                int(target_chat_id), QUIZ_DELIVERY_SUPPRESS_SECONDS, exc,
             )
-        logging.warning(
-            "⚠️ Не удалось отправить quiz в chat_id=%s: %s",
-            target_chat_id,
-            exc,
-        )
+        logging.warning("⚠️ Не удалось отправить mc-квиз в chat_id=%s: %s", target_chat_id, exc)
         return False
 
-    active_quizzes[poll_message.poll.id] = {
-        "chat_id": int(target_chat_id),
-        "correct_option_id": quiz["correct_option_id"],
-        "correct_text": quiz.get("correct_text"),
-        "options": quiz["options"],
-        "freeform_option": QUIZ_FREEFORM_OPTION,
-        "message_id": poll_message.message_id,
-        "quiz_type": quiz.get("quiz_type", resolved_quiz_type),
-        "word_ru": quiz.get("word_ru"),
-    }
-    # Attach the "✍️ свой вариант" entry directly UNDER the poll (URL button →
-    # Mini-App, poll-scoped). This keeps the answer box on the poll itself, so we
-    # no longer post a separate message that lands at the bottom of the chat.
     try:
-        await context.bot.edit_message_reply_markup(
-            chat_id=int(target_chat_id),
-            message_id=int(poll_message.message_id),
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
-                "✍️ Нет верного? ➡️ ВПИШИ СВОЙ ВАРИАНТ 👈",
-                url=get_webapp_deeplink(f"ans_qfp_{poll_message.poll.id}"),
-            )]]),
-        )
-        active_quizzes[poll_message.poll.id]["freeform_button"] = True
+        await asyncio.to_thread(update_mc_dispatch_telegram_id, int(dispatch_id), int(sent_message.message_id))
     except Exception:
-        logging.warning("quiz poll: attach freeform button failed chat=%s", target_chat_id, exc_info=True)
-        active_quizzes[poll_message.poll.id]["freeform_button"] = False
+        logging.debug("mc quiz: store telegram_message_id failed", exc_info=True)
+    # Interactive inbox (DM feed): enables the ✅ marker + "→ next task" button.
     try:
         await asyncio.to_thread(
-            upsert_active_quiz,
-            str(poll_message.poll.id),
-            chat_id=int(target_chat_id),
-            message_id=int(poll_message.message_id),
-            correct_option_id=int(quiz["correct_option_id"]),
-            options=[str(option) for option in (quiz.get("options") or [])],
-            correct_text=(quiz.get("correct_text") or ""),
-            freeform_option=QUIZ_FREEFORM_OPTION,
-            quiz_type=(quiz.get("quiz_type") or resolved_quiz_type or "generated"),
-            word_ru=(quiz.get("word_ru") or ""),
+            record_interactive_inbox,
+            user_id=int(target_chat_id), kind="mc", dispatch_id=int(dispatch_id),
+            chat_id=int(target_chat_id), telegram_message_id=int(sent_message.message_id),
+            deeplink=f"ans_mc_{dispatch_id}", title="🎯 Quiz",
         )
     except Exception:
-        logging.warning("⚠️ Не удалось сохранить активный квиз в БД", exc_info=True)
+        logging.debug("mc quiz: inbox record failed", exc_info=True)
     try:
         await asyncio.to_thread(
             record_telegram_quiz_delivery,
             int(target_chat_id),
-            poll_id=str(poll_message.poll.id),
-            word_ru=(quiz.get("word_ru") or chosen_entry.get("word_ru") or ""),
-            quiz_type=(quiz.get("quiz_type") or resolved_quiz_type or "generated"),
+            poll_id=f"mc_{dispatch_id}",
+            word_ru=word_ru,
+            quiz_type=quiz_type_resolved,
             delivery_mode=used_mode,
         )
     except Exception:
@@ -26639,11 +26855,6 @@ async def _send_poll_quiz_for_target(
     except Exception:
         logging.warning("⚠️ Не удалось обновить состояние чередования Telegram quiz", exc_info=True)
 
-    context.job_queue.run_once(
-        cleanup_quiz_cache,
-        when=QUIZ_CACHE_TTL_SECONDS,
-        data={"poll_id": poll_message.poll.id},
-    )
     try:
         await asyncio.to_thread(record_quiz_word, (chosen_entry or {}).get("word_ru"))
     except Exception:
@@ -26997,6 +27208,20 @@ async def admin_image_quiz_batch_command(update: Update, context: CallbackContex
             sent_count,
             requested_count,
         )
+
+
+async def admin_mc_send_command(update: Update, context: CallbackContext) -> None:
+    """Test the Mini-App MC quiz: send a quiz card to this chat right now."""
+    user = update.effective_user
+    chat = update.effective_chat
+    message = update.effective_message
+    if not user or not chat or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    sent = await _send_poll_quiz_for_target(context, target_chat_id=int(chat.id))
+    await message.reply_text("✅ MC-Quiz отправлен." if sent else "❌ Не удалось отправить MC-Quiz (см. логи).")
 
 
 async def test_image_quiz_fallback_command(update: Update, context: CallbackContext) -> None:
@@ -27443,6 +27668,7 @@ def main():
     application.add_handler(CommandHandler("test_image_quiz", test_image_quiz_command))
     application.add_handler(CommandHandler("admin_image_quiz_batch", admin_image_quiz_batch_command))
     application.add_handler(CommandHandler("test_image_quiz_fallback", test_image_quiz_fallback_command))
+    application.add_handler(CommandHandler("admin_mc_send", admin_mc_send_command))
     application.add_handler(CommandHandler("admin_riddle_send", admin_riddle_send_command))
     application.add_handler(CommandHandler("admin_riddle_health", admin_visual_riddle_health_command))
     application.add_handler(CommandHandler("admin_retag", admin_retag_command))
@@ -27484,6 +27710,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_dictionary_select_all_callback, pattern=r"^dictselall:"))
     application.add_handler(CallbackQueryHandler(_noop_callback, pattern=r"^dictsave_noop$"))
     application.add_handler(CallbackQueryHandler(_noop_callback, pattern=r"^overtaken_noop$"))
+    application.add_handler(CallbackQueryHandler(_noop_callback, pattern=r"^inbox_done_noop$"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_save_confirm_callback, pattern=r"^dictsaveconfirm:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_save_option_callback, pattern=r"^dictsaveopt:"))
     application.add_handler(CallbackQueryHandler(handle_dictionary_quick_save_callback, pattern=r"^dictquicksave:"))

@@ -495,6 +495,108 @@ def evaluate_anagram(*, dispatch_id: int, user_id: int, assembled: str) -> dict 
     return _anagram_result_payload(card=card, is_correct=is_correct, already_answered=False)
 
 
+# ── Multiple-choice quiz (kind="mc") — the Mini-App replacement for polls ────
+
+def _mc_result_payload(dispatch: dict, *, is_correct: bool, selected_option_id: int,
+                       freeform_text: str, already_answered: bool) -> dict:
+    """Verdict view: reveal the correct option + explanation only AFTER answering."""
+    options = list(dispatch.get("options") or [])
+    correct_id = int(dispatch.get("correct_option_id") or 0)
+    correct_text = str(dispatch.get("correct_text") or "")
+    your_text = freeform_text or (
+        options[selected_option_id] if 0 <= selected_option_id < len(options) else ""
+    )
+    word_ru = str(dispatch.get("word_ru") or "")
+    return {
+        "kind": "mc",
+        "is_correct": bool(is_correct),
+        "correct_option_id": correct_id,
+        "correct_text": correct_text,
+        "your_answer": your_text,
+        "selected_option_id": int(selected_option_id),
+        "explanation": str(dispatch.get("explanation") or ""),
+        "hint_ru": word_ru,
+        "already_answered": bool(already_answered),
+        "deepdive_card_id": dispatch.get("deepdive_card_id"),
+        "saveable_words": ([{"source": correct_text, "target": word_ru}]
+                           if (correct_text and word_ru) else []),
+    }
+
+
+def load_mc_task(*, dispatch_id: int, user_id: int) -> dict | None:
+    """Render metadata: question + options, with the correct one hidden until the
+    user answers (then the stored verdict is returned for an anti-replay reopen)."""
+    from backend.database import get_mc_dispatch_by_id, get_mc_answer
+    dispatch = get_mc_dispatch_by_id(int(dispatch_id))
+    if not dispatch:
+        return None
+    options = list(dispatch.get("options") or [])
+    if not options:
+        return None
+    existing = get_mc_answer(dispatch_id=int(dispatch_id), user_id=int(user_id))
+    meta = {
+        "kind": "mc",
+        "question": str(dispatch.get("question") or ""),
+        "options": options,
+        "freeform_option": str(dispatch.get("freeform_option") or ""),
+        "quiz_type": str(dispatch.get("quiz_type") or ""),
+        "already_answered": bool(existing),
+    }
+    if existing:
+        meta["result"] = _mc_result_payload(
+            dispatch, is_correct=bool(existing.get("is_correct")),
+            selected_option_id=int(existing.get("selected_option_id") or -1),
+            freeform_text=str(existing.get("freeform_text") or ""),
+            already_answered=True,
+        )
+    return meta
+
+
+def evaluate_mc(*, dispatch_id: int, user_id: int, selected_option_id: int,
+                freeform_text: str = "") -> dict | None:
+    """Grade a multiple-choice answer in place (anti-replay). A normal option is
+    correct iff it is the correct_option_id; picking the freeform option grades
+    the typed text against the correct answer (deterministic, like the qf path)."""
+    from backend.database import get_mc_dispatch_by_id, get_mc_answer, record_mc_answer
+    dispatch = get_mc_dispatch_by_id(int(dispatch_id))
+    if not dispatch:
+        return None
+
+    existing = get_mc_answer(dispatch_id=int(dispatch_id), user_id=int(user_id))
+    if existing:
+        return _mc_result_payload(
+            dispatch, is_correct=bool(existing.get("is_correct")),
+            selected_option_id=int(existing.get("selected_option_id") or -1),
+            freeform_text=str(existing.get("freeform_text") or ""),
+            already_answered=True,
+        )
+
+    options = list(dispatch.get("options") or [])
+    freeform_option = str(dispatch.get("freeform_option") or "").strip()
+    correct_text = str(dispatch.get("correct_text") or "")
+    sid = int(selected_option_id)
+    selected_text = options[sid] if 0 <= sid < len(options) else ""
+    is_freeform_pick = bool(freeform_option) and selected_text == freeform_option
+
+    if is_freeform_pick:
+        typed = str(freeform_text or "")
+        is_correct = check_quiz_freeform_deterministic(user_text=typed, correct_text=correct_text)
+        if not is_correct and typed.strip():
+            is_correct = _quiz_freeform_semantic_match(typed, correct_text)
+    else:
+        is_correct = sid == int(dispatch.get("correct_option_id") or 0)
+
+    record_mc_answer(
+        dispatch_id=int(dispatch_id), user_id=int(user_id),
+        selected_option_id=sid, freeform_text=str(freeform_text or ""),
+        is_correct=bool(is_correct),
+    )
+    return _mc_result_payload(
+        dispatch, is_correct=is_correct, selected_option_id=sid,
+        freeform_text=str(freeform_text or ""), already_answered=False,
+    )
+
+
 # ── Hörverständnis (listening): load + async-graded submit + poll ────────────
 
 def _listening_result_payload(dispatch: dict, answers: list, evaluation: list,
@@ -591,6 +693,22 @@ def content_ranking_key(kind: str, dispatch_id: int) -> str:
     dispatch_id), so a dispatch-based key would make every user their own ranking
     ("1 of 1"). Keying by the content id (compound/crossword/card/aufgabe/listening/
     poll) aggregates everyone who answered the same task."""
+    # MC quizzes are generated per-user (each its own dispatch), so key by the
+    # shared content (quiz_type + correct answer) → everyone who got a quiz with
+    # the same answer aggregates into one crowd ranking ("% ответили верно").
+    if kind == "mc":
+        try:
+            from backend.database import get_mc_dispatch_by_id
+            d = get_mc_dispatch_by_id(int(dispatch_id))
+            if d:
+                qt = str(d.get("quiz_type") or "").strip().lower()
+                ans = _normalize_quiz_text(str(d.get("correct_text") or ""))
+                if ans:
+                    return f"mc:{qt}:{ans}"
+        except Exception:
+            pass
+        return f"mc:{dispatch_id}"
+
     from backend.database import (
         get_rebus_dispatch_by_id, get_crossword_dispatch_by_id, get_anagram_dispatch_by_id,
         get_aufgabe_dispatch_by_id, get_listening_dispatch_by_id, get_quiz_freeform_dispatch_by_id,

@@ -22676,7 +22676,7 @@ def get_answer_task():
 
     from backend.answer_eval import (
         load_rebus_task, load_crossword_task, load_anagram_task, load_listening_task,
-        load_freeform_task, load_aufgabe_task,
+        load_freeform_task, load_aufgabe_task, load_mc_task,
     )
     if kind == "rb":
         meta = load_rebus_task(dispatch_id=dispatch_id, user_id=user_id)
@@ -22690,6 +22690,8 @@ def get_answer_task():
         meta = load_freeform_task(dispatch_id=dispatch_id, user_id=user_id)
     elif kind == "au":
         meta = load_aufgabe_task(dispatch_id=dispatch_id, user_id=user_id)
+    elif kind == "mc":
+        meta = load_mc_task(dispatch_id=dispatch_id, user_id=user_id)
     else:
         return jsonify({"error": "unsupported kind"}), 400
     if meta is None:
@@ -22720,10 +22722,20 @@ def submit_answer():
 
     from backend.answer_eval import (
         evaluate_rebus, evaluate_crossword, evaluate_anagram, start_listening_evaluation,
-        evaluate_freeform, evaluate_aufgabe,
+        evaluate_freeform, evaluate_aufgabe, evaluate_mc,
     )
     try:
-        if kind == "rb":
+        if kind == "mc":
+            try:
+                sel = int(payload.get("selected_option_id"))
+            except (TypeError, ValueError):
+                return jsonify({"error": "selected_option_id обязателен"}), 400
+            result = evaluate_mc(
+                dispatch_id=dispatch_id, user_id=user_id,
+                selected_option_id=sel,
+                freeform_text=str(payload.get("freeform_text") or ""),
+            )
+        elif kind == "rb":
             result = evaluate_rebus(dispatch_id=dispatch_id, user_id=user_id, raw_input=answer)
         elif kind == "cw":
             result = evaluate_crossword(dispatch_id=dispatch_id, user_id=user_id, raw_input=answer)
@@ -22835,7 +22847,132 @@ def submit_answer():
         except Exception:
             logging.warning("challenge ranking failed key=%s user=%s", challenge_key, user_id, exc_info=True)
 
+    # Interactive inbox: flip this task to answered (once) and, for the DM feed,
+    # mark its source message ✅ via the outbox the bot already polls. Harmless
+    # no-op if the task's sender didn't write an inbox row.
+    if not result.get("already_answered"):
+        try:
+            from backend.database import (
+                mark_interactive_inbox_answered, enqueue_challenge_notification,
+            )
+            inbox_row = mark_interactive_inbox_answered(
+                user_id=user_id, kind=kind, dispatch_id=dispatch_id,
+            )
+            if (inbox_row and inbox_row.get("telegram_message_id")
+                    and int(inbox_row.get("chat_id") or 0) == int(user_id)):
+                enqueue_challenge_notification(
+                    user_id=int(user_id), kind="inbox_done",
+                    challenge_key=f"{kind}:{dispatch_id}",
+                    payload={
+                        "chat_id": int(inbox_row["chat_id"]),
+                        "message_id": int(inbox_row["telegram_message_id"]),
+                        "deeplink": str(inbox_row.get("deeplink") or ""),
+                        "title": str(inbox_row.get("title") or ""),
+                    },
+                )
+        except Exception:
+            logging.warning("inbox answered hook failed kind=%s id=%s user=%s",
+                            kind, dispatch_id, user_id, exc_info=True)
+
     return jsonify({"ok": True, **result})
+
+
+# ── Deep-dive overlay (in-place 🔊/📌/🧩/❓ for a quiz result) ─────────────
+# Replaces the four callback buttons that dumped new messages at the chat
+# bottom. The DM card now carries one Mini-App button (?startapp=dive_<id>);
+# this overlay reads the persisted card and runs the actions in place.
+
+@app.route("/api/answer/deepdive", methods=["GET", "POST"])
+def deepdive_load():
+    """Return the word context for a deep-dive card the user owns."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    raw_id = request.args.get("id") or payload.get("id")
+    try:
+        card_id = int(raw_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "id обязателен"}), 400
+    from backend.deepdive import load_card
+    meta = load_card(card_id=card_id, user_id=user_id)
+    if meta is None:
+        return jsonify({"error": "Карточка не найдена"}), 404
+    return jsonify({"ok": True, **meta})
+
+
+@app.route("/api/answer/deepdive/feel", methods=["POST"])
+def deepdive_feel():
+    """📌 Почувствовать слово — feel-the-word explanation for the card pair."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    try:
+        card_id = int(payload.get("id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "id обязателен"}), 400
+    from backend.deepdive import load_card, generate_feel
+    card = load_card(card_id=card_id, user_id=user_id)
+    if card is None:
+        return jsonify({"error": "Карточка не найдена"}), 404
+    try:
+        feel_text = generate_feel(card)
+    except Exception as exc:
+        logging.exception("deepdive feel failed id=%s user=%s", card_id, user_id)
+        return jsonify({"error": f"Ошибка разбора: {exc}"}), 500
+    if not feel_text:
+        return jsonify({"error": "Разбор пустой. Попробуйте снова."}), 502
+    return jsonify({"ok": True, "feel": feel_text})
+
+
+@app.route("/api/answer/deepdive/phrase", methods=["POST"])
+def deepdive_phrase():
+    """🧩 Дать сочетание — best short collocation with the correct word."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    try:
+        card_id = int(payload.get("id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "id обязателен"}), 400
+    from backend.deepdive import load_card, generate_phrase
+    card = load_card(card_id=card_id, user_id=user_id)
+    if card is None:
+        return jsonify({"error": "Карточка не найдена"}), 404
+    try:
+        suggestion = generate_phrase(card)
+    except Exception as exc:
+        logging.exception("deepdive phrase failed id=%s user=%s", card_id, user_id)
+        return jsonify({"error": f"Ошибка сочетания: {exc}"}), 500
+    return jsonify({"ok": True, **suggestion})
+
+
+@app.route("/api/answer/deepdive/save", methods=["POST"])
+def deepdive_save():
+    """💾 Save a generated collocation pair to the user's dictionary."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    source_text = str(payload.get("source_text") or "").strip()
+    target_text = str(payload.get("target_text") or "").strip()
+    source_lang = str(payload.get("source_lang") or "").strip().lower()
+    target_lang = str(payload.get("target_lang") or "").strip().lower()
+    semantic_tag = str(payload.get("semantic_category") or "").strip()
+    if not source_text or not target_text or not source_lang or not target_lang:
+        return jsonify({"error": "Неполная пара для сохранения"}), 400
+    from backend.deepdive import save_phrase
+    ok, entry_id = save_phrase(
+        user_id=user_id,
+        source_text=source_text, target_text=target_text,
+        source_lang=source_lang, target_lang=target_lang,
+        semantic_tag=semantic_tag,
+    )
+    if not ok:
+        return jsonify({"error": "Не удалось сохранить"}), 500
+    return jsonify({"ok": True, "entry_id": entry_id})
 
 
 @app.route("/api/answer/review/next", methods=["POST"])

@@ -196,6 +196,16 @@ async function bootstrapAnswerOverlay(startParam) {
   );
 }
 
+async function bootstrapDeepDive(startParam) {
+  try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
+  const { default: DeepDiveOverlay } = await import('./answer/DeepDiveOverlay.jsx');
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    <React.StrictMode>
+      <DeepDiveOverlay startParam={startParam} />
+    </React.StrictMode>,
+  );
+}
+
 async function bootstrapLeaderboard(startParam) {
   try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
   const { default: Leaderboard } = await import('./leaderboard/Leaderboard.jsx');
@@ -220,6 +230,10 @@ async function bootstrapApp() {
   const answerStartParam = getAnswerStartParam();
   if (/^ans_/i.test(answerStartParam)) {
     await bootstrapAnswerOverlay(answerStartParam);
+    return;
+  }
+  if (/^dive_/i.test(answerStartParam)) {
+    await bootstrapDeepDive(answerStartParam);
     return;
   }
   if (/^plan$/i.test(answerStartParam)) {

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './answer.css';
 import AnagramGame from './AnagramGame.jsx';
+import MCGame from './MCGame.jsx';
 import ListeningGame from './ListeningGame.jsx';
 import CrosswordGrid from './CrosswordGrid.jsx';
 import AufgabeGame from './AufgabeGame.jsx';
@@ -38,7 +39,7 @@ function getInitData() {
 // start_param: ans_rb_123 / ans_cw_45 / ans_ag_7 / ans_ls_3 / ans_qf_9 / ans_au_2
 //   ans_qfp_<poll_id> — poll-scoped freeform (button attached under the poll)
 function parseStartParam(startParam) {
-  const m = /^ans_(rb|cw|ag|ls|qf|qfp|sp|au|asbl|asb|asp|as|alf|al|rv|adbl|adb|adl|ad|bh)_(\d+)$/.exec(String(startParam || '').trim().toLowerCase());
+  const m = /^ans_(rb|cw|ag|ls|qf|qfp|sp|au|mc|asbl|asb|asp|as|alf|al|rv|adbl|adb|adl|ad|bh)_(\d+)$/.exec(String(startParam || '').trim().toLowerCase());
   if (!m) return null;
   // qfp's id is a big Telegram poll_id → keep it a string (Number() loses precision).
   return { kind: m[1], id: m[1] === 'qfp' ? m[2] : Number(m[2]) };
@@ -52,6 +53,7 @@ const KIND_META = {
   qf: { eyebrow: '✍️ Antwort', title: 'Eigene Antwort' },
   qfp: { eyebrow: '✍️ Antwort', title: 'Eigene Antwort' },
   au: { eyebrow: '✏️ Aufgabe', title: 'Aufgabe · B2+' },
+  mc: { eyebrow: '🎯 Quiz', title: 'Quiz' },
 };
 
 // au covers several formats — show the right label per format.
@@ -103,6 +105,44 @@ async function api(path, body) {
 }
 
 const arrowOf = (dir) => (dir === 'across' ? '↔' : '↕');
+
+// Play a German word/phrase via the existing TTS pipeline (generate → poll → play).
+async function playWordTts(text) {
+  const t = String(text || '').trim();
+  if (!t) return;
+  const initData = getInitData();
+  await fetch('/api/webapp/tts/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ initData, text: t, language: 'de-DE' }),
+  });
+  const params = new URLSearchParams({ text: t, language: 'de-DE' });
+  for (let i = 0; i < 30; i += 1) {
+    const res = await fetch(`/api/webapp/tts/url?${params.toString()}`, {
+      method: 'GET', headers: { 'X-Telegram-InitData': initData },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data.status === 'ready' && data.audio_url) { await new Audio(data.audio_url).play(); return; }
+    if (data.status === 'failed') throw new Error(data.message || 'TTS');
+    await new Promise((r) => setTimeout(r, data.retry_after_ms || 700));
+  }
+  throw new Error('Zeitüberschreitung');
+}
+
+function ListenButton({ text }) {
+  const [state, setState] = useState('idle'); // idle|loading|error
+  const play = async () => {
+    if (state === 'loading' || !text) return;
+    setState('loading'); haptic('light');
+    try { await playWordTts(text); setState('idle'); }
+    catch (_e) { setState('error'); haptic('bad'); }
+  };
+  return (
+    <button type="button" className="mc-listen" disabled={state === 'loading'} onClick={play}>
+      {state === 'loading' ? '🔊 Готовлю…' : state === 'error' ? '🔊 Ещё раз' : '🔊 Прослушать'}
+    </button>
+  );
+}
 
 function RebusResult({ result }) {
   const good = !!result.is_correct;
@@ -218,6 +258,25 @@ function AnagramResult({ result }) {
       </div>
       {result.explanation ? <div className="ans-explain">{result.explanation}</div> : null}
       {result.tip ? <div className="ans-tip">💡 {result.tip}</div> : null}
+    </div>
+  );
+}
+
+function MCResult({ result }) {
+  const good = !!result.is_correct;
+  return (
+    <div className={`ans-result ${good ? 'ok' : 'bad'}`}>
+      <div className="ans-verdict">{good ? '✅ Richtig!' : '❌ Falsch'}</div>
+      <div className="ans-answer">
+        {good ? '' : 'Richtige Antwort: '}
+        <b>{result.correct_text}</b>
+        {result.hint_ru ? <span className="ans-meaning"> · {result.hint_ru}</span> : null}
+      </div>
+      {!good && result.your_answer ? (
+        <div className="ans-meaning" style={{ marginTop: 4 }}>Deine Antwort: {result.your_answer}</div>
+      ) : null}
+      {result.explanation ? <div className="ans-explain">{result.explanation}</div> : null}
+      {result.correct_text ? <ListenButton text={result.correct_text} /> : null}
     </div>
   );
 }
@@ -558,6 +617,30 @@ export default function AnswerOverlay({ startParam }) {
     }
   }, [parsed, submitting, rebusInput, cwInputs]);
 
+  // Multiple-choice: submit the picked option (+ typed text for the freeform pick).
+  const submitMC = useCallback(async (selectedOptionId, freeformText) => {
+    if (!parsed || submitting) return;
+    haptic('light');
+    setSubmitting(true);
+    setError('');
+    try {
+      const time_ms = taskLoadedAt.current ? Date.now() - taskLoadedAt.current : 0;
+      const data = await api('/api/answer/submit', {
+        kind: 'mc', id: parsed.id,
+        selected_option_id: selectedOptionId,
+        freeform_text: freeformText || '',
+        time_ms,
+      });
+      setResult(data);
+      haptic(data.is_correct ? 'ok' : 'bad');
+    } catch (e) {
+      setError(String(e.message || e));
+      haptic('bad');
+    } finally {
+      setSubmitting(false);
+    }
+  }, [parsed, submitting]);
+
   // Listening: submit kicks off async LLM grading; poll until it's done.
   const pollListening = useCallback(() => {
     let tries = 0;
@@ -679,6 +762,7 @@ export default function AnswerOverlay({ startParam }) {
   const isFreeform = kind === 'qf' || kind === 'qfp';
   const isCrossword = kind === 'cw';
   const isAufgabe = kind === 'au';
+  const isMC = kind === 'mc';
   let { eyebrow, title: heading } = KIND_META[kind] || KIND_META.rb;
   if (isAufgabe && meta?.format && AU_LABELS[meta.format]) {
     eyebrow = AU_LABELS[meta.format].eyebrow;
@@ -706,6 +790,7 @@ export default function AnswerOverlay({ startParam }) {
         </div>
         {isRebus ? <RebusResult result={result} />
           : isAufgabe ? <AufgabeResult result={result} />
+          : isMC ? <MCResult result={result} />
           : (isAnagram || isFreeform) ? <AnagramResult result={result} />
           : isListening ? <ListeningResult result={result} />
           : <CrosswordResult result={result} />}
@@ -720,6 +805,7 @@ export default function AnswerOverlay({ startParam }) {
             `Интерактив: ${heading || eyebrow || ''}.`,
             result.full_word ? `Слово: ${result.full_word}.` : '',
             result.correct_word ? `Правильный ответ: ${result.correct_word}.` : '',
+            result.correct_text ? `Правильный ответ: ${result.correct_text}.` : '',
             result.meaning_ru ? `Значение: ${result.meaning_ru}.` : '',
             (result.explanation || result.explanation_ru) ? `Объяснение: ${result.explanation || result.explanation_ru}.` : '',
             result.tip ? `Подсказка: ${result.tip}.` : '',
@@ -750,6 +836,25 @@ export default function AnswerOverlay({ startParam }) {
           <><div className="ans-skel" /><div className="ans-skel sm" /><div className="ans-skel" /></>
         ) : (
           <ListeningGame task={meta} onSubmit={submitListening} submitting={submitting} />
+        )}
+        {error ? <p className="ans-error">{error}</p> : null}
+      </div></div>
+    );
+  }
+
+  // Multiple-choice input view — question + tappable options (in place of the poll).
+  if (isMC) {
+    return (
+      <div className="ans-root"><div className="ans-card">
+        <div className="ans-head">
+          <span className="ans-eyebrow">{eyebrow}</span>
+          <h1 className="ans-title">{heading}</h1>
+          <p className="ans-sub">Wähle die richtige Antwort 🎯</p>
+        </div>
+        {metaLoading || !meta ? (
+          <><div className="ans-skel" /><div className="ans-skel sm" /><div className="ans-skel" /></>
+        ) : (
+          <MCGame task={meta} onSubmit={submitMC} submitting={submitting} />
         )}
         {error ? <p className="ans-error">{error}</p> : null}
       </div></div>

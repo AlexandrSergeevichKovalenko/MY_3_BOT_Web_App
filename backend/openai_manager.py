@@ -2106,6 +2106,7 @@ Input payload is JSON:
 
 Return STRICT JSON:
 {
+  "semantic_category": "...",
   "items": [
     {"source": "...", "target": "..."},
     {"source": "...", "target": "..."},
@@ -2115,6 +2116,11 @@ Return STRICT JSON:
 
 Rules:
 - Exactly 3 items.
+
+- SEMANTIC CATEGORY (top-level "semantic_category"):
+  Classify the CORE word/phrase into EXACTLY ONE of these Russian categories (output the Russian label verbatim):
+  Работа, Учёба, Здоровье, Путешествия, Быт, Еда, Спорт, Технологии, Деньги, Семья, Транспорт, Природа, Культура, Общение, Покупки, Жильё, Право, Эмоции, Прочее.
+  Pick the single best fit; use "Прочее" only if nothing else fits. This lets the learner's save go straight into the right folder.
 
 - #1 ITEM — EXACT TRANSLATION CARD:
   The first item must be the most accurate, natural translation of the original input.
@@ -2190,6 +2196,7 @@ Input JSON:
 
 Return STRICT JSON:
 {
+  "semantic_category": "...",
   "items": [
     {"source": "...", "target": "..."},
     {"source": "...", "target": "..."},
@@ -2199,6 +2206,11 @@ Return STRICT JSON:
 
 Rules:
 - Exactly 3 items.
+
+- SEMANTIC CATEGORY (top-level "semantic_category"):
+  Classify the CORE word/phrase into EXACTLY ONE of these Russian categories (output the Russian label verbatim):
+  Работа, Учёба, Здоровье, Путешествия, Быт, Еда, Спорт, Технологии, Деньги, Семья, Транспорт, Природа, Культура, Общение, Покупки, Жильё, Право, Эмоции, Прочее.
+  Pick the single best fit; use "Прочее" only if nothing else fits. This lets the learner's save go straight into the right folder.
 
 - #1 ITEM — EXACT TRANSLATION CARD:
   The first item must be the most accurate, natural translation of the original input.

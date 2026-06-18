@@ -8891,6 +8891,95 @@ def ensure_webapp_tables() -> None:
             """)
             # ── end anagram tables ────────────────────────────────────────
 
+            # ── Deep-dive cards (in-place 🔊/📌/🧩/❓ actions for a quiz result) ──
+            # One small row per result card holds just the word context the four
+            # actions need. The DM message carries a single Mini-App button
+            # (?startapp=dive_<id>); the overlay reads this row from the web tier
+            # (the bot's in-memory pending_* dicts aren't visible there).
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_deepdive_cards (
+                    id           BIGSERIAL PRIMARY KEY,
+                    user_id      BIGINT NOT NULL,
+                    source_text  TEXT NOT NULL DEFAULT '',
+                    target_text  TEXT NOT NULL DEFAULT '',
+                    source_lang  TEXT NOT NULL DEFAULT '',
+                    target_lang  TEXT NOT NULL DEFAULT '',
+                    context_text TEXT NOT NULL DEFAULT '',
+                    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_deepdive_cards_user_time
+                ON bt_3_deepdive_cards (user_id, created_at DESC);
+            """)
+            # ── end deep-dive cards ───────────────────────────────────────
+
+            # ── Multiple-choice quiz as a Mini-App interactive (kind="mc") ──
+            # Replaces the native Telegram poll: the verdict/explanation render in
+            # the overlay in place instead of a message dumped at the chat bottom.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_mc_dispatches (
+                    id                  BIGSERIAL PRIMARY KEY,
+                    user_id             BIGINT NOT NULL,
+                    chat_id             BIGINT NOT NULL DEFAULT 0,
+                    question            TEXT NOT NULL DEFAULT '',
+                    options_json        JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    correct_option_id   INTEGER NOT NULL DEFAULT 0,
+                    correct_text        TEXT NOT NULL DEFAULT '',
+                    explanation         TEXT NOT NULL DEFAULT '',
+                    quiz_type           TEXT NOT NULL DEFAULT '',
+                    word_ru             TEXT NOT NULL DEFAULT '',
+                    freeform_option     TEXT NOT NULL DEFAULT '',
+                    hide_correct        BOOLEAN NOT NULL DEFAULT FALSE,
+                    deepdive_card_id    BIGINT,
+                    telegram_message_id BIGINT,
+                    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_mc_dispatches_user_time
+                ON bt_3_mc_dispatches (user_id, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_mc_answers (
+                    id                 BIGSERIAL PRIMARY KEY,
+                    dispatch_id        BIGINT NOT NULL REFERENCES bt_3_mc_dispatches(id),
+                    user_id            BIGINT NOT NULL,
+                    selected_option_id INTEGER NOT NULL DEFAULT -1,
+                    freeform_text      TEXT NOT NULL DEFAULT '',
+                    is_correct         BOOLEAN NOT NULL,
+                    answered_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (dispatch_id, user_id)
+                );
+            """)
+            # ── end mc quiz tables ────────────────────────────────────────
+
+            # ── Interactive inbox (per-user feed of sent tasks + answered state) ──
+            # Powers the ✅ "выполнено" marker and the "→ oldest unanswered" jump
+            # button. One row per (user, task) written at SEND time, flipped at
+            # ANSWER time. DM-only feed (chat_id == user_id).
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_interactive_inbox (
+                    id                  BIGSERIAL PRIMARY KEY,
+                    user_id             BIGINT NOT NULL,
+                    kind                TEXT NOT NULL,
+                    dispatch_id         BIGINT NOT NULL,
+                    chat_id             BIGINT NOT NULL DEFAULT 0,
+                    telegram_message_id BIGINT,
+                    deeplink            TEXT NOT NULL DEFAULT '',
+                    title               TEXT NOT NULL DEFAULT '',
+                    answered            BOOLEAN NOT NULL DEFAULT FALSE,
+                    answered_at         TIMESTAMPTZ,
+                    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (user_id, kind, dispatch_id)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_interactive_inbox_open
+                ON bt_3_interactive_inbox (user_id, answered, created_at);
+            """)
+            # ── end interactive inbox ─────────────────────────────────────
+
             # ── Freeform quiz ("keine korrekte Antworten" → type answer) ──
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_quiz_freeform_dispatches (
@@ -14787,6 +14876,312 @@ def get_recent_dictionary_user_ids(
             )
             rows = cursor.fetchall()
     return [int(row[0]) for row in rows if row and row[0] is not None]
+
+
+def create_deepdive_card(
+    *,
+    user_id: int,
+    source_text: str,
+    target_text: str,
+    source_lang: str,
+    target_lang: str,
+    context_text: str = "",
+) -> int | None:
+    """Persist the word context for a quiz-result deep-dive (🔊/📌/🧩/❓) and
+    return its id. The DM card links to the Mini-App via ?startapp=dive_<id>."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_deepdive_cards
+                        (user_id, source_text, target_text, source_lang, target_lang, context_text)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING id;
+                    """,
+                    (
+                        int(user_id),
+                        str(source_text or "").strip(),
+                        str(target_text or "").strip(),
+                        str(source_lang or "").strip().lower(),
+                        str(target_lang or "").strip().lower(),
+                        str(context_text or "").strip(),
+                    ),
+                )
+                row = cursor.fetchone()
+        return int(row[0]) if row and row[0] is not None else None
+    except Exception:
+        logging.exception("❌ create_deepdive_card failed user_id=%s", user_id)
+        return None
+
+
+def get_deepdive_card(card_id: int) -> dict | None:
+    """Return a deep-dive card row as a dict (or None)."""
+    try:
+        cid = int(card_id)
+    except (TypeError, ValueError):
+        return None
+    if cid <= 0:
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, user_id, source_text, target_text,
+                       source_lang, target_lang, context_text
+                FROM bt_3_deepdive_cards
+                WHERE id = %s;
+                """,
+                (cid,),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "user_id": int(row[1]),
+        "source_text": str(row[2] or ""),
+        "target_text": str(row[3] or ""),
+        "source_lang": str(row[4] or ""),
+        "target_lang": str(row[5] or ""),
+        "context_text": str(row[6] or ""),
+    }
+
+
+def create_mc_dispatch(
+    *,
+    user_id: int,
+    chat_id: int,
+    question: str,
+    options: list,
+    correct_option_id: int,
+    correct_text: str,
+    explanation: str = "",
+    quiz_type: str = "",
+    word_ru: str = "",
+    freeform_option: str = "",
+    hide_correct: bool = False,
+    deepdive_card_id: int | None = None,
+) -> int | None:
+    """Persist a multiple-choice quiz as a Mini-App interactive; return its id."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_mc_dispatches
+                        (user_id, chat_id, question, options_json, correct_option_id,
+                         correct_text, explanation, quiz_type, word_ru, freeform_option,
+                         hide_correct, deepdive_card_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id;
+                    """,
+                    (
+                        int(user_id), int(chat_id), str(question or ""),
+                        json.dumps([str(o) for o in (options or [])], ensure_ascii=False),
+                        int(correct_option_id), str(correct_text or ""),
+                        str(explanation or ""), str(quiz_type or ""), str(word_ru or ""),
+                        str(freeform_option or ""), bool(hide_correct),
+                        int(deepdive_card_id) if deepdive_card_id else None,
+                    ),
+                )
+                row = cursor.fetchone()
+        return int(row[0]) if row and row[0] is not None else None
+    except Exception:
+        logging.exception("❌ create_mc_dispatch failed user_id=%s", user_id)
+        return None
+
+
+def get_mc_dispatch_by_id(dispatch_id: int) -> dict | None:
+    try:
+        did = int(dispatch_id)
+    except (TypeError, ValueError):
+        return None
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, user_id, chat_id, question, options_json, correct_option_id,
+                       correct_text, explanation, quiz_type, word_ru, freeform_option,
+                       hide_correct, deepdive_card_id, telegram_message_id
+                FROM bt_3_mc_dispatches
+                WHERE id = %s;
+                """,
+                (did,),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    options = row[4]
+    if isinstance(options, str):
+        try:
+            options = json.loads(options)
+        except Exception:
+            options = []
+    return {
+        "id": int(row[0]),
+        "user_id": int(row[1]),
+        "chat_id": int(row[2]),
+        "question": str(row[3] or ""),
+        "options": list(options or []),
+        "correct_option_id": int(row[5]),
+        "correct_text": str(row[6] or ""),
+        "explanation": str(row[7] or ""),
+        "quiz_type": str(row[8] or ""),
+        "word_ru": str(row[9] or ""),
+        "freeform_option": str(row[10] or ""),
+        "hide_correct": bool(row[11]),
+        "deepdive_card_id": int(row[12]) if row[12] is not None else None,
+        "telegram_message_id": int(row[13]) if row[13] is not None else None,
+    }
+
+
+def get_mc_answer(*, dispatch_id: int, user_id: int) -> dict | None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT selected_option_id, freeform_text, is_correct
+                FROM bt_3_mc_answers
+                WHERE dispatch_id = %s AND user_id = %s;
+                """,
+                (int(dispatch_id), int(user_id)),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "selected_option_id": int(row[0]),
+        "freeform_text": str(row[1] or ""),
+        "is_correct": bool(row[2]),
+    }
+
+
+def record_mc_answer(
+    *, dispatch_id: int, user_id: int, selected_option_id: int,
+    freeform_text: str, is_correct: bool,
+) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_mc_answers
+                    (dispatch_id, user_id, selected_option_id, freeform_text, is_correct)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (dispatch_id, user_id) DO NOTHING;
+                """,
+                (int(dispatch_id), int(user_id), int(selected_option_id),
+                 str(freeform_text or ""), bool(is_correct)),
+            )
+
+
+def update_mc_dispatch_telegram_id(dispatch_id: int, telegram_message_id: int) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_mc_dispatches SET telegram_message_id = %s WHERE id = %s;",
+                (int(telegram_message_id), int(dispatch_id)),
+            )
+
+
+def record_interactive_inbox(
+    *, user_id: int, kind: str, dispatch_id: int, chat_id: int,
+    telegram_message_id: int | None = None, deeplink: str = "", title: str = "",
+) -> None:
+    """Add a task to the user's interactive inbox (idempotent per task)."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_interactive_inbox
+                        (user_id, kind, dispatch_id, chat_id, telegram_message_id, deeplink, title)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (user_id, kind, dispatch_id) DO UPDATE
+                        SET telegram_message_id = COALESCE(EXCLUDED.telegram_message_id,
+                                                           bt_3_interactive_inbox.telegram_message_id),
+                            deeplink = EXCLUDED.deeplink,
+                            title = EXCLUDED.title;
+                    """,
+                    (int(user_id), str(kind), int(dispatch_id), int(chat_id),
+                     int(telegram_message_id) if telegram_message_id else None,
+                     str(deeplink or ""), str(title or "")),
+                )
+    except Exception:
+        logging.warning("record_interactive_inbox failed user=%s kind=%s id=%s",
+                        user_id, kind, dispatch_id, exc_info=True)
+
+
+def mark_interactive_inbox_answered(*, user_id: int, kind: str, dispatch_id: int) -> dict | None:
+    """Flip a task to answered (once). Returns the row (chat_id/message_id/deeplink/
+    title) only on the first flip, so the caller can mark the message ✅; None if
+    no such row or it was already answered."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_interactive_inbox
+                    SET answered = TRUE, answered_at = NOW()
+                    WHERE user_id = %s AND kind = %s AND dispatch_id = %s AND answered = FALSE
+                    RETURNING chat_id, telegram_message_id, deeplink, title;
+                    """,
+                    (int(user_id), str(kind), int(dispatch_id)),
+                )
+                row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "chat_id": int(row[0]) if row[0] is not None else 0,
+            "telegram_message_id": int(row[1]) if row[1] is not None else None,
+            "deeplink": str(row[2] or ""),
+            "title": str(row[3] or ""),
+        }
+    except Exception:
+        logging.warning("mark_interactive_inbox_answered failed user=%s kind=%s id=%s",
+                        user_id, kind, dispatch_id, exc_info=True)
+        return None
+
+
+def get_oldest_unanswered_inbox(user_id: int, *, max_age_days: int = 3) -> dict | None:
+    """Oldest still-open (unanswered, recent) task for the jump button."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT kind, dispatch_id, deeplink, title, created_at
+                FROM bt_3_interactive_inbox
+                WHERE user_id = %s AND answered = FALSE
+                  AND created_at > NOW() - (%s || ' days')::interval
+                ORDER BY created_at ASC
+                LIMIT 1;
+                """,
+                (int(user_id), int(max_age_days)),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "kind": str(row[0] or ""),
+        "dispatch_id": int(row[1]),
+        "deeplink": str(row[2] or ""),
+        "title": str(row[3] or ""),
+    }
+
+
+def count_open_inbox(user_id: int, *, max_age_days: int = 3) -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM bt_3_interactive_inbox
+                WHERE user_id = %s AND answered = FALSE
+                  AND created_at > NOW() - (%s || ' days')::interval;
+                """,
+                (int(user_id), int(max_age_days)),
+            )
+            row = cursor.fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
 
 
 def get_dictionary_entry_by_id(entry_id: int) -> dict | None:

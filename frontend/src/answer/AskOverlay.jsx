@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { renderRich } from './richText.jsx';
 
 // Floating, draggable "ask the model" window used on every interactive's result.
 // No backdrop — it floats over the task (still visible). Drag by the header to any
@@ -108,7 +109,9 @@ export default function AskOverlay({ api, context = '', onClose }) {
           <div className="ask-pop-hint">Задай любой вопрос по этому заданию — отвечу здесь.</div>
         ) : null}
         {messages.map((m, i) => (
-          <div key={i} className={`ask-bubble ${m.role === 'user' ? 'me' : 'bot'}`}>{m.text}</div>
+          <div key={i} className={`ask-bubble ${m.role === 'user' ? 'me' : 'bot'}`}>
+            {m.role === 'bot' ? renderRich(m.text) : m.text}
+          </div>
         ))}
         {busy ? <div className="ask-bubble bot ask-typing">…</div> : null}
         {err ? <div className="ask-pop-err">{err}</div> : null}
@@ -118,7 +121,7 @@ export default function AskOverlay({ api, context = '', onClose }) {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder="Ваш вопрос…"
-          rows={2}
+          rows={3}
           autoCapitalize="sentences"
           onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) ask(); }}
         />
