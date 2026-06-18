@@ -16309,6 +16309,15 @@ async def _send_quiz_result_private(
             logging.exception("❌ Не удалось подготовить кнопку quiz follow-up user_id=%s", user_id)
             reply_markup = fallback_reply_markup
 
+    # Attach the result to the quiz itself (reply) when the poll is in this same DM,
+    # so it sits under the task instead of being dumped at the bottom of the chat.
+    poll_reply_to = None
+    try:
+        if int(quiz_data.get("chat_id") or 0) == int(user_id) and quiz_data.get("message_id"):
+            poll_reply_to = int(quiz_data["message_id"])
+    except (TypeError, ValueError):
+        poll_reply_to = None
+
     max_attempts = 2
     send_variants = []
     if reply_markup is not None:
@@ -16324,6 +16333,8 @@ async def _send_quiz_result_private(
                     text="\n".join(lines),
                     reply_markup=variant_markup,
                     parse_mode="HTML",
+                    reply_to_message_id=poll_reply_to,
+                    allow_sending_without_reply=True,
                 )
                 return True
             except RetryAfter as exc:
@@ -26374,14 +26385,21 @@ def _build_quiz_poll_explanation(quiz: dict) -> str:
     back to a concise correct-answer line so a popup always appears. Capped at
     the 200-char Telegram limit.
     """
-    text = str((quiz or {}).get("explanation") or "").strip()
-    if not text:
-        correct = str((quiz or {}).get("correct_text") or "").strip()
-        word_ru = str((quiz or {}).get("word_ru") or "").strip()
-        if correct and word_ru:
-            text = f"✅ {correct} — {word_ru}"
-        elif correct:
-            text = f"✅ {correct}"
+    expl = str((quiz or {}).get("explanation") or "").strip()
+    correct = str((quiz or {}).get("correct_text") or "").strip()
+    word_ru = str((quiz or {}).get("word_ru") or "").strip()
+    # Lead with the CORRECT answer (clear, like a good quiz popup), then the
+    # mistakes/why — not the other way around. Capped at Telegram's 200-char limit.
+    if correct and word_ru:
+        head = f"✅ {correct} — {word_ru}"
+    elif correct:
+        head = f"✅ {correct}"
+    else:
+        head = ""
+    if head and expl:
+        text = f"{head}\n{expl}"
+    else:
+        text = head or expl
     return text[:200]
 
 
