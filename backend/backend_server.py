@@ -23186,6 +23186,10 @@ def adjektiv_learn():
             "before": before, "after": after, "a": correct, "full": str(p.get("full") or ""),
             "erklaerung": str(p.get("erklaerung") or ""), "tip": str(p.get("tip") or ""),
             "example": str(p.get("example") or ""), "ru": str(p.get("hint_ru") or ""),
+            # Per-word translations for tap-to-translate + save (deterministic items only).
+            "adj": str(p.get("adj") or ""), "adj_ru": str(p.get("adj_ru") or ""),
+            "noun": str(p.get("noun") or ""), "noun_ru": str(p.get("noun_ru") or ""),
+            "noun_article": str(p.get("noun_article") or ""),
         })
     if not out:
         return jsonify({"ok": False, "error": "Колода пока готовится. Загляни чуть позже."}), 200

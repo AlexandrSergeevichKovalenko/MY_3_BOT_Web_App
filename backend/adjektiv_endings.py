@@ -91,19 +91,63 @@ ADJECTIVE_RU = {
     "winzig": "крошечный", "riesig": "огромный", "gigantisch": "гигантский", "mächtig": "могучий",
     "klebrig": "липкий", "rutschig": "скользкий", "rau": "шершавый", "kantig": "угловатый",
     "schlau": "хитрый", "naiv": "наивный",
+    # ── second wave (real, regular stems: -ig/-lich/-isch/-bar/-sam/-haft + participles) ──
+    "eisig": "ледяной", "windig": "ветреный", "sonnig": "солнечный", "wolkig": "облачный",
+    "neblig": "туманный", "staubig": "пыльный", "sandig": "песчаный", "steinig": "каменистый",
+    "schlammig": "илистый", "matschig": "слякотный", "feucht": "влажный", "schwül": "душный",
+    "frostig": "морозный", "schattig": "тенистый", "sumpfig": "болотистый", "stürmisch": "бурный",
+    "haarig": "волосатый", "borstig": "щетинистый", "wollig": "шерстяной", "seidig": "шелковистый",
+    "samtig": "бархатистый", "faltig": "морщинистый", "runzlig": "морщинистый", "körnig": "зернистый",
+    "klumpig": "комковатый", "schaumig": "пенистый", "schleimig": "слизистый", "saftig": "сочный",
+    "fruchtig": "фруктовый", "milchig": "молочный", "wässrig": "водянистый", "ölig": "маслянистый",
+    "knusprig": "хрустящий", "zäh": "жёсткий", "ranzig": "прогорклый", "gierig": "жадный",
+    "eifrig": "усердный", "emsig": "хлопотливый", "stur": "упрямый", "hartnäckig": "упорный",
+    "prächtig": "великолепный", "heftig": "резкий", "wuchtig": "массивный", "schläfrig": "сонный",
+    "fiebrig": "лихорадочный", "blutig": "кровавый", "holprig": "ухабистый", "kurvig": "извилистый",
+    "zackig": "зубчатый", "fehlerhaft": "ошибочный", "zweifelhaft": "сомнительный",
+    "schmerzhaft": "болезненный", "ekelhaft": "отвратительный", "lebhaft": "оживлённый",
+    "standhaft": "стойкий", "tugendhaft": "добродетельный", "mangelhaft": "недостаточный",
+    "zaghaft": "робкий", "essbar": "съедобный", "trinkbar": "питьевой", "lesbar": "читаемый",
+    "machbar": "выполнимый", "denkbar": "мыслимый", "sichtbar": "видимый", "hörbar": "слышимый",
+    "spürbar": "ощутимый", "brauchbar": "пригодный", "fruchtbar": "плодородный", "dankbar": "благодарный",
+    "sonderbar": "странный", "wunderbar": "чудесный", "furchtbar": "ужасный", "unsichtbar": "невидимый",
+    "heilbar": "излечимый", "aufmerksam": "внимательный", "gehorsam": "послушный", "sorgsam": "заботливый",
+    "behutsam": "бережный", "gewaltsam": "насильственный", "mühsam": "трудоёмкий", "wachsam": "бдительный",
+    "biegsam": "гибкий", "genügsam": "неприхотливый", "ratsam": "целесообразный", "ärgerlich": "досадный",
+    "kindlich": "детский", "männlich": "мужской", "weiblich": "женский", "tödlich": "смертельный",
+    "schädlich": "вредный", "heimlich": "тайный", "unheimlich": "жуткий", "köstlich": "восхитительный",
+    "peinlich": "неловкий", "reichlich": "обильный", "ländlich": "сельский", "jährlich": "ежегодный",
+    "täglich": "ежедневный", "wöchentlich": "еженедельный", "monatlich": "ежемесячный",
+    "feierlich": "торжественный", "gründlich": "основательный", "verständlich": "понятный",
+    "erträglich": "терпимый", "beträchtlich": "значительный", "erheblich": "существенный",
+    "kläglich": "жалкий", "schrecklich": "страшный", "herrlich": "великолепный", "kindisch": "ребяческий",
+    "neidisch": "завистливый", "launisch": "капризный", "wählerisch": "привередливый",
+    "heimisch": "местный", "tierisch": "звериный", "teuflisch": "дьявольский", "magisch": "магический",
+    "logisch": "логичный", "kritisch": "критический", "exotisch": "экзотический", "mechanisch": "механический",
+    "organisch": "органический", "chemisch": "химический", "medizinisch": "медицинский",
+    "künstlerisch": "художественный", "gekocht": "варёный", "gebraten": "жареный", "gebacken": "печёный",
+    "gegrillt": "приготовленный на гриле", "gefroren": "замороженный", "getrocknet": "сушёный",
+    "geräuchert": "копчёный", "gemahlen": "молотый", "gehackt": "рубленый", "gepresst": "прессованный",
+    "poliert": "полированный", "lackiert": "лакированный", "gestreift": "полосатый", "kariert": "клетчатый",
+    "gepunktet": "в горошек", "gemustert": "узорчатый", "zerbrochen": "разбитый", "zerrissen": "порванный",
+    "verbrannt": "сгоревший", "gefüllt": "наполненный", "geleert": "опустошённый",
 }
 
 # Citation list for random generation (keys of ADJECTIVE_RU).
 ADJECTIVES = list(ADJECTIVE_RU.keys())
 
-# Fallback nouns (word, gender) if the Artikel noun bank is empty.
+# Fallback nouns (word, gender, meaning_ru) if the Artikel noun bank is empty.
 _FALLBACK_NOUNS = [
-    ("Wein", "m"), ("Mann", "m"), ("Tisch", "m"), ("Wagen", "m"), ("Berg", "m"),
-    ("Hund", "m"), ("Stuhl", "m"), ("Markt", "m"), ("Film", "m"), ("Brief", "m"),
-    ("Frau", "f"), ("Stadt", "f"), ("Idee", "f"), ("Reise", "f"), ("Lampe", "f"),
-    ("Tür", "f"), ("Straße", "f"), ("Sprache", "f"), ("Lösung", "f"), ("Frage", "f"),
-    ("Buch", "n"), ("Auto", "n"), ("Haus", "n"), ("Bild", "n"), ("Fenster", "n"),
-    ("Zimmer", "n"), ("Problem", "n"), ("Spiel", "n"), ("Wasser", "n"), ("Geschenk", "n"),
+    ("Wein", "m", "вино"), ("Mann", "m", "мужчина"), ("Tisch", "m", "стол"),
+    ("Wagen", "m", "автомобиль"), ("Berg", "m", "гора"), ("Hund", "m", "собака"),
+    ("Stuhl", "m", "стул"), ("Markt", "m", "рынок"), ("Film", "m", "фильм"),
+    ("Brief", "m", "письмо"), ("Frau", "f", "женщина"), ("Stadt", "f", "город"),
+    ("Idee", "f", "идея"), ("Reise", "f", "поездка"), ("Lampe", "f", "лампа"),
+    ("Tür", "f", "дверь"), ("Straße", "f", "улица"), ("Sprache", "f", "язык"),
+    ("Lösung", "f", "решение"), ("Frage", "f", "вопрос"), ("Buch", "n", "книга"),
+    ("Auto", "n", "автомобиль"), ("Haus", "n", "дом"), ("Bild", "n", "картина"),
+    ("Fenster", "n", "окно"), ("Zimmer", "n", "комната"), ("Problem", "n", "проблема"),
+    ("Spiel", "n", "игра"), ("Wasser", "n", "вода"), ("Geschenk", "n", "подарок"),
 ]
 
 _ART_GENDER = {"der": "m", "die": "f", "das": "n"}
@@ -139,18 +183,23 @@ _TYPE_RU = {"weak": "слабое склонение (после der/die/das)",
 _TYPE_SHORT = {"weak": "слабое", "mixed": "смешанное", "strong": "сильное"}
 
 
+_GENDER_ART = {"m": "der", "f": "die", "n": "das"}
+
+
 def _load_nouns(limit: int = 400) -> list[tuple]:
+    """(word, gender, meaning_ru). meaning_ru lets the trainer show an accurate
+    per-word translation on tap (and save the noun with its article)."""
     try:
         from backend.database import get_db_connection_context
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT word, article FROM bt_3_article_sprint_nouns "
+                    "SELECT word, article, COALESCE(meaning_ru, '') FROM bt_3_article_sprint_nouns "
                     "WHERE retired=FALSE AND verified=TRUE AND article IN ('der','die','das') "
                     "ORDER BY random() LIMIT %s;",
                     (int(limit),),
                 )
-                rows = [(str(r[0]).strip(), _ART_GENDER.get(str(r[1]), "n"))
+                rows = [(str(r[0]).strip(), _ART_GENDER.get(str(r[1]), "n"), str(r[2] or "").strip())
                         for r in (cur.fetchall() or []) if r and r[0]]
         if rows:
             return rows
@@ -193,7 +242,8 @@ def _example(typ: str, case: str, gender: str, ending: str) -> str:
 
 
 def _build_one(noun: tuple, adjective: str) -> dict:
-    word, gender = noun
+    word, gender = noun[0], noun[1]
+    noun_ru = str(noun[2]) if len(noun) > 2 else ""
     typ = random.choice(["weak", "mixed", "strong"])
     case = random.choice(["Nom", "Akk", "Dat"])
     ending = _TABLES[typ][case][gender]
@@ -219,6 +269,9 @@ def _build_one(noun: tuple, adjective: str) -> dict:
         "tip": _feeling(typ, case, gender, ending),
         "example": _example(typ, case, gender, ending),
         "hint_ru": hint_ru,
+        # Per-word data for tap-to-translate + save-to-dictionary.
+        "adj": adjective, "adj_ru": ADJECTIVE_RU.get(adjective, ""),
+        "noun": word, "noun_ru": noun_ru, "noun_article": _GENDER_ART.get(gender, "das"),
     }
 
 

@@ -48,7 +48,38 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
     try { haptic?.(ok ? 'ok' : 'bad'); } catch (_e) { /* noop */ }
   }, [pick, card, haptic]);
 
-  const next = useCallback(() => { setPick(null); setI((x) => x + 1); }, []);
+  const next = useCallback(() => { setPick(null); setI((x) => x + 1); setWordPop(null); }, []);
+
+  // Tap-to-translate: a small popup for the adjective or the noun (accurate
+  // word-level translation; the phrase itself is auto-generated and may be unreal).
+  const [wordPop, setWordPop] = useState(null); // null | {kind, de, ru, saving, saved}
+  const openWord = useCallback((kind) => {
+    if (!card) return;
+    try { haptic?.('tap'); } catch (_e) { /* noop */ }
+    if (kind === 'adj' && card.adj) {
+      setWordPop({ kind, de: card.adj, ru: card.adj_ru || '', save_de: card.adj, saving: false, saved: false });
+    } else if (kind === 'noun' && card.noun) {
+      const art = card.noun_article ? `${card.noun_article} ` : '';
+      setWordPop({ kind, de: `${art}${card.noun}`, ru: card.noun_ru || '',
+        save_de: `${art}${card.noun}`.trim(), saving: false, saved: false });
+    }
+  }, [card, haptic]);
+
+  const saveWord = useCallback(async () => {
+    if (!wordPop || wordPop.saving || wordPop.saved) return;
+    setWordPop((w) => (w ? { ...w, saving: true } : w));
+    try {
+      const res = await api('/api/webapp/dictionary/save', {
+        word_de: wordPop.save_de,
+        translation_ru: wordPop.ru,
+        source_lang: 'ru', target_lang: 'de',
+        origin_process: 'adjektiv_trainer',
+      });
+      setWordPop((w) => (w ? { ...w, saving: false, saved: !!(res && res.ok !== false) } : w));
+    } catch (_e) {
+      setWordPop((w) => (w ? { ...w, saving: false } : w));
+    }
+  }, [wordPop, api]);
 
   let cls = 'al-card';
   let body = null;
@@ -71,12 +102,40 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
       </div>
       <div className={`as-word adj-word${answered ? (pick === correct ? ' ok' : ' bad') : ''}`}>
         <span className="fit-line adj-line" ref={phraseFit}>
-          <span>{card.before}</span>
+          {(() => {
+            const adj = card.adj || ''; const b = card.before || '';
+            if (adj && b.endsWith(adj)) {
+              const prefix = b.slice(0, b.length - adj.length);
+              return (<>
+                {prefix ? <span>{prefix}</span> : null}
+                <span className="adj-word-tap" onClick={() => openWord('adj')}>{adj}</span>
+              </>);
+            }
+            return <span>{b}</span>;
+          })()}
           <span className="adj-slot">{answered ? `-${correct}` : '·'}</span>
-          <span>{card.after}</span>
+          {(() => {
+            const noun = card.noun || ''; const a = card.after || '';
+            const idx = noun ? a.indexOf(noun) : -1;
+            if (idx >= 0) {
+              return (<>
+                {a.slice(0, idx) ? <span>{a.slice(0, idx)}</span> : null}
+                <span className="adj-word-tap" onClick={() => openWord('noun')}>{noun}</span>
+                {a.slice(idx + noun.length) ? <span>{a.slice(idx + noun.length)}</span> : null}
+              </>);
+            }
+            return <span>{a}</span>;
+          })()}
         </span>
       </div>
       {card.ru ? <div className="adj-hint">{card.ru}</div> : null}
+      {(card.adj || card.noun) ? (
+        <div className="adj-disclaimer">
+          Тапни слово — перевод и «в словарь». Фразы генерируются автоматически и
+          бывают нереальными/смешными: суть не в смысле, а в механике — по роду/падежу/числу
+          быстро выбрать окончание.
+        </div>
+      ) : null}
       <div className="as-buttons adj-buttons">
         {ENDINGS.map((e) => {
           const state = answered ? (e === correct ? ' on' : (e === pick ? ' wrong' : '')) : '';
@@ -97,6 +156,18 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
       {answered
         ? <button className="ans-btn" onClick={next}>Weiter →</button>
         : <button className="ans-btn-ghost" onClick={onClose}>Schließen</button>}
+      {wordPop ? (
+        <div className="adj-wordpop-backdrop" onClick={() => setWordPop(null)}>
+          <div className="adj-wordpop" onClick={(e) => e.stopPropagation()}>
+            <div className="adj-wordpop-de">{wordPop.de}</div>
+            <div className="adj-wordpop-ru">{wordPop.ru || '—'}</div>
+            <button className="adj-wordpop-save" onClick={saveWord}
+              disabled={wordPop.saving || wordPop.saved}>
+              {wordPop.saved ? '✓ В словаре' : (wordPop.saving ? 'Сохраняю…' : '➕ В словарь')}
+            </button>
+          </div>
+        </div>
+      ) : null}
     </>);
   }
 
