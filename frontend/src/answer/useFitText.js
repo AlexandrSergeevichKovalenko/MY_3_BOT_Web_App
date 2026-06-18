@@ -10,6 +10,7 @@ export default function useFitText(dep, { max = 40, min = 14, padding = 28 } = {
     const el = ref.current;
     const box = el?.parentElement;
     if (!el || !box) return;
+    el.style.whiteSpace = 'nowrap'; // measure/shrink on one line first
     let size = max;
     el.style.fontSize = `${size}px`;
     const avail = box.clientWidth - padding;
@@ -19,6 +20,9 @@ export default function useFitText(dep, { max = 40, min = 14, padding = 28 } = {
       el.style.fontSize = `${size}px`;
       guard += 1;
     }
+    // Still too wide even at the min size (a very long phrase)? Let it wrap onto
+    // several centred lines instead of overflowing / being clipped.
+    el.style.whiteSpace = el.scrollWidth > avail ? 'normal' : 'nowrap';
   }, [max, min, padding]);
 
   // re-fit on content change (next item) — layout effect avoids a flash

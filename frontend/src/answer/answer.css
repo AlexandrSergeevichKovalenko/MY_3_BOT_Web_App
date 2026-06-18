@@ -783,7 +783,7 @@ html[data-scheme="light"] .ans-why-wrong { color: #92400e; }
 .bh-row-title { font-size: 15px; font-weight: 700; color: var(--dmps-text-primary, #F8FAFC); }
 .bh-row-sub { margin-top: 3px; font-size: 13px; color: var(--dmps-text-secondary, #CBD5E1); }
 
-.fit-line { display: inline-block; white-space: nowrap; line-height: 1.15; }
+.fit-line { display: inline-block; white-space: nowrap; line-height: 1.15; max-width: 100%; text-align: center; word-break: break-word; overflow-wrap: anywhere; }
 /* Keep the phrase line a plain inline-block: useFitText shrinks the font by
    reading el.scrollWidth, which only reports overflow on a block box. An
    inline-flex line becomes a shrinkable flex item, so scrollWidth never exceeds
