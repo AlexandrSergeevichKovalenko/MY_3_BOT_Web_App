@@ -437,10 +437,21 @@ function RankingCard({ ranking }) {
   }
 
   const inTop3 = your_place && your_place <= 3;
+  // Speed percentile among those who answered CORRECTLY (real load→submit time).
+  let speedLine = '';
+  if (your_place && total_correct >= 2) {
+    if (your_place === 1) {
+      speedLine = '⚡ Быстрее всех, кто ответил верно!';
+    } else {
+      const pct = Math.round(((total_correct - your_place) / (total_correct - 1)) * 100);
+      if (pct > 0) speedLine = `⚡ Быстрее ${pct}% тех, кто ответил верно`;
+    }
+  }
   return (
     <div className="rank-card">
       <div className="rank-trophy">{your_place === 1 ? '🏆' : '⚡'}</div>
       <div className="rank-head">Место {your_place} из {total_correct} · {fmt(your_time_ms)}</div>
+      {speedLine ? <div className="rank-sub">{speedLine}</div> : null}
       <div className="rank-list">
         {(top3 || []).map((r) => (
           <div className={`rank-row${r.place === your_place ? ' me' : ''}`} key={r.place}>
