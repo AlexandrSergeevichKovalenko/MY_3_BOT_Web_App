@@ -18,19 +18,83 @@ import random
 # Regular adjectives only — consonant/vowel stems that just take the ending.
 # Deliberately EXCLUDES -el/-er/-e stems (dunkel→dunkles, teuer→teures,
 # leise→leiser) and irregular "hoch" → no wrong forms can be produced.
-ADJECTIVES = [
-    "gut", "neu", "alt", "jung", "klein", "groß", "lang", "kurz", "breit", "schmal",
-    "tief", "dick", "dünn", "schwer", "leicht", "schnell", "langsam", "laut", "warm",
-    "kalt", "kühl", "heiß", "frisch", "schmutzig", "nass", "trocken", "hart", "weich",
-    "glatt", "scharf", "stark", "schwach", "gesund", "krank", "wach", "reich", "arm",
-    "billig", "günstig", "wichtig", "nützlich", "interessant", "langweilig", "schön",
-    "hässlich", "freundlich", "höflich", "ehrlich", "klug", "dumm", "fleißig", "faul",
-    "mutig", "ruhig", "glücklich", "traurig", "lustig", "ernst", "modern", "bekannt",
-    "berühmt", "fremd", "ganz", "voll", "leer", "offen", "frei", "möglich", "nötig",
-    "richtig", "falsch", "einfach", "schwierig", "sicher", "gefährlich", "bequem",
-    "praktisch", "natürlich", "echt", "typisch", "normal", "grün", "blau", "rot",
-    "gelb", "schwarz", "weiß", "grau", "braun",
-]
+# German adjective → Russian (lemma, masculine nominative). Used both to generate
+# items AND to show an accurate per-WORD translation on tap (the phrase itself is
+# auto-generated and may be unreal/funny — meaning lives at the word level, not the
+# phrase). Regular stems ONLY (no -el/-er/-e stems, no irregular "hoch") so no wrong
+# forms can be produced.
+ADJECTIVE_RU = {
+    "gut": "хороший", "neu": "новый", "alt": "старый", "jung": "молодой",
+    "klein": "маленький", "groß": "большой", "lang": "длинный", "kurz": "короткий",
+    "breit": "широкий", "schmal": "узкий", "tief": "глубокий", "dick": "толстый",
+    "dünn": "тонкий", "schwer": "тяжёлый", "leicht": "лёгкий", "schnell": "быстрый",
+    "langsam": "медленный", "laut": "громкий", "warm": "тёплый", "kalt": "холодный",
+    "kühl": "прохладный", "heiß": "горячий", "frisch": "свежий", "schmutzig": "грязный",
+    "nass": "мокрый", "trocken": "сухой", "hart": "твёрдый", "weich": "мягкий",
+    "glatt": "гладкий", "scharf": "острый", "stark": "сильный", "schwach": "слабый",
+    "gesund": "здоровый", "krank": "больной", "wach": "бодрствующий", "reich": "богатый",
+    "arm": "бедный", "billig": "дешёвый", "günstig": "выгодный", "wichtig": "важный",
+    "nützlich": "полезный", "interessant": "интересный", "langweilig": "скучный",
+    "schön": "красивый", "hässlich": "уродливый", "freundlich": "дружелюбный",
+    "höflich": "вежливый", "ehrlich": "честный", "klug": "умный", "dumm": "глупый",
+    "fleißig": "прилежный", "faul": "ленивый", "mutig": "смелый", "ruhig": "спокойный",
+    "glücklich": "счастливый", "traurig": "грустный", "lustig": "весёлый", "ernst": "серьёзный",
+    "modern": "современный", "bekannt": "известный", "berühmt": "знаменитый", "fremd": "чужой",
+    "ganz": "целый", "voll": "полный", "leer": "пустой", "offen": "открытый",
+    "frei": "свободный", "möglich": "возможный", "nötig": "нужный", "richtig": "правильный",
+    "falsch": "неправильный", "einfach": "простой", "schwierig": "трудный", "sicher": "надёжный",
+    "gefährlich": "опасный", "bequem": "удобный", "praktisch": "практичный",
+    "natürlich": "естественный", "echt": "настоящий", "typisch": "типичный", "normal": "нормальный",
+    "grün": "зелёный", "blau": "синий", "rot": "красный", "gelb": "жёлтый",
+    "schwarz": "чёрный", "weiß": "белый", "grau": "серый", "braun": "коричневый",
+    # ── expanded set for variety (single-word, regular stems only) ──────────────
+    "hell": "светлый", "klar": "ясный", "rund": "круглый", "spitz": "острый (заострённый)",
+    "flach": "плоский", "steil": "крутой", "eng": "тесный", "weit": "далёкий",
+    "fern": "далёкий", "nah": "близкий", "niedrig": "низкий", "tapfer": "храбрый",
+    "stolz": "гордый", "bescheiden": "скромный", "geduldig": "терпеливый",
+    "neugierig": "любопытный", "vorsichtig": "осторожный", "nervös": "нервный",
+    "munter": "бодрый", "satt": "сытый", "hungrig": "голодный", "durstig": "жаждущий",
+    "berauscht": "опьянённый", "verrückt": "сумасшедший", "wahr": "истинный",
+    "geheim": "тайный", "öffentlich": "публичный", "privat": "частный", "sozial": "социальный",
+    "politisch": "политический", "wirtschaftlich": "экономический", "kulturell": "культурный",
+    "historisch": "исторический", "religiös": "религиозный", "wissenschaftlich": "научный",
+    "technisch": "технический", "digital": "цифровой", "elektrisch": "электрический",
+    "automatisch": "автоматический", "manuell": "ручной", "global": "глобальный",
+    "lokal": "местный", "national": "национальный", "international": "международный",
+    "modisch": "модный", "elegant": "элегантный", "schick": "стильный", "schlicht": "простой (скромный)",
+    "bunt": "пёстрый", "farbig": "цветной", "blass": "бледный", "golden": "золотой",
+    "silbern": "серебряный", "violett": "фиолетовый", "lecker": "вкусный", "süß": "сладкий",
+    "bitter": "горький", "salzig": "солёный", "würzig": "пряный", "fettig": "жирный",
+    "mager": "постный", "roh": "сырой", "reif": "спелый", "faulig": "гнилой",
+    "giftig": "ядовитый", "sauber": "чистый", "ordentlich": "аккуратный", "chaotisch": "хаотичный",
+    "still": "тихий (безмолвный)", "ruhelos": "беспокойный", "hektisch": "суетливый",
+    "beliebt": "популярный", "unbeliebt": "непопулярный", "wertvoll": "ценный",
+    "wertlos": "бесполезный", "kostbar": "драгоценный", "altmodisch": "старомодный",
+    "klassisch": "классический", "tragisch": "трагический", "komisch": "комичный",
+    "seltsam": "странный", "merkwürdig": "странный", "gewöhnlich": "обычный",
+    "besonders": "особенный", "selten": "редкий", "häufig": "частый", "plötzlich": "внезапный",
+    "endlos": "бесконечный", "ewig": "вечный", "kurzfristig": "краткосрочный",
+    "duftend": "ароматный", "glänzend": "блестящий", "matt": "матовый", "durchsichtig": "прозрачный",
+    "undurchsichtig": "непрозрачный", "fest": "крепкий", "locker": "рыхлый", "elastisch": "эластичный",
+    "zerbrechlich": "хрупкий", "robust": "прочный", "stabil": "устойчивый", "beweglich": "подвижный",
+    "unbeweglich": "неподвижный", "lebendig": "живой", "tot": "мёртвый", "wild": "дикий",
+    "zahm": "ручной", "gefährdet": "под угрозой", "harmlos": "безобидный", "freudig": "радостный",
+    "wütend": "злой", "ängstlich": "боязливый", "eifersüchtig": "ревнивый", "großzügig": "щедрый",
+    "geizig": "скупой", "sparsam": "экономный", "verschwenderisch": "расточительный",
+    "begabt": "одарённый", "talentiert": "талантливый", "erfahren": "опытный",
+    "unerfahren": "неопытный", "geschickt": "ловкий", "ungeschickt": "неуклюжий",
+    "pünktlich": "пунктуальный", "zuverlässig": "надёжный", "verantwortlich": "ответственный",
+    "treu": "верный", "untreu": "неверный", "loyal": "лояльный", "gerecht": "справедливый",
+    "ungerecht": "несправедливый", "streng": "строгий", "grausam": "жестокий", "sanft": "нежный",
+    "zärtlich": "ласковый", "herzlich": "сердечный", "fröhlich": "радостный", "heiter": "весёлый",
+    "düster": "мрачный", "gemütlich": "уютный", "ungemütlich": "неуютный", "geräumig": "просторный",
+    "winzig": "крошечный", "riesig": "огромный", "gigantisch": "гигантский", "mächtig": "могучий",
+    "klebrig": "липкий", "rutschig": "скользкий", "rau": "шершавый", "kantig": "угловатый",
+    "schlau": "хитрый", "naiv": "наивный",
+}
+
+# Citation list for random generation (keys of ADJECTIVE_RU).
+ADJECTIVES = list(ADJECTIVE_RU.keys())
 
 # Fallback nouns (word, gender) if the Artikel noun bank is empty.
 _FALLBACK_NOUNS = [
