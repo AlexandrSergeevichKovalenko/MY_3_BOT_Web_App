@@ -533,6 +533,36 @@ def _mc_result_payload(dispatch: dict, *, is_correct: bool, selected_option_id: 
     }
 
 
+def _ensure_mc_deepdive_card(dispatch: dict, user_id: int) -> int | None:
+    """Create-once (and store on the dispatch) a deep-dive card for the correct
+    answer, so the result's 📌/🧩 reuse it instead of minting one per open. Only
+    for the dispatch owner (DM feed); group non-owners get None → the frontend
+    mints its own via /deepdive/from_text."""
+    if int(dispatch.get("user_id") or 0) != int(user_id):
+        return None
+    existing = dispatch.get("deepdive_card_id")
+    if existing:
+        return int(existing)
+    options = list(dispatch.get("options") or [])
+    correct_id = int(dispatch.get("correct_option_id") or 0)
+    if not dispatch.get("hide_correct") and 0 <= correct_id < len(options):
+        correct_de = str(options[correct_id])
+    else:
+        correct_de = str(dispatch.get("correct_text") or "")
+    if not correct_de.strip():
+        return None
+    from backend.database import create_deepdive_card, set_mc_deepdive_card_id
+    card_id = create_deepdive_card(
+        user_id=int(user_id), source_text=correct_de,
+        target_text=str(dispatch.get("word_ru") or ""),
+        source_lang="de", target_lang="ru",
+    )
+    if card_id:
+        set_mc_deepdive_card_id(int(dispatch["id"]), int(card_id))
+        dispatch["deepdive_card_id"] = int(card_id)
+    return card_id
+
+
 def load_mc_task(*, dispatch_id: int, user_id: int) -> dict | None:
     """Render metadata: question + options, with the correct one hidden until the
     user answers (then the stored verdict is returned for an anti-replay reopen)."""
@@ -553,6 +583,7 @@ def load_mc_task(*, dispatch_id: int, user_id: int) -> dict | None:
         "already_answered": bool(existing),
     }
     if existing:
+        _ensure_mc_deepdive_card(dispatch, user_id)
         meta["result"] = _mc_result_payload(
             dispatch, is_correct=bool(existing.get("is_correct")),
             selected_option_id=int(existing.get("selected_option_id") or -1),
@@ -601,6 +632,7 @@ def evaluate_mc(*, dispatch_id: int, user_id: int, selected_option_id: int,
         selected_option_id=sid, freeform_text=str(freeform_text or ""),
         is_correct=bool(is_correct),
     )
+    _ensure_mc_deepdive_card(dispatch, user_id)
     return _mc_result_payload(
         dispatch, is_correct=is_correct, selected_option_id=sid,
         freeform_text=str(freeform_text or ""), already_answered=False,

@@ -253,10 +253,11 @@ function MCResult({ result, api }) {
   const good = !!result.is_correct;
   const germanText = result.correct_de || result.correct_text || '';
   const russianText = result.word_ru || '';
-  const [cardId, setCardId] = useState(null);
-  // Mint a deep-dive card from the correct word so 📌/🧩 can run on it.
+  const [cardId, setCardId] = useState(result.deepdive_card_id || null);
+  // Prefer the card the backend created once for this task; only mint one
+  // (from_text) as a fallback when it's absent (e.g. group non-owner).
   useEffect(() => {
-    if (!germanText) return undefined;
+    if (result.deepdive_card_id || !germanText) return undefined;
     let cancelled = false;
     (async () => {
       try {
@@ -268,7 +269,7 @@ function MCResult({ result, api }) {
       } catch (_e) { /* listen still works without a card */ }
     })();
     return () => { cancelled = true; };
-  }, [germanText, russianText, api]);
+  }, [result.deepdive_card_id, germanText, russianText, api]);
   return (
     <div className={`ans-result ${good ? 'ok' : 'bad'}`}>
       <div className="ans-verdict">{good ? '✅ Richtig!' : '❌ Falsch'}</div>

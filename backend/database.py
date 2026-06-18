@@ -15084,6 +15084,17 @@ def update_mc_dispatch_telegram_id(dispatch_id: int, telegram_message_id: int) -
             )
 
 
+def set_mc_deepdive_card_id(dispatch_id: int, card_id: int) -> None:
+    """Attach a (once-created) deep-dive card to the mc dispatch so the result's
+    📌/🧩 don't mint a fresh card on every open."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE bt_3_mc_dispatches SET deepdive_card_id = %s WHERE id = %s AND deepdive_card_id IS NULL;",
+                (int(card_id), int(dispatch_id)),
+            )
+
+
 def record_interactive_inbox(
     *, user_id: int, kind: str, dispatch_id: int, chat_id: int,
     telegram_message_id: int | None = None, deeplink: str = "", title: str = "",

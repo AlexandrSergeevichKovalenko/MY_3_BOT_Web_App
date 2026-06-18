@@ -17235,6 +17235,48 @@ def _read_webapp_tts_request_payload(*, payload: dict | None = None) -> tuple[di
     )
 
 
+def _warm_tts_text(text: str, *, lang_short: str = "de") -> None:
+    """Pre-synthesize a word/phrase into the R2 TTS cache (idempotent) using the
+    SAME defaults the Mini-App player sends, so a later 🔊 tap is an instant cache
+    hit. Best-effort, off any critical path — swallow all errors."""
+    try:
+        normalized_text = _normalize_utterance_text(str(text or ""))
+        if not normalized_text:
+            return
+        voice = _normalize_tts_voice_name(None, lang_short)
+        language_code = _TTS_LANG_CODES.get(lang_short, _TTS_LANG_CODES["de"])
+        speed = TTS_WEBAPP_DEFAULT_SPEED
+        cache_key = _tts_object_cache_key(lang_short, voice, speed, normalized_text)
+        object_key = _tts_object_key(lang_short, voice, cache_key)
+        meta = get_tts_object_meta(cache_key, touch_hit=False)
+        if meta and str(meta.get("status") or "").strip().lower() in {"ready", "pending"}:
+            return  # already cached or in flight
+        if not create_tts_object_pending(
+            cache_key=cache_key, language=language_code, voice=voice,
+            speed=speed, source_text=normalized_text, object_key=object_key,
+        ):
+            return  # lost the claim race → someone else is generating it
+        _enqueue_tts_generation_job_result(
+            user_id=0, language=language_code, tts_lang_short=lang_short,
+            voice=voice, speaking_rate=speed, normalized_text=normalized_text,
+            cache_key=cache_key, object_key=object_key, had_existing_meta=bool(meta),
+            request_id="", correlation_id="", enqueue_ts_ms=_to_epoch_ms(),
+        )
+    except Exception:
+        logging.debug("warm_tts failed", exc_info=True)
+
+
+def _warm_tts_async(text: str, *, lang_short: str = "de") -> None:
+    """Fire-and-forget warm (own thread) so the caller's response stays fast."""
+    if not str(text or "").strip():
+        return
+    try:
+        threading.Thread(target=_warm_tts_text, args=(text,),
+                         kwargs={"lang_short": lang_short}, daemon=True).start()
+    except Exception:
+        logging.debug("warm_tts thread start failed", exc_info=True)
+
+
 def _build_tts_url_response_from_meta(meta: dict, *, fallback_object_key: str, retry_after_ms: int | None = None) -> tuple[dict, int]:
     status = str(meta.get("status") or "").strip().lower()
     cache_key = str(meta.get("cache_key") or "").strip()
@@ -22693,6 +22735,20 @@ def get_answer_task():
         meta = load_aufgabe_task(dispatch_id=dispatch_id, user_id=user_id)
     elif kind == "mc":
         meta = load_mc_task(dispatch_id=dispatch_id, user_id=user_id)
+        # Pre-warm the correct answer's audio NOW (while the user reads/answers),
+        # so the 🔊 button on the result is an instant cache hit instead of a
+        # 20-30s cold synth. Off the critical path.
+        try:
+            from backend.database import get_mc_dispatch_by_id
+            _d = get_mc_dispatch_by_id(dispatch_id)
+            if _d:
+                _opts = list(_d.get("options") or [])
+                _cid = int(_d.get("correct_option_id") or 0)
+                _de = (_opts[_cid] if (not _d.get("hide_correct") and 0 <= _cid < len(_opts))
+                       else str(_d.get("correct_text") or ""))
+                _warm_tts_async(_de, lang_short="de")
+        except Exception:
+            logging.debug("mc warm_tts skipped", exc_info=True)
     else:
         return jsonify({"error": "unsupported kind"}), 400
     if meta is None:
