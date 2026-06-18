@@ -1995,13 +1995,12 @@ async def _send_next_open_task(update: Update, context: CallbackContext) -> None
         )
         return
     title = str(nxt.get("title") or "Задание").strip() or "Задание"
-    more = f" Ещё не сделано: {open_count}." if open_count > 1 else ""
+    more = f"  ·  ещё не сделано: {open_count}" if open_count > 1 else ""
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-        f"▶️ Открыть: {title}", url=get_webapp_deeplink(str(nxt["deeplink"])))]])
+        f"▶️ Открыть и решить: {title}", url=get_webapp_deeplink(str(nxt["deeplink"])))]])
     await update.message.reply_text(
-        f"▶️ <b>Твоё самое старое невыполненное задание</b> — {html.escape(title)}.{more}\n"
-        "Нажми кнопку ниже, чтобы открыть и решить его прямо в приложении 👇",
-        parse_mode="HTML", reply_markup=kb,
+        f"📋 Невыполненное задание{more} 👇",
+        reply_markup=kb,
     )
 
 

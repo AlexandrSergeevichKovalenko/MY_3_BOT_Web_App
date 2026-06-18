@@ -10317,19 +10317,13 @@ def get_skill_state_v2_comparison(
     return results
 
 
-def get_admin_telegram_ids() -> set[int]:
-    raw_values = [
-        os.getenv("BOT_ADMIN_TELEGRAM_IDS"),
-        os.getenv("TELEGRAM_ADMIN_IDS"),
-        os.getenv("BOT_ADMIN_TELEGRAM_ID"),
-        os.getenv("TELEGRAM_ADMIN_ID"),
-    ]
-    merged = ",".join(v for v in raw_values if v)
-    if not merged:
-        return set()
+_ADMIN_IDS_KV_KEY = "bot_admin_telegram_ids"
+_ADMIN_IDS_CACHE: set[int] | None = None  # process-lifetime cache (admins ~never change)
 
+
+def _parse_admin_ids_csv(merged: str) -> set[int]:
     result: set[int] = set()
-    for token in merged.replace(";", ",").split(","):
+    for token in str(merged or "").replace(";", ",").split(","):
         value = token.strip()
         if not value:
             continue
@@ -10338,6 +10332,42 @@ def get_admin_telegram_ids() -> set[int]:
         except ValueError:
             continue
     return result
+
+
+def get_admin_telegram_ids() -> set[int]:
+    """Admin Telegram IDs from env, with a durable DB fallback.
+
+    Root cause of the recurring "Доступ к боту закрыт" lockout: admin detection
+    used ONLY the env var, so a process that didn't see BOT_ADMIN_TELEGRAM_IDS
+    (e.g. right after a redeploy) treated the admin as a normal — denied — user.
+    Now: when the env is present we cache it AND persist it to bt_3_admin_kv;
+    when the env is missing we fall back to that stored value (cached in-process,
+    so the hot path stays O(1) with no per-call DB read)."""
+    global _ADMIN_IDS_CACHE
+    merged = ",".join(v for v in (
+        os.getenv("BOT_ADMIN_TELEGRAM_IDS"),
+        os.getenv("TELEGRAM_ADMIN_IDS"),
+        os.getenv("BOT_ADMIN_TELEGRAM_ID"),
+        os.getenv("TELEGRAM_ADMIN_ID"),
+    ) if v)
+    if merged:
+        ids = _parse_admin_ids_csv(merged)
+        if ids:
+            if _ADMIN_IDS_CACHE != ids:
+                _ADMIN_IDS_CACHE = set(ids)
+                try:
+                    admin_kv_set(_ADMIN_IDS_KV_KEY, ",".join(str(i) for i in sorted(ids)))
+                except Exception:
+                    logging.debug("persist admin ids to kv failed", exc_info=True)
+            return set(_ADMIN_IDS_CACHE)
+    if _ADMIN_IDS_CACHE:
+        return set(_ADMIN_IDS_CACHE)
+    try:
+        stored = admin_kv_get(_ADMIN_IDS_KV_KEY)
+    except Exception:
+        stored = None
+    _ADMIN_IDS_CACHE = _parse_admin_ids_csv(stored or "")
+    return set(_ADMIN_IDS_CACHE)
 
 
 # In-memory TTL cache for the Telegram allow-list lookup.
