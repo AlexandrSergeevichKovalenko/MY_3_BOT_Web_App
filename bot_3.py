@@ -18786,6 +18786,14 @@ async def _send_scheduled_rebuses(context: CallbackContext) -> None:
             compound_entry_pick = await asyncio.to_thread(
                 pick_next_rebus, cooldown_days=REBUS_COOLDOWN_DAYS
             )
+            # Never waste a slot: if every ready rebus is still in cooldown, fall back
+            # to the LEAST-recently-sent one (ignore cooldown). The picker already
+            # prefers oldest-sent, so at 1 slot/day this only ever repeats after the
+            # whole bank has cycled — far longer than the cooldown anyway.
+            if not compound_entry_pick:
+                compound_entry_pick = await asyncio.to_thread(pick_next_rebus, cooldown_days=0)
+                if compound_entry_pick:
+                    logging.info("rebus_slot: all in cooldown — sending least-recently-sent fallback")
         except Exception:
             logging.warning("rebus_slot: pick_next_rebus failed", exc_info=True)
             compound_entry_pick = None
