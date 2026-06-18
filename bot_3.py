@@ -19548,7 +19548,15 @@ async def admin_lazy_image_command(update: Update, context: CallbackContext) -> 
     if result.get("errs"):
         text += "\n🔴 " + "\n".join(result["errs"])
     text += "\nКэш фонов обновится в течение ~10 мин (или после рестарта)."
-    await status_msg.edit_text(text[:4000])
+    # The status message can go stale after a redeploy → edit fails ("Message can't
+    # be edited"); fall back to a fresh message so the result is never lost.
+    try:
+        await status_msg.edit_text(text[:4000])
+    except Exception:
+        try:
+            await message.reply_text(text[:4000])
+        except Exception:
+            logging.warning("admin_lazy_image: could not deliver result")
 
 
 async def admin_artikel_themes_command(update: Update, context: CallbackContext) -> None:
