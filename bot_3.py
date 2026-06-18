@@ -1986,7 +1986,13 @@ async def _send_next_open_task(update: Update, context: CallbackContext) -> None
         logging.warning("next-task lookup failed user=%s", user_id, exc_info=True)
         nxt, open_count = None, 0
     if not nxt or not nxt.get("deeplink"):
-        await update.message.reply_text("🎉 Все задания выполнены! Новые придут по расписанию.")
+        await update.message.reply_text(
+            "✅ <b>Нет невыполненных заданий.</b>\n\n"
+            "Эта кнопка ведёт к самому старому заданию, которое я прислал тебе в личку "
+            "и которое ты ещё не решил (квиз, ребус, кроссворд, анаграмма, Aufgabe, аудирование). "
+            "Как появится новое — кнопка откроет его прямо здесь. Новые задания приходят по расписанию.",
+            parse_mode="HTML",
+        )
         return
     title = str(nxt.get("title") or "Задание").strip() or "Задание"
     more = f" Ещё не сделано: {open_count}." if open_count > 1 else ""
