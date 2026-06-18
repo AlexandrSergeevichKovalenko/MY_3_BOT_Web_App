@@ -16109,46 +16109,39 @@ async def _build_quiz_result_commentary_items(
 
 
 def _build_quiz_poll_stats_lines(*, quiz_data: dict, poll_stats: dict | None, selected_index: int | None) -> list[str]:
+    """Human-readable crowd stats — NOT a per-option vote dump (that's noise, esp.
+    at 1–2 respondents). Shows the success rate + how popular the user's own answer
+    was. The user's own answer is already counted in the totals."""
     if not isinstance(poll_stats, dict):
         return []
-
-    total_answers = int(poll_stats.get("total_answers") or 0)
-    if total_answers <= 0:
+    total = int(poll_stats.get("total_answers") or 0)
+    if total <= 0:
         return []
+    if total == 1:
+        # Only this user has answered so far — a 0%/100% breakdown would be noise.
+        return ["", "📊 Ты <b>первым</b> отвечаешь на этот квиз — статистика появится, когда ответят другие."]
 
-    correct_answers = int(poll_stats.get("correct_answers") or 0)
-    wrong_answers = max(0, int(poll_stats.get("wrong_answers") or 0))
-    freeform_answers = int(poll_stats.get("freeform_answers") or 0)
-    option_counts = {
-        int(row.get("selected_option_index")): int(row.get("votes") or 0)
-        for row in (poll_stats.get("option_rows") or [])
-        if isinstance(row, dict) and row.get("selected_option_index") is not None
-    }
-    options = [str(option).strip() for option in (quiz_data.get("options") or []) if str(option).strip()]
-    correct_option_id = quiz_data.get("correct_option_id")
-    lines = [
-        "",
-        "📊 <b>Как отвечают все:</b>",
-    ]
-    for index, option in enumerate(options):
-        votes = int(option_counts.get(index) or 0)
-        pct = int(round((votes / total_answers) * 100)) if total_answers else 0
-        markers = []
-        if isinstance(correct_option_id, int) and index == int(correct_option_id):
-            markers.append("✅")
-        if selected_index is not None and index == int(selected_index):
-            markers.append("🙋")
-        marker_text = " ".join(markers).strip()
-        prefix = f"{marker_text} " if marker_text else ""
-        lines.append(f"{prefix}{index + 1}. {html.escape(option)} — {votes} ({pct}%)")
+    correct = max(0, int(poll_stats.get("correct_answers") or 0))
+    correct_pct = int(round((correct / total) * 100))
+    lines = ["", f"📊 <b>Правильно ответили:</b> {correct} из {total} ({correct_pct}%)"]
 
-    if freeform_answers > 0:
-        pct = int(round((freeform_answers / total_answers) * 100)) if total_answers else 0
-        lines.append(f"✍️ Свой вариант — {freeform_answers} ({pct}%)")
-
-    correct_pct = int(round((correct_answers / total_answers) * 100)) if total_answers else 0
-    wrong_pct = int(round((wrong_answers / total_answers) * 100)) if total_answers else 0
-    lines.append(f"Верно: {correct_answers}/{total_answers} ({correct_pct}%) · Неверно: {wrong_answers}/{total_answers} ({wrong_pct}%)")
+    # How many chose the SAME option as the user (incl. the user).
+    if selected_index is not None:
+        option_counts = {
+            int(row.get("selected_option_index")): int(row.get("votes") or 0)
+            for row in (poll_stats.get("option_rows") or [])
+            if isinstance(row, dict) and row.get("selected_option_index") is not None
+        }
+        mine = int(option_counts.get(int(selected_index)) or 0)
+        correct_option_id = quiz_data.get("correct_option_id")
+        is_correct_choice = isinstance(correct_option_id, int) and int(selected_index) == int(correct_option_id)
+        if not is_correct_choice and mine >= 1:
+            mine_pct = int(round((mine / total) * 100))
+            others = max(0, mine - 1)
+            if others > 0:
+                lines.append(f"🙋 Так же, как ты, ошиблись ещё {others} из {total} ({mine_pct}%) — это частая ошибка.")
+            else:
+                lines.append("🙋 Так ошибся только ты — остальные выбрали иначе.")
     return lines
 
 
@@ -26396,19 +26389,35 @@ def _build_quiz_poll_explanation(quiz: dict) -> str:
     expl = str((quiz or {}).get("explanation") or "").strip()
     correct = str((quiz or {}).get("correct_text") or "").strip()
     word_ru = str((quiz or {}).get("word_ru") or "").strip()
-    # Lead with the CORRECT answer (clear, like a good quiz popup), then the
-    # mistakes/why — not the other way around. Capped at Telegram's 200-char limit.
+
+    def _clean_cut(s: str, n: int) -> str:
+        s = str(s or "").strip()
+        if len(s) <= n:
+            return s
+        cut = s[:n].rstrip()
+        sp = cut.rfind(" ")
+        if sp > int(n * 0.6):  # prefer a word boundary, but don't cut too short
+            cut = cut[:sp].rstrip()
+        return cut.rstrip(" ,;:—-") + "…"
+
+    # Lead with the CORRECT answer (clear, like a good quiz popup); append as much of
+    # the explanation as fits, truncated at a WORD boundary (never mid-word). The full
+    # explanation is shown in the private result message, so the popup is just a teaser.
+    LIMIT = 200
     if correct and word_ru:
         head = f"✅ {correct} — {word_ru}"
     elif correct:
         head = f"✅ {correct}"
     else:
         head = ""
-    if head and expl:
-        text = f"{head}\n{expl}"
-    else:
-        text = head or expl
-    return text[:200]
+    if not head:
+        return _clean_cut(expl, LIMIT)
+    if not expl:
+        return _clean_cut(head, LIMIT)
+    room = LIMIT - len(head) - 1
+    if room < 24:
+        return _clean_cut(head, LIMIT)
+    return f"{head}\n{_clean_cut(expl, room)}"
 
 
 async def _send_poll_quiz_for_target(
