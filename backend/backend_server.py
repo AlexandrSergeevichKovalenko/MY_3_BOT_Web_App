@@ -2619,6 +2619,7 @@ _BILLING_GUARD_RULES: dict[str, dict] = {
     "/api/webapp/flashcards/enrich": {"cap": True},
     "/api/webapp/explain": {"cap": True},
     "/api/webapp/explain/question": {"cap": True},
+    "/api/webapp/ask": {"cap": True},
     "/api/webapp/tts/generate": {"cap": True, "feature_code": "tts_chars_daily"},
     "/api/webapp/youtube/transcript": {"cap": True, "feature_code": "youtube_fetch_daily"},
     "/api/webapp/youtube/translate": {"cap": True},
@@ -54171,6 +54172,103 @@ def explain_webapp_translation_followup_question():
             "language_pair": _build_language_pair_payload(source_lang, target_lang),
         }
     )
+
+
+@app.route("/api/webapp/ask", methods=["POST"])
+def webapp_ask_about_task():
+    """Free-text 'ask the model' for the floating ask-window on ANY interactive's
+    result. Sends the task context + the learner's question (+ recent thread) to the
+    smart model (gpt-4.1) and returns the answer. Capped by ask_gpt_daily."""
+    payload = request.get_json(silent=True) or {}
+    init_data = payload.get("initData")
+    context_text = str(payload.get("context") or "").strip()
+    learner_question = str(payload.get("learner_question") or "").strip()
+    history = payload.get("history") if isinstance(payload.get("history"), list) else []
+
+    if not init_data:
+        return jsonify({"error": "initData обязателен"}), 400
+    if not learner_question:
+        return jsonify({"error": "learner_question обязателен"}), 400
+    if not _telegram_hash_is_valid(init_data):
+        return jsonify({"error": "initData не прошёл проверку"}), 401
+
+    parsed = _parse_telegram_init_data(init_data)
+    user_data = parsed.get("user") or {}
+    user_id = user_data.get("id")
+    if not user_id:
+        return jsonify({"error": "user_id отсутствует в initData"}), 400
+
+    source_lang, target_lang, _profile = _get_user_language_pair(int(user_id))
+    request_id = str(payload.get("request_id") or "").strip()
+    if not request_id:
+        request_id = f"{hashlib.sha1(learner_question.encode('utf-8', 'ignore')).hexdigest()[:16]}:{time.time_ns()}"
+    reservation = reserve_free_feature_usage(
+        user_id=int(user_id),
+        feature_key="ask_gpt_daily",
+        idempotency_key=f"askgpt:webapp_task:{int(user_id)}:{hashlib.sha1(request_id.encode('utf-8', 'ignore')).hexdigest()[:24]}",
+        source_lang=source_lang,
+        target_lang=target_lang,
+        metadata={"origin": "webapp_task_ask", "request_id": request_id[:120], "question_len": len(learner_question)},
+        tz="Europe/Vienna",
+    )
+    if reservation.get("blocked"):
+        return jsonify(reservation.get("error") or build_free_limit_error("ask_gpt_daily", used=5, tz="Europe/Vienna")), 429
+
+    thread_lines = []
+    for turn in (history or [])[-4:]:
+        q = str((turn or {}).get("q") or "").strip()
+        a = str((turn or {}).get("a") or "").strip()
+        if q:
+            thread_lines.append(f"Вопрос: {q}")
+        if a:
+            thread_lines.append(f"Ответ: {a}")
+    prev_question = (
+        "Пользователь выполняет учебное задание (интерактив) и задаёт вопрос по нему. "
+        "Ответь кратко, дружелюбно и по делу, опираясь на контекст задания ниже."
+    )
+    prev_answer_parts = []
+    if context_text:
+        prev_answer_parts.append(f"Контекст задания:\n{context_text[:1500]}")
+    if thread_lines:
+        prev_answer_parts.append("Предыдущие реплики в этом окне:\n" + "\n".join(thread_lines))
+    prev_answer = "\n\n".join(prev_answer_parts) or "—"
+
+    try:
+        followup_payload = asyncio.run(
+            run_language_learning_private_question_detailed(
+                {
+                    "learner_question": learner_question,
+                    "source_language": source_lang,
+                    "target_language": target_lang,
+                    "conversation_context": {
+                        "previous_question": prev_question,
+                        "previous_answer": prev_answer,
+                    },
+                }
+            )
+        )
+        usage_question = get_last_llm_usage(reset=True)
+        _billing_log_event_safe(
+            user_id=int(user_id), action_type="ask_gpt_daily", provider="openai",
+            units_type="requests", units_value=1.0, source_lang=source_lang, target_lang=target_lang,
+            idempotency_seed=f"task_ask:{user_id}:{hashlib.sha1(learner_question.encode('utf-8', 'ignore')).hexdigest()[:16]}:{time.time_ns()}",
+            status="estimated",
+            metadata={"origin": "webapp_task_ask", "question_len": len(learner_question), "context_len": len(context_text)},
+        )
+        _billing_log_openai_usage(
+            user_id=int(user_id), action_type="ask_gpt_daily", source_lang=source_lang, target_lang=target_lang,
+            usage=usage_question, seed=f"task_ask_tokens:{user_id}:{time.time_ns()}",
+            metadata={"origin": "webapp_task_ask"},
+        )
+    except Exception as exc:
+        return jsonify({"error": f"Ошибка вопроса: {exc}"}), 500
+
+    if not isinstance(followup_payload, dict):
+        return jsonify({"error": "Некорректный ответ модели"}), 500
+    answer = str(followup_payload.get("answer") or "").strip()
+    if not answer:
+        return jsonify({"error": "Модель не вернула ответ"}), 500
+    return jsonify({"ok": True, "answer": answer})
 
 
 @app.route("/api/webapp/finish", methods=["POST"])

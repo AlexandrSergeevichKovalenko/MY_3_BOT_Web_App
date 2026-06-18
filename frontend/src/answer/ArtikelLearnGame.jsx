@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import AskOverlay from './AskOverlay.jsx';
 
 // Artikel Trainer — the self-paced LEARNING deck (companion to the timed Sprint).
 // Look at a noun, tap der/die/das, get instant ✅/❌ + a memory hint, then swipe
@@ -16,6 +17,7 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
   const [idx, setIdx] = useState(0);
   const [chosen, setChosen] = useState(null);
   const [stats, setStats] = useState({ correct: 0, answered: 0 });
+  const [askOpen, setAskOpen] = useState(false);
   const [themes, setThemes] = useState([]);
   const [daily, setDaily] = useState({ key: null, label: '' });
   const [focusLabel, setFocusLabel] = useState('');
@@ -293,8 +295,23 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
       ) : (
         <div className="al-hint-pre">Выбери артикль</div>
       )}
+      <button className="ask-open-btn" onClick={() => setAskOpen(true)}>❓ Спросить</button>
     </>);
   }
 
-  return <div className="ans-root"><div className="ans-card as-card al-card">{body}</div></div>;
+  const _ac = cardsRef.current[idx];
+  return (
+    <div className="ans-root">
+      <div className="ans-card as-card al-card">{body}</div>
+      {askOpen ? (
+        <AskOverlay api={api} onClose={() => setAskOpen(false)}
+          context={[
+            'Интерактив: Artikel Trainer (der/die/das).',
+            _ac ? `Слово: ${_ac.a ? _ac.a + ' ' : ''}${_ac.w}.` : '',
+            _ac && _ac.ru ? `Значение: ${_ac.ru}.` : '',
+            _ac && _ac.tip ? `Подсказка: ${_ac.tip}.` : '',
+          ].filter(Boolean).join(' ')} />
+      ) : null}
+    </div>
+  );
 }

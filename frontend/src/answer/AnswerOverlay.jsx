@@ -11,6 +11,7 @@ import ReviewSession from './ReviewSession.jsx';
 import AdjektivSprintGame from './AdjektivSprintGame.jsx';
 import AdjektivLearnGame from './AdjektivLearnGame.jsx';
 import BattleHistory from './BattleHistory.jsx';
+import AskOverlay from './AskOverlay.jsx';
 
 /**
  * Lightweight in-place answer overlay for in-group tasks (rebus + crossword).
@@ -472,6 +473,7 @@ export default function AnswerOverlay({ startParam }) {
   const [fatal, setFatal] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null);
+  const [askOpen, setAskOpen] = useState(false);
   const [rebusInput, setRebusInput] = useState('');
   const [cwInputs, setCwInputs] = useState([]);
   const [grading, setGrading] = useState(false);
@@ -698,8 +700,22 @@ export default function AnswerOverlay({ startParam }) {
           : <CrosswordResult result={result} />}
         {result.ranking ? <RankingCard ranking={result.ranking} /> : null}
         {meta?.already_answered ? <p className="ans-note">Bereits beantwortet</p> : null}
+        <button className="ask-open-btn" onClick={() => setAskOpen(true)}>❓ Спросить</button>
         <button className="ans-btn" onClick={close}>Schließen</button>
-      </div></div>
+      </div>
+      {askOpen ? (
+        <AskOverlay api={api} onClose={() => setAskOpen(false)}
+          context={[
+            `Интерактив: ${heading || eyebrow || ''}.`,
+            result.full_word ? `Слово: ${result.full_word}.` : '',
+            result.correct_word ? `Правильный ответ: ${result.correct_word}.` : '',
+            result.meaning_ru ? `Значение: ${result.meaning_ru}.` : '',
+            (result.explanation || result.explanation_ru) ? `Объяснение: ${result.explanation || result.explanation_ru}.` : '',
+            result.tip ? `Подсказка: ${result.tip}.` : '',
+            result.user_answer ? `Мой ответ: ${result.user_answer}.` : '',
+          ].filter(Boolean).join(' ')} />
+      ) : null}
+      </div>
     );
   }
 

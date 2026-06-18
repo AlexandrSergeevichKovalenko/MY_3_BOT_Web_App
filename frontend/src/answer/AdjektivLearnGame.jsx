@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import useFitText from './useFitText.js';
+import AskOverlay from './AskOverlay.jsx';
 
 // Adjektiv Trainer — self-paced learning deck for adjective endings (companion to
 // the Adjektiv Sprint, same look). Each card: a phrase with a blanked ending +
@@ -53,6 +54,7 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
   // Tap-to-translate: a small popup for the adjective or the noun (accurate
   // word-level translation; the phrase itself is auto-generated and may be unreal).
   const [wordPop, setWordPop] = useState(null); // null | {kind, de, ru, saving, saved}
+  const [askOpen, setAskOpen] = useState(false);
   const openWord = useCallback((kind) => {
     if (!card) return;
     try { haptic?.('tap'); } catch (_e) { /* noop */ }
@@ -153,9 +155,20 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
           {card.example ? <div className="adj-rev-rule">📝 {card.example}</div> : null}
         </div>
       ) : null}
+      <button className="ask-open-btn" onClick={() => setAskOpen(true)}>❓ Спросить</button>
       {answered
         ? <button className="ans-btn" onClick={next}>Weiter →</button>
         : <button className="ans-btn-ghost" onClick={onClose}>Schließen</button>}
+      {askOpen ? (
+        <AskOverlay api={api} onClose={() => setAskOpen(false)}
+          context={[
+            'Интерактив: Adjektivendungen (окончания прилагательных).',
+            card.full ? `Фраза: ${card.full}.` : '',
+            (card.adj || card.noun) ? `Слова: ${[card.adj, card.noun].filter(Boolean).join(', ')}.` : '',
+            card.ru ? `Грамматика: ${card.ru}.` : '',
+            card.erklaerung ? `Правило: ${card.erklaerung}.` : '',
+          ].filter(Boolean).join(' ')} />
+      ) : null}
       {wordPop ? (
         <div className="adj-wordpop-backdrop" onClick={() => setWordPop(null)}>
           <div className="adj-wordpop" onClick={(e) => e.stopPropagation()}>
