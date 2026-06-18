@@ -35,7 +35,24 @@ export default function useFitText(dep, { max = 40, min = 14, padding = 28 } = {
       ro = new ResizeObserver(() => fit());
       ro.observe(box);
     }
-    return () => { window.removeEventListener('resize', fit); ro?.disconnect(); };
+    // Re-fit once web fonts finish loading. The first measurement runs with a
+    // fallback font (narrower) → text "fits" and isn't shrunk; when Manrope/Onest
+    // load the text gets wider and overflows, but nothing else re-triggers fit.
+    let cancelled = false;
+    const reFit = () => { if (!cancelled) fit(); };
+    const fontSet = typeof document !== 'undefined' ? document.fonts : null;
+    if (fontSet) {
+      try { fontSet.ready.then(reFit); } catch (_e) { /* ignore */ }
+      try { fontSet.addEventListener('loadingdone', reFit); } catch (_e) { /* ignore */ }
+    }
+    return () => {
+      cancelled = true;
+      window.removeEventListener('resize', fit);
+      ro?.disconnect();
+      if (fontSet) {
+        try { fontSet.removeEventListener('loadingdone', reFit); } catch (_e) { /* ignore */ }
+      }
+    };
   }, [fit]);
 
   return ref;

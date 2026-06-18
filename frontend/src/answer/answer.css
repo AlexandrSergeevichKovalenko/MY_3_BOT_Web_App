@@ -790,7 +790,7 @@ html[data-scheme="light"] .ans-why-wrong { color: #92400e; }
    its box → the font never shrinks and the text gets clipped by overflow:hidden. */
 .fit-line.adj-line { display: inline-block; white-space: nowrap; }
 .adj-word { font-size: 30px; text-align: center; overflow: hidden; }
-.adj-slot { display: inline-block; vertical-align: baseline; margin: 0 4px; color: #8b5cf6; font-weight: 900; min-width: 40px; text-align: center; border-bottom: 3px solid #8b5cf6; padding: 0 6px; }
+.adj-slot { display: inline-block; vertical-align: baseline; margin: 0 3px; color: #8b5cf6; font-weight: 900; min-width: 28px; text-align: center; border-bottom: 3px solid #8b5cf6; padding: 0 4px; }
 .adj-hint { margin-top: 10px; font-size: 14px; color: var(--dmps-text-muted, #94A3B8); }
 .adj-buttons { grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 14px; }
 .adj-end { background: linear-gradient(180deg, #6d4ad6, #4f2fb0); font-size: 20px; padding: 20px 0; }
