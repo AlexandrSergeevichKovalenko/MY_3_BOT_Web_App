@@ -14349,34 +14349,51 @@ async def send_daily_summary(context: CallbackContext):
             key=lambda item: float(item[7] or 0),
             reverse=True,
         )
-        summary = "📊 Итоги дня:\n\n"
-        if not current_rows:
-            summary += "📊 Сегодня никто не перевёл ни одного предложения!\n"
-        else:
-            for i, (user_id, total_sentences, translated, missed, avg_minutes, total_time_minutes, avg_score, final_score) in enumerate(current_rows):
-                username = display_names.get(int(user_id)) or f"User {int(user_id)}"
-                medal = medals[i] if i < len(medals) else "💩"
-                summary += (
-                    f"{medal} {username}\n"
-                    f"📜 Всего предложений: {total_sentences}\n"
-                    f"✅ Переведено: {translated}\n"
-                    f"🚨 Не переведено: {missed}\n"
-                    f"⏱ Время среднее: {avg_minutes:.1f} мин\n"
-                    f"⏱ Время общее: {total_time_minutes:.1f} мин\n"
-                    f"🎯 Средняя оценка: {avg_score:.1f}/100\n"
-                    f"🏆 Итоговый балл: {final_score:.1f}\n\n"
-                )
-
         lazy_user_map = {
             uid: uname
             for uid, uname in chat_usernames.get(target_chat_id, {}).items()
             if uid not in active_users
         }
+
+        # Nobody translated all day → the "lazy day" plaque (photo) + slacker list.
+        if not current_rows:
+            cap_lines = ["📊 Итоги дня", "", "Сегодня задание никто не сделал 🦥"]
+            if lazy_user_map:
+                cap_lines += ["", "🦥 Писали в чат, но не переводили:"]
+                cap_lines += [f"👤 {u}: ничего не перевёл!" for u in list(lazy_user_map.values())[:25]]
+            caption = "\n".join(cap_lines)[:1000]
+            try:
+                from backend.lazy_day_card import render_lazy_day_card, pick_lazy_background
+                bg = await asyncio.to_thread(pick_lazy_background)
+                png = await asyncio.to_thread(render_lazy_day_card, subtitle="Сегодня задание никто не сделал", background_bytes=bg)
+                await context.bot.send_photo(
+                    chat_id=int(target_chat_id), photo=io.BytesIO(png), caption=caption)
+            except Exception as exc:
+                logging.warning("daily lazy card failed chat=%s: %s — text fallback", target_chat_id, exc)
+                try:
+                    await context.bot.send_message(chat_id=int(target_chat_id), text=caption)
+                except Exception:
+                    pass
+            continue
+
+        summary = "📊 Итоги дня:\n\n"
+        for i, (user_id, total_sentences, translated, missed, avg_minutes, total_time_minutes, avg_score, final_score) in enumerate(current_rows):
+            username = display_names.get(int(user_id)) or f"User {int(user_id)}"
+            medal = medals[i] if i < len(medals) else "💩"
+            summary += (
+                f"{medal} {username}\n"
+                f"📜 Всего предложений: {total_sentences}\n"
+                f"✅ Переведено: {translated}\n"
+                f"🚨 Не переведено: {missed}\n"
+                f"⏱ Время среднее: {avg_minutes:.1f} мин\n"
+                f"⏱ Время общее: {total_time_minutes:.1f} мин\n"
+                f"🎯 Средняя оценка: {avg_score:.1f}/100\n"
+                f"🏆 Итоговый балл: {final_score:.1f}\n\n"
+            )
         if lazy_user_map:
             summary += "\n🦥 Ленивцы (писали в чат, но не переводили):\n"
             for username in lazy_user_map.values():
                 summary += f"👤 {username}: ничего не перевёл!\n"
-
         try:
             await context.bot.send_message(chat_id=int(target_chat_id), text=summary)
         except Exception as exc:
@@ -14467,37 +14484,59 @@ async def send_progress_report(context: CallbackContext):
 
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     for target_chat_id in all_targets:
-        progress_report = f"📊 Промежуточные итоги перевода:\n🕒 Время отчёта:\n{current_time}\n\n"
         current_rows = sorted(
             chat_rows.get(target_chat_id, []),
             key=lambda item: float(item[7] or 0),
             reverse=True,
         )
-
-        if not current_rows:
-            progress_report += "📊 Сегодня никто не перевёл ни одного предложения!\n"
-        else:
-            for user_id, total, translated, missed, avg_minutes, total_minutes, avg_score, final_score in current_rows:
-                progress_report += (
-                    f"👤 {display_names.get(int(user_id)) or f'User {int(user_id)}'}\n"
-                    f"📜 Переведено: {translated}/{total}\n"
-                    f"🚨 Не переведено: {missed}\n"
-                    f"⏱ Время среднее: {avg_minutes:.1f} мин\n"
-                    f"⏱ Время общ.: {total_minutes:.1f} мин\n"
-                    f"🎯 Средняя оценка: {avg_score:.1f}/100\n"
-                    f"🏆 Итоговый балл: {final_score:.1f}\n\n"
-                )
-
         lazy_user_map = {
             uid: uname
             for uid, uname in chat_usernames.get(target_chat_id, {}).items()
             if uid not in active_users
         }
+
+        # Nobody translated → a fun "lazy day" plaque (photo) + the slacker list in
+        # the caption, instead of a dry text report.
+        if not current_rows:
+            cap_lines = [
+                f"📊 Промежуточные итоги перевода · {current_time}",
+                "",
+                "Сегодня задание никто не сделал 🦥",
+            ]
+            if lazy_user_map:
+                cap_lines += ["", "🦥 Писали в чат, но не переводили:"]
+                cap_lines += [f"👤 {u}: ничего не перевёл!" for u in list(lazy_user_map.values())[:25]]
+            caption = "\n".join(cap_lines)[:1000]
+            try:
+                from backend.lazy_day_card import render_lazy_day_card, pick_lazy_background
+                bg = await asyncio.to_thread(pick_lazy_background)
+                png = await asyncio.to_thread(render_lazy_day_card, background_bytes=bg)
+                await context.bot.send_photo(
+                    chat_id=int(target_chat_id), photo=io.BytesIO(png), caption=caption)
+            except Exception as exc:
+                logging.warning("lazy day card failed chat=%s: %s — text fallback", target_chat_id, exc)
+                try:
+                    await context.bot.send_message(chat_id=int(target_chat_id), text=caption)
+                except Exception:
+                    pass
+            continue
+
+        # Someone translated → keep the analytics text report.
+        progress_report = f"📊 Промежуточные итоги перевода:\n🕒 Время отчёта:\n{current_time}\n\n"
+        for user_id, total, translated, missed, avg_minutes, total_minutes, avg_score, final_score in current_rows:
+            progress_report += (
+                f"👤 {display_names.get(int(user_id)) or f'User {int(user_id)}'}\n"
+                f"📜 Переведено: {translated}/{total}\n"
+                f"🚨 Не переведено: {missed}\n"
+                f"⏱ Время среднее: {avg_minutes:.1f} мин\n"
+                f"⏱ Время общ.: {total_minutes:.1f} мин\n"
+                f"🎯 Средняя оценка: {avg_score:.1f}/100\n"
+                f"🏆 Итоговый балл: {final_score:.1f}\n\n"
+            )
         if lazy_user_map:
             progress_report += "\n🦥 Ленивцы (писали в чат, но не переводили):\n"
             for username in lazy_user_map.values():
                 progress_report += f"👤 {username}: ничего не перевёл!\n"
-
         try:
             await context.bot.send_message(chat_id=int(target_chat_id), text=progress_report)
         except Exception as exc:
@@ -19448,6 +19487,41 @@ async def admin_overtaken_images_command(update: Update, context: CallbackContex
         text += "\n🔴 " + "\n".join(result["errs"][:5])
     text += "\n\nКэш фонов обновится в течение ~10 мин (или после рестарта)."
     await status_msg.edit_text(text[:4000])
+
+
+async def admin_lazy_image_command(update: Update, context: CallbackContext) -> None:
+    """Generate the 'lazy day' Smurf-sloth-on-the-couch background via gpt-image-1
+    and store it in R2. Run once; the no-activity translation report then uses it.
+    /admin_lazy_image"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    status_msg = await message.reply_text("Генерирую смурф-картинку «день лени»…")
+
+    def _gen() -> dict:
+        from backend.image_generation_provider import generate_image_bytes
+        from backend.r2_storage import r2_put_bytes
+        from backend.lazy_day_card import LAZY_IMAGE_PROMPT, lazy_bg_key
+        res = generate_image_bytes(prompt=LAZY_IMAGE_PROMPT, template_id=0, user_id=0, action_type="lazy_day_image")
+        data = bytes(res.get("data") or b"")
+        if not data:
+            raise RuntimeError("empty image payload")
+        r2_put_bytes(lazy_bg_key(), data, content_type="image/png",
+                     cache_control="public, max-age=86400")
+        return {"ok": True, "key": lazy_bg_key()}
+
+    try:
+        result = await asyncio.to_thread(_gen)
+    except Exception as exc:
+        await status_msg.edit_text(f"Error: {exc}")
+        return
+    await status_msg.edit_text(
+        f"✅ Готово (R2: {result.get('key')}). Кэш фона обновится в течение ~10 мин (или после рестарта)."
+    )
 
 
 async def admin_artikel_themes_command(update: Update, context: CallbackContext) -> None:
@@ -27403,6 +27477,7 @@ def main():
     application.add_handler(CommandHandler("admin_rebus_reset", admin_rebus_reset_command))
     application.add_handler(CommandHandler("admin_rebus_audit", admin_rebus_audit_command))
     application.add_handler(CommandHandler("admin_overtaken_images", admin_overtaken_images_command))
+    application.add_handler(CommandHandler("admin_lazy_image", admin_lazy_image_command))
     application.add_handler(CommandHandler("admin_battle_images", admin_battle_images_command))
     application.add_handler(CommandHandler("artikel_themes", admin_artikel_themes_command))
     application.add_handler(CommandHandler("artikel_remindtheme", admin_artikel_remindtheme_command))
