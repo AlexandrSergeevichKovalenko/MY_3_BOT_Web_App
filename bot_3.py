@@ -14542,9 +14542,9 @@ async def send_daily_summary(context: CallbackContext):
 
         # Nobody translated all day → the "lazy day" plaque (photo) + slacker list.
         if not current_rows:
-            cap_lines = ["📊 Итоги дня", "", "Сегодня задание никто не сделал 🦥"]
+            cap_lines = ["📊 Итоги дня"]
             if lazy_user_map:
-                cap_lines += ["", "🦥 Писали в чат, но не переводили:"]
+                cap_lines += [""]
                 cap_lines += [f"👤 {u}: ничего не перевёл!" for u in list(lazy_user_map.values())[:25]]
             caption = "\n".join(cap_lines)[:1000]
             try:
@@ -14681,13 +14681,9 @@ async def send_progress_report(context: CallbackContext):
         # Nobody translated → a fun "lazy day" plaque (photo) + the slacker list in
         # the caption, instead of a dry text report.
         if not current_rows:
-            cap_lines = [
-                f"📊 Промежуточные итоги перевода · {current_time}",
-                "",
-                "Сегодня задание никто не сделал 🦥",
-            ]
+            cap_lines = [f"📊 Промежуточные итоги перевода · {current_time}"]
             if lazy_user_map:
-                cap_lines += ["", "🦥 Писали в чат, но не переводили:"]
+                cap_lines += [""]
                 cap_lines += [f"👤 {u}: ничего не перевёл!" for u in list(lazy_user_map.values())[:25]]
             caption = "\n".join(cap_lines)[:1000]
             try:
