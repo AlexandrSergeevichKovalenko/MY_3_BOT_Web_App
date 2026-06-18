@@ -2918,10 +2918,13 @@ Pick ONE format:
    correct in meaning+register+collocation; distractors differ by a REAL nuance (false friend, wrong
    register, wrong collocation), not by being broken.
 
-Also return "explanation": ONE Russian comment (≤180 chars) that NAMES the grammar rule the correct
-answer follows AND tersely flags what EACH wrong option violates, so the learner UNDERSTANDS instead of
-guessing. Example: "Верно: окончание -er (склонение после ein). A: -en неверно; C: 'existierend' не
-сказуемое; D: V2 — 'Derzeit ist es'." Concrete, rule-named, not dry.
+Also return "explanation": ONE Russian comment (≤180 chars). It MUST be POSITION-INDEPENDENT — the 4
+options are SHUFFLED before the learner sees them, so NEVER reference options by number/letter/position
+("1.", "2.", "A:", "первый вариант"). LEAD with the rule the correct answer follows, then name the typical
+mistakes by their ACTUAL wrong form/word (not by position), so the learner UNDERSTANDS instead of guessing.
+  ✓ "Верно: окончание -er (склонение после ein). Ошибки: -en неверно, 'existierend' не сказуемое, V2 'Derzeit ist es'."
+  ✗ "A: -en неверно; C: …; D: …"   (буквы/номера не ложатся на перемешанные варианты)
+Concrete, rule-named, not dry.
 
 Return STRICT JSON with keys: question, options (array of 4 strings), correct_option_id (0-based int),
 quiz_type ("word_order"|"word_choice"|"translation"), explanation.
@@ -2979,8 +2982,16 @@ STRICT:
 - Random word-salad / scrambles are also forbidden.
 - Do NOT include the correct sentence in options. If you cannot make 3 clean meaningful-error distractors, return {"options": []}.
 
+"explanation" = a SHORT Russian comment (≤180 chars). It MUST be POSITION-INDEPENDENT:
+the 4 options are SHUFFLED before the learner sees them, so NEVER reference options by
+number/letter/position ("1.", "2.", "3.", "A:", "первый вариант"). Instead: LEAD with why
+the correct sentence is right (name the rule), then name the typical mistakes by their
+ACTUAL wrong form/word, not by position.
+  ✓ "Верно: Perfekt 'hat … überprüft' + предлог 'für'. Ошибки: 'ist' вместо 'hat', предлог 'an', 'überprüfte' вместо Partizip II."
+  ✗ "1. Не тот вспом. глагол. 2. Неправильный предлог. 3. Неправильный Partizip II."  (нумерация не ложится на перемешанные варианты)
+
 Return STRICT JSON ONLY:
-{"options": ["<wrong1>","<wrong2>","<wrong3>"], "explanation": "<short Russian comment, <=180 chars, names the rule>"}
+{"options": ["<wrong1>","<wrong2>","<wrong3>"], "explanation": "<position-independent Russian comment, <=180 chars>"}
 """,
 "aufgabe_cloze": """
 Du erstellst deutsche Lückentext-Aufgaben (open cloze) für fortgeschrittene Lernende (Niveau B2–C1).
