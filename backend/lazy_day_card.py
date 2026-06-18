@@ -31,7 +31,19 @@ LAZY_IMAGE_PROMPT = (
     "background, no text, no letters, no numbers, centered composition."
 )
 
-_bg_cache: dict = {"t": 0.0, "img": None}
+_ACTIVE_BG_KEY = "lazy/smurf_active.png"
+
+# Celebratory counterpart: shown when someone DID complete the task today.
+ACTIVE_IMAGE_PROMPT = (
+    "A cute friendly blue smurf-like cartoon character sitting proudly and energetically "
+    "at a tidy desk with an open book and a laptop, a shiny golden star/trophy beside him, "
+    "colorful confetti in the air, a big proud confident smile, one thumb up, eyes bright "
+    "and motivated — a 'great job, work done' celebration vibe. Soft 3D Pixar-like render, "
+    "bright cheerful lighting, vibrant playful colors, clean simple background, no text, no "
+    "letters, no numbers, centered composition."
+)
+
+_bg_cache: dict = {"lazy": {"t": 0.0, "img": None}, "active": {"t": 0.0, "img": None}}
 _BG_CACHE_TTL = 600.0
 
 
@@ -39,32 +51,52 @@ def lazy_bg_key() -> str:
     return _LAZY_BG_KEY
 
 
-def pick_lazy_background() -> bytes | None:
-    """The pre-generated lazy-Smurf background bytes from R2 (cached in-proc, TTL).
-    Returns None if not generated yet → renderer uses the gradient fallback."""
+def active_bg_key() -> str:
+    return _ACTIVE_BG_KEY
+
+
+def _pick_bg(slot: str, key: str) -> bytes | None:
     from backend.r2_storage import r2_get_bytes
     now = time.time()
-    if now - float(_bg_cache.get("t") or 0.0) > _BG_CACHE_TTL or not _bg_cache.get("img"):
+    cache = _bg_cache.setdefault(slot, {"t": 0.0, "img": None})
+    if now - float(cache.get("t") or 0.0) > _BG_CACHE_TTL or not cache.get("img"):
         img = None
         try:
-            b = r2_get_bytes(_LAZY_BG_KEY)
+            b = r2_get_bytes(key)
             if b:
                 img = bytes(b)
         except Exception:
             img = None
-        _bg_cache["img"] = img
-        _bg_cache["t"] = now
-    return _bg_cache.get("img")
+        cache["img"] = img
+        cache["t"] = now
+    return cache.get("img")
 
 
-def render_lazy_day_card(
-    *,
-    title: str = "ДЕНЬ ЛЕНИ",
-    subtitle: str = "Сегодня задание никто не сделал",
-    background_bytes: bytes | None = None,
-) -> bytes:
-    """Render the 'lazy day' plaque. Returns PNG bytes. Names go in the caption."""
+def pick_lazy_background() -> bytes | None:
+    """Pre-generated lazy-Smurf background from R2 (cached). None → gradient fallback."""
+    return _pick_bg("lazy", _LAZY_BG_KEY)
+
+
+def pick_active_background() -> bytes | None:
+    """Pre-generated celebratory-Smurf background from R2 (cached). None → fallback."""
+    return _pick_bg("active", _ACTIVE_BG_KEY)
+
+
+def _strip_emoji(s: str) -> str:
+    """Server font has no color-emoji glyphs → strip emoji so drawn text never shows
+    tofu boxes (emoji stay in the Telegram caption)."""
+    import re as _re
+    s = _re.sub(r"[\U0001F000-\U0001FAFF☀-➿←-⇿️‍]", "", str(s or ""))
+    return _re.sub(r"\s+", " ", s).strip()
+
+
+def _render_day_card(*, title: str, subtitle: str, background_bytes: bytes | None,
+                     grad_top, grad_bot) -> bytes:
+    """Shared 'day report' plaque renderer: bg (or gradient fallback) + title pill +
+    subtitle. Dynamic name lists go in the photo caption, never drawn here."""
     from PIL import Image, ImageDraw, ImageOps
+    title = _strip_emoji(title) or "Итоги"
+    subtitle = _strip_emoji(subtitle)
 
     if background_bytes:
         try:
@@ -72,8 +104,7 @@ def render_lazy_day_card(
                 Image.open(io.BytesIO(background_bytes)).convert("RGBA"), (W, H), Image.LANCZOS
             )
         except Exception:
-            base = _vgrad((120, 96, 60), (52, 40, 28)).convert("RGBA")
-        # Darken the top + bottom bands so the white text stays legible.
+            base = _vgrad(grad_top, grad_bot).convert("RGBA")
         ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         od = ImageDraw.Draw(ov)
         for y in range(H):
@@ -86,12 +117,10 @@ def render_lazy_day_card(
                 od.line([(0, y), (W, y)], fill=(15, 12, 8, a))
         base = Image.alpha_composite(base, ov)
     else:
-        base = _vgrad((120, 96, 60), (52, 40, 28)).convert("RGBA")
+        base = _vgrad(grad_top, grad_bot).convert("RGBA")
         _glow(base, W // 2, 470, 460, 36)
 
     d = ImageDraw.Draw(base)
-
-    # ── title pill ───────────────────────────────────────────────────────────
     tf = _font(48, True)
     tw = d.textlength(title, font=tf)
     ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
@@ -101,9 +130,7 @@ def render_lazy_day_card(
     base.paste(ov, (0, 0), ov)
     _ctext(d, W // 2, 114, title, tf, (255, 255, 255, 240))
 
-    # ── subtitle near the bottom ─────────────────────────────────────────────
     sf = _font(44, True)
-    # wrap subtitle to <= W-160 if needed
     if d.textlength(subtitle, font=sf) > W - 150:
         sf = _font(36, True)
     _ctext(d, W // 2, 880, subtitle, sf, WHITE)
@@ -112,3 +139,19 @@ def render_lazy_day_card(
     out = io.BytesIO()
     base.convert("RGB").save(out, format="PNG", optimize=True)
     return out.getvalue()
+
+
+def render_lazy_day_card(*, title: str = "ДЕНЬ ЛЕНИ",
+                         subtitle: str = "Сегодня задание никто не сделал",
+                         background_bytes: bytes | None = None) -> bytes:
+    """'Lazy day' plaque (nobody did the task). Names go in the caption."""
+    return _render_day_card(title=title, subtitle=subtitle, background_bytes=background_bytes,
+                            grad_top=(120, 96, 60), grad_bot=(52, 40, 28))
+
+
+def render_active_day_card(*, title: str = "МОЛОДЦЫ!",
+                           subtitle: str = "Сегодня поработали!",
+                           background_bytes: bytes | None = None) -> bytes:
+    """Celebratory plaque (someone completed the task). Per-user stats go in the caption."""
+    return _render_day_card(title=title, subtitle=subtitle, background_bytes=background_bytes,
+                            grad_top=(56, 104, 72), grad_bot=(20, 46, 36))

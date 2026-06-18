@@ -14256,6 +14256,28 @@ async def _resolve_report_display_names(
     return labels
 
 
+async def _send_day_report_with_active_card(context, *, chat_id: int, text: str, log_label: str) -> None:
+    """Send a 'someone completed' day report as a celebratory plaque (photo) with the
+    analytics in the caption. If the analytics is longer than a caption allows, send a
+    short caption + the full text as a follow-up. Falls back to plain text on failure."""
+    try:
+        from backend.lazy_day_card import render_active_day_card, pick_active_background
+        bg = await asyncio.to_thread(pick_active_background)
+        png = await asyncio.to_thread(render_active_day_card, background_bytes=bg)
+        if len(text) <= 1000:
+            await context.bot.send_photo(chat_id=chat_id, photo=io.BytesIO(png), caption=text)
+        else:
+            await context.bot.send_photo(chat_id=chat_id, photo=io.BytesIO(png), caption="📊 Итоги перевода 💪")
+            await context.bot.send_message(chat_id=chat_id, text=text)
+        return
+    except Exception as exc:
+        logging.warning("active day card failed chat=%s (%s): %s — text fallback", chat_id, log_label, exc)
+    try:
+        await context.bot.send_message(chat_id=chat_id, text=text)
+    except Exception as exc:
+        logging.warning("⚠️ Не удалось отправить %s в chat_id=%s: %s", log_label, chat_id, exc)
+
+
 async def send_daily_summary(context: CallbackContext):
 
     conn = get_db_connection()
@@ -14394,10 +14416,8 @@ async def send_daily_summary(context: CallbackContext):
             summary += "\n🦥 Ленивцы (писали в чат, но не переводили):\n"
             for username in lazy_user_map.values():
                 summary += f"👤 {username}: ничего не перевёл!\n"
-        try:
-            await context.bot.send_message(chat_id=int(target_chat_id), text=summary)
-        except Exception as exc:
-            logging.warning("⚠️ Не удалось отправить daily summary в chat_id=%s: %s", target_chat_id, exc)
+        await _send_day_report_with_active_card(
+            context, chat_id=int(target_chat_id), text=summary, log_label="daily summary")
 
 
 
@@ -14537,10 +14557,8 @@ async def send_progress_report(context: CallbackContext):
             progress_report += "\n🦥 Ленивцы (писали в чат, но не переводили):\n"
             for username in lazy_user_map.values():
                 progress_report += f"👤 {username}: ничего не перевёл!\n"
-        try:
-            await context.bot.send_message(chat_id=int(target_chat_id), text=progress_report)
-        except Exception as exc:
-            logging.warning("⚠️ Не удалось отправить progress report в chat_id=%s: %s", target_chat_id, exc)
+        await _send_day_report_with_active_card(
+            context, chat_id=int(target_chat_id), text=progress_report, log_label="progress report")
 
 
 async def error_handler(update, context):
@@ -19500,28 +19518,37 @@ async def admin_lazy_image_command(update: Update, context: CallbackContext) -> 
     if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
         await message.reply_text("Allowed users only.")
         return
-    status_msg = await message.reply_text("Генерирую смурф-картинку «день лени»…")
+    status_msg = await message.reply_text("Генерирую смурф-картинки «день лени» и «молодцы»…")
 
     def _gen() -> dict:
         from backend.image_generation_provider import generate_image_bytes
         from backend.r2_storage import r2_put_bytes
-        from backend.lazy_day_card import LAZY_IMAGE_PROMPT, lazy_bg_key
-        res = generate_image_bytes(prompt=LAZY_IMAGE_PROMPT, template_id=0, user_id=0, action_type="lazy_day_image")
-        data = bytes(res.get("data") or b"")
-        if not data:
-            raise RuntimeError("empty image payload")
-        r2_put_bytes(lazy_bg_key(), data, content_type="image/png",
-                     cache_control="public, max-age=86400")
-        return {"ok": True, "key": lazy_bg_key()}
+        from backend.lazy_day_card import (
+            LAZY_IMAGE_PROMPT, lazy_bg_key, ACTIVE_IMAGE_PROMPT, active_bg_key,
+        )
+        made, errs = [], []
+        for prompt, key in ((LAZY_IMAGE_PROMPT, lazy_bg_key()), (ACTIVE_IMAGE_PROMPT, active_bg_key())):
+            try:
+                res = generate_image_bytes(prompt=prompt, template_id=0, user_id=0, action_type="lazy_day_image")
+                data = bytes(res.get("data") or b"")
+                if not data:
+                    raise RuntimeError("empty image payload")
+                r2_put_bytes(key, data, content_type="image/png", cache_control="public, max-age=86400")
+                made.append(key)
+            except Exception as exc:
+                errs.append(f"{key}: {str(exc)[:120]}")
+        return {"made": made, "errs": errs}
 
     try:
         result = await asyncio.to_thread(_gen)
     except Exception as exc:
         await status_msg.edit_text(f"Error: {exc}")
         return
-    await status_msg.edit_text(
-        f"✅ Готово (R2: {result.get('key')}). Кэш фона обновится в течение ~10 мин (или после рестарта)."
-    )
+    text = f"✅ Готово: {len(result.get('made') or [])}/2 (R2: {', '.join(result.get('made') or [])})"
+    if result.get("errs"):
+        text += "\n🔴 " + "\n".join(result["errs"])
+    text += "\nКэш фонов обновится в течение ~10 мин (или после рестарта)."
+    await status_msg.edit_text(text[:4000])
 
 
 async def admin_artikel_themes_command(update: Update, context: CallbackContext) -> None:
