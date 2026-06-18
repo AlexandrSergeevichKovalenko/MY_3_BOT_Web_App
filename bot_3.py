@@ -769,6 +769,27 @@ def _battle_available_button_text(user_id: int | None) -> str:
         on = False
     return f"{ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT} ✅" if on else ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT
 
+
+def _is_known_reply_menu_button(text: str) -> bool:
+    """True if the text is one of the DM reply-keyboard menu labels. Used so a
+    pending text-capture state (e.g. admin broadcast) never swallows a menu tap —
+    menu buttons must always route to their action."""
+    t = str(text or "").strip()
+    if not t:
+        return False
+    static_labels = {
+        ARTIKEL_LEARN_BUTTON_TEXT, ARTIKEL_FOCUS_BUTTON_TEXT, ARTIKEL_BATTLE_CALL_BUTTON_TEXT,
+        ADJEKTIV_SPRINT_BUTTON_TEXT, ADJEKTIV_BATTLE_BUTTON_TEXT, BATTLE_HISTORY_BUTTON_TEXT,
+        ADMIN_BROADCAST_BUTTON_TEXT, NEXT_TASK_BUTTON_TEXT, LANGUAGE_TUTOR_BUTTON_TEXT,
+        DICTIONARY_BATCH_FAST_BUTTON_TEXT, SHORTCUT_INSTALL_BUTTON_TEXT,
+        SHORTCUT_CONNECT_BUTTON_TEXT, SHORTCUT_AUTOSAVE_BUTTON_TEXT, HOWTO_GUIDE_BUTTON_TEXT,
+    }
+    if t in static_labels:
+        return True
+    # Dynamic labels (state suffix): match by their stable routing prefix.
+    return t.startswith(_AUTOSAVE_BUTTON_PREFIX) or t.startswith(ARTIKEL_BATTLE_AVAILABLE_BUTTON_TEXT)
+
+
 try:
     from backend.onboarding_assets import ONBOARDING_ASSETS as _ONBOARDING_ASSETS
 except Exception:  # pragma: no cover - assets module optional before first upload
@@ -1968,11 +1989,12 @@ async def _send_next_open_task(update: Update, context: CallbackContext) -> None
         await update.message.reply_text("🎉 Все задания выполнены! Новые придут по расписанию.")
         return
     title = str(nxt.get("title") or "Задание").strip() or "Задание"
-    more = f"\n\nОсталось невыполненных: {open_count}" if open_count > 1 else ""
+    more = f" Ещё не сделано: {open_count}." if open_count > 1 else ""
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(
         f"▶️ Открыть: {title}", url=get_webapp_deeplink(str(nxt["deeplink"])))]])
     await update.message.reply_text(
-        f"▶️ <b>Самое старое невыполненное задание</b>{more}",
+        f"▶️ <b>Твоё самое старое невыполненное задание</b> — {html.escape(title)}.{more}\n"
+        "Нажми кнопку ниже, чтобы открыть и решить его прямо в приложении 👇",
         parse_mode="HTML", reply_markup=kb,
     )
 
@@ -5884,6 +5906,16 @@ async def handle_user_message(update: Update, context: CallbackContext):
             )
             return
         pending_broadcast = _restore_admin_broadcast_input(int(user_id))
+        if (pending_broadcast and update.effective_chat and update.effective_chat.type == "private"
+                and _is_known_reply_menu_button(text)):
+            # A menu button was tapped while the broadcast input was open: don't
+            # capture it as broadcast text — drop the broadcast state and let the
+            # tap route to its normal action below.
+            _clear_admin_broadcast_input(
+                int(user_id),
+                state_key=str((pending_broadcast or {}).get("state_key") or f"admin_broadcast:{int(user_id)}").strip(),
+            )
+            pending_broadcast = None
         if pending_broadcast and update.effective_chat and update.effective_chat.type == "private":
             started_at = float((pending_broadcast or {}).get("started_at") or 0.0)
             state_key = str((pending_broadcast or {}).get("state_key") or f"admin_broadcast:{int(user_id)}").strip()
