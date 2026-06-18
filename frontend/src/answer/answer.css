@@ -891,6 +891,19 @@ html[data-scheme="light"] .adj-wordpop-ru { color: #334155; }
 .as-row.bad .as-correct-article { color: #22c55e; }
 .as-mine { color: #ef4444; }
 .as-ru { opacity: .65; }
+.as-save-hint { font-size: 12.5px; color: var(--dmps-text-muted, #94A3B8); margin-bottom: 8px; }
+.as-row-tap {
+  width: 100%; text-align: left; cursor: pointer; font-family: inherit;
+  color: var(--dmps-text-primary, #F8FAFC);
+  background: rgba(148,163,184,0.08); border: 1px solid transparent;
+  border-radius: 10px; padding: 8px 11px; line-height: 1.35;
+  transition: background 0.12s, border-color 0.12s;
+}
+.as-row-tap:hover { background: rgba(99,102,241,0.16); border-color: rgba(99,102,241,0.32); }
+.as-row-tap:disabled { cursor: default; }
+.as-row-tap.saved { background: rgba(34,197,94,0.14); border-color: rgba(34,197,94,0.34); opacity: 0.9; }
+.as-row-mark { display: inline-block; min-width: 1.4em; }
+html[data-scheme="light"] .as-row-tap { color: #0f172a; background: #f1f4f9; }
 
 /* Artikel Sprint — certificate (грамота) header on the result screen */
 .as-cert {

@@ -17,6 +17,8 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
   const [count, setCount] = useState(3);
   const [flash, setFlash] = useState(null); // {ok:bool} transient
   const [result, setResult] = useState(null);
+  const [savedWords, setSavedWords] = useState(() => new Set());
+  const [savingWords, setSavingWords] = useState(() => new Set());
   const answersRef = useRef([]);
   const wordsRef = useRef([]);
   const startRef = useRef(0);
@@ -116,6 +118,28 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
       } else { setCount(c); }
     }, 800);
   }, [finish]);
+
+  // Tap a review row → save the noun WITH its article ("der Rosenkohl") to the
+  // dictionary, paired with the Russian meaning.
+  const saveWord = useCallback(async (de, ru) => {
+    const key = String(de || '').trim();
+    if (!key || savedWords.has(key) || savingWords.has(key)) return;
+    setSavingWords((s) => new Set(s).add(key));
+    haptic?.('tap');
+    try {
+      await api('/api/webapp/dictionary/save', {
+        source_text: key, target_text: String(ru || '').trim(),
+        source_lang: 'de', target_lang: 'ru', direction: 'de_to_ru',
+        origin_process: 'artikel_sprint_save',
+      });
+      setSavedWords((s) => new Set(s).add(key));
+      haptic?.('ok');
+    } catch (_e) {
+      haptic?.('bad');
+    } finally {
+      setSavingWords((s) => { const n = new Set(s); n.delete(key); return n; });
+    }
+  }, [api, haptic, savedWords, savingWords]);
 
   const answer = useCallback((article) => {
     if (phase !== 'playing') return;
@@ -240,18 +264,30 @@ export default function ArtikelSprintGame({ api, haptic, onClose, practice = fal
         </div>
       ) : null}
       {items.length ? (
-        <div className="as-result-list">
-          {items.map((it, i) => (
-            <div key={i} className={`as-row ${it.ok ? 'ok' : 'bad'}`}>
-              {it.ok ? (
-                <>✅ <b>{it.a}</b> {it.w}</>
-              ) : (
-                <>❌ <b className="as-correct-article">{it.a}</b> {it.w}<span className="as-mine"> (ты: {it.chosen || '—'})</span></>
-              )}
-              {it.ru ? <span className="as-ru"> · {it.ru}</span> : null}
-            </div>
-          ))}
-        </div>
+        <>
+          <div className="as-save-hint">👆 нажми на слово, чтобы сохранить в словарь (с артиклем)</div>
+          <div className="as-result-list">
+            {items.map((it, i) => {
+              const de = `${it.a} ${it.w}`.trim();
+              const isSaved = savedWords.has(de);
+              const isSaving = savingWords.has(de);
+              return (
+                <button
+                  type="button"
+                  key={i}
+                  className={`as-row as-row-tap ${it.ok ? 'ok' : 'bad'}${isSaved ? ' saved' : ''}`}
+                  disabled={isSaved || isSaving}
+                  onClick={() => saveWord(de, it.ru)}
+                >
+                  <span className="as-row-mark">{isSaved ? '💾' : isSaving ? '⏳' : (it.ok ? '✅' : '❌')}</span>
+                  {' '}<b className={it.ok ? '' : 'as-correct-article'}>{it.a}</b> {it.w}
+                  {!it.ok ? <span className="as-mine"> (ты: {it.chosen || '—'})</span> : null}
+                  {it.ru ? <span className="as-ru"> · {it.ru}</span> : null}
+                </button>
+              );
+            })}
+          </div>
+        </>
       ) : null}
       <button className="ans-btn" onClick={onClose}>Schließen</button>
     </>);
