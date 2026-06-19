@@ -2976,30 +2976,43 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
             is_pro = bool(is_user_pro(int(user_id)))
         except Exception:
             is_pro = False
-    artikel_row = [ARTIKEL_LEARN_BUTTON_TEXT]
+    is_admin = user_id is not None and _is_admin_user(int(user_id))
+
+    # Logical sections, most-used first. Three layouts emerge from the same code:
+    #   free  = base rows;  Pro = base + the Pro-only buttons folded into their
+    #   section;  admin = the user's tier layout + an isolated admin row at the end.
+    # (Plain TEXT buttons: a tap sends the label, the router opens the Mini-App via
+    #  the t.me deeplink — reply-keyboard web_app buttons don't carry initData.)
+    rows: list[list[str]] = []
+
+    # 1) Ежедневные задания — главное действие.
+    rows.append([NEXT_TASK_BUTTON_TEXT])
+
+    # 2) Тренажёры (учить). Pro: +персональная тема на завтра.
+    rows.append([ARTIKEL_LEARN_BUTTON_TEXT] + ([ARTIKEL_FOCUS_BUTTON_TEXT] if is_pro else []))
+    rows.append([ADJEKTIV_SPRINT_BUTTON_TEXT])
+
+    # 3) Батлы. Создавать батл — Pro; быть в списке приглашаемых + история — всем.
     if is_pro:
-        artikel_row.append(ARTIKEL_FOCUS_BUTTON_TEXT)
-    rows = [artikel_row]
-    # Creating a battle is Pro-only; opting-in to BE invited is for EVERYONE
-    # (otherwise a free user couldn't consent to join the battle invite list).
-    battle_row = ([ARTIKEL_BATTLE_CALL_BUTTON_TEXT] if is_pro else []) + [_battle_available_button_text(user_id)]
-    rows.append(battle_row)
-    # Adjektivendungen game: open (everyone) + create battle (Pro only).
-    adjektiv_row = [ADJEKTIV_SPRINT_BUTTON_TEXT] + ([ADJEKTIV_BATTLE_BUTTON_TEXT] if is_pro else [])
-    rows.append(adjektiv_row)
-    rows.append([BATTLE_HISTORY_BUTTON_TEXT])
-    if user_id is not None and _is_admin_user(int(user_id)):
+        rows.append([ARTIKEL_BATTLE_CALL_BUTTON_TEXT, ADJEKTIV_BATTLE_BUTTON_TEXT])
+    rows.append([_battle_available_button_text(user_id), BATTLE_HISTORY_BUTTON_TEXT])
+
+    # 4) Слова и помощь.
+    rows.append([DICTIONARY_BATCH_FAST_BUTTON_TEXT, LANGUAGE_TUTOR_BUTTON_TEXT])
+
+    # 5) Захват слов (Shortcut + ночной автосейв).
+    rows.append([SHORTCUT_INSTALL_BUTTON_TEXT, SHORTCUT_CONNECT_BUTTON_TEXT])
+    rows.append([_autosave_button_text(user_id)])
+
+    # 6) Справка.
+    rows.append([HOWTO_GUIDE_BUTTON_TEXT])
+
+    # 7) Админ — отдельной строкой в самом низу.
+    if is_admin:
         rows.append([ADMIN_BROADCAST_BUTTON_TEXT])
+
     return ReplyKeyboardMarkup(
-        [
-            *rows,
-            [NEXT_TASK_BUTTON_TEXT],
-            [LANGUAGE_TUTOR_BUTTON_TEXT],
-            [DICTIONARY_BATCH_FAST_BUTTON_TEXT],
-            [SHORTCUT_INSTALL_BUTTON_TEXT, SHORTCUT_CONNECT_BUTTON_TEXT],
-            [_autosave_button_text(user_id)],
-            [HOWTO_GUIDE_BUTTON_TEXT],
-        ],
+        rows,
         resize_keyboard=True,
         # is_persistent=False on purpose: the menu must NOT pop up on every tap —
         # it stays reachable via the keyboard icon. (Do NOT set True.)
