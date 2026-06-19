@@ -23841,10 +23841,16 @@ async def prepare_aufgabe_pool_job(context: CallbackContext) -> None:
     # Self-heal: drop degenerate wortbildung (derived noun == stem, e.g. krise→Krise)
     # left over from before the prompt was hardened, so they're never served again.
     try:
-        from backend.database import purge_degenerate_aufgabe_bank
-        removed = await asyncio.to_thread(purge_degenerate_aufgabe_bank)
-        if removed:
-            logging.info("aufgabe_pool: purged %s degenerate item(s)", removed)
+        from backend.database import (
+            purge_degenerate_aufgabe_bank, purge_degenerate_aufgabe_mistakes,
+        )
+        removed_bank = await asyncio.to_thread(purge_degenerate_aufgabe_bank)
+        # Also self-heal EVERY user's review queue (global, not per-user) so no
+        # admin command is needed — degenerate wortbildung/error/wortgruppe gone.
+        removed_rev = await asyncio.to_thread(purge_degenerate_aufgabe_mistakes)
+        if removed_bank or removed_rev:
+            logging.info("aufgabe_pool: purged degenerate items — pool=%s review_queue=%s",
+                         removed_bank, removed_rev)
     except Exception:
         logging.warning("aufgabe_pool: degenerate purge failed", exc_info=True)
     per_format = AUFGABE_PER_FORMAT_TARGET
