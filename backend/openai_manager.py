@@ -6031,22 +6031,27 @@ async def run_generate_aufgabe(format: str, *, count: int = 6, level: str = "B2"
     items = data.get("items") if isinstance(data, dict) else data
     if not isinstance(items, list):
         return []
-    # Deterministic guard: drop degenerate wortbildung where the derived noun ==
-    # the stem (e.g. stamm "krise" → "Krise"). The prompt forbids this, but a guard
-    # makes sure a bad item never reaches the pool even if the model slips.
-    if str(format or "").strip().lower() == "wortbildung":
-        kept = []
-        for it in items:
-            if not isinstance(it, dict):
-                continue
-            noun = (str(it.get("correct") or "").split() or [""])[0].strip().lower()
-            stamm = str(it.get("stamm") or "").strip().lower()
-            if noun and stamm and noun == stamm:
-                logging.info("aufgabe wortbildung: dropped degenerate stamm=%s correct=%s",
-                             it.get("stamm"), it.get("correct"))
-                continue
-            kept.append(it)
-        return kept
+    # Deterministic guard: drop degenerate items the prompt already forbids, so a
+    # bad one never reaches the pool even if the model slips:
+    #  - wortbildung: derived noun == stem (e.g. "krise" → "Krise");
+    #  - error: the tapped token already equals the correction (no real error,
+    #    e.g. "zumachen?" → "zumachen").
+    fmt = str(format or "").strip().lower()
+    if fmt in ("wortbildung", "error"):
+        try:
+            from backend.database import is_degenerate_aufgabe
+        except Exception:
+            is_degenerate_aufgabe = None
+        if is_degenerate_aufgabe is not None:
+            kept = []
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                if is_degenerate_aufgabe(fmt, it):
+                    logging.info("aufgabe %s: dropped degenerate item=%s", fmt, it)
+                    continue
+                kept.append(it)
+            return kept
     return items
 
 

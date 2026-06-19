@@ -23841,12 +23841,12 @@ async def prepare_aufgabe_pool_job(context: CallbackContext) -> None:
     # Self-heal: drop degenerate wortbildung (derived noun == stem, e.g. krise→Krise)
     # left over from before the prompt was hardened, so they're never served again.
     try:
-        from backend.database import purge_degenerate_wortbildung_bank
-        removed = await asyncio.to_thread(purge_degenerate_wortbildung_bank)
+        from backend.database import purge_degenerate_aufgabe_bank
+        removed = await asyncio.to_thread(purge_degenerate_aufgabe_bank)
         if removed:
-            logging.info("aufgabe_pool: purged %s degenerate wortbildung item(s)", removed)
+            logging.info("aufgabe_pool: purged %s degenerate item(s)", removed)
     except Exception:
-        logging.warning("aufgabe_pool: degenerate wortbildung purge failed", exc_info=True)
+        logging.warning("aufgabe_pool: degenerate purge failed", exc_info=True)
     per_format = AUFGABE_PER_FORMAT_TARGET
     total_made = 0
     for fmt, level in _AUFGABE_FORMATS:
@@ -25932,12 +25932,12 @@ async def admin_clean_bad_reviews_command(update: Update, context: CallbackConte
         await message.reply_text("Allowed users only.")
         return
     from backend.database import (
-        purge_degenerate_wortbildung_mistakes, purge_degenerate_wortbildung_bank,
+        purge_degenerate_aufgabe_mistakes, purge_degenerate_aufgabe_bank,
     )
-    m = await asyncio.to_thread(purge_degenerate_wortbildung_mistakes)
-    b = await asyncio.to_thread(purge_degenerate_wortbildung_bank)
+    m = await asyncio.to_thread(purge_degenerate_aufgabe_mistakes)
+    b = await asyncio.to_thread(purge_degenerate_aufgabe_bank)
     await message.reply_text(
-        f"🧹 Удалено вырожденных wortbildung:\n"
+        f"🧹 Удалено вырожденных заданий (wortbildung/error):\n"
         f"• из очереди ошибок: {m}\n• из пула заданий: {b}")
 
 

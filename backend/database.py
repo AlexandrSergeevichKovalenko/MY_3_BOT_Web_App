@@ -1349,64 +1349,83 @@ def _mistake_hash(fmt: str, payload: dict, correct_answer: str) -> str:
     return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:32]
 
 
-def is_degenerate_wortbildung(fmt, stamm, correct) -> bool:
-    """A wortbildung item is degenerate (no real word-formation) when the derived
-    noun equals the stem — e.g. stamm "krise" → "Krise". The hardened generator
-    forbids this; this guard catches any that slip through / pre-hardening items.
-    NB: a 1-word answer alone is NOT degenerate (legit older "liefern"→"Lieferung")."""
-    if str(fmt or "") != "wortbildung":
-        return False
-    c = str(correct or "").strip()
-    s = str(stamm or "").strip()
-    if not c or not s:
-        return False
-    noun = (c.split() or [""])[0].strip().lower()
-    return bool(noun) and noun == s.lower()
+def _norm_degenerate_token(s) -> str:
+    """Lowercase + strip surrounding punctuation/space for degeneracy comparisons."""
+    return str(s or "").strip().strip(".,!?;:()[]{}\"'«»").strip().lower()
 
 
-def purge_degenerate_wortbildung_bank() -> int:
-    """Delete degenerate wortbildung items (derived noun == stem) from the aufgabe
-    pool so they stop being served. Returns the count removed."""
+def is_degenerate_aufgabe(fmt, payload, correct_answer=None) -> bool:
+    """True for a meaningless item that should never be served/reviewed:
+    - wortbildung: the derived noun == the stem (no real word-formation, e.g.
+      stamm "krise" → "Krise"). 1-word answers alone are NOT degenerate.
+    - error ("Finde den Fehler"): the tapped token already equals the correction
+      (no real error, e.g. "zumachen?" → "zumachen") — also covers word-order
+      "errors" the format can't express.
+    The hardened prompts forbid both; this catches slips + pre-hardening items."""
+    fmt = str(fmt or "")
+    payload = payload if isinstance(payload, dict) else {}
+    if fmt == "wortbildung":
+        correct = correct_answer if correct_answer is not None else payload.get("correct")
+        c = str(correct or "").strip()
+        stamm = str(payload.get("stamm") or "").strip()
+        if not c or not stamm:
+            return False
+        noun = (c.split() or [""])[0]
+        return _norm_degenerate_token(noun) == _norm_degenerate_token(stamm)
+    if fmt == "error":
+        woerter = payload.get("woerter") or []
+        try:
+            idx = int(payload.get("error_index", -1))
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(woerter, list) or not (0 <= idx < len(woerter)):
+            return False
+        correct_word = str(payload.get("correct_word") or "").strip()
+        if not correct_word:
+            return False
+        return _norm_degenerate_token(woerter[idx]) == _norm_degenerate_token(correct_word)
+    return False
+
+
+def _purge_degenerate_aufgabe(table: str, *, id_col: str = "id") -> int:
+    """Shared: delete degenerate wortbildung/error rows from an aufgabe table
+    (bank or mistakes) by checking each candidate in Python. Returns count removed."""
     try:
         with get_db_connection_context() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
-                    DELETE FROM bt_3_aufgabe_bank
-                    WHERE format = 'wortbildung'
-                      AND lower(split_part(trim(payload->>'correct'), ' ', 1)) = lower(trim(payload->>'stamm'))
-                      AND coalesce(trim(payload->>'stamm'), '') <> '';
-                    """
+                    f"SELECT {id_col}, format, payload FROM {table} "
+                    f"WHERE format IN ('wortbildung', 'error');"
                 )
-                n = cur.rowcount or 0
+                rows = cur.fetchall() or []
+                bad_ids = []
+                for r in rows:
+                    payload = _coerce_json_object(r[2]) if not isinstance(r[2], dict) else r[2]
+                    if is_degenerate_aufgabe(r[1], payload):
+                        bad_ids.append(r[0])
+                if bad_ids:
+                    cur.execute(
+                        f"DELETE FROM {table} WHERE {id_col} = ANY(%s);", (bad_ids,)
+                    )
             conn.commit()
-        return int(n)
+        return len(bad_ids)
     except Exception:
-        logging.warning("purge_degenerate_wortbildung_bank failed", exc_info=True)
+        logging.warning("_purge_degenerate_aufgabe failed table=%s", table, exc_info=True)
         return 0
 
 
-def purge_degenerate_wortbildung_mistakes() -> int:
-    """Delete degenerate wortbildung items from the spaced-repetition review queue
-    (old pre-hardening 'krise→Krise' tasks). Returns the count removed."""
+def purge_degenerate_aufgabe_bank() -> int:
+    """Remove degenerate wortbildung/error items from the aufgabe pool."""
+    return _purge_degenerate_aufgabe("bt_3_aufgabe_bank", id_col="aufgabe_id")
+
+
+def purge_degenerate_aufgabe_mistakes() -> int:
+    """Remove degenerate wortbildung/error items from the review queue."""
     try:
         ensure_aufgabe_mistakes_schema()
-        with get_db_connection_context() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    DELETE FROM bt_3_aufgabe_mistakes
-                    WHERE format = 'wortbildung'
-                      AND lower(split_part(trim(correct_answer), ' ', 1)) = lower(trim(payload->>'stamm'))
-                      AND coalesce(trim(payload->>'stamm'), '') <> '';
-                    """
-                )
-                n = cur.rowcount or 0
-            conn.commit()
-        return int(n)
     except Exception:
-        logging.warning("purge_degenerate_wortbildung_mistakes failed", exc_info=True)
-        return 0
+        pass
+    return _purge_degenerate_aufgabe("bt_3_aufgabe_mistakes", id_col="id")
 
 
 def record_aufgabe_mistake(*, user_id: int, fmt: str, payload: dict,
@@ -1414,9 +1433,9 @@ def record_aufgabe_mistake(*, user_id: int, fmt: str, payload: dict,
     """Store (or refresh) a wrong answer for spaced-repetition review. Best-effort;
     one upsert keyed by (user, content) so the same item isn't duplicated."""
     import json as _json
-    # Never queue a degenerate wortbildung (stem == answer) for review.
-    if is_degenerate_wortbildung(fmt, (payload or {}).get("stamm"), correct_answer):
-        logging.info("skip degenerate wortbildung mistake user_id=%s", user_id)
+    # Never queue a degenerate task (no real error / no real word-formation).
+    if is_degenerate_aufgabe(fmt, payload, correct_answer):
+        logging.info("skip degenerate aufgabe mistake user_id=%s fmt=%s", user_id, fmt)
         return
     try:
         ensure_aufgabe_mistakes_schema()
