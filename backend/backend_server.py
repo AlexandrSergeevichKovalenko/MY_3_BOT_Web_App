@@ -22667,6 +22667,7 @@ def _inbox_mark_kind_done(user_id: int, kind: str) -> None:
                         "message_id": int(row["telegram_message_id"]),
                         "deeplink": str(row.get("deeplink") or ""),
                         "title": str(row.get("title") or ""),
+                        "keyboard_json": row.get("keyboard_json"),
                     },
                 )
     except Exception:
@@ -22949,6 +22950,7 @@ def submit_answer():
                         "message_id": int(inbox_row["telegram_message_id"]),
                         "deeplink": str(inbox_row.get("deeplink") or ""),
                         "title": str(inbox_row.get("title") or ""),
+                        "keyboard_json": inbox_row.get("keyboard_json"),
                     },
                 )
         except Exception:

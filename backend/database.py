@@ -8968,11 +8968,16 @@ def ensure_webapp_tables() -> None:
                     telegram_message_id BIGINT,
                     deeplink            TEXT NOT NULL DEFAULT '',
                     title               TEXT NOT NULL DEFAULT '',
+                    keyboard_json       JSONB,
                     answered            BOOLEAN NOT NULL DEFAULT FALSE,
                     answered_at         TIMESTAMPTZ,
                     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     UNIQUE (user_id, kind, dispatch_id)
                 );
+            """)
+            cursor.execute("""
+                ALTER TABLE bt_3_interactive_inbox
+                ADD COLUMN IF NOT EXISTS keyboard_json JSONB;
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_interactive_inbox_open
@@ -15125,28 +15130,50 @@ def set_mc_deepdive_card_id(dispatch_id: int, card_id: int) -> None:
             )
 
 
+def _coerce_inbox_keyboard_json(value) -> list | None:
+    """JSONB may come back as a parsed list or a raw string depending on the driver."""
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, list) else None
+        except Exception:
+            return None
+    return None
+
+
 def record_interactive_inbox(
     *, user_id: int, kind: str, dispatch_id: int, chat_id: int,
     telegram_message_id: int | None = None, deeplink: str = "", title: str = "",
+    keyboard_json: list | None = None,
 ) -> None:
-    """Add a task to the user's interactive inbox (idempotent per task)."""
+    """Add a task to the user's interactive inbox (idempotent per task).
+
+    keyboard_json (optional): the card's original inline keyboard as
+    [[{text, url|callback_data}, …], …] so the ✅ edit can keep ALL its buttons
+    and just prepend a "✅ Выполнено" row."""
     try:
+        kb_dump = json.dumps(keyboard_json, ensure_ascii=False) if keyboard_json else None
         with get_db_connection_context() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
                     INSERT INTO bt_3_interactive_inbox
-                        (user_id, kind, dispatch_id, chat_id, telegram_message_id, deeplink, title)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        (user_id, kind, dispatch_id, chat_id, telegram_message_id, deeplink, title, keyboard_json)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (user_id, kind, dispatch_id) DO UPDATE
                         SET telegram_message_id = COALESCE(EXCLUDED.telegram_message_id,
                                                            bt_3_interactive_inbox.telegram_message_id),
                             deeplink = EXCLUDED.deeplink,
-                            title = EXCLUDED.title;
+                            title = EXCLUDED.title,
+                            keyboard_json = COALESCE(EXCLUDED.keyboard_json, bt_3_interactive_inbox.keyboard_json);
                     """,
                     (int(user_id), str(kind), int(dispatch_id), int(chat_id),
                      int(telegram_message_id) if telegram_message_id else None,
-                     str(deeplink or ""), str(title or "")),
+                     str(deeplink or ""), str(title or ""), kb_dump),
                 )
     except Exception:
         logging.warning("record_interactive_inbox failed user=%s kind=%s id=%s",
@@ -15165,7 +15192,7 @@ def mark_interactive_inbox_answered(*, user_id: int, kind: str, dispatch_id: int
                     UPDATE bt_3_interactive_inbox
                     SET answered = TRUE, answered_at = NOW()
                     WHERE user_id = %s AND kind = %s AND dispatch_id = %s AND answered = FALSE
-                    RETURNING chat_id, telegram_message_id, deeplink, title;
+                    RETURNING chat_id, telegram_message_id, deeplink, title, keyboard_json;
                     """,
                     (int(user_id), str(kind), int(dispatch_id)),
                 )
@@ -15177,6 +15204,7 @@ def mark_interactive_inbox_answered(*, user_id: int, kind: str, dispatch_id: int
             "telegram_message_id": int(row[1]) if row[1] is not None else None,
             "deeplink": str(row[2] or ""),
             "title": str(row[3] or ""),
+            "keyboard_json": _coerce_inbox_keyboard_json(row[4]),
         }
     except Exception:
         logging.warning("mark_interactive_inbox_answered failed user=%s kind=%s id=%s",
@@ -15197,7 +15225,7 @@ def mark_interactive_inbox_answered_all_kind(*, user_id: int, kind: str) -> list
                     UPDATE bt_3_interactive_inbox
                     SET answered = TRUE, answered_at = NOW()
                     WHERE user_id = %s AND kind = %s AND answered = FALSE
-                    RETURNING id, chat_id, telegram_message_id, deeplink, title;
+                    RETURNING id, chat_id, telegram_message_id, deeplink, title, keyboard_json;
                     """,
                     (int(user_id), str(kind)),
                 )
@@ -15209,6 +15237,7 @@ def mark_interactive_inbox_answered_all_kind(*, user_id: int, kind: str) -> list
                 "telegram_message_id": int(r[2]) if r[2] is not None else None,
                 "deeplink": str(r[3] or ""),
                 "title": str(r[4] or ""),
+                "keyboard_json": _coerce_inbox_keyboard_json(r[5]),
             }
             for r in rows
         ]

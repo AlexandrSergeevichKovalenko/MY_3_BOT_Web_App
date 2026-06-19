@@ -1177,6 +1177,53 @@ async def _preserve_system_message(message, message_type: str) -> None:
         logging.debug("Failed to preserve system message", exc_info=True)
 
 
+def _inbox_kb_json(markup) -> list | None:
+    """Serialize an InlineKeyboardMarkup → [[{text, url|callback_data}, …], …] so
+    the interactive-inbox can later restore the card's buttons + prepend a ✅ row."""
+    try:
+        rows = getattr(markup, "inline_keyboard", None)
+        if not rows:
+            return None
+        out: list[list[dict]] = []
+        for row in rows:
+            r: list[dict] = []
+            for b in row:
+                item = {"text": str(getattr(b, "text", "") or "")}
+                if getattr(b, "url", None):
+                    item["url"] = str(b.url)
+                elif getattr(b, "callback_data", None):
+                    item["callback_data"] = str(b.callback_data)
+                else:
+                    continue
+                r.append(item)
+            if r:
+                out.append(r)
+        return out or None
+    except Exception:
+        return None
+
+
+def _inbox_kb_from_json(keyboard_json) -> list:
+    """Rebuild inline-keyboard rows (list[list[InlineKeyboardButton]]) from the
+    stored JSON, skipping any malformed buttons."""
+    rows: list[list[InlineKeyboardButton]] = []
+    for row in (keyboard_json or []):
+        built: list[InlineKeyboardButton] = []
+        for it in (row or []):
+            if not isinstance(it, dict):
+                continue
+            text = str(it.get("text") or "").strip()
+            if not text:
+                continue
+            if it.get("url"):
+                built.append(InlineKeyboardButton(text, url=str(it["url"])))
+            elif it.get("callback_data"):
+                built.append(InlineKeyboardButton(text, callback_data=str(it["callback_data"])))
+        if built:
+            rows.append(built)
+    return rows
+
+
 def _install_tracked_send_wrappers(app: Application) -> None:
     # Backward-compatible no-op: tracking is implemented in TrackingExtBot below.
     return
@@ -22595,22 +22642,23 @@ async def _send_challenge_notifications_job(context: CallbackContext) -> None:
                 await asyncio.to_thread(mark_challenge_notification_sent, int(n["id"]))
                 continue
             elif kind == "inbox_done":
-                # Mark the task message ✅ in place (DM feed) — keeps the deeplink so
-                # the user can reopen and see their stored verdict.
+                # Mark the task message ✅ in place (DM feed): prepend a "✅ Выполнено"
+                # row and KEEP the card's original buttons (so e.g. Adjektiv Sprint
+                # still shows both "Играть" and "Учить окончания").
                 chat_id = int(p.get("chat_id") or 0)
                 message_id = int(p.get("message_id") or 0)
                 deeplink = str(p.get("deeplink") or "").strip()
+                rows = [[InlineKeyboardButton("✅ Выполнено", callback_data="inbox_done_noop")]]
+                original_rows = _inbox_kb_from_json(p.get("keyboard_json"))
+                if original_rows:
+                    rows += original_rows
+                elif deeplink:
+                    rows.append([InlineKeyboardButton("↻ Открыть снова", url=get_webapp_deeplink(deeplink))])
                 if chat_id and message_id:
-                    done_btn = (
-                        InlineKeyboardMarkup([[InlineKeyboardButton(
-                            "✅ Выполнено · открыть снова", url=get_webapp_deeplink(deeplink))]])
-                        if deeplink else
-                        InlineKeyboardMarkup([[InlineKeyboardButton(
-                            "✅ Выполнено", callback_data="inbox_done_noop")]])
-                    )
                     try:
                         await context.bot.edit_message_reply_markup(
-                            chat_id=chat_id, message_id=message_id, reply_markup=done_btn)
+                            chat_id=chat_id, message_id=message_id,
+                            reply_markup=InlineKeyboardMarkup(rows))
                     except Exception:
                         logging.debug("inbox_done: edit markup failed id=%s", n.get("id"), exc_info=True)
                 await asyncio.to_thread(mark_challenge_notification_sent, int(n["id"]))
@@ -24593,6 +24641,7 @@ async def _send_scheduled_adjektiv_sprint(context: CallbackContext) -> None:
                         user_id=cid, kind="ad", dispatch_id=int(did), chat_id=cid,
                         telegram_message_id=int(msg.message_id),
                         deeplink="ans_ad_0", title="🔠 Adjektiv Sprint",
+                        keyboard_json=_inbox_kb_json(kb),
                     )
                 except Exception:
                     logging.debug("adj sprint: inbox record failed did=%s", did, exc_info=True)
@@ -24911,6 +24960,7 @@ async def _send_scheduled_artikel_sprint(context: CallbackContext) -> None:
                         user_id=cid, kind="as", dispatch_id=int(did), chat_id=cid,
                         telegram_message_id=int(msg.message_id),
                         deeplink="ans_as_0", title="⚡ Artikel Sprint",
+                        keyboard_json=_inbox_kb_json(kb),
                     )
                 except Exception:
                     logging.debug("artikel sprint: inbox record failed did=%s", did, exc_info=True)
