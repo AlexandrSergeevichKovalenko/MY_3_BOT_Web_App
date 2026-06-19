@@ -25937,7 +25937,7 @@ async def admin_clean_bad_reviews_command(update: Update, context: CallbackConte
     m = await asyncio.to_thread(purge_degenerate_aufgabe_mistakes)
     b = await asyncio.to_thread(purge_degenerate_aufgabe_bank)
     await message.reply_text(
-        f"🧹 Удалено вырожденных заданий (wortbildung/error):\n"
+        f"🧹 Удалено вырожденных заданий (wortbildung/error/wortgruppe):\n"
         f"• из очереди ошибок: {m}\n• из пула заданий: {b}")
 
 

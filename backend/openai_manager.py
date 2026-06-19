@@ -6035,9 +6035,10 @@ async def run_generate_aufgabe(format: str, *, count: int = 6, level: str = "B2"
     # bad one never reaches the pool even if the model slips:
     #  - wortbildung: derived noun == stem (e.g. "krise" → "Krise");
     #  - error: the tapped token already equals the correction (no real error,
-    #    e.g. "zumachen?" → "zumachen").
+    #    e.g. "zumachen?" → "zumachen");
+    #  - wortgruppe: missing base-form "lemmas" → unanswerable synonym-guessing.
     fmt = str(format or "").strip().lower()
-    if fmt in ("wortbildung", "error"):
+    if fmt in ("wortbildung", "error", "wortgruppe"):
         try:
             from backend.database import is_degenerate_aufgabe
         except Exception:

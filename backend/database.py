@@ -1384,6 +1384,12 @@ def is_degenerate_aufgabe(fmt, payload, correct_answer=None) -> bool:
         if not correct_word:
             return False
         return _norm_degenerate_token(woerter[idx]) == _norm_degenerate_token(correct_word)
+    if fmt == "wortgruppe":
+        # Unanswerable without the base-form lemmas shown to the learner → it
+        # becomes synonym-guessing (only the RU meaning is given). Old pre-change
+        # items lack "lemmas"; treat those as degenerate.
+        lemmas = payload.get("lemmas")
+        return not (isinstance(lemmas, list) and any(str(w).strip() for w in lemmas))
     return False
 
 
@@ -1395,7 +1401,7 @@ def _purge_degenerate_aufgabe(table: str, *, id_col: str = "id") -> int:
             with conn.cursor() as cur:
                 cur.execute(
                     f"SELECT {id_col}, format, payload FROM {table} "
-                    f"WHERE format IN ('wortbildung', 'error');"
+                    f"WHERE format IN ('wortbildung', 'error', 'wortgruppe');"
                 )
                 rows = cur.fetchall() or []
                 bad_ids = []
