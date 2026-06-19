@@ -15383,6 +15383,39 @@ def get_oldest_unanswered_inbox(user_id: int, *, max_age_days: int = 3) -> dict 
     }
 
 
+def get_inbox_next_and_count(user_id: int, *, max_age_days: int = 3) -> dict:
+    """One round-trip for the "▶️ Следующее задание" button: the oldest open task
+    AND the open count, on a single connection (was 2 separate queries)."""
+    out = {"next": None, "open_count": 0}
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT kind, dispatch_id, deeplink, title,
+                           COUNT(*) OVER () AS open_count
+                    FROM bt_3_interactive_inbox
+                    WHERE user_id = %s AND answered = FALSE
+                      AND created_at > NOW() - (%s || ' days')::interval
+                    ORDER BY created_at ASC
+                    LIMIT 1;
+                    """,
+                    (int(user_id), int(max_age_days)),
+                )
+                row = cursor.fetchone()
+        if row:
+            out["next"] = {
+                "kind": str(row[0] or ""),
+                "dispatch_id": int(row[1]),
+                "deeplink": str(row[2] or ""),
+                "title": str(row[3] or ""),
+            }
+            out["open_count"] = int(row[4] or 0)
+    except Exception:
+        logging.warning("get_inbox_next_and_count failed user=%s", user_id, exc_info=True)
+    return out
+
+
 def count_open_inbox(user_id: int, *, max_age_days: int = 3) -> int:
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:

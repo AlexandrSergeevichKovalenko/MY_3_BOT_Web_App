@@ -290,6 +290,7 @@ from backend.database import (
     record_interactive_inbox,
     get_oldest_unanswered_inbox,
     count_open_inbox,
+    get_inbox_next_and_count,
     get_pending_freeform_result_cards,
     mark_freeform_card_sent,
     get_pending_challenge_notifications,
@@ -2012,6 +2013,9 @@ async def _send_shortcut_install_prompt(update: Update, context: CallbackContext
             "⚡️ Накопилось много слов? Зайдите в личку и нажмите один раз <b>«🇩🇪➡️🇷🇺 Быстрый перевод»</b> — "
             "режим применится сразу ко всей очереди.\n"
             "🔎 Или переводите слова по одному — там доступен ещё и <b>детальный</b> разбор.\n\n"
+            "▶️ Каждый день я присылаю мини-задания (квиз, ребус, кроссворд и др.). "
+            "Кнопка <b>«▶️ Следующее задание»</b> внизу сразу открывает самое старое нерешённое — "
+            "не нужно листать чат.\n\n"
             f"📱 <b>Что умеет приложение:</b> {guide_url}\n"
             "🎬 Видео-инструкции — кнопка <b>«Как пользоваться»</b> внизу."
         ),
@@ -2026,12 +2030,23 @@ async def _send_next_open_task(update: Update, context: CallbackContext) -> None
     if not update.effective_message or not update.effective_user:
         return
     user_id = int(update.effective_user.id)
+    chat_id = int(update.effective_chat.id) if update.effective_chat else user_id
+    t0 = pytime.time()
+    logging.info("next_task: tapped user=%s", user_id)
+    # Instant "typing…" so the tap never feels like it crashed while we look up.
     try:
-        nxt = await asyncio.to_thread(get_oldest_unanswered_inbox, user_id)
-        open_count = await asyncio.to_thread(count_open_inbox, user_id)
+        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+    except Exception:
+        pass
+    try:
+        summary = await asyncio.to_thread(get_inbox_next_and_count, user_id)
+        nxt = summary.get("next")
+        open_count = int(summary.get("open_count") or 0)
     except Exception:
         logging.warning("next-task lookup failed user=%s", user_id, exc_info=True)
         nxt, open_count = None, 0
+    logging.info("next_task: lookup done user=%s open_count=%s next=%s elapsed_ms=%d",
+                 user_id, open_count, (nxt or {}).get("deeplink"), int((pytime.time() - t0) * 1000))
     if not nxt or not nxt.get("deeplink"):
         await update.message.reply_text(
             "✅ <b>Нет невыполненных заданий.</b>\n\n"
@@ -2042,11 +2057,13 @@ async def _send_next_open_task(update: Update, context: CallbackContext) -> None
         )
         return
     title = str(nxt.get("title") or "Задание").strip() or "Задание"
-    more = f"  ·  ещё не сделано: {open_count}" if open_count > 1 else ""
+    more = f"\n📥 Ещё не сделано сегодня: <b>{open_count}</b>." if open_count > 1 else ""
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(
         f"▶️ Открыть и решить: {title}", url=get_webapp_deeplink(str(nxt["deeplink"])))]])
     await update.message.reply_text(
-        f"📋 Невыполненное задание{more} 👇",
+        f"📋 <b>Твоё самое старое невыполненное задание</b> — открой и реши прямо тут, "
+        f"не листая чат 👇{more}",
+        parse_mode="HTML",
         reply_markup=kb,
     )
 
