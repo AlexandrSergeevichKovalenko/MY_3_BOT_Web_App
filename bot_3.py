@@ -2024,6 +2024,22 @@ async def _send_shortcut_install_prompt(update: Update, context: CallbackContext
     )
 
 
+_NEXT_TASK_CARD_CACHE: bytes | None = None
+
+
+def _next_task_card_bytes() -> bytes | None:
+    """Render the "Следующее задание" plaque once and cache it (it's static)."""
+    global _NEXT_TASK_CARD_CACHE
+    if _NEXT_TASK_CARD_CACHE is None:
+        try:
+            from backend.interactive_card import render_next_task_card
+            _NEXT_TASK_CARD_CACHE = render_next_task_card() or b""
+        except Exception:
+            logging.debug("next-task card render failed", exc_info=True)
+            _NEXT_TASK_CARD_CACHE = b""
+    return _NEXT_TASK_CARD_CACHE or None
+
+
 async def _send_next_open_task(update: Update, context: CallbackContext) -> None:
     """«▶️ Следующее задание» — jump to the oldest still-open interactive in the
     user's DM feed, so they don't scroll back through the chat to find it."""
@@ -2060,12 +2076,18 @@ async def _send_next_open_task(update: Update, context: CallbackContext) -> None
     more = f"\n📥 Ещё не сделано сегодня: <b>{open_count}</b>." if open_count > 1 else ""
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(
         f"▶️ Открыть и решить: {title}", url=get_webapp_deeplink(str(nxt["deeplink"])))]])
-    await update.message.reply_text(
-        f"📋 <b>Твоё самое старое невыполненное задание</b> — открой и реши прямо тут, "
-        f"не листая чат 👇{more}",
-        parse_mode="HTML",
-        reply_markup=kb,
+    caption = (
+        f"📋 <b>Твоё самое старое невыполненное задание</b> — {html.escape(title)}.\n"
+        f"Открой и реши прямо тут, не листая чат 👇{more}"
     )
+    # Branded plaque (cached, static) so it stands out among the chat like the
+    # other task cards; fall back to plain text if rendering isn't available.
+    poster = await asyncio.to_thread(_next_task_card_bytes)
+    if poster:
+        await update.message.reply_photo(
+            photo=io.BytesIO(poster), caption=caption, parse_mode="HTML", reply_markup=kb)
+    else:
+        await update.message.reply_text(caption, parse_mode="HTML", reply_markup=kb)
 
 
 async def _send_howto_guide_chapter(update: Update, context: CallbackContext) -> None:

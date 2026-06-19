@@ -182,6 +182,22 @@ def _motif_quiz(base, d, cx, cy, accent):
         y += h + gap
 
 
+def _motif_next_arrow(base, d, cx, cy, accent):
+    """A big 'go to your next task' play-arrow in a ring + forward chevrons."""
+    r = 172
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=accent, width=22)
+    d.ellipse([cx - r + 30, cy - r + 30, cx + r - 30, cy + r - 30],
+              outline=tuple(min(255, c + 30) for c in accent), width=6)
+    # play triangle (points right) — the recognizable "▶" cue
+    s = 88
+    d.polygon([(cx - s * 0.42, cy - s), (cx - s * 0.42, cy + s), (cx + s, cy)], fill=GOLD)
+    # two faint forward chevrons to imply "jump ahead"
+    for k, off in enumerate((r + 70, r + 140)):
+        col = tuple(min(255, c + 20) for c in accent)
+        w = 16 - k * 4
+        d.line([(cx + off - 34, cy - 46), (cx + off, cy), (cx + off - 34, cy + 46)], fill=col, width=max(6, w), joint="curve")
+
+
 def _motif_stopwatch(base, d, cx, cy, accent):
     """Stopwatch + der/die/das pills + a spark (Artikel Sprint)."""
     r = 150
@@ -439,6 +455,13 @@ def _card(*, badge, title, subtitle, accent, motif, cta) -> bytes | None:
 def render_anagram_card(*, level: str = "B2+") -> bytes | None:
     return _card(badge="WORTRÄTSEL", title="Anagramm", subtitle=f"Buchstabensalat  ·  {level}",
                  accent=(167, 139, 250), motif=_motif_anagram, cta="Setz die Buchstaben zusammen")
+
+
+def render_next_task_card(*, level: str = "") -> bytes | None:
+    """Recognizable plaque for the "▶️ Следующее задание" jump button — the same
+    brand language as the task cards so users learn to spot it."""
+    return _card(badge="ЗАДАНИЕ", title="Следующее", subtitle="Самое старое нерешённое",
+                 accent=(96, 165, 250), motif=_motif_next_arrow, cta="Открой и реши 👇")
 
 
 def render_quiz_card(*, level: str = "") -> bytes | None:
