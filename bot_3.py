@@ -824,7 +824,7 @@ SYSTEM_MESSAGE_CLEANUP_EXCLUDE_TYPES = [
 # Achievement keepsakes — грамоты и пьедесталы батлов: these are awards users want
 # to keep, so the nightly system-message cleanup must NEVER delete them, regardless
 # of how SYSTEM_MESSAGE_CLEANUP_EXCLUDE_TYPES is configured in the environment.
-ALWAYS_PRESERVE_MESSAGE_TYPES = ["certificate", "battle_podium"]
+ALWAYS_PRESERVE_MESSAGE_TYPES = ["certificate", "battle_podium", "champion"]
 ENABLE_LEGACY_REPLY_KEYBOARD = (os.getenv("ENABLE_LEGACY_REPLY_KEYBOARD") or "0").strip().lower() in {"1", "true", "yes", "on"}
 ENABLE_LEGACY_TRANSLATION_TEXT_CAPTURE = (
     os.getenv("ENABLE_LEGACY_TRANSLATION_TEXT_CAPTURE") or "0"
@@ -22828,8 +22828,9 @@ async def _send_group_daily_report_job(context: CallbackContext) -> None:
             logging.warning("group daily report: poster render failed chat_id=%s", chat_id, exc_info=True)
         try:
             if poster:
-                await context.bot.send_photo(chat_id=chat_id, photo=io.BytesIO(poster),
+                champ_msg = await context.bot.send_photo(chat_id=chat_id, photo=io.BytesIO(poster),
                                              caption=text, parse_mode="HTML", reply_markup=kb)
+                await _preserve_system_message(champ_msg, "champion")  # winner keepsake, don't auto-delete
             else:
                 await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=kb)
             sent += 1
@@ -22933,8 +22934,9 @@ async def _post_champion_card(context: CallbackContext, *, days: int, chat_ids: 
     for cid in chat_ids:
         try:
             if poster:
-                await context.bot.send_photo(chat_id=int(cid), photo=io.BytesIO(poster),
+                champ_msg = await context.bot.send_photo(chat_id=int(cid), photo=io.BytesIO(poster),
                                              caption=caption, parse_mode="HTML", reply_markup=kb)
+                await _preserve_system_message(champ_msg, "champion")  # winner keepsake, don't auto-delete
             else:
                 await context.bot.send_message(chat_id=int(cid), text=text, parse_mode="HTML", reply_markup=kb)
             sent += 1
@@ -23027,8 +23029,9 @@ async def _post_weekly_group_champions(context: CallbackContext, *, week_no: int
             logging.warning("weekly group champion: poster render failed chat_id=%s", chat_id, exc_info=True)
         try:
             if poster:
-                await context.bot.send_photo(chat_id=chat_id, photo=io.BytesIO(poster),
+                champ_msg = await context.bot.send_photo(chat_id=chat_id, photo=io.BytesIO(poster),
                                              caption=text, parse_mode="HTML", reply_markup=kb)
+                await _preserve_system_message(champ_msg, "champion")  # winner keepsake, don't auto-delete
             else:
                 await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=kb)
             sent += 1
