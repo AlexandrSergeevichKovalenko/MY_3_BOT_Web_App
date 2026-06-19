@@ -461,7 +461,7 @@ def render_next_task_card(*, level: str = "") -> bytes | None:
     """Recognizable plaque for the "▶️ Следующее задание" jump button — the same
     brand language as the task cards so users learn to spot it."""
     return _card(badge="ЗАДАНИЕ", title="Следующее", subtitle="Самое старое нерешённое",
-                 accent=(96, 165, 250), motif=_motif_next_arrow, cta="Открой и реши 👇")
+                 accent=(96, 165, 250), motif=_motif_next_arrow, cta="Открой и реши")
 
 
 def render_quiz_card(*, level: str = "") -> bytes | None:
