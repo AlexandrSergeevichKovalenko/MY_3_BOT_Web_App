@@ -15184,6 +15184,40 @@ def mark_interactive_inbox_answered(*, user_id: int, kind: str, dispatch_id: int
         return None
 
 
+def mark_interactive_inbox_answered_all_kind(*, user_id: int, kind: str) -> list[dict]:
+    """Flip ALL still-open inbox rows of a kind to answered (for self-contained
+    games opened via a generic ?startapp=ans_<kind>_0 deeplink, where the submit
+    endpoint doesn't know the exact dispatch id). Returns the freshly-flipped rows
+    (id/chat_id/message_id/deeplink/title) so the caller can mark each message ✅."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE bt_3_interactive_inbox
+                    SET answered = TRUE, answered_at = NOW()
+                    WHERE user_id = %s AND kind = %s AND answered = FALSE
+                    RETURNING id, chat_id, telegram_message_id, deeplink, title;
+                    """,
+                    (int(user_id), str(kind)),
+                )
+                rows = cursor.fetchall() or []
+        return [
+            {
+                "id": int(r[0]),
+                "chat_id": int(r[1]) if r[1] is not None else 0,
+                "telegram_message_id": int(r[2]) if r[2] is not None else None,
+                "deeplink": str(r[3] or ""),
+                "title": str(r[4] or ""),
+            }
+            for r in rows
+        ]
+    except Exception:
+        logging.warning("mark_interactive_inbox_answered_all_kind failed user=%s kind=%s",
+                        user_id, kind, exc_info=True)
+        return []
+
+
 def get_oldest_unanswered_inbox(user_id: int, *, max_age_days: int = 3) -> dict | None:
     """Oldest still-open (unanswered, recent) task for the jump button."""
     with get_db_connection_context() as conn:

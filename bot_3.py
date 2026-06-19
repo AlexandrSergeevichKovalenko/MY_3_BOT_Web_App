@@ -23075,10 +23075,22 @@ async def _send_mistake_review_reminders(context: CallbackContext) -> None:
         )
         try:
             if poster:
-                await context.bot.send_photo(chat_id=uid, photo=io.BytesIO(poster),
+                rev_msg = await context.bot.send_photo(chat_id=uid, photo=io.BytesIO(poster),
                                              caption=caption, parse_mode="HTML", reply_markup=kb)
             else:
-                await context.bot.send_message(chat_id=uid, text=caption, parse_mode="HTML", reply_markup=kb)
+                rev_msg = await context.bot.send_message(chat_id=uid, text=caption, parse_mode="HTML", reply_markup=kb)
+            # Review has no per-dispatch id → key the inbox row by the day so the
+            # daily card gets a ✅ once the user does any review work.
+            try:
+                day_id = int(_get_quiz_schedule_now().strftime("%Y%m%d"))
+                await asyncio.to_thread(
+                    record_interactive_inbox,
+                    user_id=uid, kind="rv", dispatch_id=day_id, chat_id=uid,
+                    telegram_message_id=int(rev_msg.message_id),
+                    deeplink="ans_rv_0", title="🔁 Работа над ошибками",
+                )
+            except Exception:
+                logging.debug("review reminder: inbox record failed uid=%s", uid, exc_info=True)
             sent += 1
         except Exception:
             logging.warning("mistake reminder send failed uid=%s", uid, exc_info=True)
@@ -24574,6 +24586,16 @@ async def _send_scheduled_adjektiv_sprint(context: CallbackContext) -> None:
                     chat_id=cid, text=caption, parse_mode="Markdown", reply_markup=kb)
             await asyncio.to_thread(
                 update_adjektiv_sprint_dispatch_message_id, int(did), telegram_message_id=int(msg.message_id))
+            if cid > 0:  # DM feed → ✅ marker + "next task"
+                try:
+                    await asyncio.to_thread(
+                        record_interactive_inbox,
+                        user_id=cid, kind="ad", dispatch_id=int(did), chat_id=cid,
+                        telegram_message_id=int(msg.message_id),
+                        deeplink="ans_ad_0", title="🔠 Adjektiv Sprint",
+                    )
+                except Exception:
+                    logging.debug("adj sprint: inbox record failed did=%s", did, exc_info=True)
             sent += 1
         except Exception as exc:
             logging.warning("adjektiv_sprint: send failed chat=%s: %s", cid, exc)
@@ -24882,6 +24904,16 @@ async def _send_scheduled_artikel_sprint(context: CallbackContext) -> None:
                     chat_id=cid, text=caption, parse_mode="Markdown", reply_markup=kb)
             await asyncio.to_thread(
                 update_article_sprint_dispatch_message_id, int(did), telegram_message_id=int(msg.message_id))
+            if cid > 0:  # DM feed → ✅ marker + "next task"
+                try:
+                    await asyncio.to_thread(
+                        record_interactive_inbox,
+                        user_id=cid, kind="as", dispatch_id=int(did), chat_id=cid,
+                        telegram_message_id=int(msg.message_id),
+                        deeplink="ans_as_0", title="⚡ Artikel Sprint",
+                    )
+                except Exception:
+                    logging.debug("artikel sprint: inbox record failed did=%s", did, exc_info=True)
             sent += 1
         except Exception as exc:
             logging.warning("artikel_sprint: send failed chat=%s: %s", cid, exc)

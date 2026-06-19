@@ -22649,6 +22649,30 @@ def release_webapp_instance():
     return jsonify({"ok": True, "released": bool(released)})
 
 
+def _inbox_mark_kind_done(user_id: int, kind: str) -> None:
+    """Mark every open interactive-inbox row of a kind answered and queue a ✅
+    edit for each (DM feed). Used by self-contained games (Adjektiv/Artikel Sprint,
+    Review) whose submit endpoints don't know the exact dispatch id. Best-effort."""
+    try:
+        from backend.database import (
+            mark_interactive_inbox_answered_all_kind, enqueue_challenge_notification,
+        )
+        for row in mark_interactive_inbox_answered_all_kind(user_id=int(user_id), kind=str(kind)) or []:
+            if row.get("telegram_message_id") and int(row.get("chat_id") or 0) == int(user_id):
+                enqueue_challenge_notification(
+                    user_id=int(user_id), kind="inbox_done",
+                    challenge_key=f"{kind}:{row.get('id')}",
+                    payload={
+                        "chat_id": int(row["chat_id"]),
+                        "message_id": int(row["telegram_message_id"]),
+                        "deeplink": str(row.get("deeplink") or ""),
+                        "title": str(row.get("title") or ""),
+                    },
+                )
+    except Exception:
+        logging.warning("inbox mark-kind-done failed user=%s kind=%s", user_id, kind, exc_info=True)
+
+
 def _answer_auth_user_id() -> tuple[int | None, str, tuple]:
     """Shared auth for /api/answer/*. Returns (user_id, user_name, error_response).
 
@@ -23086,6 +23110,7 @@ def answer_review_submit():
         return jsonify({"error": "Ошибка проверки"}), 500
     if result.get("error") == "not_found":
         return jsonify({"error": "Задание не найдено"}), 404
+    _inbox_mark_kind_done(int(user_id), "rv")  # ✅ the "Работа над ошибками" card
     return jsonify({"ok": True, **result})
 
 
@@ -23338,6 +23363,8 @@ def adjektiv_submit():
         except Exception:
             logging.warning("adjektiv overtake enqueue failed set=%s", set_id, exc_info=True)
     pct = round(100 * correct / answered) if answered else 0
+    if recorded:
+        _inbox_mark_kind_done(int(user_id), "ad")  # ✅ the Adjektiv Sprint card
     return jsonify({
         "ok": True, "correct": correct, "answered": answered, "total": total, "pct": pct,
         "items": items, "already_played": not recorded,
@@ -23728,6 +23755,8 @@ def artikel_submit():
             logging.warning("artikel overtake enqueue failed set=%s", set_id, exc_info=True)
     ranking = (compute_article_sprint_ranking(set_id=set_id, user_id=int(user_id))
                if str(s.get("kind") or "") in ("daily", "battle") else None)
+    if recorded and _kind == "daily":
+        _inbox_mark_kind_done(int(user_id), "as")  # ✅ the daily Artikel Sprint card
     return jsonify({
         "ok": True, "correct": correct, "answered": answered, "total": total,
         "pct": round(100 * correct / answered) if answered else 0,
