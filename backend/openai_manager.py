@@ -6029,7 +6029,25 @@ async def run_generate_aufgabe(format: str, *, count: int = 6, level: str = "B2"
     except json.JSONDecodeError:
         return []
     items = data.get("items") if isinstance(data, dict) else data
-    return items if isinstance(items, list) else []
+    if not isinstance(items, list):
+        return []
+    # Deterministic guard: drop degenerate wortbildung where the derived noun ==
+    # the stem (e.g. stamm "krise" → "Krise"). The prompt forbids this, but a guard
+    # makes sure a bad item never reaches the pool even if the model slips.
+    if str(format or "").strip().lower() == "wortbildung":
+        kept = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            noun = (str(it.get("correct") or "").split() or [""])[0].strip().lower()
+            stamm = str(it.get("stamm") or "").strip().lower()
+            if noun and stamm and noun == stamm:
+                logging.info("aufgabe wortbildung: dropped degenerate stamm=%s correct=%s",
+                             it.get("stamm"), it.get("correct"))
+                continue
+            kept.append(it)
+        return kept
+    return items
 
 
 async def run_check_synonym_batch(*, target_word: str, candidates: list[str], relation: str = "synonym") -> set[str]:

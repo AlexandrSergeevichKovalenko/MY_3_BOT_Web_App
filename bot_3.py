@@ -23838,6 +23838,15 @@ async def _aufgabe_topup_format(fmt: str, level: str, want: int) -> int:
 async def prepare_aufgabe_pool_job(context: CallbackContext) -> None:
     """Startup + nightly: fill the B2+ task pool (all formats) to target via the
     per-format top-up helper, off the critical path."""
+    # Self-heal: drop degenerate wortbildung (derived noun == stem, e.g. krise→Krise)
+    # left over from before the prompt was hardened, so they're never served again.
+    try:
+        from backend.database import purge_degenerate_wortbildung_bank
+        removed = await asyncio.to_thread(purge_degenerate_wortbildung_bank)
+        if removed:
+            logging.info("aufgabe_pool: purged %s degenerate wortbildung item(s)", removed)
+    except Exception:
+        logging.warning("aufgabe_pool: degenerate wortbildung purge failed", exc_info=True)
     per_format = AUFGABE_PER_FORMAT_TARGET
     total_made = 0
     for fmt, level in _AUFGABE_FORMATS:
@@ -25912,6 +25921,26 @@ async def admin_pool_remind_command(update: Update, context: CallbackContext) ->
         await message.reply_text(f"❌ pool reminder failed: {exc}")
 
 
+async def admin_clean_bad_reviews_command(update: Update, context: CallbackContext) -> None:
+    """Purge degenerate wortbildung (derived noun == stem, e.g. krise→Krise) from
+    the review queue AND the aufgabe pool. /admin_clean_bad_reviews"""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    from backend.database import (
+        purge_degenerate_wortbildung_mistakes, purge_degenerate_wortbildung_bank,
+    )
+    m = await asyncio.to_thread(purge_degenerate_wortbildung_mistakes)
+    b = await asyncio.to_thread(purge_degenerate_wortbildung_bank)
+    await message.reply_text(
+        f"🧹 Удалено вырожденных wortbildung:\n"
+        f"• из очереди ошибок: {m}\n• из пула заданий: {b}")
+
+
 async def admin_aufgabe_pool_command(update: Update, context: CallbackContext) -> None:
     """Run the Aufgabe pool top-up immediately. /admin_aufgabe_pool"""
     user = update.effective_user
@@ -27906,6 +27935,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_battle_wizard_callback, pattern=r"^bw:"))
     application.add_handler(CommandHandler("admin_aq_send", admin_article_quiz_send_command))
     application.add_handler(CommandHandler("admin_aq_pool", admin_article_quiz_pool_command))
+    application.add_handler(CommandHandler("admin_clean_bad_reviews", admin_clean_bad_reviews_command))
     application.add_handler(CommandHandler("addartikel", admin_add_artikel_command))
     application.add_handler(CommandHandler("admin_cw_send", admin_crossword_send_command))
     application.add_handler(CommandHandler("admin_cw_resend", admin_crossword_resend_command))
