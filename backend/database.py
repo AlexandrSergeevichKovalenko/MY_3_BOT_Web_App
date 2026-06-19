@@ -1354,6 +1354,16 @@ def _norm_degenerate_token(s) -> str:
     return str(s or "").strip().strip(".,!?;:()[]{}\"'«»").strip().lower()
 
 
+def _word_after_gap(satz) -> str:
+    """The first word right AFTER the "_____" gap in a sentence ('' if none)."""
+    m = re.search(r"_{2,}", str(satz or ""))
+    if not m:
+        return ""
+    rest = str(satz)[m.end():].strip()
+    toks = rest.split()
+    return toks[0] if toks else ""
+
+
 def is_degenerate_aufgabe(fmt, payload, correct_answer=None) -> bool:
     """True for a meaningless item that should never be served/reviewed:
     - wortbildung: the derived noun == the stem (no real word-formation, e.g.
@@ -1367,11 +1377,22 @@ def is_degenerate_aufgabe(fmt, payload, correct_answer=None) -> bool:
     if fmt == "wortbildung":
         correct = correct_answer if correct_answer is not None else payload.get("correct")
         c = str(correct or "").strip()
-        stamm = str(payload.get("stamm") or "").strip()
-        if not c or not stamm:
+        if not c:
             return False
-        noun = (c.split() or [""])[0]
-        return _norm_degenerate_token(noun) == _norm_degenerate_token(stamm)
+        toks = c.split()
+        stamm = str(payload.get("stamm") or "").strip()
+        # (a) no real word-formation: the derived noun == the stem (krise→Krise).
+        if stamm and _norm_degenerate_token(toks[0]) == _norm_degenerate_token(stamm):
+            return True
+        # (b) the answer's trailing article is ALREADY printed in the sentence right
+        #     after the gap → the learner can't/shouldn't type it (would double it);
+        #     a broken item (the article belongs IN the gap, not the sentence).
+        if len(toks) >= 2:
+            article = _norm_degenerate_token(toks[-1])
+            after = _norm_degenerate_token(_word_after_gap(payload.get("satz")))
+            if article and after and article == after:
+                return True
+        return False
     if fmt == "error":
         woerter = payload.get("woerter") or []
         try:
