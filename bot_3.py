@@ -19054,6 +19054,7 @@ async def send_rebus_to_chat(
                 user_id=int(target_user_id), kind="rb", dispatch_id=int(dispatch_id),
                 chat_id=int(chat_id), telegram_message_id=int(photo_message.message_id),
                 deeplink=f"ans_rb_{dispatch_id}", title="🧩 Rätsel",
+                keyboard_json=_inbox_kb_json(keyboard),
             )
         except Exception:
             logging.debug("rebus_send: inbox record failed dispatch_id=%s", dispatch_id, exc_info=True)
@@ -21959,6 +21960,7 @@ async def send_crossword_to_chat(
                 user_id=int(target_user_id), kind="cw", dispatch_id=int(dispatch_id),
                 chat_id=int(chat_id), telegram_message_id=int(msg.message_id),
                 deeplink=f"ans_cw_{dispatch_id}", title="🔤 Kreuzwort",
+                keyboard_json=_inbox_kb_json(keyboard),
             )
         except Exception:
             logging.debug("cw_send: inbox record failed dispatch_id=%s", dispatch_id, exc_info=True)
@@ -22459,6 +22461,7 @@ async def send_anagram_to_chat(
                 user_id=int(target_user_id), kind="ag", dispatch_id=int(dispatch_id),
                 chat_id=int(chat_id), telegram_message_id=int(msg.message_id),
                 deeplink=f"ans_ag_{dispatch_id}", title="🔤 Anagramm",
+                keyboard_json=_inbox_kb_json(keyboard),
             )
         except Exception:
             logging.debug("ag_send: inbox record failed dispatch_id=%s", dispatch_id, exc_info=True)
@@ -22711,8 +22714,22 @@ async def _send_challenge_notifications_job(context: CallbackContext) -> None:
                         await context.bot.edit_message_reply_markup(
                             chat_id=chat_id, message_id=message_id,
                             reply_markup=InlineKeyboardMarkup(rows))
+                    except BadRequest as exc:
+                        # "not modified" → the ✅ is already there (success). Any other
+                        # BadRequest (message deleted / can't be edited) is permanent →
+                        # give up so we don't retry forever.
+                        msg = str(exc).lower()
+                        if "not modified" not in msg:
+                            logging.info("inbox_done: permanent edit failure id=%s: %s", n.get("id"), exc)
+                    except (Forbidden,) as exc:
+                        logging.info("inbox_done: blocked, giving up id=%s: %s", n.get("id"), exc)
                     except Exception:
-                        logging.debug("inbox_done: edit markup failed id=%s", n.get("id"), exc_info=True)
+                        # Transient (network / rate-limit / TimedOut): leave the row
+                        # PENDING so the next poll retries — otherwise a single hiccup
+                        # would permanently lose the ✅ marker.
+                        logging.warning("inbox_done: transient edit failure, will retry id=%s",
+                                        n.get("id"), exc_info=True)
+                        continue
                 await asyncio.to_thread(mark_challenge_notification_sent, int(n["id"]))
                 continue
             elif kind == "admin_alert":
@@ -23188,6 +23205,7 @@ async def _send_mistake_review_reminders(context: CallbackContext) -> None:
                     user_id=uid, kind="rv", dispatch_id=day_id, chat_id=uid,
                     telegram_message_id=int(rev_msg.message_id),
                     deeplink="ans_rv_0", title="🔁 Работа над ошибками",
+                    keyboard_json=_inbox_kb_json(kb),
                 )
             except Exception:
                 logging.debug("review reminder: inbox record failed uid=%s", uid, exc_info=True)
@@ -23587,6 +23605,7 @@ async def send_aufgabe_to_chat(
                 user_id=int(target_user_id), kind="au", dispatch_id=int(dispatch_id),
                 chat_id=int(chat_id), telegram_message_id=int(msg.message_id),
                 deeplink=f"ans_au_{dispatch_id}", title="✏️ Aufgabe",
+                keyboard_json=_inbox_kb_json(keyboard),
             )
         except Exception:
             logging.debug("au_send: inbox record failed dispatch_id=%s", dispatch_id, exc_info=True)
@@ -26235,6 +26254,7 @@ async def send_listening_to_chat(
                 user_id=int(target_user_id), kind="ls", dispatch_id=int(dispatch_id),
                 chat_id=int(chat_id), telegram_message_id=int(sent_msg.message_id),
                 deeplink=f"ans_ls_{dispatch_id}", title="🎧 Hörverständnis",
+                keyboard_json=_inbox_kb_json(keyboard),
             )
         except Exception:
             logging.debug("ls_send: inbox record failed dispatch_id=%s", dispatch_id, exc_info=True)
@@ -27048,6 +27068,7 @@ async def _send_poll_quiz_for_target(
             user_id=int(target_chat_id), kind="mc", dispatch_id=int(dispatch_id),
             chat_id=int(target_chat_id), telegram_message_id=int(sent_message.message_id),
             deeplink=f"ans_mc_{dispatch_id}", title="🎯 Quiz",
+            keyboard_json=_inbox_kb_json(quiz_keyboard),
         )
     except Exception:
         logging.debug("mc quiz: inbox record failed", exc_info=True)
