@@ -3522,14 +3522,16 @@ Regeln:
   KEIN Text, keine Buchstaben, keine Labels im Bild.
 - "target_label": das Zielobjekt MIT Artikel (z. B. "der Wasserkocher").
 - "article": nur der Artikel des Zielobjekts: "der" | "die" | "das".
-- "question_de": "Finde {Nomen ohne Artikel} im Bild — tippe darauf und gib den Artikel ein."
+- "question_de": "Finde {Nomen OHNE Artikel} im Bild — tippe darauf und gib den Artikel ein."
+  WICHTIG: das Nomen steht OHNE Artikel (NICHT "die Schere", sondern "Schere") — den
+  Artikel soll der Lernende ja selbst eingeben. KEINE russische Übersetzung im Satz.
 - "erklaerung": „lehrbuchartige“ Erklärung auf Russisch (2–3 Sätze): das Wort, sein Genus und
   WARUM dieser Artikel (Regel/Endung/Bedeutungsgruppe, z. B. -er oft maskulin). Nicht trocken.
 - "tip": EIN kurzer russischer Merk-Tipp zum Genus (Eselsbrücke/Faustregel). Ohne Emoji.
 - "hint_ru": kurze russische Übersetzung des Wortes.
 
 Gib NUR STRICT JSON:
-{"items":[{"image_prompt":"A cluttered kitchen counter: a large shiny toaster prominently in the center, a fruit bowl, a cutting board and jars, and a small electric kettle half-hidden off to the side near the wall, photorealistic, no text","target_label":"der Wasserkocher","article":"der","question_de":"Finde den Wasserkocher im Bild — tippe darauf und gib den Artikel ein.","erklaerung":"…","tip":"…","hint_ru":"чайник (электрический)"}]}
+{"items":[{"image_prompt":"A cluttered kitchen counter: a large shiny toaster prominently in the center, a fruit bowl, a cutting board and jars, and a small electric kettle half-hidden off to the side near the wall, photorealistic, no text","target_label":"der Wasserkocher","article":"der","question_de":"Finde Wasserkocher im Bild — tippe darauf und gib den Artikel ein.","erklaerung":"…","tip":"…","hint_ru":"чайник (электрический)"}]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
 "image_quiz_sentence_fallback": """

@@ -1121,7 +1121,19 @@ def aufgabe_client_meta(fmt: str, payload: dict) -> dict:
             except Exception:
                 meta["audio_url"] = ""
     elif fmt == "pin":
-        meta["question_de"] = str(payload.get("question_de") or "")
+        # The challenge is: read the GERMAN word, find the (hidden) object, tap it,
+        # then supply its article. So during the task we must NOT reveal (a) the
+        # Russian meaning — a Russian speaker would find "ножницы" trivially — nor
+        # (b) the article. We rebuild the question from target_label MINUS the article
+        # (fixes old rows whose stored question_de leaked "die …"), and blank hint_ru
+        # (the Russian meaning is still shown afterwards, in the result card).
+        target_label = str(payload.get("target_label") or "").strip()
+        wort = re.sub(r"^(der|die|das)\s+", "", target_label, flags=re.IGNORECASE).strip()
+        if wort:
+            meta["question_de"] = f"Finde {wort} im Bild — tippe darauf und gib den Artikel ein."
+        else:  # no target_label (shouldn't happen) → fall back to stored text
+            meta["question_de"] = str(payload.get("question_de") or "")
+        meta["hint_ru"] = ""  # never show the Russian meaning during the pin task
         meta["needs_article"] = bool(str(payload.get("article") or "").strip())
         meta["image_url"] = ""
         key = str(payload.get("image_object_key") or "")
