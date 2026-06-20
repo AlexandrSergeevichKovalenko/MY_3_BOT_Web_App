@@ -101,7 +101,10 @@ export default function AskOverlay({ api, context = '', onClose }) {
         onPointerCancel={onHeaderPointerUp}
       >
         <span className="ask-pop-grip">⋮⋮</span>
-        <span className="ask-pop-title">Спросить</span>
+        <span className="ask-pop-titlewrap">
+          <span className="ask-pop-title">Спросить</span>
+          <span className="ask-pop-drag-hint">Зажми и перетащи в удобное место</span>
+        </span>
         <button type="button" className="ask-pop-close" onClick={onClose} aria-label="Закрыть">✕</button>
       </div>
       <div className="ask-pop-thread" ref={threadRef}>

@@ -20,9 +20,14 @@ export default function useFitText(dep, { max = 40, min = 14, padding = 28 } = {
       el.style.fontSize = `${size}px`;
       guard += 1;
     }
-    // Still too wide even at the min size (a very long phrase)? Let it wrap onto
-    // several centred lines instead of overflowing / being clipped.
-    el.style.whiteSpace = el.scrollWidth > avail ? 'normal' : 'nowrap';
+    // Resting state: always allow normal word-wrapping. If the phrase fits at the
+    // size we just settled on, it stays on one line anyway; but if a later change
+    // we can't always re-measure in time (web font finishing, the Telegram sheet
+    // width settling) makes it overflow, the browser wraps the overflowing word
+    // onto the next line instead of clipping it. Combined with `overflow-wrap:
+    // break-word` in the CSS, whole words wrap at the spaces — a long word like
+    // "Kaffeemaschine" drops to the next line intact rather than being cut off.
+    el.style.whiteSpace = 'normal';
   }, [max, min, padding]);
 
   // re-fit on content change (next item) — layout effect avoids a flash

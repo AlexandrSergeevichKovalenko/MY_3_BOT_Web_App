@@ -783,7 +783,13 @@ html[data-scheme="light"] .ans-why-wrong { color: #92400e; }
 .bh-row-title { font-size: 15px; font-weight: 700; color: var(--dmps-text-primary, #F8FAFC); }
 .bh-row-sub { margin-top: 3px; font-size: 13px; color: var(--dmps-text-secondary, #CBD5E1); }
 
-.fit-line { display: inline-block; white-space: nowrap; line-height: 1.15; max-width: 100%; text-align: center; word-break: break-word; overflow-wrap: anywhere; }
+/* Wrap by WHOLE words (at the spaces): when the phrase doesn't fit, the
+   overflowing word drops to the next line intact. `overflow-wrap: break-word`
+   only ever splits a single word if that one word alone is wider than the line —
+   it never breaks mid-word just to pack the line tighter. `word-break: normal`
+   keeps that behaviour (the old `break-word`/`anywhere` pair forced ugly
+   mid-word breaks). useFitText shrinks the font first; this is the fallback. */
+.fit-line { display: inline-block; white-space: nowrap; line-height: 1.15; max-width: 100%; text-align: center; word-break: normal; overflow-wrap: break-word; }
 /* Keep the phrase line a plain inline-block: useFitText shrinks the font by
    reading el.scrollWidth, which only reports overflow on a block box. An
    inline-flex line becomes a shrinkable flex item, so scrollWidth never exceeds
@@ -952,7 +958,9 @@ html[data-scheme="light"] .ask-open-btn { color: #1e1b4b; background: #eef0ff; }
 }
 .ask-pop-head:active { cursor: grabbing; }
 .ask-pop-grip { color: var(--dmps-text-subtle, #64748B); font-size: 14px; letter-spacing: -2px; }
-.ask-pop-title { flex: 1; font-weight: 800; font-size: 15px; color: var(--dmps-text-primary, #F8FAFC); }
+.ask-pop-titlewrap { flex: 1; display: flex; flex-direction: column; gap: 1px; line-height: 1.15; }
+.ask-pop-title { font-weight: 800; font-size: 15px; color: var(--dmps-text-primary, #F8FAFC); }
+.ask-pop-drag-hint { font-size: 10px; font-weight: 500; color: var(--dmps-text-subtle, #64748B); opacity: 0.85; }
 .ask-pop-close {
   border: none; background: transparent; color: var(--dmps-text-muted, #94A3B8);
   font-size: 16px; cursor: pointer; padding: 2px 6px;
