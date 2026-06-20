@@ -648,6 +648,85 @@ def _article_quiz_enabled() -> bool:
     return val in ("1", "true", "yes", "on")
 
 
+# ── Global daily send rotation (Этап 0) ──────────────────────────────────────
+# The scheduler registers one cron job per (kind, slot). Rather than firing all of
+# them every day (~28 sends → notification overload + needless generation), we hold
+# a fixed daily BUDGET and rotate which slots actually deliver. "Always-on" kinds
+# (the 1×/2× interactives) fire daily; the rest (aufgabe formats + article-quiz)
+# rotate to fill the remaining budget. NOTHING is removed from generation — an "off"
+# slot just doesn't deliver today and returns another day; pools stay fuller, so the
+# nightly top-ups generate less. The pick is deterministic per calendar day and the
+# same in every process (see backend/global_rotation.py). This ceiling = the
+# «Интенсивно» preset and the volume the GROUP receives too.
+from backend.global_rotation import (
+    SlotEntry as _SlotEntry,
+    compute_active_slot_keys as _compute_active_slot_keys,
+    slot_key as _slot_key,
+)
+
+GLOBAL_DAILY_SEND_BUDGET = max(1, int((os.getenv("GLOBAL_DAILY_SEND_BUDGET") or "20").strip() or "20"))
+
+# Kinds that always fire (never thinned): the 1×/2× interactives.
+_ROTATION_ALWAYS_ON_KINDS = {
+    "rebus", "crossword", "anagram", "sprint",
+    "artikel_sprint", "adjektiv_sprint", "artikel_learn", "listening",
+}
+# Rotation weight for the rotating pool (higher → appears more often). Article-quiz
+# is text-only and the least engaging → weighted slightly down.
+_ROTATION_WEIGHTS = {"article_quiz": 0.8, "aufgabe": 1.0}
+
+_rotation_catalog_cache: list | None = None
+_rotation_active_cache: tuple[int, frozenset] | None = None
+
+
+def _build_rotation_catalog() -> list:
+    """Assemble the SlotEntry catalog from the live slot constants. Built lazily +
+    cached so every slot constant (some defined far below) exists at call time."""
+    global _rotation_catalog_cache
+    if _rotation_catalog_cache is not None:
+        return _rotation_catalog_cache
+    entries: list = []
+
+    def add(kind: str, slots, *, always_on: bool) -> None:
+        weight = float(_ROTATION_WEIGHTS.get(kind, 1.0))
+        for (h, m) in slots:
+            entries.append(_SlotEntry(kind, int(h), int(m), weight=weight, always_on=always_on))
+
+    # Always-on (1×/2× types — never thinned).
+    add("rebus", REBUS_SLOT_TIMES, always_on=True)
+    add("crossword", CROSSWORD_SLOT_TIMES, always_on=True)
+    add("anagram", ANAGRAM_SLOT_TIMES, always_on=True)
+    add("sprint", SPRINT_SLOT_TIMES.keys(), always_on=True)
+    add("adjektiv_sprint", ADJEKTIV_SPRINT_SLOTS, always_on=True)
+    add("artikel_sprint", [ARTIKEL_SPRINT_SLOT], always_on=True)
+    add("artikel_learn", [ARTIKEL_LEARN_SLOT], always_on=True)
+    add("listening", [LISTENING_SLOT_TIME], always_on=True)
+    # Rotating pool (thinned to fit the budget).
+    add("article_quiz", ARTICLE_QUIZ_SLOT_TIMES, always_on=False)
+    add("aufgabe", AUFGABE_FORMAT_SLOTS.keys(), always_on=False)
+
+    _rotation_catalog_cache = entries
+    return entries
+
+
+def _global_rotation_active_keys(now: datetime | None = None) -> frozenset:
+    """Slot keys that should FIRE today, cached per calendar day."""
+    global _rotation_active_cache
+    day = (now or _get_quiz_schedule_now()).date().toordinal()
+    if _rotation_active_cache is not None and _rotation_active_cache[0] == day:
+        return _rotation_active_cache[1]
+    active = frozenset(_compute_active_slot_keys(
+        _build_rotation_catalog(), day, GLOBAL_DAILY_SEND_BUDGET))
+    _rotation_active_cache = (day, active)
+    return active
+
+
+def _is_global_slot_active_today(kind: str, hour: int, minute: int,
+                                 now: datetime | None = None) -> bool:
+    """True if this (kind, slot) is in today's rotation budget (or always-on)."""
+    return _slot_key(kind, hour, minute) in _global_rotation_active_keys(now)
+
+
 def _format_quiz_delivery_slot(slot_dt: datetime) -> str:
     return f"{int(slot_dt.hour):02d}:{int(slot_dt.minute):02d}"
 
@@ -28130,6 +28209,28 @@ def main():
 
         fut.add_done_callback(_log_scheduler_failure)
 
+    def make_rotation_gated(kind, hour, minute, async_func, *extra):
+        """Этап 0: wrap a scheduled interactive sender so it only fires when its
+        (kind, slot) is in today's global rotation budget. Always-on kinds always
+        pass; a thinned slot just skips delivery today (pool generation untouched).
+        Fails OPEN on any gate error — an occasional over-send beats a silent
+        blackout if the rotation ever misbehaves."""
+        def _job():
+            try:
+                if not _is_global_slot_active_today(kind, hour, minute):
+                    logging.info(
+                        "rotation_skip kind=%s slot=%02d:%02d budget=%s",
+                        kind, int(hour), int(minute), GLOBAL_DAILY_SEND_BUDGET,
+                    )
+                    return
+            except Exception:
+                logging.warning(
+                    "rotation gate failed kind=%s slot=%02d:%02d — firing anyway",
+                    kind, int(hour), int(minute), exc_info=True,
+                )
+            submit_async(async_func, CallbackContext(application=application), *extra)
+        return _job
+
     # def run_async_job(async_func, context=None, *args, **kwargs):
     #     if context is None:
     #         context = CallbackContext(application=application)   # Создаем `context`, если его нет
@@ -28272,7 +28373,7 @@ def main():
         # -- Rebus (Komposita) hourly slots: 8:30–20:30 Europe/Vienna --
         for _rb_hour, _rb_minute in sorted(REBUS_SLOT_TIMES):
             scheduler.add_job(
-                lambda: submit_async(_send_scheduled_rebuses, CallbackContext(application=application)),
+                make_rotation_gated("rebus", _rb_hour, _rb_minute, _send_scheduled_rebuses),
                 "cron",
                 hour=_rb_hour,
                 minute=_rb_minute,
@@ -28295,7 +28396,7 @@ def main():
         # -- Article quiz (der/die/das) slots: 9:15, 13:15, 17:15 Europe/Vienna --
         for _aq_hour, _aq_minute in sorted(ARTICLE_QUIZ_SLOT_TIMES):
             scheduler.add_job(
-                lambda: submit_async(_send_scheduled_article_quiz, CallbackContext(application=application)),
+                make_rotation_gated("article_quiz", _aq_hour, _aq_minute, _send_scheduled_article_quiz),
                 "cron",
                 hour=_aq_hour,
                 minute=_aq_minute,
@@ -28318,7 +28419,7 @@ def main():
         # -- Crossword slots: 11:45, 17:45 Europe/Vienna --
         for _cw_hour, _cw_minute in sorted(CROSSWORD_SLOT_TIMES):
             scheduler.add_job(
-                lambda: submit_async(_send_scheduled_crossword, CallbackContext(application=application)),
+                make_rotation_gated("crossword", _cw_hour, _cw_minute, _send_scheduled_crossword),
                 "cron",
                 hour=_cw_hour,
                 minute=_cw_minute,
@@ -28341,7 +28442,7 @@ def main():
         # -- Anagram (assemble-the-word) Mini-App card slots --
         for _ag_hour, _ag_minute in sorted(ANAGRAM_SLOT_TIMES):
             scheduler.add_job(
-                lambda: submit_async(_send_scheduled_anagram, CallbackContext(application=application)),
+                make_rotation_gated("anagram", _ag_hour, _ag_minute, _send_scheduled_anagram),
                 "cron",
                 hour=_ag_hour,
                 minute=_ag_minute,
@@ -28364,7 +28465,7 @@ def main():
         # -- Aufgabe (B2+ text tasks): one daily slot per format → all formats sent daily --
         for (_au_hour, _au_minute), _au_fmt in sorted(AUFGABE_FORMAT_SLOTS.items()):
             scheduler.add_job(
-                (lambda fmt=_au_fmt: submit_async(_send_scheduled_aufgabe, CallbackContext(application=application), fmt)),
+                make_rotation_gated("aufgabe", _au_hour, _au_minute, _send_scheduled_aufgabe, _au_fmt),
                 "cron",
                 hour=_au_hour,
                 minute=_au_minute,
@@ -28379,7 +28480,7 @@ def main():
         # -- Synonym/Antonym Sprint: 1×/day each --
         for (_sp_hour, _sp_minute), _sp_rel in sorted(SPRINT_SLOT_TIMES.items()):
             scheduler.add_job(
-                (lambda rel=_sp_rel: submit_async(_send_scheduled_sprint, CallbackContext(application=application), rel)),
+                make_rotation_gated("sprint", _sp_hour, _sp_minute, _send_scheduled_sprint, _sp_rel),
                 "cron",
                 hour=_sp_hour,
                 minute=_sp_minute,
@@ -28395,7 +28496,7 @@ def main():
         )
         # -- Artikel Sprint: one daily reminder (default 19:00) --
         scheduler.add_job(
-            lambda: submit_async(_send_scheduled_artikel_sprint, CallbackContext(application=application)),
+            make_rotation_gated("artikel_sprint", int(ARTIKEL_SPRINT_SLOT[0]), int(ARTIKEL_SPRINT_SLOT[1]), _send_scheduled_artikel_sprint),
             "cron",
             hour=int(ARTIKEL_SPRINT_SLOT[0]),
             minute=int(ARTIKEL_SPRINT_SLOT[1]),
@@ -28404,7 +28505,7 @@ def main():
         # -- Adjektiv Sprint: two daily sets (10:00 and 15:30) --
         for _adj_h, _adj_m in ADJEKTIV_SPRINT_SLOTS:
             scheduler.add_job(
-                lambda: submit_async(_send_scheduled_adjektiv_sprint, CallbackContext(application=application)),
+                make_rotation_gated("adjektiv_sprint", int(_adj_h), int(_adj_m), _send_scheduled_adjektiv_sprint),
                 "cron",
                 hour=int(_adj_h),
                 minute=int(_adj_m),
@@ -28412,7 +28513,7 @@ def main():
             )
         # -- Artikel Trainer: morning learning nudge / all-day entry point (08:00) --
         scheduler.add_job(
-            lambda: submit_async(_send_scheduled_artikel_learn, CallbackContext(application=application)),
+            make_rotation_gated("artikel_learn", int(ARTIKEL_LEARN_SLOT[0]), int(ARTIKEL_LEARN_SLOT[1]), _send_scheduled_artikel_learn),
             "cron",
             hour=int(ARTIKEL_LEARN_SLOT[0]),
             minute=int(ARTIKEL_LEARN_SLOT[1]),
@@ -28573,7 +28674,7 @@ def main():
         # -- Hörverständnis: daily at 18:30 --
         _ls_hour, _ls_minute = LISTENING_SLOT_TIME
         scheduler.add_job(
-            lambda: submit_async(_send_scheduled_listening, CallbackContext(application=application)),
+            make_rotation_gated("listening", _ls_hour, _ls_minute, _send_scheduled_listening),
             "cron",
             hour=_ls_hour,
             minute=_ls_minute,
