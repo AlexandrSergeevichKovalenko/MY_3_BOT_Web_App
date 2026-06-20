@@ -19681,8 +19681,17 @@ async def admin_rebus_add_command(update: Update, context: CallbackContext) -> N
 
 async def admin_rebus_recheck_command(update: Update, context: CallbackContext) -> None:
     """Re-verify existing rebus component images against the vision gate; bad ones
-    (wrong object / answer-reveal) are failed + their compounds reset to recompose
-    with freshly gated images. /admin_rebus_recheck [limit]"""
+    (wrong object / word↔meaning desync) are failed + their compounds reset to
+    recompose with freshly gated images.
+
+    /admin_rebus_recheck [limit]            — re-check ready images (cap 300)
+    /admin_rebus_recheck pregate [limit]    — ONLY the pre-gate images (dalle_prompt
+                                              NULL — generated before the image↔meaning
+                                              gate existed, never validated). Cap 500.
+
+    Both feed each image's expected Russian meaning (from the rebus parts) to the
+    gate, so a stale image that no longer matches its part's meaning is caught —
+    not just blatant wrong-object renders."""
     user = update.effective_user
     message = update.effective_message
     if not user or not message:
@@ -19690,21 +19699,28 @@ async def admin_rebus_recheck_command(update: Update, context: CallbackContext) 
     if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
         await message.reply_text("Allowed users only.")
         return
-    args = context.args or []
+    args = [str(a).strip() for a in (context.args or [])]
+    pregate = bool(args) and args[0].lower() in ("pregate", "pre", "stale")
+    num_args = [a for a in args if a.isdigit()]
+    cap = 500 if pregate else 300
+    default = cap if pregate else 120
     try:
-        limit = max(1, min(300, int(args[0]))) if args else 120
+        limit = max(1, min(cap, int(num_args[0]))) if num_args else default
     except (ValueError, IndexError):
-        limit = 120
-    status_msg = await message.reply_text(f"Перепроверяю до {limit} картинок vision-гейтом…")
+        limit = default
+    status_msg = await message.reply_text(
+        f"Перепроверяю до {limit} {'до-гейтовых ' if pregate else ''}картинок vision-гейтом…"
+    )
 
-    def _recheck(lim: int) -> dict:
+    def _recheck(lim: int, pregate_only: bool) -> dict:
         from backend.database import (
             list_ready_rebus_component_images, upsert_rebus_component_image,
-            reset_rebus_compounds_for_part,
+            reset_rebus_compounds_for_part, get_rebus_part_meanings,
         )
         from backend.openai_manager import run_image_depicts
         from backend.r2_storage import r2_get_bytes
-        rows = list_ready_rebus_component_images(lim)
+        rows = list_ready_rebus_component_images(lim, pregate_only=pregate_only)
+        meanings = get_rebus_part_meanings()
         checked = 0
         bad: list[str] = []
         reset = 0
@@ -19721,7 +19737,7 @@ async def admin_rebus_recheck_command(update: Update, context: CallbackContext) 
                 continue
             checked += 1
             mime = "image/webp" if key.endswith(".webp") else "image/png"
-            verdict = run_image_depicts(bytes(img), word, mime=mime)
+            verdict = run_image_depicts(bytes(img), word, meaning=meanings.get(word, ""), mime=mime)
             if not verdict.get("ok"):
                 bad.append(f"{word} ({verdict.get('reason') or '?'})")
                 upsert_rebus_component_image(word, generation_status="failed",
@@ -19730,7 +19746,7 @@ async def admin_rebus_recheck_command(update: Update, context: CallbackContext) 
         return {"checked": checked, "bad": bad, "compounds_reset": reset}
 
     try:
-        result = await asyncio.to_thread(_recheck, limit)
+        result = await asyncio.to_thread(_recheck, limit, pregate)
     except Exception as exc:
         await status_msg.edit_text(f"Error: {exc}")
         return

@@ -34847,17 +34847,44 @@ def mark_rebus_composed(compound_id: str, *, image_object_key: str) -> None:
         conn.commit()
 
 
-def list_ready_rebus_component_images(limit: int = 200) -> list[dict]:
-    """Ready component images — for re-verifying them against the vision gate."""
+def list_ready_rebus_component_images(limit: int = 200, *, pregate_only: bool = False) -> list[dict]:
+    """Ready component images — for re-verifying them against the vision gate.
+
+    `pregate_only` restricts to images with no stored prompt (`dalle_prompt IS
+    NULL`): those were generated before the image↔meaning vision gate existed and
+    were never validated against their Russian meaning — the systemic blind spot."""
+    sql = (
+        "SELECT word, image_object_key FROM bt_3_rebus_component_images "
+        "WHERE generation_status = 'ready' AND image_object_key IS NOT NULL "
+    )
+    if pregate_only:
+        sql += "AND dalle_prompt IS NULL "
+    sql += "ORDER BY word LIMIT %s"
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(
-                "SELECT word, image_object_key FROM bt_3_rebus_component_images "
-                "WHERE generation_status = 'ready' AND image_object_key IS NOT NULL "
-                "ORDER BY word LIMIT %s",
-                (int(limit),),
-            )
+            cursor.execute(sql, (int(limit),))
             return [{"word": r[0], "image_object_key": r[1]} for r in (cursor.fetchall() or [])]
+
+
+def get_rebus_part_meanings() -> dict:
+    """word → meaning_ru, harvested from every non-retired rebus's parts. Lets the
+    component re-check feed each image's expected Russian meaning to the vision
+    gate (catches word↔meaning desync, not just wrong-object). First value wins."""
+    out: dict[str, str] = {}
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT parts_json FROM bt_3_rebus_bank WHERE retired = FALSE")
+            for (parts,) in (cursor.fetchall() or []):
+                if not isinstance(parts, list):
+                    continue
+                for p in parts:
+                    if not isinstance(p, dict):
+                        continue
+                    w = str(p.get("word") or "").strip()
+                    m = str(p.get("meaning_ru") or "").strip()
+                    if w and m and w not in out:
+                        out[w] = m
+    return out
 
 
 def reset_rebus_compounds_for_part(word: str) -> int:
