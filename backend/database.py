@@ -29227,6 +29227,23 @@ def _get_user_subscription_with_cursor(cursor, user_id: int) -> dict | None:
     return _subscription_row_to_dict(row) if row else None
 
 
+def _pro_denylist() -> set[int]:
+    """Telegram user ids force-kept on Free regardless of ANY subscription — incl.
+    Stripe TEST-mode "subscriptions" where any fake card grants Pro. Set via env
+    PRO_DENYLIST="123,456". Fully reversible: clear the env to restore their Pro."""
+    raw = (os.getenv("PRO_DENYLIST") or "").replace(";", ",").replace(" ", ",")
+    out: set[int] = set()
+    for tok in raw.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            out.add(int(tok))
+        except ValueError:
+            continue
+    return out
+
+
 def resolve_entitlement(
     user_id: int,
     now_ts_utc: datetime | None = None,
@@ -29291,6 +29308,16 @@ def resolve_entitlement(
         effective_mode = "free"
         if status == "trialing":
             source_of_entitlement = "expired_or_invalid_trial"
+
+    # Admin denylist: block the SELF-SERVE subscription path (incl. Stripe TEST-mode
+    # re-subscribes) for these ids — they must EARN Pro via the reward engine instead
+    # of holding an idle freebie. Reversible via the PRO_DENYLIST env.
+    # NOTE (Этап 4): when the earned/reward Pro grant lands, check it ABOVE this block
+    # so denylisted users can still use Pro they actually EARNED — the denylist only
+    # kills the self-serve shortcut, not honestly-earned access.
+    if int(user_id) in _pro_denylist():
+        effective_mode = "free"
+        source_of_entitlement = "pro_denylisted"
 
     free_plan = (
         _get_billing_plan_with_cursor(cursor, "free")
