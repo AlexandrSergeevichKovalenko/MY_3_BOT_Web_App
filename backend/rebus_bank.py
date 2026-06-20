@@ -1182,17 +1182,10 @@ REBUS_COMPOUND_BANK: list[dict] = [
         "wrong_options": ["Kuhstall", "Hühnerei", "Pferdestall"],
         "explanation_ru": "Huhn (курица) + Stall (сарай) = Hühnerstall — курятник",
     },
-    {
-        "id": "angelrute_001",
-        "compound": "Angelrute",
-        "article": "die",
-        "meaning_ru": "удочка",
-        "difficulty": "B1",
-        "category": "sport",
-        "parts": [{"word": "Angel", "meaning_ru": "крючок"}, {"word": "Rute", "meaning_ru": "прут"}],
-        "wrong_options": ["Angelschnur", "Wanderrute", "Fischnetz"],
-        "explanation_ru": "Angel (крючок/снасть) + Rute (прут) = Angelrute",
-    },
+    # Retired: a broken visual rebus. "Angel" IS German for the fishing rod
+    # (удочка) — so its component image renders the whole answer "Angelrute"
+    # (удочка), giving it away, and labelling the part «крючок» is simply wrong.
+    # Removed from the code bank so sync_rebus_bank_from_code() keeps it retired.
     {
         "id": "krankenwagen_001",
         "compound": "Krankenwagen",
