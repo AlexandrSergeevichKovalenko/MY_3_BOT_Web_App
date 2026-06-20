@@ -98,6 +98,7 @@ _DEFAULT_RESPONSES_TASKS = {
     "sprint_antonym",
     "check_synonym",
     "check_synonym_batch",
+    "check_wortgruppe_batch",
     "word_order_distractors",
     "image_quiz_sentence_fallback",
     "image_quiz_visual_screen",
@@ -3078,64 +3079,62 @@ Gib NUR STRICT JSON:
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
 "aufgabe_wortgruppe": """
-Du erstellst anspruchsvolle deutsche Wortgruppen-Aufgaben für B2–C2.
+Du erstellst anspruchsvolle deutsche Wortgruppen-Aufgaben für C1–C2.
 
 Eingabe-JSON: {"count": <int>, "level": "C1"|"C2"}.
 
-Jede Aufgabe: EIN natürlicher deutscher Satz mit GENAU EINER Lücke "_____". Die
-Lücke steht für EINE vollständige grammatische Wortgruppe (2–5 Wörter), nicht für
-ein einzelnes Wort.
+SO BAUST DU JEDE AUFGABE (Reihenfolge EINHALTEN):
+1) Schreibe EINEN vollständigen, natürlichen, grammatisch EINWANDFREIEN deutschen
+   Satz (C1) → Feld "vollsatz". Ein Muttersprachler muss ihn als korrekt UND
+   idiomatisch akzeptieren.
+2) Wähle darin EINEN ZUSAMMENHÄNGENDEN Ausschnitt als Lösung → Feld "correct".
+   BEVORZUGT der VORDERE Teil eines Nebensatzes INKL. einleitender Konjunktion oder
+   Präposition; das zugehörige FINITE (gebeugte) Verb steht am SATZENDE und bleibt
+   SICHTBAR — es gehört NICHT in die Lücke. So bleibt die ganze Gruppe an EINER Stelle.
+3) "satz" = exakt "vollsatz", aber mit "correct" durch GENAU EIN "_____" ersetzt.
+   HARTE PFLICHT: setzt man "correct" wieder für "_____" ein, ergibt sich WORTGENAU
+   wieder "vollsatz" (gleiche Wörter, gleiche Zeichen, gleiche Reihenfolge).
 
-KONZEPT: Der/die Lernende bekommt die GRUNDFORMEN der Inhaltswörter vorgegeben
-("lemmas") und muss daraus selbst die korrekte Gruppe bauen — also Artikel,
-Kasus/Endungen, Reflexivpronomen, zu-Infinitiv UND vor allem die richtige
-PRÄPOSITION ergänzen. Die Grammatik macht der Lernende; die Wörter geben WIR vor,
-damit die Lösung eindeutig ist und ohne Synonym-Raten geprüft werden kann.
+EINDEUTIGKEIT (HARTE PFLICHT):
+- Mit den gegebenen Stützwörtern ("lemmas") darf es GENAU EINE grammatisch korrekte,
+  natürliche Lösung geben.
+- VERBOTEN sind Verben/Konstruktionen mit ZWEI zulässigen Rektionen, bei denen
+  DIESELBEN Inhaltswörter mehrere richtige Gruppen erlauben. Beispiel "abwägen":
+  sowohl "die Vorteile und Nachteile abwägen" (Akkusativ) ALS AUCH "zwischen den
+  Vorteilen und Nachteilen abwägen" (Dativ) ist korrekt → MEHRDEUTIG → NICHT
+  verwenden. Nimm nur Konstruktionen, deren Lösung mit den lemmas EINDEUTIG ist.
+- Nur ORTHOGRAFISCHE Doubletten (z. B. mit/ohne wiederholten Artikel) sind erlaubt;
+  liste sie ALLE in "accepted".
 
-Geeignete Typen (abwechslungsreich mischen):
-- Nominalgruppen mit Artikel und Kasussteuerung: "die Freiheit der Presse"
-- Präpositionalgruppen: "mit dem nötigen Abstand", "auf den ersten Blick"
-- Verbgruppen mit Rektion: "sich mit einem Thema auseinandersetzen"
-- Infinitivgruppen: "ohne lange zu zögern", "um die Lage besser zu verstehen"
-- feste grammatische Wendungen auf hohem Niveau
+STÜTZWÖRTER "lemmas" (das EINZIGE, was der Lernende sieht):
+- ALLE Inhaltswörter der Lösung, OHNE Artikel:
+  • Substantive im Nominativ, OHNE Artikel, im für die Lösung passenden NUMERUS
+    (z. B. "Vorteile", "Nachteile").
+  • Pronomen wie "man" werden mit aufgeführt.
+  • Verben im INFINITIV; Adjektive/Adverbien in der Grundform.
+- NIEMALS in "lemmas": Artikel, Konjunktion ("ob","dass","und"), Präposition, "zu",
+  Reflexivpronomen, gebeugte Formen, Kasusendungen. GENAU DAS ergänzt der Lernende.
 
-Felder pro Aufgabe:
-- "satz" = ein natürlicher Satz mit genau einer Lücke "_____", die die KOMPLETTE
-  Zielgruppe zusammenhängend (an EINER Stelle) umfasst (kein Teil der Gruppe steht
-  schon sichtbar im Satz). WENN die Gruppe ein FINITES (gebeugtes) Verb enthält:
-  baue den Satz so, dass die ganze Gruppe ohne Satzklammer-Trennung in EINER Lücke
-  steht (z. B. im Nebensatz mit Verb am Ende) — sonst würde das Verb zerrissen.
-  REFLEXIVE Verben am besten als zu-Infinitivgruppe ("sich … zu …"), damit "sich"
-  zusammenhängend in der Lücke bleibt; ein FINITES reflexives Verb zieht "sich" nach
-  vorne (Gruppe zerrissen) — solche Gruppen NICHT verwenden.
-- "lemmas" = Liste der vorzugebenden Inhaltswörter in der GRUNDFORM:
-  • Nomen OHNE Artikel ("Thema", "Presse").
-  • Verb im INFINITIV, reflexive Verben mit "sich" ("sich auseinandersetzen").
-  • Adjektiv/Adverb in der Grundform OHNE Endung ("nötig", "erst").
-  • Die PRÄPOSITION NIEMALS in die lemmas aufnehmen — sie zu finden ist die Aufgabe.
-  • Keine Funktionswörter (Artikel, Hilfsverben, "zu") in die lemmas.
-- "tense" = NUR wenn die Gruppe ein finites Verb verlangt, das gewünschte Tempus
-  als deutsches Etikett: "Präsens" | "Präteritum" | "Perfekt" | "Plusquamperfekt".
-  Bei Gruppen OHNE finites Verb (Nominal-/Präpositional-/zu-Infinitivgruppe): "".
-- "preposition" = die in der Lücke benötigte Präposition (z. B. "mit"); "" wenn keine.
-- "correct" = die vollständige, korrekt gebeugte Wortgruppe genau so, wie sie in die
-  Lücke gehört (inkl. Artikel, Präposition, Endungen, ggf. "zu"/Reflexivpronomen).
-- "aliases" = nur ECHTE gleichwertige Varianten DERSELBEN Wörter (z. B. zulässige
-  Umstellungen), sonst []. KEINE lexikalischen Synonyme — die Wörter sind fix.
-- "hint_ru" = kurze russische Bedeutungsangabe der GANZEN Gruppe (Sinn erkennbar,
-  aber die deutsche Form nicht ablesbar).
-- "erklaerung" = klare russische Lehrbuch-Erklärung (2–3 Sätze): welcher Kasus /
-  welche Rektion / welche Präposition und warum.
-- "tip" = kurzer russischer Merksatz oder Eselsbrücke.
+FELDER pro Aufgabe:
+- "vollsatz", "satz", "lemmas" (Liste), "correct".
+- "hidden_glue" = die versteckte Konjunktion/Präposition, die der Lernende finden muss
+  (z. B. "ob", "zwischen", "mit"); "" wenn keine.
+- "accepted" = Liste ALLER gleichwertigen Schreibungen von "correct" (enthält
+  "correct" selbst).
+- "hint_ru" = kurze russische Bedeutungsangabe der GANZEN Gruppe (Sinn klar, deutsche
+  Form NICHT ablesbar).
+- "erklaerung" = klare russische Erklärung (2–3 Sätze): welche Konjunktion/Präposition,
+  welcher Kasus/welche Rektion und warum.
+- "tip" = kurzer russischer Merksatz.
 
-Pflichten / Qualität:
-- Mit den vorgegebenen lemmas + der gesuchten Präposition + der geforderten Grammatik
-  (und ggf. "tense") muss "correct" die EINZIGE richtige Lösung sein.
-- Die lemmas decken GENAU die Inhaltswörter von "correct" ab (keines fehlt, keines zu viel).
-- Sätze natürlich und realistisch, Niveau C1/C2 in der Konstruktion.
+QUALITÄT:
+- "lemmas" decken GENAU die Inhaltswörter von "correct" ab (keines fehlt, keines zu viel).
+
+WORKED EXAMPLE:
+{"vollsatz":"Eine gute Entscheidung hängt oft davon ab, ob man die Vorteile und Nachteile sorgfältig abwägt.","satz":"Eine gute Entscheidung hängt oft davon ab, _____ sorgfältig abwägt.","lemmas":["man","Vorteile","Nachteile"],"hidden_glue":"ob","correct":"ob man die Vorteile und Nachteile","accepted":["ob man die Vorteile und Nachteile","ob man die Vorteile und die Nachteile"],"hint_ru":"взвесить плюсы и минусы","erklaerung":"…","tip":"…"}
 
 Gib NUR STRICT JSON zurück:
-{"items":[{"satz":"Es ist wichtig, _____ und nicht alles oberflächlich zu betrachten.","lemmas":["sich auseinandersetzen","Thema"],"tense":"","preposition":"mit","correct":"sich mit dem Thema auseinanderzusetzen","aliases":[],"erklaerung":"…","tip":"…","hint_ru":"…"}]}
+{"items":[{ … Felder wie oben … }]}
 Genau "count" Aufgaben, alle verschieden, ohne Markdown.
 """,
 "aufgabe_adjektiv": """
@@ -3369,6 +3368,22 @@ at B2+ level. Ignore article/case/capitalization/spacing. Accept genuine close s
 opposites); REJECT merely topically related words, wrong part of speech, the same word as target, or
 wrong-direction relations. Be reasonably generous for real near-synonyms.
 Return STRICT JSON ONLY: {"valid": ["<exactly the candidate strings you accept>"]}.
+""",
+"check_wortgruppe_batch": """
+You verify German "Wortgruppe" grammar exercises. Input JSON:
+{"items":[{"vollsatz":"...","satz":"...","lemmas":["...","..."],"correct":"..."}, ...]}.
+For EACH item, in input order, judge TWO things:
+(a) GRAMMAR: is "vollsatz" fully grammatical and natural German at C1 level — would a
+    native speaker accept it as correct AND idiomatic? (Watch for wrong verb rection /
+    a matrix that does not license the construction, e.g. "abhängen von … zu+Infinitiv".)
+(b) UNIQUENESS: the learner sees ONLY "satz" (with the gap) plus "lemmas" — the content
+    words in base form, WITHOUT any article, conjunction or preposition. Given EXACTLY
+    those words, is "correct" the ONE AND ONLY grammatically correct, natural way to fill
+    the gap? If the same lemmas allow a DIFFERENT valid filling (another case/rection,
+    e.g. accusative object vs. "zwischen"+dative), it is NOT unique → fail.
+Return STRICT JSON ONLY, one result per item, SAME order:
+{"results":[{"ok": true|false, "accepted":["<every equivalent correct spelling, incl. correct>"]}, ...]}
+ok = true ONLY if BOTH (a) and (b) hold; otherwise ok=false and accepted=[].
 """,
 "check_synonym": """
 You judge German vocabulary. Input JSON: {"target": "...", "candidate": "...", "relation": "synonym"|"antonym"}.
@@ -6052,8 +6067,69 @@ async def run_generate_aufgabe(format: str, *, count: int = 6, level: str = "B2"
                     logging.info("aufgabe %s: dropped degenerate item=%s", fmt, it)
                     continue
                 kept.append(it)
-            return kept
+            items = kept
+        # wortgruppe: an LLM verifier confirms each item's full sentence is grammatical
+        # AND its solution is UNIQUE given only the shown lemmas — catches mehrdeutig
+        # constructions (e.g. "abwägen" accusative vs. "zwischen"+dative) and broken
+        # carriers that no answer fits. Failing items are dropped; the verifier's
+        # accepted-list is attached so grading accepts every equivalent spelling.
+        # Infra failure → fail-open (keep items; the deterministic vollsatz gate in
+        # _aufgabe_payload_from_item still applies downstream).
+        if fmt == "wortgruppe" and items:
+            verdicts = await run_check_wortgruppe_batch(items=items)
+            if verdicts and len(verdicts) == len(items):
+                verified = []
+                for it, v in zip(items, verdicts):
+                    if not v.get("ok"):
+                        logging.info("aufgabe wortgruppe: verifier dropped item satz=%s", it.get("satz"))
+                        continue
+                    acc = v.get("accepted") or []
+                    if acc:
+                        it["accepted"] = acc
+                    verified.append(it)
+                items = verified
+        return items
     return items
+
+
+async def run_check_wortgruppe_batch(*, items: list[dict]) -> list[dict]:
+    """Verify a batch of wortgruppe items in ONE LLM call (pool-prep, off the hot
+    path). For each: the full sentence must be grammatical AND the solution must be
+    UNIQUE given only the shown lemmas. Returns a list aligned to input order,
+    [{"ok": bool, "accepted": [...]}]; [] on failure/timeout (caller fails open)."""
+    payload_items = [{
+        "vollsatz": str(it.get("vollsatz") or ""),
+        "satz": str(it.get("satz") or ""),
+        "lemmas": [str(l) for l in (it.get("lemmas") or [])],
+        "correct": str(it.get("correct") or ""),
+    } for it in (items or [])]
+    if not payload_items:
+        return []
+    try:
+        content = await llm_execute(
+            task_name="check_wortgruppe_batch",
+            system_instruction_key="check_wortgruppe_batch",
+            user_message=json.dumps({"items": payload_items}, ensure_ascii=False),
+            poll_interval_seconds=1.5,
+            responses_timeout_seconds=30.0,
+        )
+        data = json.loads(content)
+        results = data.get("results") if isinstance(data, dict) else None
+        if not isinstance(results, list):
+            return []
+        out: list[dict] = []
+        for r in results:
+            if isinstance(r, dict):
+                out.append({
+                    "ok": bool(r.get("ok")),
+                    "accepted": [str(a) for a in (r.get("accepted") or []) if str(a).strip()],
+                })
+            else:
+                out.append({"ok": False, "accepted": []})
+        return out
+    except Exception:
+        logging.warning("run_check_wortgruppe_batch failed", exc_info=True)
+        return []
 
 
 async def run_check_synonym_batch(*, target_word: str, candidates: list[str], relation: str = "synonym") -> set[str]:

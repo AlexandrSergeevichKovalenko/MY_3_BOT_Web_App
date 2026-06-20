@@ -23769,25 +23769,55 @@ def _aufgabe_payload_from_item(fmt: str, it: dict) -> dict | None:
                 payload["stamm_ru"] = stamm_ru
         return payload
     if fmt == "wortgruppe":
-        # Variant C: we GIVE the base-form lemmas; the learner builds the grammar
-        # (article, case, endings, reflexive, zu-Infinitiv) AND supplies the hidden
-        # preposition. With lexis fixed by us, there is exactly one correct group —
-        # so grading stays a deterministic backend exact-match (no runtime LLM, no
-        # synonym guessing). The preposition is the challenge and is NEVER shown.
+        # We GIVE the base-form content words (lemmas, no articles); the learner
+        # supplies ALL grammar — conjunction/preposition, articles, case, endings,
+        # word order. Uniqueness of the answer is enforced upstream by the LLM
+        # verifier (run_check_wortgruppe_batch); here are the deterministic guards
+        # that need no model. Grading is a backend exact-match against `accepted`.
         satz = str(it.get("satz") or "").strip()
         correct = str(it.get("correct") or "").strip()
+        vollsatz = str(it.get("vollsatz") or "").strip()
         lemmas = [str(w).strip() for w in (it.get("lemmas") or []) if str(w).strip()]
-        if not satz or "_____" not in satz or len(correct.split()) < 2 or not lemmas:
+        if not satz or satz.count("_____") != 1 or not lemmas:
             return None
-        preposition = str(it.get("preposition") or "").strip()
-        tense = str(it.get("tense") or "").strip()
-        # The preposition must never leak into the shown lemmas (else it gives the
-        # task away). Drop the item if it does — no silent stripping.
-        if preposition and any(l.casefold() == preposition.casefold() for l in lemmas):
+        if not (2 <= len(correct.split()) <= 6):
             return None
-        return {"satz": satz, "correct": correct,
-                "aliases": [str(a) for a in (it.get("aliases") or []) if str(a).strip()],
-                "lemmas": lemmas, "tense": tense, "preposition": preposition, **common}
+
+        def _wg_norm(s: str) -> str:
+            return " ".join(str(s or "").split()).strip().casefold()
+
+        # Carrier + answer must reproduce the full sentence WORD-FOR-WORD. This is the
+        # core fix: it rejects a broken frame like "…hängt davon ab, _____ abzuwägen",
+        # where the matrix licenses no correct filling. No clean vollsatz → drop.
+        if not vollsatz or _wg_norm(satz.replace("_____", correct)) != _wg_norm(vollsatz):
+            return None
+
+        # The shown words must be CONTENT words only: no article/conjunction/
+        # preposition/"zu" may leak into the lemmas (finding them is the task), and
+        # the hidden glue must not be shown. (Checks each lemma AS A WHOLE, so a
+        # multiword lemma like "sich auseinandersetzen" is fine.)
+        _WG_FUNCTION = {
+            "der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "einem",
+            "eines", "einer", "zu", "ob", "dass", "und", "oder", "aber", "sich", "nicht",
+            "mit", "von", "für", "auf", "an", "in", "bei", "zwischen", "über", "unter",
+            "aus", "nach", "um", "durch", "gegen", "ohne", "vor", "wegen", "trotz",
+        }
+        hidden_glue = str(it.get("hidden_glue") or it.get("preposition") or "").strip()
+        if any(_wg_norm(l) in _WG_FUNCTION for l in lemmas):
+            return None
+        if hidden_glue and any(_wg_norm(l) == _wg_norm(hidden_glue) for l in lemmas):
+            return None
+
+        # accepted = correct + every equivalent spelling (from the verifier, falling
+        # back to legacy aliases), de-duplicated, preserving order.
+        accepted_raw = [correct] + [
+            str(a).strip() for a in (it.get("accepted") or it.get("aliases") or []) if str(a).strip()
+        ]
+        seen: set[str] = set()
+        accepted = [a for a in accepted_raw if not (_wg_norm(a) in seen or seen.add(_wg_norm(a)))]
+        return {"satz": satz, "vollsatz": vollsatz, "correct": correct,
+                "accepted": accepted, "aliases": accepted,  # aliases mirrored for back-compat
+                "lemmas": lemmas, "hidden_glue": hidden_glue, **common}
     if fmt == "transform":
         original = str(it.get("original") or "").strip()
         key = str(it.get("schluesselwort") or "").strip()

@@ -1293,7 +1293,11 @@ def _check_aufgabe(fmt: str, payload: dict, raw_input: str) -> bool:
         candidates = [str(payload.get("correct") or "")] + [str(a) for a in (payload.get("aliases") or [])]
         return any(check_quiz_freeform_deterministic(user_text=answer, correct_text=c) for c in candidates if str(c).strip())
     if fmt == "wortgruppe":
-        candidates = [str(payload.get("correct") or "")] + [str(a) for a in (payload.get("aliases") or [])]
+        # Uniqueness is guaranteed at generation, so exact-match is fair; `accepted`
+        # (built by the verifier) lists every equivalent spelling (e.g. with/without a
+        # repeated article). Fall back to legacy `aliases` for older pool rows.
+        variants = payload.get("accepted") or payload.get("aliases") or []
+        candidates = [str(payload.get("correct") or "")] + [str(a) for a in variants]
         return any(check_quiz_freeform_exact(user_text=answer, correct_text=c) for c in candidates if str(c).strip())
     if fmt == "transform":
         candidates = [str(a) for a in (payload.get("accepted") or [])]
