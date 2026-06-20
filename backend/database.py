@@ -36238,7 +36238,14 @@ def count_available_aufgaben(*, format: str | None = None) -> int:
 
 
 def pick_next_aufgabe(*, cooldown_days: int = 14, format: str | None = None) -> dict | None:
-    """Oldest unsent (or cooldown-expired) active task, optionally of one format."""
+    """Oldest unsent (or cooldown-expired) active task, optionally of one format.
+
+    Serve-time self-heal: a degenerate item (e.g. wortbildung whose answer-article
+    is already printed in the sentence) must NEVER be served, even if it slipped
+    into the pool before the deterministic guard existed and a purge hasn't run
+    yet. So we scan the top candidates, skip any that `is_degenerate_aufgabe`
+    flags, retire them on the spot (so they leave the rotation for good), and
+    return the first clean one."""
     with get_db_connection_context() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -36249,15 +36256,31 @@ def pick_next_aufgabe(*, cooldown_days: int = 14, format: str | None = None) -> 
                   AND (%s IS NULL OR format = %s)
                   AND (last_sent_at IS NULL OR last_sent_at < NOW() - INTERVAL '1 day' * %s)
                 ORDER BY last_sent_at NULLS FIRST, created_at
-                LIMIT 1
+                LIMIT 12
                 """,
                 (format, format, int(cooldown_days)),
             )
-            row = cursor.fetchone()
-    if not row:
-        return None
-    return {"aufgabe_id": row[0], "format": row[1], "level": row[2],
-            "payload": row[3] if isinstance(row[3], dict) else {}}
+            rows = cursor.fetchall() or []
+            picked = None
+            degenerate_ids = []
+            for row in rows:
+                payload = row[3] if isinstance(row[3], dict) else {}
+                if is_degenerate_aufgabe(row[1], payload):
+                    degenerate_ids.append(row[0])
+                    continue
+                picked = {"aufgabe_id": row[0], "format": row[1], "level": row[2],
+                          "payload": payload}
+                break
+            if degenerate_ids:
+                # Retire the broken items so they never resurface (best-effort).
+                cursor.execute(
+                    "UPDATE bt_3_aufgabe_bank SET retired = TRUE WHERE aufgabe_id = ANY(%s);",
+                    (degenerate_ids,),
+                )
+                conn.commit()
+                logging.info("pick_next_aufgabe: retired %d degenerate item(s) at serve time",
+                             len(degenerate_ids))
+    return picked
 
 
 def mark_aufgabe_sent(aufgabe_id: str) -> None:
