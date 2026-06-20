@@ -15431,6 +15431,72 @@ def count_open_inbox(user_id: int, *, max_age_days: int = 3) -> int:
     return int(row[0]) if row and row[0] is not None else 0
 
 
+# ── Daily send-rotation skips (Этап 0) ───────────────────────────────────────
+# The bot's rotation gate thins the daily firehose to a fixed budget; a thinned
+# slot doesn't deliver today. We record those skips so BOTH send-plan dashboards
+# (bot DM + Mini-App) can show "ротация" instead of a false "не отправлено".
+_rotation_skips_schema_ready = False
+
+
+def _ensure_rotation_skips_schema() -> None:
+    global _rotation_skips_schema_ready
+    if _rotation_skips_schema_ready:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_rotation_skips (
+                    plan_date  DATE     NOT NULL,
+                    kind       TEXT     NOT NULL,
+                    hour       SMALLINT NOT NULL,
+                    minute     SMALLINT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (plan_date, kind, hour, minute)
+                );
+                """
+            )
+        conn.commit()
+    _rotation_skips_schema_ready = True
+
+
+def record_rotation_skip(plan_date, kind: str, hour: int, minute: int) -> None:
+    """Record that the daily rotation thinned this (kind, slot) on plan_date.
+    Best-effort: a failure here must never block the scheduler."""
+    try:
+        _ensure_rotation_skips_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_rotation_skips (plan_date, kind, hour, minute)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (plan_date, kind, hour, minute) DO NOTHING;
+                    """,
+                    (plan_date, str(kind), int(hour), int(minute)),
+                )
+            conn.commit()
+    except Exception:
+        logging.warning("record_rotation_skip failed kind=%s %02d:%02d",
+                        kind, int(hour), int(minute), exc_info=True)
+
+
+def get_rotation_skips_today(plan_date) -> set:
+    """Set of (kind, hour, minute) thinned by the daily rotation on plan_date."""
+    try:
+        _ensure_rotation_skips_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT kind, hour, minute FROM bt_3_rotation_skips WHERE plan_date = %s;",
+                    (plan_date,),
+                )
+                rows = cursor.fetchall() or []
+        return {(str(r[0]), int(r[1]), int(r[2])) for r in rows}
+    except Exception:
+        return set()
+
+
 def get_dictionary_entry_by_id(entry_id: int) -> dict | None:
     if not entry_id:
         return None

@@ -25710,7 +25710,19 @@ def _send_plan_groups() -> list[dict]:
     return groups
 
 
-def _plan_slot_status(kind: str, h: int, m: int, dispatched: set, now_minute: int, *, grace: int = 8) -> str:
+_PLAN_TABLE_TO_ROTATION_KIND = {
+    "bt_3_article_quiz_dispatches": "article_quiz",
+    "bt_3_aufgabe_dispatches": "aufgabe",
+    "bt_3_rebus_dispatches": "rebus",
+    "bt_3_crossword_dispatches": "crossword",
+    "bt_3_anagram_dispatches": "anagram",
+    "bt_3_listening_dispatches": "listening",
+    "bt_3_sprint_dispatches": "sprint",
+    "bt_3_article_sprint_dispatches": "artikel_sprint",
+}
+
+
+def _plan_slot_status(kind: str, h: int, m: int, dispatched: set, now_minute: int, *, grace: int = 8, rotated: bool = False) -> str:
     if kind == "listening":
         sent = bool(dispatched)
     elif kind == "slotHM":
@@ -25719,6 +25731,8 @@ def _plan_slot_status(kind: str, h: int, m: int, dispatched: set, now_minute: in
         sent = h in dispatched
     if sent:
         return "sent"
+    if rotated:  # thinned by the daily rotation → not a miss
+        return "rotated"
     return "failed" if (h * 60 + m + grace) < now_minute else "planned"
 
 
@@ -25726,16 +25740,22 @@ def _build_send_plan_text() -> str:
     """Rebuild the plan-vs-fact dashboard from the schedule + dispatch tables."""
     from backend.database import (
         get_dispatched_slot_hours_today, get_dispatched_created_hours_today, listening_dispatched_today,
+        get_rotation_skips_today,
     )
     now = _get_quiz_schedule_now()
     plan_date = now.date()
     now_minute = int(now.hour) * 60 + int(now.minute)
-    ic = {"sent": "✅", "planned": "⏳", "failed": "🔴"}
+    ic = {"sent": "✅", "planned": "⏳", "failed": "🔴", "rotated": "⏸️"}
+    try:
+        rotation_skips = get_rotation_skips_today(plan_date)
+    except Exception:
+        rotation_skips = set()
 
     lines = [f"📋 <b>План отправок · {plan_date.strftime('%d.%m.%Y')}</b>", ""]
-    total = done = failed = 0
+    total = done = failed = rotated = 0
     for g in _send_plan_groups():
         kind, table = g["kind"], g["table"]
+        rkind = _PLAN_TABLE_TO_ROTATION_KIND.get(table)
         try:
             if kind == "listening":
                 dispatched = listening_dispatched_today(plan_date)
@@ -25748,17 +25768,19 @@ def _build_send_plan_text() -> str:
             logging.warning("send_plan: fact query failed table=%s", table, exc_info=True)
         toks = []
         for (h, m, label) in g["slots"]:
-            st = _plan_slot_status(kind, h, m, dispatched, now_minute)
+            is_rotated = bool(rkind and (rkind, h, m) in rotation_skips)
+            st = _plan_slot_status(kind, h, m, dispatched, now_minute, rotated=is_rotated)
             total += 1
             done += (st == "sent")
             failed += (st == "failed")
+            rotated += (st == "rotated")
             tag = f" {label}" if label else ""
-            toks.append(f"{ic[st]} {h:02d}:{m:02d}{tag}")
+            toks.append(f"{ic.get(st, '⏳')} {h:02d}:{m:02d}{tag}")
         lines.append(f"{g['emoji']} <b>{g['title']}</b>")
         lines.append("   " + "  ".join(toks))
     lines.append("")
-    lines.append(f"Итого: ✅ {done} · 🔴 {failed} · ⏳ {total - done - failed} из {total}")
-    lines.append(f"<i>Обновлено: {now.strftime('%H:%M')} · ✅ ушло · ⏳ ждём · 🔴 не ушло</i>")
+    lines.append(f"Итого: ✅ {done} · ⏸️ {rotated} · 🔴 {failed} · ⏳ {total - done - failed - rotated} из {total}")
+    lines.append(f"<i>Обновлено: {now.strftime('%H:%M')} · ✅ ушло · ⏸️ ротация · ⏳ ждём · 🔴 не ушло</i>")
     return "\n".join(lines)
 
 
@@ -28222,6 +28244,13 @@ def main():
                         "rotation_skip kind=%s slot=%02d:%02d budget=%s",
                         kind, int(hour), int(minute), GLOBAL_DAILY_SEND_BUDGET,
                     )
+                    # Record the skip so the send-plan dashboards show "ротация",
+                    # not a false "не отправлено" (best-effort, never blocks).
+                    try:
+                        from backend.database import record_rotation_skip
+                        record_rotation_skip(_get_quiz_schedule_now().date(), kind, int(hour), int(minute))
+                    except Exception:
+                        logging.debug("record_rotation_skip dispatch failed", exc_info=True)
                     return
             except Exception:
                 logging.warning(

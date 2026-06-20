@@ -14,7 +14,7 @@ async function api(path) {
   return data;
 }
 
-const ICON = { sent: '✅', planned: '⏳', failed: '🔴' };
+const ICON = { sent: '✅', planned: '⏳', failed: '🔴', rotated: '⏸️' };
 const REFRESH_MS = 25000;
 
 export default function PlanTable() {
@@ -57,6 +57,7 @@ export default function PlanTable() {
           <div className="pl-totals">
             <span className="pl-pill ok">✅ {t.sent || 0}</span>
             <span className="pl-pill wait">⏳ {t.planned || 0}</span>
+            {t.rotated ? <span className="pl-pill rot">⏸️ {t.rotated}</span> : null}
             <span className="pl-pill bad">🔴 {t.failed || 0}</span>
             <span className="pl-pill mut">из {t.total || 0}</span>
           </div>
@@ -83,7 +84,7 @@ export default function PlanTable() {
         ))}
       </div>
 
-      <div className="pl-legend">✅ ушло · ⏳ ждём · 🔴 не ушло · обновляется автоматически</div>
+      <div className="pl-legend">✅ ушло · ⏸️ ротация · ⏳ ждём · 🔴 не ушло · обновляется автоматически</div>
     </div>
   );
 }

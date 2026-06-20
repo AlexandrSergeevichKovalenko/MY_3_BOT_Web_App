@@ -69,3 +69,7 @@ Thumbs.db
 *.db
 # Local Claude Code settings — may contain inlined secrets, never commit
 .claude/settings.local.json
+# Claude Code agent worktrees (local working dirs, never commit)
+.claude/worktrees/
+# Local scratch / prototypes
+tmp/
