@@ -294,6 +294,9 @@ from backend.database import (
     get_inbox_next_and_count,
     get_inbox_open_today,
     get_inbox_open_kinds_today,
+    get_user_prefs,
+    get_user_presets_bulk,
+    set_user_preset,
     get_pending_freeform_result_cards,
     mark_freeform_card_sent,
     get_pending_challenge_notifications,
@@ -745,6 +748,18 @@ def _is_global_slot_active_today(kind: str, hour: int, minute: int,
 # later stage; for now Pro = «Обычно». Reversible via TIER_DELIVERY_ENABLED=0.
 FREE_SEND_BUDGET = max(0, int((os.getenv("FREE_SEND_BUDGET") or "4").strip() or "4"))
 DEFAULT_PRO_SEND_BUDGET = max(1, int((os.getenv("DEFAULT_PRO_SEND_BUDGET") or "12").strip() or "12"))
+RARE_SEND_BUDGET = max(0, int((os.getenv("RARE_SEND_BUDGET") or "8").strip() or "8"))
+
+# Pro preset → daily slot budget (Этап 3). Absent prefs row → «normal» («Обычно»).
+# «custom» falls back to «normal» until the per-type mask UI lands.
+def _preset_budget(preset: str | None) -> int:
+    return {
+        "intensive": GLOBAL_DAILY_SEND_BUDGET,
+        "normal": DEFAULT_PRO_SEND_BUDGET,
+        "rare": RARE_SEND_BUDGET,
+        "silent": 0,
+        "custom": DEFAULT_PRO_SEND_BUDGET,
+    }.get(str(preset or "normal"), DEFAULT_PRO_SEND_BUDGET)
 # Free users with no activity in this many days get no scheduled push (data kept;
 # the pull "Следующее задание" button still works; they resume on any activity).
 FREE_INACTIVE_SUPPRESS_DAYS = max(1, int((os.getenv("FREE_INACTIVE_SUPPRESS_DAYS") or "21").strip() or "21"))
@@ -779,10 +794,11 @@ def _slot_rank_today(kind: str, hour: int, minute: int, now: datetime | None = N
     return _rotation_rank_cache[1].get(_slot_key(kind, hour, minute), 10_000)
 
 
-def _user_send_budget(user_id: int, *, is_pro: bool, active_recent: set | None) -> int:
+def _user_send_budget(user_id: int, *, is_pro: bool, active_recent: set | None,
+                      preset: str | None = None) -> int:
     """How many of today's ranked active slots this DM user receives."""
     if is_pro:
-        return DEFAULT_PRO_SEND_BUDGET  # «Обычно»; custom Pro schedules come later
+        return _preset_budget(preset)  # «Обычно» by default; their chosen preset otherwise
     # Free: suppress entirely if inactive past the window (data kept, pull still works).
     if active_recent is not None and int(user_id) not in active_recent:
         return 0
@@ -905,6 +921,7 @@ SHORTCUT_CONNECT_BUTTON_TEXT = "📱 Connect Shortcut"
 DICTIONARY_BATCH_FAST_BUTTON_TEXT = "🇩🇪➡️🇷🇺 Быстрый перевод"
 HOWTO_GUIDE_BUTTON_TEXT = "🎬 Как пользоваться"
 NEXT_TASK_BUTTON_TEXT = "▶️ Следующее задание"
+SCHEDULE_BUTTON_TEXT = "🗓 Расписание"
 ARTIKEL_LEARN_BUTTON_TEXT = "📚 Учить артикли"
 ARTIKEL_FOCUS_BUTTON_TEXT = "🎯 Тема на завтра"
 ARTIKEL_BATTLE_CALL_BUTTON_TEXT = "⚔️ Вызвать на батл"
@@ -966,7 +983,7 @@ def _is_known_reply_menu_button(text: str) -> bool:
     static_labels = {
         ARTIKEL_LEARN_BUTTON_TEXT, ARTIKEL_FOCUS_BUTTON_TEXT, ARTIKEL_BATTLE_CALL_BUTTON_TEXT,
         ADJEKTIV_SPRINT_BUTTON_TEXT, ADJEKTIV_BATTLE_BUTTON_TEXT, BATTLE_HISTORY_BUTTON_TEXT,
-        ADMIN_BROADCAST_BUTTON_TEXT, NEXT_TASK_BUTTON_TEXT, LANGUAGE_TUTOR_BUTTON_TEXT,
+        ADMIN_BROADCAST_BUTTON_TEXT, NEXT_TASK_BUTTON_TEXT, SCHEDULE_BUTTON_TEXT, LANGUAGE_TUTOR_BUTTON_TEXT,
         DICTIONARY_BATCH_FAST_BUTTON_TEXT, SHORTCUT_INSTALL_BUTTON_TEXT,
         SHORTCUT_CONNECT_BUTTON_TEXT, SHORTCUT_AUTOSAVE_BUTTON_TEXT, HOWTO_GUIDE_BUTTON_TEXT,
     }
@@ -2364,6 +2381,66 @@ async def _next_task_chooser_callback(update: Update, context: CallbackContext) 
     await query.answer()
 
 
+# Pro delivery presets (Этап 3c). «custom» (per-type mask) lands with the Mini-App UI.
+_PRESET_PICKER = [
+    ("intensive", "🔥 Интенсивно", "~20 заданий в день — весь поток"),
+    ("normal",    "🙂 Обычно",     "~12 в день (по умолчанию)"),
+    ("rare",      "🌙 Редко",      "~8 в день"),
+    ("silent",    "🔕 Тишина",     "не присылаю автоматически"),
+]
+_PRESET_LABELS = {code: label for code, label, _ in _PRESET_PICKER}
+
+
+async def _send_schedule_picker(update: Update, context: CallbackContext) -> None:
+    """«🗓 Расписание» — pick how many tasks/day the bot DMs you (Pro)."""
+    if not update.effective_message or not update.effective_user:
+        return
+    user_id = int(update.effective_user.id)
+    if not await asyncio.to_thread(is_user_pro, user_id):
+        await update.message.reply_text(
+            "🗓 <b>Расписание</b> — настройка для Pro.\n\n"
+            "На бесплатном тарифе — подборка из 4 заданий в день. "
+            "Pro открывает гибкое расписание и до 20 заданий в день 🔓",
+            parse_mode="HTML")
+        return
+    prefs = await asyncio.to_thread(get_user_prefs, user_id)
+    cur = str((prefs or {}).get("preset") or "normal")
+    lines = ["🗓 <b>Расписание доставки</b>", "",
+             "Сколько заданий в день присылать тебе в личку (поменять можно в любой момент):", ""]
+    for code, label, desc in _PRESET_PICKER:
+        mark = "✅ " if code == cur else "• "
+        lines.append(f"{mark}<b>{label}</b> — {desc}")
+    rows = [[InlineKeyboardButton(("✅ " if code == cur else "") + label, callback_data=f"pset:{code}")]
+            for code, label, _ in _PRESET_PICKER]
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML",
+                                    reply_markup=InlineKeyboardMarkup(rows))
+
+
+async def _schedule_preset_callback(update: Update, context: CallbackContext) -> None:
+    """pset:<preset> — save the chosen delivery preset (Pro)."""
+    query = update.callback_query
+    if not query or not query.from_user:
+        return
+    user_id = int(query.from_user.id)
+    code = (query.data or "").split(":", 1)[1] if ":" in (query.data or "") else ""
+    if code not in _PRESET_LABELS:
+        await query.answer()
+        return
+    if not await asyncio.to_thread(is_user_pro, user_id):
+        await query.answer("Расписание доступно в Pro 🔒", show_alert=True)
+        return
+    ok = await asyncio.to_thread(set_user_preset, user_id, code)
+    await query.answer("Сохранено ✅" if ok else "Не удалось сохранить, попробуй ещё раз")
+    if ok:
+        try:
+            await query.edit_message_text(
+                f"🗓 <b>Расписание обновлено</b>\nТеперь: <b>{_PRESET_LABELS.get(code, code)}</b>.\n"
+                "Изменения вступают в силу со следующих заданий. Поменять — снова «🗓 Расписание».",
+                parse_mode="HTML")
+        except Exception:
+            pass
+
+
 async def _send_howto_guide_chapter(update: Update, context: CallbackContext) -> None:
     """«🎬 Как пользоваться» — глава с видео о работе бота и приложения."""
     if not update.effective_message:
@@ -3261,6 +3338,9 @@ def _build_private_language_tutor_reply_keyboard(user_id: int | None = None,
 
     # 1) Ежедневные задания — главное действие.
     rows.append([NEXT_TASK_BUTTON_TEXT])
+    # Расписание — Pro-настройка интенсивности доставки.
+    if is_pro:
+        rows.append([SCHEDULE_BUTTON_TEXT])
 
     # 2) Тренажёры (учить). Pro: +персональная тема на завтра.
     rows.append([ARTIKEL_LEARN_BUTTON_TEXT] + ([ARTIKEL_FOCUS_BUTTON_TEXT] if is_pro else []))
@@ -5593,6 +5673,7 @@ async def handle_button_click(update: Update, context: CallbackContext):
         ADJEKTIV_BATTLE_BUTTON_TEXT,
         BATTLE_HISTORY_BUTTON_TEXT,
         NEXT_TASK_BUTTON_TEXT,
+        SCHEDULE_BUTTON_TEXT,
     }
     _msg_text = (update.message.text or "").strip() if update.message else ""
     if not ENABLE_LEGACY_REPLY_KEYBOARD and (
@@ -5648,6 +5729,8 @@ async def handle_button_click(update: Update, context: CallbackContext):
         await _send_howto_guide_chapter(update, context)
     elif text == NEXT_TASK_BUTTON_TEXT:
         await _send_next_open_task(update, context)
+    elif text == SCHEDULE_BUTTON_TEXT:
+        await _send_schedule_picker(update, context)
     elif text == ARTIKEL_LEARN_BUTTON_TEXT:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(
             "📚 Открыть тренажёр", url=get_webapp_deeplink("ans_al_0"))]])
@@ -18585,6 +18668,7 @@ async def _collect_quiz_delivery_user_targets(context: CallbackContext) -> list[
         tier_active = bool(sched) and _tier_delivery_enabled()
         slot_rank = 0
         pro_map: dict[int, bool] = {}
+        preset_map: dict = {}
         active_recent: set | None = None
         if tier_active:
             s_kind, s_hh, s_mm = sched
@@ -18602,6 +18686,10 @@ async def _collect_quiz_delivery_user_targets(context: CallbackContext) -> list[
                         lambda ids=tuple(dm_uids): {u: _is_user_pro_cached(u) for u in ids})
                 except Exception:
                     pro_map = {}
+                try:  # Pro preset → tier budget (Этап 3); absent row = «Обычно»
+                    preset_map = await asyncio.to_thread(get_user_presets_bulk, tuple(dm_uids))
+                except Exception:
+                    preset_map = {}
 
         result: list[dict] = []
         tier_skipped = 0
@@ -18609,7 +18697,8 @@ async def _collect_quiz_delivery_user_targets(context: CallbackContext) -> list[
             safe_chat_id = int(chat_id)
             if tier_active and safe_chat_id > 0 and user_ids_for_chat:
                 uid = int(user_ids_for_chat[0])
-                budget = _user_send_budget(uid, is_pro=pro_map.get(uid, False), active_recent=active_recent)
+                budget = _user_send_budget(uid, is_pro=pro_map.get(uid, False),
+                                           active_recent=active_recent, preset=preset_map.get(uid))
                 if slot_rank >= budget:
                     tier_skipped += 1
                     continue
@@ -28320,6 +28409,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_autosave_digest_toggle_callback, pattern=r"^asv_tog:"))
     application.add_handler(CallbackQueryHandler(handle_autosave_digest_save_callback, pattern=r"^asv_save:"))
     application.add_handler(CallbackQueryHandler(_next_task_chooser_callback, pattern=r"^nxt:"))
+    application.add_handler(CallbackQueryHandler(_schedule_preset_callback, pattern=r"^pset:"))
     # 🔥 Логирование всех сообщений (группа -1, не блокирует цепочку)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message, block=False), group=-1)
 

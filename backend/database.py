@@ -15561,6 +15561,100 @@ def get_rotation_skips_today(plan_date) -> set:
         return set()
 
 
+# ── Per-user schedule/notification preferences (Этап 3) ──────────────────────
+# One row per user (JSONB blobs + cache-friendly PK lookup). Absent row = the
+# «Обычно» default — no backfill needed. Pro-only feature; Free always = 4/day.
+_user_prefs_schema_ready = False
+
+
+def _ensure_user_prefs_schema() -> None:
+    global _user_prefs_schema_ready
+    if _user_prefs_schema_ready:
+        return
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bt_3_user_prefs (
+                    user_id       BIGINT PRIMARY KEY,
+                    tz_name       TEXT,
+                    preset        TEXT NOT NULL DEFAULT 'normal',
+                    schedule      JSONB,
+                    interactives  JSONB,
+                    notifications JSONB,
+                    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+        conn.commit()
+    _user_prefs_schema_ready = True
+
+
+def get_user_prefs(user_id: int) -> dict | None:
+    try:
+        _ensure_user_prefs_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT user_id, tz_name, preset, schedule, interactives, notifications "
+                    "FROM bt_3_user_prefs WHERE user_id = %s;",
+                    (int(user_id),),
+                )
+                r = cursor.fetchone()
+        if not r:
+            return None
+        return {
+            "user_id": int(r[0]), "tz_name": r[1], "preset": str(r[2] or "normal"),
+            "schedule": r[3], "interactives": r[4], "notifications": r[5],
+        }
+    except Exception:
+        logging.warning("get_user_prefs failed user=%s", user_id, exc_info=True)
+        return None
+
+
+def get_user_presets_bulk(user_ids) -> dict:
+    """{user_id: preset} for the given ids (one query) — for per-send tier sizing.
+    Users without a row are simply absent (caller treats them as the default)."""
+    out: dict = {}
+    ids = [int(u) for u in (user_ids or []) if u]
+    if not ids:
+        return out
+    try:
+        _ensure_user_prefs_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT user_id, preset FROM bt_3_user_prefs WHERE user_id = ANY(%s);",
+                    (ids,),
+                )
+                for r in cursor.fetchall() or []:
+                    out[int(r[0])] = str(r[1] or "normal")
+    except Exception:
+        logging.warning("get_user_presets_bulk failed", exc_info=True)
+    return out
+
+
+def set_user_preset(user_id: int, preset: str) -> bool:
+    try:
+        _ensure_user_prefs_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_user_prefs (user_id, preset, updated_at)
+                    VALUES (%s, %s, NOW())
+                    ON CONFLICT (user_id) DO UPDATE
+                        SET preset = EXCLUDED.preset, updated_at = NOW();
+                    """,
+                    (int(user_id), str(preset)),
+                )
+            conn.commit()
+        return True
+    except Exception:
+        logging.warning("set_user_preset failed user=%s preset=%s", user_id, preset, exc_info=True)
+        return False
+
+
 def get_dictionary_entry_by_id(entry_id: int) -> dict | None:
     if not entry_id:
         return None
