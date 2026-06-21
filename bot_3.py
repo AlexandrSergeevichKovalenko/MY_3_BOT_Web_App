@@ -14598,24 +14598,28 @@ async def _resolve_report_display_names(
     return labels
 
 
-async def _send_day_report_with_active_card(context, *, chat_id: int, text: str, log_label: str) -> None:
+async def _send_day_report_with_active_card(context, *, chat_id: int, text: str, log_label: str,
+                                            reply_markup=None) -> None:
     """Send a 'someone completed' day report as a celebratory plaque (photo) with the
     analytics in the caption. If the analytics is longer than a caption allows, send a
-    short caption + the full text as a follow-up. Falls back to plain text on failure."""
+    short caption + the full text as a follow-up. Falls back to plain text on failure.
+    `reply_markup` (optional) is attached to the message the user sees so they can act
+    on the report right away (e.g. a button that opens the translations section)."""
     try:
         from backend.lazy_day_card import render_active_day_card, pick_active_background
         bg = await asyncio.to_thread(pick_active_background)
         png = await asyncio.to_thread(render_active_day_card, background_bytes=bg)
         if len(text) <= 1000:
-            await context.bot.send_photo(chat_id=chat_id, photo=io.BytesIO(png), caption=text)
+            await context.bot.send_photo(chat_id=chat_id, photo=io.BytesIO(png), caption=text,
+                                         reply_markup=reply_markup)
         else:
             await context.bot.send_photo(chat_id=chat_id, photo=io.BytesIO(png), caption="📊 Итоги перевода 💪")
-            await context.bot.send_message(chat_id=chat_id, text=text)
+            await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
         return
     except Exception as exc:
         logging.warning("active day card failed chat=%s (%s): %s — text fallback", chat_id, log_label, exc)
     try:
-        await context.bot.send_message(chat_id=chat_id, text=text)
+        await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
     except Exception as exc:
         logging.warning("⚠️ Не удалось отправить %s в chat_id=%s: %s", log_label, chat_id, exc)
 
@@ -14707,6 +14711,10 @@ async def send_daily_summary(context: CallbackContext):
         return
 
     medals = ["🥇", "🥈", "🥉"]
+    # Same one-tap CTA as the interim report: jump straight to the translations section.
+    translations_kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("📊 Открыть переводы", url=get_webapp_deeplink("translations"))
+    ]])
     for target_chat_id in all_targets:
         current_rows = sorted(
             chat_rows.get(target_chat_id, []),
@@ -14731,11 +14739,13 @@ async def send_daily_summary(context: CallbackContext):
                 bg = await asyncio.to_thread(pick_lazy_background)
                 png = await asyncio.to_thread(render_lazy_day_card, subtitle="Сегодня задание никто не сделал", background_bytes=bg)
                 await context.bot.send_photo(
-                    chat_id=int(target_chat_id), photo=io.BytesIO(png), caption=caption)
+                    chat_id=int(target_chat_id), photo=io.BytesIO(png), caption=caption,
+                    reply_markup=translations_kb)
             except Exception as exc:
                 logging.warning("daily lazy card failed chat=%s: %s — text fallback", target_chat_id, exc)
                 try:
-                    await context.bot.send_message(chat_id=int(target_chat_id), text=caption)
+                    await context.bot.send_message(chat_id=int(target_chat_id), text=caption,
+                                                   reply_markup=translations_kb)
                 except Exception:
                     pass
             continue
@@ -14759,7 +14769,8 @@ async def send_daily_summary(context: CallbackContext):
             for username in lazy_user_map.values():
                 summary += f"👤 {username}: ничего не перевёл!\n"
         await _send_day_report_with_active_card(
-            context, chat_id=int(target_chat_id), text=summary, log_label="daily summary")
+            context, chat_id=int(target_chat_id), text=summary, log_label="daily summary",
+            reply_markup=translations_kb)
 
 
 
@@ -14845,6 +14856,11 @@ async def send_progress_report(context: CallbackContext):
         return
 
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # One-tap CTA: open the Mini-App straight at the translations section, so the
+    # report turns into action instead of just being read.
+    translations_kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("📊 Открыть переводы", url=get_webapp_deeplink("translations"))
+    ]])
     for target_chat_id in all_targets:
         current_rows = sorted(
             chat_rows.get(target_chat_id, []),
@@ -14870,11 +14886,13 @@ async def send_progress_report(context: CallbackContext):
                 bg = await asyncio.to_thread(pick_lazy_background)
                 png = await asyncio.to_thread(render_lazy_day_card, background_bytes=bg)
                 await context.bot.send_photo(
-                    chat_id=int(target_chat_id), photo=io.BytesIO(png), caption=caption)
+                    chat_id=int(target_chat_id), photo=io.BytesIO(png), caption=caption,
+                    reply_markup=translations_kb)
             except Exception as exc:
                 logging.warning("lazy day card failed chat=%s: %s — text fallback", target_chat_id, exc)
                 try:
-                    await context.bot.send_message(chat_id=int(target_chat_id), text=caption)
+                    await context.bot.send_message(chat_id=int(target_chat_id), text=caption,
+                                                   reply_markup=translations_kb)
                 except Exception:
                     pass
             continue
@@ -14896,7 +14914,8 @@ async def send_progress_report(context: CallbackContext):
             for username in lazy_user_map.values():
                 progress_report += f"👤 {username}: ничего не перевёл!\n"
         await _send_day_report_with_active_card(
-            context, chat_id=int(target_chat_id), text=progress_report, log_label="progress report")
+            context, chat_id=int(target_chat_id), text=progress_report, log_label="progress report",
+            reply_markup=translations_kb)
 
 
 async def error_handler(update, context):
