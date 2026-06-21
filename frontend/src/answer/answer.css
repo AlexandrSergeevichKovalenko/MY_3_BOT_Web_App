@@ -788,13 +788,21 @@ html[data-scheme="light"] .ans-why-wrong { color: #92400e; }
    only ever splits a single word if that one word alone is wider than the line —
    it never breaks mid-word just to pack the line tighter. `word-break: normal`
    keeps that behaviour (the old `break-word`/`anywhere` pair forced ugly
-   mid-word breaks). useFitText shrinks the font first; this is the fallback. */
-.fit-line { display: inline-block; white-space: nowrap; line-height: 1.15; max-width: 100%; text-align: center; word-break: normal; overflow-wrap: break-word; }
+   mid-word breaks).
+   The RESTING white-space is `normal` (wrapping) — NOT `nowrap`. useFitText
+   shrinks the font to keep the phrase on one line when it can, but its result is
+   an imperative inline style that depends on the measurement firing at the right
+   time (Telegram sheet width settling, web fonts loading, a stale PWA build…).
+   When that timing is off the old `nowrap` resting state CLIPPED the word at the
+   card edge instead of wrapping. With `normal` as the default, the worst case is a
+   harmless wrap to a second line — it can never clip. (useFitText still measures
+   correctly: it sets `nowrap` itself for the duration of the measurement.) */
+.fit-line { display: inline-block; white-space: normal; line-height: 1.15; max-width: 100%; text-align: center; word-break: normal; overflow-wrap: break-word; }
 /* Keep the phrase line a plain inline-block: useFitText shrinks the font by
    reading el.scrollWidth, which only reports overflow on a block box. An
    inline-flex line becomes a shrinkable flex item, so scrollWidth never exceeds
    its box → the font never shrinks and the text gets clipped by overflow:hidden. */
-.fit-line.adj-line { display: inline-block; white-space: nowrap; }
+.fit-line.adj-line { display: inline-block; }
 .adj-word { font-size: 30px; text-align: center; overflow: hidden; }
 .adj-slot { display: inline-block; vertical-align: baseline; margin: 0 3px; color: #8b5cf6; font-weight: 900; min-width: 28px; text-align: center; border-bottom: 3px solid #8b5cf6; padding: 0 4px; }
 .adj-hint { margin-top: 10px; font-size: 14px; color: var(--dmps-text-muted, #94A3B8); }
