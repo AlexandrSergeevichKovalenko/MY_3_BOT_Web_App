@@ -15431,6 +15431,70 @@ def count_open_inbox(user_id: int, *, max_age_days: int = 3) -> int:
     return int(row[0]) if row and row[0] is not None else 0
 
 
+def get_inbox_open_today(user_id: int, *, since_ts, limit: int = 3, kind: str | None = None) -> dict:
+    """Up to `limit` OLDEST still-open tasks created since `since_ts` (start of the
+    user's day) + the total open count, in one round-trip — for the «Следующее
+    задание» card's 2/3 buttons. Optional `kind` filter for the type chooser."""
+    out = {"tasks": [], "open_count": 0}
+    where = "user_id = %s AND answered = FALSE AND created_at >= %s"
+    params: list = [int(user_id), since_ts]
+    if kind:
+        where += " AND kind = %s"
+        params.append(str(kind))
+    params.append(max(1, int(limit)))
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT kind, dispatch_id, deeplink, title,
+                           COUNT(*) OVER () AS open_count
+                    FROM bt_3_interactive_inbox
+                    WHERE {where}
+                    ORDER BY created_at ASC
+                    LIMIT %s;
+                    """,
+                    tuple(params),
+                )
+                rows = cursor.fetchall() or []
+        for r in rows:
+            out["tasks"].append({
+                "kind": str(r[0] or ""),
+                "dispatch_id": int(r[1]),
+                "deeplink": str(r[2] or ""),
+                "title": str(r[3] or ""),
+            })
+        if rows:
+            out["open_count"] = int(rows[0][4] or 0)
+    except Exception:
+        logging.warning("get_inbox_open_today failed user=%s", user_id, exc_info=True)
+    return out
+
+
+def get_inbox_open_kinds_today(user_id: int, *, since_ts) -> list:
+    """Distinct open kinds (with counts) created since `since_ts`, oldest-first — for
+    the «Выбрать тип» chooser."""
+    out: list = []
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT kind, COUNT(*) AS n, MIN(created_at) AS first_at
+                    FROM bt_3_interactive_inbox
+                    WHERE user_id = %s AND answered = FALSE AND created_at >= %s
+                    GROUP BY kind
+                    ORDER BY first_at ASC;
+                    """,
+                    (int(user_id), since_ts),
+                )
+                rows = cursor.fetchall() or []
+        out = [(str(r[0] or ""), int(r[1] or 0)) for r in rows if r and r[0]]
+    except Exception:
+        logging.warning("get_inbox_open_kinds_today failed user=%s", user_id, exc_info=True)
+    return out
+
+
 # ── Daily send-rotation skips (Этап 0) ───────────────────────────────────────
 # The bot's rotation gate thins the daily firehose to a fixed budget; a thinned
 # slot doesn't deliver today. We record those skips so BOTH send-plan dashboards

@@ -292,6 +292,8 @@ from backend.database import (
     get_oldest_unanswered_inbox,
     count_open_inbox,
     get_inbox_next_and_count,
+    get_inbox_open_today,
+    get_inbox_open_kinds_today,
     get_pending_freeform_result_cards,
     mark_freeform_card_sent,
     get_pending_challenge_notifications,
@@ -2218,9 +2220,26 @@ def _next_task_card_bytes() -> bytes | None:
     return _NEXT_TASK_CARD_CACHE or None
 
 
+# Inbox kind codes → display label (button text + «Выбрать тип» chooser).
+_INBOX_KIND_DISPLAY = {
+    "rb": "🧩 Ребус", "cw": "🔤 Кроссворд", "ag": "🔀 Анаграмма",
+    "au": "✏️ Aufgabe", "ls": "🎧 Аудирование", "as": "⚡ Artikel Sprint",
+    "ad": "🟦 Adjektiv Sprint", "mc": "🇩🇪 Квиз", "rv": "🛠 Работа над ошибками",
+    "artikel": "⚡ Artikel-батл", "adjektiv": "⚔️ Adjektiv-батл",
+}
+
+
+def _next_task_button_label(idx: int, task: dict) -> str:
+    """Numbered, emoji-titled button label (≤60 chars for Telegram)."""
+    title = str(task.get("title") or "").strip()
+    if not title:
+        title = _INBOX_KIND_DISPLAY.get(str(task.get("kind") or ""), "Задание")
+    return f"▶️ {idx}. {title}"[:60]
+
+
 async def _send_next_open_task(update: Update, context: CallbackContext) -> None:
-    """«▶️ Следующее задание» — jump to the oldest still-open interactive in the
-    user's DM feed, so they don't scroll back through the chat to find it."""
+    """«▶️ Следующее задание» — collect the user's oldest still-open tasks FROM TODAY
+    as up to 3 buttons on one branded card, so they don't scroll the chat to find them."""
     if not update.effective_message or not update.effective_user:
         return
     user_id = int(update.effective_user.id)
@@ -2232,30 +2251,35 @@ async def _send_next_open_task(update: Update, context: CallbackContext) -> None
         await context.bot.send_chat_action(chat_id=chat_id, action="typing")
     except Exception:
         pass
+    now = _get_quiz_schedule_now()
+    since_ts = now.replace(hour=0, minute=0, second=0, microsecond=0)
     try:
-        summary = await asyncio.to_thread(get_inbox_next_and_count, user_id)
-        nxt = summary.get("next")
-        open_count = int(summary.get("open_count") or 0)
+        data = await asyncio.to_thread(get_inbox_open_today, user_id, since_ts=since_ts, limit=3)
+        tasks = [t for t in (data.get("tasks") or []) if t.get("deeplink")]
+        open_count = int(data.get("open_count") or 0)
     except Exception:
         logging.warning("next-task lookup failed user=%s", user_id, exc_info=True)
-        nxt, open_count = None, 0
-    logging.info("next_task: lookup done user=%s open_count=%s next=%s elapsed_ms=%d",
-                 user_id, open_count, (nxt or {}).get("deeplink"), int((pytime.time() - t0) * 1000))
-    if not nxt or not nxt.get("deeplink"):
+        tasks, open_count = [], 0
+    logging.info("next_task: lookup done user=%s open_today=%s shown=%s elapsed_ms=%d",
+                 user_id, open_count, len(tasks), int((pytime.time() - t0) * 1000))
+    if not tasks:
         await update.message.reply_text(
-            "✅ <b>Нет невыполненных заданий.</b>\n\n"
-            "Эта кнопка ведёт к самому старому заданию, которое я прислал тебе в личку "
-            "и которое ты ещё не решил (квиз, ребус, кроссворд, анаграмма, Aufgabe, аудирование). "
-            "Как появится новое — кнопка откроет его прямо здесь. Новые задания приходят по расписанию.",
+            "✅ <b>На сегодня всё решено!</b>\n\n"
+            "Эта кнопка собирает твои невыполненные задания за сегодня (квиз, ребус, кроссворд, "
+            "анаграмма, Aufgabe, аудирование). Новые приходят по расписанию — загляни позже 👍",
             parse_mode="HTML",
         )
         return
-    title = str(nxt.get("title") or "Задание").strip() or "Задание"
-    more = f"\n📥 Ещё не сделано сегодня: <b>{open_count}</b>." if open_count > 1 else ""
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-        f"▶️ Открыть и решить: {title}", url=get_webapp_deeplink(str(nxt["deeplink"])))]])
+    rows = [[InlineKeyboardButton(
+        _next_task_button_label(i, t), url=get_webapp_deeplink(str(t["deeplink"])))]
+        for i, t in enumerate(tasks, 1)]
+    kb = InlineKeyboardMarkup(rows)
+    n = len(tasks)
+    head = ("Твоё невыполненное задание за сегодня" if n == 1
+            else f"Твои {n} самых старых невыполненных за сегодня")
+    more = f"\nВсего не сделано сегодня: <b>{open_count}</b>." if open_count > n else ""
     caption = (
-        f"📋 <b>Твоё самое старое невыполненное задание</b> — {html.escape(title)}.\n"
+        f"📋 <b>{head}</b>\n"
         f"Открой и реши прямо тут, не листая чат 👇{more}"
     )
     # Branded plaque (cached, static) so it stands out among the chat like the
