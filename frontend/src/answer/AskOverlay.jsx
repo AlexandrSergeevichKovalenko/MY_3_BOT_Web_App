@@ -6,11 +6,12 @@ import { renderRich } from './richText.jsx';
 // spot. Chat thread (iMessage-style): your question, then the model's answer below.
 // `api(path, body)` posts JSON (initData injected by the host); `context` is a short
 // description of the current task so the answer is on-point.
-export default function AskOverlay({ api, context = '', onClose }) {
+export default function AskOverlay({ api, context = '', onClose, saveText = '', saveTranslation = '' }) {
   const [messages, setMessages] = useState([]); // {role:'user'|'bot', text}
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [saved, setSaved] = useState(false);
   const [pos, setPos] = useState(null); // {x, y} top-left; null until measured
   const panelRef = useRef(null);
   const threadRef = useRef(null);
@@ -89,6 +90,23 @@ export default function AskOverlay({ api, context = '', onClose }) {
     }
   }, [input, busy, messages, api, context]);
 
+  // Optimistic dictionary save: confirm instantly, save in the background. The
+  // backend canonicalizes the entry "по нашей схеме" (single word vs phrase,
+  // article, dedup), so we just send the German text + its Russian meaning.
+  const save = useCallback(() => {
+    const word = String(saveText || '').trim();
+    if (saved || !word) return;
+    setSaved(true);
+    Promise.resolve(
+      api('/api/webapp/dictionary/save', {
+        word_de: word,
+        translation_ru: String(saveTranslation || '').trim(),
+        source_lang: 'ru', target_lang: 'de',
+        origin_process: 'ask_overlay',
+      }),
+    ).catch(() => { /* best-effort background save */ });
+  }, [saved, saveText, saveTranslation, api]);
+
   const style = pos ? { left: `${pos.x}px`, top: `${pos.y}px` } : { left: '50%', top: '60%', visibility: 'hidden' };
 
   return (
@@ -132,6 +150,16 @@ export default function AskOverlay({ api, context = '', onClose }) {
           {busy ? '…' : 'Спросить'}
         </button>
       </div>
+      {saveText ? (
+        <button
+          type="button"
+          className={`ask-pop-save ${saved ? 'is-saved' : ''}`}
+          onClick={save}
+          disabled={saved}
+        >
+          {saved ? '✓ В словаре' : '💾 Сохранить в словарь'}
+        </button>
+      ) : null}
     </div>
   );
 }

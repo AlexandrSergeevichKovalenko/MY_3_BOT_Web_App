@@ -1080,6 +1080,18 @@ html[data-scheme="light"] .dd-feel, html[data-scheme="light"] .dd-pair-line { co
   background: linear-gradient(180deg, #6366F1, #4f46e5);
 }
 .ask-pop-send:disabled { opacity: 0.5; cursor: default; }
+/* "Save to dictionary" — a secondary action under the Спросить button. */
+.ask-pop-save {
+  width: calc(100% - 24px); height: 40px; margin: 0 12px 12px;
+  border: 1px solid var(--dmps-border, #334155); border-radius: 12px; cursor: pointer;
+  font-family: inherit; font-size: 14px; font-weight: 700;
+  color: var(--dmps-text-secondary, #CBD5E1); background: rgba(148, 163, 184, 0.10);
+  transition: transform 0.1s ease, background 0.12s ease;
+}
+.ask-pop-save:active { transform: scale(0.985); }
+.ask-pop-save.is-saved { color: #22c55e; border-color: rgba(34, 197, 94, 0.45); background: rgba(34, 197, 94, 0.12); cursor: default; }
+html[data-scheme="light"] .ask-pop-save { color: #334155; background: #f4f6fa; border-color: #d6dbe4; }
+html[data-scheme="light"] .ask-pop-save.is-saved { color: #15803d; background: #e7f6ec; border-color: rgba(21, 128, 61, 0.4); }
 html[data-scheme="light"] .ask-pop { background: #ffffff; border-color: #c9d2e0; }
 html[data-scheme="light"] .ask-pop-title { color: #0f172a; }
 html[data-scheme="light"] .ask-bubble.bot { color: #0f172a; background: #eef1f7; }

@@ -305,6 +305,8 @@ export default function ArtikelLearnGame({ api, haptic, onClose, focus = false }
       <div className="ans-card as-card al-card">{body}</div>
       {askOpen ? (
         <AskOverlay api={api} onClose={() => setAskOpen(false)}
+          saveText={_ac ? `${_ac.a ? _ac.a + ' ' : ''}${_ac.w}`.trim() : ''}
+          saveTranslation={_ac ? (_ac.ru || '') : ''}
           context={[
             'Интерактив: Artikel Trainer (der/die/das).',
             _ac ? `Слово: ${_ac.a ? _ac.a + ' ' : ''}${_ac.w}.` : '',

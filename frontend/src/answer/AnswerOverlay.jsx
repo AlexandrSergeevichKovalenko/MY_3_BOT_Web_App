@@ -809,6 +809,8 @@ export default function AnswerOverlay({ startParam }) {
       </div>
       {askOpen ? (
         <AskOverlay api={api} onClose={() => setAskOpen(false)}
+          saveText={result.full_word || result.correct_word || ''}
+          saveTranslation={result.meaning_ru || ''}
           context={[
             `Интерактив: ${heading || eyebrow || ''}.`,
             result.full_word ? `Слово: ${result.full_word}.` : '',

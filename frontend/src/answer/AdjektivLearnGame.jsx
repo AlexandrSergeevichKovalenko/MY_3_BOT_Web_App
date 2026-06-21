@@ -166,6 +166,10 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
         : <button className="ans-btn-ghost" onClick={onClose}>Schließen</button>}
       {askOpen ? (
         <AskOverlay api={api} onClose={() => setAskOpen(false)}
+          saveText={card.noun
+            ? `${card.noun_article ? card.noun_article + ' ' : ''}${card.noun}`.trim()
+            : (card.adj || '')}
+          saveTranslation={card.noun ? (card.noun_ru || '') : (card.adj_ru || '')}
           context={[
             'Интерактив: Adjektivendungen (окончания прилагательных).',
             card.full ? `Фраза: ${card.full}.` : '',
