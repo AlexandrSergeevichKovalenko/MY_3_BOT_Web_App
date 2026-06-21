@@ -18,6 +18,7 @@ AUFGABE = [
     (9, 30), (10, 30), (11, 30), (12, 0), (13, 30), (14, 30),
     (15, 30), (16, 0), (17, 30), (18, 30), (19, 30),
 ]
+MC = [(h, 0) for h in range(6, 23)]  # hourly multiple-choice quiz, 6:00..22:00
 ALWAYS_ON = [
     ("rebus", 12, 30), ("crossword", 11, 45), ("crossword", 17, 45),
     ("anagram", 12, 15), ("anagram", 19, 15), ("sprint", 14, 15),
@@ -32,6 +33,7 @@ def _catalog() -> list[SlotEntry]:
     entries: list[SlotEntry] = [SlotEntry(k, h, m, always_on=True) for (k, h, m) in ALWAYS_ON]
     entries += [SlotEntry("article_quiz", h, m, weight=0.8) for (h, m) in ARTICLE_QUIZ]
     entries += [SlotEntry("aufgabe", h, m, weight=1.0) for (h, m) in AUFGABE]
+    entries += [SlotEntry("mc", h, m, weight=0.15) for (h, m) in MC]
     return entries
 
 
@@ -42,8 +44,19 @@ def _ordinals(n: int) -> range:
 
 def test_catalog_shape():
     entries = _catalog()
-    assert len(entries) == 28
+    assert len(entries) == 12 + 5 + 11 + 17  # always-on + article_quiz + aufgabe + mc
     assert sum(1 for e in entries if e.always_on) == 12
+
+
+def test_mc_quiz_is_thinned_to_rare():
+    """The old ~12/day hourly quiz flood is rotated down to ~1/day by its low weight."""
+    entries = _catalog()
+    mc = 0
+    days = 200
+    for day in _ordinals(days):
+        active = compute_active_slot_keys(entries, day, BUDGET)
+        mc += sum(1 for k in active if k.startswith("mc:"))
+    assert mc / days < 2.0
 
 
 def test_daily_total_equals_budget_exactly():

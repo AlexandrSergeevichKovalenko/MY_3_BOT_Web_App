@@ -676,8 +676,10 @@ _ROTATION_ALWAYS_ON_KINDS = {
     "artikel_sprint", "adjektiv_sprint", "artikel_learn", "listening",
 }
 # Rotation weight for the rotating pool (higher → appears more often). Article-quiz
-# is text-only and the least engaging → weighted slightly down.
-_ROTATION_WEIGHTS = {"article_quiz": 0.8, "aufgabe": 1.0}
+# is text-only and the least engaging → weighted down. The hourly multiple-choice
+# quiz ("mc", 17 slots/day) is the floodiest + least engaging → weighted very low so
+# rotation keeps only ~1/day (was ~12/day, bypassing the budget entirely).
+_ROTATION_WEIGHTS = {"article_quiz": 0.8, "aufgabe": 1.0, "mc": 0.15}
 
 _rotation_catalog_cache: list | None = None
 _rotation_active_cache: tuple[int, frozenset] | None = None
@@ -708,6 +710,9 @@ def _build_rotation_catalog() -> list:
     # Rotating pool (thinned to fit the budget).
     add("article_quiz", ARTICLE_QUIZ_SLOT_TIMES, always_on=False)
     add("aufgabe", AUFGABE_FORMAT_SLOTS.keys(), always_on=False)
+    # Hourly multiple-choice quiz — fold its many slots in so rotation+tiers apply
+    # (low weight → ~1/day survives instead of the old ~12/day firehose).
+    add("mc", [(h, m) for h in QUIZ_SCHEDULE_HOURS for m in QUIZ_SCHEDULE_MINUTES], always_on=False)
 
     _rotation_catalog_cache = entries
     return entries
@@ -28661,7 +28666,7 @@ def main():
         for hour in QUIZ_SCHEDULE_HOURS:
             for minute in QUIZ_SCHEDULE_MINUTES:
                 scheduler.add_job(
-                    lambda: submit_async(send_scheduled_quiz, CallbackContext(application=application)),
+                    make_rotation_gated("mc", hour, minute, send_scheduled_quiz),
                     "cron",
                     hour=hour,
                     minute=minute,
