@@ -11097,6 +11097,36 @@ function AppInner() {
     return () => window.clearInterval(intervalId);
   }, [flashcardsDailyTimerActive, writeFlashcardsDailyTimerSnapshot, getFlashcardsDailyDisplayElapsedSeconds]);
 
+  // Pause the daily flashcards timer when the app/tab is backgrounded, and resume it
+  // on return — but ONLY if we're still on an active flashcards screen
+  // (flashcardActiveMode is set to null on every exit path, so leaving the section
+  // won't auto-resume). The in-tick sleep-gap correction above is the backstop for
+  // platforms that don't reliably fire visibilitychange (iOS Telegram); this handler
+  // covers the ones that do, so the timer never keeps counting while the user is away.
+  useEffect(() => {
+    if (typeof document === 'undefined') return undefined;
+    const pauseForBackground = () => {
+      if (flashcardsDailyActiveRef.current) pauseFlashcardsDailyTimer('app_hidden');
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        pauseForBackground();
+      } else if (
+        document.visibilityState === 'visible'
+        && flashcardActiveMode
+        && !flashcardsDailyActiveRef.current
+      ) {
+        startFlashcardsDailyTimer();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pagehide', pauseForBackground);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pagehide', pauseForBackground);
+    };
+  }, [flashcardActiveMode, pauseFlashcardsDailyTimer, startFlashcardsDailyTimer]);
+
   const formatSrsIntervalHint = (seconds) => {
     const safeSeconds = Number(seconds);
     if (!Number.isFinite(safeSeconds) || safeSeconds < 0) return '';
