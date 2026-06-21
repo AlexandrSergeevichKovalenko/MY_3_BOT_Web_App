@@ -801,6 +801,31 @@ def _is_user_pro_cached(user_id: int) -> bool:
     return val
 
 
+def _append_free_pro_teaser(caption: str | None, chat_id: int) -> str:
+    """Этап 1b: append a soft, non-pushy "locked value" line to a card's caption for
+    FREE users in their personal DM (chat_id > 0 == private chat). Shows how much more
+    Pro delivers today — "смотри, сколько ещё есть", not "купи". Never on group chats,
+    never for Pro users, and never if it would overflow Telegram's caption limit."""
+    text = caption or ""
+    if not _tier_delivery_enabled():
+        return text
+    uid = int(chat_id)
+    if uid <= 0:  # group chat — no teaser
+        return text
+    try:
+        if _is_user_pro_cached(uid):  # Pro already has it — no teaser
+            return text
+    except Exception:
+        return text
+    gain = max(0, DEFAULT_PRO_SEND_BUDGET - FREE_SEND_BUDGET)
+    if gain <= 0:
+        return text
+    teaser = f"\n\n🔒 В Pro сегодня — ещё {gain} заданий."
+    if len(text) + len(teaser) > 1024:  # Telegram photo-caption ceiling
+        return text
+    return text + teaser
+
+
 def _format_quiz_delivery_slot(slot_dt: datetime) -> str:
     return f"{int(slot_dt.hour):02d}:{int(slot_dt.minute):02d}"
 
@@ -19220,6 +19245,7 @@ async def send_rebus_to_chat(
         return False
 
     caption = _build_rebus_caption(compound_entry)
+    caption = _append_free_pro_teaser(caption, chat_id)
     keyboard = _build_rebus_keyboard(dispatch_id)
 
     logging.info(
@@ -21659,6 +21685,7 @@ async def send_article_quiz_to_chat(
         return False
 
     caption = _build_article_quiz_caption(entry)
+    caption = _append_free_pro_teaser(caption, chat_id)
     keyboard = _build_article_quiz_keyboard(dispatch_id)
 
     logging.info(
@@ -22145,6 +22172,7 @@ async def send_crossword_to_chat(
         return False
 
     caption  = _build_crossword_caption(words_json, topic, difficulty)
+    caption  = _append_free_pro_teaser(caption, chat_id)
     keyboard = _build_crossword_keyboard(dispatch_id, words_json)
 
     logging.info(
@@ -22652,6 +22680,7 @@ async def send_anagram_to_chat(
         return False
 
     caption  = _build_anagram_caption(payload["hint_ru"])
+    caption  = _append_free_pro_teaser(caption, chat_id)
     keyboard = _build_anagram_keyboard(dispatch_id)
     poster = None
     try:
@@ -23805,6 +23834,7 @@ async def send_aufgabe_to_chat(
         logging.info("au_send: duplicate suppressed aufgabe_id=%s chat_id=%s", aufgabe_id, chat_id)
         return False
     caption  = _build_aufgabe_caption(entry)
+    caption  = _append_free_pro_teaser(caption, chat_id)
     keyboard = _build_aufgabe_keyboard(dispatch_id)
     poster   = await asyncio.to_thread(_render_aufgabe_card, entry)
     try:
@@ -25722,6 +25752,7 @@ async def send_sprint_to_chat(context: CallbackContext, *, entry: dict, relation
         f"За *60 секунд* напиши как можно больше {word_kind}!\n"
         f"🏆 Победитель — у кого больше правильных."
     )
+    caption = _append_free_pro_teaser(caption, chat_id)
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(
         "▶️ Играть (60 секунд)", url=get_webapp_deeplink(f"ans_sp_{dispatch_id}"))]])
     poster = None
@@ -26498,6 +26529,7 @@ async def send_listening_to_chat(
     # Audio now lives inside the Mini-App overlay (R2 MP3, iOS-playable). The
     # group gets a branded hero card + deeplink button instead of a voice message.
     caption  = _build_listening_card_caption(entry)
+    caption  = _append_free_pro_teaser(caption, chat_id)
     keyboard = _build_listening_keyboard(dispatch_id)
     poster = None
     try:
