@@ -8921,23 +8921,33 @@ body {
   background: rgba(9, 19, 45, 0.72);
 }
 
-.flashcard-queue-source-options {
+/* Source toggle: two compact pills side-by-side in ONE row at any width.
+   Parent-scoped (.flashcard-queue-source-card …) so this 2-column grid beats the
+   later, equal-specificity `.setup-options { display:flex; flex-wrap:wrap }` rule —
+   otherwise the pills fell back to full-width and stacked vertically. */
+.flashcard-queue-source-card .flashcard-queue-source-options {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  align-items: center;
-  gap: 12px;
+  grid-template-columns: 1fr 1fr;   /* equal columns, never wraps to a second row */
+  align-items: stretch;             /* both pills take the same (tallest) height */
+  gap: 8px;
 }
 
-.flashcard-queue-source-options .flashcard-queue-source-pill {
-  min-height: 42px;
+.flashcard-queue-source-card .flashcard-queue-source-options .flashcard-queue-source-pill {
+  min-height: 34px;
   width: 100%;
-  padding: 0 8px;
-  border-radius: 14px;
-  justify-self: stretch;
+  padding: 6px 8px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   text-align: center;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-size: 12.5px;
+  line-height: 1.2;
+  /* Wrap inside the pill on narrow screens (text never overflows / gets cut);
+     align-items:stretch then keeps the two pills the same height. */
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: normal;
   box-sizing: border-box;
 }
 
