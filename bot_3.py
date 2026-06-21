@@ -2237,6 +2237,33 @@ def _next_task_button_label(idx: int, task: dict) -> str:
     return f"▶️ {idx}. {title}"[:60]
 
 
+async def _send_next_task_card(context: CallbackContext, chat_id: int, tasks: list,
+                               open_count: int, *, kind_label: str | None = None,
+                               show_chooser: bool = True) -> None:
+    """Render the branded «Следующее задание» card with up to 3 deeplink buttons
+    (+ optional «🎯 Выбрать тип» row). Shared by the button handler and the chooser."""
+    rows = [[InlineKeyboardButton(_next_task_button_label(i, t), url=get_webapp_deeplink(str(t["deeplink"])))]
+            for i, t in enumerate([t for t in tasks if t.get("deeplink")], 1)]
+    if not rows:
+        return
+    if show_chooser:
+        rows.append([InlineKeyboardButton("🎯 Выбрать тип", callback_data="nxt:menu")])
+    kb = InlineKeyboardMarkup(rows)
+    n = len(rows) - (1 if show_chooser else 0)
+    scope = f" · {kind_label}" if kind_label else ""
+    head = (f"Твоё невыполненное задание за сегодня{scope}" if n == 1
+            else f"Твои {n} самых старых невыполненных за сегодня{scope}")
+    more = f"\nВсего не сделано сегодня: <b>{open_count}</b>." if open_count > n else ""
+    caption = f"📋 <b>{head}</b>\nОткрой и реши прямо тут, не листая чат 👇{more}"
+    poster = await asyncio.to_thread(_next_task_card_bytes)
+    if poster:
+        await context.bot.send_photo(chat_id=int(chat_id), photo=io.BytesIO(poster),
+                                     caption=caption, parse_mode="HTML", reply_markup=kb)
+    else:
+        await context.bot.send_message(chat_id=int(chat_id), text=caption,
+                                       parse_mode="HTML", reply_markup=kb)
+
+
 async def _send_next_open_task(update: Update, context: CallbackContext) -> None:
     """«▶️ Следующее задание» — collect the user's oldest still-open tasks FROM TODAY
     as up to 3 buttons on one branded card, so they don't scroll the chat to find them."""
@@ -2270,26 +2297,66 @@ async def _send_next_open_task(update: Update, context: CallbackContext) -> None
             parse_mode="HTML",
         )
         return
-    rows = [[InlineKeyboardButton(
-        _next_task_button_label(i, t), url=get_webapp_deeplink(str(t["deeplink"])))]
-        for i, t in enumerate(tasks, 1)]
-    kb = InlineKeyboardMarkup(rows)
-    n = len(tasks)
-    head = ("Твоё невыполненное задание за сегодня" if n == 1
-            else f"Твои {n} самых старых невыполненных за сегодня")
-    more = f"\nВсего не сделано сегодня: <b>{open_count}</b>." if open_count > n else ""
-    caption = (
-        f"📋 <b>{head}</b>\n"
-        f"Открой и реши прямо тут, не листая чат 👇{more}"
-    )
-    # Branded plaque (cached, static) so it stands out among the chat like the
-    # other task cards; fall back to plain text if rendering isn't available.
-    poster = await asyncio.to_thread(_next_task_card_bytes)
-    if poster:
-        await update.message.reply_photo(
-            photo=io.BytesIO(poster), caption=caption, parse_mode="HTML", reply_markup=kb)
-    else:
-        await update.message.reply_text(caption, parse_mode="HTML", reply_markup=kb)
+    await _send_next_task_card(context, chat_id, tasks, open_count)
+
+
+async def _next_task_chooser_callback(update: Update, context: CallbackContext) -> None:
+    """«🎯 Выбрать тип» on the next-task card. nxt:menu → list the kinds the user has
+    open today; nxt:k:<kind> → that kind's 3 oldest; nxt:all → back to the mix; for
+    Free users a «🔒 Другие типы — в Pro» hint nudges conversion at the point of interest."""
+    query = update.callback_query
+    if not query or not query.from_user:
+        return
+    data = str(query.data or "")
+    user_id = int(query.from_user.id)
+    chat_id = int(query.message.chat_id) if query.message else user_id
+    now = _get_quiz_schedule_now()
+    since_ts = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    if data == "nxt:locked":
+        await query.answer("Эти типы заданий открываются в Pro 🔒", show_alert=True)
+        return
+
+    if data == "nxt:menu":
+        try:
+            kinds = await asyncio.to_thread(get_inbox_open_kinds_today, user_id, since_ts=since_ts)
+        except Exception:
+            kinds = []
+        await query.answer()
+        if not kinds:
+            await context.bot.send_message(chat_id=chat_id, text="✅ На сегодня всё решено — выбирать нечего.")
+            return
+        rows = [[InlineKeyboardButton(f"{_INBOX_KIND_DISPLAY.get(k, k)} · {cnt}", callback_data=f"nxt:k:{k}")]
+                for k, cnt in kinds]
+        try:
+            is_pro = await asyncio.to_thread(_is_user_pro_cached, user_id)
+        except Exception:
+            is_pro = True
+        if not is_pro:
+            rows.append([InlineKeyboardButton("🔒 Другие типы — в Pro", callback_data="nxt:locked")])
+        rows.append([InlineKeyboardButton("⬅️ Все вперемешку", callback_data="nxt:all")])
+        await context.bot.send_message(
+            chat_id=chat_id, text="🎯 <b>Какой тип задания показать?</b>", parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(rows))
+        return
+
+    if data == "nxt:all" or data.startswith("nxt:k:"):
+        kind = None if data == "nxt:all" else data.split(":", 2)[2]
+        try:
+            res = await asyncio.to_thread(get_inbox_open_today, user_id, since_ts=since_ts, limit=3, kind=kind)
+            tasks = [t for t in (res.get("tasks") or []) if t.get("deeplink")]
+            open_count = int(res.get("open_count") or 0)
+        except Exception:
+            tasks, open_count = [], 0
+        await query.answer()
+        if not tasks:
+            await context.bot.send_message(chat_id=chat_id, text="✅ Заданий этого типа на сегодня нет.")
+            return
+        label = _INBOX_KIND_DISPLAY.get(kind) if kind else None
+        await _send_next_task_card(context, chat_id, tasks, open_count, kind_label=label)
+        return
+
+    await query.answer()
 
 
 async def _send_howto_guide_chapter(update: Update, context: CallbackContext) -> None:
@@ -28247,6 +28314,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_shortcut_connect_callback, pattern=r"^shortcut:connect$"))
     application.add_handler(CallbackQueryHandler(handle_autosave_digest_toggle_callback, pattern=r"^asv_tog:"))
     application.add_handler(CallbackQueryHandler(handle_autosave_digest_save_callback, pattern=r"^asv_save:"))
+    application.add_handler(CallbackQueryHandler(_next_task_chooser_callback, pattern=r"^nxt:"))
     # 🔥 Логирование всех сообщений (группа -1, не блокирует цепочку)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message, block=False), group=-1)
 
