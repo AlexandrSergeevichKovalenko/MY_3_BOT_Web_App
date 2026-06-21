@@ -67,21 +67,26 @@ export default function AdjektivLearnGame({ api, haptic, onClose }) {
     }
   }, [card, haptic]);
 
-  const saveWord = useCallback(async () => {
-    if (!wordPop || wordPop.saving || wordPop.saved) return;
-    setWordPop((w) => (w ? { ...w, saving: true } : w));
-    try {
-      const res = await api('/api/webapp/dictionary/save', {
-        word_de: wordPop.save_de,
+  const saveWord = useCallback(() => {
+    // Optimistic save: confirm instantly and release the learner. The network call
+    // runs in the background (fire-and-forget) — no "Сохраняю…" wait. The popup
+    // flips to ✓ and auto-dismisses, so the user goes straight back to learning.
+    if (!wordPop || wordPop.saved) return;
+    const word_de = wordPop.save_de;
+    setWordPop((w) => (w ? { ...w, saving: false, saved: true } : w));
+    try { haptic?.('ok'); } catch (_e) { /* noop */ }
+    Promise.resolve(
+      api('/api/webapp/dictionary/save', {
+        word_de,
         translation_ru: wordPop.ru,
         source_lang: 'ru', target_lang: 'de',
         origin_process: 'adjektiv_trainer',
-      });
-      setWordPop((w) => (w ? { ...w, saving: false, saved: !!(res && res.ok !== false) } : w));
-    } catch (_e) {
-      setWordPop((w) => (w ? { ...w, saving: false } : w));
-    }
-  }, [wordPop, api]);
+      }),
+    ).catch(() => { /* best-effort background save */ });
+    // Auto-close shortly after the ✓ shows; guard so we don't close a different
+    // word the user may have opened in the meantime.
+    setTimeout(() => setWordPop((w) => (w && w.save_de === word_de ? null : w)), 650);
+  }, [wordPop, api, haptic]);
 
   let cls = 'al-card';
   let body = null;
