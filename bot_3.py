@@ -24666,7 +24666,7 @@ def _build_cert_rows(cur: dict, prev: dict) -> list[dict]:
                      "dir": (1 if a > b else (-1 if a < b else 0))})
 
     add_int("Переводы предложений", "translations")
-    add_int("Новых слов", "words")
+    add_int("Выучено слов", "words")
     add_int("Пройдено игр", "games")
     add_int("Аудио-заданий", "audio")
     add_int("Побед в батлах", "battle_wins")
@@ -24747,7 +24747,7 @@ async def _send_weekly_certificate_job(context: CallbackContext) -> None:
     await _send_certificates_window(
         context, cur_start=now - _td(days=7), cur_end=now,
         prev_start=now - _td(days=14), prev_end=now - _td(days=7),
-        title="ГРАМОТА", subtitle_prefix="Твои успехи за неделю",
+        title="URKUNDE", subtitle_prefix="Твои успехи за неделю",
         col_now="Текущий", col_prev="Прошлый")
 
 
@@ -24756,10 +24756,10 @@ async def _send_weekly_certificate_job(context: CallbackContext) -> None:
 # ending today is sent (Dec 31 → year, Jun 30 → half-year, Mar 31/Sep 30 → quarter,
 # other month-ends → month). "This period vs the previous same-length period."
 _CERT_PERIOD_META = {
-    "month":   ("ГРАМОТА МЕСЯЦА", "Твои успехи за месяц", "Текущий", "Прошлый"),
-    "quarter": ("ГРАМОТА КВАРТАЛА", "Твои успехи за квартал", "Текущий", "Прошлый"),
-    "half":    ("ГРАМОТА ПОЛУГОДИЯ", "Твои успехи за полугодие", "Текущий", "Прошлый"),
-    "year":    ("ГРАМОТА ГОДА", "Твои успехи за год", "Текущий", "Прошлый"),
+    "month":   ("URKUNDE DES MONATS", "Твои успехи за месяц", "Текущий", "Прошлый"),
+    "quarter": ("URKUNDE DES QUARTALS", "Твои успехи за квартал", "Текущий", "Прошлый"),
+    "half":    ("URKUNDE DES HALBJAHRES", "Твои успехи за полугодие", "Текущий", "Прошлый"),
+    "year":    ("URKUNDE DES JAHRES", "Твои успехи за год", "Текущий", "Прошлый"),
 }
 
 

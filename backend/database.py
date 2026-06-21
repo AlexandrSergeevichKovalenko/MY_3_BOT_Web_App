@@ -37008,6 +37008,42 @@ def _cert_battle_wins_by_user(start, end) -> dict:
     return wins
 
 
+def _cert_learned_words_by_user(start, end) -> dict:
+    """Words LEARNED per user in [start, end): the moment a flashcard first reaches
+    the mature SRS interval (interval_days_after >= MATURE_INTERVAL_DAYS) is when the
+    word counts as learned — same definition as the analytics 'learned_words' that
+    powers the leaderboard. This is genuine vocabulary growth, NOT every dictionary
+    save/auto-import (which is what the old raw row count measured). {user_id: count}."""
+    from backend.srs import MATURE_INTERVAL_DAYS
+    out: dict[int, int] = {}
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    WITH first_learned AS (
+                        SELECT l.user_id, l.card_id, MIN(l.reviewed_at) AS learned_at
+                        FROM bt_3_card_review_log l
+                        JOIN bt_3_webapp_dictionary_queries q
+                          ON q.id = l.card_id AND q.user_id = l.user_id
+                        WHERE COALESCE(l.interval_days_after, 0) >= %s
+                        GROUP BY l.user_id, l.card_id
+                    )
+                    SELECT user_id, COUNT(*)
+                    FROM first_learned
+                    WHERE learned_at >= %s AND learned_at < %s
+                    GROUP BY user_id
+                    """,
+                    (MATURE_INTERVAL_DAYS, start, end),
+                )
+                for r in cur.fetchall() or []:
+                    if r[0] is not None:
+                        out[int(r[0])] = int(r[1] or 0)
+    except Exception:
+        logging.warning("_cert_learned_words_by_user failed", exc_info=True)
+    return out
+
+
 def active_user_ids_in_window(start, end) -> set[int]:
     """Distinct users who did anything trackable in [start, end)."""
     users: set[int] = set()
@@ -37044,7 +37080,10 @@ def certificate_stats_for_window(start, end) -> dict:
         for uid, n in _cert_count_by_user(tbl, ts, start, end, distinct_col=dcol).items():
             games[uid] = games.get(uid, 0) + n
     translations = _cert_count_by_user("bt_3_translations", "timestamp", start, end, distinct_col="sentence_id")
-    words = _cert_count_by_user("bt_3_webapp_dictionary_queries", "created_at", start, end)
+    # "words" = words LEARNED (cards reaching the mature SRS interval), NOT raw
+    # dictionary saves — the old row count was dominated by auto-saves/imports and
+    # did not reflect what the user actually learned.
+    words = _cert_learned_words_by_user(start, end)
     audio = _cert_count_by_user("bt_3_listening_answers", "submitted_at", start, end)
     wins = _cert_battle_wins_by_user(start, end)
     # Article accuracy = quiz + sprint per-word answers combined.
