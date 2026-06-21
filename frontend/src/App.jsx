@@ -11261,12 +11261,15 @@ function AppInner() {
   const checkTodayTheory = async () => {
     if (!initData || !theoryPackage) return;
     const sentences = Array.isArray(theoryPackage?.practice_sentences) ? theoryPackage.practice_sentences : [];
+    // Soft, user-correctable validations: show a floating 3s toast OVER the task
+    // (not the inline red error, which is gated by !theoryError and would hide the
+    // whole theory card — i.e. the sentences the user still needs to fill in).
     if (!sentences.length) {
-      setTheoryError(tr('Нет предложений для проверки.', 'Keine Saetze zur Pruefung.'));
+      showInlineToast(tr('Нет предложений для проверки.', 'Keine Saetze zur Pruefung.'));
       return;
     }
     if (theoryPracticeAnswers.some((item, index) => index < sentences.length && !String(item || '').trim())) {
-      setTheoryError(tr('Заполните переводы для всех предложений.', 'Bitte alle Uebersetzungen ausfuellen.'));
+      showInlineToast(tr('Переведите все предложения, чтобы проверить.', 'Bitte alle Saetze uebersetzen.'));
       return;
     }
     try {
@@ -31294,7 +31297,7 @@ function AppInner() {
                 </div>
                 {theoryLoading && <div className="webapp-muted">{tr('Готовим теорию...', 'Theorie wird vorbereitet...')}</div>}
                 {theoryError && <div className="webapp-error">{theoryError}</div>}
-                {!theoryLoading && !theoryError && theoryPackage && (
+                {!theoryLoading && theoryPackage && (
                   <div className="theory-card">
                     <div className="theory-focus-line">
                       <strong>{tr('Фокус', 'Fokus')}:</strong>{' '}
