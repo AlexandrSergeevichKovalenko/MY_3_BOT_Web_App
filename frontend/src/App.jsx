@@ -6036,6 +6036,9 @@ function AppInner() {
   const SRS_NEXT_DEDUP_WINDOW_MS = 900;
   const SRS_EASY_LOCK_AFTER_SEC = 5;
   const SRS_GOOD_LOCK_AFTER_SEC = 7;
+  // Front side (source text) auto-flips to the answer after this think-time if the
+  // learner hasn't pressed "Show Answer" yet.
+  const SRS_AUTO_REVEAL_AFTER_SEC = 5;
   const QUICK_TRANSLATE_CACHE_TTL_MS = 5 * 60 * 1000;
   const srsEasyLocked = srsRevealAnswer && srsRevealElapsedSec >= SRS_EASY_LOCK_AFTER_SEC;
   const srsGoodLocked = srsRevealAnswer && srsRevealElapsedSec >= SRS_GOOD_LOCK_AFTER_SEC;
@@ -11889,6 +11892,23 @@ function AppInner() {
       window.clearInterval(intervalId);
     };
   }, [srsRevealAnswer, srsCard, srsRevealStartedAt]);
+
+  // Auto-reveal: while the FRONT (source text) is showing, give the learner a fixed
+  // think-time; if they haven't pressed "Show Answer" within it, flip to the answer
+  // automatically — same effect as the button (which stays for an earlier manual
+  // reveal). Keyed on the card id so an unrelated re-render of srsCard doesn't reset
+  // the timer; skipped while loading/submitting.
+  useEffect(() => {
+    const frontCardId = srsCard ? String(srsCard.id || srsCard.entry_id || '') : '';
+    if (!frontCardId || srsRevealAnswer || srsLoading || srsSubmitting) return undefined;
+    const timeoutId = window.setTimeout(() => {
+      setSrsRevealStartedAt(Date.now());
+      setSrsRevealElapsedSec(0);
+      setSrsRevealAnswer(true);
+    }, SRS_AUTO_REVEAL_AFTER_SEC * 1000);
+    return () => window.clearTimeout(timeoutId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [srsCard?.id, srsCard?.entry_id, srsRevealAnswer, srsLoading, srsSubmitting]);
 
   useEffect(() => {
     if (!srsRevealAnswer || !srsCard) return;
