@@ -124,17 +124,18 @@ function PhraseCard({ card }) {
     }
   }, [card.id, phase]);
 
-  const save = useCallback(async () => {
+  const save = useCallback(() => {
+    // Optimistic: confirm instantly, save in the background (fire-and-forget) — no
+    // "Сохраняю…" wait. The button flips to "✅ Сохранено в словарь" right away.
     if (!pair || saveState !== 'idle') return;
-    setSaveState('saving'); haptic('tap');
-    try {
-      await api('/api/answer/deepdive/save', {
+    setSaveState('done'); haptic('ok');
+    Promise.resolve(
+      api('/api/answer/deepdive/save', {
         source_text: pair.source_text, target_text: pair.target_text,
         source_lang: pair.source_lang, target_lang: pair.target_lang,
         semantic_category: pair.semantic_category || '',
-      });
-      setSaveState('done'); haptic('ok');
-    } catch (_e) { setSaveState('idle'); haptic('bad'); }
+      }),
+    ).catch(() => { /* best-effort background save */ });
   }, [pair, saveState]);
 
   if (phase === 'idle') {

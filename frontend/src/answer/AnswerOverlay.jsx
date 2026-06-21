@@ -167,22 +167,21 @@ function SaveWrongWords({ items, originProcess = 'crossword_save',
   const toggle = (i) => setChecked((s) => {
     const n = new Set(s); if (n.has(i)) n.delete(i); else n.add(i); return n;
   });
-  const save = async () => {
+  const save = () => {
     if (phase !== 'idle' || !checked.size) return;
-    setPhase('saving'); haptic('tap');
-    let ok = 0;
-    for (let i = 0; i < words.length; i += 1) {
-      if (!checked.has(i)) continue;
-      try {
-        await api('/api/webapp/dictionary/save', {
-          source_text: words[i].de, target_text: words[i].ru || '',
+    // Optimistic: confirm instantly ("✅ Сохранено: N") and release the user; the
+    // saves fire in the background (best-effort, in parallel) — no "Сохраняю…" wait.
+    const toSave = words.filter((_, i) => checked.has(i));
+    setOkCount(toSave.length); setPhase('done'); haptic('ok');
+    toSave.forEach((w) => {
+      Promise.resolve(
+        api('/api/webapp/dictionary/save', {
+          source_text: w.de, target_text: w.ru || '',
           source_lang: 'de', target_lang: 'ru', direction: 'de_to_ru',
           origin_process: originProcess,
-        });
-        ok += 1;
-      } catch (_e) { /* keep going — save the rest */ }
-    }
-    setOkCount(ok); setPhase('done'); haptic(ok ? 'ok' : 'bad');
+        }),
+      ).catch(() => { /* best-effort background save */ });
+    });
   };
   return (
     <div className="sv-save">

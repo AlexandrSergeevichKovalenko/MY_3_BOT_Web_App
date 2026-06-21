@@ -42,18 +42,19 @@ export default function DeepDiveActions({ api, haptic, cardId, germanText, playT
     } catch (e) { setPhrase((s) => ({ ...s, phase: 'error', err: String(e.message || e) })); haptic?.('bad'); }
   }, [phrase.phase, cardId, api, haptic]);
 
-  const savePhrase = useCallback(async () => {
+  const savePhrase = useCallback(() => {
+    // Optimistic: confirm instantly, save in the background (fire-and-forget) — no
+    // "Сохраняю…" wait. The button flips to "✅ Сохранено в словарь" right away.
     const p = phrase.pair;
     if (!p || phrase.save !== 'idle') return;
-    setPhrase((s) => ({ ...s, save: 'saving' })); haptic?.('tap');
-    try {
-      await api('/api/answer/deepdive/save', {
+    setPhrase((s) => ({ ...s, save: 'done' })); haptic?.('ok');
+    Promise.resolve(
+      api('/api/answer/deepdive/save', {
         source_text: p.source_text, target_text: p.target_text,
         source_lang: p.source_lang, target_lang: p.target_lang,
         semantic_category: p.semantic_category || '',
-      });
-      setPhrase((s) => ({ ...s, save: 'done' })); haptic?.('ok');
-    } catch (_e) { setPhrase((s) => ({ ...s, save: 'idle' })); haptic?.('bad'); }
+      }),
+    ).catch(() => { /* best-effort background save */ });
   }, [phrase.pair, phrase.save, api, haptic]);
 
   return (
