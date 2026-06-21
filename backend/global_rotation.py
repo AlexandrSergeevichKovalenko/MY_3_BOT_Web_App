@@ -98,6 +98,22 @@ def compute_active_slot_keys(
     return active
 
 
+def rank_slots(entries: list[SlotEntry], day_ordinal: int) -> list[SlotEntry]:
+    """Deterministic best-first ranking of slots for a day (weighted, date-seeded).
+
+    Used to derive NESTED per-tier daily subsets from today's active slots:
+        tier_set(N) = rank_slots(active_entries, day)[:N]
+    so Free (small N) ⊆ Обычно (medium N) ⊆ full. Higher weight ranks earlier.
+    The seed is salted ("rank:") so the ordering is independent of which slots the
+    active-set selection picked.
+    """
+    def _key(e: SlotEntry) -> float:
+        w = max(1e-9, float(e.weight))
+        u = _deterministic_uniform(day_ordinal, "rank:" + e.key)
+        return -math.log(u) / w
+    return sorted(entries, key=_key)
+
+
 # --------------------------------------------------------------------------- #
 # Manual demo: prints the per-kind airtime and daily totals over a window so we
 # can eyeball that the rotation holds the budget and spreads fairly.

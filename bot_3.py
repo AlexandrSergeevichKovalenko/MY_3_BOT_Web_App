@@ -17,6 +17,7 @@ from telegram.request import HTTPXRequest
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
+import contextvars
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import CallbackQueryHandler
 import hashlib
@@ -662,6 +663,7 @@ from backend.global_rotation import (
     SlotEntry as _SlotEntry,
     compute_active_slot_keys as _compute_active_slot_keys,
     slot_key as _slot_key,
+    rank_slots as _rank_slots,
 )
 
 GLOBAL_DAILY_SEND_BUDGET = max(1, int((os.getenv("GLOBAL_DAILY_SEND_BUDGET") or "20").strip() or "20"))
@@ -725,6 +727,78 @@ def _is_global_slot_active_today(kind: str, hour: int, minute: int,
                                  now: datetime | None = None) -> bool:
     """True if this (kind, slot) is in today's rotation budget (or always-on)."""
     return _slot_key(kind, hour, minute) in _global_rotation_active_keys(now)
+
+
+# ── Per-tier delivery budgets (Этап 1) ───────────────────────────────────────
+# DM recipients get a personal slice of today's active slots: Free=4, Pro-default
+# («Обычно»)=12, full=GLOBAL_DAILY_SEND_BUDGET (20). The slices are NESTED: today's
+# active slots are ranked deterministically and a tier of budget N = the top-N. A
+# DM user receives a given slot iff its rank < their budget. Group chats are never
+# filtered (they always get the full active set). Custom Pro schedules arrive in a
+# later stage; for now Pro = «Обычно». Reversible via TIER_DELIVERY_ENABLED=0.
+FREE_SEND_BUDGET = max(0, int((os.getenv("FREE_SEND_BUDGET") or "4").strip() or "4"))
+DEFAULT_PRO_SEND_BUDGET = max(1, int((os.getenv("DEFAULT_PRO_SEND_BUDGET") or "12").strip() or "12"))
+# Free users with no activity in this many days get no scheduled push (data kept;
+# the pull "Следующее задание" button still works; they resume on any activity).
+FREE_INACTIVE_SUPPRESS_DAYS = max(1, int((os.getenv("FREE_INACTIVE_SUPPRESS_DAYS") or "21").strip() or "21"))
+
+# Set by the rotation gate for the duration of one scheduled send so the shared
+# delivery collector can tier-filter DM recipients. Unset (None) on manual/force
+# sends → no filtering. ContextVar = correctly isolated per asyncio task.
+_current_scheduled_send: contextvars.ContextVar = contextvars.ContextVar(
+    "current_scheduled_send", default=None)
+
+_rotation_rank_cache: tuple[int, dict] | None = None
+
+
+def _tier_delivery_enabled() -> bool:
+    return (os.getenv("TIER_DELIVERY_ENABLED") or "1").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _global_rotation_active_entries(now: datetime | None = None) -> list:
+    """SlotEntry objects for today's active (firing) slots."""
+    active_keys = _global_rotation_active_keys(now)
+    return [e for e in _build_rotation_catalog() if e.key in active_keys]
+
+
+def _slot_rank_today(kind: str, hour: int, minute: int, now: datetime | None = None) -> int:
+    """0-based rank of this slot within today's active set (best-first). Slots that
+    aren't active today rank past the end (effectively delivered to no DM tier)."""
+    global _rotation_rank_cache
+    day = (now or _get_quiz_schedule_now()).date().toordinal()
+    if _rotation_rank_cache is None or _rotation_rank_cache[0] != day:
+        ranked = _rank_slots(_global_rotation_active_entries(now), day)
+        _rotation_rank_cache = (day, {e.key: i for i, e in enumerate(ranked)})
+    return _rotation_rank_cache[1].get(_slot_key(kind, hour, minute), 10_000)
+
+
+def _user_send_budget(user_id: int, *, is_pro: bool, active_recent: set | None) -> int:
+    """How many of today's ranked active slots this DM user receives."""
+    if is_pro:
+        return DEFAULT_PRO_SEND_BUDGET  # «Обычно»; custom Pro schedules come later
+    # Free: suppress entirely if inactive past the window (data kept, pull still works).
+    if active_recent is not None and int(user_id) not in active_recent:
+        return 0
+    return FREE_SEND_BUDGET
+
+
+# Short-TTL memo so tier-filtering doesn't hit the DB once per recipient per send.
+# Honors the PRO_DENYLIST (is_user_pro → resolve_entitlement) within the TTL window.
+_PRO_STATUS_CACHE: dict[int, tuple[bool, float]] = {}
+_PRO_STATUS_TTL_SECONDS = 600.0
+
+
+def _is_user_pro_cached(user_id: int) -> bool:
+    now_ts = pytime.time()
+    cached = _PRO_STATUS_CACHE.get(int(user_id))
+    if cached and cached[1] > now_ts:
+        return cached[0]
+    try:
+        val = bool(is_user_pro(int(user_id)))
+    except Exception:
+        return bool(cached[0]) if cached else False
+    _PRO_STATUS_CACHE[int(user_id)] = (val, now_ts + _PRO_STATUS_TTL_SECONDS)
+    return val
 
 
 def _format_quiz_delivery_slot(slot_dt: datetime) -> str:
@@ -18381,13 +18455,51 @@ async def _collect_quiz_delivery_user_targets(context: CallbackContext) -> list[
             grouped.setdefault(safe_chat_id, []).append(int(user_id))
         if skipped > 0:
             logging.info("ℹ️ scheduled quiz: suppressed %s user target(s) before chat grouping", skipped)
-        return [
-            {
-                "chat_id": int(chat_id),
+
+        # ── Этап 1: per-tier DM filtering for scheduled rotation sends ──
+        # Active only when the rotation gate tagged this send (manual/force sends
+        # leave the contextvar unset → unfiltered). Group chats (chat_id < 0) are
+        # never filtered. A DM user gets this slot iff its rank < their budget.
+        sched = _current_scheduled_send.get()
+        tier_active = bool(sched) and _tier_delivery_enabled()
+        slot_rank = 0
+        pro_map: dict[int, bool] = {}
+        active_recent: set | None = None
+        if tier_active:
+            s_kind, s_hh, s_mm = sched
+            slot_rank = _slot_rank_today(s_kind, s_hh, s_mm)
+            dm_uids = [int(uids[0]) for cid, uids in grouped.items() if int(cid) > 0 and uids]
+            if dm_uids:
+                try:
+                    active_recent = set(await _collect_scheduler_candidate_user_ids(
+                        lookback_days=FREE_INACTIVE_SUPPRESS_DAYS,
+                        include_allowed=False, include_admins=True))
+                except Exception:
+                    active_recent = None
+                try:
+                    pro_map = await asyncio.to_thread(
+                        lambda ids=tuple(dm_uids): {u: _is_user_pro_cached(u) for u in ids})
+                except Exception:
+                    pro_map = {}
+
+        result: list[dict] = []
+        tier_skipped = 0
+        for chat_id, user_ids_for_chat in sorted(grouped.items(), key=lambda item: int(item[0])):
+            safe_chat_id = int(chat_id)
+            if tier_active and safe_chat_id > 0 and user_ids_for_chat:
+                uid = int(user_ids_for_chat[0])
+                budget = _user_send_budget(uid, is_pro=pro_map.get(uid, False), active_recent=active_recent)
+                if slot_rank >= budget:
+                    tier_skipped += 1
+                    continue
+            result.append({
+                "chat_id": safe_chat_id,
                 "user_ids": [int(user_id) for user_id in user_ids_for_chat],
-            }
-            for chat_id, user_ids_for_chat in sorted(grouped.items(), key=lambda item: int(item[0]))
-        ]
+            })
+        if tier_active and tier_skipped > 0:
+            logging.info("tier_delivery kind=%s slot=%02d:%02d rank=%s → filtered %s DM recipient(s)",
+                         sched[0], int(sched[1]), int(sched[2]), slot_rank, tier_skipped)
+        return result
     except Exception:
         logging.warning("⚠️ Не удалось собрать user targets для scheduled quiz", exc_info=True)
         return []
@@ -28322,7 +28434,16 @@ def main():
                     "rotation gate failed kind=%s slot=%02d:%02d — firing anyway",
                     kind, int(hour), int(minute), exc_info=True,
                 )
-            submit_async(async_func, CallbackContext(application=application), *extra)
+            # Tag this send with its (kind, slot) so the shared delivery collector can
+            # tier-filter DM recipients (Этап 1). ContextVar is per-task, so concurrent
+            # sends don't clash; manual/force sends leave it unset → no filtering.
+            async def _wrapped(ctx, *a):
+                token = _current_scheduled_send.set((kind, int(hour), int(minute)))
+                try:
+                    await async_func(ctx, *a)
+                finally:
+                    _current_scheduled_send.reset(token)
+            submit_async(_wrapped, CallbackContext(application=application), *extra)
         return _job
 
     # def run_async_job(async_func, context=None, *args, **kwargs):

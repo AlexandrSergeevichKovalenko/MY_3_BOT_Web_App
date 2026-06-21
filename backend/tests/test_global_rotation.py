@@ -10,6 +10,7 @@ from backend.global_rotation import (
     SlotEntry,
     compute_active_slot_keys,
     slot_key,
+    rank_slots,
 )
 
 ARTICLE_QUIZ = [(9, 15), (10, 15), (13, 15), (17, 15), (18, 15)]
@@ -110,3 +111,45 @@ def test_budget_at_or_below_always_on_keeps_only_always_on():
     active = compute_active_slot_keys(entries, _ordinals(1).start, 5)
     assert len(active) == 12
     assert all(":" in k for k in active)
+
+
+# ── Tier ranking (Этап 1): nested per-tier subsets ──────────────────────────
+FREE_N, OBYCHNO_N, FULL_N = 4, 12, 20
+
+
+def _active_entries(entries, day):
+    active = compute_active_slot_keys(entries, day, FULL_N)
+    return [e for e in entries if e.key in active]
+
+
+def test_rank_is_deterministic_and_total():
+    entries = _catalog()
+    for day in _ordinals(20):
+        act = _active_entries(entries, day)
+        r1 = rank_slots(act, day)
+        r2 = rank_slots(act, day)
+        assert [e.key for e in r1] == [e.key for e in r2]
+        assert len(r1) == len(act) == FULL_N  # ranks every active slot once
+
+
+def test_tiers_are_nested_free_subset_obychno_subset_full():
+    entries = _catalog()
+    for day in _ordinals(60):
+        ranked = [e.key for e in rank_slots(_active_entries(entries, day), day)]
+        free = set(ranked[:FREE_N])
+        obychno = set(ranked[:OBYCHNO_N])
+        full = set(ranked[:FULL_N])
+        assert free <= obychno <= full
+        assert len(free) == FREE_N and len(obychno) == OBYCHNO_N
+
+
+def test_free_tier_rotates_types_over_time():
+    """Free's 4/day should cover many different kinds across a window (breadth)."""
+    entries = _catalog()
+    kinds_seen = set()
+    for day in _ordinals(21):
+        ranked = rank_slots(_active_entries(entries, day), day)
+        for e in ranked[:FREE_N]:
+            kinds_seen.add(e.kind)
+    # Over 3 weeks Free should have sampled well beyond a couple of types.
+    assert len(kinds_seen) >= 6
