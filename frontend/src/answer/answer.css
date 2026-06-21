@@ -638,6 +638,14 @@ html[data-scheme="light"] .au-word.picked { background: #dfe9fd; color: #0f172a;
   -webkit-touch-callout: none; user-select: none;
 }
 .pin-img { display: block; width: 100%; height: auto; }
+
+/* Rebus puzzle picture duplicated into the answer overlay (same image as the chat). */
+.ans-rebus-img {
+  display: block; width: 100%; height: auto;
+  border-radius: var(--dmps-radius-inner, 20px);
+  border: 1px solid var(--dmps-border, #334155);
+}
+.ans-rebus-img-skel { width: 100%; aspect-ratio: 16 / 9; height: auto; }
 .pin-marker {
   position: absolute; width: 26px; height: 26px; margin: -13px 0 0 -13px;
   border-radius: 50%; border: 3px solid #fff;

@@ -185,7 +185,18 @@ def load_rebus_task(*, dispatch_id: int, user_id: int) -> dict | None:
         "letter_count": len(correct_word),
         "requires_article": bool(article),
         "already_answered": bool(existing),
+        "image_url": "",
     }
+    # The rebus image (the two component pictures + "= ?") is the actual puzzle — it's
+    # sent to the Telegram chat, but when answering in the Mini-App the user no longer
+    # sees it. Surface the composed card URL so the overlay can show the same picture.
+    composed_key = str(entry.get("composed_image_object_key") or "")
+    if composed_key:
+        try:
+            from backend.r2_storage import r2_public_url
+            meta["image_url"] = r2_public_url(composed_key)
+        except Exception:
+            meta["image_url"] = ""
     if existing:
         meta["result"] = _rebus_result_payload(
             entry=entry,

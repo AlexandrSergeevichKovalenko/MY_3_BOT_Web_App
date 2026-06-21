@@ -976,6 +976,16 @@ export default function AnswerOverlay({ startParam }) {
         )}
       </div>
 
+      {/* The rebus picture (sent to the Telegram chat) duplicated here, so the user
+          can solve it without leaving the Mini-App. Skeleton while meta loads. */}
+      {isRebus ? (
+        metaLoading ? (
+          <div className="ans-rebus-img-skel ans-skel" />
+        ) : meta?.image_url ? (
+          <img className="ans-rebus-img" src={meta.image_url} alt="Rätsel" />
+        ) : null
+      ) : null}
+
       {isRebus ? (
         <input
           className="ans-input"
