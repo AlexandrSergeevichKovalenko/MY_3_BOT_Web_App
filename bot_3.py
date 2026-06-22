@@ -294,6 +294,9 @@ from backend.database import (
     get_inbox_next_and_count,
     get_inbox_open_today,
     get_inbox_open_kinds_today,
+    get_users_with_held_inbox,
+    get_held_inbox,
+    mark_inbox_pushed,
     get_user_prefs,
     get_user_presets_bulk,
     get_user_prefs_bulk,
@@ -2312,9 +2315,10 @@ def _next_task_button_label(idx: int, task: dict) -> str:
 
 async def _send_next_task_card(context: CallbackContext, chat_id: int, tasks: list,
                                open_count: int, *, kind_label: str | None = None,
-                               show_chooser: bool = True) -> None:
+                               show_chooser: bool = True, title_override: str | None = None) -> None:
     """Render the branded «Следующее задание» card with up to 3 deeplink buttons
-    (+ optional «🎯 Выбрать тип» row). Shared by the button handler and the chooser."""
+    (+ optional «🎯 Выбрать тип» row). Shared by the button handler, the chooser and
+    the windowed-release batch (title_override)."""
     rows = [[InlineKeyboardButton(_next_task_button_label(i, t), url=get_webapp_deeplink(str(t["deeplink"])))]
             for i, t in enumerate([t for t in tasks if t.get("deeplink")], 1)]
     if not rows:
@@ -2324,8 +2328,8 @@ async def _send_next_task_card(context: CallbackContext, chat_id: int, tasks: li
     kb = InlineKeyboardMarkup(rows)
     n = len(rows) - (1 if show_chooser else 0)
     scope = f" · {kind_label}" if kind_label else ""
-    head = (f"Твоё невыполненное задание за сегодня{scope}" if n == 1
-            else f"Твои {n} самых старых невыполненных за сегодня{scope}")
+    head = title_override or (f"Твоё невыполненное задание за сегодня{scope}" if n == 1
+                              else f"Твои {n} самых старых невыполненных за сегодня{scope}")
     more = f"\nВсего не сделано сегодня: <b>{open_count}</b>." if open_count > n else ""
     caption = f"📋 <b>{head}</b>\nОткрой и реши прямо тут, не листая чат 👇{more}"
     poster = await asyncio.to_thread(_next_task_card_bytes)
@@ -2523,6 +2527,41 @@ async def _schedule_window_callback(update: Update, context: CallbackContext) ->
     await query.answer("Сохранено ✅" if ok else "Не удалось сохранить")
     if ok:
         await _refresh_schedule_picker(query, user_id)
+
+
+async def _release_windowed_inbox_job(context: CallbackContext) -> None:
+    """Этап 3f: when a windowed user's active hours open, deliver everything we HELD
+    for them (tasks that fired while they were "off") as ONE batch card. Tasks that
+    fire DURING the window go live as usual; nothing is delivered outside it."""
+    if _is_quiet_hours_now():
+        return
+    now = _get_quiz_schedule_now()
+    since_ts = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    try:
+        user_ids = await asyncio.to_thread(get_users_with_held_inbox, since_ts)
+    except Exception:
+        user_ids = []
+    if not user_ids:
+        return
+    released = 0
+    for uid in user_ids:
+        try:
+            prefs = await asyncio.to_thread(get_user_prefs, uid)
+            if not _now_in_window((prefs or {}).get("schedule"), (prefs or {}).get("tz_name")):
+                continue  # still outside their window — keep holding
+            held = [t for t in await asyncio.to_thread(get_held_inbox, uid, since_ts=since_ts, limit=20)
+                    if t.get("deeplink")]
+            if not held:
+                continue
+            await _send_next_task_card(context, uid, held, len(held),
+                                       title_override="📬 Задания, пока тебя не было",
+                                       show_chooser=False)
+            await asyncio.to_thread(mark_inbox_pushed, uid, since_ts=since_ts)
+            released += 1
+        except Exception:
+            logging.warning("release_windowed_inbox failed user=%s", uid, exc_info=True)
+    if released:
+        logging.info("release_windowed_inbox: delivered held batch to %s user(s)", released)
 
 
 async def _send_howto_guide_chapter(update: Update, context: CallbackContext) -> None:
@@ -29191,6 +29230,14 @@ def main():
             "cron",
             hour=11,
             minute=0,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Windowed deferred delivery (Этап 3f): every 20 min, release held tasks to
+        #    users whose active window is currently open (dormant until 3f wires held). --
+        scheduler.add_job(
+            lambda: submit_async(_release_windowed_inbox_job, CallbackContext(application=application)),
+            "cron",
+            minute="*/20",
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
         # -- Hörverständnis: daily at 18:30 --

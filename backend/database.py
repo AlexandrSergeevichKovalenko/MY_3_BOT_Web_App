@@ -9089,9 +9089,19 @@ def ensure_webapp_tables() -> None:
                 ALTER TABLE bt_3_interactive_inbox
                 ADD COLUMN IF NOT EXISTS keyboard_json JSONB;
             """)
+            # pushed=FALSE → recorded but the card was HELD (windowed user out of window);
+            # a release job batches these into one card when their window opens (Этап 3f).
+            cursor.execute("""
+                ALTER TABLE bt_3_interactive_inbox
+                ADD COLUMN IF NOT EXISTS pushed BOOLEAN NOT NULL DEFAULT TRUE;
+            """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bt_3_interactive_inbox_open
                 ON bt_3_interactive_inbox (user_id, answered, created_at);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_interactive_inbox_held
+                ON bt_3_interactive_inbox (user_id, created_at) WHERE pushed = FALSE;
             """)
             # ── end interactive inbox ─────────────────────────────────────
 
@@ -15258,10 +15268,12 @@ def _coerce_inbox_keyboard_json(value) -> list | None:
 def record_interactive_inbox(
     *, user_id: int, kind: str, dispatch_id: int, chat_id: int,
     telegram_message_id: int | None = None, deeplink: str = "", title: str = "",
-    keyboard_json: list | None = None,
+    keyboard_json: list | None = None, pushed: bool = True,
 ) -> None:
     """Add a task to the user's interactive inbox (idempotent per task).
 
+    pushed=False → the card was HELD (windowed user out of window); a release job
+    delivers these as one batch when their window opens (Этап 3f).
     keyboard_json (optional): the card's original inline keyboard as
     [[{text, url|callback_data}, …], …] so the ✅ edit can keep ALL its buttons
     and just prepend a "✅ Выполнено" row."""
@@ -15272,8 +15284,8 @@ def record_interactive_inbox(
                 cursor.execute(
                     """
                     INSERT INTO bt_3_interactive_inbox
-                        (user_id, kind, dispatch_id, chat_id, telegram_message_id, deeplink, title, keyboard_json)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        (user_id, kind, dispatch_id, chat_id, telegram_message_id, deeplink, title, keyboard_json, pushed)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (user_id, kind, dispatch_id) DO UPDATE
                         SET telegram_message_id = COALESCE(EXCLUDED.telegram_message_id,
                                                            bt_3_interactive_inbox.telegram_message_id),
@@ -15283,7 +15295,7 @@ def record_interactive_inbox(
                     """,
                     (int(user_id), str(kind), int(dispatch_id), int(chat_id),
                      int(telegram_message_id) if telegram_message_id else None,
-                     str(deeplink or ""), str(title or ""), kb_dump),
+                     str(deeplink or ""), str(title or ""), kb_dump, bool(pushed)),
                 )
     except Exception:
         logging.warning("record_interactive_inbox failed user=%s kind=%s id=%s",
@@ -15493,6 +15505,67 @@ def get_inbox_open_kinds_today(user_id: int, *, since_ts) -> list:
     except Exception:
         logging.warning("get_inbox_open_kinds_today failed user=%s", user_id, exc_info=True)
     return out
+
+
+def get_users_with_held_inbox(since_ts) -> list:
+    """Distinct user_ids that have HELD (pushed=FALSE), still-open inbox items since
+    `since_ts` — the release job's work list (Этап 3f)."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT DISTINCT user_id FROM bt_3_interactive_inbox "
+                    "WHERE pushed = FALSE AND answered = FALSE AND created_at >= %s;",
+                    (since_ts,),
+                )
+                rows = cursor.fetchall() or []
+        return [int(r[0]) for r in rows if r and r[0] is not None]
+    except Exception:
+        logging.warning("get_users_with_held_inbox failed", exc_info=True)
+        return []
+
+
+def get_held_inbox(user_id: int, *, since_ts, limit: int = 20) -> list:
+    """The user's HELD (pushed=FALSE, open) tasks since `since_ts`, oldest-first."""
+    out: list = []
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT kind, dispatch_id, deeplink, title
+                    FROM bt_3_interactive_inbox
+                    WHERE user_id = %s AND pushed = FALSE AND answered = FALSE AND created_at >= %s
+                    ORDER BY created_at ASC
+                    LIMIT %s;
+                    """,
+                    (int(user_id), since_ts, max(1, int(limit))),
+                )
+                for r in cursor.fetchall() or []:
+                    out.append({"kind": str(r[0] or ""), "dispatch_id": int(r[1]),
+                                "deeplink": str(r[2] or ""), "title": str(r[3] or "")})
+    except Exception:
+        logging.warning("get_held_inbox failed user=%s", user_id, exc_info=True)
+    return out
+
+
+def mark_inbox_pushed(user_id: int, *, since_ts) -> int:
+    """Flip the user's HELD rows (since since_ts) to pushed=TRUE after the batch is
+    delivered. Returns how many rows flipped."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE bt_3_interactive_inbox SET pushed = TRUE "
+                    "WHERE user_id = %s AND pushed = FALSE AND created_at >= %s;",
+                    (int(user_id), since_ts),
+                )
+                n = cursor.rowcount
+            conn.commit()
+        return int(n or 0)
+    except Exception:
+        logging.warning("mark_inbox_pushed failed user=%s", user_id, exc_info=True)
+        return 0
 
 
 # ── Daily send-rotation skips (Этап 0) ───────────────────────────────────────
