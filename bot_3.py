@@ -2464,12 +2464,14 @@ def _build_schedule_picker(prefs) -> tuple:
     cur = str((prefs or {}).get("preset") or "normal")
     cur_win = _current_window_key((prefs or {}).get("schedule"))
     lines = ["🗓 <b>Расписание доставки</b>", "",
-             "<b>Интенсивность</b> — сколько заданий в день:", ""]
+             "Две настройки: <b>сколько</b> заданий и <b>в какие часы</b>. Жми по кнопкам ниже.", ""]
     rows: list = []
+    rows.append([InlineKeyboardButton("⚡ Сколько в день — выбери одно:", callback_data="pset:hdr")])
     for code, label, desc in _PRESET_PICKER:
         lines.append(("✅ " if code == cur else "• ") + f"<b>{label}</b> — {desc}")
         rows.append([InlineKeyboardButton(("✅ " if code == cur else "") + label, callback_data=f"pset:{code}")])
     lines += ["", "🕐 <b>Активные часы</b> — когда присылать (по твоему времени):"]
+    rows.append([InlineKeyboardButton("🕐 В какие часы — выбери одно:", callback_data="pwin:hdr")])
     for key, (label, _wins) in _WINDOW_PRESETS.items():
         rows.append([InlineKeyboardButton(("✅ " if key == cur_win else "") + label, callback_data=f"pwin:{key}")])
     if cur_win is None:
@@ -2510,6 +2512,9 @@ async def _schedule_preset_callback(update: Update, context: CallbackContext) ->
         return
     user_id = int(query.from_user.id)
     code = (query.data or "").split(":", 1)[1] if ":" in (query.data or "") else ""
+    if code == "hdr":
+        await query.answer("👇 Выбери, сколько заданий в день")
+        return
     if code not in _PRESET_LABELS:
         await query.answer()
         return
@@ -2529,6 +2534,9 @@ async def _schedule_window_callback(update: Update, context: CallbackContext) ->
         return
     user_id = int(query.from_user.id)
     key = (query.data or "").split(":", 1)[1] if ":" in (query.data or "") else ""
+    if key == "hdr":
+        await query.answer("👇 Выбери, в какие часы присылать")
+        return
     if key not in _WINDOW_PRESETS:
         await query.answer()
         return
