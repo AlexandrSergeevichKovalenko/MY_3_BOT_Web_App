@@ -296,7 +296,9 @@ from backend.database import (
     get_inbox_open_kinds_today,
     get_user_prefs,
     get_user_presets_bulk,
+    get_user_prefs_bulk,
     set_user_preset,
+    set_user_schedule,
     get_pending_freeform_result_cards,
     mark_freeform_card_sent,
     get_pending_challenge_notifications,
@@ -760,6 +762,55 @@ def _preset_budget(preset: str | None) -> int:
         "silent": 0,
         "custom": DEFAULT_PRO_SEND_BUDGET,
     }.get(str(preset or "normal"), DEFAULT_PRO_SEND_BUDGET)
+
+
+# Active-window presets (Этап 3b). Stored in prefs.schedule as
+# {weekday:[[start_min,end_min]…], weekend:[…]} in the user's TZ. The canned ones
+# use the same windows for weekday/weekend; the full split lands with the 3d UI.
+_WINDOW_PRESETS = {
+    "allday":  ("🌗 Весь день",      None),
+    "morning": ("🌅 Утро 7–10",      [[7 * 60, 10 * 60]]),
+    "evening": ("🌆 Вечер 18–22",    [[18 * 60, 22 * 60]]),
+    "morneve": ("🌅🌆 Утро+вечер",    [[7 * 60, 10 * 60], [18 * 60, 22 * 60]]),
+}
+
+
+def _window_schedule_for(key: str):
+    wins = _WINDOW_PRESETS.get(key, ("", None))[1]
+    return None if wins is None else {"weekday": wins, "weekend": wins}
+
+
+def _current_window_key(schedule) -> str | None:
+    if not schedule:
+        return "allday"
+    wd = schedule.get("weekday")
+    for key, (_label, wins) in _WINDOW_PRESETS.items():
+        if wins is not None and wins == wd:
+            return key
+    return None  # a custom grid set via the (future) Mini-App
+
+
+def _now_in_window(schedule, tz_name) -> bool:
+    """True if NOW (in the user's TZ) falls inside their active windows. No schedule
+    → always true. Empty list for the current day-type → nothing that day."""
+    if not schedule:
+        return True
+    try:
+        tz = ZoneInfo(str(tz_name) if tz_name else QUIZ_SCHEDULE_TZ_NAME)
+    except Exception:
+        try:
+            tz = ZoneInfo(QUIZ_SCHEDULE_TZ_NAME)
+        except Exception:
+            return True
+    now = datetime.now(tz)
+    windows = schedule.get("weekend" if now.weekday() >= 5 else "weekday")
+    if windows is None:
+        return True
+    now_min = now.hour * 60 + now.minute
+    try:
+        return any(int(s) <= now_min < int(e) for s, e in windows)
+    except Exception:
+        return True
 # Free users with no activity in this many days get no scheduled push (data kept;
 # the pull "Следующее задание" button still works; they resume on any activity).
 FREE_INACTIVE_SUPPRESS_DAYS = max(1, int((os.getenv("FREE_INACTIVE_SUPPRESS_DAYS") or "21").strip() or "21"))
@@ -2391,8 +2442,27 @@ _PRESET_PICKER = [
 _PRESET_LABELS = {code: label for code, label, _ in _PRESET_PICKER}
 
 
+def _build_schedule_picker(prefs) -> tuple:
+    """(text, markup) for the «🗓 Расписание» screen — intensity + active hours,
+    with the current choices ticked. Shared by the opener and both callbacks."""
+    cur = str((prefs or {}).get("preset") or "normal")
+    cur_win = _current_window_key((prefs or {}).get("schedule"))
+    lines = ["🗓 <b>Расписание доставки</b>", "",
+             "<b>Интенсивность</b> — сколько заданий в день:", ""]
+    rows: list = []
+    for code, label, desc in _PRESET_PICKER:
+        lines.append(("✅ " if code == cur else "• ") + f"<b>{label}</b> — {desc}")
+        rows.append([InlineKeyboardButton(("✅ " if code == cur else "") + label, callback_data=f"pset:{code}")])
+    lines += ["", "🕐 <b>Активные часы</b> — когда присылать (по твоему времени):"]
+    for key, (label, _wins) in _WINDOW_PRESETS.items():
+        rows.append([InlineKeyboardButton(("✅ " if key == cur_win else "") + label, callback_data=f"pwin:{key}")])
+    if cur_win is None:
+        lines.append("• сейчас: свои часы из приложения")
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
 async def _send_schedule_picker(update: Update, context: CallbackContext) -> None:
-    """«🗓 Расписание» — pick how many tasks/day the bot DMs you (Pro)."""
+    """«🗓 Расписание» — Pro: pick delivery intensity + active hours."""
     if not update.effective_message or not update.effective_user:
         return
     user_id = int(update.effective_user.id)
@@ -2404,20 +2474,21 @@ async def _send_schedule_picker(update: Update, context: CallbackContext) -> Non
             parse_mode="HTML")
         return
     prefs = await asyncio.to_thread(get_user_prefs, user_id)
-    cur = str((prefs or {}).get("preset") or "normal")
-    lines = ["🗓 <b>Расписание доставки</b>", "",
-             "Сколько заданий в день присылать тебе в личку (поменять можно в любой момент):", ""]
-    for code, label, desc in _PRESET_PICKER:
-        mark = "✅ " if code == cur else "• "
-        lines.append(f"{mark}<b>{label}</b> — {desc}")
-    rows = [[InlineKeyboardButton(("✅ " if code == cur else "") + label, callback_data=f"pset:{code}")]
-            for code, label, _ in _PRESET_PICKER]
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML",
-                                    reply_markup=InlineKeyboardMarkup(rows))
+    text, kb = _build_schedule_picker(prefs)
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
+
+
+async def _refresh_schedule_picker(query, user_id: int) -> None:
+    prefs = await asyncio.to_thread(get_user_prefs, user_id)
+    text, kb = _build_schedule_picker(prefs)
+    try:
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        pass
 
 
 async def _schedule_preset_callback(update: Update, context: CallbackContext) -> None:
-    """pset:<preset> — save the chosen delivery preset (Pro)."""
+    """pset:<preset> — save the delivery intensity (Pro)."""
     query = update.callback_query
     if not query or not query.from_user:
         return
@@ -2430,15 +2501,28 @@ async def _schedule_preset_callback(update: Update, context: CallbackContext) ->
         await query.answer("Расписание доступно в Pro 🔒", show_alert=True)
         return
     ok = await asyncio.to_thread(set_user_preset, user_id, code)
-    await query.answer("Сохранено ✅" if ok else "Не удалось сохранить, попробуй ещё раз")
+    await query.answer("Сохранено ✅" if ok else "Не удалось сохранить")
     if ok:
-        try:
-            await query.edit_message_text(
-                f"🗓 <b>Расписание обновлено</b>\nТеперь: <b>{_PRESET_LABELS.get(code, code)}</b>.\n"
-                "Изменения вступают в силу со следующих заданий. Поменять — снова «🗓 Расписание».",
-                parse_mode="HTML")
-        except Exception:
-            pass
+        await _refresh_schedule_picker(query, user_id)
+
+
+async def _schedule_window_callback(update: Update, context: CallbackContext) -> None:
+    """pwin:<key> — save active hours (Pro)."""
+    query = update.callback_query
+    if not query or not query.from_user:
+        return
+    user_id = int(query.from_user.id)
+    key = (query.data or "").split(":", 1)[1] if ":" in (query.data or "") else ""
+    if key not in _WINDOW_PRESETS:
+        await query.answer()
+        return
+    if not await asyncio.to_thread(is_user_pro, user_id):
+        await query.answer("Расписание доступно в Pro 🔒", show_alert=True)
+        return
+    ok = await asyncio.to_thread(set_user_schedule, user_id, _window_schedule_for(key))
+    await query.answer("Сохранено ✅" if ok else "Не удалось сохранить")
+    if ok:
+        await _refresh_schedule_picker(query, user_id)
 
 
 async def _send_howto_guide_chapter(update: Update, context: CallbackContext) -> None:
@@ -18668,7 +18752,7 @@ async def _collect_quiz_delivery_user_targets(context: CallbackContext) -> list[
         tier_active = bool(sched) and _tier_delivery_enabled()
         slot_rank = 0
         pro_map: dict[int, bool] = {}
-        preset_map: dict = {}
+        prefs_map: dict = {}
         active_recent: set | None = None
         if tier_active:
             s_kind, s_hh, s_mm = sched
@@ -18686,10 +18770,10 @@ async def _collect_quiz_delivery_user_targets(context: CallbackContext) -> list[
                         lambda ids=tuple(dm_uids): {u: _is_user_pro_cached(u) for u in ids})
                 except Exception:
                     pro_map = {}
-                try:  # Pro preset → tier budget (Этап 3); absent row = «Обычно»
-                    preset_map = await asyncio.to_thread(get_user_presets_bulk, tuple(dm_uids))
+                try:  # Pro preset (budget) + schedule (active window) per recipient
+                    prefs_map = await asyncio.to_thread(get_user_prefs_bulk, tuple(dm_uids))
                 except Exception:
-                    preset_map = {}
+                    prefs_map = {}
 
         result: list[dict] = []
         tier_skipped = 0
@@ -18697,9 +18781,12 @@ async def _collect_quiz_delivery_user_targets(context: CallbackContext) -> list[
             safe_chat_id = int(chat_id)
             if tier_active and safe_chat_id > 0 and user_ids_for_chat:
                 uid = int(user_ids_for_chat[0])
+                p = prefs_map.get(uid) or {}
                 budget = _user_send_budget(uid, is_pro=pro_map.get(uid, False),
-                                           active_recent=active_recent, preset=preset_map.get(uid))
-                if slot_rank >= budget:
+                                           active_recent=active_recent, preset=p.get("preset"))
+                # Window gate (Pro schedule): skip if NOW is outside their active hours.
+                in_window = _now_in_window(p.get("schedule"), p.get("tz_name")) if p else True
+                if slot_rank >= budget or not in_window:
                     tier_skipped += 1
                     continue
             result.append({
@@ -28410,6 +28497,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_autosave_digest_save_callback, pattern=r"^asv_save:"))
     application.add_handler(CallbackQueryHandler(_next_task_chooser_callback, pattern=r"^nxt:"))
     application.add_handler(CallbackQueryHandler(_schedule_preset_callback, pattern=r"^pset:"))
+    application.add_handler(CallbackQueryHandler(_schedule_window_callback, pattern=r"^pwin:"))
     # 🔥 Логирование всех сообщений (группа -1, не блокирует цепочку)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message, block=False), group=-1)
 

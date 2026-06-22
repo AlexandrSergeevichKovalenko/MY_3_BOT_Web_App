@@ -15655,6 +15655,52 @@ def set_user_preset(user_id: int, preset: str) -> bool:
         return False
 
 
+def set_user_schedule(user_id: int, schedule) -> bool:
+    """Save the active-window schedule (JSONB {weekday:[[s,e]…], weekend:[…]} in
+    minutes-from-midnight, user TZ). None clears it (= all day)."""
+    try:
+        _ensure_user_prefs_schema()
+        payload = json.dumps(schedule) if schedule is not None else None
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO bt_3_user_prefs (user_id, schedule, updated_at)
+                    VALUES (%s, %s::jsonb, NOW())
+                    ON CONFLICT (user_id) DO UPDATE
+                        SET schedule = EXCLUDED.schedule, updated_at = NOW();
+                    """,
+                    (int(user_id), payload),
+                )
+            conn.commit()
+        return True
+    except Exception:
+        logging.warning("set_user_schedule failed user=%s", user_id, exc_info=True)
+        return False
+
+
+def get_user_prefs_bulk(user_ids) -> dict:
+    """{user_id: {preset, schedule, tz_name}} for the given ids (one query) — used to
+    size + window-gate DM delivery per recipient. Absent users are simply omitted."""
+    out: dict = {}
+    ids = [int(u) for u in (user_ids or []) if u]
+    if not ids:
+        return out
+    try:
+        _ensure_user_prefs_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT user_id, preset, schedule, tz_name FROM bt_3_user_prefs WHERE user_id = ANY(%s);",
+                    (ids,),
+                )
+                for r in cursor.fetchall() or []:
+                    out[int(r[0])] = {"preset": str(r[1] or "normal"), "schedule": r[2], "tz_name": r[3]}
+    except Exception:
+        logging.warning("get_user_prefs_bulk failed", exc_info=True)
+    return out
+
+
 def get_dictionary_entry_by_id(entry_id: int) -> dict | None:
     if not entry_id:
         return None
