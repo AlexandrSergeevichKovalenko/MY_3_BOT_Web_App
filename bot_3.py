@@ -831,6 +831,18 @@ def _tier_delivery_enabled() -> bool:
     return (os.getenv("TIER_DELIVERY_ENABLED") or "1").strip().lower() in ("1", "true", "yes", "on")
 
 
+# Этап 3f: hold off-window allocation tasks → batch-deliver when the window opens.
+# Default OFF (ship dark, flip on after verifying). Only these (rotation) kinds have
+# their sender wired to record a held inbox row instead of sending — others keep the
+# 3b behaviour (off-window = skip) even when the flag is on, so coverage is safe to
+# roll out incrementally.
+_HELD_SUPPORTED_KINDS = {"rebus", "crossword", "anagram", "aufgabe", "listening"}
+
+
+def _window_defer_enabled() -> bool:
+    return (os.getenv("WINDOW_DEFER_ENABLED") or "0").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _global_rotation_active_entries(now: datetime | None = None) -> list:
     """SlotEntry objects for today's active (firing) slots."""
     active_keys = _global_rotation_active_keys(now)
@@ -18818,19 +18830,29 @@ async def _collect_quiz_delivery_user_targets(context: CallbackContext) -> list[
         tier_skipped = 0
         for chat_id, user_ids_for_chat in sorted(grouped.items(), key=lambda item: int(item[0])):
             safe_chat_id = int(chat_id)
+            held = False
             if tier_active and safe_chat_id > 0 and user_ids_for_chat:
                 uid = int(user_ids_for_chat[0])
                 p = prefs_map.get(uid) or {}
                 budget = _user_send_budget(uid, is_pro=pro_map.get(uid, False),
                                            active_recent=active_recent, preset=p.get("preset"))
-                # Window gate (Pro schedule): skip if NOW is outside their active hours.
-                in_window = _now_in_window(p.get("schedule"), p.get("tz_name")) if p else True
-                if slot_rank >= budget or not in_window:
+                if slot_rank >= budget:
                     tier_skipped += 1
-                    continue
+                    continue  # not in this user's allocation
+                in_window = _now_in_window(p.get("schedule"), p.get("tz_name")) if p else True
+                if not in_window:
+                    # Off-window but in allocation: HOLD it (release job batches it when
+                    # the window opens) — only if deferral is on AND this kind's sender
+                    # supports it; otherwise keep the 3b behaviour (skip).
+                    if _window_defer_enabled() and sched and sched[0] in _HELD_SUPPORTED_KINDS:
+                        held = True
+                    else:
+                        tier_skipped += 1
+                        continue
             result.append({
                 "chat_id": safe_chat_id,
                 "user_ids": [int(user_id) for user_id in user_ids_for_chat],
+                "held": held,
             })
         if tier_active and tier_skipped > 0:
             logging.info("tier_delivery kind=%s slot=%02d:%02d rank=%s → filtered %s DM recipient(s)",
@@ -19506,6 +19528,7 @@ async def send_rebus_to_chat(
     slot_hour: int,
     chat_id: int,
     target_user_id: int,
+    held: bool = False,
 ) -> bool:
     """Send one rebus card to a chat. Returns True on success."""
     compound_id = str(compound_entry.get("compound_id") or compound_entry.get("id") or "")
@@ -19554,6 +19577,14 @@ async def send_rebus_to_chat(
             compound_id, chat_id, slot_date, slot_hour,
         )
         return False
+
+    if held and int(chat_id) == int(target_user_id):  # Этап 3f: record, don't send
+        await asyncio.to_thread(
+            record_interactive_inbox, user_id=int(target_user_id), kind="rb",
+            dispatch_id=int(dispatch_id), chat_id=int(chat_id),
+            deeplink=f"ans_rb_{dispatch_id}", title="🧩 Rätsel", pushed=False)
+        logging.info("held kind=rb dispatch_id=%s user=%s", dispatch_id, target_user_id)
+        return True
 
     caption = _build_rebus_caption(compound_entry)
     caption = _append_free_pro_teaser(caption, chat_id)
@@ -19738,6 +19769,7 @@ async def _send_scheduled_rebuses(context: CallbackContext) -> None:
             slot_hour=slot_hour,
             chat_id=target_chat_id,
             target_user_id=target_chat_id,
+            held=bool(target.get("held")),
         )
         if ok:
             sent += 1
@@ -22452,6 +22484,7 @@ async def send_crossword_to_chat(
     slot_hour: int,
     chat_id: int,
     target_user_id: int,
+    held: bool = False,
 ) -> bool:
     """Send one crossword card to a chat. Returns True on success."""
     crossword_id = str(crossword_entry.get("crossword_id") or "")
@@ -22481,6 +22514,14 @@ async def send_crossword_to_chat(
             crossword_id, chat_id, slot_date, slot_hour,
         )
         return False
+
+    if held and int(chat_id) == int(target_user_id):  # Этап 3f: record, don't send
+        await asyncio.to_thread(
+            record_interactive_inbox, user_id=int(target_user_id), kind="cw",
+            dispatch_id=int(dispatch_id), chat_id=int(chat_id),
+            deeplink=f"ans_cw_{dispatch_id}", title="🔤 Kreuzwort", pushed=False)
+        logging.info("held kind=cw dispatch_id=%s user=%s", dispatch_id, target_user_id)
+        return True
 
     caption  = _build_crossword_caption(words_json, topic, difficulty)
     caption  = _append_free_pro_teaser(caption, chat_id)
@@ -22591,6 +22632,7 @@ async def _send_scheduled_crossword(context: CallbackContext) -> None:
             slot_hour=slot_hour,
             chat_id=target_chat_id,
             target_user_id=target_chat_id,
+            held=bool(target.get("held")),
         )
         if ok:
             sent += 1
@@ -22962,6 +23004,7 @@ async def send_anagram_to_chat(
     slot_hour: int,
     chat_id: int,
     target_user_id: int,
+    held: bool = False,
 ) -> bool:
     """Send one anagram card to a chat. Returns True on success."""
     try:
@@ -22989,6 +23032,14 @@ async def send_anagram_to_chat(
             card_id, chat_id, slot_date, slot_hour,
         )
         return False
+
+    if held and int(chat_id) == int(target_user_id):  # Этап 3f: record, don't send
+        await asyncio.to_thread(
+            record_interactive_inbox, user_id=int(target_user_id), kind="ag",
+            dispatch_id=int(dispatch_id), chat_id=int(chat_id),
+            deeplink=f"ans_ag_{dispatch_id}", title="🔤 Anagramm", pushed=False)
+        logging.info("held kind=ag dispatch_id=%s user=%s", dispatch_id, target_user_id)
+        return True
 
     caption  = _build_anagram_caption(payload["hint_ru"])
     caption  = _append_free_pro_teaser(caption, chat_id)
@@ -23118,6 +23169,7 @@ async def _send_scheduled_anagram(context: CallbackContext) -> None:
             context, card_id=card_id, payload=payload,
             slot_date=slot_date, slot_hour=slot_hour,
             chat_id=target_chat_id, target_user_id=target_chat_id,
+            held=bool(target.get("held")),
         )
         if ok:
             sent += 1
@@ -24128,7 +24180,7 @@ def _render_aufgabe_card(entry: dict) -> bytes | None:
 
 async def send_aufgabe_to_chat(
     context: CallbackContext, *, entry: dict, slot_date, slot_hour: int,
-    chat_id: int, target_user_id: int,
+    chat_id: int, target_user_id: int, held: bool = False,
 ) -> bool:
     """Send one B2+ text task card (no image) + Mini-App deeplink button."""
     aufgabe_id = str(entry.get("aufgabe_id") or "")
@@ -24144,6 +24196,13 @@ async def send_aufgabe_to_chat(
     if not dispatch_id:
         logging.info("au_send: duplicate suppressed aufgabe_id=%s chat_id=%s", aufgabe_id, chat_id)
         return False
+    if held and int(chat_id) == int(target_user_id):  # Этап 3f: record, don't send
+        await asyncio.to_thread(
+            record_interactive_inbox, user_id=int(target_user_id), kind="au",
+            dispatch_id=int(dispatch_id), chat_id=int(chat_id),
+            deeplink=f"ans_au_{dispatch_id}", title="✏️ Aufgabe", pushed=False)
+        logging.info("held kind=au dispatch_id=%s user=%s", dispatch_id, target_user_id)
+        return True
     caption  = _build_aufgabe_caption(entry)
     caption  = _append_free_pro_teaser(caption, chat_id)
     keyboard = _build_aufgabe_keyboard(dispatch_id)
@@ -25105,6 +25164,7 @@ async def _send_scheduled_aufgabe(context: CallbackContext, fmt: str | None = No
         ok = await send_aufgabe_to_chat(
             context, entry=entry, slot_date=slot_date, slot_hour=slot_hour,
             chat_id=target_chat_id, target_user_id=target_chat_id,
+            held=bool(target.get("held")),
         )
         if ok:
             sent += 1
@@ -26813,6 +26873,7 @@ async def send_listening_to_chat(
     slot_date,
     chat_id: int,
     target_user_id: int,
+    held: bool = False,
 ) -> bool:
     """Send one listening quiz (voice + caption + button) to a group chat."""
     listening_id = str(entry.get("listening_id") or "")
@@ -26836,6 +26897,14 @@ async def send_listening_to_chat(
     if not dispatch_id:
         logging.info("ls_send: duplicate suppressed listening_id=%s chat_id=%s", listening_id, chat_id)
         return False
+
+    if held and int(chat_id) == int(target_user_id):  # Этап 3f: record, don't send
+        await asyncio.to_thread(
+            record_interactive_inbox, user_id=int(target_user_id), kind="ls",
+            dispatch_id=int(dispatch_id), chat_id=int(chat_id),
+            deeplink=f"ans_ls_{dispatch_id}", title="🎧 Hörverständnis", pushed=False)
+        logging.info("held kind=ls dispatch_id=%s user=%s", dispatch_id, target_user_id)
+        return True
 
     # Audio now lives inside the Mini-App overlay (R2 MP3, iOS-playable). The
     # group gets a branded hero card + deeplink button instead of a voice message.
@@ -26922,6 +26991,7 @@ async def _send_scheduled_listening(context: CallbackContext) -> None:
             slot_date=slot_date,
             chat_id=target_chat_id,
             target_user_id=target_chat_id,
+            held=bool(target.get("held")),
         )
         if ok:
             sent += 1
