@@ -15638,6 +15638,9 @@ body {
   user-select: none;
   border-bottom: 1px solid rgba(99, 170, 235, 0.18);
   background: rgba(12, 20, 42, 0.85);
+  /* Don't let the browser start a page scroll/gesture from the drag handle — the
+     widget should move alone, not drag the page behind it. */
+  touch-action: none;
 }
 
 .translation-dict-widget-handle:active {
@@ -15901,6 +15904,15 @@ body {
 
 .webapp-page.is-theme-light .translation-dict-result-translation {
   color: #7c4a12;
+}
+
+/* Light theme: the meaning/examples blocks default to a pale dark-theme gray that
+   blended into the light card. Force readable dark-brown text. */
+.webapp-page.is-theme-light .translation-dict-mini-block {
+  color: #2d2117;
+}
+.webapp-page.is-theme-light .translation-dict-mini-block strong {
+  color: #1a120a;
 }
 
 .webapp-page.is-theme-light .translation-dict-widget-actions button,

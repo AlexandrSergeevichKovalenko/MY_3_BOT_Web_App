@@ -27131,6 +27131,14 @@ function AppInner() {
     setCollocationsError('');
     setCollocationOptions([]);
     setSelectedCollocations([]);
+    // The base word/phrase the user is saving — always available, independent of the
+    // collocations enrichment. Kept here so we can fall back to it if that call fails.
+    const baseST = getDictionarySourceTarget(dictionaryResult);
+    const fallbackBase = {
+      source: baseST.sourceText || dictionaryWord.trim(),
+      target: baseST.targetText || '',
+      isBase: true,
+    };
     try {
       const response = await fetch('/api/webapp/dictionary/collocations', {
         method: 'POST',
@@ -27172,7 +27180,17 @@ function AppInner() {
         ? [`${String(options[0].source)}|||${String(options[0].target)}`]
         : []);
     } catch (error) {
-      setCollocationsError(`${tr('Ошибка связок', 'Kollokationsfehler')}: ${error.message}`);
+      // Collocations are an optional enrichment (a flaky upstream LLM call). Never
+      // let them block the actual save: fall back to the base word/phrase so the user
+      // can still add it. Show a soft note instead of a blocking red error.
+      const canSaveBase = Boolean(fallbackBase.source && fallbackBase.target);
+      setCollocationOptions(canSaveBase ? [fallbackBase] : []);
+      setSelectedCollocations(canSaveBase
+        ? [`${String(fallbackBase.source)}|||${String(fallbackBase.target)}`]
+        : []);
+      setCollocationsError(canSaveBase
+        ? ''
+        : `${tr('Ошибка связок', 'Kollokationsfehler')}: ${error.message}`);
     } finally {
       setCollocationsLoading(false);
     }

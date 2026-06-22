@@ -1948,6 +1948,11 @@ Return STRICT JSON with these fields:
 
 Output rules:
 - Explanatory notes must be in Russian.
+- LANGUAGE: NEVER use English anywhere in the output. Every meaning value/context and
+  every explanation must be in RUSSIAN or GERMAN only — German for the equivalent
+  word/phrase, Russian for any explanation. If a phrase has no single concise German
+  equivalent, meanings.primary.value must be a short RUSSIAN explanation — never an
+  English definition.
 - German examples must be natural, frequent, realistic, and learner-useful.
 - meanings.primary.value should reflect the main useful German equivalent(s).
 - meanings.secondary must contain only relevant/common secondary meanings.
@@ -2075,6 +2080,9 @@ Return STRICT JSON with these fields:
 
 Output rules:
 - Explanatory notes must be in Russian.
+- LANGUAGE: NEVER use English anywhere in the output. Every meaning value/context and
+  every explanation must be in RUSSIAN or GERMAN only. meanings.primary/secondary
+  values are Russian meanings; explanations are Russian — never an English definition.
 - meanings.primary.value should contain the 1–3 most useful/common Russian meaning(s).
 - meanings.secondary must contain only relevant/common secondary meanings.
 - Each meaning must include short context plus one practical German example and its Russian translation.
@@ -2361,6 +2369,8 @@ Rules:
 - Output ONLY JSON.
 - semantic_category: pick the single best-matching category from the fixed list above.
 - All explanatory note fields must be written in the learner-facing explanation language.
+- NEVER use English for explanations/meanings unless the looked-up item itself is English.
+  The explanation language is source_language or target_language — never a third language.
 - Use source_language as the explanation language by default, except when target_language is clearly the learner language from the input context.
 - All explanatory fields must be written consistently in that explanation language:
   translations[].value, translations[].context, meanings.primary.value, meanings.primary.context,
