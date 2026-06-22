@@ -25924,9 +25924,38 @@ ARTIKEL_THEME_REMINDER_SLOT = (
 )
 
 
+def _build_artikel_theme_reminder(play_date, current_key, ready):
+    """(text, InlineKeyboardMarkup) for the 'pick the Artikel Sprint theme' DM.
+    Each ready theme is a tap-to-set button (one global theme per day, for everyone);
+    the currently-selected one is marked ✅. Shared by the daily job and the button
+    callback so the message can re-render in place after a tap."""
+    cur = str(current_key or "")
+    lines = [
+        "🗓 <b>Не забудь выбрать тему Artikel Sprint на завтра!</b>",
+        "",
+        f"📅 На завтра ({play_date.isoformat()}) сейчас: "
+        + (f"<b>{html.escape(cur)}</b> ✅" if cur else "<b>— не выбрана —</b> ⚠️"),
+    ]
+    kb = None
+    if ready:
+        lines.append("\nНажми тему — поставлю её на завтра <i>(одна тема на день, для всех)</i>:")
+        iso = play_date.isoformat()
+        rows_kb = []
+        for r in ready[:25]:
+            key = str(r["theme_key"])
+            mark = "✅ " if cur and key == cur else ""
+            label = f"{mark}{r['label_de']}"[:60]
+            rows_kb.append([InlineKeyboardButton(label, callback_data=f"art_st:{iso}:{key}")])
+        kb = InlineKeyboardMarkup(rows_kb)
+    else:
+        lines.append("\n⚠️ Готовых тем нет — сначала наполни: /artikel_fill &lt;тема&gt;")
+    lines.append("\nВсе темы и статусы: /artikel_themes")
+    return "\n".join(lines)[:4000], kb
+
+
 async def _send_artikel_theme_reminder_job(context: CallbackContext) -> None:
     """Daily 16:00 DM to admins: reminder to set tomorrow's Artikel Sprint theme,
-    showing what's already scheduled, the ready-to-use themes, and the command."""
+    with one tap-to-set button per ready theme (no manual command typing)."""
     if not _artikel_sprint_enabled():
         return
     try:
@@ -25938,29 +25967,50 @@ async def _send_artikel_theme_reminder_job(context: CallbackContext) -> None:
         tkey = await asyncio.to_thread(get_article_sprint_theme_for_date, tomorrow)
         rows = await asyncio.to_thread(list_article_sprint_themes)
         ready = [r for r in (rows or []) if int(r["verified_count"]) >= int(r["target_count"])]
-        lines = [
-            "🗓 <b>Не забудь выбрать тему Artikel Sprint на завтра!</b>",
-            "",
-            f"📅 На завтра ({tomorrow.isoformat()}) сейчас: "
-            + (f"<b>{html.escape(str(tkey))}</b> ✅" if tkey else "<b>— не выбрана —</b> ⚠️"),
-        ]
-        if ready:
-            lines.append("\n<b>Готовые темы</b> (можно ставить):")
-            for r in ready[:25]:
-                lines.append(f"✅ <code>{r['theme_key']}</code> — {html.escape(str(r['label_de']))}")
-        else:
-            lines.append("\n⚠️ Готовых тем нет — сначала наполни: /artikel_fill &lt;тема&gt;")
-        lines.append("\n<b>Поставить тему на завтра:</b>")
-        lines.append("<code>/artikel_settheme tomorrow &lt;theme_key&gt;</code>")
-        lines.append("\nВсе темы и статусы: /artikel_themes")
-        text = "\n".join(lines)[:4000]
+        text, kb = _build_artikel_theme_reminder(tomorrow, tkey, ready)
         for admin_id in admin_ids:
             try:
-                await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML")
+                await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML", reply_markup=kb)
             except Exception:
                 logging.warning("artikel_theme_reminder: send failed admin_id=%s", admin_id, exc_info=True)
     except Exception:
         logging.warning("artikel_theme_reminder job failed", exc_info=True)
+
+
+async def handle_artikel_settheme_callback(update: Update, context: CallbackContext) -> None:
+    """Inline-button handler for the theme reminder: set the tapped theme for the date
+    encoded in callback_data (admin only), then re-render the message with the new pick."""
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await query.answer("Только для админов.", show_alert=True)
+        return
+    try:
+        _, iso, theme_key = str(query.data or "").split(":", 2)
+        play_date = datetime.strptime(iso, "%Y-%m-%d").date()
+    except Exception:
+        await query.answer("Не удалось разобрать кнопку.", show_alert=True)
+        return
+    theme = await asyncio.to_thread(get_article_sprint_theme, theme_key)
+    if not theme:
+        await query.answer("Нет такой темы.", show_alert=True)
+        return
+    try:
+        await asyncio.to_thread(set_article_sprint_theme_for_date, play_date, theme_key, set_by=int(user.id))
+    except Exception:
+        logging.warning("artikel settheme callback: set failed key=%s", theme_key, exc_info=True)
+        await query.answer("Не удалось сохранить.", show_alert=True)
+        return
+    await query.answer(f"✅ {theme['label_de']}")
+    try:
+        rows = await asyncio.to_thread(list_article_sprint_themes)
+        ready = [r for r in (rows or []) if int(r["verified_count"]) >= int(r["target_count"])]
+        text, kb = _build_artikel_theme_reminder(play_date, theme_key, ready)
+        await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        logging.warning("artikel settheme callback: re-render failed", exc_info=True)
 
 
 async def admin_artikel_remindtheme_command(update: Update, context: CallbackContext) -> None:
@@ -28612,6 +28662,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_shortcut_connect_callback, pattern=r"^shortcut:connect$"))
     application.add_handler(CallbackQueryHandler(handle_autosave_digest_toggle_callback, pattern=r"^asv_tog:"))
     application.add_handler(CallbackQueryHandler(handle_autosave_digest_save_callback, pattern=r"^asv_save:"))
+    application.add_handler(CallbackQueryHandler(handle_artikel_settheme_callback, pattern=r"^art_st:"))
     application.add_handler(CallbackQueryHandler(_next_task_chooser_callback, pattern=r"^nxt:"))
     application.add_handler(CallbackQueryHandler(_schedule_preset_callback, pattern=r"^pset:"))
     application.add_handler(CallbackQueryHandler(_schedule_window_callback, pattern=r"^pwin:"))
