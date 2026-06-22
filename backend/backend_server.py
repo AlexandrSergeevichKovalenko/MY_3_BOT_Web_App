@@ -40963,8 +40963,18 @@ def get_srs_prefetch_cards():
                     )
                     queue_info_duration_ms = _elapsed_ms_since(queue_info_started_perf)
             due_count = max(0, int(queue_info.get("due_count") or 0))
+            due_count_total = max(0, int(queue_info.get("due_count_total") or 0))
             new_remaining_today = max(0, int(queue_info.get("new_remaining_today") or 0))
-            max_items = max(1, min(int(SRS_PREFETCH_MAX_ITEMS), due_count + new_remaining_today))
+            # Size the prefetch buffer to what _list_srs_queue_cards will ACTUALLY serve.
+            # The daily cap (SRS_DUE_PER_DAY) only caps `due_count` for display/new-card
+            # logic — due cards are still served by their real due_at past the cap. If we
+            # size the buffer by the capped due_count it collapses to ~1 once the cap is
+            # reached, so every further card pays the full synchronous fetch (~6 COUNT
+            # queries) → the "Preparing next card…" stall. Use the real due backlog so the
+            # buffer stays full and hides that latency (review volume is unchanged — the
+            # user just stops paying per-card; capped at SRS_PREFETCH_MAX_ITEMS).
+            serveable = max(due_count + new_remaining_today, min(due_count_total, int(SRS_PREFETCH_MAX_ITEMS)))
+            max_items = max(1, min(int(SRS_PREFETCH_MAX_ITEMS), serveable))
             limit_check_started_perf = time.perf_counter()
             fsrs_limit_state = _check_flashcards_words_daily_limit(
                 user_id=int(user_id),
