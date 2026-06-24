@@ -983,7 +983,11 @@ PENDING_INPUT_STATE_CLEANUP_INTERVAL_MINUTES = max(
 )
 LANGUAGE_TUTOR_BUTTON_TEXT = "💬 Спросить у GPT"
 SHORTCUT_INSTALL_BUTTON_TEXT = "📲 Установить Shortcut"
-SHORTCUT_CONNECT_BUTTON_TEXT = "📱 Connect Shortcut"
+SHORTCUT_CONNECT_BUTTON_TEXT = "📱 Подключить кодом"
+# Two-shortcut system: A = collector (screenshots → "Deutsch Queue" album, no pairing),
+# B = nightly processor (reads the album, OCRs, sends words to DM, needs pairing).
+SHORTCUT_COLLECTOR_INSTALL_BUTTON_TEXT = "📲 1. Шорткат для скриншотов"
+SHORTCUT_PROCESSOR_INSTALL_BUTTON_TEXT = "📲 2. Шорткат ночного перевода"
 DICTIONARY_BATCH_FAST_BUTTON_TEXT = "🇩🇪➡️🇷🇺 Быстрый перевод"
 HOWTO_GUIDE_BUTTON_TEXT = "🎬 Как пользоваться"
 NEXT_TASK_BUTTON_TEXT = "▶️ Следующее задание"
@@ -25934,6 +25938,11 @@ async def _prewarm_artikel_focus_job(context: CallbackContext) -> None:
 ARTIKEL_AUTOFILL_ENABLED = (os.getenv("ARTIKEL_AUTOFILL_ENABLED", "1").strip().lower() not in ("0", "false", "no"))
 ARTIKEL_AUTOFILL_PER_THEME = max(1, int((os.getenv("ARTIKEL_AUTOFILL_PER_THEME") or "40").strip() or "40"))
 ARTIKEL_AUTOFILL_TOTAL = max(1, int((os.getenv("ARTIKEL_AUTOFILL_TOTAL") or "120").strip() or "120"))
+# When an admin picks a not-yet-ready theme for a day, top up JUST that theme toward
+# its target in several passes (verification rejects some each pass) so it's ready by
+# the play date — independent of the bounded nightly autofill above.
+ARTIKEL_FILL_ONPICK_MAX_PASSES = max(1, int((os.getenv("ARTIKEL_FILL_ONPICK_MAX_PASSES") or "8").strip() or "8"))
+_ARTIKEL_ONPICK_FILLS_INFLIGHT: set[str] = set()
 
 
 async def _artikel_autofill_nightly_job(context: CallbackContext) -> None:
@@ -25969,12 +25978,27 @@ ARTIKEL_THEME_REMINDER_SLOT = (
 )
 
 
-def _build_artikel_theme_reminder(play_date, current_key, ready):
+def _artikel_theme_ready_icon(row) -> str:
+    """✅ pool full (verified ≥ target) · 🟡 partially filled · ▫️ empty."""
+    try:
+        verified = int(row["verified_count"])
+        target = int(row["target_count"])
+    except Exception:
+        return "▫️"
+    if target and verified >= target:
+        return "✅"
+    return "🟡" if verified > 0 else "▫️"
+
+
+def _build_artikel_theme_reminder(play_date, current_key, themes):
     """(text, InlineKeyboardMarkup) for the 'pick the Artikel Sprint theme' DM.
-    Each ready theme is a tap-to-set button (one global theme per day, for everyone);
-    the currently-selected one is marked ✅. Shared by the daily job and the button
-    callback so the message can re-render in place after a tap."""
+    ALL themes are tap-to-set buttons (one global theme per day, for everyone), each
+    marked ✅/🟡/▫️ by how full its word pool is; 👉 marks the currently-picked one.
+    Picking a not-ready theme also kicks off filling its pool before the play date, so
+    every theme is selectable — there's a full day to prepare it. Shared by the daily
+    job and the button callback so the message re-renders in place after a tap."""
     cur = str(current_key or "")
+    rows = list(themes or [])
     lines = [
         "🗓 <b>Не забудь выбрать тему Artikel Sprint на завтра!</b>",
         "",
@@ -25982,20 +26006,59 @@ def _build_artikel_theme_reminder(play_date, current_key, ready):
         + (f"<b>{html.escape(cur)}</b> ✅" if cur else "<b>— не выбрана —</b> ⚠️"),
     ]
     kb = None
-    if ready:
-        lines.append("\nНажми тему — поставлю её на завтра <i>(одна тема на день, для всех)</i>:")
+    if rows:
+        lines.append("\nНажми тему — поставлю её на завтра <i>(одна тема на день, для всех)</i>.")
+        lines.append("✅ готова · 🟡 наполняется · ▫️ пустая — выбор 🟡/▫️ запустит наполнение к завтра.")
         iso = play_date.isoformat()
         rows_kb = []
-        for r in ready[:25]:
+        for r in rows[:30]:
             key = str(r["theme_key"])
-            mark = "✅ " if cur and key == cur else ""
-            label = f"{mark}{r['label_de']}"[:60]
+            sel = "👉 " if cur and key == cur else ""
+            label = f"{sel}{_artikel_theme_ready_icon(r)} {r['label_de']}"[:60]
             rows_kb.append([InlineKeyboardButton(label, callback_data=f"art_st:{iso}:{key}")])
         kb = InlineKeyboardMarkup(rows_kb)
     else:
-        lines.append("\n⚠️ Готовых тем нет — сначала наполни: /artikel_fill &lt;тема&gt;")
+        lines.append("\n⚠️ Тем нет — сначала наполни: /artikel_fill &lt;тема&gt;")
     lines.append("\nВсе темы и статусы: /artikel_themes")
     return "\n".join(lines)[:4000], kb
+
+
+async def _ensure_artikel_theme_filled_bg(context, *, theme_key, label_de, play_date, admin_id):
+    """Background: top up a not-yet-ready theme's noun pool toward its target over
+    several passes (GPT generate + verify; verification rejects some each pass), then
+    DM the admin the outcome. Guarded so a double-tap can't run two fills at once."""
+    if theme_key in _ARTIKEL_ONPICK_FILLS_INFLIGHT:
+        return
+    _ARTIKEL_ONPICK_FILLS_INFLIGHT.add(theme_key)
+    try:
+        from backend.article_sprint_generator import fill_theme
+        from backend.database import count_article_sprint_nouns, get_article_sprint_theme
+        theme = await asyncio.to_thread(get_article_sprint_theme, theme_key)
+        target = int(theme["target_count"]) if theme else 0
+        if not target:
+            return
+        for _pass in range(ARTIKEL_FILL_ONPICK_MAX_PASSES):
+            have = await asyncio.to_thread(count_article_sprint_nouns, theme_key, verified_only=True)
+            if have >= target:
+                break
+            res = await asyncio.to_thread(fill_theme, theme_key)
+            if int((res or {}).get("added") or 0) <= 0:
+                break  # no progress this pass — stop rather than burn LLM calls
+        final = await asyncio.to_thread(count_article_sprint_nouns, theme_key, verified_only=True)
+        ready = final >= target
+        msg = (
+            f"{'✅' if ready else '🟡'} Тема «{html.escape(str(label_de))}» на {play_date.isoformat()}: "
+            f"наполнено {final}/{target}."
+            + ("" if ready else " Не добил до target — ночной autofill продолжит.")
+        )
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=msg, parse_mode="HTML")
+        except Exception:
+            logging.warning("artikel onpick fill: notify failed admin_id=%s", admin_id, exc_info=True)
+    except Exception:
+        logging.warning("artikel onpick fill failed key=%s", theme_key, exc_info=True)
+    finally:
+        _ARTIKEL_ONPICK_FILLS_INFLIGHT.discard(theme_key)
 
 
 async def _send_artikel_theme_reminder_job(context: CallbackContext) -> None:
@@ -26011,8 +26074,7 @@ async def _send_artikel_theme_reminder_job(context: CallbackContext) -> None:
         tomorrow = _get_quiz_schedule_now().date() + timedelta(days=1)
         tkey = await asyncio.to_thread(get_article_sprint_theme_for_date, tomorrow)
         rows = await asyncio.to_thread(list_article_sprint_themes)
-        ready = [r for r in (rows or []) if int(r["verified_count"]) >= int(r["target_count"])]
-        text, kb = _build_artikel_theme_reminder(tomorrow, tkey, ready)
+        text, kb = _build_artikel_theme_reminder(tomorrow, tkey, rows)
         for admin_id in admin_ids:
             try:
                 await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML", reply_markup=kb)
@@ -26048,11 +26110,26 @@ async def handle_artikel_settheme_callback(update: Update, context: CallbackCont
         logging.warning("artikel settheme callback: set failed key=%s", theme_key, exc_info=True)
         await query.answer("Не удалось сохранить.", show_alert=True)
         return
-    await query.answer(f"✅ {theme['label_de']}")
     try:
         rows = await asyncio.to_thread(list_article_sprint_themes)
-        ready = [r for r in (rows or []) if int(r["verified_count"]) >= int(r["target_count"])]
-        text, kb = _build_artikel_theme_reminder(play_date, theme_key, ready)
+    except Exception:
+        rows = None
+        logging.warning("artikel settheme callback: list themes failed", exc_info=True)
+    picked = next((r for r in (rows or []) if str(r["theme_key"]) == theme_key), None)
+    is_ready = bool(picked) and int(picked["verified_count"]) >= int(picked["target_count"])
+    if is_ready:
+        await query.answer(f"✅ {theme['label_de']}")
+    else:
+        # Selectable even when not ready: top up this theme's pool before the play date.
+        have = int(picked["verified_count"]) if picked else 0
+        target = int(picked["target_count"]) if picked else int(theme.get("target_count") or 0)
+        await query.answer(f"⏳ {theme['label_de']}: наполняю ({have}/{target})…")
+        asyncio.create_task(_ensure_artikel_theme_filled_bg(
+            context, theme_key=theme_key, label_de=theme["label_de"],
+            play_date=play_date, admin_id=int(user.id),
+        ))
+    try:
+        text, kb = _build_artikel_theme_reminder(play_date, theme_key, rows)
         await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=kb)
     except Exception:
         logging.warning("artikel settheme callback: re-render failed", exc_info=True)
