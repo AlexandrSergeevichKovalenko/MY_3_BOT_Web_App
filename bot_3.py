@@ -2549,6 +2549,22 @@ async def _schedule_window_callback(update: Update, context: CallbackContext) ->
         await _refresh_schedule_picker(query, user_id)
 
 
+async def _prepare_adjektiv_set_job(context: CallbackContext) -> None:
+    """Pre-build today's Adjektiv Sprint set early (deterministic rule-engine, no LLM)
+    so the Mini-App «Играть» never shows «сет ещё готовится» before the 10:00/15:30
+    sends. Idempotent (get_or_create)."""
+    if not _adjektiv_sprint_enabled():
+        return
+    try:
+        from backend.database import get_or_create_daily_adjektiv_set
+        now = _get_quiz_schedule_now()
+        slot = int(ADJEKTIV_SPRINT_SLOTS[0][0]) * 100 + int(ADJEKTIV_SPRINT_SLOTS[0][1])
+        set_id = await asyncio.to_thread(get_or_create_daily_adjektiv_set, now.date(), slot)
+        logging.info("prepare_adjektiv_set ready set_id=%s date=%s", set_id, now.date())
+    except Exception:
+        logging.warning("prepare_adjektiv_set failed", exc_info=True)
+
+
 async def _release_windowed_inbox_job(context: CallbackContext) -> None:
     """Этап 3f: when a windowed user's active hours open, deliver everything we HELD
     for them (tasks that fired while they were "off") as ONE batch card. Tasks that
@@ -28819,6 +28835,7 @@ def main():
                 application.job_queue.run_once(prepare_aufgabe_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 190),
                 application.job_queue.run_once(prepare_sprint_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 250),
                 application.job_queue.run_once(prepare_anagram_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 220),
+                application.job_queue.run_once(_prepare_adjektiv_set_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 30),
                 application.job_queue.run_once(_seed_billing_prices_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 10),
                 application.job_queue.run_repeating(_send_pending_freeform_cards_job, interval=FREEFORM_CARD_POLL_SECONDS, first=20),
                 application.job_queue.run_repeating(_send_challenge_notifications_job, interval=CHALLENGE_NOTIF_POLL_SECONDS, first=25),
@@ -29367,6 +29384,15 @@ def main():
             lambda: submit_async(_release_windowed_inbox_job, CallbackContext(application=application)),
             "cron",
             minute="*/20",
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Adjektiv Sprint: pre-build today's set early (05:00) so the Mini-App is
+        #    playable from the morning, not only after the 10:00 send. --
+        scheduler.add_job(
+            lambda: submit_async(_prepare_adjektiv_set_job, CallbackContext(application=application)),
+            "cron",
+            hour=5,
+            minute=0,
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
         # -- Hörverständnis: daily at 18:30 --
