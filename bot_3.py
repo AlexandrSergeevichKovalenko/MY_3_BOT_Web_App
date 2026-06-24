@@ -27718,10 +27718,22 @@ async def send_numdict_to_chat(
     caption  = _build_numdict_card_caption(chat_id)
     caption  = _append_free_pro_teaser(caption, chat_id)
     keyboard = _build_numdict_keyboard(dispatch_id)
+    poster = None
     try:
-        sent_msg = await context.bot.send_message(
-            chat_id=int(chat_id), text=caption, reply_markup=keyboard, parse_mode="HTML",
-        )
+        from backend.interactive_card import render_numdict_card
+        poster = await asyncio.to_thread(render_numdict_card, n_items=NUMDICT_SESSION_ITEMS)
+    except Exception:
+        logging.warning("nd_send: card render failed dispatch_id=%s", dispatch_id, exc_info=True)
+    try:
+        if poster:
+            sent_msg = await context.bot.send_photo(
+                chat_id=int(chat_id), photo=io.BytesIO(poster),
+                caption=caption, reply_markup=keyboard, parse_mode="HTML",
+            )
+        else:
+            sent_msg = await context.bot.send_message(
+                chat_id=int(chat_id), text=caption, reply_markup=keyboard, parse_mode="HTML",
+            )
     except Exception as exc:
         logging.warning("nd_send: send card failed dispatch_id=%s: %s", dispatch_id, exc)
         return False

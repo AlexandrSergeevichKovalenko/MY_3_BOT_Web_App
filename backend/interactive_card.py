@@ -394,6 +394,31 @@ def _motif_relation(base, d, cx, cy, accent, symbol):
     _ctext(d, cx, cy - 44, symbol, _font(76), GOLD)
 
 
+def _motif_keypad(base, d, cx, cy, accent):
+    """A phone dialpad with sound waves — you HEAR a number and tap it in
+    (Zahlen-Diktat). A couple of keys glow gold like a number being read out."""
+    tile_w = tile_h = 104
+    gap = 22
+    rows = [("1", "2", "3"), ("4", "5", "6"), ("7", "8", "9"), ("*", "0", "#")]
+    grid_w = 3 * tile_w + 2 * gap
+    grid_h = 4 * tile_h + 3 * gap
+    x0 = cx - grid_w / 2
+    y0 = cy - grid_h / 2
+    lit = {"3", "0"}  # highlight a couple of keys = "the number being dictated"
+    for r, row in enumerate(rows):
+        for c, label in enumerate(row):
+            tx = x0 + c * (tile_w + gap) + tile_w / 2
+            ty = y0 + r * (tile_h + gap) + tile_h / 2
+            col = GOLD if label in lit else accent
+            ink = INK
+            _tile(d, tx, ty, tile_w, tile_h, label, col, fs=52, radius=26, ink=ink)
+    # sound waves on the left = the number is spoken aloud
+    ax = x0 - 70
+    for i, rr in enumerate((64, 122, 180)):
+        d.arc([ax - rr, cy - rr, ax + rr, cy + rr], start=135, end=225,
+              fill=GOLD, width=12 - i * 2)
+
+
 def _finish(base) -> bytes:
     out = BytesIO()
     base.convert("RGB").save(out, format="PNG")
@@ -468,6 +493,13 @@ def render_quiz_card(*, level: str = "") -> bytes | None:
     sub = "Wähle die richtige Antwort" + (f"  ·  {level}" if level else "")
     return _card(badge="QUIZ", title="Quiz", subtitle=sub,
                  accent=(96, 165, 250), motif=_motif_quiz, cta="Antworte in der Mini-App")
+
+
+def render_numdict_card(*, level: str = "B1", n_items: int = 3) -> bytes | None:
+    return _card(badge="HÖREN & TIPPEN", title="Zahlen-Diktat",
+                 subtitle=f"Hör die Zahl & tippe sie  ·  {level}",
+                 accent=(129, 140, 248), motif=_motif_keypad,
+                 cta=f"{int(n_items)} Szenen · tippe die Zahl")
 
 
 def render_cloze_card(*, level: str = "B2+") -> bytes | None:
