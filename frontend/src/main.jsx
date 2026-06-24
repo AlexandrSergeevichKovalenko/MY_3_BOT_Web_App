@@ -226,6 +226,16 @@ async function bootstrapPlanTable() {
   );
 }
 
+async function bootstrapShortcutGuide() {
+  try { window.Telegram?.WebApp?.ready?.(); } catch (_e) { /* ignore */ }
+  const { default: ShortcutGuide } = await import('./shortcut/ShortcutGuide.jsx');
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    <React.StrictMode>
+      <ShortcutGuide />
+    </React.StrictMode>,
+  );
+}
+
 async function bootstrapApp() {
   const answerStartParam = getAnswerStartParam();
   if (/^ans_/i.test(answerStartParam)) {
@@ -238,6 +248,10 @@ async function bootstrapApp() {
   }
   if (/^plan$/i.test(answerStartParam)) {
     await bootstrapPlanTable();
+    return;
+  }
+  if (/^shortcut$/i.test(answerStartParam)) {
+    await bootstrapShortcutGuide();
     return;
   }
   if (/^lb/i.test(answerStartParam)) {

@@ -39674,6 +39674,62 @@ def shortcut_install_redirect():
     return redirect(install_url, code=302)
 
 
+# iCloud links for the two-command system (see bot_3.py). Env overrides win; the
+# hardcoded values are the live links so the Mini-App install screen works even if
+# the web tier hasn't got the env vars set yet.
+_SHORTCUT_COLLECTOR_DEFAULT_URL = "https://www.icloud.com/shortcuts/39a22ce3741f4dc4915c762687e182eb"
+_SHORTCUT_PROCESSOR_DEFAULT_URL = "https://www.icloud.com/shortcuts/20e998527b944a1ebe22ceb875da7ad9"
+
+
+def _shortcut_collector_public_url() -> str:
+    return (
+        (os.getenv("SHORTCUT_COLLECTOR_URL") or "").strip()
+        or (os.getenv("SHORTCUT_SCREENSHOT_URL") or "").strip()
+        or _SHORTCUT_COLLECTOR_DEFAULT_URL
+    )
+
+
+def _shortcut_processor_public_url() -> str:
+    return (
+        (os.getenv("SHORTCUT_PROCESSOR_URL") or "").strip()
+        or (os.getenv("SHORTCUT_NIGHTLY_URL") or "").strip()
+        or _shortcut_public_install_url()
+        or _SHORTCUT_PROCESSOR_DEFAULT_URL
+    )
+
+
+@app.route("/api/webapp/shortcut/info", methods=["POST"])
+def webapp_shortcut_info():
+    """Install links for the Mini-App shortcut screen (initData auth)."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    return jsonify({
+        "ok": True,
+        "collector_url": _shortcut_collector_public_url(),
+        "processor_url": _shortcut_processor_public_url(),
+    })
+
+
+@app.route("/api/webapp/shortcut/pairing-code", methods=["POST"])
+def webapp_shortcut_pairing_code():
+    """Issue a one-time pairing code for the nightly-processor shortcut, straight
+    from the Mini-App (initData auth) — so the user never leaves the install screen."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    allowed, limiter_response = _shortcut_enforce_pairing_code_issuance_limit(user_id=int(user_id))
+    if not allowed:
+        return limiter_response
+    try:
+        result = create_shortcut_pairing_code(user_id=int(user_id))
+    except Exception as exc:
+        if "shortcut schema unavailable" in str(exc).strip().lower():
+            return jsonify({"error": "Shortcut processing is temporarily unavailable"}), 503
+        raise
+    return jsonify(_build_shortcut_pairing_code_response(result)), 200
+
+
 @app.route("/api/shortcut/pairing-code", methods=["POST"])
 def shortcut_create_pairing_code():
     body = request.get_json(silent=True) or {}
