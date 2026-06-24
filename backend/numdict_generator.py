@@ -36,8 +36,9 @@ NUM_OPEN = "«NUM»"
 NUM_CLOSE = "«/NUM»"
 _SENTINEL_RE = re.compile(re.escape(NUM_OPEN) + r"(.*?)" + re.escape(NUM_CLOSE), re.DOTALL)
 
-# Unambiguous alphabet for spoken alphanumeric codes (no 0/O, 1/I confusables).
-_ALNUM_ALPHABET = "ACDEFHJKLMNPQRTUVWXY3479"
+# Unambiguous chars for spoken alphanumeric codes (no 0/O, 1/I, B/8, etc.).
+_ALNUM_LETTERS = "ACDEFHJKLMNPQRTUVWXY"
+_ALNUM_DIGITS = "23456789"
 
 
 # ─── Scenario templates ───────────────────────────────────────────────────────
@@ -163,7 +164,15 @@ def _gen_digits(length: int, group: int = 0) -> tuple[str, str]:
 
 
 def _gen_alnum(length: int, group: int = 0) -> tuple[str, str]:
-    code = "".join(random.choice(_ALNUM_ALPHABET) for _ in range(length))
+    """Digit-heavy alphanumeric code: ALWAYS mixed — never letters-only and never
+    digits-only. ~1/3 letters sprinkled among digits (harder to catch by ear), at
+    least one letter and at least two digits."""
+    n_letters = max(1, min(length - 2, round(length * 0.34)))
+    letter_pos = set(random.sample(range(length), n_letters))
+    code = "".join(
+        random.choice(_ALNUM_LETTERS) if i in letter_pos else random.choice(_ALNUM_DIGITS)
+        for i in range(length)
+    )
     if group and group > 0:
         disp = "-".join(code[i:i + group] for i in range(0, length, group))
     else:

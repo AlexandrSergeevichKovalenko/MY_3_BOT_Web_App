@@ -280,6 +280,7 @@ from backend.database import (
     get_numdict_entries_missing_audio,
     count_numdict_bank_entries,
     reset_numdict_audio,
+    retire_all_numdict,
     update_crossword_dispatch_telegram_id,
     get_crossword_dispatch_by_id,
     record_crossword_answer,
@@ -27929,6 +27930,37 @@ async def admin_numdict_pool_command(update: Update, context: CallbackContext) -
         await status_msg.edit_text(f"Error: {exc}")
 
 
+async def admin_numdict_fresh_command(update: Update, context: CallbackContext) -> None:
+    """/admin_nd_fresh [N] — retire ALL current numdict entries and generate N fresh
+    ones (default = pool target) with the latest generator logic (grouping + mixed
+    codes), then synthesize their audio. Use after changing how numbers/codes are made."""
+    user    = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+    args = context.args or []
+    try:
+        target = max(1, int(args[0])) if args else NUMDICT_POOL_TARGET
+    except (ValueError, IndexError):
+        target = NUMDICT_POOL_TARGET
+    status_msg = await message.reply_text(f"Retiring old + generating {target} fresh numdict...")
+    try:
+        retired = await asyncio.to_thread(retire_all_numdict)
+        from backend.numdict_generator import prepare_numdict_pool
+        result = await asyncio.to_thread(
+            prepare_numdict_pool, target_ready=target, max_attempts=max(12, target),
+        )
+        audio_result = await _backfill_numdict_audio(limit=max(50, target))
+        await status_msg.edit_text(
+            f"Numdict regenerated: retired {retired}\n{result}\naudio: {audio_result}"
+        )
+    except Exception as exc:
+        await status_msg.edit_text(f"Error: {exc}")
+
+
 async def admin_numdict_resynth_command(update: Update, context: CallbackContext) -> None:
     """/admin_nd_resynth — re-synthesize ALL active numdict audio with the current
     reading logic (e.g. after changing grouping). Content/answers stay; only audio is
@@ -29322,6 +29354,7 @@ def main():
     application.add_handler(CommandHandler("admin_nd_send", admin_numdict_send_command))
     application.add_handler(CommandHandler("admin_nd_pool", admin_numdict_pool_command))
     application.add_handler(CommandHandler("admin_nd_resynth", admin_numdict_resynth_command))
+    application.add_handler(CommandHandler("admin_nd_fresh", admin_numdict_fresh_command))
 
 
     application.add_handler(CallbackQueryHandler(topic_selected)) #Он ждет любые нажатия на inline-кнопки.
