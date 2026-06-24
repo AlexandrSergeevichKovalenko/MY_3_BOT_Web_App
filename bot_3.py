@@ -300,6 +300,8 @@ from backend.database import (
     get_user_prefs,
     get_user_presets_bulk,
     get_user_prefs_bulk,
+    get_windowed_user_prefs,
+    get_inbox_delivery_stats_today,
     set_user_preset,
     set_user_schedule,
     get_pending_freeform_result_cards,
@@ -26067,10 +26069,30 @@ def _build_artikel_theme_reminder(play_date, current_key, themes):
     return "\n".join(lines)[:4000], kb
 
 
-async def _ensure_artikel_theme_filled_bg(context, *, theme_key, label_de, play_date, admin_id):
+async def _rerender_artikel_theme_reminder(context, *, chat_id, message_id, play_date):
+    """Re-draw the picker message in place with fresh pool icons + current pick, so a
+    theme's button flips ▫️/🟡 → ✅ live once its background fill finishes. Best-effort
+    (the message may be too old to edit, or unchanged → Telegram errors)."""
+    if not chat_id or not message_id:
+        return
+    try:
+        rows = await asyncio.to_thread(list_article_sprint_themes)
+        cur = await asyncio.to_thread(get_article_sprint_theme_for_date, play_date)
+        text, kb = _build_artikel_theme_reminder(play_date, cur, rows)
+        await context.bot.edit_message_text(
+            chat_id=chat_id, message_id=message_id, text=text, parse_mode="HTML", reply_markup=kb,
+        )
+    except Exception:
+        logging.info("artikel onpick fill: live re-render skipped", exc_info=True)
+
+
+async def _ensure_artikel_theme_filled_bg(
+    context, *, theme_key, label_de, play_date, admin_id, chat_id=None, message_id=None
+):
     """Background: top up a not-yet-ready theme's noun pool toward its target over
     several passes (GPT generate + verify; verification rejects some each pass), then
-    DM the admin the outcome. Guarded so a double-tap can't run two fills at once."""
+    live-update the picker buttons and DM the admin the outcome. Re-renders after each
+    pass so the icon flips ▫️→🟡→✅ as words land. Guarded against double-tap."""
     if theme_key in _ARTIKEL_ONPICK_FILLS_INFLIGHT:
         return
     _ARTIKEL_ONPICK_FILLS_INFLIGHT.add(theme_key)
@@ -26088,8 +26110,13 @@ async def _ensure_artikel_theme_filled_bg(context, *, theme_key, label_de, play_
             res = await asyncio.to_thread(fill_theme, theme_key)
             if int((res or {}).get("added") or 0) <= 0:
                 break  # no progress this pass — stop rather than burn LLM calls
+            # Live progress: redraw so the icon reflects the growing pool between passes.
+            await _rerender_artikel_theme_reminder(
+                context, chat_id=chat_id, message_id=message_id, play_date=play_date)
         final = await asyncio.to_thread(count_article_sprint_nouns, theme_key, verified_only=True)
         ready = final >= target
+        await _rerender_artikel_theme_reminder(
+            context, chat_id=chat_id, message_id=message_id, play_date=play_date)
         msg = (
             f"{'✅' if ready else '🟡'} Тема «{html.escape(str(label_de))}» на {play_date.isoformat()}: "
             f"наполнено {final}/{target}."
@@ -26168,9 +26195,12 @@ async def handle_artikel_settheme_callback(update: Update, context: CallbackCont
         have = int(picked["verified_count"]) if picked else 0
         target = int(picked["target_count"]) if picked else int(theme.get("target_count") or 0)
         await query.answer(f"⏳ {theme['label_de']}: наполняю ({have}/{target})…")
+        picker_msg = query.message
         asyncio.create_task(_ensure_artikel_theme_filled_bg(
             context, theme_key=theme_key, label_de=theme["label_de"],
             play_date=play_date, admin_id=int(user.id),
+            chat_id=(picker_msg.chat_id if picker_msg else None),
+            message_id=(picker_msg.message_id if picker_msg else None),
         ))
     try:
         text, kb = _build_artikel_theme_reminder(play_date, theme_key, rows)
