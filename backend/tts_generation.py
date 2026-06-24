@@ -579,6 +579,73 @@ def synthesize_page_with_timings(
     }
 
 
+def synthesize_numdict_mp3(
+    *,
+    scenario_text: str,
+    number_type: str = "digits",
+    lang_code: str = "de-DE",
+    voice_name: str | None = None,
+    speaking_rate: float = 1.0,
+) -> bytes:
+    """Synthesize a Zahlen-Diktat scene to MP3, reading the embedded number naturally.
+
+    The scene contains the spoken number wrapped in «NUM»…«/NUM». We route the scene
+    through SSML and wrap just that number in <say-as interpret-as="{number_type}">
+    so a phone number is grouped / a code is spelled digit-by-digit instead of being
+    read as one giant cardinal. number_type ∈ {telephone, digits, characters, cardinal}.
+    Returns MP3 bytes (Telegram iOS webview can't decode Opus)."""
+    from xml.sax.saxutils import escape as _xml_escape
+
+    try:
+        from google.cloud import texttospeech_v1beta1 as texttospeech
+    except Exception as exc:
+        raise RuntimeError(f"Google TTS не установлен: {exc}") from exc
+
+    text = str(scenario_text or "").strip()
+    if not text:
+        raise RuntimeError("scenario_text leer")
+
+    say_as = str(number_type or "digits").strip().lower()
+    if say_as not in ("telephone", "digits", "characters", "cardinal"):
+        say_as = "digits"
+
+    open_m, close_m = "«NUM»", "«/NUM»"
+    oi, ci = text.find(open_m), text.find(close_m)
+    if 0 <= oi < ci:
+        before = text[:oi]
+        number = text[oi + len(open_m):ci]
+        after = text[ci + len(close_m):]
+        inner = (
+            f"{_xml_escape(before)}"
+            f'<say-as interpret-as="{say_as}">{_xml_escape(number.strip())}</say-as>'
+            f"{_xml_escape(after)}"
+        )
+    else:
+        # No marker (shouldn't happen) — speak the plain text, stripping stray markers.
+        inner = _xml_escape(text.replace(open_m, " ").replace(close_m, " "))
+    ssml_text = f"<speak>{inner}</speak>"
+
+    _enforce_google_tts_monthly_budget(len(text))
+
+    resolved_voice_name = str(voice_name or _TTS_VOICES["de"]).strip() or _TTS_VOICES["de"]
+    key_path = prepare_google_creds_for_tts()
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
+    tts_client = texttospeech.TextToSpeechClient()
+    voice_params = texttospeech.VoiceSelectionParams(language_code=lang_code, name=resolved_voice_name)
+    audio_config = texttospeech.AudioConfig(
+        audio_encoding=texttospeech.AudioEncoding.MP3,
+        speaking_rate=float(speaking_rate),
+    )
+    response = tts_client.synthesize_speech(
+        input=texttospeech.SynthesisInput(ssml=ssml_text),
+        voice=voice_params,
+        audio_config=audio_config,
+    )
+    if not response.audio_content:
+        raise RuntimeError("Google TTS вернул пустой аудиопоток")
+    return response.audio_content
+
+
 # ---------------------------------------------------------------------------
 # TTS execution core (Slice 5)
 # ---------------------------------------------------------------------------

@@ -9306,6 +9306,73 @@ def ensure_webapp_tables() -> None:
             """)
             # ── end listening tables ──────────────────────────────────────
 
+            # ── Zahlen-Diktat (number dictation) tables ───────────────────
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_numdict_bank (
+                    numdict_id          TEXT PRIMARY KEY,
+                    scenario_id         TEXT NOT NULL DEFAULT '',
+                    difficulty          TEXT NOT NULL DEFAULT 'B1',
+                    scenario_text       TEXT NOT NULL DEFAULT '',
+                    number_type         TEXT NOT NULL DEFAULT 'digits',
+                    answer_value        TEXT NOT NULL DEFAULT '',
+                    display_answer      TEXT NOT NULL DEFAULT '',
+                    prompt_de           TEXT NOT NULL DEFAULT '',
+                    prompt_ru           TEXT NOT NULL DEFAULT '',
+                    input_mode          TEXT NOT NULL DEFAULT 'numeric',
+                    audio_object_key    TEXT,
+                    audio_status        TEXT NOT NULL DEFAULT 'pending',
+                    send_count          INTEGER NOT NULL DEFAULT 0,
+                    last_sent_at        TIMESTAMPTZ,
+                    retired             BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (audio_status IN ('pending', 'ready', 'failed')),
+                    CHECK (number_type IN ('telephone', 'digits', 'cardinal', 'characters')),
+                    CHECK (input_mode IN ('numeric', 'alnum'))
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_numdict_bank_available
+                ON bt_3_numdict_bank (audio_status, retired, last_sent_at NULLS FIRST);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_numdict_dispatches (
+                    id                  BIGSERIAL PRIMARY KEY,
+                    slot_date           DATE NOT NULL,
+                    slot_hour           SMALLINT NOT NULL DEFAULT 0,
+                    item_ids            JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    target_user_id      BIGINT NOT NULL,
+                    chat_id             BIGINT NOT NULL,
+                    telegram_message_id BIGINT,
+                    status              TEXT NOT NULL DEFAULT 'sent',
+                    sent_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (target_user_id, slot_date, slot_hour),
+                    CHECK (status IN ('sent', 'failed'))
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_numdict_dispatches_user
+                ON bt_3_numdict_dispatches (target_user_id, slot_date DESC);
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_3_numdict_answers (
+                    id                  BIGSERIAL PRIMARY KEY,
+                    dispatch_id         BIGINT NOT NULL REFERENCES bt_3_numdict_dispatches(id),
+                    user_id             BIGINT NOT NULL,
+                    item_index          SMALLINT NOT NULL,
+                    numdict_id          TEXT NOT NULL,
+                    typed_answer        TEXT NOT NULL DEFAULT '',
+                    is_correct          BOOLEAN NOT NULL,
+                    submitted_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (dispatch_id, user_id, item_index)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bt_3_numdict_answers_user
+                ON bt_3_numdict_answers (user_id, submitted_at DESC);
+            """)
+            # ── end numdict tables ────────────────────────────────────────
+
             # ── Analytics precomputed snapshots ───────────────────────────
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bt_3_analytics_summary_snapshot (
@@ -37292,7 +37359,7 @@ _PLAN_DISPATCH_TABLES = {
     "bt_3_article_quiz_dispatches", "bt_3_aufgabe_dispatches", "bt_3_rebus_dispatches",
     "bt_3_crossword_dispatches", "bt_3_anagram_dispatches", "bt_3_listening_dispatches",
     "bt_3_visual_riddle_dispatches", "bt_3_image_quiz_dispatches", "bt_3_sprint_dispatches",
-    "bt_3_article_sprint_dispatches",
+    "bt_3_article_sprint_dispatches", "bt_3_numdict_dispatches",
 }
 
 
@@ -39174,6 +39241,7 @@ def pool_demand_last_24h() -> dict:
                 "anagram": "SELECT COUNT(DISTINCT (slot_date, slot_hour)) FROM bt_3_anagram_dispatches WHERE sent_at >= NOW() - INTERVAL '24 hours'",
                 "aufgabe": "SELECT COUNT(DISTINCT (slot_date, slot_hour)) FROM bt_3_aufgabe_dispatches WHERE sent_at >= NOW() - INTERVAL '24 hours'",
                 "listening": "SELECT COUNT(DISTINCT slot_date) FROM bt_3_listening_dispatches WHERE sent_at >= NOW() - INTERVAL '24 hours'",
+                "numdict": "SELECT COUNT(DISTINCT (slot_date, slot_hour)) FROM bt_3_numdict_dispatches WHERE sent_at >= NOW() - INTERVAL '24 hours'",
             }
             for game, q in sent_queries.items():
                 try:
@@ -39415,6 +39483,260 @@ def save_listening_evaluation(
                 (_json.dumps(evaluation_json, ensure_ascii=False), int(answer_id)),
             )
         conn.commit()
+
+
+# ── Zahlen-Diktat (number dictation): bank + dispatch + per-item answers ───────
+
+def upsert_numdict_bank_entry(
+    numdict_id: str,
+    *,
+    scenario_id: str,
+    difficulty: str,
+    scenario_text: str,
+    number_type: str,
+    answer_value: str,
+    display_answer: str,
+    prompt_de: str,
+    prompt_ru: str,
+    input_mode: str,
+    audio_object_key: str | None,
+    audio_status: str,
+) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_numdict_bank
+                    (numdict_id, scenario_id, difficulty, scenario_text, number_type,
+                     answer_value, display_answer, prompt_de, prompt_ru, input_mode,
+                     audio_object_key, audio_status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (numdict_id) DO UPDATE SET
+                    scenario_id      = EXCLUDED.scenario_id,
+                    difficulty       = EXCLUDED.difficulty,
+                    scenario_text    = EXCLUDED.scenario_text,
+                    number_type      = EXCLUDED.number_type,
+                    answer_value     = EXCLUDED.answer_value,
+                    display_answer   = EXCLUDED.display_answer,
+                    prompt_de        = EXCLUDED.prompt_de,
+                    prompt_ru        = EXCLUDED.prompt_ru,
+                    input_mode       = EXCLUDED.input_mode,
+                    audio_object_key = EXCLUDED.audio_object_key,
+                    audio_status     = EXCLUDED.audio_status,
+                    updated_at       = NOW()
+                """,
+                (
+                    str(numdict_id), str(scenario_id), str(difficulty),
+                    str(scenario_text), str(number_type), str(answer_value),
+                    str(display_answer), str(prompt_de), str(prompt_ru),
+                    str(input_mode), audio_object_key, str(audio_status),
+                ),
+            )
+        conn.commit()
+
+
+def count_numdict_bank_entries(*, exclude_retired: bool = True) -> int:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            if exclude_retired:
+                cursor.execute(
+                    "SELECT COUNT(*) FROM bt_3_numdict_bank WHERE retired = FALSE"
+                )
+            else:
+                cursor.execute("SELECT COUNT(*) FROM bt_3_numdict_bank")
+            return int((cursor.fetchone() or [0])[0])
+
+
+def pick_next_numdict_batch(*, count: int = 3, cooldown_days: int = 15) -> list[dict]:
+    """Pick the N oldest ready, non-retired numdict entries past cooldown, and bump
+    their send_count/last_sent_at so the batch rotates. Returns [] if not enough."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT numdict_id, scenario_id, difficulty, scenario_text, number_type,
+                       answer_value, display_answer, prompt_de, prompt_ru, input_mode,
+                       audio_object_key
+                FROM bt_3_numdict_bank
+                WHERE audio_status = 'ready'
+                  AND retired = FALSE
+                  AND (last_sent_at IS NULL
+                       OR last_sent_at < NOW() - (%s || ' days')::INTERVAL)
+                ORDER BY last_sent_at NULLS FIRST, created_at
+                LIMIT %s
+                """,
+                (int(cooldown_days), int(count)),
+            )
+            rows = cursor.fetchall()
+            if len(rows) < int(count):
+                return []
+            cols = ["numdict_id", "scenario_id", "difficulty", "scenario_text",
+                    "number_type", "answer_value", "display_answer", "prompt_de",
+                    "prompt_ru", "input_mode", "audio_object_key"]
+            picked = [dict(zip(cols, r)) for r in rows]
+            ids = [p["numdict_id"] for p in picked]
+            cursor.execute(
+                """
+                UPDATE bt_3_numdict_bank
+                SET send_count = send_count + 1, last_sent_at = NOW(), updated_at = NOW()
+                WHERE numdict_id = ANY(%s)
+                """,
+                (ids,),
+            )
+        conn.commit()
+    return picked
+
+
+def record_numdict_dispatch(
+    *,
+    slot_date,
+    slot_hour: int,
+    item_ids: list,
+    target_user_id: int,
+    chat_id: int,
+) -> int:
+    import json as _json
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_numdict_dispatches
+                    (slot_date, slot_hour, item_ids, target_user_id, chat_id)
+                VALUES (%s, %s, %s::jsonb, %s, %s)
+                ON CONFLICT (target_user_id, slot_date, slot_hour) DO NOTHING
+                RETURNING id
+                """,
+                (slot_date, int(slot_hour),
+                 _json.dumps([str(i) for i in item_ids], ensure_ascii=False),
+                 int(target_user_id), int(chat_id)),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    return int(row[0]) if row else 0
+
+
+def get_numdict_dispatch_by_id(dispatch_id: int) -> dict | None:
+    """The dispatch row + the joined bank rows for its 3 items (ordered)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, slot_date, slot_hour, item_ids, target_user_id, chat_id
+                FROM bt_3_numdict_dispatches WHERE id = %s
+                """,
+                (int(dispatch_id),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            item_ids = row[3] if isinstance(row[3], list) else []
+            items: list[dict] = []
+            if item_ids:
+                cursor.execute(
+                    """
+                    SELECT numdict_id, scenario_text, number_type, answer_value,
+                           display_answer, prompt_de, prompt_ru, input_mode,
+                           audio_object_key, audio_status
+                    FROM bt_3_numdict_bank
+                    WHERE numdict_id = ANY(%s)
+                    """,
+                    ([str(i) for i in item_ids],),
+                )
+                cols = ["numdict_id", "scenario_text", "number_type", "answer_value",
+                        "display_answer", "prompt_de", "prompt_ru", "input_mode",
+                        "audio_object_key", "audio_status"]
+                by_id = {r[0]: dict(zip(cols, r)) for r in cursor.fetchall()}
+                items = [by_id[i] for i in item_ids if i in by_id]
+    return {
+        "id": int(row[0]), "slot_date": row[1], "slot_hour": int(row[2] or 0),
+        "item_ids": [str(i) for i in item_ids],
+        "target_user_id": int(row[4]), "chat_id": int(row[5]),
+        "items": items,
+    }
+
+
+def mark_numdict_audio_ready(numdict_id: str, *, audio_object_key: str) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE bt_3_numdict_bank
+                SET audio_object_key = %s, audio_status = 'ready', updated_at = NOW()
+                WHERE numdict_id = %s
+                """,
+                (str(audio_object_key), str(numdict_id)),
+            )
+        conn.commit()
+
+
+def get_numdict_entries_missing_audio(limit: int = 20) -> list[dict]:
+    """Active numdict entries whose audio isn't in R2 yet — for off-path backfill."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT numdict_id, scenario_text, number_type
+                FROM bt_3_numdict_bank
+                WHERE retired = FALSE
+                  AND scenario_text <> ''
+                  AND (audio_status <> 'ready' OR COALESCE(audio_object_key, '') = '')
+                ORDER BY created_at
+                LIMIT %s
+                """,
+                (int(limit),),
+            )
+            rows = cursor.fetchall()
+    return [{"numdict_id": r[0], "scenario_text": r[1], "number_type": r[2]} for r in rows]
+
+
+def record_numdict_item_answer(
+    *,
+    dispatch_id: int,
+    user_id: int,
+    item_index: int,
+    numdict_id: str,
+    typed_answer: str,
+    is_correct: bool,
+) -> None:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO bt_3_numdict_answers
+                    (dispatch_id, user_id, item_index, numdict_id, typed_answer, is_correct)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (dispatch_id, user_id, item_index) DO NOTHING
+                """,
+                (int(dispatch_id), int(user_id), int(item_index),
+                 str(numdict_id), str(typed_answer), bool(is_correct)),
+            )
+        conn.commit()
+
+
+def get_numdict_answers(*, dispatch_id: int, user_id: int) -> dict[int, dict]:
+    """Already-submitted items for this user, keyed by item_index (anti-replay)."""
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT item_index, typed_answer, is_correct
+                FROM bt_3_numdict_answers
+                WHERE dispatch_id = %s AND user_id = %s
+                """,
+                (int(dispatch_id), int(user_id)),
+            )
+            rows = cursor.fetchall()
+    return {int(r[0]): {"typed": r[1], "is_correct": bool(r[2])} for r in rows}
+
+
+def numdict_dispatched_today(plan_date) -> bool:
+    with get_db_connection_context() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM bt_3_numdict_dispatches WHERE slot_date = %s LIMIT 1",
+                (plan_date,),
+            )
+            return cursor.fetchone() is not None
 
 
 # ── Analytics summary snapshots ───────────────────────────────────────────────

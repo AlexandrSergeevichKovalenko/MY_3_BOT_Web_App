@@ -273,6 +273,12 @@ from backend.database import (
     get_listening_entries_missing_audio,
     save_listening_answers,
     save_listening_evaluation,
+    pick_next_numdict_batch,
+    record_numdict_dispatch,
+    get_numdict_dispatch_by_id,
+    mark_numdict_audio_ready,
+    get_numdict_entries_missing_audio,
+    count_numdict_bank_entries,
     update_crossword_dispatch_telegram_id,
     get_crossword_dispatch_by_id,
     record_crossword_answer,
@@ -443,6 +449,11 @@ LISTENING_COOLDOWN_DAYS = max(5, int((os.getenv("LISTENING_COOLDOWN_DAYS") or "7
 LISTENING_POOL_TARGET   = max(3, int((os.getenv("LISTENING_POOL_TARGET") or "7").strip() or "7"))
 PENDING_INPUT_STATE_LISTENING = "listening_answer"
 LISTENING_ANSWER_TTL_SECONDS  = 60 * 45  # 45 minutes
+NUMDICT_SLOT_TIMES = [(15, 10), (18, 10)]    # Zahlen-Diktat: twice a day
+# 2 slots × 3 items = 6/day; pool must hold ≥ 3×slots×cooldown items to never stall.
+NUMDICT_COOLDOWN_DAYS = max(3, int((os.getenv("NUMDICT_COOLDOWN_DAYS") or "6").strip() or "6"))
+NUMDICT_POOL_TARGET   = max(12, int((os.getenv("NUMDICT_POOL_TARGET") or "40").strip() or "40"))
+NUMDICT_SESSION_ITEMS = 3
 CROSSWORD_COOLDOWN_DAYS = max(7, int((os.getenv("CROSSWORD_COOLDOWN_DAYS") or "21").strip() or "21"))
 CROSSWORD_POOL_TARGET = max(5, int((os.getenv("CROSSWORD_POOL_TARGET") or "15").strip() or "15"))
 CROSSWORD_POOL_TOPUP_TRIGGER = max(1, int((os.getenv("CROSSWORD_POOL_TOPUP_TRIGGER") or "3").strip() or "3"))
@@ -720,6 +731,7 @@ def _build_rotation_catalog() -> list:
     # Rotating pool (thinned to fit the budget).
     add("article_quiz", ARTICLE_QUIZ_SLOT_TIMES, always_on=False)
     add("aufgabe", AUFGABE_FORMAT_SLOTS.keys(), always_on=False)
+    add("numdict", NUMDICT_SLOT_TIMES, always_on=False)
     # Hourly multiple-choice quiz — fold its many slots in so rotation+tiers apply
     # (low weight → ~1/day survives instead of the old ~12/day firehose).
     add("mc", [(h, m) for h in QUIZ_SCHEDULE_HOURS for m in QUIZ_SCHEDULE_MINUTES], always_on=False)
@@ -838,7 +850,7 @@ def _tier_delivery_enabled() -> bool:
 # their sender wired to record a held inbox row instead of sending — others keep the
 # 3b behaviour (off-window = skip) even when the flag is on, so coverage is safe to
 # roll out incrementally.
-_HELD_SUPPORTED_KINDS = {"rebus", "crossword", "anagram", "aufgabe", "listening"}
+_HELD_SUPPORTED_KINDS = {"rebus", "crossword", "anagram", "aufgabe", "listening", "numdict"}
 
 
 def _window_defer_enabled() -> bool:
@@ -23488,6 +23500,7 @@ _DIGEST_CATEGORIES = [
     ("ag",  "🔀 Анаграмма",       "bt_3_anagram_dispatches",      "slotH"),
     ("au",  "✏️ Aufgabe",         "bt_3_aufgabe_dispatches",      "slotH"),
     ("ls",  "🎧 Аудирование",     "bt_3_listening_dispatches",    "listening"),
+    ("nd",  "🔢 Числа-диктант",   "bt_3_numdict_dispatches",      "slotHM"),
     ("sp",  "🏃 Спринт син/ант",  "bt_3_sprint_dispatches",       "slotHM"),
     ("qf",  "✍️ Свой вариант",    None,                           None),
 ]
@@ -26533,6 +26546,8 @@ def _send_plan_groups() -> list[dict]:
          "table": "bt_3_anagram_dispatches", "kind": "slotH"},
         {"emoji": "🎧", "title": "Аудирование", "slots": [(LISTENING_SLOT_TIME[0], LISTENING_SLOT_TIME[1], "")],
          "table": "bt_3_listening_dispatches", "kind": "listening"},
+        {"emoji": "🔢", "title": "Числа-диктант", "slots": [(h, m, "") for (h, m) in sorted(NUMDICT_SLOT_TIMES)],
+         "table": "bt_3_numdict_dispatches", "kind": "slotHM"},
         {"emoji": "🏃", "title": "Спринт син/ант",
          "slots": [(h, m, "Синонимы" if SPRINT_SLOT_TIMES[(h, m)] == "synonym" else "Антонимы")
                    for (h, m) in sorted(SPRINT_SLOT_TIMES.keys())],
@@ -26561,6 +26576,7 @@ _PLAN_TABLE_TO_ROTATION_KIND = {
     "bt_3_crossword_dispatches": "crossword",
     "bt_3_anagram_dispatches": "anagram",
     "bt_3_listening_dispatches": "listening",
+    "bt_3_numdict_dispatches": "numdict",
     "bt_3_sprint_dispatches": "sprint",
     "bt_3_article_sprint_dispatches": "artikel_sprint",
 }
@@ -26791,6 +26807,7 @@ async def build_pool_inventory_report(context: CallbackContext) -> str:
     from backend.database import (
         count_aufgaben_by_format, count_available_rebuses, count_available_article_quiz_entries,
         count_crossword_bank_entries, count_available_anagram_cards, count_listening_bank_entries,
+        count_numdict_bank_entries,
         count_prepared_telegram_quizzes, count_ready_visual_riddle_templates,
         pool_demand_last_24h,
     )
@@ -26841,6 +26858,7 @@ async def build_pool_inventory_report(context: CallbackContext) -> str:
     artic = await asyncio.to_thread(count_available_article_quiz_entries, cooldown_days=14)
     anag = await asyncio.to_thread(count_available_anagram_cards, cooldown_days=ANAGRAM_COOLDOWN_DAYS)
     listen = await asyncio.to_thread(count_listening_bank_entries, exclude_retired=True)
+    numdict = await asyncio.to_thread(count_numdict_bank_entries, exclude_retired=True)
     prep = await asyncio.to_thread(count_prepared_telegram_quizzes)
     # Visual-riddle disabled: keep the pool code available, but hide it from the
     # Telegram pool report and stop topping it up from the scheduler.
@@ -26858,6 +26876,7 @@ async def build_pool_inventory_report(context: CallbackContext) -> str:
     lines.append(row("🇩🇪", "Artikel-Quiz", artic, ARTICLE_QUIZ_POOL_TARGET, len(ARTICLE_QUIZ_SLOT_TIMES), _article_quiz_enabled()))
     lines.append(row("🔀", "Anagramm", anag, ANAGRAM_POOL_TARGET, len(ANAGRAM_SLOT_TIMES), _anagram_enabled()))
     lines.append(row("🎧", "Hörverständnis", listen, LISTENING_POOL_TARGET, 1, _listening_enabled()))
+    lines.append(row("🔢", "Zahlen-Diktat", numdict, NUMDICT_POOL_TARGET, len(NUMDICT_SLOT_TIMES), _numdict_enabled()))
     lines.append(row("🃏", "Prepared-Quiz (poll)", prep, None, "—"))
     # lines.append(row("🖼", "Visual-Riddle", vr, VISUAL_RIDDLE_POOL_TARGET, len(VISUAL_RIDDLE_SLOT_TIMES), _visual_riddles_enabled()))
     lines.append("🖼 <b>Image-Quiz</b>: ретайрнут <i>(off)</i>")
@@ -26875,6 +26894,7 @@ async def build_pool_inventory_report(context: CallbackContext) -> str:
         lines.append(f"🇩🇪 Artikel: {int(s.get('article', 0))} · —")
         lines.append(f"🔀 Anagramm: {int(s.get('anagram', 0))} · {int(a.get('ag', 0))}")
         lines.append(f"🎧 Hören: {int(s.get('listening', 0))} · {int(a.get('ls', 0))}")
+        lines.append(f"🔢 Числа: {int(s.get('numdict', 0))} · {int(a.get('nd', 0))}")
         lines.append(f"✍️ Freeform: — · {int(a.get('qf', 0))}")
     except Exception:
         logging.warning("pool_report: demand block failed", exc_info=True)
@@ -27628,6 +27648,272 @@ async def admin_listening_pool_command(update: Update, context: CallbackContext)
 
 
 # ── end Hörverständnis ────────────────────────────────────────────────────────
+
+
+# ── Zahlen-Diktat (number dictation) ──────────────────────────────────────────
+
+def _numdict_enabled() -> bool:
+    return (os.getenv("NUMDICT_ENABLED") or "true").strip().lower() not in ("0", "false", "no")
+
+
+def _build_numdict_card_caption(chat_id: int) -> str:
+    lines = [
+        "🔢 <b>Zahlen-Diktat</b>",
+        "",
+        "Höre 3 kurze Szenen und tippe die Zahl, die du heraushörst — "
+        "Telefonnummer, Kundennummer oder Code. Max. 2× anhören. 👇",
+    ]
+    return "\n".join(lines)
+
+
+def _build_numdict_keyboard(dispatch_id: int) -> InlineKeyboardMarkup:
+    btn = InlineKeyboardButton(
+        text="🔢 Üben",
+        url=get_webapp_deeplink(f"ans_nd_{dispatch_id}"),
+    )
+    return InlineKeyboardMarkup([[btn]])
+
+
+async def send_numdict_to_chat(
+    context: CallbackContext,
+    *,
+    items: list,
+    slot_date,
+    slot_hour: int,
+    chat_id: int,
+    target_user_id: int,
+    held: bool = False,
+) -> bool:
+    """Send one Zahlen-Diktat session (3 items) card + deeplink button to a chat."""
+    item_ids = [str(it.get("numdict_id") or "") for it in (items or []) if it.get("numdict_id")]
+    if len(item_ids) < NUMDICT_SESSION_ITEMS:
+        logging.warning("nd_send: not enough items (%s)", len(item_ids))
+        return False
+
+    try:
+        dispatch_id = await asyncio.to_thread(
+            record_numdict_dispatch,
+            slot_date=slot_date,
+            slot_hour=int(slot_hour),
+            item_ids=item_ids,
+            target_user_id=int(target_user_id),
+            chat_id=int(chat_id),
+        )
+    except Exception:
+        logging.warning("nd_send: dispatch insert failed", exc_info=True)
+        return False
+
+    if not dispatch_id:
+        logging.info("nd_send: duplicate suppressed chat_id=%s", chat_id)
+        return False
+
+    if held and int(chat_id) == int(target_user_id):  # Этап 3f: record, don't send
+        await asyncio.to_thread(
+            record_interactive_inbox, user_id=int(target_user_id), kind="nd",
+            dispatch_id=int(dispatch_id), chat_id=int(chat_id),
+            deeplink=f"ans_nd_{dispatch_id}", title="🔢 Zahlen-Diktat", pushed=False)
+        logging.info("held kind=nd dispatch_id=%s user=%s", dispatch_id, target_user_id)
+        return True
+
+    caption  = _build_numdict_card_caption(chat_id)
+    caption  = _append_free_pro_teaser(caption, chat_id)
+    keyboard = _build_numdict_keyboard(dispatch_id)
+    try:
+        sent_msg = await context.bot.send_message(
+            chat_id=int(chat_id), text=caption, reply_markup=keyboard, parse_mode="HTML",
+        )
+    except Exception as exc:
+        logging.warning("nd_send: send card failed dispatch_id=%s: %s", dispatch_id, exc)
+        return False
+
+    if int(chat_id) == int(target_user_id):  # DM feed only
+        try:
+            await asyncio.to_thread(
+                record_interactive_inbox,
+                user_id=int(target_user_id), kind="nd", dispatch_id=int(dispatch_id),
+                chat_id=int(chat_id), telegram_message_id=int(sent_msg.message_id),
+                deeplink=f"ans_nd_{dispatch_id}", title="🔢 Zahlen-Diktat",
+                keyboard_json=_inbox_kb_json(keyboard),
+            )
+        except Exception:
+            logging.debug("nd_send: inbox record failed dispatch_id=%s", dispatch_id, exc_info=True)
+
+    logging.info("nd_send_ok dispatch_id=%s chat_id=%s", dispatch_id, chat_id)
+    return True
+
+
+async def _send_scheduled_numdict(context: CallbackContext) -> None:
+    if _is_quiet_hours_now():
+        logging.info("quiet_hours: skip numdict")
+        return
+    if not _numdict_enabled():
+        return
+
+    slot_now  = _get_quiz_schedule_now()
+    slot_date = slot_now.date()
+    if (slot_now.hour, slot_now.minute) not in NUMDICT_SLOT_TIMES:
+        return
+    slot_hour = slot_now.hour * 100 + slot_now.minute
+
+    # Resolve recipients first so an empty audience doesn't burn the batch cooldown.
+    delivery_targets = await _collect_quiz_delivery_user_targets(context)
+    if not delivery_targets:
+        return
+
+    try:
+        batch = await asyncio.to_thread(
+            pick_next_numdict_batch,
+            count=NUMDICT_SESSION_ITEMS,
+            cooldown_days=NUMDICT_COOLDOWN_DAYS,
+        )
+    except Exception:
+        logging.warning("nd_slot: pick_next_numdict_batch failed", exc_info=True)
+        return
+
+    if not batch or len(batch) < NUMDICT_SESSION_ITEMS:
+        logging.info("nd_slot: not enough ready numdict entries slot=%s", slot_date)
+        return
+
+    sent = 0
+    for target in delivery_targets:
+        target_chat_id = int(target.get("chat_id") or 0)
+        if not target_chat_id:
+            continue
+        ok = await send_numdict_to_chat(
+            context,
+            items=batch,
+            slot_date=slot_date,
+            slot_hour=slot_hour,
+            chat_id=target_chat_id,
+            target_user_id=target_chat_id,
+            held=bool(target.get("held")),
+        )
+        if ok:
+            sent += 1
+
+    if sent == 0:
+        await _alert_admin_interactive(
+            context,
+            f"⚠️ <b>Zahlen-Diktat: отправка не удалась</b> (0 доставлено, слот {slot_date} {slot_hour}).",
+            throttle_key="nd_send_fail",
+        )
+    logging.info("nd_slot_done slot=%s hour=%s sent=%d", slot_date, slot_hour, sent)
+
+
+async def _backfill_numdict_audio(limit: int = 10) -> dict:
+    """Synthesize SSML number audio → MP3 → R2 for numdict entries missing audio.
+
+    The number is wrapped in <say-as> so it is read naturally (phone grouped /
+    code digit-by-digit). MP3 because the Telegram iOS webview can't decode Opus.
+    """
+    from backend.r2_storage import r2_put_bytes
+    from backend.tts_generation import synthesize_numdict_mp3
+    entries = await asyncio.to_thread(get_numdict_entries_missing_audio, limit)
+    made = 0
+    for e in entries:
+        numdict_id = str(e.get("numdict_id") or "")
+        scenario_text = str(e.get("scenario_text") or "").strip()
+        number_type = str(e.get("number_type") or "digits")
+        if not numdict_id or not scenario_text:
+            continue
+        try:
+            mp3_bytes = await asyncio.to_thread(
+                synthesize_numdict_mp3, scenario_text=scenario_text,
+                number_type=number_type, speaking_rate=1.0,
+            )
+            object_key = f"numdict/audio/{numdict_id}.mp3"
+            await asyncio.to_thread(r2_put_bytes, object_key, mp3_bytes, content_type="audio/mpeg")
+            await asyncio.to_thread(mark_numdict_audio_ready, numdict_id, audio_object_key=object_key)
+            made += 1
+        except Exception:
+            logging.warning("nd_audio_backfill failed numdict_id=%s", numdict_id, exc_info=True)
+    if entries:
+        logging.info("numdict_audio_backfill missing=%s made=%s", len(entries), made)
+    return {"missing": len(entries), "made": made}
+
+
+async def prepare_numdict_pool_job(context: CallbackContext) -> None:
+    """Startup + nightly: generate numdict entries + backfill their SSML audio."""
+    try:
+        from backend.numdict_generator import prepare_numdict_pool
+        result = await asyncio.to_thread(
+            prepare_numdict_pool, target_ready=NUMDICT_POOL_TARGET,
+            max_attempts=max(12, NUMDICT_POOL_TARGET),
+        )
+        logging.info("numdict_pool_job done: %s", result)
+    except Exception:
+        logging.warning("numdict_pool_job failed", exc_info=True)
+    try:
+        audio_result = await _backfill_numdict_audio(limit=20)
+        logging.info("numdict_audio_backfill done: %s", audio_result)
+    except Exception:
+        logging.warning("numdict_audio_backfill job failed", exc_info=True)
+
+
+async def admin_numdict_send_command(update: Update, context: CallbackContext) -> None:
+    """/admin_nd_send — send a Zahlen-Diktat session to this chat (admin test)."""
+    user    = update.effective_user
+    chat    = update.effective_chat
+    message = update.effective_message
+    if not user or not chat or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+
+    status_msg = await message.reply_text("Preparing Zahlen-Diktat...")
+    try:
+        batch = await asyncio.to_thread(
+            pick_next_numdict_batch, count=NUMDICT_SESSION_ITEMS, cooldown_days=0,
+        )
+    except Exception as exc:
+        await status_msg.edit_text(f"pick_next_numdict_batch failed: {exc}")
+        return
+    if not batch or len(batch) < NUMDICT_SESSION_ITEMS:
+        await status_msg.edit_text("Not enough ready numdict entries. Run /admin_nd_pool first.")
+        return
+
+    slot_now = _get_quiz_schedule_now()
+    ok = await send_numdict_to_chat(
+        context, items=batch, slot_date=slot_now.date(),
+        slot_hour=slot_now.hour * 100 + slot_now.minute,
+        chat_id=int(chat.id), target_user_id=int(user.id),
+    )
+    if ok:
+        await status_msg.delete()
+    else:
+        await status_msg.edit_text("Numdict send failed — check logs.")
+
+
+async def admin_numdict_pool_command(update: Update, context: CallbackContext) -> None:
+    """/admin_nd_pool — generate numdict entries + audio (admin)."""
+    user    = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    if not _can_use_image_quiz_test_commands(getattr(user, "id", None)):
+        await message.reply_text("Allowed users only.")
+        return
+
+    args = context.args or []
+    try:
+        target = max(1, int(args[0])) if args else NUMDICT_POOL_TARGET
+    except (ValueError, IndexError):
+        target = NUMDICT_POOL_TARGET
+
+    status_msg = await message.reply_text(f"Generating numdict pool (target={target})...")
+    try:
+        from backend.numdict_generator import prepare_numdict_pool
+        result = await asyncio.to_thread(
+            prepare_numdict_pool, target_ready=target, max_attempts=max(12, target),
+        )
+        audio_result = await _backfill_numdict_audio(limit=max(10, target))
+        await status_msg.edit_text(f"Numdict pool done:\n{result}\naudio: {audio_result}")
+    except Exception as exc:
+        await status_msg.edit_text(f"Error: {exc}")
+
+
+# ── end Zahlen-Diktat ─────────────────────────────────────────────────────────
 
 async def _run_semantic_retag_backfill(admin_chat_id: int, max_entries: int | None = None) -> None:
     processed = 0
@@ -28997,6 +29283,8 @@ def main():
     application.add_handler(CommandHandler("admin_cw_rerender", admin_crossword_rerender_command))
     application.add_handler(CommandHandler("admin_ls_send", admin_listening_send_command))
     application.add_handler(CommandHandler("admin_ls_pool", admin_listening_pool_command))
+    application.add_handler(CommandHandler("admin_nd_send", admin_numdict_send_command))
+    application.add_handler(CommandHandler("admin_nd_pool", admin_numdict_pool_command))
 
 
     application.add_handler(CallbackQueryHandler(topic_selected)) #Он ждет любые нажатия на inline-кнопки.
@@ -29024,6 +29312,7 @@ def main():
                 application.job_queue.run_once(prepare_article_quiz_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 100),
                 application.job_queue.run_once(prepare_crossword_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 130),
                 application.job_queue.run_once(prepare_listening_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 160),
+                application.job_queue.run_once(prepare_numdict_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 280),
                 application.job_queue.run_once(prepare_aufgabe_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 190),
                 application.job_queue.run_once(prepare_sprint_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 250),
                 application.job_queue.run_once(prepare_anagram_pool_job, when=QUIZ_PREPARED_STARTUP_DELAY_SECONDS + 220),
@@ -29614,6 +29903,27 @@ def main():
         logging.info(
             "listening_scheduler_registered slot=%s:00 tz=%s enabled=%s",
             LISTENING_SLOT_TIME, QUIZ_SCHEDULE_TZ_NAME, _listening_enabled(),
+        )
+        # -- Zahlen-Diktat: twice a day (15:10 + 18:10), routed through rotation --
+        for _nd_h, _nd_m in NUMDICT_SLOT_TIMES:
+            scheduler.add_job(
+                make_rotation_gated("numdict", int(_nd_h), int(_nd_m), _send_scheduled_numdict),
+                "cron",
+                hour=int(_nd_h),
+                minute=int(_nd_m),
+                timezone=QUIZ_SCHEDULE_TZ_NAME,
+            )
+        # -- Zahlen-Diktat pool top-up + audio backfill: nightly at 02:20 --
+        scheduler.add_job(
+            lambda: submit_async(prepare_numdict_pool_job, CallbackContext(application=application)),
+            "cron",
+            hour=2,
+            minute=20,
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        logging.info(
+            "numdict_scheduler_registered slots=%s tz=%s enabled=%s",
+            NUMDICT_SLOT_TIMES, QUIZ_SCHEDULE_TZ_NAME, _numdict_enabled(),
         )
 
     # scheduler.add_job(

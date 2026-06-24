@@ -23123,6 +23123,57 @@ def answer_review_submit():
     return jsonify({"ok": True, **result})
 
 
+@app.route("/api/answer/numdict/session", methods=["POST"])
+def answer_numdict_session():
+    """Zahlen-Diktat: the 3-item session bundle (audio + prompt per item)."""
+    user_id, _user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    try:
+        dispatch_id = int(payload.get("dispatch_id") or payload.get("id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "dispatch_id обязателен"}), 400
+    from backend.answer_eval import load_numdict_session
+    data = load_numdict_session(dispatch_id=dispatch_id, user_id=int(user_id))
+    if data is None:
+        return jsonify({"error": "Задание не найдено"}), 404
+    return jsonify({"ok": True, **data})
+
+
+@app.route("/api/answer/numdict/submit", methods=["POST"])
+def answer_numdict_submit():
+    """Grade one number-dictation item (deterministic digit/char compare)."""
+    user_id, user_name, err = _answer_auth_user_id()
+    if user_id is None:
+        return err
+    payload = request.get_json(silent=True) or {}
+    try:
+        dispatch_id = int(payload.get("dispatch_id") or payload.get("id"))
+        item_index = int(payload.get("item_index"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "dispatch_id и item_index обязательны"}), 400
+    answer = str(payload.get("answer") or "")
+    try:
+        time_ms = int(payload.get("time_ms") or 0)
+    except (TypeError, ValueError):
+        time_ms = 0
+    from backend.answer_eval import grade_numdict_item
+    try:
+        result = grade_numdict_item(
+            dispatch_id=dispatch_id, user_id=int(user_id), item_index=item_index,
+            typed=answer, user_name=str(user_name or ""), time_ms=time_ms,
+        )
+    except Exception:
+        logging.exception("numdict submit failed disp=%s idx=%s user=%s", dispatch_id, item_index, user_id)
+        return jsonify({"error": "Ошибка проверки"}), 500
+    if result is None or result.get("error"):
+        return jsonify({"error": "Задание не найдено"}), 404
+    if int(result.get("remaining") or 0) == 0:  # whole 3-item session done → ✅ the card
+        _inbox_mark_kind_done(int(user_id), "nd")
+    return jsonify({"ok": True, **result})
+
+
 @app.route("/api/sprint/task", methods=["GET", "POST"])
 def sprint_task():
     user_id, user_name, err = _answer_auth_user_id()

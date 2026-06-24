@@ -10,6 +10,7 @@ import SprintGame from './SprintGame.jsx';
 import ArtikelSprintGame from './ArtikelSprintGame.jsx';
 import ArtikelLearnGame from './ArtikelLearnGame.jsx';
 import ReviewSession from './ReviewSession.jsx';
+import NumberDictationGame from './NumberDictationGame.jsx';
 import AdjektivSprintGame from './AdjektivSprintGame.jsx';
 import AdjektivLearnGame from './AdjektivLearnGame.jsx';
 import BattleHistory from './BattleHistory.jsx';
@@ -40,7 +41,7 @@ function getInitData() {
 // start_param: ans_rb_123 / ans_cw_45 / ans_ag_7 / ans_ls_3 / ans_qf_9 / ans_au_2
 //   ans_qfp_<poll_id> — poll-scoped freeform (button attached under the poll)
 function parseStartParam(startParam) {
-  const m = /^ans_(rb|cw|ag|ls|qf|qfp|sp|au|mc|asbl|asb|asp|as|alf|al|rv|adbl|adb|adl|ad|bh)_(\d+)$/.exec(String(startParam || '').trim().toLowerCase());
+  const m = /^ans_(rb|cw|ag|ls|qf|qfp|sp|au|mc|asbl|asb|asp|as|alf|al|rv|adbl|adb|adl|ad|bh|nd)_(\d+)$/.exec(String(startParam || '').trim().toLowerCase());
   if (!m) return null;
   // qfp's id is a big Telegram poll_id → keep it a string (Number() loses precision).
   return { kind: m[1], id: m[1] === 'qfp' ? m[2] : Number(m[2]) };
@@ -55,6 +56,7 @@ const KIND_META = {
   qfp: { eyebrow: '✍️ Antwort', title: 'Eigene Antwort' },
   au: { eyebrow: '✏️ Aufgabe', title: 'Aufgabe · B2+' },
   mc: { eyebrow: '🎯 Quiz', title: 'Quiz' },
+  nd: { eyebrow: '🔢 Zahlen-Diktat', title: 'Zahlen hören & tippen' },
 };
 
 // au covers several formats — show the right label per format.
@@ -578,7 +580,7 @@ export default function AnswerOverlay({ startParam }) {
 
   useEffect(() => {
     if (!parsed) { setFatal('Ungültiger Link.'); setMetaLoading(false); return; }
-    if (['sp', 'as', 'asp', 'asb', 'asbl', 'al', 'alf', 'rv', 'ad', 'adb', 'adbl', 'adl', 'bh'].includes(parsed.kind)) { setMetaLoading(false); return; }  // these games load themselves
+    if (['sp', 'as', 'asp', 'asb', 'asbl', 'al', 'alf', 'rv', 'ad', 'adb', 'adbl', 'adl', 'bh', 'nd'].includes(parsed.kind)) { setMetaLoading(false); return; }  // these games load themselves
     let cancelled = false;
     (async () => {
       try {
@@ -748,6 +750,9 @@ export default function AnswerOverlay({ startParam }) {
   }
   if (kind === 'rv') {
     return <ReviewSession api={api} haptic={haptic} onClose={close} />;
+  }
+  if (kind === 'nd' && parsed?.id != null) {
+    return <NumberDictationGame dispatchId={parsed.id} api={api} haptic={haptic} onClose={close} />;
   }
   if (kind === 'ad') {
     return <AdjektivSprintGame api={api} haptic={haptic} onClose={close} />;

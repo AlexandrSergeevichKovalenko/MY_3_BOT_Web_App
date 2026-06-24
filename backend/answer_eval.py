@@ -888,6 +888,129 @@ def get_listening_status(*, dispatch_id: int, user_id: int) -> dict:
     return {"kind": "listening", "status": st}
 
 
+# ── Zahlen-Diktat (number dictation): session load + deterministic grade ──────
+
+import re as _re_numdict
+
+
+def _normalize_numdict(value: str, input_mode: str) -> str:
+    """Canonical comparison: numeric → digits only; alnum → uppercase A-Z0-9.
+    Strips spaces, dashes, dots, slashes, brackets so '030 12-34.56' == '0301234 56'."""
+    s = str(value or "").upper()
+    if str(input_mode) == "alnum":
+        return _re_numdict.sub(r"[^A-Z0-9]", "", s)
+    return _re_numdict.sub(r"\D", "", s)
+
+
+def _numdict_audio_url(item: dict) -> str:
+    key = str(item.get("audio_object_key") or "")
+    if key and str(item.get("audio_status") or "") == "ready":
+        try:
+            from backend.r2_storage import r2_public_url
+            return r2_public_url(key)
+        except Exception:
+            return ""
+    return ""
+
+
+def load_numdict_session(*, dispatch_id: int, user_id: int) -> dict | None:
+    """The 3-item session bundle for the player. Never leaks unanswered answers."""
+    from backend.database import get_numdict_dispatch_by_id, get_numdict_answers
+    dispatch = get_numdict_dispatch_by_id(int(dispatch_id))
+    if not dispatch:
+        return None
+    answered = get_numdict_answers(dispatch_id=int(dispatch_id), user_id=int(user_id))
+    items_by_id = {it["numdict_id"]: it for it in (dispatch.get("items") or [])}
+    items = []
+    for idx, numdict_id in enumerate(dispatch.get("item_ids") or []):
+        it = items_by_id.get(numdict_id)
+        if not it:
+            continue
+        prior = answered.get(idx)
+        items.append({
+            "item_index": idx,
+            "numdict_id": numdict_id,
+            "prompt_de": str(it.get("prompt_de") or ""),
+            "prompt_ru": str(it.get("prompt_ru") or ""),
+            "input_mode": str(it.get("input_mode") or "numeric"),
+            "audio_url": _numdict_audio_url(it),
+            "already": (
+                {"is_correct": bool(prior["is_correct"]), "typed": str(prior.get("typed") or ""),
+                 "display_answer": str(it.get("display_answer") or "")}
+                if prior else None
+            ),
+        })
+    return {
+        "kind": "numdict",
+        "id": int(dispatch_id),
+        "dispatch_id": int(dispatch_id),
+        "total": len(items),
+        "items": items,
+    }
+
+
+def grade_numdict_item(*, dispatch_id: int, user_id: int, item_index: int, typed: str,
+                       user_name: str = "", time_ms: int = 0) -> dict | None:
+    """Deterministic per-item grade (digit/char compare). Records ranking + anti-replay."""
+    from backend.database import (
+        get_numdict_dispatch_by_id, get_numdict_answers, record_numdict_item_answer,
+        record_challenge_result,
+    )
+    dispatch = get_numdict_dispatch_by_id(int(dispatch_id))
+    if not dispatch:
+        return None
+    item_ids = dispatch.get("item_ids") or []
+    idx = int(item_index)
+    if idx < 0 or idx >= len(item_ids):
+        return {"kind": "numdict", "error": "bad_index"}
+    numdict_id = item_ids[idx]
+    item = next((it for it in (dispatch.get("items") or []) if it["numdict_id"] == numdict_id), None)
+    if not item:
+        return {"kind": "numdict", "error": "not_found"}
+
+    total = len(item_ids)
+    mode = str(item.get("input_mode") or "numeric")
+    display_answer = str(item.get("display_answer") or "")
+
+    answered = get_numdict_answers(dispatch_id=int(dispatch_id), user_id=int(user_id))
+    if idx in answered:  # anti-replay: return the stored verdict, don't re-record
+        prior = answered[idx]
+        return {
+            "kind": "numdict", "item_index": idx, "is_correct": bool(prior["is_correct"]),
+            "display_answer": display_answer, "typed": str(prior.get("typed") or ""),
+            "remaining": max(0, total - len(answered)), "already_answered": True,
+            "ranking": _safe_numdict_ranking(numdict_id, user_id),
+        }
+
+    is_correct = _normalize_numdict(typed, mode) == _normalize_numdict(item.get("answer_value"), mode)
+    record_numdict_item_answer(
+        dispatch_id=int(dispatch_id), user_id=int(user_id), item_index=idx,
+        numdict_id=str(numdict_id), typed_answer=str(typed or ""), is_correct=is_correct,
+    )
+    try:
+        record_challenge_result(
+            challenge_key=f"nd:{numdict_id}", user_id=int(user_id),
+            user_name=str(user_name or ""), is_correct=bool(is_correct), time_ms=int(time_ms or 0),
+        )
+    except Exception:
+        pass
+    answered_count = len(answered) + 1
+    return {
+        "kind": "numdict", "item_index": idx, "is_correct": bool(is_correct),
+        "display_answer": display_answer, "typed": str(typed or ""),
+        "remaining": max(0, total - answered_count),
+        "ranking": _safe_numdict_ranking(numdict_id, user_id),
+    }
+
+
+def _safe_numdict_ranking(numdict_id: str, user_id: int) -> dict | None:
+    try:
+        from backend.database import compute_challenge_ranking
+        return compute_challenge_ranking(challenge_key=f"nd:{numdict_id}", user_id=int(user_id))
+    except Exception:
+        return None
+
+
 # ── Freeform quiz ("keine korrekte Antworten" → type answer): load + evaluate ──
 
 def _quiz_freeform_semantic_match(user_text: str, correct_text: str) -> bool:
