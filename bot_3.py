@@ -771,10 +771,10 @@ def _preset_budget(preset: str | None) -> int:
 # {weekday:[[start_min,end_min]…], weekend:[…]} in the user's TZ. The canned ones
 # use the same windows for weekday/weekend; the full split lands with the 3d UI.
 _WINDOW_PRESETS = {
-    "allday":  ("🌗 Весь день",      None),
-    "morning": ("🌅 Утро 7–10",      [[7 * 60, 10 * 60]]),
-    "evening": ("🌆 Вечер 18–22",    [[18 * 60, 22 * 60]]),
-    "morneve": ("🌅🌆 Утро+вечер",    [[7 * 60, 10 * 60], [18 * 60, 22 * 60]]),
+    "allday":  ("🌗 Весь день",         None),
+    "morning": ("🌅 Утро 06–12",        [[6 * 60, 12 * 60]]),
+    "evening": ("🌆 Вечер 17:30–22:30", [[17 * 60 + 30, 22 * 60 + 30]]),
+    "morneve": ("🌅🌆 Утро+вечер",       [[6 * 60, 9 * 60], [18 * 60, 22 * 60 + 30]]),
 }
 
 
@@ -2458,29 +2458,50 @@ _PRESET_PICKER = [
 _PRESET_LABELS = {code: label for code, label, _ in _PRESET_PICKER}
 
 
-def _build_schedule_picker(prefs) -> tuple:
-    """(text, markup) for the «🗓 Расписание» screen — intensity + active hours,
-    with the current choices ticked. Shared by the opener and both callbacks."""
+def _sched_labels(prefs) -> tuple:
+    """(preset_code, window_key, preset_label, window_label) for the current prefs."""
     cur = str((prefs or {}).get("preset") or "normal")
     cur_win = _current_window_key((prefs or {}).get("schedule"))
-    lines = ["🗓 <b>Расписание доставки</b>", "",
-             "Две настройки: <b>сколько</b> заданий и <b>в какие часы</b>. Жми по кнопкам ниже.", ""]
-    rows: list = []
-    rows.append([InlineKeyboardButton("⚡ Сколько в день — выбери одно:", callback_data="pset:hdr")])
+    preset_label = _PRESET_LABELS.get(cur, "🙂 Обычно")
+    win_label = _WINDOW_PRESETS.get(cur_win or "allday", ("⚙️ свои часы", None))[0] if cur_win is not None else "⚙️ свои часы"
+    return cur, cur_win, preset_label, win_label
+
+
+def _render_sched_step1(prefs) -> tuple:
+    """Step 1/2 — pick intensity."""
+    cur, _, _, _ = _sched_labels(prefs)
+    lines = ["🗓 <b>Расписание · шаг 1 из 2</b>", "", "<b>Сколько заданий в день?</b>", ""]
     for code, label, desc in _PRESET_PICKER:
         lines.append(("✅ " if code == cur else "• ") + f"<b>{label}</b> — {desc}")
-        rows.append([InlineKeyboardButton(("✅ " if code == cur else "") + label, callback_data=f"pset:{code}")])
-    lines += ["", "🕐 <b>Активные часы</b> — когда присылать (по твоему времени):"]
-    rows.append([InlineKeyboardButton("🕐 В какие часы — выбери одно:", callback_data="pwin:hdr")])
-    for key, (label, _wins) in _WINDOW_PRESETS.items():
-        rows.append([InlineKeyboardButton(("✅ " if key == cur_win else "") + label, callback_data=f"pwin:{key}")])
-    if cur_win is None:
-        lines.append("• сейчас: свои часы из приложения")
+    rows = [[InlineKeyboardButton(("✅ " if code == cur else "") + label, callback_data=f"pset:{code}")]
+            for code, label, _ in _PRESET_PICKER]
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
+def _render_sched_step2(prefs) -> tuple:
+    """Step 2/2 — pick active hours, then confirm."""
+    _, cur_win, preset_label, _ = _sched_labels(prefs)
+    lines = ["🗓 <b>Расписание · шаг 2 из 2</b>", "",
+             f"Интенсивность: <b>{preset_label}</b>", "",
+             "<b>В какие часы присылать?</b> (по твоему времени)"]
+    rows = [[InlineKeyboardButton(("✅ " if key == cur_win else "") + label, callback_data=f"pwin:{key}")]
+            for key, (label, _w) in _WINDOW_PRESETS.items()]
+    rows.append([InlineKeyboardButton("✅ Подтвердить", callback_data="sch:done")])
+    rows.append([InlineKeyboardButton("⬅️ К интенсивности", callback_data="sch:open")])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
+def _render_sched_collapsed(prefs) -> tuple:
+    """Collapsed — one button showing the current settings; tap to re-edit."""
+    _, _, preset_label, win_label = _sched_labels(prefs)
+    text = ("🗓 <b>Расписание сохранено</b>\n"
+            f"Сейчас: <b>{preset_label} · {win_label}</b>.\nНажми кнопку, чтобы изменить.")
+    rows = [[InlineKeyboardButton(f"🗓 {preset_label} · {win_label}", callback_data="sch:open")]]
+    return text, InlineKeyboardMarkup(rows)
+
+
 async def _send_schedule_picker(update: Update, context: CallbackContext) -> None:
-    """«🗓 Расписание» — Pro: pick delivery intensity + active hours."""
+    """«🗓 Расписание» — Pro: 2-step wizard (intensity → hours → confirm)."""
     if not update.effective_message or not update.effective_user:
         return
     user_id = int(update.effective_user.id)
@@ -2492,13 +2513,13 @@ async def _send_schedule_picker(update: Update, context: CallbackContext) -> Non
             parse_mode="HTML")
         return
     prefs = await asyncio.to_thread(get_user_prefs, user_id)
-    text, kb = _build_schedule_picker(prefs)
+    text, kb = _render_sched_step1(prefs)
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
 
 
-async def _refresh_schedule_picker(query, user_id: int) -> None:
+async def _sched_edit(query, render_fn, user_id: int) -> None:
     prefs = await asyncio.to_thread(get_user_prefs, user_id)
-    text, kb = _build_schedule_picker(prefs)
+    text, kb = render_fn(prefs)
     try:
         await query.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
     except Exception:
@@ -2506,15 +2527,12 @@ async def _refresh_schedule_picker(query, user_id: int) -> None:
 
 
 async def _schedule_preset_callback(update: Update, context: CallbackContext) -> None:
-    """pset:<preset> — save the delivery intensity (Pro)."""
+    """pset:<preset> — save intensity, advance to the hours step."""
     query = update.callback_query
     if not query or not query.from_user:
         return
     user_id = int(query.from_user.id)
     code = (query.data or "").split(":", 1)[1] if ":" in (query.data or "") else ""
-    if code == "hdr":
-        await query.answer("👇 Выбери, сколько заданий в день")
-        return
     if code not in _PRESET_LABELS:
         await query.answer()
         return
@@ -2524,19 +2542,16 @@ async def _schedule_preset_callback(update: Update, context: CallbackContext) ->
     ok = await asyncio.to_thread(set_user_preset, user_id, code)
     await query.answer("Сохранено ✅" if ok else "Не удалось сохранить")
     if ok:
-        await _refresh_schedule_picker(query, user_id)
+        await _sched_edit(query, _render_sched_step2, user_id)
 
 
 async def _schedule_window_callback(update: Update, context: CallbackContext) -> None:
-    """pwin:<key> — save active hours (Pro)."""
+    """pwin:<key> — save active hours, stay on the hours step (now ticked)."""
     query = update.callback_query
     if not query or not query.from_user:
         return
     user_id = int(query.from_user.id)
     key = (query.data or "").split(":", 1)[1] if ":" in (query.data or "") else ""
-    if key == "hdr":
-        await query.answer("👇 Выбери, в какие часы присылать")
-        return
     if key not in _WINDOW_PRESETS:
         await query.answer()
         return
@@ -2544,9 +2559,23 @@ async def _schedule_window_callback(update: Update, context: CallbackContext) ->
         await query.answer("Расписание доступно в Pro 🔒", show_alert=True)
         return
     ok = await asyncio.to_thread(set_user_schedule, user_id, _window_schedule_for(key))
-    await query.answer("Сохранено ✅" if ok else "Не удалось сохранить")
+    await query.answer("Сохранено ✅ — жми «Подтвердить»" if ok else "Не удалось сохранить")
     if ok:
-        await _refresh_schedule_picker(query, user_id)
+        await _sched_edit(query, _render_sched_step2, user_id)
+
+
+async def _schedule_nav_callback(update: Update, context: CallbackContext) -> None:
+    """sch:done → collapse to one button; sch:open → reopen the wizard at step 1."""
+    query = update.callback_query
+    if not query or not query.from_user:
+        return
+    user_id = int(query.from_user.id)
+    action = (query.data or "").split(":", 1)[1] if ":" in (query.data or "") else ""
+    if not await asyncio.to_thread(is_user_pro, user_id):
+        await query.answer("Расписание доступно в Pro 🔒", show_alert=True)
+        return
+    await query.answer()
+    await _sched_edit(query, _render_sched_collapsed if action == "done" else _render_sched_step1, user_id)
 
 
 async def _prepare_adjektiv_set_job(context: CallbackContext) -> None:
@@ -28682,6 +28711,7 @@ def main():
     application.add_handler(CallbackQueryHandler(_next_task_chooser_callback, pattern=r"^nxt:"))
     application.add_handler(CallbackQueryHandler(_schedule_preset_callback, pattern=r"^pset:"))
     application.add_handler(CallbackQueryHandler(_schedule_window_callback, pattern=r"^pwin:"))
+    application.add_handler(CallbackQueryHandler(_schedule_nav_callback, pattern=r"^sch:"))
     # 🔥 Логирование всех сообщений (группа -1, не блокирует цепочку)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message, block=False), group=-1)
 
