@@ -2115,47 +2115,74 @@ async def send_main_menu(update: Update, context: CallbackContext):
     # 2️⃣ Отправляем новое меню (только в личке)
     #await update.message.reply_text("Используйте кнопки:", reply_markup=reply_markup)
 
-def _build_shortcut_connect_keyboard() -> InlineKeyboardMarkup:
-    rows = []
-    install_url = _shortcut_install_web_url()
-    if install_url:
-        rows.append([InlineKeyboardButton(SHORTCUT_INSTALL_BUTTON_TEXT, url=install_url)])
-    rows.append([InlineKeyboardButton(SHORTCUT_CONNECT_BUTTON_TEXT, callback_data="shortcut:connect")])
-    return InlineKeyboardMarkup(rows)
-
-
-def _shortcut_install_web_url() -> str:
-    direct_url = (
+def _legacy_shortcut_direct_url() -> str:
+    """Old single-shortcut env vars — kept as a fallback for the nightly processor
+    so existing deployments don't break before the two new vars are set."""
+    return (
         (os.getenv("SHORTCUT_INSTALL_URL") or "").strip()
         or (os.getenv("SHORTCUT_ICLOUD_URL") or "").strip()
         or (os.getenv("IOS_SHORTCUT_INSTALL_URL") or "").strip()
     )
-    if not direct_url:
-        return ""
-    base_url = get_public_web_url()
-    if base_url:
-        return f"{base_url.rstrip('/')}/api/shortcut/install"
-    return direct_url
+
+
+def _shortcut_collector_install_url() -> str:
+    """Shortcut A — saves screenshots into the 'Deutsch Queue' album. No pairing."""
+    return (
+        (os.getenv("SHORTCUT_COLLECTOR_URL") or "").strip()
+        or (os.getenv("SHORTCUT_SCREENSHOT_URL") or "").strip()
+    )
+
+
+def _shortcut_processor_install_url() -> str:
+    """Shortcut B — nightly: reads the album, OCRs, sends words to DM. Needs pairing."""
+    return (
+        (os.getenv("SHORTCUT_PROCESSOR_URL") or "").strip()
+        or (os.getenv("SHORTCUT_NIGHTLY_URL") or "").strip()
+        or _legacy_shortcut_direct_url()
+    )
+
+
+def _build_shortcut_collector_keyboard() -> InlineKeyboardMarkup | None:
+    url = _shortcut_collector_install_url()
+    if not url:
+        return None
+    return InlineKeyboardMarkup([[InlineKeyboardButton(SHORTCUT_COLLECTOR_INSTALL_BUTTON_TEXT, url=url)]])
+
+
+def _build_shortcut_processor_keyboard() -> InlineKeyboardMarkup:
+    rows = []
+    url = _shortcut_processor_install_url()
+    if url:
+        rows.append([InlineKeyboardButton(SHORTCUT_PROCESSOR_INSTALL_BUTTON_TEXT, url=url)])
+    rows.append([InlineKeyboardButton(SHORTCUT_CONNECT_BUTTON_TEXT, callback_data="shortcut:connect")])
+    return InlineKeyboardMarkup(rows)
 
 
 def _build_shortcut_install_keyboard() -> InlineKeyboardMarkup | None:
-    install_url = _shortcut_install_web_url()
-    if not install_url:
+    """Both install buttons + the pairing button, in one keyboard."""
+    collector = _shortcut_collector_install_url()
+    processor = _shortcut_processor_install_url()
+    rows = []
+    if collector:
+        rows.append([InlineKeyboardButton(SHORTCUT_COLLECTOR_INSTALL_BUTTON_TEXT, url=collector)])
+    if processor:
+        rows.append([InlineKeyboardButton(SHORTCUT_PROCESSOR_INSTALL_BUTTON_TEXT, url=processor)])
+    rows.append([InlineKeyboardButton(SHORTCUT_CONNECT_BUTTON_TEXT, callback_data="shortcut:connect")])
+    if not (collector or processor):
         return None
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton(SHORTCUT_INSTALL_BUTTON_TEXT, url=install_url)],
-            [InlineKeyboardButton(SHORTCUT_CONNECT_BUTTON_TEXT, callback_data="shortcut:connect")],
-        ]
-    )
+    return InlineKeyboardMarkup(rows)
+
+
+# Back-compat alias: some call sites still build the "connect" keyboard.
+_build_shortcut_connect_keyboard = _build_shortcut_install_keyboard
 
 
 async def _send_shortcut_connect_prompt(update: Update, context: CallbackContext) -> None:
     if not update.effective_message:
         return
     await update.effective_message.reply_text(
-        "Сначала установите Shortcut на iPhone, потом нажмите Connect Shortcut и подключите его одним кодом.",
-        reply_markup=_build_shortcut_connect_keyboard(),
+        "Сначала установите команды на iPhone, потом нажмите «📱 Подключить кодом» и подключите ночную команду одним кодом.",
+        reply_markup=_build_shortcut_install_keyboard(),
     )
 
 
@@ -2195,17 +2222,21 @@ async def _send_shortcut_install_prompt(update: Update, context: CallbackContext
     if not update.effective_message:
         return
     chat_id = int(update.effective_chat.id) if update.effective_chat else int(update.effective_user.id)
-    keyboard = _build_shortcut_install_keyboard()
+    collector_kb = _build_shortcut_collector_keyboard()
+    processor_kb = _build_shortcut_processor_keyboard()
 
-    # Сообщение 0 — для кого это
+    # Сообщение 0 — для кого это и как работает пара команд
     await context.bot.send_message(
         chat_id=chat_id,
         text=(
-            "📲 <b>Установка Shortcut — делаем по шагам</b>\n\n"
-            "Shortcut — функция <b>только для iPhone</b>. С ней одним нажатием (кнопка действия "
-            "или двойной тап по задней крышке) вы фотографируете экран с немецким контентом, "
-            "бот вытягивает оттуда слова и присылает их вам в личку для перевода и сохранения.\n\n"
-            "📱 <b>Другой телефон (Android и т.д.)?</b> Shortcut не нужен — вам доступно всё остальное:\n"
+            "📲 <b>Перевод по скриншотам — настройка за 5 минут</b>\n\n"
+            "Это для <b>iPhone</b>. Работает в паре из двух команд:\n\n"
+            "🟢 <b>Команда 1 «Скриншоты»</b> — одним движением (кнопка действия или двойное касание задней "
+            "крышки) фотографирует экран и складывает картинку в ваш альбом <b>«Deutsch Queue»</b>. "
+            "Удобно ловить слова прямо во время рилсов и видео — ничего не прерывая.\n\n"
+            "🌙 <b>Команда 2 «Ночной перевод»</b> — рано утром сама берёт накопленные за день скриншоты, "
+            "распознаёт текст и присылает слова вам в личку. Останется сохранить их одной кнопкой.\n\n"
+            "📱 <b>Другой телефон (Android и т.п.)?</b> Команды не нужны — вам доступно всё остальное:\n"
             "• написать боту слово или фразу;\n"
             "• переслать немецкий текст из любого мессенджера;\n"
             "• вставить большой кусок текста — бот сам выберет слова под ваш уровень."
@@ -2214,81 +2245,94 @@ async def _send_shortcut_install_prompt(update: Update, context: CallbackContext
         disable_web_page_preview=True,
     )
 
-    # Сообщение 1 — Шаг 1: установка (+ кнопка установки и фото)
-    if keyboard:
+    # Сообщение 1 — Шаг 1: создать альбом
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "<b>Шаг 1. Создайте альбом «Deutsch Queue»</b> (один раз)\n\n"
+            "1️⃣ Откройте приложение <b>«Фото»</b>.\n"
+            "2️⃣ Внизу выберите <b>«Альбомы»</b> и нажмите <b>＋</b> → <b>«Новый альбом»</b>.\n"
+            "3️⃣ Назовите его <b>точно так</b>: <code>Deutsch Queue</code> (с большой буквы, с пробелом).\n\n"
+            "Сюда первая команда будет складывать скриншоты, а ночная — забирать их для перевода."
+        ),
+        parse_mode="HTML",
+    )
+
+    # Сообщение 2 — Шаг 2: команда «Скриншоты» + привязка к запуску
+    if collector_kb:
         await context.bot.send_message(
             chat_id=chat_id,
             text=(
-                "<b>Шаг 1. Установите Shortcut</b>\n\n"
-                "1️⃣ Нажмите кнопку <b>«📲 Установить Shortcut»</b> ниже.\n"
-                "2️⃣ Откроется приложение <b>«Команды»</b> (Shortcuts).\n"
-                "3️⃣ Пролистайте вниз и нажмите <b>«Добавить быструю команду»</b>. "
-                "На всех экранах просто <b>соглашайтесь / разрешайте</b>."
+                "<b>Шаг 2. Команда «Скриншоты»</b>\n\n"
+                "1️⃣ Нажмите кнопку ниже — откроется приложение <b>«Команды»</b>. Пролистайте вниз и нажмите "
+                "<b>«Добавить команду»</b> (на всех экранах — соглашайтесь).\n"
+                "2️⃣ Привяжите её к быстрому запуску, чтобы вызывать одним движением:\n\n"
+                "🔹 <b>Двойное касание крышки</b> (любой iPhone): Настройки → <b>Универсальный доступ</b> → "
+                "<b>Касание</b> → <b>Касание задней панели</b> → <b>Двойное касание</b> → выберите команду.\n\n"
+                "🔹 <b>Кнопка «Действие»</b> (iPhone 15 Pro и новее): Настройки → <b>Кнопка «Действие»</b> → "
+                "пролистайте до <b>«Быстрая команда»</b> → выберите команду."
             ),
             parse_mode="HTML",
-            reply_markup=keyboard,
+            reply_markup=collector_kb,
             disable_web_page_preview=True,
         )
     else:
         await context.bot.send_message(
             chat_id=chat_id,
             text=(
-                "⚠️ Кнопка установки временно не настроена (администратору нужно задать SHORTCUT_INSTALL_URL). "
-                "Остальные функции бота работают как обычно."
+                "⚠️ Кнопка установки команды «Скриншоты» временно не настроена (администратору нужно задать "
+                "SHORTCUT_COLLECTOR_URL). Остальные функции бота работают как обычно."
             ),
         )
-    for _photo_key in ("step1_photo_1", "step1_photo_2", "step1_photo_3"):
-        await _send_onboarding_photo(context, chat_id, _photo_key)
-
-    # Сообщение 2 — Шаг 2: привязка к запуску (+ видео)
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=(
-            "<b>Шаг 2. Привяжите запуск</b> (чтобы вызывать одним движением)\n\n"
-            "🔹 <b>Вариант А — двойное касание задней крышки</b> (любой iPhone):\n"
-            "Настройки → <b>Универсальный доступ</b> → <b>Касание</b> → <b>Касание задней панели</b> → "
-            "<b>Двойное касание</b> → выберите вашу команду.\n\n"
-            "🔹 <b>Вариант Б — кнопка «Действие»</b> (iPhone 15 Pro и новее):\n"
-            "Настройки → <b>Кнопка «Действие»</b> → пролистайте до пункта <b>«Быстрая команда»</b> → "
-            "<b>Выбрать команду</b> → выберите вашу."
-        ),
-        parse_mode="HTML",
-    )
     await _send_onboarding_video(context, chat_id, "step2_back_tap", caption="🔹 Двойное касание задней крышки")
     await _send_onboarding_video(context, chat_id, "step2_action_button", caption="🔹 Кнопка «Действие»")
 
-    # Сообщение 3 — Шаг 3: подключение (код). Фото добавим позже.
+    # Сообщение 3 — Шаг 3: команда «Ночной перевод» + привязка кодом
     await context.bot.send_message(
         chat_id=chat_id,
         text=(
-            "<b>Шаг 3. Подключите Shortcut к вашему аккаунту — один раз</b>\n\n"
-            "1️⃣ Вернитесь в бот и нажмите <b>«📱 Connect Shortcut»</b>.\n"
-            "2️⃣ Бот пришлёт <b>персональный код</b> отдельным сообщением — <b>скопируйте его</b>.\n"
-            "3️⃣ Сразу найдите любой немецкий контент и запустите Shortcut (двойной тап / кнопка действия). "
-            "При <b>первом</b> запуске он попросит код — <b>вставьте его</b>.\n\n"
-            "⚠️ Код <b>одноразовый</b> и действует <b>24 часа</b> — поэтому подключитесь прямо сейчас. "
-            "После этого код больше не нужен: всё запускается автоматически."
+            "<b>Шаг 3. Команда «Ночной перевод»</b>\n\n"
+            "1️⃣ Нажмите кнопку ниже и так же добавьте вторую команду.\n"
+            "2️⃣ Привяжите её к вашему аккаунту — один раз:\n"
+            "• нажмите <b>«📱 Подключить кодом»</b> — бот пришлёт персональный код;\n"
+            "• запустите команду «Ночной перевод» вручную один раз — она попросит код, вставьте его.\n\n"
+            "⚠️ Код <b>одноразовый</b> и действует <b>24 часа</b> — подключитесь сразу. Дальше код не нужен."
+        ),
+        parse_mode="HTML",
+        reply_markup=processor_kb,
+        disable_web_page_preview=True,
+    )
+
+    # Сообщение 4 — Шаг 4: автоматизация по времени (06:30–07:30)
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "<b>Шаг 4. Поставьте утренний запуск по времени</b>\n\n"
+            "1️⃣ В приложении «Команды» откройте вкладку <b>«Автоматизация»</b> → <b>＋</b> → "
+            "<b>«Создать автоматизацию для себя»</b>.\n"
+            "2️⃣ Выберите <b>«Время суток»</b> и поставьте утро — <b>06:30–07:30</b>, повтор <b>ежедневно</b>.\n"
+            "3️⃣ Действие — запустить команду <b>«Ночной перевод»</b>. Выключите «Спрашивать до запуска», "
+            "чтобы команда шла сама.\n\n"
+            "⏰ Почему именно 06:30–07:30: в это время сервер свободен, перевод проходит быстро и без сбоев. "
+            "Слова прилетят в личку примерно через полторы минуты после запуска."
         ),
         parse_mode="HTML",
     )
-    await _send_onboarding_photo(context, chat_id, "step3_photo")
 
-    # Сообщение 4 — готово / как пользоваться
+    # Сообщение 5 — готово / как пользоваться
     guide_url = get_webapp_deeplink("guide", bot_username=context.bot.username)
     await context.bot.send_message(
         chat_id=chat_id,
         text=(
-            "✅ <b>Готово! Дальше всё просто:</b>\n\n"
-            "🎬 Смотрите рилс/видео → на интересном месте поставьте на паузу → кнопка действия или двойной "
-            "тап → скрин превращается в текст → можно что-то дописать или убрать лишние слова → подтвердите → "
-            "слова прилетают в личку.\n\n"
-            "⚡️ Накопилось много слов? Зайдите в личку и нажмите один раз <b>«🇩🇪➡️🇷🇺 Быстрый перевод»</b> — "
-            "режим применится сразу ко всей очереди.\n"
-            "🔎 Или переводите слова по одному — там доступен ещё и <b>детальный</b> разбор.\n\n"
+            "✅ <b>Готово! Как это работает каждый день:</b>\n\n"
+            "🎬 Видите немецкое слово в рилсе/видео/чате → кнопка действия или двойное касание крышки → "
+            "скриншот тихо уходит в альбом «Deutsch Queue».\n"
+            "🌙 Утром команда сама всё переводит → слова приходят вам в личку.\n"
+            "💾 Останется нажать сохранить — выбранные слова лягут в словарь.\n\n"
             "▶️ Каждый день я присылаю мини-задания (квиз, ребус, кроссворд и др.). "
             "Кнопка <b>«▶️ Следующее задание»</b> внизу сразу открывает самое старое нерешённое — "
             "не нужно листать чат.\n\n"
-            f"📱 <b>Что умеет приложение:</b> {guide_url}\n"
+            f"📱 <b>Что ещё умеет приложение:</b> {guide_url}\n"
             "🎬 Видео-инструкции — кнопка <b>«Как пользоваться»</b> внизу."
         ),
         parse_mode="HTML",
@@ -3623,8 +3667,8 @@ def _build_private_start_onboarding_text() -> str:
         "🔹 <b>Пересланный немецкий текст</b>\n"
         "Нашли интересный пост в любом мессенджере — <b>перешлите его боту</b>. Он разобьёт текст на слова и фразы, предложит сохранить, добавит объяснения, озвучку и примеры в разных контекстах.\n"
         "→ <b>Быстрый перевод</b> — 2 коротких варианта; <b>детальный</b> — глубокий разбор слова и его частей.\n\n"
-        "🔹 <b>Скриншоты, рилсы и любой контент — через Shortcut (iPhone)</b>\n"
-        "Смотрите видео в YouTube/Instagram/TikTok → нажимаете кнопку действия или двойной тап по задней крышке → скрин превращается в немецкий текст → прилетает вам в личку для перевода и сохранения.\n\n"
+        "🔹 <b>Скриншоты, рилсы и любой контент — через команды Shortcut (iPhone)</b>\n"
+        "Ловите немецкие слова прямо во время видео: кнопка действия или двойное касание крышки делает скриншот → утром команда сама всё переводит → слова приходят вам в личку для сохранения.\n\n"
         "🔹 <b>Игры и квизы — лично или командой</b>\n"
         "Каждый день бот присылает интерактивные задания (B2+): впиши слово, собери предложение, найди синоним и др. Есть рейтинг и Кубок чемпиона недели. Хотите играть <b>командой с друзьями</b> в общем чате — команда <b>/group</b> подскажет, как настроить.\n\n"
         "🔹 <b>Артикли: учим и сражаемся</b>\n"
