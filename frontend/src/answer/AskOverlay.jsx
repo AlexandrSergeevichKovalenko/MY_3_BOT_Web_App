@@ -11,7 +11,8 @@ export default function AskOverlay({ api, context = '', onClose, saveText = '', 
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const [saved, setSaved] = useState(false);
+  const [saveState, setSaveState] = useState('idle'); // 'idle'|'saving'|'saved'|'error'
+  const [savedRu, setSavedRu] = useState('');
   const [pos, setPos] = useState(null); // {x, y} top-left; null until measured
   const panelRef = useRef(null);
   const threadRef = useRef(null);
@@ -90,22 +91,42 @@ export default function AskOverlay({ api, context = '', onClose, saveText = '', 
     }
   }, [input, busy, messages, api, context]);
 
-  // Optimistic dictionary save: confirm instantly, save in the background. The
-  // backend canonicalizes the entry "по нашей схеме" (single word vs phrase,
-  // article, dedup), so we just send the German text + its Russian meaning.
-  const save = useCallback(() => {
+  // Save through the SAME canonical flow as the Reader / YouTube: first a
+  // dictionary lookup (LLM builds the real Russian translation + article +
+  // examples — the full card), then persist that card. Sending the German text
+  // straight to /save (the old behaviour) left grammar-game words with no Russian
+  // translation, so the entry showed German on both sides.
+  const save = useCallback(async () => {
     const word = String(saveText || '').trim();
-    if (saved || !word) return;
-    setSaved(true);
-    Promise.resolve(
-      api('/api/webapp/dictionary/save', {
-        word_de: word,
-        translation_ru: String(saveTranslation || '').trim(),
-        source_lang: 'ru', target_lang: 'de',
+    if (saveState === 'saving' || saveState === 'saved' || !word) return;
+    setSaveState('saving');
+    try {
+      const lookup = await api('/api/webapp/dictionary', { word });
+      const item = (lookup && lookup.item) || {};
+      const direction = String(lookup?.direction || '').toLowerCase();
+      const isDeRu = direction !== 'ru-de'; // task words are German → de-ru
+      const sourceText = String(
+        (isDeRu ? (item.word_de || item.translation_de) : (item.word_ru || item.translation_ru)) || word,
+      ).trim();
+      const targetText = String(
+        (isDeRu ? (item.translation_ru || item.word_ru) : (item.translation_de || item.word_de))
+        || saveTranslation || '',
+      ).trim();
+      await api('/api/webapp/dictionary/save', {
+        source_text: sourceText,
+        target_text: targetText,
+        translation_ru: String(item.translation_ru || (isDeRu ? targetText : '')).trim(),
+        translation_de: String(item.translation_de || (isDeRu ? '' : targetText)).trim(),
+        direction: direction || 'de-ru',
+        response_json: item,
         origin_process: 'ask_overlay',
-      }),
-    ).catch(() => { /* best-effort background save */ });
-  }, [saved, saveText, saveTranslation, api]);
+      });
+      setSavedRu(isDeRu ? targetText : sourceText);
+      setSaveState('saved');
+    } catch (_e) {
+      setSaveState('error');
+    }
+  }, [saveState, saveText, saveTranslation, api]);
 
   const style = pos ? { left: `${pos.x}px`, top: `${pos.y}px` } : { left: '50%', top: '60%', visibility: 'hidden' };
 
@@ -153,11 +174,15 @@ export default function AskOverlay({ api, context = '', onClose, saveText = '', 
       {saveText ? (
         <button
           type="button"
-          className={`ask-pop-save ${saved ? 'is-saved' : ''}`}
+          className={`ask-pop-save ${saveState === 'saved' ? 'is-saved' : ''} ${saveState === 'error' ? 'is-error' : ''}`}
           onClick={save}
-          disabled={saved}
+          disabled={saveState === 'saving' || saveState === 'saved'}
         >
-          {saved ? '✓ В словаре' : '💾 Сохранить в словарь'}
+          {saveState === 'saving' ? '⏳ Сохраняю…'
+            : saveState === 'saved'
+              ? (savedRu ? `✓ «${saveText}» — ${savedRu}` : `✓ «${saveText}» в словаре`)
+              : saveState === 'error' ? '⚠️ Не вышло — повторить'
+                : `💾 Сохранить «${saveText}»`}
         </button>
       ) : null}
     </div>
