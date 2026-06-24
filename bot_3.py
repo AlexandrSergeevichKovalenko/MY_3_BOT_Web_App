@@ -2644,6 +2644,109 @@ async def _prepare_adjektiv_set_job(context: CallbackContext) -> None:
         logging.warning("prepare_adjektiv_set failed", exc_info=True)
 
 
+# ── Drip delivery within active windows (Этап 3f Stage B) ────────────────────
+# Windowed Pro users get their daily budget ONE AT A TIME, evenly spaced across
+# their active window, pulled from pre-stocked pools (decoupled from the slot clock
+# → works for any window incl. morning). Behind DRIP_DELIVERY_ENABLED (default off).
+DRIP_TICK_MINUTES = max(1, int((os.getenv("DRIP_TICK_MINUTES") or "10").strip() or "10"))
+MIN_DRIP_INTERVAL_MINUTES = max(1, int((os.getenv("MIN_DRIP_INTERVAL_MINUTES") or "30").strip() or "30"))
+# Types the drip can pull now (each needs a pool-pick + send_X_to_chat). Starts with
+# aufgabe — its many formats already give variety; more kinds added next.
+_DRIP_KINDS = ["aufgabe"]
+_DRIP_AUFGABE_FORMATS = ["cloze", "satzbau", "synonym", "antonym", "transform",
+                         "error", "wortbildung", "wortgruppe"]
+
+
+def _drip_delivery_enabled() -> bool:
+    return (os.getenv("DRIP_DELIVERY_ENABLED") or "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _window_minutes_today(schedule, tz_name) -> int:
+    if not schedule:
+        return 0
+    try:
+        tz = ZoneInfo(str(tz_name) if tz_name else QUIZ_SCHEDULE_TZ_NAME)
+    except Exception:
+        tz = ZoneInfo(QUIZ_SCHEDULE_TZ_NAME)
+    now = datetime.now(tz)
+    wins = schedule.get("weekend" if now.weekday() >= 5 else "weekday") or []
+    try:
+        return sum(max(0, int(e) - int(s)) for s, e in wins)
+    except Exception:
+        return 0
+
+
+async def _drip_deliver_one(context: CallbackContext, user_id: int, delivered_idx: int, now) -> bool:
+    """Deliver ONE task (rotated by delivery index) from a pool to a windowed user."""
+    uid = int(user_id)
+    kind = _DRIP_KINDS[int(delivered_idx) % len(_DRIP_KINDS)]
+    slot_date = now.date()
+    slot_hour = int(now.hour) * 100 + int(now.minute)
+    try:
+        if kind == "aufgabe":
+            fmt = _DRIP_AUFGABE_FORMATS[int(delivered_idx) % len(_DRIP_AUFGABE_FORMATS)]
+            entry = await asyncio.to_thread(pick_next_aufgabe, cooldown_days=AUFGABE_SEND_COOLDOWN_DAYS, format=fmt)
+            if not entry:
+                entry = await asyncio.to_thread(pick_next_aufgabe, cooldown_days=0, format=fmt)
+            if not entry:
+                return False
+            ok = await send_aufgabe_to_chat(context, entry=entry, slot_date=slot_date,
+                                            slot_hour=slot_hour, chat_id=uid, target_user_id=uid)
+            if ok:
+                try:
+                    await asyncio.to_thread(mark_aufgabe_sent, str(entry.get("aufgabe_id") or ""))
+                except Exception:
+                    pass
+            return ok
+    except Exception:
+        logging.warning("drip_deliver_one failed kind=%s uid=%s", kind, uid, exc_info=True)
+    return False
+
+
+async def _drip_delivery_job(context: CallbackContext) -> None:
+    """Every DRIP_TICK_MINUTES: each windowed Pro user in-window + under budget gets
+    one task if their pacing interval (window_minutes / budget, floored) has elapsed."""
+    if not _drip_delivery_enabled() or _is_quiet_hours_now():
+        return
+    now = _get_quiz_schedule_now()
+    since_ts = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    try:
+        users = await asyncio.to_thread(get_windowed_user_prefs)
+    except Exception:
+        users = []
+    delivered = 0
+    for u in users:
+        try:
+            uid = int(u.get("user_id") or 0)
+            schedule = u.get("schedule")
+            tz = u.get("tz_name")
+            if not uid or not _now_in_window(schedule, tz):
+                continue
+            if not _is_user_pro_cached(uid):
+                continue
+            budget = _preset_budget(u.get("preset"))
+            if budget <= 0:
+                continue
+            count, last_ts = await asyncio.to_thread(get_inbox_delivery_stats_today, uid, since_ts)
+            if count >= budget:
+                continue
+            wmin = _window_minutes_today(schedule, tz)
+            interval = max(MIN_DRIP_INTERVAL_MINUTES, (wmin / budget) if budget else MIN_DRIP_INTERVAL_MINUTES)
+            if last_ts is not None:
+                try:
+                    elapsed = (now - last_ts).total_seconds() / 60.0
+                except Exception:
+                    elapsed = interval
+                if elapsed < interval:
+                    continue
+            if await _drip_deliver_one(context, uid, count, now):
+                delivered += 1
+        except Exception:
+            logging.warning("drip user failed uid=%s", u.get("user_id"), exc_info=True)
+    if delivered:
+        logging.info("drip_delivery: delivered %s task(s)", delivered)
+
+
 async def _release_windowed_inbox_job(context: CallbackContext) -> None:
     """Этап 3f: when a windowed user's active hours open, deliver everything we HELD
     for them (tasks that fired while they were "off") as ONE batch card. Tasks that
@@ -18937,6 +19040,9 @@ async def _collect_quiz_delivery_user_targets(context: CallbackContext) -> list[
             if tier_active and safe_chat_id > 0 and user_ids_for_chat:
                 uid = int(user_ids_for_chat[0])
                 p = prefs_map.get(uid) or {}
+                if _drip_delivery_enabled() and p.get("schedule"):
+                    tier_skipped += 1
+                    continue  # windowed → drip job delivers; no live slot sends
                 budget = _user_send_budget(uid, is_pro=pro_map.get(uid, False),
                                            active_recent=active_recent, preset=p.get("preset"))
                 if slot_rank >= budget:
@@ -29565,6 +29671,13 @@ def main():
             lambda: submit_async(_release_windowed_inbox_job, CallbackContext(application=application)),
             "cron",
             minute="*/20",
+            timezone=QUIZ_SCHEDULE_TZ_NAME,
+        )
+        # -- Drip delivery (Этап 3f Stage B): paced one-at-a-time within active windows --
+        scheduler.add_job(
+            lambda: submit_async(_drip_delivery_job, CallbackContext(application=application)),
+            "cron",
+            minute=f"*/{DRIP_TICK_MINUTES}",
             timezone=QUIZ_SCHEDULE_TZ_NAME,
         )
         # -- Adjektiv Sprint: pre-build today's set early (05:00) so the Mini-App is

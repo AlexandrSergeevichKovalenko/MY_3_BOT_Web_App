@@ -15774,6 +15774,45 @@ def get_user_prefs_bulk(user_ids) -> dict:
     return out
 
 
+def get_windowed_user_prefs() -> list:
+    """Users with a non-null active-window schedule (the drip job's work list, Этап 3f
+    Stage B). One query; Pro check happens caller-side."""
+    out: list = []
+    try:
+        _ensure_user_prefs_schema()
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT user_id, preset, schedule, tz_name FROM bt_3_user_prefs "
+                    "WHERE schedule IS NOT NULL;"
+                )
+                for r in cursor.fetchall() or []:
+                    out.append({"user_id": int(r[0]), "preset": str(r[1] or "normal"),
+                                "schedule": r[2], "tz_name": r[3]})
+    except Exception:
+        logging.warning("get_windowed_user_prefs failed", exc_info=True)
+    return out
+
+
+def get_inbox_delivery_stats_today(user_id: int, since_ts) -> tuple:
+    """(delivered_count, last_delivered_at) for the user's inbox since `since_ts`,
+    excluding the spaced-rep review (kind='rv') which is delivered off-schedule —
+    used to pace the drip (how many already today + when last)."""
+    try:
+        with get_db_connection_context() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT COUNT(*), MAX(created_at) FROM bt_3_interactive_inbox "
+                    "WHERE user_id = %s AND created_at >= %s AND kind <> 'rv';",
+                    (int(user_id), since_ts),
+                )
+                r = cursor.fetchone()
+        return (int(r[0] or 0), r[1]) if r else (0, None)
+    except Exception:
+        logging.warning("get_inbox_delivery_stats_today failed user=%s", user_id, exc_info=True)
+        return (0, None)
+
+
 def get_dictionary_entry_by_id(entry_id: int) -> dict | None:
     if not entry_id:
         return None
